@@ -174,7 +174,7 @@ def test_merge_features_into_summary(tmp_path, mocker):
     # Stale value was replaced, not duplicated into a suffixed column.
     assert "mean_amplitude_right" not in df.columns
     assert df["mean_amplitude"][0] != 9.0
-    # No mask group: no call has a SAM mask, so the absolute loudness stays null
+    # No mask group: no USV has a SAM mask, so the absolute loudness stays null
     # (it is measured over the mask) while the spectral features are still written.
     assert df["loudness_db"].null_count() == df.height
 
@@ -182,7 +182,7 @@ def test_merge_features_into_summary(tmp_path, mocker):
 def test_merge_features_refuses_a_summary_the_h5_does_not_match(tmp_path, mocker):
     """The features are joined to the summary by row position, so a summary whose row count
     differs from the H5's (re-curated after the spectrograms were made) raises instead of
-    writing every feature onto the wrong call, and the summary is left untouched."""
+    writing every feature onto the wrong USV, and the summary is left untouched."""
     session_id = "20230119_155302"
     root = tmp_path / session_id
     (root / "audio" / "spectrograms").mkdir(parents=True)
@@ -289,7 +289,7 @@ def test_merge_features_uses_mask_group_when_present(tmp_path, mocker):
     # The masked region keeps the in-mask pixel (row 4), not the brighter row-10 pixel.
     assert df["peak_freq_hz"][0] == freq_axis[4]
     assert df["max_amplitude"][0] == 1.0
-    # The absolute loudness is measured over the call's SAM mask union, with the
+    # The absolute loudness is measured over the USV's SAM mask union, with the
     # spectrogram generator's settings, and written as loudness_db.
     np.testing.assert_array_equal(measured["regions"], seg)
     np.testing.assert_array_equal(measured["starts"], [0.1])

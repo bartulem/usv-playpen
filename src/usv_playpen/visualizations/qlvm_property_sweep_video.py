@@ -314,6 +314,21 @@ def render_qlvm_property_sweep_video(
     header = fig.suptitle("", y=0.995, fontsize=16)
 
     def show(position: float) -> None:
+        """
+        Description
+        -----------
+        Moves every property panel to one sweep position and rewrites the figure
+        header with the percentile window it shows.
+
+        Parameters
+        ----------
+        position (float)
+            Centre of the percentile window, a quantile in ``[window / 2, 1 - window / 2]``.
+
+        Returns
+        -------
+        None
+        """
         for panel in panels:
             panel.update(position)
         header.set_text(f"USVs between the {100 * (position - window / 2):.0f}th and "

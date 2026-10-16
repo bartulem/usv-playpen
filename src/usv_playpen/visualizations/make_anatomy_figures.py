@@ -611,9 +611,49 @@ class AnatomyFigureMaker:
         out_dir (str | pathlib.Path | None)
             Directory override; `None` falls back to
             `figures.save_directory`.
+        fig_size_inches (tuple[float, float], default (6.0, 5.0))
+            Figure size in inches; forwarded to
+            `build_unit_positions_figure`.
         fig_format (str | None)
             Output format override; `None` falls back to
             `figures.fig_format`.
+        view_elev (float, default 18.0)
+            Elevation angle for `ax.view_init`; forwarded to
+            `build_unit_positions_figure`.
+        view_azim (float, default -60.0)
+            Azimuth angle for `ax.view_init`; forwarded to
+            `build_unit_positions_figure`.
+        shell_vertex_stride (int, default 6)
+            Take every Nth vertex of the root mesh for the brain-shell
+            scatter (lower -> denser shell); forwarded to
+            `build_unit_positions_figure`.
+        shell_point_size (float, default 0.7)
+            Marker size for shell dots; forwarded to
+            `build_unit_positions_figure`.
+        shell_point_alpha (float, default 0.50)
+            Alpha for shell dots; forwarded to
+            `build_unit_positions_figure`.
+        region_alpha (float, default 0.10)
+            Face alpha for the highlighted sub-region volumes (PAG,
+            MRN, VTA, CENT, SC); forwarded to
+            `build_unit_positions_figure`.
+        mb_alpha (float, default 0.04)
+            Face alpha for the MB parent volume, kept very low so it
+            does not occlude PAG / MRN / VTA; forwarded to
+            `build_unit_positions_figure`.
+        dot_size (float, default 9.0)
+            Scatter marker size for unit dots; forwarded to
+            `build_unit_positions_figure`.
+        dot_alpha (float, default 1.0)
+            Alpha for unit dots; forwarded to
+            `build_unit_positions_figure`.
+        legend_marker_scale (float, default 3.0)
+            Multiplier applied to the in-axes dot size for the legend
+            swatches; forwarded to `build_unit_positions_figure`.
+        filter_outliers (bool, default True)
+            When True, drop dots whose stereotaxic coordinates fall
+            outside their bucket's Allen mesh bounding box; forwarded
+            to `build_unit_positions_figure`.
         rasterize_dense (bool, default True)
             When True, the six translucent Allen-CCF bucket meshes
             are flattened to an embedded raster layer inside the SVG.
@@ -627,8 +667,6 @@ class AnatomyFigureMaker:
             points), so those layers remain editable per-element.
             Set False to emit a fully vector SVG (mesh polygons
             included; large but cleanly editable everywhere).
-        All other kwargs
-            See `build_unit_positions_figure`.
 
         Returns
         -------

@@ -6,7 +6,7 @@ Cross-session USV summary statistics and their figures, driven from
 
 The loaders build one master per-USV table over a list of sessions
 (``build_master_usv_dataframe``: the USV summaries joined with the behavioral
-features at each call, the session metadata and the QLVM category
+features at each USV, the session metadata and the QLVM category
 ``qlvm_category``); the plotters draw the descriptive views of that table --
 emitter assignment and per-mouse participation, global and local vocalization
 fatigue (overall and per category), USV duration against spatial behavior,
@@ -245,7 +245,7 @@ def merge_usv_and_behavioral_features(
     dataset using the shared 'frame_index'. This creates a unified dataset where
     every individual vocalization is annotated with the physical distance,
     relative angles of the mice, and its acoustic category at the exact moment
-    the call was emitted.
+    the USV was emitted.
 
     Parameters
     ----------
@@ -1361,8 +1361,8 @@ def plot_unassigned_proportion_vs_distance_jointplot(
         g.ax_joint.text(0.05, 0.95, stat_text, transform=g.ax_joint.transAxes,
                         fontsize=12, color=line_color, va='top')
 
-    g.set_axis_labels('Median Nose-Nose Distance', 'Proportion of Unassigned Calls', fontsize=12)
-    g.figure.suptitle('Correlation between Distance and Unassigned Calls', y=1.02, fontsize=14)
+    g.set_axis_labels('Median Nose-Nose Distance', 'Proportion of Unassigned USVs', fontsize=12)
+    g.figure.suptitle('Correlation between Distance and Unassigned USVs', y=1.02, fontsize=14)
 
     g.figure.tight_layout()
     return g, stats_dict
@@ -2205,8 +2205,8 @@ def plot_category_prevalence_and_embedding(
     (``auxiliary_plot_functions.draw_category_outlines``, the method the embedding
     explorer uses), not by contouring the integer grid at half-integer levels, which
     would stack lines wherever non-consecutive categories touch. On a conditional map (``qlvm_duration``, ``qlvm_entropy``,
-    ``qlvm_bandwidth``, ``qlvm_loudness``) the bundle does not partition the torus the calls sit on, so no boundaries are drawn and the
-    embedding titles say so; the bars still count the calls' ``qlvm_category``.
+    ``qlvm_bandwidth``, ``qlvm_loudness``) the bundle does not partition the torus the USVs sit on, so no boundaries are drawn and the
+    embedding titles say so; the bars still count the USVs' ``qlvm_category``.
     Boundaries are never estimated from the data.
 
     Parameters
@@ -2388,7 +2388,7 @@ def plot_category_prevalence_and_embedding(
     ax_sum_emb.grid(False)
 
     if plot_type == 'density':
-        # Single global density of ALL calls
+        # Single global density of ALL USVs
         kde_global = gaussian_kde(np.vstack([dim1_all, dim2_all]))
         zz_global = kde_global(np.vstack([xx.flatten(), yy.flatten()])).reshape(xx.shape)
         zz_norm_global = (zz_global - zz_global.min()) / (zz_global.max() - zz_global.min() + 1e-10)
@@ -2398,7 +2398,7 @@ def plot_category_prevalence_and_embedding(
             extent=[x_min, x_max, y_min, y_max], aspect='auto', zorder=2
         )
     elif plot_type == 'scatter':
-        # Scatter all calls, colored by assignment
+        # Scatter all USVs, colored by assignment
         for sex_key, color in [('male', male_color), ('female', female_color), ('unassigned', unassigned_color)]:
             subset = df_pd[df_pd['sex'] == sex_key]
             ax_sum_emb.scatter(
@@ -3258,7 +3258,7 @@ def plot_session_squeak_time_heatmap(
         share(t) = sum_i K(t - t_i) * squeak_i / sum_i K(t - t_i),
 
     the kernel-weighted fraction of nearby segments that are squeaks. Each row is one session
-    (rows are never smoothed into one another), and a lone squeak is weighed against the calls
+    (rows are never smoothed into one another), and a lone squeak is weighed against the vocalizations
     around it rather than being 1 of 1 in a bin. Where the vocal density ``sum_i K(t - t_i)``
     is below ``min_vocal_density`` -- no vocalization within roughly two sigma -- the share is
     undefined (0 / 0, not 0 %) and drawn in ``nodata_color``, white, so a silent stretch reads
@@ -3437,7 +3437,26 @@ def plot_session_squeak_time_heatmap(
     # itself at vmax. create_colormap runs from ``cm_end`` (index 0) to ``cm_start`` (top) in
     # 0-255 RGB; luminance equalisation is off so the condition colour is kept exactly.
     def tinted_ramp(name: str, full: np.ndarray) -> mcolors.ListedColormap:
-        """The zero_tint-of-``full`` (0 %) to ``full`` (vmax) ramp for one colour, in RGB 0-1."""
+        """
+        Description
+        -----------
+        The zero_tint-of-``full`` (0 %) to ``full`` (vmax) ramp for one colour, in RGB 0-1.
+        The 0 % end is ``zero_tint * full + (1 - zero_tint)`` (the colour blended toward
+        white by the enclosing ``zero_tint``), built with ``create_colormap`` at 255 steps
+        with luminance equalisation off so the condition colour is kept exactly.
+
+        Parameters
+        ----------
+        name (str)
+            Name given to the colormap (``cm_name``).
+        full (np.ndarray)
+            ``(3,)`` RGB colour in 0-1 at the vmax end of the ramp.
+
+        Returns
+        -------
+        cmap (mcolors.ListedColormap)
+            The sequential tint-to-colour colormap.
+        """
         tint = zero_tint * full + (1.0 - zero_tint)
         return create_colormap(input_parameter_dict={
             'cm_length': 255, 'cm_name': name, 'cm_type': 'sequential',

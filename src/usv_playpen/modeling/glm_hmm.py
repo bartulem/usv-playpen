@@ -6,8 +6,8 @@ GLM-HMM over latent vocal states.
 A hidden Markov model whose per-state emission is a behaviour -> vocalization
 GLM: each latent state owns its own mapping from the behavioural history window
 ``X`` to the vocalization it accompanies, so the states are distinct
-"behaviour-to-vocalization rules" the animal switches between over a bout of
-calling. The Markov chain over states is stationary (a single ``K x K``
+"behaviour-to-vocalization rules" the animal switches between over a vocal
+bout. The Markov chain over states is stationary (a single ``K x K``
 transition matrix); the GLM lives in the emissions, following the classic
 Ashwood/Pillow GLM-HMM factorization.
 
@@ -178,16 +178,65 @@ class _BaseEmission:
     """
 
     def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray) -> "_BaseEmission":
-        """Responsibility-weighted M-step refit; returns self."""
+        """
+        Description
+        -----------
+        Responsibility-weighted M-step refit; returns self.
+
+        Parameters
+        ----------
+        X (np.ndarray)
+            ``(n, d)`` behavioural design matrix (pooled over all sequences).
+        y (np.ndarray)
+            Observed targets aligned to the rows of ``X``.
+        sample_weight (np.ndarray)
+            ``(n,)`` non-negative per-sample weights (the state's E-step
+            responsibilities).
+
+        Returns
+        -------
+        self (_BaseEmission)
+            The refit emission. The base class raises ``NotImplementedError``.
+        """
         raise NotImplementedError
 
     def log_density(self, X: np.ndarray, y: np.ndarray) -> np.ndarray:
-        """Per-sample log-density (E-step emission log-likelihood), shape ``(n,)``."""
+        """
+        Description
+        -----------
+        Per-sample log-density (E-step emission log-likelihood), shape ``(n,)``.
+
+        Parameters
+        ----------
+        X (np.ndarray)
+            ``(n, d)`` behavioural design matrix.
+        y (np.ndarray)
+            Observed targets aligned to the rows of ``X``.
+
+        Returns
+        -------
+        log_density (np.ndarray)
+            ``(n,)`` per-sample log-density under this emission. The base class raises
+            ``NotImplementedError``.
+        """
         raise NotImplementedError
 
     @property
     def n_params(self) -> int:
-        """Number of free parameters in this emission (for BIC)."""
+        """
+        Description
+        -----------
+        Number of free parameters in this emission (for BIC).
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        n_params (int)
+            Free-parameter count. The base class raises ``NotImplementedError``.
+        """
         raise NotImplementedError
 
     def random_init(self, X: np.ndarray, y: np.ndarray, rng: np.random.Generator) -> "_BaseEmission":
@@ -239,13 +288,52 @@ class GaussianEmission(_BaseEmission):
     """
 
     def __init__(self, n_targets: int, min_var: float = 1e-4) -> None:
+        """
+        Description
+        -----------
+        Store the target dimensionality and variance floor; the fitted mean and
+        variance (``mean_``, ``var_``) start as ``None`` until :meth:`fit` runs.
+
+        Parameters
+        ----------
+        n_targets (int)
+            Dimensionality ``d`` of the target ``y`` (cast to int).
+        min_var (float)
+            Variance floor so a near-degenerate state cannot collapse to a spike
+            (cast to float); defaults to ``1e-4``.
+
+        Returns
+        -------
+        None
+        """
         self.n_targets = int(n_targets)
         self.min_var = float(min_var)
         self.mean_ = None
         self.var_ = None
 
     def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray) -> "GaussianEmission":
-        """Weighted MLE of the mean and diagonal variance."""
+        """
+        Description
+        -----------
+        Weighted MLE of the mean and diagonal variance. When the weights sum to zero
+        or less (no responsibility mass) the pooled unweighted moments are used so the
+        state stays defined; the variance is floored at ``min_var``.
+
+        Parameters
+        ----------
+        X (np.ndarray)
+            Behavioural design matrix; unused (this emission is independent of ``X``)
+            and kept only for the shared emission interface.
+        y (np.ndarray)
+            ``(n, d)`` observed targets.
+        sample_weight (np.ndarray)
+            ``(n,)`` per-sample weights (the state's responsibilities).
+
+        Returns
+        -------
+        self (GaussianEmission)
+            The fitted emission, with ``mean_`` and ``var_`` of shape ``(d,)``.
+        """
         y = np.asarray(y, dtype=np.float64)
         w = np.asarray(sample_weight, dtype=np.float64)
         total = float(w.sum())
@@ -260,7 +348,23 @@ class GaussianEmission(_BaseEmission):
         return self
 
     def log_density(self, X: np.ndarray, y: np.ndarray) -> np.ndarray:
-        """Per-sample diagonal-Gaussian log-density."""
+        """
+        Description
+        -----------
+        Per-sample diagonal-Gaussian log-density.
+
+        Parameters
+        ----------
+        X (np.ndarray)
+            Behavioural design matrix; unused (kept for the shared emission interface).
+        y (np.ndarray)
+            ``(n, d)`` observed targets.
+
+        Returns
+        -------
+        log_density (np.ndarray)
+            ``(n,)`` log-density, summed over the ``d`` independent target dimensions.
+        """
         y = np.asarray(y, dtype=np.float64)
         centred = y - self.mean_[None, :]
         return (-0.5 * (np.log(2.0 * np.pi * self.var_)[None, :]
@@ -268,7 +372,20 @@ class GaussianEmission(_BaseEmission):
 
     @property
     def n_params(self) -> int:
-        """``d`` means + ``d`` variances."""
+        """
+        Description
+        -----------
+        ``d`` means + ``d`` variances.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        n_params (int)
+            ``2 * n_targets``.
+        """
         return 2 * self.n_targets
 
 
@@ -298,6 +415,24 @@ class ManifoldEmission(_BaseEmission):
     """
 
     def __init__(self, regressor_kwargs: dict) -> None:
+        """
+        Description
+        -----------
+        Copy the regressor keyword arguments, read the von Mises geometry
+        (``metric``, ``period``) from them, and resolve the regressor class via
+        :func:`resolve_manifold_regressor_cls`. The fitted regressor and concentration
+        (``regressor_``, ``kappa_``) start as ``None`` until :meth:`fit` runs.
+
+        Parameters
+        ----------
+        regressor_kwargs (dict)
+            Keyword arguments for the manifold regressor constructor; must contain the
+            ``'metric'`` and ``'period'`` keys (a ``KeyError`` is raised otherwise).
+
+        Returns
+        -------
+        None
+        """
         self.regressor_kwargs = dict(regressor_kwargs)
         self.metric = self.regressor_kwargs['metric']
         self.period = self.regressor_kwargs['period']
@@ -307,9 +442,26 @@ class ManifoldEmission(_BaseEmission):
 
     def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray) -> "ManifoldEmission":
         """
+        Description
+        -----------
         Responsibility-weighted M-step: refit the regressor with the per-sample
         responsibilities as ``sample_weight``, then fit the von Mises
         concentration on the (weighted) residuals.
+
+        Parameters
+        ----------
+        X (np.ndarray)
+            ``(n, d)`` behavioural design matrix.
+        y (np.ndarray)
+            ``(n, 2)`` observed manifold coordinates.
+        sample_weight (np.ndarray)
+            ``(n,)`` per-sample weights (the state's responsibilities); the same weight
+            is applied to both coordinates in the concentration fit.
+
+        Returns
+        -------
+        self (ManifoldEmission)
+            The fitted emission, with a fresh ``regressor_`` and its ``kappa_``.
         """
         X = np.asarray(X, dtype=np.float64)
         y = np.asarray(y, dtype=np.float64)
@@ -323,7 +475,24 @@ class ManifoldEmission(_BaseEmission):
         return self
 
     def log_density(self, X: np.ndarray, y: np.ndarray) -> np.ndarray:
-        """Per-sample product-von-Mises log-density around the regressor prediction."""
+        """
+        Description
+        -----------
+        Per-sample product-von-Mises log-density around the regressor prediction.
+
+        Parameters
+        ----------
+        X (np.ndarray)
+            ``(n, d)`` behavioural design matrix.
+        y (np.ndarray)
+            ``(n, 2)`` observed manifold coordinates.
+
+        Returns
+        -------
+        log_density (np.ndarray)
+            ``(n,)`` per-sample log-density (:func:`von_mises_logpdf_per_point` at the
+            fitted ``kappa_``).
+        """
         X = np.asarray(X, dtype=np.float64)
         y = np.asarray(y, dtype=np.float64)
         return von_mises_logpdf_per_point(
@@ -333,7 +502,20 @@ class ManifoldEmission(_BaseEmission):
 
     @property
     def n_params(self) -> int:
-        """Regressor coefficients + intercept + one concentration scalar."""
+        """
+        Description
+        -----------
+        Regressor coefficients + intercept + one concentration scalar.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        n_params (int)
+            ``coef_.size + intercept_.size + 1`` of the fitted regressor.
+        """
         coef = np.asarray(self.regressor_.coef_)
         intercept = np.asarray(self.regressor_.intercept_)
         return int(coef.size + intercept.size + 1)
@@ -370,19 +552,72 @@ class MultinomialEmission(_BaseEmission):
     """
 
     def __init__(self, classifier_kwargs: dict) -> None:
+        """
+        Description
+        -----------
+        Copy the classifier keyword arguments and force
+        ``uniform_class_weights=True`` on the copy; the fitted classifier
+        (``classifier_``) starts as ``None`` until :meth:`fit` runs.
+
+        Parameters
+        ----------
+        classifier_kwargs (dict)
+            Keyword arguments for the :class:`SmoothMultinomialLogisticRegression`
+            constructor (any ``uniform_class_weights`` entry is overwritten).
+
+        Returns
+        -------
+        None
+        """
         self.classifier_kwargs = dict(classifier_kwargs)
         self.classifier_kwargs['uniform_class_weights'] = True
         self.classifier_ = None
 
     def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray) -> "MultinomialEmission":
-        """Responsibility-weighted M-step: refit the classifier with the responsibilities."""
+        """
+        Description
+        -----------
+        Responsibility-weighted M-step: refit the classifier with the responsibilities.
+
+        Parameters
+        ----------
+        X (np.ndarray)
+            ``(n, d)`` behavioural design matrix.
+        y (np.ndarray)
+            ``(n,)`` categorical vocalization labels.
+        sample_weight (np.ndarray)
+            ``(n,)`` per-sample weights (the state's responsibilities).
+
+        Returns
+        -------
+        self (MultinomialEmission)
+            The fitted emission, with a fresh ``classifier_``.
+        """
         self.classifier_ = SmoothMultinomialLogisticRegression(**self.classifier_kwargs)
         self.classifier_.fit(np.asarray(X), np.asarray(y),
                              sample_weight=np.asarray(sample_weight, dtype=np.float64))
         return self
 
     def log_density(self, X: np.ndarray, y: np.ndarray) -> np.ndarray:
-        """Per-sample categorical log-density: log P(observed class | x) under this state."""
+        """
+        Description
+        -----------
+        Per-sample categorical log-density: log P(observed class | x) under this state.
+
+        Parameters
+        ----------
+        X (np.ndarray)
+            ``(n, d)`` behavioural design matrix.
+        y (np.ndarray)
+            ``(n,)`` observed labels; each must be one of the classifier's ``classes_``
+            (a ``KeyError`` is raised otherwise).
+
+        Returns
+        -------
+        log_density (np.ndarray)
+            ``(n,)`` ``log(P(y | x) + 1e-12)`` (the small constant keeps a zero
+            probability finite).
+        """
         proba = self.classifier_.predict_proba(np.asarray(X))
         column_of = {label: idx for idx, label in enumerate(self.classifier_.classes_)}
         y = np.asarray(y)
@@ -391,7 +626,20 @@ class MultinomialEmission(_BaseEmission):
 
     @property
     def n_params(self) -> int:
-        """Classifier coefficients + intercepts."""
+        """
+        Description
+        -----------
+        Classifier coefficients + intercepts.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        n_params (int)
+            ``coef_.size + intercept_.size`` of the fitted classifier.
+        """
         coef = np.asarray(self.classifier_.coef_)
         intercept = np.asarray(self.classifier_.intercept_)
         return int(coef.size + intercept.size)
@@ -474,6 +722,46 @@ class GLMHMM:
                  transition_pseudocount: float = 1.0, transition_mode: str = 'static',
                  transition_factory=None, random_state: int = 0,
                  verbose: bool = False) -> None:
+        """
+        Description
+        -----------
+        Store the model configuration, validate the transition mode, and initialise
+        the fitted attributes (``log_pi_``, ``log_A_``, ``transition_glms_``,
+        ``emissions_``, ``log_likelihood_``, ``n_iter_``, ``converged_``) to ``None``.
+
+        Parameters
+        ----------
+        n_states (int)
+            Number of latent states ``K``.
+        emission_factory (callable)
+            Zero-argument callable returning a fresh emission object (one per state).
+        n_em_iters (int)
+            Maximum Baum-Welch iterations per restart; defaults to 100.
+        n_restarts (int)
+            Number of random EM restarts; defaults to 5.
+        tol (float)
+            Convergence tolerance on the per-iteration log-likelihood increase;
+            defaults to ``1e-4``.
+        transition_pseudocount (float)
+            Laplace pseudocount on the expected transition / initial-state counts;
+            defaults to 1.0.
+        transition_mode (str)
+            ``'static'`` (default) for the stationary ``K x K`` matrix, or
+            ``'input_driven'`` for per-"from"-state transition GLMs of the design row.
+            Any other value raises ``ValueError``.
+        transition_factory (callable or None)
+            Zero-argument callable returning a fresh per-"from"-state transition
+            classifier; required (``ValueError`` otherwise) when
+            ``transition_mode='input_driven'``, ignored in ``'static'`` mode.
+        random_state (int)
+            Seed for the restart / initialisation randomness; defaults to 0.
+        verbose (bool)
+            Print per-iteration log-likelihood when True; defaults to False.
+
+        Returns
+        -------
+        None
+        """
         self.n_states = int(n_states)
         self.emission_factory = emission_factory
         self.n_em_iters = int(n_em_iters)
@@ -548,7 +836,22 @@ class GLMHMM:
         n_time = log_B.shape[0]
 
         def log_A_into(t: int) -> np.ndarray:
-            """Log transition matrix used for the step landing at timestep ``t``."""
+            """
+            Description
+            -----------
+            Log transition matrix used for the step landing at timestep ``t``.
+
+            Parameters
+            ----------
+            t (int)
+                Index of the timestep the transition lands on.
+
+            Returns
+            -------
+            log_A (np.ndarray)
+                ``(K, K)`` log transition matrix: the stationary ``self.log_A_`` when no
+                per-timestep tensor was supplied, else ``log_A_seq[t]``.
+            """
             return self.log_A_ if log_A_seq is None else log_A_seq[t]
 
         log_alpha = np.empty((n_time, self.n_states))
@@ -603,7 +906,25 @@ class GLMHMM:
         return gamma, xi, gamma[0], seq_loglik
 
     def _emission_log_B(self, X: np.ndarray, y: np.ndarray) -> np.ndarray:
-        """Stack per-state emission log-densities into a ``(T, K)`` matrix."""
+        """
+        Description
+        -----------
+        Stack per-state emission log-densities into a ``(T, K)`` matrix. Non-finite
+        entries are replaced by ``_LOG_DENSITY_FLOOR`` and every entry is clipped from
+        below at that floor.
+
+        Parameters
+        ----------
+        X (np.ndarray)
+            ``(T, d)`` behavioural design for the sequence.
+        y (np.ndarray)
+            The sequence's observed targets.
+
+        Returns
+        -------
+        log_B (np.ndarray)
+            ``(T, K)`` floored per-timestep, per-state emission log-density.
+        """
         log_B = np.empty((X.shape[0], self.n_states))
         for k in range(self.n_states):
             log_B[:, k] = self.emissions_[k].log_density(X, y)
@@ -1054,6 +1375,27 @@ def _id_seq_loglik(params: dict, X: jax.Array, y: jax.Array,
     a0 = log_pi + log_emit[0]
 
     def step(a_prev: jax.Array, inp: tuple) -> tuple:
+        """
+        Description
+        -----------
+        One forward-recursion step of the ``lax.scan``: combine the previous log-alpha
+        with the transition log-matrix landing at this timestep (``logsumexp`` over the
+        from-state axis) and add this timestep's emission log-density.
+
+        Parameters
+        ----------
+        a_prev (jax.Array)
+            ``(K,)`` log-alpha of the previous timestep (the scan carry).
+        inp (tuple)
+            ``(le_t, lt_t)``: the ``(K,)`` emission log-density of this timestep and the
+            ``(K, K)`` log transition matrix into it (row = from-state, column = to-state).
+
+        Returns
+        -------
+        a_t, None (tuple)
+            The ``(K,)`` log-alpha of this timestep (the new carry) and ``None`` (no
+            per-step output is stacked).
+        """
         le_t, lt_t = inp
         a_t = le_t + _jax_logsumexp(a_prev[:, None] + lt_t, axis=0)
         return a_t, None
@@ -1190,12 +1532,48 @@ def _id_run_lbfgs(init: dict, Xp: jax.Array, yp: jax.Array, mask: jax.Array,
         The final parameters and the ``(n_steps,)`` per-iteration objective trace.
     """
     def fun(p: dict) -> jax.Array:
+        """
+        Description
+        -----------
+        Closure over the batch and hyperparameters: the regularised objective
+        :func:`_id_objective` as a function of the parameters alone, as optax requires.
+
+        Parameters
+        ----------
+        p (dict)
+            Parameter pytree (see :func:`_id_seq_loglik`).
+
+        Returns
+        -------
+        value (jax.Array)
+            Scalar regularised objective.
+        """
         return _id_objective(p, Xp, yp, mask, n_bins, r, n_features, n_time)
 
     opt = optax.lbfgs()
     value_and_grad = optax.value_and_grad_from_state(fun)
 
     def step(carry: tuple, _: None) -> tuple:
+        """
+        Description
+        -----------
+        One L-BFGS iteration of the ``lax.scan``: evaluate the objective value and
+        gradient (reusing the line-search cache in the optimiser state), compute the
+        optax L-BFGS update with the zoom line search, and apply it.
+
+        Parameters
+        ----------
+        carry (tuple)
+            ``(params, state)``: the current parameter pytree and the optax L-BFGS state.
+        _ (None)
+            Unused scan input (the scan runs ``length=n_steps`` with no ``xs``).
+
+        Returns
+        -------
+        (params, state), value (tuple)
+            The updated ``(params, state)`` carry and the scalar objective value
+            evaluated at the parameters BEFORE this update (stacked into the trace).
+        """
         params, state = carry
         value, grad = value_and_grad(params, state=state)
         updates, state = opt.update(
@@ -1263,6 +1641,37 @@ class InputDrivenGLMHMM:
     def __init__(self, n_states: int, n_features: int, n_time_bins: int, n_classes: int,
                  *, lambda_smooth: float = 0.05, n_restarts: int = 4,
                  n_lbfgs: int = 600, random_state: int = 0, verbose: bool = False) -> None:
+        """
+        Description
+        -----------
+        Store the model configuration (cast to the documented types) and initialise
+        the fitted attributes ``params_`` and ``log_likelihood_`` to ``None``.
+
+        Parameters
+        ----------
+        n_states (int)
+            Number of latent states ``K``.
+        n_features (int)
+            Number of behavioural cues ``U``.
+        n_time_bins (int)
+            Number of temporal taps ``L`` per cue.
+        n_classes (int)
+            Number of emission categories ``C``.
+        lambda_smooth (float)
+            First-difference temporal-smoothness coefficient; defaults to 0.05.
+        n_restarts (int)
+            Number of random-init restarts; defaults to 4.
+        n_lbfgs (int)
+            L-BFGS iterations per restart; defaults to 600.
+        random_state (int)
+            Base seed for the filter initialisation; defaults to 0.
+        verbose (bool)
+            Print per-restart diagnostics when True; defaults to False.
+
+        Returns
+        -------
+        None
+        """
         self.n_states = int(n_states)
         self.n_features = int(n_features)
         self.n_time_bins = int(n_time_bins)
@@ -1277,17 +1686,51 @@ class InputDrivenGLMHMM:
 
     def _init_params(self, seed: int) -> dict:
         """
+        Description
+        -----------
         Structured random-sign decaying-exponential filter init (Calhoun-style): each
         per-cue filter block is ``exp(-arange(L) / L)`` times a random sign in
         ``{-1, 0, +1}``, which breaks state symmetry so the joint optimiser can pull
         the states apart. Reference-coded shapes: ``W_emit`` has ``C - 1`` free
         emission classes, ``W_trans`` is ``K x D x K`` (self logit pinned in the loss).
+
+        Parameters
+        ----------
+        seed (int)
+            Seed for the ``np.random.default_rng`` drawing the signs and biases.
+
+        Returns
+        -------
+        params (dict)
+            float32 JAX arrays ``log_pi`` ``(K,)`` (zeros, a uniform initial state),
+            ``W_emit`` ``(K, D, C - 1)``, ``b_emit`` ``(K, C - 1)`` and ``b_trans``
+            ``(K, K)`` (normal, sd 0.3), and ``W_trans`` ``(K, D, K)``.
         """
         rng = np.random.default_rng(seed)
         design_width = self.n_features * self.n_time_bins
         decay = np.exp(-np.arange(self.n_time_bins) / self.n_time_bins)
 
         def structured(lead: tuple) -> np.ndarray:
+            """
+            Description
+            -----------
+            Build one structured random-sign filter block: for every leading index and every
+            behavioural cue, a random sign drawn from ``{-1, 0, +1}`` (a uniform draw on
+            ``[-1, 1]`` rounded to the nearest integer) multiplies the decaying exponential
+            ``exp(-arange(L) / L)`` over the ``L`` temporal taps, and the cue blocks are
+            flattened feature-major into the design width ``U * L``. Draws from the enclosing
+            method's seeded ``rng``.
+
+            Parameters
+            ----------
+            lead (tuple)
+                Leading shape of the block (e.g. ``(n_states,)``).
+
+            Returns
+            -------
+            block (np.ndarray)
+                ``(*lead, n_features * n_time_bins)`` float32 filter block.
+            """
             signs = np.round(rng.uniform(-1, 1, size=(*lead, self.n_features, 1)))
             block = signs * decay[None, :]
             return block.reshape((*lead, design_width)).astype(np.float32)
@@ -1308,7 +1751,23 @@ class InputDrivenGLMHMM:
         }
 
     def _pad_stack(self, sequences: list) -> tuple:
-        """Pad a list of ``(X, y)`` to a common ``Tmax`` -> ``(Xp, yp, mask)`` arrays."""
+        """
+        Description
+        -----------
+        Pad a list of ``(X, y)`` to a common ``Tmax`` -> ``(Xp, yp, mask)`` arrays.
+
+        Parameters
+        ----------
+        sequences (list)
+            List of ``(X, y)`` tuples, ``X`` of shape ``(T, n_features * n_time_bins)``
+            and ``y`` of shape ``(T,)`` integer labels.
+
+        Returns
+        -------
+        Xp, yp, mask (tuple[jax.Array, jax.Array, jax.Array])
+            float32 design ``(S, Tmax, D)``, int32 labels ``(S, Tmax)`` and boolean
+            real-step mask ``(S, Tmax)``; padded entries are zero / False.
+        """
         design_width = self.n_features * self.n_time_bins
         lengths = np.asarray([len(y) for _, y in sequences], dtype=np.int32)
         n_max = int(lengths.max())
@@ -1323,7 +1782,23 @@ class InputDrivenGLMHMM:
         return jnp.asarray(Xp), jnp.asarray(yp), jnp.asarray(mask)
 
     def _forward_ll(self, params: dict, sequences: list) -> float:
-        """Total forward marginal log-likelihood of ``sequences`` under ``params``."""
+        """
+        Description
+        -----------
+        Total forward marginal log-likelihood of ``sequences`` under ``params``.
+
+        Parameters
+        ----------
+        params (dict)
+            Parameter pytree (see :func:`_id_seq_loglik`).
+        sequences (list)
+            List of ``(X, y)`` tuples.
+
+        Returns
+        -------
+        loglik (float)
+            Summed marginal log-likelihood over the sequences.
+        """
         Xp, yp, mask = self._pad_stack(sequences)
         return float(_id_batch_loglik(params, Xp, yp, mask))
 
@@ -1384,7 +1859,21 @@ class InputDrivenGLMHMM:
         return self
 
     def log_likelihood(self, sequences: list) -> float:
-        """Total forward marginal log-likelihood of ``sequences`` under the fit model."""
+        """
+        Description
+        -----------
+        Total forward marginal log-likelihood of ``sequences`` under the fit model.
+
+        Parameters
+        ----------
+        sequences (list)
+            List of ``(X, y)`` tuples.
+
+        Returns
+        -------
+        loglik (float)
+            Summed marginal log-likelihood under ``params_``.
+        """
         return self._forward_ll(self.params_, sequences)
 
     def viterbi(self, X: np.ndarray, y: np.ndarray) -> np.ndarray:
@@ -1436,7 +1925,23 @@ class InputDrivenGLMHMM:
         return states
 
     def bic(self, sequences: list) -> float:
-        """BIC on ``sequences``: ``-2 * loglik + n_params * log(n_obs)`` over all filters."""
+        """
+        Description
+        -----------
+        BIC on ``sequences``: ``-2 * loglik + n_params * log(n_obs)`` over all filters.
+
+        Parameters
+        ----------
+        sequences (list)
+            List of ``(X, y)`` tuples; ``n_obs`` is their total number of timesteps
+            (floored at 1 inside the log).
+
+        Returns
+        -------
+        bic (float)
+            The Bayesian information criterion (lower is better); ``n_params`` counts
+            every entry of every array in ``params_``.
+        """
         n_obs = int(sum(len(y) for _, y in sequences))
         n_params = int(sum(np.asarray(value).size for value in self.params_.values()))
         return float(-2.0 * self.log_likelihood(sequences)
@@ -1517,7 +2022,7 @@ def _idm_seq_loglik(params: dict, X: jax.Array, y: jax.Array, w: jax.Array,
     (``mask`` False) get zero emission and an identity transition. Each event's
     emission log-density is scaled by a per-event weight ``w`` (a WEIGHTED / tempered
     likelihood): with inverse-region-frequency weights this region-balances the fit so
-    the common central calls do not dominate the regressors (all weights 1.0 recovers
+    the common central vocalizations do not dominate the regressors (all weights 1.0 recovers
     the plain marginal likelihood). Weights scale the emission uniformly across states,
     so they leave the per-timestep state ranking -- and hence Viterbi decoding -- intact.
 
@@ -1565,6 +2070,27 @@ def _idm_seq_loglik(params: dict, X: jax.Array, y: jax.Array, w: jax.Array,
     a0 = log_pi + log_emit[0]
 
     def step(a_prev: jax.Array, inp: tuple) -> tuple:
+        """
+        Description
+        -----------
+        One forward-recursion step of the ``lax.scan``: combine the previous log-alpha
+        with the transition log-matrix landing at this timestep (``logsumexp`` over the
+        from-state axis) and add this timestep's emission log-density.
+
+        Parameters
+        ----------
+        a_prev (jax.Array)
+            ``(K,)`` log-alpha of the previous timestep (the scan carry).
+        inp (tuple)
+            ``(le_t, lt_t)``: the ``(K,)`` emission log-density of this timestep and the
+            ``(K, K)`` log transition matrix into it (row = from-state, column = to-state).
+
+        Returns
+        -------
+        a_t, None (tuple)
+            The ``(K,)`` log-alpha of this timestep (the new carry) and ``None`` (no
+            per-step output is stacked).
+        """
         le_t, lt_t = inp
         a_t = le_t + _jax_logsumexp(a_prev[:, None] + lt_t, axis=0)
         return a_t, None
@@ -1575,7 +2101,31 @@ def _idm_seq_loglik(params: dict, X: jax.Array, y: jax.Array, w: jax.Array,
 
 def _idm_batch_loglik(params: dict, Xp: jax.Array, yp: jax.Array, wp: jax.Array,
                       mask: jax.Array, period: jax.Array) -> jax.Array:
-    """Total (weighted) forward marginal log-likelihood over a padded batch (see :func:`_idm_seq_loglik`)."""
+    """
+    Description
+    -----------
+    Total (weighted) forward marginal log-likelihood over a padded batch (see :func:`_idm_seq_loglik`).
+
+    Parameters
+    ----------
+    params (dict)
+        Parameter pytree (see :func:`_idm_seq_loglik`).
+    Xp (jax.Array)
+        ``(S, Tmax, D)`` padded design.
+    yp (jax.Array)
+        ``(S, Tmax, 2)`` padded torus positions.
+    wp (jax.Array)
+        ``(S, Tmax)`` per-event emission weights.
+    mask (jax.Array)
+        ``(S, Tmax)`` boolean real-step mask.
+    period (jax.Array)
+        Torus wrap period per axis.
+
+    Returns
+    -------
+    loglik (jax.Array)
+        Scalar sum of the per-sequence (weighted) marginal log-likelihoods.
+    """
     per_seq = jax.vmap(
         lambda X, y, w, m: _idm_seq_loglik(params, X, y, w, m, period))(Xp, yp, wp, mask)
     return jnp.sum(per_seq)
@@ -1584,7 +2134,34 @@ def _idm_batch_loglik(params: dict, Xp: jax.Array, yp: jax.Array, wp: jax.Array,
 def _idm_objective(params: dict, Xp: jax.Array, yp: jax.Array, wp: jax.Array,
                    mask: jax.Array, n_bins: jax.Array, r: jax.Array, n_features: int,
                    n_time: int, period: jax.Array) -> jax.Array:
-    """Per-bin-mean negative (weighted) forward marginal + r * SUM first-difference smoothness."""
+    """
+    Description
+    -----------
+    Per-bin-mean negative (weighted) forward marginal + r * SUM first-difference smoothness.
+
+    Parameters
+    ----------
+    params (dict)
+        Parameter pytree (see :func:`_idm_seq_loglik`).
+    Xp, yp, wp, mask (jax.Array)
+        Padded design, torus targets, per-event weights and real-step mask (see
+        :func:`_idm_batch_loglik`).
+    n_bins (jax.Array)
+        Total number of real events, for the per-bin mean.
+    r (jax.Array)
+        First-difference smoothness coefficient.
+    n_features (int)
+        Number of behavioural cues.
+    n_time (int)
+        Number of temporal taps per cue.
+    period (jax.Array)
+        Torus wrap period per axis.
+
+    Returns
+    -------
+    value (jax.Array)
+        Scalar regularised objective (smoothness on ``W_emit`` and ``W_trans``).
+    """
     data = -_idm_batch_loglik(params, Xp, yp, wp, mask, period) / n_bins
     smooth = (_id_first_diff(params['W_emit'], n_features, n_time)
               + _id_first_diff(params['W_trans'], n_features, n_time))
@@ -1595,14 +2172,79 @@ def _idm_objective(params: dict, Xp: jax.Array, yp: jax.Array, wp: jax.Array,
 def _idm_run_lbfgs(init: dict, Xp: jax.Array, yp: jax.Array, wp: jax.Array, mask: jax.Array,
                    n_steps: int, n_bins: jax.Array, r: jax.Array, n_features: int,
                    n_time: int, period: jax.Array) -> tuple:
-    """Full-batch L-BFGS (zoom line search) on the manifold objective; whole solve in one scan."""
+    """
+    Description
+    -----------
+    Full-batch L-BFGS (zoom line search) on the manifold objective; whole solve in one scan.
+
+    Parameters
+    ----------
+    init (dict)
+        Initial parameters (see :func:`_idm_seq_loglik`), ``log_kappa`` included and
+        optimised freely.
+    Xp, yp, wp, mask (jax.Array)
+        Padded design, torus targets, per-event weights and real-step mask.
+    n_steps (int)
+        Number of L-BFGS iterations (static; the ``lax.scan`` length).
+    n_bins (jax.Array)
+        Total number of real events, for the per-bin mean.
+    r (jax.Array)
+        First-difference smoothness coefficient.
+    n_features (int)
+        Number of behavioural cues (static).
+    n_time (int)
+        Number of temporal taps per cue (static).
+    period (jax.Array)
+        Torus wrap period per axis.
+
+    Returns
+    -------
+    params, values (tuple[dict, jax.Array])
+        The final parameters and the ``(n_steps,)`` per-iteration objective trace.
+    """
     def fun(p: dict) -> jax.Array:
+        """
+        Description
+        -----------
+        Closure over the batch and hyperparameters: the manifold objective
+        :func:`_idm_objective` as a function of the parameters alone.
+
+        Parameters
+        ----------
+        p (dict)
+            Parameter pytree (see :func:`_idm_seq_loglik`).
+
+        Returns
+        -------
+        value (jax.Array)
+            Scalar regularised objective.
+        """
         return _idm_objective(p, Xp, yp, wp, mask, n_bins, r, n_features, n_time, period)
 
     opt = optax.lbfgs()
     value_and_grad = optax.value_and_grad_from_state(fun)
 
     def step(carry: tuple, _: None) -> tuple:
+        """
+        Description
+        -----------
+        One L-BFGS iteration of the ``lax.scan``: evaluate the objective value and
+        gradient (reusing the line-search cache in the optimiser state), compute the
+        optax L-BFGS update with the zoom line search, and apply it.
+
+        Parameters
+        ----------
+        carry (tuple)
+            ``(params, state)``: the current parameter pytree and the optax L-BFGS state.
+        _ (None)
+            Unused scan input (the scan runs ``length=n_steps`` with no ``xs``).
+
+        Returns
+        -------
+        (params, state), value (tuple)
+            The updated ``(params, state)`` carry and the scalar objective value
+            evaluated at the parameters BEFORE this update (stacked into the trace).
+        """
         params, state = carry
         value, grad = value_and_grad(params, state=state)
         updates, state = opt.update(
@@ -1670,12 +2312,59 @@ def _idm_run_lbfgs_fixed_kappa(init_wo: dict, log_kappa: jax.Array, Xp: jax.Arra
                                n_steps: int, n_bins: jax.Array, r: jax.Array,
                                n_features: int, n_time: int, period: jax.Array) -> tuple:
     """
+    Description
+    -----------
     Full-batch L-BFGS on :func:`_idm_objective_fixed_kappa` (the frozen-``log_kappa``
     manifold objective); the whole solve runs inside one ``lax.scan``. Mirrors
     :func:`_idm_run_lbfgs` but optimises only ``init_wo`` (the parameters excluding
     ``log_kappa``), returning the optimised sub-dict and the per-step objective trace.
+
+    Parameters
+    ----------
+    init_wo (dict)
+        Initial parameters WITHOUT ``log_kappa`` (``log_pi``, ``W_emit``, ``b_emit``,
+        ``W_trans``, ``b_trans``).
+    log_kappa (jax.Array)
+        ``(K,)`` frozen log-concentration.
+    Xp, yp, wp, mask (jax.Array)
+        Padded design ``(S, Tmax, D)``, torus targets ``(S, Tmax, 2)``, per-event
+        weights ``(S, Tmax)``, real-step mask.
+    n_steps (int)
+        Number of L-BFGS iterations (static; the ``lax.scan`` length).
+    n_bins (jax.Array)
+        Total real events (per-bin-mean normaliser).
+    r (jax.Array)
+        Smoothness weight on the SUM first-difference filter penalty.
+    n_features (int)
+        Number of base behavioural features (static).
+    n_time (int)
+        History taps per feature (static).
+    period (jax.Array)
+        Torus wrap period per axis.
+
+    Returns
+    -------
+    params, values (tuple[dict, jax.Array])
+        The optimised sub-dict (no ``log_kappa``) and the ``(n_steps,)`` objective trace.
     """
     def fun(p: dict) -> jax.Array:
+        """
+        Description
+        -----------
+        Closure over ``log_kappa``, the batch and the hyperparameters: the
+        frozen-concentration objective :func:`_idm_objective_fixed_kappa` as a
+        function of the optimised sub-dict alone.
+
+        Parameters
+        ----------
+        p (dict)
+            Parameter pytree without ``log_kappa``.
+
+        Returns
+        -------
+        value (jax.Array)
+            Scalar regularised objective.
+        """
         return _idm_objective_fixed_kappa(
             p, log_kappa, Xp, yp, wp, mask, n_bins, r, n_features, n_time, period)
 
@@ -1683,6 +2372,26 @@ def _idm_run_lbfgs_fixed_kappa(init_wo: dict, log_kappa: jax.Array, Xp: jax.Arra
     value_and_grad = optax.value_and_grad_from_state(fun)
 
     def step(carry: tuple, _: None) -> tuple:
+        """
+        Description
+        -----------
+        One L-BFGS iteration of the ``lax.scan``: evaluate the objective value and
+        gradient (reusing the line-search cache in the optimiser state), compute the
+        optax L-BFGS update with the zoom line search, and apply it.
+
+        Parameters
+        ----------
+        carry (tuple)
+            ``(params, state)``: the current parameter pytree and the optax L-BFGS state.
+        _ (None)
+            Unused scan input (the scan runs ``length=n_steps`` with no ``xs``).
+
+        Returns
+        -------
+        (params, state), value (tuple)
+            The updated ``(params, state)`` carry and the scalar objective value
+            evaluated at the parameters BEFORE this update (stacked into the trace).
+        """
         params, state = carry
         value, grad = value_and_grad(params, state=state)
         updates, state = opt.update(
@@ -1806,6 +2515,47 @@ class InputDrivenManifoldGLMHMM:
                  *, period: float = 1.0, lambda_smooth: float = 0.05, n_restarts: int = 4,
                  n_lbfgs: int = 600, random_state: int = 0, verbose: bool = False,
                  kappa_mode: str = 'global_mle', n_kappa_rounds: int = 3) -> None:
+        """
+        Description
+        -----------
+        Store the model configuration (cast to the documented types), validate
+        ``kappa_mode``, and initialise the fitted attributes ``params_`` and
+        ``log_likelihood_`` to ``None``.
+
+        Parameters
+        ----------
+        n_states (int)
+            Number of latent states ``K``.
+        n_features (int)
+            Number of behavioural cues ``U``.
+        n_time_bins (int)
+            Number of temporal taps ``L`` per cue.
+        period (float)
+            Torus wrap period per axis; defaults to 1.0.
+        lambda_smooth (float)
+            First-difference temporal-smoothness coefficient; defaults to 0.05.
+        n_restarts (int)
+            Number of random-init restarts; defaults to 4.
+        n_lbfgs (int)
+            L-BFGS iterations per restart (per round in ``'global_mle'`` mode);
+            defaults to 600.
+        random_state (int)
+            Base seed for the filter initialisation; defaults to 0.
+        verbose (bool)
+            Print per-restart diagnostics when True; defaults to False.
+        kappa_mode (str)
+            ``'global_mle'`` (default) alternates L-BFGS at frozen concentration with a
+            responsibility-weighted global concentration MLE
+            (:meth:`_fit_restart_global_kappa`); ``'free'`` co-optimises ``log_kappa`` in
+            L-BFGS. Any other value raises ``ValueError``.
+        n_kappa_rounds (int)
+            Number of L-BFGS / concentration-MLE alternations per restart in
+            ``'global_mle'`` mode; defaults to 3.
+
+        Returns
+        -------
+        None
+        """
         self.n_states = int(n_states)
         self.n_features = int(n_features)
         self.n_time_bins = int(n_time_bins)
@@ -1830,16 +2580,51 @@ class InputDrivenManifoldGLMHMM:
 
     def _init_params(self, seed: int) -> dict:
         """
+        Description
+        -----------
         Structured random-sign decaying-exponential filter init for the angular
         regressor + transition filters (breaking state symmetry), a moderate initial
         concentration, and a uniform initial state. Shapes: ``W_emit`` ``(K, D, 2)``,
         ``W_trans`` ``(K, D, K)``.
+
+        Parameters
+        ----------
+        seed (int)
+            Seed for the ``np.random.default_rng`` drawing the signs and biases.
+
+        Returns
+        -------
+        params (dict)
+            float32 JAX arrays ``log_pi`` ``(K,)`` (zeros), ``W_emit`` ``(K, D, 2)``,
+            ``b_emit`` ``(K, 2)`` (uniform on ``[0, 2 pi)``), ``log_kappa`` ``(K,)``
+            (all ``log 2``), ``W_trans`` ``(K, D, K)`` and ``b_trans`` ``(K, K)``
+            (normal, sd 0.3).
         """
         rng = np.random.default_rng(seed)
         design_width = self.n_features * self.n_time_bins
         decay = np.exp(-np.arange(self.n_time_bins) / self.n_time_bins)
 
         def structured(lead: tuple) -> np.ndarray:
+            """
+            Description
+            -----------
+            Build one structured random-sign filter block: for every leading index and every
+            behavioural cue, a random sign drawn from ``{-1, 0, +1}`` (a uniform draw on
+            ``[-1, 1]`` rounded to the nearest integer) multiplies the decaying exponential
+            ``exp(-arange(L) / L)`` over the ``L`` temporal taps, and the cue blocks are
+            flattened feature-major into the design width ``U * L``. Draws from the enclosing
+            method's seeded ``rng``.
+
+            Parameters
+            ----------
+            lead (tuple)
+                Leading shape of the block (e.g. ``(n_states,)``).
+
+            Returns
+            -------
+            block (np.ndarray)
+                ``(*lead, n_features * n_time_bins)`` float32 filter block.
+            """
             signs = np.round(rng.uniform(-1, 1, size=(*lead, self.n_features, 1)))
             block = signs * decay[None, :]
             return block.reshape((*lead, design_width)).astype(np.float32)
@@ -1860,10 +2645,24 @@ class InputDrivenManifoldGLMHMM:
 
     def _pad_stack(self, sequences: list) -> tuple:
         """
+        Description
+        -----------
         Pad a list of sequences to a common ``Tmax``. Each sequence is ``(X, y)`` or
         ``(X, y, w)`` -- ``y`` a ``(T, 2)`` torus position and ``w`` an optional
         ``(T,)`` per-event emission weight (defaults to all-ones when absent). Returns
         the padded ``(Xp, yp, wp, mask)``.
+
+        Parameters
+        ----------
+        sequences (list)
+            List of ``(X, y)`` or ``(X, y, w)`` tuples.
+
+        Returns
+        -------
+        Xp, yp, wp, mask (tuple[jax.Array, jax.Array, jax.Array, jax.Array])
+            float32 design ``(S, Tmax, D)``, float32 torus targets ``(S, Tmax, 2)``,
+            float32 weights ``(S, Tmax)`` and boolean real-step mask ``(S, Tmax)``;
+            padded entries are zero / False.
         """
         design_width = self.n_features * self.n_time_bins
         lengths = np.asarray([len(seq[1]) for seq in sequences], dtype=np.int32)
@@ -1884,7 +2683,23 @@ class InputDrivenManifoldGLMHMM:
         return jnp.asarray(Xp), jnp.asarray(yp), jnp.asarray(wp), jnp.asarray(mask)
 
     def _forward_ll(self, params: dict, sequences: list) -> float:
-        """Total (weighted) forward marginal log-likelihood of ``sequences`` under ``params``."""
+        """
+        Description
+        -----------
+        Total (weighted) forward marginal log-likelihood of ``sequences`` under ``params``.
+
+        Parameters
+        ----------
+        params (dict)
+            Parameter pytree (see :func:`_idm_seq_loglik`).
+        sequences (list)
+            List of ``(X, y)`` or ``(X, y, w)`` tuples.
+
+        Returns
+        -------
+        loglik (float)
+            Summed (weighted) marginal log-likelihood over the sequences.
+        """
         Xp, yp, wp, mask = self._pad_stack(sequences)
         return float(_idm_batch_loglik(params, Xp, yp, wp, mask, self.period))
 
@@ -1993,7 +2808,21 @@ class InputDrivenManifoldGLMHMM:
         return {**params_wo, 'log_kappa': log_kappa}
 
     def log_likelihood(self, sequences: list) -> float:
-        """Total forward marginal log-likelihood of ``sequences`` under the fit model."""
+        """
+        Description
+        -----------
+        Total forward marginal log-likelihood of ``sequences`` under the fit model.
+
+        Parameters
+        ----------
+        sequences (list)
+            List of ``(X, y)`` or ``(X, y, w)`` tuples (any ``w`` weights the emissions).
+
+        Returns
+        -------
+        loglik (float)
+            Summed marginal log-likelihood under ``params_``.
+        """
         return self._forward_ll(self.params_, sequences)
 
     def macro_score(self, sequences: list, region_labels: list,
@@ -2104,26 +2933,70 @@ class InputDrivenManifoldGLMHMM:
         return states
 
     def bic(self, sequences: list) -> float:
-        """BIC on ``sequences``: ``-2 * loglik + n_params * log(n_obs)`` over all filters."""
-        n_obs = int(sum(len(y) for _, y in sequences))
+        """
+        Description
+        -----------
+        BIC on ``sequences``: ``-2 * loglik + n_params * log(n_obs)`` over all filters.
+
+        Parameters
+        ----------
+        sequences (list)
+            List of ``(X, y)`` or ``(X, y, w)`` tuples; ``n_obs`` is their total
+            number of events (floored at 1 inside the log).
+
+        Returns
+        -------
+        bic (float)
+            The Bayesian information criterion (lower is better); ``n_params`` counts
+            every entry of every array in ``params_``.
+        """
+        n_obs = int(sum(len(seq[1]) for seq in sequences))
         n_params = int(sum(np.asarray(value).size for value in self.params_.values()))
         return float(-2.0 * self.log_likelihood(sequences)
                      + n_params * np.log(max(n_obs, 1)))
 
     def initial_state_distribution(self) -> np.ndarray:
-        """Fitted initial-state probability vector (softmax of the ``log_pi`` logits)."""
+        """
+        Description
+        -----------
+        Fitted initial-state probability vector (softmax of the ``log_pi`` logits).
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        pi (np.ndarray)
+            ``(K,)`` initial-state probabilities summing to 1.
+        """
         log_pi = np.asarray(self.params_['log_pi'], dtype=np.float64)
         log_pi = log_pi - _logsumexp(log_pi, axis=0)
         return np.exp(log_pi)
 
     def mean_transition_matrix(self, sequences: list) -> np.ndarray:
-        """Mean ``(K, K)`` input-driven transition matrix over all events (rows sum to 1)."""
+        """
+        Description
+        -----------
+        Mean ``(K, K)`` input-driven transition matrix over all events (rows sum to 1).
+
+        Parameters
+        ----------
+        sequences (list)
+            List of ``(X, y)`` or ``(X, y, w)`` tuples over which to average the
+            transitions (only ``X`` is read).
+
+        Returns
+        -------
+        transition (np.ndarray)
+            ``(K, K)`` mean transition matrix (rows sum to 1).
+        """
         p = {key: np.asarray(value, dtype=np.float64) for key, value in self.params_.items()}
         eye = np.eye(self.n_states, dtype=bool)
         total = np.zeros((self.n_states, self.n_states))
         count = 0
-        for X, _ in sequences:
-            X = np.asarray(X, dtype=np.float64)
+        for seq in sequences:
+            X = np.asarray(seq[0], dtype=np.float64)
             t_logits = np.einsum('td,idj->tij', X, p['W_trans']) + p['b_trans'][None]
             t_logits = np.where(eye[None], 0.0, t_logits)
             total += np.exp(_np_log_softmax(t_logits, axis=2)).sum(axis=0)

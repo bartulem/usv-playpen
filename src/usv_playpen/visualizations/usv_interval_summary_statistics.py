@@ -77,7 +77,7 @@ def plot_log_usv_interval_histograms(
     male_label (str)
         Legend label for the male histogram, before its count; defaults to
         ``'male'``. When the two pools are different vocalizations -- the male's
-        ultrasonic calls against the female's squeaks -- the label has to say so,
+        USVs against the female's squeaks -- the label has to say so,
         or the figure calls squeak intervals USV intervals.
     female_label (str)
         Legend label for the female histogram, before its count; defaults to

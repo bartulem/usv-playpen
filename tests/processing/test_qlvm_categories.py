@@ -3,7 +3,7 @@
 
 Tests for processing/qlvm_categories: the content-ridge category build (ranks,
 fields, content change, periodic basins, floor-first joins, session-bootstrap
-consensus) and the assignment of a session's calls from its torus coordinates.
+consensus) and the assignment of a session's USVs from its torus coordinates.
 """
 
 from __future__ import annotations
@@ -37,24 +37,24 @@ _CFG = {
 }
 
 
-def _corpus(tmp_path, n_sessions=8, calls_per_session=150, seed=0):
-    """Write a synthetic corpus: calls spread uniformly over the torus, whose two
+def _corpus(tmp_path, n_sessions=8, usvs_per_session=150, seed=0):
+    """Write a synthetic corpus: USVs spread uniformly over the torus, whose two
     properties jump between the left (x < 0.5) and the right half, so the content
     change has two ridges (x = 0 and x = 0.5) and two categories. Returns the
     positions and properties table paths."""
     rng = np.random.default_rng(seed)
-    n_calls = n_sessions * calls_per_session
-    x, y = rng.random(n_calls), rng.random(n_calls)
+    n_usvs = n_sessions * usvs_per_session
+    x, y = rng.random(n_usvs), rng.random(n_usvs)
     right = x >= 0.5
-    spec_id = [f"2023010{session % 10}_1{session:05d}_{row}" for session in range(n_sessions) for row in range(calls_per_session)]
+    spec_id = [f"2023010{session % 10}_1{session:05d}_{row}" for session in range(n_sessions) for row in range(usvs_per_session)]
     session_id = [spec.rsplit("_", 1)[0] for spec in spec_id]
     positions = tmp_path / "positions.csv"
     properties = tmp_path / "properties.csv"
     pls.DataFrame({"spec_id": spec_id, "x": x, "y": y}).write_csv(positions)
     pls.DataFrame({
         "spec_id": spec_id, "session_id": session_id,
-        "p_a": np.where(right, 10.0, 1.0) + rng.normal(0, 0.5, n_calls),
-        "p_b": np.where(right, -5.0, 5.0) + rng.normal(0, 0.5, n_calls),
+        "p_a": np.where(right, 10.0, 1.0) + rng.normal(0, 0.5, n_usvs),
+        "p_b": np.where(right, -5.0, 5.0) + rng.normal(0, 0.5, n_usvs),
     }).write_csv(properties)
     return positions, properties
 
@@ -89,7 +89,7 @@ def test_property_ranks_are_centred_average_ranks():
 def test_content_fields_and_change_on_a_step():
     """A constant field has no content change; a step in x between columns 9/10 and
     19/20 of a 20-pixel torus gives change only within span of the two edges, equal to
-    the step height, and the field of weighted calls is their weighted mean."""
+    the step height, and the field of weighted USVs is their weighted mean."""
     resolution = 20
     rows = np.repeat(np.arange(resolution), resolution)
     cols = np.tile(np.arange(resolution), resolution)
@@ -124,7 +124,7 @@ def test_join_basins_joins_small_regions_first_then_the_weakest_ridge():
     lookup = qc.join_basins(basins, change, np.array([0.0, 40.0, 40.0, 40.0, 40.0]), 0.0, 3)
     assert lookup[2] == lookup[3]
     assert len({lookup[1], lookup[2], lookup[4]}) == 3
-    # A floor of 34 % (41.5 of 122 calls) leaves no 3 regions that all hold it.
+    # A floor of 34 % (41.5 of 122 USVs) leaves no 3 regions that all hold it.
     assert qc.join_basins(basins, change, sizes, 0.34, 3) is None
 
 
@@ -136,7 +136,7 @@ def test_align_to_reference_maps_by_overlap():
 
 
 def test_session_bootstrap_weights_count_the_draws():
-    """Each call is weighted by how often its session was drawn by the seeded draw."""
+    """Each USV is weighted by how often its session was drawn by the seeded draw."""
     sessions = np.array(["a", "a", "b", "c"])
     pool = np.array(["a", "b", "c"])
     drawn = np.random.default_rng(5).choice(pool, size=3, replace=True)
@@ -146,7 +146,7 @@ def test_session_bootstrap_weights_count_the_draws():
 
 def test_build_writes_a_category_directory_split_along_the_ridges(tmp_path):
     """The two halves of the synthetic torus become the two categories (R-1 the
-    larger), the files hold consistent grids, call labels and nomenclature, and the
+    larger), the files hold consistent grids, USV labels and nomenclature, and the
     build does not depend on the number of workers."""
     out_dir = _build(tmp_path)
     with np.load(out_dir / qc.CATEGORY_GRIDS_NAME) as grids:
@@ -164,23 +164,23 @@ def test_build_writes_a_category_directory_split_along_the_ridges(tmp_path):
     assert [category["description"] for category in nomenclature["categories"]] == ["low", "high"]
     assert nomenclature["categories"][0]["n_vocalizations"] >= nomenclature["categories"][1]["n_vocalizations"]
     assert nomenclature["n_votes"] == 6
-    calls = pls.read_csv(out_dir / qc.CATEGORY_CALL_LABELS_NAME)
-    assert calls.height == 1200
-    assert calls["category"].value_counts().sort("category")["count"].to_list() == [
+    usv_labels = pls.read_csv(out_dir / qc.CATEGORY_USV_LABELS_NAME)
+    assert usv_labels.height == 1200
+    assert usv_labels["category"].value_counts().sort("category")["count"].to_list() == [
         category["n_vocalizations"] for category in nomenclature["categories"]
     ]
     bundle = qc.load_category_bundle(str(out_dir))
-    assigned = qc.assign_categories(calls.select(["x", "y"]).to_numpy(), bundle)
-    np.testing.assert_array_equal(assigned["category"], calls["category"].to_numpy())
-    np.testing.assert_array_equal(assigned["uncertain"], calls["uncertain"].to_numpy())
+    assigned = qc.assign_categories(usv_labels.select(["x", "y"]).to_numpy(), bundle)
+    np.testing.assert_array_equal(assigned["category"], usv_labels["category"].to_numpy())
+    np.testing.assert_array_equal(assigned["uncertain"], usv_labels["uncertain"].to_numpy())
     parallel_dir = _build(tmp_path, {**_CFG, "n_jobs": 2}, "parallel")
     with np.load(out_dir / qc.CATEGORY_GRIDS_NAME) as first, np.load(parallel_dir / qc.CATEGORY_GRIDS_NAME) as second:
         np.testing.assert_array_equal(first["label_grid"], second["label_grid"])
         np.testing.assert_array_equal(first["agreement"], second["agreement"])
 
 
-def test_build_refuses_bad_settings_and_unplaced_calls(tmp_path):
-    """Invalid settings are listed together; a corpus call without a position stops the build."""
+def test_build_refuses_bad_settings_and_unplaced_usvs(tmp_path):
+    """Invalid settings are listed together; a corpus USV without a position stops the build."""
     with pytest.raises(ValueError, match=r"size_floor must lie.*\n.*category_descriptions"):
         _build(tmp_path, {**_CFG, "size_floor": 0.6, "category_descriptions": ["one"]})
     positions, properties = _corpus(tmp_path)
@@ -206,7 +206,7 @@ def test_assign_categories_follows_the_pixel_rule_and_threshold():
 
 
 def test_assigner_merges_category_columns_into_the_summary(tmp_path):
-    """The session's calls with P1 / P2 get P_category and nothing else: calls without
+    """The session's USVs with P1 / P2 get P_category and nothing else: USVs without
     coordinates get a null, an earlier P_category is replaced, earlier
     P_category_agreement / P_category_uncertain columns are removed (the agreement stays
     computable from the bundle), every other column is kept, and the summary comes out in
@@ -335,7 +335,7 @@ def test_apply_category_order_renumbers_by_size_rank():
     Description
     -----------
     ``category_order`` names, for each output category, the size rank it takes
-    (1 = most calls): ``[1, 4, 2, 3]`` keeps the largest first, puts the smallest
+    (1 = most USVs): ``[1, 4, 2, 3]`` keeps the largest first, puts the smallest
     second and shifts the second and third largest to third and fourth. An empty
     order keeps the size order, and a non-permutation raises.
 
@@ -358,7 +358,7 @@ def test_build_numbers_categories_by_category_order(tmp_path):
     Description
     -----------
     A build with ``category_order`` reversed numbers the categories in that order:
-    the category that is first by call count becomes the last, with its call
+    the category that is first by USV count becomes the last, with its USV
     count, and the settings check rejects an order that is not a permutation.
 
     Parameters

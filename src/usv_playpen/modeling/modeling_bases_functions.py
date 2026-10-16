@@ -61,12 +61,42 @@ def laplacian_pyramid(width: int, levels: int, step: float, fwhm: float, normali
 
 
 def _nlin(x: np.ndarray) -> np.ndarray:
-    """Logarithmic non-linear transform."""
+    """
+    Logarithmic non-linear transform.
+
+    Computes ``log(x + 1e-20)``; the tiny offset keeps ``x = 0`` finite (about
+    ``-46.05``) instead of ``-inf``. Used to place the raised-cosine centres on a
+    log-stretched time axis.
+
+    Parameters
+    ----------
+    x : np.ndarray
+        Non-negative input values (e.g. time bins shifted by the offset ``b``).
+
+    Returns
+    -------
+    y : np.ndarray
+        ``log(x + 1e-20)``, the same shape as ``x``.
+    """
     return np.log(x + 1e-20)
 
 
 def _invnl(x: np.ndarray) -> np.ndarray:
-    """Inverse of the logarithmic non-linear transform."""
+    """
+    Inverse of the logarithmic non-linear transform.
+
+    Computes ``exp(x) - 1e-20``, which undoes :func:`_nlin` exactly.
+
+    Parameters
+    ----------
+    x : np.ndarray
+        Values on the log-stretched axis.
+
+    Returns
+    -------
+    y : np.ndarray
+        ``exp(x) - 1e-20``, the same shape as ``x``.
+    """
     return np.exp(x) - 1e-20
 
 

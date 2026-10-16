@@ -416,6 +416,51 @@ class IBLAlignmentExporter:
         ephys_dirname: str = 'EPHYS',
         out_subdir: str | None = None,
     ) -> None:
+        """
+        Description
+        -----------
+        Validate ``hemisphere`` and resolve every input / output path of
+        the export: the per-animal brainreg directory
+        (``{os_cup_loc}/{histology_dirname}/{mouse_id}``), the EPHYS
+        session directory (``{os_cup_loc}/{ephys_dirname}/{session_date}_{probe_id}``),
+        its ``kilosort{kilosort_version}`` subdirectory, and the ALF output
+        directory (``{os_cup_loc}/{histology_dirname}/{mouse_id}/{session_date}/{leaf}``,
+        ``leaf`` = ``out_subdir`` or ``ibl_{hemisphere}H``). No file is read
+        or written here.
+
+        Parameters
+        ----------
+        os_cup_loc : str or os.PathLike
+            Root mount point of the storage server; stored as a
+            :class:`pathlib.Path`.
+        mouse_id : str
+            Animal identifier (e.g. ``"164335_0"``).
+        session_date : str
+            Recording date in ``YYYYMMDD`` format.
+        probe_id : str
+            SpikeGLX probe label (e.g. ``"imec1"``).
+        hemisphere : str
+            ``"L"`` or ``"R"``.
+        kilosort_version : str or int, default ``"4"``
+            Version suffix of the Kilosort subdirectory; stored as a string.
+        histology_dirname : str, default ``"histology"``
+            Top-level histology directory name under ``os_cup_loc``.
+        ephys_dirname : str, default ``"EPHYS"``
+            Top-level EPHYS directory name under ``os_cup_loc``.
+        out_subdir : str or None, default ``None``
+            Leaf name of the ALF output directory; ``None`` gives
+            ``ibl_{hemisphere}H``.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ValueError
+            If ``hemisphere`` is not ``"L"`` or ``"R"``.
+        """
+
         if hemisphere not in ('L', 'R'):
             raise ValueError(f"hemisphere must be 'L' or 'R', got {hemisphere!r}")
 
@@ -719,6 +764,25 @@ class IBLAlignmentExporter:
                     merged[key] = value
 
         def _sort_key(item: tuple[str, Any]) -> int | float:
+            """
+            Description
+            -----------
+            Sort key of one merged ``(key, value)`` item: the integer
+            channel index for ``channel_<int>`` keys, ``inf`` for every
+            other key (e.g. ``"origin"`` or a non-integer tail), so those
+            sort to the end.
+
+            Parameters
+            ----------
+            item : tuple of (str, Any)
+                One ``(key, value)`` pair of the merged channel-location dict.
+
+            Returns
+            -------
+            int or float
+                The channel index, or ``float('inf')``.
+            """
+
             key = item[0]
             if key.startswith('channel_'):
                 tail = key.split('_', 1)[1]

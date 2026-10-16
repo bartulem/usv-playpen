@@ -23,9 +23,7 @@ from usv_playpen.processing.masks.cc_box_detector import (
 )
 
 
-# ---------------------------------------------------------------------------
 # BoxDetectorConfig
-# ---------------------------------------------------------------------------
 
 
 def test_config_coerces_norm_pctl_list_to_tuple():
@@ -43,9 +41,7 @@ def test_config_rejects_invalid_fields(kwargs):
         BoxDetectorConfig(**kwargs)
 
 
-# ---------------------------------------------------------------------------
 # box_to_xyxy — the single detector(y,x) -> SAM(x,y) swap
-# ---------------------------------------------------------------------------
 
 
 def test_box_to_xyxy_swaps_axes():
@@ -54,13 +50,11 @@ def test_box_to_xyxy_swaps_axes():
     assert box_to_xyxy((1, 2, 3, 4)) == (2, 1, 4, 3)
 
 
-# ---------------------------------------------------------------------------
 # merge_time_gaps
-# ---------------------------------------------------------------------------
 
 
 def test_merge_time_gaps_unions_time_adjacent_freq_overlapping():
-    """Two fragments of one call — same frequency rows, a small time gap — are
+    """Two fragments of one USV — same frequency rows, a small time gap — are
     unioned into a single bounding box."""
 
     cfg = BoxDetectorConfig()
@@ -69,9 +63,9 @@ def test_merge_time_gaps_unions_time_adjacent_freq_overlapping():
     assert merged == [(10, 0, 20, 20)]
 
 
-def test_merge_time_gaps_keeps_frequency_stacked_calls_separate():
+def test_merge_time_gaps_keeps_frequency_stacked_usvs_separate():
     """Two time-overlapping boxes far apart in frequency (gap >> merge_freq_gap)
-    are kept separate — distinct stacked calls, not one fragmented call."""
+    are kept separate — distinct stacked USVs, not one fragmented USV."""
 
     cfg = BoxDetectorConfig()
     boxes = [(10, 0, 20, 10), (40, 0, 50, 10)]   # same time cols; freq gap 40-20=20 >> merge_freq_gap
@@ -79,9 +73,7 @@ def test_merge_time_gaps_keeps_frequency_stacked_calls_separate():
     assert len(merged) == 2
 
 
-# ---------------------------------------------------------------------------
 # ridge_map + detect_boxes
-# ---------------------------------------------------------------------------
 
 
 def _blob_spec(n_freq: int = 64, n_time: int = 64) -> np.ndarray:

@@ -1123,6 +1123,34 @@ def get_back_angles(back_directions: np.ndarray) -> np.ndarray:
 
 
 class FeatureZoo:
+    """
+    Description
+    -----------
+    Computes, saves and plots the per-session behavioral features derived from
+    the metric 3D tracking (speed, acceleration, neck elevation, allocentric and
+    egocentric head angles, back and body angles, tail curvature, dyadic
+    distances and angles, and their first / second derivatives).
+
+    The class attributes are the shared feature vocabulary of the package:
+    ``feature_boundaries`` and ``feature_labels`` (histogram ranges and axis
+    titles of the behavioral features), ``vocal_boundaries``, ``vocal_labels``
+    and ``vocal_titles`` (the same for the vocal features) and
+    ``feature_display_names`` (canonical display labels, resolved by the class
+    method ``resolve_feature_label``). ``NeuronalTuning`` in
+    ``analyses/compute_neuronal_tuning_curves.py`` subclasses it to reuse them.
+
+    The constructor takes keyword arguments only and stores each as an
+    attribute of the same name: ``root_directory``,
+    ``behavioral_parameters_dict`` (the ``compute_behavioral_features``
+    analyses settings) and ``message_output``; any other key raises
+    ``TypeError``. It also loads ``visualizations_parameter_dict`` from
+    ``_parameter_settings/visualizations_settings.json`` and sets
+    ``app_context_bool`` (GUI vs. CLI context). The entry methods are
+    ``save_behavioral_features_to_file`` (computes and writes the features) and
+    ``plot_feature_distributions`` (draws their distributions). It is
+    constructed by ``analyses/analyze_data.py``.
+    """
+
     feature_boundaries = {
         "speed": [0, 54],
         "acceleration": [-180, 180],
@@ -1308,13 +1336,13 @@ class FeatureZoo:
     # Vocal-tuning bin ranges. Values rounded to give clean bin widths
     # at the default 36-bin resolution (50 ms for duration, 2.5 kHz for
     # frequency-related properties, 0.15 for entropy). The two amplitude
-    # properties are read off per-call min-max normalized [0, 1]
+    # properties are read off per-USV min-max normalized [0, 1]
     # spectrograms (generate_spectrograms `normalize`), so their range is
     # [0, 1] (1/36 bins); the older [0, 4.5] / [0, 14.4] ranges predate that
-    # normalization and put every call into one or two bins. `loudness_db`
+    # normalization and put every USV into one or two bins. `loudness_db`
     # (the absolute image-level dB) bins over [24, 96] dB (2 dB bins),
     # covering the 0.1-99.9 percentiles (31.7-95.6 dB) of the noise-free
-    # calls of the 641 backfilled sessions.
+    # USVs of the 641 backfilled sessions.
     # `mask_number` uses a 12-bin integer-centered grid
     # ([0.5, 12.5] with 12 bins puts each integer 1..12 at a bin centre).
     # Ranges cover the observed extrema in a 304-session courtship pool

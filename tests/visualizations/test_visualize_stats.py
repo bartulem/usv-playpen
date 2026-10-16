@@ -92,10 +92,8 @@ def test_component_palette_colors_derive_from_settings():
     assert palette_colors == list(component_colors[:len(palette_colors)])
 
 
-# ---------------------------------------------------------------------------
 # Synthetic session builder — produces the disk layout extract_session_metadata
 # / load_and_filter_usv_data / build_master_usv_dataframe expect.
-# ---------------------------------------------------------------------------
 
 
 def _make_synthetic_session(
@@ -105,8 +103,8 @@ def _make_synthetic_session(
     female_id: str = "Ms_Y",
     frame_rate: float = 150.0,
     experiment_code: str = "exp1",
-    n_male_calls: int = 4,
-    n_female_calls: int = 3,
+    n_male_usvs: int = 4,
+    n_female_usvs: int = 3,
     n_unassigned: int = 1,
     include_behavioral: bool = True,
     include_embedding: bool = True,
@@ -125,7 +123,7 @@ def _make_synthetic_session(
       with `track_names`, `recording_frame_rate`, `experimental_code`.
     - A USV summary CSV at <root>/audio/<session_id>_usv_summary.csv with
       `start`, `stop`, `duration`, `emitter`, the noise column, the category column and
-      the `usv` / `squeak` booleans (pure USVs (true, false) on the calls, `n_squeak` male
+      the `usv` / `squeak` booleans (pure USVs (true, false) on the `n_male_usvs` / `n_female_usvs` rows, `n_squeak` male
       pure squeaks (false, true) and `n_overlap` male overlap rows (true, true) appended before
       the noise rows, null on noise rows), with the squeak extent `squeak_start` / `squeak_end`
       (the segment's own times on every squeak row, null elsewhere).
@@ -139,7 +137,7 @@ def _make_synthetic_session(
     session_root.mkdir(parents=True, exist_ok=True)
     session_id = session_root.name  # e.g. "20260101_120000"
 
-    # ---- tracking H5 ------------------------------------------------------
+    # tracking H5
     video_dir = session_root / "video"
     video_dir.mkdir(exist_ok=True)
     h5_path = video_dir / f"{session_id}_points3d_translated_rotated_metric.h5"
@@ -149,12 +147,12 @@ def _make_synthetic_session(
         f.create_dataset("recording_frame_rate", data=np.float64(frame_rate))
         f.create_dataset("experimental_code", data=np.bytes_(experiment_code))
 
-    # ---- session metadata (the source of each animal's sex) ---------------
+    # session metadata (the source of each animal's sex)
     (session_root / f"{session_id}_metadata.yaml").write_text(
         f"Subjects:\n- subject_id: '{male_id}'\n  sex: {male_sex}\n"
         f"- subject_id: '{female_id}'\n  sex: {female_sex}\n")
 
-    # ---- USV summary CSV --------------------------------------------------
+    # USV summary CSV
     audio_dir = session_root / "audio"
     audio_dir.mkdir(exist_ok=True)
     rows_start = []
@@ -167,7 +165,7 @@ def _make_synthetic_session(
     rows_qlvm2 = []
 
     t = 0.05
-    for _ in range(n_male_calls):
+    for _ in range(n_male_usvs):
         rows_start.append(t)
         rows_dur.append(0.05)
         rows_emitter.append(male_id)
@@ -177,7 +175,7 @@ def _make_synthetic_session(
         rows_qlvm1.append(np.random.RandomState(0).rand())
         rows_qlvm2.append(np.random.RandomState(1).rand())
         t += 0.5
-    for _ in range(n_female_calls):
+    for _ in range(n_female_usvs):
         rows_start.append(t)
         rows_dur.append(0.05)
         rows_emitter.append(female_id)
@@ -245,7 +243,7 @@ def _make_synthetic_session(
     usv_csv = audio_dir / f"{session_id}_usv_summary.csv"
     pls.DataFrame(cols).write_csv(usv_csv)
 
-    # ---- Behavioral features CSV -----------------------------------------
+    # Behavioral features CSV
     if include_behavioral:
         n_frames = int(frame_rate * (t + 1.0))
         beh_cols = {
@@ -261,9 +259,7 @@ def _make_synthetic_session(
     return session_root, h5_path, usv_csv
 
 
-# ---------------------------------------------------------------------------
 # extract_session_metadata
-# ---------------------------------------------------------------------------
 
 
 def test_extract_session_metadata_happy_path(tmp_path):
@@ -301,15 +297,13 @@ def test_extract_session_metadata_single_track_raises(tmp_path):
         extract_session_metadata(str(sess))
 
 
-# ---------------------------------------------------------------------------
 # load_and_filter_usv_data
-# ---------------------------------------------------------------------------
 
 
 def test_load_and_filter_usv_data_drops_noise_and_adds_frame_index(tmp_path):
     """Noise rows must be removed; frame_index = floor(start * frame_rate)."""
     sess = tmp_path / "20260101_120000"
-    _make_synthetic_session(sess, n_male_calls=2, n_female_calls=1,
+    _make_synthetic_session(sess, n_male_usvs=2, n_female_usvs=1,
                             n_unassigned=0, n_noise=3)
     md = extract_session_metadata(str(sess))
     df = load_and_filter_usv_data(
@@ -319,7 +313,7 @@ def test_load_and_filter_usv_data_drops_noise_and_adds_frame_index(tmp_path):
     # Only non-noise rows survive: 2 male + 1 female = 3
     assert df.height == 3
     assert "frame_index" in df.columns
-    # Spot-check: frame_index of the first call (start = 0.05) at 150 Hz = 7
+    # Spot-check: frame_index of the first USV (start = 0.05) at 150 Hz = 7
     assert df["frame_index"][0] == int(0.05 * 150.0)
 
 
@@ -329,7 +323,7 @@ def test_load_and_filter_usv_data_raises_when_the_noise_column_is_absent(tmp_pat
     convention quietly stopped filtering, so the loader now refuses and the error
     names both ways out."""
     sess = tmp_path / "20260101_120000"
-    _make_synthetic_session(sess, n_male_calls=2, n_female_calls=1,
+    _make_synthetic_session(sess, n_male_usvs=2, n_female_usvs=1,
                             n_unassigned=0, n_noise=3, write_noise_column=False)
     md = extract_session_metadata(str(sess))
 
@@ -357,9 +351,7 @@ def test_load_and_filter_usv_data_missing_csv_raises(tmp_path):
                                  exclude_noise_usvs=True)
 
 
-# ---------------------------------------------------------------------------
 # extract_category_embedding_data
-# ---------------------------------------------------------------------------
 
 
 def test_extract_category_embedding_data_concats_sessions(tmp_path):
@@ -406,9 +398,7 @@ def test_extract_category_embedding_data_skips_bad_session(tmp_path):
     assert df.height == 0
 
 
-# ---------------------------------------------------------------------------
 # get_session_behavioral_features / merge_usv_and_behavioral_features
-# ---------------------------------------------------------------------------
 
 
 def test_get_session_behavioral_features_loads_csv_with_frame_index(tmp_path):
@@ -449,9 +439,7 @@ def test_merge_usv_and_behavioral_features_join_shape(tmp_path):
     }
 
 
-# ---------------------------------------------------------------------------
 # build_master_usv_dataframe — top-level pipeline entry point
-# ---------------------------------------------------------------------------
 
 
 def test_build_master_usv_dataframe_returns_two_frames_and_count(tmp_path):
@@ -493,13 +481,13 @@ def _master_df(session_roots):
 
 
 def test_build_master_usv_dataframe_sex_comes_from_metadata_not_track_order(tmp_path):
-    """A courtship session whose metadata lists the female in track slot 0: her calls
+    """A courtship session whose metadata lists the female in track slot 0: her USVs
     are 'female', male_id / female_id name the metadata male / female, and the dyadic
     angles are swapped so 'mf_angle' stays the male's angle to the female."""
     sess = tmp_path / "20260101_120000"
     # track 0 ("Fa") is the female, track 1 ("Mb") the male
     _make_synthetic_session(sess, male_id="Fa", female_id="Mb", male_sex="female", female_sex="male",
-                            n_male_calls=4, n_female_calls=3, n_unassigned=1, n_noise=0)
+                            n_male_usvs=4, n_female_usvs=3, n_unassigned=1, n_noise=0)
     beh_csv = sess / f"{sess.name}_behavioral_features.csv"
     n_frames = pls.read_csv(beh_csv).height
     pls.DataFrame({
@@ -519,7 +507,7 @@ def test_build_master_usv_dataframe_sex_comes_from_metadata_not_track_order(tmp_
 
 
 def test_build_master_usv_dataframe_female_female_session(tmp_path):
-    """A female-female session: every attributed call is 'female', there is no single
+    """A female-female session: every attributed USV is 'female', there is no single
     male or female, so male_id and female_id are null."""
     sess = tmp_path / "20260101_120000"
     _make_synthetic_session(sess, male_id="F1", female_id="F2", male_sex="female", female_sex="female",
@@ -600,15 +588,15 @@ def test_build_master_usv_dataframe_counts_pure_usvs_only(tmp_path):
     it is a USV count), and
     ``usv_only=False`` keeps every non-noise vocalization."""
     sess = tmp_path / "20260101_120000"
-    _make_synthetic_session(sess, n_male_calls=4, n_female_calls=3, n_unassigned=1,
+    _make_synthetic_session(sess, n_male_usvs=4, n_female_usvs=3, n_unassigned=1,
                             n_squeak=2, n_overlap=1, n_noise=2)
     common = dict(session_roots=[str(sess)], exclude_noise_usvs=True, usv_category_col="qlvm_category",
                   distance_suffix="nose-nose", mf_angle_suffix="allo_yaw-nose", fm_angle_suffix="nose-allo_yaw")
     usv_only_df, _bg, n_noise = build_master_usv_dataframe(**common)
     assert usv_only_df.height == 8 and n_noise == 2
     assert 4 not in usv_only_df["category"].to_list()
-    every_call_df, _bg, _n = build_master_usv_dataframe(**common, usv_only=False)
-    assert every_call_df.height == 11
+    every_vocalization_df, _bg, _n = build_master_usv_dataframe(**common, usv_only=False)
+    assert every_vocalization_df.height == 11
 
 
 def test_build_master_usv_dataframe_usv_only_needs_vocal_flags(tmp_path):
@@ -635,9 +623,7 @@ def test_extract_category_embedding_data_keeps_pure_usvs_only(tmp_path):
     assert extract_category_embedding_data(**kwargs, usv_only=False)["category"].to_list().count(4) == 2
 
 
-# ===========================================================================
 # usv_interval_summary_statistics — loaders driven off an HDF5 archive
-# ===========================================================================
 
 
 def _build_archive(tmp_path: Path, *, with_mixture_model: bool = True, with_lrt: bool = True,
@@ -732,7 +718,7 @@ def _build_archive(tmp_path: Path, *, with_mixture_model: bool = True, with_lrt:
     return out
 
 
-# ---- find_latest_archive --------------------------------------------------
+# find_latest_archive
 
 
 def test_find_latest_archive_picks_newest(tmp_path):
@@ -750,7 +736,7 @@ def test_find_latest_archive_raises_when_none(tmp_path):
         find_latest_archive(str(tmp_path))
 
 
-# ---- load_intervals_from_h5 / load_mixture_model_fits_from_h5 / load_best_fit -------
+# load_intervals_from_h5 / load_mixture_model_fits_from_h5 / load_best_fit
 
 
 def test_load_intervals_from_h5_returns_tidy_frame(tmp_path):
@@ -792,7 +778,7 @@ def test_load_best_fit_from_h5_returns_a_model(tmp_path):
     np.testing.assert_array_equal(order, np.arange(2))
 
 
-# ---- load_lrt_sweep_from_h5 -----------------------------------------------
+# load_lrt_sweep_from_h5
 
 
 def test_load_lrt_sweep_from_h5_returns_dict(tmp_path):
@@ -860,7 +846,7 @@ def test_load_lrt_sweep_from_h5_missing_tables_raises(tmp_path):
         load_lrt_sweep_from_h5(str(arc), interval_type="s2s")
 
 
-# ---- selected_K_from_h5 ---------------------------------------------------
+# selected_K_from_h5
 
 
 def test_selected_K_from_h5_reads_attrs(tmp_path):
@@ -1422,7 +1408,7 @@ def test_plot_unassigned_proportion_vs_distance_jointplot():
     Description
     -----------
     `plot_unassigned_proportion_vs_distance_jointplot` must render the
-    Seaborn JointGrid of per-session median distance vs. unassigned-call
+    Seaborn JointGrid of per-session median distance vs. unassigned-USV
     proportion and return the Pearson r / p.
 
     Parameters
@@ -1581,7 +1567,6 @@ def test_fit_mixture_model_sweep_feeds_plot_ic_curves():
     plt.close(fig)
 
 
-# ===========================================================================
 # usv_summary_statistics — category-level grid / embedding figures
 #
 # These four figure functions were previously uncovered. Each consumes a
@@ -1590,7 +1575,6 @@ def test_fit_mixture_model_sweep_feeds_plot_ic_curves():
 # returned figure + stats structure. Error-path branches (bad sex_key,
 # missing columns, empty categories, insufficient background) are exercised
 # separately so the guardrails stay covered.
-# ===========================================================================
 
 
 def _embedding_frame() -> pls.DataFrame:
@@ -1747,9 +1731,9 @@ def test_plot_category_prevalence_and_embedding(plot_type, qlvm_category_bundle)
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 @pytest.mark.filterwarnings("ignore::UserWarning")
 def test_plot_category_prevalence_and_embedding_conditional_map_has_no_boundaries(tmp_path, monkeypatch):
-    """On a conditional map the bundle does not partition the torus the calls sit on:
+    """On a conditional map the bundle does not partition the torus the USVs sit on:
     no boundaries are drawn (and the bundle is not even read), the embedding titles say
-    so, and the prevalence bars still count the calls' categories."""
+    so, and the prevalence bars still count the USVs' categories."""
     monkeypatch.setattr(os_utils, "QLVM_CATEGORY_BUNDLE_DIRECTORY", str(tmp_path / "unused"))
     fig, axes = plot_category_prevalence_and_embedding(
         _embedding_frame(),
@@ -2105,7 +2089,6 @@ def test_plot_estrous_category_kde_grid_degenerate_grid_shapes(cats, stages, wan
     plt.close(fig)
 
 
-# ===========================================================================
 # usv_interval_summary_statistics — bootstrap-LRT sweep, panel, and the
 # notebook -> HDF5 archive writer.
 #
@@ -2114,7 +2097,6 @@ def test_plot_estrous_category_kde_grid_degenerate_grid_shapes(cats, stages, wan
 # so the broken-axis, normal, and empty-fill rendering branches are all
 # driven without paying the bootstrap cost; one small real sweep covers the
 # compute loop and its size<2 skip.
-# ===========================================================================
 
 def _lrt_res(K_n, K_a, lr_obs, lr_null, p_value):
     """

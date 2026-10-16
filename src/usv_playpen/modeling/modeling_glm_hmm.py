@@ -154,7 +154,7 @@ def _build_session_sequences(raw_data: dict, emission_features: list,
         When True (categorical target), events whose label is NaN (unlabelled)
         are dropped from the sequence, together with their design-matrix rows,
         and the labels are cast to integers. When False (manifold position
-        target) the extraction stage has already dropped calls without torus
+        target) the extraction stage has already dropped USVs without torus
         coordinates, so ``Y`` should hold no NaN; any row that still does (a
         pickle built before that drop) is removed here as well, with a printed
         count, so the emission never fits on a NaN position.
@@ -214,7 +214,7 @@ def _build_session_sequences(raw_data: dict, emission_features: list,
         sequences.append((session_id, x_seq, target_seq))
     if n_nan_positions_dropped > 0:
         print(f"GLM-HMM: dropped {n_nan_positions_dropped} events with NaN manifold positions "
-              f"(an input pickle built before unplaced calls were dropped at extraction).")
+              f"(an input pickle built before unplaced USVs were dropped at extraction).")
     return sequences
 
 
@@ -444,7 +444,7 @@ def run_glm_hmm_state_selection(input_data_path: str, settings_path: str,
             # The reference-coded engine reads each emission as a class index 0..C-1
             # (class 0 the fixed zero baseline), but the QLVM category labels are
             # 1..k (R-1..R-k). Sizing the engine by `max + 1` would add a phantom
-            # class 0 that no call carries and make it the reference, so the observed
+            # class 0 that no USV carries and make it the reference, so the observed
             # labels are mapped onto contiguous indices in sorted order instead
             # (index i is label class_labels[i]); the mapping is stored in the
             # metadata. The static engine keeps the raw labels: its per-state

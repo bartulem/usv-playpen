@@ -7,7 +7,7 @@ Coverage:
 - colour helpers (hex round trip, blending toward a ground colour)
 - the male-side camera rule and the peak-microphone channel mapping
 - the candidate-window finder on a synthetic session (male-only windows pass,
-  windows touching a female call, a noise detection or a cut call do not)
+  windows touching a female vocalization, a noise detection or a cut vocalization do not)
 - the still maker end to end on the synthetic session (PNG + SVG written under tmp_path)
 - the video maker end to end when ffmpeg is present (frames pooled, clip encoded)
 - the view-picker page (data and title embedded)
@@ -126,7 +126,7 @@ def _write_session(root: pathlib.Path) -> pathlib.Path:
     Write a synthetic session in the on-disk shape the module reads: the mouse points3d .h5 (two
     animals, 15 nodes, 30 fps, 12 s, experimental code of a male-female courtship pair), a USV summary
     (male USVs at 3-5 s, a female squeak at 7 s, a noise detection at 8 s, male USVs again at 9-11 s),
-    one microphone's video-cropped wav with a tone burst at each call, and a behavioural-features
+    one microphone's video-cropped wav with a tone burst at each vocalization, and a behavioural-features
     csv (one row per frame) whose egocentric columns hold ``frame + feature index`` for the male and
     the negative of that for the female, and whose dyadic columns, in the male-female order only,
     hold ``frame`` scaled by the feature's rank.
@@ -293,7 +293,7 @@ class TestOnSyntheticSession:
     """The window finder, still, video and picker on one small on-disk session."""
 
     def test_find_windows_keeps_only_clean_male_windows(self, tmp_path):
-        """Windows inside the male-only stretches qualify; any touching the squeak, the noise detection or a cut call do not."""
+        """Windows inside the male-only stretches qualify; any touching the squeak, the noise detection or a cut vocalization do not."""
 
         session = _write_session(tmp_path)
         settings = _settings(tmp_path / "figures")
@@ -312,7 +312,7 @@ class TestOnSyntheticSession:
         assert all(later - earlier >= settings["vocal_pose_figures"]["candidates"]["window_seconds"] for earlier, later in itertools.pairwise(starts))
 
     def test_find_windows_needs_pure_usvs_whatever_the_flag_typing(self, tmp_path):
-        """A male call detect-usv-squeaks left unscored (null booleans, not noise) is not a pure USV,
+        """A male vocalization detect-usv-squeaks left unscored (null booleans, not noise) is not a pure USV,
         so no window holding it qualifies; with the flags written as text the clean windows are found
         unchanged."""
 
@@ -329,9 +329,9 @@ class TestOnSyntheticSession:
             pls.when(pls.col("start") == pls.col("start").min()).then(None).otherwise(pls.col("squeak")).alias("squeak"),
         )
         unscored.write_csv(summary_path)
-        first_call = float(summary["start"].min())
+        first_vocalization_start = float(summary["start"].min())
         for row in find_vocal_pose_windows(str(session), settings, message_output=lambda *_: None).iter_rows(named=True):
-            assert not (row["start"] <= first_call < row["end"]), "a window holding an unscored call qualified"
+            assert not (row["start"] <= first_vocalization_start < row["end"]), "a window holding an unscored vocalization qualified"
 
     def test_still_writes_png_and_svg(self, tmp_path):
         """The still maker renders the synthetic session and writes both files where the figures block points."""

@@ -188,6 +188,8 @@ def validate_sequence(pos_events: np.ndarray,
 class Synchronizer:
 
     """
+    Description
+    -----------
     Synchronizes the recorded data streams of a session.
 
     This class cross-checks the audio (.wav), video (tracking) and e-phys

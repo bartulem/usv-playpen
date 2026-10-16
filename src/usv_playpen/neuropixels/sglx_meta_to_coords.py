@@ -154,7 +154,19 @@ class ProbeGeometry:
 
     @property
     def columns_per_shank(self) -> int:
-        """Number of electrode columns on one shank (derived)."""
+        """
+        Description
+        -----------
+        Number of electrode columns on one shank (derived).
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        columns_per_shank (int)
+            ``electrodes_per_shank // rows_per_shank``.
+        """
 
         return self.electrodes_per_shank // self.rows_per_shank
 
@@ -404,17 +416,40 @@ class ShankCoords:
 
     @property
     def n_channels(self) -> int:
-        """Number of saved channels."""
+        """
+        Description
+        -----------
+        Number of saved channels.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        n_channels (int)
+            ``shank_index.size``.
+        """
 
         return self.shank_index.size
 
     def x_global_um(self) -> np.ndarray:
         """
+        Description
+        -----------
         Return x coordinates with the per-shank offset applied:
         ``shank_index * shank_pitch_um + x_um``. Useful for
         downstream tools that expect a single absolute x per channel
         (KS chanMap, NPY, plain text) rather than separate "x within
         shank" + "shank index" fields.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        x_global_um (np.ndarray)
+            Absolute x per saved channel in micrometres, shape
+            ``(n_channels,)``.
         """
 
         return self.shank_index * self.shank_pitch_um + self.x_um
@@ -515,9 +550,21 @@ def channel_counts(meta: dict[str, str]) -> ChannelCounts:
 
 def _probe_part_number(meta: dict[str, str]) -> str:
     """
+    Description
+    -----------
     Return the probe part number from ``imDatPrb_pn``, or the literal
     string ``'3A'`` if the key is absent (which identifies a pre-part-
     number 3A-phase probe).
+
+    Parameters
+    ----------
+    meta (dict[str, str])
+        Parsed meta key/value pairs.
+
+    Returns
+    -------
+    part_number (str)
+        The ``imDatPrb_pn`` value, or ``'3A'``.
     """
 
     if "imDatPrb_pn" in meta:
@@ -527,9 +574,27 @@ def _probe_part_number(meta: dict[str, str]) -> str:
 
 def _lookup_geometry(meta: dict[str, str]) -> ProbeGeometry:
     """
+    Description
+    -----------
     Resolve ``meta`` to a ``ProbeGeometry`` from ``PROBE_GEOMETRY``,
     raising ``ValueError`` with a clear message if the probe part
     number isn't in our table.
+
+    Parameters
+    ----------
+    meta (dict[str, str])
+        Parsed meta key/value pairs (the part number is read via
+        :func:`_probe_part_number`).
+
+    Returns
+    -------
+    geometry (ProbeGeometry)
+        The geometry registered for the probe's part number.
+
+    Raises
+    ------
+    ValueError
+        The part number is not a key of ``PROBE_GEOMETRY``.
     """
 
     pn = _probe_part_number(meta)
@@ -787,6 +852,9 @@ def write_text_coords(coords: ShankCoords, dst: Path) -> None:
         Per-channel geometry.
     dst (Path)
         Output file path.
+    Returns
+    -------
+    None
     """
 
     x_global = coords.x_global_um()
@@ -811,6 +879,9 @@ def write_npy_coords(coords: ShankCoords, dst: Path) -> None:
         Per-channel geometry.
     dst (Path)
         Output ``.npy`` path.
+    Returns
+    -------
+    None
     """
 
     geometry_xy = np.column_stack([coords.x_global_um(), coords.y_um])
@@ -840,6 +911,9 @@ def write_jrclust_coords(coords: ShankCoords, dst: Path) -> None:
         Per-channel geometry.
     dst (Path)
         Output text-file path.
+    Returns
+    -------
+    None
     """
 
     n = coords.n_channels
@@ -892,6 +966,9 @@ def write_kilosort_chanmap(
     name (str)
         Value stored under the MATLAB ``name`` field (typically the
         meta file basename).
+    Returns
+    -------
+    None
     """
 
     n = coords.n_channels
@@ -932,6 +1009,22 @@ def _imro_derived_meta_fields(meta: dict[str, str]) -> tuple[str, str, str]:
 
     NP1110 (probe type ``1110``) puts the gain and filter info in the
     imro table header rather than per channel.
+
+    For the other probe types the gains are read from the first channel
+    entry; ``imAnyChanFullBand`` is ``true`` if any entry's sixth field
+    (AP-filter flag) is ``0``, and ``false`` when entries carry no such
+    field. Imro header types above 50,000 (3A-phase) are treated as type 0.
+
+    Parameters
+    ----------
+    meta (dict[str, str])
+        Parsed meta key/value pairs; must contain ``imroTbl``.
+
+    Returns
+    -------
+    ap_gain_line, lf_gain_line, any_full_line (tuple[str, str, str])
+        The ``imChan0apGain=...``, ``imChan0lfGain=...`` and
+        ``imAnyChanFullBand=...`` lines, each with a trailing newline.
     """
 
     table = meta["imroTbl"].split(")")
@@ -984,6 +1077,22 @@ def _sns_geom_map_string(meta: dict[str, str], coords: ShankCoords) -> str:
     parsed per-channel geometry, using the probe part number from
     ``meta`` for the header. Trailing newline included so the line
     is ready to append to a meta file.
+
+    The line is written with a leading ``~`` (``~snsGeomMap=...``), the
+    form SpikeGLX uses for its geometry key, followed by one
+    ``(shank:x_um:y_um:connected)`` group per saved channel.
+
+    Parameters
+    ----------
+    meta (dict[str, str])
+        Parsed meta key/value pairs (part number source).
+    coords (ShankCoords)
+        Per-channel geometry.
+
+    Returns
+    -------
+    geom_line (str)
+        The complete ``~snsGeomMap=...`` line, newline-terminated.
     """
 
     pn = _probe_part_number(meta)
@@ -1074,6 +1183,30 @@ def augment_legacy_meta(
 def _write_text(
     meta: dict[str, str], coords: ShankCoords, dst: Path, base_name: str
 ) -> Path:
+    """
+    Description
+    -----------
+    Writer adapter for the ``TEXT`` output format: matches the
+    ``(meta, coords, dst, base_name)`` signature of the ``_WRITERS``
+    dispatch table.
+    Delegates to :func:`write_text_coords`.
+
+    Parameters
+    ----------
+    meta (dict[str, str])
+        Parsed meta key/value pairs (unused by this format).
+    coords (ShankCoords)
+        Per-channel geometry.
+    dst (Path)
+        Output path.
+    base_name (str)
+        Meta file basename (unused by this format).
+
+    Returns
+    -------
+    written_path (Path)
+        The path actually written.
+    """
     write_text_coords(coords, dst)
     return dst
 
@@ -1081,6 +1214,30 @@ def _write_text(
 def _write_npy(
     meta: dict[str, str], coords: ShankCoords, dst: Path, base_name: str
 ) -> Path:
+    """
+    Description
+    -----------
+    Writer adapter for the ``NPY`` output format: matches the
+    ``(meta, coords, dst, base_name)`` signature of the ``_WRITERS``
+    dispatch table.
+    Delegates to :func:`write_npy_coords`.
+
+    Parameters
+    ----------
+    meta (dict[str, str])
+        Parsed meta key/value pairs (unused by this format).
+    coords (ShankCoords)
+        Per-channel geometry.
+    dst (Path)
+        Output path.
+    base_name (str)
+        Meta file basename (unused by this format).
+
+    Returns
+    -------
+    written_path (Path)
+        The path actually written.
+    """
     write_npy_coords(coords, dst)
     return dst
 
@@ -1088,6 +1245,30 @@ def _write_npy(
 def _write_jrclust(
     meta: dict[str, str], coords: ShankCoords, dst: Path, base_name: str
 ) -> Path:
+    """
+    Description
+    -----------
+    Writer adapter for the ``JRCLUST_STRINGS`` output format: matches the
+    ``(meta, coords, dst, base_name)`` signature of the ``_WRITERS``
+    dispatch table.
+    Delegates to :func:`write_jrclust_coords`.
+
+    Parameters
+    ----------
+    meta (dict[str, str])
+        Parsed meta key/value pairs (unused by this format).
+    coords (ShankCoords)
+        Per-channel geometry.
+    dst (Path)
+        Output path.
+    base_name (str)
+        Meta file basename (unused by this format).
+
+    Returns
+    -------
+    written_path (Path)
+        The path actually written.
+    """
     write_jrclust_coords(coords, dst)
     return dst
 
@@ -1095,6 +1276,30 @@ def _write_jrclust(
 def _write_kilosort(
     meta: dict[str, str], coords: ShankCoords, dst: Path, base_name: str
 ) -> Path:
+    """
+    Description
+    -----------
+    Writer adapter for the ``KILOSORT_MAT`` output format: matches the
+    ``(meta, coords, dst, base_name)`` signature of the ``_WRITERS``
+    dispatch table.
+    Delegates to :func:`write_kilosort_chanmap` with ``name=base_name``.
+
+    Parameters
+    ----------
+    meta (dict[str, str])
+        Parsed meta key/value pairs (unused by this format).
+    coords (ShankCoords)
+        Per-channel geometry.
+    dst (Path)
+        Output path.
+    base_name (str)
+        Meta file basename (used only by the Kilosort writer as the MATLAB ``name`` field).
+
+    Returns
+    -------
+    written_path (Path)
+        The path actually written.
+    """
     write_kilosort_chanmap(coords, dst, name=base_name)
     return dst
 
@@ -1102,6 +1307,31 @@ def _write_kilosort(
 def _write_legacy_meta(
     meta: dict[str, str], coords: ShankCoords, dst: Path, base_name: str
 ) -> Path:
+    """
+    Description
+    -----------
+    Writer adapter for the ``LEGACY_META_AUGMENT`` output format: matches the
+    ``(meta, coords, dst, base_name)`` signature of the ``_WRITERS``
+    dispatch table.
+    Delegates to :func:`augment_legacy_meta`, which appends to the
+    meta file at ``dst`` in place and writes a backup beside it.
+
+    Parameters
+    ----------
+    meta (dict[str, str])
+        Parsed meta key/value pairs (unused; the meta file at ``dst`` is re-read).
+    coords (ShankCoords)
+        Per-channel geometry.
+    dst (Path)
+        The meta file to augment in place.
+    base_name (str)
+        Meta file basename (unused by this format).
+
+    Returns
+    -------
+    written_path (Path)
+        The path actually written.
+    """
     # ``dst`` for the legacy-meta path is the meta file itself; the
     # writer mutates it in place and creates a backup beside it.
     return augment_legacy_meta(dst, coords)
@@ -1252,10 +1482,21 @@ def plot_coords(
 
 def _ensure_qt_app() -> QApplication:
     """
+    Description
+    -----------
     Return the running ``QApplication`` instance, creating one if
     none exists. The standalone GUI entry point uses this so that the
     script also works when invoked from a parent process that already
     started a Qt event loop (e.g. the main usv_playpen GUI).
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    app (QApplication)
+        The existing application instance, or a new one built from
+        ``sys.argv``.
     """
 
     app = QApplication.instance()

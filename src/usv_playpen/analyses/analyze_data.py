@@ -26,6 +26,16 @@ from .generate_audio_files import AudioGenerator
 
 
 class Analyst:
+    """
+    Description
+    -----------
+    Runs the analyses steps of the pipeline over a list of session root
+    directories: :meth:`analyze_data` walks the analyses booleans in the
+    settings and dispatches each enabled step (behavioral features,
+    inter-USV intervals, neuronal tuning curves, bout-occupancy decoding,
+    audio-file generation, ...). Constructor parameters are documented in
+    ``__init__``.
+    """
 
     def __init__(self, input_parameter_dict: dict = None,
                  root_directories: list = None,
@@ -253,7 +263,7 @@ def generate_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
 @click.option('--num-naturalistic-usv-files', 'num_naturalistic_usv_files', type=int, default=None, required=False, help='Number of WAV files to create.')
 @click.option('--context-label', 'context_label', type=click.Choice(['courtship_male', 'courtship_female', 'lone_male', 'lone_female', 'same_sex_male', 'same_sex_female', 'mixed']), default=None, required=False, help='Which (sex, social context) repository to play back; the newest matching build in that directory is used.')
 @click.option('--total-playback-time', 'total_acceptable_naturalistic_playback_time', type=int, default=None, required=False, help='Maximum amount of seconds for the duration of the naturalistic playback file.')
-@click.option('--complexity-enabled/--no-complexity-enabled', 'complexity_enabled', default=None, required=False, help='Steer bout draws toward a target call complexity (else uniform).')
+@click.option('--complexity-enabled/--no-complexity-enabled', 'complexity_enabled', default=None, required=False, help='Steer bout draws toward a target USV complexity (else uniform).')
 @click.option('--complexity-mask-threshold', 'complexity_mask_threshold', type=int, default=None, required=False, help='A USV is "complex" if its mask_number is >= this (default 2).')
 @click.option('--complexity-start-fraction', 'complexity_start_fraction', type=float, default=None, required=False, help='Target complex-USV fraction at the START of the file (0-1).')
 @click.option('--complexity-end-fraction', 'complexity_end_fraction', type=float, default=None, required=False, help='Target complex-USV fraction at the END of the file (0-1); differs from start = linear ramp.')
@@ -297,7 +307,7 @@ def generate_naturalistic_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
 @click.option('--total-bin-num', 'total_bin_num', type=int, default=None, required=False, help='Total number of bins for 1D tuning curves.')
 @click.option('--n-spatial-bins', 'n_spatial_bins', type=int, default=None, required=False, help='Number of spatial bins.')
 @click.option('--spatial-scale-cm', 'spatial_scale_cm', type=int, default=None, required=False, help='Spatial extent of the arena (in cm).')
-@click.option('--peth-window-seconds', 'peth_window_seconds', nargs=2, type=float, default=None, required=False, help='Peri-USV-onset PETH window [start stop] relative to each call onset (in s); default -2 0.5.')
+@click.option('--peth-window-seconds', 'peth_window_seconds', nargs=2, type=float, default=None, required=False, help='Peri-USV-onset PETH window [start stop] relative to each USV onset (in s); default -2 0.5.')
 @click.option('--peth-bin-seconds', 'peth_bin_seconds', type=float, default=None, required=False, help='PETH bin width (in s).')
 @click.option('--bout-quiet-seconds', 'bout_quiet_seconds', type=float, default=None, required=False, help='Inter-bout silence required to define a new bout (in s).')
 @click.option('--n-usv-min-self', 'n_usv_min_self', type=int, default=None, required=False, help='Minimum self-side USV count to compute self plots.')

@@ -612,6 +612,25 @@ def _tune_manifold_regularization(X_train: np.ndarray,
     higher_is_better = inner_cv_scoring_metric in higher_is_better_metrics
 
     def _empty_audit():
+        """
+        Builds the empty grid-audit payload returned when the tuner cannot
+        score the grid (degenerate training fold, or no pair with a finite
+        inner score): no scores, no standard errors, no argmax pair and the
+        1-SE rule marked as not applied.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        audit : dict
+            Fresh dict with keys `'grid_scores'` ({}), `'grid_ses'` ({}),
+            `'argmax_pair'` (None), `'one_se_applied'` (False) and
+            `'one_se_threshold'` (None); a new dict on every invocation so callers
+            may fill it in place.
+        """
+
         return {
             'grid_scores': {},
             'grid_ses': {},
@@ -770,6 +789,21 @@ def _tune_manifold_regularization(X_train: np.ndarray,
     }
 
     def _warn_l2_grid_edge(chosen_l2: float) -> None:
+        """
+        Prints a warning when the selected L2 strength sits on either endpoint
+        of `l2_reg_grid` (from the enclosing scope) while that grid has more
+        than one point, i.e. when the optimum may lie beyond the searched range.
+
+        Parameters
+        ----------
+        chosen_l2 : float
+            The L2 penalty strength the tuner is about to return.
+
+        Returns
+        -------
+        None
+        """
+
         # Flag a tuned l2 that rails to a grid endpoint (the tuned l2 is no longer
         # interior, so the grid is mis-placed / too narrow and the optimum lies
         # beyond it). Only meaningful when the l2 axis has more than one point, so
@@ -798,11 +832,43 @@ def _tune_manifold_regularization(X_train: np.ndarray,
         threshold = argmax_score - argmax_se
 
         def _within(score_: float) -> bool:
+            """
+            Tests whether a pair's mean inner score lies inside the 1-SE band of
+            a higher-is-better metric, i.e. is at least `threshold`
+            (`argmax_score - SE(argmax)`, from the enclosing scope).
+
+            Parameters
+            ----------
+            score_ : float
+                Mean inner-CV score of one `(lambda_smooth, l2_reg)` pair.
+
+            Returns
+            -------
+            in_band : bool
+                True when `score_ >= threshold`.
+            """
+
             return score_ >= threshold
     else:
         threshold = argmax_score + argmax_se
 
         def _within(score_: float) -> bool:
+            """
+            Tests whether a pair's mean inner score lies inside the 1-SE band of
+            a lower-is-better metric, i.e. is at most `threshold`
+            (`argmax_score + SE(argmax)`, from the enclosing scope).
+
+            Parameters
+            ----------
+            score_ : float
+                Mean inner-CV score of one `(lambda_smooth, l2_reg)` pair.
+
+            Returns
+            -------
+            in_band : bool
+                True when `score_ <= threshold`.
+            """
+
             return score_ <= threshold
 
     in_band = [pair for pair, score in valid_pairs if _within(score)]
@@ -822,6 +888,17 @@ def _tune_manifold_regularization(X_train: np.ndarray,
 
 
 class ContinuousModelingPipeline(FeatureZoo):
+    """
+    Data-extraction pipeline for continuous manifold-position USV modelling.
+
+    Loads the modelling settings, derives the fixed-length behavioural
+    history window (in frames) from the camera sampling rate, and, through
+    `extract_and_save_continuous_data`, assembles for every valid USV the
+    `(X, Y, w)` triplet -- z-scored behavioural history window, `(x, y)`
+    manifold coordinates and inverse-density sample weight -- serialized as
+    `{feature: {session: {'X', 'Y', 'w'}}}` for `ContinuousModelRunner`.
+    Inherits the standardized behavioural feature computations of `FeatureZoo`.
+    """
 
     def __init__(self, modeling_settings_dict: dict = None, **kwargs):
         """
@@ -843,6 +920,10 @@ class ContinuousModelingPipeline(FeatureZoo):
             `_parameter_settings/modeling_settings.json`.
         **kwargs : dict
             Additional keyword arguments to dynamically set as instance attributes.
+
+        Returns
+        -------
+        None
         """
 
         if modeling_settings_dict is None:
@@ -977,7 +1058,7 @@ class ContinuousModelingPipeline(FeatureZoo):
                 continue
 
             # Per-USV category labels (the regular map's qlvm_category, the
-            # label of every map's calls, conditional maps included) aligned
+            # label of every map's USVs, conditional maps included) aligned
             # 1:1 with onsets/targets. Surfaced by `find_usv_categories` when
             # the column exists in the source USV CSV. Absent label arrays
             # signal "this USV summary carries no categories yet"; downstream
@@ -1427,6 +1508,10 @@ class ContinuousModelRunner:
             An instance of the extraction class which holds the
             'modeling_settings' dictionary and calculated attributes
             (including `history_frames`).
+
+        Returns
+        -------
+        None
         """
         self.modeling_settings = pipeline_instance.modeling_settings
         # History-window length in frames (the pipeline derives it from the camera
@@ -2458,6 +2543,24 @@ class ContinuousModelRunner:
         # torus, dcor_xy on euclidean, else r2_spatial) plus MAE, for ACTUAL vs
         # NULL vs NULL-MF per split.
         def _has_finite_metric(key):
+            """
+            Tests whether the ACTUAL strategy's per-fold metrics (`results`,
+            from the enclosing scope) hold metric `key` with at least one
+            finite value, used to pick the per-split headline metric.
+
+            Parameters
+            ----------
+            key : str
+                Metric name in `results['actual']['folds']['metrics']`
+                (e.g. `'vm_logscore'`, `'dcor_xy'`).
+
+            Returns
+            -------
+            has_finite : bool
+                True when the metric is present, non-empty and has a finite
+                entry; False otherwise.
+            """
+
             metrics = results['actual']['folds']['metrics']
             if key not in metrics:
                 return False

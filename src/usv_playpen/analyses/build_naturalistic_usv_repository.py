@@ -22,7 +22,7 @@ interval (IBI) rule the modeling layer uses. All gaps stored are the REAL record
 values: within-bout inter-USV gaps and the real pause preceding each bout.
 
 The reconstruction chain (validated) is: max-variance channel -> tight SAM mask ->
-time-only mask feather -> single true-phase ISTFT (no iterations) -> call-adaptive fade
+time-only mask feather -> single true-phase ISTFT (no iterations) -> USV-adaptive fade
 -> peak-normalize -> int16 at the recording sampling rate.
 """
 
@@ -148,11 +148,11 @@ def reconstruct_usv_waveform(
     does not resample time). The mask is applied to the complex STFT (true phase
     retained) and inverted with a single ``librosa.istft``.
 
-    Two cosmetic steps clean the boundaries without distorting the call: the mask is
+    Two cosmetic steps clean the boundaries without distorting the USV: the mask is
     feathered in TIME ONLY (Gaussian ``feather_sigma_time``) so the hard time-edge
     does not invert to a broadband onset/offset click, while the frequency edges stay
-    tight (a frequency feather would bleed a halo below/above the call); and a short
-    call-adaptive raised-cosine fade tapers the waveform ends.
+    tight (a frequency feather would bleed a halo below/above the USV); and a short
+    USV-adaptive raised-cosine fade tapers the waveform ends.
 
     Parameters
     ----------
@@ -177,7 +177,7 @@ def reconstruct_usv_waveform(
         Gaussian sigma (in time bins) of the time-only mask feather.
     fade_ms (float)
         Target raised-cosine onset/offset fade length in milliseconds; the actual
-        fade is capped at one third of the call so short calls are not over-eaten.
+        fade is capped at one third of the USV so short USVs are not over-eaten.
 
     Returns
     -------
@@ -442,7 +442,7 @@ class NaturalisticUsvRepositoryBuilder:
                     durations = h5_file[f"spectrogram/{session_id}"]["durations"][:]
                     # Summary rows index the H5 rows (durations, masks) and are stored as
                     # usv_row, so a summary re-curated after the spectrograms were made would
-                    # attach every mask to the wrong call; such a session is skipped and logged.
+                    # attach every mask to the wrong USV; such a session is skipped and logged.
                     if durations.size != usv_summary_df.height:
                         error_message = (
                             f"{usv_summary_loc.name} has {usv_summary_df.height} rows but {h5_loc.name} holds "
@@ -771,11 +771,11 @@ class NaturalisticUsvRepositoryBuilder:
 @click.option('--ibi-z-score', 'ibi_z_score', type=float, default=None, required=False, help='z-score for the inter-bout-interval threshold exp(mu + z*sd).')
 @click.option('--ibi-component-index', 'ibi_component_index', type=int, default=None, required=False, help='Mixture component index (per-sex) used for the IBI threshold.')
 @click.option('--min-vocalizations', 'min_vocalizations', type=int, default=None, required=False, help='Minimum USVs for a bout to be kept.')
-@click.option('--length-threshold', 'length_threshold', type=int, default=None, required=False, help='Drop the whole bout if any of its USVs has duration > this (time bins); the stored 128-column mask truncates longer calls.')
+@click.option('--length-threshold', 'length_threshold', type=int, default=None, required=False, help='Drop the whole bout if any of its USVs has duration > this (time bins); the stored 128-column mask truncates longer USVs.')
 @click.option('--min-duration', 'min_duration', type=int, default=None, required=False, help='Drop the whole bout if any of its USVs has duration < this (time bins).')
 @click.option('--mask-dilation', 'mask_dilation', type=int, default=None, required=False, help='Grow the SAM mask by this many bins before inversion (0 = tight).')
 @click.option('--feather-sigma-time', 'feather_sigma_time', type=float, default=None, required=False, help='Gaussian sigma (time bins) of the time-only mask feather.')
-@click.option('--fade-ms', 'fade_ms', type=float, default=None, required=False, help='Raised-cosine onset/offset fade length in milliseconds (call-adaptive).')
+@click.option('--fade-ms', 'fade_ms', type=float, default=None, required=False, help='Raised-cosine onset/offset fade length in milliseconds (USV-adaptive).')
 @click.option('--peak-normalize/--no-peak-normalize', 'peak_normalize', default=None, required=False, help='Peak-normalize each USV to a uniform level, or preserve relative amplitude.')
 @click.option('--peak-target-fraction', 'peak_target_fraction', type=float, default=None, required=False, help='Fraction of the int16 ceiling each peak-normalized snippet is scaled to.')
 @click.pass_context

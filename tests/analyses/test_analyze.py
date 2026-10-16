@@ -856,9 +856,7 @@ def test_t_mixture_quantile_inverts_cdf():
     np.testing.assert_allclose(recovered, test_points, atol=1e-6)
 
 
-# ---------------------------------------------------------------------------
 # triage helpers (compute_neuronal_tuning_curves.py)
-# ---------------------------------------------------------------------------
 
 
 # _longest_run --------------------------------------------------------------
@@ -1245,9 +1243,7 @@ def test_vmi_n_bouts_matches_detector():
     assert out["n_bouts"] == 2
 
 
-# ---------------------------------------------------------------------------
 # unit_triage_aggregator.py
-# ---------------------------------------------------------------------------
 
 
 # _to_jsonable / _safe_float ------------------------------------------------
@@ -1438,9 +1434,7 @@ def test_emitter_role_map_missing_role_returns_empty():
     cluster_data = {"usv_peth": {"emitter_x": {"rate": np.zeros(5)}}}
     assert _emitter_role_map(cluster_data) == {}
 
-# ---------------------------------------------------------------------------
 # mixture_model_utils — additional targeted tests
-# ---------------------------------------------------------------------------
 
 
 def _make_two_component_gmm(seed=0, n_per=2000):
@@ -1632,7 +1626,6 @@ def test_t_update_nu_returns_finite_in_range():
     assert 2.0 < nu <= 200.0
 
 
-# ---------------------------------------------------------------------------
 # compute_neuronal_tuning_curves — synthetic integration tests
 #
 # These tests exercise the per-cluster behavioral and vocal compute methods
@@ -1641,7 +1634,6 @@ def test_t_update_nu_returns_finite_in_range():
 # path. Goal: lift coverage on _compute_one_cluster_behavioral,
 # _load_*_inputs, _build_vocal_side_precompute, _compute_one_cluster_vocal,
 # and the triage attachers.
-# ---------------------------------------------------------------------------
 
 
 def _make_synthetic_session(tmp_path, *, n_frames=1500, n_usvs=120, fps=150.0):
@@ -1700,7 +1692,7 @@ def _make_synthetic_session(tmp_path, *, n_frames=1500, n_usvs=120, fps=150.0):
         "stop": stops.tolist(),
         "duration": durations.tolist(),
         "emitter": ["m1"] * n_usvs,
-        # Every synthetic call is real; the tuning-curve loader drops noise-flagged rows.
+        # Every synthetic USV is real; the tuning-curve loader drops noise-flagged rows.
         "noise": [False] * n_usvs,
         # No squeaks: the vocal tuning keeps pure-USV anchors (usv true, squeak false), so the
         # two booleans are required.
@@ -2263,12 +2255,10 @@ def test_compute_one_cluster_vocal_triage_stats_populated(synthetic_compute_sess
     assert "m1" in ts["usv_property_tuning"]
 
 
-# ===========================================================================
 # usv_interval_archive — HDF5 archive layer for IUI / mixture-model output
-# ===========================================================================
 
 
-# ---- _attr_value / _decode_attr round-trip --------------------------------
+# _attr_value / _decode_attr round-trip
 
 
 @pytest.mark.parametrize("v,expected_type", [
@@ -2311,7 +2301,7 @@ def test_decode_attr_recovers_python_types():
     assert _decode_attr(np.array([1, 2])) == [1, 2]
 
 
-# ---- _polars_to_h5 / _h5_to_polars round-trip -----------------------------
+# _polars_to_h5 / _h5_to_polars round-trip
 
 
 def test_h5_to_polars_renames_the_legacy_call_type_column(tmp_path):
@@ -2360,7 +2350,7 @@ def test_polars_h5_roundtrip_empty_frame(tmp_path):
     assert set(rt.columns) == {"a", "b"}
 
 
-# ---- _try_git_sha (subprocess.run mocked) ---------------------------------
+# _try_git_sha (subprocess.run mocked)
 
 
 def test_try_git_sha_happy(monkeypatch, tmp_path):
@@ -2393,7 +2383,7 @@ def test_try_git_sha_nonzero_returncode_returns_unknown(monkeypatch, tmp_path):
     assert _try_git_sha(tmp_path) == "unknown"
 
 
-# ---- detect_repo_root_for_provenance / git_sha_for_provenance -------------
+# detect_repo_root_for_provenance / git_sha_for_provenance
 
 
 def test_detect_repo_root_walks_up(tmp_path):
@@ -2423,7 +2413,7 @@ def test_git_sha_for_provenance_combines_helpers(monkeypatch, tmp_path):
     assert git_sha_for_provenance(repo) == "deadbee"
 
 
-# ---- write_ivi_h5 / read_usv_interval_h5 round-trip -----------------------
+# write_ivi_h5 / read_usv_interval_h5 round-trip
 
 
 def _example_per_mode_payload():
@@ -2485,7 +2475,7 @@ def test_write_ivi_h5_creates_parent_dir(tmp_path):
     assert nested.is_file()
 
 
-# ---- reconstruct_best_model -----------------------------------------------
+# reconstruct_best_model
 
 
 def _mixture_model_fits_row(model_class, sex="male", K=2, bic=10.0, cv=1.0):
@@ -2568,9 +2558,7 @@ def test_reconstruct_best_model_falls_back_when_cv_all_nan():
     assert model is not None
 
 
-# ===========================================================================
 # compute_inter_usv_interval_distributions — pure helpers
-# ===========================================================================
 
 
 def test_read_session_lists_dedupes_and_preserves_order(tmp_path):
@@ -2649,7 +2637,7 @@ def test_compute_session_usv_intervals_missing_session_returns_empty(monkeypatch
 
 
 def test_compute_session_usv_intervals_basic_pairs(monkeypatch):
-    """Synthesise 4 calls (M, M, F, F) → expect one M-M interval and one F-F."""
+    """Synthesise 4 USVs (M, M, F, F) → expect one M-M interval and one F-F."""
     import usv_playpen.analyses.compute_inter_usv_interval_distributions as cmod
 
     monkeypatch.setattr(cmod, "extract_session_metadata", lambda _root: {
@@ -2732,8 +2720,8 @@ def test_compute_session_usv_intervals_e2s_drops_overlapping(monkeypatch):
 def test_compute_session_usv_intervals_same_sex_session_pairs_per_animal(monkeypatch):
     """
     A female-female session: both animals are female by their metadata, so both
-    animals' intervals land in the 'female' pool and nothing in 'male'; a call of
-    one female is never paired with a call of the other (the A->B step breaks the
+    animals' intervals land in the 'female' pool and nothing in 'male'; a USV of
+    one female is never paired with a USV of the other (the A->B step breaks the
     chain), and each interval carries the animal it belongs to.
     """
     import usv_playpen.analyses.compute_inter_usv_interval_distributions as cmod
@@ -2776,15 +2764,13 @@ def test_extract_animal_sexes_reads_metadata_and_refuses_to_guess(tmp_path):
         extract_animal_sexes(str(tmp_path / "absent"), ["124784_2"])
 
 
-# ===========================================================================
 # mixture_model_utils — coverage extension toward ~90%
 # Targeting: bootstrap_lrt, select_n_components_step_up_lrt, edge cases in
 # gmm_boundaries_logspace / gmm_modes / select_best_n_components / cv helpers,
 # and the matplotlib smoke surfaces (plot_gmm_fit, qqplot_gmm).
-# ===========================================================================
 
 
-# ---- bootstrap_lrt --------------------------------------------------------
+# bootstrap_lrt
 
 
 def test_bootstrap_lrt_invalid_K_pair_raises():
@@ -2849,7 +2835,7 @@ def test_bootstrap_lrt_uses_full_array_when_smaller_than_subsample():
     assert result["n_subsample"] == 30
 
 
-# ---- select_n_components_step_up_lrt --------------------------------------
+# select_n_components_step_up_lrt
 
 
 def test_select_n_components_step_up_returns_first_nonsig_K_null():
@@ -2878,7 +2864,7 @@ def test_select_n_components_step_up_empty_pairs_raises():
         select_n_components_step_up_lrt({}, alpha=0.05)
 
 
-# ---- gmm_boundaries_logspace edge cases -----------------------------------
+# gmm_boundaries_logspace edge cases
 
 
 def test_gmm_boundaries_logspace_returns_nan_when_no_real_root():
@@ -2911,7 +2897,7 @@ def test_gmm_boundaries_logspace_returns_finite_when_unique_root():
     assert sec_b[0] > 0  # exp() of finite log-boundary is positive
 
 
-# ---- gmm_cv_neg_loglik short-data branches --------------------------------
+# gmm_cv_neg_loglik short-data branches
 
 
 def test_gmm_cv_neg_loglik_returns_inf_when_n_below_folds():
@@ -2943,7 +2929,7 @@ def test_t_mixture_cv_neg_loglik_returns_inf_when_train_smaller_than_n_component
     assert val == float("inf")
 
 
-# ---- select_best_n_components cv_mode branch ------------------------------
+# select_best_n_components cv_mode branch
 
 
 def test_select_best_n_components_cv_mode_picks_rep_by_bic():
@@ -2962,7 +2948,7 @@ def test_select_best_n_components_cv_mode_picks_rep_by_bic():
     assert out["a"]["rep"] == 0
 
 
-# ---- plot_gmm_fit / qqplot_gmm smoke ----------------------------------
+# plot_gmm_fit / qqplot_gmm smoke
 
 
 def test_plot_gmm_fit_returns_figure_and_axes():
@@ -3001,12 +2987,10 @@ def test_qqplot_gmm_returns_figure():
     assert isinstance(fig, matplotlib.figure.Figure)
 
 
-# ===========================================================================
 # compute_behavioral_features — FeatureZoo class + missing pure helpers
-# ===========================================================================
 
 
-# ---- FeatureZoo class -----------------------------------------------------
+# FeatureZoo class
 
 
 def test_feature_zoo_init_loads_visualizations_settings():
@@ -3302,7 +3286,7 @@ def test_feature_zoo_save_behavioral_features_single_mouse_skips_social(tmp_path
     )
 
 
-# ---- calculate_sei --------------------------------------------------------
+# calculate_sei
 
 
 def test_calculate_sei_returns_high_score_when_aligned_and_close():
@@ -3354,7 +3338,7 @@ def test_calculate_sei_returns_negative_when_target_is_behind():
     assert sei[0] < 0
 
 
-# ---- get_back_root --------------------------------------------------------
+# get_back_root
 
 
 def _make_back_input(neck_pos, tti_pos, n_frames=1):
@@ -3431,7 +3415,7 @@ def test_get_back_root_returns_nan_when_neck_and_tti_coincident():
     np.testing.assert_array_equal(out[0, :, 2], [0.0, 0.0, 1.0])
 
 
-# ---- get_back_angles ------------------------------------------------------
+# get_back_angles
 
 
 def test_get_back_angles_zero_when_back_along_x_axis():
@@ -3672,7 +3656,7 @@ def test_anchor_bin_validity_grid_post_and_prior():
 def test_anchor_bin_validity_grid_cuts_post_onset_bins_at_the_next_onset():
     """Post-onset bins stay valid only while they end before the next USV's onset
     (any USV after the anchor's onset); pre-onset bins are untouched by that rule,
-    and a last call keeps its post-onset bins up to the recording end."""
+    and a last USV keeps its post-onset bins up to the recording end."""
     starts = np.array([1.0, 1.25, 3.0])
     stops = np.array([1.1, 1.3, 3.1])
     edges = np.arange(-0.5, 0.5 + 1e-9, 0.1)
@@ -3687,7 +3671,7 @@ def test_anchor_bin_validity_grid_cuts_post_onset_bins_at_the_next_onset():
     # 1.1 and 1.2 s are valid and those ending at 1.3 / 1.4 / 1.5 s are not
     np.testing.assert_array_equal(grid[0, post], [True, True, False, False, False])
     assert grid[0, ~post].all()
-    # anchor 2 (the last call): nothing follows it, so every post-onset bin is valid
+    # anchor 2 (the last USV): nothing follows it, so every post-onset bin is valid
     assert grid[1].all()
     # another USV starting at the anchor's very onset leaves no clean post-onset bin
     same = _anchor_bin_validity_grid(

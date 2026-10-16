@@ -79,7 +79,41 @@ class HashableDict(dict):
     """A dictionary that can be hashed for JAX static arguments, handling nested lists."""
 
     def __hash__(self):
+        """
+        Description
+        -----------
+        Hash the dictionary by its sorted ``(key, value)`` items, after converting
+        nested lists to tuples and nested dicts to sorted item tuples, so equal
+        configurations hash equally regardless of insertion order.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        int
+            Hash of the recursively hashable, key-sorted item tuple. Raises
+            ``TypeError`` if a leaf value is itself unhashable (e.g. a set or array).
+        """
         def make_hashable(v):
+            """
+            Description
+            -----------
+            Recursively convert a value into a hashable equivalent: lists become tuples
+            of converted elements, dicts become key-sorted tuples of ``(key, converted
+            value)`` pairs, and every other value is returned unchanged.
+
+            Parameters
+            ----------
+            v : Any
+                The value to convert.
+
+            Returns
+            -------
+            Any
+                The hashable equivalent of ``v``.
+            """
             if isinstance(v, list):
                 return tuple(make_hashable(e) for e in v)
             elif isinstance(v, dict):
@@ -434,7 +468,7 @@ def init_cnn_params_and_state(key: jax.Array, in_channels: int,
         c_out = channels[i + 1]
 
         if i == 0 and use_inception:
-            # === Multi-Scale Inception Block 0 ===
+            # Multi-Scale Inception Block 0
             # Initialize N parallel depthwise kernels for different temporal fields.
             #
             # The per-kernel PRNG keys are drawn from a dedicated, disjoint
@@ -474,7 +508,7 @@ def init_cnn_params_and_state(key: jax.Array, in_channels: int,
             params['b0_sc_w'] = jax.random.normal(k[inc_sc_key_offset], (c_out, c_in, 1)) * jnp.sqrt(2.0 / c_in)
             params['b0_sc_b'] = jnp.zeros((1, c_out, 1))
         else:
-            # === Standard Blocks (Or Block 0 if Inception is False) ===
+            # Standard Blocks (Or Block 0 if Inception is False)
             # 1. Depthwise Conv Weights
             params[f'b{i}_dw_w'] = jax.random.normal(k[i * 10], (c_in, 1, std_kernel)) * jnp.sqrt(2.0 / std_kernel)
 
@@ -497,7 +531,7 @@ def init_cnn_params_and_state(key: jax.Array, in_channels: int,
         state[f'b{i}_bn_sc_mean'] = jnp.zeros((1, c_out, 1))
         state[f'b{i}_bn_sc_var'] = jnp.ones((1, c_out, 1))
 
-        # === 5. Squeeze-and-Excitation (SE) Attention Weights ===
+        # 5. Squeeze-and-Excitation (SE) Attention Weights
         se_hidden = max(1, c_out // se_reduction)
 
         params[f'b{i}_se_w1'] = jax.random.normal(k[i * 10 + 3], (c_out, se_hidden)) * jnp.sqrt(2.0 / c_out)
@@ -508,7 +542,7 @@ def init_cnn_params_and_state(key: jax.Array, in_channels: int,
 
         current_time = current_time // 2
 
-    # === Final Dense Head (Bottleneck) ===
+    # Final Dense Head (Bottleneck)
     flattened_size = channels[-1] * current_time
 
     # If Hybrid Flatten is active, we add the Global Average Pooling dimension (c_out)
@@ -662,7 +696,7 @@ def cnn_forward(params: Dict[str, jax.Array],
     for i in range(len(hp['block_channels'])):
         in_channels = out.shape[1]
 
-        # === PATH A: Main Transform (Multi-Scale vs Standard) ===
+        # PATH A: Main Transform (Multi-Scale vs Standard)
         if i == 0 and use_inception:
             # Parallel Multi-Scale Branching
             branches = [jax.lax.conv_general_dilated(
@@ -703,13 +737,13 @@ def cnn_forward(params: Dict[str, jax.Array],
         )
         path_a = path_a_sum * 0.5  # Average pooling
 
-        # === 5. SQUEEZE-AND-EXCITATION (SE) ATTENTION ===
+        # 5. SQUEEZE-AND-EXCITATION (SE) ATTENTION
         se_squeeze = jnp.max(path_a, axis=2)  # Peak-isolating global pool
         se_hidden = act(jnp.dot(se_squeeze, params[f'b{i}_se_w1']) + params[f'b{i}_se_b1'])
         se_weight = se_gate(jnp.dot(se_hidden, params[f'b{i}_se_w2']) + params[f'b{i}_se_b2'])
         path_a = path_a * se_weight[:, :, jnp.newaxis]
 
-        # === PATH B: The Shortcut ===
+        # PATH B: The Shortcut
         sc_w_key = f'b{i}_sc_w' if i > 0 else 'b0_sc_w'
         sc_b_key = f'b{i}_sc_b' if i > 0 else 'b0_sc_b'
 
@@ -729,7 +763,7 @@ def cnn_forward(params: Dict[str, jax.Array],
         min_time = min(path_a.shape[2], path_b.shape[2])
         out = act(path_a[:, :, :min_time] + path_b[:, :, :min_time])
 
-    # === FLATTEN & NON-LINEAR REASONING HEAD ===
+    # FLATTEN & NON-LINEAR REASONING HEAD
     out_flat = out.reshape(out.shape[0], -1)
 
     # Hybrid Flatten: Concatenate the strictly timed motifs with the time-invariant averages
@@ -858,6 +892,10 @@ class NeuralContinuousCNNRunner:
             A nested dictionary containing IO paths, filter histories, split strategies,
             and JAX/Optax hyperparameters. If None is provided, it attempts to load
             from the default JSON configuration file.
+
+        Returns
+        -------
+        None
 
         Raises
         ------
@@ -1106,6 +1144,25 @@ class NeuralContinuousCNNRunner:
         torus_sin_cos = _use_sin_cos_torus_output(self.hp)
 
         def _decode(preds_raw):
+            """
+            Description
+            -----------
+            Fold the raw network output back to the 2-D manifold coordinate: on the torus
+            ``'sin_cos'`` head the per-axis ``(sin, cos)`` output is decoded to an angle with
+            :func:`angle_decode_jax` (``atan2``, differentiable); on euclidean and on the
+            legacy torus ``'raw'`` head the output is returned unchanged.
+
+            Parameters
+            ----------
+            preds_raw : jax.Array
+                Raw ``cnn_forward`` output, shape ``(Batch, 4)`` on the ``'sin_cos'`` head
+                and ``(Batch, 2)`` otherwise.
+
+            Returns
+            -------
+            jax.Array
+                ``(Batch, 2)`` manifold coordinates.
+            """
             if torus_sin_cos:
                 return angle_decode_jax(preds_raw, jnp.asarray(self.manifold_period))
             return preds_raw
@@ -1116,6 +1173,25 @@ class NeuralContinuousCNNRunner:
         origin_jax = jnp.zeros(2)
 
         def glob_scalar_fn(x_single):
+            """
+            Description
+            -----------
+            Global ("postural baseline") scalar objective for ONE trial: run the network
+            in inference mode on the single sequence, decode the prediction to the 2-D
+            manifold coordinate, and return the wrap-aware L1 distance of that prediction
+            from the origin (``signed_diff_jax`` under the run's manifold metric/period).
+
+            Parameters
+            ----------
+            x_single : jax.Array
+                One input sequence, shape ``(Features, Time_Bins)``; a leading batch axis
+                is added before the forward pass.
+
+            Returns
+            -------
+            jax.Array
+                Scalar ``sum(|signed_diff(prediction, origin)|)``.
+            """
             preds_raw, _ = cnn_forward(params, state, x_single[jnp.newaxis, ...],
                                        Y_center, Y_scale, self.hp, is_training=False)
             preds = _decode(preds_raw)
@@ -1130,6 +1206,22 @@ class NeuralContinuousCNNRunner:
 
         @jax.jit
         def get_batched_glob_grads(x_batch):
+            """
+            Description
+            -----------
+            JIT-compiled, ``vmap``-vectorised gradient of :func:`glob_scalar_fn` with
+            respect to each input sequence in a batch.
+
+            Parameters
+            ----------
+            x_batch : jax.Array
+                Batch of input sequences, shape ``(Batch, Features, Time_Bins)``.
+
+            Returns
+            -------
+            jax.Array
+                Per-trial input gradients, the same shape as ``x_batch``.
+            """
             return jax.vmap(compute_glob_grad)(x_batch)
 
         batch_size = self.hp['batch_size']
@@ -1248,6 +1340,25 @@ class NeuralContinuousCNNRunner:
         torus_sin_cos = _use_sin_cos_torus_output(self.hp)
 
         def _decode(preds_raw):
+            """
+            Description
+            -----------
+            Fold the raw network output back to the 2-D manifold coordinate: on the torus
+            ``'sin_cos'`` head the per-axis ``(sin, cos)`` output is decoded to an angle with
+            :func:`angle_decode_jax` (``atan2``, differentiable); on euclidean and on the
+            legacy torus ``'raw'`` head the output is returned unchanged.
+
+            Parameters
+            ----------
+            preds_raw : jax.Array
+                Raw ``cnn_forward`` output, shape ``(Batch, 4)`` on the ``'sin_cos'`` head
+                and ``(Batch, 2)`` otherwise.
+
+            Returns
+            -------
+            jax.Array
+                ``(Batch, 2)`` manifold coordinates.
+            """
             if torus_sin_cos:
                 # Build the period array only on the torus `sin_cos` path; on
                 # euclidean / legacy `'raw'` runs the decode is the identity and
@@ -1256,6 +1367,25 @@ class NeuralContinuousCNNRunner:
             return preds_raw
 
         def region_scalar_fn(x_single):
+            """
+            Description
+            -----------
+            Region (point-attractor) scalar objective for ONE trial: run the network in
+            inference mode on the single sequence, decode the prediction to the 2-D
+            manifold coordinate, and return the NEGATIVE wrap-aware Euclidean distance
+            from the prediction to ``polygon_centroid``.
+
+            Parameters
+            ----------
+            x_single : jax.Array
+                One input sequence, shape ``(Features, Time_Bins)``; a leading batch axis
+                is added before the forward pass.
+
+            Returns
+            -------
+            jax.Array
+                Scalar ``-sqrt(sum(signed_diff(prediction, centroid) ** 2))``.
+            """
             preds_raw, _ = cnn_forward(params, state, x_single[jnp.newaxis, ...],
                                        Y_center, Y_scale, self.hp, is_training=False)
             preds = _decode(preds_raw)
@@ -1278,6 +1408,22 @@ class NeuralContinuousCNNRunner:
         # 3. JIT compile the vectorized region-gradient function for fast batched execution
         @jax.jit
         def get_batched_grads(x_batch):
+            """
+            Description
+            -----------
+            JIT-compiled, ``vmap``-vectorised gradient of :func:`region_scalar_fn` with
+            respect to each input sequence in a batch.
+
+            Parameters
+            ----------
+            x_batch : jax.Array
+                Batch of input sequences, shape ``(Batch, Features, Time_Bins)``.
+
+            Returns
+            -------
+            jax.Array
+                Per-trial input gradients, the same shape as ``x_batch``.
+            """
             return jax.vmap(compute_region_grad)(x_batch)
 
         # 4. Execute in memory-safe mini-batches
@@ -1570,6 +1716,25 @@ class NeuralContinuousCNNRunner:
         manifold_period_jax = jnp.asarray(self.manifold_period)
 
         def _decode_predictions_for_eval(preds_raw):
+            """
+            Description
+            -----------
+            Fold the raw network output back to the 2-D manifold coordinate: on the torus
+            ``'sin_cos'`` head the per-axis ``(sin, cos)`` output is decoded to an angle with
+            :func:`angle_decode_jax` (``atan2``, differentiable); on euclidean and on the
+            legacy torus ``'raw'`` head the output is returned unchanged.
+
+            Parameters
+            ----------
+            preds_raw : jax.Array
+                Raw ``cnn_forward`` output, shape ``(Batch, 4)`` on the ``'sin_cos'`` head
+                and ``(Batch, 2)`` otherwise.
+
+            Returns
+            -------
+            jax.Array
+                ``(Batch, 2)`` manifold coordinates.
+            """
             if torus_sin_cos:
                 return angle_decode_jax(preds_raw, manifold_period_jax)
             return preds_raw
@@ -1578,6 +1743,34 @@ class NeuralContinuousCNNRunner:
         # `y_center` / `y_scale` are passed in explicitly (not closed over) so each fold
         # evaluates against the SAME prediction box it was trained on.
         def evaluate_batched(p, s, x_s, y_center, y_scale):
+            """
+            Description
+            -----------
+            Memory-safe batched inference: run the network in inference mode
+            (``is_training=False``, so batch-norm statistics are not updated and no
+            dropout is applied) over ``x_s`` in chunks of ``batch_size``, zero-padding the
+            final remainder chunk to the static batch shape JAX requires and discarding
+            the padded predictions, then decode the concatenated output with
+            :func:`_decode_predictions_for_eval`.
+
+            Parameters
+            ----------
+            p : Dict[str, jax.Array]
+                Trainable network weights.
+            s : Dict[str, jax.Array]
+                Non-trainable network states (BN moving means and variances).
+            x_s : jax.Array
+                Input tensor, shape ``(N, Features, Time_Bins)``.
+            y_center : jax.Array
+                The 2-D centre of the prediction box the weights were trained against.
+            y_scale : jax.Array
+                The 2-D half-width of that prediction box.
+
+            Returns
+            -------
+            jax.Array
+                ``(N, 2)`` decoded manifold predictions.
+            """
             preds = []
 
             for i in range(0, len(x_s), batch_size):
@@ -1614,11 +1807,66 @@ class NeuralContinuousCNNRunner:
         # backward recompile on every fold and strategy.
         @jax.jit
         def _compute_grads(p, s, xs, yt, rng_key, y_center, y_scale):
+            """
+            Description
+            -----------
+            JIT-compiled forward + backward pass for one training mini-batch: split the
+            RNG key (one half drives this step's dropout, the other is returned for the
+            next step), evaluate :func:`loss_fn` in training mode, and return its
+            gradients together with the updated batch-norm state.
+
+            Parameters
+            ----------
+            p : Dict[str, jax.Array]
+                Trainable network weights.
+            s : Dict[str, jax.Array]
+                Non-trainable network states (BN moving means and variances).
+            xs : jax.Array
+                Mini-batch inputs, shape ``(Batch, Features, Time_Bins)``.
+            yt : jax.Array
+                Mini-batch 2-D manifold targets, shape ``(Batch, 2)``.
+            rng_key : jax.Array
+                JAX PRNG key for this step.
+            y_center : jax.Array
+                The fold's 2-D prediction-box centre (a traced argument, so each fold
+                trains against its own box without recompiling).
+            y_scale : jax.Array
+                The fold's 2-D prediction-box half-width.
+
+            Returns
+            -------
+            Tuple[Dict[str, jax.Array], Dict[str, jax.Array], jax.Array]
+                ``(grads, new_state, rng_key)``: the loss gradients w.r.t. ``p``, the
+                updated BN state, and the carried-forward PRNG key.
+            """
             # Split the key: use one half for this step's dropout, keep the
             # other for the next step.
             rng_key, drop_key = jax.random.split(rng_key)
 
             def loss_fn(weights, current_state):
+                """
+                Description
+                -----------
+                Training loss for the mini-batch: forward pass in training mode (dropout on,
+                BN statistics updated), a residual that is the plain difference to the
+                ``(sin, cos)`` target encoding on the torus ``'sin_cos'`` head and the
+                wrap-aware ``signed_diff_jax(yt, preds)`` otherwise, then either the Huber
+                loss (``hp['loss_function'] == 'huber'``, threshold ``hp['huber_delta']``) or
+                the squared error, summed over the output axis and averaged over the batch.
+
+                Parameters
+                ----------
+                weights : Dict[str, jax.Array]
+                    Trainable network weights (the differentiated argument).
+                current_state : Dict[str, jax.Array]
+                    Non-trainable network states going into the step.
+
+                Returns
+                -------
+                Tuple[jax.Array, Dict[str, jax.Array]]
+                    ``(loss, new_state)``: the scalar loss and the updated BN state (the
+                    auxiliary output of ``jax.value_and_grad(..., has_aux=True)``).
+                """
                 preds, new_state = cnn_forward(
                     weights, current_state, xs, y_center, y_scale, self.hp,
                     rng_key=drop_key, is_training=True
@@ -1842,6 +2090,27 @@ class NeuralContinuousCNNRunner:
                 # optimiser is rebuilt) rather than hoisted.
                 @jax.jit
                 def _apply_update(p, o_state, grads):
+                    """
+                    Description
+                    -----------
+                    JIT-compiled AdamW optimiser step: compute the update from the gradients
+                    with the per-fold ``optimizer`` (its LR schedule and weight-decay mask are
+                    closed over) and apply it to the weights.
+
+                    Parameters
+                    ----------
+                    p : Dict[str, jax.Array]
+                        Current trainable network weights.
+                    o_state : optax.OptState
+                        Current optimiser state.
+                    grads : Dict[str, jax.Array]
+                        Loss gradients w.r.t. ``p``.
+
+                    Returns
+                    -------
+                    Tuple[Dict[str, jax.Array], optax.OptState]
+                        ``(p_new, o_state_new)``: the updated weights and optimiser state.
+                    """
                     updates, o_state_new = optimizer.update(grads, o_state, p)
                     p_new = optax.apply_updates(p, updates)
                     return p_new, o_state_new

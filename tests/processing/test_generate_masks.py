@@ -142,7 +142,7 @@ def test_flatten_session_masks_flips_to_natural_frequency_orientation():
     relative to the stored spectrogram and the ascending ``frequency_bins`` axis the
     acoustic-feature / QLVM code index against. flatten_session_masks MUST flip it back
     to natural (low-freq-first) order, or masked mean_freq / peak_freq / QLVM latents
-    come out mirrored around the band centre (a low-freq call read as high-freq).
+    come out mirrored around the band centre (a low-freq USV read as high-freq).
 
     A mask at the image TOP (rows 0..k-1) must be stored at the natural BOTTOM
     (rows F-k..F-1)."""

@@ -85,14 +85,14 @@ def compute_usv_spectrogram(
         ``nperseg``, ``min_freq``, ``max_freq``, ``hop_length``,
         ``window``. A ``num_time_bins`` of None keeps every native STFT frame
         (no ``fix_length`` padding or truncation), which the squeak detector
-        needs to see calls longer than the model window.
+        needs to see vocalizations longer than the model window.
     normalize (bool)
         Whether to min-max normalize the averaged spectrogram. Defaults to True.
     db_ref (float | None)
         Power reference for ``librosa.power_to_db``. None (the default) keeps the
         per-segment ``ref=np.max`` the QLVM spectrograms were built with, which
         makes every segment's loudest bin 0 dB. A float (the squeak detector
-        uses 1.0) makes the dB scale absolute, so quiet and loud calls stay
+        uses 1.0) makes the dB scale absolute, so quiet and loud vocalizations stay
         distinguishable across segments and sessions.
     top_db (float | None)
         Per-array clamp passed to ``librosa.power_to_db``. 80.0 (the default) is
@@ -149,7 +149,7 @@ def compute_usv_spectrogram(
     original_time_bins = 0
 
     # The FFT-frequency axis, the band mask and the frequency-resample
-    # interpolation grids depend only on call-invariant parameters
+    # interpolation grids depend only on segment-invariant parameters
     # (``sampling_rate``, ``nperseg``, ``min_freq``, ``max_freq`` and
     # ``num_freq_bins``), so they are computed once here rather than
     # rebuilt on every channel iteration. ``freq_orig`` is the

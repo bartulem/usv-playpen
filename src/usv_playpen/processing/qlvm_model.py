@@ -52,7 +52,22 @@ _MATMUL_PRECISION = "float32"
 
 # Lattice generators (port of models/sampling.py)
 def _fibonacci(n: int) -> int:
-    """Return the n-th Fibonacci number (``fib(0)=0``, ``fib(1)=1``)."""
+    """
+    Description
+    -----------
+    Return the n-th Fibonacci number (``fib(0)=0``, ``fib(1)=1``).
+
+    Parameters
+    ----------
+    n (int)
+        Non-negative index into the Fibonacci sequence (a negative ``n``
+        returns 0, as the loop body never runs).
+
+    Returns
+    -------
+    fib_n (int)
+        The n-th Fibonacci number.
+    """
     a, b = 0, 1
     for _ in range(n):
         a, b = b, a + b
@@ -290,7 +305,26 @@ def binary_evidence(samples: jnp.ndarray, data: jnp.ndarray, row_weights: jnp.nd
 
 # Decoder forward (torch ConvTranspose2d / Linear, in JAX)
 def _linear(x: jnp.ndarray, weight: jnp.ndarray, bias: jnp.ndarray) -> jnp.ndarray:
-    """Apply ``torch.nn.Linear``: ``y = x @ weight.T + bias`` (weight is (out, in))."""
+    """
+    Description
+    -----------
+    Apply ``torch.nn.Linear``: ``y = x @ weight.T + bias`` (weight is (out, in)),
+    under the module's ``_MATMUL_PRECISION`` default matmul precision.
+
+    Parameters
+    ----------
+    x (jnp.ndarray)
+        Input of shape ``(..., in_features)``.
+    weight (jnp.ndarray)
+        Torch-layout weight of shape ``(out_features, in_features)``.
+    bias (jnp.ndarray)
+        Bias of shape ``(out_features,)``.
+
+    Returns
+    -------
+    y (jnp.ndarray)
+        Output of shape ``(..., out_features)``.
+    """
     with jax.default_matmul_precision(_MATMUL_PRECISION):
         return x @ weight.T + bias
 

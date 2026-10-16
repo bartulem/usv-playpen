@@ -18,8 +18,8 @@ Pipeline per spectrogram:
   5. emit ONE ``{'segmentation', 'area', 'bbox'}`` dict per box -- NO 'any'-overlap merge
 
 Why not the grid path: AMG over-proposes then patches up with an ``'any'``-overlap merge
-that re-fuses temporally overlapping USVs -- exactly the calls we want kept separate.
-Box-prompting emits one instance per detected box, so overlapping calls stay distinct.
+that re-fuses temporally overlapping USVs -- exactly the USVs we want kept separate.
+Box-prompting emits one instance per detected box, so overlapping USVs stay distinct.
 
 Output schema is identical to the grid path: a list of ``{'segmentation', 'area', 'bbox'}``
 dicts per spec index (plus ``iou_pred``/``box`` for QA), so downstream
@@ -43,9 +43,7 @@ from .cc_box_detector import BoxDetectorConfig, detect_boxes, box_to_xyxy
 from ._common_memory import cleanup_memory, log_memory_usage
 
 
-# ---------------------------------------------------------------------------
 # Model
-# ---------------------------------------------------------------------------
 def build_predictor(model_cfg: str, checkpoint: str, device: torch.device,
                     logger: logging.Logger) -> SAM2ImagePredictor:
     """Build a SAM2ImagePredictor around the (fine-tuned) checkpoint.
@@ -67,9 +65,7 @@ def build_predictor(model_cfg: str, checkpoint: str, device: torch.device,
     return predictor
 
 
-# ---------------------------------------------------------------------------
 # Per-spectrogram box-prompt inference
-# ---------------------------------------------------------------------------
 _CC8 = np.ones((3, 3), dtype=int)  # 8-connectivity
 
 
@@ -79,6 +75,15 @@ def _split_mask_components(seg: np.ndarray, min_px: int) -> List[np.ndarray]:
     Returns ``[seg]`` unchanged if the mask is a single component (the common case),
     so a connected USV is never artificially split -- only genuinely disconnected blobs
     captured under one box become separate instances.
+
+    Args:
+        seg: Boolean mask, shape (H, W).
+        min_px: Minimum component size in pixels; smaller components are discarded.
+
+    Returns:
+        List[np.ndarray]: One boolean (H, W) mask per kept component. If the mask has
+        at most one component, or every component is below ``min_px``, ``[seg]`` is
+        returned unchanged.
     """
     lab, n = ndimage.label(seg, structure=_CC8)
     if n <= 1:
@@ -89,7 +94,15 @@ def _split_mask_components(seg: np.ndarray, min_px: int) -> List[np.ndarray]:
 
 
 def _box_mask(box, shape) -> np.ndarray:
-    """Boolean mask of an inclusive (top, left, bottom, right) box."""
+    """Boolean mask of an inclusive (top, left, bottom, right) box.
+
+    Args:
+        box: Inclusive (top, left, bottom, right) pixel box.
+        shape: (H, W) shape of the output mask.
+
+    Returns:
+        np.ndarray: Boolean mask of ``shape``, True inside the box.
+    """
     t, l, b, r = box
     m = np.zeros(shape, dtype=bool)
     m[t:b + 1, l:r + 1] = True
@@ -97,13 +110,28 @@ def _box_mask(box, shape) -> np.ndarray:
 
 
 def _box_area(box) -> int:
-    """Pixel area of an inclusive (top, left, bottom, right) box."""
+    """Pixel area of an inclusive (top, left, bottom, right) box.
+
+    Args:
+        box: Inclusive (top, left, bottom, right) pixel box.
+
+    Returns:
+        int: ``(bottom - top + 1) * (right - left + 1)``.
+    """
     t, l, b, r = box
     return (b - t + 1) * (r - l + 1)
 
 
 def _uncovered_frac(mask: np.ndarray, covered: np.ndarray) -> float:
-    """Fraction of ``mask`` pixels not already in ``covered``."""
+    """Fraction of ``mask`` pixels not already in ``covered``.
+
+    Args:
+        mask: Boolean mask, shape (H, W).
+        covered: Boolean mask of already-segmented pixels, same shape.
+
+    Returns:
+        float: Uncovered fraction in [0, 1]; 0.0 for an empty ``mask``.
+    """
     a = int(mask.sum())
     if a == 0:
         return 0.0
@@ -117,9 +145,22 @@ def merge_overlapping_instances(masks: List[Dict], iou_thresh: float = 0.5,
     Two instances are unioned iff their IoU >= ``iou_thresh`` OR their containment
     (intersection / smaller area) >= ``containment_thresh``. This targets over-segmentation
     (near-duplicate masks from overlapping boxes or residual rounds) while LEAVING two
-    genuinely distinct calls that merely cross -- they share few pixels relative to their
+    genuinely distinct USVs that merely cross -- they share few pixels relative to their
     size, so both ratios stay low. Disjoint instances (no shared pixel) are never merged.
     Iterates to a fixed point.
+
+    Args:
+        masks: Instance dicts with a ``'segmentation'`` (bool (H, W)) key and optional
+            ``'iou_pred'`` (float, 0.0 if absent) and ``'box'`` keys.
+        iou_thresh: IoU at or above which two overlapping instances are merged.
+        containment_thresh: Intersection / smaller-area ratio at or above which two
+            overlapping instances are merged.
+
+    Returns:
+        List[Dict]: Merged instances, each ``{'segmentation', 'area', 'bbox', 'iou_pred',
+        'box', 'n_merged'}`` (``iou_pred`` is the max over merged members, ``box`` the
+        first member's box or None, ``n_merged`` the number of member boxes). A list of
+        at most one mask is returned unchanged (without the added keys).
     """
     if len(masks) <= 1:
         return masks
@@ -207,22 +248,53 @@ def process_single_spec_boxprompt(
     below ``iou_floor``; set ``drop_below_iou=True`` to discard those. Near-empty masks
     (< ``tiny_mask_floor_px``) are always dropped.
 
-    ``min_detect_width`` widens the working window with silence when the call is
+    ``min_detect_width`` widens the working window with silence when the USV is
     shorter than it. The window is otherwise exactly ``duration`` columns, so a
-    15 ms call becomes an 8-column image that the detector then resizes to its
+    15 ms USV becomes an 8-column image that the detector then resizes to its
     square input -- a sixteen-fold horizontal stretch, far outside anything it was
     trained on. Padding to a floor keeps the aspect ratio sane; the returned masks
     are cropped back to ``duration`` so the stored geometry is unchanged.
+
+    Args:
+        spec: One spectrogram, shape (H, W) (frequency x time, unflipped).
+        duration: Number of valid time columns; columns at or beyond it are padding.
+            If it exceeds ``W`` the whole spectrogram is used.
+        predictor: SAM2ImagePredictor instance.
+        detector_cfg: Connected-component box detector config (used when ``detect_fn``
+            is None, and for residual re-detection).
+        cmap: Matplotlib colormap (viridis) for RGB conversion.
+        multimask_output: Ask SAM2 for several candidate masks per box and keep the
+            one with the highest predicted IoU.
+        iou_floor: Predicted-IoU threshold below which a mask counts as low-IoU.
+        drop_below_iou: Discard low-IoU masks instead of keeping them.
+        tiny_mask_floor_px: Minimum mask / component area in pixels.
+        split_disconnected: Emit each 8-connected component of a mask separately.
+        max_iters: Number of residual-prompting rounds (cc detector only; a learned
+            ``detect_fn`` always runs one pass).
+        merge_instances: Apply :func:`merge_overlapping_instances` to the result.
+        merge_iou: IoU threshold passed to the merge.
+        merge_containment: Containment threshold passed to the merge.
+        detect_fn: Optional learned detector ``detect_fn(working_spec, eff_duration)``
+            returning flipped-space (t, l, b, r) boxes; None uses the cc detector.
+        mask_intensity_floor: Normalized-intensity floor in [0, 1]; mask pixels below
+            it are dropped (0.0 disables).
+        min_box_area: Minimum detector box area in pixels (0 disables the gate).
+        min_detect_width: Minimum working-window width in columns (0 disables).
+        logger: Logger instance; defaults to the ``"sam2_processing"`` logger.
+
+    Returns:
+        List[Dict]: One instance dict per kept mask (see above); empty if no box
+        survives detection.
     """
     if logger is None:
         logger = logging.getLogger("sam2_processing")
 
     height, width = spec.shape
 
-    # --- working region (mirror the grid path's zero-padded crop) ---
+    # working region (mirror the grid path's zero-padded crop)
     # Columns at or beyond ``duration`` in the stored spectrogram hold a constant
     # 1.0 (the top of the normalized range), so the window must never reach into
-    # them; any widening pads with the call's own minimum instead, i.e. silence.
+    # them; any widening pads with the USV's own minimum instead, i.e. silence.
     if duration <= width:
         window_width = max(int(duration), int(min_detect_width)) if min_detect_width else int(duration)
         window_width = min(window_width, width)
@@ -231,7 +303,7 @@ def process_single_spec_boxprompt(
     else:
         working_spec = spec
 
-    # --- flip + normalize + viridis -> RGB uint8 (identical to the grid path) ---
+    # flip + normalize + viridis -> RGB uint8 (identical to the grid path)
     flipped_spec = np.flipud(working_spec)
     spec_min, spec_max = flipped_spec.min(), flipped_spec.max()
     if spec_max > spec_min:
@@ -245,7 +317,7 @@ def process_single_spec_boxprompt(
     # anywhere in it, and masks are cropped back to ``duration`` on the way out.
     eff_duration = img_w
 
-    # --- detect first-pass boxes on the SAME flipped space SAM sees ---
+    # detect first-pass boxes on the SAME flipped space SAM sees
     # detect_fn (learned detector, e.g. yolo) takes the UNFLIPPED working spec, flips +
     # renders internally, and returns flipped-space (t,l,b,r) -- same convention as the cc
     # detect_boxes. It runs a SINGLE pass (no residual re-detection). The cc baseline
@@ -265,7 +337,7 @@ def process_single_spec_boxprompt(
     if not boxes0:
         return []
 
-    # --- encode the image ONCE, then prompt (optionally iterating on the residual) ---
+    # encode the image ONCE, then prompt (optionally iterating on the residual)
     predictor.set_image(image)
 
     masks_out: List[Dict] = []
@@ -296,7 +368,7 @@ def process_single_spec_boxprompt(
             best_iou = float(iou_preds[best])
             seg = masks[best].astype(bool)
 
-            # Stringency: keep only the bright call core, dropping faint harmonic bands /
+            # Stringency: keep only the bright USV core, dropping faint harmonic bands /
             # diffuse tails below the intensity floor (in the SAME normalized space as the
             # image). Re-splitting then separates a harmonic that detaches from the core.
             if mask_intensity_floor > 0.0:
@@ -330,7 +402,7 @@ def process_single_spec_boxprompt(
     predictor.reset_predictor()  # free cached image embedding before next spec
 
     # Conservative post-merge: fuse near-duplicate / contained instances (over-seg),
-    # keep genuinely distinct crossing calls separate.
+    # keep genuinely distinct crossing USVs separate.
     if merge_instances and len(masks_out) > 1:
         masks_out = merge_overlapping_instances(masks_out, merge_iou, merge_containment)
 
@@ -338,7 +410,7 @@ def process_single_spec_boxprompt(
         logger.debug(f"{n_low_iou} mask(s) below iou_floor={iou_floor} "
                      f"({'dropped' if drop_below_iou else 'kept'})")
 
-    # Crop back to the call's own window so stored masks keep the (F, duration)
+    # Crop back to the USV's own window so stored masks keep the (F, duration)
     # geometry ``flatten_session_masks`` writes into the fixed-width frame.
     if working_spec.shape[1] != int(duration):
         cropped: List[Dict] = []
@@ -393,10 +465,17 @@ def process_session_batch_boxprompt(
         batch_size: Number of spectrograms to process before memory cleanup.
         multimask_output / iou_floor / drop_below_iou / split_disconnected / max_iters /
         merge_instances / merge_iou / merge_containment: see ``process_single_spec_boxprompt``.
-        logger: Logger instance.
+        detect_fn: Optional learned box detector; see ``process_single_spec_boxprompt``.
+        mask_intensity_floor: Normalized-intensity floor for mask pixels (0.0 disables);
+            see ``process_single_spec_boxprompt``.
+        tiny_mask_floor_px: Minimum mask / component area in pixels.
+        min_box_area: Minimum detector box area in pixels (0 disables the gate).
+        logger: Logger instance; defaults to the ``"sam2_processing"`` logger.
 
     Returns:
         Tuple[str, Dict]: Session name and dictionary mapping spec indices to masks.
+        Specs shorter than ``duration_min``, and specs whose processing raised, map to
+        an empty list (errors are logged, not raised).
     """
     if logger is None:
         logger = logging.getLogger("sam2_processing")

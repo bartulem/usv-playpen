@@ -16,7 +16,7 @@ sessions and writes the same spectrograms (see ``docs/Process.rst``). The steps:
    ``mask/<session>/spectrogram_index``, from which each row's mask count is
    taken), its type is read from the ``Subjects[].sex`` entries of its metadata
    YAML (:func:`session_type_from_metadata`: ``MF``, ``FF``, ``MM``,
-   ``lone_male``, ...), and the rows that are not ultrasonic calls alone are
+   ``lone_male``, ...), and the rows that are not USVs alone are
    marked: with ``exclude_squeaks`` every row whose ``*_usv_summary.csv``
    ``squeak`` (written by ``detect-usv-squeaks``) is true -- a pure squeak or a
    segment holding both a squeak and a USV -- so the set holds pure USVs only
@@ -75,9 +75,9 @@ setting, the per-type report (available / target / drawn / per-stratum counts),
 the session types and the train/validation session lists.
 
 Session fingerprints. ``spec_id`` is ``{session}_{row}``, a row number in the
-session's spectrogram H5, so it points at the right call only while that file is
+session's spectrogram H5, so it points at the right USV only while that file is
 unchanged; a rebuilt H5 renumbers its rows and every consumer joining on
-``spec_id`` silently attaches the wrong calls (session 20251004_201051 of the v2
+``spec_id`` silently attaches the wrong USVs (session 20251004_201051 of the v2
 package went stale exactly this way). The builder therefore records, for every
 session H5 it reads, the SHA-256 of the file's bytes, its row count and how many of
 its rows entered the set -- in ``metadata.npz`` and in two sidecars laid out like the
@@ -123,11 +123,11 @@ from ..yaml_utils import load_session_metadata
 # same one the QLVM data loader and train-qlvm use (qmc_deep_gen data/mouse_data.py).
 FLOOR_MINMAX_EPSILON = 1e-8
 
-# The USV summary columns copied into every split, row for row: the raw per-call
+# The USV summary columns copied into every split, row for row: the raw per-USV
 # values a conditional train-qlvm run conditions on (mean frequency and bandwidth
-# of the SAM-masked call, written by generate-usv-acoustic-features, and the
+# of the SAM-masked USV, written by generate-usv-acoustic-features, and the
 # absolute loudness it measures with compute_usv_loudness.session_image_level_db,
-# and the spectral entropy in nats of the call's normalized frequency power profile).
+# and the spectral entropy in nats of the USV's normalized frequency power profile).
 SUMMARY_CONDITION_COLUMNS = ("mean_freq_hz", "freq_bandwidth_hz", "loudness_db", "spectral_entropy")
 
 
@@ -716,7 +716,7 @@ def read_reference_squeak_index(reference_squeak_index_path: str) -> dict[str, t
     applies its strict squeak rule: a segment is a squeak when its segment flag
     ``is_bbv`` is true OR it holds at least one run of three above-threshold frames
     (``n_bouts_min3 >= 1``). By this rule the reference USV training sets left
-    broadband calls out, so a rebuild of those sets has to exclude exactly these
+    broadband vocalizations out, so a rebuild of those sets has to exclude exactly these
     rows. Only the four needed columns are read, ``session_id`` as a string.
 
     Parameters
@@ -821,7 +821,7 @@ def usv_summary_exclusions(
     Description
     -----------
     The rows of a session to leave out of a USV training set, which holds
-    ultrasonic calls alone. With ``exclude_squeaks`` every row whose
+    USVs alone. With ``exclude_squeaks`` every row whose
     ``*_usv_summary.csv`` ``squeak`` (written by ``detect-usv-squeaks``) is true --
     a squeak alone or a squeak and a USV in one segment -- is left out
     (:func:`os_utils.squeak_bearing_mask`), so only pure USVs (``usv & ~squeak``)
@@ -908,13 +908,13 @@ def usv_summary_condition_values(root_directory: str, n_rows: int) -> dict[str, 
     """
     Description
     -----------
-    The raw per-call values a conditional QLVM conditions on, read from the
+    The raw per-USV values a conditional QLVM conditions on, read from the
     session's ``*_usv_summary.csv`` (rows 1:1 with the spectrogram H5 rows, which
     is checked): ``mean_freq_hz`` and ``freq_bandwidth_hz`` (the energy-weighted
-    mean frequency and the bandwidth of the call's SAM-masked region) and
+    mean frequency and the bandwidth of the USV's SAM-masked region) and
     ``loudness_db`` (the absolute image-level loudness over the same mask region,
     :func:`compute_usv_loudness.session_image_level_db`) and ``spectral_entropy``
-    (the entropy in nats of the call's normalized frequency power profile), all
+    (the entropy in nats of the USV's normalized frequency power profile), all
     four written by ``generate-usv-acoustic-features``. A column the summary lacks, a null or NaN
     value, and every row of a session without a summary are NaN: the values are
     only needed by a conditional ``train-qlvm`` run, which refuses a training row
@@ -1240,12 +1240,12 @@ def load_row_exclusion_table(table_path: str) -> dict[str, np.ndarray]:
     """
     Description
     -----------
-    Reads a row-exclusion table: a CSV with one row per call to leave out of the
+    Reads a row-exclusion table: a CSV with one row per USV to leave out of the
     set, columns ``session_id`` (the session id that names the spectrogram H5
-    groups) and ``row`` (the call's row in that session's spectrogram H5, which is
+    groups) and ``row`` (the USV's row in that session's spectrogram H5, which is
     also its ``*_usv_summary.csv`` row and the number after the last underscore of
     its ``spec_id``). Other columns are ignored. It carries exclusions that live
-    outside the USV summaries, e.g. a hand-curated list of calls to drop, or the
+    outside the USV summaries, e.g. a hand-curated list of USVs to drop, or the
     reference squeak index's strict rows for a set that also needs the summary
     ``squeak`` flag (``strict_squeak_exclusion`` replaces that flag rather than
     adding to it). The table's rows are added on top of every other exclusion.
@@ -1442,7 +1442,7 @@ class QLVMTrainingSetBuilder:
             error_message = "build_qlvm_training_set settings are inconsistent:\n  " + "\n  ".join(problems)
             raise ValueError(error_message)
 
-        # Calls listed in the row-exclusion table are left out on top of the summary
+        # USVs listed in the row-exclusion table are left out on top of the summary
         # flags (or of the Python-API row_exclusions that replace them).
         table_exclusions = None if row_exclusion_table is None else load_row_exclusion_table(row_exclusion_table)
         table_excluded_rows = 0
@@ -1696,12 +1696,12 @@ class QLVMTrainingSetBuilder:
 @click.option('--draw-mode', 'draw_mode', type=click.Choice(['natural', 'uniform']), default=None, required=False, help='Within-session draw: uniform over rows ("natural") or equal across mask-count strata ("uniform").')
 @click.option('--mask-count-bin-edges', 'mask_count_bin_edges', type=str, default=None, required=False, help='Comma-separated inclusive lower bounds of the mask-count strata above 0, the last open-ended, e.g. 1,2,3,4,5 (strata 0/1/2/3/4/5+).')
 @click.option('--length-threshold', 'length_threshold', type=float, default=None, required=False, help='Drop spectrograms with duration >= threshold (time bins).')
-@click.option('--require-mask/--no-require-mask', 'require_mask', default=None, required=False, help='Leave out calls without a SAM mask instance.')
+@click.option('--require-mask/--no-require-mask', 'require_mask', default=None, required=False, help='Leave out USVs without a SAM mask instance.')
 @click.option('--exclude-squeaks/--no-exclude-squeaks', 'exclude_squeaks', default=None, required=False, help='Leave out rows whose USV summary squeak flag is true (pure squeaks and squeak + USV segments; detect-usv-squeaks), so the set holds pure USVs (usv true, squeak false) only.')
 @click.option('--strict-squeak-exclusion/--no-strict-squeak-exclusion', 'strict_squeak_exclusion', default=None, required=False, help='With --exclude-squeaks, take the squeak rows from the reference squeak index (--reference-squeak-index-path) by its strict rule (is_bbv or n_bouts_min3 >= 1) instead of the summary squeak flag, to reproduce the shipped sets.')
 @click.option('--reference-squeak-index-path', 'reference_squeak_index_path', type=str, default=None, required=False, help='The reference squeak index CSV (session_id, seg_index, is_bbv, n_bouts_min3) read by --strict-squeak-exclusion.')
 @click.option('--exclude-noise/--no-exclude-noise', 'exclude_noise', default=None, required=False, help='Leave out rows the USV summary flags as noise (detect-usv-noise).')
-@click.option('--row-exclusion-table', 'row_exclusion_table', type=str, default=None, required=False, help='CSV with columns session_id and row (spectrogram-H5 row) of further calls to leave out, on top of the summary flags (e.g. a hand-curated list of calls to drop), or "none".')
+@click.option('--row-exclusion-table', 'row_exclusion_table', type=str, default=None, required=False, help='CSV with columns session_id and row (spectrogram-H5 row) of further USVs to leave out, on top of the summary flags (e.g. a hand-curated list of USVs to drop), or "none".')
 @click.option('--masking-type', 'masking_type', type=click.Choice(['sam', 'none']), default=None, required=False, help='Read SAM masks from the mask/<session> groups ("sam") or none ("none").')
 @click.option('--apply-mask/--no-apply-mask', 'apply_mask', default=None, required=False, help='Multiply the binarized SAM mask into the stored spectrograms (masked set) or keep them unmasked.')
 @click.option('--floor', 'floor', type=str, default=None, required=False, help='Loudness floor baked into unmasked spectrograms after a per-spectrogram min-max (e.g. 0.2), or "none".')

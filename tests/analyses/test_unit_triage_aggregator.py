@@ -254,7 +254,7 @@ def _full_triage_stats(
         },
         "usv_category_tuning": {
             "self": {
-                "call_category": {
+                "vocal_category": {
                     "role": "self",
                     **_categorical_payload(
                         peak_abs_z=4.0 if cat_significant else 0.5
@@ -264,7 +264,7 @@ def _full_triage_stats(
         },
         "usv_category_peth": {
             "self": {
-                "call_category": {
+                "vocal_category": {
                     "role": "self",
                     "best_cat": 2,
                     "best_t": 0.1,
@@ -344,8 +344,8 @@ def test_flag_one_cluster_emits_every_modality_key_when_all_significant():
         "vmi_self_excit",
         "usv_peth_self_excit",
         "usv_property_self_duration_excit",
-        "usv_category_self_call_category",
-        "usv_category_peth_self_call_category_excit",
+        "usv_category_self_vocal_category",
+        "usv_category_peth_self_vocal_category_excit",
         "behavioral_0ms_speed_excit",
         "spatial_0ms_self_xy",
     }
@@ -470,8 +470,8 @@ def test_flag_one_cluster_records_carry_admin_and_metric_fields():
     assert prop["property"] == "duration"
     assert prop["role"] == "self"
 
-    cat = records["usv_category_self_call_category"]
-    assert cat["cat_feat"] == "call_category"
+    cat = records["usv_category_self_vocal_category"]
+    assert cat["cat_feat"] == "vocal_category"
     assert cat["peak_abs_z"] == pytest.approx(4.0)
 
     behav = records["behavioral_0ms_speed_excit"]
@@ -547,14 +547,14 @@ def test_aggregate_modality_stats_dispatch_by_prefix():
     assert spatial_agg["median_info_rate_bps"] == pytest.approx(1.2)
 
     cat_agg = _aggregate_modality_stats(
-        "usv_category_self_call_category",
+        "usv_category_self_vocal_category",
         [{"peak_abs_z": 3.5}, {"peak_abs_z": 5.0}],
     )
     assert cat_agg["max_peak_abs_z"] == pytest.approx(5.0)
     assert cat_agg["median_peak_abs_z"] == pytest.approx(4.25)
 
     cat_peth_agg = _aggregate_modality_stats(
-        "usv_category_peth_self_call_category_excit",
+        "usv_category_peth_self_vocal_category_excit",
         [{"peak_z": 4.0}, {"peak_z": -5.0}],
     )
     # Falls through to the run-based default because of the `_peth_` check.

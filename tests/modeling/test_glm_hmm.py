@@ -664,6 +664,12 @@ def test_input_driven_manifold_glmhmm_shapes_and_bic():
     assert np.asarray(params['W_trans']).shape == (n_states, design_width, n_states)
     assert np.isfinite(model.log_likelihood(sequences))
     assert np.isfinite(model.bic(sequences))
+    # Weighted (X, y, w) sequences, as the fit takes them, also go through bic and
+    # mean_transition_matrix (both used to unpack exactly two elements and raise).
+    weighted = [(X, y, np.ones(len(y), dtype=np.float32)) for X, y in sequences]
+    assert model.bic(weighted) == pytest.approx(model.bic(sequences))
+    np.testing.assert_allclose(model.mean_transition_matrix(weighted),
+                               model.mean_transition_matrix(sequences))
 
 
 def test_input_driven_manifold_glmhmm_kappa_mode_validation_and_global_mle():
@@ -851,7 +857,7 @@ def test_glm_hmm_pipeline_runs_input_driven_manifold(tmp_path):
 
 def test_session_sequences_drop_nan_manifold_positions(capsys):
     """A manifold target row with a NaN position (a pickle built before unplaced
-    calls were dropped at extraction) is removed together with its design row,
+    USVs were dropped at extraction) is removed together with its design row,
     with the count printed, so the emission never fits on a NaN."""
     rng = np.random.default_rng(0)
     y = rng.random((6, 2))

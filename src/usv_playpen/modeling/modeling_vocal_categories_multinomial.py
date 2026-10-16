@@ -517,6 +517,25 @@ def _tune_multinomial_regularization(X_train: np.ndarray,
         )
 
     def _empty_audit():
+        """
+        Builds the empty grid-audit payload returned when the tuner cannot
+        score the grid (degenerate training fold, or no pair with a finite
+        inner score): no scores, no standard errors, no argmax pair and the
+        1-SE rule marked as not applied.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        audit : dict
+            Fresh dict with keys `'grid_scores'` ({}), `'grid_ses'` ({}),
+            `'argmax_pair'` (None), `'one_se_applied'` (False) and
+            `'one_se_threshold'` (None); a new dict on every invocation so callers
+            may fill it in place.
+        """
+
         return {
             'grid_scores': {},
             'grid_ses': {},
@@ -543,6 +562,35 @@ def _tune_multinomial_regularization(X_train: np.ndarray,
     inner_folds = list(sgkf.split(np.zeros(len(y_train)), y_train, groups=groups_train))
 
     def _compute_score(y_true_, y_pred_, y_proba_, model_classes_):
+        """
+        Scores one inner-validation sub-fold with `inner_cv_scoring_metric`
+        (from the enclosing scope): macro one-vs-rest ROC AUC (`'auc'`),
+        balanced accuracy (`'score'`), macro F1 (`'f1'`), macro recall
+        (`'recall'`), Matthews correlation (`'mcc'`), log-loss on probabilities
+        clipped to [1e-15, 1 - 1e-15] (`'ll'`), multiclass Brier score
+        (`'brier'`) or expected calibration error with `_ECE_N_BINS` bins
+        (`'ece'`).
+
+        Parameters
+        ----------
+        y_true_ : np.ndarray
+            (n,) true class labels of the inner-validation rows.
+        y_pred_ : np.ndarray
+            (n,) predicted class labels.
+        y_proba_ : np.ndarray
+            (n, n_classes) predicted class probabilities, columns ordered as
+            `model_classes_`.
+        model_classes_ : np.ndarray
+            Class labels of the fitted inner model, in probability-column order.
+
+        Returns
+        -------
+        score : float
+            The metric value; NaN when the metric raises `ValueError` /
+            `RuntimeError` (e.g. a class missing from the sub-fold) or the
+            metric name matches no branch.
+        """
+
         try:
             if inner_cv_scoring_metric == 'auc':
                 return float(roc_auc_score(
@@ -678,11 +726,43 @@ def _tune_multinomial_regularization(X_train: np.ndarray,
         threshold = argmax_score - argmax_se
 
         def _within(score_: float) -> bool:
+            """
+            Tests whether a pair's mean inner score lies inside the 1-SE band of
+            a higher-is-better metric, i.e. is at least `threshold`
+            (`argmax_score - SE(argmax)`, from the enclosing scope).
+
+            Parameters
+            ----------
+            score_ : float
+                Mean inner-CV score of one `(lambda_smooth, l2_reg)` pair.
+
+            Returns
+            -------
+            in_band : bool
+                True when `score_ >= threshold`.
+            """
+
             return score_ >= threshold
     else:
         threshold = argmax_score + argmax_se
 
         def _within(score_: float) -> bool:
+            """
+            Tests whether a pair's mean inner score lies inside the 1-SE band of
+            a lower-is-better metric, i.e. is at most `threshold`
+            (`argmax_score + SE(argmax)`, from the enclosing scope).
+
+            Parameters
+            ----------
+            score_ : float
+                Mean inner-CV score of one `(lambda_smooth, l2_reg)` pair.
+
+            Returns
+            -------
+            in_band : bool
+                True when `score_ <= threshold`.
+            """
+
             return score_ <= threshold
 
     in_band = [pair for pair, score in valid_pairs if _within(score)]
@@ -740,6 +820,10 @@ class MultinomialModelingPipeline(FeatureZoo):
             `_parameter_settings/modeling_settings.json`.
         **kwargs : dict
             Additional keyword arguments to set as instance attributes.
+
+        Returns
+        -------
+        None
         """
 
         if modeling_settings_dict is None:
@@ -974,7 +1058,7 @@ class MultinomialModelingPipeline(FeatureZoo):
         class_counts_md = {int(lbl): int(cnt) for lbl, cnt in zip(unique_labels, counts)}
 
         # The model's class count C stays the cohort's observed label count (a
-        # class with no calls cannot be fit), but on the QLVM category column the
+        # class with no USVs cannot be fit), but on the QLVM category column the
         # category bundle defines k categories (1..k; os_utils.load_qlvm_category_bundle,
         # the partition assign-qlvm-categories labelled the summaries with), so k is
         # recorded beside C and a cohort that never produced some of them says which.
@@ -1062,7 +1146,7 @@ class MultinomialModelingPipeline(FeatureZoo):
                 'usv_category_number': len(class_counts_md),
                 'usv_category_column_name': column_name_cats,
                 # The category bundle's k (its R-1..R-k) and the bundle categories
-                # the cohort has no calls of (C = usv_category_number <= k); None /
+                # the cohort has no USVs of (C = usv_category_number <= k); None /
                 # [] for a label column other than qlvm_category.
                 'bundle_category_number': bundle_category_number,
                 'bundle_categories_missing': bundle_categories_missing,
@@ -1274,6 +1358,10 @@ class MultinomialModelRunner:
             An instance of the extraction class which holds the
             'modeling_settings' dictionary and calculated attributes
             (including `history_frames`).
+
+        Returns
+        -------
+        None
         """
 
         self.modeling_settings = pipeline_instance.modeling_settings
@@ -1607,6 +1695,24 @@ class MultinomialModelRunner:
         canonical_classes = np.unique(feat_data['y'])
 
         def _class_proportions(labels: np.ndarray) -> np.ndarray:
+            """
+            Class proportions of a label vector over the project-wide canonical
+            class ordering (`canonical_classes`, from the enclosing scope), so
+            arrays from different folds and strategies line up even when a fold
+            lacks a rare class.
+
+            Parameters
+            ----------
+            labels : np.ndarray
+                (n,) integer class labels.
+
+            Returns
+            -------
+            proportions : np.ndarray
+                (n_classes,) float32 share of each canonical class in `labels`
+                (sums to 1); all zeros when `labels` is empty.
+            """
+
             if len(labels) == 0:
                 return np.zeros(len(canonical_classes), dtype=np.float32)
             counts = np.array([(labels == c).sum() for c in canonical_classes], dtype=np.float64)

@@ -7,7 +7,7 @@ layout (the five production cells, corpus/SESSION_H5_BASELINE.tsv,
 MANIFEST.sha256) consolidate into one ``spectrograms_qlvmv3_*`` store with the
 shared frequency_bins, byte-equal spectrogram/mask groups, the regular model's
 qlvm_dim, per-model coordinates (NaN where not embedded), int16 labels (0 where
-not embedded), per-call status codes, per-model provenance attrs and package
+not embedded), per-vocalization status codes, per-model provenance attrs and package
 tables, the sessions table and the root provenance attrs. Refusals (nothing
 written): a spectrogram H5 whose SHA-256 differs from the baseline, a session
 outside the package corpus, a summary lacking QLVM columns, an embedding that
@@ -22,7 +22,7 @@ under a patched os_utils.QLVM_MODEL_PACKAGE_ROOT / QLVM_SQUEAK_PACKAGE_ROOT and
 the synthetic category bundle consolidate into one ``spectrograms_production_*``
 store: byte-equal spectrogram/mask groups, per-map coordinates (NaN where not
 embedded, squeak map NaN off the squeak rows), status bit fields, qlvm_category
-with the bundle's per-call agreement and uncertain flag, per-map provenance
+with the bundle's per-USV agreement and uncertain flag, per-map provenance
 (model id, cell directory, checkpoint SHA-256), the bundle's grids and identity,
 the sessions table and the root attrs; the store is the one
 resolve_consolidated_h5_path picks and the torus-traversal video accepts its
@@ -64,7 +64,7 @@ from usv_playpen.visualizations.qlvm_torus_traversal_video import (
 SESSIONS = ("20260101_120000", "20260102_120000")
 QLVM_PRODUCTION_MODEL_CELLS = css.V3_MODEL_CELLS
 PREFIXES = tuple(QLVM_PRODUCTION_MODEL_CELLS)
-# Five calls per session: durations and SAM-mask counts give statuses 0, 1, 2, 3, 0.
+# Five USVs per session: durations and SAM-mask counts give statuses 0, 1, 2, 3, 0.
 DURATIONS = np.array([10, 200, 10, 200, 10], dtype=np.int64)
 MASK_INDEX = np.array([0, 1, 4, 4], dtype=np.int64)
 EXPECTED_STATUS = np.array([0, 1, 2, 3, 0], dtype=np.int8)
@@ -73,7 +73,7 @@ SPEC_SETTINGS = {"num_freq_bins": 16, "num_time_bins": 8, "min_freq": 30000, "ma
 
 
 def _build_session(base_dir, session_id, freq0=30000.0, seed=0):
-    """Create one session dir with a per-session spectrograms H5 (five calls, mask
+    """Create one session dir with a per-session spectrograms H5 (five USVs, mask
     group) and a usv_summary CSV carrying every production QLVM column: coordinates
     and labels on the embedded rows 0 and 4, nulls elsewhere. Returns the root."""
     root = base_dir / session_id
@@ -296,7 +296,7 @@ def test_missing_qlvm_columns_are_refused(tmp_path, mocker, corpus):
 
 
 def test_embedding_that_contradicts_the_status_is_refused(tmp_path, mocker, corpus):
-    """Regular coordinates on a call without a SAM mask (status 2) mean the summary
+    """Regular coordinates on a USV without a SAM mask (status 2) mean the summary
     does not follow the package's rules: refused."""
     roots, package = corpus
     summary_path = roots[0] / "audio" / f"{SESSIONS[0]}_usv_summary.csv"
@@ -394,7 +394,7 @@ def test_readers_of_the_store_work_on_the_new_file(tmp_path, mocker, corpus):
     assert index == [(session_id, row) for session_id in SESSIONS for row in EMBEDDED_ROWS]
 
 
-# Production mode: six calls per session. Rows 0-3 are pure USVs (status 0, 1 too
+# Production mode: six vocalizations per session. Rows 0-3 are pure USVs (status 0, 1 too
 # long, 2 no SAM mask, 3 both), row 4 holds a USV and a squeak (status 0), row 5 is a
 # pure squeak with a mask (status 4). The USV maps place rows 0 and 4, the squeak map
 # rows 4 and 5.
@@ -418,7 +418,7 @@ def _build_production_session(base_dir, session_id, seed=0):
     Description
     -----------
     Creates one session directory with a per-session spectrograms H5 (six
-    calls, mask group) and a usv_summary CSV in the canonical production layout:
+    vocalizations, mask group) and a usv_summary CSV in the canonical production layout:
     the usv / squeak flags, coordinates of every USV map on rows 0 and 4,
     squeak-map coordinates on rows 4 and 5, and qlvm_category of the regular
     map's positions on the synthetic bundle; nulls elsewhere.
@@ -703,19 +703,19 @@ def test_production_store_refuses_inconsistent_sessions_together(tmp_path, mocke
 
 
 def test_production_store_refuses_a_category_from_another_bundle(tmp_path, mocker, production_corpus):
-    """A qlvm_category that differs from the bundle's category of the call's pixel
+    """A qlvm_category that differs from the bundle's category of the USV's pixel
     (the summary was labelled with another bundle) is refused."""
     roots = production_corpus
     summary_path = roots[0] / "audio" / f"{SESSIONS[0]}_usv_summary.csv"
     pls.read_csv(summary_path).with_columns(qlvm_category=pls.Series([4, None, None, None, 2, None])).write_csv(summary_path)
-    with pytest.raises(ValueError, match=rf"{SESSIONS[0]}: 1 calls' qlvm_category differs from the category bundle's"):
+    with pytest.raises(ValueError, match=rf"{SESSIONS[0]}: 1 USVs' qlvm_category differs from the category bundle's"):
         _consolidate_production(tmp_path, roots, mocker)
     assert list((tmp_path / "store").iterdir()) == []
 
 
 @pytest.mark.usefixtures("qlvm_category_bundle")
 def test_production_store_refuses_a_regular_cell_without_require_mask(tmp_path, mocker, monkeypatch):
-    """The status rule assumes the regular cell drops maskless calls; a contract
+    """The status rule assumes the regular cell drops maskless USVs; a contract
     without require_mask is refused before any session is read."""
     _write_production_cells(tmp_path, monkeypatch, require_mask=False)
     roots = [_build_production_session(tmp_path / "data", SESSIONS[0])]

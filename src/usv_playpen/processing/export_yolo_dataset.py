@@ -4,7 +4,7 @@ Export a YOLO box-detector training dataset from per-session USV spectrograms.
 
 To train the YOLO box detector that :mod:`generate_masks` uses (method
 ``boxprompt``, detector ``yolo``), the detector needs ground-truth bounding boxes
-around the calls on each spectrogram image. This module renders every valid USV
+around the USVs on each spectrogram image. This module renders every valid USV
 spectrogram to an image EXACTLY the way the inference path renders it
 (``np.flipud`` -> slice to the signal window -> ``render_spec_image`` with the
 same colormap) and writes an Ultralytics-format dataset (``images/{train,val}``,
@@ -46,7 +46,7 @@ from ..time_utils import is_gui_context, smart_wait
 from .masks.box_detectors.common.boxes import render_spec_image, tlbr_to_xywhn
 from .masks.box_detectors.detect import get_detector
 
-# Single-class detector: every box is a USV call.
+# Single-class detector: every box is a USV.
 _CLASS_ID = 0
 _CLASS_NAME = "usv"
 

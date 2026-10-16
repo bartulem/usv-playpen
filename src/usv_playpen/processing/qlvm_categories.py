@@ -2,23 +2,23 @@
 @author: bartulem
 
 Content-ridge categories of a QLVM torus: build them once from a corpus of
-embedded calls, then label the calls of any session with them.
+embedded USVs, then label the USVs of any session with them.
 
-A category is a part of the torus inside which the calls' acoustic content
+A category is a part of the torus inside which the USVs' acoustic content
 changes little, bounded by ridges where it changes fast. The build
 (:class:`QLVMCategoryBuilder`, ``build-qlvm-categories``), from every corpus
-call's torus position and six acoustic properties:
+USV's torus position and six acoustic properties:
 
 1. **Ranks.** Each property (by default ``mask_count``, ``durations``,
    ``freq_bandwidth_hz``, ``spectral_entropy``, ``mean_freq_hz``,
-   ``loudness_db``) becomes its rank over all calls, ``(rank - 0.5) / n`` in
+   ``loudness_db``) becomes its rank over all USVs, ``(rank - 0.5) / n`` in
    ``(0, 1)`` (average rank for ties), so every property counts equally whatever
    its unit (:func:`property_ranks`).
-2. **Content fields.** Every call sits in one pixel of a periodic
+2. **Content fields.** Every USV sits in one pixel of a periodic
    ``grid_resolution`` x ``grid_resolution`` grid (``floor(y * res)``,
    ``floor(x * res)``); each property's field is the Gaussian kernel average of
    its ranks (``field_sigma`` pixels, wrapped at the seams): the smoothed sum of
-   the calls' (weighted) ranks over the smoothed (weighted) call count
+   the USVs' (weighted) ranks over the smoothed (weighted) USV count
    (:func:`content_fields`).
 3. **Content change.** At every pixel, the root sum of squares, over x, y and the
    properties, of the periodic central differences of the fields at offset
@@ -30,14 +30,14 @@ call's torus position and six acoustic properties:
    and the central tile is kept (:func:`periodic_basins`). Basin boundaries thus
    run along the ridges of content change.
 5. **Joins.** Neighbouring basins are joined one pair at a time. While a region
-   holds less than ``size_floor`` of the (weighted) calls, the smallest such
+   holds less than ``size_floor`` of the (weighted) USVs, the smallest such
    region joins the neighbour it shares the lowest mean ridge with; otherwise
    the pair of neighbours with the lowest mean ridge height along their shared
    boundary joins; down to ``n_categories`` regions, which must all satisfy the
-   floor (:func:`join_basins`). Categories are numbered by (weighted) call
+   floor (:func:`join_basins`). Categories are numbered by (weighted) USV
    count, largest first (:func:`partition_grid`).
 6. **Consensus.** ``n_bootstraps`` resamples of the sessions with replacement
-   (seed ``bootstrap_seed + i``; every call weighted by how often its session was
+   (seed ``bootstrap_seed + i``; every USV weighted by how often its session was
    drawn) rebuild steps 2-5; each resample's categories are matched one-to-one
    to the full-data categories by their pixel overlap (Hungarian assignment,
    :func:`align_to_reference`), and every pixel collects one vote per resample
@@ -45,11 +45,11 @@ call's torus position and six acoustic properties:
    category of a pixel is the one with most votes; its ``agreement`` is that
    category's share of the votes (:func:`consensus_vote`).
 
-Each call takes the consensus category of the pixel under its position, with
-that pixel's agreement; a call is ``uncertain`` when its agreement is below
+Each USV takes the consensus category of the pixel under its position, with
+that pixel's agreement; a USV is ``uncertain`` when its agreement is below
 ``uncertain_agreement``. Categories are numbered ``1`` ... ``k`` and named ``R-1``
 ... ``R-k`` in the order ``category_order`` gives (category ``i`` is the
-category whose full-data call count ranks ``category_order[i - 1]``, largest
+category whose full-data USV count ranks ``category_order[i - 1]``, largest
 first; empty keeps the size order, :func:`apply_category_order`), each with the
 description ``category_descriptions`` gives it (``category_order`` ``[1, 4, 2, 3]``
 with ``simple``, ``biphones``, ``intermediate``, ``complex`` in the shipped
@@ -58,18 +58,18 @@ settings).
 The build writes, into its output directory: ``category_grids.npz``
 (``label_grid`` (int16, ``1..k``, indexed ``[y, x]``), ``agreement``,
 ``reference_grid`` (the full-data partition, ``1..k``), ``content_change``,
-``basins`` and ``density`` (the smoothed call count)), ``category_nomenclature.json``
-(the categories' names, descriptions, call counts and label positions, plus the
-uncertainty threshold and grid resolution), ``category_call_labels.csv`` (the
-corpus calls' categories) and ``build_config.json`` (the settings and inputs).
+``basins`` and ``density`` (the smoothed USV count)), ``category_nomenclature.json``
+(the categories' names, descriptions, USV counts and label positions, plus the
+uncertainty threshold and grid resolution), ``category_usv_labels.csv`` (the
+corpus USVs' categories) and ``build_config.json`` (the settings and inputs).
 
 The assignment (:class:`QLVMCategoryAssigner`, ``assign-qlvm-categories``) reads
-such a directory and labels the calls of one session from their torus
+such a directory and labels the USVs of one session from their torus
 coordinates ``<P>1`` / ``<P>2`` in its ``*_usv_summary.csv``, with the same pixel
 rule (:func:`qlvm_latents.label_grid_lookup`), writing ``<P>_category`` (int,
-``1..k`` for ``R-1`` ... ``R-k``) only; calls without coordinates get nulls. The
-per-call agreement and uncertain flag do not go into the summary: they stay
-computable from the category directory and the call's coordinates
+``1..k`` for ``R-1`` ... ``R-k``) only; USVs without coordinates get nulls. The
+per-USV agreement and uncertain flag do not go into the summary: they stay
+computable from the category directory and the USV's coordinates
 (:func:`assign_categories` on :func:`load_category_bundle`), and any
 ``<P>_category_agreement`` / ``<P>_category_uncertain`` column an earlier version
 wrote is removed. Run it after ``infer-qlvm-latents``, which drops the
@@ -103,7 +103,7 @@ from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import (
     CATEGORY_CONFIDENCE_SUFFIXES,
     QLVM_CATEGORY_BUILD_CONFIG_NAME,
-    QLVM_CATEGORY_CALL_LABELS_NAME,
+    QLVM_CATEGORY_USV_LABELS_NAME,
     QLVM_CATEGORY_GRIDS_NAME,
     QLVM_CATEGORY_NOMENCLATURE_NAME,
     atomic_output_path,
@@ -120,7 +120,7 @@ from .qlvm_latents import label_grid_lookup
 # a bundle finds them too).
 CATEGORY_GRIDS_NAME = QLVM_CATEGORY_GRIDS_NAME
 CATEGORY_NOMENCLATURE_NAME = QLVM_CATEGORY_NOMENCLATURE_NAME
-CATEGORY_CALL_LABELS_NAME = QLVM_CATEGORY_CALL_LABELS_NAME
+CATEGORY_USV_LABELS_NAME = QLVM_CATEGORY_USV_LABELS_NAME
 CATEGORY_BUILD_CONFIG_NAME = QLVM_CATEGORY_BUILD_CONFIG_NAME
 
 # The columns a positions table and a properties table must carry besides the properties.
@@ -132,50 +132,50 @@ def property_ranks(values: np.ndarray) -> np.ndarray:
     """
     Description
     -----------
-    Ranks every property over all calls: ``(rank - 0.5) / n``, ``rank`` the
+    Ranks every property over all USVs: ``(rank - 0.5) / n``, ``rank`` the
     1-based average rank (``scipy.stats.rankdata``, ties sharing their mean rank),
     so each column lies in ``(0, 1)`` whatever the property's unit.
 
     Parameters
     ----------
     values (np.ndarray)
-        ``(n_calls, n_properties)`` raw property values; all finite.
+        ``(n_usvs, n_properties)`` raw property values; all finite.
 
     Returns
     -------
     ranks (np.ndarray)
-        ``(n_calls, n_properties)`` float64 ranks.
+        ``(n_usvs, n_properties)`` float64 ranks.
     """
 
     values = np.asarray(values, dtype=np.float64)
     if not np.isfinite(values).all():
         error_message = f"property_ranks: {int((~np.isfinite(values)).sum())} property values are not finite."
         raise ValueError(error_message)
-    n_calls = values.shape[0]
-    return np.column_stack([(rankdata(values[:, index]) - 0.5) / n_calls for index in range(values.shape[1])])
+    n_usvs = values.shape[0]
+    return np.column_stack([(rankdata(values[:, index]) - 0.5) / n_usvs for index in range(values.shape[1])])
 
 
 def vocalization_pixels(coordinates: np.ndarray, resolution: int) -> tuple[np.ndarray, np.ndarray]:
     """
     Description
     -----------
-    The grid pixel of every call: row ``int(y * res)``, column ``int(x * res)``,
+    The grid pixel of every USV: row ``int(y * res)``, column ``int(x * res)``,
     each clipped to ``[0, res - 1]`` (truncation equals the floor for coordinates
     in ``[0, 1)``, where every QLVM coordinate lies).
 
     Parameters
     ----------
     coordinates (np.ndarray)
-        ``(n_calls, 2)`` torus coordinates ``(x, y)``.
+        ``(n_usvs, 2)`` torus coordinates ``(x, y)``.
     resolution (int)
         Grid resolution in pixels per side.
 
     Returns
     -------
     rows (np.ndarray)
-        ``(n_calls,)`` int64 pixel rows.
+        ``(n_usvs,)`` int64 pixel rows.
     cols (np.ndarray)
-        ``(n_calls,)`` int64 pixel columns.
+        ``(n_usvs,)`` int64 pixel columns.
     """
 
     coordinates = np.asarray(coordinates, dtype=np.float64).reshape(-1, 2)
@@ -197,19 +197,19 @@ def content_fields(
     -----------
     Kernel-average field of every feature on the periodic grid: the Gaussian
     smoothing (``sigma`` pixels, ``mode='wrap'``) of the weighted feature sums
-    per pixel divided by the smoothing of the weighted call counts per pixel
-    (floored at 1e-9, so a pixel far from every call does not divide by zero).
+    per pixel divided by the smoothing of the weighted USV counts per pixel
+    (floored at 1e-9, so a pixel far from every USV does not divide by zero).
 
     Parameters
     ----------
     rows (np.ndarray)
-        ``(n_calls,)`` pixel row of each call.
+        ``(n_usvs,)`` pixel row of each USV.
     cols (np.ndarray)
-        ``(n_calls,)`` pixel column of each call.
+        ``(n_usvs,)`` pixel column of each USV.
     features (np.ndarray)
-        ``(n_calls, p)`` features (property ranks).
+        ``(n_usvs, p)`` features (property ranks).
     weights (np.ndarray)
-        ``(n_calls,)`` call weights (1 for a plain build; session draw counts in a
+        ``(n_usvs,)`` USV weights (1 for a plain build; session draw counts in a
         bootstrap).
     sigma (float)
         Gaussian smoothing in pixels.
@@ -369,11 +369,11 @@ def join_basins(basins: np.ndarray, change: np.ndarray, basin_size: np.ndarray, 
     -----------
     Joins neighbouring basins one pair at a time until ``n_categories`` regions
     remain, every one of them holding at least ``size_floor`` of the (weighted)
-    calls. At each step: if some region holds less than ``size_floor`` of the
-    calls, the smallest of them joins the neighbour it shares the lowest mean
+    USVs. At each step: if some region holds less than ``size_floor`` of the
+    USVs, the smallest of them joins the neighbour it shares the lowest mean
     ridge with; otherwise the pair of neighbours with the lowest mean ridge
     height (:func:`basin_ridges`; ties go to the pair met first) joins. The
-    larger region (by weighted calls) keeps its label, and the ridges of the
+    larger region (by weighted USVs) keeps its label, and the ridges of the
     absorbed one are added to the survivor's.
 
     Parameters
@@ -383,9 +383,9 @@ def join_basins(basins: np.ndarray, change: np.ndarray, basin_size: np.ndarray, 
     change (np.ndarray)
         ``(res, res)`` content-change field.
     basin_size (np.ndarray)
-        ``(n + 1,)`` weighted call count of every basin (index 0 unused).
+        ``(n + 1,)`` weighted USV count of every basin (index 0 unused).
     size_floor (float)
-        Smallest share of the calls a final region may hold.
+        Smallest share of the USVs a final region may hold.
     n_categories (int)
         Number of regions to stop at.
 
@@ -434,20 +434,20 @@ def partition_grid(rows: np.ndarray, cols: np.ndarray, ranks: np.ndarray, weight
     """
     Description
     -----------
-    Builds the categories from weighted calls (module docstring, steps 2-5) and
-    numbers them ``0..k-1`` by weighted call count, largest first (ties keep the
+    Builds the categories from weighted USVs (module docstring, steps 2-5) and
+    numbers them ``0..k-1`` by weighted USV count, largest first (ties keep the
     order ``pandas.Series.sort_values`` gives them).
 
     Parameters
     ----------
     rows (np.ndarray)
-        ``(n_calls,)`` pixel row of each call.
+        ``(n_usvs,)`` pixel row of each USV.
     cols (np.ndarray)
-        ``(n_calls,)`` pixel column of each call.
+        ``(n_usvs,)`` pixel column of each USV.
     ranks (np.ndarray)
-        ``(n_calls, p)`` property ranks.
+        ``(n_usvs, p)`` property ranks.
     weights (np.ndarray)
-        ``(n_calls,)`` call weights.
+        ``(n_usvs,)`` USV weights.
     cfg (dict)
         The ``build_qlvm_categories`` settings (``grid_resolution``,
         ``field_sigma``, ``change_span``, ``marker_sigma``, ``marker_distance``,
@@ -485,10 +485,10 @@ def apply_category_order(grid: np.ndarray, category_order: list, n_categories: i
     """
     Description
     -----------
-    Renumbers a partition whose categories are numbered ``0..k-1`` by call count,
+    Renumbers a partition whose categories are numbered ``0..k-1`` by USV count,
     largest first (:func:`partition_grid`), into the order ``category_order``
     gives: category ``i`` (``0``-based) of the result is the category of size
-    rank ``category_order[i]`` (``1``-based, ``1`` = most calls). ``[1, 4, 2, 3]``
+    rank ``category_order[i]`` (``1``-based, ``1`` = most USVs). ``[1, 4, 2, 3]``
     makes the largest category the first, the smallest the second, the second
     largest the third and the third largest the fourth. An empty order keeps the
     size order. Cells outside ``0..k-1`` (none in a complete partition) keep
@@ -565,14 +565,14 @@ def session_bootstrap_weights(sessions: np.ndarray, pool: np.ndarray, seed: int)
     """
     Description
     -----------
-    Call weights of one session resample: ``len(pool)`` sessions are drawn from
+    USV weights of one session resample: ``len(pool)`` sessions are drawn from
     ``pool`` with replacement (``numpy.random.default_rng(seed).choice``), and
-    every call is weighted by how many times its session was drawn (0 when never).
+    every USV is weighted by how many times its session was drawn (0 when never).
 
     Parameters
     ----------
     sessions (np.ndarray)
-        ``(n_calls,)`` session id of each call.
+        ``(n_usvs,)`` session id of each USV.
     pool (np.ndarray)
         Sessions to draw from (sorted unique session ids).
     seed (int)
@@ -581,7 +581,7 @@ def session_bootstrap_weights(sessions: np.ndarray, pool: np.ndarray, seed: int)
     Returns
     -------
     weights (np.ndarray)
-        ``(n_calls,)`` float64 weights.
+        ``(n_usvs,)`` float64 weights.
     """
 
     drawn, draw_counts = np.unique(np.random.default_rng(seed).choice(pool, size=len(pool), replace=True), return_counts=True)
@@ -611,13 +611,13 @@ def bootstrap_vote(
     seed (int)
         Seed of the resample.
     rows (np.ndarray)
-        ``(n_calls,)`` pixel row of each call.
+        ``(n_usvs,)`` pixel row of each USV.
     cols (np.ndarray)
-        ``(n_calls,)`` pixel column of each call.
+        ``(n_usvs,)`` pixel column of each USV.
     ranks (np.ndarray)
-        ``(n_calls, p)`` property ranks.
+        ``(n_usvs, p)`` property ranks.
     sessions (np.ndarray)
-        ``(n_calls,)`` session id of each call.
+        ``(n_usvs,)`` session id of each USV.
     pool (np.ndarray)
         Sessions to draw from.
     reference (np.ndarray)
@@ -702,7 +702,7 @@ def read_table(path: str | pathlib.Path, columns: list[str]) -> pd.DataFrame:
     """
     Description
     -----------
-    Reads the named columns of a per-call table from a ``.npz`` (one array per
+    Reads the named columns of a per-USV table from a ``.npz`` (one array per
     column; e.g. a ``build-qlvm-training-set`` split, read lazily so its
     spectrograms are never loaded), ``.parquet`` or ``.csv`` file.
 
@@ -737,7 +737,7 @@ def read_table(path: str | pathlib.Path, columns: list[str]) -> pd.DataFrame:
     elif path.suffix == '.csv':
         table = pd.read_csv(path, dtype={'spec_id': str, 'session_id': str})
     else:
-        error_message = f"{path}: a per-call table must be a .npz, .parquet or .csv file."
+        error_message = f"{path}: a per-USV table must be a .npz, .parquet or .csv file."
         raise ValueError(error_message)
     missing = [column for column in columns if column not in table.columns]
     if missing:
@@ -815,7 +815,7 @@ class QLVMCategoryBuilder:
     Description
     -----------
     Builds the content-ridge categories of a QLVM torus from a corpus of embedded
-    calls and writes them as a category directory (see the module docstring).
+    USVs and writes them as a category directory (see the module docstring).
     """
 
     def __init__(
@@ -834,10 +834,10 @@ class QLVMCategoryBuilder:
         Parameters
         ----------
         positions_file (str)
-            Per-call torus positions: ``.npz`` / ``.parquet`` / ``.csv`` with
+            Per-USV torus positions: ``.npz`` / ``.parquet`` / ``.csv`` with
             ``spec_id``, ``x`` and ``y`` in ``[0, 1)``.
         properties_file (str)
-            Per-call properties: ``.npz`` / ``.parquet`` / ``.csv`` with
+            Per-USV properties: ``.npz`` / ``.parquet`` / ``.csv`` with
             ``spec_id``, ``session_id`` and every column of the ``properties``
             setting (e.g. a ``build-qlvm-training-set`` split, whose ``mask_count``,
             ``durations``, ``freq_bandwidth_hz``, ``spectral_entropy``,
@@ -916,7 +916,7 @@ class QLVMCategoryBuilder:
         Description
         -----------
         Reads the properties table (the corpus, in its row order) and joins every
-        call's position from the positions table on ``spec_id``.
+        USV's position from the positions table on ``spec_id``.
 
         Parameters
         ----------
@@ -927,9 +927,9 @@ class QLVMCategoryBuilder:
         -------
         corpus (pd.DataFrame)
             ``spec_id``, ``session_id``, ``x``, ``y`` and the properties, one row
-            per call.
+            per USV.
         values (np.ndarray)
-            ``(n_calls, n_properties)`` float64 property values.
+            ``(n_usvs, n_properties)`` float64 property values.
         """
 
         properties = list(cfg['properties'])
@@ -944,7 +944,7 @@ class QLVMCategoryBuilder:
         corpus = corpus.merge(positions, on='spec_id', how='left', validate='one_to_one')
         unplaced = int(corpus[['x', 'y']].isna().any(axis=1).sum())
         if unplaced:
-            error_message = f"build_qlvm_categories: {unplaced} calls of {self.properties_file} have no position in {self.positions_file}."
+            error_message = f"build_qlvm_categories: {unplaced} USVs of {self.properties_file} have no position in {self.positions_file}."
             raise ValueError(error_message)
         coordinates = corpus[['x', 'y']].to_numpy(dtype=np.float64)
         if (coordinates < 0).any() or (coordinates >= 1).any():
@@ -952,7 +952,7 @@ class QLVMCategoryBuilder:
             raise ValueError(error_message)
         n_extra = positions.shape[0] - corpus.shape[0]
         if n_extra:
-            self.message_output(f"{n_extra} positions belong to no call of the properties table and are ignored.")
+            self.message_output(f"{n_extra} positions belong to no USV of the properties table and are ignored.")
         return corpus, corpus[properties].to_numpy(dtype=np.float64)
 
     def build(self) -> None:
@@ -961,7 +961,7 @@ class QLVMCategoryBuilder:
         -----------
         Runs the build (module docstring, steps 1-6) and writes the category
         directory: ``category_grids.npz``, ``category_nomenclature.json``,
-        ``category_call_labels.csv`` and ``build_config.json``.
+        ``category_usv_labels.csv`` and ``build_config.json``.
 
         Parameters
         ----------
@@ -985,13 +985,13 @@ class QLVMCategoryBuilder:
         rows, cols = vocalization_pixels(corpus[['x', 'y']].to_numpy(dtype=np.float64), resolution)
         sessions = corpus['session_id'].to_numpy().astype(str)
         pool = np.unique(sessions)
-        self.message_output(f"{corpus.shape[0]:,} calls from {pool.size} sessions; properties {list(cfg['properties'])}.")
+        self.message_output(f"{corpus.shape[0]:,} USVs from {pool.size} sessions; properties {list(cfg['properties'])}.")
 
         reference, layers = partition_grid(rows, cols, ranks, np.ones(corpus.shape[0]), cfg)
         if reference is None:
             error_message = (
                 f"build_qlvm_categories: the full corpus does not reach {n_categories} categories that each hold "
-                f"at least {cfg['size_floor']} of the calls."
+                f"at least {cfg['size_floor']} of the USVs."
             )
             raise ValueError(error_message)
         aligned = Parallel(n_jobs=int(cfg['n_jobs']))(
@@ -1004,12 +1004,12 @@ class QLVMCategoryBuilder:
             raise ValueError(error_message)
         grid = apply_category_order(grid, cfg['category_order'], n_categories)
         reference = apply_category_order(reference, cfg['category_order'], n_categories)
-        call_category = grid[rows, cols] + 1
-        call_agreement = agreement[rows, cols]
-        uncertain = call_agreement < float(cfg['uncertain_agreement'])
+        usv_category = grid[rows, cols] + 1
+        usv_agreement = agreement[rows, cols]
+        uncertain = usv_agreement < float(cfg['uncertain_agreement'])
         self.message_output(
-            f"{n_votes} of {cfg['n_bootstraps']} session resamples voted; {int((grid[rows, cols] != reference[rows, cols]).sum()):,} calls "
-            f"changed category from the single full-data partition; {int(uncertain.sum()):,} calls "
+            f"{n_votes} of {cfg['n_bootstraps']} session resamples voted; {int((grid[rows, cols] != reference[rows, cols]).sum()):,} USVs "
+            f"changed category from the single full-data partition; {int(uncertain.sum()):,} USVs "
             f"({uncertain.mean():.1%}) are uncertain (agreement < {cfg['uncertain_agreement']})."
         )
 
@@ -1021,14 +1021,14 @@ class QLVMCategoryBuilder:
                 'grid_label': category,
                 'name': f'R-{category}',
                 'description': descriptions[category - 1],
-                'n_vocalizations': int((call_category == category).sum()),
-                'share': round(float((call_category == category).mean()), 4),
-                'uncertain_share': round(float(uncertain[call_category == category].mean()), 4) if (call_category == category).any() else 0.0,
+                'n_vocalizations': int((usv_category == category).sum()),
+                'share': round(float((usv_category == category).mean()), 4),
+                'uncertain_share': round(float(uncertain[usv_category == category].mean()), 4) if (usv_category == category).any() else 0.0,
                 'label_x': round(label_x, 4),
                 'label_y': round(label_y, 4),
             })
             self.message_output(
-                f"  R-{category} ({descriptions[category - 1] or 'no description'}): {categories[-1]['n_vocalizations']:,} calls "
+                f"  R-{category} ({descriptions[category - 1] or 'no description'}): {categories[-1]['n_vocalizations']:,} USVs "
                 f"({categories[-1]['share']:.1%}), {categories[-1]['uncertain_share']:.1%} uncertain."
             )
 
@@ -1057,15 +1057,15 @@ class QLVMCategoryBuilder:
         with atomic_output_path(output_dir / CATEGORY_NOMENCLATURE_NAME) as tmp_path:
             tmp_path.write_text(json.dumps(nomenclature, indent=1) + '\n')
         names = np.array([category['name'] for category in categories])
-        call_labels = corpus[['spec_id', 'session_id', 'x', 'y']].assign(
-            category=call_category,
-            name=names[call_category - 1],
-            description=np.array(descriptions)[call_category - 1],
-            agreement=call_agreement,
+        usv_labels = corpus[['spec_id', 'session_id', 'x', 'y']].assign(
+            category=usv_category,
+            name=names[usv_category - 1],
+            description=np.array(descriptions)[usv_category - 1],
+            agreement=usv_agreement,
             uncertain=uncertain,
         )
-        with atomic_output_path(output_dir / CATEGORY_CALL_LABELS_NAME) as tmp_path:
-            call_labels.to_csv(tmp_path, index=False)
+        with atomic_output_path(output_dir / CATEGORY_USV_LABELS_NAME) as tmp_path:
+            usv_labels.to_csv(tmp_path, index=False)
         build_config = {
             'build_qlvm_categories': cfg,
             'positions_file': str(self.positions_file),
@@ -1089,7 +1089,7 @@ class QLVMCategoryAssigner:
     """
     Description
     -----------
-    Labels the calls of one session with a category directory, from their torus
+    Labels the USVs of one session with a category directory, from their torus
     coordinates in the session's ``*_usv_summary.csv`` (see the module docstring).
     """
 
@@ -1129,12 +1129,12 @@ class QLVMCategoryAssigner:
         Description
         -----------
         Reads the category directory (``category_directory``) and the session's
-        USV summary, labels every call that has both ``<P>1`` and ``<P>2``
+        USV summary, labels every USV that has both ``<P>1`` and ``<P>2``
         (``P`` = ``coordinate_prefix``; :func:`assign_categories`) and writes
-        ``<P>_category`` (``1..k``) into the summary (null for calls without
-        coordinates), replacing an earlier column of that name. The per-call
+        ``<P>_category`` (``1..k``) into the summary (null for USVs without
+        coordinates), replacing an earlier column of that name. The per-USV
         agreement and uncertain flag are computed (the log counts the uncertain
-        calls) but not written; an earlier ``<P>_category_agreement`` /
+        USVs) but not written; an earlier ``<P>_category_agreement`` /
         ``<P>_category_uncertain`` column is removed. The summary is rewritten
         atomically, in canonical column order
         (:func:`os_utils.order_usv_summary_columns`).
@@ -1184,7 +1184,7 @@ class QLVMCategoryAssigner:
             "_placed": placed,
             category_column: labels['category'],
         })
-        # Calls without coordinates get a null category.
+        # USVs without coordinates get a null category.
         new_columns = new_columns.select(
             pls.when(pls.col("_placed")).then(pls.col(category_column)).otherwise(None).alias(category_column)
         )
@@ -1207,21 +1207,21 @@ class QLVMCategoryAssigner:
 
 
 @click.command(name="build-qlvm-categories")
-@click.option('--positions-file', type=click.Path(exists=True, file_okay=True, dir_okay=False), required=True, help='Per-call torus positions (.npz / .parquet / .csv with spec_id, x, y in [0, 1)), e.g. the embedding of the training set the map was trained on.')
-@click.option('--properties-file', type=click.Path(exists=True, file_okay=True, dir_okay=False), required=True, help='Per-call properties (.npz / .parquet / .csv with spec_id, session_id and every property column), e.g. a build-qlvm-training-set split; its rows are the corpus.')
-@click.option('--output-directory', type=click.Path(file_okay=False, dir_okay=True), required=True, help='Directory to write category_grids.npz, category_nomenclature.json, category_call_labels.csv and build_config.json into.')
+@click.option('--positions-file', type=click.Path(exists=True, file_okay=True, dir_okay=False), required=True, help='Per-USV torus positions (.npz / .parquet / .csv with spec_id, x, y in [0, 1)), e.g. the embedding of the training set the map was trained on.')
+@click.option('--properties-file', type=click.Path(exists=True, file_okay=True, dir_okay=False), required=True, help='Per-USV properties (.npz / .parquet / .csv with spec_id, session_id and every property column), e.g. a build-qlvm-training-set split; its rows are the corpus.')
+@click.option('--output-directory', type=click.Path(file_okay=False, dir_okay=True), required=True, help='Directory to write category_grids.npz, category_nomenclature.json, category_usv_labels.csv and build_config.json into.')
 @click.option('--properties', 'properties', type=str, default=None, required=False, help='Comma-separated property columns the categories are built on, e.g. mask_count,durations,freq_bandwidth_hz,spectral_entropy,mean_freq_hz,loudness_db.')
 @click.option('--grid-resolution', 'grid_resolution', type=int, default=None, required=False, help='Pixels per side of the periodic grid.')
 @click.option('--field-sigma', 'field_sigma', type=float, default=None, required=False, help='Gaussian smoothing of the property fields, in pixels.')
 @click.option('--change-span', 'change_span', type=int, default=None, required=False, help='Offset of the central differences of the content-change field, in pixels.')
 @click.option('--marker-sigma', 'marker_sigma', type=float, default=None, required=False, help='Blur of the content-change field before the watershed, in pixels.')
 @click.option('--marker-distance', 'marker_distance', type=int, default=None, required=False, help='Half-width of the window a watershed marker is the minimum of, in pixels.')
-@click.option('--size-floor', 'size_floor', type=float, default=None, required=False, help='Smallest share of the calls a category may hold.')
+@click.option('--size-floor', 'size_floor', type=float, default=None, required=False, help='Smallest share of the USVs a category may hold.')
 @click.option('--n-categories', 'n_categories', type=int, default=None, required=False, help='Number of categories.')
 @click.option('--n-bootstraps', 'n_bootstraps', type=int, default=None, required=False, help='Session resamples of the consensus vote.')
 @click.option('--bootstrap-seed', 'bootstrap_seed', type=int, default=None, required=False, help='Seed of the first session resample (resample i uses seed + i).')
-@click.option('--uncertain-agreement', 'uncertain_agreement', type=float, default=None, required=False, help='A call whose pixel agreement is below this is flagged uncertain.')
-@click.option('--category-order', 'category_order', type=str, default=None, required=False, help='Comma-separated size rank (1 = most calls) of each category, R-1 first (e.g. "1,4,2,3"), or an empty string for size order.')
+@click.option('--uncertain-agreement', 'uncertain_agreement', type=float, default=None, required=False, help='A USV whose pixel agreement is below this is flagged uncertain.')
+@click.option('--category-order', 'category_order', type=str, default=None, required=False, help='Comma-separated size rank (1 = most USVs) of each category, R-1 first (e.g. "1,4,2,3"), or an empty string for size order.')
 @click.option('--category-descriptions', 'category_descriptions', type=str, default=None, required=False, help='Comma-separated short description of each category, R-1 first (e.g. "simple,biphones,intermediate,complex"), or an empty string for none.')
 @click.option('--n-jobs', 'n_jobs', type=int, default=None, required=False, help='Parallel workers of the session resamples.')
 @click.pass_context
@@ -1230,18 +1230,18 @@ def build_qlvm_categories_cli(ctx, positions_file, properties_file, output_direc
     Description
     -----------
     A command-line tool to build the content-ridge categories of a QLVM torus
-    from a corpus of embedded calls and write them as a category directory.
+    from a corpus of embedded USVs and write them as a category directory.
 
     Parameters
     ----------
     ctx (click.Context)
         The click context; its parameter sources tell which options were given on the command line.
     positions_file (str)
-        Per-call torus positions (.npz / .parquet / .csv with spec_id, x, y in [0, 1)), e.g. the embedding of the training set the map was trained on.
+        Per-USV torus positions (.npz / .parquet / .csv with spec_id, x, y in [0, 1)), e.g. the embedding of the training set the map was trained on.
     properties_file (str)
-        Per-call properties (.npz / .parquet / .csv with spec_id, session_id and every property column), e.g. a build-qlvm-training-set split; its rows are the corpus.
+        Per-USV properties (.npz / .parquet / .csv with spec_id, session_id and every property column), e.g. a build-qlvm-training-set split; its rows are the corpus.
     output_directory (str)
-        Directory to write category_grids.npz, category_nomenclature.json, category_call_labels.csv and build_config.json into.
+        Directory to write category_grids.npz, category_nomenclature.json, category_usv_labels.csv and build_config.json into.
     **kwargs
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 

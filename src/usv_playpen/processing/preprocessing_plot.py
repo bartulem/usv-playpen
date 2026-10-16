@@ -23,6 +23,22 @@ apply_plot_style()
 
 
 class SummaryPlotter:
+    """
+    Description
+    -----------
+    Draws the one-page summary figure of a session's first preprocessing stage:
+    session details, the phidget measurements (illumination, humidity,
+    temperature) and the audio/video synchronization error statistics. It holds
+    ``root_directory`` and ``message_output``; when ``root_directory`` is None it
+    is read from the ``preprocessing_plot`` block of
+    ``_parameter_settings/processing_settings.json``.
+
+    The entry method is ``preprocessing_summary``, which takes the per-device
+    IPI discrepancy dictionary and the phidget data dictionary and saves the
+    figure under ``<root_directory>/sync/``. It is constructed by the processing
+    pipeline (``processing/preprocess_data.py``).
+    """
+
     def __init__(
         self, root_directory: str = None, message_output: Callable | None = None
     ) -> None:

@@ -83,7 +83,7 @@ def _make_inference_session(tmp_path, rng, *, with_masks=True):
     QLVMLatentInference run and return (root, session_id, cfg), with ``cfg`` an
     ``infer_qlvm_latents`` block whose ``model_cells`` is still empty (a test lists
     the cells it embeds with, see :func:`_make_model_cell`). Rows 0 and 2 are real
-    64-bin calls (inside the synthetic cells' duration window of 100), row 1 is a
+    64-bin USVs (inside the synthetic cells' duration window of 100), row 1 is a
     placeholder; with ``with_masks``, rows 0 and 2 each get one all-ones SAM mask.
     The summary carries the ``usv`` / ``squeak`` booleans detect-usv-squeaks writes (rows 0
     and 2 pure USVs, ``(true, false)``; the placeholder row null), which inference requires."""
@@ -127,7 +127,7 @@ def _make_inference_session(tmp_path, rng, *, with_masks=True):
 
 def test_infer_and_merge_masking_type_applies_or_skips_sam_mask(tmp_path, mocker):
     """The decoder is trained on SAM-masked (background-zeroed) spectrograms, so
-    ``masking_type='sam'`` must zero every pixel outside the call's SAM mask region
+    ``masking_type='sam'`` must zero every pixel outside the USV's SAM mask region
     before embedding, while ``masking_type='none'`` must embed the raw spectrogram.
     This pins the train/inference masking parity: embedding raw specs into a
     masked-trained decoder is out-of-distribution and yields unreliable latents.
@@ -425,7 +425,7 @@ def _make_model_cell(
     ``condition`` block, a conditional one (one extra decoder input) and its
     ``condition_bins.npz`` (``bins`` = (edges, bin_mean) for phase 10, or a dict of
     the phase 11 keys, see :func:`_phase11_bins`). ``require_mask`` True, as in every
-    v2 and v3 cell, says its corpus kept only calls with a SAM mask. The cell is
+    v2 and v3 cell, says its corpus kept only USVs with a SAM mask. The cell is
     ``<tmp_path>/pkg/phase_test/<cell_name>``, so several cells share one package.
     ``contract_overrides`` replaces training-contract entries (e.g. ``target_shape``)."""
     torch = pytest.importorskip("torch")
@@ -479,7 +479,7 @@ def _phase11_bins(name, c_min, c_max, step):
 
 def test_infer_and_merge_with_a_model_package_cell(tmp_path, mocker):
     """A model_cells cell's ReLU checkpoint, contract and Fibonacci lattice are used:
-    calls outside its duration window are null and inputs are min-maxed and floored.
+    USVs outside its duration window are null and inputs are min-maxed and floored.
     The cell's label_grid.npy files are not read: only the qlvm1 / qlvm2 coordinates are
     written (no qlvm_category / qlvm_supercategory), and no qlvm_model column."""
     rng = np.random.default_rng(13)
@@ -522,7 +522,7 @@ def test_infer_and_merge_with_a_model_package_cell(tmp_path, mocker):
 
 def test_compute_condition_values_follow_the_contract_definitions():
     """Duration c is normalized on the corpus range; mean-frequency c is the energy
-    centroid of the masked call's frequency rows, before any min-max."""
+    centroid of the masked USV's frequency rows, before any min-max."""
     durations = np.array([8, 60, 127], dtype=np.int64)
     duration = {"name": "duration", "duration_min": 8, "duration_max": 127, "epsilon": 1e-8}
     np.testing.assert_array_equal(
@@ -539,7 +539,7 @@ def test_compute_condition_values_follow_the_contract_definitions():
 
 
 def test_frozen_condition_values_take_bin_means_and_clamp_the_range():
-    """New calls decode at the corpus mean of their bin; values beyond the corpus
+    """New USVs decode at the corpus mean of their bin; values beyond the corpus
     range fall in the outermost bins, and a value on an edge belongs to the upper bin."""
     bins = {"edges": np.array([0.0, 0.3, 0.6, 1.0]), "bin_mean": np.array([0.1, 0.45, 0.8], dtype=np.float32)}
     got = ql.frozen_condition_values(np.array([-0.2, 0.1, 0.3, 0.59, 0.61, 1.4]), bins)
@@ -549,7 +549,7 @@ def test_frozen_condition_values_take_bin_means_and_clamp_the_range():
 
 def test_infer_and_merge_conditional_cell_decodes_at_frozen_mean_freq(tmp_path, mocker):
     """A mean-frequency cell fed unmasked spectrograms still needs the masks for c:
-    each call is decoded at the frozen bin mean of its masked centroid."""
+    each USV is decoded at the frozen bin mean of its masked centroid."""
     rng = np.random.default_rng(16)
     res = 8
     grid = rng.integers(1, 5, size=(res, res)).astype(np.int16)
@@ -557,8 +557,8 @@ def test_infer_and_merge_conditional_cell_decodes_at_frozen_mean_freq(tmp_path, 
     _set_session_durations(root, session_id, [64, 0, 64])
     n_f = n_t = 128
     low_rows, high_rows = np.zeros((n_f, n_t), dtype=bool), np.zeros((n_f, n_t), dtype=bool)
-    low_rows[:32, :] = True                                # row 0's call sits in the low rows
-    high_rows[96:, :] = True                               # row 2's call in the high rows
+    low_rows[:32, :] = True                                # row 0's USV sits in the low rows
+    high_rows[96:, :] = True                               # row 2's USV in the high rows
     _write_session_masks(root, session_id, {0: low_rows, 2: high_rows})
     condition = {"name": "mean_freq", "spectrogram": "masked", "epsilon": 1e-8}
     edges, bin_mean = np.array([0.0, 0.5, 1.0]), np.array([0.2, 0.8], dtype=np.float32)
@@ -590,7 +590,7 @@ def test_infer_and_merge_conditional_cell_decodes_at_frozen_mean_freq(tmp_path, 
 
 
 def test_frozen_condition_values_phase11_exact_clamps_to_the_training_range():
-    """Duration and bandwidth cells decode each call at its own c, clamped to the
+    """Duration and bandwidth cells decode each USV at its own c, clamped to the
     range the cell was trained on."""
     bins = _phase11_bins("bandwidth", 0.05, 0.95, 0.01)
     got = ql.frozen_condition_values(np.array([-0.1, 0.05, 0.3337, 0.95, 1.2]), bins, "exact")
@@ -609,7 +609,7 @@ def test_frozen_condition_values_phase11_grid_snaps_to_the_nearest_grid_point():
 
 
 def test_condition_quantile_value_reads_the_training_distribution():
-    """The fixed conditioning value of a decode without a call is the quantile of the
+    """The fixed conditioning value of a decode without a USV is the quantile of the
     cell's training c distribution (bin edges + per-bin training rows, linear inside a
     bin), decoded by the cell's own rule: exact clamps, grid snaps, phase 10 bins (no
     group_sizes, equal-share quantile bins) take the bin mean; a quantile outside
@@ -649,7 +649,7 @@ def test_compute_condition_values_maps_bandwidth_and_loudness_from_raw_units():
         ql.compute_condition_values(loudness, durations, None, np.array([28.83, 95.85, 62.34, 10.0, 120.0])),
         np.array([0.0, 1.0, (62.34 - 28.83) / (95.85 - 28.83), 0.0, 1.0], dtype=np.float32),
     )
-    with pytest.raises(ValueError, match="needs each call's raw value"):
+    with pytest.raises(ValueError, match="needs each USV's raw value"):
         ql.compute_condition_values(loudness, durations, None)
 
 
@@ -689,7 +689,7 @@ def test_load_model_cell_refuses_bins_that_disagree_with_the_contract(tmp_path, 
 
 
 def _phase11_session(tmp_path, rng, condition, bins, summary_columns=None):
-    """A session whose rows 0 and 2 are real calls with SAM masks in the low and the
+    """A session whose rows 0 and 2 are real USVs with SAM masks in the low and the
     high frequency rows, a phase 11 cell for ``condition`` and settings pointing at
     it; ``summary_columns`` are added to usv_summary.csv."""
     grid = rng.integers(1, 5, size=(8, 8)).astype(np.int16)
@@ -729,8 +729,8 @@ def _run_capturing_c(root, cfg, mocker, extra_settings=None):
 
 
 def test_infer_and_merge_phase11_bandwidth_reads_the_summary(tmp_path, mocker):
-    """A bandwidth cell decodes each call at its summary freq_bandwidth_hz / 90 kHz,
-    clamped to the training range; a call without a bandwidth gets null columns."""
+    """A bandwidth cell decodes each USV at its summary freq_bandwidth_hz / 90 kHz,
+    clamped to the training range; a USV without a bandwidth gets null columns."""
     rng = np.random.default_rng(21)
     condition = {"name": "bandwidth", "source": "usv_summary freq_bandwidth_hz", "decode": "exact"}
     root, session_id, cfg, _masks = _phase11_session(
@@ -752,8 +752,8 @@ def test_infer_and_merge_phase11_bandwidth_reads_the_summary(tmp_path, mocker):
 
 def test_infer_and_merge_phase11_grid_counts_against_the_decode_grid(tmp_path, mocker):
     """A 'grid' cell clips to the ends of its decode grid, which can extend past the
-    training range (as the v3 mean-frequency grid does), so the log counts calls against
-    the grid's ends: a call between the training maximum and the grid's end decodes at
+    training range (as the v3 mean-frequency grid does), so the log counts USVs against
+    the grid's ends: a USV between the training maximum and the grid's end decodes at
     its own grid point and is not counted, while one beyond the grid's end is."""
     rng = np.random.default_rng(23)
     condition = {"name": "bandwidth", "source": "usv_summary freq_bandwidth_hz", "decode": "grid"}
@@ -792,9 +792,9 @@ def test_infer_and_merge_phase11_bandwidth_needs_the_summary_column(tmp_path, mo
 
 
 def test_infer_and_merge_phase11_loudness_reads_the_summary_loudness(tmp_path, mocker):
-    """A loudness cell is decoded at each call's loudness_db (the absolute level
+    """A loudness cell is decoded at each USV's loudness_db (the absolute level
     generate-usv-acoustic-features measured from the audio over the SAM mask), mapped
-    through db_range and snapped to the decode grid; a call without a loudness_db
+    through db_range and snapped to the decode grid; a USV without a loudness_db
     gets null columns, and a summary without the column raises."""
     rng = np.random.default_rng(23)
     condition = {"name": "loudness", "db_range": [28.83, 95.85], "decode": "grid"}
@@ -831,14 +831,14 @@ _ENTROPY_CONDITION = {
 def test_compute_condition_values_scales_spectral_entropy_by_the_training_range():
     """The spectral entropy map: (H - entropy_min) / (entropy_max - entropy_min) in
     float64 rounded to float32, clamped to [0, 1] beyond the training range, NaN
-    kept for a call without an entropy."""
+    kept for a USV without an entropy."""
     low, high = _ENTROPY_CONDITION["entropy_min"], _ENTROPY_CONDITION["entropy_max"]
     raw = np.array([low, high, 2.5, 0.3, 6.0, np.nan])
     got = ql.compute_condition_values(_ENTROPY_CONDITION, np.zeros(6, dtype=np.int64), None, raw)
     assert got.dtype == np.float32
     np.testing.assert_array_equal(got[:5], np.array([0.0, 1.0, (2.5 - low) / (high - low), 0.0, 1.0], dtype=np.float32))
     assert np.isnan(got[5])
-    with pytest.raises(ValueError, match="needs each call's raw value"):
+    with pytest.raises(ValueError, match="needs each USV's raw value"):
         ql.compute_condition_values(_ENTROPY_CONDITION, np.zeros(1, dtype=np.int64), None)
 
 
@@ -855,9 +855,9 @@ def test_enforce_training_contract_accepts_spectral_entropy_with_a_range():
 
 
 def test_infer_and_merge_spectral_entropy_reads_the_summary_and_snaps_to_the_grid(tmp_path, mocker):
-    """A spectral entropy cell is decoded at each call's summary spectral_entropy,
+    """A spectral entropy cell is decoded at each USV's summary spectral_entropy,
     scaled by the contract's training range, clamped to [0, 1] and snapped to the
-    nearest decode-grid point; a call without an entropy gets null columns, and a
+    nearest decode-grid point; a USV without an entropy gets null columns, and a
     summary without the column raises."""
     rng = np.random.default_rng(24)
     low, high = _ENTROPY_CONDITION["entropy_min"], _ENTROPY_CONDITION["entropy_max"]
@@ -911,10 +911,10 @@ def test_infer_and_merge_model_cell_refuses_wrong_masking(tmp_path, mocker):
 
 def _use_decoder(tmp_path, rng, cfg, decoder, grid):
     """Point ``cfg`` at one kind of model cell for the SAM-mask rule: ``"sam"`` (a
-    cell trained with masking_type sam on every call), ``"require_mask"`` (an
-    unmasked cell whose set kept only calls with a mask), ``"mean_freq"`` (an
+    cell trained with masking_type sam on every USV), ``"require_mask"`` (an
+    unmasked cell whose set kept only USVs with a mask), ``"mean_freq"`` (an
     unmasked cell conditioned on mean frequency, require_mask false) or
-    ``"unmasked"`` (an unmasked cell whose set kept every call)."""
+    ``"unmasked"`` (an unmasked cell whose set kept every USV)."""
     condition, bins = None, None
     if decoder == "mean_freq":
         condition = {"name": "mean_freq", "spectrogram": "masked", "epsilon": 1e-8}
@@ -941,10 +941,10 @@ def _fake_embed_counting(captured):
     ("decoder", "maskless_embedded"),
     [("sam", True), ("require_mask", False), ("mean_freq", False), ("unmasked", True)],
 )
-def test_infer_and_merge_nulls_calls_without_a_sam_mask(tmp_path, mocker, decoder, maskless_embedded):
-    """build_session_masks gives a call without mask instances an all-ones mask. A
-    require_mask training set left such calls out, and a mean-frequency cell would
-    compute c over the whole call, so those decoders give them null qlvm_* columns.
+def test_infer_and_merge_nulls_usvs_without_a_sam_mask(tmp_path, mocker, decoder, maskless_embedded):
+    """build_session_masks gives a USV without mask instances an all-ones mask. A
+    require_mask training set left such USVs out, and a mean-frequency cell would
+    compute c over the whole USV, so those decoders give them null qlvm_* columns.
     A sam decoder whose set kept them under that all-ones mask still embeds them, as
     does an unmasked decoder."""
     rng = np.random.default_rng(17)
@@ -973,7 +973,7 @@ def test_infer_and_merge_nulls_calls_without_a_sam_mask(tmp_path, mocker, decode
 
 @pytest.mark.parametrize("decoder", ["sam", "require_mask", "mean_freq"])
 def test_infer_and_merge_refuses_a_session_without_masks(tmp_path, mocker, decoder):
-    """A session H5 without a mask/<session> group would give every call an all-ones
+    """A session H5 without a mask/<session> group would give every USV an all-ones
     mask, so a decoder that needs masks stops before anything is written."""
     rng = np.random.default_rng(18)
     grid = np.ones((8, 8), dtype=np.int16)
@@ -993,7 +993,7 @@ def test_infer_and_merge_refuses_a_session_without_masks(tmp_path, mocker, decod
 
 
 def test_infer_and_merge_unmasked_decoder_needs_no_masks(tmp_path, mocker):
-    """A decoder trained on every call without masks embeds a session that has no
+    """A decoder trained on every USV without masks embeds a session that has no
     mask/<session> group."""
     rng = np.random.default_rng(19)
     grid = np.ones((8, 8), dtype=np.int16)
@@ -1013,7 +1013,7 @@ def test_infer_and_merge_unmasked_decoder_needs_no_masks(tmp_path, mocker):
 
 
 def _model_cells_session(tmp_path, rng, prefixes=("qlvm", "qlvm_x")):
-    """A session whose rows 0 and 2 are real 64-bin calls with a SAM mask (row 1 a
+    """A session whose rows 0 and 2 are real 64-bin USVs with a SAM mask (row 1 a
     placeholder), one unmasked floor-trained package cell per prefix (all in one
     package, ``<tmp_path>/pkg``) and settings listing them in ``model_cells``. Every
     cell ships its own (unread) label grids (:func:`_model_cell_grids`), as a clustered
@@ -1070,8 +1070,8 @@ def _write_fake_package(tmp_path, root, session_id, cfg, rng, *, baseline_sessio
 
 def _run_model_cells(root, cfg, mocker):
     """Run infer_and_merge with embed_data replaced by a stand-in that records how many
-    spectrograms each call embedded and places every one at the torus center; returns
-    (embedded counts per call, messages)."""
+    spectrograms each USV embedded and places every one at the torus center; returns
+    (embedded counts per USV, messages)."""
     embedded = []
 
     def _fake_embed(lattice, data, params, *_rest):
@@ -1091,7 +1091,7 @@ def _run_model_cells(root, cfg, mocker):
 
 def test_model_cells_write_prefixed_coordinates_only(tmp_path, mocker):
     """Every listed cell places the session and each prefix gets exactly its coordinates
-    <prefix>1/<prefix>2, null where the call was not placed, and no cluster-label column
+    <prefix>1/<prefix>2, null where the USV was not placed, and no cluster-label column
     (the cells' label grids are not read). No model column is written; the stale category
     (qlvm_category), legacy coarse-level (qlvm_supercategory, qlvm_x_supercategory),
     category confidence, model and coordinate columns of the listed prefixes are replaced
@@ -1137,7 +1137,7 @@ def test_model_cells_write_prefixed_coordinates_only(tmp_path, mocker):
 def _to_v3_layout(package_root):
     """Rearrange a fake package from the v2 / v2.1 layout (every file at the cell's or
     package's top level, clusters in ``cluster/<level>/``) into the v3 layout of
-    2026-09-28: ``config/`` for the contract and bins, ``inference/`` for the per-call
+    2026-09-28: ``config/`` for the contract and bins, ``inference/`` for the per-USV
     tables, ``inference/clusters_<level>/`` for the clusters, and the package's
     ``SESSION_H5_BASELINE.tsv`` in ``corpus/``."""
     for cell in sorted(package_root.glob("phase_*/*")):
@@ -1231,8 +1231,8 @@ def test_model_cells_take_package_values_when_the_session_is_verified(tmp_path, 
     ],
 )
 def test_model_cells_fall_back_to_inference_when_the_gate_fails(tmp_path, mocker, failure, reason):
-    """Package rows name calls only by H5 position, so any doubt that the session's
-    rows are the package's -- not in its corpus, H5 rehashed, or a call's duration or
+    """Package rows name USVs only by H5 position, so any doubt that the session's
+    rows are the package's -- not in its corpus, H5 rehashed, or a USV's duration or
     mask count changed -- embeds the session. (A summary out of step with the H5 is
     refused outright: test_infer_and_merge_refuses_a_summary_and_h5_of_different_lengths.)"""
     rng = np.random.default_rng(32)
@@ -1364,11 +1364,11 @@ def test_model_cell_coordinates_of_the_summary_and_production_maps_are_writable(
 
 
 def test_infer_and_merge_sam_inputs_equal_the_masked_training_inputs(tmp_path, mocker):
-    """A masked cell is fed exactly what train-qlvm fed it: the call and its SAM mask
+    """A masked cell is fed exactly what train-qlvm fed it: the USV and its SAM mask
     union resized separately (here time-stretched), the resized mask binarized at 0.5
     and multiplied in (build-qlvm-training-set with apply_mask), then each spectrogram
     min-maxed and the binarized mask multiplied in again (train_qlvm.prepare_split).
-    The mask edge (row 50, column 40 of a 64-bin call) does not fall on the resized
+    The mask edge (row 50, column 40 of a 64-bin USV) does not fall on the resized
     grid, so masking the native spectrogram before the resize would differ there."""
     rng = np.random.default_rng(41)
     grid = np.ones((8, 8), dtype=np.int16)

@@ -17,23 +17,23 @@ the five USV maps of ``os_utils.QLVM_MAPS`` (``qlvm``, ``qlvm_duration``,
 ``qlvm_entropy``, ``qlvm_bandwidth``, ``qlvm_loudness``; cells resolved by
 ``os_utils.qlvm_map_cell_directory``), the squeak map ``os_utils.QLVM_SQUEAK_MAP``
 (``qlvm_squeak``) and the category column ``os_utils.QLVM_CATEGORY_COLUMN``
-(``qlvm_category``) with the per-call agreement and uncertain flag of the
+(``qlvm_category``) with the per-USV agreement and uncertain flag of the
 category bundle (``os_utils.load_qlvm_category_bundle``), which the summaries do
 not carry and the store computes with the assigner's pixel rule
 (``qlvm_categories.assign_categories``). Its layout:
 
 * ``qlvm/<session>/<map>`` -- ``(n, 2)`` float64 coordinates ``<map>1`` /
-  ``<map>2`` of every USV map and of the squeak map, NaN where the call was not
+  ``<map>2`` of every USV map and of the squeak map, NaN where the vocalization was not
   embedded (the squeak map is NaN on every row without a squeak);
 * ``qlvm/<session>/status`` -- ``(n,)`` int8 bit field of the USV maps'
   embedding rule (``PRODUCTION_STATUS_CODES``): 0 embedded, bit 0 (1) too long
   (duration at or above the regular cell's ``length_threshold``), bit 1 (2) no
   SAM mask, bit 2 (4) pure squeak (``squeak`` true, ``usv`` false), bit 3 (8)
-  no call frames (duration 0);
+  no vocalization frames (duration 0);
 * ``qlvm/<session>/qlvm_category`` -- ``(n,)`` int16 category ``1..k`` (0 where
-  the call is not on the regular map);
+  the USV is not on the regular map);
 * ``qlvm/<session>/qlvm_category_agreement`` -- ``(n,)`` float64 consensus
-  agreement of the call's pixel (NaN where not on the regular map);
+  agreement of the USV's pixel (NaN where not on the regular map);
 * ``qlvm/<session>/qlvm_category_uncertain`` -- ``(n,)`` bool, agreement below
   the bundle's ``uncertain_agreement``;
 * ``qlvm_models/<map>/`` -- provenance attrs of every map's production cell
@@ -43,16 +43,16 @@ not carry and the store computes with the assigner's pixel rule
   and its identity, directory, model id, names, descriptions, nomenclature and
   build config as attrs;
 * ``sessions`` -- one row per session: id, the SHA-256 of its spectrogram H5
-  and of its USV summary, its row count, the number of calls on the regular map
+  and of its USV summary, its row count, the number of vocalizations on the regular map
   and on the squeak map.
 
 A production session is refused when its summary lacks a coordinate column of
 any map, ``qlvm_category`` or the ``usv`` / ``squeak`` flags; when the regular
 map's coordinates are not present exactly where the status is 0 (the rule
-``infer-qlvm-latents`` embeds by), a conditional map places a call the status
-excludes, or the squeak map places a call without a squeak; or when
+``infer-qlvm-latents`` embeds by), a conditional map places a vocalization the status
+excludes, or the squeak map places a vocalization without a squeak; or when
 ``qlvm_category`` is not present exactly where ``qlvm1`` / ``qlvm2`` are or
-differs from the bundle's category of the call's pixel (the summary was
+differs from the bundle's category of the USV's pixel (the summary was
 labelled with another bundle). The output is
 ``spectrograms_production_<S>sessions_<N>vocalizations_<UTC timestamp>.h5``.
 
@@ -62,7 +62,7 @@ package contributed to the sessions' ``*_usv_summary.csv``, plus the package
 tables needed to interpret it:
 
 * ``spectrogram/<session>/qlvm_dim`` -- ``(n, 2)`` float64 coordinates of the
-  regular (phase 6) model, ``qlvm1`` / ``qlvm2``, NaN where a call was not
+  regular (phase 6) model, ``qlvm1`` / ``qlvm2``, NaN where a vocalization was not
   embedded; kept for the readers that pool ``qlvm_dim`` (the torus-traversal
   video);
 * ``qlvm/<session>/<prefix>`` -- ``(n, 2)`` float64 coordinates of every
@@ -71,7 +71,7 @@ tables needed to interpret it:
 * ``qlvm/<session>/<label column>`` -- ``(n,)`` int16 cluster labels
   (``qlvm_category``, ``qlvm_supercategory``, ``qlvm_dur_category``, ...),
   0 where the summary has no label (package labels start at 1);
-* ``qlvm/<session>/status`` -- ``(n,)`` int8 per call: 0 embedded, 1 too long
+* ``qlvm/<session>/status`` -- ``(n,)`` int8 per vocalization: 0 embedded, 1 too long
   (duration at or above the regular cell's ``length_threshold``), 2 no SAM
   mask, 3 both;
 * ``qlvm_models/<prefix>/`` -- provenance attrs of each model's package cell
@@ -93,8 +93,8 @@ The v3 store is meant for the package's corpus sessions (``--package-corpus``
 resolves them from the package's ``SESSION_H5_BASELINE.tsv``). Every session is
 validated before anything is written: its spectrogram H5 must be the one the
 package was built from (baseline SHA-256), its summary must have one row per
-H5 row and carry the QLVM columns, and the embedded calls must be exactly the
-calls the package's rules admit.
+H5 row and carry the QLVM columns, and the embedded vocalizations must be exactly the
+vocalizations the package's rules admit.
 
 The v3 output is written to ``spectrograms_root`` as
 ``spectrograms_qlvmv3_<S>sessions_<N>vocalizations_<UTC timestamp>.h5``.
@@ -244,7 +244,7 @@ V3_MODEL_CELLS = {
     "qlvm_loud": "phase11_cond_loudness_floor/natural_5strata_N29000_unmasked_floor",
 }
 
-# Per-call embedding status codes of qlvm/<session>/status (bit 0: too long, bit 1: no SAM mask).
+# Per-vocalization embedding status codes of qlvm/<session>/status (bit 0: too long, bit 1: no SAM mask).
 STATUS_EMBEDDED = 0
 STATUS_TOO_LONG = 1
 STATUS_NO_MASK = 2
@@ -271,9 +271,9 @@ PRODUCTION_STORE_NAME_PREFIX = "spectrograms_production"
 # the squeak map.
 PRODUCTION_STORE_MAPS = (*QLVM_MAPS, QLVM_SQUEAK_MAP)
 
-# Per-call status bits of a production store's qlvm/<session>/status: the reasons
-# the USV maps' embedding rule (infer-qlvm-latents) leaves a call off their tori.
-# 0 means the call is embedded on the regular map; any set bit means it is not.
+# Per-vocalization status bits of a production store's qlvm/<session>/status: the reasons
+# the USV maps' embedding rule (infer-qlvm-latents) leaves a vocalization off their tori.
+# 0 means the vocalization is embedded on the regular map; any set bit means it is not.
 PRODUCTION_STATUS_TOO_LONG = 1
 PRODUCTION_STATUS_NO_MASK = 2
 PRODUCTION_STATUS_PURE_SQUEAK = 4
@@ -283,10 +283,10 @@ PRODUCTION_STATUS_CODES = {
     PRODUCTION_STATUS_TOO_LONG: "bit 0: too long (duration >= length_threshold of the regular cell)",
     PRODUCTION_STATUS_NO_MASK: "bit 1: no SAM mask",
     PRODUCTION_STATUS_PURE_SQUEAK: "bit 2: pure squeak (squeak true, usv false)",
-    PRODUCTION_STATUS_NO_FRAMES: "bit 3: no call frames (duration 0)",
+    PRODUCTION_STATUS_NO_FRAMES: "bit 3: no vocalization frames (duration 0)",
 }
 
-# Names of the per-call category agreement / uncertain datasets of a production
+# Names of the per-USV category agreement / uncertain datasets of a production
 # store (qlvm_category_agreement, qlvm_category_uncertain): the confidence the
 # summary does not carry, named as the columns an earlier assigner wrote.
 CATEGORY_AGREEMENT_DATASET = f"{QLVM_CATEGORY_MAP}{CATEGORY_CONFIDENCE_SUFFIXES[0]}"
@@ -350,11 +350,11 @@ def package_session_types(regular_cell: pathlib.Path) -> dict[str, str]:
     Description
     -----------
     Each corpus session's type (``FF``, ``MF_intact``, ``MF_mute``, ``MM`` or
-    ``lone_male``) as the package records it per call in the regular cell's
+    ``lone_male``) as the package records it per vocalization in the regular cell's
     ``inference/recon_mse_breakdown.npz`` (``session_types``, aligned with
     ``spec_id`` = ``<session>_<H5 row>``). The package README names this array,
     not the corpus ``session_type`` column (which does not separate
-    ``MF_intact`` from ``MF_mute``), as the source of a call's session type.
+    ``MF_intact`` from ``MF_mute``), as the source of a vocalization's session type.
 
     Parameters
     ----------
@@ -369,7 +369,7 @@ def package_session_types(regular_cell: pathlib.Path) -> dict[str, str]:
     Raises
     ------
     ValueError
-        A session's calls carry more than one type.
+        A session's vocalizations carry more than one type.
     """
     with np.load(cell_file(regular_cell, "recon_mse_breakdown.npz"), allow_pickle=False) as breakdown:
         spec_id = breakdown["spec_id"].astype(str)
@@ -438,7 +438,7 @@ def embedding_status(durations: np.ndarray, mask_counts: np.ndarray, length_thre
     """
     Description
     -----------
-    Each call's embedding status under the package's corpus rules: a call is
+    Each vocalization's embedding status under the package's corpus rules: a vocalization is
     embedded (0) when its duration is below the cell contract's
     ``length_threshold`` and it has at least one SAM mask instance; otherwise
     its status sets bit 0 when it is too long (``duration >= length_threshold``)
@@ -473,14 +473,14 @@ def production_embedding_status(
     """
     Description
     -----------
-    Each call's embedding status under the rule ``infer-qlvm-latents`` embeds the
+    Each vocalization's embedding status under the rule ``infer-qlvm-latents`` embeds the
     production USV maps by (the regular cell's training contract: SAM-masked,
-    ``require_mask`` true, ``length_threshold``): a call is embedded (0) when it
-    has call frames (``duration > 0``), its duration is below
+    ``require_mask`` true, ``length_threshold``): a vocalization is embedded (0) when it
+    has vocalization frames (``duration > 0``), its duration is below
     ``length_threshold``, it has at least one SAM mask instance and it is not a
     pure squeak (``squeak`` true, ``usv`` false; the USV maps skip those). Every
-    reason a call is not embedded sets one bit (``PRODUCTION_STATUS_CODES``):
-    1 too long, 2 no SAM mask, 4 pure squeak, 8 no call frames, so e.g. 6 is a
+    reason a vocalization is not embedded sets one bit (``PRODUCTION_STATUS_CODES``):
+    1 too long, 2 no SAM mask, 4 pure squeak, 8 no vocalization frames, so e.g. 6 is a
     pure squeak without a SAM mask.
 
     Parameters
@@ -564,6 +564,25 @@ def production_map_provenance(qlvm_map: str) -> dict:
 
 
 class SpectrogramStoreConsolidator:
+    """
+    Description
+    -----------
+    Consolidates the per-session spectrogram H5 files and USV summaries of a
+    list of sessions into one spectrogram store, in either the ``"production"``
+    mode (production QLVM maps plus the category bundle) or the ``"v3"`` mode
+    (the columns and tables of one QLVM model package). Both modes validate every
+    session first and raise one ``ValueError`` listing all problems before
+    anything is written, then write the store atomically one session at a time.
+
+    It holds ``root_directories`` (the sessions, in store order),
+    ``input_parameter_dict`` (processing settings: ``spectrograms_root``, the
+    ``generate_spectrograms`` block and
+    ``consolidate_spectrogram_store.store_mode``), ``message_output``,
+    ``package_root`` (the v3 QLVM model package, ``V3_PACKAGE_ROOT`` by default)
+    and ``app_context_bool`` (GUI vs. CLI context). The entry method is
+    ``consolidate_spectrogram_store``, which returns the path of the written
+    store. It is constructed by the command-line entry point of this module.
+    """
 
     def __init__(self,
                  root_directories: list[str] | None = None,
@@ -628,7 +647,7 @@ class SpectrogramStoreConsolidator:
         ``<prefix>_category`` and ``<prefix>_supercategory`` for the others,
         :func:`model_cell_label_columns`); a session without a session type
         in the package; and an embedding that disagrees with the package's rules
-        -- the per-call status (:func:`embedding_status`, from the H5 durations
+        -- the per-vocalization status (:func:`embedding_status`, from the H5 durations
         and the bincount of ``mask/<session>/spectrogram_index``, against the
         regular cell's ``length_threshold``) must be 0 exactly where
         ``qlvm1`` / ``qlvm2`` are non-null, and each model's labels must be
@@ -998,7 +1017,7 @@ class SpectrogramStoreConsolidator:
         if regular_contract['require_mask'] is not True:
             error_message = (
                 f"The regular production cell {models[QLVM_REGULAR_MAP]['cell_directory']} does not set require_mask "
-                f"in its training contract; the production store's status rule (a call without a SAM mask is not "
+                f"in its training contract; the production store's status rule (a vocalization without a SAM mask is not "
                 f"embedded) would not describe its embedding."
             )
             raise ValueError(error_message)
@@ -1199,12 +1218,12 @@ class SpectrogramStoreConsolidator:
         Turns one validated session's production QLVM summary columns into the
         arrays the production store writes and checks them. Coordinates become
         ``(n, 2)`` float64 per map (null -> NaN); ``<map>1`` and ``<map>2`` must
-        be null on the same rows. The regular map must place a call exactly
+        be null on the same rows. The regular map must place a vocalization exactly
         where the status is 0, a conditional map only where it is 0 (a
-        conditional decoder may also leave out a call without a conditioning
+        conditional decoder may also leave out a vocalization without a conditioning
         value) and the squeak map only where the summary's ``squeak`` flag is
         true. ``qlvm_category`` must be present exactly where ``qlvm1`` /
-        ``qlvm2`` are and equal the bundle's category of each call's pixel
+        ``qlvm2`` are and equal the bundle's category of each USV's pixel
         (:func:`qlvm_categories.assign_categories`, the assigner's rule), whose
         agreement and uncertain flag are kept too. The arrays are stored in
         ``session['coordinates']``, ``session['category']`` (int16, 0 off the
@@ -1272,7 +1291,7 @@ class SpectrogramStoreConsolidator:
             n_differ = int(np.count_nonzero(stored != assigned['category']))
             if n_differ:
                 problems.append(
-                    f"{session_id}: {n_differ} calls' {QLVM_CATEGORY_COLUMN} differs from the category bundle's "
+                    f"{session_id}: {n_differ} USVs' {QLVM_CATEGORY_COLUMN} differs from the category bundle's "
                     f"({bundle['identity']}); the summary was labelled with another bundle, run "
                     f"assign-qlvm-categories on it"
                 )

@@ -96,6 +96,26 @@ def _read_int16_snippet(snippet_path: Path, expected_rate_hz: int | None = None)
 
 
 class AudioGenerator:
+    """
+    Description
+    -----------
+    Builds audio files for playback experiments and listening: naturalistic USV
+    playback WAVs that replay real recorded bouts from a naturalistic USV
+    repository with their real timing, USV playback WAVs that concatenate
+    individual USV WAVs with a set inter-USV period, and frequency-shifted
+    (human-audible) segments of a session's recording.
+
+    The constructor takes keyword arguments only and stores each as an
+    attribute of the same name: ``exp_id``, ``root_directory``,
+    ``create_playback_settings_dict``, ``freq_shift_settings_dict`` and
+    ``message_output`` (any other key raises ``TypeError``; a key not passed
+    leaves its attribute unset). It also sets ``app_context_bool`` (GUI vs. CLI
+    context); the class attributes ``command_addition`` and
+    ``shell_usage_bool`` adapt the shell commands to Windows vs. other systems.
+    The entry methods are ``create_naturalistic_usv_playback_wav``,
+    ``create_usv_playback_wav`` and ``frequency_shift_audio_segment``. It is
+    constructed by ``analyses/analyze_data.py``.
+    """
 
     if os.name == 'nt':
         command_addition = 'cmd /c '
@@ -112,16 +132,24 @@ class AudioGenerator:
 
         Parameters
         ----------
+        **kwargs (dict)
+            Keyword arguments, each stored as an instance attribute of the same
+            name. Only the keys listed below are accepted; any other key raises
+            ``TypeError``. A key that is not passed leaves its attribute unset
+            (there is no ``None`` fallback), so a method that reads it raises
+            ``AttributeError``.
         exp_id (str)
-            Base file server directory.
+            Base file server directory: the experimenter's directory name under
+            the file-server root, used to build the ``usv_playback_experiments``
+            input and output paths.
         root_directory (str)
-            Root directory for data; defaults to None.
+            Root directory for data; optional (see above).
         create_playback_settings_dict (dict)
-            Settings for creating USV playback files; defaults to None.
+            Settings for creating USV playback files; optional (see above).
         freq_shift_settings_dict (dict)
-            Frequency shift settings; defaults to None.
+            Frequency shift settings; optional (see above).
         message_output (function)
-            Defines output messages; defaults to None.
+            Defines output messages; optional (see above).
 
         Returns
         -------
@@ -292,7 +320,7 @@ class AudioGenerator:
                       tqdm(total=total_acceptable_playback_time, desc="Generating Playback", unit="s") as pbar):
 
                     # fixed lead-in silence at the very start (stands in for the first bout's
-                    # preceding pause, so the file opens on a call after a short, constant gap)
+                    # preceding pause, so the file opens on a USV after a short, constant gap)
                     edge_silence_samples = int(np.ceil(edge_silence_seconds * sampling_rate))
                     replay_chunks.append(np.zeros(edge_silence_samples, dtype=np.int16))
                     meta_entries.append((edge_silence_samples, 'ISI'))
@@ -393,7 +421,7 @@ class AudioGenerator:
                         pbar.update(update_amount)
                         last_time_updated = total_playback_time_created
 
-                    # fixed lead-out silence at the very end (so the file closes on a call
+                    # fixed lead-out silence at the very end (so the file closes on a USV
                     # followed by a short, constant gap rather than a truncated pause)
                     replay_chunks.append(np.zeros(edge_silence_samples, dtype=np.int16))
                     meta_entries.append((edge_silence_samples, 'ISI'))

@@ -3,7 +3,7 @@
 Train the YOLO box detector used by the in-house mask-generation step.
 
 :mod:`generate_masks` (method ``boxprompt``, detector ``yolo``) proposes one box
-per call with a trained Ultralytics YOLO model, then prompts SAM2 per box. This
+per USV with a trained Ultralytics YOLO model, then prompts SAM2 per box. This
 module fine-tunes that YOLO detector from a COCO-pretrained checkpoint
 (``yolo11n.pt`` by default) on the single-class USV dataset written by
 :mod:`export_yolo_dataset`, and copies the resulting ``best.pt`` to a stable path

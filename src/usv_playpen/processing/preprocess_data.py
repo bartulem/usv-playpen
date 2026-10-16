@@ -83,6 +83,14 @@ def _stamp_processing_version(root_directory: str | pathlib.Path) -> None:
 
 
 class Stylist:
+    """
+    Description
+    -----------
+    Runs the processing (preprocessing) steps of the pipeline over a list of
+    session root directories: :meth:`prepare_data_for_analyses` walks the
+    processing booleans in the settings and dispatches each enabled step in
+    pipeline order. Constructor parameters are documented in ``__init__``.
+    """
 
     def __init__(self,
                  exp_settings_dict: dict = None,
@@ -165,7 +173,7 @@ class Stylist:
         (20) computes USV acoustic features
         (21) infers QLVM latents (the regular map qlvm1 / qlvm2 and the
              qlvm_duration / qlvm_entropy / qlvm_bandwidth / qlvm_loudness
-             conditional maps), then labels the regular map's calls with
+             conditional maps), then labels the regular map's USVs with
              the QLVM category bundle (qlvm_category) and embeds the
              squeaks in the squeak QLVM (qlvm_squeak1 / qlvm_squeak2)
 
@@ -398,7 +406,7 @@ class Stylist:
                                                     input_parameter_dict=self.input_parameter_dict,
                                                     message_output=self.message_output).merge_features_into_summary()
 
-                    # # # infer QLVM latents, label the regular map's calls with the QLVM categories
+                    # # # infer QLVM latents, label the regular map's USVs with the QLVM categories
                     # (re-inferring drops qlvm_category, so the two always run together) and embed the
                     # squeaks with the squeak QLVM (qlvm_squeak1 / qlvm_squeak2)
                     if self.input_parameter_dict['processing_booleans']['infer_qlvm_latents']:
@@ -957,6 +965,25 @@ def add_broadband_low_band_variance_cli(ctx, root_directories, sessions_file, us
         raise click.UsageError("Give --root-directories, --sessions-file or --usv-counts-csv.")
 
     def one(root: str) -> str:
+        """
+        Description
+        -----------
+        Runs :func:`add_broadband_low_band_variance` on one session root
+        (with its messages silenced) and renders the outcome as one line.
+        Any exception is caught and reported in the line, so one failing
+        session does not stop the batch.
+
+        Parameters
+        ----------
+        root (str)
+            Session root directory.
+
+        Returns
+        -------
+        line (str)
+            ``"<root>: <status> (<reason>)"`` on success, or
+            ``"<root>: FAILED (<error>)"`` when the session raised.
+        """
         try:
             result = add_broadband_low_band_variance(root, settings, message_output=lambda *_args, **_kwargs: None, force=force)
             return f"{root}: {result['status']} ({result['reason']})"
@@ -1284,7 +1311,7 @@ def das_command_line_inference_cli(ctx, root_directory, **kwargs):
 @click.option('--seam-repair-width-tolerance-above-ms', 'seam_repair_width_tolerance_above_ms', type=float, default=None, required=False, help='Seam repair: merged-gap width gate reach above each stride multiple (ms).')
 @click.option('--seam-repair-raw-stop-tolerance-s', 'seam_repair_raw_stop_tolerance_s', type=float, default=None, required=False, help='Seam repair: maximum distance (s) between a merged stop and a raw ladder-gap stop for corroboration.')
 @click.option('--seam-repair-snippet-margin-s', 'seam_repair_snippet_margin_s', type=float, default=None, required=False, help='Seam repair: audio margin (s) excised around each flagged pair for re-detection.')
-@click.option('--seam-repair-max-boundary-shift-s', 'seam_repair_max_boundary_shift_s', type=float, default=None, required=False, help='Seam repair: maximum outward correction (s) permitted per call edge.')
+@click.option('--seam-repair-max-boundary-shift-s', 'seam_repair_max_boundary_shift_s', type=float, default=None, required=False, help='Seam repair: maximum outward correction (s) permitted per USV edge.')
 @click.pass_context
 def summarize_das_findings_cli(ctx, root_directory, **kwargs):
     """

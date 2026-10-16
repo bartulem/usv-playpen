@@ -23,9 +23,7 @@ import sleap_anipose
 import usv_playpen
 from usv_playpen.processing.anipose_operations import ConvertTo3D, find_mouse_names
 
-# ---------------------------------------------------------------------------
 # Shared fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -46,9 +44,7 @@ def session_with_video_dir(tmp_path):
     return tmp_path, sess_dir
 
 
-# ---------------------------------------------------------------------------
 # ConvertTo3D.__init__
-# ---------------------------------------------------------------------------
 
 
 def test_convert_to_3d_init_resolves_session_root_joint_date_dir(
@@ -101,9 +97,7 @@ def test_convert_to_3d_init_picks_first_sorted_session_dir(processing_settings, 
     assert converter.session_root_name == "20230101"
 
 
-# ---------------------------------------------------------------------------
 # sleap_file_conversion (subprocess + wait_for_subprocesses)
-# ---------------------------------------------------------------------------
 
 
 def test_sleap_file_conversion_invokes_subprocess_per_slp(
@@ -172,9 +166,7 @@ def test_sleap_file_conversion_no_slp_files(processing_settings,
     assert waiter.call_args.kwargs["subps"] == []
 
 
-# ---------------------------------------------------------------------------
 # conduct_anipose_calibration (sleap_anipose.draw_board / .calibrate)
-# ---------------------------------------------------------------------------
 
 
 def test_conduct_anipose_calibration_draws_board_when_not_provided(
@@ -222,9 +214,7 @@ def test_conduct_anipose_calibration_skips_draw_when_board_provided(
     assert calib_mock.call_count == 1
 
 
-# ---------------------------------------------------------------------------
 # conduct_anipose_triangulation
-# ---------------------------------------------------------------------------
 
 
 def test_conduct_anipose_triangulation_raises_when_no_calibration(
@@ -328,7 +318,6 @@ def test_conduct_anipose_triangulation_session_branch_reads_frame_count(
     assert cfg["conduct_anipose_triangulation"]["frame_restriction"] is None
 
 
-# ---------------------------------------------------------------------------
 # translate_rotate_metric — arena + animal transform branches
 #
 # Builds a synthetic square arena points3d.h5 (the four North/West/South/East
@@ -337,7 +326,6 @@ def test_conduct_anipose_triangulation_session_branch_reads_frame_count(
 # metric-conversion + translate + multi-axis rotation pipeline through to a
 # written *_translated_rotated_metric.h5. The 'animal' branch additionally
 # transforms a synthetic 15-node mouse points3d.h5.
-# ---------------------------------------------------------------------------
 
 
 # Real arena skeleton: North/West/South/East occupy indices 0..3, followed by

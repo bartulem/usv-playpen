@@ -77,7 +77,7 @@ def _build_session(tmp_path: pathlib.Path, excluded_channels: list[str] | None =
     Creates a synthetic session: a broadband memmap of four channels (two master,
     two slave) of 2 s of noise plus a 5 kHz tone, and a summary with a 50 ms
     squeak (row 0), a 0.6 s both segment whose squeak lies late in the segment
-    (row 1, longer than the 64-frame test window), a noise row without a call
+    (row 1, longer than the 64-frame test window), a noise row without a vocal
     class (row 2), a usv row (row 3) and a 4 ms squeak without a squeak
     envelope, too short for one STFT frame (row 4). Optionally writes session
     metadata excluding channels.
@@ -294,7 +294,7 @@ def test_builder_reports_a_broken_session_and_writes_the_rest(tmp_path):
 
 
 def test_squeak_store_thumbnail_reads_a_row_and_scales_it(tmp_path):
-    """The tile is the call's stored frames scaled over the top dynamic range; unknown or empty rows give None."""
+    """The tile is the squeak's stored frames scaled over the top dynamic range; unknown or empty rows give None."""
     with h5py.File(tmp_path / "tiny.h5", "w") as h5:
         group = h5.create_group("spectrogram/s")
         tile_db = np.full((4, 10), -80.0)

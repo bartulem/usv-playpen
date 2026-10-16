@@ -241,9 +241,7 @@ def test_summarize_das_findings_zero_after_merge(processing_settings, tmp_path,
     # And the function did not raise.
 
 
-# ===========================================================================
 # Vocalocator
-# ===========================================================================
 
 
 def _make_vocalocator(tmp_path, processing_settings, **extras):
@@ -277,7 +275,7 @@ def test_prepare_for_vocalocator_animal_id_encodes_subject_sex(
 
     with h5py.File(tmp_path / "audio" / "sound_localization" / "dset.h5", "r") as f:
         animal_id = f["animal_id"][:]
-    # two USVs in the fixture -> the codes are tiled across calls
+    # two USVs in the fixture -> the codes are tiled across USVs
     assert animal_id.shape == (2, 2)
     for row in animal_id:
         assert list(row) == expected_codes
@@ -342,7 +340,7 @@ def test_vocalocator_init_accepts_expected_kwargs():
 
 def test_vocalocator_run_vocalocator_subprocess_invocation(tmp_path, processing_settings, mocker):
     """run_vocalocator runs the subprocess and writes assessment_assn.npy."""
-    # ---- minimal disk setup needed before the method's calls -----------
+    # minimal disk setup needed before the method's calls
     audio_dir = tmp_path / "audio"
     audio_dir.mkdir()
     video_dir = tmp_path / "video" / "track"
@@ -367,7 +365,7 @@ def test_vocalocator_run_vocalocator_subprocess_invocation(tmp_path, processing_
         "emitter": [None, None],
     }).write_csv(audio_dir / "sess_usv_summary.csv")
 
-    # ---- assessment.h5 produced "by the subprocess" --------------------
+    # assessment.h5 produced "by the subprocess"
     assessment_h5 = sl_dir / "assessment.h5"
     n_voc = 2
     raw = np.zeros((n_voc, 27), dtype=np.float32)
@@ -379,7 +377,7 @@ def test_vocalocator_run_vocalocator_subprocess_invocation(tmp_path, processing_
         f.create_dataset("scaled_locations", data=scaled)
         f.attrs["model_config"] = json.dumps(model_config)
 
-    # ---- mock everything subprocess-y ----------------------------------
+    # mock everything subprocess-y
     mocker.patch("usv_playpen.processing.assign_vocalizations.subprocess.run",
                  return_value=MagicMock(returncode=0))
     mocker.patch("usv_playpen.processing.assign_vocalizations.smart_wait")
@@ -487,9 +485,7 @@ def test_vocalocator_run_vocalocator_ssl_empty_assignments_no_crash(tmp_path,
     assert out.height == 0
 
 
-# ===========================================================================
 # summarize_das_findings — happy path with synthetic multi-channel data
-# ===========================================================================
 
 
 def _make_summary_fixture(tmp_path: Path,
@@ -507,7 +503,7 @@ def _make_summary_fixture(tmp_path: Path,
     annot_dir = tmp_path / "audio" / "das_annotations"
     annot_dir.mkdir(parents=True)
 
-    # Write per-channel CSVs with `n_usv` real calls + 1 noise row each
+    # Write per-channel CSVs with `n_usv` real USVs + 1 noise row each
     for ch in channels:
         rows = []
         for i in range(n_usv):
@@ -528,7 +524,7 @@ def _make_summary_fixture(tmp_path: Path,
     n_samples = int(sampling_rate * 5)  # 5 seconds of audio
     audio = np.zeros((n_samples, n_audio_channels), dtype=np.int16)
     # Inject the SAME waveform on every channel at the USV start times (a
-    # real call reaches all microphones with one shared time-frequency
+    # real USV reaches all microphones with one shared time-frequency
     # pattern), so the correlation/coherence gate scores the fixture USVs as
     # genuine rather than as uncorrelated per-channel noise.
     rng = np.random.default_rng(0)
@@ -751,9 +747,7 @@ def test_summarize_das_findings_missing_mmap_reports_real_cause(
     assert "no das annotations" not in reported
 
 
-# ===========================================================================
 # Phase 3 merge — greedy interval union
-# ===========================================================================
 
 
 def _write_channel_annotations(annot_dir, channel: str, intervals: list) -> None:
@@ -799,8 +793,8 @@ def _run_merge_only(tmp_path, mocker, processing_settings, channel_intervals: di
     return pls.read_csv(str(summaries[0]))
 
 
-def test_merge_single_call_spans_the_outermost_channel(processing_settings, tmp_path, mocker):
-    """One call heard on several channels becomes one USV spanning the union of
+def test_merge_single_usv_spans_the_outermost_channel(processing_settings, tmp_path, mocker):
+    """One vocalization heard on several channels becomes one USV spanning the union of
     their detections, so the channel that heard the faint edges sets the bounds."""
     df = _run_merge_only(tmp_path, mocker, processing_settings, {
         "ch01": [(0.100, 0.150)],
@@ -813,8 +807,8 @@ def test_merge_single_call_spans_the_outermost_channel(processing_settings, tmp_
     assert df["chs_count"][0] == 3
 
 
-def test_merge_separated_calls_stay_separate(processing_settings, tmp_path, mocker):
-    """Calls with real silence between them are never joined."""
+def test_merge_separated_usvs_stay_separate(processing_settings, tmp_path, mocker):
+    """USVs with real silence between them are never joined."""
     df = _run_merge_only(tmp_path, mocker, processing_settings, {
         "ch01": [(0.10, 0.15), (0.50, 0.55)],
         "ch02": [(0.10, 0.15), (0.50, 0.55)],
@@ -823,12 +817,12 @@ def test_merge_separated_calls_stay_separate(processing_settings, tmp_path, mock
     assert df["start"].to_list() == pytest.approx([0.10, 0.50])
 
 
-def test_merge_bridging_segment_joins_calls(processing_settings, tmp_path, mocker):
-    """A single channel whose detection spans the gap joins the calls either side.
+def test_merge_bridging_segment_joins_usvs(processing_settings, tmp_path, mocker):
+    """A single channel whose detection spans the gap joins the USVs either side.
 
     This is the accepted cost of the union: transitive overlap means one long
     detection fuses its neighbours. The coverage-watershed merge that replaced it
-    avoided this but clipped faint call edges to do so, which is the worse error,
+    avoided this but clipped faint USV edges to do so, which is the worse error,
     so the behaviour is pinned here deliberately rather than guarded against.
     """
     df = _run_merge_only(tmp_path, mocker, processing_settings, {
@@ -892,7 +886,7 @@ def test_summarize_das_findings_skips_metadata_excluded_channel(
 
 def _make_gate_fixture(tmp_path: Path, channels: tuple, audio: np.ndarray,
                        sampling_rate: int = 250000) -> None:
-    """Write per-channel annotation CSVs (one 50 ms call at 0.1 s per channel)
+    """Write per-channel annotation CSVs (one 50 ms USV at 0.1 s per channel)
     plus the given 24-channel audio as the hpss mmap, for gate-behavior tests."""
     annot_dir = tmp_path / "audio" / "das_annotations"
     annot_dir.mkdir(parents=True)
@@ -968,13 +962,13 @@ def test_summarize_das_findings_excluded_channel_cannot_fail_amplitude_check(
     processing_settings, tmp_path, mocker
 ):
     """A loud artifact on a hardware-excluded channel must not become the
-    peak-amplitude channel and knock out a genuine call via condition_0: the
+    peak-amplitude channel and knock out a genuine USV via condition_0: the
     amplitude scan runs over eligible channels only."""
     sr = 250000
     rng = np.random.default_rng(0)
     audio = np.zeros((sr, 24), dtype=np.int16)
     s, e = int(0.1 * sr), int(0.15 * sr)
-    # a genuine call: one shared waveform on every channel...
+    # a genuine USV: one shared waveform on every channel...
     audio[s:e, :] = rng.integers(-8000, 8000, size=(e - s, 1), dtype=np.int16)
     # ...plus a much louder artifact on the excluded channel m_ch04 (column 3).
     audio[s:e, 3] = rng.integers(-30000, 30000, size=e - s, dtype=np.int16)
@@ -1464,7 +1458,7 @@ def test_shipped_assign_vocalizations_block_schema():
 
 def test_phase4_all_zero_window_fails_loud(tmp_path, processing_settings, mocker):
     """A truncated/corrupt concatenated mmap (all-zero audio where DAS detected
-    calls) must raise, not silently classify real calls as noise."""
+    USVs) must raise, not silently classify real USVs as noise."""
     _make_summary_fixture(tmp_path, n_usv=3, channels=("ch01", "ch02"))
     # Zero the entire mmap: DAS detections exist but the concatenated audio has
     # no content at their windows (the truncated-write failure signature).
@@ -1487,9 +1481,7 @@ def test_phase4_all_zero_window_fails_loud(tmp_path, processing_settings, mocker
         fmv.summarize_das_findings()
 
 
-# ===========================================================================
 # repair_seam_snapped_boundaries — seam-ladder detection + snippet repair
-# ===========================================================================
 
 
 def test_ladder_gap_leading_stops_exact_fingerprint_detected():
@@ -1553,15 +1545,15 @@ def test_repaired_facing_edges_outward_recovery_and_inward_clamp():
 
 
 def test_repaired_facing_edges_joined_or_missing_returns_none():
-    """A re-detection that joins both calls into one segment, or misses a
-    call's midpoint entirely, is unrepairable and returns None."""
+    """A re-detection that joins both USVs into one segment, or misses a
+    USV's midpoint entirely, is unrepairable and returns None."""
     # one segment spans both midpoints -> joined
     assert _repaired_facing_edges(
         annotation_starts=np.array([0.050]), annotation_stops=np.array([0.210]),
         snippet_offset=0.05, stop_first=0.150, start_second=0.214,
         mid_first=0.125, mid_second=0.237, max_boundary_shift=0.034,
     ) is None
-    # second call undetected
+    # second USV undetected
     assert _repaired_facing_edges(
         annotation_starts=np.array([0.050]), annotation_stops=np.array([0.101]),
         snippet_offset=0.05, stop_first=0.150, start_second=0.214,
@@ -1638,7 +1630,7 @@ def test_seam_repair_corrects_flagged_pair_and_preserves_columns(
 
     def _fake_wait(**_kwargs):
         # stand in for das predict on the snippet folder: recover 1 ms of
-        # call-1 tail and 8 ms of call-2 onset (snippet offset is 0.050 s)
+        # USV-1 tail and 8 ms of USV-2 onset (snippet offset is 0.050 s)
         pls.DataFrame({
             "start_seconds": [0.050, 0.156],
             "stop_seconds": [0.101, 0.210],
@@ -1760,8 +1752,8 @@ def test_greedy_merge_segments_unions_overlapping_and_separates_disjoint():
     assert merged[1]['start'] == 0.5 and merged[1]['stop'] == 0.6
 
 
-def test_consensus_remerge_recovers_calls_masked_by_one_channel():
-    """One channel fusing a run of calls must not dictate the merged boundary."""
+def test_consensus_remerge_recovers_usvs_masked_by_one_channel():
+    """One channel fusing a run of USVs must not dictate the merged boundary."""
     segments = []
     for index in range(4):
         start = 0.30 * index
@@ -1821,23 +1813,23 @@ def test_consensus_remerge_needs_enough_agreeing_channels():
 
 
 def test_consensus_remerge_recurses_into_its_own_sub_intervals():
-    """A channel fusing two calls INSIDE a long interval is invisible to a single pass.
+    """A channel fusing two USVs INSIDE a long interval is invisible to a single pass.
 
     Dissent is judged against the median longest-segment of the WHOLE interval, so a
-    channel bridging only two adjacent calls does not stand out when the interval also
-    contains a genuinely long call that lifts that median. Observed in 20240311_143803
+    channel bridging only two adjacent USVs does not stand out when the interval also
+    contains a genuinely long USV that lifts that median. Observed in 20240311_143803
     at 300.816 s: a 779 ms interval with a 96 ms median, where the channels fusing two
-    30-40 ms calls sat at 102-107 ms -- 1.1x, nowhere near the threshold. Re-testing
+    30-40 ms USVs sat at 102-107 ms -- 1.1x, nowhere near the threshold. Re-testing
     each sub-interval against its own, much shorter, median is what exposes them.
 
-    The fixture reproduces that shape: a long 300 ms call every channel agrees on lifts
+    The fixture reproduces that shape: a long 300 ms USV every channel agrees on lifts
     the parent median, so the channel fusing the final close pair (110 ms) reads as
     ordinary at the top level and only becomes an outlier once the sub-interval is
     judged on its own.
     """
     segments = []
     for channel in (f'ch{n:02d}' for n in range(1, 8)):
-        segments.append((0.00, 0.30, channel))        # the long call, lifts the median
+        segments.append((0.00, 0.30, channel))        # the long USV, lifts the median
         segments.append((0.50, 0.55, channel))
         segments.append((0.80, 0.85, channel))
         segments.append((1.10, 1.15, channel))        # the close pair, 20 ms apart:
@@ -1915,7 +1907,7 @@ def test_consensus_remerge_will_not_cut_at_a_gap_the_segmenter_could_not_make():
     DAS runs with --segment-fillgap 0.015, so it closes any gap under 15 ms within a
     channel: over 221,522 within-channel gaps in six sessions, 99.87% are >= 15 ms.
     A finer gap in the merged output is manufactured by taking the union across
-    channels and cutting it again, and left alone it puts boundaries inside calls --
+    channels and cutting it again, and left alone it puts boundaries inside USVs --
     20250928_172408 at 565.074 s was cut into 18 ms and 133 ms pieces divided by
     0.1 ms.
     """

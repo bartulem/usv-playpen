@@ -20,9 +20,7 @@ from usv_playpen.yaml_utils import (
     sync_equipment_dynamic_fields,
 )
 
-# ---------------------------------------------------------------------------
 # SmartDumper.represent_list — flow vs block style
-# ---------------------------------------------------------------------------
 
 
 def test_smart_dumper_simple_list_uses_flow_style():
@@ -49,9 +47,7 @@ def test_smart_dumper_mixed_list_uses_block_style():
     assert "- a:" in out
 
 
-# ---------------------------------------------------------------------------
 # SmartDumper.represent_str — single-quoting YAML 1.1 coercion candidates
-# ---------------------------------------------------------------------------
 
 
 def test_smart_dumper_quotes_integer_looking_strings():
@@ -108,9 +104,7 @@ def test_smart_dumper_leaves_non_coercible_lookalike_unquoted():
     assert yaml.safe_load(out)["v"] == "1e3"
 
 
-# ---------------------------------------------------------------------------
 # SmartDumper.represent_numpy_scalar — convert np scalars to native Python
-# ---------------------------------------------------------------------------
 
 
 def test_smart_dumper_numpy_int64_emits_as_python_int():
@@ -140,9 +134,7 @@ def test_smart_dumper_numpy_bool_emits_as_python_bool():
     assert "numpy" not in out
 
 
-# ---------------------------------------------------------------------------
 # load_session_metadata / save_session_metadata round-trip
-# ---------------------------------------------------------------------------
 
 
 def test_load_session_metadata_returns_none_when_no_yaml(tmp_path):
@@ -188,9 +180,7 @@ def test_save_then_load_round_trip(tmp_path):
     assert found_path == out_path
 
 
-# ---------------------------------------------------------------------------
 # _set_block_field_in_position — canonical-order insertion
-# ---------------------------------------------------------------------------
 
 
 def test_set_block_field_existing_value_unchanged_returns_false():
@@ -229,9 +219,7 @@ def test_set_block_field_appends_when_anchor_missing():
     assert list(block.keys())[-1] == "new"
 
 
-# ---------------------------------------------------------------------------
 # sync_equipment_dynamic_fields — full reconciliation
-# ---------------------------------------------------------------------------
 
 
 def _equip_fixture() -> dict:
@@ -379,9 +367,7 @@ def test_sync_equipment_skips_missing_block():
     assert "audio_Avisoft" not in md["Equipment"]
 
 
-# ---------------------------------------------------------------------------
 # set_sync_LEDs_device_port — repositioning helper
-# ---------------------------------------------------------------------------
 
 
 def test_set_sync_LEDs_device_port_reorders_existing_field():
@@ -420,9 +406,7 @@ def test_set_sync_LEDs_device_port_no_op_when_metadata_not_dict():
     set_sync_LEDs_device_port("garbage", "COM9")  # must not raise
 
 
-# ---------------------------------------------------------------------------
 # read_excluded_audio_channels — per-session hardware-excluded microphones
-# ---------------------------------------------------------------------------
 
 
 def _write_metadata(tmp_path, audio_block):

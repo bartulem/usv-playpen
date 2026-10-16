@@ -130,6 +130,50 @@ def _bivariate_loss_static(
     folded into the shortest-wrap representation before squaring; on
     `metric='euclidean'` this reduces to the plain `Y_true - Y_pred`
     difference.
+
+    Parameters
+    ----------
+    params : tuple
+        `(W, b)` tuple of current model parameters: `W` of shape
+        `(n_feats * n_time, 2)` and `b` of shape `(2,)`.
+    X : jnp.ndarray
+        Input behavioural history matrix of shape
+        `(n_samples, n_feats * n_time)`.
+    Y_true : jnp.ndarray
+        True continuous acoustic targets of shape `(n_samples, 2)`.
+    weights : jnp.ndarray
+        Inverse-density sample weights of shape `(n_samples,)`, normalised
+        to unit mean upstream (in `SmoothBivariateRegression.fit`).
+    n_feats : int
+        Number of distinct behavioural features; used to reshape `W` into
+        `(n_feats, n_time, 2)` so the smoothness penalty runs along the
+        time axis only.
+    n_time : int
+        Number of time bins per behavioural feature; same reshape purpose
+        as `n_feats`.
+    lam_smooth : float
+        Temporal-smoothness penalty strength (multiplies
+        `0.5 * ||D_order W||^2`).
+    lam_l2 : float
+        L2 (ridge) penalty strength (multiplies `0.5 * ||W||^2`).
+    huber_delta : float
+        Huber transition point in native manifold distance units: residual
+        norms up to `huber_delta` are penalised quadratically, larger ones
+        linearly.
+    smoothness_derivative_order : int
+        Order of the finite-difference derivative (1 or 2) taken along the
+        time axis of `W` for the smoothness penalty.
+    metric : str
+        Residual geometry, `'euclidean'` (plain difference) or `'torus'`
+        (wrap-aware shortest-path signed difference via `signed_diff_jax`).
+    period : float
+        Per-axis wrap period; used only on the `metric='torus'` path.
+
+    Returns
+    -------
+    loss : jnp.ndarray
+        Scalar total loss: density-weighted mean Huber residual
+        + 0.5 * `lam_l2` * ||W||^2 + 0.5 * `lam_smooth` * ||D_order W||^2.
     """
 
     W, b = params
@@ -194,6 +238,60 @@ def _bivariate_train_loop_jit(
     state pytree is identical to the one constructed externally by
     `fit()` (same shapes / dtypes), which lets the caller pass in a
     pre-initialised state without breaking JAX's structural typing.
+
+    Parameters
+    ----------
+    params_init : tuple
+        Initial `(W, b)` parameters (`W` of shape `(n_feats * n_time, 2)`,
+        `b` of shape `(2,)`).
+    opt_state_init : optax.OptState
+        Initial optimiser state built by `fit()` from the same
+        clip-by-global-norm + cosine-decayed Adam chain this function
+        rebuilds, so the two pytrees are structurally identical.
+    X : jnp.ndarray
+        Input behavioural history matrix of shape
+        `(n_samples, n_feats * n_time)`.
+    Y : jnp.ndarray
+        Target manifold coordinates of shape `(n_samples, 2)`.
+    w : jnp.ndarray
+        Unit-mean inverse-density sample weights of shape `(n_samples,)`.
+    lambda_smooth : float
+        Temporal-smoothness penalty strength.
+    l2_reg : float
+        L2 (ridge) penalty strength.
+    huber_delta : float
+        Huber transition point in native manifold distance units.
+    learning_rate : float
+        Initial Adam step size; cosine-decayed to zero over `max_iter`.
+    grad_clip_norm : float
+        Global-norm threshold the gradient is clipped to before Adam.
+    tol : float
+        Convergence tolerance: the loop stops once the L2 norm of the
+        parameter change over the last 100 steps (checked every 100 steps)
+        falls below it.
+    max_iter : int
+        Maximum number of optimisation steps (static JIT argument; also the
+        decay length of the cosine schedule).
+    n_feats : int
+        Number of behavioural features (static JIT argument).
+    n_time : int
+        Number of time bins per feature (static JIT argument).
+    smoothness_derivative_order : int
+        Order (1 or 2) of the finite-difference smoothness penalty (static
+        JIT argument).
+    metric : str
+        Residual geometry, `'euclidean'` or `'torus'` (static JIT argument).
+    period : float
+        Per-axis wrap period, used only on the `'torus'` path.
+
+    Returns
+    -------
+    params_final : tuple
+        Final `(W, b)` parameters.
+    i_final : jnp.ndarray
+        Scalar int32 number of steps taken.
+    converged_final : jnp.ndarray
+        Scalar bool, True iff the tolerance check fired before `max_iter`.
     """
 
     # Cosine-decay the step to zero over `max_iter`, and clip the global norm of
@@ -219,6 +317,21 @@ def _bivariate_train_loop_jit(
     check_interval = 100
 
     def step(params, opt_state):
+        """
+        One clipped, cosine-decayed Adam step on `_bivariate_loss_static`.
+
+        Parameters
+        ----------
+        params : tuple
+            Current `(W, b)` parameters.
+        opt_state : optax.OptState
+            Current optimiser state.
+
+        Returns
+        -------
+        params, opt_state : tuple
+            Updated parameters and optimiser state.
+        """
         grads = jax.grad(_bivariate_loss_static)(
             params, X, Y, w,
             n_feats, n_time,
@@ -231,10 +344,40 @@ def _bivariate_train_loop_jit(
         return params, opt_state
 
     def cond_fn(state):
+        """
+        While-loop continuation test: keep iterating while fewer than
+        `max_iter` steps were taken and convergence has not been flagged.
+
+        Parameters
+        ----------
+        state : tuple
+            Loop carry `(i, params, opt_state, last_check_params, converged)`.
+
+        Returns
+        -------
+        keep_going : jnp.ndarray
+            Scalar bool.
+        """
         i_, _params, _opt_state, _last, converged_flag = state
         return (i_ < max_iter) & (~converged_flag)
 
     def body_fn(state):
+        """
+        While-loop body: take one optimiser step and, every
+        `check_interval` (100) steps, compare the parameters with the last
+        checkpoint, flag convergence when the change norm is below `tol`
+        and refresh the checkpoint.
+
+        Parameters
+        ----------
+        state : tuple
+            Loop carry `(i, params, opt_state, last_check_params, converged)`.
+
+        Returns
+        -------
+        state : tuple
+            The updated loop carry, same structure.
+        """
         i_, params_, opt_state_, last_, _converged = state
         params_next, opt_state_next = step(params_, opt_state_)
         i_next = i_ + 1
@@ -414,6 +557,61 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             metric: str = 'euclidean',
             period: float = 1.0,
     ):
+        """
+        Stores the hyperparameters (scikit-learn convention: no fitting or
+        validation of data here) after checking the derivative order and the
+        metric / period pair.
+
+        Parameters
+        ----------
+        n_features : int, default=1
+            Number of distinct behavioural features (see the class docstring).
+        n_time_bins : int, default=1
+            Number of time steps per feature.
+        lambda_smooth : float, default=1e2
+            Temporal-smoothness penalty strength.
+        l2_reg : float, default=0.1
+            L2 (ridge) penalty strength.
+        smoothness_derivative_order : int, default=2
+            Finite-difference order of the smoothness penalty; must be 1 or 2.
+        smoothness_reflective_edges : bool, default=True
+            Read by the torus subclass :class:`SmoothTorusManifoldRegression`
+            only (see the class docstring); this coordinate model's penalty is
+            always open-boundary.
+        huber_delta : float, default=1.0
+            Huber transition point in native manifold distance units.
+        learning_rate : float, default=1e-3
+            Initial Adam step size (cosine-decayed to zero over `max_iter`).
+        grad_clip_norm : float, default=1.0
+            Global-norm gradient clipping threshold.
+        max_iter : int, default=5000
+            Maximum number of optimisation steps.
+        tol : float, default=1e-4
+            Convergence tolerance on the parameter-change norm over 100 steps.
+        random_state : int, default=0
+            Seed of the JAX PRNG used for weight initialisation.
+        verbose : bool, default=False
+            If True, prints loss progress during descent.
+        _use_lax_loop : bool, default=False
+            Opt-in fused training loop (`_bivariate_train_loop_jit`, a single
+            `jax.lax.while_loop`); False runs the Python for-loop over a
+            JIT-compiled step.
+        metric : str, default='euclidean'
+            Target geometry, `'euclidean'` or `'torus'`; validated with
+            `_validate_metric_period`.
+        period : float, default=1.0
+            Per-axis wrap period of the torus targets (cast to float).
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ValueError
+            If `smoothness_derivative_order` is not 1 or 2, or if
+            `_validate_metric_period` rejects `metric` / `period`.
+        """
         if smoothness_derivative_order not in (1, 2):
             raise ValueError(
                 f"smoothness_derivative_order must be 1 or 2; got {smoothness_derivative_order}."
@@ -695,6 +893,32 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
 
         @partial(jax.jit, static_argnums=(5, 6))
         def step(params, opt_state, X_batch, Y_batch, w_batch, n_feats, n_time):
+            """
+            One JIT-compiled clipped, cosine-decayed Adam step on
+            `self._loss_fn` (the Python for-loop path of `fit`).
+
+            Parameters
+            ----------
+            params : tuple
+                Current `(W, b)` parameters.
+            opt_state : optax.OptState
+                Current optimiser state.
+            X_batch : jnp.ndarray
+                Design matrix of shape `(n_samples, n_feats * n_time)`.
+            Y_batch : jnp.ndarray
+                Targets of shape `(n_samples, 2)`.
+            w_batch : jnp.ndarray
+                Unit-mean sample weights of shape `(n_samples,)`.
+            n_feats : int
+                Number of behavioural features (static argument).
+            n_time : int
+                Number of time bins per feature (static argument).
+
+            Returns
+            -------
+            params, opt_state : tuple
+                Updated parameters and optimiser state.
+            """
             grads = jax.grad(self._loss_fn)(
                 params, X_batch, Y_batch, w_batch,
                 n_feats, n_time,
@@ -1069,6 +1293,22 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         # comparable scalar; the headline R^2 below is the principled
         # joint-axis figure.
         def _pearson_np(a, b):
+            """
+            Pearson correlation as a centred dot product over the norm
+            product (no scipy validation).
+
+            Parameters
+            ----------
+            a : np.ndarray
+                1-D array.
+            b : np.ndarray
+                1-D array of the same length.
+
+            Returns
+            -------
+            r : float
+                Pearson r, or NaN when either input is constant.
+            """
             a_c = a - a.mean()
             b_c = b - b.mean()
             denom = np.sqrt(np.sum(a_c ** 2) * np.sum(b_c ** 2))
@@ -1077,6 +1317,22 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             return float(np.dot(a_c, b_c) / denom)
 
         def _spearman(a, b):
+            """
+            Spearman rank correlation via `scipy.stats.spearmanr`, NaN-safe.
+
+            Parameters
+            ----------
+            a : np.ndarray
+                1-D array.
+            b : np.ndarray
+                1-D array of the same length.
+
+            Returns
+            -------
+            rho : float
+                Spearman rho, or NaN when scipy raises ValueError or returns
+                a non-finite value.
+            """
             try:
                 value = spearmanr(a, b)[0]
             except ValueError:
@@ -1088,7 +1344,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         spearman_x = _spearman(Y_true[:, 0], Y_pred[:, 0])
         spearman_y = _spearman(Y_true[:, 1], Y_pred[:, 1])
 
-        # The manifold selection score under a geometry-specific, honestly-named
+        # The manifold selection score under a geometry-specific, accurately named
         # key (the inactive one is NaN so the bundle is schema-stable):
         #   - torus: `vm_logscore`, the macro (per-region) product-von-Mises
         #     log-likelihood on the decoded prediction. Signed, has a real zero,

@@ -587,6 +587,8 @@ def flag_one_cluster(
     Modality keys follow the convention:
 
       vmi_<role>_<direction>
+      ibi_bout_onset_<role>_<excit|suppress>
+      ibi_bout_first_usv_<role>_<first|later>
       usv_peth_<role>_<direction>
       usv_property_<role>_<prop>_<direction>
       usv_category_<role>_<cat_feat>
@@ -614,6 +616,15 @@ def flag_one_cluster(
     vmi_min_bouts (int)
         Minimum bout count required to consider VMI meaningful. See
         `_flag_vmi`.
+    ibi_bout_alpha (float)
+        Two-sided shift-null p-value cutoff for the IBI bout-onset
+        statistics (`onset_gain` and `first_over_later`) of the
+        `usv_ibi_bout_onset` block. See `_flag_ibi_bout_onset`.
+    ibi_bout_min_bouts (int)
+        Fewest IBI bouts an emitter needs before its bout-onset statistics
+        can be flagged significant; below it the record is still emitted
+        (``tested`` True) with ``significant`` False. See
+        `_flag_ibi_bout_onset`.
     spatial_info_bps_threshold (float)
         Skaggs information-rate cutoff (bits/spike) for spatial
         modalities. See `_flag_spatial`.
@@ -967,7 +978,22 @@ def _aggregate_modality_stats(mod_key: str, per_session: list[dict]) -> dict:
     """
 
     def _vals(field: str) -> list[float]:
-        """Pull finite floats for one metric across per_session."""
+        """
+        Description
+        -----------
+        Pull finite floats for one metric across per_session.
+
+        Parameters
+        ----------
+        field (str)
+            Metric name to read from every per-session entry; entries without
+            it, or whose value is None, non-numeric or non-finite, are skipped.
+
+        Returns
+        -------
+        out (list[float])
+            The finite values, in ``per_session`` order (empty when none).
+        """
         out = []
         for e in per_session:
             v = (e[field] if field in e else None)

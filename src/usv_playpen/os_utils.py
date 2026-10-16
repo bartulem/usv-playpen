@@ -438,7 +438,7 @@ QLVM_PRODUCTION_MASKING_TYPE = "sam"
 QLVM_PRODUCTION_TIME_STRETCH = True
 
 # The QLVM maps a visualization or analysis can use, one per production model: the
-# column prefix of QLVM_PRODUCTION_MODEL_CELLS. A map `P` places calls at `P1`/`P2`;
+# column prefix of QLVM_PRODUCTION_MODEL_CELLS. A map `P` places USVs at `P1`/`P2`;
 # the visualizations pick one with `shared_resources.qlvm_map` in
 # visualizations_settings.json.
 QLVM_MAPS = tuple(QLVM_PRODUCTION_MODEL_CELLS)
@@ -474,9 +474,9 @@ QLVM_DECODER_MAPS = QLVM_MAPS + (QLVM_SQUEAK_MAP,)
 # corpus embedding (read-only). It holds `category_grids.npz` (the periodic label
 # grid of the categories, 1..k meaning R-1..R-k, indexed [y, x] over the unit torus,
 # plus the per-pixel bootstrap agreement, the full-data reference grid, the
-# content-change field, the watershed basins and the smoothed call density),
-# `category_nomenclature.json` (names, descriptions, call counts and shares, label
-# positions), `category_call_labels.csv` and `build_config.json` (the settings and
+# content-change field, the watershed basins and the smoothed USV density),
+# `category_nomenclature.json` (names, descriptions, USV counts and shares, label
+# positions), `category_usv_labels.csv` and `build_config.json` (the settings and
 # inputs of the build). It is the ONE source of category geometry: every consumer
 # that draws category boundaries, places category centres or reads region arrays
 # (the neuronal tuning watersheds, the sequence figure, the embedding thumbnails and
@@ -492,23 +492,23 @@ QLVM_CATEGORY_BUNDLE_DIRECTORY = f"{SPECTROGRAMS_DIRECTORY}/categories"
 # finds them by these names).
 QLVM_CATEGORY_GRIDS_NAME = "category_grids.npz"
 QLVM_CATEGORY_NOMENCLATURE_NAME = "category_nomenclature.json"
-QLVM_CATEGORY_CALL_LABELS_NAME = "category_call_labels.csv"
+QLVM_CATEGORY_USV_LABELS_NAME = "category_usv_labels.csv"
 QLVM_CATEGORY_BUILD_CONFIG_NAME = "build_config.json"
 
 # The QLVM map the category bundle is defined on: the regular map. Its grid is a
 # partition of THAT torus only, so it draws boundaries / centres on the regular map
 # alone; a conditional map (qlvm_duration, qlvm_entropy, qlvm_bandwidth,
-# qlvm_loudness) places the same calls elsewhere, so
-# a figure of a conditional map draws no category boundaries and shows each call's
+# qlvm_loudness) places the same USVs elsewhere, so
+# a figure of a conditional map draws no category boundaries and shows each USV's
 # category through its qlvm_category label instead.
 QLVM_CATEGORY_MAP = QLVM_REGULAR_MAP
 
 # The one categorical QLVM label column of the summary, qlvm_category: the
-# category-bundle category of each call's position on the regular map (1..k meaning
+# category-bundle category of each USV's position on the regular map (1..k meaning
 # R-1..R-k; 4 in production), written by assign-qlvm-categories. There is no coarse
 # level and no category column of the conditional maps: an analysis of ANY map
 # (qlvm, qlvm_duration, qlvm_entropy, qlvm_bandwidth, qlvm_loudness) that needs a
-# per-call region / category label reads
+# per-USV region / category label reads
 # this column.
 QLVM_CATEGORY_COLUMN = f"{QLVM_CATEGORY_MAP}_category"
 QLVM_CATEGORY_COLUMNS = (QLVM_CATEGORY_COLUMN,)
@@ -651,10 +651,10 @@ def read_qlvm_category_bundle(category_directory: str | pathlib.Path) -> dict:
         * ``label_grid`` (``(res, res)`` int64, ``1..k``, indexed ``[y, x]``:
           pixel ``[y, x]`` covers torus positions
           ``[x / res, (x + 1) / res) x [y / res, (y + 1) / res)``, the pixel
-          rule assign-qlvm-categories labels a call with);
+          rule assign-qlvm-categories labels a USV with);
         * ``agreement`` (``(res, res)`` float64) -- the consensus share of every
           pixel's category over the session resamples;
-        * ``density`` (``(res, res)`` float64) -- the smoothed corpus call count
+        * ``density`` (``(res, res)`` float64) -- the smoothed corpus USV count
           per pixel (the regular map's density landscape);
         * ``resolution`` (int);
         * ``axis`` (``(res,)`` float64) -- the pixel centres ``(i + 0.5) / res``,
@@ -669,7 +669,7 @@ def read_qlvm_category_bundle(category_directory: str | pathlib.Path) -> dict:
         * ``model_id`` (str) -- that map's production cell
           (:func:`qlvm_cell_model_id` of :func:`qlvm_production_cell_directory`);
         * ``identity`` (str) -- a one-line provenance of the bundle (directory,
-          build time, positions file SHA-256 and call count from
+          build time, positions file SHA-256 and USV count from
           ``build_config.json``), for logs and figure records.
 
     Raises
@@ -1315,6 +1315,13 @@ def atomic_output_path(final_path: str | pathlib.Path) -> Iterator[pathlib.Path]
         Sibling temporary path the caller writes its bytes to. After a clean
         exit it has been renamed onto ``final_path`` and no longer exists under
         the temporary name.
+
+    Returns
+    -------
+    context (Iterator[pathlib.Path])
+        The generator that ``contextlib.contextmanager`` wraps into a context
+        manager; entering it yields ``tmp_path`` (above), leaving it cleanly
+        publishes the file, and leaving it by an exception removes the temp file.
     """
 
     final = pathlib.Path(final_path)
@@ -1494,7 +1501,7 @@ QLVM_SUMMARY_MAP_PREFIXES = ("qlvm", "qlvm_duration", "qlvm_entropy", "qlvm_band
 # maps replace, with the cluster labels of the duration map (conditional maps carry
 # no category columns), the retired v3 mean-frequency (qlvm_mf), bandwidth (qlvm_bw)
 # and loudness (qlvm_loud) conditional maps with their labels, the legacy provenance
-# column qlvm_model of the retired single-model run, the per-call category
+# column qlvm_model of the retired single-model run, the per-USV category
 # agreement / uncertain flag of the regular map (kept outside the summary), and the
 # columns of the retired squeak detectors that the usv / squeak booleans, the class
 # probabilities and the one squeak_start / squeak_end extent replace: the binary
@@ -1532,7 +1539,7 @@ USV_SUMMARY_RENAMED_COLUMNS = {
     "p_both": "overlap_probability",
 }
 
-# Suffixes of the per-call category agreement / uncertain columns an earlier
+# Suffixes of the per-USV category agreement / uncertain columns an earlier
 # assign_qlvm_categories wrote for a prefix P (P_category_agreement,
 # P_category_uncertain); they never belong in the summary, whatever the prefix.
 CATEGORY_CONFIDENCE_SUFFIXES = ("_category_agreement", "_category_uncertain")
@@ -2147,7 +2154,7 @@ def obsolete_usv_summary_columns(columns: Iterable[str]) -> list[str]:
     Description
     -----------
     Picks, from a USV summary's column names, the columns the canonical layout no
-    longer has: every name in ``USV_SUMMARY_OBSOLETE_COLUMNS`` and every per-call
+    longer has: every name in ``USV_SUMMARY_OBSOLETE_COLUMNS`` and every per-USV
     category confidence column (a name ending in one of
     ``CATEGORY_CONFIDENCE_SUFFIXES``, e.g. ``qlvm_category_agreement``). A
     canonical column (``USV_SUMMARY_COLUMN_ORDER``) is never picked.
@@ -2459,6 +2466,22 @@ def newest_match_or_raise(
         )
     if key is None:
         def key(p):
+            """
+            Description
+            -----------
+            Default ordering key: the path's creation time (``st_ctime``), so the
+            most recently created match wins.
+
+            Parameters
+            ----------
+            p (pathlib.Path)
+                A path matching the glob pattern.
+
+            Returns
+            -------
+            ctime (float)
+                ``p.stat().st_ctime`` in seconds since the epoch.
+            """
             return p.stat().st_ctime
     matches = list(root.rglob(pattern) if recursive else root.glob(pattern))
     if not matches:

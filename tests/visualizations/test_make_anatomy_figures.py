@@ -422,13 +422,11 @@ def test_build_unit_positions_figure_filters_outliers(catalog_path, viz_settings
     plt.close(fig)
 
 
-# ===========================================================================
 # Single-unit waveform helpers: catalog slicing, per-probe Kilosort context
 # loading, IBL brain-coordinate parsing, and the two LineCollection-based
 # waveform renderers. Driven by a synthetic Kilosort probe directory plus a
 # catalog whose unit_id strings carry the `imec<d>` / `cl<dddd>` tokens the
 # slicer parses.
-# ===========================================================================
 
 
 # 8-channel single-shank probe: two lateral columns (0 / 32 µm) over four

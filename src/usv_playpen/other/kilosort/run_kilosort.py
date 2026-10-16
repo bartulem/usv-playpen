@@ -54,9 +54,7 @@ import numpy as np
 import torch
 from kilosort.run_kilosort import run_kilosort
 
-# =============================================================================
-# --- 1. USER CONFIGURATION: EDIT THESE ---
-# =============================================================================
+# 1. USER CONFIGURATION: EDIT THESE
 
 # Root directory holding one ``{session_date}_{probe_id}/`` folder per recording.
 EPHYS_DIR = Path("/path/to/ephys")
@@ -86,9 +84,7 @@ probe_path = EPHYS_DIR / f'{session_date}_{probe_id}' / f'concatenated_{session_
 # OPTIONAL: The directory where Kilosort will save the results.
 results_dir = data_file.parent / 'kilosort4'
 
-# =============================================================================
-# --- 2. KILOSORT SETTINGS DICTIONARY ---
-# =============================================================================
+# 2. KILOSORT SETTINGS DICTIONARY
 
 settings = {
     # # # --- Main Parameters ---
@@ -134,7 +130,7 @@ settings = {
     # Subsampling factor for batches. e.g., 10 means only every 10th batch is used. Default is 1 (use all batches).
     'batch_downsampling': 1,
 
-    # --- Preprocessing ---
+    # Preprocessing
     # Batches with absolute values above this threshold will be zeroed out as artifacts. Default is infinite (no artifact removal).
     'artifact_threshold': np.inf,
 
@@ -156,7 +152,7 @@ settings = {
     # Gaussian smoothing for drift estimation [correlation, time, y-axis].
     'drift_smoothing': [0.5, 0.5, 0.5],
 
-    # --- Spike Detection ---
+    # Spike Detection
     # Sample index for aligning waveforms. If None, it's determined automatically.
     'nt0min': None,
 
@@ -196,7 +192,7 @@ settings = {
     # Threshold in standard deviations for single-channel crossings to compute universal templates.
     'Th_single_ch': 6.0,
 
-    # --- Clustering ---
+    # Clustering
     # Allowed fraction of refractory violations in ACG for a unit to be labeled "good".
     'acg_threshold': 0.2,
 
@@ -218,7 +214,7 @@ settings = {
     # Random seed for the kmeans++ clustering initialization.
     'cluster_init_seed': 5,
 
-    # --- Postprocessing ---
+    # Postprocessing
     # Time in ms to consider subsequent spikes from the same cluster as duplicates.
     'duplicate_spike_ms': 0.25,
 
@@ -227,9 +223,7 @@ settings = {
 }
 
 
-# =============================================================================
-# --- 3. RUN KILOSORT ---
-# =============================================================================
+# 3. RUN KILOSORT
 
 if __name__ == '__main__':
 

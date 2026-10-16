@@ -702,9 +702,9 @@ def _write_session_dir(
     ``(1, n_neural_samples)`` float array so ``np.load(...)[0, :]`` works), one
     ``*_translated_rotated_metric.h5`` tracking file exposing ``track_names``,
     ``recording_frame_rate`` and a ``tracks`` array (only its leading dimension is
-    read), and one ``*_usv_summary.csv`` of per-call rows. The focal mouse is the
+    read), and one ``*_usv_summary.csv`` of per-USV rows. The focal mouse is the
     FIRST entry of ``track_names`` so the loader's ``emitter`` filter keeps only
-    its calls.
+    its USVs.
 
     Parameters
     ----------
@@ -804,7 +804,7 @@ def test_load_animal_sessions_picks_richest_day_and_builds_entries(tmp_path):
     ``20240102`` has two catalog-passing units versus one on ``20240101``, so the
     loader picks the richer day, intersects the per-session unit sets, reads the
     tracking H5 (frame rate + frame count) and the ``usv_summary`` CSV (focal-only
-    calls split into the two category groups), and returns one entry per session of
+    USVs split into the two category groups), and returns one entry per session of
     the chosen day. A custom ``message_output`` sink captures the two diagnostic
     lines (day pick + common-unit count), confirming the logging branch runs.
     """
@@ -965,7 +965,7 @@ def test_compute_group_acoustics_reads_peak_amp_ch(tmp_path, monkeypatch):
     Description
     -----------
     :func:`compute_group_acoustics` pulls onsets from the group dataframe's
-    ``start`` column and per-call channels from ``peak_amp_ch`` when present, then
+    ``start`` column and per-USV channels from ``peak_amp_ch`` when present, then
     forwards them to :func:`extract_snippet_acoustics`. The acoustics extractor is
     monkeypatched to a recorder so the test asserts the exact onsets/channels/root
     passed through (the ``peak_amp_ch`` branch), without needing a real audio file.

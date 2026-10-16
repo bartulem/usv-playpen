@@ -401,6 +401,24 @@ def make_qlvm_decode_fn(params: dict, condition: float = None):
     condition_row = None if condition is None else jnp.full((1, 1), float(condition), dtype=jnp.float32)
 
     def decode_fn(z: jnp.ndarray) -> jnp.ndarray:
+        """
+        Decode one torus position into a flattened spectrogram.
+
+        The position is wrapped mod 1 onto the native period-1 torus, mapped
+        through the sin/cos torus basis, extended with the constant
+        conditioning value when the decoder is conditional, and passed through
+        the frozen decoder.
+
+        Parameters
+        ----------
+        z : jnp.ndarray
+            Torus position of shape (2,).
+
+        Returns
+        -------
+        jnp.ndarray
+            Flattened decoded spectrogram of shape (16384,) (128 x 128).
+        """
         basis = torus_basis_forward((z % 1.0)[None, :])   # (1, 4)
         if condition_row is not None:
             basis = jnp.concatenate([basis, condition_row.astype(basis.dtype)], axis=-1)   # (1, 5)
@@ -526,7 +544,7 @@ def resolve_geodesic_decoder_source(geodesic_settings: dict,
     fixes the conditioning value of a conditional map's decoder: the decoder is
     evaluated at that quantile of its training corpus's conditioning distribution
     (``processing.qlvm_latents.condition_quantile_value``; ``0.5`` is the corpus
-    median call), the same value for every grid node, so the metric is one
+    median vocalization), the same value for every grid node, so the metric is one
     Riemannian metric of the torus; the regular and squeak decoders take no
     conditioning value and ignore it. This is read before any geometry is built,
     so a configuration error (a missing key, a manifold whose columns name no QLVM

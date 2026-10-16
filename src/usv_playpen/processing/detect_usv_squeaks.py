@@ -970,6 +970,33 @@ def read_usv_squeak_labels(label_sets: list[dict], label_overrides: list[dict], 
         raise ValueError(error_message)
 
     def _read(csv_path: str, required: tuple[str, ...]) -> pls.DataFrame:
+        """
+        Description
+        -----------
+        Read one labels or sample CSV with every column as text (types are cast once,
+        after the sets are joined, so a numeric-looking id keeps its leading zeros and
+        an all-empty column never changes type) and keep only the required columns.
+
+        Parameters
+        ----------
+        csv_path (str)
+            Path of the CSV, resolved through :func:`configure_path`.
+        required (tuple[str, ...])
+            Column names the file must hold; the returned frame has exactly these, in
+            this order.
+
+        Returns
+        -------
+        table (pls.DataFrame)
+            The file restricted to ``required``, all columns as strings.
+
+        Raises
+        ------
+        FileNotFoundError
+            The resolved path is not a file.
+        ValueError
+            The file lacks one or more of the ``required`` columns.
+        """
         # Every column is read as text (types are cast once, after the sets are joined), so an id
         # that looks numeric keeps its leading zeros and an all-empty column never changes type.
         path = pathlib.Path(configure_path(csv_path))

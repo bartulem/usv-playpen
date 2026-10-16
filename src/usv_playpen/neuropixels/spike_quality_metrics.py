@@ -363,6 +363,81 @@ class SpikeQualityMetricsExtractor:
         template_metric_params: dict | None = None,
         triangulation_max_distance_um: float = DEFAULT_TRIANGULATION_MAX_DISTANCE_UM,
     ) -> None:
+        """
+        Description
+        -----------
+        Validate ``hemisphere``, store the session configuration, build the
+        per-session metric-parameter dicts (module defaults with the optional
+        overrides layered on), resolve the EPHYS / Kilosort / ``channel_locations.json``
+        paths, and read the single ``concatenated_*.ap.meta`` file. Every
+        step-method output attribute starts as ``None``. The class docstring
+        describes the shared parameters in full.
+
+        Parameters
+        ----------
+        os_cup_loc : str or os.PathLike
+            Root mount point of the storage server.
+        mouse_id : str
+            Tail-tagged animal identifier.
+        session_date : str
+            Recording date in ``YYYYMMDD`` format (cast to str).
+        probe_id : str
+            SpikeGLX probe label (e.g. ``"imec0"``).
+        hemisphere : str
+            ``"L"`` or ``"R"``; any other value raises ``ValueError``.
+        kilosort_version : str or int, default ``"4"``
+            Kilosort subdirectory suffix (cast to str).
+        phy_curated : bool, default True
+            Whether the sorting was manually curated in phy.
+        num_channels_sparsity : int, default 7
+            Channels per unit in the phy-peak-centred sparsity.
+        shank_width_microns : float, default 70
+            Shank width for the anatomical channel-coordinate transform.
+        shank_spacing_microns : float, default 250
+            Centre-to-centre shank spacing stripped from each ``lateral`` value.
+        somatic_classifier : dict or None, default None
+            Override merged onto :func:`classify_somatic`'s default params.
+        histology_dirname : str, default ``"histology"``
+            Top-level histology directory name under ``os_cup_loc``.
+        ephys_dirname : str, default ``"EPHYS"``
+            Top-level EPHYS directory name under ``os_cup_loc``.
+        unit_subset : int or list or None, default None
+            ``None`` processes every non-noise unit; an ``int`` N the first N units;
+            a list exactly those unit ids.
+        analyzer_folder : str or os.PathLike or None, default None
+            ``None`` keeps the ``SortingAnalyzer`` in memory; a path writes a
+            binary-folder analyzer there.
+        job_kwargs : dict or None, default None
+            SpikeInterface job kwargs (copied); ``None`` uses
+            :data:`DEFAULT_JOB_KWARGS`.
+        extension_params : dict or None, default None
+            Two-level overrides layered onto a deep copy of :data:`EXTENSION_PARAMS`
+            by :func:`_merge_metric_overrides` (a dict-valued key updates that
+            extension's sub-dict key-by-key); ``None`` keeps the defaults.
+        quality_metric_params : dict or None, default None
+            Two-level overrides layered the same way onto a deep copy of
+            :data:`QM_PARAMS`; ``None`` keeps the defaults.
+        template_metric_params : dict or None, default None
+            Flat overrides applied with ``dict.update`` onto a copy of
+            :data:`TEMPLATE_METRIC_PARAMS`; ``None`` keeps the defaults.
+        triangulation_max_distance_um : float, default ``DEFAULT_TRIANGULATION_MAX_DISTANCE_UM``
+            Maximum reach (in microns, default 1000) of the monopolar triangulation
+            used to localise units.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ValueError
+            If ``hemisphere`` is not ``"L"`` or ``"R"``.
+        FileNotFoundError
+            If no ``concatenated_*.ap.meta`` file exists under the EPHYS session
+            directory.
+        RuntimeError
+            If more than one ``concatenated_*.ap.meta`` file exists there.
+        """
         if hemisphere not in ('L', 'R'):
             msg = f"hemisphere must be 'L' or 'R', got {hemisphere!r}"
             raise ValueError(msg)
@@ -444,6 +519,14 @@ class SpikeQualityMetricsExtractor:
         downstream metrics were validated against — but no
         recording-traversing extension is computed here. Sets
         :attr:`recording`, :attr:`sorting` and :attr:`analyzer`.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
         """
         recording_raw = si.read_spikeglx(
             folder_path=str(self.ephys_path),
@@ -500,6 +583,14 @@ class SpikeQualityMetricsExtractor:
         SpikeInterface's own ``templates`` extension. Sets
         :attr:`spike_train_metrics` (a ``pandas.DataFrame`` indexed by
         unit id).
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
         """
         self.analyzer.compute(['random_spikes'])
         self.spike_train_metrics = si.compute_quality_metrics(
@@ -549,6 +640,14 @@ class SpikeQualityMetricsExtractor:
         channel coordinates. Requires :attr:`dense_templates` to have
         been set by :meth:`compute_recording_dependent_metrics`. Sets
         :attr:`template_metrics`.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
         """
         channel_locations = self.analyzer.get_channel_locations()
         sampling_frequency = self.analyzer.sampling_frequency
@@ -640,6 +739,14 @@ class SpikeQualityMetricsExtractor:
         single-sample slice. The affected metrics come out ``NaN`` for
         those units by design, so the warnings carry no actionable
         information and are silenced here.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
         """
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
@@ -825,6 +932,14 @@ class SpikeQualityMetricsExtractor:
         first. Sets :attr:`unit_locations` (a ``dict`` keyed by unit id,
         each value a ``dict`` with ``location``, ``closest_channel`` and
         ``brain_region``).
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
         """
         with self.channel_locations_file.open() as channel_locs_file:
             channel_locations = json.load(channel_locs_file)

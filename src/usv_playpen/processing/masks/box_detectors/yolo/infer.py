@@ -26,21 +26,21 @@ that flipped space. So here we likewise **flip first**, render with the SAME
 :func:`render_spec_image`, run YOLO, and return boxes in flipped space. Downstream
 ``box_to_xyxy`` + SAM then behave exactly as for the CC detector.
 
->>> CRITICAL CAVEAT — NMS can delete the calls box-prompt exists to keep separate <<<
+>>> CRITICAL CAVEAT — NMS can delete the USVs box-prompt exists to keep separate <<<
 YOLO applies Non-Maximum Suppression to its raw detections. Two USVs that overlap
-in time but are stacked in frequency (or a long call partly overlapping a short
+in time but are stacked in frequency (or a long USV partly overlapping a short
 one) can produce two boxes with high IoU — and NMS will SUPPRESS one of them.
-That is precisely the case box-prompted SAM2 exists to handle (one box per call,
+That is precisely the case box-prompted SAM2 exists to handle (one box per USV,
 kept separate). To mitigate, this adapter exposes:
   * ``iou`` (NMS IoU threshold) — RAISE it (e.g. 0.7-0.9) so only near-duplicate
-    boxes are merged and genuinely-stacked calls survive. Default here is 0.7,
+    boxes are merged and genuinely-stacked USVs survive. Default here is 0.7,
     higher than ultralytics' 0.7/0.45-ish defaults-for-detection intent, to favor
-    RECALL of overlapping calls.
+    RECALL of overlapping USVs.
   * ``agnostic_nms`` — single class anyway, but kept explicit.
   * ``max_det`` — generous cap (default 300) so dense sessions aren't truncated.
 **This is the #1 thing to validate** when adopting the YOLO detector: compare
-per-spec box counts and stacked-call recall against the CC baseline. If YOLO
-drops stacked calls, raise ``iou`` further or fall back to ``cc`` for those specs.
+per-spec box counts and stacked-USV recall against the CC baseline. If YOLO
+drops stacked USVs, raise ``iou`` further or fall back to ``cc`` for those specs.
 
 Imports
 -------
@@ -73,7 +73,7 @@ class YoloDetectorConfig:
     """
 
     conf: float = 0.25            # confidence threshold (lower => more recall)
-    iou: float = 0.7             # NMS IoU; RAISE to keep stacked calls (see module doc)
+    iou: float = 0.7             # NMS IoU; RAISE to keep stacked USVs (see module doc)
     agnostic_nms: bool = True     # class-agnostic NMS (single class anyway)
     max_det: int = 300            # cap on detections per spec
     imgsz: int = 128              # MUST match the rendered image size (native 128)
@@ -246,6 +246,17 @@ def _extract_xyxy(result):
 
     Returns a numpy float array or ``None``. Handles torch tensors (lazy: torch may
     not be needed) by going through ``.cpu().numpy()`` when available.
+
+    Args:
+        result: One ultralytics ``Results`` object (one image's predictions);
+            read through ``result.boxes.xyxy``, which may be a torch tensor or
+            array-like.
+
+    Returns:
+        A float64 numpy array of shape (N, 4) holding the first four columns
+        (x0, y0, x1, y1) of the boxes, a (0, 4) array when there are no boxes,
+        or ``None`` when ``result`` has no ``boxes`` or ``boxes`` has no
+        ``xyxy`` attribute.
     """
     boxes = getattr(result, "boxes", None)
     if boxes is None:

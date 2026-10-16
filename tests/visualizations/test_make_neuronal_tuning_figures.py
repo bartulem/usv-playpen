@@ -163,7 +163,7 @@ def _build_synthetic_figure_session(
         "max_amplitude":     rng.uniform(0.5, 8.0, n_usvs).tolist(),
         "spectral_entropy":  rng.uniform(1.0, 4.0, n_usvs).tolist(),
         "mask_number":       rng.integers(1, 12, n_usvs).tolist(),
-        # Every synthetic call is real; the figures drop noise-flagged rows.
+        # Every synthetic USV is real; the figures drop noise-flagged rows.
         "noise":             [False] * n_usvs,
     })
     usv_df.write_csv(root / "audio" / "sync" / "vid1_usv_summary.csv")
@@ -440,14 +440,12 @@ def test_figures_render_when_tracking_h5_at_session_root(tmp_path, qlvm_category
     )
 
 
-# ---------------------------------------------------------------------------
 # Per-bug rendering regressions: each test exercises a single private
 # rendering method with a hand-crafted payload that surfaces exactly one
 # class of "axis bound vs rendered data extent" mismatch, then inspects
 # the resulting matplotlib axes for the regression. These tests are
 # fast (no compute, no PDF I/O) and pinpoint the offending code path
 # precisely when a fix regresses.
-# ---------------------------------------------------------------------------
 
 
 def _make_figure_maker() -> NeuronalTuningFigureMaker:
@@ -770,13 +768,11 @@ def test_categorical_strip_has_exactly_two_xticks():
         plt.close(fig)
 
 
-# ---------------------------------------------------------------------------
 # Full pkl contract: walks the ENTIRE payload structure
 # `NeuronalTuning.calculate_neuronal_tuning_curves` writes per cluster and
 # asserts every expected key and shape consistency at every level. This
 # is the safety net for the renaming-class bug (compute writes `usv_*`
 # but figure code looked for `vocal_q*`) at every nested layer.
-# ---------------------------------------------------------------------------
 
 
 # 1D behavioral feature cell stat keys (smoothing_sd == 0 path: no
@@ -924,7 +920,7 @@ def test_pkl_contract_includes_entire_expected_payload_structure(tmp_path):
     with pkls[0].open("rb") as fh:
         d = pickle.load(fh)
 
-    # ---- top level ------------------------------------------------------
+    # top level
     assert set(d.keys()) == _TOP_LEVEL_KEYS, (
         f"top-level keys mismatch.\n"
         f"  expected: {sorted(_TOP_LEVEL_KEYS)}\n"
@@ -933,7 +929,7 @@ def test_pkl_contract_includes_entire_expected_payload_structure(tmp_path):
         f"  extra:    {sorted(set(d.keys()) - _TOP_LEVEL_KEYS)}"
     )
 
-    # ---- beh_offset=0s --------------------------------------------------
+    # beh_offset=0s
     beh = d["beh_offset=0s"]
     assert isinstance(beh, dict) and beh, "beh_offset=0s is empty"
     for feat_name, feat_payload in beh.items():
@@ -954,12 +950,12 @@ def test_pkl_contract_includes_entire_expected_payload_structure(tmp_path):
                     f"!= bin_centers shape={n}"
                 )
 
-    # ---- behavioral_metadata -------------------------------------------
+    # behavioral_metadata
     bm = d["behavioral_metadata"]
     missing = _BEHAVIORAL_METADATA_KEYS - set(bm.keys())
     assert not missing, f"behavioral_metadata missing keys: {sorted(missing)}"
 
-    # ---- usv_peth[emitter] ---------------------------------------------
+    # usv_peth[emitter]
     usv_peth = d["usv_peth"]
     assert isinstance(usv_peth, dict) and usv_peth, "usv_peth is empty"
     for emitter, payload in usv_peth.items():
@@ -973,7 +969,7 @@ def test_pkl_contract_includes_entire_expected_payload_structure(tmp_path):
                 f"usv_peth[{emitter}][{k}] shape mismatch with bin_centers_s"
             )
 
-    # ---- usv_property_tuning[emitter][prop] ----------------------------
+    # usv_property_tuning[emitter][prop]
     upt = d["usv_property_tuning"]
     for emitter, by_prop in upt.items():
         assert set(by_prop.keys()) == set(CONTINUOUS_PROPERTIES), (
@@ -995,7 +991,7 @@ def test_pkl_contract_includes_entire_expected_payload_structure(tmp_path):
                     f"mismatch with bin_centers"
                 )
 
-    # ---- usv_category_tuning[emitter][cat_feat] ------------------------
+    # usv_category_tuning[emitter][cat_feat]
     uct = d["usv_category_tuning"]
     for emitter, by_cat in uct.items():
         assert set(by_cat.keys()) == set(CATEGORICAL_FEATURES), (
@@ -1018,7 +1014,7 @@ def test_pkl_contract_includes_entire_expected_payload_structure(tmp_path):
                     f"shape mismatch with categories"
                 )
 
-    # ---- usv_category_peth[emitter][cat_feat] --------------------------
+    # usv_category_peth[emitter][cat_feat]
     ucp = d["usv_category_peth"]
     for emitter, by_cat in ucp.items():
         assert set(by_cat.keys()) == set(CATEGORICAL_FEATURES), (
@@ -1040,12 +1036,12 @@ def test_pkl_contract_includes_entire_expected_payload_structure(tmp_path):
                     f"shape={arr.shape} != (n_cats={n_cats}, n_bins={n_bins})"
                 )
 
-    # ---- usv_metadata ---------------------------------------------------
+    # usv_metadata
     um = d["usv_metadata"]
     missing = _USV_METADATA_KEYS - set(um.keys())
     assert not missing, f"usv_metadata missing keys: {sorted(missing)}"
 
-    # ---- triage_stats ---------------------------------------------------
+    # triage_stats
     ts = d["triage_stats"]
     missing = _TRIAGE_STATS_KEYS - set(ts.keys())
     assert not missing, (
@@ -1065,7 +1061,6 @@ def test_pkl_contract_includes_entire_expected_payload_structure(tmp_path):
         )
 
 
-# ---------------------------------------------------------------------------
 # Population-level "aggregate" figures: every `make_*_figure(s)` method that
 # consumes a cross-session `unit_triage_*.pkl` (produced by
 # `unit_triage_aggregator.py`) plus the companion `unit_catalog.csv`. These
@@ -1084,7 +1079,6 @@ def test_pkl_contract_includes_entire_expected_payload_structure(tmp_path):
 # `aggregate_units_across_conditions` writes (per-modality `per_session` lists
 # AND the top-level `n_significant` / `n_tested` counts the behavioral / vocal
 # flag helpers read).
-# ---------------------------------------------------------------------------
 
 _COND_A = "intact_female"
 _COND_B = "mute_female"
@@ -1280,7 +1274,7 @@ def _vocal_modalities(archetype):
         "mean_freq_hz":      (60000.0, 61000.0),
         "peak_freq_hz":      (62000.0, 63000.0),
         "freq_bandwidth_hz": (15000.0, 16000.0),
-        "mean_amplitude":    (0.50, 0.52),   # per-call normalized [0, 1] scale
+        "mean_amplitude":    (0.50, 0.52),   # per-USV normalized [0, 1] scale
         "max_amplitude":     (0.93, 0.96),
         "loudness_db":       (60.0, 62.0),   # absolute dB
         "spectral_entropy":  (2.0, 2.1),
@@ -2444,14 +2438,12 @@ def test_collectors_honor_configurable_filter(triage_fixture, tmp_path):
     )
 
 
-# ---------------------------------------------------------------------------
 # Per-cluster behavioral-page rendering: the `make_neuronal_tuning_figures`
 # dispatcher's non-PDF (one-file-per-page) save path, plus the social /
 # directional-SEI branches of `_render_behavioral_pages` that the
 # single-mouse full-pipeline fixtures never reach. The full-pipeline tests
 # above already exercise the 1D self-feature + 2D spatial happy path via the
 # default PDF backend; these add the format / multi-animal branches.
-# ---------------------------------------------------------------------------
 
 
 def _beh_1d_payload(n_bins: int = 12) -> dict:

@@ -203,6 +203,8 @@ def _safe_literal_eval(raw: str):
 
 class YamlHighlighter(QSyntaxHighlighter):
     """
+    Description
+    -----------
     A syntax highlighter for basic YAML files that colors keys.
     """
     def __init__(self, parent=None):
@@ -256,6 +258,26 @@ class YamlHighlighter(QSyntaxHighlighter):
 
 
 class ChemoDialog(QDialog):
+    """
+    Description
+    -----------
+    Modal dialog for adding, editing or deleting a subject's chemogenetic
+    intervention (stored under ``subject['interventions']['chemogenetics']`` in
+    the metadata). It holds a subject selector (``subject_combo``), an
+    intervention-type selector (excitatory / inhibitory) and one widget per
+    virus / agonist field in ``fields`` (vendor, name, lot, concentration,
+    volume, injection date, target area, agonist details).
+
+    In create mode (``subject`` is None) the user picks a subject from the
+    parent window's ``metadata_settings['Subjects']`` before OK is enabled; in
+    edit mode (a subject dict is passed) the selector is locked to that subject,
+    the form is pre-filled by ``populate_form`` and a delete button is offered
+    (``delete_intervention``). ``save_and_accept`` writes the form into the
+    chosen subject, saves the metadata YAML and updates the subject repository
+    through the parent window, then closes the dialog. It is opened from
+    ``USVPlaypenWindow`` with the window as ``parent``.
+    """
+
     def __init__(self, parent=None, subject: dict = None):
         """
         Description
@@ -464,7 +486,11 @@ class ChemoDialog(QDialog):
 
 
 class EphysDialog(QDialog):
-    """A custom dialog for E-phys Interventions with edit/delete functionality."""
+    """
+    Description
+    -----------
+    A custom dialog for E-phys Interventions with edit/delete functionality.
+    """
     def __init__(self, parent=None, subject: dict = None):
         """
         Description
@@ -680,7 +706,11 @@ class EphysDialog(QDialog):
 
 
 class LesionDialog(QDialog):
-    """A custom dialog for Lesion Interventions with edit/delete functionality."""
+    """
+    Description
+    -----------
+    A custom dialog for Lesion Interventions with edit/delete functionality.
+    """
     def __init__(self, parent=None, subject: dict = None):
         """
         Description
@@ -858,7 +888,11 @@ class LesionDialog(QDialog):
 
 
 class OptoDialog(QDialog):
-    """A custom dialog for Optogenetic Interventions with edit/delete functionality."""
+    """
+    Description
+    -----------
+    A custom dialog for Optogenetic Interventions with edit/delete functionality.
+    """
 
     def __init__(self, parent=None, subject: dict = None):
         """
@@ -1113,6 +1147,19 @@ def replace_name_in_path(experimenter_list: list = None,
 
 
 class Main(QWidget):
+    """
+    Description
+    -----------
+    QWidget for the landing page of the usv-playpen GUI. It holds no state of
+    its own; its only addition to ``QWidget`` is ``paintEvent``, which draws the
+    GUI background image across the widget's whole rectangle on every repaint.
+    It is constructed (with the main window as ``parent``) and populated by
+    ``USVPlaypenWindow.main_window``, which places the experimenter selector and
+    the Record / Process / Analyze / Visualize entry buttons on it.
+
+    The only constructor input is ``parent`` (QWidget), the owning window.
+    """
+
     def __init__(self, parent: QWidget = None) -> None:
         """
         Description
@@ -1150,7 +1197,21 @@ class Main(QWidget):
         QWidget.paintEvent(self, event)
 
 class Credentials(QWidget):
-    def __init__(self, parent: QWidget = Main) -> None:
+    """
+    Description
+    -----------
+    Bare QWidget container for the credentials page of the usv-playpen GUI. The
+    class adds no behaviour of its own beyond ``QWidget``: it exists so the page
+    has a distinct type and object to parent its widgets to. It is constructed
+    (with the main window as ``parent``) and populated by
+    ``USVPlaypenWindow.credentials_window``, which sets it as the window's central widget
+    and places the save-directory picker and the e-mail, university and
+    Motif credential fields that are written to the credential files on it.
+
+    The only constructor input is ``parent`` (QWidget), the owning window.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
         """
         Description
         -----------
@@ -1159,7 +1220,7 @@ class Credentials(QWidget):
         Parameters
         ----------
         parent (QWidget)
-            Parent widget; defaults to Main.
+            Parent widget (the main window passes itself); None makes a top-level widget.
 
         Returns
         -------
@@ -1168,7 +1229,21 @@ class Credentials(QWidget):
         super(Credentials, self).__init__(parent)
 
 class Record(QWidget):
-    def __init__(self, parent: QWidget = Main) -> None:
+    """
+    Description
+    -----------
+    Bare QWidget container for the first recording page of the usv-playpen GUI. The
+    class adds no behaviour of its own beyond ``QWidget``: it exists so the page
+    has a distinct type and object to parent its widgets to. It is constructed
+    (with the main window as ``parent``) and populated by
+    ``USVPlaypenWindow.record_one``, which sets it as the window's central widget
+    and places the Avisoft / CoolTerm / credentials directory pickers, the
+    lab file-server destination selectors and the main recording parameters on it.
+
+    The only constructor input is ``parent`` (QWidget), the owning window.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
         """
         Description
         -----------
@@ -1177,7 +1252,7 @@ class Record(QWidget):
         Parameters
         ----------
         parent (QWidget)
-            Parent widget; defaults to Main.
+            Parent widget (the main window passes itself); None makes a top-level widget.
 
         Returns
         -------
@@ -1187,7 +1262,23 @@ class Record(QWidget):
 
 
 class VideoSettings(QWidget):
-    def __init__(self, parent: QWidget = Main) -> None:
+    """
+    Description
+    -----------
+    Bare QWidget container for the second and third recording page of the usv-playpen GUI. The
+    class adds no behaviour of its own beyond ``QWidget``: it exists so the page
+    has a distinct type and object to parent its widgets to. It is constructed
+    (with the main window as ``parent``) and populated by
+    ``USVPlaypenWindow.record_two`` and
+    ``USVPlaypenWindow.record_three``, which sets it as the window's central widget
+    and places (in ``record_two``) the audio, sync and video settings and
+    (in ``record_three``) the session metadata fields; each of the two pages
+    constructs its own instance on it.
+
+    The only constructor input is ``parent`` (QWidget), the owning window.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
         """
         Description
         -----------
@@ -1196,7 +1287,7 @@ class VideoSettings(QWidget):
         Parameters
         ----------
         parent (QWidget)
-            Parent widget; defaults to Main.
+            Parent widget (the main window passes itself); None makes a top-level widget.
 
         Returns
         -------
@@ -1205,7 +1296,21 @@ class VideoSettings(QWidget):
         super(VideoSettings, self).__init__(parent)
 
 class ConductRecording(QWidget):
-    def __init__(self, parent: QWidget = Main) -> None:
+    """
+    Description
+    -----------
+    Bare QWidget container for the conduct-recording page of the usv-playpen GUI. The
+    class adds no behaviour of its own beyond ``QWidget``: it exists so the page
+    has a distinct type and object to parent its widgets to. It is constructed
+    (with the main window as ``parent``) and populated by
+    ``USVPlaypenWindow.record_four``, which sets it as the window's central widget
+    and places the read-only log box that ``ExperimentController`` writes
+    its progress messages to while a recording runs on it.
+
+    The only constructor input is ``parent`` (QWidget), the owning window.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
         """
         Description
         -----------
@@ -1214,7 +1319,7 @@ class ConductRecording(QWidget):
         Parameters
         ----------
         parent (QWidget)
-            Parent widget; defaults to Main.
+            Parent widget (the main window passes itself); None makes a top-level widget.
 
         Returns
         -------
@@ -1223,7 +1328,22 @@ class ConductRecording(QWidget):
         super(ConductRecording, self).__init__(parent)
 
 class ProcessSettings(QWidget):
-    def __init__(self, parent: QWidget = Main) -> None:
+    """
+    Description
+    -----------
+    Bare QWidget container for the processing-settings page of the usv-playpen GUI. The
+    class adds no behaviour of its own beyond ``QWidget``: it exists so the page
+    has a distinct type and object to parent its widgets to. It is constructed
+    (with the main window as ``parent``) and populated by
+    ``USVPlaypenWindow.process_one``, which sets it as the window's central widget
+    and places the processing step selectors and their parameters (SLEAP
+    model / inference directories, calibration file, and the remaining
+    processing settings) on it.
+
+    The only constructor input is ``parent`` (QWidget), the owning window.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
         """
         Description
         -----------
@@ -1232,7 +1352,7 @@ class ProcessSettings(QWidget):
         Parameters
         ----------
         parent (QWidget)
-            Parent widget; defaults to Main.
+            Parent widget (the main window passes itself); None makes a top-level widget.
 
         Returns
         -------
@@ -1241,7 +1361,21 @@ class ProcessSettings(QWidget):
         super(ProcessSettings, self).__init__(parent)
 
 class ConductProcess(QWidget):
-    def __init__(self, parent: QWidget = Main) -> None:
+    """
+    Description
+    -----------
+    Bare QWidget container for the conduct-processing page of the usv-playpen GUI. The
+    class adds no behaviour of its own beyond ``QWidget``: it exists so the page
+    has a distinct type and object to parent its widgets to. It is constructed
+    (with the main window as ``parent``) and populated by
+    ``USVPlaypenWindow.process_two``, which sets it as the window's central widget
+    and places the read-only log box that the processing run writes its
+    progress messages to on it.
+
+    The only constructor input is ``parent`` (QWidget), the owning window.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
         """
         Description
         -----------
@@ -1250,7 +1384,7 @@ class ConductProcess(QWidget):
         Parameters
         ----------
         parent (QWidget)
-            Parent widget; defaults to Main.
+            Parent widget (the main window passes itself); None makes a top-level widget.
 
         Returns
         -------
@@ -1259,7 +1393,21 @@ class ConductProcess(QWidget):
         super(ConductProcess, self).__init__(parent)
 
 class AnalysesSettings(QWidget):
-    def __init__(self, parent: QWidget = Main) -> None:
+    """
+    Description
+    -----------
+    Bare QWidget container for the analyses-settings page of the usv-playpen GUI. The
+    class adds no behaviour of its own beyond ``QWidget``: it exists so the page
+    has a distinct type and object to parent its widgets to. It is constructed
+    (with the main window as ``parent``) and populated by
+    ``USVPlaypenWindow.analyze_one``, which sets it as the window's central widget
+    and places the analysis selectors and their parameters (behavioral
+    features, neuronal tuning curves, notification e-mails, analyses PC) on it.
+
+    The only constructor input is ``parent`` (QWidget), the owning window.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
         """
         Description
         -----------
@@ -1268,7 +1416,7 @@ class AnalysesSettings(QWidget):
         Parameters
         ----------
         parent (QWidget)
-            Parent widget; defaults to Main.
+            Parent widget (the main window passes itself); None makes a top-level widget.
 
         Returns
         -------
@@ -1277,7 +1425,21 @@ class AnalysesSettings(QWidget):
         super(AnalysesSettings, self).__init__(parent)
 
 class ConductAnalyses(QWidget):
-    def __init__(self, parent: QWidget = Main) -> None:
+    """
+    Description
+    -----------
+    Bare QWidget container for the conduct-analyses page of the usv-playpen GUI. The
+    class adds no behaviour of its own beyond ``QWidget``: it exists so the page
+    has a distinct type and object to parent its widgets to. It is constructed
+    (with the main window as ``parent``) and populated by
+    ``USVPlaypenWindow.analyze_two``, which sets it as the window's central widget
+    and places the read-only log box that the analyses run writes its
+    progress messages to on it.
+
+    The only constructor input is ``parent`` (QWidget), the owning window.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
         """
         Description
         -----------
@@ -1286,7 +1448,7 @@ class ConductAnalyses(QWidget):
         Parameters
         ----------
         parent (QWidget)
-            Parent widget; defaults to Main.
+            Parent widget (the main window passes itself); None makes a top-level widget.
 
         Returns
         -------
@@ -1295,7 +1457,22 @@ class ConductAnalyses(QWidget):
         super(ConductAnalyses, self).__init__(parent)
 
 class VisualizationsSettings(QWidget):
-    def __init__(self, parent: QWidget = Main) -> None:
+    """
+    Description
+    -----------
+    Bare QWidget container for the visualizations-settings page of the usv-playpen GUI. The
+    class adds no behaviour of its own beyond ``QWidget``: it exists so the page
+    has a distinct type and object to parent its widgets to. It is constructed
+    (with the main window as ``parent``) and populated by
+    ``USVPlaypenWindow.visualize_one``, which sets it as the window's central widget
+    and places the visualization selectors and their parameters (neuronal
+    tuning figures, behavioral videos, spectrograms, figure format, notification
+    e-mails, visualizations PC) on it.
+
+    The only constructor input is ``parent`` (QWidget), the owning window.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
         """
         Description
         -----------
@@ -1304,7 +1481,7 @@ class VisualizationsSettings(QWidget):
         Parameters
         ----------
         parent (QWidget)
-            Parent widget; defaults to Main.
+            Parent widget (the main window passes itself); None makes a top-level widget.
 
         Returns
         -------
@@ -1313,7 +1490,21 @@ class VisualizationsSettings(QWidget):
         super(VisualizationsSettings, self).__init__(parent)
 
 class ConductVisualizations(QWidget):
-    def __init__(self, parent: QWidget = Main) -> None:
+    """
+    Description
+    -----------
+    Bare QWidget container for the conduct-visualizations page of the usv-playpen GUI. The
+    class adds no behaviour of its own beyond ``QWidget``: it exists so the page
+    has a distinct type and object to parent its widgets to. It is constructed
+    (with the main window as ``parent``) and populated by
+    ``USVPlaypenWindow.visualize_two``, which sets it as the window's central widget
+    and places the read-only log box that ``Visualizer`` writes its progress
+    messages to on it.
+
+    The only constructor input is ``parent`` (QWidget), the owning window.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
         """
         Description
         -----------
@@ -1322,7 +1513,7 @@ class ConductVisualizations(QWidget):
         Parameters
         ----------
         parent (QWidget)
-            Parent widget; defaults to Main.
+            Parent widget (the main window passes itself); None makes a top-level widget.
 
         Returns
         -------
@@ -1333,7 +1524,11 @@ class ConductVisualizations(QWidget):
 
 # noinspection PyUnresolvedReferences,PyTypeChecker
 class USVPlaypenWindow(QMainWindow):
-    """ Main window of usv-playpen GUI """
+    """
+    Description
+    -----------
+    Main window of usv-playpen GUI.
+    """
 
     def __init__(self, **kwargs) -> None:
         """
@@ -1700,6 +1895,11 @@ class USVPlaypenWindow(QMainWindow):
 
         Parameters
         ----------
+        subject_id (str)
+            The subject ID picked in the completer; it is looked up in
+            ``self.subject_repository`` and the method returns without changes
+            when no repository entry has that ID. If the subject is already in
+            the session the form is only filled for live editing.
 
         Returns
         -------
@@ -1769,6 +1969,11 @@ class USVPlaypenWindow(QMainWindow):
 
         Parameters
         ----------
+        subject_data_to_save (dict)
+            The subject's fields (possibly a partial dict, e.g. without
+            ``interventions``); a deep copy is merged into the stored preset. The
+            method returns without changes when the dict has no ``subject_id``
+            key or its value is empty.
 
         Returns
         -------
@@ -2219,6 +2424,14 @@ class USVPlaypenWindow(QMainWindow):
 
         Parameters
         ----------
+        subject_id (str)
+            ID of the session subject (an entry of
+            ``self.metadata_settings['Subjects']``) whose intervention is edited;
+            nothing happens when no session subject has that ID.
+        intervention_key (str)
+            Which intervention dialog to open: ``'chemogenetics'``,
+            ``'electrophysiology'``, ``'lesion'`` or ``'optogenetics'``; any other
+            value opens nothing.
 
         Returns
         -------
@@ -7401,6 +7614,8 @@ class USVPlaypenWindow(QMainWindow):
 
         Parameters
         ----------
+        s (str)
+            The message text, appended as a new line to ``self.txt_edit``.
 
         Returns
         -------
@@ -7417,6 +7632,8 @@ class USVPlaypenWindow(QMainWindow):
 
         Parameters
         ----------
+        s (str)
+            The message text, appended as a new line to ``self.txt_edit_analyze``.
 
         Returns
         -------
@@ -7433,6 +7650,8 @@ class USVPlaypenWindow(QMainWindow):
 
         Parameters
         ----------
+        s (str)
+            The message text, appended as a new line to ``self.txt_edit_visualize``.
 
         Returns
         -------
@@ -7449,6 +7668,8 @@ class USVPlaypenWindow(QMainWindow):
 
         Parameters
         ----------
+        s (str)
+            The message text, appended as a new line to ``self.txt_edit_process``.
 
         Returns
         -------

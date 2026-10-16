@@ -60,29 +60,29 @@ With ``conditional`` null the decoder takes no conditioning input (``c_dim``
 0). With ``conditional`` one of ``duration``, ``mean_freq``, ``bandwidth``,
 ``loudness`` or ``spectral_entropy`` it trains a conditional decoder (``c_dim`` 1)
 with the recipe of the v3 package's phase 11 cells (qmc_deep_gen ``bartul_mouse_cond.py`` with
-``bin_scheme="quantile_capped"``, ``scale_loss_by_batch=True`` and a per-call
+``bin_scheme="quantile_capped"``, ``scale_loss_by_batch=True`` and a per-USV
 table; ``data/conditionals.py``, ``data/mouse_data.py`` and ``train/train.py``):
 
-* **The value, per call.** ``duration``: ``(d - d_min) / (d_max - d_min + 1e-8)``
+* **The value, per USV.** ``duration``: ``(d - d_min) / (d_max - d_min + 1e-8)``
   of the pre-resize duration in time bins, ``d_min`` / ``d_max`` the training
   split's (8 and 127 in every shipped cell). ``mean_freq``:
-  ``(f - 30 kHz) * 127 / (128 * 90 kHz)`` of the call's mean frequency ``f`` over
+  ``(f - 30 kHz) * 127 / (128 * 90 kHz)`` of the USV's mean frequency ``f`` over
   its SAM-masked region (the USV summary's ``mean_freq_hz``), which equals the
   energy-weighted row centroid of the resized SAM-masked spectrogram
   ``infer-qlvm-latents`` computes to 1.5e-7. ``bandwidth``:
   ``clip(freq_bandwidth_hz / 90 kHz, 0, 1)``. ``loudness``:
-  ``clip((dB - 28.83) / (95.85 - 28.83), 0, 1)`` of the call's absolute
+  ``clip((dB - 28.83) / (95.85 - 28.83), 0, 1)`` of the USV's absolute
   image-level loudness over its SAM mask (the summary's ``loudness_db``,
   :func:`compute_usv_loudness.session_image_level_db`; 28.83-95.85 dB is the
   0.1-99.9 percentile range of the package corpus). ``spectral_entropy``:
-  ``clip((H - H_min) / (H_max - H_min), 0, 1)`` of the call's spectral entropy in
+  ``clip((H - H_min) / (H_max - H_min), 0, 1)`` of the USV's spectral entropy in
   nats (the summary's ``spectral_entropy``), with ``H_min`` / ``H_max`` the
   smallest and largest entropy of the TRAINING split (so the training values span
-  exactly ``[0, 1]``; validation rows and later calls outside that range are
+  exactly ``[0, 1]``; validation rows and later USVs outside that range are
   clamped), recorded in the contract as ``entropy_min`` / ``entropy_max``. The raw
   values come from the split's ``mean_freq_hz`` / ``freq_bandwidth_hz`` /
   ``loudness_db`` / ``spectral_entropy`` columns (``build-qlvm-training-set``
-  copies them from the summaries), or, with ``condition_table``, from a per-call
+  copies them from the summaries), or, with ``condition_table``, from a per-USV
   ``.npz`` keyed by ``spec_id`` (the package's ``corpus/cond_table.npz``, for sets
   built outside the repository). A row without a finite value stops the run.
 * **Bins.** The training split's values are cut into ``condition_n_bins`` (32)
@@ -107,19 +107,19 @@ table; ``data/conditionals.py``, ``data/mouse_data.py`` and ``train/train.py``):
   instead of a full one; the recorded loss is the unscaled batch mean. Short
   batches are padded to ``batch_size`` with zero-weight rows, which changes
   neither the loss nor its gradient.
-* **Validation.** One call at a time at its own value.
+* **Validation.** One USV at a time at its own value.
 * **Output.** The cell's contract names the condition (a ``condition`` block in
   the form of the shipped phase 11 contracts: the value's definition, its
   constants and its decode rule) and ``config/condition_bins.npz`` records the
   bins (``edges``, ``group_ids``, ``group_sizes``, ``group_means``), the training
   range of the value (``train_c_min``, ``train_c_max``) and the decode grid
   (``decode_grid``, ``condition_decode_grid_step`` apart from ``train_c_min``
-  past ``train_c_max``). ``infer-qlvm-latents`` decodes a new call as the package
+  past ``train_c_max``). ``infer-qlvm-latents`` decodes a new USV as the package
   decoded its corpus: at its own value clamped to the training range for
   duration and bandwidth (``decode`` ``"exact"``: few distinct values, 120
   durations and 128 bandwidth steps) and at the nearest grid point for mean
   frequency, loudness and spectral entropy (``decode`` ``"grid"``; a continuous
-  value decoded exactly would need one full lattice decode per call).
+  value decoded exactly would need one full lattice decode per USV).
 """
 
 from __future__ import annotations
@@ -181,7 +181,7 @@ METRICS_DIRECTORY = "metrics"
 _NORMALIZATION_CHUNK = 4096
 
 # Conditional decoders. The split column (a build-qlvm-training-set USV summary
-# column, SUMMARY_CONDITION_COLUMNS) each condition's raw per-call value is read
+# column, SUMMARY_CONDITION_COLUMNS) each condition's raw per-USV value is read
 # from; duration uses the split's own durations.
 CONDITION_RAW_COLUMNS = {
     "mean_freq": "mean_freq_hz",
@@ -190,12 +190,12 @@ CONDITION_RAW_COLUMNS = {
     "spectral_entropy": "spectral_entropy",
 }
 
-# The v3 package's per-call table (corpus/cond_table.npz) names the loudness column
+# The v3 package's per-USV table (corpus/cond_table.npz) names the loudness column
 # image_level_db; a condition_table may use either name.
 _CONDITION_TABLE_ALIASES = {"loudness_db": "image_level_db"}
 
-# How infer-qlvm-latents decodes a call, per condition, as the v3 package decoded
-# its corpus (qlvm_latents.frozen_condition_values): "exact" at the call's own
+# How infer-qlvm-latents decodes a USV, per condition, as the v3 package decoded
+# its corpus (qlvm_latents.frozen_condition_values): "exact" at the USV's own
 # value clamped to the training range, "grid" at the nearest decode_grid point.
 CONDITION_DECODE = {
     "duration": "exact",
@@ -210,7 +210,7 @@ CONDITION_BIN_SCHEMES = ("quantile", "quantile_capped")
 
 # Frozen maps from raw units to the conditioning value (qmc_deep_gen
 # data/conditionals.py CONDITIONAL_REGISTRY), constants rather than per-dataset
-# ranges, so a training split and every later call map one call to one value:
+# ranges, so a training split and every later USV map one USV to one value:
 # the spectrograms' 30-120 kHz band over 128 frequency rows (mean frequency and
 # bandwidth) and the 0.1-99.9 percentile loudness range of the package corpus.
 MEAN_FREQ_LOW_HZ = 30000.0
@@ -417,11 +417,11 @@ def condition_decode_grid(c_min: float, c_max: float, step: float) -> np.ndarray
     """
     Description
     -----------
-    The fixed conditioning values ``infer-qlvm-latents`` decodes calls at under a
+    The fixed conditioning values ``infer-qlvm-latents`` decodes USVs at under a
     ``"grid"`` decode rule (qmc_deep_gen ``data/conditionals.py:decode_grid``):
     ``c_min + step * k`` for ``k = 0 .. ceil((c_max - c_min) / step - 1e-9)``, so the
     grid starts at the training minimum and its last point is at or just past the
-    training maximum. A call inside the training range is then decoded at most
+    training maximum. A USV inside the training range is then decoded at most
     ``step / 2`` from its own value.
 
     Parameters
@@ -492,7 +492,7 @@ def condition_contract_block(
     -----------
     The ``condition`` block of a conditional cell's training contract, in the form
     of the shipped phase 11 contracts: ``name``, the constants
-    ``infer-qlvm-latents`` computes a call's value with
+    ``infer-qlvm-latents`` computes a USV's value with
     (:func:`qlvm_latents.compute_condition_values`: ``duration_min`` /
     ``duration_max`` / ``epsilon`` for duration, ``spectrogram`` / ``epsilon`` for
     mean frequency, ``db_range`` for loudness, ``entropy_min`` / ``entropy_max``
@@ -539,7 +539,7 @@ def condition_contract_block(
     scaling = f"; loss scaled by rows / {batch_size}" if scale_loss_by_batch else "; batch-mean loss"
     decode = CONDITION_DECODE[conditional]
     decode_rule = (
-        "the call's own c, clamped to [train_c_min, train_c_max] of condition_bins.npz" if decode == "exact" else
+        "the USV's own c, clamped to [train_c_min, train_c_max] of condition_bins.npz" if decode == "exact" else
         f"nearest point of condition_bins.npz decode_grid ({decode_grid_step:g} apart over the training c range); "
         f"c beyond the grid decodes at its end point"
     )
@@ -595,7 +595,7 @@ def raw_condition_values(split: dict, column: str, table: dict | None, split_nam
     Description
     -----------
     Each row's raw conditioning value (Hz, dB or nats) in one split: from ``table`` (a
-    per-call table, ``spec_id`` -> value, :func:`load_condition_table`) when one is
+    per-USV table, ``spec_id`` -> value, :func:`load_condition_table`) when one is
     given, else from the split's own ``column``. Every row must have a finite value
     (a row without one would otherwise train at an arbitrary conditioning value),
     so a missing ``spec_id``, a missing column or a non-finite value raises.
@@ -651,7 +651,7 @@ def load_condition_table(table_path: pathlib.Path, column: str) -> dict:
     """
     Description
     -----------
-    Reads one raw column of a per-call conditioning table: an ``.npz`` with a
+    Reads one raw column of a per-USV conditioning table: an ``.npz`` with a
     ``spec_id`` array and the column (``mean_freq_hz``, ``freq_bandwidth_hz``,
     ``loudness_db`` -- also accepted under the v3 package's name
     ``image_level_db`` -- or ``spectral_entropy``), e.g. the package's
@@ -1216,7 +1216,7 @@ class QLVMTrainer:
         bins and writes ``config/condition_bins.npz``, then trains on batches drawn
         one bin at a time, each decoded at its rows' mean value, with the loss
         optionally scaled by the batch's share of ``batch_size``, and validates each
-        call at its own value (module docstring).
+        USV at its own value (module docstring).
 
         Parameters
         ----------
@@ -1566,12 +1566,12 @@ class QLVMTrainer:
 @click.option('--val-freq', 'val_freq', type=int, default=None, required=False, help='Compute the validation loss every N epochs (and after the last).')
 @click.option('--val-samples-per-mask-count', 'val_samples_per_mask_count', type=int, default=None, required=False, help='Validation subset: at most this many spectrograms per masks_len value.')
 @click.option('--seed', 'seed', type=int, default=None, required=False, help='Seed of the initialization, shuffling, lattice shifts and validation subset.')
-@click.option('--conditional', 'conditional', type=click.Choice(['none', 'duration', 'mean_freq', 'bandwidth', 'loudness', 'spectral_entropy']), default=None, required=False, help='Train a decoder conditioned on this per-call value (the phase 11 recipe), or none for an unconditional decoder.')
+@click.option('--conditional', 'conditional', type=click.Choice(['none', 'duration', 'mean_freq', 'bandwidth', 'loudness', 'spectral_entropy']), default=None, required=False, help='Train a decoder conditioned on this per-USV value (the phase 11 recipe), or none for an unconditional decoder.')
 @click.option('--condition-n-bins', 'condition_n_bins', type=int, default=None, required=False, help='Quantile bins the training values are cut into (conditional runs).')
 @click.option('--condition-bin-scheme', 'condition_bin_scheme', type=click.Choice(['quantile', 'quantile_capped']), default=None, required=False, help='quantile, or quantile_capped (bins wider than the widest inner bin split into equal-width pieces).')
 @click.option('--condition-scale-loss-by-batch/--no-condition-scale-loss-by-batch', 'condition_scale_loss_by_batch', default=None, required=False, help='Scale each step\'s loss by rows / batch size (conditional runs).')
 @click.option('--condition-decode-grid-step', 'condition_decode_grid_step', type=float, default=None, required=False, help='Spacing of the decode grid written to condition_bins.npz.')
-@click.option('--condition-table', 'condition_table', type=str, default=None, required=False, help='Per-call .npz (spec_id + mean_freq_hz / freq_bandwidth_hz / loudness_db or image_level_db / spectral_entropy) to read the raw values from instead of the splits\' columns, or none.')
+@click.option('--condition-table', 'condition_table', type=str, default=None, required=False, help='Per-USV .npz (spec_id + mean_freq_hz / freq_bandwidth_hz / loudness_db or image_level_db / spectral_entropy) to read the raw values from instead of the splits\' columns, or none.')
 @click.pass_context
 def train_qlvm_cli(ctx, dataset_directory, output_directory, **kwargs) -> None:
     """

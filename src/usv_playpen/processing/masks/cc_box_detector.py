@@ -26,9 +26,9 @@ Key differences from the noise-filter source, justified by the box-prompt design
     we want RECALL (a missed component => no box => no mask, with no recovery), so those
     shape gates are DISABLED by default here and exposed as opt-in (``strict_traces``).
   * A second **time-gap box merge** unions components that are close in time AND
-    overlap/near in frequency -- joining a single call broken into pieces by the
+    overlap/near in frequency -- joining a single USV broken into pieces by the
     threshold -- while deliberately keeping frequency-stacked, time-overlapping
-    distinct calls SEPARATE (this is what fixes the overlap case).
+    distinct USVs SEPARATE (this is what fixes the overlap case).
   * Boxes are **asymmetrically dilated** (more along time than frequency, since USVs are
     horizontally elongated) and clamped to ``[0, H-1]`` x ``[0, duration-1]`` so prompts
     never extend into the right-edge zero padding.
@@ -57,9 +57,7 @@ from skimage.filters import threshold_otsu
 Box = Tuple[int, int, int, int]  # (top, left, bottom, right), inclusive
 
 
-# ---------------------------------------------------------------------------
 # Config (ported subset of noise_filter.config.DetectorConfig + box params)
-# ---------------------------------------------------------------------------
 @dataclass
 class BoxDetectorConfig:
     """Thresholds for the connected-component box detector.
@@ -69,25 +67,25 @@ class BoxDetectorConfig:
     ``strict_*`` fields are box-prompt additions.
     """
 
-    # --- numerical hygiene ---
+    # numerical hygiene
     EPS: float = 1e-6
     PTP_EPS: float = 1e-3  # min peak-to-peak of signal region before "degenerate"
 
-    # --- Stage 0: degenerate gate ---
+    # Stage 0: degenerate gate
     D_MIN: int = 4         # minimum valid duration (columns) to attempt detection
     MIN_FG_PIX: int = 20   # minimum foreground (S > 0) pixel count
 
-    # --- Stage 1: pre-conditioning ---
+    # Stage 1: pre-conditioning
     NORM_PCTL: Tuple[float, float] = (2.0, 98.0)  # robust contrast normalization
     TIME_SMOOTH: int = 3   # uniform_filter1d window along TIME axis only (never freq)
     ROW_BG_PCTL: float = 15.0  # per-row baseline percentile (must be < 50)
 
-    # --- Stage 2: binarization threshold ---
+    # Stage 2: binarization threshold
     OTSU_MIN_RANGE: float = 0.05  # min dynamic range of foreground to run Otsu
     PCT: float = 90.0      # percentile floor on the Otsu threshold
     ABS_FLOOR: float = 0.05  # absolute floor on the binarization threshold
 
-    # --- per-component KEEP filters (loosened for recall vs. noise_filter) ---
+    # per-component KEEP filters (loosened for recall vs. noise_filter)
     min_area_px: int = 20          # drop small diffuse-noise components. 12 was too low and
     #   admitted faint blobs as false positives; 20 trims the noisy tail (specs with >=5
     #   boxes ~1.9% -> ~0.1%) while keeping ~99% of specs with >=1 box. Raise to 25-30 for
@@ -102,37 +100,70 @@ class BoxDetectorConfig:
     min_fill: float = 0.60         # used only if strict_traces
     min_width_t: int = 5           # used only if strict_traces
 
-    # --- saturation guard (skip pathological all-bright specs) ---
+    # saturation guard (skip pathological all-bright specs)
     max_area_frac: float = 0.35    # if binarized foreground exceeds this frac -> no boxes
 
-    # --- time-gap box merge ---
+    # time-gap box merge
     merge_time_gap: int = 6        # union boxes whose column gap <= this (frames).
     #   ~12 ms at hop=512 / sr=250 kHz (~2.05 ms/frame); 10-15 ms ~= 5-7 frames.
     merge_freq_gap: int = 2        # ...AND whose row intervals overlap or are within this.
-    #   Small, so frequency-stacked distinct calls (large freq gap) stay SEPARATE.
+    #   Small, so frequency-stacked distinct USVs (large freq gap) stay SEPARATE.
 
-    # --- asymmetric dilation (USVs are horizontally elongated) ---
+    # asymmetric dilation (USVs are horizontally elongated)
     pad_time: int = 8              # pad along time (cols); MedSAM jitter is 0-20px, kept conservative
     pad_freq: int = 4              # pad along freq (rows)
 
     def __post_init__(self) -> None:
+        """Normalize and validate the configuration after dataclass construction.
+
+        Converts a list-valued ``NORM_PCTL`` (as loaded from JSON / YAML) to a tuple
+        in place and asserts the row-background percentile and the time-smoothing
+        width are in range.
+
+        Args:
+            None (operates on ``self``).
+
+        Returns:
+            None
+
+        Raises:
+            AssertionError: If ``ROW_BG_PCTL`` is outside ``[0, 50)`` or
+                ``TIME_SMOOTH`` is below 1.
+        """
         if isinstance(self.NORM_PCTL, list):
             self.NORM_PCTL = tuple(self.NORM_PCTL)
         assert 0.0 <= self.ROW_BG_PCTL < 50.0, "ROW_BG_PCTL must be in [0, 50)"
         assert self.TIME_SMOOTH >= 1, "TIME_SMOOTH must be >= 1"
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 def _clip_duration(duration, n_time: int) -> int:
-    """Clamp a (possibly noisy) duration to ``[1, n_time]``."""
+    """Clamp a (possibly noisy) duration to ``[1, n_time]``.
+
+    Args:
+        duration: Valid time frames as any value ``int()`` accepts (a float or
+            numpy scalar is truncated toward zero).
+        n_time: Number of time columns of the spectrogram (the upper bound).
+
+    Returns:
+        ``int(duration)`` clamped to ``[1, n_time]``.
+    """
     d = int(duration)
     return max(1, min(d, n_time))
 
 
 def _sanitize(arr: np.ndarray) -> np.ndarray:
-    """Replace non-finite pixels with 0 and return a float64 copy."""
+    """Replace non-finite pixels with 0 and return a float64 copy.
+
+    Args:
+        arr: Array of any shape and numeric dtype (typically the ``[F, d]`` signal
+            region of a spectrogram).
+
+    Returns:
+        Float64 array of the same shape with every NaN / +-inf replaced by 0.0. When
+        ``arr`` is already finite float64 the result may be ``arr`` itself (no copy
+        is forced by ``np.asarray``).
+    """
     out = np.asarray(arr, dtype=np.float64)
     if not np.all(np.isfinite(out)):
         out = np.where(np.isfinite(out), out, 0.0)
@@ -162,7 +193,7 @@ def ridge_map(spec: np.ndarray, duration: int, cfg: BoxDetectorConfig
     # Hard-slice to the signal region so right zero-padding never enters detection.
     S = _sanitize(spec[:, :d])  # [F, d]
 
-    # ---- Stage 0: degenerate gate ----
+    # Stage 0: degenerate gate
     ptp = float(S.max() - S.min())
     n_fg = int(np.count_nonzero(S > 0))
     if (d < cfg.D_MIN) or (ptp < cfg.PTP_EPS) or (n_fg < cfg.MIN_FG_PIX):
@@ -170,7 +201,7 @@ def ridge_map(spec: np.ndarray, duration: int, cfg: BoxDetectorConfig
 
     EPS = cfg.EPS
 
-    # ---- Stage 1: pre-conditioning ----
+    # Stage 1: pre-conditioning
     p_lo, p_hi = cfg.NORM_PCTL
     p2, p98 = np.percentile(S, [float(p_lo), float(p_hi)])
     Sn = np.clip((S - p2) / (p98 - p2 + EPS), 0.0, 1.0)
@@ -190,6 +221,23 @@ def _label_boxes(R_ridge: np.ndarray, cfg: BoxDetectorConfig) -> List[Box]:
     """Stage 2: binarize -> 8-connected label -> per-component boxes (filtered).
 
     Returns inclusive ``(top, left, bottom, right)`` boxes in ``R_ridge`` coords.
+
+    The threshold is the maximum of Otsu's threshold on the positive ridge values
+    (the median when Otsu fails), their ``cfg.PCT`` percentile and ``cfg.ABS_FLOOR``.
+
+    Args:
+        R_ridge: Float array ``[F, d]`` ridge map from :func:`ridge_map`.
+        cfg: BoxDetectorConfig supplying the threshold settings (``MIN_FG_PIX``,
+            ``OTSU_MIN_RANGE``, ``PCT``, ``ABS_FLOOR``), the saturation guard
+            (``max_area_frac``) and the per-component keep filters
+            (``min_area_px``, ``min_mean_int`` and, with ``strict_traces``,
+            ``min_elong`` / ``max_height_f`` / ``min_fill`` / ``min_width_t``).
+
+    Returns:
+        List of inclusive ``(top, left, bottom, right)`` int boxes, one per kept
+        8-connected component; empty when there are too few foreground pixels, their
+        dynamic range is below ``OTSU_MIN_RANGE``, the binarized foreground exceeds
+        ``max_area_frac`` or no component survives the filters.
     """
     fg_vals = R_ridge[R_ridge > 0]
     if (fg_vals.size < cfg.MIN_FG_PIX) or (
@@ -255,7 +303,20 @@ def _label_boxes(R_ridge: np.ndarray, cfg: BoxDetectorConfig) -> List[Box]:
 
 
 def _intervals_near(a0: int, a1: int, b0: int, b1: int, gap: int) -> bool:
-    """True if inclusive intervals [a0,a1],[b0,b1] overlap or are within ``gap``."""
+    """True if inclusive intervals [a0,a1],[b0,b1] overlap or are within ``gap``.
+
+    Args:
+        a0: Inclusive start of the first interval.
+        a1: Inclusive end of the first interval.
+        b0: Inclusive start of the second interval.
+        b1: Inclusive end of the second interval.
+        gap: Largest allowed separation (in the intervals' index units) between the
+            end of one interval and the start of the other.
+
+    Returns:
+        True when the intervals overlap or the gap between them is at most ``gap``,
+        False otherwise.
+    """
     if a1 >= b0 and b1 >= a0:  # overlap
         return True
     return (b0 - a1 <= gap) and (a0 - b1 <= gap)  # one of the two gaps is small & >=0
@@ -264,9 +325,20 @@ def _intervals_near(a0: int, a1: int, b0: int, b1: int, gap: int) -> bool:
 def merge_time_gaps(boxes: List[Box], cfg: BoxDetectorConfig) -> List[Box]:
     """Union boxes close in TIME and overlapping/near in FREQUENCY.
 
-    Joins a single call fragmented by the threshold, while keeping
-    frequency-stacked, time-overlapping distinct calls SEPARATE (large freq gap =>
+    Joins a single USV fragmented by the threshold, while keeping
+    frequency-stacked, time-overlapping distinct USVs SEPARATE (large freq gap =>
     not merged). Iterates to a fixed point.
+
+    Args:
+        boxes: Inclusive ``(top, left, bottom, right)`` boxes (rows = frequency,
+            columns = time).
+        cfg: BoxDetectorConfig supplying ``merge_time_gap`` (largest column gap, in
+            frames) and ``merge_freq_gap`` (largest row gap) for two boxes to merge.
+
+    Returns:
+        New list of boxes in which every pair close in both time and frequency has
+        been replaced by its bounding union; a copy of ``boxes`` when it holds at
+        most one box.
     """
     if len(boxes) <= 1:
         return list(boxes)
@@ -293,7 +365,19 @@ def merge_time_gaps(boxes: List[Box], cfg: BoxDetectorConfig) -> List[Box]:
 
 
 def _dilate_clamp(box: Box, cfg: BoxDetectorConfig, n_freq: int, duration: int) -> Box:
-    """Asymmetrically pad a box and clamp to ``[0, n_freq-1]`` x ``[0, duration-1]``."""
+    """Asymmetrically pad a box and clamp to ``[0, n_freq-1]`` x ``[0, duration-1]``.
+
+    Args:
+        box: Inclusive ``(top, left, bottom, right)`` box.
+        cfg: BoxDetectorConfig supplying ``pad_freq`` (rows added above and below)
+            and ``pad_time`` (columns added left and right).
+        n_freq: Number of frequency rows of the spectrogram.
+        duration: Valid time frames; the right edge is clamped to ``duration - 1``
+            so the box never reaches into the zero padding.
+
+    Returns:
+        The padded, clamped inclusive ``(top, left, bottom, right)`` box.
+    """
     t, l, b, r = box
     t = max(0, t - cfg.pad_freq)
     b = min(n_freq - 1, b + cfg.pad_freq)
@@ -303,9 +387,7 @@ def _dilate_clamp(box: Box, cfg: BoxDetectorConfig, n_freq: int, duration: int) 
     return (t, l, b, r)
 
 
-# ---------------------------------------------------------------------------
 # Public entry point
-# ---------------------------------------------------------------------------
 def detect_boxes(spec: np.ndarray, duration: int,
                  cfg: Optional[BoxDetectorConfig] = None) -> List[Box]:
     """Detect one box per USV candidate in a single spectrogram.
@@ -347,6 +429,13 @@ def box_to_xyxy(box: Box) -> Tuple[int, int, int, int]:
     NOTE: this is the SINGLE place x/y are swapped for SAM. Detector boxes are
     (y0, x0, y1, x1); SAM wants (x0, y0, x1, y1). Keep this isolated -- the repo has
     a history of tuple-index-shift bugs.
+
+    Args:
+        box: Inclusive detector box ``(top, left, bottom, right)``, i.e.
+            ``(y0, x0, y1, x1)``.
+
+    Returns:
+        The same box as SAM XYXY ``(x0, y0, x1, y1)`` = ``(left, top, right, bottom)``.
     """
     t, l, b, r = box
     return (l, t, r, b)

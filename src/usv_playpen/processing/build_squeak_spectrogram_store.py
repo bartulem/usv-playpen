@@ -7,7 +7,7 @@ explorer (``notebooks/usv_embedding_explorer.py``) can show squeak thumbnails
 without touching session audio while brushing.
 
 The consolidated store (``consolidate-spectrogram-store``) holds the ultrasonic
-spectrograms (30-125 kHz, linear frequency, min-max normalized per call) the
+spectrograms (30-125 kHz, linear frequency, min-max normalized per USV) the
 USV maps are built from. A squeak is a broadband harmonic stack whose
 fundamental sits around 3-8 kHz, so those thumbnails show only its ultrasonic
 tail. This store covers the whole band instead, on a log frequency axis that
@@ -25,7 +25,7 @@ Rows. Per session, the rows of ``*_usv_summary.csv`` with ``squeak`` true (pure
 squeaks and segments holding both a squeak and a USV) and ``noise`` not true
 (:func:`detect_usv_squeaks.squeak_qlvm_rows`), the rows
 ``infer-qlvm-squeak-latents`` considers; every row that carries
-``qlvm_squeak1`` / ``qlvm_squeak2`` is among them. The store holds every call
+``qlvm_squeak1`` / ``qlvm_squeak2`` is among them. The store holds every vocal
 class the squeak map can show, so the explorer's squeak-class filter
 (squeak / both / squeak + both) needs no rebuild.
 
@@ -56,10 +56,10 @@ converted to absolute dB (``ref`` 1.0, no ``top_db`` clamp, librosa's
 weights equal to each channel's audio variance (the rule of
 ``generate_spectrograms.compute_usv_spectrogram``).
 
-Time extent. As in the consolidated store, every call sits in a fixed window
+Time extent. As in the consolidated store, every vocalization sits in a fixed window
 (``window_frames``, 256 frames = 524 ms by default) from column 0 with its
 native frame count in ``durations``, so a thumbnail padded to the window shows
-the call's true duration. An audio window longer than the display window keeps
+the vocalization's true duration. An audio window longer than the display window keeps
 the ``window_frames`` frames centred on the squeak's crop (the frames inside its
 envelope plus the embedding's two context frames,
 :func:`detect_usv_squeaks.squeak_crop_frames`), clipped to the audio window;
@@ -68,15 +68,15 @@ time of the audio window's frame 0.
 
 Storage. dB values are clipped to ``[db_floor, db_ceil]`` and quantized to
 uint8 (0 = ``db_floor``, 255 = ``db_ceil``; :func:`quantize_db` /
-:func:`dequantize_db`), gzip-compressed in one chunk per call so the explorer
-reads a call without decompressing its neighbours. Layout:
+:func:`dequantize_db`), gzip-compressed in one chunk per vocalization so the explorer
+reads a vocalization without decompressing its neighbours. Layout:
 
 * ``frequency_bins`` -- ``(F,)`` float64 geometric centres (Hz) of the log bins;
   ``frequency_bin_edges`` -- ``(F + 1,)`` their edges;
 * ``spectrogram/<session>/spectrograms`` -- ``(n, F, window_frames)`` uint8;
 * ``spectrogram/<session>/row_index`` -- ``(n,)`` int64 0-based summary rows,
   ascending (the explorer's ``row_index``);
-* ``spectrogram/<session>/durations`` -- ``(n,)`` int32 frames of the call in
+* ``spectrogram/<session>/durations`` -- ``(n,)`` int32 frames of the vocalization in
   the window (0 when the segment is shorter than one STFT window);
 * ``spectrogram/<session>/n_frames`` -- ``(n,)`` int32 native frames of the
   whole audio window; ``window_first`` -- ``(n,)`` int32 first kept frame;
@@ -135,7 +135,7 @@ QUANTIZATION_MAX = 255
 # Thread-pool environment variables pinned to 1 in the spawned workers: each
 # worker's small per-frame matrix products would otherwise start one BLAS / OpenMP
 # thread per core in every process, and n_workers processes oversubscribe the CPU
-# (measured: 6 workers ran at ~400 % CPU each and about 5x slower per call).
+# (measured: 6 workers ran at ~400 % CPU each and about 5x slower per vocalization).
 WORKER_THREAD_ENV_VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS")
 
 # Absolute-dB reference of the stored spectrograms (power relative to 1.0 on
@@ -414,12 +414,12 @@ def squeak_store_thumbnail(
     """
     Description
     -----------
-    One call's display tile from a session group of the squeak store: its
+    One vocalization's display tile from a session group of the squeak store: its
     stored frames (``spectrograms[position, :, :durations[position]]``),
     dequantized to dB and mapped to ``[0, 1]`` over the top
-    ``dynamic_range_db`` dB of the call (``(x - (max - range)) / range``,
+    ``dynamic_range_db`` dB of the vocalization (``(x - (max - range)) / range``,
     clipped), so the harmonic stack and the ultrasonic part share one contrast
-    and every call is shown relative to its own peak, as the min-max-normalized
+    and every vocalization is shown relative to its own peak, as the min-max-normalized
     USV thumbnails are. The row is found by binary search on the ascending
     ``row_index`` dataset.
 
@@ -434,7 +434,7 @@ def squeak_store_thumbnail(
     db_ceil (float)
         The store's ``db_ceil`` attr.
     dynamic_range_db (float)
-        dB range below the call's peak mapped onto ``[0, 1]``.
+        dB range below the vocalization's peak mapped onto ``[0, 1]``.
 
     Returns
     -------
@@ -718,6 +718,28 @@ class SqueakSpectrogramStoreBuilder:
         n_sessions = len(self.root_directories)
 
         def _collect(entry: dict) -> None:
+            """
+            Description
+            -----------
+            Files one session's result as it arrives: an entry holding
+            ``error`` is appended to ``failures`` and logged as FAILED; any
+            other entry has its per-session ``messages`` logged, is appended to
+            ``entries`` and gets a progress line (sessions done out of
+            ``n_sessions``, squeak rows kept out of summary rows).
+
+            Parameters
+            ----------
+            entry (dict)
+                A session entry from :func:`session_squeak_spectrograms` (with
+                ``session_id``, ``messages``, ``row_index`` and
+                ``n_summary_rows`` among its keys), or the
+                ``{"root_directory", "error"}`` dict :func:`_session_worker`
+                returns on failure.
+
+            Returns
+            -------
+            None
+            """
             if "error" in entry:
                 failures.append(entry)
                 self.message_output(f"FAILED {entry['root_directory']}: {entry['error']}")
@@ -828,7 +850,7 @@ class SqueakSpectrogramStoreBuilder:
 @click.option('--min-freq', 'min_freq', type=float, default=None, required=False, help='Lower edge (Hz) of the lowest log-frequency bin.')
 @click.option('--max-freq', 'max_freq', type=float, default=None, required=False, help='Upper edge (Hz) of the highest log-frequency bin (at most 125000, the Nyquist frequency).')
 @click.option('--n-frequency-bins', 'n_frequency_bins', type=int, default=None, required=False, help='Number of log-spaced frequency bins.')
-@click.option('--window-frames', 'window_frames', type=int, default=None, required=False, help='Width (2.048 ms frames) of the fixed window every call is stored in.')
+@click.option('--window-frames', 'window_frames', type=int, default=None, required=False, help='Width (2.048 ms frames) of the fixed window every vocalization is stored in.')
 @click.option('--db-floor', 'db_floor', type=float, default=None, required=False, help='Absolute dB mapped to uint8 code 0 (values below are clipped).')
 @click.option('--db-ceil', 'db_ceil', type=float, default=None, required=False, help='Absolute dB mapped to uint8 code 255 (values above are clipped).')
 @click.option('--exclude-metadata-audio-channels/--no-exclude-metadata-audio-channels', 'exclude_metadata_audio_channels', default=None, required=False, help='Drop channels the session metadata marks as excluded from the spectrogram average (keep it equal to the detect-usv-squeaks run).')

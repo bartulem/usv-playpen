@@ -775,7 +775,7 @@ class TestFindBoutEpochs:
         """If the requested category column is absent from the summary, the
         single-category onset target cannot be applied: the loader raises the
         labels-unavailable error naming the setting (it used to fall back to all
-        calls with only a printed warning)."""
+        USVs with only a printed warning)."""
 
         rows = {
             'emitter': ['male', 'male'],
@@ -1067,7 +1067,7 @@ class TestFindUsvCategories:
         """When ``manifold_column_names`` are present, continuous onsets, stacked
         targets and the region label array are written. The label is the regular
         map's ``qlvm_category`` for EVERY map, the conditional ones included (the
-        categories are defined on the regular map and label the call); a
+        categories are defined on the regular map and label the USV); a
         ``<prefix>_category`` / ``<prefix>_supercategory`` column of the manifold's
         own prefix is never read."""
 
@@ -1206,8 +1206,8 @@ class TestFindUsvCategories:
                                 manifold_column_names=['qlvm1', 'qlvm2'],
                                 **self._kwargs(tmp_path, rows))
 
-    def test_manifold_path_drops_unplaced_calls(self, tmp_path, capsys):
-        """Calls with null / NaN manifold coordinates (not placed by the
+    def test_manifold_path_drops_unplaced_usvs(self, tmp_path, capsys):
+        """USVs with null / NaN manifold coordinates (not placed by the
         embedding) are dropped from onsets, targets and label arrays, and the
         per-session and total counts are printed, so no NaN reaches the
         inverse-density KDE."""
@@ -1229,12 +1229,12 @@ class TestFindUsvCategories:
         assert np.isfinite(male['continuous_targets']).all()
         np.testing.assert_allclose(male['continuous_category'], [1, 4])
         printed = capsys.readouterr().out
-        assert 'sess_D (male): dropped 2 of 4 calls with null/NaN manifold coordinates' in printed
-        assert 'dropped 2 calls with null/NaN coordinates in total' in printed
+        assert 'sess_D (male): dropped 2 of 4 vocalizations with null/NaN manifold coordinates' in printed
+        assert 'dropped 2 vocalizations with null/NaN coordinates in total' in printed
 
     def test_manifold_path_all_null_column(self, tmp_path):
-        """A manifold column that is null for every call (read by CSV inference
-        as text) leaves no placed call rather than crashing."""
+        """A manifold column that is null for every USV (read by CSV inference
+        as text) leaves no placed USV rather than crashing."""
 
         rows = {
             'emitter': ['male', 'male'],
@@ -1633,12 +1633,12 @@ class TestFindVariableLengthBouts:
 
 
 class TestBoutOffsetEpochs:
-    """``'bout_offset'`` mode: the END of a bout against an interior call.
+    """``'bout_offset'`` mode: the END of a bout against an interior USV.
 
     Two bouts under the ~1 s IBI threshold of ``_mixture_model_params``: a short
-    one (three calls over 0.25 s ending at 2.25 s) and a long one (six calls
+    one (three USVs over 0.25 s ending at 2.25 s) and a long one (six USVs
     over 1.05 s ending at 7.05 s). Positions are measured from the bout's first
-    call start to the call's offset.
+    USV start to the USV's offset.
     """
 
     def _build(self, tmp_path, rows: dict, n_frames: int = 1000, fps: float = 100.0):
@@ -1673,7 +1673,7 @@ class TestBoutOffsetEpochs:
 
     def test_cross_bout_pairs_positions_across_bouts_and_drops_unmatched(self, tmp_path):
         """The short bout's end (position 0.25 s) is matched to the long bout's
-        interior call at position 0.25 s (offset 6.25 s, with 0.8 s of singing
+        interior USV at position 0.25 s (offset 6.25 s, with 0.8 s of singing
         left); the long bout's end (position 1.05 s) finds no candidate in the
         short bout and is dropped, so the groups stay position-matched."""
 
@@ -1682,7 +1682,7 @@ class TestBoutOffsetEpochs:
         np.testing.assert_allclose(out['negative_events'], [6.25])
 
     def test_cross_bout_respects_minimum_singing_left(self, tmp_path):
-        """Raising the minimum singing left past what any interior call offers
+        """Raising the minimum singing left past what any interior USV offers
         leaves no candidates and therefore no pairs."""
 
         out = self._run(tmp_path, self._two_bouts(), min_singing_after_negative=2.0)
@@ -1712,16 +1712,16 @@ class TestBoutOffsetEpochs:
         assert capped['negative_events'].size == 2
         assert np.all(capped['negative_events'] > 8.0)
 
-    def test_within_bout_uses_own_interior_call_and_skips_short_bouts(self, tmp_path):
-        """Within the long bout the negative is the latest interior call with
+    def test_within_bout_uses_own_interior_usv_and_skips_short_bouts(self, tmp_path):
+        """Within the long bout the negative is the latest interior USV with
         at least 0.5 s of singing left (offset 6.45 s, 0.6 s before the end at
-        7.05 s); the short bout holds no such call and contributes nothing."""
+        7.05 s); the short bout holds no such USV and contributes nothing."""
 
         out = self._run(tmp_path, self._two_bouts(), negative_scheme='within_bout')
         np.testing.assert_allclose(out['positive_events'], [7.05])
         np.testing.assert_allclose(out['negative_events'], [6.45])
 
-    def test_positives_and_negatives_never_share_a_call(self, tmp_path):
+    def test_positives_and_negatives_never_share_a_usv(self, tmp_path):
         for scheme in ('cross_bout', 'within_bout'):
             out = self._run(tmp_path, self._two_bouts(), negative_scheme=scheme)
             assert not set(out['positive_events']) & set(out['negative_events'])
@@ -1731,7 +1731,7 @@ class TestBoutOffsetEpochs:
         with pytest.raises(ValueError, match='negative_scheme'):
             self._run(tmp_path, self._two_bouts(), negative_scheme='sideways')
 
-    def test_female_without_calls_is_empty_in_both_groups(self, tmp_path):
+    def test_female_without_usvs_is_empty_in_both_groups(self, tmp_path):
         kwargs = self._build(tmp_path, self._two_bouts())
         out = find_onset_epochs(prediction_mode='bout_offset', filter_history=1.0, usv_bout_time=0.5, min_usv_per_bout=2,
                                 proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),

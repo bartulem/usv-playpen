@@ -419,7 +419,7 @@ class _BroadbandChannelStream:
     ``block_length`` block (absolute block grid ``k * block_length``), smooths it
     with a running median over ``2 * half_window + 1`` blocks (real and imaginary
     parts separately, the window truncated at the recording edges; the median
-    ignores short transients such as a call crossing the tone frequency),
+    ignores short transients such as a vocalization crossing the tone frequency),
     interpolates the smoothed complex envelope linearly between block centres
     and subtracts the tone ``2 Re(envelope(n) exp(i w n))``. The cleaned signal is
     then convolved with the centred high-pass FIR (zero padding beyond the
@@ -695,7 +695,7 @@ def estimate_low_band_variance(wav_paths: list[pathlib.Path],
     and the high band is the broadband audio). Measured on 1,118 labelled
     segments of 294 sessions: the reconstructed weights match the full-band
     ones at Spearman 0.997 and the noise model keeps its precision and recall
-    (scores r 0.984 with the wav input, about 2 more real calls lost per 10,000
+    (scores r 0.984 with the wav input, about 2 more real vocalizations lost per 10,000
     segments beyond the 9 the tone removal costs), where the broadband variance
     alone drops its recall from 0.99 to 0.73. Independent draws of the windows
     agree at Spearman 0.997 (values within about 5 %).
@@ -895,6 +895,31 @@ def validate_broadband_output(root_directory: str | pathlib.Path, settings: dict
 
 
 class Operator:
+    """
+    Description
+    -----------
+    File-level operations of the processing pipeline on one or more sessions:
+    splitting sorted Neuropixels spikes back into sessions, concatenating
+    Neuropixels binary files, splitting multichannel audio and concatenating
+    single-channel audio, harmonic/percussive source separation, sox filtering,
+    concatenating audio into a memmap, writing the broadband (line-noise
+    removed, high-passed) audio memmap, concatenating video files and rectifying
+    video frame rates.
+
+    It holds ``input_parameter_dict`` (the ``modify_files.Operator`` processing
+    settings), ``input_parameter_dict_2`` (the ``synchronize_files.Synchronizer``
+    settings), ``root_directory`` (one session root, or a list of them for the
+    multi-session operations), ``message_output`` and ``app_context_bool`` (GUI
+    vs. CLI context). The entry methods are ``split_clusters_to_sessions``,
+    ``concatenate_binary_files``, ``multichannel_to_channel_audio``,
+    ``hpss_audio``, ``filter_audio_files``, ``concatenate_audio_files``,
+    ``broadband_filter_audio``, ``concatenate_video_files`` and
+    ``rectify_video_fps``. When ``input_parameter_dict`` or ``root_directory``
+    is None the missing value is read from
+    ``_parameter_settings/processing_settings.json``. It is constructed by the
+    processing pipeline (``processing/preprocess_data.py``) and by the
+    broadband-filtering helpers in this module.
+    """
 
     def __init__(self, root_directory: str | list[str] = None,
                  input_parameter_dict: dict = None,

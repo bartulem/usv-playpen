@@ -66,6 +66,10 @@ def validate_paths(
         Path to the modeling_settings.json configuration (auto-resolved
         by the dispatcher relative to this module, not taken as CLI input).
 
+    Returns
+    -------
+    None
+
     Raises
     ------
     FileNotFoundError

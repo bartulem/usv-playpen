@@ -15,17 +15,17 @@ cells) and the duration window, and its Fibonacci embedding lattice is rebuilt.
 A clustered v2 / v3 package cell may also ship fine and coarse ``label_grid.npy``
 files; they are not read here. The summary's one category column,
 ``qlvm_category``, comes from ``assign-qlvm-categories`` (see below).
-Conditional cells take one conditioning value per call: phase 10 cells
+Conditional cells take one conditioning value per USV: phase 10 cells
 (``qlvm_models_latest/v2``, duration or mean frequency) decode it at the frozen
 corpus bin mean, phase 11 cells (``qlvm_models_latest/v3``, duration, mean
-frequency, bandwidth or loudness) at the call's own value clamped to the training
+frequency, bandwidth or loudness) at the USV's own value clamped to the training
 range or snapped to the cell's decode grid, as the contract's ``condition.decode``
 says (:func:`frozen_condition_values`); a phase 11 recipe cell trained by
 ``train-qlvm`` on spectral entropy (the summary's ``spectral_entropy``, min-max
 scaled by its training split's range) is decoded on its grid the same way.
 
 The session is placed on the torus of every listed cell and each prefix ``P``
-gets the float columns ``P1`` / ``P2`` (nulls where the call was not placed), and
+gets the float columns ``P1`` / ``P2`` (nulls where the USV was not placed), and
 nothing else: the summary's category column of the regular map, ``qlvm_category``,
 holds the content-ridge categories ``assign-qlvm-categories`` writes after this
 step (:mod:`qlvm_categories`), and the canonical layout
@@ -47,7 +47,7 @@ mode that only reports.
 Fidelity: the session spectrograms are preprocessed with the SAME resize /
 time-stretch used to build the training set (:func:`stretch_specs`), so they are
 in-distribution for the decoder. A masked cell (``masking_type`` ``"sam"``) gets
-exactly what a masked training set fed it: call and SAM mask union resized
+exactly what a masked training set fed it: USV and SAM mask union resized
 separately, the resized mask binarized at 0.5 and multiplied in, then a min-max
 and the binarized mask once more (``build-qlvm-training-set --apply-mask`` and
 ``train_qlvm.prepare_split``). A cell that has not been clustered (no
@@ -59,13 +59,13 @@ package's per-row durations and mask counts) takes the package's own coordinates
 (:func:`package_route_verdict`, :func:`load_package_session_rows`); every other
 session is embedded with the cell as above.
 
-Pure squeaks. The USV maps were trained on ultrasonic calls, so a pure squeak --
+Pure squeaks. The USV maps were trained on ultrasonic vocalizations, so a pure squeak --
 ``squeak`` true and ``usv`` false in the summary (written by
-``detect-usv-squeaks``), a broadband squeak with no ultrasonic call in it -- is not
+``detect-usv-squeaks``), a broadband squeak with no ultrasonic vocalization in it -- is not
 a USV the maps can place: it is skipped by every model cell and gets null
 coordinates (squeaks have their own map,
 ``infer-qlvm-squeak-latents``). A segment holding both (``usv`` and ``squeak``
-true) is embedded like any other call. Rows with null booleans (noise, or too
+true) is embedded like any other USV. Rows with null booleans (noise, or too
 short to score) are treated as before. Because the rule needs the two booleans, a
 summary without them raises: run ``detect-usv-noise`` and ``detect-usv-squeaks`` on
 the session first.
@@ -128,7 +128,7 @@ PACKAGE_BASELINE_NAME = "SESSION_H5_BASELINE.tsv"
 
 # Where a package keeps its files. v3 (restructured 2026-09-28) puts the baseline in
 # ``<package>/corpus/`` and, inside a cell, the contract and bins in ``config/``, the
-# per-call tables in ``inference/`` and each cluster level in ``inference/clusters_<level>/``;
+# per-USV tables in ``inference/`` and each cluster level in ``inference/clusters_<level>/``;
 # v2 / v2.1 keep all of these at the package or cell top level and the clusters in
 # ``cluster/<level>/``. Both layouts are read; the v3 location is tried first.
 PACKAGE_BASELINE_SUBDIRECTORIES = ("corpus", "")
@@ -430,7 +430,7 @@ def load_model_cell(model_cell_directory: str) -> dict:
         raise ValueError(error_message)
     condition_bins = None
     if contract["c_dim"]:
-        # Conditional cells: the frozen table new calls are decoded from. Phase 10
+        # Conditional cells: the frozen table new USVs are decoded from. Phase 10
         # holds the corpus quantile bins of c and each bin's mean c; phase 11 holds
         # its training range and decode grid instead (see frozen_condition_values).
         with np.load(cell_file(cell, pathlib.Path(contract["condition_bins"]).name), allow_pickle=False) as bins:
@@ -451,7 +451,7 @@ def load_model_cell(model_cell_directory: str) -> dict:
         "contract": contract,
         # The torch float32 lattice the package's corpus embedding was computed on (the
         # exact lattice, cast to float32 by JAX, lands up to ~1e-3 off it and moves 8% of
-        # calls by more than 1e-3; measured on 9,390 calls of 6 corpus sessions).
+        # USVs by more than 1e-3; measured on 9,390 USVs of 6 corpus sessions).
         "lattice": gen_fib_basis_float32(contract["embedding_fib_m"]),
         "condition_bins": condition_bins,
         "model_id": "/".join(cell.parts[-3:]),
@@ -467,7 +467,7 @@ def compute_condition_values(
     """
     Description
     -----------
-    Each call's own conditioning value, as a conditional QLVM model package
+    Each USV's own conditioning value, as a conditional QLVM model package
     defines it in its training contract's ``condition`` block (float32, the
     package's ``condition_value`` / ``condition_from_raw``). ``"duration"``:
     ``(d - duration_min) / (duration_max - duration_min + epsilon)`` on the
@@ -482,7 +482,7 @@ def compute_condition_values(
     ``"spectral_entropy"`` (``train-qlvm``):
     ``clip((H - entropy_min) / (entropy_max - entropy_min), 0, 1)`` of the
     summary's ``spectral_entropy`` in nats, with ``entropy_min`` / ``entropy_max``
-    the training split's range the contract records, so a call outside it is
+    the training split's range the contract records, so a USV outside it is
     clamped to 0 or 1. The three raw-unit maps run in float64 and round to
     float32, as the training sets stored them; a NaN raw value stays NaN.
 
@@ -506,7 +506,7 @@ def compute_condition_values(
     """
     if condition["name"] in ("bandwidth", "loudness", "spectral_entropy"):
         if raw_values is None:
-            error_message = f"compute_condition_values: {condition['name']} needs each call's raw value."
+            error_message = f"compute_condition_values: {condition['name']} needs each USV's raw value."
             raise ValueError(error_message)
         raw = np.asarray(raw_values, dtype=np.float64)
         if condition["name"] == "bandwidth":
@@ -540,17 +540,17 @@ def frozen_condition_values(values: np.ndarray, condition_bins: dict, decode: st
     """
     Description
     -----------
-    The conditioning value to decode new calls at (the package's
+    The conditioning value to decode new USVs at (the package's
     ``frozen_condition_value``), by the rule the cell's embedding used.
 
     Phase 11 (``condition_bins`` has a ``decode_grid``): with ``decode``
-    ``"exact"`` (duration, bandwidth) each call's own value clamped to the
+    ``"exact"`` (duration, bandwidth) each USV's own value clamped to the
     training range ``[train_c_min, train_c_max]``; with ``"grid"`` (mean
     frequency, loudness, spectral entropy) the nearest point of ``decode_grid``, a value beyond
-    the grid decoding at its end point. The package embedded every corpus call
-    this way, so a new call is decoded exactly like a corpus call.
+    the grid decoding at its end point. The package embedded every corpus USV
+    this way, so a new USV is decoded exactly like a corpus USV.
 
-    Phase 10 (``bin_mean``): the corpus mean of the quantile bin each call's own
+    Phase 10 (``bin_mean``): the corpus mean of the quantile bin each USV's own
     value falls in, ``bin_mean[digitize(value, edges[1:-1])]``. That corpus
     embedding decoded batches at their mean value, which a new session cannot
     reproduce; the frozen bin mean comes closest. Values beyond the corpus range
@@ -559,7 +559,7 @@ def frozen_condition_values(values: np.ndarray, condition_bins: dict, decode: st
     Parameters
     ----------
     values (np.ndarray)
-        ``(N,)`` each call's own conditioning value.
+        ``(N,)`` each USV's own conditioning value.
     condition_bins (dict)
         The cell's ``condition_bins.npz``: ``edges`` and ``bin_mean`` (phase 10),
         or ``decode_grid``, ``train_c_min`` and ``train_c_max`` (phase 11).
@@ -598,10 +598,10 @@ def condition_quantile_value(condition_bins: dict, decode: str | None, quantile:
     by the cell's own rule (:func:`frozen_condition_values`: clamped to the
     training range for ``decode`` ``"exact"``, snapped to the decode grid for
     ``"grid"``, the bin mean for phase 10 bins), so the value is one the cell's
-    embedding itself decodes calls at.
+    embedding itself decodes USVs at.
 
     A conditional decoder maps a torus position AND a conditioning value to a
-    spectrogram, so anything that decodes torus positions without a call (the
+    spectrogram, so anything that decodes torus positions without a USV (the
     pullback metric ``G(z) = J(z)^T J(z)`` of the torus geodesics, the decoded
     vocal-space atlas of the manifold filter atlas) has to fix that value. This
     fixes it from the cell alone: the training corpus distribution is read from
@@ -611,8 +611,8 @@ def condition_quantile_value(condition_bins: dict, decode: str | None, quantile:
     falls in. A phase 10 table (``edges`` + ``bin_mean``, no ``group_sizes``) holds
     corpus quantile bins, so each of its bins is taken to hold an equal share. The
     value is therefore the same for every run, cohort and session subset (it does
-    not depend on which calls a run happens to hold), and ``quantile`` ``0.5`` is
-    the corpus median call.
+    not depend on which USVs a run happens to hold), and ``quantile`` ``0.5`` is
+    the corpus median USV.
 
     Parameters
     ----------
@@ -663,7 +663,7 @@ def model_decode_condition(model: dict, condition_quantile: float) -> np.float32
     """
     Description
     -----------
-    The conditioning value a cell is decoded at when there is no call to take it
+    The conditioning value a cell is decoded at when there is no USV to take it
     from: None for an unconditional cell (``c_dim`` 0, which takes none), else
     :func:`condition_quantile_value` of the cell's training corpus at
     ``condition_quantile``.
@@ -785,7 +785,7 @@ def enforce_training_contract(contract: dict, cfg: dict, params: dict[str, jnp.n
     Returns
     -------
     length_threshold (float)
-        The training set's duration bound: calls with ``duration >= length_threshold``
+        The training set's duration bound: USVs with ``duration >= length_threshold``
         were never trained on.
     """
     mismatches = [
@@ -840,7 +840,7 @@ def label_grid_lookup(coords: np.ndarray, grid: np.ndarray) -> np.ndarray:
     the grid's resolution (``grid.shape[0]``). This is the pixel rule of the QLVM
     model packages: on the posterior-mean coordinates of the v3 production cells
     it reproduces the package's ``inference/clusters_<level>/cluster_labels.csv``
-    on every one of the 445,742 corpus calls but one (a duration-map call whose
+    on every one of the 445,742 corpus USVs but one (a duration-map USV whose
     coordinate lies within float32 rounding of a pixel edge).
     The ``mod`` wraps a coordinate of exactly ``1.0`` (or one whose product with
     ``res`` rounds up to ``res``) to pixel 0, the pixel it shares on the torus,
@@ -956,7 +956,7 @@ def model_cell_stale_columns(prefix: str) -> list[str]:
     the category column ``P_category`` an earlier ``assign-qlvm-categories`` wrote
     for it (``qlvm_category`` for the regular map), the coarse-level
     ``P_supercategory`` older summaries may still carry (the canonical layout has no
-    coarse level), and the per-call category confidence columns of the category
+    coarse level), and the per-USV category confidence columns of the category
     column (its name plus each suffix of ``os_utils.CATEGORY_CONFIDENCE_SUFFIXES``
     minus its leading ``_category``, e.g. ``qlvm_category_agreement``,
     ``qlvm_category_uncertain``).
@@ -1016,7 +1016,7 @@ def load_package_baseline(package_root: pathlib.Path) -> dict[str, str]:
     at the package root for v2 / v2.1; tab-separated,
     columns ``session``, ``h5_rows``, ``corpus_rows``, ``bytes``, ``sha256``,
     ``path``): the SHA-256 of each corpus session's spectrogram H5 at the time the
-    package's per-call rows were checked against it.
+    package's per-USV rows were checked against it.
 
     Parameters
     ----------
@@ -1045,7 +1045,7 @@ def load_package_session_rows(model_cell_directory: str, session_id: str) -> dic
     Description
     -----------
     The rows of one session in a QLVM model package cell's corpus embedding:
-    ``recon_mse_breakdown.npz`` names every corpus call by ``spec_id``
+    ``recon_mse_breakdown.npz`` names every corpus USV by ``spec_id``
     (``<session>_<row of the session's spectrogram H5>``) and records the
     ``durations`` and ``mask_counts`` it was built with, and ``posterior_cache.npz``
     holds, in the same row order, its posterior-mean torus embedding
@@ -1065,7 +1065,7 @@ def load_package_session_rows(model_cell_directory: str, session_id: str) -> dic
         ``row`` (``(n,)`` int64 spectrogram-H5 rows, ascending), ``durations`` and
         ``mask_counts`` (``(n,)`` float64, as the package recorded them) and
         ``coords`` (``(n, 2)`` float64 torus coordinates ``(x, y)``); ``n`` is 0
-        when the cell holds no call of the session.
+        when the cell holds no USV of the session.
     """
     cell = pathlib.Path(configure_path(model_cell_directory))
     with np.load(cell_file(cell, "recon_mse_breakdown.npz"), allow_pickle=False) as breakdown:
@@ -1104,7 +1104,7 @@ def session_h5_call_table(h5_loc: pathlib.Path, session_id: str) -> tuple[np.nda
     Description
     -----------
     Each spectrogram-H5 row's duration and number of SAM mask instances, the two
-    per-call quantities a QLVM model package records for its corpus rows
+    per-USV quantities a QLVM model package records for its corpus rows
     (``recon_mse_breakdown.npz`` ``durations`` / ``mask_counts``). Durations are
     ``spectrogram/<session>/durations``; the mask count of a row is how many
     entries of ``mask/<session>/spectrogram_index`` name it (0 for every row when
@@ -1146,7 +1146,7 @@ def package_route_verdict(
     Description
     -----------
     Decides whether a session's coordinates under one model can be taken from the
-    model package instead of being inferred. A package row names its call only by
+    model package instead of being inferred. A package row names its USV only by
     position (``spec_id`` = ``<session>_<H5 row>``), so the package's values are
     used only when all of these hold, checked in this order:
 
@@ -1274,13 +1274,13 @@ class QLVMLatentInference:
         and get nulls). Pure squeaks (``squeak & ~usv``) are skipped by
         every cell and get nulls; segments holding both are embedded as usual; a
         summary without ``usv`` / ``squeak`` raises KeyError (run ``detect-usv-squeaks``
-        first). When the contract's training set kept only calls with a SAM mask
+        first). When the contract's training set kept only USVs with a SAM mask
         (``require_mask``) or the decoder conditions on mean frequency or
         loudness, USVs without a mask instance are skipped and get nulls too.
         When the decoder needs SAM masks at all (those cases, or ``masking_type``
         ``"sam"``), a session H5 without a ``mask/<session>`` group raises. A
         conditional package decoder is decoded at :func:`frozen_condition_values`
-        of each call's own value (:func:`compute_condition_values`); a bandwidth
+        of each USV's own value (:func:`compute_condition_values`); a bandwidth
         condition reads it from the summary's ``freq_bandwidth_hz`` (missing
         column raises), a loudness condition from the summary's ``loudness_db``
         (the absolute loudness ``generate-usv-acoustic-features`` measured from the
@@ -1288,7 +1288,7 @@ class QLVMLatentInference:
         missing column raises), a spectral entropy condition from the summary's
         ``spectral_entropy`` (scaled by the contract's ``entropy_min`` /
         ``entropy_max`` and clamped to ``[0, 1]``; missing column raises), and
-        calls with no value get nulls. The summary is rewritten atomically.
+        USVs with no value get nulls. The summary is rewritten atomically.
 
         Each prefix ``P`` gets the float columns ``P1`` / ``P2`` only (the regular
         map's ``qlvm_category`` comes from ``assign-qlvm-categories``); no model
@@ -1374,7 +1374,7 @@ class QLVMLatentInference:
         -----------
         The run of :meth:`infer_and_merge`: places the session on the
         torus of every cell of ``model_cells`` and merges, per prefix ``P``, the
-        float columns ``P1`` / ``P2`` into the summary (nulls where a call was not
+        float columns ``P1`` / ``P2`` into the summary (nulls where a USV was not
         placed). The settings are validated, and every cell
         is loaded once and checked against them
         (:func:`enforce_training_contract`), before anything is embedded.
@@ -1534,10 +1534,10 @@ class QLVMLatentInference:
         Description
         -----------
         Embeds the session's USVs with one decoder: reads the spectrogram H5,
-        keeps the calls inside the duration window (and, where the decoder needs
+        keeps the USVs inside the duration window (and, where the decoder needs
         it, with a SAM mask and a conditioning value), preprocesses them as the
         training set was built (SAM masking, resize / time-stretch, the contract's
-        input normalization), computes each call's conditioning value for a
+        input normalization), computes each USV's conditioning value for a
         conditional package decoder, and embeds them (:func:`qlvm_model.embed_data`).
 
         Parameters
@@ -1548,7 +1548,7 @@ class QLVMLatentInference:
         cfg (dict)
             The ``infer_qlvm_latents`` settings block.
         length_threshold (float | None)
-            Embed only calls with ``duration < length_threshold`` (None: every
+            Embed only USVs with ``duration < length_threshold`` (None: every
             positive duration).
         root (pathlib.Path)
             The session root directory.
@@ -1559,7 +1559,7 @@ class QLVMLatentInference:
         usv_summary_loc (pathlib.Path)
             Path of the summary, named in errors.
         null_columns (str)
-            How the log names the columns a skipped call leaves null (e.g.
+            How the log names the columns a skipped USV leaves null (e.g.
             ``"qlvm_duration1/qlvm_duration2"``).
         skip_rows (np.ndarray)
             ``(n_rows,)`` boolean, True for summary rows never to embed (the pure
@@ -1568,7 +1568,7 @@ class QLVMLatentInference:
         Returns
         -------
         usv_indices (np.ndarray)
-            ``(N,)`` uint32 summary rows of the embedded calls.
+            ``(N,)`` uint32 summary rows of the embedded USVs.
         coords (np.ndarray)
             ``(N, 2)`` torus coordinates ``(x, y)`` in ``[0, 1)``.
         """
@@ -1600,20 +1600,20 @@ class QLVMLatentInference:
             # masking_type "none" keeps raw spectrograms (correct only if the decoder
             # was trained without masking).
             # A mean-frequency or loudness condition is always computed on the masked
-            # call, even for a decoder fed unmasked (floored) spectrograms, so it needs
+            # USV, even for a decoder fed unmasked (floored) spectrograms, so it needs
             # the masks too.
             condition = contract['condition'] if contract['c_dim'] else None
             masked_call_condition = condition is not None and condition['name'] in ('mean_freq', 'loudness')
             require_mask = contract['require_mask']
-            # build_session_masks gives a call without mask instances an all-ones mask.
-            # A set built with require_mask left such calls out, and their mean frequency
-            # or loudness would span the whole call, so those decoders give them null
+            # build_session_masks gives a USV without mask instances an all-ones mask.
+            # A set built with require_mask left such USVs out, and their mean frequency
+            # or loudness would span the whole USV, so those decoders give them null
             # columns. Sets without require_mask (e.g. a build-qlvm-training-set set)
             # trained on them under that all-ones mask, so they are embedded as before.
             drop_maskless = require_mask or masked_call_condition
             masks = None
             if cfg['masking_type'] == 'sam' or drop_maskless:
-                # Without a mask group every call would get the all-ones fallback.
+                # Without a mask group every USV would get the all-ones fallback.
                 if f"mask/{root.name}" not in h5_file:
                     error_message = (
                         f"{h5_loc} has no mask/{root.name} group. This decoder needs SAM masks (masking_type 'sam', "
@@ -1634,8 +1634,8 @@ class QLVMLatentInference:
             specs = specs[usv_indices].astype(np.float32)
             durations = durations[usv_indices]
 
-        # Bandwidth, loudness and spectral entropy conditions take each call's raw value
-        # from outside the stored spectrogram; a call without one gets null columns.
+        # Bandwidth, loudness and spectral entropy conditions take each USV's raw value
+        # from outside the stored spectrogram; a USV without one gets null columns.
         raw_values = None
         if condition is not None and condition['name'] == 'bandwidth':
             if "freq_bandwidth_hz" not in usv_df.columns:
@@ -1648,7 +1648,7 @@ class QLVMLatentInference:
         elif condition is not None and condition['name'] == 'loudness':
             # The absolute loudness generate-usv-acoustic-features measured from the audio
             # over the same SAM mask union (compute_usv_loudness.session_image_level_db),
-            # read instead of re-measured; a call without it gets null columns.
+            # read instead of re-measured; a USV without it gets null columns.
             if "loudness_db" not in usv_df.columns:
                 error_message = (
                     f"{usv_summary_loc.name} has no loudness_db column, which this loudness-conditioned decoder "
@@ -1690,7 +1690,7 @@ class QLVMLatentInference:
         target_shape = tuple(int(v) for v in cfg['target_shape'])
         resized = stretch_specs(specs, durations, target_shape, cfg['time_stretch'])
         if cfg['masking_type'] == 'sam':
-            # A masked set (build-qlvm-training-set with apply_mask) resizes the call and
+            # A masked set (build-qlvm-training-set with apply_mask) resizes the USV and
             # its SAM mask union separately, binarizes the resized mask at 0.5 and
             # multiplies it in; train-qlvm then min-maxes each spectrogram and multiplies
             # the binarized mask in again (train_qlvm.prepare_split). Masking the native
@@ -1703,12 +1703,12 @@ class QLVMLatentInference:
         data = jnp.asarray(inputs[:, None, :, :])
 
         # A conditional package decoder is decoded at the value its cell's rule gives
-        # each call's own condition value (frozen_condition_values).
+        # each USV's own condition value (frozen_condition_values).
         condition_values = None
         if condition is not None:
             masked_resized = None
             if condition['name'] == 'mean_freq':
-                # The mean frequency is defined on the native call masked by its SAM
+                # The mean frequency is defined on the native USV masked by its SAM
                 # mask union, then resized (the definition the packages were built with).
                 masked_resized = stretch_specs(specs * masks, durations, target_shape, cfg['time_stretch'])
             own_values = compute_condition_values(condition, durations, masked_resized, raw_values)

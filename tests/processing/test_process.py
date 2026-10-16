@@ -120,7 +120,7 @@ VIDEO_START_PAUSE_S = 2.3
 DEVICE_DESYNC_MS = 100
 
 
-# --- Helper Functions to Generate Synthetic Data ---
+# Helper Functions to Generate Synthetic Data
 
 def create_led_video_from_ipi(filepath: Path, width: int, height: int, fps: int, ipi_sequence_ms: np.ndarray, on_duration_ms: int):
     """Creates a synthetic video where LEDs flash according to a precise IPI sequence."""
@@ -184,7 +184,7 @@ def create_verifiable_multichannel_wav(filepath: Path, sr: int, duration_s: floa
     return ground_truth
 
 
-# --- Pytest Fixtures ---
+# Pytest Fixtures
 
 @pytest.fixture
 def file_pipeline_fixture(tmp_path: Path) -> tuple[Path, dict]:
@@ -382,7 +382,7 @@ def av_sync_fixture(tmp_path: Path) -> Path:
     yield session_root
 
 
-# --- The Integration Tests ---
+# The Integration Tests
 
 def test_file_manipulation_pipeline(file_pipeline_fixture: Path, mocker):
     """Tests the initial file manipulation steps: concat, rectify, split, crop."""
@@ -400,7 +400,7 @@ def test_file_manipulation_pipeline(file_pipeline_fixture: Path, mocker):
         # Using atol=50 to account for MPEG compression artifacts
         return np.allclose(frame[50:150, 50:250], expected_frame[50:150, 50:250], atol=50)
 
-    # --- Step 1: `concatenate-video-files` ---
+    # Step 1: `concatenate-video-files`
     print("\n--> Running: concatenate-video-files")
     result_concat = runner.invoke(concatenate_video_files_cli, ['--root-directory', str(root_dir), '--camera-serial', CAMERA_SERIALS[0], '--camera-serial', CAMERA_SERIALS[1], '--output-name', 'concatenated_video'])
     assert result_concat.exit_code == 0, f"CLI failed:\n{result_concat.output}"
@@ -425,7 +425,7 @@ def test_file_manipulation_pipeline(file_pipeline_fixture: Path, mocker):
         cap.release()
     print("Video concatenation content verified.")
 
-    # --- Step 2: `rectify-video-fps` ---
+    # Step 2: `rectify-video-fps`
     print("\n--> Running: rectify-video-fps")
     mock_img_store = mocker.MagicMock()
     mock_img_store.frame_count = expected_total_frames
@@ -502,7 +502,7 @@ def test_file_manipulation_pipeline(file_pipeline_fixture: Path, mocker):
     assert metadata['Session']['session_duration'] == pytest.approx(expected_video_duration, abs=1e-3)
     print("Video rectification outputs verified.")
 
-    # --- Step 3: `multichannel-to-single-ch` ---
+    # Step 3: `multichannel-to-single-ch`
     print("\n--> Running: multichannel-to-single-ch")
     result_split = runner.invoke(multichannel_to_channel_audio_cli, ['--root-directory', str(root_dir)])
     assert result_split.exit_code == 0, f"CLI failed:\n{result_split.output}"
@@ -527,7 +527,7 @@ def test_file_manipulation_pipeline(file_pipeline_fixture: Path, mocker):
     assert_array_equal(data_actual[-5:], expected_end)
     print("Audio multichannel split content verified.")
 
-    # --- Step 4: `crop-wav-files` ---
+    # Step 4: `crop-wav-files`
 
     # Ensure timestamped video directory exists because crop logic might rely on it
     (root_dir / "video" / date_joint).mkdir(exist_ok=True)
@@ -2122,10 +2122,10 @@ def test_get_arena_dimensions_extracts_xy_extent(tmp_path):
 
 def test_write_to_h5_round_trip_with_animal_ids(tmp_path):
     out_path = tmp_path / "dset.h5"
-    n_calls = 3
-    audio = [np.full((10,), float(i), dtype=np.float16) for i in range(n_calls)]
+    n_vocalizations = 3
+    audio = [np.full((10,), float(i), dtype=np.float16) for i in range(n_vocalizations)]
     node_names = np.array([b"head", b"nose"])
-    locations = np.zeros((n_calls, 2, 2, 3))
+    locations = np.zeros((n_vocalizations, 2, 2, 3))
     length_idx = np.array([0, 10, 20, 30])
     animal_ids = np.array([0, 1], dtype=np.int32)
     extras = {"audio_sr": 250000, "video_fps": 150}
@@ -2141,11 +2141,11 @@ def test_write_to_h5_round_trip_with_animal_ids(tmp_path):
     )
 
     with h5py.File(out_path, "r") as f:
-        assert f["audio"].shape == (n_calls * 10,)
+        assert f["audio"].shape == (n_vocalizations * 10,)
         assert f["node_names"].shape == (2,)
-        assert f["locations"].shape == (n_calls, 2, 2, 3)
+        assert f["locations"].shape == (n_vocalizations, 2, 2, 3)
         np.testing.assert_array_equal(f["length_idx"][:], length_idx)
-        assert f["animal_id"].shape == (n_calls, 2)
+        assert f["animal_id"].shape == (n_vocalizations, 2)
         assert f.attrs["audio_sr"] == 250000
         assert f.attrs["video_fps"] == 150
 
@@ -2405,7 +2405,6 @@ def test_rectify_video_fps_all_dropped_frames_warns_and_uses_sentinel(tmp_path, 
     assert frame_count_dict['median_empirical_camera_sr'] == pytest.approx(expected_esr)
 
 
-# ===========================================================================
 # modify_files.Operator.split_clusters_to_sessions
 #
 # Pure numpy + file-I/O method (no external ffmpeg/sox), so it can be driven
@@ -2414,7 +2413,6 @@ def test_rectify_video_fps_all_dropped_frames_warns_and_uses_sentinel(tmp_path, 
 # Kilosort directory holding cluster_info.tsv / spike_clusters.npy /
 # spike_times.npy. Verifies per-session, per-cluster spike .npy files land
 # under <root>/ephys/<probe>/cluster_data/ for good + MUA clusters only.
-# ===========================================================================
 
 
 def _processing_settings_dict():
@@ -2654,7 +2652,6 @@ def test_split_clusters_to_sessions_tracking_nan_falls_back_to_session(tmp_path,
     assert (cluster_data_dir / "imec0_cl0000_ch010_good.npy").exists()
 
 
-# ===========================================================================
 # modify_files.Operator.concatenate_binary_files
 #
 # Builds tiny synthetic SpikeGLX .ap.bin / .ap.meta pairs and lets the method
@@ -2662,7 +2659,6 @@ def test_split_clusters_to_sessions_tracking_nan_falls_back_to_session(tmp_path,
 # .meta + changepoints JSON, and run the real POSIX `cat` concatenation into
 # <EPHYS>/<day>_<probe>/. Two recordings exercise both the first-file and
 # subsequent-file changepoint branches.
-# ===========================================================================
 
 
 def _write_ap_pair(probe_dir: Path, stem: str, n_samples: int, n_channels: int):
@@ -2769,13 +2765,11 @@ def test_concatenate_binary_files_merges_two_recordings(tmp_path, mocker):
     assert info["rec_a"]["total_num_channels"] == n_channels
 
 
-# ===========================================================================
 # modify_files.Operator — audio HPSS + Sox band filtering
 #
 # hpss_audio is pure librosa/scipy; filter_audio_files shells out to the
 # bundled static_sox. Both run end-to-end on a tiny synthetic WAV, chained
 # cropped_to_video -> hpss -> hpss_filtered.
-# ===========================================================================
 
 
 def _write_small_wav(path: Path, *, sr: int = 250000, n: int = 8192):

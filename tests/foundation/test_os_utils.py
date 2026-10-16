@@ -741,7 +741,7 @@ def test_read_qlvm_category_bundle_refuses_a_malformed_bundle(tmp_path):
 def test_read_qlvm_category_bundle_returns_every_file_it_reads(tmp_path):
     """The agreement grid, the descriptions and both JSON files come back as read,
     and the provenance line carries the positions hash cut at 12 characters and the
-    call and category counts."""
+    vocalization and category counts."""
     directory = write_qlvm_category_bundle(tmp_path / "bundle")
     with np.load(directory / "category_grids.npz") as grids:
         agreement = grids["agreement"]

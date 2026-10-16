@@ -245,7 +245,7 @@ def test_session_roots_by_id_and_spectrogram_file():
 
 
 def test_check_categories_match_bundle_names_the_disagreeing_sessions():
-    """Categories equal to the grid's pixel category pass; a disagreeing call raises naming its session; a table
+    """Categories equal to the grid's pixel category pass; a disagreeing USV raises naming its session; a table
     without the category column raises pointing at assign-qlvm-categories."""
     grid = _two_band_grid()
     usvs = pls.DataFrame({"session_id": ["a", "a", "b"], "qlvm1": [0.1, 0.9, 0.2], "qlvm2": [0.5, 0.5, 0.5],
@@ -258,7 +258,7 @@ def test_check_categories_match_bundle_names_the_disagreeing_sessions():
         qf.check_categories_match_bundle(usvs.drop("qlvm_category"), grid)
 
 
-def test_read_thumbnail_applies_the_mask_union_and_centres_the_call(tmp_path):
+def test_read_thumbnail_applies_the_mask_union_and_centres_the_usv(tmp_path):
     """The thumbnail is the spectrogram's valid slice times the union of the USV's masks, centred in the window."""
     h5_path = tmp_path / "20250101_120000_spectrograms.h5"
     specs = np.zeros((1, 8, 16), dtype=np.float32)

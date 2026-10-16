@@ -23,9 +23,7 @@ from scipy.io.wavfile import read as _real_wavfile_read
 
 from usv_playpen.processing.synchronize_files import Synchronizer
 
-# ---------------------------------------------------------------------------
 # Shared fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -45,9 +43,7 @@ def _make_sync(tmp_path, processing_settings) -> Synchronizer:
     )
 
 
-# ---------------------------------------------------------------------------
 # _build_led_px_dict — pure dict constructor
-# ---------------------------------------------------------------------------
 
 
 def test_build_led_px_dict_returns_distinct_dict_per_call():
@@ -76,9 +72,7 @@ def test_build_led_px_dict_has_expected_keys():
                 assert len(pos) == 2  # (x, y)
 
 
-# ---------------------------------------------------------------------------
 # Synchronizer.__init__
-# ---------------------------------------------------------------------------
 
 
 def test_synchronizer_init_with_full_kwargs(processing_settings, tmp_path):
@@ -100,9 +94,7 @@ def test_synchronizer_init_loads_defaults_when_input_dict_none(tmp_path):
     assert "find_audio_sync_trains" in sync.input_parameter_dict
 
 
-# ---------------------------------------------------------------------------
 # find_lsb_changes (static method, lsb_bool=True/False, edge cases)
-# ---------------------------------------------------------------------------
 
 
 def test_find_lsb_changes_lsb_true_returns_correct_endpoints():
@@ -166,9 +158,7 @@ def test_find_lsb_changes_lsb_false_uses_raw_signal():
     assert largest_break > 0
 
 
-# ---------------------------------------------------------------------------
 # validate_ephys_video_sync — file-missing branches
-# ---------------------------------------------------------------------------
 
 
 def test_validate_ephys_video_sync_no_camera_json_raises(processing_settings, tmp_path,
@@ -181,9 +171,7 @@ def test_validate_ephys_video_sync_no_camera_json_raises(processing_settings, tm
         sync.validate_ephys_video_sync()
 
 
-# ---------------------------------------------------------------------------
 # crop_wav_files_to_video — file-missing branches
-# ---------------------------------------------------------------------------
 
 
 def test_crop_wav_files_to_video_raises_when_camera_json_missing(processing_settings,
@@ -198,9 +186,7 @@ def test_crop_wav_files_to_video_raises_when_camera_json_missing(processing_sett
         sync.crop_wav_files_to_video()
 
 
-# ---------------------------------------------------------------------------
 # find_audio_sync_trains — early-fail branches
-# ---------------------------------------------------------------------------
 
 
 def test_find_audio_sync_trains_raises_when_camera_json_missing(processing_settings,
@@ -218,9 +204,7 @@ def test_find_audio_sync_trains_raises_when_camera_json_missing(processing_setti
         sync.find_audio_sync_trains()
 
 
-# ---------------------------------------------------------------------------
 # find_video_sync_trains — no-video-subdirs path
-# ---------------------------------------------------------------------------
 
 
 def test_find_video_sync_trains_no_video_dir_returns_empty(processing_settings,
@@ -506,9 +490,7 @@ def test_validate_ephys_video_sync_writes_changepoints(tmp_path, processing_sett
     assert rec["total_num_channels"] == 5
 
 
-# ---------------------------------------------------------------------------
 # _phase_shift_correct_in_place — Neuropixels ADC sample-time de-skew
-# ---------------------------------------------------------------------------
 
 
 def test_phase_shift_correct_in_place_deskews_ap_preserves_sync_and_is_idempotent(
@@ -811,9 +793,7 @@ def test_crop_wav_files_to_video_both_devices_tempo_adjust(tmp_path, mocker):
     assert len(cropped) >= 2      # both devices cropped
 
 
-# ---------------------------------------------------------------------------
 # find_audio_sync_trains — pulse-sequence shape-mismatch reconciliation
-# ---------------------------------------------------------------------------
 
 
 def _wire_audio_sync(sync, mocker, *, audio_durations_ms, audio_starts,
@@ -1471,9 +1451,7 @@ def test_find_audio_sync_trains_with_nidq_block(tmp_path, processing_settings, m
     assert "nidq_ipi_start_samples" in result[key]
 
 
-# ---------------------------------------------------------------------------
 # crop_wav_files_to_video — s_longer branch + KeyError guards
-# ---------------------------------------------------------------------------
 
 
 def test_crop_wav_files_to_video_both_devices_s_longer(tmp_path, mocker):

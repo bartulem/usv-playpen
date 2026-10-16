@@ -104,10 +104,10 @@ def emitter_sex_expression(animal_sex: dict[str, str], emitter_column: str = 'em
 
     The emitter is cast to string and stripped of null bytes and whitespace before it is
     compared, matching the stripping :func:`extract_animal_sexes` applies to the track
-    names, so a padded name on either side cannot silently send a call to
+    names, so a padded name on either side cannot silently send a vocalization to
     ``'unassigned'``. A row whose emitter is not one of the resolved animals -- an
-    empty / null emitter, i.e. a call Vocalocator could not attribute -- is
-    ``'unassigned'``; that is a property of the call, not a failed sex lookup (an animal
+    empty / null emitter, i.e. a vocalization Vocalocator could not attribute -- is
+    ``'unassigned'``; that is a property of the vocalization, not a failed sex lookup (an animal
     whose sex cannot be resolved has already raised in :func:`extract_animal_sexes`).
 
     Parameters
@@ -186,14 +186,14 @@ def load_and_filter_usv_data(
     missing classification can never be mistaken for a clean session.
 
     ``vocal_class`` selects among the vocalizations that survive. Dropping noise leaves ultrasonic
-    calls AND squeaks, and the two are different vocalizations: a squeak is a broadband call with a
+    vocalizations AND squeaks, and the two are different vocalizations: a squeak is a broadband vocalization with a
     3-8 kHz fundamental, while a USV is ultrasonic. ``detect_usv_squeaks`` writes two booleans for
     every non-noise segment, ``usv`` and ``squeak``: a pure USV is ``usv & ~squeak``, a pure squeak
     ``squeak & ~usv``, and a segment holding both has both true. Callers that want
     one kind and not the other must say so, because the union is rarely what an analysis means. In
     the cohort the distinction is large -- with the earlier binary squeak detector, 7.6% of the
     male's segments and 48.0% of the female's were squeaks -- and treating them as one class puts a
-    squeak between two ultrasonic calls, which suppresses the long interval those calls would have
+    squeak between two USVs, which suppresses the long interval those USVs would have
     formed and contributes two short ones in its place. A segment holding both is neither a clean
     USV nor a clean squeak, so it belongs to neither ``'usv'`` nor ``'squeak'`` and is removed from
     both sequences; null booleans (a segment too short to score) are likewise in neither.
@@ -220,7 +220,7 @@ def load_and_filter_usv_data(
         Which vocalizations to keep: ``'usv'`` for pure USVs only (``usv & ~squeak``),
         ``'squeak'`` for pure squeaks only (``squeak & ~usv``; segments holding both and null
         booleans are in neither), or None to keep every row that survives the noise filter.
-        Defaults to None, which preserves the behaviour of every caller written before the call
+        Defaults to None, which preserves the behaviour of every caller written before the USV/squeak
         classifier existed.
 
     Returns

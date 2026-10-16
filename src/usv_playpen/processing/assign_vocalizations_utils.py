@@ -194,8 +194,8 @@ def write_to_h5(
         1-D array of per-animal SEX codes (0 = male, 1 = female) in the
         tracks-array animal order (e.g. [0, 1] for a male/female courtship
         session, [1, 1] for female-female, [0, 0] for male-male). When
-        provided, a dataset of shape (num_calls, num_animals) is written under
-        the key 'animal_id', tiling the codes across all calls.
+        provided, a dataset of shape (num_usvs, num_animals) is written under
+        the key 'animal_id', tiling the codes across all USVs.
     extra_metadata (dict)
         Additional metadata to be stored in the HDF5 file.
 
@@ -223,8 +223,8 @@ def write_to_h5(
         f.create_dataset(name="locations", data=locations)
         f.create_dataset(name="length_idx", data=length_idx)
         if animal_ids is not None:
-            num_calls = locations.shape[0]
-            f.create_dataset(name="animal_id", data=np.tile(animal_ids, (num_calls, 1)))
+            num_usvs = locations.shape[0]
+            f.create_dataset(name="animal_id", data=np.tile(animal_ids, (num_usvs, 1)))
 
 
 def eval_pdf_with_angle(

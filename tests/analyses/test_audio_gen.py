@@ -23,9 +23,7 @@ from usv_playpen.analyses.generate_audio_files import (
     _read_int16_snippet,
 )
 
-# ---------------------------------------------------------------------------
 # AudioGenerator class-level attributes
-# ---------------------------------------------------------------------------
 
 
 def test_audiogen_class_level_attrs_are_set():
@@ -52,9 +50,7 @@ def test_audiogen_init_stores_arbitrary_kwargs():
     assert hasattr(ag, "app_context_bool")
 
 
-# ---------------------------------------------------------------------------
 # frequency_shift_audio_segment
-# ---------------------------------------------------------------------------
 
 
 def _fs_settings(audio_dir: str = "original",
@@ -576,7 +572,7 @@ def test_create_naturalistic_usv_playback_wav_seed_reproducible(tmp_path, mocker
 
 
 def _overall_complex_fraction(usvids):
-    """Fraction of the output's USV labels that are session-B calls (the complex ones in the
+    """Fraction of the output's USV labels that are session-B USVs (the complex ones in the
     fake repo: mask 3/4); ISI/IUI silence labels are ignored."""
     usv_labels = [x.strip() for x in usvids if x.strip() and x.strip() not in ("ISI", "IUI")]
     if not usv_labels:
@@ -623,9 +619,9 @@ def test_complexity_ramp_increases_over_file(tmp_path, mocker):
 
 
 def test_complexity_threshold_is_respected(tmp_path, mocker):
-    """Raising the mask threshold above every call's mask_number means nothing counts as
+    """Raising the mask threshold above every USV's mask_number means nothing counts as
     complex, so steering has nothing to prefer and degenerates to uniform draws -- a
-    less session-B-heavy file than a threshold at which the complex calls qualify."""
+    less session-B-heavy file than a threshold at which the complex USVs qualify."""
     _, qualifies, _ = _run_naturalistic_playback(tmp_path / "t2", mocker, seed=0, exp_id="x", complexity=(True, 2, 1.0, 1.0))
     _, none_qualify, _ = _run_naturalistic_playback(tmp_path / "t9", mocker, seed=0, exp_id="x", complexity=(True, 9, 1.0, 1.0))
     assert _overall_complex_fraction(qualifies) > _overall_complex_fraction(none_qualify)

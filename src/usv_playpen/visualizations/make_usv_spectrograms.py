@@ -121,7 +121,7 @@ CBAR_INSET_PAD_AXES_FRACTION = 0.02
 STITCHED_EDGE_TAPER_ALPHA = 0.3
 
 # Sequence-figure left-panel styling. Marker areas (pt^2) scale modestly with USV
-# duration (so longer calls read bigger without dominating); the connecting path's
+# duration (so longer USVs read bigger without dominating); the connecting path's
 # per-segment linewidth scales with the inter-USV interval (shorter gap -> thinner)
 # within this range; its per-segment color is a white -> emitter-color time
 # gradient (white = start of the bout, emitter color towards the end).
@@ -835,7 +835,7 @@ class USVSpectrogramPlotter:
         (from the consolidated store) at its true on-session time: the spec is
         SAM2-masked (when ``apply_mask``), edge-tapered, linearly resampled to its
         on-session duration in canvas bins, and blended into the canvas with
-        ``np.maximum``. Inter-call gaps and masked-out regions stay zero (render
+        ``np.maximum``. Inter-USV gaps and masked-out regions stay zero (render
         black). The freq axis is cropped to ``cfg['freq_limits']`` (kHz).
 
         Parameters
@@ -976,7 +976,7 @@ class USVSpectrogramPlotter:
         normalized-amplitude image spanning ``[start_time_sec, end_time_sec]`` by
         the cropped frequency range, with kHz y-labels at the limits and
         (optionally) a right-side `[0, 1]` colorbar labelled "Normalized
-        amplitude". The axes facecolor is set black so inter-call gaps read as
+        amplitude". The axes facecolor is set black so inter-USV gaps read as
         black (the image covers the data area, so this only affects any uncovered
         margin).
 
@@ -1154,10 +1154,10 @@ class USVSpectrogramPlotter:
         stacks several iso-lines wherever neighbouring region labels differ by
         more than one, which renders as uneven line thickness. A conditional map
         (``qlvm_duration``, ``qlvm_entropy``, ``qlvm_bandwidth``,
-        ``qlvm_loudness``) places the calls elsewhere, so the bundle's
+        ``qlvm_loudness``) places the vocalizations elsewhere, so the bundle's
         grid and density do not describe it: its panel is a bare unit square with
         a note saying the category boundaries are defined on the regular map (the
-        calls themselves are still drawn by the caller). No other source of
+        vocalizations themselves are still drawn by the caller). No other source of
         density or boundaries is used.
 
         Parameters
@@ -1221,7 +1221,7 @@ class USVSpectrogramPlotter:
         boundaries; on a conditional map a bare square, since the categories are
         defined on the regular map, see ``_draw_embedding_left_map``) -- where the
         window's USVs
-        are colored by emitter (male / female / unassigned), sized by call
+        are colored by emitter (male / female / unassigned), sized by USV
         duration, numbered ``1..n`` in time order, and joined by a connecting line
         whose color is a white -> male time gradient and whose per-segment width
         tracks the inter-USV silent gap (the line takes the short wrap-around
@@ -1229,10 +1229,10 @@ class USVSpectrogramPlotter:
         continuous spectrogram over the same window -- the per-USV averaged
         spectrograms, SAM2-masked when ``apply_mask``, stitched at their true times
         onto a black background, with an optional raw-audio trace on top
-        (``plot_raw_audio``). The left numbering matches the time order of calls
+        (``plot_raw_audio``). The left numbering matches the time order of USVs
         along the right time axis.
 
-        The window's calls exclude every segment the noise classifier flagged
+        The window's USVs exclude every segment the noise classifier flagged
         (always; ``os_utils.drop_noise_usvs``) and, when the sequence settings'
         ``exclude_squeaks`` is True, every squeak-bearing segment as well: only
         the pure USVs (``usv & ~squeak``, ``os_utils.vocal_class_mask``) are kept,
@@ -1240,7 +1240,7 @@ class USVSpectrogramPlotter:
         segments holding a squeak and a USV, and unclassed rows are neither
         plotted on the map, numbered, stitched into the spectrogram nor marked.
         The summary's row index is taken before this filtering, so the stitched
-        spectrogram still looks each call up at its original store row.
+        spectrogram still looks each USV up at its original store row.
 
         Parameters
         ----------
@@ -1344,8 +1344,27 @@ class USVSpectrogramPlotter:
         dur_lo, dur_hi = (min(durations), max(durations)) if durations else (0.0, 0.0)
 
         def _marker_size(duration: float) -> float:
-            """Map a USV duration to a modest marker area (pt^2); equal/zero spread
-            falls back to the midpoint so markers never blow up."""
+            """
+            Description
+            -----------
+            Map a USV duration to a modest marker area (pt^2); equal/zero spread
+            falls back to the midpoint so markers never blow up.
+
+            The duration is placed linearly between the shortest (``dur_lo``) and
+            longest (``dur_hi``) USV of the sequence, read from the enclosing
+            scope, and mapped onto ``[_SEQ_MARKER_S_MIN, _SEQ_MARKER_S_MAX]``.
+
+            Parameters
+            ----------
+            duration (float)
+                USV duration in seconds (``stop - start``).
+
+            Returns
+            -------
+            marker_area (float)
+                Scatter marker area in pt^2; the midpoint of the marker range when
+                every USV of the sequence has the same duration.
+            """
             if dur_hi <= dur_lo:
                 return 0.5 * (_SEQ_MARKER_S_MIN + _SEQ_MARKER_S_MAX)
             frac = (duration - dur_lo) / (dur_hi - dur_lo)
@@ -1374,7 +1393,7 @@ class USVSpectrogramPlotter:
         # Connecting line through the sequence: per-segment COLOR is a white ->
         # male-color time gradient (white = start of the bout, emitter color toward
         # the end), per-segment WIDTH tracks the inter-USV silent gap -- the time
-        # between the end of one call and the start of the next
+        # between the end of one USV and the start of the next
         # (start(next) - stop(prev)); a longer silence -> thicker line.
         if len(path_pts) >= 2:
             n_seg = len(path_pts) - 1
@@ -1382,7 +1401,7 @@ class USVSpectrogramPlotter:
             path_cmap = mcolors.LinearSegmentedColormap.from_list(
                 "white_to_male", ["#FFFFFF", male_color]
             )
-            # Overlapping calls (stop > next start) clamp to a zero gap.
+            # Overlapping USVs (stop > next start) clamp to a zero gap.
             gaps = [max(0.0, path_starts[i + 1] - path_stops[i]) for i in range(n_seg)]
             # Robust width scale: cap the top of the range at the Tukey upper
             # outlier fence (Q3 + 1.5*IQR), clamped to the real max, so one very
@@ -1393,6 +1412,27 @@ class USVSpectrogramPlotter:
             gap_hi = max(gap_lo, min(max(gaps), q3 + 1.5 * (q3 - q1)))
 
             def _segment_lw(gap: float) -> float:
+                """
+                Description
+                -----------
+                Map an inter-USV silent gap to a connecting-line width. The gap is
+                placed linearly between ``gap_lo`` and the Tukey-fence-capped
+                ``gap_hi`` (both from the enclosing scope), clipped to ``[0, 1]``
+                so gaps beyond the fence saturate, and mapped onto
+                ``[_SEQ_LW_MIN, _SEQ_LW_MAX]``.
+
+                Parameters
+                ----------
+                gap (float)
+                    Silent gap in seconds between one USV's stop and the next
+                    USV's start (overlaps already clamped to 0).
+
+                Returns
+                -------
+                linewidth (float)
+                    Line width in points; the midpoint of the width range when all
+                    gaps are equal.
+                """
                 if gap_hi <= gap_lo:
                     return 0.5 * (_SEQ_LW_MIN + _SEQ_LW_MAX)
                 frac = min(1.0, max(0.0, (gap - gap_lo) / (gap_hi - gap_lo)))
@@ -1407,6 +1447,25 @@ class USVSpectrogramPlotter:
             # and re-enters the opposite.
 
             def _wrap_offset(delta: float) -> float:
+                """
+                Description
+                -----------
+                Return the periodic shift that brings the second point of a pair to
+                its nearest image on the unit torus along one axis: a coordinate
+                difference above 0.5 is shortened by wrapping backwards, one below
+                -0.5 by wrapping forwards.
+
+                Parameters
+                ----------
+                delta (float)
+                    Coordinate difference (second point minus first) along one axis
+                    of the [0, 1] map.
+
+                Returns
+                -------
+                offset (float)
+                    -1.0 when ``delta > 0.5``, 1.0 when ``delta < -0.5``, else 0.0.
+                """
                 if delta > 0.5:
                     return -1.0
                 if delta < -0.5:
@@ -1414,6 +1473,28 @@ class USVSpectrogramPlotter:
                 return 0.0
 
             def _sub_segments(i: int) -> list[list[tuple[float, float]]]:
+                """
+                Description
+                -----------
+                Build the line piece(s) joining sequence point ``i`` to point
+                ``i + 1`` along the shortest route on the periodic map. Without a
+                wrap this is the single straight segment; with a wrap on either
+                axis it is two collinear segments -- point ``i`` to the shifted
+                image of point ``i + 1``, and the shifted image of point ``i`` to
+                point ``i + 1`` -- which the [0, 1] axes clip so the line leaves one
+                edge and re-enters the opposite one.
+
+                Parameters
+                ----------
+                i (int)
+                    Index of the segment's first point in ``path_pts`` (enclosing
+                    scope); must be smaller than ``len(path_pts) - 1``.
+
+                Returns
+                -------
+                subs (list[list[tuple[float, float]]])
+                    One or two segments, each a two-point ``[(x, y), (x, y)]`` list.
+                """
                 (x1, y1), (x2, y2) = path_pts[i], path_pts[i + 1]
                 mx = _wrap_offset(x2 - x1)
                 my = _wrap_offset(y2 - y1)
@@ -1999,6 +2080,23 @@ def plot_session_type_usv_counts(
     )
 
     def _mean_sem(arr: np.ndarray) -> tuple[float, float, int]:
+        """
+        Description
+        -----------
+        Mean, standard error of the mean (sample SD with ``ddof=1`` over
+        sqrt(n)) and size of a per-session USV-count array.
+
+        Parameters
+        ----------
+        arr (np.ndarray)
+            1-D array of per-session USV counts.
+
+        Returns
+        -------
+        mean, sem, n (tuple[float, float, int])
+            ``(0.0, 0.0, 0)`` for an empty array; the SEM is 0.0 when
+            ``n == 1``.
+        """
         n = arr.size
         if n == 0:
             return 0.0, 0.0, 0
@@ -2168,7 +2266,7 @@ def plot_session_usv_timeline(
     Description
     -----------
     Render a single horizontal timeline of every (non-noise) USV in
-    ``session_root``, with each call drawn as a rectangle that spans
+    ``session_root``, with each USV drawn as a rectangle that spans
     its ``[start, stop]`` interval and is colored by its assigned
     emitter: ``male_color`` if the CSV's ``emitter`` is an animal the
     session metadata records as male, ``female_color`` if it is a
@@ -2674,7 +2772,7 @@ def build_pooled_embeddings_df(
             qlvm_category (Int64; only when some summary carries it)
             emitter (Utf8)
             sex (Utf8; 'male' / 'female' from the session metadata's
-                Subjects matched to the emitter, 'unassigned' for calls
+                Subjects matched to the emitter, 'unassigned' for vocalizations
                 with no attributed emitter -- never from the track slot)
             duration (Float64)
             usv, squeak (Boolean; the vocal-class booleans, null on unscorable
@@ -3102,11 +3200,36 @@ def _pick_category_samples(
       unused data point. Gives an ordered "central → peripheral"
       coverage.
 
+    Parameters
+    ----------
+    pts (np.ndarray)
+        (M, 2) float array of `(x, y)` embedding coordinates of one
+        category's rows.
+    n_per (int)
+        Maximum number of indices to return; the function returns
+        ``min(n_per, M)`` indices (an empty int array when ``M`` is 0).
+    method (str)
+        Sampling strategy: ``"random"``, ``"nearest"``, ``"spread"``,
+        ``"grid"`` or ``"spiral"`` (see Strategies above).
+    rng (np.random.Generator)
+        Random generator used by ``"random"`` and by the ``"spiral"``
+        fallback when every point sits on the centroid; the other
+        strategies are deterministic.
+
     Returns
     -------
     local_indices (np.ndarray)
         1-D int array of indices into ``pts`` of the selected rows,
         in sampling order (so the first index is the "first" pick).
+        The ``"random"`` strategy (and the degenerate ``"spiral"``
+        fallback) returns its draw sorted ascending instead. The
+        ``"grid"`` strategy can return fewer than ``min(n_per, M)``
+        indices when its grid holds fewer cells than that.
+
+    Raises
+    ------
+    ValueError
+        If ``method`` is not one of the five strategies.
     """
 
     n_take = min(n_per, pts.shape[0])
@@ -3269,7 +3392,7 @@ def plot_embedding_with_category_thumbnails(
     applied to zero out non-USV pixels; per-category control is
     available via ``mask_excluded_categories``, which lists categories
     where the mask should NOT be applied (useful when SAM2 produces
-    poor masks for some call types).
+    poor masks for some vocal types).
 
     The pooled embeddings DataFrame is built by
     ``build_pooled_embeddings_df`` (or supplied directly via
@@ -3287,15 +3410,15 @@ def plot_embedding_with_category_thumbnails(
     qlvm_map (str)
         One of ``os_utils.QLVM_MAPS`` - selects which QLVM map to plot
         (``"qlvm"`` the regular model; ``"qlvm_duration"``, ``"qlvm_entropy"``,
-        ``"qlvm_bandwidth"`` and ``"qlvm_loudness"`` the conditional ones): its coordinates ``<qlvm_map>1/2``. The calls are
+        ``"qlvm_bandwidth"`` and ``"qlvm_loudness"`` the conditional ones): its coordinates ``<qlvm_map>1/2``. The vocalizations are
         coloured and grouped by ``qlvm_category`` on EVERY map
         (``os_utils.QLVM_CATEGORY_COLUMN``; the categories are defined on the
-        regular map and label the call). The category boundaries and centres
+        regular map and label the vocalization). The category boundaries and centres
         come from the category bundle (``os_utils.load_qlvm_category_bundle``)
         and are drawn on the regular map only; on a conditional map there are
-        no boundaries (the colours show each call's category), the spiral
+        no boundaries (the colours show each vocalization's category), the spiral
         sampler walks without a boundary filter, and the centres are the
-        per-category means of that map's calls.
+        per-category means of that map's vocalizations.
     n_samples_per_category (int)
         How many spectrograms to display per category row.
     apply_mask (bool)
@@ -3322,6 +3445,33 @@ def plot_embedding_with_category_thumbnails(
         positions (``centers``, row ``i`` = category ``i + 1``; every
         pooled ``qlvm_category`` must lie in ``1..k``, otherwise
         ValueError: the labels and the bundle are different partitions).
+    draw_spiral_overlay (bool)
+        If ``True`` and ``sampling_method == "spiral"``, draw each
+        category's dense spiral path (the trajectory the picks follow)
+        on the main scatter. Ignored for every other sampling method.
+    spiral_show_only_for (int | None)
+        When not None, draw the spiral overlay for this single category
+        label only; ``None`` draws every category's spiral.
+    spiral_color (str)
+        Hex colour of the spiral overlay line.
+    spiral_linewidth (float)
+        Line width (points) of the spiral overlay.
+    spiral_radius_scale (float)
+        Per-category spiral radius as a fraction of the largest distance
+        from the category centre to one of its points (larger / more
+        spread categories get larger spirals); used only when
+        ``spiral_radius_abs`` is None. A category with no points falls
+        back to a radius of 0.1.
+    spiral_radius_abs (float | None)
+        Fixed spiral radius in embedding-space units, applied identically
+        to every category; overrides ``spiral_radius_scale`` when not None.
+    spiral_n_turns (int)
+        Number of revolutions each spiral makes from its centre to its
+        radius.
+    spiral_random_phase (bool)
+        If ``True``, every spiral is rotated by a random angular offset
+        drawn from the seeded generator; ``False`` starts every spiral at
+        theta = 0 (deterministic in the angle).
     draw_cluster_boundaries (bool)
         Overlay the category bundle's boundaries on the regular map's
         scatter (never on a conditional map).
@@ -3365,7 +3515,7 @@ def plot_embedding_with_category_thumbnails(
         ``aspect="auto"`` so it fills the uniform slot. Net
         effect: every thumbnail has literally the same on-page
         shape and the same time scale, the longest USV fills its
-        slot, and shorter calls sit centered with symmetric
+        slot, and shorter USVs sit centered with symmetric
         zero borders proportional to ``1 - dur / max_dur``.
         Default ``False`` keeps the existing ``aspect="auto"``
         behaviour, which stretches every spectrogram horizontally
@@ -3373,12 +3523,12 @@ def plot_embedding_with_category_thumbnails(
         both cases -- the array is already cropped to the per-USV
         original time-bin count via the ``durations`` field;
         this toggle only changes display padding / aspect.
-    fig_size, fig_dpi
+    fig_size, fig_dpi (tuple[float, float], int)
         Matplotlib figure size and DPI.
     output_path, fig_format (str | None)
         Optional save path; ``fig_format`` overrides any extension on
         ``output_path``. Both run through ``configure_path``.
-    exclude_noise_usvs
+    exclude_noise_usvs (bool)
         Noise filtering passed through to
         ``build_pooled_embeddings_df`` (only used when ``pooled_df`` is
         ``None``).
@@ -3388,13 +3538,13 @@ def plot_embedding_with_category_thumbnails(
         thumbnail picks, leaving out pure squeaks, segments holding both a
         squeak and a USV, and rows with null booleans (unscorable segments);
         default ``True``. The USV QLVM models were trained on USVs only, so
-        squeak-bearing calls sit wherever the decoder places them. A pooled
+        squeak-bearing vocalizations sit wherever the decoder places them. A pooled
         table without ``usv`` / ``squeak`` raises.
     scatter_max_points (int)
         Optional cap on points rendered in the scatter (random sample
         using the ``seed`` argument); the per-category sampling still draws from
         the full pool so all categories are represented in the grid.
-    scatter_point_size, scatter_point_alpha
+    scatter_point_size, scatter_point_alpha (float, float)
         Marker size and alpha for the scatter.
     pooled_df (pls.DataFrame | None)
         Optionally pass a pre-built pooled-embeddings DataFrame to
@@ -3407,7 +3557,7 @@ def plot_embedding_with_category_thumbnails(
         Force-rebuild the embeddings cache.
     message_output (Callable | None)
         Logger; defaults to ``print``.
-    seed (int)
+    seed (int | None)
         Seed for the per-category sampling and the scatter downsample.
 
     Returns
@@ -3438,15 +3588,15 @@ def plot_embedding_with_category_thumbnails(
         raise ValueError(msg)
 
     x_col, y_col = f"{qlvm_map}1", f"{qlvm_map}2"
-    # Every map's calls are grouped by the regular map's categories (the only
+    # Every map's vocalizations are grouped by the regular map's categories (the only
     # category column); the bundle's grid draws on the regular map alone.
     cat_col = QLVM_CATEGORY_COLUMN
     on_category_map = qlvm_map == QLVM_CATEGORY_MAP
     category_bundle = load_qlvm_category_bundle() if on_category_map else None
     if not on_category_map:
         message_output(
-            f"{qlvm_map}: the QLVM categories are defined on the {QLVM_CATEGORY_MAP} map, so this map's calls are "
-            f"coloured by their {cat_col} with no category boundaries, and category centres are the calls' means."
+            f"{qlvm_map}: the QLVM categories are defined on the {QLVM_CATEGORY_MAP} map, so this map's vocalizations are "
+            f"coloured by their {cat_col} with no category boundaries, and category centres are the vocalizations' means."
         )
 
     if pooled_df is None:
@@ -3549,7 +3699,7 @@ def plot_embedding_with_category_thumbnails(
     # Category boundaries: the category bundle's label grid on the regular map
     # (the partition the summaries' qlvm_category was assigned from; xx / yy are
     # its pixel centres, rows indexed by y); none on a conditional map, whose
-    # calls the grid does not describe. The spiral sampler uses the same grid.
+    # vocalizations the grid does not describe. The spiral sampler uses the same grid.
     boundary_xx = boundary_yy = boundary_labels = None
     if category_bundle is not None:
         boundary_xx = boundary_yy = category_bundle["axis"]
@@ -3633,6 +3783,27 @@ def plot_embedding_with_category_thumbnails(
     bottom_row = outer[1, 0].subgridspec(1, 4, wspace=0.12)
 
     def _overlay_boundaries(ax, alpha=1.0, linewidth=2.5):
+        """
+        Description
+        -----------
+        Draw the category bundle's black category outlines (one outline per
+        category via ``draw_category_outlines``, so every border has the same
+        width) on ``ax``. Does nothing when no label grid was resolved (a
+        conditional map) or when ``draw_cluster_boundaries`` is False.
+
+        Parameters
+        ----------
+        ax (matplotlib.axes.Axes)
+            Axes to draw the outlines on.
+        alpha (float)
+            Opacity applied to every outline contour set. Defaults to 1.0.
+        linewidth (float)
+            Outline line width in points. Defaults to 2.5.
+
+        Returns
+        -------
+        None
+        """
         # `boundary_labels` is also computed when sampling_method == 'spiral' (the spiral
         # sampler needs the label grid), so gate the DRAWING on the user's flag too —
         # otherwise spiral runs draw boundary contours despite draw_cluster_boundaries=False.
@@ -3794,6 +3965,32 @@ def plot_embedding_with_category_thumbnails(
     ax_freq = fig.add_subplot(bottom_row[0, 3])
 
     def _render_continuous(ax, values, label_template):
+        """
+        Description
+        -----------
+        Scatter the displayed points on ``ax`` coloured by a continuous value
+        with the project sequential colormap. The colour limits are the 2nd
+        and 98th percentiles of the finite values (widened by 1.0 when they
+        coincide); points are drawn in ascending value order so the high
+        values sit on top. Non-finite values are skipped, and the panel is
+        left empty (no x-label) when no value is finite.
+
+        Parameters
+        ----------
+        ax (matplotlib.axes.Axes)
+            Auxiliary-panel axes to draw on.
+        values (np.ndarray)
+            1-D float array aligned with the scatter points (``x_all`` /
+            ``y_all`` of the enclosing scope), e.g. durations in ms or
+            bandwidths in kHz.
+        label_template (str)
+            x-label format string with ``{lo}`` and ``{hi}`` placeholders,
+            filled with the colour limits.
+
+        Returns
+        -------
+        None
+        """
         finite = np.isfinite(values)
         if finite.sum() == 0:
             return
@@ -3871,6 +4068,25 @@ def plot_embedding_with_category_thumbnails(
     # Horizontal: each category is a row, sample index walks columns.
     # Vertical:   each category is a column, sample index walks rows.
     def _grid_pos(cat_idx: int, sample_idx: int) -> tuple[int, int]:
+        """
+        Description
+        -----------
+        Translate a (category, sample) pair into its thumbnail-grid cell
+        according to ``tile_orientation`` of the enclosing scope.
+
+        Parameters
+        ----------
+        cat_idx (int)
+            Position of the category in the displayed category order.
+        sample_idx (int)
+            Position of the sample within its category.
+
+        Returns
+        -------
+        grid_row, grid_col (tuple[int, int])
+            ``(cat_idx, sample_idx)`` for ``"horizontal"`` tiling,
+            ``(sample_idx, cat_idx)`` for ``"vertical"``.
+        """
         if tile_orientation == "horizontal":
             return cat_idx, sample_idx
         return sample_idx, cat_idx
@@ -3885,11 +4101,24 @@ def plot_embedding_with_category_thumbnails(
         dur_cache: dict[str, np.ndarray] = {}
 
         def _strip_ax_chrome(ax: plt.Axes) -> None:
-            """Hide ticks + every spine + the axes frame so no
+            """
+            Description
+            -----------
+            Hide ticks + every spine + the axes frame so no
             rectangular outline is ever drawn around a thumbnail.
             ``set_frame_on(False)`` is defensive on top of the per-
             spine ``set_visible(False)`` calls in case any draw path
-            leaves the frame visible."""
+            leaves the frame visible.
+
+            Parameters
+            ----------
+            ax (plt.Axes)
+                Thumbnail axes to strip.
+
+            Returns
+            -------
+            None
+            """
             ax.set_xticks([])
             ax.set_yticks([])
             for sp in ax.spines.values():
@@ -3903,7 +4132,7 @@ def plot_embedding_with_category_thumbnails(
         # of 128) means the longest USV in the figure fills its slot
         # horizontally and every other USV scales proportionally,
         # which keeps the right-side whitespace bounded instead of
-        # crushing 95% of calls into ~25% of slot width.
+        # crushing 95% of USVs into ~25% of slot width.
         unstretched_x_max = None
         if unstretched_specs:
             max_dur = 1
@@ -3976,7 +4205,7 @@ def plot_embedding_with_category_thumbnails(
                 if unstretched_specs:
                     # Pad every spec to a common ``(n_freq, max_dur)``
                     # shape by surrounding the valid time slice with
-                    # zeros split evenly left/right, so the call sits
+                    # zeros split evenly left/right, so the USV sits
                     # centered horizontally and the array fed to
                     # ``imshow`` has identical dimensions for every
                     # thumbnail. Combined with ``aspect="auto"`` and
@@ -4100,7 +4329,7 @@ def render_embedding_thumbnails_for_cohort(
     # The category boundaries and the cluster-ID / spiral centres come from the
     # category bundle (os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY) inside
     # plot_embedding_with_category_thumbnails, on the regular map only; a
-    # conditional map shows its calls coloured by qlvm_category without boundaries.
+    # conditional map shows its vocalizations coloured by qlvm_category without boundaries.
     qlvm_map = visualizations_parameter_dict["shared_resources"]["qlvm_map"]
 
     # Pooled-embeddings cache resolved by convention from the spectrograms dir

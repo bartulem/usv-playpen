@@ -86,6 +86,25 @@ def count_last_recording_dropouts(log_file_path: str,
 
 
 class ExperimentController:
+    """
+    Description
+    -----------
+    Runs a behavioral recording session on the recording PC: checks network and
+    file-server connections, camera vitals and that Avisoft is recording, edits
+    the Avisoft config file, conducts tracking calibration and the recording
+    itself (cameras, ultrasonic audio, sync), and moves the recorded files to the
+    lab file-server destinations.
+
+    It holds ``exp_settings_dict`` (the behavioral-experiments settings),
+    ``email_receivers``, ``metadata_settings`` (session metadata, an empty dict
+    when None), ``message_output`` and ``app_context_bool`` (GUI vs. CLI
+    context), plus ``api``, ``camera_serial_num`` and ``config_1``, which start
+    as None and are filled during the run (camera API handle, camera serial
+    numbers, parsed Avisoft config). The entry methods are
+    ``conduct_behavioral_recording`` and ``conduct_tracking_calibration``. It is
+    constructed by the GUI (``usv_playpen_gui.py``) and by the command-line
+    entry points of this module.
+    """
 
     def __init__(self, email_receivers: list = None,
                  exp_settings_dict: dict = None,
@@ -593,6 +612,23 @@ class ExperimentController:
         # "Mount point ... is not valid" line and never the actual
         # cause of the failure.
         def emit(msg: str) -> None:
+            """
+            Description
+            -----------
+            Send one diagnostic line to the GUI message stream
+            (``self.message_output``) and mirror it to stdout with an
+            immediate flush, so the line survives the ``sys.exit(1)`` the
+            caller issues after a False return.
+
+            Parameters
+            ----------
+            msg (str)
+                Diagnostic line to emit.
+
+            Returns
+            -------
+            None
+            """
             self.message_output(msg)
             print(msg, flush=True)
 
@@ -698,10 +734,18 @@ class ExperimentController:
 
         Returns
         -------
-        master_ip_address (str), api_key (str), second_ip_address (str),
-        ssh_port (str), ssh_username (str), ssh_password (str)
-            IP address of the main PC, API key to run Motif remotely, IP address of the second PC,
-            SSH port, SSH username, and SSH password.
+        master_ip_address (str), second_ip_address (str), ssh_port (str),
+        ssh_username (str), ssh_password (str), api_key (str)
+            IP address of the main PC, IP address of the second PC, SSH port,
+            SSH username, SSH password, and API key to run Motif remotely, in
+            this order (the ``[motif]`` keys ``master_ip_address``,
+            ``second_ip_address``, ``ssh_port``, ``ssh_username``,
+            ``ssh_password`` and ``api`` of ``motif_config.ini``).
+
+        Raises
+        ------
+        FileNotFoundError
+            If ``motif_config.ini`` is missing from the credentials directory.
         """
 
         config = configparser.ConfigParser()

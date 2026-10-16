@@ -66,7 +66,7 @@ def test_polars_h5_roundtrip_nullable_int_and_bool(tmp_path):
 
 def _make_settings(tmp_path, fit_mixture_model=False, fit_tied_model=False, fit_serial_dependence=False):
     """Build the analyses_settings sub-block expected by the class, including the pool spec:
-    the male's ultrasonic calls (fitted) and the female's squeaks (described only)."""
+    the male's USVs (fitted) and the female's squeaks (described only)."""
     return {
         "compute_inter_usv_interval_distributions": {
             "session_lists": [],
@@ -680,7 +680,7 @@ def _write_summary(root: Path, with_vocal_flags: bool) -> None:
     frame.write_csv(str(audio / f"{root.name}_usv_summary.csv"))
 
 
-def test_load_and_filter_usv_data_call_type_filters(tmp_path):
+def test_load_and_filter_usv_data_vocal_class_filters(tmp_path):
     """``vocal_class='usv'`` keeps the pure USVs (usv true, squeak false) and ``'squeak'`` the pure
     squeaks; a segment with both flags true (usv true is not enough) and an unscored (null) row
     belong to neither, and None keeps every row. Each row is timed as its vocalization: the pure
@@ -714,7 +714,7 @@ def test_load_and_filter_usv_data_squeaks_need_the_squeak_extent(tmp_path):
     assert usv["start"].to_list() == [1.0, 3.0]
 
 
-def test_load_and_filter_usv_data_rejects_unknown_call_type(tmp_path):
+def test_load_and_filter_usv_data_rejects_unknown_vocal_class(tmp_path):
     """An unknown ``vocal_class`` is a ValueError."""
 
     _write_summary(tmp_path, with_vocal_flags=True)
@@ -723,7 +723,7 @@ def test_load_and_filter_usv_data_rejects_unknown_call_type(tmp_path):
 
 
 def test_load_and_filter_usv_data_without_vocal_flags_raises(tmp_path):
-    """Asking for a call type on a summary the call classifier never ran on is a KeyError that
+    """Asking for a vocal class on a summary the USV / squeak classifier never ran on is a KeyError that
     says which step to run, rather than treating every row as a USV."""
 
     _write_summary(tmp_path, with_vocal_flags=False)
@@ -743,7 +743,7 @@ def _patch_session_identity(monkeypatch) -> None:
 def test_compute_session_usv_intervals_overlap_is_neither_usv_nor_squeak(tmp_path, monkeypatch):
     """An overlap segment (usv and squeak flags both true) is left out of the squeak sequence: under ``'filtered'`` it is removed
     before pairing (the squeaks either side of it form one interval), under ``'strict'`` it stays
-    in the record as a non-target call and breaks the pairs it sits between. It never enters the
+    in the record as a non-target vocalization and breaks the pairs it sits between. It never enters the
     USV sequence either."""
 
     _patch_session_identity(monkeypatch)

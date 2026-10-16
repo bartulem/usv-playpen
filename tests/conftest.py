@@ -18,7 +18,6 @@ if sys.platform.startswith("linux") and "microsoft" in os.uname().release.lower(
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
-# ---------------------------------------------------------------------------
 # Source-tree integrity baseline
 #
 # We snapshot SHA-256 hashes of every file under ``src/usv_playpen`` at the
@@ -31,7 +30,6 @@ if sys.platform.startswith("linux") and "microsoft" in os.uname().release.lower(
 # commits a87717a and 75b0ab2 and shipped the empty YAML in v0.10.1 /
 # v0.10.2 -- will now fail loudly with a per-file diff instead of leaving
 # a trail of corrupted artifacts in working trees and releases.
-# ---------------------------------------------------------------------------
 
 SRC_TREE_ROOT = Path(__file__).resolve().parent.parent / "src" / "usv_playpen"
 

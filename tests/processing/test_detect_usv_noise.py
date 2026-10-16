@@ -28,7 +28,7 @@ SAMPLING_RATE = noise.NOISE_SAMPLING_RATE
 DECISION = {
     "exclude_at_or_above": 0.14, "noise_at_or_above": 0.82, "held_out_precision": 0.944,
     "held_out_recall": 0.955, "held_out_uncertain_share": 0.0089, "uncertain_share": 0.0103,
-    "real_calls_excluded_per_10000": 71.0,
+    "real_vocalizations_excluded_per_10000": 71.0,
 }
 CALIBRATION = [
     {"threshold": 0.30, "precision": 0.949, "recall": 0.992, "flagged_per_10000": 342.0, "calls_lost_per_10000": 17.6},
@@ -145,16 +145,16 @@ def test_segment_input_keeps_only_the_segment_frames():
     assert n_short == 0
 
 
-def test_frame_budget_batches_keep_a_long_call_from_inflating_a_batch():
-    """Batches are padded to their longest call, so a batch is budgeted in frame slots, not segments: one
-    512-frame call among short ones would otherwise make the batch 30x larger and exhaust the GPU."""
+def test_frame_budget_batches_keep_a_long_segment_from_inflating_a_batch():
+    """Batches are padded to their longest segment, so a batch is budgeted in frame slots, not segments: one
+    512-frame segment among short ones would otherwise make the batch 30x larger and exhaust the GPU."""
     short = [np.zeros((3, 128, 16), dtype=np.float32)] * 6
-    long_call = np.zeros((3, 128, 512), dtype=np.float32)
-    batches = noise.frame_budget_batches([*short, long_call, *short], batch_size=1)
-    assert batches[0] == (0, 6)                       # the short calls fill one batch (6 * 16 <= 128)
-    assert (6, 7) in batches                          # the long call is scored on its own
+    long_segment = np.zeros((3, 128, 512), dtype=np.float32)
+    batches = noise.frame_budget_batches([*short, long_segment, *short], batch_size=1)
+    assert batches[0] == (0, 6)                       # the short segments fill one batch (6 * 16 <= 128)
+    assert (6, 7) in batches                          # the long segment is scored on its own
     assert batches[-1][1] == 13                       # every segment is covered, in order
-    assert noise.frame_budget_batches([long_call], batch_size=1) == [(0, 1)]   # never an empty batch
+    assert noise.frame_budget_batches([long_segment], batch_size=1) == [(0, 1)]   # never an empty batch
 
 
 def test_score_noise_rows_flags_every_row_above_the_threshold(tmp_path):
@@ -172,7 +172,7 @@ def test_score_noise_rows_flags_every_row_above_the_threshold(tmp_path):
 
 
 def test_score_noise_rows_below_threshold_flags_nothing(tmp_path):
-    """A model that is confident every segment holds a call must flag no row."""
+    """A model that is confident every segment holds a vocalization must flag no row."""
     root = _build_session(tmp_path)
     summary = pls.read_csv(root / "audio" / f"{SESSION_ID}_usv_summary.csv", schema_overrides={"usv_id": pls.String})
     scores = noise.score_noise_rows(
@@ -418,3 +418,13 @@ def test_train_noise_model_cli_routes(mocker, tmp_path):
     assert settings.call_args.kwargs["block"] == "train_noise_model"
     assert "seeds" in settings.call_args.kwargs["provided_params"]
     mock_cls.return_value.train.assert_called_once()
+
+
+def test_current_noise_decision_keys_reads_a_block_written_before_the_rename():
+    """A calibration JSON or bundle written earlier names the cost real_calls_excluded_per_10000;
+    it is read under the current key with its value, and a current block is unchanged."""
+    legacy = {"exclude_at_or_above": 0.5, "real_calls_excluded_per_10000": 71.0}
+    current = noise.current_noise_decision_keys(legacy)
+    assert current == {"exclude_at_or_above": 0.5, "real_vocalizations_excluded_per_10000": 71.0}
+    assert "real_calls_excluded_per_10000" in legacy
+    assert noise.current_noise_decision_keys(current) == current

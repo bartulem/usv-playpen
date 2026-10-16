@@ -175,6 +175,19 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             Additional keyword arguments. These are set as instance attributes on the
             pipeline object, allowing for dynamic overrides of settings or injection
             of additional parameters.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        FileNotFoundError
+            If `modeling_settings_dict` is None and the default settings JSON
+            does not exist.
+        KeyError
+            If `io.camera_sampling_rate` or `model_params.filter_history` is
+            missing from the settings (needed for `history_frames`).
         """
 
         if modeling_settings_dict is None:
@@ -625,6 +638,16 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             validation fold represented as NumPy arrays. X_train/y_train are
             class-balanced; X_test/y_test preserve the natural class prior of the
             source data; groups_train is the session of every training row.
+
+        Returns
+        -------
+        generator
+            The generator object producing the tuples described under `Yields`.
+
+        Raises
+        ------
+        ValueError
+            If `strategy` is not 'actual'.
         """
 
         # Only the real Target-vs-Other condition is built; the null is a
@@ -786,6 +809,13 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         basis_matrix : np.ndarray | None
             The projection matrix [lags, bases] used for dimensionality reduction in Sklearn.
             Must be None if `model_engine` is 'pygam'.
+        held_out_session_ids : list, optional
+            Session ids reserved as the held-out test set. They are excluded from
+            every CV split; when non-empty (and the pooled data is not degenerate)
+            the model is refit once on all development sessions and scored on these
+            sessions, for both the real-label model and a shuffled-label null, and
+            the scores are stored under `results['heldout']`. None (default) is
+            treated as an empty list (no held-out scoring).
 
         Returns
         -------
@@ -793,7 +823,8 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             A tuple containing the feature name and a nested results dictionary with 'actual'
             and 'null' sub-keys. Sub-keys contain NumPy arrays for computed metrics,
             reconstructed filter shapes, and (if sklearn) optimized hyperparameters across
-            all validation folds.
+            all validation folds. A top-level 'heldout' key (with its own 'actual' and
+            'null' records) is present only when held-out sessions were scored.
         """
 
         # Strict lookup, no .get()
@@ -1025,7 +1056,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                          'MCC': results['null']['mcc'][split_idx]},
             }))
 
-        # Honest held-out score. Refit on ALL development sessions (balanced
+        # Unbiased held-out score. Refit on ALL development sessions (balanced
         # target-vs-other training pool) and score once on the reserved held-out
         # sessions at their natural class prior, for both the real-label model and
         # a shuffled-label null control (the held-out chance floor). The only
@@ -1044,6 +1075,21 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             n_held_events = int(X_te_targ_held.shape[0] + X_te_other_held.shape[0])
 
             def _empty_cat_heldout():
+                """
+                Builds an all-NaN held-out record (every metric, the confusion
+                matrix, optimizer diagnostics, filter shapes and, for the sklearn
+                engine, the projected coefficients and optimal C), carrying the
+                held-out session and event counts; it is filled in place when the
+                held-out fit succeeds and stays NaN otherwise.
+
+                Parameters
+                ----------
+
+                Returns
+                -------
+                rec : dict
+                    The NaN-initialised held-out record.
+                """
                 rec = {m: np.nan for m in metrics}
                 rec['confusion_matrix'] = np.full((2, 2), np.nan)
                 rec['n_iter'] = np.nan

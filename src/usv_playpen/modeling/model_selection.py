@@ -188,6 +188,25 @@ def _make_step_wrapper(input_md: dict, univariate_md: dict, run_md: dict):
     """
 
     def wrap(payload: dict) -> dict:
+        """
+        Description
+        -----------
+        Attaches the metadata blocks captured by `_make_step_wrapper` to one step-pickle
+        payload: `_run_metadata` always, `_input_metadata` and
+        `_univariate_metadata` only when the corresponding upstream block
+        is not `None`.
+
+        Parameters
+        ----------
+        payload : dict
+            The step result to be pickled.
+
+        Returns
+        -------
+        dict
+            A new dict produced by `inject_metadata` holding `payload`'s
+            entries plus the metadata blocks; `payload` itself is not mutated.
+        """
         blocks = {'_run_metadata': run_md}
         if input_md is not None:
             blocks['_input_metadata'] = input_md
@@ -204,7 +223,7 @@ def _frozen_selection_kappa(y_dev: np.ndarray, w_dev: np.ndarray, *, metric: str
     -----------
     The torus selection's frozen von Mises concentration: fit ONCE on the
     development events from the residuals of an intercept-only (circular-mean)
-    predictor -- the marginal dispersion of the call positions -- and unweighted,
+    predictor -- the marginal dispersion of the USV positions -- and unweighted,
     matching the unweighted per-point von Mises scoring. Every torus score of a
     selection run (the univariate screen, the baseline, the candidates, the
     acceptance gate and the held-out refit) reuses it when
@@ -413,6 +432,31 @@ def _fold_paired_margin_bootstrap(
     # number per fold and the paired actual-minus-null margin is bootstrapped over
     # folds.
     def _fold_scores(folds: dict) -> np.ndarray:
+        """
+        Description
+        -----------
+        Scores every fold of one strategy's per-fold predictions: the torus
+        macro (per-region) von Mises log-likelihood
+        (:func:`macro_von_mises_logscore`, with the enclosing ``kappa``,
+        ``min_region_events`` and the regions of ``event_to_region`` at the
+        fold's test indices, or pooled scoring when ``event_to_region`` is
+        ``None``) or, on euclidean, the wrap-aware distance correlation
+        (:func:`dcor_prediction_truth`, ``n_rep=1``). A fold with fewer than
+        ``min_fold_events`` test predictions scores NaN.
+
+        Parameters
+        ----------
+        folds (dict)
+            The strategy's ``folds`` block, holding the parallel per-fold lists
+            ``test_indices`` (full-event indices), ``y_pred_xy`` (``(n, 2)``
+            predictions) and ``y_true`` (``(n, 2)`` targets).
+
+        Returns
+        -------
+        scores (np.ndarray)
+            ``(n_folds,)`` float array of per-fold scores, NaN for skipped folds
+            (and for a torus fold where no region clears ``min_region_events``).
+        """
         scores = []
         for test_indices, y_pred_xy, y_true in zip(
                 folds['test_indices'], folds['y_pred_xy'], folds['y_true']):
@@ -3984,6 +4028,29 @@ def multinomial_vocal_category_model_selection(
     # baseline intentionally keeps the natural-rate training distribution so
     # its empirical-prior floor remains an informative baseline.
     def _fold_train_indices_for_model(tr_idx: np.ndarray, fold_idx: int) -> np.ndarray:
+        """
+        Description
+        -----------
+        The training rows a learned model fits on in one outer fold. With
+        ``balance_train`` off these are the fold's training rows unchanged;
+        with it on they are down-sampled so every class contributes the same
+        number of rows (:func:`_balance_multinomial_train_indices`), drawn with
+        a generator seeded ``random_seed + fold_idx + 1`` so every candidate in
+        the same fold sees the same balanced subset.
+
+        Parameters
+        ----------
+        tr_idx (np.ndarray)
+            The fold's training row indices into the full arrays.
+        fold_idx (int)
+            The outer fold's 0-based index (offsets the balancing seed).
+
+        Returns
+        -------
+        train_idx (np.ndarray)
+            ``tr_idx`` itself when balancing is off, otherwise a shuffled
+            class-balanced subset of it.
+        """
         if not balance_train:
             return tr_idx
         fold_rng = np.random.default_rng(random_seed + fold_idx + 1)
@@ -4107,6 +4174,25 @@ def multinomial_vocal_category_model_selection(
     canonical_classes = np.unique(y_global)
 
     def _class_proportions(labels: np.ndarray) -> np.ndarray:
+        """
+        Description
+        -----------
+        The share of each class of ``canonical_classes`` (the sorted unique
+        labels of the whole cohort) among ``labels``, so every fold's
+        proportion vector has the same length and class order even when a
+        fold lacks a class.
+
+        Parameters
+        ----------
+        labels (np.ndarray)
+            Class labels of one set of rows (a fold's training or test rows).
+
+        Returns
+        -------
+        proportions (np.ndarray)
+            ``(n_classes,)`` float32 proportions summing to 1; all zeros when
+            ``labels`` is empty.
+        """
         if len(labels) == 0:
             return np.zeros(len(canonical_classes), dtype=np.float32)
         counts = np.array([(labels == c).sum() for c in canonical_classes], dtype=np.float64)
@@ -5244,7 +5330,7 @@ def continuous_vocal_manifold_model_selection(
     # recomputes dcor from the stored predictions rather than reading this key.
     SCREENING_METRIC = SELECTION_SCORE_KEY
 
-    # ---- Fold-grain paired-margin screen ------------------------------------
+    # Fold-grain paired-margin screen
     # The gate recomputes the paired `actual` vs `null` score margin PER CV FOLD
     # (the macro von Mises log-likelihood on the torus; the wrap-aware distance
     # correlation on euclidean) and bootstraps the folds: a feature is kept only
@@ -5264,6 +5350,25 @@ def continuous_vocal_manifold_model_selection(
     _required_fold_keys = ('y_pred_xy', 'y_true', 'test_indices')
 
     def _has_pred_keys(res):
+        """
+        Description
+        -----------
+        Whether one univariate result carries the per-fold predictions the
+        fold-grain screen recomputes its score from: ``y_pred_xy``, ``y_true``
+        and ``test_indices`` in the ``folds`` block of both its ``actual`` and
+        its ``SCREEN_BASELINE_STRATEGY`` entries.
+
+        Parameters
+        ----------
+        res (Any)
+            One feature's univariate result (normally a dict); anything that is
+            not a dict yields ``False``.
+
+        Returns
+        -------
+        has_keys (bool)
+            True when every required per-fold key is present in both entries.
+        """
         return (isinstance(res, dict) and 'actual' in res
                 and SCREEN_BASELINE_STRATEGY in res
                 and all(k in res['actual']['folds'] for k in _required_fold_keys)
@@ -6012,6 +6117,24 @@ def continuous_vocal_manifold_model_selection(
         step_counter = 1
 
     def _make_manifold_cand_data():
+        """
+        Description
+        -----------
+        A fresh, empty results entry for one manifold candidate: a ``folds``
+        block of empty per-fold lists (one list per metric of
+        ``MANIFOLD_METRIC_KEYS``, the fitted weights, spline coefficients and
+        intercepts, the test indices, targets, weights and predictions, the fit
+        diagnostics and the per-fold hyperparameter audit trail), appended to
+        fold by fold.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        cand_data (dict)
+            ``{'folds': {...}}`` with every per-fold list empty.
+        """
         return {
             'folds': {
                 'metrics': {m: [] for m in MANIFOLD_METRIC_KEYS},
@@ -6039,6 +6162,22 @@ def continuous_vocal_manifold_model_selection(
         }
 
     def _empty_grid_audit():
+        """
+        Description
+        -----------
+        The hyperparameter grid audit recorded for a fold whose regularization
+        was not tuned (fixed centres) or whose fit failed: empty score and SE
+        grids, no argmax pair and no 1-SE rule applied.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        grid_audit (dict)
+            ``{'grid_scores': {}, 'grid_ses': {}, 'argmax_pair': None,
+            'one_se_applied': False, 'one_se_threshold': None}``.
+        """
         return {
             'grid_scores': {},
             'grid_ses': {},
@@ -6100,6 +6239,32 @@ def continuous_vocal_manifold_model_selection(
         labels for the training rows) forwards the equal-region fit reweighting
         into the inner-CV fits on the torus so the tuned pair is chosen under the
         same reweighted objective the outer fit uses; `None` on euclidean.
+
+        Parameters
+        ----------
+        X_tr_ (np.ndarray)
+            The outer fold's training design, ``(n_rows, n_features * n_time_bins)``.
+        Y_tr_ (np.ndarray)
+            The training rows' ``(n_rows, 2)`` manifold-position targets.
+        w_tr_ (np.ndarray)
+            The training rows' ``(n_rows,)`` sample weights (before any
+            equal-region reweighting; the inner CV applies that via ``region_tr_``).
+        groups_tr_ (np.ndarray)
+            The training rows' session labels, so the inner CV splits by session.
+        n_feats_ (int)
+            Number of features in the trial model (sets the l2 rescale).
+        fold_idx_ (int)
+            The outer fold's index (offsets the tuner's ``random_state``).
+        region_tr_ (np.ndarray or None)
+            Per-row acoustic-region labels of the training rows, forwarded to the
+            inner-CV fits as ``region_train``; ``None`` (default) on euclidean.
+
+        Returns
+        -------
+        lambda_smooth, l2_reg, grid_audit, tuned (tuple[float, float, dict, bool])
+            The smoothness and l2 penalties used, the inner-CV grid record
+            (:func:`_empty_grid_audit` when not tuned) and whether the inner-CV
+            search ran.
         """
         if not tune_regularization_bool:
             lam_sm = float(hp['lambda_smooth_fixed'])

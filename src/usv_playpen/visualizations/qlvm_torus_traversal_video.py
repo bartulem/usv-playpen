@@ -28,7 +28,7 @@ store's ``qlvm/<key>/qlvm`` coordinates must come from the production regular
 cell the bundle is defined on (``qlvm_models/qlvm`` provenance attrs of the store,
 checked before rendering): a production store (``consolidate-spectrogram-store``
 in production mode) passes, while a store of another cell (e.g. the v3 archive the
-same command writes in v3 mode) places the calls on another torus, and the
+same command writes in v3 mode) places the USVs on another torus, and the
 bundle's regions would mislabel them, so it is refused.
 
 Layout:
@@ -130,7 +130,7 @@ def pool_latents_from_h5(h5, qlvm_map: str) -> tuple[np.ndarray, list[tuple[str,
     Pools every session's per-USV latent coordinates of one QLVM map from the
     consolidated H5's ``qlvm/<key>/<qlvm_map>`` datasets (the map's torus
     coordinates, written by ``consolidate-spectrogram-store`` in either store
-    mode, NaN where a call was not embedded; row ``i`` is the
+    mode, NaN where a USV was not embedded; row ``i`` is the
     session's spectrogram row ``i``) into one array, with a parallel
     ``(session key, spectrogram row)`` list so a nearest-neighbour hit can be
     mapped straight back to a spectrogram. Rows with NaN coords are dropped, and
@@ -174,14 +174,56 @@ def pool_latents_from_h5(h5, qlvm_map: str) -> tuple[np.ndarray, list[tuple[str,
 
 
 def _lin(a, b, n):
-    """Linear interpolation a -> b in ``n`` steps, returning an (n, len(a)) array."""
+    """
+    Description
+    -----------
+    Linear interpolation a -> b in ``n`` steps, returning an (n, len(a)) array.
+    Both endpoints are included (row 0 is ``a``, row ``n - 1`` is ``b``).
+
+    Parameters
+    ----------
+    a (array-like)
+        Start point, shape ``(d,)``; cast to float.
+    b (array-like)
+        End point, shape ``(d,)``; cast to float.
+    n (int)
+        Number of interpolation steps (rows of the output).
+
+    Returns
+    -------
+    path (np.ndarray)
+        Float array of shape ``(n, d)`` with evenly spaced points from ``a`` to ``b``.
+    """
     a = np.asarray(a, dtype=float)
     b = np.asarray(b, dtype=float)
     return a + np.linspace(0.0, 1.0, n)[:, None] * (b - a)
 
 
 def _smooth_jitter(rng, n, sigma):
-    """Small smooth (n, 2) perturbation pinned at both endpoints."""
+    """
+    Description
+    -----------
+    Small smooth (n, 2) perturbation pinned at both endpoints. White Gaussian
+    noise of standard deviation ``sigma`` is box-smoothed per dimension with a
+    window of ``max(3, n // 8)`` samples, then a linear ramp is subtracted so the
+    first and last rows are exactly zero (the jittered path still starts and ends
+    on its endpoints). Returns all zeros when ``n <= 2`` or ``sigma <= 0`` (no
+    draws are made from ``rng`` in that case).
+
+    Parameters
+    ----------
+    rng (np.random.Generator)
+        Random generator the Gaussian noise is drawn from.
+    n (int)
+        Number of path samples (rows of the output).
+    sigma (float)
+        Standard deviation of the raw Gaussian noise, in latent ``[0, 1]`` units.
+
+    Returns
+    -------
+    jitter (np.ndarray)
+        Float array of shape ``(n, 2)``, zero at rows 0 and ``n - 1``.
+    """
     if n <= 2 or sigma <= 0:
         return np.zeros((n, 2))
     win = max(3, n // 8)
@@ -194,7 +236,32 @@ def _smooth_jitter(rng, n, sigma):
 
 
 def _curved_path(a, b, n, amplitude):
-    """Deterministic curved path from a to b: straight line + half-sine bend."""
+    """
+    Description
+    -----------
+    Deterministic curved path from a to b: straight line + half-sine bend. The
+    bend is applied along the unit perpendicular ``(-dy, dx) / |b - a|`` with
+    magnitude ``amplitude * sin(pi * t)``, so it vanishes at both endpoints and
+    peaks mid-way; a negative amplitude bends to the other side. When ``a`` and
+    ``b`` coincide (norm below 1e-12) the straight line is returned unbent.
+
+    Parameters
+    ----------
+    a (array-like)
+        Start point, shape ``(2,)``; cast to float.
+    b (array-like)
+        End point, shape ``(2,)``; cast to float (may lie outside ``[0, 1]`` to
+        express a walk that wraps the torus).
+    n (int)
+        Number of path samples (rows of the output).
+    amplitude (float)
+        Peak perpendicular displacement of the bend, in latent units (signed).
+
+    Returns
+    -------
+    path (np.ndarray)
+        Float array of shape ``(n, 2)``.
+    """
     a = np.asarray(a, dtype=float)
     b = np.asarray(b, dtype=float)
     t = np.linspace(0.0, 1.0, n)
@@ -209,7 +276,26 @@ def _curved_path(a, b, n, amplitude):
 
 
 def _shortest_extended(a, b):
-    """Return (a, b') so that the straight line a->b' is the shortest torus path."""
+    """
+    Description
+    -----------
+    Return (a, b') so that the straight line a->b' is the shortest torus path.
+    Each coordinate difference ``b - a`` is wrapped into ``[-0.5, 0.5)`` and added
+    back to ``a``, so ``b'`` may lie outside ``[0, 1)``; taking ``b' % 1.0``
+    recovers ``b``.
+
+    Parameters
+    ----------
+    a (array-like)
+        Start point on the unit torus, shape ``(2,)``; cast to float.
+    b (array-like)
+        End point on the unit torus, shape ``(2,)``; cast to float.
+
+    Returns
+    -------
+    a, b_extended (tuple[np.ndarray, np.ndarray])
+        ``a`` as a float array and the unwrapped end point ``b'``.
+    """
     a = np.asarray(a, dtype=float)
     b = np.asarray(b, dtype=float)
     d = (b - a + 0.5) % 1.0 - 0.5
@@ -220,7 +306,25 @@ def _shortest_extended(a, b):
 
 
 def _set_border(ax, color, width):
-    """Set every spine of ``ax`` to the given color/width (used for tile borders)."""
+    """
+    Description
+    -----------
+    Set every spine of ``ax`` to the given color/width (used for tile borders).
+    Spines are also made visible.
+
+    Parameters
+    ----------
+    ax (matplotlib.axes.Axes)
+        Axes whose four spines are restyled.
+    color (str)
+        Hex edge color of the spines.
+    width (float)
+        Spine line width, in points.
+
+    Returns
+    -------
+    None
+    """
     for sp in ax.spines.values():
         sp.set_visible(True)
         sp.set_edgecolor(color)
@@ -228,7 +332,24 @@ def _set_border(ax, color, width):
 
 
 def _contour_visible(cs, vis):
-    """Toggle visibility of a QuadContourSet across matplotlib versions."""
+    """
+    Description
+    -----------
+    Toggle visibility of a QuadContourSet across matplotlib versions. Newer
+    matplotlib makes the contour set itself an artist (``set_visible``); older
+    versions expose per-level ``collections``, which are toggled too when present.
+
+    Parameters
+    ----------
+    cs (matplotlib.contour.QuadContourSet)
+        The contour set to show or hide.
+    vis (bool)
+        True to show, False to hide.
+
+    Returns
+    -------
+    None
+    """
     try:
         cs.set_visible(vis)
     except AttributeError:
@@ -239,7 +360,26 @@ def _contour_visible(cs, vis):
 
 
 def _set_contour_style(cs, lw, alpha):
-    """Set a QuadContourSet's linewidth + alpha across matplotlib versions."""
+    """
+    Description
+    -----------
+    Set a QuadContourSet's linewidth + alpha across matplotlib versions. Newer
+    matplotlib styles the contour set directly; older versions expose per-level
+    ``collections``, which are styled too when present.
+
+    Parameters
+    ----------
+    cs (matplotlib.contour.QuadContourSet)
+        The contour set to restyle.
+    lw (float)
+        Contour line width, in points.
+    alpha (float)
+        Contour opacity in ``[0, 1]``.
+
+    Returns
+    -------
+    None
+    """
     try:
         cs.set_linewidth(lw)
         cs.set_alpha(alpha)
@@ -260,7 +400,7 @@ def check_store_map_provenance(h5, qlvm_map: str) -> str:
     -----------
     Checks that the consolidated store's coordinates of ``qlvm_map`` come from
     the production cell the category bundle is defined on, so the bundle's
-    regions describe the torus the pooled calls sit on. A production store
+    regions describe the torus the pooled USVs sit on. A production store
     (``consolidate-spectrogram-store`` in production mode) records each map's
     ``<package>/<phase>/<cell>`` identifier as the ``qlvm_models/<map>`` attr
     ``model_id``; a v3 store records the package root and cell instead (attrs
@@ -300,7 +440,7 @@ def check_store_map_provenance(h5, qlvm_map: str) -> str:
     if store_model_id != expected:
         error_message = (
             f"The consolidated store's {qlvm_map} coordinates come from {store_model_id}, but the QLVM category "
-            f"bundle partitions the torus of {expected}; its regions would mislabel these calls. Render the video "
+            f"bundle partitions the torus of {expected}; its regions would mislabel these USVs. Render the video "
             f"from a store of the production cells."
         )
         raise ValueError(error_message)
@@ -310,12 +450,54 @@ def check_store_map_provenance(h5, qlvm_map: str) -> str:
 def build_phases(centers, K, peaks_only, title_card_frames, cluster_hold_frames,
                  peak_traverse_frames, boundary_traverse_frames,
                  peak_jitter_sigma, boundary_curve_amplitude, rng):
-    """Build the ordered list of animation phases (the "script").
+    """
+    Description
+    -----------
+    Build the ordered list of animation phases (the "script").
 
     Mixes ``title_card`` / ``cluster`` / ``traversal`` phase dicts: Part 1 title
     card + one cluster phase each; then (unless ``peaks_only``) Part 2 title card
     + up to 5 peak->peak traversals, and Part 3 title card + 5 boundary walks.
     ``rng`` is consumed in a fixed order (peak-pair choice, then per-pair jitter).
+
+    Peak pairs are ``min(5, K * (K - 1))`` ordered pairs ``(i, j)``, ``i != j``,
+    drawn without replacement; each walk follows the shortest torus path
+    (:func:`_shortest_extended`) plus :func:`_smooth_jitter`. The five boundary
+    walks are fixed start/end points bent by :func:`_curved_path`.
+
+    Parameters
+    ----------
+    centers (np.ndarray)
+        Category peak positions on the unit torus, shape ``(K, 2)``.
+    K (int)
+        Number of categories (one ``cluster`` phase each).
+    peaks_only (bool)
+        If True, only Part 1 (title card + cluster phases) is built, and its title
+        card reads "QLVM categories walkthrough".
+    title_card_frames (int)
+        Duration of every ``title_card`` phase, in frames.
+    cluster_hold_frames (int)
+        Duration of every ``cluster`` phase, in frames.
+    peak_traverse_frames (int)
+        Duration (and trajectory length) of every peak-to-peak walk, in frames.
+    boundary_traverse_frames (int)
+        Duration (and trajectory length) of every boundary walk, in frames.
+    peak_jitter_sigma (float)
+        Noise standard deviation passed to :func:`_smooth_jitter` for peak walks.
+    boundary_curve_amplitude (float)
+        Base bend amplitude of the boundary walks; each walk scales it by its own
+        fixed factor (1.0, 1.0, 1.0, -1.0 or 0.6).
+    rng (np.random.Generator)
+        Random generator for the peak-pair choice and the jitter.
+
+    Returns
+    -------
+    phases (list[dict])
+        Ordered phase dicts. Every phase has ``'name'`` and ``'duration'``;
+        ``title_card`` phases add ``'part'``, ``'title'``, ``'subtitle'``;
+        ``cluster`` phases add ``'active_ci'``; ``traversal`` phases add
+        ``'kind'`` (``'peak'`` / ``'boundary'``), ``'sub'`` (label) and
+        ``'traj'`` (``(duration, 2)`` array, possibly outside ``[0, 1)``).
     """
     phases = []
 
@@ -379,11 +561,38 @@ def build_phases(centers, K, peaks_only, title_card_frames, cluster_hold_frames,
 
 def precompute_reveals(phases, nn_query, samples_per_trace,
                        boundary_positions_per_walk, boundary_neighbors):
-    """Annotate each ``traversal`` phase in-place with its right-panel reveal plan.
+    """
+    Description
+    -----------
+    Annotate each ``traversal`` phase in-place with its right-panel reveal plan.
 
     Boundary walks reveal ``boundary_positions_per_walk`` evenly-spaced positions,
     each with its ``boundary_neighbors`` nearest neighbours; peak walks reveal
     ``samples_per_trace`` positions with one NN each.
+
+    Each phase gains ``'reveal_frames'`` (int frame indices, evenly spaced over
+    the walk), ``'reveal_xy'`` (the trajectory points at those frames) and either
+    ``'reveal_nn'`` (boundary: ``(positions, neighbours)`` pooled-row indices) or
+    ``'reveal_idx'`` (peak: one pooled-row index per position). Trajectory points
+    are wrapped with ``% 1.0`` before querying. Non-traversal phases are skipped.
+
+    Parameters
+    ----------
+    phases (list[dict])
+        Phase list from :func:`build_phases`; modified in place.
+    nn_query (Callable)
+        ``nn_query(xy_unit, k)`` returning the ``k`` nearest pooled-row indices
+        (on the torus) of a point in ``[0, 1)^2``.
+    samples_per_trace (int)
+        Number of revealed positions per peak-to-peak walk.
+    boundary_positions_per_walk (int)
+        Number of revealed positions per boundary walk.
+    boundary_neighbors (int)
+        Number of nearest neighbours revealed at each boundary position.
+
+    Returns
+    -------
+    None
     """
     for ph in phases:
         if ph['name'] != 'traversal':
@@ -564,7 +773,25 @@ class QLVMTorusTraversalVideo:
                                         algorithm="ball_tree").fit(torus_forward(pooled_coords))
 
             def nn_query(xy_unit, k):
-                """Return the k nearest latent indices to a single [0,1]^2 point."""
+                """
+                Description
+                -----------
+                Return the k nearest latent indices to a single [0,1]^2 point.
+                Distances are Euclidean in the :func:`torus_forward` embedding, so
+                wrap-around is respected; ``k`` is capped at the pooled sample count.
+
+                Parameters
+                ----------
+                xy_unit (array-like)
+                    Query point in ``[0, 1)^2``, shape ``(2,)``.
+                k (int)
+                    Number of neighbours requested.
+
+                Returns
+                -------
+                idx (np.ndarray)
+                    Integer pooled-row indices, shape ``(min(k, n_samples),)``, nearest first.
+                """
                 z = torus_forward(np.asarray(xy_unit)[None])
                 _, idx = nn_index.kneighbors(z, n_neighbors=min(k, n_samples))
                 return idx[0]
@@ -575,12 +802,31 @@ class QLVMTorusTraversalVideo:
 
             @lru_cache(maxsize=spec_cache_size)
             def _get_spec(data_idx):
-                """Read (and LRU-cache) the spectrogram for a pooled index from the H5.
+                """
+                Description
+                -----------
+                Read (and LRU-cache) the spectrogram for a pooled index from the H5.
 
                 Optionally applies the combined SAM2 mask (``apply_mask``), then
-                centers the call in its fixed window with equal zero-padding on
-                both sides (using the per-USV ``durations``) so short calls are not
+                centers the USV in its fixed window with equal zero-padding on
+                both sides (using the per-USV ``durations``) so short USVs are not
                 stretched -- the same treatment as the marimo embedding explorer.
+
+                The duration is clipped to ``[1, spectrogram width]``; without a
+                ``durations`` dataset the full width is used. The mask is the
+                union (logical OR) of every SAM2 instance whose ``spectrogram_index``
+                equals the row; a row with no instance is left unmasked.
+
+                Parameters
+                ----------
+                data_idx (int)
+                    Index into the pooled ``(session_key, row)`` list.
+
+                Returns
+                -------
+                canvas (np.ndarray)
+                    Spectrogram of the same ``(F, T)`` shape and dtype as the stored one,
+                    with the (masked) USV centred and zeros elsewhere.
                 """
                 session_key, row = pooled_index[int(data_idx)]
                 grp = h5["spectrogram"][session_key]
@@ -591,7 +837,7 @@ class QLVMTorusTraversalVideo:
                     dur = max(1, min(dur, spec_w))
                 else:
                     dur = spec_w
-                call = spec[:, :dur]
+                vocalization = spec[:, :dur]
 
                 if apply_mask and "mask" in h5 and session_key in h5["mask"]:
                     mask_grp = h5["mask"][session_key]
@@ -601,11 +847,11 @@ class QLVMTorusTraversalVideo:
                     if matching.size > 0:
                         masks_for_spec = mask_grp["segmentations"][matching, :, :dur]
                         combined_mask = np.any(masks_for_spec, axis=0)
-                        call = call * combined_mask.astype(call.dtype)
+                        vocalization = vocalization * combined_mask.astype(vocalization.dtype)
 
                 canvas = np.zeros((spec_h, spec_w), dtype=spec.dtype)
                 pad_left = (spec_w - dur) // 2
-                canvas[:, pad_left:pad_left + dur] = call
+                canvas[:, pad_left:pad_left + dur] = vocalization
                 return canvas
 
             # m+1 neighbours per cluster: index 0 = peak (center tile), 1.. = ring.
@@ -627,7 +873,7 @@ class QLVMTorusTraversalVideo:
                 for fi in range(ph['duration']):
                     frames_info.append((pi, fi))
 
-            # --- Figure layout ---
+            # Figure layout
             sample_spec = _get_spec(0)
             spec_H, spec_W = sample_spec.shape
 
@@ -701,7 +947,7 @@ class QLVMTorusTraversalVideo:
                                     fontsize=20, color=_C_SUBTITLE, style='italic')
             ax_card.set_visible(False)
 
-            # --- Static left panel ---
+            # Static left panel
             nz = heatmap[heatmap > 0]
             vmax = float(np.percentile(nz, 95)) if nz.size else None
             ax_l.imshow(heatmap, origin='lower', extent=(0, 1, 0, 1),
@@ -718,7 +964,22 @@ class QLVMTorusTraversalVideo:
             active_contour_ci = {'value': None}
 
             def show_cluster_contour(ci):
-                """Show cluster ``ci``'s accent-colored outline on the left panel, hiding any prior."""
+                """
+                Description
+                -----------
+                Show cluster ``ci``'s accent-colored outline on the left panel, hiding any prior.
+                The contour of label ``ci + 1`` in the bundle's ``label_grid`` is drawn
+                once on first use and cached in ``cluster_contours``.
+
+                Parameters
+                ----------
+                ci (int)
+                    Zero-based category index.
+
+                Returns
+                -------
+                None
+                """
                 prev = active_contour_ci['value']
                 if prev is not None and prev != ci and prev in cluster_contours:
                     _contour_visible(cluster_contours[prev], False)
@@ -730,7 +991,19 @@ class QLVMTorusTraversalVideo:
                 active_contour_ci['value'] = ci
 
             def hide_active_contour():
-                """Hide the currently-active cluster contour (if any)."""
+                """
+                Description
+                -----------
+                Hide the currently-active cluster contour (if any) and clear the
+                active-cluster record.
+
+                Parameters
+                ----------
+
+                Returns
+                -------
+                None
+                """
                 prev = active_contour_ci['value']
                 if prev is not None and prev in cluster_contours:
                     _contour_visible(cluster_contours[prev], False)
@@ -756,7 +1029,26 @@ class QLVMTorusTraversalVideo:
             BLANK = np.zeros((spec_H, spec_W))
 
             def _init_tile(ax, fontsize):
-                """Initialise one tile axes: blank imshow + empty title; return (im, t)."""
+                """
+                Description
+                -----------
+                Initialise one tile axes: blank imshow + empty title; return (im, t).
+                Ticks are removed and the border set to light gray, 0.5 pt; the image
+                is a zero ``(spec_H, spec_W)`` array in the spectrogram colormap with
+                clim ``[0, 1]``.
+
+                Parameters
+                ----------
+                ax (matplotlib.axes.Axes)
+                    Tile axes to initialise.
+                fontsize (float)
+                    Font size of the (initially empty) tile title.
+
+                Returns
+                -------
+                im, t (tuple[matplotlib.image.AxesImage, matplotlib.text.Text])
+                    The tile's image artist and title artist.
+                """
                 ax.set_xticks([]); ax.set_yticks([])
                 _set_border(ax, _C_LIGHTGRAY, 0.5)
                 im = ax.imshow(np.zeros((spec_H, spec_W)), cmap=spec_cmap,
@@ -775,7 +1067,34 @@ class QLVMTorusTraversalVideo:
                 ring_imgs.append(im); ring_titles.append(t)
 
             def _draw(im, ax, t, data_idx, title_str, border, border_w):
-                """Paint one tile: spectrogram (or blank) + per-tile clim + title + border."""
+                """
+                Description
+                -----------
+                Paint one tile: spectrogram (or blank) + per-tile clim + title + border.
+                A spectrogram is scaled to ``[0, max(spectrogram max, 1e-8)]``; a
+                blank tile shows zeros with clim ``[0, 1]``.
+
+                Parameters
+                ----------
+                im (matplotlib.image.AxesImage)
+                    Image artist of the tile.
+                ax (matplotlib.axes.Axes)
+                    Tile axes (its spines carry the border).
+                t (matplotlib.text.Text)
+                    Title artist of the tile.
+                data_idx (int or None)
+                    Pooled-row index to show, or None for a blank tile.
+                title_str (str)
+                    Tile title text.
+                border (str)
+                    Hex border color.
+                border_w (float)
+                    Border line width, in points.
+
+                Returns
+                -------
+                None
+                """
                 if data_idx is None:
                     im.set_data(BLANK); im.set_clim(0, 1)
                 else:
@@ -787,27 +1106,106 @@ class QLVMTorusTraversalVideo:
                 _set_border(ax, border, border_w)
 
             def render_grid_slot(slot, data_idx, title_str='', border=_C_LIGHTGRAY, border_w=0.5):
-                """Draw spectrogram ``data_idx`` into right-grid tile ``slot`` (in place)."""
+                """
+                Description
+                -----------
+                Draw spectrogram ``data_idx`` into right-grid tile ``slot`` (in place).
+
+                Parameters
+                ----------
+                slot (int)
+                    Row-major index of the 5x15 grid tile.
+                data_idx (int or None)
+                    Pooled-row index to show, or None for a blank tile.
+                title_str (str)
+                    Tile title text; defaults to empty.
+                border (str)
+                    Hex border color; defaults to light gray.
+                border_w (float)
+                    Border line width in points; defaults to 0.5.
+
+                Returns
+                -------
+                None
+                """
                 _draw(grid_imgs[slot], ax_grid[slot], grid_titles[slot],
                       data_idx, title_str, border, border_w)
 
             def render_ring_slot(slot, data_idx, title_str='', border=_C_LIGHTGRAY, border_w=0.5):
-                """Draw spectrogram ``data_idx`` into ring tile ``slot`` (in place)."""
+                """
+                Description
+                -----------
+                Draw spectrogram ``data_idx`` into ring tile ``slot`` (in place).
+
+                Parameters
+                ----------
+                slot (int)
+                    Ring tile index (0 = the centre/peak tile, then inner to outer ring).
+                data_idx (int or None)
+                    Pooled-row index to show, or None for a blank tile.
+                title_str (str)
+                    Tile title text; defaults to empty.
+                border (str)
+                    Hex border color; defaults to light gray.
+                border_w (float)
+                    Border line width in points; defaults to 0.5.
+
+                Returns
+                -------
+                None
+                """
                 _draw(ring_imgs[slot], ring_all_axes[slot], ring_titles[slot],
                       data_idx, title_str, border, border_w)
 
             def blank_grid():
-                """Blank every right-grid tile."""
+                """
+                Description
+                -----------
+                Blank every right-grid tile (empty title, light-gray 0.3 pt border).
+
+                Parameters
+                ----------
+
+                Returns
+                -------
+                None
+                """
                 for s in range(n_grid_slots):
                     render_grid_slot(s, None, '', _C_LIGHTGRAY, 0.3)
 
             def set_grid_visible(vis):
-                """Show/hide all right-grid tile axes."""
+                """
+                Description
+                -----------
+                Show/hide all right-grid tile axes.
+
+                Parameters
+                ----------
+                vis (bool)
+                    True to show, False to hide.
+
+                Returns
+                -------
+                None
+                """
                 for ax in ax_grid:
                     ax.set_visible(vis)
 
             def set_ring_visible(vis):
-                """Show/hide all ring tile axes."""
+                """
+                Description
+                -----------
+                Show/hide all ring tile axes (including the centre tile).
+
+                Parameters
+                ----------
+                vis (bool)
+                    True to show, False to hide.
+
+                Returns
+                -------
+                None
+                """
                 for ax in ring_all_axes:
                     ax.set_visible(vis)
 
@@ -817,7 +1215,25 @@ class QLVMTorusTraversalVideo:
             state = {'last_phase': -1, 'last_reveal_count': 0}
 
             def on_phase_enter(pi):
-                """Reconfigure all shared artists for the first frame of phase ``pi``."""
+                """
+                Description
+                -----------
+                Reconfigure all shared artists for the first frame of phase ``pi``.
+                Clears the trail, head and centre markers and the active contour, then
+                shows the title card (``title_card``), the ring of the peak and its
+                nearest samples (``cluster``) or a blank right grid (``traversal``),
+                and sets the titles; the reveal counter is reset (except on title
+                cards, which return early).
+
+                Parameters
+                ----------
+                pi (int)
+                    Index into ``phases`` of the phase being entered.
+
+                Returns
+                -------
+                None
+                """
                 ph = phases[pi]
                 if ax_card.get_visible() and ph['name'] != 'title_card':
                     ax_card.set_visible(False)
@@ -870,7 +1286,25 @@ class QLVMTorusTraversalVideo:
                 state['last_reveal_count'] = 0
 
             def update(frame_idx):
-                """Advance the animation to global frame ``frame_idx`` (mutates artists)."""
+                """
+                Description
+                -----------
+                Advance the animation to global frame ``frame_idx`` (mutates artists).
+                Calls :func:`on_phase_enter` on a phase change, pulses the active
+                cluster outline in ``cluster`` phases, and in ``traversal`` phases
+                redraws the recency trail and head marker and fills any newly
+                revealed right-grid tiles.
+
+                Parameters
+                ----------
+                frame_idx (int)
+                    Global frame index into ``frames_info``.
+
+                Returns
+                -------
+                artists (list)
+                    Always an empty list (``blit=False``, so nothing is returned for blitting).
+                """
                 pi, fi = frames_info[frame_idx]
                 ph = phases[pi]
                 if pi != state['last_phase']:

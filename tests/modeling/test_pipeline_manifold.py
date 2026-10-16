@@ -379,12 +379,12 @@ class TestContinuousInputExtraction:
         assert spec['usv_category_column_name'] == 'qlvm_category'
         assert list(spec['usv_manifold_column_names']) == ['qlvm1', 'qlvm2']
 
-    def test_extraction_without_labels_drops_unplaced_calls(self, tmp_path, capsys):
+    def test_extraction_without_labels_drops_unplaced_usvs(self, tmp_path, capsys):
         """
         With the label-free setting (``usv_category_column_name`` null)
         on summaries that carry torus coordinates only -- no ``qlvm_category`` --
-        and some calls the embedding could not place
-        (null ``qlvm1`` / ``qlvm2``), extraction still runs: the unplaced calls
+        and some USVs the embedding could not place
+        (null ``qlvm1`` / ``qlvm2``), extraction still runs: the unplaced USVs
         are dropped before the inverse-density KDE (counts printed), no
         category packet is written, the tag names the embedding
         (``manifold_qlvm``).
@@ -407,7 +407,7 @@ class TestContinuousInputExtraction:
         pipeline = ContinuousModelingPipeline(modeling_settings_dict=settings)
         pipeline.extract_and_save_continuous_data()
         printed = capsys.readouterr().out
-        assert 'calls with null/NaN coordinates in total' in printed
+        assert 'vocalizations with null/NaN coordinates in total' in printed
 
         pkls = list(save_dir.glob('modeling_manifold_qlvm_*.pkl'))
         assert len(pkls) == 1, f"expected exactly one manifold_qlvm pickle, got {pkls}"

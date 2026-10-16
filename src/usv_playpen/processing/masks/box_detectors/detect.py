@@ -60,9 +60,7 @@ Detector = Callable[[np.ndarray, int], List[Box]]
 VALID_NAMES = ("cc", "unet", "yolo")
 
 
-# ---------------------------------------------------------------------------
 # Per-backend builders (each returns a closure detect(spec, duration) -> boxes)
-# ---------------------------------------------------------------------------
 def _build_cc(
     cfg=None,
     detector_extra: Optional[dict] = None,
@@ -98,6 +96,16 @@ def _build_cc(
         cfg = BoxDetectorConfig(**kwargs)
 
     def detect(spec: np.ndarray, duration: int) -> List[Box]:
+        """Run the cc detector on one UNFLIPPED working spectrogram.
+
+        Args:
+            spec: UNFLIPPED working spectrogram, shape [F, T]; flipped here before
+                delegating to ``detect_boxes``.
+            duration: Number of valid time columns; clamped to ``[1, T]``.
+
+        Returns:
+            List[Box]: Flipped-space inclusive ``(top, left, bottom, right)`` boxes.
+        """
         spec = np.asarray(spec)
         # Flip once here so this wrapper takes the UNFLIPPED working spec, matching
         # the unet / yolo wrappers (which also flip internally). The cc detector then
@@ -132,7 +140,9 @@ def _build_unet(
         ``detect(spec, duration) -> list[(t,l,b,r)]`` bound to the loaded model.
 
     Raises:
-        ValueError: if ``weights`` is not provided.
+        NotImplementedError: always, in this vendored copy -- the U-Net backend is not
+            bundled (see the comment below), so no detector is ever returned and the
+            arguments are not inspected.
     """
     # The U-Net backend is intentionally NOT vendored into specgen (it pulls in
     # segmentation_models_pytorch and is unused by the boxprompt path). specgen only
@@ -184,14 +194,22 @@ def _build_yolo(
     model = load_model(weights, device=cfg.device)
 
     def detect(spec: np.ndarray, duration: int) -> List[Box]:
+        """Run the loaded YOLO model on one UNFLIPPED working spectrogram.
+
+        Args:
+            spec: UNFLIPPED working spectrogram, shape [F, T]; ``detect_boxes_yolo``
+                flips and renders it internally.
+            duration: Number of valid time columns.
+
+        Returns:
+            List[Box]: Flipped-space inclusive ``(top, left, bottom, right)`` boxes.
+        """
         return list(detect_boxes_yolo(spec, duration, model=model, cfg=cfg))
 
     return detect
 
 
-# ---------------------------------------------------------------------------
 # Public dispatcher
-# ---------------------------------------------------------------------------
 def get_detector(name: str, weights: Optional[str] = None, **kw) -> Detector:
     """Return a unified ``detect(spec, duration) -> [(t,l,b,r)]`` callable.
 
@@ -223,7 +241,8 @@ def get_detector(name: str, weights: Optional[str] = None, **kw) -> Detector:
         padding and excluded; boxes are clamped to ``[0, F-1]`` x ``[0, duration-1]``.
 
     Raises:
-        ValueError: for an unknown ``name``, or a missing ``weights`` for unet/yolo.
+        ValueError: for an unknown ``name``, or a missing ``weights`` for yolo.
+        NotImplementedError: for ``"unet"``, which is not bundled in this vendored copy.
     """
     key = str(name).strip().lower()
     if key == "cc":

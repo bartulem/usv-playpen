@@ -1104,7 +1104,7 @@ USV neuronal coactivity analyses
 --------------------------------
 **usv_neuronal_coactivity_analyses.ipynb** asks how coordinated a brain-region
 population (PAG by default) is during one class of USV versus another. For a
-30 ms window locked to each call onset it computes three coactivity metrics —
+30 ms window locked to each USV onset it computes three coactivity metrics —
 pairwise spike-count correlation (``r_sc``), population-vector cosine similarity
 (``similarity``), and population-vector Pearson correlation (``pop_corr``) — and
 tests them with a pooled trial-count bootstrap, a chained circular-shuffle null,
@@ -1223,13 +1223,13 @@ so they resolve on macOS (``/Volumes/falkner``) too.
     NULL_COLOR = "#808080"
     THRESHOLD_COLOR = "#000000"
 
-* **CATEGORY_COLUMN** / **GROUP_A_IDS** / **GROUP_B_IDS** — the ``usv_summary`` column that labels each call and the two sets of ``qlvm_category`` ids (1..4, meaning R-1..R-4) contrasted (default ``complex`` [4] vs ``simple`` [1], i.e. R-4 vs R-1; the names and descriptions come from the category bundle's ``category_nomenclature.json``, ``os_utils.load_qlvm_category_bundle``); ``*_LABEL`` names them in tables and plots.
+* **CATEGORY_COLUMN** / **GROUP_A_IDS** / **GROUP_B_IDS** — the ``usv_summary`` column that labels each USV and the two sets of ``qlvm_category`` ids (1..4, meaning R-1..R-4) contrasted (default ``complex`` [4] vs ``simple`` [1], i.e. R-4 vs R-1; the names and descriptions come from the category bundle's ``category_nomenclature.json``, ``os_utils.load_qlvm_category_bundle``); ``*_LABEL`` names them in tables and plots.
 * **CATALOG_PATH** / **UNIT_BRAIN_AREAS** / **UNIT_REQUIRE_SOMATIC** / **UNIT_CLUSTER_GROUP** — the unit-catalog file and the three-criteria filter (region, somatic waveform, Kilosort ``cluster_group``) applied to select the population.
 * **ANIMALS_TO_SESSIONS** / **CHOSEN_ANIMAL** / **DATA_ROOT** — the per-animal session lists (Kilosort is per-day, so the loader keeps the single best-populated day), the focal animal for single-animal cells, and the data root.
 * The coactivity hyperparameters below are read from the ``neuronal_coactivity`` block of ``analyses_settings.json`` (loaded once in the Imports cell), so they are tuned in one place — edit the JSON to retune. The segmentation / unit-filter / animal-map values above stay inline as per-run edits.
 * **SEED** — base RNG seed; each stochastic routine offsets it (``SEED + k``) for an independent, reproducible stream.
 * **USV_BOOTSTRAP_NUM** / **N_BOOT_ITERATIONS** / **N_SHUFFLES** / **N_PERMUTATIONS** / **PER_SESSION_N_SHUFFLES** — matched trial count and iteration counts for the pooled bootstrap, chained/per-session shuffle nulls, and label permutation.
-* **WINDOW_S** — the post-onset window (30 ms) over which spikes are counted per call.
+* **WINDOW_S** — the post-onset window (30 ms) over which spikes are counted per USV.
 * **MIN_SHIFT_S** / **MAX_SHIFT_S** — the circular-shift range (seconds) for the shuffle nulls, forwarded to ``run_group_comparison`` / ``per_session_group_metrics``.
 * **N_AMPLITUDE_BINS** / **MIN_BIN_TRIALS** — the amplitude-stratification quantile-bin count and the per-group-per-bin trial floor for the amplitude-stratified section.
 * **ACOUSTICS_PARAMS** — the ``neuronal_coactivity.acoustics`` sub-block (STFT ``nperseg`` / ``hop_length`` / ``window``, the ``min_freq`` / ``max_freq`` band, and the ``low_energy_frac`` / ``high_energy_frac`` bandwidth-crossing fractions), forwarded to ``engine.compute_group_acoustics`` → ``extract_snippet_acoustics``.
@@ -1278,9 +1278,9 @@ changing.
         f"Loaded {len(sessions_data)} sessions for {CHOSEN_ANIMAL}; common filtered units = {n_common}"
     )
 
-**Acoustic confound.** The fixed 30 ms window equalises call duration, but the two categories could
+**Acoustic confound.** The fixed 30 ms window equalises USV duration, but the two categories could
 still differ acoustically (loudness, pitch) in ways that drive population
-activity independently of call identity. For every call
+activity independently of USV identity. For every USV
 ``engine.compute_group_acoustics`` reads the loudest-channel waveform snippet
 ``[onset, onset + WINDOW_S)`` and computes four features — root-mean-square (RMS)
 amplitude plus energy-weighted mean frequency and bandwidth, and the peak (loudest-bin) frequency.
@@ -1301,7 +1301,7 @@ it tells you *which* features differ so a control can be chosen;
         "freq_bandwidth_hz": "frequency bandwidth (Hz)",
     }
 
-    # Pool per-call features across the animal's sessions, per group.
+    # Pool per-USV features across the animal's sessions, per group.
     group_a_acoustics = {feature: [] for feature in ACOUSTIC_FEATURES}
     group_b_acoustics = {feature: [] for feature in ACOUSTIC_FEATURES}
     for sess in sessions_data:
@@ -1367,7 +1367,7 @@ group-A-vs-group-B permutation test.
     # Per-session deltas, each group vs its chained null, and the direct A-vs-B permutation test.
     print(summarize_group_comparison(results, label_a=GROUP_A_LABEL, label_b=GROUP_B_LABEL))
 
-* **WINDOW_S** — the per-call spike-count window used to build every matrix.
+* **WINDOW_S** — the per-USV spike-count window used to build every matrix.
 * **USV_BOOTSTRAP_NUM** — the matched trial count both groups are bootstrapped (and onset-sampled) to.
 * **N_BOOT_ITERATIONS** / **N_SHUFFLES** / **N_PERMUTATIONS** — iteration counts for the pooled bootstrap, the chained null, and the label permutation.
 * **SEED** — the base seed the engine offsets per internal routine for independent, reproducible streams.
@@ -1504,9 +1504,9 @@ to ``pop_corr(group B)``, coloured by the permutation significance.
 * **N_PERMUTATIONS** — permutation count for the per-animal A-vs-B test.
 * **SEED** — offset per animal (``SEED + 200 + 3 * animal_idx``) for independent streams.
 
-**Amplitude-stratified.** The confound check shows the groups differ acoustically (complex calls are
+**Amplitude-stratified.** The confound check shows the groups differ acoustically (complex USVs are
 louder); this cell asks whether loudness actually *drives* the ``pop_corr`` gap.
-It bins all calls by their 30 ms RMS into quantile bins and, for bins holding at
+It bins all USVs by their 30 ms RMS into quantile bins and, for bins holding at
 least ``MIN_BIN_TRIALS`` of both groups (the overlap region), bootstraps each
 group to a matched N and re-runs the same ``complex``-vs-``simple``
 label-permutation test (``engine.compare_groups``) *within* the loudness-matched
@@ -1514,7 +1514,7 @@ bin. ``summarize_amplitude_stratified`` prints the per-bin table and
 ``plot_amplitude_stratified`` draws the per-bin ``pop_corr`` with the
 unstratified matched-N bootstrap means as references. If the gap persists within
 bins, loudness is not the explanation; if it collapses, amplitude is a confound.
-``N_AMPLITUDE_BINS`` and ``MIN_BIN_TRIALS`` are local knobs; the per-call RMS is
+``N_AMPLITUDE_BINS`` and ``MIN_BIN_TRIALS`` are local knobs; the per-USV RMS is
 reused from the acoustic confound-check cell, so re-run that first.
 
 .. code-block:: python
@@ -1523,7 +1523,7 @@ reused from the acoustic confound-check cell, so re-run that first.
     N_AMPLITUDE_BINS = 5
     MIN_BIN_TRIALS = 15  # required per group, per bin, for a bin to be compared
 
-    # Reuse the per-call RMS from the acoustic confound check above (aligned to the same
+    # Reuse the per-USV RMS from the acoustic confound check above (aligned to the same
     # session + dataframe order as the pooled spike-count matrices built here).
     a_rms = group_a_acoustics["rms"]
     b_rms = group_b_acoustics["rms"]
@@ -1609,7 +1609,7 @@ reused from the acoustic confound-check cell, so re-run that first.
     )
 
 * **N_AMPLITUDE_BINS** / **MIN_BIN_TRIALS** — the quantile-bin count and the per-group, per-bin trial floor for a bin to be compared.
-* **WINDOW_S** — window for the count matrices (aligned to the reused per-call RMS).
+* **WINDOW_S** — window for the count matrices (aligned to the reused per-USV RMS).
 * **USV_BOOTSTRAP_NUM** — cap for the unstratified reference bootstrap (per-bin N is matched to the smaller group instead).
 * **N_BOOT_ITERATIONS** / **N_PERMUTATIONS** — bootstrap and permutation iteration counts per bin.
 * **SEED** — offset per bin and stream (``SEED + 300 + 3 * bin_idx``, ``SEED + 600/601``).
@@ -1626,14 +1626,14 @@ Compute is split from plotting: one compute cell runs the same analysis as the
 plot cells read that archive back, so figures can be re-rendered without refitting -- even across
 kernel restarts.
 
-The analysis works on **pools** declared in ``interval_pools``: each names an emitter sex, a call type
+The analysis works on **pools** declared in ``interval_pools``: each names an emitter sex, a vocal class
 and an adjacency rule, and whether it is modelled. The shipped settings model the male's ultrasonic
-calls and describe the female's squeaks, which are too sparse to model (a few hundred intervals across
-under half the sessions). Squeaks are kept out of the ultrasonic pool: a squeak between two calls
+vocalizations and describe the female's squeaks, which are too sparse to model (a few hundred intervals across
+under half the sessions). Squeaks are kept out of the ultrasonic pool: a squeak between two vocalizations
 would replace one long interval with two short ones.
 
 Each animal's sex is read from the ``Subjects`` block of the session's ``*_metadata.yaml``, not from
-its track slot, and intervals are only ever measured between two calls of the *same* animal. A pool
+its track slot, and intervals are only ever measured between two vocalizations of the *same* animal. A pool
 therefore holds every animal of its sex in a session -- one in courtship, both in a female-female
 session -- without pairing the two with each other; the ``intervals`` table records each interval's
 ``emitter_id``. A session whose metadata does not record an animal's sex raises instead of being
@@ -1730,7 +1730,7 @@ knobs straight from the settings block.
 
     # Interval definitions are both COMPUTED, but only e2s is drawn unless asked for:
     # the tied peaks-plus-background model is defined on end-to-start gaps, and
-    # start-to-start intervals carry each call's own duration, which smears the gap
+    # start-to-start intervals carry each vocalization's own duration, which smears the gap
     # structure (the s2s peak test runs to the top of its grid with broad "peaks").
     # Add "s2s" here to draw it anyway.
     plot_interval_types = ("e2s",)
@@ -1742,8 +1742,8 @@ knobs straight from the settings block.
 
 * **output_directory** -- where the HDF5 archive is written and where the plot cells look for the newest run.
 * **interval_types** -- both interval definitions (``s2s`` start-to-start, ``e2s`` end-to-start) are computed.
-* **plot_interval_types** -- which of them are DRAWN; ``e2s`` only by default. The peaks-plus-background model is defined on end-to-start gaps: start-to-start intervals include each call's own duration, which smears the gap structure, and the s2s peak test runs to the top of its grid with broad "peaks". Add ``"s2s"`` to draw it anyway.
-* **interval_label** / **vocal_class_label** -- titles and legend text; the legend names the call type because the pools are different vocalizations.
+* **plot_interval_types** -- which of them are DRAWN; ``e2s`` only by default. The peaks-plus-background model is defined on end-to-start gaps: start-to-start intervals include each vocalization's own duration, which smears the gap structure, and the s2s peak test runs to the top of its grid with broad "peaks". Add ``"s2s"`` to draw it anyway.
+* **interval_label** / **vocal_class_label** -- titles and legend text; the legend names the vocal class because the pools are different vocalizations.
 * **density_as_bin_means** -- when ``true`` the best-fit overlay draws the mixture as the bar heights it *predicts* (its density averaged over each histogram bin) rather than as the point-wise curve. A histogram bar is a bin average while the curve is a point density, so a point-wise curve necessarily rides above the bars wherever a bin straddles the peak and reads as an overshoot the fit does not have. Set ``false`` to restore the point-wise curve.
 * **plot_log_xlims** / **bins_per_sex** -- plot-only knobs read straight from JSON (not archived in the HDF5); **tau** is likewise read from JSON but *is* archived in the HDF5.
 
@@ -1753,7 +1753,7 @@ the analysis reads (all of them are archived in the root ``/attrs`` except the p
 * **session_lists** -- session-list text files, one session root per line; their union, de-duplicated, is the cohort.
 * **output_directory** -- where the archive is written; **figures_directory** -- where the notebook saves figures (not read by the analysis).
 * **exclude_noise_usvs** -- drop the segments ``detect-usv-noise`` flagged as holding no vocalization.
-* **interval_pools** -- the pools, each ``{sex, vocal_class, adjacency, fit}``: ``vocal_class`` ``usv`` or ``squeak``; ``adjacency`` ``filtered`` (other call types removed before pairing) or ``strict`` (two calls pair only if nothing lies between them in the full record -- required for sparse callers and whenever many calls are unassigned); ``fit`` whether the models run on it. A squeak's interval runs from or to the squeak itself (``squeak_start`` / ``squeak_end``, ``os_utils.vocal_event_times``), not its segment, so squeak pools need those columns.
+* **interval_pools** -- the pools, each ``{sex, vocal_class, adjacency, fit}``: ``vocal_class`` ``usv`` or ``squeak``; ``adjacency`` ``filtered`` (other vocal classes removed before pairing) or ``strict`` (two vocalizations pair only if nothing lies between them in the full record -- required for sparse vocalizers and whenever many vocalizations are unassigned); ``fit`` whether the models run on it. A squeak's interval runs from or to the squeak itself (``squeak_start`` / ``squeak_end``, ``os_utils.vocal_event_times``), not its segment, so squeak pools need those columns.
 * **min_intervals_for_fitting** -- a fitted pool smaller than this is archived for description only (5000).
 * **fit_tied_model**, **tied_peak_grid**, **tied_n_background**, **tied_n_init**, **tied_n_init_boot** -- the tied-scale peak model: whether it runs, the peak counts tested (``[1, 2, 3]``, each against one more), the fixed background count (2), and the EM restarts of the observed fits (4) and of the bootstrap refits (2).
 * **design_bootstrap** -- session resamples for the design effect of every corrected test, tied and unconstrained (2000).
@@ -1821,8 +1821,8 @@ axis:
 .. code-block:: python
 
     # One axis per interval type, both pools overlaid. The pools are different
-    # vocalizations -- the male's ultrasonic calls and the female's squeaks -- so the
-    # legend names the call type rather than the sex alone.
+    # vocalizations -- the male's USVs and the female's squeaks -- so the
+    # legend names the vocal class rather than the sex alone.
     for it in plot_interval_types:
         sub = ivs.load_intervals_from_h5(str(h5_path), it)
         pools = {
@@ -2478,12 +2478,12 @@ Fourth, the video, which ends on the still's frame and camera — the window pla
 
 The §6 category-embedding panel reads its own knobs from the **Statistics parameters** cell (``embedding_qlvm_map``, ``embedding_boundary_color``, ``embedding_log_scale_bars``, ``embedding_plot_type``, ``embedding_grid_res``) and first extracts the embedding via ``uss.extract_category_embedding_data`` (``usv_only=True``: pure USVs only) before calling ``uss.plot_category_prevalence_and_embedding``. §7 builds per-animal ``session_count`` / ``total_usvs`` dicts for each sex and passes them to ``uss.plot_animal_participation_stats``.
 
-* **embedding_qlvm_map** — the QLVM map the panel draws (``'qlvm'``, ``'qlvm_duration'``, ``'qlvm_entropy'``, ``'qlvm_bandwidth'`` or ``'qlvm_loudness'``; its ``P1`` / ``P2`` become ``usv_continuous_cols``). The prevalence bars count the calls' ``qlvm_category`` on every map; the category boundaries are the QLVM category bundle's label grid (``os_utils.load_qlvm_category_bundle``), drawn only on ``'qlvm'``, the map the bundle is defined on (a conditional map shows no boundaries and says so in the panel titles; boundaries are never estimated from the data). Each category is outlined as the 0.5 contour of its own mask (``auxiliary_plot_functions.draw_category_outlines``, the method the embedding explorer uses), so a border between two non-consecutive categories is one line of the same width as every other, not the doubled line half-integer contours of the label grid would draw.
+* **embedding_qlvm_map** — the QLVM map the panel draws (``'qlvm'``, ``'qlvm_duration'``, ``'qlvm_entropy'``, ``'qlvm_bandwidth'`` or ``'qlvm_loudness'``; its ``P1`` / ``P2`` become ``usv_continuous_cols``). The prevalence bars count the USVs' ``qlvm_category`` on every map; the category boundaries are the QLVM category bundle's label grid (``os_utils.load_qlvm_category_bundle``), drawn only on ``'qlvm'``, the map the bundle is defined on (a conditional map shows no boundaries and says so in the panel titles; boundaries are never estimated from the data). Each category is outlined as the 0.5 contour of its own mask (``auxiliary_plot_functions.draw_category_outlines``, the method the embedding explorer uses), so a border between two non-consecutive categories is one line of the same width as every other, not the doubled line half-integer contours of the label grid would draw.
 * **embedding_boundary_color** / **embedding_log_scale_bars** — category-boundary color and log/linear scaling of the prevalence bars.
 * **embedding_plot_type** — ``"density"`` vs. scatter rendering of the embedding.
 * **embedding_grid_res** — resolution of the density grid.
 
-**Rate & fatigue (§8–11).** Four cells characterise how vocalization rate and duration evolve over a session. **§8 Global vocalization rate over time** draws duration histograms by sex and hourly regressions of USV duration and count; **§9 Global rate by category** is a category-resolved global-fatigue heatmap; **§10 Local fatigue around emission events** bins USV counts into a fixed window around session onset and plots the mean trend; **§11 Local fatigue by category** breaks the same signal down by call category. All four read their binning / smoothing / colormap knobs from the **Statistics parameters** cell.
+**Rate & fatigue (§8–11).** Four cells characterise how vocalization rate and duration evolve over a session. **§8 Global vocalization rate over time** draws duration histograms by sex and hourly regressions of USV duration and count; **§9 Global rate by category** is a category-resolved global-fatigue heatmap; **§10 Local fatigue around emission events** bins USV counts into a fixed window around session onset and plots the mean trend; **§11 Local fatigue by category** breaks the same signal down by USV category. All four read their binning / smoothing / colormap knobs from the **Statistics parameters** cell.
 
 .. code-block:: python
 
@@ -2506,7 +2506,7 @@ The §6 category-embedding panel reads its own knobs from the **Statistics param
 * **fatigue_facet_figsize** — figure size for the category-faceted local-fatigue heatmap.
 * **colormap** / **smoothing_sigma** — colormap and Gaussian smoothing applied to both category fatigue heatmaps.
 
-**Proximity & duration (§12–14).** Three cells relate USV assignment and duration to spatial behavior. **§12 Unassigned-rate vs. proximity (session-level)** aggregates per session (median distance vs. unassigned proportion, as a jointplot); **§13 Unassigned-rate vs. proximity (per-USV level)** asks the same per call (distance-by-assignment KDEs with an analysis of variance, ANOVA); **§14 USV duration vs. spatial behavior** is a regression grid of USV duration on each spatial / postural feature, computed separately for males and females.
+**Proximity & duration (§12–14).** Three cells relate USV assignment and duration to spatial behavior. **§12 Unassigned-rate vs. proximity (session-level)** aggregates per session (median distance vs. unassigned proportion, as a jointplot); **§13 Unassigned-rate vs. proximity (per-USV level)** asks the same per USV (distance-by-assignment KDEs with an analysis of variance, ANOVA); **§14 USV duration vs. spatial behavior** is a regression grid of USV duration on each spatial / postural feature, computed separately for males and females.
 
 .. code-block:: python
 
@@ -2732,8 +2732,8 @@ from the summaries. The **Map** dropdown names each USV map as the GUI does (``o
 * **duration**, **entropy**, **bandwidth**, **loudness** (``qlvm_duration``,
   ``qlvm_entropy``, ``qlvm_bandwidth``, ``qlvm_loudness``) — the conditional
   models, whose maps are what is left once that acoustic variable is removed. They carry no
-  categories of their own: a **Color by** category colours their calls by the regular map's
-  ``qlvm_category`` (the categories label the call), and **Boundaries** are skipped, since the
+  categories of their own: a **Color by** category colours their USVs by the regular map's
+  ``qlvm_category`` (the categories label the USV), and **Boundaries** are skipped, since the
   category bundle partitions the regular map's torus only (the chart title says so).
 * **squeaks** (``qlvm_squeak``) — the squeak (broadband vocalization) map: the production
   squeak QLVM model's (``os_utils.QLVM_SQUEAK_PRODUCTION_CELL``, the time-stretched ``stretch_nofloor`` cell) coordinates ``qlvm_squeak1`` / ``qlvm_squeak2``, written by
@@ -2763,10 +2763,10 @@ The USV maps show only the segments ``detect-usv-squeaks`` classed as pure USVs 
   the other QLVM figures draw).
 * **Color by** — a categorical label (category, session type, session id, or
   emitter sex, read from each session's metadata ``Subjects`` so same-sex sessions need no correction) or a continuous metric (point density, or a per-USV acoustic feature: duration, mean / peak frequency,
-  frequency bandwidth, mean / max amplitude, spectral entropy, loudness in dB, or the number of masks the call was built from), the
-  latter rendered through the project colormap. The category is the calls' ``qlvm_category``
+  frequency bandwidth, mean / max amplitude, spectral entropy, loudness in dB, or the number of masks the USV was built from), the
+  latter rendered through the project colormap. The category is the USVs' ``qlvm_category``
   on every USV map, the conditional ones included (the categories are defined on the regular
-  map and label the call); the squeak map has none and falls back to density, saying so.
+  map and label the USV); the squeak map has none and falls back to density, saying so.
 * **Boundaries** — optional category outlines: the ``label_grid`` of the QLVM category bundle
   (``os_utils.load_qlvm_category_bundle``, ``os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY``), the
   partition the summaries' ``qlvm_category`` was assigned from, drawn on the regular map
@@ -2774,11 +2774,11 @@ The USV maps show only the segments ``detect-usv-squeaks`` classed as pure USVs 
   boundaries are drawn and the chart title says why; boundaries are never estimated from the
   data.
 * **Examples (spectrograms) plotted** — 5–50, sampled along an Archimedean spiral (centre →
-  edge) and laid out as a square grid, each call's width preserving its true duration.
+  edge) and laid out as a square grid, each USV's width preserving its true duration.
 * **Max points** — caps how many points the scatter draws, keeping the chart under marimo's
   ``output_max_bytes``.
 * **Apply mask** — multiplies each sampled spectrogram by its SAM2 segmentation mask, so only
-  the segmented call shows.
+  the segmented USV shows.
 * **Squeak class** — on the squeaks map, which squeak-bearing class is shown: **squeak only**
   (the default; ``squeak`` true, ``usv`` false) or **squeak + USV** (segments holding a squeak and a
   USV, both booleans true). The USV maps ignore it.

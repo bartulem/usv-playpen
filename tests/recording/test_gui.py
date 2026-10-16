@@ -663,13 +663,11 @@ def test_nudge_button_icon_up_marks_icon_text_buttons(qtbot):
     assert not text_only.property("_iconNudged")
 
 
-# ---------------------------------------------------------------------------
 # Subject repository ("remembered animals") <-> session-record consistency.
 #
 # `_add_subject` builds its dict from the form widgets only, so keys with no
 # widget -- notably `interventions` -- are absent from it. The repository writer
 # must therefore never treat an incoming dict as the complete animal.
-# ---------------------------------------------------------------------------
 
 
 def _subject_window(qtbot, monkeypatch, tmp_path):

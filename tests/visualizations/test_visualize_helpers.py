@@ -38,9 +38,7 @@ from usv_playpen.visualizations.make_behavioral_videos import (
 )
 
 
-# ===========================================================================
 # _decide_strip_xscale — pure decision rule
-# ===========================================================================
 
 
 def test_decide_strip_xscale_returns_linear_for_empty_input():
@@ -70,9 +68,7 @@ def test_decide_strip_xscale_returns_linear_when_below_threshold():
     assert _decide_strip_xscale(obs, null, null, log_ratio_threshold=100.0) == "linear"
 
 
-# ===========================================================================
 # NeuronalTuningFigureMaker — early-exit / skip paths
-# ===========================================================================
 
 
 def _make_fig_maker(root_directory: str, **viz_overrides) -> NeuronalTuningFigureMaker:
@@ -101,7 +97,7 @@ def test_fig_maker_sex_color_resolves_male_and_female(tmp_path):
 
 def test_fig_maker_load_segmentation_raises_when_bundle_missing(tmp_path, monkeypatch):
     """_load_segmentation raises when the QLVM category bundle is missing: the
-    section-(c) watersheds are drawn only over the partition the calls were
+    section-(c) watersheds are drawn only over the partition the USVs were
     labelled with, never over placeholders."""
     maker, _ = _make_fig_maker(str(tmp_path))
     monkeypatch.setattr(os_utils, "QLVM_CATEGORY_BUNDLE_DIRECTORY", str(tmp_path / "no_bundle"))
@@ -152,9 +148,7 @@ def test_fig_maker_skips_pkl_with_no_payload(tmp_path, mocker, qlvm_category_bun
     maker.make_neuronal_tuning_figures()  # should not raise
 
 
-# ===========================================================================
 # make_behavioral_videos — pure helpers
-# ===========================================================================
 
 
 def test_read_ttl_events_returns_first_off_to_on_and_on_to_off():
@@ -332,9 +326,7 @@ def test_create_spike_sound_file_overlapping_spikes_sum(tmp_path):
     assert two_peak > one_peak * 1.5, f"expected additive (~2x); one={one_peak}, two={two_peak}"
 
 
-# ===========================================================================
 # Create3DVideo — early-exit / no-files paths
-# ===========================================================================
 
 
 def test_create_3d_video_load_beh_features_missing_raises(tmp_path):

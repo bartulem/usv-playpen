@@ -86,7 +86,7 @@ CONTINUOUS_PROPERTIES = (
 )
 
 # The per-USV QLVM category columns (os_utils.QLVM_CATEGORY_COLUMNS: the regular
-# map's qlvm_category only, the category label of every call whatever map it is
+# map's qlvm_category only, the category label of every USV whatever map it is
 # drawn on; there is no coarse level and no category column of the conditional maps).
 CATEGORICAL_FEATURES = QLVM_CATEGORY_COLUMNS
 
@@ -233,6 +233,13 @@ def generate_ratemaps(
         bins_in_one_dir = ceil(sqrt(num_bins)), so the effective bin count is
         bins_in_one_dir**2 (>= num_bins; equal only when num_bins is a perfect
         square).
+    precomputed_occupancy (tuple | None)
+        Optional ``(bin_edges, bin_centers, occupancy_seconds)`` triple as
+        returned by :func:`_compute_occupancy` for the same ``feature_arr``,
+        ``min_val``, ``max_val``, ``num_bins``, ``camera_fr`` and
+        ``space_bool``. Occupancy does not depend on the spike train, so a
+        caller scoring many spike trains on one feature passes it to skip the
+        recomputation; None (default) computes it here.
 
     Returns
     -------
@@ -522,7 +529,7 @@ def _anchor_bin_validity_grid(
     -----------
     Per-(anchor, bin) boolean validity grid for a PETH over a fixed set of
     bins relative to the anchor's onset (``peth_window_seconds``, by default
-    [-2, +0.5] s: pre-onset bins and, after onset, bins over the call itself
+    [-2, +0.5] s: pre-onset bins and, after onset, bins over the vocalization itself
     and what follows it).
 
     A bin at relative offset Δt is valid for an anchor iff:
@@ -534,8 +541,8 @@ def _anchor_bin_validity_grid(
 
       (iv) always, for a post-onset bin: the bin ends no later than the
            onset of the next USV (any emitter, squeaks and both included) after the
-           anchor's onset, so the post-onset PETH covers the anchor call and
-           the silence after it, never a following call.
+           anchor's onset, so the post-onset PETH covers the anchor vocalization and
+           the silence after it, never a following vocalization.
 
     Clauses (ii) and (iii) only constrain pre-onset bins (a post-onset bin
     lies after every USV that started before the anchor); clause (iv) only
@@ -2431,12 +2438,12 @@ class NeuronalTuning(FeatureZoo):
           only); the more-vocal side is `self`, the less-vocal side is
           `partner` (counting squeaks would make a squeak-heavy female
           `self`).
-        - A side's anchors are its calls, restricted to pure USVs
+        - A side's anchors are its vocalizations, restricted to pure USVs
           (``usv & ~squeak``) when `exclude_squeaks_self` (self) /
           `exclude_squeaks_partner` (partner) is set: a segment holding both
           a squeak and a USV is treated like a squeak. Every
           noise-filtered segment, squeaks and both included, still counts
-          as another call in the overlap / cleanliness checks.
+          as another vocalization in the overlap / cleanliness checks.
         - `self` included iff its anchor count >= `n_usv_min_self`.
         - `partner` included iff
           `include_partner_vocalization_tuning_bool` AND its anchor count
@@ -2529,7 +2536,7 @@ class NeuronalTuning(FeatureZoo):
         if len(sides_to_run) > 1:
             roles_to_run.append(("partner", sides_to_run[1]))
         for role, side in roles_to_run:
-            # A side's anchors: its calls, restricted to pure USVs when that role excludes squeaks.
+            # A side's anchors: its vocalizations, restricted to pure USVs when that role excludes squeaks.
             side["mask"] = (
                 side["emitter_mask"] & is_usv if exclude_squeaks_by_role[role] else side["emitter_mask"]
             )

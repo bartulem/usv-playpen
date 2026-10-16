@@ -1112,6 +1112,19 @@ class TestPlotTimescaleAudit:
         with pytest.raises(ValueError, match='does not look like a timescale-audit pickle'):
             plot_timescale_audit(timescale_pkl_path=str(bad), save_plot_bool=False)
 
+    def test_rejects_a_pickle_without_the_lower_signal_null(self, tmp_path):
+        """The horizon search reads ``rho_signal_null_p0_5``; a payload without it is
+        refused up front with the clear error instead of a bare ``KeyError`` later."""
+
+        path = _write_timescale_pickle(tmp_path, np.random.default_rng(0))
+        with open(path, 'rb') as fh:
+            payload = pickle.load(fh)
+        del payload['rho_signal_null_p0_5']
+        with open(path, 'wb') as fh:
+            pickle.dump(payload, fh)
+        with pytest.raises(ValueError, match=r"rho_signal_null_p0_5"):
+            plot_timescale_audit(timescale_pkl_path=path, save_plot_bool=False)
+
 
 @pytest.mark.filterwarnings("ignore:FigureCanvasAgg is non-interactive:UserWarning")
 class TestPlotTimescaleAuditPerFeature:

@@ -6,7 +6,16 @@ import numpy as np
 
 
 def get_bbox(mask: np.ndarray) -> Tuple[int, int, int, int]:
-    """Get bounding box of mask: (top, left, bottom, right)"""
+    """Get bounding box of mask: (top, left, bottom, right)
+
+    Args:
+        mask: 2-D boolean (or truthy) mask, shape (H, W).
+
+    Returns:
+        Tuple[int, int, int, int]: Inclusive (top, left, bottom, right) pixel bounds of
+        the non-zero pixels (row / column indices as numpy integers); ``(0, 0, 0, 0)``
+        for an empty mask.
+    """
     rows, cols = np.where(mask)
     if len(rows) == 0:
         return (0, 0, 0, 0)

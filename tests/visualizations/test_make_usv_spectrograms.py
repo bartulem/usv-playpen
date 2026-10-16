@@ -97,7 +97,7 @@ def test_session_type_and_timeline_colors_derive_from_settings():
     assert USV_TIMELINE_UNASSIGNED_COLOR == viz_settings["unassigned_colors"][0]
 
 
-# ---- synthetic-artifact builders ------------------------------------------
+# synthetic-artifact builders
 
 
 def _base_settings(
@@ -412,7 +412,7 @@ def _close_figs():
     plt.close("all")
 
 
-# ---- USVSpectrogramPlotter.__init__ (A2) ----------------------------------
+# USVSpectrogramPlotter.__init__ (A2)
 
 
 def test_init_stashes_kwargs_and_defaults(tmp_path):
@@ -458,7 +458,7 @@ def test_init_preserves_explicit_message_output(tmp_path):
     assert plotter.message_output is _logger
 
 
-# ---- _resolve_cmap --------------------------------------------------------
+# _resolve_cmap
 
 
 def test_resolve_cmap_override_wins(tmp_path):
@@ -481,7 +481,7 @@ def test_resolve_cmap_from_settings(tmp_path):
     assert plotter._resolve_cmap() == "inferno"
 
 
-# ---- _load_audio_memmap (A1) ----------------------------------------------
+# _load_audio_memmap (A1)
 
 
 def test_load_audio_memmap_parses_filename(tmp_path):
@@ -525,7 +525,7 @@ def test_load_audio_memmap_missing_file_raises(tmp_path):
         plotter._load_audio_memmap()
 
 
-# ---- _resolve_window ------------------------------------------------------
+# _resolve_window
 
 
 def test_resolve_window_end_zero_means_full_file(tmp_path):
@@ -575,7 +575,7 @@ def test_resolve_window_clamps_out_of_range_bounds(tmp_path):
     assert (start_s, end_s) == pytest.approx((0.0, 2.0))
 
 
-# ---- _compute_magnitude_spectrogram ---------------------------------------
+# _compute_magnitude_spectrogram
 
 
 def test_compute_magnitude_spectrogram_shape(tmp_path):
@@ -591,7 +591,7 @@ def test_compute_magnitude_spectrogram_shape(tmp_path):
     assert np.all(mag >= 0.0)
 
 
-# ---- _render_raw_audio / _render_spectrogram ------------------------------
+# _render_raw_audio / _render_spectrogram
 
 
 def test_render_raw_audio_zero_signal(tmp_path):
@@ -637,7 +637,7 @@ def test_render_spectrogram_with_and_without_cbar(tmp_path):
         plt.close(fig)
 
 
-# ---- _save_figure ---------------------------------------------------------
+# _save_figure
 
 
 def test_save_figure_noop_when_disabled(tmp_path):
@@ -730,7 +730,7 @@ def test_save_figure_explicit_save_dir(tmp_path):
     assert len(list(out.glob("*.png"))) == 1
 
 
-# ---- plot_single_channel / plot_all_channels ------------------------------
+# plot_single_channel / plot_all_channels
 
 
 @pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
@@ -807,7 +807,7 @@ def test_plot_all_channels_no_cbar(tmp_path):
     assert isinstance(fig, plt.Figure)
 
 
-# ---- plot_stitched --------------------------------------------------------
+# plot_stitched
 
 
 def _setup_stitched_session(tmp_path: pathlib.Path, *, with_mask: bool = True):
@@ -872,7 +872,7 @@ def test_plot_stitched_drops_noise_and_keeps_store_row_indices(tmp_path, mocker)
     spectrogram store."""
     settings = _setup_stitched_session(tmp_path, with_mask=True)
     plotter = USVSpectrogramPlotter(root_directory=str(tmp_path), visualizations_parameter_dict=settings)
-    # The synthetic memmap is shorter than the calls; widen the window over all four.
+    # The synthetic memmap is shorter than the USVs; widen the window over all four.
     mocker.patch.object(plotter, "_resolve_window", return_value=(0, 250_000, 0.0, 1.0))
     canvas_builder = mocker.patch.object(plotter, "_build_stitched_canvas", side_effect=RuntimeError("stop"))
     with pytest.raises(RuntimeError, match="stop"):
@@ -928,7 +928,7 @@ def test_plot_stitched_freq_limits_out_of_range(tmp_path):
         plotter.plot_stitched()
 
 
-# ---- make_usv_spectrograms dispatch ---------------------------------------
+# make_usv_spectrograms dispatch
 
 
 @pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
@@ -975,7 +975,7 @@ def test_dispatch_unknown_mode(tmp_path):
         plotter.make_usv_spectrograms()
 
 
-# ---- plot_usv_property_histograms -----------------------------------------
+# plot_usv_property_histograms
 
 
 def _write_sessions_txt(tmp_path: pathlib.Path, roots: list[pathlib.Path]) -> pathlib.Path:
@@ -1047,7 +1047,7 @@ def test_plot_usv_property_histograms_skips_missing_session(tmp_path):
     assert any("[skip]" in m for m in logs)
 
 
-# ---- _count_usvs_per_session / plot_session_type_usv_counts ---------------
+# _count_usvs_per_session / plot_session_type_usv_counts
 
 
 def test_count_usvs_per_session(tmp_path):
@@ -1084,7 +1084,7 @@ def test_plot_session_type_usv_counts(tmp_path):
     assert out.exists()
 
 
-# ---- _resolve_session_emitter_ids / plot_session_usv_timeline -------------
+# _resolve_session_emitter_ids / plot_session_usv_timeline
 
 
 def test_resolve_session_emitter_sexes(tmp_path):
@@ -1165,7 +1165,7 @@ def test_plot_session_usv_timeline_full_session(tmp_path):
     assert isinstance(fig, plt.Figure)
 
 
-# ---- build_pooled_embeddings_df -------------------------------------------
+# build_pooled_embeddings_df
 
 
 def _write_embedding_session(root: pathlib.Path, session_id: str):
@@ -1267,7 +1267,7 @@ def test_build_pooled_embeddings_df_and_cache(tmp_path):
 
 def test_build_pooled_embeddings_df_sex_comes_from_metadata(tmp_path):
     """The pooled 'sex' column is the emitter's metadata sex, never its track
-    slot: in a female-female session the track-0 animal is female; a call with
+    slot: in a female-female session the track-0 animal is female; a USV with
     no attributed emitter stays unassigned; editing the metadata invalidates
     the cache."""
     sess = tmp_path / "20230101_000000"
@@ -1494,7 +1494,7 @@ def test_build_pooled_embeddings_df_no_sessions(tmp_path):
     assert any("No sessions" in m for m in logs)
 
 
-# ---- pure sampling / geometry helpers -------------------------------------
+# pure sampling / geometry helpers
 
 
 def test_medoid_xy_edge_cases():
@@ -1619,7 +1619,7 @@ def test_pick_category_samples_spiral_degenerate():
     assert out.max() < 10
 
 
-# ---- plot_embedding_with_category_thumbnails -----------------------------------
+# plot_embedding_with_category_thumbnails
 
 
 @pytest.fixture(autouse=True)
@@ -1714,10 +1714,10 @@ def test_plot_umap_thumbnails_random(tmp_path):
 @pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
 @pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
 def test_plot_umap_thumbnails_conditional_map_colours_by_qlvm_category(tmp_path):
-    """qlvm_map='qlvm_duration' groups and colours its calls by the regular map's
+    """qlvm_map='qlvm_duration' groups and colours its USVs by the regular map's
     qlvm_category (the only category column) and draws no category boundaries (the
     bundle partitions the regular map's torus only), saying so; the category-ID labels
-    sit at the calls' means on that map, not at the bundle's label positions."""
+    sit at the USVs' means on that map, not at the bundle's label positions."""
     pooled = _make_pooled_df("sessQ", n_per_cat=6)
     h5_path = tmp_path / "store.h5"
     _write_consolidated_h5(h5_path, "sessQ", n_usvs=12, n_freq=16, n_time=24)
@@ -1958,7 +1958,7 @@ def test_bandwidth_split_constant_is_khz():
     assert 0.0 < BANDWIDTH_BIMODAL_SPLIT_KHZ < 200.0
 
 
-# ---- plot_sequence (per-session embedding + continuous spectrogram) -------
+# plot_sequence (per-session embedding + continuous spectrogram)
 
 
 def _write_spectrograms_dir(
@@ -1999,7 +1999,7 @@ def _write_sequence_session(
         "peak_amp_ch": [1.0, 1.0, 0.0, 2.0],
         "qlvm1": [0.2, 0.4, 0.6, 0.8],
         "qlvm2": [0.3, 0.5, 0.7, 0.2],
-        # every call a pure USV, so exclude_squeaks keeps all four
+        # every segment a pure USV, so exclude_squeaks keeps all four
         "usv": [True, True, True, True],
         "squeak": [False, False, False, False],
     }
@@ -2216,8 +2216,8 @@ def test_plot_sequence_map_missing_coords_raises(tmp_path):
 @pytest.mark.parametrize(("exclude_squeaks", "expected_numbers"), [(True, ["1", "2"]), (False, ["1", "2", "3"])])
 def test_plot_sequence_drops_noise_and_optionally_squeaks(tmp_path, exclude_squeaks, expected_numbers):
     """The sequence always drops the noise segments and, with ``exclude_squeaks``,
-    the squeak-bearing ones too: of four window calls (pure USV, noise, pure squeak,
-    pure USV) the map numbers two calls with the flag on and three with it off, and
+    the squeak-bearing ones too: of four window segments (pure USV, noise, pure squeak,
+    pure USV) the map numbers two segments with the flag on and three with it off, and
     the stitched spectrogram still renders (the store rows are looked up by the
     pre-filter row index)."""
     from matplotlib.collections import PathCollection
@@ -2250,7 +2250,7 @@ def test_plot_sequence_drops_noise_and_optionally_squeaks(tmp_path, exclude_sque
     ax_left = fig.axes[0]
     assert [t.get_text() for t in ax_left.texts] == expected_numbers
     assert sum(isinstance(c, PathCollection) for c in ax_left.collections) == len(expected_numbers)
-    # the noise call (qlvm1 = 0.4) is never placed on the map
+    # the noise segment (qlvm1 = 0.4) is never placed on the map
     placed_x = [float(c.get_offsets()[0][0]) for c in ax_left.collections if isinstance(c, PathCollection)]
     assert 0.4 not in placed_x
     assert (0.6 in placed_x) is (not exclude_squeaks)
@@ -2259,7 +2259,7 @@ def test_plot_sequence_drops_noise_and_optionally_squeaks(tmp_path, exclude_sque
 @pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
 def test_plot_sequence_exclude_squeaks_requires_vocal_flags(tmp_path):
     """With ``exclude_squeaks`` on, a summary without the usv / squeak booleans raises
-    instead of silently keeping every call."""
+    instead of silently keeping every vocalization."""
     session_id = "20230101_120000"
     root = tmp_path / session_id
     _write_audio_memmap(root, channel_num=3)
@@ -2278,7 +2278,7 @@ def test_plot_sequence_exclude_squeaks_requires_vocal_flags(tmp_path):
         USVSpectrogramPlotter(root_directory=str(root), visualizations_parameter_dict=settings).plot_sequence()
 
 
-# ---- render_embedding_thumbnails_for_cohort (cohort driver) ---------------
+# render_embedding_thumbnails_for_cohort (cohort driver)
 
 def test_read_cohort_session_roots_pools_dedupes_and_needs_a_non_playback_list(tmp_path):
     """The cohort is every non-playback *sessions_list.txt (sorted by name), roots deduplicated in first-seen order
@@ -2522,7 +2522,7 @@ def test_explorer_squeak_map_class_filter(squeak_class, expected_rows):
 
 @pytest.mark.parametrize("qlvm_map", ["qlvm", "qlvm_duration"])
 def test_explorer_colours_by_qlvm_category_and_draws_bundle_boundaries_on_the_regular_map(qlvm_map):
-    """Every USV map colours by the calls' qlvm_category (conditional maps included);
+    """Every USV map colours by the USVs' qlvm_category (conditional maps included);
     the boundaries are the category bundle's grid on the regular map only: there they
     add the haloed boundary layers, on a conditional map none are drawn and the chart
     title says the categories are defined on the regular map."""

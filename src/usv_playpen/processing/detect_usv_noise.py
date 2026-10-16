@@ -4,7 +4,7 @@ Flag the USV segments that hold no vocalization at all and merge the result into
 ``*_usv_summary.csv``.
 
 The DAS segmenter keeps every interval a channel fired on, so a session's summary also holds segments
-with no call in them: electrical clicks, cage knocks, broadband transients and faint smears. This step
+with no vocalization in them: electrical clicks, cage knocks, broadband transients and faint smears. This step
 scores every segment with an ensemble of five time-resolved multiple-instance classifiers and writes two
 columns:
 
@@ -16,7 +16,7 @@ columns:
   re-running this step.
 
 A segment is NOISE only when it contains no vocalization at all -- neither a USV nor a squeak -- which is
-also the rule its training labels follow, so a faint call on one channel, or a call mixed with noise, is
+also the rule its training labels follow, so a faint vocalization on one channel, or a vocalization mixed with noise, is
 a vocalization, not noise.
 
 The decision is fixed by the model bundle, not by a setting. The ensemble's probabilities split the
@@ -26,7 +26,7 @@ chosen as the narrowest uncertain band whose confident decisions reach precision
 consensus-labelled segments drawn at random from the whole cohort, and the same rule applied held out
 (by session) gave precision 0.944 and recall 0.955 with 0.9% of segments uncertain. The bundle's
 ``decision`` block records the cut-offs, those held-out numbers and the cost of the exclusion (about 71
-real calls per 10,000 segments, most of them in the uncertain band); this step prints them on every run.
+real vocalizations per 10,000 segments, most of them in the uncertain band); this step prints them on every run.
 
 Input contract (fixed by the trained models, therefore constants rather than settings): for every segment
 the two-band absolute-dB spectrogram (30-120 kHz and 3-30 kHz, 128 linear bins each) is rebuilt from the
@@ -104,7 +104,7 @@ NOISE_COLUMNS = ("noise", "noise_probability")
 # (compute_usv_spectrogram's channel_variance_offsets), which reproduces the production weights
 # (Spearman 0.997). Through this code path on 1,118 labelled segments the noise model keeps its
 # precision and recall (0.988 / 0.993, scores r 0.984 with the wav input); it loses about 11 more real
-# calls per 10,000 segments, 9 of them from the tone removal alone and 2 from the weight reconstruction,
+# vocalizations per 10,000 segments, 9 of them from the tone removal alone and 2 from the weight reconstruction,
 # and the vocal-class / squeak QLVM outputs agree with the wav input at >= 99.98 % / a median position
 # shift of 0.003-0.006.
 BROADBAND_RECORD_NAME = "line_noise.json"
@@ -122,8 +122,8 @@ NOISE_SPEC_BASE = {
 NOISE_BANDS_HZ = ((30000.0, 120000.0), (3000.0, 30000.0))
 NOISE_DB_REF = 1.0
 HOP_SAMPLES = NOISE_SPEC_BASE["hop_length"]
-# Frame count a `batch_size` of segments is budgeted at (the median call is ~16 frames; this is the
-# model's own window), so a batch's padded size stays bounded however long the calls are.
+# Frame count a `batch_size` of segments is budgeted at (the median vocalization is ~16 frames; this is the
+# model's own window), so a batch's padded size stays bounded however long the vocalizations are.
 TYPICAL_SEGMENT_FRAMES = 128
 
 # Input transform and window every trained bundle records: dB clip range, the affine map onto [-1, 1], the
@@ -158,7 +158,9 @@ NOISE_AUG_FREQ_MASK_ROWS = 10
 # Columns a training labels CSV must hold (one row per labelled segment; ``noise`` 1 = no vocalization).
 NOISE_LABEL_COLUMNS = ("sample_id", "session_dir", "start", "stop", "chs_count", "noise")
 # Keys the detector reads from a bundle's ``decision`` block, so a trained bundle must carry them.
-NOISE_DECISION_KEYS = ("exclude_at_or_above", "noise_at_or_above", "held_out_precision", "held_out_recall", "real_calls_excluded_per_10000")
+NOISE_DECISION_KEYS = ("exclude_at_or_above", "noise_at_or_above", "held_out_precision", "held_out_recall", "real_vocalizations_excluded_per_10000")
+# A decision block written before the rename names the last key real_calls_excluded_per_10000.
+LEGACY_NOISE_DECISION_KEYS = {"real_calls_excluded_per_10000": "real_vocalizations_excluded_per_10000"}
 
 
 class BroadbandChannelReader:
@@ -385,7 +387,7 @@ class NoiseTimeMIL(nn.Module):
     The trained noise classifier. Four Conv2d-BatchNorm-ReLU blocks pool only along frequency, so every
     time column keeps its own representation; five residual dilated Conv1d blocks (dilations 1 to 16)
     then give each frame a receptive field of about 61 frames, so a frame is judged in the context of the
-    whole call. A 1x1 frame head emits a per-frame logit, a 1x1 attention head weights the frames, and
+    whole vocalization. A 1x1 frame head emits a per-frame logit, a 1x1 attention head weights the frames, and
     the segment logit is their attention-weighted sum plus a linear term in the two scalars (log channel
     count, log duration). Attribute names match the checkpoint's ``state_dict`` keys and must not change.
     """
@@ -567,7 +569,7 @@ def load_noise_model(noise_model_path: str, device: torch.device) -> dict:
         "db_center": float(checkpoint["db_center"]), "db_half": float(checkpoint["db_half"]),
         "max_frames": int(checkpoint["max_frames"]), "context_frames": int(checkpoint["context_frames"]),
         "bands_hz": NOISE_BANDS_HZ, "calibration": checkpoint["calibration"],
-        "decision": checkpoint["decision"],
+        "decision": current_noise_decision_keys(checkpoint["decision"]),
     }
 
 
@@ -766,7 +768,7 @@ def ensemble_noise_probability(
     standardized_scalars (np.ndarray)
         ``(N, n_scalars)`` float32 scalars, already standardized with the bundle's mean and std.
     batch_size (int)
-        Segments per forward pass at the typical call length.
+        Segments per forward pass at the typical vocalization length.
     device (torch.device)
         Scoring device.
 
@@ -796,17 +798,17 @@ def frame_budget_batches(inputs: list[np.ndarray], batch_size: int) -> list[tupl
     -----------
     Splits the session's segments into consecutive batches that hold at most ``batch_size *
     TYPICAL_SEGMENT_FRAMES`` frame slots, a batch always taking at least one segment. Every batch is
-    padded to its longest segment, so counting segments alone is not enough: one 512-frame call among
+    padded to its longest segment, so counting segments alone is not enough: one 512-frame vocalization among
     255 short ones would inflate the batch 30-fold and exhaust the GPU (measured: a cohort run with
     eight sessions in parallel failed on batches asking for 1.8 GiB at ``batch_size`` 256). Budgeting
-    frames keeps a batch's memory roughly constant whatever the call lengths are.
+    frames keeps a batch's memory roughly constant whatever the vocalization lengths are.
 
     Parameters
     ----------
     inputs (list[np.ndarray])
         Per-segment ``(C, 128, T)`` inputs, in summary order.
     batch_size (int)
-        Segments per forward pass at the typical call length; the frame budget is this times
+        Segments per forward pass at the typical vocalization length; the frame budget is this times
         ``TYPICAL_SEGMENT_FRAMES``.
 
     Returns
@@ -861,7 +863,7 @@ def score_noise_rows(
     exclude_metadata_audio_channels (bool)
         Drop channels the session metadata marks as excluded from the average.
     batch_size (int)
-        Segments per forward pass at the typical call length (see :func:`frame_budget_batches`).
+        Segments per forward pass at the typical vocalization length (see :func:`frame_budget_batches`).
     message_output (Callable)
         Logging callback.
 
@@ -968,6 +970,35 @@ def read_noise_labels(labels_csv_path: str, message_output: Callable) -> pls.Dat
     return labels
 
 
+def current_noise_decision_keys(decision: dict) -> dict:
+    """
+    Description
+    -----------
+    Returns a copy of a noise ``decision`` block under the current key names: a block written
+    before the rename (a calibration JSON or a trained bundle) names the real-vocalization cost
+    ``real_calls_excluded_per_10000``, read here as ``real_vocalizations_excluded_per_10000``
+    (see ``LEGACY_NOISE_DECISION_KEYS``). A block already under the current names comes back
+    unchanged.
+
+    Parameters
+    ----------
+    decision (dict)
+        The ``decision`` block as stored.
+
+    Returns
+    -------
+    decision (dict)
+        A new dict with every legacy key renamed (its value kept) unless the current key is
+        already present.
+    """
+
+    renamed = dict(decision)
+    for legacy_key, current_key in LEGACY_NOISE_DECISION_KEYS.items():
+        if legacy_key in renamed and current_key not in renamed:
+            renamed[current_key] = renamed.pop(legacy_key)
+    return renamed
+
+
 def read_noise_calibration(calibration_path: str) -> dict:
     """
     Description
@@ -976,7 +1007,7 @@ def read_noise_calibration(calibration_path: str) -> dict:
     The JSON holds ``calibration`` (a list of rows, each with at least ``threshold``, ``precision`` and
     ``recall``: the cross-fitted precision / recall of this training procedure at every threshold) and
     ``decision`` (the exclusion cut-offs ``exclude_at_or_above`` <= ``noise_at_or_above`` plus their
-    held-out ``held_out_precision``, ``held_out_recall`` and ``real_calls_excluded_per_10000``, and any
+    held-out ``held_out_precision``, ``held_out_recall`` and ``real_vocalizations_excluded_per_10000``, and any
     further provenance keys). ``calibration_source`` and ``calibration_population`` are copied into the
     bundle when present. Training does not measure these: they come from the session-grouped cross-fit
     and the cut-off selection on consensus-labelled segments, so they describe the bundle only when it
@@ -1008,6 +1039,7 @@ def read_noise_calibration(calibration_path: str) -> dict:
     if not content["calibration"] or any(key not in row for row in content["calibration"] for key in ("threshold", "precision", "recall")):
         error_message = f"{path}: 'calibration' must be a non-empty list of rows with threshold, precision and recall."
         raise ValueError(error_message)
+    content["decision"] = current_noise_decision_keys(content["decision"])
     missing = [key for key in NOISE_DECISION_KEYS if key not in content["decision"]]
     if missing:
         error_message = f"{path}: the 'decision' block lacks {missing}, which detect-usv-noise reads."
@@ -1315,7 +1347,7 @@ class USVNoiseDetector:
             f"noise = p >= {decision['exclude_at_or_above']:.2f}: confident noise (p >= {decision['noise_at_or_above']:.2f}) "
             f"plus the uncertain band, which is excluded rather than guessed. Held out, the confident decisions "
             f"reach precision {decision['held_out_precision']:.3f} and recall {decision['held_out_recall']:.3f}; "
-            f"the exclusion costs about {decision['real_calls_excluded_per_10000']:.0f} real calls per 10,000 segments."
+            f"the exclusion costs about {decision['real_vocalizations_excluded_per_10000']:.0f} real vocalizations per 10,000 segments."
         )
 
         root = pathlib.Path(self.root_directory)
@@ -1363,7 +1395,7 @@ class USVNoiseDetector:
             merged.write_csv(file=str(tmp_summary_path))
 
         self.message_output(
-            f"Merged noise calls into {usv_summary_loc.name}: {int(scores['noise'].sum())} noise segment(s) among {usv_df.height} USVs."
+            f"Merged noise flags into {usv_summary_loc.name}: {int(scores['noise'].sum())} noise segment(s) among {usv_df.height} USVs."
         )
         self.message_output(
             f"USV noise detection ended at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."
@@ -1511,7 +1543,7 @@ class USVNoiseModelTrainer:
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
 @click.option('--noise-model-path', 'noise_model_path', type=str, default=None, required=False, help='Path to the noise model bundle (.pt); derived from spectrograms_root when empty.')
 @click.option('--exclude-metadata-audio-channels/--no-exclude-metadata-audio-channels', 'exclude_metadata_audio_channels', default=None, required=False, help='Drop channels the session metadata marks as excluded from the spectrogram average.')
-@click.option('--batch-size', 'batch_size', type=int, default=None, required=False, help='Segments per forward pass at the typical call length; a batch is budgeted at batch-size x 128 frame slots, so one long call never inflates it.')
+@click.option('--batch-size', 'batch_size', type=int, default=None, required=False, help='Segments per forward pass at the typical vocalization length; a batch is budgeted at batch-size x 128 frame slots, so one long vocalization never inflates it.')
 @click.pass_context
 def detect_usv_noise_cli(ctx, root_directory, **kwargs) -> None:
     """

@@ -160,7 +160,7 @@ def test_make_video_ignores_a_conditional_shared_map(tmp_path, qlvm_category_bun
 
 def test_make_video_refuses_a_store_of_another_cell(tmp_path, qlvm_category_bundle):
     """A store whose qlvm coordinates come from another cell (e.g. the v3 archive)
-    places the calls on another torus than the bundle partitions: refused."""
+    places the USVs on another torus than the bundle partitions: refused."""
     spec_dir = _write_inputs(
         tmp_path,
         package_root="/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/v3",

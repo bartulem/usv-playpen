@@ -86,6 +86,25 @@ def blend(colour: str, weight: float, background: str = COLOR_PAGE) -> str:
 
 
 class NeuronalDecodingFigureMaker:
+    """
+    Description
+    -----------
+    Draws the vocal-bout occupancy decoding figures from the per-session
+    outputs of ``BoutOccupancyDecoder`` and gathers those outputs across
+    sessions. The assumptions behind the figure (sessions chosen by the caller,
+    at most three comparison panels, every named session and area already
+    decoded) are set out in the module docstring; the builder raises when they
+    do not hold.
+
+    The constructor takes keyword arguments only and stores each as an
+    attribute of the same name: ``decoding_directory`` (the decoder output
+    directory), ``visualizations_parameter_dict`` and ``message_output``; any
+    other key raises ``TypeError``. It also sets ``root``, the decoder output
+    directory resolved for the active experimenter. The entry methods are
+    ``make_bout_decoding_figure`` (writes the figure and returns its path) and
+    ``summarize`` (returns one polars frame of the per-session decoder
+    tables).
+    """
 
     def __init__(self, **kwargs) -> None:
         """

@@ -674,9 +674,7 @@ def test_x_is_log_survives_a_draw_that_overflows_exp(fitter):
     assert np.isfinite(np.ravel(model.means_)).all()
 
 
-# ===========================================================================
 # stable_subsample — the value-keyed draw used by bootstrap_lrt
-# ===========================================================================
 
 
 def _multiset_overlap(left, right):

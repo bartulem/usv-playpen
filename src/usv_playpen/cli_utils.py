@@ -17,6 +17,8 @@ from .os_utils import _host_experimenter, _host_experimenter_list, rebase_experi
 
 class StringTuple(click.ParamType):
     """
+    Description
+    -----------
     A custom click type that accepts a comma-separated pair of strings
     and converts it into a tuple. e.g., "Head, Nose" -> ('Head', 'Nose')
     """
@@ -101,6 +103,26 @@ def find_nested_key_paths(d: dict, target_key: str) -> list[str]:
     paths: list[str] = []
 
     def _walk(sub: dict, prefix: str) -> None:
+        """
+        Description
+        -----------
+        Depth-first walk of one (sub-)dictionary: appends the dot-separated
+        path of ``target_key`` to the enclosing ``paths`` list when it occurs
+        at this level, then recurses into every dict-valued entry in insertion
+        order.
+
+        Parameters
+        ----------
+        sub (dict)
+            The (sub-)dictionary being searched.
+        prefix (str)
+            Dot-separated path of ``sub`` from the root; ``""`` at the root.
+
+        Returns
+        -------
+        None
+        """
+
         # record a match at this level before descending (shallowest/earliest wins)
         if target_key in sub:
             paths.append(f"{prefix}.{target_key}" if prefix else target_key)

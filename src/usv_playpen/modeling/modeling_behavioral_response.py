@@ -5,7 +5,7 @@ Module for extracting a female behavioral response to male vocal bouts.
 This module inverts the direction of every other pipeline in ``modeling/``. The
 five vocal pipelines predict something about a *vocalization* from a window of
 preceding *behavior*; this one predicts a *behavioral* variable and asks whether
-the partner's calling changed it.
+the partner's vocalizing changed it.
 
 It sets up two questions, both answered from one extraction:
 
@@ -18,10 +18,10 @@ Key design decisions, each ruled rather than defaulted:
 
 1.  Anchors are **events, not tiles**. Every row sits either at a bout offset or
     inside an inter-bout gap. An earlier tiled design spent ~70% of its rows on
-    windows containing no calls at all, which diluted the very contrast it was
+    windows containing no vocalizations at all, which diluted the very contrast it was
     meant to measure.
 2.  The silent comparison is **inter-bout silence**, not globally quiet stretches.
-    A point inside a gap is a moment where he *could* have called and did not,
+    A point inside a gap is a moment where he *could* have vocalized and did not,
     with both animals demonstrably still interacting. Globally quiet periods are a
     different behavioral regime, and covariate adjustment would then be
     extrapolating between two separated groups rather than comparing within one.
@@ -181,7 +181,7 @@ def inter_bout_quiet_anchors(bout_onsets: np.ndarray,
 
     The anchor is placed uniformly at random inside the sub-interval where its
     whole pre-anchor history and forward window fall within the gap, so no male
-    call touches either. Random placement rather than the midpoint avoids
+    vocalization touches either. Random placement rather than the midpoint avoids
     systematically sampling the quietest instant of every gap.
 
     One anchor per gap, not several: tiling long gaps would buy rows that are
@@ -246,11 +246,11 @@ def deep_silence_anchors(bout_onsets: np.ndarray,
     Tiles anchors through stretches with no male bout within a wide margin.
 
     Where :func:`inter_bout_quiet_anchors` samples the gaps *between* bouts, this
-    samples the stretches where he has not called for ``margin_seconds`` on either
+    samples the stretches where he has not vocalized for ``margin_seconds`` on either
     side. The two answer different questions and neither is strictly better:
 
     *   Inter-bout silence keeps the animals inside an ongoing interaction, but is
-        contaminated by carryover -- if calling shifts her state for tens of
+        contaminated by carryover -- if vocalizing shifts her state for tens of
         seconds, a moment between two bouts is still a post-vocal moment, so the
         contrast can only ever see the fast component.
     *   Deep silence escapes that carryover, at the cost of a larger imbalance in
@@ -1296,8 +1296,8 @@ class MatchedDivergencePipeline(BehavioralResponsePipeline):
     Differences from the contrast, all deliberate:
 
     *   **Cleanliness is judged against EVERY USV**, not merely against the
-        predictor mouse's bouts. A window containing his singleton calls, the
-        partner's calls or unassigned ones is not silent, and the looser rule
+        predictor mouse's bouts. A window containing his singleton USVs, the
+        partner's USVs or unassigned ones is not silent, and the looser rule
         measurably changes what is being averaged: at 4 s it keeps 3,441 anchors
         where the strict rule keeps 1,593, and the extra anchors start 0.055 z
         lower in speed.
@@ -1665,7 +1665,7 @@ def forward_clean_times(times: np.ndarray,
     Flags times followed by silence from EVERY animal.
 
     Two conditions, both required: nothing starts within ``forward_seconds`` of
-    the time, and nothing that began earlier is still ongoing at it. A call
+    the time, and nothing that began earlier is still ongoing at it. A vocalization
     straddling the moment is invisible to a starts-only test, which is why the
     running maximum of the stop times is carried separately.
 
@@ -1706,7 +1706,7 @@ def _all_usv_times(session_root: Path, csv_sep: str) -> tuple[np.ndarray, np.nda
     ``squeak_end``.
 
     Deliberately unfiltered by emitter: a window is silent only if nobody
-    vocalized in it, so unassigned calls and the partner's count too. Filtering
+    vocalized in it, so unassigned vocalizations and the partner's count too. Filtering
     to the predictor's bouts instead more than doubles the surviving anchors and
     changes what they are -- measured on this cohort, 3,441 against 1,593, with
     the extra anchors starting 0.055 z lower in speed.

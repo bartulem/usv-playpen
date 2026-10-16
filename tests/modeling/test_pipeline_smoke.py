@@ -214,8 +214,8 @@ class TestOnsetInputExtraction:
         of the block's own history length, equal positive and negative counts
         per session (one matched negative per positive), and the block's
         settings in ``analysis_specific``. The synthetic bouts are three
-        10 ms calls 20 ms apart, so the minimum singing left is set to 30 ms
-        to make their interior calls eligible.
+        10 ms USVs 20 ms apart, so the minimum singing left is set to 30 ms
+        to make their interior USVs eligible.
         """
 
         settings, save_dir = _build_settings(tmp_path, model_engine='sklearn')

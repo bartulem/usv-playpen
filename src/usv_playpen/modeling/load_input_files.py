@@ -83,7 +83,7 @@ def load_behavioral_feature_data(behavior_file_paths: list = None,
 
 
 # Vocal-predictor modes that build one trace per USV category and therefore need a
-# per-call label column; 'pooled_rate' / 'pooled_binary' never read one.
+# per-USV label column; 'pooled_rate' / 'pooled_binary' never read one.
 CATEGORY_PREDICTOR_TYPES = ('categories_rate', 'all_rate')
 
 # Vocal classes a bout-grouping prediction mode accepts as its target
@@ -411,7 +411,7 @@ def read_usv_summary_table(csv_path: str | Path, csv_sep: str) -> pls.DataFrame:
     The per-mouse selections filter on ``emitter``, so a session whose
     ``emitter`` column is entirely empty (``vcl-assign`` has not run since the
     last ``das-summarize``, which rewrites the summary without it) gives every
-    mouse zero calls; a warning names that cause here, before the downstream
+    mouse zero vocalizations; a warning names that cause here, before the downstream
     "no events" errors that would otherwise hide it.
 
     Parameters
@@ -432,7 +432,7 @@ def read_usv_summary_table(csv_path: str | Path, csv_sep: str) -> pls.DataFrame:
     )
     if 'emitter' in usv_summary_data.columns and usv_summary_data.height and usv_summary_data['emitter'].null_count() == usv_summary_data.height:
         print(
-            f"Warning: {Path(csv_path).name} has no assigned emitter (the emitter column is empty), so no call "
+            f"Warning: {Path(csv_path).name} has no assigned emitter (the emitter column is empty), so no vocalization "
             f"is attributed to either mouse; run vcl-assign on the session (after das-summarize)."
         )
     return usv_summary_data
@@ -793,23 +793,23 @@ def _group_vocalizations_into_bouts(starts: np.ndarray,
                             stops: np.ndarray,
                             ibi_threshold: float) -> tuple[np.ndarray, np.ndarray]:
     """
-    Splits one mouse's time-sorted calls into bouts at every inter-call gap
+    Splits one mouse's time-sorted vocalizations into bouts at every inter-vocalization gap
     of at least ``ibi_threshold`` seconds.
 
     Parameters
     ----------
     starts : np.ndarray
-        Call start times (s), sorted.
+        Vocalization start times (s), sorted.
     stops : np.ndarray
-        Call stop times (s), same order.
+        Vocalization stop times (s), same order.
     ibi_threshold : float
         Gap (next start minus previous stop) at or above which a new bout begins.
 
     Returns
     -------
     bout_start_indices, bout_end_indices : tuple of np.ndarray
-        Index of the first and last call of every bout; empty arrays when there
-        are no calls.
+        Index of the first and last vocalization of every bout; empty arrays when there
+        are no vocalizations.
     """
 
     if len(starts) == 0:
@@ -837,32 +837,32 @@ def _bout_offset_events(starts: np.ndarray,
     """
     Positive and negative event times for ``'bout_offset'`` mode.
 
-    A positive is the offset of a bout's last call. A negative is an interior
-    call's offset, and the question the two classes pose is: given that he is
+    A positive is the offset of a bout's last vocalization. A negative is an interior
+    vocalization's offset, and the question the two classes pose is: given that he is
     singing, why does he stop here rather than continue. ``'cross_bout'`` draws
     the negative from another bout of the same session at the same time since
     bout onset, so position in the bout is held fixed and the bouts that
     continue are, by definition, the longer ones. ``'within_bout'`` draws it
     from the same bout, so bout length and context are shared and only the
     approach to the end differs, at the price of admitting only bouts long
-    enough to hold such a call.
+    enough to hold such a vocalization.
 
     Parameters
     ----------
     starts : np.ndarray
-        Call start times (s), sorted.
+        Vocalization start times (s), sorted.
     stops : np.ndarray
-        Call stop times (s), same order.
+        Vocalization stop times (s), same order.
     bout_start_indices : np.ndarray
-        First-call index of every bout (see ``_group_vocalizations_into_bouts``).
+        First-vocalization index of every bout (see ``_group_vocalizations_into_bouts``).
     bout_end_indices : np.ndarray
-        Last-call index of every bout.
+        Last-vocalization index of every bout.
     min_usv_per_bout : int
-        Bouts with fewer calls contribute neither positives nor negatives.
+        Bouts with fewer vocalizations contribute neither positives nor negatives.
     negative_scheme : str
         ``'cross_bout'`` or ``'within_bout'``.
     min_singing_after_negative : float
-        Seconds the bout must keep singing after a negative's call.
+        Seconds the bout must keep singing after a negative's vocalization.
     time_since_bout_onset_tolerance : float
         ``'cross_bout'`` only: maximal position mismatch (s) between a positive
         and its negative.
@@ -891,7 +891,7 @@ def _bout_offset_events(starts: np.ndarray,
             negatives.append(float(max(eligible)))
         return np.array(positives), np.array(negatives)
 
-    # cross_bout: every interior call with enough singing left is a candidate,
+    # cross_bout: every interior vocalization with enough singing left is a candidate,
     # tagged with its position (time since its bout's onset) and its bout.
     candidate_position: list[float] = []
     candidate_time: list[float] = []
@@ -1057,7 +1057,7 @@ def find_onset_epochs(root_directories: list = None,
         `vocal_output_type` is set.
     negative_scheme : str, optional
         ``'bout_offset'`` mode only. ``'cross_bout'``: each positive (the last
-        call's offset of a bout) is paired with an interior call's offset from
+        vocalization's offset of a bout) is paired with an interior vocalization's offset from
         ANOTHER bout of the same session, at the same time since that bout's
         onset (within ``time_since_bout_onset_tolerance``), in a bout that kept
         singing for at least ``min_singing_after_negative`` seconds after it;
@@ -1065,13 +1065,13 @@ def find_onset_epochs(root_directories: list = None,
         once, at most ``max_negatives_per_bout`` from any one bout; positives
         without a partner are dropped so the two groups share the same
         distribution of time since bout onset. ``'within_bout'``: the negative
-        is the latest interior call of the SAME bout that ended at least
+        is the latest interior vocalization of the SAME bout that ended at least
         ``min_singing_after_negative`` seconds before the bout's end; bouts too
         short to hold one contribute nothing. Either way the pairing is only
         the sampling recipe -- the returned groups are pooled downstream.
     min_singing_after_negative : int or float, optional
         ``'bout_offset'`` mode only: seconds the bout must keep singing after a
-        negative's call, so the negative sits outside the ending itself.
+        negative's vocalization, so the negative sits outside the ending itself.
     time_since_bout_onset_tolerance : int or float, optional
         ``'bout_offset'`` / ``'cross_bout'`` only: how far apart, in seconds, the
         time since bout onset of a positive and its negative may be.
@@ -1079,10 +1079,10 @@ def find_onset_epochs(root_directories: list = None,
         ``'bout_offset'`` / ``'cross_bout'`` only: cap on negatives drawn from
         one bout; ``None`` means no cap.
         ``'bout_offset'`` targets the END of a bout: positives are the offsets
-        of the last call of every bout with at least ``min_usv_per_bout``
-        calls, with no clean-history or clean-future requirement (the
-        inter-call threshold already defines the end), and negatives are
-        interior-call offsets chosen by ``negative_scheme``.
+        of the last vocalization of every bout with at least ``min_usv_per_bout``
+        vocalizations, with no clean-history or clean-future requirement (the
+        inter-vocalization threshold already defines the end), and negatives are
+        interior-vocalization offsets chosen by ``negative_scheme``.
 
     Returns
     -------
@@ -1105,7 +1105,7 @@ def find_onset_epochs(root_directories: list = None,
     # Labels are needed only by the per-category predictor traces and by the
     # single-category onset target ('individual' mode); either one without a label
     # column stops here, before any session is read, instead of silently building
-    # no category traces or falling back to all calls.
+    # no category traces or falling back to all USVs.
     category_purposes = []
     if vocal_output_type in CATEGORY_PREDICTOR_TYPES:
         category_purposes.append(f"vocal_features.vocal_predictor_type '{vocal_output_type}'")
@@ -1349,7 +1349,7 @@ def find_onset_epochs(root_directories: list = None,
                     usv_events_positive = np.array([])
                     usv_events_negative = np.array([])
 
-            ### Mode 4: 'bout_offset' (the END of a bout against an interior call, see _bout_offset_events)
+            ### Mode 4: 'bout_offset' (the END of a bout against an interior vocalization, see _bout_offset_events)
             elif prediction_mode == 'bout_offset':
                 starts = usv_data_dict[session_id][mouse_name]['start']
                 stops = usv_data_dict[session_id][mouse_name]['stop']
@@ -1448,8 +1448,8 @@ def find_usv_categories(root_directories: list = None,
         coordinates on the continuous acoustic manifold. If any of the configured
         columns is missing from the CSV for a given session/mouse, no continuous
         targets are written for that mouse. When None or empty, continuous target
-        extraction is skipped entirely. Calls whose coordinates are null / NaN in
-        any configured column (calls the embedding could not place) are dropped
+        extraction is skipped entirely. Vocalizations whose coordinates are null / NaN in
+        any configured column (vocalizations the embedding could not place) are dropped
         from 'continuous_onsets', 'continuous_targets' and the label arrays, with
         the number dropped printed per session-mouse pair and in total.
 
@@ -1472,12 +1472,12 @@ def find_usv_categories(root_directories: list = None,
                 with 'continuous_onsets': the regular map's QLVM category
                 (os_utils.QLVM_CATEGORY_COLUMN, 'qlvm_category') whatever map the
                 manifold columns come from, because the categories are defined on
-                the regular map only and label each call, not a map. Present only
+                the regular map only and label each vocalization, not a map. Present only
                 when that column exists in the source CSV (a summary whose
                 categories assign-qlvm-categories has not written yet has none).
     """
 
-    # Per-call labels are needed by the categorical paths only: the multinomial /
+    # Per-USV labels are needed by the categorical paths only: the multinomial /
     # binomial category models (no manifold columns), a `target_category`, and the
     # per-category predictor traces. The continuous manifold path reads the torus
     # coordinates alone, so there a null `category_column` simply means "no
@@ -1551,7 +1551,7 @@ def find_usv_categories(root_directories: list = None,
 
             # Drop the segments holding no vocalization (global removal). This is independent of
             # `category_column`: the noise verdict comes from the classifier, so the experimental
-            # category the caller models can vary without changing which rows are real calls.
+            # category the caller models can vary without changing which rows are real vocalizations.
             if exclude_noise_usvs:
                 mouse_usvs = drop_noise_usvs(mouse_usvs, f"{session_id} ({mouse_name})")[0]
 
@@ -1615,7 +1615,7 @@ def find_usv_categories(root_directories: list = None,
                         manifold_usvs = manifold_usvs.filter(pls.col('start') > filter_history)
                     else:
                         manifold_usvs = mouse_usvs
-                    # A call the embedding could not place (outside the model's
+                    # A vocalization the embedding could not place (outside the model's
                     # duration window, no SAM mask, no condition value) has null
                     # coordinates; it has no manifold target, so it is dropped here,
                     # together with its onset and labels, before anything downstream
@@ -1629,7 +1629,7 @@ def find_usv_categories(root_directories: list = None,
                     placed = np.isfinite(manifold_targets).all(axis=1)
                     n_unplaced = int(np.count_nonzero(~placed))
                     if n_unplaced > 0:
-                        print(f"  {session_id} ({mouse_name}): dropped {n_unplaced} of {placed.size} calls with "
+                        print(f"  {session_id} ({mouse_name}): dropped {n_unplaced} of {placed.size} vocalizations with "
                               f"null/NaN manifold coordinates ({', '.join(manifold_column_names)}).")
                         n_unplaced_total += n_unplaced
                         n_unplaced_sessions += 1
@@ -1643,7 +1643,7 @@ def find_usv_categories(root_directories: list = None,
                     # map's qlvm_category (R-1..R-k) for EVERY map -- qlvm and
                     # the four conditional maps alike: the categories are defined
                     # on the regular map only (os_utils.QLVM_CATEGORY_MAP) and
-                    # are a property of the call, so a conditional map's calls
+                    # are a property of the vocalization, so a conditional map's vocalizations
                     # carry the same labels. Stored as a plain numpy array
                     # aligned 1:1 with continuous_onsets / continuous_targets
                     # above, only when the column is present in the source CSV;
@@ -1655,7 +1655,7 @@ def find_usv_categories(root_directories: list = None,
                         )
 
     if manifold_column_names:
-        print(f"Manifold targets: dropped {n_unplaced_total} calls with null/NaN coordinates in total "
+        print(f"Manifold targets: dropped {n_unplaced_total} vocalizations with null/NaN coordinates in total "
               f"({n_unplaced_sessions} session-mouse pairs affected).")
 
     return usv_data_dict

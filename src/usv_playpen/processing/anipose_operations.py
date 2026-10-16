@@ -317,6 +317,28 @@ def rotate_z(data: np.ndarray, theta: float) -> np.ndarray:
 
 
 class ConvertTo3D:
+    """
+    Description
+    -----------
+    Turns a session's 2D SLEAP tracking into metric 3D tracking with Anipose:
+    converting ``.slp`` predictions to ``.analysis.h5`` files, running the
+    camera calibration, triangulating the 3D points, and translating / rotating
+    the 3D points into the arena frame in meters.
+
+    It holds ``input_parameter_dict`` (the ``anipose_operations.ConvertTo3D``
+    processing settings), ``root_directory``, ``message_output``,
+    ``app_context_bool`` (GUI vs. CLI context) and the session's joint-date
+    video directory (``session_root_joint_date_dir``, the underscore-free
+    subdirectory of ``<root_directory>/video``, with its name in
+    ``session_root_name``). The constructor raises ``FileNotFoundError`` when no
+    such subdirectory exists. The entry methods are ``sleap_file_conversion``,
+    ``conduct_anipose_calibration``, ``conduct_anipose_triangulation`` and
+    ``translate_rotate_metric``. When ``input_parameter_dict`` or
+    ``root_directory`` is None the missing value is read from
+    ``_parameter_settings/processing_settings.json``. It is constructed by the
+    processing pipeline (``processing/preprocess_data.py``).
+    """
+
     def __init__(
         self,
         root_directory: str = None,

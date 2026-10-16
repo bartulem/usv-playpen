@@ -56,6 +56,50 @@ def _multinomial_loss_static(
     folded into the focal term as a weighted mean, so a caller (e.g. the GLM-HMM
     M-step) can fit the emission on responsibility-weighted events. A vector of
     ones recovers the plain mean.
+
+    Parameters
+    ----------
+    params : tuple
+        ``(W, b)`` tuple of current model parameters, with ``W`` of shape
+        ``(n_feats * n_time, n_classes)`` and ``b`` of shape ``(n_classes,)``.
+    X : jnp.ndarray
+        Design matrix of shape ``(n_samples, n_feats * n_time)``.
+    Y_onehot : jnp.ndarray
+        One-hot class labels of shape ``(n_samples, n_classes)``; the mask that
+        selects ``p_t`` (the true-class probability) from each softmax row.
+    sample_weight : jnp.ndarray
+        Per-sample non-negative weight of shape ``(n_samples,)``; the focal term
+        is ``sum(sample_weight * focal) / (sum(sample_weight) + 1e-12)``.
+    n_feats : int
+        Number of distinct physical features; ``W`` is reshaped to
+        ``(n_feats, n_time, n_classes)`` so the smoothness penalty runs along
+        the time axis only.
+    n_time : int
+        Number of time bins (lags or basis coefficients) per feature.
+    lam_smooth : float
+        Temporal-smoothness penalty strength.
+    lam_l2 : float
+        L2 (Ridge) penalty strength.
+    class_weights : jnp.ndarray
+        Per-class weight vector of shape ``(n_classes,)``, used as the focal-loss
+        alpha (``alpha_t = sum(Y_onehot * class_weights, axis=1)``) and as the
+        per-class scaler of the smoothness penalty.
+    focal_gamma : float
+        Focusing parameter of the focal loss; the modulator base ``1 - p_t`` is
+        clamped at ``1e-7`` so a saturated event cannot make the gradient NaN.
+        ``0.0`` recovers plain alpha-balanced cross-entropy.
+    smoothness_derivative_order : int
+        Order (1 or 2) of the finite difference taken along the time axis.
+    smoothness_reflective_edges : bool, default True
+        For order 2 only: also penalise the edge slopes at both ends of every
+        filter (reflective boundary) if True; plain open-boundary P-spline
+        penalty if False.
+
+    Returns
+    -------
+    loss : jnp.ndarray
+        Scalar total loss: weighted-mean focal cross-entropy + 0.5 * ``lam_l2``
+        * ||W||^2 + 0.5 * ``lam_smooth`` * sum_c class_weight_c * penalty_c.
     """
 
     W, b = params
@@ -130,6 +174,60 @@ def _multinomial_train_loop_jit(
     distinct values seen at runtime are the outer fit's `max_iter` and
     the inner-CV's `inner_max_iter`, so the cache holds at most two
     compiled variants per shape.
+
+    Parameters
+    ----------
+    params_init : tuple
+        Initial ``(W, b)`` parameters, ``W`` of shape
+        ``(n_feats * n_time, n_classes)`` and ``b`` of shape ``(n_classes,)``.
+    opt_state_init : optax.OptState
+        Initial optimizer state of the clipped-Adam chain built here.
+    X : jnp.ndarray
+        Design matrix of shape ``(n_samples, n_feats * n_time)``.
+    Y_onehot : jnp.ndarray
+        One-hot class labels of shape ``(n_samples, n_classes)``.
+    sample_weight : jnp.ndarray
+        Per-sample non-negative weight of shape ``(n_samples,)`` folded into the
+        focal term as a weighted mean (ones -> plain mean).
+    class_weights : jnp.ndarray
+        Per-class weight vector of shape ``(n_classes,)`` (focal alpha and
+        smoothness scaler).
+    lambda_smooth : float
+        Temporal-smoothness penalty strength (traced).
+    l2_reg : float
+        L2 (Ridge) penalty strength (traced).
+    focal_gamma : float
+        Focal-loss gamma (traced).
+    learning_rate : float
+        Initial learning rate of the cosine-decay schedule (traced).
+    grad_clip_norm : float
+        Global-norm gradient clip applied before Adam (traced).
+    tol : float
+        Convergence tolerance: every 100 steps the L2 norm of the change in
+        ``(W, b)`` since the previous check is compared against it, and the loop
+        stops once it falls below (traced).
+    max_iter : int
+        Maximum number of steps and the cosine schedule's ``decay_steps``.
+        Static JIT argument.
+    n_feats : int
+        Number of distinct physical features. Static JIT argument.
+    n_time : int
+        Number of time bins per feature. Static JIT argument.
+    smoothness_derivative_order : int
+        Order (1 or 2) of the smoothness penalty. Static JIT argument.
+    smoothness_reflective_edges : bool, default True
+        Whether an order-2 penalty also penalises the edge slopes (reflective
+        boundary). Static JIT argument.
+
+    Returns
+    -------
+    params_final : tuple
+        The ``(W, b)`` parameters when the loop stopped.
+    i_final : jnp.ndarray
+        Scalar int32 count of steps taken (equals ``max_iter`` when the
+        tolerance check never fired).
+    converged_final : jnp.ndarray
+        Scalar bool, True when the tolerance check fired before ``max_iter``.
     """
 
     scheduler = optax.cosine_decay_schedule(
@@ -153,6 +251,25 @@ def _multinomial_train_loop_jit(
     check_interval = 100
 
     def step(params, opt_state):
+        """
+        One clipped-Adam descent step on :func:`_multinomial_loss_static`, closing
+        over the design matrix, targets, weights and penalty scalars of the
+        enclosing call.
+
+        Parameters
+        ----------
+        params : tuple
+            Current ``(W, b)`` parameters.
+        opt_state : optax.OptState
+            Current optimizer state.
+
+        Returns
+        -------
+        params : tuple
+            Updated ``(W, b)`` parameters.
+        opt_state : optax.OptState
+            Advanced optimizer state.
+        """
         grads = jax.grad(_multinomial_loss_static)(
             params, X, Y_onehot, sample_weight,
             n_feats, n_time,
@@ -166,10 +283,40 @@ def _multinomial_train_loop_jit(
         return params, opt_state
 
     def cond_fn(state):
+        """
+        Continuation predicate of the ``jax.lax.while_loop``.
+
+        Parameters
+        ----------
+        state : tuple
+            ``(i, params, opt_state, last_checked_params, converged)`` loop carry.
+
+        Returns
+        -------
+        keep_going : jnp.ndarray
+            Scalar bool, True while ``i < max_iter`` and the tolerance check has
+            not fired.
+        """
         i_, _params, _opt_state, _last, converged_flag = state
         return (i_ < max_iter) & (~converged_flag)
 
     def body_fn(state):
+        """
+        One iteration of the ``jax.lax.while_loop``: take a step, and on every
+        ``check_interval``-th step compare the parameters against the last checked
+        ones (the L2 norm over ``W`` and ``b`` together) to set the convergence flag
+        and refresh the reference.
+
+        Parameters
+        ----------
+        state : tuple
+            ``(i, params, opt_state, last_checked_params, converged)`` loop carry.
+
+        Returns
+        -------
+        state : tuple
+            The next loop carry, same layout, with ``i`` incremented.
+        """
         i_, params_, opt_state_, last_, _converged = state
         params_next, opt_state_next = step(params_, opt_state_)
         i_next = i_ + 1
@@ -259,6 +406,8 @@ def _multinomial_default_step(
         Focal-loss gamma (traced).
     learning_rate : float
         Cosine-decay initial learning rate (traced).
+    grad_clip_norm : float
+        Global-norm gradient clip applied before Adam (traced).
     loss_fn : callable
         The jitted multinomial loss (the class ``_loss_fn`` staticmethod); static
         JIT argument.
@@ -432,6 +581,54 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
             verbose: bool = False,
             _use_lax_loop: bool = False
     ):
+        """
+        Store the hyperparameters unchanged (sklearn convention: no validation or
+        derived state beyond the checks and casts below).
+
+        Parameters
+        ----------
+        n_features : int, default=1
+            Number of distinct physical features.
+        n_time_bins : int, default=1
+            Number of time bins (or basis coefficients) per feature.
+        lambda_smooth : float, default=1
+            Temporal-smoothness penalty strength.
+        l2_reg : float, default=0.1
+            L2 (Ridge) penalty strength.
+        smoothness_derivative_order : int, default=2
+            Order of the smoothness penalty; must be 1 or 2 (stored as int).
+        smoothness_reflective_edges : bool, default=True
+            For order 2: also penalise the edge slopes (stored as bool).
+        focal_gamma : float, default=2.0
+            Focusing parameter of the focal loss.
+        uniform_class_weights : bool, default=False
+            Use uniform ``1 / n_classes`` class weights instead of softened
+            inverse-frequency ones.
+        learning_rate : float, default=1e-3
+            Initial Adam step size of the cosine-decay schedule.
+        grad_clip_norm : float, default=1.0
+            Global-norm gradient clip applied before Adam.
+        max_iter : int, default=5000
+            Maximum number of optimization steps.
+        tol : float, default=1e-4
+            Convergence tolerance on the parameter change over 100 steps.
+        random_state : int, default=0
+            Seed for JAX random number generation.
+        verbose : bool, default=False
+            If True, prints loss progress during training.
+        _use_lax_loop : bool, default=False
+            Opt-in fused training loop (:func:`_multinomial_train_loop_jit`);
+            see the comment in the body for when it pays off.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ValueError
+            If ``smoothness_derivative_order`` is not 1 or 2.
+        """
         if smoothness_derivative_order not in (1, 2):
             raise ValueError(
                 f"smoothness_derivative_order must be 1 or 2; got {smoothness_derivative_order}."
@@ -910,7 +1107,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         balanced : bool, default=False
             If True, makes predictions based purely on the behavioral feature evidence
             by neutralizing the class priors (intercepts) before calculating the argmax.
-            This prevents the model from defaulting to the majority class (e.g., R-1, the category with the most calls)
+            This prevents the model from defaulting to the majority class (e.g., R-1, the category with the most USVs)
             when uncertain, allowing for the isolation and visualization of specific
             kinematic relationships to rare vocal categories.
 

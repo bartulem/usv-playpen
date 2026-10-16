@@ -31,13 +31,25 @@ from .assign_vocalizations_utils import (
 
 
 class Vocalocator:
+    """
+    Description
+    -----------
+    Assigns each vocalization of a session to an emitter with the Vocalocator
+    sound-source localization model: prepares the session's audio memmap, USV
+    summary segments and 3D tracks for inference (the ``dset.h5`` bundle), and
+    runs Vocalocator (:meth:`run_vocalocator`) or Vocalocator-SSL
+    (:meth:`run_vocalocator_ssl`) inference, whose outputs attribute the
+    session's vocalizations to the tracked animals.
+    """
 
     def __init__(self, **kwargs) -> None:
 
         """
         Description
         -----------
-        Initializes the Vocalocator class.
+        Initializes the Vocalocator class. Every argument arrives as a keyword
+        through ``**kwargs`` and is stored as an instance attribute; only the
+        three keywords below are accepted.
 
         Parameters
         ----------
@@ -51,6 +63,12 @@ class Vocalocator:
         Returns
         -------
         None
+
+        Raises
+        ------
+        TypeError
+            If any keyword other than ``root_directory``,
+            ``input_parameter_dict`` or ``message_output`` is passed.
         """
 
         expected_kwargs = {'root_directory', 'input_parameter_dict', 'message_output'}
@@ -69,7 +87,7 @@ class Vocalocator:
         Description
         -----------
         Prepares the root directory for vocalocator inference. The ``dset.h5``
-        bundle includes a per-call ``animal_id`` field of per-animal SEX codes
+        bundle includes a per-vocalization ``animal_id`` field of per-animal SEX codes
         (0 = male, 1 = female), derived from the session metadata's
         ``Subjects`` matched to the track names -- an input feature of the
         Vocalocator identity model.

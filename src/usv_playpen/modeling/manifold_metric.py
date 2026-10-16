@@ -65,6 +65,10 @@ def _validate_metric_period(metric: str, period: float) -> None:
         the caller cannot silently mis-specify on euclidean runs and
         then flip to torus later).
 
+    Returns
+    -------
+    None
+
     Raises
     ------
     ValueError
@@ -247,6 +251,21 @@ def distance_correlation(A: np.ndarray, B: np.ndarray) -> float:
     """
 
     def _double_center(M: np.ndarray) -> np.ndarray:
+        """
+        Double-centres a square distance matrix: subtracts its column means
+        and row means and adds back its grand mean.
+
+        Parameters
+        ----------
+        M : np.ndarray
+            ``(n, n)`` pairwise distance matrix.
+
+        Returns
+        -------
+        M_centered : np.ndarray
+            ``(n, n)`` double-centred matrix (every row and column sums to
+            zero up to floating-point error).
+        """
         # The grand mean equals the mean of the per-column means (each column
         # mean already averages a full column, and averaging those over the
         # columns averages every entry exactly once), so it is reused from the
@@ -773,7 +792,7 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
     Every euclidean-named quantity is built from the wrap-aware signed
     residual, so on ``metric='torus'`` it is the geodesic distance and on
     ``metric='euclidean'`` it reduces to the ordinary plane distance. The
-    model-selection score lives under a geometry-specific, honestly-named key:
+    model-selection score lives under a geometry-specific, accurately named key:
     on ``'torus'`` it is ``vm_logscore``, the macro (per-region)
     product-von-Mises log-likelihood (:func:`macro_von_mises_logscore`), and
     ``dcor_xy`` is ``nan`` (distance correlation is uninformative there); on
@@ -854,6 +873,21 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
         mahalanobis_mae = float('nan')
 
     def _pearson(a, b):
+        """
+        Pearson correlation as a centred dot product over the norm product.
+
+        Parameters
+        ----------
+        a : np.ndarray
+            1-D array.
+        b : np.ndarray
+            1-D array of the same length.
+
+        Returns
+        -------
+        r : float
+            Pearson r, or NaN when either input is constant.
+        """
         a_c = a - a.mean()
         b_c = b - b.mean()
         denom = np.sqrt(np.sum(a_c ** 2) * np.sum(b_c ** 2))
@@ -862,13 +896,30 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
         return float(np.dot(a_c, b_c) / denom)
 
     def _spear(a, b):
+        """
+        Spearman rank correlation via `scipy.stats.spearmanr`, NaN on a
+        degenerate input.
+
+        Parameters
+        ----------
+        a : np.ndarray
+            1-D array.
+        b : np.ndarray
+            1-D array of the same length.
+
+        Returns
+        -------
+        rho : float
+            Spearman rho, or NaN when it is not finite (e.g. a constant
+            input).
+        """
         # `spearmanr` signals a degenerate/constant input by returning
         # `nan` (with a ConstantInputWarning), not by raising, so the
         # `np.isfinite` guard below is the real degeneracy handler.
         value = spearmanr(a, b)[0]
         return float(value) if np.isfinite(value) else float('nan')
 
-    # Two honestly-named selection-score keys, one per geometry (the inactive one
+    # Two accurately named selection-score keys, one per geometry (the inactive one
     # is NaN, so the metric dict is schema-stable across geometries):
     #   - torus: `vm_logscore` = the macro (per-region) product-von-Mises
     #     log-likelihood (`macro_von_mises_logscore`) -- signed, has a real zero,

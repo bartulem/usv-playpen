@@ -20,12 +20,12 @@ Two interval definitions are supported:
 
 * ``s2s``: ``start[i+1] - start[i]`` (literature standard).
 * ``e2s``: ``start[i+1] - stop[i]``  (alternate; can be negative for
-  overlapping calls and is dropped via the strict ``> 0`` filter).
+  overlapping USVs and is dropped via the strict ``> 0`` filter).
 
 The number of dropped non-positive intervals is reported per session
-per mode so a user can detect bias from overlapping calls in ``e2s``.
-Non-positive intervals are most common in ``e2s`` (overlapping calls),
-but ``s2s`` can also drop an interval when two same-animal calls share
+per mode so a user can detect bias from overlapping USVs in ``e2s``.
+Non-positive intervals are most common in ``e2s`` (overlapping USVs),
+but ``s2s`` can also drop an interval when two same-animal USVs share
 an identical ``start`` timestamp (interval == 0), so the drop count is
 meaningful -- if rarely nonzero -- in both modes.
 """
@@ -179,17 +179,17 @@ def compute_session_usv_intervals(
     never on its sex, and each animal's sex is read from the session
     metadata (:func:`extract_animal_sexes`) rather than from its track
     slot: in a female-female session both animals are female, their
-    intervals both land in the ``'female'`` pool, and a call of one
-    female is never paired with a call of the other. The "current
+    intervals both land in the ``'female'`` pool, and a vocalization of one
+    female is never paired with a vocalization of the other. The "current
     pointer" advances on every row regardless of whether an interval
     was recorded — this is
     intentional: it preserves chronological order of the conversation
     so a male->female->male triplet does not record a male-male
-    interval that skips over the female call. Intervals strictly
+    interval that skips over the female vocalization. Intervals strictly
     greater than zero are kept; non-positive intervals are counted and
     reported. These arise most often in ``e2s`` mode (overlapping
-    calls), but ``s2s`` can also yield a zero interval when two
-    same-animal calls share an identical ``start`` timestamp.
+    vocalizations), but ``s2s`` can also yield a zero interval when two
+    same-animal vocalizations share an identical ``start`` timestamp.
 
     Parameters
     ----------
@@ -204,22 +204,22 @@ def compute_session_usv_intervals(
         Restrict to ``'usv'`` (pure USVs, ``usv & ~squeak``) or ``'squeak'`` (pure
         squeaks, ``squeak & ~usv``), or None for every non-noise row.
         Defaults to None. An inter-USV interval analysis wants ``'usv'``: dropping
-        noise alone leaves squeaks in the record, and a squeak between two ultrasonic
-        calls suppresses the long interval those calls would have formed and
+        noise alone leaves squeaks in the record, and a squeak between two
+        USVs suppresses the long interval those USVs would have formed and
         contributes two short ones instead. A segment holding both (``usv`` and
         ``squeak`` true) and null booleans are in neither type: under
         ``'filtered'`` they are removed from both sequences, under ``'strict'`` they
-        stay in the record as non-target calls that break a pair.
+        stay in the record as non-target vocalizations that break a pair.
     adjacency (str)
         How "consecutive" is defined, and the two are not interchangeable:
 
-        * ``'filtered'`` (default) removes the other call types first, so two calls of
+        * ``'filtered'`` (default) removes the other vocal types first, so two vocalizations of
           the target type are paired even when something else occurred between them.
-          For a dense caller this measures bout structure.
+          For a dense vocalizer this measures bout structure.
         * ``'strict'`` requires both members of a pair to be adjacent in the session's
           full record, so any intervening vocalization by either animal breaks it.
 
-        The distinction is immaterial for the male's ultrasonic calls, which are dense
+        The distinction is immaterial for the male's USVs, which are dense
         enough that his neighbours are almost always his own, but decisive for the
         female's squeaks: filtered gives her a 5.2 s median and a 1,080 s maximum
         because the definition spans arbitrary stretches of his song, while strict
@@ -266,9 +266,9 @@ def compute_session_usv_intervals(
     animal_sex = extract_animal_sexes(session_root, metadata['track_names'])
 
     try:
-        # Under 'filtered' the other call types are removed before pairing, so the loader
+        # Under 'filtered' the other vocal types are removed before pairing, so the loader
         # does the restriction. Under 'strict' the full record has to stay intact -- an
-        # intervening call must be able to break a pair -- so the restriction is applied
+        # intervening vocalization must be able to break a pair -- so the restriction is applied
         # as a mask during pairing instead. Either way the loader times each row as its
         # vocalization (os_utils.vocal_event_times) and re-sorts by that onset, so a squeak's
         # interval runs from or to the squeak itself (squeak_start / squeak_end), not its segment.
@@ -299,7 +299,7 @@ def compute_session_usv_intervals(
 
     # The emitter column is compared after stripping, since the CSV's emitter values can lack
     # the null-byte / whitespace padding that the H5 ``track_names`` carry; anything that is not
-    # one of the two tracked animals (unassigned calls) maps to None and never forms a pair.
+    # one of the two tracked animals (unassigned vocalizations) maps to None and never forms a pair.
     emitter_expr = pls.col("emitter").cast(pls.Utf8).str.strip_chars("\x00").str.strip_chars().alias("emitter")
     # Under 'strict' the target-type flag has to survive into the pairing loop, so it is
     # carried alongside start/stop/sex rather than applied as a row filter.
@@ -348,7 +348,7 @@ def compute_session_usv_intervals(
         usv1_target = target_arr[r]
 
         # same identified animal (skip unassigned-unassigned pairs), and under 'strict'
-        # both members must also be the requested call type -- anything else between them
+        # both members must also be the requested vocal type -- anything else between them
         # breaks the pair rather than being skipped over
         if (usv0_emitter is not None) and (usv0_emitter == usv1_emitter) \
                 and usv0_target and usv1_target:
@@ -866,6 +866,26 @@ def _fit_bent_median_line(
     ones = np.ones_like(x)
 
     def objective(bend: float) -> float:
+        """
+        Description
+        -----------
+        Median-regression objective of the bent line at one fixed bend: builds the
+        design ``[1, softmin(x, bend; corner_width)]`` and returns the sum of absolute
+        residuals of its median regression on ``y`` (``x``, ``y``, ``ones``,
+        ``corner_width`` and ``max_iter`` come from the enclosing scope). Minimised
+        over ``bend`` by the bounded scalar search.
+
+        Parameters
+        ----------
+        bend (float)
+            Candidate bend location, natural log seconds.
+
+        Returns
+        -------
+        loss (float)
+            Sum of absolute residuals of the median regression at that bend.
+        """
+
         return _median_regression(np.column_stack([ones, _soft_minimum(x, bend, corner_width)]), y,
                                   max_iter)[1]
 
@@ -1288,6 +1308,8 @@ def fit_tied_peak_ladder_and_lrt(
 
 class InterUSVIntervalCalculator:
     """
+    Description
+    -----------
     Cross-session inter-vocalization-interval driver. Reads one or more
     session-list text files, computes per-session inter-USV intervals in each
     interval-definition mode (``s2s`` and ``e2s``), runs the optional
@@ -1432,10 +1454,10 @@ class InterUSVIntervalCalculator:
         # the larger K is not identifiable there, which is itself the finding.
         bootstrap_lrt_n_init = cfg['bootstrap_lrt_n_init']
         bootstrap_lrt_bonferroni = cfg['bootstrap_lrt_bonferroni']
-        # Pools are declared in settings rather than hardcoded: each names the emitter, the call
-        # type (ultrasonic calls or squeaks) and the adjacency rule, and whether it is fitted.
+        # Pools are declared in settings rather than hardcoded: each names the emitter, the vocal
+        # type (USVs or squeaks) and the adjacency rule, and whether it is fitted.
         # Male USVs and female squeaks are different measurements of different vocalizations;
-        # the adjacency rule matters for the sparse caller (see compute_session_usv_intervals).
+        # the adjacency rule matters for the sparse vocalizer (see compute_session_usv_intervals).
         interval_pools = cfg['interval_pools']
         min_intervals_for_fitting = cfg['min_intervals_for_fitting']
         fit_tied_model = cfg['fit_tied_model']

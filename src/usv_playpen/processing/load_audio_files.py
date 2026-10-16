@@ -16,6 +16,22 @@ from scipy.io import wavfile
 
 
 class DataLoader:
+    """
+    Description
+    -----------
+    Loads WAV files into memory. It holds ``input_parameter_dict`` (the
+    ``load_audio_files.DataLoader`` processing settings: ``wave_data_loc``, the
+    directories to scan, and ``load_wavefile_data``, the file-name conditions and
+    the reading library) and ``known_dtypes``, the map from numpy dtype names to
+    the dtype strings stored with each file. When ``input_parameter_dict`` is
+    None the block is read from ``_parameter_settings/processing_settings.json``.
+
+    The entry method is ``load_wavefile_data``, which returns a dictionary keyed
+    by WAV file name with each file's sampling rate, sample array and dtype. It
+    is constructed by ``Operator.concatenate_audio_files`` in
+    ``processing/modify_files.py``.
+    """
+
     def __init__(self, input_parameter_dict: dict | None = None) -> None:
         """
         Description

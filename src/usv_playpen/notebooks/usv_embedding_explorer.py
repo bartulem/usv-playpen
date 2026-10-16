@@ -44,9 +44,9 @@ Architecture
   colored by a categorical label (category / session type / session id / emitter
   sex) OR a continuous metric through the colormap (density, duration,
   frequencies, amplitudes, spectral entropy), with an ``alt.selection_interval``
-  brush. The category colouring is the calls' ``qlvm_category`` (R-1..R-k) on
+  brush. The category colouring is the USVs' ``qlvm_category`` (R-1..R-k) on
   every USV map, the conditional ones included (the categories are defined on the
-  regular map and label the call; ``os_utils.QLVM_CATEGORY_COLUMN``); the squeak
+  regular map and label the USV; ``os_utils.QLVM_CATEGORY_COLUMN``); the squeak
   map holds no USVs with categories, so there a category colouring falls back to
   density, with a note in the chart title. Optional category-boundary contours
   overlay the scatter of the regular map only: the ``label_grid`` of the QLVM
@@ -61,7 +61,7 @@ Architecture
 - Brushing samples spectrograms from the selection along an Archimedean spiral
   (centre -> edge) and renders them as a square grid to the RIGHT of the scatter
   -- read from the consolidated h5 for only the sampled rows, padded to the
-  fixed window so each call's width reflects its true duration, embedded inline
+  fixed window so each vocalization's width reflects its true duration, embedded inline
   as a base64 PNG. The brushed rows are recovered with
   ``chart_widget.apply_selection`` (``.value`` fails on the layered chart).
 - On the squeaks map the tiles come instead from the squeak spectrogram store
@@ -90,6 +90,26 @@ app = marimo.App(width="full")
 
 @app.cell
 def _imports():
+    """
+    Description
+    -----------
+    Cell 1: every import of the notebook (standard library, third-party and the
+    usv_playpen helpers), and lifts altair's 5,000-row data cap
+    (``alt.data_transformers.disable_max_rows``). marimo hands each returned name
+    to the cells that reference it.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    names (tuple)
+        The imported modules, classes, functions and constants (``BytesIO``,
+        ``Path``, the ``os_utils`` QLVM constants and resolvers, ``alt``,
+        ``base64``, ``build_pooled_embeddings_df``, ``vocal_class_mask``, ``h5py``,
+        ``hashlib``, ``json``, ``load_qlvm_category_bundle``, ``mo``, ``np``,
+        ``pd``, ``pls``, ``plt``, ``squeak_store_thumbnail``).
+    """
     import base64
     import hashlib
     import json
@@ -163,6 +183,46 @@ def _settings(
     resolve_experimenter_path,
     resolve_squeak_spectrogram_store_path,
 ):
+    """
+    Description
+    -----------
+    Cell 2: all settings. Reads ``visualizations_settings.json`` once and derives
+    the colormap, the sex colours, the consolidated and squeak spectrogram stores,
+    the starting QLVM map, the category bundle's grid, the available session lists
+    (playback lists excluded) with their session ids, and the scatter's pixel size.
+    A missing file, block or store falls back (defaults, None, or empty mappings)
+    instead of raising.
+
+    Parameters
+    ----------
+    Path (type)
+        ``pathlib.Path``.
+    QLVM_MAPS (tuple)
+        The production USV maps (``os_utils.QLVM_MAPS``); a ``qlvm_map`` setting
+        outside it falls back to ``"qlvm"``.
+    json (module)
+        The ``json`` module.
+    load_qlvm_category_bundle (callable)
+        ``os_utils.load_qlvm_category_bundle``, read for its ``label_grid``.
+    resolve_consolidated_h5_path (callable)
+        Resolves the newest consolidated ``spectrograms_*.h5`` under a directory.
+    resolve_experimenter_path (callable)
+        Re-keys a shipped lab path to the active experimenter and the host mount.
+    resolve_squeak_spectrogram_store_path (callable)
+        Resolves the newest ``squeak_spectrograms_*.h5`` under a directory.
+
+    Returns
+    -------
+    settings (tuple)
+        ``CHART_DATA_WIDTH_PX`` / ``CHART_HEIGHT_PX`` (int, 520 each),
+        ``SQUEAK_DYNAMIC_RANGE_DB`` (float, 60.0), ``available_lists``
+        (dict, list file name -> absolute path), ``category_grid`` (np.ndarray or
+        None), ``category_grid_note`` (str or None, why the grid is missing),
+        ``consolidated_h5_path`` (path or None), ``default_qlvm_map`` (str),
+        ``global_cmap`` (str), ``list_to_sessions`` (dict, list path -> session
+        ids), ``sex_colors`` (dict, male / female / unassigned -> hex) and
+        ``squeak_store_path`` (path or None).
+    """
     # Cell 2 = ALL settings/config (imports are all in cell 1). Reads
     # visualizations_settings.json once and exposes everything downstream cells
     # need: the colormap, sex colors, the consolidated store path, the available
@@ -289,6 +349,37 @@ def _settings(
 
 @app.cell
 def _widgets(QLVM_MAPS, QLVM_MAP_DISPLAY_NAMES, available_lists, default_qlvm_map, mo):
+    """
+    Description
+    -----------
+    Builds the map-independent controls: the session-list multiselect with its
+    Load button (the selection is committed to ``mo.state`` on click, so the pooled
+    build runs only on Load), the Map dropdown, the Color-by dropdown, the
+    examples and max-points sliders and the Apply-mask checkbox, plus the states
+    that remember the Boundaries and Squeak-class choices across map changes.
+
+    Parameters
+    ----------
+    QLVM_MAPS (tuple)
+        The production USV maps offered in the Map dropdown.
+    QLVM_MAP_DISPLAY_NAMES (dict)
+        QLVM map -> the name the dropdown shows it by.
+    available_lists (dict)
+        Session-list file name -> absolute path (from the settings cell).
+    default_qlvm_map (str)
+        The Map dropdown's starting map.
+    mo (module)
+        The ``marimo`` module.
+
+    Returns
+    -------
+    widgets (tuple)
+        ``apply_mask_checkbox``, ``color_dropdown``, ``get_boundary_choice``,
+        ``get_loaded_lists``, ``get_squeak_class_choice``, ``map_dropdown``,
+        ``max_points_slider``, ``n_samples_slider``, ``session_row`` (the
+        displayed list picker + Load row), ``set_boundary_choice`` and
+        ``set_squeak_class_choice``.
+    """
     # Session-list picker: a multiselect dropdown (pick one / some / all),
     # FIXED WIDTH so it never widens, capped height with overflow so extra chips
     # SCROLL inside the box rather than growing the layout. .style() returns a
@@ -421,6 +512,43 @@ def _map_dependent_controls(
     set_boundary_choice,
     set_squeak_class_choice,
 ):
+    """
+    Description
+    -----------
+    Rebuilds the two single-map controls on every map change: Boundaries (enabled
+    only on ``QLVM_CATEGORY_MAP``, otherwise disabled and showing ``"none"``) and
+    Squeak class (enabled only on the squeaks map), each restoring the viewer's
+    remembered choice from state.
+
+    Parameters
+    ----------
+    QLVM_CATEGORY_MAP (str)
+        The map the category bundle is defined on.
+    SQUEAK_CLASS_SELECTIONS (dict)
+        Selection name -> vocal classes (``os_utils.SQUEAK_CLASS_SELECTIONS``).
+    get_boundary_choice (callable)
+        Getter of the remembered Boundaries choice.
+    get_squeak_class_choice (callable)
+        Getter of the remembered Squeak-class selection name.
+    map_dropdown (marimo.ui.dropdown)
+        The Map dropdown; its value decides which control is enabled.
+    mo (module)
+        The ``marimo`` module.
+    set_boundary_choice (callable)
+        Setter of the remembered Boundaries choice.
+    set_squeak_class_choice (callable)
+        Setter of the remembered Squeak-class selection name.
+
+    Returns
+    -------
+    boundary_dropdown, squeak_class_dropdown (tuple)
+        The two dropdowns.
+
+    Raises
+    ------
+    ValueError
+        If the squeak-class options are not ``SQUEAK_CLASS_SELECTIONS`` names.
+    """
     # The two controls that apply to one map only, rebuilt on every map change so
     # they are greyed out (disabled) elsewhere: Boundaries on the map the category
     # bundle is defined on (QLVM_CATEGORY_MAP), Squeak class on the squeaks map.
@@ -473,6 +601,36 @@ def _controls_layout(
     n_samples_slider,
     squeak_class_dropdown,
 ):
+    """
+    Description
+    -----------
+    Stacks the per-map controls into one display-only column (one control per
+    row); ``_explorer`` places it under the list and session pickers.
+
+    Parameters
+    ----------
+    apply_mask_checkbox (marimo.ui.checkbox)
+        Apply-mask toggle.
+    boundary_dropdown (marimo.ui.dropdown)
+        Boundaries dropdown.
+    color_dropdown (marimo.ui.dropdown)
+        Color-by dropdown.
+    map_dropdown (marimo.ui.dropdown)
+        Map dropdown.
+    max_points_slider (marimo.ui.slider)
+        Max-points slider.
+    mo (module)
+        The ``marimo`` module.
+    n_samples_slider (marimo.ui.slider)
+        Examples (spectrograms) slider.
+    squeak_class_dropdown (marimo.ui.dropdown)
+        Squeak-class dropdown.
+
+    Returns
+    -------
+    other_controls (tuple)
+        One-element tuple holding the ``mo.vstack`` of the controls.
+    """
     # Display only: re-running it (any control changes) rebuilds nothing the
     # scatter depends on. One control per row (label left, input right).
     # `session_row` (the list picker + Load) and the Sessions filter from
@@ -499,6 +657,27 @@ def _controls_layout(
 
 @app.cell
 def _session_filter(get_loaded_lists, list_to_sessions, mo):
+    """
+    Description
+    -----------
+    Builds the Sessions multiselect, offering only the sessions of the loaded
+    lists (empty before any Load); an empty pick means every loaded session is
+    shown.
+
+    Parameters
+    ----------
+    get_loaded_lists (callable)
+        Getter of the list paths committed by the last Load (None before any).
+    list_to_sessions (dict)
+        List path -> session ids, from the settings cell.
+    mo (module)
+        The ``marimo`` module.
+
+    Returns
+    -------
+    sessions_row, sessions_select (tuple)
+        The displayed label + picker row and the multiselect itself.
+    """
     # Individual-session filter, PRUNED to the sessions of whichever lists are Loaded
     # (empty before any Load). Keyed on the cheap loaded-lists state and the
     # pre-parsed {list -> sessions} map -- never the pooled build -- so it updates
@@ -540,12 +719,58 @@ def _load_pooled_df(
     mo,
     pls,
 ):
+    """
+    Description
+    -----------
+    Pools the loaded lists' sessions into one embeddings table with
+    ``build_pooled_embeddings_df`` (noise USVs excluded), through a combined
+    session list and a parquet cache under ``~/.usv_playpen_cache`` keyed by a hash
+    of the session union, and tags every row with its source list
+    (``session_type``). Stops the cell with a message when a list or the build
+    cannot be read.
+
+    Parameters
+    ----------
+    Path (type)
+        ``pathlib.Path``.
+    build_pooled_embeddings_df (callable)
+        Builds (or reads the cache of) the pooled embeddings table.
+    get_loaded_lists (callable)
+        Getter of the list paths committed by the last Load.
+    hashlib (module)
+        The ``hashlib`` module (selection hash).
+    mo (module)
+        The ``marimo`` module.
+    pls (module)
+        The ``polars`` module.
+
+    Returns
+    -------
+    pooled_df (tuple)
+        One-element tuple: the pooled ``polars.DataFrame``, or None when no list
+        is loaded.
+    """
     # Wrapped in an inner function so the no-selection case can early-return
     # None (a marimo cell body can't `return`, but a nested function can). The
     # loaded selection is the `mo.state` set on the last "Load" click (None
     # before any click) -- so picking in the dropdown does NOT rebuild; only
     # clicking Load does. None -> pooled_df is None, downstream short-circuits.
     def _():
+        """
+        Description
+        -----------
+        Body of the load (a nested function so the no-selection case can return
+        early).
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        pooled (polars.DataFrame or None)
+            The pooled table with the ``session_type`` column, or None when no list
+            is loaded.
+        """
         selected_paths = list(get_loaded_lists() or [])
         if not selected_paths:
             return None
@@ -634,11 +859,92 @@ def _scatter_chart(
     sex_colors,
     squeak_class_dropdown,
 ):
+    """
+    Description
+    -----------
+    Prepares the display frame and builds the brushable altair scatter of the
+    chosen QLVM map: filters to the picked sessions and to the map's vocal classes
+    (pure USVs on a USV map, the selected squeak class on the squeaks map),
+    samples to the max-points ceiling, colours by the chosen categorical label or
+    continuous quantity (category colouring falls back to density where there are
+    no categories) and, on the category map, overlays the category bundle's
+    boundaries; the chart title states why a colouring or the boundaries were not
+    drawn.
+
+    Parameters
+    ----------
+    CHART_DATA_WIDTH_PX (int)
+        Scatter width in pixels.
+    CHART_HEIGHT_PX (int)
+        Scatter height in pixels.
+    QLVM_CATEGORY_COLUMN (str)
+        The category column (``qlvm_category``).
+    QLVM_CATEGORY_MAP (str)
+        The map the category bundle is defined on.
+    SQUEAK_CLASS_SELECTIONS (dict)
+        Selection name -> vocal classes.
+    alt (module)
+        The ``altair`` module.
+    boundary_dropdown (marimo.ui.dropdown)
+        Boundaries dropdown.
+    vocal_class_mask (callable)
+        ``os_utils.vocal_class_mask``, the row filter by vocal class.
+    category_grid (np.ndarray or None)
+        The category bundle's ``label_grid``, None when unreadable.
+    category_grid_note (str or None)
+        Why the grid is missing.
+    color_dropdown (marimo.ui.dropdown)
+        Color-by dropdown.
+    global_cmap (str)
+        Colormap of the continuous colourings.
+    map_dropdown (marimo.ui.dropdown)
+        Map dropdown.
+    max_points_slider (marimo.ui.slider)
+        Max-points slider.
+    mo (module)
+        The ``marimo`` module.
+    np (module)
+        The ``numpy`` module.
+    pd (module)
+        The ``pandas`` module.
+    plt (module)
+        ``matplotlib.pyplot`` (boundary contours).
+    pooled_df (polars.DataFrame or None)
+        The pooled embeddings table.
+    sessions_select (marimo.ui.multiselect)
+        Sessions picker.
+    sex_colors (dict)
+        Emitter sex -> hex colour.
+    squeak_class_dropdown (marimo.ui.dropdown)
+        Squeak-class dropdown.
+
+    Returns
+    -------
+    chart_data, chart_widget, coord_x, coord_y (tuple)
+        The plotted ``pandas.DataFrame``, the ``mo.ui.altair_chart`` widget and
+        the x / y coordinate column names; all None when there is nothing to
+        plot.
+    """
     # Inner function so the no-data case can early-return None (a marimo cell
     # body can't `return`). pooled_df is None until a list is picked. This cell
     # both prepares the display frame (map/color/boundary columns + sampling)
     # AND builds the chart -- they share the same reactive inputs.
     def _():
+        """
+        Description
+        -----------
+        Body of the scatter cell (a nested function so the no-data cases can return
+        early).
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        chart_widget, chart_pd, x_col, y_col (tuple)
+            The altair chart widget, its data frame and the coordinate column names,
+            or four Nones when there is nothing to plot.
+        """
         if pooled_df is None:
             return None, None, None, None
 
@@ -652,10 +958,10 @@ def _scatter_chart(
             return None, None, None, None
 
         map_prefix = map_dropdown.value
-        # A QLVM map P places calls at P1/P2 on the unit torus.
+        # A QLVM map P places vocalizations at P1/P2 on the unit torus.
         x_col, y_col = f"{map_prefix}1", f"{map_prefix}2"
-        # Every USV map colours by the calls' qlvm_category (the regular map's
-        # categories label the call, conditional maps included); the squeak map
+        # Every USV map colours by the USVs' qlvm_category (the regular map's
+        # categories label the USV, conditional maps included); the squeak map
         # holds the squeak-bearing classes, which carry no USV category, so a
         # category colouring falls back to density there. Boundaries are the
         # category bundle's grid and are drawn on the regular map only: on any
@@ -920,6 +1226,24 @@ def _scatter_chart(
                 # pops; over the categorical palette a white core reads
                 # cleanly.
                 def _bline(_color, _width):
+                    """
+                    Description
+                    -----------
+                    One line layer of the haloed category-boundary contour.
+
+                    Parameters
+                    ----------
+                    _color (str)
+                        Hex line colour.
+                    _width (float)
+                        Stroke width in pixels.
+
+                    Returns
+                    -------
+                    layer (altair.Chart)
+                        Line chart of ``boundary_df`` on the scatter's scales, one line per
+                        contour segment.
+                    """
                     return (
                         alt.Chart(boundary_df)
                         .mark_line(color=_color, strokeWidth=_width, opacity=1.0)
@@ -960,6 +1284,20 @@ def _scatter_chart(
 
 @app.cell
 def _tooltip_style(mo):
+    """
+    Description
+    -----------
+    Injects a page-wide style that left-aligns the Vega tooltip's key column.
+
+    Parameters
+    ----------
+    mo (module)
+        The ``marimo`` module.
+
+    Returns
+    -------
+    None
+    """
     # Left-align the Vega tooltip's key column so the short labels (session id /
     # emitter) sit flush-left with the longer acoustic labels instead of being
     # right-indented. The tooltip is a body-level portal, so a page-wide <style>
@@ -998,7 +1336,87 @@ def _explorer(
     squeak_store_path,
     squeak_store_thumbnail,
 ):
+    """
+    Description
+    -----------
+    Renders the explorer: the controls on top and, beneath them, the scatter with
+    a grid of spectrograms sampled from the brushed region (along an Archimedean
+    spiral, centre -> edge) to its right. USV tiles come from the consolidated
+    store (optionally SAM-masked), squeak tiles from the squeak spectrogram store
+    over the top ``SQUEAK_DYNAMIC_RANGE_DB`` dB (falling back to the consolidated
+    store with a note when it is not built); the grid is embedded inline as a
+    base64 PNG. Without a chart or a brush it shows a hint instead.
+
+    Parameters
+    ----------
+    BytesIO (type)
+        ``io.BytesIO`` (PNG buffer).
+    CHART_HEIGHT_PX (int)
+        Scatter height; the grid image is forced to it.
+    SQUEAK_DYNAMIC_RANGE_DB (float)
+        Dynamic range of each squeak tile below its peak, in dB.
+    apply_mask_checkbox (marimo.ui.checkbox)
+        Apply-mask toggle.
+    available_lists (dict)
+        Session-list file name -> path (for the no-lists hint).
+    base64 (module)
+        The ``base64`` module.
+    chart_data (pandas.DataFrame or None)
+        The plotted points.
+    chart_widget (marimo.ui.altair_chart or None)
+        The scatter widget.
+    consolidated_h5_path (path or None)
+        The consolidated spectrogram store.
+    coord_x (str or None)
+        X coordinate column.
+    coord_y (str or None)
+        Y coordinate column.
+    get_loaded_lists (callable)
+        Getter of the loaded list paths.
+    global_cmap (str)
+        Spectrogram colormap.
+    h5py (module)
+        The ``h5py`` module.
+    map_dropdown (marimo.ui.dropdown)
+        Map dropdown.
+    mo (module)
+        The ``marimo`` module.
+    n_samples_slider (marimo.ui.slider)
+        Number of spectrograms to sample.
+    np (module)
+        The ``numpy`` module.
+    other_controls (marimo Html)
+        The stacked per-map controls.
+    plt (module)
+        ``matplotlib.pyplot``.
+    session_row (marimo Html)
+        The list picker + Load row.
+    sessions_row (marimo Html)
+        The Sessions picker row.
+    squeak_store_path (path or None)
+        The squeak spectrogram store.
+    squeak_store_thumbnail (callable)
+        Reads one squeak tile from the squeak store.
+
+    Returns
+    -------
+    None
+    """
     def _():
+        """
+        Description
+        -----------
+        Body of the explorer cell (a nested function so the hint cases can return
+        early).
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        layout (marimo Html)
+            ``mo.vstack`` of the controls and the hint or the scatter + grid row.
+        """
         # The control panel is rendered at the TOP of THIS cell's output, with
         # the plot directly beneath it -- same cell, so nothing (no code block)
         # separates the widgets from the embedding. When there's no chart yet
@@ -1075,7 +1493,7 @@ def _explorer(
             picks = selected_pd.iloc[_pick_idx]
             tiles = []
             # The fixed spectrogram storage window (time-bin count, e.g. 128). Every
-            # spec is padded to this common width so a call's horizontal extent ==
+            # spec is padded to this common width so a vocalization's horizontal extent ==
             # its true duration RELATIVE TO THE WINDOW (a stable, absolute scale --
             # not the per-brush max, which would rescale every selection).
             time_window = None
@@ -1103,7 +1521,7 @@ def _explorer(
             try:
                 with h5py.File(tile_store_path, "r") as h5:
                     if squeak_tiles:
-                        # Squeak store: one fixed window for every call, absolute dB
+                        # Squeak store: one fixed window for every squeak, absolute dB
                         # quantized to uint8 over the stored [db_floor, db_ceil];
                         # each tile is scaled over the top SQUEAK_DYNAMIC_RANGE_DB
                         # below its own peak. No SAM masks exist for these rows.
@@ -1172,7 +1590,7 @@ def _explorer(
                 # generate_spectrograms, so [0, 1] is the correct display window.
                 # Pad each tile (left-aligned) to the FIXED storage window so its
                 # horizontal extent == its true duration relative to that window: a
-                # short call stays short, a window-length call fills the tile. Lay
+                # short vocalization stays short, a window-length vocalization fills the tile. Lay
                 # the tiles out in a GRID (N_COLS columns) of LANDSCAPE tiles. The
                 # block is forced to the scatter height (legend on the left, so the
                 # scatter starts at the widget top and the grid aligns to it).
@@ -1198,7 +1616,7 @@ def _explorer(
                         continue  # empty trailing slot
                     _, _, tile = tiles[slot]
                     n_freq, dur = tile.shape
-                    # Center the call in the fixed window: width == dur / window
+                    # Center the vocalization in the fixed window: width == dur / window
                     # (duration preserved), with equal zero-padding on both sides.
                     dur = min(dur, w_target)
                     pad_left = (w_target - dur) // 2

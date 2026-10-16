@@ -4,7 +4,7 @@ Tests for processing/compute_usv_loudness: the absolute, masked, variance-weight
 image-level loudness a QLVM loudness conditional is decoded at.
 
 The port was checked against the package's corpus values outside the test suite
-(every checked call of two corpus sessions reproduced ``image_level_db``
+(every checked USV of two corpus sessions reproduced ``image_level_db``
 exactly); these tests pin the properties that check relies on with synthetic audio.
 """
 
@@ -39,7 +39,7 @@ def _tone(n_samples, freq_hz, amplitude, rng):
     return amplitude * np.sin(2 * np.pi * freq_hz * t) + rng.normal(0.0, 20.0, n_samples)
 
 
-def test_call_image_level_db_scales_with_the_audio_level():
+def test_usv_image_level_db_scales_with_the_audio_level():
     """Power is kept absolute: ten times the amplitude is 20 dB louder."""
     rng = np.random.default_rng(0)
     segment = _tone(12500, 60000.0, 3000.0, rng)[:, None]
@@ -48,7 +48,7 @@ def test_call_image_level_db_scales_with_the_audio_level():
     assert loud - quiet == pytest.approx(20.0, abs=1e-4)
 
 
-def test_call_image_level_db_weights_channels_by_their_variance():
+def test_usv_image_level_db_weights_channels_by_their_variance():
     """Channels combine as sum(w * L) / sum(w), w the de-meaned segment variance,
     so the loud channel dominates."""
     rng = np.random.default_rng(1)
@@ -63,8 +63,8 @@ def test_call_image_level_db_weights_channels_by_their_variance():
     assert level_quiet < got < level_loud
 
 
-def test_call_image_level_db_averages_only_inside_the_region():
-    """The level is the call's mask region's: the rows holding the tone are
+def test_usv_image_level_db_averages_only_inside_the_region():
+    """The level is the USV's mask region's: the rows holding the tone are
     louder than rows of noise only."""
     rng = np.random.default_rng(2)
     segment = _tone(12500, 60000.0, 3000.0, rng)[:, None]
@@ -75,18 +75,18 @@ def test_call_image_level_db_averages_only_inside_the_region():
     assert usv_image_level_db(segment, _SR, _SPEC_PARAMS, on_tone) > usv_image_level_db(segment, _SR, _SPEC_PARAMS, off_tone) + 10.0
 
 
-def test_call_image_level_db_is_nan_without_a_usable_call():
+def test_usv_image_level_db_is_nan_without_a_usable_usv():
     """A segment shorter than one STFT window, or a region with no pixel over the
-    call's frames, has no level."""
+    USV's frames, has no level."""
     rng = np.random.default_rng(3)
     assert np.isnan(usv_image_level_db(_tone(1000, 60000.0, 3000.0, rng)[:, None], _SR, _SPEC_PARAMS, _FULL))
     late = np.zeros((128, 128), dtype=bool)
-    late[:, 120:] = True                              # a 12,500-sample call spans 25 frames
+    late[:, 120:] = True                              # a 12,500-sample USV spans 25 frames
     assert np.isnan(usv_image_level_db(_tone(12500, 60000.0, 3000.0, rng)[:, None], _SR, _SPEC_PARAMS, late))
 
 
 def test_session_image_level_db_slices_like_the_generator_and_drops_excluded_channels(tmp_path):
-    """Calls are cut from the HPSS memmap at floor(start * sr):ceil(stop * sr) and
+    """USVs are cut from the HPSS memmap at floor(start * sr):ceil(stop * sr) and
     the metadata's excluded channels are left out, as the spectrograms were made."""
     session_id = "20230119_155302"
     root = tmp_path / session_id
@@ -109,6 +109,6 @@ def test_session_image_level_db_slices_like_the_generator_and_drops_excluded_cha
     got = session_image_level_db(str(root), starts, stops, regions, _SPEC_PARAMS, message_output=lambda *_a: None)
 
     assert got.dtype == np.float32
-    for call, (start, stop) in enumerate(zip(starts, stops, strict=True)):
+    for usv_idx, (start, stop) in enumerate(zip(starts, stops, strict=True)):
         segment = audio[int(np.floor(start * _SR)):int(np.ceil(stop * _SR)), [0, 2]]
-        assert got[call] == np.float32(usv_image_level_db(segment, _SR, _SPEC_PARAMS, regions[call]))
+        assert got[usv_idx] == np.float32(usv_image_level_db(segment, _SR, _SPEC_PARAMS, regions[usv_idx]))

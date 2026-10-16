@@ -7,7 +7,7 @@ from the 3D-extracted kinematic history that precedes it. Which event is the
 target is set by ``model_params.model_target_vocal_type``: the onset of a USV
 bout (``'bout_onset'``), the onset of a single USV (``'individual'``), whether the
 animal is vocalizing at a grid time (``'state'``), or the END of a bout against
-an interior call of a bout that continued (``'bout_offset'``, configured by the
+an interior vocalization of a bout that continued (``'bout_offset'``, configured by the
 ``bout_offset`` settings block). The module name predates the offset target and
 is kept for continuity; the class name likewise. It handles the orchestration of
 data preparation, feature engineering (egocentric/dyadic), and statistical
@@ -78,7 +78,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
        produced by the upstream extraction), detects vocal bouts via mixture-model-driven
        inter-bout-interval thresholds, assembles per-session history windows
        around the positive and negative event timestamps (onset vs silent tile,
-       or last call vs interior call in ``'bout_offset'`` mode), applies cross-session z-scoring,
+       or last vocalization vs interior vocalization in ``'bout_offset'`` mode), applies cross-session z-scoring,
        and serializes the resulting `{feature: {session: {usv_feature_arr,
        no_usv_feature_arr}}}` dictionary to disk.
     2. **Cross-validation splitting**: the `create_data_splits` generator
@@ -112,6 +112,10 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             from '_parameter_settings/modeling_settings.json'.
         **kwargs : dict
             Additional keyword arguments to set as attributes.
+
+        Returns
+        -------
+        None
         """
 
         if modeling_settings_dict is None:
@@ -581,6 +585,24 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 max_frame_idx = len(column_data_np)
 
                 def _collect_valid_windows(times):
+                    """
+                    Cut the history window preceding every event time out of the
+                    session's feature column. A window spans the `history_frames`
+                    frames ending at round(time * session_sampling_rate); windows
+                    reaching outside the recording are dropped (not NaN-padded) and
+                    NaN samples inside kept windows are set to 0.
+
+                    Parameters
+                    ----------
+                    times : np.ndarray
+                        Event times in seconds.
+
+                    Returns
+                    -------
+                    np.ndarray
+                        Array of shape (n_valid_events, history_frames) in the
+                        column's dtype; (0, history_frames) when no window fits.
+                    """
                     ends = np.round(times * session_sampling_rate).astype(int)
                     starts = ends - history_frames
                     valid_mask = (starts >= 0) & (ends <= max_frame_idx)
@@ -720,6 +742,11 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             values contain 'usv_feature_arr' and 'no_usv_feature_arr'.
         strategy_override : str, optional
             If provided, this strategy will be used instead of the one in settings.
+
+        Returns
+        -------
+        generator
+            A generator over the splits; each item is described under Yields.
 
         Yields
         ------
@@ -874,6 +901,13 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         basis_matrix : np.ndarray
             The projection matrix [frames, bases] used to constrain the temporal
             filter complexity.
+        held_out_session_ids : list or None, optional
+            Session IDs reserved at extraction time as the held-out test set
+            (passed by the dispatcher). They are excluded from every CV split; the
+            model is refit once on all development sessions and scored on these
+            sessions, the result stored under a top-level ``'heldout'`` key of the
+            results dictionary. None or an empty list disables the held-out
+            evaluation (no ``'heldout'`` key is written).
 
         Returns
         -------
@@ -913,6 +947,11 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             - `n_iter`, `converged`, `fit_time` : optimizer diagnostics exposing
               folds that terminated at `max_iter` without converging.
             - `split_sizes` : metadata tracking the N for each training/test fold.
+            When ``held_out_session_ids`` is non-empty (and the pooled data is not
+            degenerate) the dictionary also carries a top-level ``'heldout'`` key
+            with ``'actual'`` and ``'null'`` records: the same metrics as scalars
+            for the development-refit model scored once on the held-out sessions,
+            plus ``n_held_out_sessions`` and ``n_held_out_events``.
         """
 
         # Initialize results structure with 'actual' and 'null' keys
@@ -934,9 +973,38 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         # and chance-corrected summary scores, and `n_iter`/`converged`/
         # `fit_time` expose silent-failure modes of the underlying solver.
         def _scalar():
+            """
+            Allocate one per-split scalar metric array.
+
+            Parameters
+            ----------
+            None
+
+            Returns
+            -------
+            np.ndarray
+                Float array of shape (n_splits,) filled with NaN.
+            """
             return np.full(n_splits, np.nan)
 
         def _make_branch():
+            """
+            Allocate the NaN-filled per-split results container of one branch
+            ('actual' or 'null') of the logistic-regression run.
+
+            Parameters
+            ----------
+            None
+
+            Returns
+            -------
+            dict
+                Keys `filter_shapes` (n_splits, history_frames), `coefs_projected`
+                (n_splits, n_bases), `confusion_matrix` (n_splits, 2, 2) and the
+                per-split scalar metrics `optimal_C`, `score`, `recall`, `f1`,
+                `auc`, `ll`, `deviance_explained`, `brier`, `ece`, `mcc`,
+                `n_iter`, `converged`, `fit_time` (each (n_splits,)), all NaN.
+            """
             return {
                 'filter_shapes': np.full((n_splits, history_frames), np.nan),
                 'coefs_projected': np.full((n_splits, n_bases), np.nan),
@@ -1153,6 +1221,22 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             n_held_events = int(X_pos_held.shape[0] + X_neg_held.shape[0])
 
             def _empty_heldout_rec():
+                """
+                Build one NaN-filled held-out record ('actual' or 'null') that the
+                held-out refit fills in when the data allow it.
+
+                Parameters
+                ----------
+                None
+
+                Returns
+                -------
+                dict
+                    The per-split metric keys as scalars (`filter_shapes` a
+                    length-history_frames NaN array, `confusion_matrix` a (2, 2)
+                    NaN array, the rest NaN) plus `n_held_out_sessions` and
+                    `n_held_out_events`.
+                """
                 return {
                     'filter_shapes': np.full(history_frames, np.nan),
                     'coefs_projected': np.full(n_bases, np.nan),
@@ -1287,6 +1371,13 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         basis_matrix : np.ndarray
             This argument is **ignored** by the `pygam` method but is included
             for API compatibility with the `run_model_analysis_parallel` caller.
+        held_out_session_ids : list or None, optional
+            Session IDs reserved at extraction time as the held-out test set
+            (passed by the dispatcher). They are excluded from every CV split; the
+            model is refit once on all development sessions and scored on these
+            sessions, the result stored under a top-level ``'heldout'`` key of the
+            results dictionary. None or an empty list disables the held-out
+            evaluation (no ``'heldout'`` key is written).
 
         Returns
         -------
@@ -1311,6 +1402,11 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                - `n_iter`, `converged`, `fit_time` : optimizer diagnostics.
                Also contains a 'split_sizes' key. 'null' metrics are NaN if not
                calculated.
+            When ``held_out_session_ids`` is non-empty (and the pooled data is not
+            degenerate) the dictionary also carries a top-level ``'heldout'`` key
+            with ``'actual'`` and ``'null'`` records: the same metrics as scalars
+            for the development-refit model scored once on the held-out sessions,
+            plus ``n_held_out_sessions`` and ``n_held_out_events``.
         """
 
         print(f"--- Running [pygam] analysis for feature: {feature_name} ---")
@@ -1345,9 +1441,38 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             gam_kwargs_shuffled['lam'] = lam_penalty
 
         def _scalar():
+            """
+            Allocate one per-split scalar metric array.
+
+            Parameters
+            ----------
+            None
+
+            Returns
+            -------
+            np.ndarray
+                Float array of shape (n_splits,) filled with NaN.
+            """
             return np.full(n_splits, np.nan)
 
         def _make_pygam_branch():
+            """
+            Allocate the per-split results container of one branch ('actual' or
+            'null') of the pyGAM run.
+
+            Parameters
+            ----------
+            None
+
+            Returns
+            -------
+            dict
+                Same keys as the logistic-regression branch: `filter_shapes`
+                (n_splits, history_frames) and the per-split scalar metrics filled
+                with NaN, `confusion_matrix` (n_splits, 2, 2) NaN, and
+                `coefs_projected` / `optimal_C` as empty (n_splits, 0) arrays
+                because the GAM has no basis coefficients or C.
+            """
             return {
                 'filter_shapes': np.full((n_splits, history_frames), np.nan),
                 'coefs_projected': np.empty((n_splits, 0)),
@@ -1374,6 +1499,21 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         grid_X_1 = np.stack([np.ones(history_frames, dtype=np.float32), time_indices], axis=1)
 
         def unroll_data_for_gam(X):
+            """
+            Unroll a feature-history matrix into the (value, lag) two-column
+            layout of the tensor-product spline, with the float32 lag indices
+            of the enclosing scope (see `unroll_history_matrix`).
+
+            Parameters
+            ----------
+            X : np.ndarray
+                Feature-history matrix of shape (n_samples, history_frames).
+
+            Returns
+            -------
+            np.ndarray
+                float32 array of shape (n_samples * history_frames, 2).
+            """
             return unroll_history_matrix(X, time_indices=time_indices)
 
         # Held-out reserve carved at extraction time (passed explicitly by the
@@ -1573,6 +1713,23 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             n_held_events = int(X_pos_held.shape[0] + X_neg_held.shape[0])
 
             def _empty_heldout_rec():
+                """
+                Build one NaN-filled held-out record ('actual' or 'null') that the
+                held-out refit fills in when the data allow it.
+
+                Parameters
+                ----------
+                None
+
+                Returns
+                -------
+                dict
+                    The per-split metric keys as scalars (`filter_shapes` a
+                    length-history_frames NaN array, `confusion_matrix` a (2, 2)
+                    NaN array, `coefs_projected` / `optimal_C` empty arrays
+                    because the GAM has neither, the rest NaN) plus
+                    `n_held_out_sessions` and `n_held_out_events`.
+                """
                 return {
                     'filter_shapes': np.full(history_frames, np.nan),
                     'coefs_projected': np.empty((0,)),

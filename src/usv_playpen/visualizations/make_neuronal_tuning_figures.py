@@ -149,7 +149,7 @@ VMI_REGION_TO_GROUP: dict[str, str] = {
 # is the full-width window (so ±tol/2 around the cluster centre)
 # applied to per-session `peak_bin_value` values during the
 # consistency check; it's set to two upstream bin widths (amplitudes: 2/36 of
-# their [0, 1] per-call normalized range) so the
+# their [0, 1] per-USV normalized range) so the
 # rule mirrors PETH's "±2 bins" convention. `unit_scale` and
 # `unit_label` are display-only conversions for the x-axis (e.g. Hz
 # → kHz).
@@ -184,11 +184,11 @@ def load_qlvm_category_segmentation() -> dict[str, dict]:
     ``os_utils.load_qlvm_category_bundle`` (``os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY``,
     written by ``build-qlvm-categories``): the partition of the regular map's
     torus the summaries' ``qlvm_category`` was assigned from, so every tuning
-    watershed is drawn over exactly the regions the calls were labelled with. The
+    watershed is drawn over exactly the regions the USVs were labelled with. The
     grid is ``(res, res)``, indexed ``[y, x]`` over the unit torus, so the block's
     ``xx`` / ``yy`` are the pixel centres ``(i + 0.5) / res`` and its ``bounds``
     are ``(0, 1, 0, 1)``: drawn with ``origin="lower"``, pixel ``[y, x]`` lands at
-    torus position ``(x, y)``, the pixel ``assign-qlvm-categories`` reads a call's
+    torus position ``(x, y)``, the pixel ``assign-qlvm-categories`` reads a USV's
     category from. There is no fallback: an unreadable bundle raises, rather than
     drawing placeholders or a grid of another partition.
 
@@ -4371,6 +4371,22 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         See `make_category_peak_distribution_figure` for the shared
         consistency-rule parameters. Otherwise identical.
 
+        triage_pkl_path (str | pathlib.Path)
+            Absolute path to the `unit_triage_*.pkl` artifact.
+        segmentation (str)
+            One of `USV_CATEGORY_SEGMENTATIONS`.
+        catalog_csv_path (str | pathlib.Path | None)
+            Absolute path to the unit catalog CSV; None uses the path
+            embedded in the triage pickle.
+        k_min (int)
+            Minimum mode count for consistency.
+        require_majority (bool)
+            Whether to also require `mode_count / n_sig_up > 0.5`.
+        out_dir (str | pathlib.Path | None)
+            Override the configured visualizations directory.
+        fig_format (str | None)
+            Override the configured figure format.
+
         Returns
         -------
         out_path (pathlib.Path)
@@ -4570,6 +4586,20 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Parameters
         ----------
         See per-segmentation method docstrings; identical knobs.
+
+        triage_pkl_path (str | pathlib.Path)
+            Absolute path to the `unit_triage_*.pkl` artifact.
+        catalog_csv_path (str | pathlib.Path | None)
+            Absolute path to the unit catalog CSV; None uses the path
+            embedded in the triage pickle.
+        k_min (int)
+            Minimum mode count for consistency.
+        require_majority (bool)
+            Whether to also require `mode_count / n_sig_up > 0.5`.
+        out_dir (str | pathlib.Path | None)
+            Override the configured visualizations directory.
+        fig_format (str | None)
+            Override the configured figure format.
 
         Returns
         -------
@@ -4774,6 +4804,19 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Parameters
         ----------
         See `_compute_behavioral_bucket_flags`; identical signature.
+
+        unit (dict)
+            One entry from `triage["units"]`.
+        recorded_mouse_id (str)
+            The `mouse_id` field of the unit — used to disambiguate
+            self-pose modalities from partner-self pose modalities.
+        condition (str)
+            Which `unit["conditions"][...]` block to walk
+            (e.g. `"intact_female"`).
+        k_min (int)
+            Minimum sig-session count per feature.
+        require_majority (bool)
+            Apply the strict-majority gate on top of `k_min`.
 
         Returns
         -------
@@ -5300,6 +5343,23 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         total = max(1, n_panel)
 
         def _annotate(triple, pos):
+            """
+            Description
+            -----------
+            Write one Venn region's count and its percentage of the panel
+            total (``max(1, n_panel)``) as centred text on ``ax``.
+
+            Parameters
+            ----------
+            triple (tuple[bool, bool, bool])
+                The `(beh, soc, voc)` membership key into `counts`.
+            pos (tuple[float, float])
+                Data-coordinate `(x, y)` position of the text.
+
+            Returns
+            -------
+            None
+            """
             n = counts[triple]
             p = 100.0 * n / total
             ax.text(
@@ -5446,6 +5506,18 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Parameters
         ----------
         Same as `_collect_three_set_overlap_counts`.
+
+        triage_pkl_path (str | pathlib.Path)
+            Absolute path to the `unit_triage_*.pkl` artifact.
+        catalog_csv_path (str | pathlib.Path | None)
+            Catalog CSV override; defaults to the path embedded in
+            the triage pickle.
+        condition (str)
+            Which `unit["conditions"][...]` block to walk.
+        k_min (int)
+            Minimum sig-session count per modality.
+        require_majority (bool)
+            Apply the strict-majority gate on top of `k_min`.
 
         Returns
         -------

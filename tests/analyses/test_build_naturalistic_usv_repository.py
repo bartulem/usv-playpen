@@ -42,9 +42,7 @@ _SPEC_PARAMS = json.loads(
 )["generate_spectrograms"]
 
 
-# ---------------------------------------------------------------------------
 # _normalize_emitter
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("value,expected", [
@@ -60,9 +58,7 @@ def test_normalize_emitter(value, expected):
     assert _normalize_emitter(value) == expected
 
 
-# ---------------------------------------------------------------------------
 # _segment_bouts
-# ---------------------------------------------------------------------------
 
 
 def test_segment_bouts_empty():
@@ -93,9 +89,7 @@ def test_segment_bouts_threshold_is_inclusive():
     np.testing.assert_array_equal(out, [0, 1])
 
 
-# ---------------------------------------------------------------------------
 # reconstruct_usv_waveform
-# ---------------------------------------------------------------------------
 
 
 def _tight_mask(num_freq: int = 128, num_time: int = 128) -> np.ndarray:
@@ -138,9 +132,7 @@ def test_reconstruct_shape_and_faded_ends():
     assert float(np.max(np.abs(out))) > 0.0
 
 
-# ---------------------------------------------------------------------------
 # build() — full synthetic-session integration
-# ---------------------------------------------------------------------------
 
 
 def _write_fake_session(
@@ -479,7 +471,7 @@ def test_build_skips_session_without_noise_column(tmp_path, _patched_env):
 def test_build_skips_session_whose_summary_the_h5_does_not_match(tmp_path, _patched_env):
     """Summary rows index the spectrogram H5 rows (durations, masks) and are stored as usv_row,
     so a summary with more rows than the H5 (re-curated after the spectrograms were made) is
-    skipped and logged instead of attaching masks to the wrong calls."""
+    skipped and logged instead of attaching masks to the wrong USVs."""
 
     session_root = tmp_path / "session_root"
     _write_fake_session(session_root, starts=[0.01, 0.05, 0.09], stops=[0.03, 0.07, 0.11])
@@ -573,9 +565,7 @@ def test_build_rejects_unknown_context_label(tmp_path, _patched_env):
         ).build()
 
 
-# ---------------------------------------------------------------------------
 # CLI routing
-# ---------------------------------------------------------------------------
 
 
 def test_cli_routes_to_builder(mocker, tmp_path):

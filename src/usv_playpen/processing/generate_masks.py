@@ -6,14 +6,14 @@ This is the usv-playpen-native orchestrator around the vendored mask-segmentatio
 kernels in ``processing/masks/`` (ported from the external ``spec_gen_full_pipeline``
 box-prompt path). For one session it reads the per-USV spectrograms written by
 ``generate_spectrograms`` (``audio/spectrograms/<session>_spectrograms.h5``), runs a
-YOLO box detector to propose one box per call candidate, prompts SAM2 once per box to
-segment each call, and writes the resulting instance masks back INTO the SAME H5 under
+YOLO box detector to propose one box per USV candidate, prompts SAM2 once per box to
+segment each USV, and writes the resulting instance masks back INTO the SAME H5 under
 a ``mask/<session>`` group that the spectrogram viewers and acoustic-feature steps read.
 
 Default method is ``boxprompt`` with the ``yolo`` detector: the learned box detector is
 faster, more accurate, and more stringent than the grid (``SAM2AutomaticMaskGenerator``)
-path -- it emits one box per detected call instead of over-proposing and re-fusing
-temporally overlapping calls, so overlapping/stacked USVs stay distinct instances. The
+path -- it emits one box per detected USV instead of over-proposing and re-fusing
+temporally overlapping USVs, so overlapping/stacked USVs stay distinct instances. The
 connected-component detector (``cc``) is the no-weights fallback.
 
 Mask-array index convention (matches the consolidated-store readers in
@@ -268,7 +268,7 @@ class MaskGenerator:
         ``mask/<session>`` group is overwritten so re-runs are idempotent.
 
         The detector is selectable: ``detector='yolo'`` builds a learned ``detect_fn``
-        that proposes one box per call, while ``detector='cc'`` builds no ``detect_fn``
+        that proposes one box per USV, while ``detector='cc'`` builds no ``detect_fn``
         and the kernel falls back to its connected-component detector (the no-weights
         path).
 
@@ -416,7 +416,7 @@ class MaskGenerator:
         # cuDNN's autotuner picks algorithms from the GPU state at process
         # start, and with the bf16 autocast + TF32 this module enables that
         # shifts borderline detections by more than the margin separating a
-        # faint call from the detector's confidence gate. Two runs in ONE
+        # faint USV from the detector's confidence gate. Two runs in ONE
         # process agree bit-for-bit, but runs in DIFFERENT processes do not:
         # the cohort's original mask pass left 9-26% of rows with no mask,
         # while a rerun of the identical code on the identical spectrograms
@@ -554,12 +554,12 @@ class MaskGenerator:
 @click.option('--sam2-model-path', 'sam2_model_path', type=str, default=None, required=False, help='SAM2 checkpoint path.')
 @click.option('--yolo-weights', 'yolo_weights', type=str, default=None, required=False, help='Trained YOLO best.pt weights path.')
 @click.option('--yolo-conf', 'yolo_conf', type=float, default=None, required=False, help='YOLO confidence threshold (lower => more recall).')
-@click.option('--yolo-iou', 'yolo_iou', type=float, default=None, required=False, help='YOLO NMS IoU (raise to keep stacked calls).')
+@click.option('--yolo-iou', 'yolo_iou', type=float, default=None, required=False, help='YOLO NMS IoU (raise to keep stacked USVs).')
 @click.option('--method', 'method', type=str, default=None, required=False, help="Mask-generation method; only 'boxprompt' (SAM2 box-prompt path) is supported.")
 @click.option('--yolo-imgsz', 'yolo_imgsz', type=int, default=None, required=False, help='YOLO detector input image size in px (native spectrogram size is 128).')
 @click.option('--deterministic/--no-deterministic', 'deterministic', default=None, required=False, help="Disable cuDNN's autotuner so masks reproduce across processes (default: enabled). "
      "With the autotuner on, algorithm choice varies with the GPU state at process start and "
-     "borderline faint calls fall on either side of the detector's confidence gate.")
+     "borderline faint USVs fall on either side of the detector's confidence gate.")
 @click.option('--mask-cmap', 'mask_cmap', type=str, default=None, required=False, help='Matplotlib colormap used to render each spectrogram to RGB before SAM2 prompting.')
 @click.option('--duration-min', 'duration_min', type=int, default=None, required=False, help='Minimum USV duration (time bins) to segment; shorter/placeholder (duration==0) rows are skipped.')
 @click.option('--batch-size', 'batch_size', type=int, default=None, required=False, help='Number of spectrograms processed per batch before a memory-cleanup pass.')

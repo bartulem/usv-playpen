@@ -82,7 +82,7 @@ def extract_snippet_acoustics(
     """
     Description
     -----------
-    Per-USV acoustic features over a FIXED ``window_s`` window from each call's
+    Per-USV acoustic features over a FIXED ``window_s`` window from each USV's
     onset -- the audio analogue of :func:`extract_snippet_matrix` (which counts
     spikes in the same window). For each onset the loudest-channel waveform
     snippet ``[onset, onset + window_s)`` is read from the session's concatenated
@@ -112,7 +112,7 @@ def extract_snippet_acoustics(
 
     Used to test (and later control for) acoustic confounds between vocal-category
     groups in the coactivity analysis: the fixed-duration window already equalizes
-    call DURATION; these features expose any residual AMPLITUDE / FREQUENCY
+    USV DURATION; these features expose any residual AMPLITUDE / FREQUENCY
     differences over the identical window.
 
     Parameters
@@ -121,10 +121,10 @@ def extract_snippet_acoustics(
         Session root directory; the ``*_int16.mmap`` audio is the 'ultrasonic' band
         memmap in its ``audio/hpss_filtered`` folder (``os_utils.find_audio_mmap``).
     onsets : np.ndarray
-        1D array of call onset times in seconds.
+        1D array of USV onset times in seconds.
     peak_channels : np.ndarray
         1D array (length matching ``onsets``) of the loudest 0-indexed audio
-        channel per call (the ``peak_amp_ch`` column; floats are cast to int,
+        channel per USV (the ``peak_amp_ch`` column; floats are cast to int,
         non-finite -> channel 0).
     window_s : float
         Window length in seconds (e.g. 0.030), measured from each onset.
@@ -339,7 +339,7 @@ def bootstrap_coactivity_distribution(
         Neural spike-count matrix for the group, shape
         (N_neurons x N_trials). Earlier revisions named this
         argument `simple_counts` (back when the analysis only
-        bootstrapped the "simple" call group); the function has
+        bootstrapped the "simple" USV group); the function has
         always been group-agnostic and works on any count matrix.
     n_target : int
         The target trial count per resample. Typically the size of
@@ -935,7 +935,7 @@ def load_animal_sessions(
     of that date; the largest wins, ties broken by session count.
 
     Each returned entry carries the session id + root, the recording frame rate, the
-    total session duration, per-call onsets split into the two category groups (as
+    total session duration, per-USV onsets split into the two category groups (as
     polars dataframes; only the focal mouse's USV-bearing segments -- pure USVs,
     ``usv & ~squeak``, and segments holding both a squeak and a USV, ``usv & squeak``
     -- enter a group: noise segments, pure squeaks and unscored rows are dropped first,
@@ -958,7 +958,7 @@ def load_animal_sessions(
     catalog : dict[tuple[str, str, str], dict]
         Output of :func:`load_unit_catalog`.
     category_column : str
-        ``usv_summary`` column used to split calls into groups
+        ``usv_summary`` column used to split USVs into groups
         (e.g. ``"qlvm_category"``). A None / empty value, or a column absent
         from a session's summary (e.g. one whose categories ``assign-qlvm-categories``
         has not written yet), raises ValueError
@@ -987,7 +987,7 @@ def load_animal_sessions(
     if not category_column:
         error_message = (
             f"load_animal_sessions: category_column is {category_column!r}. The group comparison splits "
-            f"calls by a per-USV category label, so without a column the QLVM category labels are not "
+            f"USVs by a per-USV category label, so without a column the QLVM category labels are not "
             f"available; set the category column to the QLVM category column, 'qlvm_category'."
         )
         raise ValueError(error_message)
@@ -1005,6 +1005,26 @@ def load_animal_sessions(
     }
 
     def _score(date: str) -> tuple[int, int]:
+        """
+        Description
+        -----------
+        Rank one recording day for the session pick: count the units of the day's
+        first session (alphabetically) that pass :func:`filter_units_by_catalog`
+        under the enclosing function's ``cluster_group`` / ``require_somatic`` /
+        ``brain_areas`` filters, and pair it with the day's session count as the
+        tie-breaker.
+
+        Parameters
+        ----------
+        date (str)
+            Recording date (the ``YYYYMMDD`` prefix of the session names).
+
+        Returns
+        -------
+        score (tuple[int, int])
+            ``(n_filtered_units, n_sessions)`` for that day; compared
+            lexicographically, the largest wins.
+        """
         first_session = sorted(by_date[date])[0]
         filtered = filter_units_by_catalog(
             animal_id, date, set(good_maps[first_session]), catalog,
@@ -1048,7 +1068,7 @@ def load_animal_sessions(
             error_message = (
                 f"load_animal_sessions: the category column '{category_column}' is absent from "
                 f"{usv_summary_file}. QLVM category labels are not available in it (re-run "
-                f"assign-qlvm-categories to write qlvm_category), so calls "
+                f"assign-qlvm-categories to write qlvm_category), so USVs "
                 f"cannot be split into groups; set the category column to an existing label column."
             )
             raise ValueError(error_message)

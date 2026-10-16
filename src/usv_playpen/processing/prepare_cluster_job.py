@@ -17,6 +17,23 @@ from ..os_utils import configure_path, to_cluster_path
 
 
 class PrepareClusterJob:
+    """
+    Description
+    -----------
+    Prepares the input list for a SLEAP inference job on the cluster. It holds
+    the ``prepare_cluster_job`` processing-settings block
+    (``input_parameter_dict``: camera names, inference root directory, centroid
+    and centered-instance model paths), the session ``root_directory`` list and
+    the ``message_output`` callback.
+
+    The entry method is ``video_list_to_txt``, which writes ``job_list.txt``
+    (the videos to run inference on, with the model path(s) to use) into the
+    inference root directory. When ``input_parameter_dict`` is None the block is
+    read from ``_parameter_settings/processing_settings.json``; ``root_directory``
+    has no settings default and must be supplied. It is constructed by the
+    processing pipeline (``processing/preprocess_data.py``).
+    """
+
     def __init__(self, input_parameter_dict: dict = None,
                  root_directory: list[str] = None,
                  message_output: Callable | None = None) -> None:

@@ -142,6 +142,17 @@ def _file_mtime_iso(path) -> str:
     """
     Returns the file modification time as an ISO-8601 UTC string.
     Accepts a `str` or `pathlib.Path`.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        The file whose modification time is read (``stat().st_mtime``).
+
+    Returns
+    -------
+    str
+        The mtime in UTC at second resolution with a ``Z`` suffix, e.g.
+        ``'2026-10-16T12:34:56Z'``.
     """
 
     ts = datetime.fromtimestamp(Path(path).stat().st_mtime, tz=timezone.utc)
@@ -154,6 +165,17 @@ def _build_default_output_filename(input_metadata: dict) -> str:
     `_input_metadata` block and the current UTC timestamp.
 
     Schema: `univariate_<analysis_tag>_<experimental_condition>_<ts>.pkl`.
+
+    Parameters
+    ----------
+    input_metadata : dict
+        The upstream `_input_metadata` block; its `analysis_tag` and
+        `experimental_condition` keys are read directly.
+
+    Returns
+    -------
+    str
+        The filename, with `<ts>` the current UTC time as `%Y%m%d_%H%M%SZ`.
     """
 
     tag = input_metadata['analysis_tag']

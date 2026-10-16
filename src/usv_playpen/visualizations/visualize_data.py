@@ -24,6 +24,23 @@ from .qlvm_torus_traversal_video import QLVMTorusTraversalVideo
 
 
 class Visualizer:
+    """
+    Description
+    -----------
+    Runs the configured visualizations over a list of sessions: per-cluster
+    neuronal tuning figures, behavioral (3D tracking) videos and USV
+    spectrograms per session, plus the cohort-level QLVM torus traversal video
+    and embedding thumbnails once per run, each switched on by
+    ``visualize_booleans`` in the settings. Failures are collected per session
+    and reported at the end rather than aborting the run.
+
+    It holds ``root_directories``, ``input_parameter_dict`` (the visualizations
+    settings) and ``message_output``; when ``input_parameter_dict`` or
+    ``root_directories`` is None the missing value is read from
+    ``_parameter_settings/visualizations_settings.json``. The entry method is
+    ``visualize_data``, which suppresses benign ``RuntimeWarning``s around the
+    whole run. It is constructed by the GUI (``usv_playpen_gui.py``).
+    """
 
     def __init__(self, input_parameter_dict: dict = None,
                  root_directories: list = None,

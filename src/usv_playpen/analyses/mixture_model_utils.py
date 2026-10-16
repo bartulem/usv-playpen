@@ -98,6 +98,10 @@ def fit_log_gmm(
         to 10.
     reg_covar (float)
         Regularisation added to component covariances; defaults to 1e-4.
+    x_is_log (bool)
+        If True, ``x`` already holds log-space values (natural log of the
+        intervals, any sign) and is used as is instead of being logged;
+        defaults to False.
 
     Returns
     -------
@@ -1462,6 +1466,10 @@ def fit_log_t_mixture(
     reg_covar (float)
         Lower bound on component variance to prevent singular fits;
         defaults to 1e-4 (matches :func:`fit_log_gmm`).
+    x_is_log (bool)
+        If True, ``x`` already holds log-space values (natural log of the
+        intervals) and is used as is instead of being logged; defaults to
+        False.
     init_params (tuple or None)
         Optional ``(weights, means, variances, nus)`` start, each of
         shape ``(n_components,)``, run as one additional initialisation
@@ -2770,6 +2778,11 @@ def fit_log_ig_mixture(
         ``1/lam`` (i.e. a ceiling ``lam <= 1/reg_covar``), preventing
         a component from collapsing onto a point mass; defaults to
         1e-4 (accepted for interface parity with the other fitters).
+    x_is_log (bool)
+        If True, ``x`` holds log-space values (natural log of the
+        intervals); they are exponentiated back to linear time (log values
+        clipped to [-700, 700] first) for the IG fit, while the KMeans
+        initialisation uses them directly. Defaults to False.
 
     Returns
     -------
@@ -3098,6 +3111,21 @@ def ig_mixture_quantile_logspace(q: np.ndarray, model: IGMixture) -> np.ndarray:
     hi = float(np.log(model.mus_.max()) + 20.0)
 
     def _cdf_scalar(v: float) -> float:
+        """
+        Description
+        -----------
+        Scalar wrapper of :func:`ig_mixture_cdf_logspace` for ``brentq``.
+
+        Parameters
+        ----------
+        v (float)
+            Log-space interval value.
+
+        Returns
+        -------
+        cdf (float)
+            Mixture CDF at ``v``.
+        """
         return float(ig_mixture_cdf_logspace(v, model)[0])
 
     out = np.empty(q.size)
@@ -3491,11 +3519,17 @@ def bootstrap_lrt(
         ``intervals_sec.size`` the full data is used.
     model_class (str)
         ``'gauss'`` for log-Gaussian mixture, ``'t'`` for log-Student-t
-        mixture. Defaults to ``'t'``.
+        mixture, ``'ig'`` for inverse-Gaussian mixture. Defaults to ``'t'``;
+        any other value raises ``ValueError``.
     n_init_obs (int)
         Number of EM restarts for the observed fits; defaults to 10.
     n_init_boot (int)
         Number of EM restarts for each bootstrap fit; defaults to 3.
+    n_jobs (int)
+        Number of parallel workers (joblib ``Parallel``) for the bootstrap
+        replicates; defaults to 1, the sequential path with one shared
+        resampling RNG stream. With ``n_jobs > 1`` each replicate draws
+        from its own deterministic RNG seeded by ``(seed, b)``.
     reg_covar (float)
         Component variance floor.
     seed (int)

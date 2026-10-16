@@ -38,7 +38,7 @@ contrast rather than crash it. Coverage:
   REAL extraction run end-to-end on a synthetic on-disk session tree (built
   with ``tests/modeling/_synth.py``): the published pickle's row table is
   aligned across every array, carries the three condition levels, and its
-  provenance counts agree with the rows; sessions whose predictor never calls,
+  provenance counts agree with the rows; sessions whose predictor never vocalizes,
   or whose response is never in bounds, are dropped; degenerate cohorts raise.
 * ``behavioral_response_contrast`` — run on that extracted pickle under every
   covariate transform, both controls, every covariate set, the legacy
@@ -215,7 +215,7 @@ class TestInterBoutQuietAnchors:
         assert anchors.size == 2
 
     def test_every_anchor_has_clean_history_and_forward_window(self):
-        """A quiet anchor touching a call is not a silent observation."""
+        """A quiet anchor touching a vocalization is not a silent observation."""
 
         onsets, durations = self._bouts()
         offsets = onsets + durations
@@ -246,7 +246,7 @@ class TestInterBoutQuietAnchors:
         assert first.tolist() == second.tolist()
 
     def test_gaps_too_short_yield_nothing(self):
-        """Better no silent row than one contaminated by a call."""
+        """Better no silent row than one contaminated by a vocalization."""
 
         anchors = inter_bout_quiet_anchors(
             np.array([10.0, 12.0]), np.array([0.2, 0.2]), CAMERA_FPS, SESSION_FRAMES,
@@ -1058,21 +1058,21 @@ class TestVarianceExplainedByVocalTerms:
 class TestForwardCleanTimes:
     """All-animal silence test used by the matched-divergence anchors."""
 
-    def test_a_call_starting_inside_the_window_disqualifies(self):
+    def test_a_vocalization_starting_inside_the_window_disqualifies(self):
         mask = forward_clean_times(np.array([10.0]), np.array([12.0]), np.array([12.1]), 4.0)
         assert not bool(mask[0])
 
-    def test_a_call_starting_after_the_window_does_not(self):
+    def test_a_vocalization_starting_after_the_window_does_not(self):
         mask = forward_clean_times(np.array([10.0]), np.array([15.0]), np.array([15.1]), 4.0)
         assert bool(mask[0])
 
-    def test_a_call_straddling_the_moment_disqualifies(self):
-        # A starts-only test would pass this: the call began before the anchor and
+    def test_a_vocalization_straddling_the_moment_disqualifies(self):
+        # A starts-only test would pass this: the vocalization began before the anchor and
         # is still running at it.
         mask = forward_clean_times(np.array([10.0]), np.array([9.0]), np.array([11.0]), 4.0)
         assert not bool(mask[0])
 
-    def test_a_session_without_calls_is_entirely_clean(self):
+    def test_a_session_without_vocalizations_is_entirely_clean(self):
         mask = forward_clean_times(np.array([1.0, 2.0]), np.empty(0), np.empty(0), 4.0)
         assert mask.all()
 
@@ -1200,8 +1200,8 @@ def _write_variable_bout_summary(session_root: Path,
     shipped male mixture model yields), separated by seeded 6-16 s gaps so
     every inter-bout gap can hold a 1 s history plus a 0.5 s forward window,
     and the longest gaps clear the 3 s deep-silence margin. Two sparse female
-    calls are added so the all-animal silence rule of the matched-divergence
-    pipeline has partner calls to respect.
+    vocalizations are added so the all-animal silence rule of the matched-divergence
+    pipeline has partner vocalizations to respect.
 
     Parameters
     ----------
@@ -1311,7 +1311,7 @@ def _build_response_cohort(base_dir: Path,
     n_sessions : int
         Number of sessions to build.
     silent_male_sessions : tuple of int
-        Session indices whose male never calls (no predictor bout).
+        Session indices whose male never vocalizes (no predictor bout).
     out_of_bounds_sessions : tuple of int
         Session indices whose female ``speed`` is never inside its bounds, so
         no anchor in them has a usable ``speed`` target.
@@ -1450,7 +1450,7 @@ def extracted_cohort(tmp_path_factory) -> dict:
     """
     Runs the real behavioral-response extraction once for the whole module.
 
-    Five ordinary sessions plus a sixth whose male never calls, so the shared
+    Five ordinary sessions plus a sixth whose male never vocalizes, so the shared
     artifact also carries the evidence that a predictor-silent session is
     dropped. Extraction is the slow step, so every contrast test reuses this
     pickle rather than re-reading the cohort.
@@ -1581,11 +1581,11 @@ class TestBehavioralResponseExtraction:
         assert np.all(artifact['target'] > 0.0)
         np.testing.assert_allclose(artifact['target_bins'].mean(axis=2), artifact['target'])
 
-    def test_a_session_whose_predictor_never_calls_is_dropped(self, extracted_cohort):
+    def test_a_session_whose_predictor_never_vocalizes_is_dropped(self, extracted_cohort):
         """
         The sixth session's male is silent. Sessions are dropped on the
         PREDICTOR having no bouts, so it must be absent from the rows and from
-        the provenance, while all five calling sessions contribute.
+        the provenance, while all five vocalizing sessions contribute.
         """
 
         artifact = extracted_cohort['artifact']
@@ -1639,7 +1639,7 @@ class TestBehavioralResponseExtraction:
             BehavioralResponsePipeline(modeling_settings_dict=settings
                                        ).extract_and_save_modeling_input_data()
 
-    def test_a_cohort_whose_predictor_never_calls_raises(self, tmp_path):
+    def test_a_cohort_whose_predictor_never_vocalizes_raises(self, tmp_path):
         """
         When every session's male is silent, every session is dropped before
         column selection; the extraction must stop with an explanation of what
@@ -2135,13 +2135,13 @@ class TestMatchedDivergenceExtraction:
 
 
 class TestAllUsvTimes:
-    """Every call in the session counts against silence, sorted by start."""
+    """Every vocalization in the session counts against silence, sorted by start."""
 
     def test_times_come_back_sorted_by_start_with_stops_aligned(self, tmp_path):
         """
         ``forward_clean_times`` assumes starts sorted ascending with each stop
         still paired to its own start; an unsorted table must be reordered as
-        pairs, and every emitter's calls kept.
+        pairs, and every emitter's vocalizations kept.
         """
 
         audio = tmp_path / 'session' / 'audio'
@@ -2181,7 +2181,7 @@ class TestAllUsvTimes:
 
     def test_a_session_without_a_summary_yields_empty_arrays(self, tmp_path):
         """
-        A session with no summary table has no calls on record; the caller
+        A session with no summary table has no vocalizations on record; the caller
         skips it on empty arrays rather than crashing on a missing file.
         """
 

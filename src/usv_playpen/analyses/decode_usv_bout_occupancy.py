@@ -374,6 +374,24 @@ def _null_draw_mean(flat: np.ndarray, labels: np.ndarray, folds: np.ndarray, n_f
         for _ in range(runs_per_count)]))
 
 class BoutOccupancyDecoder:
+    """
+    Description
+    -----------
+    Per-session decode of vocal-bout occupancy (whether a moment lies inside a
+    USV bout) from population spiking, run separately for every brain area of
+    the session that has enough units. Sessions are independent here and
+    nothing is pooled across them.
+
+    The constructor takes keyword arguments only and stores each as an
+    attribute of the same name: ``root_directory``,
+    ``decoding_parameters_dict`` (the ``decode_usv_bout_occupancy`` analyses
+    settings, including the ``emitter`` choice ``self`` / ``partner`` / ``all``)
+    and ``message_output``; any other key raises ``TypeError``. It also sets
+    ``app_context_bool`` (GUI vs. CLI context). The entry method is
+    ``decode_usv_bout_occupancy``, which writes one ``<session>_<area>.npz`` per
+    area plus ``<session>_bout_decoding.parquet``. It is constructed by
+    ``analyses/analyze_data.py``.
+    """
 
     def __init__(self, **kwargs) -> None:
         """

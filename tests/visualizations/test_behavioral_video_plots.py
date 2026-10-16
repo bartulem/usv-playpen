@@ -563,9 +563,7 @@ def test_plot_behavioral_features_accent_transparent_and_remove_axes():
         plt.close(fig)
 
 
-# ---------------------------------------------------------------------------
 # Create3DVideo.visualize_in_video — static (non-animated) full-figure render
-# ---------------------------------------------------------------------------
 
 _VIS_MOUSE_NODES = [
     "Nose", "Ear_L", "Ear_R", "Head", "Neck", "Shoulder_left", "Shoulder_right",

@@ -1,11 +1,11 @@
 """
 @author: bartulem
-Vocal-pose figures: a spectrogram of the calls in a short window above the two animals' 3D pose at its last frame.
+Vocal-pose figures: a spectrogram of the vocalizations in a short window above the two animals' 3D pose at its last frame.
 
 The still (:class:`VocalPoseStillMaker`) stacks two panels. On top is the spectrogram of one
-microphone over the window, every time column coloured by the emitter of the call covering it
+microphone over the window, every time column coloured by the emitter of the vocalization covering it
 (white to the male's colour, white to the female's, white to the unassigned colour outside any
-listed call), each emitter's USVs and squeaks scaled to their own loudest sound, with a time bar
+listed vocalization), each emitter's USVs and squeaks scaled to their own loudest sound, with a time bar
 beneath whose strength follows the fade of the pose trails. Below are both animals at the last
 frame, drawn with the shared mouse renderer (:func:`plot_mouse_data`) in one colour each, see-through
 bodies, over one silhouette per camera frame of their preceding movement that fades with age and ends
@@ -191,16 +191,16 @@ def microphone_wav(root_directory: pathlib.Path, microphone: str) -> pathlib.Pat
                                 recursive=False, label=f'cropped_to_video wav of microphone {microphone}')
 
 
-def peak_microphone(calls: pls.DataFrame) -> str:
+def peak_microphone(vocalizations: pls.DataFrame) -> str:
     """
     Description
     -----------
-    The microphone on which most of the given calls peak. ``peak_amp_ch`` indexes the 24-channel
+    The microphone on which most of the given vocalizations peak. ``peak_amp_ch`` indexes the 24-channel
     recording: 0-11 are device ``m`` channels 1-12, 12-23 device ``s`` channels 1-12.
 
     Parameters
     ----------
-    calls (pls.DataFrame)
+    vocalizations (pls.DataFrame)
         Rows of a USV summary with a ``peak_amp_ch`` column.
 
     Returns
@@ -208,11 +208,11 @@ def peak_microphone(calls: pls.DataFrame) -> str:
     microphone (str)
         Device letter and channel, e.g. ``"s04"``.
     """
-    index = int(np.bincount(calls['peak_amp_ch'].to_numpy().astype(int)).argmax())
+    index = int(np.bincount(vocalizations['peak_amp_ch'].to_numpy().astype(int)).argmax())
     return f'm{index + 1:02d}' if index < 12 else f's{index - 11:02d}'
 
 
-def read_session_calls(root_directory: pathlib.Path, message_output: Callable[..., Any]) -> pls.DataFrame:
+def read_session_vocalizations(root_directory: pathlib.Path, message_output: Callable[..., Any]) -> pls.DataFrame:
     """
     Description
     -----------
@@ -231,14 +231,14 @@ def read_session_calls(root_directory: pathlib.Path, message_output: Callable[..
 
     Returns
     -------
-    calls (pls.DataFrame)
+    sorted_vocalizations (pls.DataFrame)
         Non-noise rows, ``start`` / ``stop`` the sound's extent, sorted by ``start``.
     """
     summary_path = first_match_or_raise(root=root_directory / 'audio', pattern='*_usv_summary.csv', recursive=False, label='USV summary')
-    calls = pls.read_csv(summary_path, schema_overrides={'emitter': pls.Utf8})
-    kept, _ = drop_noise_usvs(calls, source=summary_path.name, message_output=message_output)
-    sorted_calls: pls.DataFrame = vocal_occupancy_times(kept, summary_path.name)
-    return sorted_calls
+    summary_rows = pls.read_csv(summary_path, schema_overrides={'emitter': pls.Utf8})
+    kept, _ = drop_noise_usvs(summary_rows, source=summary_path.name, message_output=message_output)
+    sorted_vocalizations: pls.DataFrame = vocal_occupancy_times(kept, summary_path.name)
+    return sorted_vocalizations
 
 
 def load_session_poses(root_directory: pathlib.Path, visualizations_parameter_dict: dict[str, Any]) -> dict[str, Any]:
@@ -280,33 +280,33 @@ def load_session_poses(root_directory: pathlib.Path, visualizations_parameter_di
     return {'tracks': tracks, 'names': names, 'nodes': nodes, 'fps': fps, 'sex_of': sex_of, 'colors': list(colors)}
 
 
-def emitter_spectrogram(root_directory: pathlib.Path, calls: pls.DataFrame, sex_of: dict[str, Any], sex_color: dict[str, Any], none_color: str,
+def emitter_spectrogram(root_directory: pathlib.Path, vocalizations: pls.DataFrame, sex_of: dict[str, Any], sex_color: dict[str, Any], none_color: str,
                         end_seconds: float, history_seconds: float, microphone: str, spectrogram: dict[str, Any],
                         message_output: Callable[..., Any]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Description
     -----------
     The spectrogram of a window as an RGB image in which every time column is coloured by the emitter
-    of the call covering it: white to the animal's colour, continuing to a darker shade of the same
+    of the vocalization covering it: white to the animal's colour, continuing to a darker shade of the same
     hue when that sex's ``*_deep`` factor is below 1 (the loud core of a narrowband USV then stands
-    out on white), and white to ``none_color`` outside any listed call. Each emitter's USVs and squeaks
+    out on white), and white to ``none_color`` outside any listed vocalization. Each emitter's USVs and squeaks
     are scaled separately to their own loudest sound (a squeak is tens of dB louder than a USV), the
     floor is shared, so silence is white throughout. With ``db_floor`` set to ``"adaptive"`` the floor
-    sits ``adaptive_floor_above_median_db`` above the band's median power (the noise floor, calls
+    sits ``adaptive_floor_above_median_db`` above the band's median power (the noise floor, vocalizations
     occupying few time-frequency bins).
 
     Parameters
     ----------
     root_directory (pathlib.Path)
         Session directory.
-    calls (pls.DataFrame)
+    vocalizations (pls.DataFrame)
         Non-noise USV summary rows (``start``, ``stop``, ``emitter``, ``squeak``).
     sex_of (dict)
         Track name -> sex.
     sex_color (dict)
         Sex -> hex colour.
     none_color (str)
-        Hex colour of sound outside any listed call.
+        Hex colour of sound outside any listed vocalization.
     end_seconds (float)
         End of the window from video start (s).
     history_seconds (float)
@@ -339,7 +339,7 @@ def emitter_spectrogram(root_directory: pathlib.Path, calls: pls.DataFrame, sex_
     column_deep = column_rgb.copy()
     column_split = np.ones(times.size)
     column_owner = np.full(times.size, 'none', dtype=object)
-    inside_window = calls.filter((pls.col('stop') >= t0) & (pls.col('start') <= end_seconds))
+    inside_window = vocalizations.filter((pls.col('stop') >= t0) & (pls.col('start') <= end_seconds))
     pad = float(spectrogram['vocal_pad_seconds'])
     # Read through os_utils (text-cast, null -> False): a squeak flag CSV-typed as the strings
     # "true" / "false" would otherwise be truthy for "false" too.
@@ -487,6 +487,36 @@ class PosePanel:
     """
 
     def __init__(self, session: dict[str, Any], settings: dict[str, Any], end_seconds: float, arena: dict[str, Any] | None, message_output: Callable[..., Any]) -> None:
+        """
+        Description
+        -----------
+        Select the frames of the window ending at ``end_seconds`` (``window.history_seconds`` long,
+        cut to the last ``window.trail_end_seconds`` when that is positive), compute their ages and
+        trail strengths (:func:`trail_strength`), resolve the camera azimuth
+        (:func:`resolve_azimuth`) and elevation, centre the poses on the horizontal midpoint of
+        their extent, derive the half extent and top of the 3D box, scale the skeleton widths to
+        the zoom (:meth:`set_box_zoom`), fix the animals' draw order (the ``camera.top_sex`` animal
+        last, on top), choose the trail ground colour, and report the camera and extent through
+        ``message_output``.
+
+        Parameters
+        ----------
+        session (dict)
+            From :func:`load_session_poses` (``names``, ``nodes``, ``sex_of``, ``colors``, ``fps``,
+            ``tracks`` of shape (frames, animals, nodes, 3) in metres).
+        settings (dict)
+            The ``vocal_pose_figures`` settings block.
+        end_seconds (float)
+            Time of the frame shown (s from video start).
+        arena (dict | None)
+            From :func:`arena_geometry`, or None when no surfaces are drawn.
+        message_output (Callable)
+            Message sink.
+
+        Returns
+        -------
+        None
+        """
         self.settings = settings
         self.message_output = message_output
         self.names = session['names']
@@ -972,6 +1002,26 @@ class VocalPoseStillMaker:
     """
 
     def __init__(self, root_directory: str, visualizations_parameter_dict: dict[str, Any] | None = None, message_output: Callable[..., Any] | None = None) -> None:
+        """
+        Description
+        -----------
+        Store the session directory, load the visualizations settings from the shipped
+        ``_parameter_settings/visualizations_settings.json`` when none are given, keep their
+        ``vocal_pose_figures`` block as ``self.settings``, and set the message sink.
+
+        Parameters
+        ----------
+        root_directory (str)
+            Session directory; stored as a ``pathlib.Path``.
+        visualizations_parameter_dict (dict | None)
+            The visualizations settings; loaded from the shipped JSON when None.
+        message_output (Callable | None)
+            Message sink; ``print`` when None.
+
+        Returns
+        -------
+        None
+        """
         self.root_directory = pathlib.Path(root_directory)
         if visualizations_parameter_dict is None:
             with (pathlib.Path(__file__).parent.parent / '_parameter_settings' / 'visualizations_settings.json').open('r') as settings_file:
@@ -1002,12 +1052,12 @@ class VocalPoseStillMaker:
         history_seconds = float(window['history_seconds'])
         dpi = int(output['dpi'])
         session = load_session_poses(self.root_directory, self.visualizations_parameter_dict)
-        calls = read_session_calls(self.root_directory, self.message_output)
+        vocalizations = read_session_vocalizations(self.root_directory, self.message_output)
         sex_color = {'male': self.visualizations_parameter_dict['male_colors'][0], 'female': self.visualizations_parameter_dict['female_colors'][0]}
         none_color = self.visualizations_parameter_dict['unassigned_colors'][0]
-        window_calls = calls.filter((pls.col('stop') >= end_seconds - history_seconds) & (pls.col('start') <= end_seconds))
-        microphone = peak_microphone(window_calls) if spectrogram_settings['microphone'] == 'peak' else str(spectrogram_settings['microphone'])
-        image, band, _ = emitter_spectrogram(self.root_directory, calls, session['sex_of'], sex_color, none_color, end_seconds,
+        window_vocalizations = vocalizations.filter((pls.col('stop') >= end_seconds - history_seconds) & (pls.col('start') <= end_seconds))
+        microphone = peak_microphone(window_vocalizations) if spectrogram_settings['microphone'] == 'peak' else str(spectrogram_settings['microphone'])
+        image, band, _ = emitter_spectrogram(self.root_directory, vocalizations, session['sex_of'], sex_color, none_color, end_seconds,
                                              history_seconds, microphone, spectrogram_settings, self.message_output)
         last_pose = session['tracks'][int(np.floor(end_seconds * session['fps']))]
         arena = None
@@ -1305,6 +1355,26 @@ class VocalPoseVideoMaker:
     """
 
     def __init__(self, root_directory: str, visualizations_parameter_dict: dict[str, Any] | None = None, message_output: Callable[..., Any] | None = None) -> None:
+        """
+        Description
+        -----------
+        Store the session directory, load the visualizations settings from the shipped
+        ``_parameter_settings/visualizations_settings.json`` when none are given, keep their
+        ``vocal_pose_figures`` block as ``self.settings``, and set the message sink.
+
+        Parameters
+        ----------
+        root_directory (str)
+            Session directory; stored as a ``pathlib.Path``.
+        visualizations_parameter_dict (dict | None)
+            The visualizations settings; loaded from the shipped JSON when None.
+        message_output (Callable | None)
+            Message sink; ``print`` when None.
+
+        Returns
+        -------
+        None
+        """
         self.root_directory = pathlib.Path(root_directory)
         if visualizations_parameter_dict is None:
             with (pathlib.Path(__file__).parent.parent / '_parameter_settings' / 'visualizations_settings.json').open('r') as settings_file:
@@ -1450,13 +1520,13 @@ class VocalPoseVideoMaker:
         fps = session['fps']
         reach = float(spec['reach_seconds'])
         spec_end = last / fps + reach
-        calls = read_session_calls(self.root_directory, self.message_output)
+        vocalizations = read_session_vocalizations(self.root_directory, self.message_output)
         sex_color = {'male': self.visualizations_parameter_dict['male_colors'][0], 'female': self.visualizations_parameter_dict['female_colors'][0]}
         none_color = self.visualizations_parameter_dict['unassigned_colors'][0]
         span = (last - first) / fps + 2 * reach
-        window_calls = calls.filter((pls.col('stop') >= spec_end - span) & (pls.col('start') <= spec_end))
-        microphone = peak_microphone(window_calls) if spectrogram_settings['microphone'] == 'peak' else str(spectrogram_settings['microphone'])
-        image, _, times = emitter_spectrogram(self.root_directory, calls, session['sex_of'], sex_color, none_color, spec_end, span, microphone,
+        window_vocalizations = vocalizations.filter((pls.col('stop') >= spec_end - span) & (pls.col('start') <= spec_end))
+        microphone = peak_microphone(window_vocalizations) if spectrogram_settings['microphone'] == 'peak' else str(spectrogram_settings['microphone'])
+        image, _, times = emitter_spectrogram(self.root_directory, vocalizations, session['sex_of'], sex_color, none_color, spec_end, span, microphone,
                                               spectrogram_settings, self.message_output)
         white = np.ones(3)
         n_columns = round(2 * reach / (times[1] - times[0]))
@@ -1554,12 +1624,12 @@ def find_vocal_pose_windows(root_directory: str, visualizations_parameter_dict: 
     Description
     -----------
     Rank the windows of a session for a vocal-pose figure. A window of ``candidates.window_seconds``,
-    stepped by ``candidates.step_seconds``, qualifies when every call overlapping it is a non-noise,
-    non-squeak USV of the male, no call is cut by either edge, no detection flagged as noise falls
+    stepped by ``candidates.step_seconds``, qualifies when every vocalization overlapping it is a non-noise,
+    non-squeak USV of the male, no vocalization is cut by either edge, no detection flagged as noise falls
     inside it, both animals are tracked on every frame, and the smallest distance between any body
     keypoints of the two animals (tails excluded) never exceeds ``candidates.max_gap_cm``. Qualifying
     windows are scored by the sum of three z-scores across windows: the fraction of the window filled
-    with calling, the duration-weighted mean frequency bandwidth of its calls, and their mean duration.
+    with vocalizing, the duration-weighted mean frequency bandwidth of its USVs, and their mean duration.
 
     Parameters
     ----------
@@ -1573,7 +1643,7 @@ def find_vocal_pose_windows(root_directory: str, visualizations_parameter_dict: 
     Returns
     -------
     windows (pls.DataFrame)
-        One row per qualifying window, best first: ``start``, ``end`` (s), ``n_calls``, ``vocal_fraction``,
+        One row per qualifying window, best first: ``start``, ``end`` (s), ``n_vocalizations``, ``vocal_fraction``,
         ``bandwidth_khz``, ``mean_duration_ms``, ``gap_median_cm``, ``gap_max_cm``, ``microphone``, ``score``.
     """
     sink: Callable[..., Any] = print if message_output is None else message_output
@@ -1585,17 +1655,17 @@ def find_vocal_pose_windows(root_directory: str, visualizations_parameter_dict: 
     window_seconds, step_seconds, max_gap_cm = (float(candidates[key]) for key in ('window_seconds', 'step_seconds', 'max_gap_cm'))
     session = load_session_poses(root, visualizations_parameter_dict)
     summary_path = first_match_or_raise(root=root / 'audio', pattern='*_usv_summary.csv', recursive=False, label='USV summary')
-    all_calls = pls.read_csv(summary_path, schema_overrides={'emitter': pls.Utf8})
-    noise_rows = all_calls.filter(noise_mask(all_calls, summary_path.name))
+    all_rows = pls.read_csv(summary_path, schema_overrides={'emitter': pls.Utf8})
+    noise_rows = all_rows.filter(noise_mask(all_rows, summary_path.name))
     noise_start, noise_stop = noise_rows['start'].to_numpy(), noise_rows['stop'].to_numpy()
-    calls = read_session_calls(root, sink)
-    start, stop = calls['start'].to_numpy(), calls['stop'].to_numpy()
-    duration, bandwidth = calls['duration'].to_numpy(), calls['freq_bandwidth_hz'].to_numpy()
+    vocalizations = read_session_vocalizations(root, sink)
+    start, stop = vocalizations['start'].to_numpy(), vocalizations['stop'].to_numpy()
+    duration, bandwidth = vocalizations['duration'].to_numpy(), vocalizations['freq_bandwidth_hz'].to_numpy()
     # A male USV is a pure USV (usv true, squeak false; os_utils.pure_usv_mask): an unscored row
     # (null booleans) or a segment holding a squeak does not count, whatever its CSV typing.
-    is_pure_usv = pure_usv_mask(calls, summary_path.name).to_list()
+    is_pure_usv = pure_usv_mask(vocalizations, summary_path.name).to_list()
     is_male_usv = np.array([(emitter in session['sex_of'] and session['sex_of'][emitter] == 'male') and pure_usv
-                            for emitter, pure_usv in zip(calls['emitter'].to_list(), is_pure_usv, strict=True)])
+                            for emitter, pure_usv in zip(vocalizations['emitter'].to_list(), is_pure_usv, strict=True)])
     tracks, fps = session['tracks'], session['fps']
     body = [i for i, name in enumerate(session['nodes']) if not name.startswith('Tail')]
     tracked = np.isfinite(tracks).all(axis=(1, 2, 3))
@@ -1614,8 +1684,8 @@ def find_vocal_pose_windows(root_directory: str, visualizations_parameter_dict: 
         rows.append({'start': float(t0), 'end': float(t1), 'n_vocalizations': int(inside.sum()), 'vocal_fraction': float(duration[inside].sum() / window_seconds),
                      'bandwidth_khz': float(np.average(bandwidth[inside], weights=duration[inside]) / 1000.0),
                      'mean_duration_ms': float(duration[inside].mean() * 1000.0), 'gap_median_cm': float(np.median(gap_cm[frames])),
-                     'gap_max_cm': float(gap_cm[frames].max()), 'microphone': peak_microphone(calls.filter(pls.Series(inside)))})
-    sink(f'  {len(rows)} qualifying windows of {window_seconds:g} s; male USVs {int(is_male_usv.sum())} of {start.size} non-noise calls')
+                     'gap_max_cm': float(gap_cm[frames].max()), 'microphone': peak_microphone(vocalizations.filter(pls.Series(inside)))})
+    sink(f'  {len(rows)} qualifying windows of {window_seconds:g} s; male USVs {int(is_male_usv.sum())} of {start.size} non-noise vocalizations')
     windows = pls.DataFrame(rows)
     if windows.height == 0:
         return windows
@@ -1632,7 +1702,7 @@ def plot_vocal_pose_window_candidates(root_directory: str, windows: pls.DataFram
     Description
     -----------
     Stack the emitter-coloured spectrograms of the best non-overlapping candidate windows (up to
-    ``candidates.n_shown``), each from the microphone most of its calls peak on and captioned with its
+    ``candidates.n_shown``), each from the microphone most of its vocalizations peak on and captioned with its
     rank letter, times and summary numbers, for choosing a window by eye.
 
     Parameters
@@ -1660,7 +1730,7 @@ def plot_vocal_pose_window_candidates(root_directory: str, windows: pls.DataFram
     settings = visualizations_parameter_dict['vocal_pose_figures']
     candidates, layout, spectrogram_settings = settings['candidates'], settings['layout'], settings['spectrogram']
     session = load_session_poses(root, visualizations_parameter_dict)
-    calls = read_session_calls(root, sink)
+    vocalizations = read_session_vocalizations(root, sink)
     sex_color = {'male': visualizations_parameter_dict['male_colors'][0], 'female': visualizations_parameter_dict['female_colors'][0]}
     none_color = visualizations_parameter_dict['unassigned_colors'][0]
     chosen: list[dict[str, Any]] = []
@@ -1673,7 +1743,7 @@ def plot_vocal_pose_window_candidates(root_directory: str, windows: pls.DataFram
                              dpi=int(candidates['sheet_dpi']), facecolor=layout['background_color'])
     for rank, (ax, row) in enumerate(zip(np.atleast_1d(axes), chosen, strict=True)):
         span = row['end'] - row['start']
-        image, band, _ = emitter_spectrogram(root, calls, session['sex_of'], sex_color, none_color, row['end'], span, row['microphone'],
+        image, band, _ = emitter_spectrogram(root, vocalizations, session['sex_of'], sex_color, none_color, row['end'], span, row['microphone'],
                                              spectrogram_settings, sink)
         ax.imshow(image, origin='lower', aspect='auto', extent=(0.0, span, band[0], band[-1]), interpolation='antialiased')
         ax.set_ylim(*spectrogram_settings['freq_range_khz'])
@@ -1682,7 +1752,7 @@ def plot_vocal_pose_window_candidates(root_directory: str, windows: pls.DataFram
         ax.set_xticks([])
         for spine in ax.spines.values():
             spine.set_visible(False)
-        ax.set_title(f"{chr(ord('A') + rank)}   {row['start']:.2f} to {row['end']:.2f} s   {row['n_vocalizations']} calls   "
+        ax.set_title(f"{chr(ord('A') + rank)}   {row['start']:.2f} to {row['end']:.2f} s   {row['n_vocalizations']} USVs   "
                      f"{row['vocal_fraction'] * 100:.0f}% vocal   bandwidth {row['bandwidth_khz']:.0f} kHz   mean {row['mean_duration_ms']:.0f} ms   "
                      f"animals {row['gap_median_cm']:.0f} cm apart (max {row['gap_max_cm']:.0f})   mic {row['microphone']}",
                      loc='left', fontsize=layout['tick_font_size'], color=layout['ink_color'], pad=layout['tick_pad'])

@@ -10,7 +10,7 @@ decreases, (2) ``checkpoint.tar`` has the structure of a shipped model package
 checkpoint, loads with ``torch.load`` into the reference torch decoder, and loads
 without torch through the inference path (``read_torch_checkpoint``,
 ``load_decoder_params``, ``load_model_cell``), (3) the training contract passes
-``enforce_training_contract`` and embeds calls, and (4) the data preparation
+``enforce_training_contract`` and embeds vocalizations, and (4) the data preparation
 (min-max, masking, the validation subset) follows the reference trainer. The
 objective and its gradients, the decoder initialization, and the JAX inference
 decoder and posterior are checked against torch transcriptions of the reference
@@ -347,7 +347,7 @@ def test_checkpoint_has_the_shipped_structure_and_loads_in_torch(trained_cell):
 def test_checkpoint_round_trips_through_the_inference_loader(trained_cell, tmp_path):
     """Without torch, the inference path reads the checkpoint (read_torch_checkpoint,
     load_decoder_params), accepts the training contract (enforce_training_contract),
-    loads the cell once its label grids exist (load_model_cell) and embeds calls."""
+    loads the cell once its label grids exist (load_model_cell) and embeds vocalizations."""
     raw = read_torch_checkpoint(trained_cell / "checkpoint.tar")
     assert set(raw) == {"model", "optimizer", "run info"}
 
@@ -570,7 +570,7 @@ def _conditional_cfg(conditional, **overrides):
 
 
 def _summary_columns(n_samples, seed):
-    """Raw per-call values in the units of the USV summary columns a split carries."""
+    """Raw per-vocalization values in the units of the USV summary columns a split carries."""
     rng = np.random.default_rng(seed)
     return {
         "mean_freq_hz": rng.uniform(35000.0, 110000.0, n_samples),
@@ -732,7 +732,7 @@ def test_conditional_cell_records_bins_and_condition(loudness_cell):
 
 def test_conditional_checkpoint_round_trips_through_the_phase11_decode_path(loudness_cell, tmp_path):
     """The conditional cell passes enforce_training_contract, loads with load_model_cell
-    (phase 11 bins + decode rule), and embeds calls at their frozen conditioning values."""
+    (phase 11 bins + decode rule), and embeds vocalizations at their frozen conditioning values."""
     _, trained = loudness_cell
     contract = json.loads((trained / "config" / "training_contract.json").read_text())
     params = load_decoder_params(str(trained / "checkpoint.tar"))
@@ -767,7 +767,7 @@ def test_conditional_checkpoint_round_trips_through_the_phase11_decode_path(loud
 def test_duration_condition_uses_the_training_duration_range(tmp_path, mocker):
     """A duration run needs no raw column: the training split's shortest and longest
     durations are recorded as the min-max, the decode is exact, and the validation
-    calls are conditioned on the same map."""
+    vocalizations are conditioned on the same map."""
     dataset_dir = tmp_path / "dataset"
     dataset_dir.mkdir()
     _write_split(dataset_dir / "train_data.npz", 32, seed=0, apply_mask=False)
@@ -790,7 +790,7 @@ def test_duration_condition_uses_the_training_duration_range(tmp_path, mocker):
 
 
 def test_condition_table_supplies_values_and_gaps_stop_the_run(tmp_path, mocker):
-    """Without split columns, a per-call table keyed by spec_id supplies the raw values
+    """Without split columns, a per-vocalization table keyed by spec_id supplies the raw values
     (the package's cond_table.npz names loudness image_level_db); a split row missing
     from the table, a split without the column and no table, and a non-finite value
     each stop the run before training."""
@@ -832,7 +832,7 @@ def test_spectral_entropy_condition_scales_by_the_training_range(tmp_path, mocke
     training values span exactly [0, 1]; validation values beyond that range are
     clamped; the decode rule is 'grid' with the configured step; and the cell
     round-trips through enforce_training_contract, load_model_cell and the grid
-    decode of new calls (inside, below and above the training range)."""
+    decode of new vocalizations (inside, below and above the training range)."""
     dataset_dir = tmp_path / "dataset"
     dataset_dir.mkdir()
     _write_split(dataset_dir / "train_data.npz", 32, seed=0, apply_mask=False, condition_columns=_entropy_columns(32, 30, 1.5, 4.5))
@@ -899,7 +899,7 @@ def test_spectral_entropy_condition_scales_by_the_training_range(tmp_path, mocke
 
 
 def test_spectral_entropy_condition_table_and_degenerate_range(tmp_path, mocker):
-    """A per-call condition_table with a spectral_entropy column supplies the raw
+    """A per-vocalization condition_table with a spectral_entropy column supplies the raw
     values (its training rows' range becomes the contract's min-max), a training
     split whose entropy is constant (no range to scale by) stops the run, and so
     does a split without the column when no table is given."""

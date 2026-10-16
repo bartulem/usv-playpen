@@ -187,7 +187,6 @@ def test_make_embedding_thumbnails_logic(mock_settings, mock_dependencies):
     assert mock_thumbnails.call_count == 1
 
 
-# ---------------------------------------------------------------------------
 # GUI smoke tests
 #
 # These exist primarily to catch settings-key / dict-path regressions: the
@@ -196,7 +195,6 @@ def test_make_embedding_thumbnails_logic(mock_settings, mock_dependencies):
 # load. A construct-and-tear-down test would have caught it.
 #
 # We use pytest-qt's `qtbot` fixture so a QApplication is in place.
-# ---------------------------------------------------------------------------
 
 
 def test_gui_main_window_constructs_without_error(qtbot, monkeypatch, tmp_path):
@@ -380,7 +378,6 @@ def test_gui_returning_to_main_window_doesnt_crash(qtbot, monkeypatch, tmp_path)
     win.main_window()
 
 
-# ---------------------------------------------------------------------------
 # Record / Process tab smoke tests
 #
 # These tabs require globals normally populated by the splash + exp-id
@@ -389,7 +386,6 @@ def test_gui_returning_to_main_window_doesnt_crash(qtbot, monkeypatch, tmp_path)
 # The result catches schema regressions in the much larger Record /
 # Process surfaces (~3500 lines combined) without booting the full GUI
 # flow.
-# ---------------------------------------------------------------------------
 
 
 def test_gui_record_tab_constructs(qtbot, monkeypatch, tmp_path):

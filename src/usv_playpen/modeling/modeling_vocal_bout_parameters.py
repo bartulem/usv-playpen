@@ -110,6 +110,10 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         modeling_settings_dict : dict, optional
             The dictionary containing configuration settings. If None, the parent
             class loads '_parameter_settings/modeling_settings.json'.
+
+        Returns
+        -------
+        None
         """
 
         super().__init__(modeling_settings_dict=modeling_settings_dict)
@@ -586,6 +590,11 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         strategy_override : str, optional
             Force 'session' or 'mixed' strategy.
 
+        Returns
+        -------
+        generator
+            A generator over the splits; each item is described under Yields.
+
         Yields
         ------
         tuple
@@ -770,6 +779,22 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         # the label-shuffled control (renamed from the legacy 'shuffled' to
         # match the vocabulary used by the classifier / manifold pipelines).
         def _make_bout_branch():
+            """
+            Create the empty per-split metric bundle of one branch ('actual' or
+            'null') of the GammaGAM run; every split appends one value (or one
+            filter array) to each list.
+
+            Parameters
+            ----------
+            None
+
+            Returns
+            -------
+            dict
+                Keys `explained_deviance`, `spearman_r`, `pearson_r`, `msle`,
+                `mae`, `rmse`, `residual_deviance`, `filter_shapes`, `n_iter`,
+                `converged` and `fit_time`, each mapped to an empty list.
+            """
             return {
                 'explained_deviance': [], 'spearman_r': [], 'pearson_r': [],
                 'msle': [], 'mae': [], 'rmse': [], 'residual_deviance': [],
@@ -1161,6 +1186,22 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         print(f"--- Running [GammaGLM] for: {feature_name} ---")
 
         def _make_sklearn_branch():
+            """
+            Create the empty per-split metric bundle of one branch ('actual' or
+            'null') of the GammaGLM run; every split appends one value (or one
+            filter array) to each list.
+
+            Parameters
+            ----------
+            None
+
+            Returns
+            -------
+            dict
+                Keys `explained_deviance`, `spearman_r`, `pearson_r`, `msle`,
+                `mae`, `rmse`, `residual_deviance`, `filter_shapes`, `n_iter`,
+                `converged` and `fit_time`, each mapped to an empty list.
+            """
             return {
                 'explained_deviance': [], 'spearman_r': [], 'pearson_r': [],
                 'msle': [], 'mae': [], 'rmse': [], 'residual_deviance': [],

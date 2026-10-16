@@ -87,7 +87,24 @@ def _figures_setting(viz_settings: dict | None, key: str, override_name: str) ->
 
 
 def _append_timestamp(stem: str) -> str:
-    """Append ``_<YYYYMMDD>_<HHMMSS>`` to ``stem`` and return it."""
+    """
+    Description
+    -----------
+    Append ``_<YYYYMMDD>_<HHMMSS>`` to ``stem`` and return it.
+
+    The timestamp is the current local time (``datetime.now()``) at second
+    resolution.
+
+    Parameters
+    ----------
+    stem (str)
+        Filename stem without extension.
+
+    Returns
+    -------
+    stamped_stem (str)
+        ``f"{stem}_{YYYYMMDD}_{HHMMSS}"``.
+    """
     return f"{stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
 

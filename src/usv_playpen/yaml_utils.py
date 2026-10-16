@@ -20,6 +20,8 @@ from .os_utils import atomic_output_path
 # while keeping dictionaries in block style for overall readability.
 class SmartDumper(yaml.Dumper):
     """
+    Description
+    -----------
     Custom yaml.Dumper that emits simple (scalar-only) lists in flow style
     (e.g., [1, 2, 3]) while keeping nested or complex lists and dictionaries
     in block style for readability. Also single-quotes strings that YAML 1.1

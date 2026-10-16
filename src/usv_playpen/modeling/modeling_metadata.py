@@ -233,6 +233,10 @@ def assert_no_reserved_keys(payload: dict, reserved: tuple = None) -> None:
         narrower tuple when only a subset of the metadata blocks will
         be embedded by the caller.
 
+    Returns
+    -------
+    None
+
     Raises
     ------
     ValueError
@@ -462,6 +466,11 @@ def build_input_metadata(modeling_settings: dict,
         - multinomial: `{'categories_kept', 'class_counts'}`
         - bout-params: `{'target_variable'}`
         - manifold: `{'usv_manifold_column_names'}`
+    held_out_session_ids : list of str, optional
+        Basenames of the sessions reserved as the held-out test set
+        (excluded from cross-validation and scored once afterwards).
+        Stored as `held_out_session_ids`; `None` (default) is stored as
+        an empty list.
     settings_path : str, optional
         Filesystem path to the settings JSON. When supplied the
         SHA-256 is computed on the file's bytes; otherwise it is

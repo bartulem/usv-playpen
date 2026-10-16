@@ -1199,7 +1199,12 @@ def plot_arena_corners_mics(data: np.ndarray,
             Offset for mouse ID text.
         text_fontsize (int)
             Font size for text.
-
+        corner_colors (dict | None)
+            Per-corner hex colours keyed ``'North'`` / ``'West'`` / ``'South'`` /
+            ``'East'`` (the ``corner_colors`` settings block, supplied by the
+            callers); used only when ``plot_corners_bool`` is True. None falls back
+            to the shipped mapping (North ``#FF0000``, West ``#FFFF00``, South
+            ``#008000``, East ``#0000FF``).
 
     Returns
     -------
@@ -1392,6 +1397,27 @@ def create_spike_sound_file(audio_duration: int|float,
 
 
 class Create3DVideo:
+    """
+    Description
+    -----------
+    Draws a session's 3D tracked mice (optionally with the arena, the speaker,
+    behavioral feature traces, vocalizations and neural activity) as a figure
+    or an animated video.
+
+    The constructor takes keyword arguments only and stores each as an
+    attribute of the same name: ``exp_id``, ``root_directory``,
+    ``arena_directory``, ``speaker_audio_file``,
+    ``visualizations_parameter_dict`` and ``message_output``; any other key
+    raises ``TypeError``. It also sets ``app_context_bool`` (GUI vs. CLI
+    context) and the drawing tables: ``brain_area_color_scheme`` (from the
+    ``brain_area_colors`` setting), the mouse skeleton ``node_connections`` and
+    ``node_polygons``, ``arena_node_connections`` and the feature-trace axis
+    labels ``beh_features_ylabels``. The class attributes ``command_addition``
+    and ``shell_usage_bool`` adapt shell commands to Windows vs. other systems.
+    The entry method is ``visualize_in_video``; ``load_h5_file`` and
+    ``load_beh_features_file`` read its inputs. It is constructed by
+    ``visualizations/visualize_data.py``.
+    """
 
     if os.name == 'nt':
         command_addition = 'cmd /c '

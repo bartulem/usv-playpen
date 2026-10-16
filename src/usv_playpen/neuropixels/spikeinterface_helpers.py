@@ -256,11 +256,44 @@ def classify_somatic(
     peak_after_index = peaks_info['peak_after_index']
 
     def _size(index):
+        """
+        Absolute template amplitude at one sample.
+
+        Parameters
+        ----------
+        index : int or None
+            Sample index into ``template_single``; ``None`` is the detector's
+            "not found" sentinel.
+
+        Returns
+        -------
+        float
+            ``abs(template_single[index])``, or 0.0 when ``index`` is ``None``.
+        """
         # Absolute amplitude at `index`; a None index (the detector's
         # "not found" sentinel) yields size 0.0, mirroring _width.
         return abs(float(template_single[index])) if index is not None else 0.0
 
     def _width(index, signal):
+        """
+        Half-prominence width (in samples) of the peak of ``signal`` at ``index``,
+        via ``scipy.signal.peak_widths`` with ``rel_height=0.5``.
+
+        Parameters
+        ----------
+        index : int or None
+            Sample index of a local maximum of ``signal``; ``None`` (not found)
+            yields 0.0.
+        signal : numpy.ndarray
+            1D waveform in which ``index`` is a maximum (``template_single`` for a
+            peak, ``-template_single`` for the trough).
+
+        Returns
+        -------
+        float
+            The width in samples; 0.0 when ``index`` is ``None`` or the peak is
+            degenerate (zero prominence / at the edge, or ``peak_widths`` raises).
+        """
         # Half-prominence width in samples; `index` must be a local maximum of
         # `signal` (the trough is a maximum of the negated waveform).
         if index is None:
@@ -274,6 +307,23 @@ def classify_somatic(
             return 0.0
 
     def _ratio(numerator, denominator):
+        """
+        Absolute ratio of two amplitude sizes, with the zero cases defined so a
+        missing feature never raises.
+
+        Parameters
+        ----------
+        numerator : float
+            Size placed in the numerator.
+        denominator : float
+            Size placed in the denominator.
+
+        Returns
+        -------
+        float
+            ``inf`` when ``denominator`` is 0 (checked first), 0.0 when
+            ``numerator`` is 0, otherwise ``abs(numerator / denominator)``.
+        """
         if denominator == 0:
             return float('inf')
         if numerator == 0:
@@ -428,6 +478,26 @@ def get_exp_decay(template, channel_locations, sampling_frequency=None, **kwargs
         The exponential decay of the template amplitude
     """
     def exp_decay(x, decay, amp0, offset):
+        """
+        Exponential-decay model fitted by ``scipy.optimize.curve_fit``:
+        ``amp0 * exp(-decay * x) + offset``.
+
+        Parameters
+        ----------
+        x : numpy.ndarray
+            Distances (um) of the channels from the peak channel.
+        decay : float
+            Decay constant (1/um); the returned metric.
+        amp0 : float
+            Amplitude at distance 0 (above ``offset``).
+        offset : float
+            Far-field baseline amplitude.
+
+        Returns
+        -------
+        numpy.ndarray
+            Model amplitude at each distance in ``x``.
+        """
         # x: distance (um) from the peak channel; amp0: peak-channel
         # amplitude; offset: far-field baseline amplitude; decay: the
         # 1/um decay constant returned as the metric (popt[0]).

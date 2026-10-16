@@ -66,17 +66,17 @@ def _remerge_from_consensus(merged: list, min_duration_s: float, span_factor: fl
 
     The greedy union takes the outermost edge across channels, which is what
     preserves the faint onsets and offsets only the nearest microphones register.
-    The same rule means a single channel that fuses a run of calls into one long
+    The same rule means a single channel that fuses a run of USVs into one long
     detection drags every other channel's boundaries out with it. Observed in
     session 20250919_145712, where 23 of 24 channels resolved seven separate
-    calls between 0.9 s and 1.9 s while one channel emitted a single 897 ms
+    USVs between 0.9 s and 1.9 s while one channel emitted a single 897 ms
     detection: the merged USV became 901 ms, and re-inference did not change it
     because the fused detection is in the raw annotation.
 
     An interval is only reconsidered when all of the following hold, so that
-    dense-but-genuine runs of overlapping calls are left untouched:
+    dense-but-genuine runs of overlapping USVs are left untouched:
 
-    1. it is longer than ``min_duration_s`` -- ordinary calls are never examined;
+    1. it is longer than ``min_duration_s`` -- ordinary USVs are never examined;
     2. at least one and at most ``max_dissenting_channels`` contributing channels
        have a segment longer than ``span_factor`` times the median
        longest-segment across the contributing channels;
@@ -87,7 +87,7 @@ def _remerge_from_consensus(merged: list, min_duration_s: float, span_factor: fl
     Condition 4 matters: where the long channel agrees with everyone else, the
     consensus re-merge reproduces one interval and nothing is changed. A channel
     set aside for the boundary is still credited in ``chs_detected`` for every
-    sub-interval its original segment covers, because it did hear the call --
+    sub-interval its original segment covers, because it did hear the USV --
     it merely failed to separate it -- and dropping it would understate
     ``chs_count`` for the downstream noise rejection.
 
@@ -110,6 +110,16 @@ def _remerge_from_consensus(merged: list, min_duration_s: float, span_factor: fl
         Fire only when at most this many channels dominate.
     min_agreeing_channels : int
         Fire only when at least this many channels remain once dissenters are set aside.
+    max_depth : int
+        Maximum recursion depth: every split interval's sub-intervals are re-tested
+        against their own median longest-segment while ``_depth < max_depth``; at the
+        cap the sub-intervals are kept as they are.
+    min_gap_s : float, default 0.0
+        Smallest gap (s) a consensus cut may leave between adjacent sub-intervals;
+        pieces separated by less are fused back together (stop extended,
+        ``chs_detected`` and ``segments`` combined). 0 disables the fusion.
+    _depth : int, default 0
+        Current recursion depth; internal, callers leave it at 0.
 
     Returns
     -------
@@ -149,9 +159,9 @@ def _remerge_from_consensus(merged: list, min_duration_s: float, span_factor: fl
         # output therefore cannot come from the segmentation at all -- it is
         # manufactured by taking the union across channels and cutting it again, where
         # different channels' detections happen to stop at slightly different instants.
-        # Left alone it puts boundaries inside calls: 20250928_172408 at 565.074 s was
-        # cut into 18 ms and 133 ms pieces divided by 0.1 ms, mid-call, and
-        # 20251004_162927 at 303.498 s lost a call to gaps of 2.4 and 11.1 ms.
+        # Left alone it puts boundaries inside USVs: 20250928_172408 at 565.074 s was
+        # cut into 18 ms and 133 ms pieces divided by 0.1 ms, mid-USV, and
+        # 20251004_162927 at 303.498 s lost a USV to gaps of 2.4 and 11.1 ms.
         # Matching the floor to the segmenter's own resolution is principled rather
         # than tuned, and it stays discriminating: at 20250928_175135 303.130 s a
         # 17.1 ms gap survives while a 4.9 ms one closes.
@@ -187,8 +197,8 @@ def _remerge_from_consensus(merged: list, min_duration_s: float, span_factor: fl
                     sub['chs_detected'].add(seg_channel)
         # Recurse. A single pass tests dissent against the median longest-segment of
         # the WHOLE interval, so inside a long one a channel fusing just two adjacent
-        # calls is invisible: in 20240311_143803 at 300.816 s the interval spans 779 ms
-        # with a 96 ms median, and the channels bridging two 30-40 ms calls sit at
+        # USVs is invisible: in 20240311_143803 at 300.816 s the interval spans 779 ms
+        # with a 96 ms median, and the channels bridging two 30-40 ms USVs sit at
         # 102-107 ms -- only 1.1x, far under the threshold. Re-testing each sub-interval
         # against its own, much shorter, median exposes them. Depth is capped because
         # each level can only shorten intervals, but a pathological channel set could
@@ -246,7 +256,10 @@ def _greedy_merge_segments(sorted_segments: list) -> list:
 
 
 def _write_usv_summary_csv(merged: list, out_path: pathlib.Path) -> None:
-    """Write the per-session USV summary CSV from a list of merged interval dicts.
+    """
+    Description
+    -----------
+    Write the per-session USV summary CSV from a list of merged interval dicts.
 
     Single source of truth for the summary schema, shared by all three
     ``summarize_das_findings`` branches (noise-filtered with >1 USV, the single-USV
@@ -300,11 +313,11 @@ def _ladder_gap_leading_stops(
     Description
     -----------
     Finds the seam-ladder gaps in one channel's raw DAS annotations and returns
-    the stop time of the call leading each such gap.
+    the stop time of the USV leading each such gap.
 
     The legacy (non-overlapping) DAS window tiling judged each stitched window
-    span without acoustic context from its neighbours, so a real inter-call
-    pause whose faint flanking call edges straddled window seams was emitted
+    span without acoustic context from its neighbours, so a real inter-USV
+    pause whose faint flanking USV edges straddled window seams was emitted
     with both endpoints ON the seam grid: the measured gap width is exactly
     ``k * stride_samples + 1`` samples (the +1 is the segment-extraction
     boundary convention). Real pauses cannot repeat to the sample, so a gap
@@ -366,10 +379,10 @@ def _repaired_facing_edges(
     Extracts the corrected facing edges of one seam-snapped USV pair from the
     overlap-tiled DAS re-detection of its audio snippet.
 
-    The re-detected segment containing the leading call's midpoint provides the
-    new stop of the first call; the segment containing the trailing call's
-    midpoint provides the new start of the second call. Because the seam
-    artifact only ever *clips* call edges (the true edges lie outward from the
+    The re-detected segment containing the leading USV's midpoint provides the
+    new stop of the first USV; the segment containing the trailing USV's
+    midpoint provides the new start of the second USV. Because the seam
+    artifact only ever *clips* USV edges (the true edges lie outward from the
     recorded ones, inside the recorded gap), inward suggestions -- which arise
     from single-channel-versus-multichannel-merge convention differences, not
     from the artifact -- are clamped to the recorded boundary. Pairs the
@@ -388,13 +401,13 @@ def _repaired_facing_edges(
         Absolute session time (s) of the snippet's first sample; added to the
         snippet-relative annotation times.
     stop_first (float)
-        Recorded stop (s) of the leading call in the summary.
+        Recorded stop (s) of the leading USV in the summary.
     start_second (float)
-        Recorded start (s) of the trailing call in the summary.
+        Recorded start (s) of the trailing USV in the summary.
     mid_first (float)
-        Midpoint (s) of the leading call's recorded extent.
+        Midpoint (s) of the leading USV's recorded extent.
     mid_second (float)
-        Midpoint (s) of the trailing call's recorded extent.
+        Midpoint (s) of the trailing USV's recorded extent.
     max_boundary_shift (float)
         Maximum permitted outward correction (s) per edge; mechanistically one
         legacy DAS window tile.
@@ -423,6 +436,26 @@ def _repaired_facing_edges(
 
 
 class FindMouseVocalizations:
+    """
+    Description
+    -----------
+    Detects USVs in a session's audio with DAS (Deep Audio Segmenter). It holds
+    ``input_parameter_dict`` (the ``usv_inference.FindMouseVocalizations``
+    processing settings), ``root_directory``, ``message_output`` and
+    ``app_context_bool`` (GUI vs. CLI context). When ``input_parameter_dict`` is
+    None the block is read from ``_parameter_settings/processing_settings.json``.
+
+    The entry methods are ``das_command_line_inference`` (runs DAS on the
+    session's WAV files to produce tentative USV segments per channel),
+    ``summarize_das_findings`` (merges the per-channel DAS outputs into the
+    session's ``*_usv_summary.csv`` with start / stop times, duration, amplitude
+    channels, detecting channels and emitter) and
+    ``repair_seam_snapped_boundaries`` (re-detects USV pairs whose inter-USV gap
+    sits on the legacy DAS window-stitching seam grid and corrects their
+    boundaries). It is constructed by the processing pipeline
+    (``processing/preprocess_data.py``).
+    """
+
     def __init__(
         self,
         root_directory: str | None = None,
@@ -667,13 +700,13 @@ class FindMouseVocalizations:
             # trimmed every USV to the span where at least valley_frac of its peak channel
             # count still agreed, which deletes the faint onsets and offsets heard by only
             # the nearest few microphones: measured against the local noise floor, watershed
-            # edges leave 5-19% of a call's own peak energy outside the boundary, where the
+            # edges leave 5-19% of a USV's own peak energy outside the boundary, where the
             # union leaves none. Its premise -- that a long merged interval is one jittery
-            # channel chaining distinct calls -- does not hold either; those intervals are
-            # dense runs of genuinely overlapping calls, with no silence to cut at.
+            # channel chaining distinct USVs -- does not hold either; those intervals are
+            # dense runs of genuinely overlapping USVs, with no silence to cut at.
             merged = _greedy_merge_segments(all_segments)
 
-            # The union's one failure mode: a channel that fuses a run of calls into
+            # The union's one failure mode: a channel that fuses a run of USVs into
             # a single detection drags everyone else's boundaries out with it, since
             # the outermost edge wins. Only intervals where one channel contradicts a
             # clear majority are reconsidered -- dense runs that every channel agrees
@@ -705,7 +738,7 @@ class FindMouseVocalizations:
             # The default is set from the cohort rather than assumed: over 439,301 USVs
             # in 246 summarized sessions the median is 86 ms, p99 is 371 ms, p99.9 is
             # 617 ms and p99.99 is 896 ms. A 1,000 ms cutoff is ~5x the p90, past any
-            # plausible call or tightly-overlapping cluster, and removes 21 intervals
+            # plausible USV or tightly-overlapping cluster, and removes 21 intervals
             # in 439,301 (0.005%) -- of which the 6 longest are that one noise session.
             duration_params = self.input_parameter_dict["summarize_das_findings"]
             if duration_params["max_usv_duration_bool"] and merged:
@@ -713,7 +746,7 @@ class FindMouseVocalizations:
 
                 # Before deleting anything, give an over-length interval one more
                 # attempt with the dissent limit relaxed. 20240311_143803 at 357.531 s
-                # is 1,094 ms of genuine calls that stayed whole only because FOUR of
+                # is 1,094 ms of genuine USVs that stayed whole only because FOUR of
                 # its channels smeared and consensus_remerge_max_dissenting_channels
                 # is 2 -- the merge declined, and the gate then destroyed real data.
                 # Relaxing the limit globally is not the answer: over twelve intervals
@@ -721,7 +754,7 @@ class FindMouseVocalizations:
                 # limit of 4 was better in six and worse in five, so neither value is
                 # right on ordinary data. Applied only here it changed 0 of 13,851
                 # intervals across eleven such sessions while splitting 357.531 into
-                # seven pieces, the longest 303 ms. Deleting real calls is the worst
+                # seven pieces, the longest 303 ms. Deleting real USVs is the worst
                 # outcome available, so the retry is worth having on that path alone.
                 if merge_params["consensus_remerge_bool"]:
                     rescued = []
@@ -857,9 +890,9 @@ class FindMouseVocalizations:
                     # twice (peak/mean amplitude channels + the STFT input below).
                     window = np.asarray(audio_file_data[start_usv:stop_usv, :])[:, eligible_channel_indices]
                     # Data-integrity guard: an all-zero window means the
-                    # concatenated mmap has no audio where DAS detected calls
+                    # concatenated mmap has no audio where DAS detected USVs
                     # (e.g. a truncated/partial mmap write). Classifying such
-                    # windows would silently discard real calls as noise --
+                    # windows would silently discard real USVs as noise --
                     # fail loud instead so the corrupt intermediate is fixed.
                     if window.size and not window.any():
                         msg = (
@@ -922,7 +955,7 @@ class FindMouseVocalizations:
 
                     # Spatial coherence: mean pairwise correlation across the
                     # top-K eligible channels ranked by in-band energy in this
-                    # window, detection status ignored. A genuine call dominates
+                    # window, detection status ignored. A genuine USV dominates
                     # the in-band soundscape at its moment, so its loudest
                     # channels share one time-frequency pattern; a localized
                     # artifact's pattern appears nowhere else on the array.
@@ -946,7 +979,7 @@ class FindMouseVocalizations:
                 # correlation-AND-coherence gate. Both cutoffs are ABSOLUTE (no
                 # session-relative percentiles, which overshoot on clean candidate
                 # pools and undershoot on noise-dominated ones): noise must fool
-                # both descriptors to survive, while a real call only needs each
+                # both descriptors to survive, while a real USV only needs each
                 # at its loose threshold. Single-channel detections have no defined
                 # correlation and are gated by coherence alone.
                 drop_counter = 0
@@ -1067,16 +1100,16 @@ class FindMouseVocalizations:
         Description
         -----------
         Checks the session's ``*_usv_summary.csv`` for inter-USV gaps snapped to
-        the legacy DAS window-stitching seam grid and corrects the affected call
+        the legacy DAS window-stitching seam grid and corrects the affected USV
         boundaries by re-detecting each flagged pair's audio snippet with the
         DAS model configured under ``das_command_line_inference``.
 
         The legacy non-overlapping DAS tiling (stride equal to the window
         length minus a 32-sample trim) judged each stitched span without
-        acoustic context from its neighbours, so the faint edges of calls
+        acoustic context from its neighbours, so the faint edges of USVs
         flanking a real pause were clipped exactly to the window seams: the
         summary records such a pause with a width of k stride multiples
-        (k = 1..``seam_repair_max_rung``) and the flanking calls lose up to one
+        (k = 1..``seam_repair_max_rung``) and the flanking USVs lose up to one
         stride of faint edge material. This tool
 
         1. flags consecutive summary pairs whose gap falls inside the

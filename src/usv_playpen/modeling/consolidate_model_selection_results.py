@@ -204,6 +204,18 @@ def _extract_run_timestamp(step_prefix: str) -> str:
 
     Returns an empty string when the prefix carries no timestamp
     token (legacy per-step prefixes that omit it).
+
+    Parameters
+    ----------
+    step_prefix : str
+        Per-step file prefix of the model-selection run; a falsy value
+        (empty string or None) is treated as an empty prefix.
+
+    Returns
+    -------
+    timestamp : str
+        The first `YYYYMMDD_HHMMSSZ` token found in `step_prefix`, or `''`
+        when there is none.
     """
 
     m = _STEP_TIMESTAMP_RE.search(step_prefix or '')
@@ -250,6 +262,31 @@ def _build_default_output_filename(input_metadata: dict,
     present are read directly and raise if missing, so a malformed
     modern artifact fails loud rather than minting an `unknown`-tagged
     filename indistinguishable from a correct one on disk.
+
+    Parameters
+    ----------
+    input_metadata : dict
+        The upstream `_input_metadata` block (`target_mouse_sex`,
+        `experimental_condition`, `analysis_tag`), or None on legacy
+        artifacts.
+    run_metadata : dict
+        The upstream `_run_metadata` block (`split_strategy`), or None on
+        legacy artifacts.
+    step_prefix : str
+        Per-step file prefix the run timestamp is extracted from with
+        :func:`_extract_run_timestamp`; default `''` (no timestamp suffix).
+
+    Returns
+    -------
+    filename : str
+        The consolidated artifact's `.pkl` file name following the schema
+        above.
+
+    Raises
+    ------
+    KeyError
+        If a present metadata block lacks one of its required identity
+        keys.
     """
 
     if input_metadata is not None:

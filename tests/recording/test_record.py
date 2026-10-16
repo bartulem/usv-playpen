@@ -285,16 +285,14 @@ def test_send_message_logs_smtp_error_and_returns_false(monkeypatch, credentials
     assert host_port_token[1] == '465'
 
 
-# ---------------------------------------------------------------------------
 # behavioral_experiments — extended mock-based coverage
 #
 # Everything below this line tests ExperimentController without any real
 # hardware: subprocess calls, paramiko, motifapi, file-system polling,
 # and the top-level orchestration in conduct_behavioral_recording.
-# ---------------------------------------------------------------------------
 
 
-# ---- count_last_recording_dropouts: pure log parsing ----------------------
+# count_last_recording_dropouts: pure log parsing
 
 
 def test_count_last_dropouts_zero_when_no_recordings(tmp_path):
@@ -332,7 +330,7 @@ def test_count_last_dropouts_no_dropouts_in_last_session(tmp_path):
     assert count_last_recording_dropouts(str(tmp_path), 'ch1') == 0
 
 
-# ---- get_cpu_affinity_mask edge cases -------------------------------------
+# get_cpu_affinity_mask edge cases
 
 
 def test_get_cpu_affinity_mask_empty_returns_zero(controller):
@@ -347,7 +345,7 @@ def test_get_cpu_affinity_mask_single_high_bit(controller):
     assert controller.get_cpu_affinity_mask() == '0x8000'
 
 
-# ---- get_custom_dir_names: pure -------------------------------------------
+# get_custom_dir_names: pure
 
 
 def test_get_custom_dir_names_format(controller):
@@ -363,7 +361,7 @@ def test_get_custom_dir_names_format(controller):
     assert win_dirs == ['F:\\TestBot\\Data\\20260509_130702', 'M:\\TestBot\\Data\\20260509_130702']
 
 
-# ---- get_cup_mount_params -------------------------------------------------
+# get_cup_mount_params
 
 
 def test_get_cup_mount_params_reads_ini(tmp_path, controller):
@@ -392,7 +390,7 @@ def test_get_connection_params_exits_when_missing(tmp_path, controller):
         controller.get_connection_params()
 
 
-# ---- check_ethernet_connection (subprocess + smart_wait mocks) ------------
+# check_ethernet_connection (subprocess + smart_wait mocks)
 
 
 def test_check_ethernet_connection_already_up(mocker, controller):
@@ -441,7 +439,7 @@ def test_check_ethernet_connection_timeout_exits(mocker, controller):
         controller.check_ethernet_connection()
 
 
-# ---- purge_cup_connections_on_windows -------------------------------------
+# purge_cup_connections_on_windows
 
 
 def test_purge_cup_connections_invokes_expected_commands(mocker, controller):
@@ -466,7 +464,7 @@ def test_purge_cup_connections_invokes_expected_commands(mocker, controller):
     assert ("cmdkey", "/delete:cup") in invoked
 
 
-# ---- remount_cup_drives_on_windows ----------------------------------------
+# remount_cup_drives_on_windows
 
 
 def _stub_get_cup_params(monkeypatch):
@@ -520,7 +518,7 @@ def test_remount_cup_drives_critical_when_all_fail(mocker, monkeypatch, controll
     assert any("CRITICAL ERROR" in m for m in out_messages)
 
 
-# ---- check_remote_mount additional branches -------------------------------
+# check_remote_mount additional branches
 
 
 def test_check_remote_mount_returns_false_when_not_a_mount(mocker, controller):
@@ -553,7 +551,7 @@ def test_check_remote_mount_ssh_exception(mocker, controller):
     assert controller.check_remote_mount('h', 22, 'u', 'p', '/m') is False
 
 
-# ---- verify_avisoft_is_recording (filesystem polling) ---------------------
+# verify_avisoft_is_recording (filesystem polling)
 
 
 @pytest.fixture
@@ -631,7 +629,7 @@ def test_verify_avisoft_returns_false_when_no_growth(mocker, controller, avisoft
     assert controller.verify_avisoft_is_recording(warmup_s=1, poll_interval_s=1, max_wait_s=2) is False
 
 
-# ---- check_camera_vitals (motifapi mocks) ---------------------------------
+# check_camera_vitals (motifapi mocks)
 
 
 def _stub_motif_creds(monkeypatch):
@@ -702,7 +700,7 @@ def test_check_camera_vitals_remote_mount_fails(mocker, monkeypatch, controller)
         controller.check_camera_vitals(camera_fr=150)
 
 
-# ---- conduct_tracking_calibration (orchestration) -------------------------
+# conduct_tracking_calibration (orchestration)
 
 
 def test_conduct_tracking_calibration_kicks_off_recording(mocker, monkeypatch, controller):
@@ -727,7 +725,7 @@ def test_conduct_tracking_calibration_kicks_off_recording(mocker, monkeypatch, c
     assert rec_starts[0].kwargs.get('codec') == 'H264'
 
 
-# ---- modify_audio_file (uses real config + redirected __file__) -----------
+# modify_audio_file (uses real config + redirected __file__)
 
 
 # Captured at import time, BEFORE any test can monkeypatch be_mod.__file__.
@@ -822,7 +820,7 @@ def test_modify_audio_file_idempotent_on_second_run(monkeypatch, tmp_path, mocke
     assert not any('lines changed' in m for m in out_messages)
 
 
-# ---- conduct_behavioral_recording (full orchestration) --------------------
+# conduct_behavioral_recording (full orchestration)
 
 
 @pytest.fixture
@@ -1000,7 +998,7 @@ def test_conduct_behavioral_recording_raises_not_exits_on_bad_credentials(mocker
     assert rec_starts == []
 
 
-# ---- CLI wrappers ---------------------------------------------------------
+# CLI wrappers
 
 
 def test_conduct_calibration_cli_invokes_controller(mocker):

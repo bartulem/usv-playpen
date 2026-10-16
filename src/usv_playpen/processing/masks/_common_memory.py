@@ -24,6 +24,9 @@ def cleanup_memory(logger: Optional[logging.Logger] = None,
         logger: Logger for output (default: module logger).
         force_gpu_cleanup: If True, synchronize + empty cache + log GPU usage.
         log_memory: If True, log CPU RSS via psutil.
+
+    Returns:
+        None. On a CUDA device the peak-memory statistics are also reset.
     """
     if logger is None:
         logger = logging.getLogger(__name__)
@@ -47,7 +50,20 @@ def cleanup_memory(logger: Optional[logging.Logger] = None,
 
 
 def log_memory_usage(logger: logging.Logger, stage: str = "") -> None:
-    """Log current CPU (and GPU, if present) memory usage for monitoring."""
+    """Log current CPU (and GPU, if present) memory usage for monitoring.
+
+    The CPU figure is the process RSS; on a CUDA device the allocated, reserved
+    and peak-allocated GPU memory are appended. All values are in GB and the
+    line is logged at INFO level.
+
+    Args:
+        logger: Logger the memory line is written to.
+        stage: Free-text label inserted into the message to say where in the
+            pipeline the measurement was taken (default: empty string).
+
+    Returns:
+        None.
+    """
     cpu_gb = psutil.Process(os.getpid()).memory_info().rss / 1024 ** 3
     msg = f"Memory usage {stage}: CPU {cpu_gb:.2f}GB"
 
@@ -65,6 +81,21 @@ def setup_device(deterministic: bool = False, logger: Optional[logging.Logger] =
 
     Enables bf16 autocast + TF32 on Ampere+ GPUs (unless deterministic). Returns a
     ``torch.device``.
+
+    On CUDA, ``deterministic`` only controls the cuDNN benchmark: bf16 autocast
+    is entered on every CUDA device and TF32 is enabled on every compute
+    capability 8+ device whether or not ``deterministic`` is set. The
+    ``PYTORCH_ENABLE_MPS_FALLBACK`` environment variable is set to ``"1"`` in
+    every case.
+
+    Args:
+        deterministic: If True, leave ``torch.backends.cudnn.benchmark`` off so
+            cuDNN does not pick algorithms by timing (default: False).
+        logger: Logger for the device report (default: module logger).
+
+    Returns:
+        torch.device: ``cuda`` when CUDA is available, else ``mps`` when Apple
+        MPS is available, else ``cpu``.
     """
     if logger is None:
         logger = logging.getLogger(__name__)

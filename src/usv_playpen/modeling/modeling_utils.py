@@ -470,6 +470,26 @@ def select_kinematic_columns(session_df_columns: list,
     include_2nd = kin_settings['include_2nd_derivatives']
 
     def _maybe_add_derivatives(feature: str, base_feature: str) -> None:
+        """
+        Appends the `_1st_der` / `_2nd_der` columns of `feature` to
+        `columns_to_keep` when the matching `include_*_derivatives` flag is
+        True and the derivative column exists in the session. Nothing is
+        added for the `speed` and `acceleration` base features.
+
+        Parameters
+        ----------
+        feature : str
+            Full column name of the kept base feature (e.g.
+            `"mouse_a.speed"`); the derivative columns are named
+            `{feature}_1st_der` / `{feature}_2nd_der`.
+        base_feature : str
+            The base-feature suffix of `feature`, used for the
+            `speed` / `acceleration` exclusion.
+
+        Returns
+        -------
+        None
+        """
         if base_feature in ('speed', 'acceleration'):
             return
         der_1st = f'{feature}_1st_der'
@@ -2098,6 +2118,22 @@ def extract_univariate_headline(analysis_type: str, res: dict) -> dict:
             actual_metrics = res['actual']['folds']['metrics']
 
             def _finite(metric_key):
+                """
+                Reports whether the actual-strategy fold metrics hold at
+                least one finite value for `metric_key`.
+
+                Parameters
+                ----------
+                metric_key : str
+                    Key into `res['actual']['folds']['metrics']`.
+
+                Returns
+                -------
+                bool
+                    True when the key is present and its per-fold values
+                    contain at least one finite number; False otherwise
+                    (absent key, empty array or all non-finite).
+                """
                 if metric_key not in actual_metrics:
                     return False
                 vals = np.asarray(actual_metrics[metric_key], dtype=np.float64)
@@ -2274,6 +2310,12 @@ def run_predictor_audits(processed_beh_dict: dict,
         `precomputed_event_times` is appropriate here too, since
         both ultimately describe the per-session events the model
         is trained on.
+
+    Returns
+    -------
+    None
+        The audit artifacts are written to `save_dir` as a side effect;
+        nothing is returned (also when both audits are disabled).
     """
 
     diagnostics_cfg = settings['diagnostics']

@@ -207,6 +207,10 @@ def plot_feature_ranking(
         If True, saves figures to output_dir.
     output_dir : str, optional
         Directory to save the figure.
+
+    Returns
+    -------
+    None
     """
 
     results_file_loc = configure_path(str(results_file_loc))
@@ -441,6 +445,10 @@ def plot_significant_filters(
     output_dir : str, optional
         Directory to save plots. If None, defaults to the parent directory
         of `results_file_loc`.
+
+    Returns
+    -------
+    None
     """
 
     results_file_loc = configure_path(str(results_file_loc))
@@ -1151,6 +1159,20 @@ def _make_feature_pretty(feature_label_overrides: dict | None,
     self_sex, other_sex = _resolve_cohort_sexes(selection_metadata)
 
     def _pretty(fname: str) -> str:
+        """
+        Presentation label of one modeling feature.
+
+        Parameters
+        ----------
+        fname : str
+            Raw feature name as stored in the selection pickle.
+
+        Returns
+        -------
+        str
+            ``feature_label_overrides[fname]`` when present, otherwise
+            ``FeatureZoo.resolve_feature_label`` with the cohort's self / other sexes.
+        """
         if fname in overrides:
             return overrides[fname]
         return FeatureZoo.resolve_feature_label(fname, self_sex, other_sex)
@@ -1221,6 +1243,10 @@ def plot_model_selection_results(
         in the summary figure. Features not present in the map are
         rendered with their raw name. The filter grid keeps the raw
         feature names so it can be cross-referenced with the pickle.
+
+    Returns
+    -------
+    None
     """
 
     BG_COLOR = '#FFFFFF'
@@ -1381,7 +1407,21 @@ def plot_model_selection_results(
 
 
     def _category_color(fname: str) -> str:
-        """Return the self / other / dyadic hex colour for a feature."""
+        """
+        Return the self / other / dyadic hex colour for a feature.
+
+        Parameters
+        ----------
+        fname : str
+            Raw feature name.
+
+        Returns
+        -------
+        str
+            ``DYADIC_COLOR`` when the name contains a ``DYADIC_KEYWORDS``
+            entry, ``self_color`` for SEI (``-sei``) and ``self`` features,
+            ``other_color`` otherwise.
+        """
         if any(x in fname for x in DYADIC_KEYWORDS):
             return DYADIC_COLOR
         if '-sei' in fname:
@@ -1404,6 +1444,11 @@ def plot_model_selection_results(
             0.0 returns the source colour unchanged; 1.0 returns
             white. Used to derive the "previous cumulative" shade
             from a feature's category colour.
+
+        Returns
+        -------
+        str
+            The lightened colour as a lowercase ``#rrggbb`` string.
         """
 
         h = hex_color.lstrip('#')
@@ -1607,7 +1652,7 @@ def plot_model_selection_results(
     # metric candidate stacked grey on top. Note that per-step marginal
     # accuracy is not guaranteed monotonic (the selector optimises
     # NLL, not accuracy), so a small negative segment is possible and
-    # is rendered honestly as a thin downward step.
+    # is rendered faithfully as a thin downward step.
     bar_width = 0.6
     bar_x_positions = [0, 1]
     bar_group_labels = ['best univariate', 'final model']
@@ -1912,6 +1957,10 @@ def plot_univariate_multinomial_performance(
     output_dir : str, optional
         Target directory for saved plots. Defaults to the same directory as the
         results file if None.
+
+    Returns
+    -------
+    None
     """
 
     results_file_loc = configure_path(str(results_file_loc))
@@ -2201,6 +2250,10 @@ def plot_univariate_multinomial_filters_grid(
         If True, saves the figure as an SVG.
     output_dir : str, optional
         Target directory for saved plots.
+
+    Returns
+    -------
+    None
     """
 
     results_file_loc = configure_path(str(results_file_loc))
@@ -2437,6 +2490,10 @@ def plot_multinomial_selection_trajectory(
         The visible tick range stops at this value; the label-stack
         above each bar still extends past it if needed so feature
         annotations are not clipped.
+
+    Returns
+    -------
+    None
     """
 
     selection_results_path = configure_path(str(selection_results_path))
@@ -2510,6 +2567,23 @@ def plot_multinomial_selection_trajectory(
         return
 
     def _fold_mean(folds_metrics: dict, key: str) -> float:
+        """
+        Mean of one per-fold metric over its finite values.
+
+        Parameters
+        ----------
+        folds_metrics : dict
+            Per-fold metric arrays of one candidate (``['folds']['metrics']``),
+            keyed by metric name.
+        key : str
+            Metric name to average.
+
+        Returns
+        -------
+        float
+            Mean of the finite fold values, or NaN when the key is absent or no
+            fold value is finite.
+        """
         if key not in folds_metrics:
             return float('nan')
         arr = np.array(folds_metrics[key], dtype=float)
@@ -2589,6 +2663,21 @@ def plot_multinomial_selection_trajectory(
     # figures).
 
     def _category_color(fname: str) -> str:
+        """
+        Return the self / other / dyadic hex colour for a feature.
+
+        Parameters
+        ----------
+        fname : str
+            Raw feature name.
+
+        Returns
+        -------
+        str
+            ``DYADIC_COLOR`` when the name contains a ``DYADIC_KEYWORDS`` entry,
+            the self colour for SEI (``-sei``) and ``self`` features, the other
+            colour otherwise.
+        """
         if any(x in fname for x in DYADIC_KEYWORDS):
             return DYADIC_COLOR
         if '-sei' in fname:
@@ -2598,6 +2687,21 @@ def plot_multinomial_selection_trajectory(
         return other_col
 
     def _lighten(hex_color: str, factor: float = 0.65) -> str:
+        """
+        Linearly interpolate a hex colour toward white.
+
+        Parameters
+        ----------
+        hex_color : str
+            ``#RRGGBB`` source colour.
+        factor : float, default 0.65
+            0.0 returns the source colour unchanged; 1.0 returns white.
+
+        Returns
+        -------
+        str
+            The lightened colour as a lowercase ``#rrggbb`` string.
+        """
         h = hex_color.lstrip('#')
         r = int(h[0:2], 16)
         g = int(h[2:4], 16)
@@ -3203,6 +3307,10 @@ def plot_multinomial_selection_diagnosis(
         Mapping from raw modeling feature names to presentation-
         friendly labels; used in the figure title that names the
         final-model feature set.
+
+    Returns
+    -------
+    None
     """
 
     selection_results_path = configure_path(str(selection_results_path))
@@ -3240,6 +3348,22 @@ def plot_multinomial_selection_diagnosis(
 
     # Pool every valid fold's predictions for the AUC matrix
     def _concat_finite(key: str) -> Optional[np.ndarray]:
+        """
+        Concatenate one per-fold array field of the final step across the valid
+        folds.
+
+        Parameters
+        ----------
+        key : str
+            Field of the final step's ``folds`` (``'y_true'`` or ``'y_probs'``).
+
+        Returns
+        -------
+        np.ndarray or None
+            The fold arrays concatenated along axis 0, skipping folds whose entry
+            is None, empty, or a floating array with any non-finite value; None
+            when no fold survives.
+        """
         parts = []
         for v in folds[key]:
             if v is None:
@@ -3312,6 +3436,19 @@ def plot_multinomial_selection_diagnosis(
 
     # Save-path resolver shared by both figures
     def _resolve_out_dir() -> pathlib.Path:
+        """
+        Directory the two figures are saved to.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        pathlib.Path
+            ``output_dir`` when given; otherwise the parent of
+            ``selection_results_path`` when it is a file, or the path itself when
+            it is a directory.
+        """
         if output_dir is None:
             _fallback = pathlib.Path(selection_results_path)
             return _fallback.parent if _fallback.is_file() else _fallback
@@ -3533,6 +3670,10 @@ def plot_manifold_selection_trajectory(
         Mapping from raw feature names (as stored in the pickle) to
         presentation-friendly labels used for every annotation. Raw
         names not in the map render unchanged.
+
+    Returns
+    -------
+    None
     """
 
     selection_results_path = configure_path(str(selection_results_path))
@@ -3584,6 +3725,23 @@ def plot_manifold_selection_trajectory(
     baseline_anchored_higher = {'vm_logscore', 'vm_logscore_pooled'}
 
     def _fold_mean(folds_metrics: dict, key: str) -> float:
+        """
+        Mean of one per-fold metric over its finite values.
+
+        Parameters
+        ----------
+        folds_metrics : dict
+            Per-fold metric arrays of one candidate (``['folds']['metrics']``),
+            keyed by metric name.
+        key : str
+            Metric name to average.
+
+        Returns
+        -------
+        float
+            Mean of the finite fold values, or NaN when the key is absent, ``folds_metrics`` is empty or None, or no
+            fold value is finite.
+        """
         if not folds_metrics or key not in folds_metrics:
             return float('nan')
         arr = np.array(folds_metrics[key], dtype=float)
@@ -3591,9 +3749,26 @@ def plot_manifold_selection_trajectory(
         return float(np.mean(arr)) if arr.size else float('nan')
 
     def _chance_value(metric_name: str, minimisation: bool) -> float:
-        """Error metrics and log-likelihood scores (``vm_logscore``) anchor at
+        """
+        Error metrics and log-likelihood scores (``vm_logscore``) anchor at
         the step-0 null-model baseline (pulled from the first selection step);
-        the remaining higher-is-better metrics (r2 / correlation) anchor at 0."""
+        the remaining higher-is-better metrics (r2 / correlation) anchor at 0.
+
+        Parameters
+        ----------
+        metric_name : str
+            Metric key in the per-fold metrics.
+        minimisation : bool
+            True when the metric is lower-is-better (an error metric).
+
+        Returns
+        -------
+        float
+            0.0 for a higher-is-better metric outside
+            ``baseline_anchored_higher``; otherwise the fold-mean of the
+            metric for the first step-0 candidate with a finite value, or NaN
+            when there is none.
+        """
         if not minimisation and metric_name not in baseline_anchored_higher:
             return 0.0
         null_step = selection_steps[0] if selection_steps else None
@@ -3662,6 +3837,21 @@ def plot_manifold_selection_trajectory(
     # gets other_col.
 
     def _category_color(fname: str) -> str:
+        """
+        Return the self / other / dyadic hex colour for a feature.
+
+        Parameters
+        ----------
+        fname : str
+            Raw feature name.
+
+        Returns
+        -------
+        str
+            ``DYADIC_COLOR`` when the name contains a ``DYADIC_KEYWORDS`` entry,
+            ``self_col`` for SEI (``-sei``) and self features, ``other_col``
+            otherwise.
+        """
         if any(x in fname for x in DYADIC_KEYWORDS):
             return DYADIC_COLOR
         if '-sei' in fname:
@@ -3671,6 +3861,21 @@ def plot_manifold_selection_trajectory(
         return other_col
 
     def _lighten(hex_color: str, factor: float = 0.65) -> str:
+        """
+        Linearly interpolate a hex colour toward white.
+
+        Parameters
+        ----------
+        hex_color : str
+            ``#RRGGBB`` source colour.
+        factor : float, default 0.65
+            0.0 returns the source colour unchanged; 1.0 returns white.
+
+        Returns
+        -------
+        str
+            The lightened colour as a lowercase ``#rrggbb`` string.
+        """
         h = hex_color.lstrip('#')
         r = int(h[0:2], 16); g = int(h[2:4], 16); b = int(h[4:6], 16)
         r = int(round(r + (255 - r) * factor))
@@ -4175,7 +4380,7 @@ def _resolve_atlas_tiles_and_categories(qlvm_map: str = QLVM_REGULAR_MAP,
       dataset: ``qlvm`` -> the regular map, ``qlvm_duration`` -> the
       duration-conditioned map, ``qlvm_squeak`` -> the squeak map, and so on;
       rows with embedding status 0 only). An atlas of one map's filter tiled at
-      another map's positions would show calls that do not live where the
+      another map's positions would show vocalizations that do not live where the
       filter fields point.
     * **Categories.** Only on the map the category bundle is defined on
       (``os_utils.QLVM_CATEGORY_MAP``, the regular map): the category bundle,
@@ -4187,7 +4392,7 @@ def _resolve_atlas_tiles_and_categories(qlvm_map: str = QLVM_REGULAR_MAP,
       embedded with (``qlvm_models/<map>`` ``model_id``); it must equal the
       bundle's (``bundle['model_id']``, the cell of the bundle's map), otherwise
       ValueError: boundaries of one torus over the positions of another would
-      mislabel every region. Any other map places the same calls elsewhere, so
+      mislabel every region. Any other map places the same vocalizations elsewhere, so
       it gets no category grid (None) and the atlas draws no boundaries.
 
     Parameters
@@ -4315,7 +4520,7 @@ def plot_manifold_filter_atlas(
       instant decoded as the signed ``e(theta) . W`` field over the torus. Decks
       overlap so only the ``t = 0`` plane shows in full; earlier slices recede as
       faded slivers. A **single shared** colour scale (``figures.diverging_cmap``,
-      rounded up to one significant figure) is honest about relative strength across
+      rounded up to one significant figure) is faithful about relative strength across
       features -- weak features render pale. The white category boundaries
       are repeated (depth-faded) on every plane.
     * **Colour scale (top-right).** A small colourbar for the affinity fields,
@@ -4427,6 +4632,20 @@ def plot_manifold_filter_atlas(
                   "TTI-allo_pitch")
 
     def _cat_color(fname: str) -> str:
+        """
+        Return the self / other / dyadic hex colour for a feature.
+
+        Parameters
+        ----------
+        fname : str
+            Raw feature name.
+
+        Returns
+        -------
+        str
+            ``DYADIC_COLOR`` when the name contains a dyadic keyword, ``self_col``
+            for SEI (``-sei``) and self features, ``other_col`` otherwise.
+        """
         if any(_kw in fname for _kw in _dyadic_kw):
             return DYADIC_COLOR
         if '-sei' in fname or fname.startswith('self.') or 'self' in fname:
@@ -4463,6 +4682,20 @@ def plot_manifold_filter_atlas(
     cos_x, sin_x, cos_y, sin_y = np.cos(a_x), np.sin(a_x), np.cos(a_y), np.sin(a_y)
 
     def _field(r: np.ndarray) -> np.ndarray:
+        """
+        Decode one torus filter weight vector to its field on the evaluation grid.
+
+        Parameters
+        ----------
+        r : np.ndarray
+            ``(4,)`` weights on the ``(cos x, sin x, cos y, sin y)`` basis of
+            ``SmoothTorusManifoldRegression._encode``.
+
+        Returns
+        -------
+        np.ndarray
+            ``(grid_n, grid_n)`` field ``e(theta) . r`` over the unit cell.
+        """
         return cos_x * r[0] + sin_x * r[1] + cos_y * r[2] + sin_y * r[3]
 
     # Filmstrip fields: sample the filter at n_time_slices instants (index 0 =
@@ -4491,6 +4724,20 @@ def plot_manifold_filter_atlas(
     front_center = (n_slices - 1) * stack_dx + side / 2.0
 
     def _gray(t_norm: float) -> str:
+        """
+        Gray level of one filmstrip time slice.
+
+        Parameters
+        ----------
+        t_norm : float
+            Normalised slice position in ``[0, 1]``.
+
+        Returns
+        -------
+        str
+            ``#rrggbb`` gray whose level runs linearly from 0.12 (``t_norm = 0``)
+            to 0.84 (``t_norm = 1``) of full scale.
+        """
         v = int(round((0.12 + 0.72 * t_norm) * 255))
         return f"#{v:02x}{v:02x}{v:02x}"
 
@@ -4699,6 +4946,10 @@ class DeepResultsVisualizer:
             A nested dictionary containing visualization settings, including
             animal colors, etc. If None is provided, it loads from the default
             visualizations_settings.json configuration file.
+
+        Returns
+        -------
+        None
         """
 
         results_pkl_path = configure_path(str(results_pkl_path))
@@ -4773,6 +5024,10 @@ class DeepResultsVisualizer:
             Override for the default save directory.
         file_format : str
             The file extension/format (defaults to the figures.fig_format setting).
+
+        Returns
+        -------
+        None
         """
         if not save_plot:
             return
@@ -4837,6 +5092,10 @@ class DeepResultsVisualizer:
             Path to save the figure.
         file_format : str, default: the figures.fig_format setting
             Format for the saved file.
+
+        Returns
+        -------
+        None
         """
 
         c_act = actual_color if actual_color is not None else getattr(self, 'default_color', '#1f77b4')
@@ -5425,6 +5684,40 @@ class DeepResultsVisualizer:
         rows are reversed so the top of the figure is the top of the
         torus (matching the convention readers expect from a 2D
         coordinate plane).
+
+        Parameters
+        ----------
+        plot_type : str
+            Visualization style of the prediction distribution
+            (``'density'`` or ``'contour'``), forwarded from
+            ``plot_spatial_precision_grid``.
+        grid_shape : tuple of (n_cols, n_rows) or None
+            Shape of the uniform patch grid; None defaults to ``(4, 4)``.
+        patch_size : float or None
+            Side length of each square patch in manifold units; None
+            defaults to ``0.20 * manifold_period``.
+        min_samples : int
+            Minimum number of data points required inside a patch.
+        bg_pt_color : str
+            Hex colour of the background manifold coordinates.
+        peak_pt_color : str
+            Colour of the crosshair marking the predicted-density peak.
+        square_edge_color : str
+            Colour of the (9-tiled) patch outline.
+        panel_fontsize : int
+            Font size of the bias score in the panel titles.
+        figsize_unit : float
+            Inches per subplot.
+        save_plot : bool
+            If True, exports the figure to disk.
+        output_dir : str or None
+            Directory for exported files.
+        file_format : str
+            Image format for saving (e.g. ``'svg'``, ``'png'``, ``'pdf'``).
+
+        Returns
+        -------
+        None
         """
 
         period = float(self.manifold_period)
@@ -6130,6 +6423,11 @@ def _classify_predictor_feature(fname: str) -> int:
     Classify a generic-keyed predictor feature into one of four
     presentation groups for the timescale-audit plots.
 
+    Parameters
+    ----------
+    fname : str
+        Generic-keyed feature name (``self.*``, ``other.*``, SEI or dyadic).
+
     Returns
     -------
     int
@@ -6285,11 +6583,32 @@ def _require_timescale_payload(payload, timescale_pkl_path: str) -> None:
     is missing the canonical fields, hinting that the user might have
     pointed at the modeling input pickle instead of the
     `_timescales.pkl` companion artifact.
+
+    Parameters
+    ----------
+    payload : dict
+        The unpickled object to validate; must contain the keys
+        `features`, `acf_lags_seconds`, `acf_median`, `rho_signal`,
+        `signal_lags_seconds`, `acf_null_mean`, `acf_null_p99_5`,
+        `rho_signal_null_mean`, `rho_signal_null_p0_5` and
+        `rho_signal_null_p99_5` (the two null percentiles bound the
+        no-signal band the horizon search reads).
+    timescale_pkl_path : str
+        Path the payload was loaded from, quoted in the error message.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    ValueError
+        If any required key is missing.
     """
 
     required = ('features', 'acf_lags_seconds', 'acf_median', 'rho_signal',
                 'signal_lags_seconds', 'acf_null_mean', 'acf_null_p99_5',
-                'rho_signal_null_mean', 'rho_signal_null_p99_5')
+                'rho_signal_null_mean', 'rho_signal_null_p0_5', 'rho_signal_null_p99_5')
     missing = [k for k in required if k not in payload]
     if missing:
         raise ValueError(
@@ -6439,6 +6758,20 @@ def _signal_outer_run_marker(rho,
     # Find all contiguous True-runs in `mask` via padded-diff trick.
     # Returns list of `(start_idx, end_idx_inclusive, length)`.
     def _runs(mask):
+        """
+        Find all contiguous True-runs of a boolean mask (padded-diff trick).
+
+        Parameters
+        ----------
+        mask : array-like of bool
+            1-D mask.
+
+        Returns
+        -------
+        list of tuple
+            ``(start_idx, end_idx_inclusive, length)`` per run, in order; an empty
+            list when the mask has no True entry.
+        """
         m = np.asarray(mask, dtype=bool)
         if not m.any():
             return []
@@ -6879,6 +7212,20 @@ def _compute_timescale_horizons(payload: dict,
     returned mapping (the caller decides whether to skip them or
     represent them otherwise).
 
+    Parameters
+    ----------
+    payload : dict
+        Timescale-audit artifact (see `_require_timescale_payload`,
+        which also requires `rho_signal_null_p0_5`); read when present are
+        `signal_floor_seconds` (default 0.5 s) and
+        `signal_min_run_seconds` (default 0.2 s).
+    signal_smooth_window : int, default 0
+        Rolling-mean window (bins) applied to each cross-correlation curve
+        before the run search (`_rolling_mean_1d`); values <= 1 leave it
+        unsmoothed.
+    acf_run_length : int, default 15
+        Number of consecutive above-null bins that defines the ACF marker.
+
     Returns
     -------
     tuple
@@ -7135,6 +7482,29 @@ def plot_timescale_audit(timescale_pkl_path: str,
     axB = fig.add_subplot(gs[0, 1])
 
     def _render_panel(ax, items, panel_title, x_axis_label):
+        """
+        Draw one horizon bar panel: one coloured horizontal bar per feature, a
+        solid line at the mean and a dashed line at the median, a pointer and bold
+        value at the mean, and the shared x-range and sparse ticks. With no items
+        it draws a "no features with marker" placeholder.
+
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes
+            Axes to draw on.
+        items : list of tuple
+            ``(feature_name, horizon_seconds)`` pairs, largest first (drawn at
+            the top).
+        panel_title : str
+            Axes title.
+        x_axis_label : str
+            X-axis label.
+
+        Returns
+        -------
+        tuple of float
+            ``(mean, median)`` of the horizons, or ``(nan, nan)`` with no items.
+        """
         if not items:
             ax.set_title(panel_title, fontsize=11)
             ax.set_xlabel(x_axis_label, labelpad=18)

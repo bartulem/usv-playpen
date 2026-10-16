@@ -216,7 +216,7 @@ def test_frozen_kappa_scores_worse_than_marginal_below_the_flat_floor():
     y_true = (np.column_stack([rng.vonmises(0.0, 2.0, n), rng.vonmises(0.0, 2.0, n)]) / (2 * np.pi)) % 1.0
     kappa = _frozen_selection_kappa(y_true, np.ones(n), metric='torus', period=1.0)
     assert kappa > 0.5
-    # Predictions half a period away from where the calls are: worse than the marginal.
+    # Predictions half a period away from where the USVs are: worse than the marginal.
     y_bad = (y_true + 0.5 + rng.normal(0.0, 0.05, (n, 2))) % 1.0
     floor = -np.log(4.0 * np.pi ** 2)
     self_fit = macro_von_mises_logscore(y_bad, y_true, None, metric='torus', period=1.0)

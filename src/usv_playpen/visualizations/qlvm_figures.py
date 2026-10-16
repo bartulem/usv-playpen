@@ -881,6 +881,23 @@ def aligned_correlation(features: np.ndarray, max_shift: int) -> np.ndarray:
     """
 
     def unit(stack: np.ndarray) -> np.ndarray:
+        """
+        Description
+        -----------
+        Centre every image on its own mean and scale it to unit L2 norm (the norm
+        floored at ``1e-12`` so a constant image does not divide by zero), then
+        flatten, so the dot product of two rows is their Pearson correlation.
+
+        Parameters
+        ----------
+        stack (np.ndarray)
+            ``(m, h, w)`` images.
+
+        Returns
+        -------
+        unit_rows (np.ndarray)
+            ``(m, h * w)`` float32, one centred unit-norm row per image.
+        """
         centred = stack - stack.mean(axis=(1, 2), keepdims=True)
         scale = np.maximum(np.sqrt((centred ** 2).sum(axis=(1, 2), keepdims=True)), 1e-12)
         return (centred / scale).reshape(stack.shape[0], -1).astype(np.float32)

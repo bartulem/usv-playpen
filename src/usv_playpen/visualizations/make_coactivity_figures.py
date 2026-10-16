@@ -151,7 +151,7 @@ def plot_acoustic_confound(
     Parameters
     ----------
     group_a_acoustics, group_b_acoustics : dict[str, numpy.ndarray]
-        Per-feature pooled per-call values for each group.
+        Per-feature pooled per-USV values for each group.
     features : sequence[str]
         Feature keys to plot, in order.
     feature_labels : dict[str, str]
@@ -487,7 +487,7 @@ def summarize_acoustic_confound(
     Parameters
     ----------
     group_a_acoustics, group_b_acoustics : dict[str, numpy.ndarray]
-        Per-feature pooled per-call values for each group.
+        Per-feature pooled per-USV values for each group.
     features : sequence[str]
         Feature keys to report.
     chosen_animal : str
