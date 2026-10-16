@@ -18,7 +18,9 @@ Notebooks configure a run either from a single **Parameters** cell near the top 
 **per-section parameters** (each cell defining its own knobs inline at its top) -- the layout
 is noted per notebook below. Paths are written ``/mnt/falkner/...`` and ``configure_path()``-
 normalised to the host OS. Each plotting cell is independent -- re-run any single one once the
-imports / parameters / setup cells above it have run.
+imports / parameters / setup cells above it have run. A ``<...>`` inside a path is a placeholder for a
+run-specific part (a result file, a run directory, an output folder): fill it in with the run
+you want before executing that cell.
 
 Neuropixels processing
 ----------------------
@@ -432,7 +434,7 @@ collinearity heatmap.
 .. code-block:: python
 
     diag_timescale_pkl = configure_path(
-        "/mnt/falkner/Bartul/modeling/..._male_mute_partner_..._timescales.pkl"
+        "/mnt/falkner/Bartul/modeling/modeling_<...>_timescales.pkl"
     )
     diag_collinearity_pkl = diag_timescale_pkl.replace(
         "_timescales.pkl", "_collinearity.pkl"
@@ -482,15 +484,11 @@ top of one consolidated artifact, and emit a self-describing filename.
 
 .. code-block:: python
 
-    # The univariate directory below holds a pre-v3 run on the retired
-    # qlvm_supercategory labels; point it at a v3 qlvm_category run
     cons_univariate_input_dir = configure_path(
-        ".../cluster/univariate_results_multi_file/male/male_multinomial_qlvm_supercategory"
+        ".../cluster/univariate_results_multi_file/<...>"
     )
     cons_univariate_delete_individuals_after = False
-    cons_selection_input_dir = configure_path(
-        ".../model_selection_results/male/vocal_onset"
-    )
+    cons_selection_input_dir = configure_path(".../model_selection_results/<...>")
     cons_selection_move_to_steps_subdir = False
     cons_selection_ignore_provenance_keys = (
         "git_commit",
@@ -537,19 +535,11 @@ consolidated univariate pickle and set the metric accordingly.
 
     figures_dir = configure_path("/mnt/falkner/Bartul/modeling/figures")
 
-    uni_ranking_results = configure_path(
-        ".../univariate_results/univariate_multinomial_qlvm_supercategory_..._male_...Z.pkl"
-    )
+    uni_ranking_results = configure_path(".../univariate_results/univariate_<...>.pkl")
     uni_ranking_p_val = 0.01
-    # The three pickles below are pre-v3 runs on retired category labels (ids 18
-    # and 10 do not exist among R-1..R-4); point them at v3 re-runs
-    uni_filters_results = configure_path(
-        ".../gam_results_male_mute_partner_category_18_...pkl"
-    )
-    uni_filters_grid_results = configure_path(".../gam_results_male_category_10_...pkl")
-    uni_raw_diff_pkl = configure_path(
-        ".../modeling_category_3_male_presence_all_...hist4s.pkl"
-    )
+    uni_filters_results = configure_path(".../gam_results_<...>.pkl")
+    uni_filters_grid_results = configure_path(".../gam_results_<...>.pkl")
+    uni_raw_diff_pkl = configure_path(".../modeling_category_<...>.pkl")
     uni_raw_diff_feature_key = "self.neck_elevation"
     uni_raw_diff_feature_color = "#9AC0CD"
     uni_raw_diff_history_seconds = 4.0
@@ -607,9 +597,8 @@ plotter reading the consolidated univariate-multinomial pickle.
 
 .. code-block:: python
 
-    # Pre-v3 run on retired category labels; point it at a v3 qlvm_category re-run
     mn_univariate_results = configure_path(
-        ".../univariate_results/multinomial_categories/univariate_multinomial_categories_male_...pkl"
+        ".../univariate_results/univariate_multinomial_<...>.pkl"
     )
 
     plot_univariate_multinomial_performance(
@@ -641,7 +630,7 @@ analysis's consolidated ``model_selection_final_*.pkl``.
 .. code-block:: python
 
     msv_results_path = configure_path(
-        ".../model_selection_results/male/vocal_onset/model_selection_final_male_..._bout_mixed_...Z.pkl"
+        ".../model_selection_results/<...>/model_selection_final_<...>.pkl"
     )
 
     plot_model_selection_results(
@@ -659,17 +648,11 @@ multinomial selection artifacts.
 
 .. code-block:: python
 
-    # The three paths below are pre-v3 runs on retired category labels
-    # (qlvm_supercategory and older); point them at v3 qlvm_category re-runs
     mn_trajectory_results = configure_path(
-        ".../model_selection_results/male/multinomial_qlvm_supercategory/model_selection_final_..._mixed_...Z.pkl"
+        ".../model_selection_results/<...>/model_selection_final_<...>.pkl"
     )
-    mn_filters_results = configure_path(
-        ".../model_selection_results/multinomial_category/male"
-    )
-    mn_diagnosis_results = configure_path(
-        ".../model_selection_results/multinomial_category/male_mute_partner"
-    )
+    mn_filters_results = configure_path(".../model_selection_results/<...>")
+    mn_diagnosis_results = configure_path(".../model_selection_results/<...>")
 
     plot_multinomial_selection_trajectory(
         selection_results_path=mn_trajectory_results,
@@ -710,10 +693,8 @@ region-balanced ``*_macro`` twins; euclidean: ``r2_spatial``, ``mahalanobis_mae`
 
 .. code-block:: python
 
-    # Pre-v3 QLVM run (pre-v3 torus coordinates, retired qlvm_supercategory
-    # labels); point it at a v3 re-run
     man_trajectory_results = configure_path(
-        ".../model_selection_results/model_selection_final_male_intact_partners_manifold_qlvm_supercategory_session_...Z.pkl"
+        ".../model_selection_results/<...>/model_selection_final_<...>.pkl"
     )
     man_filters_results = man_trajectory_results
 
@@ -754,12 +735,10 @@ labels (the QLVM category; the pre-flight check inside ``run_cnn_training`` fail
 
 .. code-block:: python
 
-    # pre-v3 QLVM input (7 retired supercategories); point both pickles at a v3 re-run
-    cnn_input_pkl = configure_path(
-        ".../modeling_manifold_qlvm_supercategory_intact_partners_male_...pkl"
-    )
+    # the modeling input cnn_results_pkl below was trained on
+    cnn_input_pkl = configure_path(".../modeling_manifold_<...>.pkl")
     cnn_results_pkl = configure_path(
-        ".../cnn_manifold_integrated_predictions_male_QLVM_...pkl"
+        ".../neural_network_results/cnn_manifold_integrated_predictions_<...>.pkl"
     )
     cnn_choose_analysis = "regional_saliency"
 
@@ -810,11 +789,10 @@ labels (the QLVM category; the pre-flight check inside ``run_cnn_training`` fail
         )
     elif cnn_choose_analysis == "regional_saliency":
         # region_key must exist in the results' saliency maps ('category_1' ...
-        # 'category_4' for a qlvm_category run; the pre-v3 results above were
-        # segmented by the retired coarse level, hence 'supercategory_7').
+        # 'category_4' for a qlvm_category run, named R-1 ... R-4).
         deep_visualizer.plot_regional_saliency_inset(
-            region_key="supercategory_7",
-            category_name="QLVM supercategory 7",
+            region_key="category_1",
+            category_name="R-1",
             prediction_plot_type="density",
             radius=0.15,
             smoothing_sigma=10.0,
@@ -2296,9 +2274,7 @@ Fourth, the video, which ends on the still's frame and camera — the window pla
     lone_male_txt_path = configure_path(
         "/mnt/falkner/Bartul/modeling/input_files/ephys_lone_male_sessions_list.txt"
     )
-    session_counts_output_path = configure_path(
-        "/Users/bmimica/Downloads/session_type_usv_counts"
-    )
+    session_counts_output_path = configure_path("<...>/session_type_usv_counts")
     session_counts_fig_format = "svg"
 
     fig_session_counts = plot_session_type_usv_counts(
@@ -2322,9 +2298,7 @@ Fourth, the video, which ends on the still's frame and camera — the window pla
 
     timeline_session_root = configure_path("/mnt/falkner/Bartul/Data/20230119_172410")
     timeline_window = (457, 462)  # (start_s, end_s); None shows the whole session
-    timeline_output_path = configure_path(
-        "/Users/bmimica/Downloads/session_usv_timeline_20230119_172410_457s-462s"
-    )
+    timeline_output_path = configure_path("<...>/session_usv_timeline_<...>")
     timeline_fig_format = "svg"
 
     fig_timeline = plot_session_usv_timeline(
@@ -2412,7 +2386,9 @@ Fourth, the video, which ends on the still's frame and camera — the window pla
 .. code-block:: python
 
     session_type = re.sub(
-        r"courtship_behavioral_|_list.txt", "", Path(sessions_list_path).name
+        r"^(behavioral|ephys)_courtship_|_sessions_list\.txt$",
+        "",
+        Path(sessions_list_path).name,
     )
     n_bins = max_time_seconds // bin_width_seconds
 
