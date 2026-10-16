@@ -1769,7 +1769,7 @@ the analysis reads (all of them are archived in the root ``/attrs`` except the p
 
 * root ``/attrs`` -- every setting above except the plot-only ones, plus ``created_at_iso``, ``git_sha``, ``source_lists`` (the list files), ``session_roots`` (the session directories that contributed data) and ``n_sessions_loaded``.
 * ``/<mode>/attrs`` (``s2s``, ``e2s``) -- ``selected_n_peak_<sex>_<call_type>`` and ``alpha_effective_<sex>_<call_type>`` of the tied test; ``K_selected_<sex>`` of the unconstrained sweep.
-* ``intervals`` -- one row per interval: ``session_id``, ``source_list``, ``interval_type``, ``interval_s``, ``log_interval``, ``emitter_id`` (the animal; archives before 2026-09-23 have ``male_id`` / ``female_id`` instead).
+* ``intervals`` -- one row per interval: ``session_id``, ``source_list``, ``interval_type``, ``interval_s``, ``log_interval``, ``emitter_id`` (the animal; archives before 2026-09-23 have ``male_id`` / ``female_id`` instead), ``chain_id`` (intervals of one animal with the same chain id follow each other without a break, each starting at the vocalization the one before it ended at; another animal's vocalization, an unassigned or non-target row or a dropped non-positive interval starts a new chain).
 * ``drop_counts`` -- non-positive intervals dropped per pool; ``pool_summary`` -- per pool ``n_intervals``, ``n_sessions``, the 5/25/50/75/95th percentiles and whether it was ``fitted``.
 * ``tied_fits``, ``tied_modes``, ``peak_lrt``, ``peak_lrt_null`` -- the tied ladder (one row per peak count and component: role, parameters, likelihood, BIC, shared peak scale), its modes, the peak test per rung (raw and corrected statistic, design effect, threshold, raw and corrected p) and its null draws.
 * ``mixture_model_fits``, ``bootstrap_lrt``, ``bootstrap_lrt_null`` -- the unconstrained sweep (every K and rep, with per-component parameters and the diagnostic information criteria), its LRT per rung (raw and corrected, with the step-up selection) and its null draws.
@@ -2024,7 +2024,7 @@ layout the modeling pipeline reads; component 0 is the first peak, from which th
 **Serial dependence.** The mixture says where the timescales are, not which of them separates a
 within-bout pause from a between-bout gap. That is settled by serial dependence: a gap inside a bout
 carries information about the gap that follows it, a gap between bouts does not. Two panels, side by
-side, show the joint distribution of consecutive intervals of one animal (square, both axes on the same
+side, show the joint distribution of consecutive intervals of one animal -- pairs that share their middle vocalization, so never across a break in the animal's run (``chain_id``) -- (square, both axes on the same
 log scale) with a **median regression** of the next interval on the current one drawn over it. The
 fits are made by the pipeline on every pair (``fit_serial_dependence``) and read from the archive; each
 line carries a pointwise band from resampling sessions (``serial_dependence_bootstrap`` = 1000
@@ -2039,8 +2039,9 @@ refits stopped at the solver's iteration cap (``serial_dependence_max_iter``).
 
 .. code-block:: python
 
-    # Pairs are consecutive rows of one animal in one session of the archived interval table,
-    # the order the analysis wrote them (ascending in time). The fits and their bands come from
+    # Pairs are consecutive rows of one animal in one session and one chain (chain_id) of the
+    # archived interval table, the order the analysis wrote them (ascending in time); an archive
+    # without chain_id is refused (re-run the interval computation). The fits and their bands come from
     # the archive (fit_serial_dependence in the pipeline). The boundary is the first peak's
     # exp(mu + z * sd) with the same z the modeling pipeline uses for its inter-bout threshold,
     # so the dotted line IS that threshold.
