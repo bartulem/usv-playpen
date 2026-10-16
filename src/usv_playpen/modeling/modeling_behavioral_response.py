@@ -75,7 +75,7 @@ import statsmodels.api as sm
 from scipy import stats
 from tqdm import tqdm
 
-from ..os_utils import atomic_output_path, configure_path
+from ..os_utils import atomic_output_path, configure_path, vocal_occupancy_times
 from .load_input_files import (
     _calculate_ibi_threshold,
     find_variable_length_bouts,
@@ -1699,7 +1699,11 @@ def forward_clean_times(times: np.ndarray,
 
 def _all_usv_times(session_root: Path, csv_sep: str) -> tuple[np.ndarray, np.ndarray]:
     """
-    Reads every USV's start and stop from a session's summary table.
+    Reads every USV's start and stop from a session's summary table, a
+    squeak-bearing row spanning the union of its segment and its squeak extent
+    (``os_utils.vocal_occupancy_times``: the squeak may reach past the segment),
+    so the table must carry ``usv`` / ``squeak`` and ``squeak_start`` /
+    ``squeak_end``.
 
     Deliberately unfiltered by emitter: a window is silent only if nobody
     vocalized in it, so unassigned calls and the partner's count too. Filtering
@@ -1719,16 +1723,21 @@ def _all_usv_times(session_root: Path, csv_sep: str) -> tuple[np.ndarray, np.nda
     starts, stops : tuple of np.ndarray
         Every USV's start and stop time in seconds, sorted by start. Empty when
         the session has no summary table.
+
+    Raises
+    ------
+    KeyError
+        The summary lacks ``usv`` / ``squeak`` or ``squeak_start`` /
+        ``squeak_end`` (run ``detect-usv-squeaks`` on the session).
     """
 
     summary_path = next((session_root / 'audio').glob('**/*_usv_summary.csv'), None)
     if summary_path is None:
         return np.empty(0), np.empty(0)
-    table = pls.read_csv(source=summary_path, separator=csv_sep, columns=['start', 'stop'])
-    starts = table['start'].to_numpy().astype(float)
-    stops = table['stop'].to_numpy().astype(float)
-    order = np.argsort(starts)
-    return starts[order], stops[order]
+    table = vocal_occupancy_times(
+        pls.read_csv(source=summary_path, separator=csv_sep, infer_schema_length=None), summary_path.name
+    )
+    return table['start'].to_numpy().astype(float), table['stop'].to_numpy().astype(float)
 
 def duration_tercile_labels(bout_duration: np.ndarray,
                             is_vocal: np.ndarray,

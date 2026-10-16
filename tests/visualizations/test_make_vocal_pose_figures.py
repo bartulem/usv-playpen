@@ -164,11 +164,11 @@ def _write_session(root: pathlib.Path) -> pathlib.Path:
     rows = []
     for start in np.concatenate([np.arange(3.0, 5.0, 0.2), np.arange(9.0, 11.0, 0.2)]):
         rows.append({"start": start, "stop": start + 0.08, "duration": 0.08, "peak_amp_ch": 0, "emitter": "100_1", "noise": False, "usv": True,
-                     "squeak": False, "freq_bandwidth_hz": 20000.0})
+                     "squeak": False, "squeak_start": None, "squeak_end": None, "freq_bandwidth_hz": 20000.0})
     rows.append({"start": 7.0, "stop": 7.2, "duration": 0.2, "peak_amp_ch": 0, "emitter": "200_2", "noise": False, "usv": False, "squeak": True,
-                 "freq_bandwidth_hz": 60000.0})
+                 "squeak_start": 7.0, "squeak_end": 7.2, "freq_bandwidth_hz": 60000.0})
     rows.append({"start": 8.0, "stop": 8.05, "duration": 0.05, "peak_amp_ch": 0, "emitter": None, "noise": True, "usv": None, "squeak": None,
-                 "freq_bandwidth_hz": 5000.0})
+                 "squeak_start": None, "squeak_end": None, "freq_bandwidth_hz": 5000.0})
     pls.DataFrame(rows).with_columns(pls.col("emitter").cast(pls.Utf8)).write_csv(session / "audio" / "20240101_120000_usv_summary.csv")
     audio_times = np.arange(int(_SESSION_SECONDS * _WAV_RATE)) / _WAV_RATE
     audio = np.zeros(audio_times.size, dtype=np.float32)

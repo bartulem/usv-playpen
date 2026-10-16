@@ -124,10 +124,11 @@ def _make_synthetic_session(
     - A 3D-tracking H5 file at <root>/video/<session_id>_points3d_translated_rotated_metric.h5
       with `track_names`, `recording_frame_rate`, `experimental_code`.
     - A USV summary CSV at <root>/audio/<session_id>_usv_summary.csv with
-      `start`, `duration`, `emitter`, the noise column, the category column and
+      `start`, `stop`, `duration`, `emitter`, the noise column, the category column and
       the `usv` / `squeak` booleans (pure USVs (true, false) on the calls, `n_squeak` male
       pure squeaks (false, true) and `n_overlap` male overlap rows (true, true) appended before
-      the noise rows, null on noise rows).
+      the noise rows, null on noise rows), with the squeak extent `squeak_start` / `squeak_end`
+      (the segment's own times on every squeak row, null elsewhere).
     - Optionally a behavioral features CSV at
       <root>/<session_id>_behavioral_features.csv with the standard
       `nose-nose`, `<X>-allo_yaw-nose`, `<X>-nose-allo_yaw` suffix columns.
@@ -217,16 +218,23 @@ def _make_synthetic_session(
         rows_qlvm2.append(0.0)
         t += 0.5
 
+    rows_stop = [start + duration for start, duration in zip(rows_start, rows_dur, strict=True)]
     cols = {
         "start": rows_start,
+        "stop": rows_stop,
         "duration": rows_dur,
         "emitter": rows_emitter,
     }
     if write_noise_column:
         cols["noise"] = rows_noise
     if write_vocal_flag_columns:
+        squeak_rows = [c in ("squeak", "overlap") for c in rows_class]
         cols["usv"] = pls.Series([None if c is None else c in ("usv", "overlap") for c in rows_class], dtype=pls.Boolean)
         cols["squeak"] = pls.Series([None if c is None else c in ("squeak", "overlap") for c in rows_class], dtype=pls.Boolean)
+        cols["squeak_start"] = pls.Series([t if flag else None for t, flag in zip(rows_start, squeak_rows, strict=True)],
+                                          dtype=pls.Float64)
+        cols["squeak_end"] = pls.Series([t if flag else None for t, flag in zip(rows_stop, squeak_rows, strict=True)],
+                                        dtype=pls.Float64)
     if include_embedding:
         cols[cat_col] = rows_cat
         cols["qlvm1"] = rows_qlvm1
@@ -2440,13 +2448,20 @@ _SQUEAK_STYLES = {
 def _write_squeak_session(root: Path, starts: list[float], classes: list[str | None], noise: list[bool]) -> None:
     """Writes ``<root>/audio/<name>_usv_summary.csv`` with the columns the heatmap reads: each
     class ("usv", "squeak", "overlap" or None) written as the ``usv`` / ``squeak`` booleans
-    detect-usv-squeaks writes ((true, false), (false, true), (true, true), null on noise rows)."""
+    detect-usv-squeaks writes ((true, false), (false, true), (true, true), null on noise rows),
+    each segment 10 ms long, and the squeak extent equal to the segment on every squeak row."""
 
     (root / "audio").mkdir(parents=True)
+    squeak_rows = [c in ("squeak", "overlap") for c in classes]
     pls.DataFrame({
         "start": starts,
+        "stop": [start + 0.01 for start in starts],
         "usv": pls.Series([None if c is None else c in ("usv", "overlap") for c in classes], dtype=pls.Boolean),
         "squeak": pls.Series([None if c is None else c in ("squeak", "overlap") for c in classes], dtype=pls.Boolean),
+        "squeak_start": pls.Series([t if flag else None for t, flag in zip(starts, squeak_rows, strict=True)],
+                                   dtype=pls.Float64),
+        "squeak_end": pls.Series([t + 0.01 if flag else None for t, flag in zip(starts, squeak_rows, strict=True)],
+                                 dtype=pls.Float64),
         "noise": noise,
     }).write_csv(str(root / "audio" / f"{root.name}_usv_summary.csv"))
 

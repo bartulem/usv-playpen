@@ -51,11 +51,13 @@ from ..analyses._usv_io import (
 from ..os_utils import (
     QLVM_CATEGORY_MAP,
     QLVM_MAPS,
+    VOCAL_CLASSES,
     configure_path,
     drop_noise_usvs,
     load_qlvm_category_bundle,
     squeak_class_selection,
     vocal_class_mask,
+    vocal_event_times,
 )
 from .auxiliary_plot_functions import create_colormap, draw_category_outlines
 
@@ -430,6 +432,11 @@ def build_master_usv_dataframe(
             n_before_class = usv_clean.height
             usv_clean = usv_clean.filter(vocal_class_mask(usv_clean, ("usv",), usv_file.name))
             total_squeak_rows_dropped += n_before_class - usv_clean.height
+        else:
+            # Every class is kept, so each row is timed as its vocalization (os_utils.vocal_event_times):
+            # a pure squeak at its own squeak extent, a segment holding both at the union of the segment
+            # and its squeak extent; a summary without squeak_start / squeak_end raises.
+            usv_clean = vocal_event_times(usv_clean, VOCAL_CLASSES, usv_file.name)
         usv_info = usv_clean.with_columns(
             (pls.col('start') * frame_rate).floor().cast(pls.UInt32).alias('frame_index')
         )
@@ -3371,6 +3378,10 @@ def plot_session_squeak_time_heatmap(
             # returned in the sessions table instead.
             summary, n_noise_dropped = drop_noise_usvs(summary, summaries[0].name,
                                                        message_output=lambda _message: None)
+        # Each squeak is placed at its own onset (os_utils.vocal_event_times with the squeak classes:
+        # a pure squeak, and an overlap segment when overlap is selected, at squeak_start; every other
+        # segment at its start), re-sorted; a summary without squeak_start / squeak_end raises.
+        summary = vocal_event_times(summary, squeak_classes, summaries[0].name)
         start = summary['start'].to_numpy().astype(float)
         is_squeak = vocal_class_mask(summary, squeak_classes, summaries[0].name).to_numpy().astype(bool)
         segment_starts[session_id] = start

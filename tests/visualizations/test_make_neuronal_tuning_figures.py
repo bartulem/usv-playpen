@@ -153,6 +153,8 @@ def _build_synthetic_figure_session(
         "emitter":           ["m1"] * n_usvs,
         "usv":               [True] * n_usvs,
         "squeak":            [False] * n_usvs,
+        "squeak_start":      [None] * n_usvs,
+        "squeak_end":        [None] * n_usvs,
         "qlvm_category":     rng.integers(1, 5, size=n_usvs).tolist(),
         "mean_freq_hz":      rng.uniform(40000, 90000, n_usvs).tolist(),
         "peak_freq_hz":      rng.uniform(40000, 90000, n_usvs).tolist(),

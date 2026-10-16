@@ -88,7 +88,9 @@ def _write_usv_summary(session_root, rows: dict, csv_sep: str = ',') -> None:
         and ``stop`` columns the loaders rely on. An all-False ``noise`` column and
         pure-USV ``usv`` (all True) / ``squeak`` (all False) columns are added when the
         caller does not supply them, since the loaders filter on them and raise when any
-        is missing.
+        is missing, and so is the squeak extent ``squeak_start`` / ``squeak_end``: the
+        segment's own ``start`` / ``stop`` on every ``squeak`` row (so the squeak times
+        equal the segment times unless a test sets them) and null elsewhere.
     csv_sep (str)
         Field separator written into the CSV (mirrors the loaders' ``csv_sep``).
 
@@ -105,6 +107,13 @@ def _write_usv_summary(session_root, rows: dict, csv_sep: str = ',') -> None:
     if 'usv' not in rows and 'squeak' not in rows:
         n_rows = len(next(iter(rows.values())))
         rows = {**rows, 'usv': [True] * n_rows, 'squeak': [False] * n_rows}
+    if 'squeak_start' not in rows and 'squeak_end' not in rows:
+        bearing = [flag is True for flag in rows['squeak']]
+        rows = {
+            **rows,
+            'squeak_start': [start if flag else None for start, flag in zip(rows['start'], bearing, strict=True)],
+            'squeak_end': [stop if flag else None for stop, flag in zip(rows['stop'], bearing, strict=True)],
+        }
     pls.DataFrame(rows).write_csv(file=csv_path, separator=csv_sep)
 
 
@@ -546,8 +555,11 @@ class TestFindBoutEpochs:
         """The ``usv`` / ``squeak`` booleans decide which onsets are positive: each target
         list keeps the rows of its classes -- "usv" pure USVs (usv true, squeak false),
         "squeak" pure squeaks, "overlap" both flags true -- and null flags are in no class;
-        the silent-epoch negatives are the same for every list, because silence is checked
-        against every vocalization of the mouse."""
+        each positive is timed as the event its list asks about: the pure squeak at its own
+        onset (3.01 s, not its segment's 3.0 s), the overlap segment at its squeak's onset
+        (5.02 s) in a squeak-only list and at the earlier of the two (its USV's 5.0 s)
+        otherwise; the silent-epoch negatives are the same for every list, because silence is
+        checked against every vocalization of the mouse."""
 
         rows = {
             'emitter': ['male', 'male', 'male', 'male', 'male'],
@@ -556,6 +568,8 @@ class TestFindBoutEpochs:
             'usv_category': [1, 1, 1, 1, 1],
             'usv': [True, False, True, True, None],
             'squeak': [False, True, False, True, None],
+            'squeak_start': [None, 3.01, None, 5.02, None],
+            'squeak_end': [None, 3.04, None, 5.06, None],
         }
         kwargs = self._build(tmp_path, rows)
         common = dict(prediction_mode='individual', filter_history=1.0,
@@ -564,11 +578,11 @@ class TestFindBoutEpochs:
         expected = {
             ('usv',): [2.0, 4.0],
             ('usv', 'overlap'): [2.0, 4.0, 5.0],
-            ('squeak',): [3.0],
-            ('squeak', 'overlap'): [3.0, 5.0],
+            ('squeak',): [3.01],
+            ('squeak', 'overlap'): [3.01, 5.02],
             ('overlap',): [5.0],
-            ('usv', 'squeak'): [2.0, 3.0, 4.0],
-            ('usv', 'squeak', 'overlap'): [2.0, 3.0, 4.0, 5.0],
+            ('usv', 'squeak'): [2.0, 3.01, 4.0],
+            ('usv', 'squeak', 'overlap'): [2.0, 3.01, 4.0, 5.0],
         }
         out = {classes: find_onset_epochs(target_classes=list(classes), **common, **kwargs)['sess_B']['male']
                for classes in expected}
@@ -1027,6 +1041,37 @@ class TestFindUsvCategories:
         np.testing.assert_allclose(male['continuous_category'], [3, 4])
         assert 'usv_rate' in male['continuous_vocal_signals']
         assert 'usv_cat_1' in male['continuous_vocal_signals']
+
+    @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
+    def test_squeak_map_onsets_are_the_squeaks_own(self, tmp_path):
+        """The squeak map's onsets are the squeaks' own (``squeak_start``): the pure
+        squeak at 3.02 s rather than its segment's 3.0 s, the overlap segment at its
+        squeak's 3.5 s rather than its USV's 2.5 s, so the two swap order and the targets
+        follow their rows; the pure USV has no squeak coordinates and is dropped. A
+        summary without ``squeak_start`` raises."""
+
+        rows = {
+            'emitter': ['male', 'male', 'male'],
+            'start': [2.0, 2.5, 3.0],
+            'stop': [2.05, 2.55, 3.05],
+            'usv_category': [1, 1, 1],
+            'usv': [True, True, False],
+            'squeak': [False, True, True],
+            'squeak_start': [None, 3.5, 3.02],
+            'squeak_end': [None, 3.6, 3.04],
+            'qlvm_squeak1': [None, 0.2, 0.1],
+            'qlvm_squeak2': [None, 0.4, 0.3],
+        }
+        common = {'target_category': None, 'filter_history': 1.0, 'category_column': None,
+                  'manifold_column_names': ['qlvm_squeak1', 'qlvm_squeak2']}
+        male = find_usv_categories(**common, **self._kwargs(tmp_path, rows))['sess_D']['male']
+        np.testing.assert_allclose(male['continuous_onsets'], [3.02, 3.5])
+        np.testing.assert_allclose(male['continuous_targets'], [[0.1, 0.3], [0.2, 0.4]])
+        kwargs = self._kwargs(tmp_path / 'no_extent', rows)
+        csv_path = tmp_path / 'no_extent' / 'sess_D' / 'audio' / 'sess_D_usv_summary.csv'
+        pls.read_csv(csv_path).drop('squeak_start', 'squeak_end').write_csv(csv_path)
+        with pytest.raises(KeyError, match="squeak_start"):
+            find_usv_categories(**common, **kwargs)
 
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
     def test_continuous_targets_without_qlvm_category_carry_no_labels(self, tmp_path):
@@ -1646,7 +1691,10 @@ class TestVocalClassTraces:
     @staticmethod
     def _rows() -> pls.DataFrame:
         """Five segments at 0.1 s steps: pure USV (category 1), pure squeak, pure USV
-        (category 2), overlap (category 1), and an unscored row (null flags)."""
+        (category 2), overlap (category 1), and an unscored row (null flags). The squeaks'
+        own extents differ from their segments: the pure squeak sounds at 0.220-0.225 s
+        (frame 22) and the overlap segment's squeak at 0.450-0.455 s (frame 45), after the
+        segment's USV onset (0.40 s, frame 40)."""
 
         return pls.DataFrame({
             'start': [0.10, 0.20, 0.30, 0.40, 0.50],
@@ -1654,6 +1702,8 @@ class TestVocalClassTraces:
             'qlvm_category': [1, None, 2, 1, 1],
             'usv': [True, False, True, True, None],
             'squeak': [False, True, False, True, None],
+            'squeak_start': [None, 0.220, None, 0.450, None],
+            'squeak_end': [None, 0.225, None, 0.455, None],
         })
 
     @pytest.mark.parametrize('classes, name', [
@@ -1670,27 +1720,30 @@ class TestVocalClassTraces:
 
     def test_pooled_traces_hold_their_classes_only(self):
         """``pooled_binary`` marks exactly the frames of each list's rows (100 fps: frame
-        10 is 0.10 s); overlap rows count in both a USV and a squeak list; unscored rows
-        in none."""
+        10 is 0.10 s), a pure squeak at its own extent (frame 22, not its segment's frame
+        20); overlap rows count in a USV list at their segment (frame 40); unscored rows in
+        none."""
 
         signals = build_vocal_predictor_signals(
             self._rows(), [['usv', 'overlap'], ['squeak']], 'pooled_binary', 'qlvm_category',
             duration_frames=60, fps=100.0, smooth_sd=None, source='s')
         assert sorted(signals) == ['squeak_event', 'usv_event']
         assert np.flatnonzero(signals['usv_event']).tolist() == [10, 30, 40]
-        assert np.flatnonzero(signals['squeak_event']).tolist() == [20]
+        assert np.flatnonzero(signals['squeak_event']).tolist() == [22]
 
     def test_categories_split_squeak_free_lists_only(self):
         """``categories_rate`` splits a list without pure squeaks by QLVM category and
-        gives a list with pure squeaks one pooled trace; ``all_rate`` adds the pooled
-        trace to the split one; an empty list still gives an all-zero pooled trace."""
+        gives a list with pure squeaks one pooled trace, every squeak at its own extent
+        (the overlap segment's squeak at frame 45 in a squeak list, its USV at frame 40 in
+        a USV list); ``all_rate`` adds the pooled trace to the split one; an empty list
+        still gives an all-zero pooled trace."""
 
         rows = self._rows()
         cats = build_vocal_predictor_signals(rows, [['usv', 'overlap'], ['squeak', 'overlap']], 'categories_rate',
                                              'qlvm_category', duration_frames=60, fps=100.0, smooth_sd=None, source='s')
         assert sorted(cats) == ['squeak_rate', 'usv_cat_1', 'usv_cat_2']
         assert np.flatnonzero(cats['usv_cat_1']).tolist() == [10, 40]
-        assert np.flatnonzero(cats['squeak_rate']).tolist() == [20, 40]
+        assert np.flatnonzero(cats['squeak_rate']).tolist() == [22, 45]
         both = build_vocal_predictor_signals(rows, [['usv']], 'all_rate', 'qlvm_category',
                                              duration_frames=60, fps=100.0, smooth_sd=None, source='s')
         assert sorted(both) == ['usv_cat_1', 'usv_cat_2', 'usv_rate']
@@ -1698,6 +1751,27 @@ class TestVocalClassTraces:
                                               'qlvm_category', duration_frames=60, fps=100.0, smooth_sd=None, source='s')
         assert list(empty) == ['squeak_rate'] and not empty['squeak_rate'].any()
         assert build_vocal_predictor_signals(rows, [['usv']], None, None, 60, 100.0, None, 's') == {}
+
+    def test_overlap_alone_spans_the_union(self):
+        """An ``["overlap"]`` list asks about neither class alone, so the overlap segment
+        spans the union of its segment and its squeak extent (0.40-0.455 s, frames 40-45)."""
+
+        signals = build_vocal_predictor_signals(
+            self._rows(), [['overlap']], 'pooled_binary', 'qlvm_category',
+            duration_frames=60, fps=100.0, smooth_sd=None, source='s')
+        assert np.flatnonzero(signals['overlap_event']).tolist() == [40, 41, 42, 43, 44, 45]
+
+    def test_squeak_list_without_the_extent_raises(self):
+        """A list that times squeaks by their extent fails loudly on a summary without
+        ``squeak_start`` / ``squeak_end``; a USV-only list does not need them."""
+
+        rows = self._rows().drop('squeak_start', 'squeak_end')
+        with pytest.raises(KeyError, match="squeak_start"):
+            build_vocal_predictor_signals(rows, [['squeak']], 'pooled_binary', 'qlvm_category',
+                                          duration_frames=60, fps=100.0, smooth_sd=None, source='s')
+        signals = build_vocal_predictor_signals(rows, [['usv', 'overlap']], 'pooled_binary', 'qlvm_category',
+                                                duration_frames=60, fps=100.0, smooth_sd=None, source='s')
+        assert np.flatnonzero(signals['usv_event']).tolist() == [10, 30, 40]
 
     def test_predictor_lists_are_checked(self):
         """Lists may share classes, but two lists giving one trace name, an unknown or

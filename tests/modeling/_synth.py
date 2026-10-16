@@ -318,6 +318,10 @@ def build_usv_summary_csv(
         'noise': [False] * n_rows,
         'usv': [True] * n_rows,
         'squeak': [False] * n_rows,
+        # The squeak extent detect-usv-squeaks writes (null on rows holding no squeak); the
+        # silence reference of the onset loader reads it from every summary.
+        'squeak_start': [None] * n_rows,
+        'squeak_end': [None] * n_rows,
         category_column: [1] * n_rows,
         f"{category_column.rsplit('_', 1)[0]}_category": [1] * n_rows,
         'mask_number': [2] * n_rows,

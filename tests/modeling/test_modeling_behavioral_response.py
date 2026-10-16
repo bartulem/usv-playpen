@@ -1250,6 +1250,8 @@ def _write_variable_bout_summary(session_root: Path,
         'noise': [False] * n_rows,
         'usv': [True] * n_rows,
         'squeak': [False] * n_rows,
+        'squeak_start': [None] * n_rows,
+        'squeak_end': [None] * n_rows,
         'qlvm_category': [1] * n_rows,
         'mask_number': [2] * n_rows,
         'qlvm1': [0.0] * n_rows,
@@ -2145,12 +2147,37 @@ class TestAllUsvTimes:
         audio = tmp_path / 'session' / 'audio'
         audio.mkdir(parents=True)
         pls.DataFrame({'emitter': ['b', 'a', 'b'], 'start': [3.0, 1.0, 2.0],
-                       'stop': [3.5, 1.5, 2.5]}).write_csv(file=audio / 'x_usv_summary.csv')
+                       'stop': [3.5, 1.5, 2.5], 'usv': [True, True, True], 'squeak': [False, False, False],
+                       'squeak_start': [None, None, None], 'squeak_end': [None, None, None],
+                       }).write_csv(file=audio / 'x_usv_summary.csv')
 
         starts, stops = _all_usv_times(tmp_path / 'session', ',')
 
         np.testing.assert_array_equal(starts, [1.0, 2.0, 3.0])
         np.testing.assert_array_equal(stops, [1.5, 2.5, 3.5])
+
+    def test_a_squeak_blocks_its_segment_and_its_extent(self, tmp_path):
+        """
+        A squeak-bearing row counts against silence over the union of its
+        segment and its squeak extent, which may reach past the segment; a
+        summary without the extent raises rather than silently using the
+        segment.
+        """
+
+        audio = tmp_path / 'session' / 'audio'
+        audio.mkdir(parents=True)
+        table = pls.DataFrame({'emitter': ['a', 'a'], 'start': [1.0, 2.0], 'stop': [1.5, 2.5],
+                               'usv': [True, True], 'squeak': [False, True],
+                               'squeak_start': [None, 1.9], 'squeak_end': [None, 2.7]})
+        table.write_csv(file=audio / 'x_usv_summary.csv')
+
+        starts, stops = _all_usv_times(tmp_path / 'session', ',')
+
+        np.testing.assert_array_equal(starts, [1.0, 1.9])
+        np.testing.assert_array_equal(stops, [1.5, 2.7])
+        table.drop('squeak_start', 'squeak_end').write_csv(file=audio / 'x_usv_summary.csv')
+        with pytest.raises(KeyError, match="squeak_start"):
+            _all_usv_times(tmp_path / 'session', ',')
 
     def test_a_session_without_a_summary_yields_empty_arrays(self, tmp_path):
         """

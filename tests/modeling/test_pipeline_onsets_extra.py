@@ -846,7 +846,11 @@ class TestExtractionGuards:
         )
         for root in session_roots:
             csv_path = next((Path(root) / 'audio').glob('*_usv_summary.csv'))
-            pls.read_csv(csv_path).with_columns(pls.lit(False).alias('usv'), pls.lit(True).alias('squeak')).write_csv(csv_path)
+            # A squeak's extent is its segment here, so the squeak onsets equal the segment onsets.
+            pls.read_csv(csv_path).with_columns(
+                pls.lit(False).alias('usv'), pls.lit(True).alias('squeak'),
+                pls.col('start').alias('squeak_start'), pls.col('stop').alias('squeak_end'),
+            ).write_csv(csv_path)
         list_file = write_session_list_file(session_roots, tmp_path / 'session_list.txt')
         save_dir = tmp_path / 'out'
         save_dir.mkdir(parents=True, exist_ok=True)

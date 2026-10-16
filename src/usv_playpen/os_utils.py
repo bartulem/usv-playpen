@@ -1589,6 +1589,11 @@ VOCAL_FLAG_COLUMNS = (USV_FLAG_COLUMN, SQUEAK_FLAG_COLUMN)
 # squeak (squeak & ~usv), "overlap" = a squeak and a USV in one segment (usv & squeak).
 VOCAL_CLASSES = ("usv", "squeak", "overlap")
 
+# The squeak's own extent (session seconds) that detect-usv-squeaks writes on every `squeak` row:
+# the time of the squeak itself, which on an overlap segment usually begins later than the
+# segment's `start` (vocal_event_times, vocal_occupancy_times).
+SQUEAK_EXTENT_COLUMNS = ("squeak_start", "squeak_end")
+
 # The three selections every squeak-side consumer (squeak figures, the explorer's squeak map)
 # offers: pure squeaks, overlap segments (a squeak and a USV together), or both kinds together
 # (squeak true).
@@ -1833,6 +1838,208 @@ def squeak_bearing_mask(usv_summary: Any, source: str) -> Any:
     """
 
     return vocal_class_mask(usv_summary, ("squeak", "overlap"), source)
+
+
+def _require_squeak_extent(usv_summary: Any, source: str, needed_by: str) -> None:
+    """
+    Description
+    -----------
+    Checks that a USV summary table carries the squeak extent ``squeak_start`` / ``squeak_end``
+    that ``detect-usv-squeaks`` writes, so a consumer that times squeaks by their own extent never
+    silently falls back to the segment times.
+
+    Parameters
+    ----------
+    usv_summary (polars.DataFrame)
+        A session's USV summary table (or any table holding its columns).
+    source (str)
+        What the table came from (a session id or file name), named in the error.
+    needed_by (str)
+        What needs the extent, named in the error.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    KeyError
+        The table lacks ``squeak_start`` or ``squeak_end``.
+    """
+
+    missing = [column for column in SQUEAK_EXTENT_COLUMNS if column not in usv_summary.columns]
+    if missing:
+        error_message = (
+            f"{source} has no {missing} column(s), which {needed_by} needs to time its squeaks. "
+            f"Run detect-usv-squeaks on the session (after detect-usv-noise)."
+        )
+        raise KeyError(error_message)
+
+
+def _squeak_extent(usv_summary: Any, squeak_rows: Any, source: str, needed_by: str) -> tuple[Any, Any]:
+    """
+    Description
+    -----------
+    The squeak extent ``squeak_start`` / ``squeak_end`` as Float64 Series, checked to be present on
+    every row of ``squeak_rows`` (``detect-usv-squeaks`` writes an extent on every ``squeak`` row,
+    so a missing one means the summary is incomplete or was edited, and the times would be wrong).
+
+    Parameters
+    ----------
+    usv_summary (polars.DataFrame)
+        A table holding ``squeak_start`` and ``squeak_end`` (checked by the caller).
+    squeak_rows (np.ndarray)
+        Boolean, one value per row: the rows that are timed by the squeak extent.
+    source (str)
+        What the table came from, named in the error.
+    needed_by (str)
+        What needs the extent, named in the error.
+
+    Returns
+    -------
+    squeak_start, squeak_end (np.ndarray)
+        Float64, one value per row (NaN where the row holds no squeak).
+
+    Raises
+    ------
+    ValueError
+        A row of ``squeak_rows`` has a null or non-numeric ``squeak_start`` or ``squeak_end``.
+    """
+
+    squeak_start = usv_summary["squeak_start"].cast(float, strict=False).to_numpy()
+    squeak_end = usv_summary["squeak_end"].cast(float, strict=False).to_numpy()
+    n_missing = int(np.count_nonzero(squeak_rows & ~(np.isfinite(squeak_start) & np.isfinite(squeak_end))))
+    if n_missing:
+        error_message = (
+            f"{source}: {n_missing} squeak-bearing row(s) have no squeak_start / squeak_end, which "
+            f"{needed_by} needs to time them. Re-run detect-usv-squeaks on the session."
+        )
+        raise ValueError(error_message)
+    return squeak_start, squeak_end
+
+
+def vocal_event_times(usv_summary: Any, classes: Iterable[str], source: str) -> Any:
+    """
+    Description
+    -----------
+    Times every row of a USV summary as the vocal event a class group asks about, so a squeak is
+    timed by the squeak and not by the segment that holds it. The segment's ``start`` / ``stop``
+    are the extent of the whole detected segment; on an overlap segment that is the USV's, and the
+    squeak inside it typically begins tens of milliseconds later (``squeak_start`` / ``squeak_end``,
+    the squeak's own extent, may also reach a little past the segment). Per row:
+
+    * a pure USV (``usv & ~squeak``) keeps ``start`` / ``stop``;
+    * a pure squeak (``squeak & ~usv``) takes ``squeak_start`` / ``squeak_end``;
+    * an overlap segment (``usv & squeak``) follows the group: the squeak extent when ``classes``
+      names ``"squeak"`` but not ``"usv"`` (the group asks about squeaks), ``start`` / ``stop``
+      when it names ``"usv"`` but not ``"squeak"`` (it asks about USVs), and otherwise -- both
+      named, or ``"overlap"`` alone -- the union of the two (the earlier onset and the later
+      offset), the extent of any vocalization the segment holds;
+    * a row of no class (noise, or too short to score: both flags null) keeps ``start`` / ``stop``.
+
+    The caller selects the group's rows (:func:`vocal_class_mask`); this only re-times them. A
+    USV-only group (``"usv"`` without ``"squeak"``, with or without ``"overlap"``) never times a
+    row by the squeak extent, so it returns every row with its segment times. When
+    the group can time any row by the squeak extent (it names ``"squeak"``, or ``"overlap"``
+    without being a USV-only group), the table must carry ``squeak_start`` / ``squeak_end``,
+    whether or not this table holds such a row, so a session without the extent fails loudly
+    instead of silently keeping the segment times.
+
+    Parameters
+    ----------
+    usv_summary (polars.DataFrame)
+        A session's USV summary table (``start``, ``stop``, ``usv``, ``squeak`` and, when the
+        group needs them, ``squeak_start`` / ``squeak_end``).
+    classes (Iterable[str])
+        The class group, each one of ``VOCAL_CLASSES``.
+    source (str)
+        What the table came from, named in the errors.
+
+    Returns
+    -------
+    timed (polars.DataFrame)
+        The same rows and columns, ``start`` / ``stop`` (Float64) replaced by the event times,
+        sorted by the new ``start``.
+
+    Raises
+    ------
+    KeyError
+        The table lacks ``usv`` / ``squeak``, or the group needs the squeak extent and the table
+        lacks ``squeak_start`` / ``squeak_end``.
+    ValueError
+        A class is not one of ``VOCAL_CLASSES``, or a row the group times by the squeak extent has
+        none.
+    """
+
+    classes = list(classes)
+    unknown = [value for value in classes if value not in VOCAL_CLASSES]
+    if unknown:
+        error_message = f"vocal_event_times: unknown vocal class(es) {unknown}; the classes are {list(VOCAL_CLASSES)}."
+        raise ValueError(error_message)
+    require_vocal_flags(usv_summary, source)
+    asks_usv = "usv" in classes
+    asks_squeak = "squeak" in classes
+    overlap_by_squeak = asks_squeak and not asks_usv
+    overlap_by_union = asks_usv == asks_squeak
+    start = usv_summary["start"].cast(float).to_numpy()
+    stop = usv_summary["stop"].cast(float).to_numpy()
+    if not (asks_squeak or ("overlap" in classes and not (asks_usv and not asks_squeak))):
+        return usv_summary.with_columns(start=start, stop=stop).sort("start")
+    needed_by = f"the {classes} event times"
+    _require_squeak_extent(usv_summary, source, needed_by)
+    usv = _vocal_flag(usv_summary, USV_FLAG_COLUMN).to_numpy()
+    squeak = _vocal_flag(usv_summary, SQUEAK_FLAG_COLUMN).to_numpy()
+    overlap = usv & squeak
+    by_squeak = (squeak & ~usv) | (overlap & overlap_by_squeak)
+    by_union = overlap & overlap_by_union
+    squeak_start, squeak_end = _squeak_extent(usv_summary, by_squeak | by_union, source, needed_by)
+    event_start = np.where(by_squeak, squeak_start, np.where(by_union, np.fmin(start, squeak_start), start))
+    event_stop = np.where(by_squeak, squeak_end, np.where(by_union, np.fmax(stop, squeak_end), stop))
+    return usv_summary.with_columns(start=event_start, stop=event_stop).sort("start")
+
+
+def vocal_occupancy_times(usv_summary: Any, source: str) -> Any:
+    """
+    Description
+    -----------
+    Times every row of a USV summary by the full extent of the sound it holds, for the silence
+    reference (epochs that must contain no vocalization of any class): a squeak-bearing row (pure
+    squeak or overlap) spans the union of its segment and its squeak extent (the earlier onset, the
+    later offset), because the squeak extent may reach past the segment; every other row keeps its
+    ``start`` / ``stop``.
+
+    Parameters
+    ----------
+    usv_summary (polars.DataFrame)
+        A session's USV summary table (``start``, ``stop``, ``usv``, ``squeak``, ``squeak_start``
+        and ``squeak_end``).
+    source (str)
+        What the table came from, named in the errors.
+
+    Returns
+    -------
+    timed (polars.DataFrame)
+        The same rows and columns, ``start`` / ``stop`` (Float64) replaced by the occupancy times,
+        sorted by the new ``start``.
+
+    Raises
+    ------
+    KeyError
+        The table lacks ``usv`` / ``squeak`` or ``squeak_start`` / ``squeak_end``.
+    ValueError
+        A squeak-bearing row has no squeak extent.
+    """
+
+    require_vocal_flags(usv_summary, source)
+    needed_by = "the silence reference"
+    _require_squeak_extent(usv_summary, source, needed_by)
+    squeak_rows = _vocal_flag(usv_summary, SQUEAK_FLAG_COLUMN).to_numpy()
+    squeak_start, squeak_end = _squeak_extent(usv_summary, squeak_rows, source, needed_by)
+    start = usv_summary["start"].cast(float).to_numpy()
+    stop = usv_summary["stop"].cast(float).to_numpy()
+    occupancy_start = np.where(squeak_rows, np.fmin(start, squeak_start), start)
+    occupancy_stop = np.where(squeak_rows, np.fmax(stop, squeak_end), stop)
+    return usv_summary.with_columns(start=occupancy_start, stop=occupancy_stop).sort("start")
 
 
 def squeak_class_selection(selection: str) -> tuple[str, ...]:

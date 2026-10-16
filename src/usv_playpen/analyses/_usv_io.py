@@ -19,7 +19,12 @@ from typing import Any
 import h5py
 import polars as pls
 
-from ..os_utils import drop_noise_usvs, vocal_class_mask
+from ..os_utils import (
+    VOCAL_CLASSES,
+    drop_noise_usvs,
+    vocal_class_mask,
+    vocal_event_times,
+)
 from ..yaml_utils import extract_animal_sexes
 
 __all__ = [
@@ -193,6 +198,16 @@ def load_and_filter_usv_data(
     USV nor a clean squeak, so it belongs to neither ``'usv'`` nor ``'squeak'`` and is removed from
     both sequences; null booleans (a segment too short to score) are likewise in neither.
 
+    Every kept row is timed as the vocalization the selection asks about
+    (:func:`os_utils.vocal_event_times`), and the table is re-sorted by that onset, so
+    ``start`` / ``stop`` and ``frame_index`` of a squeak are the squeak's own: with
+    ``'squeak'`` a pure squeak takes its squeak extent ``squeak_start`` / ``squeak_end``;
+    with None (every class) a pure squeak takes its squeak extent and a segment holding both
+    the union of the segment and its squeak extent (the earlier onset, the later offset); with
+    ``'usv'`` the segment times are kept. ``'squeak'`` and None therefore need the summary's
+    ``usv`` / ``squeak`` booleans and ``squeak_start`` / ``squeak_end`` columns, and raise
+    without them.
+
     Parameters
     ----------
     session_root (str)
@@ -212,7 +227,18 @@ def load_and_filter_usv_data(
     -------
     usv_info (pls.DataFrame)
         All columns from the USV summary CSV with noise rows removed, restricted to ``call_type``,
-        plus a newly calculated 'frame_index' column.
+        each row's ``start`` / ``stop`` the times of the vocalization ``call_type`` asks about,
+        sorted by ``start``, plus a newly calculated 'frame_index' column.
+
+    Raises
+    ------
+    FileNotFoundError
+        The session has no USV summary.
+    ValueError
+        ``call_type`` is not ``'usv'``, ``'squeak'`` or None.
+    KeyError
+        ``call_type`` is ``'squeak'`` or None and the summary lacks the ``usv`` / ``squeak``
+        booleans or ``squeak_start`` / ``squeak_end``.
     """
 
     session_path = Path(session_root)
@@ -231,6 +257,8 @@ def load_and_filter_usv_data(
             msg = f"load_and_filter_usv_data: call_type must be 'usv', 'squeak' or None, got {call_type!r}."
             raise ValueError(msg)
         usv_info_clean = usv_info_clean.filter(vocal_class_mask(usv_info_clean, (call_type,), usv_file.name))
+    selected_classes = VOCAL_CLASSES if call_type is None else (call_type,)
+    usv_info_clean = vocal_event_times(usv_info_clean, selected_classes, usv_file.name)
 
     return usv_info_clean.with_columns(
         (pls.col("start") * frame_rate).floor().cast(pls.UInt32).alias("frame_index")

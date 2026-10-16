@@ -660,7 +660,9 @@ def test_extract_animal_sexes_invalid_sex_raises(tmp_path):
 
 def _write_summary(root: Path, with_vocal_flags: bool) -> None:
     """Writes a five-row ``audio/<session>_usv_summary.csv`` (pure usv, pure squeak, pure usv, both
-    flags true and an unscored null), with or without the ``usv`` / ``squeak`` booleans."""
+    flags true and an unscored null), with or without the ``usv`` / ``squeak`` booleans and the
+    squeak extent: the pure squeak sounds at 2.02-2.08 s inside its 2.0-2.1 s segment, the overlap
+    segment's squeak at 4.03-4.15 s, outlasting its 4.0-4.1 s segment."""
 
     audio = root / "audio"
     audio.mkdir(parents=True, exist_ok=True)
@@ -670,6 +672,8 @@ def _write_summary(root: Path, with_vocal_flags: bool) -> None:
         frame = frame.with_columns(
             pls.Series("usv", [True, False, True, True, None], dtype=pls.Boolean),
             pls.Series("squeak", [False, True, False, True, None], dtype=pls.Boolean),
+            pls.Series("squeak_start", [None, 2.02, None, 4.03, None], dtype=pls.Float64),
+            pls.Series("squeak_end", [None, 2.08, None, 4.15, None], dtype=pls.Float64),
         )
     frame.write_csv(str(audio / f"{root.name}_usv_summary.csv"))
 
@@ -677,15 +681,35 @@ def _write_summary(root: Path, with_vocal_flags: bool) -> None:
 def test_load_and_filter_usv_data_call_type_filters(tmp_path):
     """``call_type='usv'`` keeps the pure USVs (usv true, squeak false) and ``'squeak'`` the pure
     squeaks; a segment with both flags true (usv true is not enough) and an unscored (null) row
-    belong to neither, and None keeps every row."""
+    belong to neither, and None keeps every row. Each row is timed as its vocalization: the pure
+    squeak at its squeak extent (2.02-2.08 s), and under None the overlap segment at the union of
+    the segment and its squeak (4.0-4.15 s); pure USVs keep their segments."""
 
     _write_summary(tmp_path, with_vocal_flags=True)
     usv = load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, call_type="usv")
     squeak = load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, call_type="squeak")
     every = load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, call_type=None)
     assert usv["start"].to_list() == [1.0, 3.0]
-    assert squeak["start"].to_list() == [2.0]
+    assert squeak["start"].to_list() == [2.02]
+    assert squeak["stop"].to_list() == [2.08]
+    assert squeak["frame_index"].to_list() == [int(np.floor(2.02 * 150.0))]
     assert every.height == 5
+    assert every["start"].to_list() == [1.0, 2.02, 3.0, 4.0, 5.0]
+    assert every["stop"].to_list() == [1.1, 2.08, 3.1, 4.15, 5.1]
+
+
+def test_load_and_filter_usv_data_squeaks_need_the_squeak_extent(tmp_path):
+    """``'squeak'`` and None time squeaks by their extent, so a summary without
+    ``squeak_start`` / ``squeak_end`` raises for them; ``'usv'`` does not need the columns."""
+
+    _write_summary(tmp_path, with_vocal_flags=True)
+    summary_path = tmp_path / "audio" / f"{tmp_path.name}_usv_summary.csv"
+    pls.read_csv(summary_path).drop("squeak_start", "squeak_end").write_csv(summary_path)
+    for call_type in ("squeak", None):
+        with pytest.raises(KeyError, match="squeak_start"):
+            load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, call_type=call_type)
+    usv = load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, call_type="usv")
+    assert usv["start"].to_list() == [1.0, 3.0]
 
 
 def test_load_and_filter_usv_data_rejects_unknown_call_type(tmp_path):
@@ -730,6 +754,9 @@ def test_compute_session_usv_intervals_overlap_is_neither_usv_nor_squeak(tmp_pat
         "noise": [False] * 6,
         "usv": [False, True, False, False, True, True],
         "squeak": [True, True, True, True, False, True],
+        # each squeak's extent is its segment, so the intervals are the segment intervals
+        "squeak_start": [1.0, 2.0, 3.0, 4.0, None, 6.0],
+        "squeak_end": [1.1, 2.1, 3.1, 4.1, None, 6.1],
     }).write_csv(str(audio / f"{tmp_path.name}_usv_summary.csv"))
 
     filtered = compute_session_usv_intervals(str(tmp_path), "s2s", exclude_noise_usvs=True,
@@ -741,3 +768,32 @@ def test_compute_session_usv_intervals_overlap_is_neither_usv_nor_squeak(tmp_pat
     np.testing.assert_allclose(filtered["female"], [2.0, 1.0])
     np.testing.assert_allclose(strict["female"], [1.0])
     assert usv["male"].size == 0 and usv["female"].size == 0
+
+
+def test_compute_session_usv_intervals_time_squeaks_by_their_extent(tmp_path, monkeypatch):
+    """A squeak interval runs between the squeaks themselves (squeak_start / squeak_end), not
+    their segments: two pure squeaks whose segments start 1.0 s apart but whose squeaks start at
+    1.05 s and 2.20 s give a 1.15 s start-to-start interval and a 1.05 s end-to-start one
+    (first squeak ends at 1.15 s)."""
+
+    _patch_session_identity(monkeypatch)
+    audio = tmp_path / "audio"
+    audio.mkdir(parents=True, exist_ok=True)
+    pls.DataFrame({
+        "start": [1.0, 2.0],
+        "stop": [1.2, 2.3],
+        "emitter": ["F", "F"],
+        "noise": [False, False],
+        "usv": [False, False],
+        "squeak": [True, True],
+        "squeak_start": [1.05, 2.20],
+        "squeak_end": [1.15, 2.25],
+    }).write_csv(str(audio / f"{tmp_path.name}_usv_summary.csv"))
+
+    for adjacency in ("filtered", "strict"):
+        s2s = compute_session_usv_intervals(str(tmp_path), "s2s", exclude_noise_usvs=True,
+                                            call_type="squeak", adjacency=adjacency)
+        e2s = compute_session_usv_intervals(str(tmp_path), "e2s", exclude_noise_usvs=True,
+                                            call_type="squeak", adjacency=adjacency)
+        np.testing.assert_allclose(s2s["female"], [1.15])
+        np.testing.assert_allclose(e2s["female"], [1.05])

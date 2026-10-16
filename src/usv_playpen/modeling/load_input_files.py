@@ -29,7 +29,16 @@ import polars as pls
 from astropy.convolution import Gaussian1DKernel, convolve
 from scipy.stats import invgauss, norm
 
-from ..os_utils import QLVM_CATEGORY_COLUMN, VOCAL_CLASSES, VOCAL_FLAG_COLUMNS, drop_noise_usvs, vocal_class_mask
+from ..os_utils import (
+    QLVM_CATEGORY_COLUMN,
+    QLVM_SQUEAK_MAP,
+    VOCAL_CLASSES,
+    VOCAL_FLAG_COLUMNS,
+    drop_noise_usvs,
+    vocal_class_mask,
+    vocal_event_times,
+    vocal_occupancy_times,
+)
 
 
 def load_behavioral_feature_data(behavior_file_paths: list = None,
@@ -303,8 +312,14 @@ def build_vocal_predictor_signals(mouse_usvs: pls.DataFrame,
     Builds one animal's vocal predictor traces: one trace per entry of
     ``predictor_classes``, from the rows of ``mouse_usvs`` whose vocal class
     (``os_utils.vocal_class_mask``, read from the ``usv`` / ``squeak`` booleans) is
-    in that entry, named by ``vocal_trace_name``. ``vocal_output_type`` decides
-    how each trace is built:
+    in that entry, named by ``vocal_trace_name``. Each row is timed as the event
+    the entry asks about (``os_utils.vocal_event_times``): a pure squeak by its
+    squeak extent ``squeak_start`` / ``squeak_end``, a pure USV by its segment
+    ``start`` / ``stop``, and an overlap segment by the squeak extent in a
+    squeak-only entry, by the segment in a USV-only entry, and by the union of the
+    two otherwise; an entry that can time a row by the squeak extent raises when
+    the summary has no ``squeak_start`` / ``squeak_end``. ``vocal_output_type``
+    decides how each trace is built:
 
     * ``'pooled_binary'``: binary occupancy, ``<name>_event``;
     * ``'pooled_rate'``: Gaussian-smoothed occupancy, ``<name>_rate``;
@@ -359,7 +374,7 @@ def build_vocal_predictor_signals(mouse_usvs: pls.DataFrame,
         )
     for group in predictor_classes:
         name = vocal_trace_name(group)
-        group_usvs = mouse_usvs.filter(vocal_class_mask(mouse_usvs, group, source))
+        group_usvs = vocal_event_times(mouse_usvs.filter(vocal_class_mask(mouse_usvs, group, source)), group, source)
         starts = group_usvs['start'].to_numpy()
         stops = group_usvs['stop'].to_numpy()
         split_by_category = vocal_output_type in CATEGORY_PREDICTOR_TYPES and 'squeak' not in group
@@ -512,6 +527,11 @@ def require_labels_for_vocal_predictors(voc_settings: dict) -> None:
             voc_settings['usv_category_column_name'],
             f"vocal_features.vocal_predictor_type '{voc_settings['vocal_predictor_type']}'",
         )
+
+
+# The torus coordinates of the squeak map (``os_utils.QLVM_SQUEAK_MAP``): manifold targets read
+# from these columns are timed by the squeak extent (``find_usv_categories``).
+SQUEAK_MAP_COLUMNS = (f"{QLVM_SQUEAK_MAP}1", f"{QLVM_SQUEAK_MAP}2")
 
 
 def _get_clean_tiled_epochs(usv_starts_all: np.ndarray,
@@ -1016,10 +1036,20 @@ def find_onset_epochs(root_directories: list = None,
         two target ones neither joins nor splits a bout), and the 'state' labels are
         the target classes' occupancy. The bout modes accept ``"usv"`` and
         ``"overlap"`` only (``BOUT_TARGET_CLASSES``): squeaks do not come in bouts.
+        Each positive row is timed as the event the target classes ask about
+        (``os_utils.vocal_event_times``): a pure squeak by its squeak extent
+        ``squeak_start`` / ``squeak_end``, a pure USV by its segment ``start`` / ``stop``,
+        and an overlap segment by the squeak extent when the classes name ``"squeak"``
+        but not ``"usv"``, by the segment when they name ``"usv"`` but not ``"squeak"``,
+        and by the union of the two otherwise; target classes that can time a row by
+        the squeak extent raise when a summary has no ``squeak_start`` / ``squeak_end``.
         Silence is NOT class-specific: a negative epoch's window and a 'bout_onset'
         positive's clean history must both be free of every vocalization of the target
         animal (any class) and of every vocalization assigned to no animal, so the two
-        groups are built under the same rule whatever the target classes.
+        groups are built under the same rule whatever the target classes; a
+        squeak-bearing row blocks the union of its segment and its squeak extent
+        (``os_utils.vocal_occupancy_times``), so every summary needs ``squeak_start`` /
+        ``squeak_end``.
     predictor_classes : list or tuple, default (('usv',),)
         ``vocal_features.vocal_predictor_classes``: a list of class lists, each one
         predictor trace (``build_vocal_predictor_signals``, named by ``vocal_trace_name``),
@@ -1159,8 +1189,13 @@ def find_onset_epochs(root_directories: list = None,
             # ('individual' mode only), of that category. The predictor traces are
             # built from their own class lists (`predictor_classes`) and the
             # silence reference from every class, so neither depends on the target.
-            typed_source_df = mouse_usvs_df.filter(
-                vocal_class_mask(mouse_usvs_df, target_classes, Path(csv_path).name)
+            # Each row is timed as the event the target classes ask about
+            # (`vocal_event_times`): a pure squeak by its squeak extent, an overlap
+            # segment by the squeak extent, the segment or their union as the classes
+            # ask about squeaks, USVs or both; re-sorted by that onset.
+            typed_source_df = vocal_event_times(
+                mouse_usvs_df.filter(vocal_class_mask(mouse_usvs_df, target_classes, Path(csv_path).name)),
+                target_classes, Path(csv_path).name,
             )
             if target_category is not None and prediction_mode == 'individual':
                 # The column's presence was checked above, when the summary was read.
@@ -1173,8 +1208,13 @@ def find_onset_epochs(root_directories: list = None,
 
             # The silence reference: every vocalization of this mouse (any class) and
             # every one assigned to no animal. Negative epochs must be free of all of
-            # them, and so must a 'bout_onset' positive's clean history.
-            all_usvs_df = usv_summary_data.filter((pls.col('emitter').is_null()) | (pls.col('emitter') == mouse_name)).sort('start')
+            # them, and so must a 'bout_onset' positive's clean history. A squeak-bearing
+            # row spans the union of its segment and its squeak extent
+            # (`vocal_occupancy_times`), which may reach past the segment.
+            all_usvs_df = vocal_occupancy_times(
+                usv_summary_data.filter((pls.col('emitter').is_null()) | (pls.col('emitter') == mouse_name)),
+                Path(csv_path).name,
+            )
             usv_start_mouse_and_uncategorized = np.array(all_usvs_df['start'])
             usv_stop_mouse_and_uncategorized = np.array(all_usvs_df['stop'])
 
@@ -1417,7 +1457,9 @@ def find_usv_categories(root_directories: list = None,
             'other_events': Start times of all other USVs (Only if target_category is set).
             'continuous_vocal_signals': Continuous arrays for X variables (smoothed/binary).
             'category_streams': Dict {cat_id: {'start': np.array, 'stop': np.array}} (Filtered).
-            'continuous_onsets': np.array of start times for valid USVs (used for continuous models).
+            'continuous_onsets': np.array of start times for valid USVs (used for continuous models);
+                    for the squeak map (``SQUEAK_MAP_COLUMNS``) the squeaks' own onsets
+                    (``squeak_start``, ``os_utils.vocal_event_times``).
             'continuous_targets': np.array of shape (N, D) stacking the configured
                 manifold columns in the order given by `manifold_column_names`.
             'continuous_category': np.array of per-USV category labels, aligned 1:1
@@ -1551,6 +1593,18 @@ def find_usv_categories(root_directories: list = None,
             # Extract continuous targets (user-configured acoustic manifold coordinates)
             if manifold_column_names:
                 if all(col in mouse_usvs.columns for col in manifold_column_names):
+                    # The squeak map places the squeak of every squeak-bearing segment
+                    # (pure squeaks and overlap segments), so its onsets are the squeaks'
+                    # own (`vocal_event_times` with the class group ("squeak",): every
+                    # squeak-bearing row by its squeak extent, never by the overlap
+                    # segment's USV onset), re-sorted and re-filtered against the history
+                    # period on that onset; every other map places USVs and keeps the
+                    # segment onsets.
+                    if set(manifold_column_names) <= set(SQUEAK_MAP_COLUMNS):
+                        manifold_usvs = vocal_event_times(mouse_usvs, ("squeak",), f"{session_id} ({mouse_name})")
+                        manifold_usvs = manifold_usvs.filter(pls.col('start') > filter_history)
+                    else:
+                        manifold_usvs = mouse_usvs
                     # A call the embedding could not place (outside the model's
                     # duration window, no SAM mask, no condition value) has null
                     # coordinates; it has no manifold target, so it is dropped here,
@@ -1558,7 +1612,7 @@ def find_usv_categories(root_directories: list = None,
                     # (the inverse-density KDE, the regressions, the GLM-HMM) sees a NaN.
                     # A column CSV inference read as text (all-null) casts to NaN too.
                     manifold_arrays = [
-                        mouse_usvs[col].cast(pls.Float64, strict=False).fill_null(np.nan).to_numpy()
+                        manifold_usvs[col].cast(pls.Float64, strict=False).fill_null(np.nan).to_numpy()
                         for col in manifold_column_names
                     ]
                     manifold_targets = np.column_stack(manifold_arrays)
@@ -1569,7 +1623,7 @@ def find_usv_categories(root_directories: list = None,
                               f"null/NaN manifold coordinates ({', '.join(manifold_column_names)}).")
                         n_unplaced_total += n_unplaced
                         n_unplaced_sessions += 1
-                    usv_data_dict[session_id][mouse_name]['continuous_onsets'] = mouse_usvs['start'].to_numpy()[placed]
+                    usv_data_dict[session_id][mouse_name]['continuous_onsets'] = manifold_usvs['start'].to_numpy()[placed]
                     usv_data_dict[session_id][mouse_name]['continuous_targets'] = manifold_targets[placed]
 
                     # Per-USV category labels, the acoustic regions of
@@ -1585,9 +1639,9 @@ def find_usv_categories(root_directories: list = None,
                     # above, only when the column is present in the source CSV;
                     # an absent label array signals "this USV summary carries
                     # no categories yet" (assign-qlvm-categories not run).
-                    if QLVM_CATEGORY_COLUMN in mouse_usvs.columns:
+                    if QLVM_CATEGORY_COLUMN in manifold_usvs.columns:
                         usv_data_dict[session_id][mouse_name]['continuous_category'] = (
-                            mouse_usvs[QLVM_CATEGORY_COLUMN].to_numpy()[placed]
+                            manifold_usvs[QLVM_CATEGORY_COLUMN].to_numpy()[placed]
                         )
 
     if manifold_column_names:
@@ -1740,7 +1794,10 @@ def find_variable_length_bouts(root_directories: list = None,
         Needed when `vocal_output_type` is set.
     target_classes : list or tuple, default ('usv',)
         ``model_params.onset_target_classes``: the vocal classes bouts are grouped
-        from (``"usv"`` and ``"overlap"`` only, ``BOUT_TARGET_CLASSES``). The predictor
+        from (``"usv"`` and ``"overlap"`` only, ``BOUT_TARGET_CLASSES``), each row timed
+        as the event the classes ask about (``os_utils.vocal_event_times``: with
+        ``"usv"`` named, an overlap segment keeps its segment times; ``["overlap"]``
+        alone takes the union of the segment and its squeak extent). The predictor
         traces are built from their own lists (`predictor_classes`), not from these.
     exclude_noise_usvs : bool, optional
         Whether to drop the segments ``detect_usv_noise`` flagged as holding no
@@ -1859,8 +1916,13 @@ def find_variable_length_bouts(root_directories: list = None,
                 category_column=category_column, duration_frames=session_duration_frames, fps=session_fps,
                 smooth_sd=proportion_smoothing_sd, source=f"{session_id} ({mouse_name})")
 
-            # Bouts are grouped from the target classes only (null booleans match no class).
-            mouse_usvs = mouse_usvs.filter(vocal_class_mask(mouse_usvs, target_classes, f"{session_id} ({mouse_name})"))
+            # Bouts are grouped from the target classes only (null booleans match no class),
+            # each row timed as the event the classes ask about (`vocal_event_times`) and
+            # re-sorted by that onset, so a squeak bout's gaps run between the squeaks.
+            mouse_usvs = vocal_event_times(
+                mouse_usvs.filter(vocal_class_mask(mouse_usvs, target_classes, f"{session_id} ({mouse_name})")),
+                target_classes, f"{session_id} ({mouse_name})",
+            )
 
             if mouse_usvs.height == 0:
                 continue

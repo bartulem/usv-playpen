@@ -1703,6 +1703,10 @@ def _make_synthetic_session(tmp_path, *, n_frames=1500, n_usvs=120, fps=150.0):
         # two booleans are required.
         "usv": [True] * n_usvs,
         "squeak": [False] * n_usvs,
+        # The squeak extent detect-usv-squeaks writes (null on rows holding no squeak); the
+        # tuning loader times squeak anchors by it and needs the columns.
+        "squeak_start": [None] * n_usvs,
+        "squeak_end": [None] * n_usvs,
         # the only QLVM category column (R-1..R-4 of the regular map)
         "qlvm_category":     rng.integers(1, 5, size=n_usvs).tolist(),
         "mean_freq_hz":      rng.uniform(40000, 90000, n_usvs).tolist(),
@@ -1974,11 +1978,14 @@ def test_squeaks_are_dropped_from_self_anchors_and_never_categorised(synthetic_c
     squeak[:5] = True
     squeak[5:10] = True
     not_usv = squeak
-    # category 99 only on squeak / overlap segments
+    # category 99 only on squeak / overlap segments; each squeak's extent is its segment, so the
+    # anchors keep their order
     df.with_columns(
         pls.Series("usv", usv.tolist(), dtype=pls.Boolean),
         pls.Series("squeak", squeak.tolist(), dtype=pls.Boolean),
         pls.when(pls.Series(not_usv)).then(99).otherwise(pls.col("qlvm_category")).alias("qlvm_category"),
+        pls.when(pls.Series(squeak)).then(pls.col("start")).otherwise(None).alias("squeak_start"),
+        pls.when(pls.Series(squeak)).then(pls.col("stop")).otherwise(None).alias("squeak_end"),
     ).write_csv(usv_csv)
 
     nt = _make_neuronal_tuning(root)
@@ -1995,6 +2002,30 @@ def test_squeaks_are_dropped_from_self_anchors_and_never_categorised(synthetic_c
     categorical = kept["anchor_categorical"]["qlvm_category"]
     assert 99 not in categorical["unique_cats"].tolist()
     assert (categorical["anchor_cat_idx_dense"][~voc_inputs["is_usv"][kept["anchor_idx"]]] == -1).all()
+
+
+def test_a_pure_squeak_is_anchored_at_its_own_onset(synthetic_compute_session):
+    """A pure squeak's anchor is its squeak's onset (squeak_start), not its segment's start; a
+    summary without the squeak extent raises rather than anchoring squeaks at their segments."""
+    root, _ = synthetic_compute_session
+    usv_csv = next(root.rglob("*_usv_summary.csv"))
+    df = pls.read_csv(usv_csv).sort("start")
+    first_start = float(df["start"][0])
+    squeak_onset = first_start + 0.0005
+    is_first = pls.Series([True] + [False] * (df.height - 1))
+    df.with_columns(
+        pls.when(is_first).then(False).otherwise(pls.col("usv")).alias("usv"),
+        pls.when(is_first).then(True).otherwise(pls.col("squeak")).alias("squeak"),
+        pls.when(is_first).then(squeak_onset).otherwise(None).alias("squeak_start"),
+        pls.when(is_first).then(pls.col("stop")).otherwise(None).alias("squeak_end"),
+    ).write_csv(usv_csv)
+
+    voc_inputs = _make_neuronal_tuning(root)._load_vocal_inputs()
+    assert voc_inputs["starts"][0] == pytest.approx(squeak_onset)
+    assert not voc_inputs["is_usv"][0]
+    pls.read_csv(usv_csv).drop("squeak_start").write_csv(usv_csv)
+    with pytest.raises(KeyError, match="squeak_start"):
+        _make_neuronal_tuning(root)._load_vocal_inputs()
 
 
 def test_unscored_rows_are_not_usv_anchors(synthetic_compute_session):

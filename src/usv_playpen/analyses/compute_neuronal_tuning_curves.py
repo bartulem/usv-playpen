@@ -61,10 +61,12 @@ from tqdm import tqdm
 
 from ..os_utils import (
     QLVM_CATEGORY_COLUMNS,
+    VOCAL_CLASSES,
     atomic_output_path,
     drop_noise_usvs,
     first_match_or_raise,
     vocal_class_mask,
+    vocal_event_times,
 )
 from ..time_utils import is_gui_context, smart_wait
 from ..yaml_utils import extract_animal_sexes
@@ -1647,6 +1649,12 @@ def load_vocal_inputs(root_directory: str | pathlib.Path) -> dict | None:
     df = drop_noise_usvs(df, usv_csv.name)[0]
     if df.shape[0] == 0:
         return None
+    # Every anchor is the onset of the vocalization it marks (os_utils.vocal_event_times over every
+    # class), re-sorted by it: a pure squeak at its squeak extent (squeak_start / squeak_end), a
+    # segment holding both at the union of the segment and its squeak extent (in practice the
+    # USV's earlier onset), a pure USV at its segment. A summary without squeak_start / squeak_end
+    # raises rather than silently anchoring squeaks at their segments.
+    df = vocal_event_times(df, VOCAL_CLASSES, usv_csv.name)
     # Segments that are not pure USVs (usv & ~squeak: pure squeaks, overlap segments,
     # unscored nulls) are dropped from the anchors per side (exclude_squeaks_self /
     # exclude_squeaks_partner) and always from the QLVM category tuning, so the two booleans

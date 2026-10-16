@@ -264,7 +264,9 @@ def compute_session_usv_intervals(
         # Under 'filtered' the other call types are removed before pairing, so the loader
         # does the restriction. Under 'strict' the full record has to stay intact -- an
         # intervening call must be able to break a pair -- so the restriction is applied
-        # as a mask during pairing instead.
+        # as a mask during pairing instead. Either way the loader times each row as its
+        # vocalization (os_utils.vocal_event_times) and re-sorts by that onset, so a squeak's
+        # interval runs from or to the squeak itself (squeak_start / squeak_end), not its segment.
         usv_info = load_and_filter_usv_data(
             session_root=session_root,
             frame_rate=metadata['frame_rate'],

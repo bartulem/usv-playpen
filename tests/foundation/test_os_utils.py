@@ -1171,6 +1171,77 @@ def test_rebase_experimenter_in_paths_is_idempotent():
 # vocal classes
 
 
+def _timed_summary() -> pls.DataFrame:
+    """Four segments: a pure USV, a pure squeak whose extent starts before its segment, an
+    overlap segment whose squeak starts 40 ms after its USV onset and outlasts it, and a noise
+    row (null flags). Rows are deliberately out of onset order once re-timed."""
+
+    return pls.DataFrame({
+        "start": [1.00, 2.00, 0.50, 3.00],
+        "stop": [1.10, 2.10, 0.60, 3.10],
+        "usv": [True, False, True, None],
+        "squeak": [False, True, True, None],
+        "squeak_start": [None, 1.98, 0.54, None],
+        "squeak_end": [None, 2.05, 0.65, None],
+    })
+
+
+@pytest.mark.parametrize(("classes", "overlap_times"), [
+    (("squeak",), (0.54, 0.65)),
+    (("squeak", "overlap"), (0.54, 0.65)),
+    (("usv", "overlap"), (0.50, 0.60)),
+    (("usv",), (0.50, 0.60)),
+    (("overlap",), (0.50, 0.65)),
+    (("usv", "squeak"), (0.50, 0.65)),
+    (("usv", "squeak", "overlap"), (0.50, 0.65)),
+])
+def test_vocal_event_times_follow_the_class_group(classes, overlap_times):
+    """A pure squeak takes its squeak extent and a pure USV its segment; an overlap segment takes
+    the squeak extent in a squeak-only group, its segment in a USV-only group, and the union
+    otherwise; noise keeps its segment; rows come back sorted by the new onset. A USV-only group
+    re-times nothing (its rows never need the extent), so a pure squeak the caller did not filter
+    out keeps its segment there."""
+
+    timed = os_utils.vocal_event_times(_timed_summary(), classes, "s")
+    rows = dict(zip(zip(timed["usv"].to_list(), timed["squeak"].to_list(), strict=True),
+                    zip(timed["start"].to_list(), timed["stop"].to_list(), strict=True), strict=True))
+    assert rows[(True, False)] == (1.00, 1.10)
+    usv_only = "squeak" not in classes and overlap_times == (0.50, 0.60)
+    assert rows[(False, True)] == ((2.00, 2.10) if usv_only else (1.98, 2.05))
+    assert rows[(True, True)] == overlap_times
+    assert rows[(None, None)] == (3.00, 3.10)
+    assert timed["start"].to_list() == sorted(timed["start"].to_list())
+
+
+def test_vocal_event_times_fail_loudly_without_the_squeak_extent():
+    """A group that can time a row by the squeak extent raises without ``squeak_start`` /
+    ``squeak_end`` (even when no such row is present) or when a squeak row lacks its extent; a
+    USV-only group needs neither."""
+
+    no_extent = _timed_summary().drop("squeak_start", "squeak_end")
+    for classes in (("squeak",), ("overlap",), ("usv", "squeak")):
+        with pytest.raises(KeyError, match="squeak_start"):
+            os_utils.vocal_event_times(no_extent.filter(pls.col("squeak") == False), classes, "s")  # noqa: E712
+    for classes in (("usv",), ("usv", "overlap")):
+        assert os_utils.vocal_event_times(no_extent, classes, "s")["start"].to_list() == [0.50, 1.00, 2.00, 3.00]
+    holed = _timed_summary().with_columns(pls.lit(None, dtype=pls.Float64).alias("squeak_start"))
+    with pytest.raises(ValueError, match="squeak-bearing row"):
+        os_utils.vocal_event_times(holed, ("squeak",), "s")
+    with pytest.raises(ValueError, match="unknown vocal class"):
+        os_utils.vocal_event_times(_timed_summary(), ("chirp",), "s")
+
+
+def test_vocal_occupancy_times_span_segment_and_squeak():
+    """The silence reference blocks every squeak-bearing row over the union of its segment and
+    its squeak extent, every other row over its segment, and needs the extent columns."""
+
+    timed = os_utils.vocal_occupancy_times(_timed_summary(), "s")
+    assert timed["start"].to_list() == [0.50, 1.00, 1.98, 3.00]
+    assert timed["stop"].to_list() == [0.65, 1.10, 2.10, 3.10]
+    with pytest.raises(KeyError, match="silence reference"):
+        os_utils.vocal_occupancy_times(_timed_summary().drop("squeak_end"), "s")
+
+
 def test_vocal_class_mask_derives_classes_from_the_two_booleans():
     """Classes come from both booleans, never from usv alone: pure USV = usv & ~squeak, pure squeak =
     squeak & ~usv, overlap = usv & squeak; null rows (noise) are in no class; the flags may arrive as

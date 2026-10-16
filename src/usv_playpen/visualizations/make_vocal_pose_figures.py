@@ -62,6 +62,7 @@ from ..os_utils import (
     noise_mask,
     pure_usv_mask,
     squeak_bearing_mask,
+    vocal_occupancy_times,
 )
 from ..yaml_utils import extract_animal_sexes
 from .auxiliary_plot_functions import choose_animal_colors
@@ -215,7 +216,11 @@ def read_session_calls(root_directory: pathlib.Path, message_output: Callable[..
     """
     Description
     -----------
-    The session's USV summary without its noise rows.
+    The session's USV summary without its noise rows, each row timed by the full extent of the
+    sound it holds (:func:`os_utils.vocal_occupancy_times`): a squeak-bearing segment spans the union
+    of the segment and its squeak extent ``squeak_start`` / ``squeak_end`` (the squeak may reach
+    past the segment), so a spectrogram colours, and a window counts, the whole squeak. A summary
+    without the squeak columns raises.
 
     Parameters
     ----------
@@ -227,12 +232,12 @@ def read_session_calls(root_directory: pathlib.Path, message_output: Callable[..
     Returns
     -------
     calls (pls.DataFrame)
-        Non-noise rows, sorted by ``start``.
+        Non-noise rows, ``start`` / ``stop`` the sound's extent, sorted by ``start``.
     """
     summary_path = first_match_or_raise(root=root_directory / 'audio', pattern='*_usv_summary.csv', recursive=False, label='USV summary')
     calls = pls.read_csv(summary_path, schema_overrides={'emitter': pls.Utf8})
     kept, _ = drop_noise_usvs(calls, source=summary_path.name, message_output=message_output)
-    sorted_calls: pls.DataFrame = kept.sort('start')
+    sorted_calls: pls.DataFrame = vocal_occupancy_times(kept, summary_path.name)
     return sorted_calls
 
 
