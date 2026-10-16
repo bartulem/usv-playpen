@@ -1483,3 +1483,146 @@ class TestHeldOutSessionsNeverShapeTheScale:
         pooled = np.concatenate([np.concatenate([self._sessions(np.zeros(1))[s][c].to_numpy()
                                                  for c in ("self.speed", "other.speed")]) for s in reference])
         assert stats_a["speed"]["mean"] == pytest.approx(float(pooled.mean()), rel=1e-5)
+
+
+class TestCoreHelperKnownAnswers:
+    """Known-answer checks added after mutation testing showed that a `break` in session pooling,
+    sampling with replacement in class balancing, wrong calibration bins, a transposed sample count
+    in class alignment and several boundary changes passed every existing test."""
+
+    def test_pool_session_arrays_concatenates_every_listed_session(self):
+        """Both classes are pooled over every listed session in list order along rows; empty or
+        missing sessions are skipped; an empty class gives a (0, n_frames) block."""
+        rng = np.random.default_rng(0)
+        data = {f"s{i}": {"pos": rng.normal(size=(i + 1, 4)), "neg": rng.normal(size=(2 * i + 1, 4))} for i in range(3)}
+        data["s_empty"] = {"pos": np.empty((0, 4)), "neg": np.empty((0, 4))}
+        order = ["s2", "s_empty", "missing", "s0", "s1"]
+        X_pos, X_neg = mu.pool_session_arrays(data, order, pos_key="pos", neg_key="neg", n_frames=4)
+        np.testing.assert_array_equal(X_pos, np.concatenate([data[s]["pos"] for s in ("s2", "s0", "s1")]))
+        np.testing.assert_array_equal(X_neg, np.concatenate([data[s]["neg"] for s in ("s2", "s0", "s1")]))
+        X_pos, X_neg = mu.pool_session_arrays(data, ["s_empty"], pos_key="pos", neg_key="neg", n_frames=4)
+        assert X_pos.shape == (0, 4) and X_neg.shape == (0, 4)
+
+    def test_balance_two_class_arrays_subsamples_without_replacement(self):
+        """The majority class is cut to the minority size by drawing DISTINCT rows of itself; the
+        minority class is returned whole; either class empty gives two empty blocks."""
+        X_pos = np.arange(5 * 3, dtype=float).reshape(5, 3)
+        X_neg = np.arange(100, 100 + 40 * 3, dtype=float).reshape(40, 3)
+        np.random.seed(0)  # noqa: NPY002 -- the helper draws from the global RNG by design
+        bal_pos, bal_neg = mu.balance_two_class_arrays(X_pos, X_neg)
+        np.testing.assert_array_equal(bal_pos, X_pos)
+        assert bal_neg.shape == (5, 3)
+        rows = {tuple(row) for row in bal_neg}
+        assert len(rows) == 5
+        assert rows <= {tuple(row) for row in X_neg}
+        empty_pos, empty_neg = mu.balance_two_class_arrays(np.empty((0, 3)), X_neg)
+        assert empty_pos.shape == (0, 3) and empty_neg.shape == (0, 3)
+        swapped_pos, swapped_neg = mu.balance_two_class_arrays(X_neg, X_pos)
+        np.testing.assert_array_equal(swapped_neg, X_pos)
+        assert len({tuple(row) for row in swapped_pos}) == 5
+
+    def test_expected_calibration_error_known_value(self):
+        """ECE = sum over the n_bins equal-width confidence bins (lo, hi], the last closed at 1, of
+        (n_bin / N) * |accuracy - mean confidence|."""
+        proba = np.array([[0.95, 0.05], [0.85, 0.15], [0.55, 0.45], [0.6, 0.4], [1.0, 0.0], [0.3, 0.7]])
+        y_pred = proba.argmax(axis=1)
+        y_true = np.array([0, 1, 0, 1, 0, 1])
+        conf = proba.max(axis=1)
+        correct = (y_pred == y_true).astype(float)
+        edges = np.linspace(0.0, 1.0, 11)
+        expected = 0.0
+        for k, (lo, hi) in enumerate(zip(edges[:-1], edges[1:], strict=True)):
+            in_bin = (conf > lo) & (conf <= hi + (1e-9 if k == 9 else 0.0))
+            if in_bin.any():
+                expected += in_bin.mean() * abs(correct[in_bin].mean() - conf[in_bin].mean())
+        got = mu.expected_calibration_error(y_true, y_pred, proba, n_bins=10)
+        assert got == pytest.approx(expected, rel=1e-12)
+        assert got > 0.0
+        assert mu.expected_calibration_error(np.array([0, 1]), np.array([0, 1]), np.array([[1.0, 0.0], [0.0, 1.0]]),
+                                             n_bins=10) == pytest.approx(0.0)
+
+    def test_align_probs_to_canonical_scatters_columns(self):
+        """A model fit on a subset of the classes has its probability columns scattered into the
+        canonical column order, zeros elsewhere, for a non-square (n_samples != n_classes) input."""
+        probs = np.array([[0.2, 0.8], [0.6, 0.4], [0.5, 0.5]])
+        out = mu.align_probs_to_canonical(probs, model_classes=[1, 3], canonical_classes=[0, 1, 2, 3])
+        np.testing.assert_array_equal(out, [[0.0, 0.2, 0.0, 0.8], [0.0, 0.6, 0.0, 0.4], [0.0, 0.5, 0.0, 0.5]])
+        with pytest.raises(ValueError, match="strictly ascending"):
+            mu.align_probs_to_canonical(probs, model_classes=[1, 3], canonical_classes=[3, 1])
+        with pytest.raises(ValueError, match="present in `canonical_classes`"):
+            mu.align_probs_to_canonical(probs, model_classes=[1, 4], canonical_classes=[0, 1, 2, 3])
+
+    def test_boundaries_of_the_selection_helpers(self):
+        """Two folds give a finite paired SE (np.std ddof=1 / sqrt(2)); a held-out proportion of 1
+        is refused; two sessions already split by session."""
+        improvement, se = mu.paired_one_se_improvement([0.3, 0.5], [0.1, 0.2], higher_is_better=True)
+        assert improvement == pytest.approx(0.25)
+        assert se == pytest.approx(np.std([0.2, 0.3], ddof=1) / np.sqrt(2))
+        with pytest.raises(ValueError, match=r"\[0, 1\)"):
+            mu.seeded_session_holdout(session_ids=['a', 'b'], held_out_test_proportion=1.0, random_seed=0)
+        cv = mu.session_grouped_inner_cv(np.array(['a', 'a', 'b', 'b']), 5)
+        assert cv.get_n_splits() == 2
+
+
+class TestFeatureSelectionKnownAnswers:
+    """Known-answer checks for the predictor-column rules, added after mutation testing showed the
+    derivative, asymmetric-pose and vocal-trace rules could be broken without any test noticing."""
+
+    _COLUMNS = [
+        'M.speed', 'M.speed_1st_der', 'M.neck_elevation', 'M.neck_elevation_1st_der',
+        'M.neck_elevation_2nd_der', 'F.neck_elevation',
+        'M-F.allo_yaw-nose', 'M-F.nose-allo_yaw', 'M-F.nose-nose', 'M-F.nose-nose_1st_der',
+        'M-F.orofacial-sei', 'F-M.orofacial-sei',
+    ]
+
+    @staticmethod
+    def _kin(symmetric=False, first=True, second=False):
+        return {'egocentric': ['speed', 'neck_elevation'],
+                'dyadic_pose': ['allo_yaw-nose', 'nose-allo_yaw', 'nose-nose'],
+                'dyadic_engagement': ['orofacial-sei'], 'dyadic_pose_symmetric': symmetric,
+                'include_1st_derivatives': first, 'include_2nd_derivatives': second}
+
+    def test_select_kinematic_columns_rules(self):
+        """Speed never gets derivatives; other features get the derivatives that are switched on
+        and present; asymmetric dyadic-pose features keep only the side the predictor's slot
+        allows; engagement keeps only the target-predictor dyad."""
+        base = ['M-F.nose-nose', 'M-F.nose-nose_1st_der', 'M-F.orofacial-sei', 'M.neck_elevation',
+                'M.neck_elevation_1st_der', 'M.speed', 'F.neck_elevation']
+        got = mu.select_kinematic_columns(self._COLUMNS, 'M', 'F', self._kin(), predictor_idx=0)
+        assert got == sorted(base + ['M-F.nose-allo_yaw'])
+        got = mu.select_kinematic_columns(self._COLUMNS, 'M', 'F', self._kin(), predictor_idx=1)
+        assert got == sorted(base + ['M-F.allo_yaw-nose'])
+        got = mu.select_kinematic_columns(self._COLUMNS, 'M', 'F', self._kin(symmetric=True, second=True), predictor_idx=0)
+        assert got == sorted(base + ['M-F.allo_yaw-nose', 'M-F.nose-allo_yaw', 'M.neck_elevation_2nd_der'])
+        got = mu.select_kinematic_columns(self._COLUMNS, 'M', 'F', self._kin(first=False), predictor_idx=0)
+        assert got == sorted(['M-F.nose-nose', 'M-F.orofacial-sei', 'M.neck_elevation', 'M.speed',
+                              'F.neck_elevation', 'M-F.nose-allo_yaw'])
+
+    def test_build_vocal_signal_columns_emits_every_trace_with_its_values(self):
+        """Every partner trace and every non-pooled target trace becomes a column carrying its own
+        values; the target's pooled traces and excluded keys are dropped; partner-only drops the
+        target entirely; no predictor type emits nothing."""
+        signals = {
+            'M': {'continuous_vocal_signals': {'usv_rate': np.array([1.0, 2.0]), 'usv_cat_1': np.array([3.0, 4.0]),
+                                               'usv_cat_2': np.array([5.0, 6.0])}},
+            'F': {'continuous_vocal_signals': {'usv_rate': np.array([7.0, 8.0]), 'squeak_rate': np.array([9.0, 10.0])}},
+        }
+        usv_data = {'s': signals}
+        settings = {'vocal_predictor_type': 'all_rate', 'vocal_predictor_partner_only': False}
+        cols, names = mu.build_vocal_signal_columns(usv_data, 's', 'M', 'F', settings, usv_self_exclude=('usv_cat_2',))
+        assert names == ['M.usv_cat_1', 'F.usv_rate', 'F.squeak_rate']
+        assert [col.to_list() for col in cols] == [[3.0, 4.0], [7.0, 8.0], [9.0, 10.0]]
+        _, names = mu.build_vocal_signal_columns(usv_data, 's', 'M', 'F',
+                                                 {**settings, 'vocal_predictor_partner_only': True})
+        assert names == ['F.usv_rate', 'F.squeak_rate']
+        assert mu.build_vocal_signal_columns(usv_data, 's', 'M', 'F', {**settings, 'vocal_predictor_type': None}) == ([], [])
+
+    @pytest.mark.filterwarnings("ignore:An input array is constant:scipy.stats.ConstantInputWarning")
+    def test_two_class_labels_and_constant_correlations(self):
+        """Labels count ROWS of each class (non-square blocks); a constant truth (not only a constant
+        prediction) makes Pearson and Spearman NaN."""
+        X, y = mu.concat_two_class_with_labels(np.zeros((3, 5)), np.ones((2, 5)))
+        assert X.shape == (5, 5)
+        np.testing.assert_array_equal(y, [1, 1, 1, 0, 0])
+        assert np.isnan(mu.pearson_r_safe(np.ones(5), np.arange(5.0)))
+        assert np.isnan(mu.spearman_r_safe(np.ones(5), np.arange(5.0)))
