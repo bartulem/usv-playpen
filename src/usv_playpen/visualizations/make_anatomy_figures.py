@@ -68,11 +68,6 @@ _CELL_TYPE_LABELS: tuple[str, ...] = (
     "Somatic", "Non-somatic", "Multi-unit",
 )
 
-# Mouse IDs excluded from anatomy figures (insufficient yield / not used
-# in any downstream analysis).
-_EXCLUDED_MOUSE_IDS: frozenset[str] = frozenset({"147366"})
-
-
 # Allen CCFv3 structure IDs for the whole-brain shell and for the six
 # display buckets. Looked up from the published structure ontology
 # (`structure_graph_download/1.json`). SC is split into motor + sensory
@@ -328,8 +323,12 @@ class AnatomyFigureMaker:
         )
         df["mouse_id"] = df["mouse_id"].astype(str)
         df["brain_area"] = df["brain_area"].astype(str)
-        if _EXCLUDED_MOUSE_IDS:
-            df = df[~df["mouse_id"].isin(_EXCLUDED_MOUSE_IDS)].reset_index(drop=True)
+        # mice left out of the anatomy figures (insufficient yield / not used in any
+        # downstream analysis): the anatomy_figures.excluded_mouse_ids setting
+        excluded_mouse_ids = {str(mouse_id) for mouse_id in
+                              self.visualizations_parameter_dict["anatomy_figures"]["excluded_mouse_ids"]}
+        if excluded_mouse_ids:
+            df = df[~df["mouse_id"].isin(excluded_mouse_ids)].reset_index(drop=True)
         df["bucket"] = df["brain_area"].map(pool_brain_area)
         # Vectorised equivalent of `_classify_cell_type` applied row-wise:
         # `mua` clusters -> Multi-unit regardless of the somatic flag;

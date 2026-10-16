@@ -213,6 +213,9 @@
         "led_px_dev": 10,
         "sync_video_extension": "mp4",
         "relative_intensity_threshold": 1.0,
+        "relative_intensity_threshold_floor": 0.2,
+        "relative_intensity_threshold_step": 0.01,
+        "min_led_event_frames": 35,
         "millisecond_divergence_tolerance": 12
       },
       "crop_wav_files_to_video": {

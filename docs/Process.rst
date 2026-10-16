@@ -2301,6 +2301,8 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
 * **led_px_dev** : maximal deviation (in px) of observed LED flashes relative to expected positions
 * **sync_video_extension** : video type (usually "mp4")
 * **relative_intensity_threshold** : top threshold (on 0-1 scale) for relative temporal change in pixel intensity
+* **relative_intensity_threshold_floor** / **relative_intensity_threshold_step** : the threshold is swept down from ``relative_intensity_threshold`` to this floor in these steps, stopping at the first threshold that yields the Arduino IPI sequence (0.2 and 0.01)
+* **min_led_event_frames** : LED on / off events shorter than this many frames are discarded as glitches (35)
 * **millisecond_divergence_tolerance** : maximal deviation of IPI onsets (in ms) between video detections and ground truth
 
 .. code-block:: json
@@ -2329,5 +2331,8 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
         "led_px_dev": 10,
         "sync_video_extension": "mp4",
         "relative_intensity_threshold": 1.0,
+        "relative_intensity_threshold_floor": 0.2,
+        "relative_intensity_threshold_step": 0.01,
+        "min_led_event_frames": 35,
         "millisecond_divergence_tolerance": 12
    }

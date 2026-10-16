@@ -155,6 +155,28 @@ maps.
                          "#9467bd", "#8c564b", "#e377c2", "#7f7f7f"],
     "corner_colors": {"North": "#FF0000", "West": "#FFFF00", "South": "#008000", "East": "#0000FF"}
 
+Two blocks hold the analysis choices of particular figures (layout and styling stay in the code):
+
+* **neuronal_tuning_figures** : the bout panels of the per-unit vocal page -- ``bout_session_bin_seconds`` (the whole-session rate trace's bins, 1 s), ``bout_zoom_seconds`` / ``bout_zoom_bin_seconds`` (the densest-window zoom's width and bins, 20 s and 50 ms), ``bout_smooth_bins`` (the Gaussian smoothing of both traces, in bins, 2), ``bout_trigger_window_seconds`` / ``bout_trigger_bin_seconds`` / ``bout_trigger_smooth_bins`` (the bout-onset-triggered raster's window, bins and smoothing: -1 to 2 s, 20 ms, 2.5 bins), ``bout_density_grid`` (the first-versus-later scatter's density grid, 160 per side) and ``bout_density_levels`` (the bout shares its contours enclose, at most three: 0.5, 0.75, 0.9).
+* **anatomy_figures** : ``excluded_mouse_ids``, mice left out of the anatomy figures (insufficient yield, used in no downstream analysis).
+
+.. code-block:: json
+
+    "neuronal_tuning_figures": {
+      "bout_session_bin_seconds": 1.0,
+      "bout_zoom_seconds": 20.0,
+      "bout_zoom_bin_seconds": 0.05,
+      "bout_smooth_bins": 2.0,
+      "bout_trigger_window_seconds": [-1.0, 2.0],
+      "bout_trigger_bin_seconds": 0.02,
+      "bout_trigger_smooth_bins": 2.5,
+      "bout_density_grid": 160,
+      "bout_density_levels": [0.5, 0.75, 0.9]
+    },
+    "anatomy_figures": {
+      "excluded_mouse_ids": ["147366"]
+    }
+
 Visualize 3D behavior (figure/video)
 ------------------------------------
 Once 3D tracked data is available, you can visualize animal social behavior, either in figure or video. This GUI segment allows for a wide array of options in creating such visualizations. For example, you can choose whether you want to view the interaction from above or the side, and you can also choose to rotate the view as the behavior unfolds.

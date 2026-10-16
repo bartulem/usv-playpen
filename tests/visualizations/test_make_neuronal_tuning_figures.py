@@ -239,14 +239,20 @@ def _make_tuning_parameters() -> dict:
     }
 
 
+# The shipped visualization settings, for the blocks the tests take as shipped.
+with (pathlib.Path(tuning_figures.__file__).resolve().parent.parent / "_parameter_settings"
+      / "visualizations_settings.json").open(encoding="utf-8") as _settings_file:
+    _SHIPPED_VIZ_SETTINGS = json.load(_settings_file)
+
+
 def _make_visualizations_parameters() -> dict:
     """
     Description
     -----------
     Return the minimum `visualizations_parameter_dict` the figure maker
     reads: `male_colors` / `female_colors` palettes (only first entry of
-    each is touched). The `figures` block is left out so the code path
-    falls back to `fig_format='pdf'` and `cmap='inferno'`.
+    each is touched) and the shipped `neuronal_tuning_figures` block (the
+    bout panels' binning, smoothing and contour settings).
 
     Parameters
     ----------
@@ -260,6 +266,7 @@ def _make_visualizations_parameters() -> dict:
     return {
         "male_colors":   ["#202020"],
         "female_colors": ["#a83232"],
+        "neuronal_tuning_figures": _SHIPPED_VIZ_SETTINGS["neuronal_tuning_figures"],
     }
 
 
@@ -1639,6 +1646,7 @@ def _make_aggregate_visualizations_parameters() -> dict:
         "social_colors":     ["#5A6470"],
         "figures":           {"sequential_cmap": "inferno", "diverging_cmap": "BrBG_r",
                               "fig_format": "png", "dpi": 80, "timestamp_in_name": False},
+        "neuronal_tuning_figures": _SHIPPED_VIZ_SETTINGS["neuronal_tuning_figures"],
     }
 
 
@@ -2915,7 +2923,7 @@ def test_bout_onset_panels_draw_session_zoom_scatter_and_raster(tmp_path):
     assert ax_session.get_xlim() == pytest.approx((0.0, 120.0))
     assert "the densest window" in ax_zoom.get_title(loc="left")
     assert ax_zoom.get_xlim()[1] - ax_zoom.get_xlim()[0] == pytest.approx(
-        tuning_figures.BOUT_ZOOM_SECONDS)
+        maker.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_zoom_seconds"])
     assert any(isinstance(c, matplotlib.collections.EventCollection) for c in ax_zoom.collections)
     assert "first vs later USV" in ax_scatter.get_title(loc="left")
     assert "19 bouts" in ax_scatter.get_title(loc="left")
@@ -2963,7 +2971,8 @@ def test_bout_onset_panels_without_payload_or_bouts_say_so(tmp_path):
                           payload=cluster_data["usv_ibi_bout_onset"]["f1"])
     ax_session, ax_zoom, ax_scatter = figure.axes
     assert "0 bouts" in ax_session.get_title(loc="left")
-    assert ax_zoom.get_xlim() == pytest.approx((0.0, tuning_figures.BOUT_ZOOM_SECONDS))
+    assert ax_zoom.get_xlim() == pytest.approx(
+        (0.0, maker.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_zoom_seconds"]))
     assert [t.get_text() for t in ax_scatter.texts] == ["too few multi-USV bouts"]
 
     peth_figure = Figure(figsize=(8, 4))

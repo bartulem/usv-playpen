@@ -842,18 +842,23 @@ class Synchronizer:
         diff_across_leds = 1 - (brightness_signal[1:] / brightness_signal[:-1])
 
         # find indices where the largest changes occur by iterating through thresholds
-        relative_intensity_threshold = self.input_parameter_dict['find_video_sync_trains']['relative_intensity_threshold']
+        # The relative-change threshold is swept down from relative_intensity_threshold to
+        # relative_intensity_threshold_floor in steps of relative_intensity_threshold_step,
+        # stopping at the first that yields the Arduino IPI sequence.
+        sync_cfg = self.input_parameter_dict['find_video_sync_trains']
+        relative_intensity_threshold = sync_cfg['relative_intensity_threshold']
 
-        for threshold_value in np.arange(0.2, relative_intensity_threshold, .01)[::-1]:
+        for threshold_value in np.arange(sync_cfg['relative_intensity_threshold_floor'], relative_intensity_threshold,
+                                         sync_cfg['relative_intensity_threshold_step'])[::-1]:
             # step 1: find raw candidate events
             pos_significant_events, neg_significant_events = find_events(
                 diffs=diff_across_leds,
                 threshold=threshold_value
             )
 
-            # step 2: filter out short-lived glitches
+            # step 2: filter out short-lived glitches (events shorter than min_led_event_frames)
             pos_significant_events, neg_significant_events = filter_events_by_duration(
-                pos_significant_events, neg_significant_events, min_duration=35
+                pos_significant_events, neg_significant_events, min_duration=sync_cfg['min_led_event_frames']
             )
 
             # step 3: ensure the sequence of events is logical (alternating)

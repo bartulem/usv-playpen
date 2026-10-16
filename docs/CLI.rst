@@ -170,7 +170,9 @@ Process
                          [--nidq-trigger-bit INTEGER] [--nidq-sync-bit INTEGER]
                          [--video-sync-camera TEXT...] [--led-version TEXT]
                          [--led-dev INTEGER] [--video-extension TEXT]
-                         [--intensity-thresh FLOAT] [--ms-tolerance INTEGER]
+                         [--intensity-thresh FLOAT] [--intensity-thresh-floor FLOAT]
+                         [--intensity-thresh-step FLOAT] [--min-led-event-frames INTEGER]
+                         [--ms-tolerance INTEGER]
 
     required arguments:
       --root-directory      Session root directory path.
@@ -190,6 +192,12 @@ Process
       --led-dev             LED pixel deviation value.
       --video-extension     Video extension for sync files.
       --intensity-thresh    Relative intensity threshold for LED detection.
+      --intensity-thresh-floor
+                            Lowest relative intensity threshold the LED detection sweep tries.
+      --intensity-thresh-step
+                            Step of the relative intensity threshold sweep.
+      --min-led-event-frames
+                            Shortest LED on/off event (in frames) kept; shorter ones are glitches.
       --ms-tolerance        Divergence tolerance (in ms).
 
 ``ev-sync-check``

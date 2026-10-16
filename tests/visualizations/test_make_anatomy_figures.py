@@ -94,9 +94,10 @@ def viz_settings() -> dict:
     Description
     -----------
     Minimal visualizations-settings dict carrying the two blocks the
-    anatomy renderer reads: the seven-bucket `brain_area_colors` palette
-    and a `figures` block. Save paths are always overridden per-call in
-    these tests, so `figures.save_directory` is intentionally absent.
+    anatomy renderer reads: the seven-bucket `brain_area_colors` palette,
+    a `figures` block and the `anatomy_figures` block (the excluded mice).
+    Save paths are always overridden per-call in these tests, so
+    `figures.save_directory` is intentionally absent.
 
     Parameters
     ----------
@@ -111,6 +112,7 @@ def viz_settings() -> dict:
         "brain_area_colors": dict(_BRAIN_AREA_COLORS),
         "cell_type_colors": ["#1A1A1A", "#7A7A7A", "#CFCFCF"],
         "figures": {"fig_format": "png", "dpi": 100, "timestamp_in_name": False},
+        "anatomy_figures": {"excluded_mouse_ids": ["147366"]},
     }
 
 

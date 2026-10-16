@@ -3244,6 +3244,9 @@ def _video_sync_synchronizer(tmp_path, *, tolerance=50, rel_thresh=0.6):
                 "Synchronizer": {
                     "find_video_sync_trains": {
                         "relative_intensity_threshold": rel_thresh,
+                        "relative_intensity_threshold_floor": 0.2,
+                        "relative_intensity_threshold_step": 0.01,
+                        "min_led_event_frames": 35,
                         "millisecond_divergence_tolerance": tolerance,
                     }
                 }

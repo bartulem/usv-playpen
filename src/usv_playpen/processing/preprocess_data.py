@@ -618,6 +618,9 @@ def crop_wav_files_to_video_cli(ctx, root_directory, **kwargs) -> None:
 @click.option('--led-dev', 'led_px_dev', type=int, default=None, required=False, help='LED pixel deviation value.')
 @click.option('--video-extension', 'sync_video_extension', type=str, default=None, required=False, help='Video extension for sync files.')
 @click.option('--intensity-thresh', 'relative_intensity_threshold', type=float, default=None, required=False, help='Relative intensity threshold for LED detection.')
+@click.option('--intensity-thresh-floor', 'relative_intensity_threshold_floor', type=float, default=None, required=False, help='Lowest relative intensity threshold the LED detection sweep tries.')
+@click.option('--intensity-thresh-step', 'relative_intensity_threshold_step', type=float, default=None, required=False, help='Step of the relative intensity threshold sweep.')
+@click.option('--min-led-event-frames', 'min_led_event_frames', type=int, default=None, required=False, help='Shortest LED on/off event (in frames) kept; shorter ones are glitches.')
 @click.option('--ms-tolerance', 'millisecond_divergence_tolerance', type=int, default=None, required=False, help='Divergence tolerance (in ms).')
 @click.pass_context
 def av_sync_check_cli(ctx, root_directory, **kwargs) -> None:

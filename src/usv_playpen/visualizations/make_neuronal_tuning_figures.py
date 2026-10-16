@@ -315,15 +315,6 @@ VOCAL_PAGE_FIGSIZE_INCHES = (16, 30.7)
 # property grid. Panels, markings and titles are ported from the standalone bout figure.
 VOCAL_PAGE_COLUMNS = 4
 VOCAL_ONE_PAGE_FIGSIZE_INCHES = (16, 27.0)
-BOUT_SESSION_BIN_SECONDS = 1.0
-BOUT_ZOOM_SECONDS = 20.0
-BOUT_ZOOM_BIN_SECONDS = 0.05
-BOUT_SMOOTH_BINS = 2.0
-BOUT_TRIGGER_WINDOW_SECONDS = (-1.0, 2.0)
-BOUT_TRIGGER_BIN_SECONDS = 0.02
-BOUT_TRIGGER_SMOOTH_BINS = 2.5
-BOUT_DENSITY_GRID = 160
-BOUT_DENSITY_LEVELS = (0.5, 0.75, 0.9)
 BOUT_DENSITY_STYLES = ("-", "--", ":")
 BOUT_LEGEND_FONTSIZE = 9
 BOUT_LEGEND_LINE_STEP = 0.075
@@ -6274,7 +6265,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
     @staticmethod
     def _draw_first_vs_later(ax, spike_times: np.ndarray, usv_starts: np.ndarray, runs: list,
-                             cfg: dict, colour: str) -> None:
+                             cfg: dict, colour: str, bout_cfg: dict) -> None:
         """
         Description
         -----------
@@ -6301,6 +6292,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             The `ibi_bout_onset` settings sub-block.
         colour (str)
             Hex colour for the markers and the density ramp.
+        bout_cfg (dict)
+            The ``neuronal_tuning_figures`` visualization settings block: the density
+            grid (``bout_density_grid``) and the bout shares the contours enclose
+            (``bout_density_levels``, at most three, one per line style).
 
         Returns
         -------
@@ -6326,15 +6321,15 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         first, later = np.asarray(first), np.asarray(later)
         limit = max(first.max(), later.max()) * 1.08 + 0.5
 
-        grid_x, grid_y = np.mgrid[0:limit:complex(0, BOUT_DENSITY_GRID),
-                                  0:limit:complex(0, BOUT_DENSITY_GRID)]
+        grid_x, grid_y = np.mgrid[0:limit:complex(0, bout_cfg["bout_density_grid"]),
+                                  0:limit:complex(0, bout_cfg["bout_density_grid"])]
         estimate = gaussian_kde(np.vstack([later, first]))
         density = estimate(np.vstack([grid_x.ravel(), grid_y.ravel()])).reshape(grid_x.shape)
         density = (density - density.min()) / (density.max() - density.min() + 1e-12)
         # contour levels enclosing a stated share of the bouts, read off the sorted density
         flat = np.sort(density.ravel())[::-1]
         share = np.cumsum(flat) / flat.sum()
-        levels = sorted({float(flat[np.searchsorted(share, q)]) for q in BOUT_DENSITY_LEVELS})
+        levels = sorted({float(flat[np.searchsorted(share, q)]) for q in bout_cfg["bout_density_levels"]})
 
         ax.imshow(density.T,
                   cmap=LinearSegmentedColormap.from_list("density", ["#FFFFFF", colour]),
@@ -6346,7 +6341,11 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         for level, style in zip(levels, BOUT_DENSITY_STYLES[::-1]):
             ax.contour(grid_x, grid_y, density, levels=[level], colors=COLOR_BLACK,
                        linestyles=style, linewidths=1.0, zorder=4)
-        for style, quantile in zip(BOUT_DENSITY_STYLES, BOUT_DENSITY_LEVELS):
+        if len(bout_cfg["bout_density_levels"]) > len(BOUT_DENSITY_STYLES):
+            msg = (f"neuronal_tuning_figures.bout_density_levels holds {len(bout_cfg['bout_density_levels'])} "
+                   f"levels; at most {len(BOUT_DENSITY_STYLES)} (one per line style) can be drawn.")
+            raise ValueError(msg)
+        for style, quantile in zip(BOUT_DENSITY_STYLES, bout_cfg["bout_density_levels"]):
             ax.plot([], [], color=COLOR_BLACK, linestyle=style, linewidth=1.0,
                     label=f"{100 * quantile:.0f}%")
         ax.scatter([later.mean()], [first.mean()], marker="D", s=46, facecolor="#FFFFFF",
@@ -6408,11 +6407,11 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         rate = spikes.size / duration if duration > 0 else float("nan")
 
         ax_session = fig.add_subplot(outer[0, 0:VOCAL_PAGE_COLUMNS - 1])
-        edges = np.arange(0.0, duration + BOUT_SESSION_BIN_SECONDS, BOUT_SESSION_BIN_SECONDS)
+        edges = np.arange(0.0, duration + self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_session_bin_seconds"], self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_session_bin_seconds"])
         trace = ndimage.gaussian_filter1d(
-            (np.histogram(spikes, bins=edges)[0] / BOUT_SESSION_BIN_SECONDS).astype(float),
-            BOUT_SMOOTH_BINS, mode="nearest")
-        ax_session.plot(edges[:-1] + BOUT_SESSION_BIN_SECONDS / 2.0, trace, color=COLOR_BLACK,
+            (np.histogram(spikes, bins=edges)[0] / self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_session_bin_seconds"]).astype(float),
+            self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_smooth_bins"], mode="nearest")
+        ax_session.plot(edges[:-1] + self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_session_bin_seconds"] / 2.0, trace, color=COLOR_BLACK,
                         linewidth=0.9)
         top = float(trace.max()) * 1.22 + 1.0
         ax_session.set_xlim(0.0, duration)
@@ -6425,8 +6424,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         ax_session.set_xlabel("time in session (s)", fontsize=8)
         ax_session.set_title(
             f"{cluster_data['usv_metadata']['cluster_id']}   {emitter}   {rate:.1f} Hz   |   "
-            f"{len(runs)} bouts   |   {BOUT_SESSION_BIN_SECONDS:g} s bins, "
-            f"{BOUT_SMOOTH_BINS:g} bin Gaussian", fontsize=9, loc="left")
+            f"{len(runs)} bouts   |   {self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_session_bin_seconds"]:g} s bins, "
+            f"{self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_smooth_bins"]:g} bin Gaussian", fontsize=9, loc="left")
         ax_session.text(0.995, 0.95, "bouts", transform=ax_session.transAxes, ha="right",
                         va="top", fontsize=BOUT_LEGEND_FONTSIZE, color=colour)
         ax_session.text(0.995, 0.95 - BOUT_LEGEND_LINE_STEP, "unassigned USVs",
@@ -6436,20 +6435,20 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             ax_session.spines[side].set_visible(False)
 
         if bout_lo.size:
-            grid = np.arange(0.0, max(duration - BOUT_ZOOM_SECONDS, 1.0), 1.0)
-            counts = np.array([int(np.sum((bout_lo >= s) & (bout_lo < s + BOUT_ZOOM_SECONDS)))
+            grid = np.arange(0.0, max(duration - self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_zoom_seconds"], 1.0), 1.0)
+            counts = np.array([int(np.sum((bout_lo >= s) & (bout_lo < s + self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_zoom_seconds"])))
                                for s in grid])
             zoom_lo = float(grid[int(np.argmax(counts))])
         else:
             zoom_lo = 0.0
-        zoom = (zoom_lo, zoom_lo + BOUT_ZOOM_SECONDS)
+        zoom = (zoom_lo, zoom_lo + self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_zoom_seconds"])
 
         ax_zoom = fig.add_subplot(outer[1, 0:VOCAL_PAGE_COLUMNS - 1])
-        zoom_edges = np.arange(zoom[0], zoom[1] + BOUT_ZOOM_BIN_SECONDS, BOUT_ZOOM_BIN_SECONDS)
+        zoom_edges = np.arange(zoom[0], zoom[1] + self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_zoom_bin_seconds"], self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_zoom_bin_seconds"])
         zoom_trace = ndimage.gaussian_filter1d(
-            (np.histogram(spikes, bins=zoom_edges)[0] / BOUT_ZOOM_BIN_SECONDS).astype(float),
-            BOUT_SMOOTH_BINS, mode="nearest")
-        ax_zoom.plot(zoom_edges[:-1] + BOUT_ZOOM_BIN_SECONDS / 2.0, zoom_trace,
+            (np.histogram(spikes, bins=zoom_edges)[0] / self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_zoom_bin_seconds"]).astype(float),
+            self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_smooth_bins"], mode="nearest")
+        ax_zoom.plot(zoom_edges[:-1] + self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_zoom_bin_seconds"] / 2.0, zoom_trace,
                      color=COLOR_BLACK, linewidth=0.9)
         zoom_top = float(zoom_trace.max()) * 1.22 + 1.0
         ax_zoom.set_xlim(*zoom)
@@ -6466,14 +6465,15 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         whole = int(np.sum((bout_lo >= zoom[0]) & (bout_hi <= zoom[1])))
         ax_zoom.set_title(f"zoom {zoom[0]:.0f}-{zoom[1]:.0f} s, the densest window   |   "
                           f"{whole} whole bouts   |   "
-                          f"{1000 * BOUT_ZOOM_BIN_SECONDS:.0f} ms bins, "
-                          f"{BOUT_SMOOTH_BINS:g} bin Gaussian, raster above",
+                          f"{1000 * self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_zoom_bin_seconds"]:.0f} ms bins, "
+                          f"{self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_smooth_bins"]:g} bin Gaussian, raster above",
                           fontsize=9, loc="left")
         for side in ("top", "right"):
             ax_zoom.spines[side].set_visible(False)
 
         self._draw_first_vs_later(fig.add_subplot(outer[1, VOCAL_PAGE_COLUMNS - 1]), spikes,
-                                  usv_starts, runs, cfg, colour)
+                                  usv_starts, runs, cfg, colour,
+                                  self.visualizations_parameter_dict["neuronal_tuning_figures"])
 
     def _render_vocal_page(
         self,
@@ -6763,7 +6763,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         spike_times = self._cluster_spike_times(cluster_data)
         colour = self._sex_color(payload["sex"])
         cmap = LinearSegmentedColormap.from_list("bout_row", [colour, "#FFFFFF"])
-        window_lo, window_hi = BOUT_TRIGGER_WINDOW_SECONDS
+        window_lo, window_hi = self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_trigger_window_seconds"]
         order = np.argsort(bout_hi - bout_lo)
         sorted_lo = bout_lo[order]
 
@@ -6792,15 +6792,15 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         ax.set_xlabel("time from bout onset (s)", fontsize=8)
         ax.set_ylabel("bout # (sorted by duration)", fontsize=8)
         ax.set_title(f"bout-triggered   |   {sorted_lo.size} bouts   |   "
-                     f"{1000 * BOUT_TRIGGER_BIN_SECONDS:.0f} ms bins", fontsize=9, loc="left")
+                     f"{1000 * self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_trigger_bin_seconds"]:.0f} ms bins", fontsize=9, loc="left")
 
-        edges = np.arange(window_lo, window_hi + BOUT_TRIGGER_BIN_SECONDS,
-                          BOUT_TRIGGER_BIN_SECONDS)
+        edges = np.arange(window_lo, window_hi + self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_trigger_bin_seconds"],
+                          self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_trigger_bin_seconds"])
         per_bout = np.vstack([np.histogram(spike_times - anchor, bins=edges)[0]
-                              / BOUT_TRIGGER_BIN_SECONDS for anchor in sorted_lo])
-        smoothed = ndimage.gaussian_filter1d(per_bout, BOUT_TRIGGER_SMOOTH_BINS, axis=1,
+                              / self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_trigger_bin_seconds"] for anchor in sorted_lo])
+        smoothed = ndimage.gaussian_filter1d(per_bout, self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_trigger_smooth_bins"], axis=1,
                                              mode="nearest")
-        centres = edges[:-1] + BOUT_TRIGGER_BIN_SECONDS / 2.0
+        centres = edges[:-1] + self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_trigger_bin_seconds"] / 2.0
         mean_rate = smoothed.mean(axis=0)
         sem_rate = smoothed.std(axis=0, ddof=1) / np.sqrt(smoothed.shape[0])
         ax_rate = ax.twinx()

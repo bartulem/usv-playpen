@@ -96,6 +96,20 @@
       "receivers": []
     }
   },
+  "neuronal_tuning_figures": {
+    "bout_session_bin_seconds": 1.0,
+    "bout_zoom_seconds": 20.0,
+    "bout_zoom_bin_seconds": 0.05,
+    "bout_smooth_bins": 2.0,
+    "bout_trigger_window_seconds": [-1.0, 2.0],
+    "bout_trigger_bin_seconds": 0.02,
+    "bout_trigger_smooth_bins": 2.5,
+    "bout_density_grid": 160,
+    "bout_density_levels": [0.5, 0.75, 0.9]
+  },
+  "anatomy_figures": {
+    "excluded_mouse_ids": ["147366"]
+  },
   "make_usv_spectrograms": {
     "save_dir": "",
     "save_fig": true,
