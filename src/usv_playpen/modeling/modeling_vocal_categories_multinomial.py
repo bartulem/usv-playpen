@@ -20,6 +20,8 @@ Key scientific capabilities:
 """
 
 import json
+import math
+
 import numpy as np
 from pathlib import Path
 import pickle
@@ -28,7 +30,7 @@ from sklearn.metrics import (
     balanced_accuracy_score, log_loss, f1_score,
     recall_score, roc_auc_score
 )
-from sklearn.model_selection import StratifiedShuffleSplit
+from sklearn.model_selection import StratifiedGroupKFold, StratifiedShuffleSplit
 from tqdm import tqdm
 from typing import Any
 
@@ -211,6 +213,16 @@ def get_stratified_group_splits_stable(
 
         attempts = 0
         current_tolerance = tolerance
+        # Every fold must hold out a DIFFERENT set of test sessions: a repeated set
+        # would be scored twice and make the fold bootstrap's CI too narrow. With
+        # fewer distinct sets than folds the request cannot be met; say so up front.
+        n_distinct_test_sets = math.comb(len(unique_sessions), n_test_sessions)
+        if n_distinct_test_sets < n_splits:
+            msg = (f"{len(unique_sessions)} sessions with {n_test_sessions} test session(s) per fold allow only "
+                   f"{n_distinct_test_sets} distinct test sets, fewer than the {n_splits} folds requested; "
+                   f"lower the fold count or raise the test proportion.")
+            raise ValueError(msg)
+        seen_test_sets = set()
 
         while len(cv_folds) < n_splits:
             attempts += 1
@@ -233,7 +245,9 @@ def get_stratified_group_splits_stable(
                 te_dist = te_counts / len(te_idx)
                 dist_error = np.max(np.abs(te_dist - global_dist))
 
-                if dist_error < current_tolerance:
+                test_set_key = frozenset(te_sess.tolist())
+                if dist_error < current_tolerance and test_set_key not in seen_test_sets:
+                    seen_test_sets.add(test_set_key)
                     cv_folds.append((tr_idx, te_idx))
                     fold_tolerances.append(float(current_tolerance))
 
@@ -366,6 +380,7 @@ def _log_spaced_grid_multinomial(center: float, decades_each_side: int) -> np.nd
 def _tune_multinomial_regularization(X_train: np.ndarray,
                                      y_train: np.ndarray,
                                      *,
+                                     groups_train: np.ndarray,
                                      lambda_smooth_grid: np.ndarray,
                                      l2_reg_grid: np.ndarray,
                                      inner_cv_folds: int,
@@ -397,11 +412,14 @@ def _tune_multinomial_regularization(X_train: np.ndarray,
 
     Strategy mirrors `_tune_manifold_regularization` in the manifold
     runner:
-    1. Partition the training fold with `StratifiedShuffleSplit` on the
-       class labels (`inner_cv_folds` splits, test_prop = 1 /
-       inner_cv_folds). Session-mixing inside the outer training fold
-       is acceptable so the inner splitter doesn't need a second layer
-       of session-holdout logic.
+    1. Partition the training fold with `StratifiedGroupKFold` on the
+       class labels, grouped by session (`groups_train`): each inner
+       validation fold holds out whole training sessions, as the outer
+       folds do, so a penalty is never scored on events from sessions it
+       was fit on (which would favour weaker regularization than
+       generalization to new sessions supports). The fold count is
+       `inner_cv_folds`, capped at the number of training sessions; fewer
+       than two sessions fall back to the grid centre.
     2. For every `(lambda_smooth, l2_reg)` pair, fit the regressor on
        each inner-training sub-fold and score it on the inner-validation
        sub-fold using `inner_cv_scoring_metric`. Aggregate per-pair
@@ -463,19 +481,20 @@ def _tune_multinomial_regularization(X_train: np.ndarray,
 
     unique_y = np.unique(y_train)
     n_unique = int(unique_y.size)
-    if len(y_train) < inner_cv_folds * 2 or n_unique < 2:
+    n_groups = int(np.unique(groups_train).size)
+    if len(y_train) < inner_cv_folds * 2 or n_unique < 2 or n_groups < 2:
         return (
             float(lambda_smooth_grid[len(lambda_smooth_grid) // 2]),
             float(l2_reg_grid[len(l2_reg_grid) // 2]),
             _empty_audit(),
         )
 
-    sss = StratifiedShuffleSplit(
-        n_splits=inner_cv_folds,
-        test_size=1.0 / inner_cv_folds,
+    sgkf = StratifiedGroupKFold(
+        n_splits=min(inner_cv_folds, n_groups),
+        shuffle=True,
         random_state=random_state + 7919,
     )
-    inner_folds = list(sss.split(np.zeros(len(y_train)), y_train))
+    inner_folds = list(sgkf.split(np.zeros(len(y_train)), y_train, groups=groups_train))
 
     def _compute_score(y_true_, y_pred_, y_proba_, model_classes_):
         try:
@@ -865,12 +884,22 @@ class MultinomialModelingPipeline(FeatureZoo):
         # tractable; allo angles tolerate plain `|x|`.
         abs_features = self.modeling_settings['kinematic_features']['abs_features']
         smooth_abs_features = self.modeling_settings['kinematic_features']['smooth_abs_features']
+        # The held-out sessions are drawn before z-scoring, from the same session list,
+        # so the pooled z-score statistics come from the DEVELOPMENT sessions only and the
+        # reserved sessions never shape the scale the models are fit and scored on.
+        _sorted_session_ids = sorted(processed_beh_data.keys())
+        held_out_session_ids = seeded_session_holdout(
+            session_ids=_sorted_session_ids,
+            held_out_test_proportion=self.modeling_settings['model_validation']['held_out_test_proportion'],
+            random_seed=self.modeling_settings['model_validation']['random_seed'],
+        )
         processed_beh_data = zscore_features_across_sessions(
             processed_beh_dict=processed_beh_data,
             suffixes=revised_predictors,
             feature_bounds=getattr(self, 'feature_boundaries', {}),
             abs_features=abs_features,
             smooth_abs_features=smooth_abs_features,
+            reference_sessions=[session_id for session_id in _sorted_session_ids if session_id not in set(held_out_session_ids)],
         )
 
         cohort_condition = derive_experimental_condition(self.modeling_settings)
@@ -952,12 +981,6 @@ class MultinomialModelingPipeline(FeatureZoo):
             for sid, targets in multinomial_targets.items()
         }
 
-        _sorted_session_ids = sorted(processed_beh_data.keys())
-        held_out_session_ids = seeded_session_holdout(
-            session_ids=_sorted_session_ids,
-            held_out_test_proportion=self.modeling_settings['model_validation']['held_out_test_proportion'],
-            random_seed=self.modeling_settings['model_validation']['random_seed'],
-        )
 
         input_metadata = build_input_metadata(
             modeling_settings=self.modeling_settings,
@@ -1686,6 +1709,7 @@ class MultinomialModelRunner:
                         fold_lambda_smooth, fold_l2_reg, fold_grid_audit = _tune_multinomial_regularization(
                             X_train=X_train,
                             y_train=y_train,
+                            groups_train=groups[train_idx],
                             lambda_smooth_grid=lambda_smooth_grid,
                             l2_reg_grid=l2_reg_grid,
                             inner_cv_folds=inner_cv_folds,
@@ -1908,6 +1932,7 @@ class MultinomialModelRunner:
                         held_lambda_smooth, held_l2_reg, held_grid_audit = _tune_multinomial_regularization(
                             X_train=X_dev,
                             y_train=y_dev_fit,
+                            groups_train=groups_dev[dev_train_idx],
                             lambda_smooth_grid=lambda_smooth_grid,
                             l2_reg_grid=l2_reg_grid,
                             inner_cv_folds=inner_cv_folds,

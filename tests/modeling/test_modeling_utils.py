@@ -1433,3 +1433,18 @@ def test_manifold_tag_segment_names_the_map(manifold_column_names, expected):
     """
 
     assert manifold_tag_segment(manifold_column_names) == expected
+
+
+class TestSessionGroupedInnerCv:
+    """The inner hyperparameter-search splitter holds out whole sessions."""
+
+    def test_folds_hold_out_whole_sessions(self):
+        """Every inner validation fold is a set of whole training sessions, capped at the
+        session count; a single-session training set falls back to event folds."""
+
+        groups = np.repeat(np.array(['a', 'b', 'c']), 4)
+        cv = mu.session_grouped_inner_cv(groups, 5)
+        assert cv.get_n_splits() == 3
+        for train_rows, val_rows in cv.split(np.zeros(groups.size), groups=groups):
+            assert not set(groups[train_rows]) & set(groups[val_rows])
+        assert mu.session_grouped_inner_cv(np.repeat('a', 6), 5) == 5

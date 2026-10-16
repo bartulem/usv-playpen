@@ -1751,6 +1751,32 @@ class TestSpatialSplitter:
             te_sessions = set(groups[te_idx].tolist())
             assert tr_sessions.isdisjoint(te_sessions)
 
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    def test_session_strategy_never_repeats_a_test_set(self):
+        """Every session fold holds out a different set of test sessions (a repeat would be
+        scored twice and narrow the fold bootstrap's CI), and asking for more folds than there
+        are distinct test sets raises up front."""
+
+        Y_list, groups_list = [], []
+        for sess in range(4):
+            Yc, _ = _spatial_blob(n_clusters=3, per_cluster=8, seed=sess)
+            Y_list.append(Yc)
+            groups_list.append(np.full(len(Yc), sess))
+        Y = np.vstack(Y_list)
+        groups = np.concatenate(groups_list)
+        # 4 sessions, 1 test session per fold -> exactly 4 distinct test sets
+        folds = get_stratified_spatial_splits_stable(
+            groups=groups, Y=Y, n_clusters=3, split_strategy='session',
+            test_prop=0.25, n_splits=4, random_seed=0, tolerance=0.9,
+        )
+        test_sets = [frozenset(groups[te_idx].tolist()) for _tr_idx, te_idx in folds]
+        assert len(set(test_sets)) == 4
+        with pytest.raises(ValueError, match="distinct test sets"):
+            get_stratified_spatial_splits_stable(
+                groups=groups, Y=Y, n_clusters=3, split_strategy='session',
+                test_prop=0.25, n_splits=5, random_seed=0, tolerance=0.9,
+            )
+
     def test_session_strategy_raises_when_unsatisfiable(self):
         """
         When a spatial cluster lives in a single session, no session split can

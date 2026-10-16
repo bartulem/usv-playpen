@@ -827,6 +827,14 @@ class TestMultinomialSplitters:
         )
         assert len(cv_folds) == 2
         assert len(tolerances) == 2
+        # no two folds hold out the same test sessions; with one test session out of six,
+        # a seventh fold has no distinct set left and is refused up front
+        assert len({frozenset(groups[te_idx].tolist()) for _tr_idx, te_idx in cv_folds}) == 2
+        with pytest.raises(ValueError, match="distinct test sets"):
+            get_stratified_group_splits_stable(
+                groups=groups, y=y, n_categories=3, split_strategy='session',
+                test_prop=1 / 6, n_splits=7, random_seed=0, tolerance=0.5,
+            )
         for tr_idx, te_idx in cv_folds:
             tr_sessions = set(groups[tr_idx].tolist())
             te_sessions = set(groups[te_idx].tolist())
@@ -1022,6 +1030,7 @@ class TestMultinomialUnivariateRunner:
         l2_grid = np.array([0.01, 0.1])
         best_lam_sm, best_l2, audit = _tune_multinomial_regularization(
             X, y,
+            groups_train=np.arange(len(y)) % 6,  # six interleaved sessions
             lambda_smooth_grid=lambda_grid,
             l2_reg_grid=l2_grid,
             inner_cv_folds=2,
@@ -1501,6 +1510,7 @@ class TestMultinomialTunerBranches:
         with pytest.raises(ValueError, match="Unsupported inner_cv_scoring_metric"):
             _tune_multinomial_regularization(
                 X, y,
+                groups_train=np.arange(len(y)) % 6,  # six interleaved sessions
                 lambda_smooth_grid=np.array([1.0]),
                 l2_reg_grid=np.array([0.01]),
                 inner_cv_folds=2,
@@ -1534,6 +1544,7 @@ class TestMultinomialTunerBranches:
         l2_grid = np.array([0.001, 0.01, 0.1])
         best_lam, best_l2, audit = _tune_multinomial_regularization(
             X, y,
+            groups_train=np.arange(len(y)) % 6,  # six interleaved sessions
             lambda_smooth_grid=lambda_grid,
             l2_reg_grid=l2_grid,
             inner_cv_folds=2,
@@ -1584,6 +1595,7 @@ class TestMultinomialTunerBranches:
         l2_grid = np.array([0.01, 0.1])
         best_lam, best_l2, audit = _tune_multinomial_regularization(
             X, y,
+            groups_train=np.arange(len(y)) % 6,  # six interleaved sessions
             lambda_smooth_grid=lambda_grid,
             l2_reg_grid=l2_grid,
             inner_cv_folds=2,
@@ -1638,6 +1650,7 @@ class TestMultinomialTunerBranches:
 
         best_lam, best_l2, audit = _tune_multinomial_regularization(
             X, y,
+            groups_train=np.arange(len(y)) % 6,  # six interleaved sessions
             lambda_smooth_grid=lambda_grid,
             l2_reg_grid=l2_grid,
             inner_cv_folds=2,

@@ -97,6 +97,7 @@ import numpy as np
 import polars as pls
 from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import confusion_matrix, matthews_corrcoef
+from sklearn.model_selection import GroupKFold
 
 from .load_input_files import _calculate_ibi_threshold, is_pooled_vocal_signal, is_vocal_signal
 from .modeling_collinearity_audit import (
@@ -795,7 +796,8 @@ def zscore_features_across_sessions(processed_beh_dict: dict,
                                     feature_bounds: dict,
                                     abs_features: list | None = None,
                                     smooth_abs_features: dict | None = None,
-                                    stats_out: dict | None = None) -> dict:
+                                    stats_out: dict | None = None,
+                                    reference_sessions: list | None = None) -> dict:
     """
     Z-scores every session's feature columns using pooled cross-session statistics.
 
@@ -842,6 +844,11 @@ def zscore_features_across_sessions(processed_beh_dict: dict,
         standard deviation applied to each feature, so a caller can
         recover the native scale after the frames are overwritten.
         Forwarded to `zscore_different_sessions_together`.
+    reference_sessions : list of str, optional
+        The sessions the pooled statistics come from (the extraction's
+        development sessions, so held-out sessions never shape the
+        scale); None pools every session. Forwarded to
+        `zscore_different_sessions_together`.
 
     Returns
     -------
@@ -856,7 +863,39 @@ def zscore_features_across_sessions(processed_beh_dict: dict,
         abs_features=abs_features,
         smooth_abs_features=smooth_abs_features,
         stats_out=stats_out,
+        reference_sessions=reference_sessions,
     )
+
+
+def session_grouped_inner_cv(groups: np.ndarray, n_folds: int) -> GroupKFold | int:
+    """
+    Description
+    -----------
+    The inner cross-validation splitter a hyperparameter search runs inside an outer
+    training fold: a ``GroupKFold`` over the training rows' sessions, so every inner
+    validation fold holds out whole sessions, as the outer folds do, and a penalty is
+    never scored on events from sessions it was fit on. The fold count is ``n_folds``
+    capped at the number of sessions. A training set drawn from a single session
+    cannot be split by session; it falls back to ``n_folds`` event folds (the int
+    ``GridSearchCV`` turns into ``KFold``). Pass ``groups`` to the search's ``fit``.
+
+    Parameters
+    ----------
+    groups (np.ndarray)
+        ``(n_rows,)`` session label of every training row.
+    n_folds (int)
+        The configured inner fold count.
+
+    Returns
+    -------
+    cv (GroupKFold | int)
+        The splitter for ``GridSearchCV(cv=...)``.
+    """
+
+    n_sessions = int(np.unique(groups).size)
+    if n_sessions < 2:
+        return int(n_folds)
+    return GroupKFold(n_splits=int(min(n_folds, n_sessions)))
 
 
 def pool_session_arrays(feature_data: dict,

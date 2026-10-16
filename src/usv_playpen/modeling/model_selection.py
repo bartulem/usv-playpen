@@ -48,6 +48,7 @@ from .modeling_utils import (
     format_selection_step,
     held_out_session_ids_from_metadata,
     development_heldout_masks,
+    session_grouped_inner_cv,
 )
 from .modeling_vocal_onsets import VocalOnsetModelingPipeline
 from .modeling_vocal_categories_multinomial import (
@@ -3112,9 +3113,9 @@ def bout_parameter_model_selection(
                     model = GridSearchCV(
                         GammaRegressor(),
                         {'alpha': list(lr_params['alphas'])},
-                        cv=lr_params['cv'],
+                        cv=session_grouped_inner_cv(groups_global[tr_idx], lr_params['cv']),
                         scoring='neg_mean_gamma_deviance',
-                    ).fit(X_tr_proj, y_tr_pos)
+                    ).fit(X_tr_proj, y_tr_pos, groups=groups_global[tr_idx])
                     fit_time = float(time.perf_counter() - fit_start)
 
                     best = model.best_estimator_
@@ -3292,9 +3293,9 @@ def bout_parameter_model_selection(
                         model = GridSearchCV(
                             GammaRegressor(),
                             {'alpha': list(lr_params['alphas'])},
-                            cv=lr_params['cv'],
+                            cv=session_grouped_inner_cv(groups_global[tr_idx], lr_params['cv']),
                             scoring='neg_mean_gamma_deviance',
-                        ).fit(X_tr_stacked, y_tr_pos)
+                        ).fit(X_tr_stacked, y_tr_pos, groups=groups_global[tr_idx])
                         fit_time = float(time.perf_counter() - fit_start)
 
                         best = model.best_estimator_
@@ -3434,9 +3435,9 @@ def bout_parameter_model_selection(
             model = GridSearchCV(
                 GammaRegressor(),
                 {'alpha': list(lr_params['alphas'])},
-                cv=lr_params['cv'],
+                cv=session_grouped_inner_cv(groups_global[tr_idx], lr_params['cv']),
                 scoring='neg_mean_gamma_deviance',
-            ).fit(X_tr_stacked, y_tr_pos)
+            ).fit(X_tr_stacked, y_tr_pos, groups=groups_global[tr_idx])
             coefs = model.best_estimator_.coef_.flatten()
             n_bases = basis_matrix.shape[1]
 
@@ -3509,9 +3510,9 @@ def bout_parameter_model_selection(
                     held_model = GridSearchCV(
                         GammaRegressor(),
                         {'alpha': list(lr_params['alphas'])},
-                        cv=lr_params['cv'],
+                        cv=session_grouped_inner_cv(groups_global[_dev_positions], lr_params['cv']),
                         scoring='neg_mean_gamma_deviance',
-                    ).fit(X_dev_stacked, y_dev_pos)
+                    ).fit(X_dev_stacked, y_dev_pos, groups=groups_global[_dev_positions])
                     y_pred = held_model.best_estimator_.predict(X_held_stacked)
                 else:
                     X_dev_gam = get_unrolled_X_for_multivariate(
@@ -3950,7 +3951,7 @@ def multinomial_vocal_category_model_selection(
             f"fixed l2_reg={hp['l2_reg_fixed']})"
         )
 
-    def _pick_multinomial_fold_hyperparams(X_tr_, y_tr_, n_feats_, fold_idx_):
+    def _pick_multinomial_fold_hyperparams(X_tr_, y_tr_, groups_tr_, n_feats_, fold_idx_):
         """
         Returns `(lambda_smooth, l2_reg, grid_audit, tuned_flag)` for the
         current outer fold and trial feature set. When tuning is off the
@@ -3972,6 +3973,7 @@ def multinomial_vocal_category_model_selection(
         lam_sm_win, lam_l2_win, grid_audit_ = _tune_multinomial_regularization(
             X_train=X_tr_,
             y_train=y_tr_,
+            groups_train=groups_tr_,
             lambda_smooth_grid=lambda_smooth_grid_mn,
             l2_reg_grid=rescaled_l2_grid,
             inner_cv_folds=inner_cv_folds_mn,
@@ -4262,7 +4264,7 @@ def multinomial_vocal_category_model_selection(
 
                 fold_lambda_smooth, fold_l2_reg, fold_grid_audit, fold_tuned_flag = (
                     _pick_multinomial_fold_hyperparams(
-                        X_tr, y_tr, n_feats_=1, fold_idx_=fold_idx,
+                        X_tr, y_tr, groups_global[tr_idx_model], n_feats_=1, fold_idx_=fold_idx,
                     )
                 )
 
@@ -4513,7 +4515,7 @@ def multinomial_vocal_category_model_selection(
                     # shape.
                     fold_lambda_smooth, fold_l2_reg, fold_grid_audit, fold_tuned_flag = (
                         _pick_multinomial_fold_hyperparams(
-                            X_tr_stacked, y_tr,
+                            X_tr_stacked, y_tr, groups_global[tr_idx_model],
                             n_feats_=n_trial_feats,
                             fold_idx_=fold_idx,
                         )
@@ -4759,6 +4761,8 @@ def multinomial_vocal_category_model_selection(
             final_lambda_smooth, final_l2_reg, final_grid_audit, final_tuned_flag = (
                 _pick_multinomial_fold_hyperparams(
                     X_dev_fit, y_dev_fit,
+                    (groups_global[_dev_positions][dev_train_idx] if balance_train
+                     else groups_global[_dev_positions]),
                     n_feats_=n_final_feats,
                     fold_idx_=n_splits,
                 )
@@ -5761,8 +5765,10 @@ def continuous_vocal_manifold_model_selection(
                     except Exception as _decode_err:
                         print(f"    [geodesic] decoder unavailable ({_decode_err}); "
                               f"pullback_geodesic_mae -> NaN")
+                # Built from the DEVELOPMENT targets only: the reserved held-out
+                # sessions never shape the geometry they are scored on.
                 geodesic_ctx = build_torus_geodesic_context(
-                    np.asarray(y_global, dtype=np.float64), decode_fn=_geo_decode_fn,
+                    np.asarray(y_global[_dev_positions], dtype=np.float64), decode_fn=_geo_decode_fn,
                     n_per_dim=int(_geo_cfg['grid_n_per_dim']), period=manifold_period,
                     k=int(_geo_cfg['graph_k']),
                     density_exponent=float(_geo_cfg['density_exponent']),

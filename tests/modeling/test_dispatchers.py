@@ -604,8 +604,8 @@ class TestDispatcherCLI:
                                                    capsys):
         """The univariate ``__main__`` block parses the four required
         flags and hands the Namespace to ``dispatch_univariate_job``,
-        which (with an out-of-bounds feature index) aborts cleanly after
-        feature mapping."""
+        which (with an out-of-bounds feature index) aborts after feature
+        mapping and exits with status 1, so SLURM records the failed task."""
 
         settings = _settings(tmp_path)
         monkeypatch.setattr(uni.json, 'load', lambda *a, **k: settings)
@@ -617,8 +617,10 @@ class TestDispatcherCLI:
             '--input_data', str(inp),
             '--output_dir', str(tmp_path / 'out'),
         ])
-        runpy.run_module('usv_playpen.modeling.main_univariate_dispatcher',
-                         run_name='__main__')
+        with pytest.raises(SystemExit) as exit_info:
+            runpy.run_module('usv_playpen.modeling.main_univariate_dispatcher',
+                             run_name='__main__')
+        assert exit_info.value.code == 1
         assert 'out of bounds' in capsys.readouterr().out
 
     def test_selection_main_parses_and_dispatches(self, tmp_path, monkeypatch):

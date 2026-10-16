@@ -70,6 +70,7 @@ from .modeling_utils import (
     root_mean_squared_error,
     mean_absolute_error_1d,
     format_split_line,
+    session_grouped_inner_cv,
 )
 
 
@@ -281,12 +282,22 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         # tractable; allo angles tolerate plain `|x|`.
         abs_features = self.modeling_settings['kinematic_features']['abs_features']
         smooth_abs_features = self.modeling_settings['kinematic_features']['smooth_abs_features']
+        # The held-out sessions are drawn before z-scoring, from the same session list,
+        # so the pooled z-score statistics come from the DEVELOPMENT sessions only and the
+        # reserved sessions never shape the scale the models are fit and scored on.
+        _sorted_session_ids = sorted(processed_beh_feature_data_dict.keys())
+        held_out_session_ids = seeded_session_holdout(
+            session_ids=_sorted_session_ids,
+            held_out_test_proportion=self.modeling_settings['model_validation']['held_out_test_proportion'],
+            random_seed=self.modeling_settings['model_validation']['random_seed'],
+        )
         processed_beh_feature_data_dict = zscore_features_across_sessions(
             processed_beh_dict=processed_beh_feature_data_dict,
             suffixes=revised_behavioral_predictors,
             feature_bounds=feature_bounds,
             abs_features=abs_features,
             smooth_abs_features=smooth_abs_features,
+            reference_sessions=[session_id for session_id in _sorted_session_ids if session_id not in set(held_out_session_ids)],
         )
 
         cohort_condition = derive_experimental_condition(self.modeling_settings)
@@ -321,12 +332,6 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             c for c in kept_columns_first_sess if is_vocal_signal(c)
         })
 
-        _sorted_session_ids = sorted(processed_beh_feature_data_dict.keys())
-        held_out_session_ids = seeded_session_holdout(
-            session_ids=_sorted_session_ids,
-            held_out_test_proportion=self.modeling_settings['model_validation']['held_out_test_proportion'],
-            random_seed=self.modeling_settings['model_validation']['random_seed'],
-        )
 
         input_metadata = build_input_metadata(
             modeling_settings=self.modeling_settings,
@@ -578,7 +583,8 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         Yields
         ------
         tuple
-            (X_train, y_train, X_test, y_test)
+            (X_train, y_train, X_test, y_test, groups_train): the split's arrays plus
+            the session label of every training row (for a session-grouped inner CV).
         """
 
         X = feature_data['X']
@@ -632,7 +638,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             )
 
             for train_idx, test_idx in sss.split(X, y_binned):
-                yield X[train_idx], y[train_idx], X[test_idx], y[test_idx]
+                yield X[train_idx], y[train_idx], X[test_idx], y[test_idx], groups[train_idx]
 
         elif split_strategy == 'session':
 
@@ -669,7 +675,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 # the feature) if a residual degeneracy still makes the split invalid.
                 try:
                     train_idx, test_idx = next(sgkf.split(X, y_binned, groups=groups))
-                    yield X[train_idx], y[train_idx], X[test_idx], y[test_idx]
+                    yield X[train_idx], y[train_idx], X[test_idx], y[test_idx], groups[train_idx]
                 except (StopIteration, ValueError):
                     continue
         else:
@@ -806,7 +812,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
         n_splits = self.modeling_settings['model_validation']['n_cv_folds']
 
-        for split_idx, (X_tr, y_tr, X_te, y_te) in enumerate(splitter):
+        for split_idx, (X_tr, y_tr, X_te, y_te, groups_tr) in enumerate(splitter):
 
             X_tr_gam = unroll_history_matrix(X_tr, time_indices=time_indices).astype(np.float32)
             X_te_gam = unroll_history_matrix(X_te, time_indices=time_indices).astype(np.float32)
@@ -1182,7 +1188,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
         n_splits = self.modeling_settings['model_validation']['n_cv_folds']
 
-        for split_idx, (X_tr, y_tr, X_te, y_te) in enumerate(splitter):
+        for split_idx, (X_tr, y_tr, X_te, y_te, groups_tr) in enumerate(splitter):
 
             X_tr_proj = np.dot(X_tr, basis_matrix)
             X_te_proj = np.dot(X_te, basis_matrix)
@@ -1200,9 +1206,9 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 model = GridSearchCV(
                     GammaRegressor(),
                     {'alpha': list(alphas)},
-                    cv=cv,
+                    cv=session_grouped_inner_cv(groups_tr, cv),
                     scoring='neg_mean_gamma_deviance',
-                ).fit(X_tr_proj, y_tr_pos)
+                ).fit(X_tr_proj, y_tr_pos, groups=groups_tr)
                 fit_time = float(time.perf_counter() - fit_start)
 
                 best = model.best_estimator_
@@ -1275,9 +1281,9 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 model_null = GridSearchCV(
                     GammaRegressor(),
                     {'alpha': list(alphas)},
-                    cv=cv,
+                    cv=session_grouped_inner_cv(groups_tr, cv),
                     scoring='neg_mean_gamma_deviance',
-                ).fit(X_tr_proj, y_tr_shuff_pos)
+                ).fit(X_tr_proj, y_tr_shuff_pos, groups=groups_tr)
                 fit_time_null = float(time.perf_counter() - fit_start)
 
                 best_null = model_null.best_estimator_
@@ -1382,9 +1388,9 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                     model = GridSearchCV(
                         GammaRegressor(),
                         {'alpha': list(alphas)},
-                        cv=cv,
+                        cv=session_grouped_inner_cv(dev_feature_data['groups'], cv),
                         scoring='neg_mean_gamma_deviance',
-                    ).fit(X_dev_proj, y_dev_pos)
+                    ).fit(X_dev_proj, y_dev_pos, groups=dev_feature_data['groups'])
                     rec['fit_time'] = float(time.perf_counter() - fit_start)
                     best = model.best_estimator_
                     y_pred = best.predict(X_held_proj)

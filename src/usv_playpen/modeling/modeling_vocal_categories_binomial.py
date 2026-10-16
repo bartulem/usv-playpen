@@ -350,12 +350,22 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         # that pygam suffers when the data piles up at the kink.
         abs_features = self.modeling_settings['kinematic_features']['abs_features']
         smooth_abs_features = self.modeling_settings['kinematic_features']['smooth_abs_features']
+        # The held-out sessions are drawn before z-scoring, from the same session list,
+        # so the pooled z-score statistics come from the DEVELOPMENT sessions only and the
+        # reserved sessions never shape the scale the models are fit and scored on.
+        _sorted_session_ids = sorted(processed_beh_data.keys())
+        held_out_session_ids = seeded_session_holdout(
+            session_ids=_sorted_session_ids,
+            held_out_test_proportion=self.modeling_settings['model_validation']['held_out_test_proportion'],
+            random_seed=self.modeling_settings['model_validation']['random_seed'],
+        )
         processed_beh_data = zscore_features_across_sessions(
             processed_beh_dict=processed_beh_data,
             suffixes=revised_predictors,
             feature_bounds=getattr(self, 'feature_boundaries', {}),
             abs_features=abs_features,
             smooth_abs_features=smooth_abs_features,
+            reference_sessions=[session_id for session_id in _sorted_session_ids if session_id not in set(held_out_session_ids)],
         )
 
         # Build the unified Level-1 filename — the analysis_tag includes
@@ -400,12 +410,6 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             c for c in kept_columns_first_sess if is_vocal_signal(c)
         })
 
-        _sorted_session_ids = sorted(processed_beh_data.keys())
-        held_out_session_ids = seeded_session_holdout(
-            session_ids=_sorted_session_ids,
-            held_out_test_proportion=self.modeling_settings['model_validation']['held_out_test_proportion'],
-            random_seed=self.modeling_settings['model_validation']['random_seed'],
-        )
 
         input_metadata = build_input_metadata(
             modeling_settings=self.modeling_settings,

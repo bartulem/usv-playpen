@@ -13,7 +13,8 @@ def zscore_different_sessions_together(data_dict: dict,
                                        feature_bounds: dict,
                                        abs_features: list | None = None,
                                        smooth_abs_features: dict | None = None,
-                                       stats_out: dict | None = None) -> dict:
+                                       stats_out: dict | None = None,
+                                       reference_sessions: list | None = None) -> dict:
     """
     Computes z-scored behavioral data when different sessions need to
     be pooled together (z-scores are computed on the pooled data,
@@ -108,6 +109,14 @@ def zscore_different_sessions_together(data_dict: dict,
         to recover the native scale (to apply a non-linear
         transform later, say) must capture them here. Purely an
         output channel: it does not change what is computed.
+    reference_sessions : list of str, optional
+        The sessions whose frames the pooled mean and standard deviation
+        are computed from; every session is then z-scored with them. A
+        modeling extraction passes its DEVELOPMENT sessions, so the
+        reserved held-out sessions never shape the scale the models are
+        fit and scored on. None pools every session (the behaviour when no
+        sessions are held out). A listed session absent from `data_dict`
+        raises.
 
     Returns
     -------
@@ -161,11 +170,20 @@ def zscore_different_sessions_together(data_dict: dict,
         if cols_to_update:
             data_dict[one_beh_session] = data_dict[one_beh_session].with_columns(cols_to_update)
 
-    # Build pooled series for each feature and get global stats
+    if reference_sessions is None:
+        reference_ids = set(data_dict)
+    else:
+        reference_ids = set(reference_sessions)
+        missing_reference = sorted(reference_ids - set(data_dict))
+        if missing_reference:
+            msg = f"zscore_different_sessions_together: reference session(s) {missing_reference} are not in the data."
+            raise KeyError(msg)
+
+    # Build pooled series for each feature and get global stats (reference sessions only)
     for one_feature in feature_lst:
         pooled_series_list = []
 
-        for dd_df in data_dict.values():
+        for dd_df in (data_dict[session_id] for session_id in data_dict if session_id in reference_ids):
             for column in dd_df.columns:
                 if column.split('.')[-1] == one_feature:
                     # No `break` here: `harmonize_session_columns` fills

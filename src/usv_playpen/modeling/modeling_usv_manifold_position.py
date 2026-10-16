@@ -48,6 +48,8 @@ Key scientific capabilities:
 """
 
 import json
+import math
+
 import numpy as np
 from pathlib import Path
 import pickle
@@ -110,7 +112,8 @@ def compute_inverse_density_weights(Y: np.ndarray,
                                     clip_percentile: float = 95.0,
                                     epsilon: float = 1e-5,
                                     metric: str = 'euclidean',
-                                    period: float = 1.0) -> np.ndarray:
+                                    period: float = 1.0,
+                                    fit_mask: np.ndarray | None = None) -> np.ndarray:
     """
     Computes inverse density sample weights using Gaussian Kernel Density Estimation (KDE).
 
@@ -148,13 +151,25 @@ def compute_inverse_density_weights(Y: np.ndarray,
         lattice shifts).
     period : float, default 1.0
         Per-axis wrap period; ignored when `metric='euclidean'`.
+    fit_mask : np.ndarray, optional
+        Boolean, shape (N,): the rows the density is estimated from (an
+        extraction passes its DEVELOPMENT rows, so reserved held-out sessions
+        never shape the weights). The density is still evaluated at every row,
+        and the clip percentile and the unit-mean normalization are taken over
+        the fit rows. None fits on every row.
 
     Returns
     -------
     weights : np.ndarray
         Array of shape (N,) containing normalized sample weights. The mean
-        of the weights is exactly 1.0, preserving the global scale of the loss.
+        of the weights over the fit rows is exactly 1.0, preserving the global
+        scale of the loss.
     """
+
+    fit_rows = np.ones(np.asarray(Y).shape[0], dtype=bool) if fit_mask is None else np.asarray(fit_mask, dtype=bool)
+    if not fit_rows.any():
+        msg = "compute_inverse_density_weights: fit_mask selects no row to estimate the density from."
+        raise ValueError(msg)
 
     if metric == 'torus':
         Y_arr = np.asarray(Y, dtype=np.float64)
@@ -165,20 +180,20 @@ def compute_inverse_density_weights(Y: np.ndarray,
             [(dx, dy) for dx in (-period, 0.0, period) for dy in (-period, 0.0, period)],
             dtype=np.float64,
         )
-        kde = gaussian_kde(Y_arr.T)
+        kde = gaussian_kde(Y_arr[fit_rows].T)
         densities = np.zeros(Y_arr.shape[0], dtype=np.float64)
         for shift in shifts:
             densities = densities + kde((Y_arr + shift).T)
     else:
-        kde = gaussian_kde(Y.T)
-        densities = kde(Y.T)
+        kde = gaussian_kde(np.asarray(Y)[fit_rows].T)
+        densities = kde(np.asarray(Y).T)
 
     raw_weights = 1.0 / (densities + epsilon)
 
-    max_allowed_weight = np.percentile(raw_weights, clip_percentile)
+    max_allowed_weight = np.percentile(raw_weights[fit_rows], clip_percentile)
     clipped_weights = np.clip(raw_weights, a_min=None, a_max=max_allowed_weight)
 
-    normalized_weights = clipped_weights / np.mean(clipped_weights)
+    normalized_weights = clipped_weights / np.mean(clipped_weights[fit_rows])
 
     return normalized_weights
 
@@ -328,6 +343,16 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
 
         attempts = 0
         current_tolerance = tolerance
+        # Every fold must hold out a DIFFERENT set of test sessions: a repeated set
+        # would be scored twice and make the fold bootstrap's CI too narrow. With
+        # fewer distinct sets than folds the request cannot be met; say so up front.
+        n_distinct_test_sets = math.comb(len(unique_sessions), n_test_sessions)
+        if n_distinct_test_sets < n_splits:
+            msg = (f"{len(unique_sessions)} sessions with {n_test_sessions} test session(s) per fold allow only "
+                   f"{n_distinct_test_sets} distinct test sets, fewer than the {n_splits} folds requested; "
+                   f"lower the fold count or raise the test proportion.")
+            raise ValueError(msg)
+        seen_test_sets = set()
 
         while len(cv_folds) < n_splits:
             attempts += 1
@@ -346,7 +371,9 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
                 te_dist = te_counts / len(te_idx)
                 dist_error = np.max(np.abs(te_dist - global_dist))
 
-                if dist_error < current_tolerance:
+                test_set_key = frozenset(te_sess.tolist())
+                if dist_error < current_tolerance and test_set_key not in seen_test_sets:
+                    seen_test_sets.add(test_set_key)
                     cv_folds.append((tr_idx, te_idx))
 
             if attempts % widen_every == 0:
@@ -605,16 +632,23 @@ def _tune_manifold_regularization(X_train: np.ndarray,
         )
 
     inner_cluster_num = max(2, spatial_cluster_num // 2)
+    # Hold out at least one whole training session per inner fold (1 / inner_cv_folds of
+    # them, or one when the fold has fewer sessions than inner folds), and ask for no more
+    # inner folds than there are distinct held-out session sets.
+    n_train_sessions = int(np.unique(groups_train).size)
+    n_inner_test_sessions = max(1, int(n_train_sessions / inner_cv_folds))
+    n_inner_folds = min(inner_cv_folds, math.comb(n_train_sessions, n_inner_test_sessions))
     inner_folds = get_stratified_spatial_splits_stable(
         groups=groups_train,
         Y=Y_train,
         n_clusters=inner_cluster_num,
-        test_prop=1.0 / inner_cv_folds,
-        n_splits=inner_cv_folds,
-        # Inner CV lives inside the outer training fold, where session-mixing
-        # is already acceptable; use 'mixed' so inner splits are quick and
-        # cluster-balanced without a second layer of session-holdout logic.
-        split_strategy='mixed',
+        test_prop=(n_inner_test_sessions + 0.5) / n_train_sessions,
+        n_splits=n_inner_folds,
+        # Inner validation folds hold out whole training sessions, as the outer
+        # folds do: an event-level ('mixed') split would score each penalty on
+        # events from sessions it was also fit on, favouring weaker regularization
+        # than generalization to new sessions supports.
+        split_strategy='session',
         random_seed=random_state + 7919,
         metric=metric,
         period=period,
@@ -986,21 +1020,6 @@ class ContinuousModelingPipeline(FeatureZoo):
         if not all_valid_Y_list:
             raise ValueError("No valid continuous targets extracted. Check manifold data.")
 
-        global_Y_matrix = np.vstack(all_valid_Y_list)
-        # Manifold-metric configuration. On torus the KDE uses the 3x3
-        # lattice-replication trick so points near the wrap boundary
-        # pick up across-the-edge neighbours.
-        _kde_metric = str(voc_settings['usv_manifold_metric'])
-        _kde_period = float(voc_settings['usv_manifold_period'])
-        global_weights = compute_inverse_density_weights(
-            global_Y_matrix, metric=_kde_metric, period=_kde_period,
-        )
-
-        ptr = 0
-        for sess_id in continuous_targets_dict.keys():
-            n_sess_usvs = len(continuous_targets_dict[sess_id]['targets'])
-            continuous_targets_dict[sess_id]['weights'] = global_weights[ptr: ptr + n_sess_usvs]
-            ptr += n_sess_usvs
 
         print("Filtering features and injecting vocal history...")
         processed_beh_data = {}
@@ -1055,13 +1074,47 @@ class ContinuousModelingPipeline(FeatureZoo):
         # tractable; allo angles tolerate plain `|x|`.
         abs_features = self.modeling_settings['kinematic_features']['abs_features']
         smooth_abs_features = self.modeling_settings['kinematic_features']['smooth_abs_features']
+        # The held-out sessions are drawn before z-scoring, from the same session list,
+        # so the pooled z-score statistics come from the DEVELOPMENT sessions only and the
+        # reserved sessions never shape the scale the models are fit and scored on.
+        _sorted_session_ids = sorted(processed_beh_data.keys())
+        held_out_session_ids = seeded_session_holdout(
+            session_ids=_sorted_session_ids,
+            held_out_test_proportion=self.modeling_settings['model_validation']['held_out_test_proportion'],
+            random_seed=self.modeling_settings['model_validation']['random_seed'],
+        )
         processed_beh_data = zscore_features_across_sessions(
             processed_beh_dict=processed_beh_data,
             suffixes=revised_predictors,
             feature_bounds=feature_bounds,
             abs_features=abs_features,
             smooth_abs_features=smooth_abs_features,
+            reference_sessions=[session_id for session_id in _sorted_session_ids if session_id not in set(held_out_session_ids)],
         )
+
+        # Inverse-density weights: the KDE is fit on the development sessions' targets
+        # only (held-out sessions drawn above), then evaluated at every target, so the
+        # reserved sessions never shape the weights the models are fit with.
+        global_Y_matrix = np.vstack(all_valid_Y_list)
+        # Manifold-metric configuration. On torus the KDE uses the 3x3
+        # lattice-replication trick so points near the wrap boundary
+        # pick up across-the-edge neighbours.
+        _kde_metric = str(voc_settings['usv_manifold_metric'])
+        _kde_period = float(voc_settings['usv_manifold_period'])
+        _held_out_set = set(held_out_session_ids)
+        _kde_fit_rows = np.concatenate([
+            np.full(len(continuous_targets_dict[sess_id]['targets']), sess_id not in _held_out_set)
+            for sess_id in continuous_targets_dict.keys()
+        ])
+        global_weights = compute_inverse_density_weights(
+            global_Y_matrix, metric=_kde_metric, period=_kde_period, fit_mask=_kde_fit_rows,
+        )
+
+        ptr = 0
+        for sess_id in continuous_targets_dict.keys():
+            n_sess_usvs = len(continuous_targets_dict[sess_id]['targets'])
+            continuous_targets_dict[sess_id]['weights'] = global_weights[ptr: ptr + n_sess_usvs]
+            ptr += n_sess_usvs
 
         cohort_condition = derive_experimental_condition(self.modeling_settings)
         # Tag carries the QLVM map the target comes from (the manifold columns'
@@ -1116,12 +1169,6 @@ class ContinuousModelingPipeline(FeatureZoo):
             for sid, packet in continuous_targets_dict.items()
         }
 
-        _sorted_session_ids = sorted(processed_beh_data.keys())
-        held_out_session_ids = seeded_session_holdout(
-            session_ids=_sorted_session_ids,
-            held_out_test_proportion=self.modeling_settings['model_validation']['held_out_test_proportion'],
-            random_seed=self.modeling_settings['model_validation']['random_seed'],
-        )
 
         input_metadata = build_input_metadata(
             modeling_settings=self.modeling_settings,
@@ -1557,7 +1604,8 @@ class ContinuousModelRunner:
         feeds report the same torus prediction-error geometry.
 
         The map holds the density-ratio and decoder-Jacobian pullback geodesic
-        geometries over a regular torus grid, precomputed from all embedded `Y`
+        geometries over a regular torus grid, precomputed from the development
+        sessions' embedded `Y` (the caller excludes the held-out sessions)
         plus the frozen decoder of the QLVM map `Y` comes from (the map prefix
         of the pickle's manifold columns: the regular, a conditional or the squeak
         cell; a conditional decoder at the configured
@@ -1583,8 +1631,9 @@ class ContinuousModelRunner:
             reused across every feature of one run and rebuilt only for a new
             input pickle.
         Y (np.ndarray)
-            `(n_events, 2)` array of all embedded torus positions the reference
-            grid's density / pullback geometries are precomputed from.
+            `(n_events, 2)` array of the development sessions' embedded torus
+            positions the reference grid's density / pullback geometries are
+            precomputed from.
         manifold_metric (str)
             The resolved manifold metric; the geodesic map is built only on
             `'torus'` (any other value returns `None`, yielding NaN columns).
@@ -1923,8 +1972,10 @@ class ContinuousModelRunner:
         # the acoustic-manifold selection it feeds. Built once per input pickle
         # and cached on the runner (fold- and feature-independent); torus-only,
         # NaN columns on any disabled / missing-decoder path (see the helper).
+        # The reference map is built from the DEVELOPMENT targets only, so the
+        # reserved held-out sessions never shape the geometry they are scored on.
         geodesic_ctx = self._resolve_geodesic_context(
-            pkl_path, Y, manifold_metric, manifold_period,
+            pkl_path, Y[_dev_positions], manifold_metric, manifold_period,
             feat_data['input_metadata'],
         )
 

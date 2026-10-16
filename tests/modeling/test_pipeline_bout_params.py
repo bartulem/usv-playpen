@@ -908,9 +908,10 @@ class TestCreateDataSplitsBranches:
         with pytest.warns(UserWarning, match="Stratification disabled"):
             splits = list(pipeline.create_data_splits(feature_data))
         assert len(splits) >= 1
-        for x_train, _y_train, x_test, _y_test in splits:
+        for x_train, _y_train, x_test, _y_test, groups_train in splits:
             assert x_train.shape[0] > 0
             assert x_test.shape[0] > 0
+            assert groups_train.shape[0] == x_train.shape[0]
 
     def test_test_proportion_out_of_range_raises(self):
         """
@@ -952,9 +953,11 @@ class TestCreateDataSplitsBranches:
         )
         splits = list(pipeline.create_data_splits(feature_data))
         assert len(splits) >= 1
-        X_tr, y_tr, _X_te, y_te = splits[0]
+        X_tr, y_tr, _X_te, y_te, groups_tr = splits[0]
         assert X_tr.shape[1] == pipeline.history_frames
         assert len(y_tr) > 0 and len(y_te) > 0
+        # the training rows' sessions travel with the split, for the session-grouped inner CV
+        assert groups_tr.shape == y_tr.shape
 
     def test_binning_except_zeroes_y_binned(self, monkeypatch):
         """
