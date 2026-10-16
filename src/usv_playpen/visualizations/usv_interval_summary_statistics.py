@@ -603,7 +603,7 @@ def _draw_text_legend(
         ha=ha, va=va,
         fontsize=fontsize, fontweight="bold", color=color,
         multialignment="left",
-        bbox={"facecolor": "white", "alpha": 0.85, "edgecolor": "none", "pad": 4},
+        bbox={"facecolor": "#FFFFFF", "alpha": 0.85, "edgecolor": "none", "pad": 4},
         clip_on=False,
         zorder=8,
     )

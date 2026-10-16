@@ -1081,7 +1081,6 @@ def select_best_n_components(df_results: pls.DataFrame, ic_col: str = 'bic') -> 
     return best
 
 
-# =====================================================================
 # Student-t mixture model (1D, log-space) — sibling of the log-Gaussian
 # code above. Same API surface where it makes sense (BIC / AIC / ICL /
 # CV / score_samples / score / predict_proba) so downstream plotting
@@ -1095,7 +1094,6 @@ def select_best_n_components(df_results: pls.DataFrame, ic_col: str = 'bic') -> 
 # Peel & McLachlan (2000) EM algorithm for the derivation; the per-
 # component degrees-of-freedom (``nu``) are updated by 1D root-finding
 # each M-step.
-# =====================================================================
 
 
 def _t_logpdf_1d(x: np.ndarray, mu: float, sigma2: float, nu: float) -> np.ndarray:
@@ -3108,7 +3106,6 @@ def ig_mixture_quantile_logspace(q: np.ndarray, model: IGMixture) -> np.ndarray:
     return out
 
 
-# =====================================================================
 # Parametric bootstrap likelihood-ratio test (LRT) for the number of
 # mixture components.
 #
@@ -3129,7 +3126,6 @@ def ig_mixture_quantile_logspace(q: np.ndarray, model: IGMixture) -> np.ndarray:
 # bootstrap LR statistics are on the same N scale; this keeps the
 # computation tractable while preserving validity (the LRT is asymptotic
 # and converges for any sufficiently large ``n_subsample``).
-# =====================================================================
 
 
 def _sample_from_mixture(model, N: int, rng: np.random.Generator) -> np.ndarray:

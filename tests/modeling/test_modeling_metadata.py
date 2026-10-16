@@ -21,6 +21,8 @@ import re
 
 import pytest
 
+import usv_playpen
+
 from usv_playpen.modeling.modeling_metadata import (
     RESERVED_METADATA_KEYS,
     SCHEMA_VERSIONS,
@@ -395,29 +397,10 @@ class TestLoadSelectionResults:
 class TestMiscHelpers:
 
     def test_get_package_version_returns_str(self):
-        """The version helper always returns a string and never raises."""
+        """The version helper returns the package's version string."""
 
         assert isinstance(get_package_version(), str)
-
-    def test_get_package_version_failure_returns_unknown(self, mocker):
-        """When ``usv_playpen.__version__`` is missing the helper hits an
-        ``AttributeError`` on the ``from .. import __version__`` line,
-        swallows it, and returns the ``'unknown'`` placeholder."""
-
-        import usv_playpen
-        # The relative import resolves the already-cached parent package
-        # and reads its __version__ attribute; removing the attribute for
-        # the duration of the call forces the AttributeError failure path.
-        # The value is captured and restored even if the assertion fails.
-        sentinel = object()
-        saved = getattr(usv_playpen, '__version__', sentinel)
-        if saved is not sentinel:
-            delattr(usv_playpen, '__version__')
-        try:
-            assert get_package_version() == 'unknown'
-        finally:
-            if saved is not sentinel:
-                usv_playpen.__version__ = saved
+        assert get_package_version() == str(usv_playpen.__version__)
 
     def test_utcnow_iso_format(self):
         """The UTC timestamp matches the documented ``...Z`` ISO form."""

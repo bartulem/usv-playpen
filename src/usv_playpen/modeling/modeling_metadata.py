@@ -75,6 +75,8 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .. import __version__
+
 #: Reserved top-level keys inside any modeling artifact. Behavioral feature
 #: names are forbidden from starting with `_` so a feature key can never
 #: collide with one of these metadata blocks.
@@ -105,26 +107,19 @@ SCHEMA_VERSIONS = {
 
 def get_package_version() -> str:
     """
-    Returns the installed `usv_playpen` package version, or `'unknown'`
-    if the version file cannot be imported (e.g., when running from an
-    in-place source tree without `hatch-vcs` having stamped a version).
-
-    The version is read once per call from `usv_playpen.__version__`,
-    which `pyproject.toml` configures via `hatch-vcs`. Any import or
-    attribute error yields the string `'unknown'`; this function
-    therefore never raises.
+    Returns the installed `usv_playpen` package version,
+    `usv_playpen.__version__`, which `pyproject.toml` configures via
+    `hatch-vcs`. The package's `__init__` imports the stamped version file
+    unconditionally, so the version always exists once this module is
+    imported.
 
     Returns
     -------
     str
-        Version string, or `'unknown'` on failure.
+        Version string.
     """
 
-    try:
-        from .. import __version__
-        return str(__version__)
-    except Exception:
-        return 'unknown'
+    return str(__version__)
 
 
 def get_git_commit_info(repo_root: str = None) -> dict:
