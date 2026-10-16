@@ -97,7 +97,7 @@ import numpy as np
 import polars as pls
 from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import confusion_matrix, matthews_corrcoef
-from sklearn.model_selection import GroupKFold
+from sklearn.model_selection import GroupKFold, StratifiedGroupKFold
 
 from .load_input_files import _calculate_ibi_threshold, is_pooled_vocal_signal, is_vocal_signal
 from .modeling_collinearity_audit import (
@@ -114,19 +114,19 @@ _ECE_N_BINS = resolve_modeling_setting('diagnostics', 'ece_n_bins')
 
 def prepare_modeling_sessions(modeling_settings: dict) -> list:
     """
-    Seeds NumPy's global RNG (if requested) and loads the session-path list.
+    Loads the session-path list.
 
-    Reads the `model_validation.random_seed` and `io.session_list_file` entries
-    from the supplied settings dictionary, applies the seed (or resets it to
-    a non-deterministic state when the seed is `None`), opens the session-list
-    text file, and returns a list of configured absolute paths. Blank lines
-    in the session-list file are skipped.
+    Reads the `io.session_list_file` entry from the supplied settings
+    dictionary, opens the session-list text file, and returns a list of
+    configured absolute paths. Blank lines in the session-list file are
+    skipped. NumPy's global RNG is not touched: every stochastic step of the
+    modeling stack draws from its own generator seeded with
+    `model_validation.random_seed`, so nothing depends on global state.
 
     Parameters
     ----------
     modeling_settings : dict
         The modeling settings dictionary. Must contain
-        `modeling_settings['model_validation']['random_seed']` and
         `modeling_settings['io']['session_list_file']`.
 
     Returns
@@ -144,13 +144,6 @@ def prepare_modeling_sessions(modeling_settings: dict) -> list:
     RuntimeError
         For any other I/O failure while reading the session-list file.
     """
-
-    if modeling_settings['model_validation']['random_seed'] is not None:
-        np.random.seed(modeling_settings['model_validation']['random_seed'])
-        print(f"Random seed set to: {modeling_settings['model_validation']['random_seed']}")
-    else:
-        np.random.seed(None)
-        print("Random seed not set.")
 
     txt_modeling_sessions = []
     sessions_file = modeling_settings['io']['session_list_file']
@@ -902,7 +895,8 @@ def pool_session_arrays(feature_data: dict,
                         session_list,
                         pos_key: str,
                         neg_key: str,
-                        n_frames: int) -> tuple:
+                        n_frames: int,
+                        return_groups: bool = False) -> tuple:
     """
     Pools per-session two-class arrays for a single feature across a list of sessions.
 
@@ -936,17 +930,23 @@ def pool_session_arrays(feature_data: dict,
         The history-window length (number of frames per epoch). Used to shape
         the empty `(0, n_frames)` placeholder returned for a class that has no
         usable data across the requested sessions.
+    return_groups : bool, default False
+        Also return the session of every pooled row, so the caller can permute
+        labels within sessions and split its inner cross-validation by session.
 
     Returns
     -------
-    tuple of (np.ndarray, np.ndarray)
-        `(X_pos, X_neg)`, each of shape `(n_epochs, n_frames)`. Either array
-        may have `n_epochs == 0` when no non-empty contribution was found for
-        that class.
+    tuple of (np.ndarray, np.ndarray) or (np.ndarray, np.ndarray, np.ndarray, np.ndarray)
+        `(X_pos, X_neg)`, each of shape `(n_epochs, n_frames)`, followed with
+        `return_groups` by `(groups_pos, groups_neg)`, the session id of every
+        row of each. Either class may have `n_epochs == 0` when no non-empty
+        contribution was found for it.
     """
 
     pos_list = []
     neg_list = []
+    pos_groups = []
+    neg_groups = []
     for sess_id in session_list:
         if sess_id not in feature_data:
             continue
@@ -954,25 +954,35 @@ def pool_session_arrays(feature_data: dict,
         n_arr = feature_data[sess_id][neg_key]
         if p_arr is not None and p_arr.size > 0:
             pos_list.append(p_arr)
+            pos_groups.append(np.full(p_arr.shape[0], sess_id, dtype=object))
         if n_arr is not None and n_arr.size > 0:
             neg_list.append(n_arr)
+            neg_groups.append(np.full(n_arr.shape[0], sess_id, dtype=object))
 
     X_pos = np.concatenate(pos_list, axis=0) if pos_list else np.empty((0, n_frames))
     X_neg = np.concatenate(neg_list, axis=0) if neg_list else np.empty((0, n_frames))
-    return X_pos, X_neg
+    if not return_groups:
+        return X_pos, X_neg
+    groups_pos = np.concatenate(pos_groups) if pos_groups else np.empty(0, dtype=object)
+    groups_neg = np.concatenate(neg_groups) if neg_groups else np.empty(0, dtype=object)
+    return X_pos, X_neg, groups_pos, groups_neg
 
 
 def balance_two_class_arrays(X_pos: np.ndarray,
-                             X_neg: np.ndarray) -> tuple:
+                             X_neg: np.ndarray,
+                             rng: np.random.Generator,
+                             groups_pos: np.ndarray | None = None,
+                             groups_neg: np.ndarray | None = None) -> tuple:
     """
     Down-samples the majority class so both classes have equal sample counts.
 
     Finds the minority class size `n = min(|X_pos|, |X_neg|)` and randomly
-    subsamples the majority class (without replacement) down to `n` rows. The
-    random draw uses NumPy's global RNG state, so reproducibility is governed
-    by the seed set at the start of the pipeline (see
-    `prepare_modeling_sessions`). When either input is empty, both outputs are
-    returned as empty arrays preserving their original column count.
+    subsamples the majority class (without replacement) down to `n` rows,
+    drawing from the caller's seeded generator `rng` (never NumPy's global
+    state, so a run's draws do not depend on what else consumed it). When
+    either input is empty, both outputs are returned as empty arrays
+    preserving their original column count. Session labels given in
+    `groups_pos` / `groups_neg` follow their rows.
 
     Parameters
     ----------
@@ -980,32 +990,47 @@ def balance_two_class_arrays(X_pos: np.ndarray,
         Positive-class samples of shape `(n_pos, n_features)`.
     X_neg : np.ndarray
         Negative-class samples of shape `(n_neg, n_features)`.
+    rng : np.random.Generator
+        The seeded generator the subsample is drawn from.
+    groups_pos : np.ndarray | None
+        Session label of every positive row; when given (with `groups_neg`)
+        the balanced labels are returned too.
+    groups_neg : np.ndarray | None
+        Session label of every negative row.
 
     Returns
     -------
-    tuple of (np.ndarray, np.ndarray)
-        `(X_pos_balanced, X_neg_balanced)`. Both arrays have the same number
-        of rows equal to `min(n_pos, n_neg)`. If either input was empty the
-        outputs are `(0, X_pos.shape[1])` and `(0, X_neg.shape[1])`
-        respectively.
+    tuple of (np.ndarray, np.ndarray) or (np.ndarray, np.ndarray, np.ndarray, np.ndarray)
+        `(X_pos_balanced, X_neg_balanced)`, followed with groups by
+        `(groups_pos_balanced, groups_neg_balanced)`. Both classes have
+        `min(n_pos, n_neg)` rows. If either input was empty the outputs are
+        `(0, X_pos.shape[1])` and `(0, X_neg.shape[1])` (and empty labels).
     """
 
+    with_groups = groups_pos is not None and groups_neg is not None
     n_pos = X_pos.shape[0]
     n_neg = X_neg.shape[0]
 
     if n_pos == 0 or n_neg == 0:
-        return np.empty((0, X_pos.shape[1])), np.empty((0, X_neg.shape[1]))
+        empty = (np.empty((0, X_pos.shape[1])), np.empty((0, X_neg.shape[1])))
+        return (*empty, np.empty(0, dtype=object), np.empty(0, dtype=object)) if with_groups else empty
 
     n_samples = min(n_pos, n_neg)
 
     if n_pos > n_samples:
-        pos_indices = np.random.choice(n_pos, n_samples, replace=False)
+        pos_indices = rng.choice(n_pos, n_samples, replace=False)
         X_pos = X_pos[pos_indices]
+        if with_groups:
+            groups_pos = groups_pos[pos_indices]
 
     if n_neg > n_samples:
-        neg_indices = np.random.choice(n_neg, n_samples, replace=False)
+        neg_indices = rng.choice(n_neg, n_samples, replace=False)
         X_neg = X_neg[neg_indices]
+        if with_groups:
+            groups_neg = groups_neg[neg_indices]
 
+    if with_groups:
+        return X_pos, X_neg, groups_pos, groups_neg
     return X_pos, X_neg
 
 
@@ -1100,7 +1125,9 @@ def concat_two_class_with_labels(X_pos: np.ndarray,
 def shuffle_train_test_arrays(X_train: np.ndarray,
                               y_train: np.ndarray,
                               X_test: np.ndarray,
-                              y_test: np.ndarray) -> tuple:
+                              y_test: np.ndarray,
+                              rng: np.random.Generator,
+                              groups_train: np.ndarray | None = None) -> tuple:
     """
     Randomly permutes the train and test blocks of a split independently.
 
@@ -1109,10 +1136,10 @@ def shuffle_train_test_arrays(X_train: np.ndarray,
     are still ordered as `[positives, negatives]`. Downstream models that do
     not perform their own mini-batch shuffling (or that take the data order
     as the optimization order) benefit from a final permutation step. This
-    helper generates one permutation index per block (sampled via NumPy's
-    global RNG, so reproducibility is governed by the pipeline-level seed
-    set in `prepare_modeling_sessions`) and applies it to `X` and `y`
-    jointly so the label alignment is preserved.
+    helper draws one permutation index per block from the caller's seeded
+    generator `rng` and applies it to `X` and `y` jointly (and to the
+    training rows' session labels, when given) so every alignment is
+    preserved.
 
     Parameters
     ----------
@@ -1124,21 +1151,109 @@ def shuffle_train_test_arrays(X_train: np.ndarray,
         Test feature matrix of shape `(n_test, n_features)`.
     y_test : np.ndarray
         Test label vector of shape `(n_test,)`.
+    rng : np.random.Generator
+        The seeded generator the permutations are drawn from.
+    groups_train : np.ndarray | None
+        Session label of every training row; when given it is permuted with
+        the training rows and returned last.
 
     Returns
     -------
-    tuple of (np.ndarray, np.ndarray, np.ndarray, np.ndarray)
-        The permuted `(X_train, y_train, X_test, y_test)` quadruple. Shapes
-        are unchanged relative to the inputs.
+    tuple of (np.ndarray, np.ndarray, np.ndarray, np.ndarray) or with a fifth np.ndarray
+        The permuted `(X_train, y_train, X_test, y_test)` quadruple, followed
+        by the permuted `groups_train` when it was given. Shapes are unchanged
+        relative to the inputs.
     """
 
-    train_shuffle_idx = np.random.permutation(X_train.shape[0])
-    test_shuffle_idx = np.random.permutation(X_test.shape[0])
-    return (X_train[train_shuffle_idx],
-            y_train[train_shuffle_idx],
-            X_test[test_shuffle_idx],
-            y_test[test_shuffle_idx])
+    train_shuffle_idx = rng.permutation(X_train.shape[0])
+    test_shuffle_idx = rng.permutation(X_test.shape[0])
+    shuffled = (X_train[train_shuffle_idx],
+                y_train[train_shuffle_idx],
+                X_test[test_shuffle_idx],
+                y_test[test_shuffle_idx])
+    if groups_train is None:
+        return shuffled
+    return (*shuffled, groups_train[train_shuffle_idx])
 
+
+def within_group_permutation(groups: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    """
+    Description
+    -----------
+    Index permutation that shuffles rows only within their own group (session):
+    applied to a target it keeps every session's target distribution (its class
+    balance, or its mean bout duration) and destroys only the trial-level pairing
+    with the inputs. A permutation across pooled sessions would also destroy any
+    difference between sessions, which the actual model can still exploit through
+    a feature that merely differs between sessions, so its null would be too easy
+    to beat.
+
+    Parameters
+    ----------
+    groups (np.ndarray)
+        ``(n,)`` group (session) label of every row.
+    rng (np.random.Generator)
+        Random generator.
+
+    Returns
+    -------
+    permutation (np.ndarray)
+        ``(n,)`` row indices; ``target[permutation]`` is the permuted target.
+    """
+
+    permutation = np.arange(groups.shape[0])
+    for group in np.unique(groups):
+        rows = np.where(groups == group)[0]
+        permutation[rows] = rows[rng.permutation(rows.size)]
+    return permutation
+
+
+def classification_inner_cv_splits(y: np.ndarray,
+                                   groups: np.ndarray,
+                                   n_folds: int,
+                                   random_state: int) -> list | int:
+    """
+    Description
+    -----------
+    The inner folds a classifier's regularization search (``LogisticRegressionCV``)
+    runs on inside an outer training fold: ``StratifiedGroupKFold`` over the
+    training rows' sessions, so every inner validation fold holds out whole sessions
+    (as the outer folds do) while keeping both classes in every fold, precomputed as
+    a list of ``(train, validation)`` index pairs because ``LogisticRegressionCV.fit``
+    takes no ``groups``. The fold count is ``n_folds`` capped at the number of
+    sessions. A training set from a single session cannot be split by session, and
+    session folds that would leave a class out of an inner training or validation
+    fold cannot be scored; both fall back to ``n_folds`` stratified event folds (the
+    int ``cv`` argument).
+
+    Parameters
+    ----------
+    y (np.ndarray)
+        ``(n_rows,)`` class label of every training row.
+    groups (np.ndarray)
+        ``(n_rows,)`` session label of every training row.
+    n_folds (int)
+        The configured inner fold count.
+    random_state (int)
+        Seed of the fold assignment.
+
+    Returns
+    -------
+    cv (list | int)
+        The ``cv`` argument for ``LogisticRegressionCV``.
+    """
+
+    n_sessions = int(np.unique(groups).size)
+    if n_sessions < 2:
+        return int(n_folds)
+    splitter = StratifiedGroupKFold(n_splits=int(min(n_folds, n_sessions)), shuffle=True,
+                                    random_state=int(random_state))
+    splits = list(splitter.split(np.zeros(len(y)), y, groups))
+    n_classes = np.unique(y).size
+    if any(np.unique(y[train]).size < n_classes or np.unique(y[validation]).size < n_classes
+           for train, validation in splits):
+        return int(n_folds)
+    return splits
 
 def bounded_test_proportion(test_proportion: float,
                             n_sessions: int,

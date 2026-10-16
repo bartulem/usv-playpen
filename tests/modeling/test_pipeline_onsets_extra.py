@@ -189,7 +189,7 @@ def _drain(generator) -> list:
     Description
     -----------
     Materializes a ``create_data_splits`` generator into a list of
-    ``(X_train, y_train, X_test, y_test)`` tuples, forcing every branch inside
+    ``(X_train, y_train, X_test, y_test, groups_train)`` tuples, forcing every branch inside
     the generator body to execute (generators are lazy, so simply constructing
     one runs no code).
 
@@ -201,7 +201,7 @@ def _drain(generator) -> list:
     Returns
     -------
     splits (list of tuple)
-        All yielded ``(X_train, y_train, X_test, y_test)`` tuples.
+        All yielded ``(X_train, y_train, X_test, y_test, groups_train)`` tuples.
     """
 
     return list(generator)
@@ -290,8 +290,11 @@ class TestDataSplitStrategies:
         feature_data = _make_feature_data([f'session_{i}' for i in range(3)])
         splits = _drain(pipeline.create_data_splits(feature_data))
         assert len(splits) == 2
-        X_train, y_train, _X_test, y_test = splits[0]
+        X_train, y_train, _X_test, y_test, groups_train = splits[0]
         assert X_train.shape[1] == HISTORY_FRAMES
+        # every training row carries the session it was pooled from
+        assert groups_train.shape == y_train.shape
+        assert set(groups_train) <= set(feature_data)
         # Balanced training fold: equal positives and negatives.
         assert int(np.sum(y_train == 1)) == int(np.sum(y_train == 0))
         # Natural-rate test fold: more negatives than positives (the source
@@ -313,7 +316,7 @@ class TestDataSplitStrategies:
             pipeline.create_data_splits(feature_data, strategy_override='session')
         )
         assert len(splits) >= 1
-        for X_train, y_train, X_test, y_test in splits:
+        for X_train, y_train, X_test, y_test, _groups_train in splits:
             assert X_train.shape[1] == HISTORY_FRAMES
             assert int(np.sum(y_train == 1)) == int(np.sum(y_train == 0))
 
@@ -363,7 +366,7 @@ class TestDataSplitStrategies:
         for sess in ('session_1', 'session_2'):
             feature_data[sess]['usv_feature_arr'] = np.empty((0, HISTORY_FRAMES))
         splits = _drain(pipeline.create_data_splits(feature_data))
-        for X_train, y_train, X_test, y_test in splits:
+        for X_train, y_train, X_test, y_test, _groups_train in splits:
             assert int(np.sum(y_train == 1)) == int(np.sum(y_train == 0))
 
     def test_unknown_strategy_raises_value_error(self, tmp_path):

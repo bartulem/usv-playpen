@@ -254,30 +254,28 @@ class TestBalanceTwoClassArrays:
         """The majority class is subsampled down to the minority count;
         both outputs end up with ``min(n_pos, n_neg)`` rows."""
 
-        np.random.seed(0)
         X_pos = np.arange(100 * 3).reshape(100, 3).astype(float)
         X_neg = np.arange(10 * 3).reshape(10, 3).astype(float)
-        bp, bn = balance_two_class_arrays(X_pos, X_neg)
+        bp, bn = balance_two_class_arrays(X_pos, X_neg, np.random.default_rng(0))
         assert bp.shape == (10, 3)
         assert bn.shape == (10, 3)
 
     def test_reproducible_under_seed(self):
-        """The down-sampling draw uses the global RNG, so re-seeding gives
-        an identical subsample."""
+        """The down-sampling draw comes from the caller's generator, so the same
+        seed gives an identical subsample whatever the global RNG holds."""
 
         X_pos = np.arange(100 * 2).reshape(100, 2).astype(float)
         X_neg = np.zeros((10, 2))
-        np.random.seed(7)
-        bp1, _ = balance_two_class_arrays(X_pos, X_neg)
-        np.random.seed(7)
-        bp2, _ = balance_two_class_arrays(X_pos, X_neg)
+        bp1, _ = balance_two_class_arrays(X_pos, X_neg, np.random.default_rng(7))
+        np.random.seed(123)  # noqa: NPY002 -- global state must not matter
+        bp2, _ = balance_two_class_arrays(X_pos, X_neg, np.random.default_rng(7))
         np.testing.assert_array_equal(bp1, bp2)
 
     def test_empty_input_returns_empty(self):
         """If one class is empty both outputs are empty with preserved
         column counts."""
 
-        bp, bn = balance_two_class_arrays(np.empty((0, 4)), np.ones((5, 4)))
+        bp, bn = balance_two_class_arrays(np.empty((0, 4)), np.ones((5, 4)), np.random.default_rng(0))
         assert bp.shape == (0, 4)
         assert bn.shape == (0, 4)
 
@@ -327,8 +325,7 @@ class TestShuffleTrainTestArrays:
         y_train = X_train[:, 0].copy()  # label encodes the row identity
         X_test = np.arange(8).reshape(4, 2).astype(float)
         y_test = X_test[:, 0].copy()
-        np.random.seed(1)
-        Xtr, ytr, Xte, yte = shuffle_train_test_arrays(X_train, y_train, X_test, y_test)
+        Xtr, ytr, Xte, yte = shuffle_train_test_arrays(X_train, y_train, X_test, y_test, np.random.default_rng(1))
         assert Xtr.shape == X_train.shape
         assert Xte.shape == X_test.shape
         # Column-0 value still equals the paired label after the shuffle.
@@ -607,32 +604,19 @@ class TestPrepareModelingSessions:
         return {'model_validation': {'random_seed': seed},
                 'io': {'session_list_file': str(session_file)}}
 
-    def test_loads_paths_and_seeds_rng(self, tmp_path):
-        """A session-list file with blank lines is read into a path list
-        (blanks skipped) and a non-None seed makes the global RNG
-        deterministic."""
+    def test_loads_paths_and_leaves_the_global_rng_alone(self, tmp_path):
+        """A session-list file with blank lines is read into a path list (blanks
+        skipped), and the global RNG state is left exactly as it was, whatever the
+        configured seed."""
 
         f = tmp_path / 'sessions.txt'
         f.write_text("/some/sessionA\n\n/some/sessionB\n")
-        out = prepare_modeling_sessions(self._settings(123, f))
-        assert out == ['/some/sessionA', '/some/sessionB']
-        # Seed was applied: next draw matches a freshly-seeded RNG.
-        first = np.random.random()
-        np.random.seed(123)
-        # Advance past the same point prepare_modeling_sessions left the RNG.
-        np.random.random()
-        # Re-running prepare resets the seed identically.
-        prepare_modeling_sessions(self._settings(123, f))
-        assert np.random.random() == pytest.approx(first)
-
-    def test_none_seed_branch(self, tmp_path):
-        """A None seed takes the non-deterministic branch and still returns
-        the loaded paths."""
-
-        f = tmp_path / 's.txt'
-        f.write_text("/x/y\n")
-        out = prepare_modeling_sessions(self._settings(None, f))
-        assert out == ['/x/y']
+        for seed in (123, None):
+            state = np.random.get_state()  # noqa: NPY002 -- checking global state is untouched
+            out = prepare_modeling_sessions(self._settings(seed, f))
+            assert out == ['/some/sessionA', '/some/sessionB']
+            after = np.random.get_state()  # noqa: NPY002
+            assert all(np.array_equal(x, y) for x, y in zip(state, after, strict=True))
 
     def test_missing_file_raises_filenotfound(self, tmp_path):
         """A non-existent session-list file raises ``FileNotFoundError``."""
@@ -1508,16 +1492,16 @@ class TestCoreHelperKnownAnswers:
         minority class is returned whole; either class empty gives two empty blocks."""
         X_pos = np.arange(5 * 3, dtype=float).reshape(5, 3)
         X_neg = np.arange(100, 100 + 40 * 3, dtype=float).reshape(40, 3)
-        np.random.seed(0)  # noqa: NPY002 -- the helper draws from the global RNG by design
-        bal_pos, bal_neg = mu.balance_two_class_arrays(X_pos, X_neg)
+        rng = np.random.default_rng(0)
+        bal_pos, bal_neg = mu.balance_two_class_arrays(X_pos, X_neg, rng)
         np.testing.assert_array_equal(bal_pos, X_pos)
         assert bal_neg.shape == (5, 3)
         rows = {tuple(row) for row in bal_neg}
         assert len(rows) == 5
         assert rows <= {tuple(row) for row in X_neg}
-        empty_pos, empty_neg = mu.balance_two_class_arrays(np.empty((0, 3)), X_neg)
+        empty_pos, empty_neg = mu.balance_two_class_arrays(np.empty((0, 3)), X_neg, rng)
         assert empty_pos.shape == (0, 3) and empty_neg.shape == (0, 3)
-        swapped_pos, swapped_neg = mu.balance_two_class_arrays(X_neg, X_pos)
+        swapped_pos, swapped_neg = mu.balance_two_class_arrays(X_neg, X_pos, rng)
         np.testing.assert_array_equal(swapped_neg, X_pos)
         assert len({tuple(row) for row in swapped_pos}) == 5
 
@@ -1644,16 +1628,16 @@ class TestSecondMutationRoundKnownAnswers:
         small = np.arange(5 * 2, dtype=float).reshape(5, 2)
         large = np.arange(100, 100 + 6 * 2, dtype=float).reshape(6, 2)
         for seed in range(40):
-            np.random.seed(seed)  # noqa: NPY002 -- the helper draws from the global RNG by design
-            bal_pos, bal_neg = mu.balance_two_class_arrays(large, small)
+            rng = np.random.default_rng(seed)
+            bal_pos, bal_neg = mu.balance_two_class_arrays(large, small, rng)
             assert len({tuple(row) for row in bal_pos}) == 5
             np.testing.assert_array_equal(bal_neg, small)
-            bal_pos, bal_neg = mu.balance_two_class_arrays(small, large)
+            bal_pos, bal_neg = mu.balance_two_class_arrays(small, large, rng)
             assert len({tuple(row) for row in bal_neg}) == 5
-        one_pos, few_neg = mu.balance_two_class_arrays(np.ones((1, 2)), large)
+        one_pos, few_neg = mu.balance_two_class_arrays(np.ones((1, 2)), large, rng)
         assert one_pos.shape == (1, 2)
         assert few_neg.shape == (1, 2)
-        many_pos, one_neg = mu.balance_two_class_arrays(large, np.ones((1, 2)))
+        many_pos, one_neg = mu.balance_two_class_arrays(large, np.ones((1, 2)), rng)
         assert many_pos.shape == (1, 2)
         assert one_neg.shape == (1, 2)
 
@@ -1745,3 +1729,60 @@ class TestSecondMutationRoundKnownAnswers:
         out = extract_univariate_headline('continuous', cont)
         assert out['Mean Null'] == {'vm_logscore': 0.1}
         assert out['Mean Null-MF'] == {'vm_logscore': -0.2}
+
+
+class TestSessionLabelsThroughPooledTasks:
+    """The pooled-row tasks (onset, category, bout parameters) carry each row's session so
+    their nulls shuffle labels within sessions and their inner CVs hold out whole sessions."""
+
+    @staticmethod
+    def _data():
+        """Three sessions whose rows carry the session index in every column, with
+        different class balances (s0: 4 pos / 1 neg, s1: 1 / 4, s2: 2 / 2)."""
+        counts = {"s0": (4, 1), "s1": (1, 4), "s2": (2, 2)}
+        return {sess: {"pos": np.full((n_pos, 3), float(i)), "neg": np.full((n_neg, 3), float(i))}
+                for i, (sess, (n_pos, n_neg)) in enumerate(counts.items())}
+
+    def test_pooling_and_balancing_keep_every_rows_session(self):
+        """Pooled session labels match the rows they label, and stay matched through the
+        class balancing (whose draw comes from the given generator)."""
+        data = self._data()
+        X_pos, X_neg, g_pos, g_neg = mu.pool_session_arrays(data, ["s0", "s1", "s2"], pos_key="pos",
+                                                            neg_key="neg", n_frames=3, return_groups=True)
+        assert list(g_pos) == ["s0"] * 4 + ["s1"] + ["s2"] * 2
+        assert list(g_neg) == ["s0"] + ["s1"] * 4 + ["s2"] * 2
+        bp, bn, gp, gn = mu.balance_two_class_arrays(X_pos, X_neg, np.random.default_rng(3),
+                                                     groups_pos=g_pos, groups_neg=g_neg)
+        assert bp.shape[0] == bn.shape[0] == 7
+        index = {"s0": 0.0, "s1": 1.0, "s2": 2.0}
+        assert [index[g] for g in gp] == list(bp[:, 0])
+        assert [index[g] for g in gn] == list(bn[:, 0])
+
+    def test_within_group_permutation_keeps_each_sessions_labels(self):
+        """Shuffling within sessions moves labels only among a session's own rows: every
+        session keeps exactly its label counts, and over many draws every row of a session
+        takes every value present in it."""
+        groups = np.array(["a"] * 4 + ["b"] * 6)
+        y = np.array([1, 1, 1, 0, 0, 0, 0, 0, 1, 0])
+        for seed in range(20):
+            perm = mu.within_group_permutation(groups, np.random.default_rng(seed))
+            assert sorted(perm[:4]) == [0, 1, 2, 3]
+            assert sorted(perm[4:]) == list(range(4, 10))
+            assert y[perm][:4].sum() == 3
+            assert y[perm][4:].sum() == 1
+
+    def test_inner_cv_splits_hold_out_whole_sessions_with_both_classes(self):
+        """The inner folds never put one session on both sides and keep both classes on each
+        side; one session, or folds that would drop a class, fall back to event folds."""
+        groups = np.repeat(np.array(["a", "b", "c", "d", "e"]), 6)
+        y = np.tile(np.array([1, 1, 1, 0, 0, 0]), 5)
+        splits = mu.classification_inner_cv_splits(y, groups, 5, 0)
+        assert isinstance(splits, list)
+        assert len(splits) == 5
+        for train, validation in splits:
+            assert not set(groups[train]) & set(groups[validation])
+            assert set(y[train]) == {0, 1}
+            assert set(y[validation]) == {0, 1}
+        assert mu.classification_inner_cv_splits(y, np.full(30, "a"), 5, 0) == 5
+        single_class_sessions = np.repeat(np.array(["a", "b"]), 15)
+        assert mu.classification_inner_cv_splits(np.repeat([1, 0], 15), single_class_sessions, 5, 0) == 5

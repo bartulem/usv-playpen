@@ -982,6 +982,19 @@ per-feature pickle each. The ranking is visualised with ``plot_feature_ranking``
 (single target) or ``plot_univariate_multinomial_performance`` (multinomial), and
 the fitted temporal filters with ``plot_significant_filters``.
 
+Every feature is scored against a **null**: the same model refit with the target
+shuffled **within sessions**, so each session keeps its own class balance (onset,
+category) or its own bout-parameter distribution (bout parameters) and only the
+event-level pairing with the feature is broken. A shuffle across pooled sessions would
+also erase every difference between sessions, which the real model can still exploit
+through a feature that merely differs between sessions, so that null would be too easy to
+beat. The regularization each fold picks (``LogisticRegressionCV`` for onset and category,
+``GridSearchCV`` for bout parameters) is chosen on inner folds that hold out whole training
+sessions, as the outer folds do (both classes kept in every inner fold; event folds when a
+training set has a single session). The class balancing and the row shuffling draw from a
+generator seeded with ``model_validation.random_seed``, never from NumPy's global state. The
+held-out score's null and the model selections' held-out nulls follow the same rule.
+
 After the array finishes, merge the per-feature pickles into a single artifact.
 ``consolidate_univariate`` asserts metadata equality across every pickle
 (guarding against stray files from a different run), hoists the agreed
@@ -1235,9 +1248,10 @@ panel draws the per-feature temporal magnitude ``|W(t)|`` over the history windo
 features that share a category; averaged into display bins so the medium-scale
 envelope reads cleanly). The **affinity filmstrips** panel samples each feature's
 filter at ``n_time_slices`` instants from ``-history_window_sec`` to onset and
-decodes each into the signed ``e(theta).W`` field over the torus (red = a +1 SD
-increase in the feature just before onset drives the predicted vocalization toward
-that region, blue = away), on a shared diverging scale. The atlas tiles come
+decodes each into the signed ``e(theta).W`` field over the torus (the positive end
+of ``figures.diverging_cmap``, brown with the shipped ``BrBG_r`` = a +1 SD increase in
+the feature just before onset drives the predicted vocalization toward that region;
+the negative end, teal = away), on a shared diverging scale. The atlas tiles come
 from the newest production spectrogram store under
 ``os_utils.SPECTROGRAMS_DIRECTORY`` (``os_utils.resolve_consolidated_h5_path``),
 at the positions of the map the run's coordinates come from, ``<map>`` the map

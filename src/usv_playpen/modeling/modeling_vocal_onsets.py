@@ -45,6 +45,7 @@ from .modeling_utils import (
     zscore_features_across_sessions,
     pool_session_arrays,
     balance_two_class_arrays,
+    classification_inner_cv_splits,
     unroll_history_matrix,
     concat_two_class_with_labels,
     shuffle_train_test_arrays,
@@ -54,6 +55,7 @@ from .modeling_utils import (
     safe_confusion_matrix,
     run_predictor_audits,
     format_split_line,
+    within_group_permutation,
 )
 from ..analyses.compute_behavioral_features import FeatureZoo
 from ..os_utils import resolve_modeling_setting
@@ -722,9 +724,11 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         Yields
         ------
         tuple
-            A tuple of (X_train, y_train, X_test, y_test) for each split.
-            X_train/y_train are class-balanced; X_test/y_test preserve the
-            natural class prior of the source data.
+            A tuple of (X_train, y_train, X_test, y_test, groups_train) for each
+            split. X_train/y_train are class-balanced; X_test/y_test preserve the
+            natural class prior of the source data; groups_train is the session of
+            every training row (for the within-session null and the session-grouped
+            inner cross-validation).
         """
 
         split_strategy = self.modeling_settings['model_validation']['split_strategy']
@@ -734,12 +738,9 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         n_splits = self.modeling_settings['model_validation']['n_cv_folds']
         test_proportion = self.modeling_settings['model_validation']['cv_validation_proportion']
         random_state = self.modeling_settings['model_validation']['random_seed']
-        # The 50/50 balance and train/test shuffle below draw from NumPy's GLOBAL RNG
-        # (`balance_two_class_arrays` / `shuffle_train_test_arrays`); seed it here so the
-        # fitting dispatcher reproduces splits from `random_seed`. The extraction stage
-        # seeds the global RNG via `prepare_modeling_sessions`, but the fitting entry
-        # point does not otherwise touch it.
-        np.random.seed(random_state)
+        # The 50/50 balance and train/test shuffle below draw from one generator seeded
+        # with `random_seed`, so the splits reproduce from it alone.
+        split_rng = np.random.default_rng(random_state)
 
         all_sessions = list(feature_data.keys())
 
@@ -751,7 +752,9 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             # is moved inside here to avoid running (and discarding) it when
             # split_strategy == 'session'. pool_session_arrays is a pure concatenate
             # (no RNG), so this is byte-identical.
-            X_pos_all, X_neg_all = pool_session_arrays(feature_data, all_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=self.history_frames)
+            X_pos_all, X_neg_all, g_pos_all, g_neg_all = pool_session_arrays(
+                feature_data, all_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr",
+                n_frames=self.history_frames, return_groups=True)
             n_pos_total = X_pos_all.shape[0]
             n_neg_total = X_neg_all.shape[0]
 
@@ -761,6 +764,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
 
             # Pool all epochs at the natural class prior, then stratified-split.
             X, y = concat_two_class_with_labels(X_pos_all, X_neg_all)
+            groups = np.concatenate((g_pos_all, g_neg_all))
 
             print(f"--- 'mixed' strategy: pooled {X.shape[0]} samples "
                   f"(pos={n_pos_total}, neg={n_neg_total}); splitting at natural rate, balancing train only.")
@@ -768,20 +772,21 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             sss = StratifiedShuffleSplit(n_splits=n_splits, test_size=test_proportion, random_state=random_state)
 
             for train_idx, test_idx in sss.split(X, y):
-                X_train_all, y_train_all = X[train_idx], y[train_idx]
+                X_train_all, y_train_all, g_train_all = X[train_idx], y[train_idx], groups[train_idx]
                 X_test, y_test = X[test_idx], y[test_idx]
 
                 # Split the training fold back into classes and balance 50/50.
-                X_pos_train = X_train_all[y_train_all == 1]
-                X_neg_train = X_train_all[y_train_all == 0]
-                X_pos_train_bal, X_neg_train_bal = balance_two_class_arrays(X_pos_train, X_neg_train)
+                X_pos_train_bal, X_neg_train_bal, g_pos_bal, g_neg_bal = balance_two_class_arrays(
+                    X_train_all[y_train_all == 1], X_train_all[y_train_all == 0], split_rng,
+                    groups_pos=g_train_all[y_train_all == 1], groups_neg=g_train_all[y_train_all == 0])
 
                 if X_pos_train_bal.shape[0] == 0:
                     print("Warning: No balanced training data for a 'mixed' split. Skipping.")
                     continue
 
                 X_train, y_train = concat_two_class_with_labels(X_pos_train_bal, X_neg_train_bal)
-                yield shuffle_train_test_arrays(X_train, y_train, X_test, y_test)
+                yield shuffle_train_test_arrays(X_train, y_train, X_test, y_test, split_rng,
+                                                groups_train=np.concatenate((g_pos_bal, g_neg_bal)))
 
         ### Strategy 2: 'session' (some sessions go to train, some to test)
         elif split_strategy == 'session':
@@ -801,11 +806,14 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 train_session_list = all_sessions_array[train_session_idx]
                 test_session_list = all_sessions_array[test_session_idx]
 
-                X_pos_train, X_neg_train = pool_session_arrays(feature_data, train_session_list, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=self.history_frames)
+                X_pos_train, X_neg_train, g_pos_train, g_neg_train = pool_session_arrays(
+                    feature_data, train_session_list, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr",
+                    n_frames=self.history_frames, return_groups=True)
                 X_pos_test, X_neg_test = pool_session_arrays(feature_data, test_session_list, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=self.history_frames)
 
                 # Balance the TRAINING set ONLY (test fold keeps the natural class prior).
-                X_pos_train_bal, X_neg_train_bal = balance_two_class_arrays(X_pos_train, X_neg_train)
+                X_pos_train_bal, X_neg_train_bal, g_pos_bal, g_neg_bal = balance_two_class_arrays(
+                    X_pos_train, X_neg_train, split_rng, groups_pos=g_pos_train, groups_neg=g_neg_train)
 
                 if X_pos_train_bal.shape[0] == 0:
                     print(f"Warning: No balanced training data for split {split_num}. Skipping.")
@@ -817,7 +825,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 # Create final test arrays (NB: unbalanced!)
                 X_test, y_test = concat_two_class_with_labels(X_pos_test, X_neg_test)
 
-                yield shuffle_train_test_arrays(X_train, y_train, X_test, y_test)
+                yield shuffle_train_test_arrays(X_train, y_train, X_test, y_test, split_rng,
+                                                groups_train=np.concatenate((g_pos_bal, g_neg_bal)))
 
         else:
             raise ValueError(f"Unknown split_strategy: {split_strategy}. Must be 'mixed' or 'session'.")
@@ -970,7 +979,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         data_splitter = self.create_data_splits(dev_feature_data)
         split_has_data = False
 
-        for split_idx, (X_train, y_train, X_test, y_test) in enumerate(data_splitter):
+        lr_settings = self.modeling_settings['hyperparameters']['classical']['logistic_regression']
+        for split_idx, (X_train, y_train, X_test, y_test, groups_train) in enumerate(data_splitter):
 
             if X_train.shape[0] == 0 or X_test.shape[0] == 0:
                 continue
@@ -985,10 +995,12 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             try:
                 lr_max_iter = self.modeling_settings['hyperparameters']['classical']['logistic_regression']['max_iter']
                 fit_start = time.perf_counter()
+                # Inner folds hold out whole training sessions, as the outer folds do.
                 lr_actual = LogisticRegressionCV(
                     penalty=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['penalty'],
                     Cs=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['cs'],
-                    cv=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['cv'],
+                    cv=classification_inner_cv_splits(y_train, groups_train, lr_settings['cv'],
+                                                      self.modeling_settings['model_validation']['random_seed']),
                     class_weight='balanced',
                     solver=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['solver'],
                     max_iter=lr_max_iter,
@@ -1046,13 +1058,17 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 shuffle_rng = np.random.default_rng(
                     (self.modeling_settings['model_validation']['random_seed'] or 0) + split_idx + 1
                 )
-                y_train_shuffled = shuffle_rng.permutation(y_train)
+                # Labels shuffled WITHIN sessions (within_group_permutation): every session
+                # keeps its own class balance, so a feature that merely differs between
+                # sessions helps the null as much as the actual model.
+                y_train_shuffled = y_train[within_group_permutation(groups_train, shuffle_rng)]
 
                 fit_start = time.perf_counter()
                 lr_shuffled = LogisticRegressionCV(
                     penalty=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['penalty'],
                     Cs=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['cs'],
-                    cv=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['cv'],
+                    cv=classification_inner_cv_splits(y_train_shuffled, groups_train, lr_settings['cv'],
+                                                      self.modeling_settings['model_validation']['random_seed']),
                     class_weight='balanced',
                     solver=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['solver'],
                     max_iter=lr_max_iter,
@@ -1121,15 +1137,19 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         # schema.
         if held_sessions:
             hist = self.history_frames
-            X_pos_dev, X_neg_dev = pool_session_arrays(
+            X_pos_dev, X_neg_dev, g_pos_dev, g_neg_dev = pool_session_arrays(
                 feature_data, dev_sessions, pos_key="usv_feature_arr",
-                neg_key="no_usv_feature_arr", n_frames=hist
+                neg_key="no_usv_feature_arr", n_frames=hist, return_groups=True
             )
             X_pos_held, X_neg_held = pool_session_arrays(
                 feature_data, held_sessions, pos_key="usv_feature_arr",
                 neg_key="no_usv_feature_arr", n_frames=hist
             )
-            X_pos_dev_bal, X_neg_dev_bal = balance_two_class_arrays(X_pos_dev, X_neg_dev)
+            X_pos_dev_bal, X_neg_dev_bal, g_pos_dev_bal, g_neg_dev_bal = balance_two_class_arrays(
+                X_pos_dev, X_neg_dev,
+                np.random.default_rng((self.modeling_settings['model_validation']['random_seed'] or 0) + n_splits + 2),
+                groups_pos=g_pos_dev, groups_neg=g_neg_dev)
+            groups_dev = np.concatenate((g_pos_dev_bal, g_neg_dev_bal))
             n_held_events = int(X_pos_held.shape[0] + X_neg_held.shape[0])
 
             def _empty_heldout_rec():
@@ -1160,14 +1180,19 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     (self.modeling_settings['model_validation']['random_seed'] or 0) + n_splits + 1
                 )
                 for branch in ('actual', 'null'):
-                    y_train_use = y_train_dev if branch == 'actual' else held_rng.permutation(y_train_dev)
+                    # The held-out null shuffles labels within the development sessions.
+                    y_train_use = (y_train_dev if branch == 'actual'
+                                   else y_train_dev[within_group_permutation(groups_dev, held_rng)])
                     rec = heldout[branch]
                     try:
                         fit_start = time.perf_counter()
                         lr = LogisticRegressionCV(
                             penalty=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['penalty'],
                             Cs=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['cs'],
-                            cv=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['cv'],
+                            cv=classification_inner_cv_splits(
+                                y_train_use, groups_dev,
+                                self.modeling_settings['hyperparameters']['classical']['logistic_regression']['cv'],
+                                self.modeling_settings['model_validation']['random_seed']),
                             class_weight='balanced',
                             solver=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['solver'],
                             max_iter=lr_max_iter,
@@ -1378,7 +1403,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 break
 
             if actual_split and actual_split[0].shape[0] > 0 and actual_split[2].shape[0] > 0:
-                (X_train, y_train, X_test, y_test) = actual_split
+                (X_train, y_train, X_test, y_test, groups_train) = actual_split
                 split_has_data_actual = True
 
                 results['split_sizes']['train'].append(X_train.shape[0])
@@ -1459,8 +1484,9 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 shuffle_rng = np.random.default_rng(
                     (self.modeling_settings['model_validation']['random_seed'] or 0) + split_idx + 1
                 )
+                # Labels shuffled within sessions, so every session keeps its class balance.
                 y_train_tiled_null = np.repeat(
-                    shuffle_rng.permutation(y_train).astype(np.float32), history_frames
+                    y_train[within_group_permutation(groups_train, shuffle_rng)].astype(np.float32), history_frames
                 )
 
                 try:
@@ -1531,15 +1557,19 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         # selection. Stored as a top-level `results['heldout']`. Skipped when
         # holdout is disabled or the pooled data is degenerate -- no `heldout` key.
         if held_sessions:
-            X_pos_dev, X_neg_dev = pool_session_arrays(
+            X_pos_dev, X_neg_dev, g_pos_dev, g_neg_dev = pool_session_arrays(
                 feature_data, dev_sessions, pos_key="usv_feature_arr",
-                neg_key="no_usv_feature_arr", n_frames=history_frames
+                neg_key="no_usv_feature_arr", n_frames=history_frames, return_groups=True
             )
             X_pos_held, X_neg_held = pool_session_arrays(
                 feature_data, held_sessions, pos_key="usv_feature_arr",
                 neg_key="no_usv_feature_arr", n_frames=history_frames
             )
-            X_pos_dev_bal, X_neg_dev_bal = balance_two_class_arrays(X_pos_dev, X_neg_dev)
+            X_pos_dev_bal, X_neg_dev_bal, g_pos_dev_bal, g_neg_dev_bal = balance_two_class_arrays(
+                X_pos_dev, X_neg_dev,
+                np.random.default_rng((self.modeling_settings['model_validation']['random_seed'] or 0) + n_splits + 2),
+                groups_pos=g_pos_dev, groups_neg=g_neg_dev)
+            groups_dev = np.concatenate((g_pos_dev_bal, g_neg_dev_bal))
             n_held_events = int(X_pos_held.shape[0] + X_neg_held.shape[0])
 
             def _empty_heldout_rec():
@@ -1574,7 +1604,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                         y_train_use = y_train_dev.astype(np.float32)
                         gam_kwargs_branch = gam_kwargs_actual
                     else:
-                        y_train_use = held_rng.permutation(y_train_dev).astype(np.float32)
+                        y_train_use = y_train_dev[within_group_permutation(groups_dev, held_rng)].astype(np.float32)
                         gam_kwargs_branch = gam_kwargs_shuffled
                     y_train_tiled = np.repeat(y_train_use, history_frames)
                     rec = heldout[branch]

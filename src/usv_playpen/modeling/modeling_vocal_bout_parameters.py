@@ -71,6 +71,7 @@ from .modeling_utils import (
     mean_absolute_error_1d,
     format_split_line,
     session_grouped_inner_cv,
+    within_group_permutation,
 )
 
 
@@ -912,7 +913,11 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
             try:
                 null_rng = np.random.default_rng(base_seed + split_idx + 1)
-                y_tr_shuff_tiled = np.repeat(null_rng.permutation(y_tr) + 1e-6, hist_frames).astype(np.float32)
+                # Targets shuffled WITHIN sessions (within_group_permutation): each session
+                # keeps its own bout-parameter distribution, so a feature that merely differs
+                # between sessions helps the null as much as the actual model.
+                y_tr_shuff_tiled = np.repeat(y_tr[within_group_permutation(groups_tr, null_rng)] + 1e-6,
+                                             hist_frames).astype(np.float32)
 
                 gam_null = GAM(
                     te(0, 1, n_splines=[n_val, n_time]),
@@ -1025,7 +1030,8 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
             heldout = {}
             for branch in ('actual', 'null'):
-                y_dev_use = y_dev_all if branch == 'actual' else held_rng.permutation(y_dev_all)
+                y_dev_use = (y_dev_all if branch == 'actual'
+                             else y_dev_all[within_group_permutation(dev_feature_data['groups'], held_rng)])
                 rec = {
                     'explained_deviance': np.nan, 'spearman_r': np.nan, 'pearson_r': np.nan,
                     'msle': np.nan, 'mae': np.nan, 'rmse': np.nan, 'residual_deviance': np.nan,
@@ -1288,7 +1294,8 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
             try:
                 null_rng = np.random.default_rng(base_seed + split_idx + 1)
-                y_tr_shuff_pos = np.maximum(null_rng.permutation(y_tr), 1e-6)
+                # Targets shuffled within sessions, as in the pyGAM engine.
+                y_tr_shuff_pos = np.maximum(y_tr[within_group_permutation(groups_tr, null_rng)], 1e-6)
 
                 fit_start = time.perf_counter()
                 model_null = GridSearchCV(
@@ -1387,7 +1394,8 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
             heldout = {}
             for branch in ('actual', 'null'):
-                y_dev_use = y_dev_all if branch == 'actual' else held_rng.permutation(y_dev_all)
+                y_dev_use = (y_dev_all if branch == 'actual'
+                             else y_dev_all[within_group_permutation(dev_feature_data['groups'], held_rng)])
                 rec = {
                     'explained_deviance': np.nan, 'spearman_r': np.nan, 'pearson_r': np.nan,
                     'msle': np.nan, 'mae': np.nan, 'rmse': np.nan, 'residual_deviance': np.nan,

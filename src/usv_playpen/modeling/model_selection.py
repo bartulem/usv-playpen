@@ -49,6 +49,8 @@ from .modeling_utils import (
     held_out_session_ids_from_metadata,
     development_heldout_masks,
     session_grouped_inner_cv,
+    classification_inner_cv_splits,
+    within_group_permutation,
 )
 from .modeling_vocal_onsets import VocalOnsetModelingPipeline
 from .modeling_vocal_categories_multinomial import (
@@ -194,34 +196,6 @@ def _make_step_wrapper(input_md: dict, univariate_md: dict, run_md: dict):
         return inject_metadata(payload, **blocks)
 
     return wrap
-
-
-def _within_group_permutation(groups: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    """
-    Description
-    -----------
-    Index permutation that shuffles rows only within their own group (session):
-    applied to a target it keeps every session's target distribution and destroys
-    the trial-level pairing with the inputs -- the within-session null the
-    selections test against, here used for the final model's no-signal filter band.
-
-    Parameters
-    ----------
-    groups (np.ndarray)
-        ``(n,)`` group (session) label of every row.
-    rng (np.random.Generator)
-        Random generator.
-
-    Returns
-    -------
-    permutation (np.ndarray)
-        ``(n,)`` row indices; ``target[permutation]`` is the permuted target.
-    """
-    permutation = np.arange(groups.shape[0])
-    for group in np.unique(groups):
-        rows = np.where(groups == group)[0]
-        permutation[rows] = rows[rng.permutation(rows.size)]
-    return permutation
 
 
 def _frozen_selection_kappa(y_dev: np.ndarray, w_dev: np.ndarray, *, metric: str, period: float) -> float:
@@ -1545,6 +1519,10 @@ def vocal_onset_model_selection(univariate_results_path: str,
             if n_p_held is None:
                 n_p_held, n_n_held = p_held.shape[0], n_held.shape[0]
         n_keep = min(p_dev_by_feat[0].shape[0], n_dev_by_feat[0].shape[0])
+        # Session of every development row (the same for every feature), for the null.
+        _, _, g_p_dev, g_n_dev = pool_session_arrays(
+            all_feature_data[current_model_features[0]], dev_sessions, pos_key="usv_feature_arr",
+            neg_key="no_usv_feature_arr", n_frames=history_frames, return_groups=True)
         heldout_result = {
             'features': list(current_model_features),
             'n_held_out_sessions': len(held_sessions),
@@ -1568,8 +1546,11 @@ def vocal_onset_model_selection(univariate_results_path: str,
             ]
             X_tr_gam = get_unrolled_X_for_multivariate(X_train_list, history_frames)
             y_tr_bal = np.concatenate((np.ones(n_keep), np.zeros(n_keep)))
+            groups_dev = np.concatenate((g_p_dev[idx_p], g_n_dev[idx_n]))
             for branch in ('actual', 'null'):
-                y_tr_use = y_tr_bal if branch == 'actual' else held_rng.permutation(y_tr_bal)
+                # The held-out null shuffles labels within the development sessions.
+                y_tr_use = (y_tr_bal if branch == 'actual'
+                            else y_tr_bal[within_group_permutation(groups_dev, held_rng)])
                 rec = {'ll': np.nan, 'auc': np.nan, 'score': np.nan,
                        'deviance_explained': np.nan, 'brier': np.nan}
                 try:
@@ -1669,11 +1650,51 @@ def _pool_category_features(
     return X_target_list, X_other_list
 
 
+def _category_row_sessions(
+        all_feature_data: dict,
+        feature: str,
+        session_list: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Description
+    -----------
+    The session of every row `_pool_category_features` pools for one feature, in the
+    same order (sessions in `session_list` order, a session's rows contiguous), for the
+    Target and the Other class. Every feature carries the same rows per session, so
+    one feature's labels serve the whole feature list; they let the selection permute
+    labels within sessions and split its inner cross-validation by session.
+
+    Parameters
+    ----------
+    all_feature_data (dict)
+        ``dict[feature_name][session_id]['target_feature_arr' | 'other_feature_arr']``.
+    feature (str)
+        The feature whose rows are labelled.
+    session_list (np.ndarray)
+        The sessions pooled, in pooling order.
+
+    Returns
+    -------
+    groups_target, groups_other (tuple[np.ndarray, np.ndarray])
+        ``(n_target,)`` and ``(n_other,)`` session ids.
+    """
+
+    target, other = [], []
+    for sess in session_list:
+        if sess in all_feature_data[feature]:
+            target.append(np.full(all_feature_data[feature][sess]['target_feature_arr'].shape[0], sess, dtype=object))
+            other.append(np.full(all_feature_data[feature][sess]['other_feature_arr'].shape[0], sess, dtype=object))
+    empty = np.empty(0, dtype=object)
+    return (np.concatenate(target) if target else empty), (np.concatenate(other) if other else empty)
+
+
 def _balance_multivariate_arrays(
         X_targ_list: list,
         X_other_list: list,
-        random_seed: int
-) -> tuple[list, list, np.ndarray, np.ndarray]:
+        random_seed: int,
+        groups_target: np.ndarray | None = None,
+        groups_other: np.ndarray | None = None
+) -> tuple:
     """
     Downsamples the majority class to enforce a strict 50/50 balance across all
     feature arrays simultaneously.
@@ -1689,6 +1710,11 @@ def _balance_multivariate_arrays(
         The aligned list of Other class arrays.
     random_seed : int
         Seed for the random number generator used for downsampling indices.
+    groups_target : np.ndarray | None
+        Session label of every Target row; when given (with `groups_other`) the
+        balanced labels are returned too.
+    groups_other : np.ndarray | None
+        Session label of every Other row.
 
     Returns
     -------
@@ -1697,14 +1723,16 @@ def _balance_multivariate_arrays(
         2. X_tr_o_bal (list of np.ndarray): Balanced Other arrays.
         3. y_target (np.ndarray): Array of ones.
         4. y_other (np.ndarray): Array of zeros.
-        Returns ([], [], None, None) if data is insufficient.
+        With groups, 5. and 6. are the balanced Target and Other session labels.
+        Returns ([], [], None, None) (plus None, None with groups) if data is insufficient.
     """
 
+    with_groups = groups_target is not None and groups_other is not None
     n_target = X_targ_list[0].shape[0]
     n_other = X_other_list[0].shape[0]
 
     if n_target == 0 or n_other == 0:
-        return [], [], None, None
+        return ([], [], None, None, None, None) if with_groups else ([], [], None, None)
 
     limit = min(n_target, n_other)
     rng = np.random.default_rng(random_seed)
@@ -1717,6 +1745,8 @@ def _balance_multivariate_arrays(
     y_target = np.ones(limit)
     y_other = np.zeros(limit)
 
+    if with_groups:
+        return X_tr_t_bal, X_tr_o_bal, y_target, y_other, groups_target[idx_target], groups_other[idx_other]
     return X_tr_t_bal, X_tr_o_bal, y_target, y_other
 
 
@@ -2006,6 +2036,9 @@ def vocal_category_model_selection(
             }
         ref_targ = pooled_category_cache[ranked_features[0]]['target']
         ref_other = pooled_category_cache[ranked_features[0]]['other']
+        # Session of every cached row (the same for every feature), sliced per fold
+        # like the arrays, for the within-session null and the grouped inner CV.
+        g_all_targ, g_all_other = _category_row_sessions(all_feature_data, ranked_features[0], all_sessions_arr)
         n_targ_total = ref_targ.shape[0]
         n_other_total = ref_other.shape[0]
 
@@ -2145,6 +2178,7 @@ def vocal_category_model_selection(
                 if split_strategy == 'session':
                     X_tr_t_raw, X_tr_o_raw = _pool_category_features(all_feature_data, [anchor], all_sessions_arr[tr_idx], history_frames)
                     X_te_t_raw, X_te_o_raw = _pool_category_features(all_feature_data, [anchor], all_sessions_arr[te_idx], history_frames)
+                    g_tr_t_raw, g_tr_o_raw = _category_row_sessions(all_feature_data, anchor, all_sessions_arr[tr_idx])
                 else:
                     # Pull the already-pooled target / other arrays from the
                     # cache instead of rebuilding them on every fold.
@@ -2160,8 +2194,10 @@ def vocal_category_model_selection(
                     X_tr_o_raw = [x[tr_other_idx] for x in X_all_o_raw]
                     X_te_t_raw = [x[te_targ_idx] for x in X_all_t_raw]
                     X_te_o_raw = [x[te_other_idx] for x in X_all_o_raw]
+                    g_tr_t_raw, g_tr_o_raw = g_all_targ[tr_targ_idx], g_all_other[tr_other_idx]
 
-                X_tr_t, X_tr_o, y_tr_t, y_tr_o = _balance_multivariate_arrays(X_tr_t_raw, X_tr_o_raw, random_seed + fold_i)
+                X_tr_t, X_tr_o, y_tr_t, y_tr_o, g_tr_t, g_tr_o = _balance_multivariate_arrays(
+                    X_tr_t_raw, X_tr_o_raw, random_seed + fold_i, groups_target=g_tr_t_raw, groups_other=g_tr_o_raw)
 
                 # Test set: natural class prior (no balancing).
                 if not X_tr_t or len(X_te_t_raw) == 0:
@@ -2174,6 +2210,7 @@ def vocal_category_model_selection(
                 X_tr_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_tr_t, X_tr_o)]
                 y_tr = np.concatenate([y_tr_t, y_tr_o])
                 perm = np.random.default_rng(random_seed + fold_i).permutation(len(y_tr))
+                groups_tr = np.concatenate([g_tr_t, g_tr_o])
 
                 X_te_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_te_t_raw, X_te_o_raw)]
                 y_te = np.concatenate([np.ones(n_te_targ), np.zeros(n_te_other)]).astype(int)
@@ -2185,7 +2222,8 @@ def vocal_category_model_selection(
                     model = LogisticRegressionCV(
                         penalty=lr_params['penalty'],
                         Cs=lr_params['cs'],
-                        cv=lr_params['cv'],
+                        # Inner folds hold out whole training sessions, as the outer folds do.
+                        cv=classification_inner_cv_splits(y_tr[perm], groups_tr[perm], lr_params['cv'], random_seed),
                         class_weight='balanced',
                         solver=lr_params['solver'],
                         max_iter=lr_params['max_iter'],
@@ -2325,6 +2363,7 @@ def vocal_category_model_selection(
                         n_te_t, n_te_o = _pool_category_features(all_feature_data, [feat], all_sessions_arr[te_idx], history_frames)
                         X_tr_t_raw, X_tr_o_raw = b_tr_t + n_tr_t, b_tr_o + n_tr_o
                         X_te_t_raw, X_te_o_raw = b_te_t + n_te_t, b_te_o + n_te_o
+                        g_tr_t_raw, g_tr_o_raw = _category_row_sessions(all_feature_data, feat, all_sessions_arr[tr_idx])
                     else:
                         # Reassemble the per-trial feature list from the
                         # pre-pooled cache so every fold reuses the same dense
@@ -2342,8 +2381,10 @@ def vocal_category_model_selection(
                         X_tr_o_raw = [x[tr_other_idx] for x in X_all_o_raw]
                         X_te_t_raw = [x[te_targ_idx] for x in X_all_t_raw]
                         X_te_o_raw = [x[te_other_idx] for x in X_all_o_raw]
+                        g_tr_t_raw, g_tr_o_raw = g_all_targ[tr_targ_idx], g_all_other[tr_other_idx]
 
-                    X_tr_t, X_tr_o, y_tr_t, y_tr_o = _balance_multivariate_arrays(X_tr_t_raw, X_tr_o_raw, random_seed + fold_i)
+                    X_tr_t, X_tr_o, y_tr_t, y_tr_o, g_tr_t, g_tr_o = _balance_multivariate_arrays(
+                        X_tr_t_raw, X_tr_o_raw, random_seed + fold_i, groups_target=g_tr_t_raw, groups_other=g_tr_o_raw)
 
                     # Test set: natural class prior (no balancing).
                     if not X_tr_t or len(X_te_t_raw) == 0:
@@ -2356,6 +2397,7 @@ def vocal_category_model_selection(
                     X_tr_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_tr_t, X_tr_o)]
                     y_tr = np.concatenate([y_tr_t, y_tr_o])
                     perm = np.random.default_rng(random_seed + fold_i).permutation(len(y_tr))
+                    groups_tr = np.concatenate([g_tr_t, g_tr_o])
 
                     X_te_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_te_t_raw, X_te_o_raw)]
                     y_te = np.concatenate([np.ones(n_te_targ), np.zeros(n_te_other)]).astype(int)
@@ -2367,7 +2409,8 @@ def vocal_category_model_selection(
                         model = LogisticRegressionCV(
                             penalty=lr_params['penalty'],
                             Cs=lr_params['cs'],
-                            cv=lr_params['cv'],
+                            # Inner folds hold out whole training sessions, as the outer folds do.
+                            cv=classification_inner_cv_splits(y_tr[perm], groups_tr[perm], lr_params['cv'], random_seed),
                             class_weight='balanced',
                             solver=lr_params['solver'],
                             max_iter=lr_params['max_iter'],
@@ -2498,6 +2541,7 @@ def vocal_category_model_selection(
 
         if split_strategy == 'session':
             X_tr_t_raw, X_tr_o_raw = _pool_category_features(all_feature_data, current_model_features, all_sessions_arr[tr_idx], history_frames)
+            g_tr_t_raw, g_tr_o_raw = _category_row_sessions(all_feature_data, current_model_features[0], all_sessions_arr[tr_idx])
         else:
             # Reuse the pre-pooled target / other arrays for the final
             # refit so the visualisation loop doesn't re-pool the full
@@ -2510,14 +2554,17 @@ def vocal_category_model_selection(
 
             X_tr_t_raw = [x[tr_targ_idx] for x in X_all_t_raw]
             X_tr_o_raw = [x[tr_other_idx] for x in X_all_o_raw]
+            g_tr_t_raw, g_tr_o_raw = g_all_targ[tr_targ_idx], g_all_other[tr_other_idx]
 
-        X_tr_t, X_tr_o, y_tr_t, y_tr_o = _balance_multivariate_arrays(X_tr_t_raw, X_tr_o_raw, random_seed + fold_idx)
+        X_tr_t, X_tr_o, y_tr_t, y_tr_o, g_tr_t, g_tr_o = _balance_multivariate_arrays(
+            X_tr_t_raw, X_tr_o_raw, random_seed + fold_idx, groups_target=g_tr_t_raw, groups_other=g_tr_o_raw)
 
         if not X_tr_t:
             continue
 
         X_tr_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_tr_t, X_tr_o)]
         y_tr = np.concatenate([y_tr_t, y_tr_o])
+        groups_tr = np.concatenate([g_tr_t, g_tr_o])
 
         if model_type == 'sklearn':
             X_tr_stacked = np.hstack([np.dot(x, basis_matrix) for x in X_tr_list])
@@ -2525,7 +2572,7 @@ def vocal_category_model_selection(
             model = LogisticRegressionCV(
                 penalty=lr_params['penalty'],
                 Cs=lr_params['cs'],
-                cv=lr_params['cv'],
+                cv=classification_inner_cv_splits(y_tr, groups_tr, lr_params['cv'], random_seed),
                 class_weight='balanced',
                 solver=lr_params['solver'],
                 max_iter=lr_params['max_iter'],
@@ -2592,7 +2639,9 @@ def vocal_category_model_selection(
         # Distinct-but-deterministic seed for the balanced development draw and
         # the null permutation; offset the fold seeds by `n_splits`.
         held_seed = random_seed + n_splits + 1
-        X_tr_t, X_tr_o, y_tr_t, y_tr_o = _balance_multivariate_arrays(dev_t_raw, dev_o_raw, held_seed)
+        dev_g_t, dev_g_o = _category_row_sessions(all_feature_data, current_model_features[0], all_sessions_arr)
+        X_tr_t, X_tr_o, y_tr_t, y_tr_o, g_tr_t, g_tr_o = _balance_multivariate_arrays(
+            dev_t_raw, dev_o_raw, held_seed, groups_target=dev_g_t, groups_other=dev_g_o)
         n_held_targ = held_t_raw[0].shape[0] if held_t_raw else 0
         n_held_other = held_o_raw[0].shape[0] if held_o_raw else 0
         heldout_result = {
@@ -2603,12 +2652,15 @@ def vocal_category_model_selection(
         if X_tr_t and n_held_targ > 0 and n_held_other > 0:
             X_tr_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_tr_t, X_tr_o)]
             y_tr_bal = np.concatenate([y_tr_t, y_tr_o])
+            groups_dev = np.concatenate([g_tr_t, g_tr_o])
             X_te_list = [np.concatenate([t, o], axis=0) for t, o in zip(held_t_raw, held_o_raw)]
             y_test_held = np.concatenate([np.ones(n_held_targ), np.zeros(n_held_other)])
             y_te_int = y_test_held.astype(int)
             held_rng = np.random.default_rng(held_seed)
             for branch in ('actual', 'null'):
-                y_tr = y_tr_bal if branch == 'actual' else held_rng.permutation(y_tr_bal)
+                # The held-out null shuffles labels within the development sessions.
+                y_tr = (y_tr_bal if branch == 'actual'
+                        else y_tr_bal[within_group_permutation(groups_dev, held_rng)])
                 rec = {'ll': np.nan, 'auc': np.nan, 'score': np.nan,
                        'deviance_explained': np.nan, 'brier': np.nan}
                 try:
@@ -2618,7 +2670,7 @@ def vocal_category_model_selection(
                         model = LogisticRegressionCV(
                             penalty=lr_params['penalty'],
                             Cs=lr_params['cs'],
-                            cv=lr_params['cv'],
+                            cv=classification_inner_cv_splits(y_tr, groups_dev, lr_params['cv'], random_seed),
                             class_weight='balanced',
                             solver=lr_params['solver'],
                             max_iter=lr_params['max_iter'],
@@ -3516,7 +3568,9 @@ def bout_parameter_model_selection(
             'n_held_out_events': int(_held_positions.size),
         }
         for branch in ('actual', 'null'):
-            y_dev_use = y_dev if branch == 'actual' else held_rng.permutation(y_dev)
+            # The held-out null shuffles targets within the development sessions.
+            y_dev_use = (y_dev if branch == 'actual'
+                         else y_dev[within_group_permutation(groups_global[_dev_positions], held_rng)])
             rec = {'explained_deviance': np.nan, 'residual_deviance': np.nan}
             try:
                 if model_type == 'sklearn':
@@ -4359,8 +4413,8 @@ def multinomial_vocal_category_model_selection(
                     f_met['ece'].append(np.nan)
                 f_met['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
 
-                cand_data['folds']['weights'].append((basis_coefficients_to_frames(model.coef_, temporal_basis, n_features=1, axis=1) if temporal_basis is not None else model.coef_))
-                cand_data['folds']['basis_coefficients'].append((np.asarray(model.coef_) if temporal_basis is not None else None))
+                cand_data['folds']['weights'].append(basis_coefficients_to_frames(model.coef_, temporal_basis, n_features=1, axis=1) if temporal_basis is not None else model.coef_)
+                cand_data['folds']['basis_coefficients'].append(np.asarray(model.coef_) if temporal_basis is not None else None)
                 cand_data['folds']['intercepts'].append(model.intercept_)
                 cand_data['folds']['y_true'].append(y_te)
                 cand_data['folds']['y_pred'].append(y_pred)
@@ -4613,8 +4667,8 @@ def multinomial_vocal_category_model_selection(
                         f_met['ece'].append(np.nan)
                     f_met['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
 
-                    cand_data['folds']['weights'].append((basis_coefficients_to_frames(model.coef_, temporal_basis, n_features=n_trial_feats, axis=1) if temporal_basis is not None else model.coef_))
-                    cand_data['folds']['basis_coefficients'].append((np.asarray(model.coef_) if temporal_basis is not None else None))
+                    cand_data['folds']['weights'].append(basis_coefficients_to_frames(model.coef_, temporal_basis, n_features=n_trial_feats, axis=1) if temporal_basis is not None else model.coef_)
+                    cand_data['folds']['basis_coefficients'].append(np.asarray(model.coef_) if temporal_basis is not None else None)
                     cand_data['folds']['intercepts'].append(model.intercept_)
                     cand_data['folds']['y_true'].append(y_te)
                     cand_data['folds']['y_pred'].append(y_pred)
@@ -4849,7 +4903,7 @@ def multinomial_vocal_category_model_selection(
             null_rng = np.random.default_rng(held_seed_mn)
             held_null_weights = []
             for _ in range(n_null_permutations):
-                perm = _within_group_permutation(groups_dev_fit, null_rng)
+                perm = within_group_permutation(groups_dev_fit, null_rng)
                 null_model = SmoothMultinomialLogisticRegression(
                     n_features=n_final_feats, n_time_bins=n_time_bins,
                     lambda_smooth=final_lambda_smooth,
@@ -6150,8 +6204,8 @@ def continuous_vocal_manifold_model_selection(
                 for _mk in f_met:
                     f_met[_mk].append(metrics[_mk])
 
-                cand_data['folds']['weights'].append((basis_coefficients_to_frames(model.coef_, temporal_basis, n_features=1, axis=0) if temporal_basis is not None else model.coef_))
-                cand_data['folds']['basis_coefficients'].append((np.asarray(model.coef_) if temporal_basis is not None else None))
+                cand_data['folds']['weights'].append(basis_coefficients_to_frames(model.coef_, temporal_basis, n_features=1, axis=0) if temporal_basis is not None else model.coef_)
+                cand_data['folds']['basis_coefficients'].append(np.asarray(model.coef_) if temporal_basis is not None else None)
                 cand_data['folds']['intercepts'].append(model.intercept_)
                 cand_data['folds']['test_indices'].append(te_idx)
                 cand_data['folds']['y_true'].append(Y_te)
@@ -6352,8 +6406,8 @@ def continuous_vocal_manifold_model_selection(
                     for _mk in f_met:
                         f_met[_mk].append(metrics[_mk])
 
-                    cand_data['folds']['weights'].append((basis_coefficients_to_frames(model.coef_, temporal_basis, n_features=n_trial_feats, axis=0) if temporal_basis is not None else model.coef_))
-                    cand_data['folds']['basis_coefficients'].append((np.asarray(model.coef_) if temporal_basis is not None else None))
+                    cand_data['folds']['weights'].append(basis_coefficients_to_frames(model.coef_, temporal_basis, n_features=n_trial_feats, axis=0) if temporal_basis is not None else model.coef_)
+                    cand_data['folds']['basis_coefficients'].append(np.asarray(model.coef_) if temporal_basis is not None else None)
                     cand_data['folds']['intercepts'].append(model.intercept_)
                     cand_data['folds']['test_indices'].append(te_idx)
                     cand_data['folds']['y_true'].append(Y_te)
@@ -6576,7 +6630,7 @@ def continuous_vocal_manifold_model_selection(
             null_rng = np.random.default_rng(held_seed)
             null_weights = []
             for _ in range(n_null_permutations):
-                perm = _within_group_permutation(groups_dev, null_rng)
+                perm = within_group_permutation(groups_dev, null_rng)
                 w_perm = w_dev[perm]
                 w_perm_fit = (w_perm * inverse_region_frequency_weights(region_dev[perm])
                               if manifold_metric == 'torus' else w_perm)

@@ -880,6 +880,38 @@ def _bout_feature_data(history_frames: int, n_per_session: int = 25, n_sessions:
     return {'X': X.astype(float), 'y': y, 'groups': groups}
 
 
+class TestNullShufflesWithinSessions:
+    """The bout-parameter null shuffles targets within sessions."""
+
+    @pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
+    @pytest.mark.filterwarnings("ignore:invalid value encountered:RuntimeWarning")
+    @pytest.mark.filterwarnings("ignore:An input array is constant:scipy.stats.ConstantInputWarning")
+    def test_a_pure_session_confound_does_not_beat_the_null(self):
+        """
+        Sessions differ in mean bout duration and in the feature's mean, but within a session
+        the feature carries nothing about the duration. The actual model explains deviance
+        through that session difference alone; a null that shuffles targets across sessions
+        loses the difference and would sit near zero, flagging a feature with no within-session
+        signal. The within-session null keeps every session's targets, so it explains as much
+        as the actual model.
+        """
+        pipeline = _minimal_bout_pipeline(split_strategy='mixed', split_num=4)
+        rng = np.random.default_rng(11)
+        n_sessions, n_per_session = 8, 60
+        groups = np.repeat([f'session_{i}' for i in range(n_sessions)], n_per_session)
+        log_means = np.repeat(rng.normal(-2.5, 0.8, n_sessions), n_per_session)
+        y = np.exp(log_means) * rng.gamma(shape=8.0, scale=1 / 8.0, size=groups.size)
+        X = log_means[:, None] + 0.3 * rng.standard_normal((groups.size, pipeline.history_frames))
+        feature_data = {'X': X, 'y': y, 'groups': groups}
+        basis = np.eye(pipeline.history_frames, 3, dtype=float)
+
+        _fn, res = pipeline._run_model_for_feature_sklearn('self.speed', feature_data, basis)
+        actual = np.nanmean(res['actual']['explained_deviance'])
+        null = np.nanmean(res['null']['explained_deviance'])
+        assert actual > 0.3
+        assert abs(actual - null) < 0.25 * actual
+
+
 class TestCreateDataSplitsBranches:
     """The ``create_data_splits`` guard / strategy / binning branches."""
 
