@@ -472,9 +472,26 @@ def run_glm_hmm_state_selection(input_data_path: str, settings_path: str,
             max_iter=int(glm_hmm_settings['multinomial_max_iter']),
         )
 
-    def fit_model(n_states: int, train_sequences: list,
-                  held_out_for_selection: list | None) -> object:
-        """Fit the configured engine for `n_states` (input-driven direct-marginal, or static EM)."""
+    def fit_model(n_states: int, train_sequences: list) -> object:
+        """
+        Description
+        -----------
+        Fits the configured engine for `n_states` (input-driven direct-marginal, or static
+        EM) on `train_sequences`; every engine picks its best restart on the training
+        log-likelihood, so no held-out data shapes the fitted model.
+
+        Parameters
+        ----------
+        n_states (int)
+            Number of hidden states.
+        train_sequences (list)
+            The sequences to fit.
+
+        Returns
+        -------
+        model (object)
+            The fitted GLM-HMM.
+        """
         if input_driven:
             if emission_type == 'manifold':
                 model = InputDrivenManifoldGLMHMM(
@@ -488,7 +505,7 @@ def run_glm_hmm_state_selection(input_data_path: str, settings_path: str,
                     n_time_bins=n_time_bins, n_classes=n_classes,
                     lambda_smooth=input_driven_lambda_smooth, n_restarts=n_restarts,
                     n_lbfgs=n_lbfgs, random_state=random_seed)
-            return model.fit(train_sequences, held_out_sequences=held_out_for_selection)
+            return model.fit(train_sequences)
         model = GLMHMM(
             n_states=n_states, emission_factory=factory, n_em_iters=n_em_iters,
             n_restarts=n_restarts, tol=em_tol,
@@ -534,13 +551,14 @@ def run_glm_hmm_state_selection(input_data_path: str, settings_path: str,
             test = [dev_xy[i] for i in range(len(dev_xy)) if fold_of[i] == fold]
             if not train or not test:
                 continue
-            cv_model = fit_model(n_states, train, None)
+            cv_model = fit_model(n_states, train)
             cv_fold_log_likelihoods.append(float(cv_model.log_likelihood(test)))
         cv_log_likelihood = float(sum(cv_fold_log_likelihoods))
         # Full-development fit: the source of the final selected model, plus the
-        # (diagnostic) BIC and reserved-set log-likelihood. The reserved held-out set
-        # (when present) also selects the input-driven engine's best restart.
-        full_model = fit_model(n_states, dev_xy, held_xy if use_heldout else None)
+        # (diagnostic) BIC and reserved-set log-likelihood. The engines pick their best
+        # restart on the development (training) log-likelihood, so the reserved held-out
+        # set is touched exactly once, by the score below, and never shapes the model.
+        full_model = fit_model(n_states, dev_xy)
         fitted_models[n_states] = full_model
         reserved_ll = full_model.log_likelihood(held_xy) if use_heldout else float('nan')
         dev_bic = full_model.bic(dev_xy)

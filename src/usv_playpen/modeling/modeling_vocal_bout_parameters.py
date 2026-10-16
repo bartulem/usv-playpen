@@ -830,9 +830,10 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 n_iter_actual = int(len(gam_diffs))
                 converged_actual = bool(gam_diffs and gam_diffs[-1] < tol_val)
 
-                # Prediction
-                y_pred_tiled = gam.predict(X_te_gam)
-                y_pred = np.mean(y_pred_tiled.reshape(len(y_te), hist_frames), axis=1)
+                # Prediction: the per-frame predictions are averaged on the LINK (log)
+                # scale and then mapped back, exp(mean(eta)) rather than mean(exp(eta)),
+                # the Jensen-correct reduction the model-selection folds use too.
+                y_pred = np.exp(np.mean(np.log(gam.predict_mu(X_te_gam)).reshape(len(y_te), hist_frames), axis=1))
 
                 try:
                     # Sanitize inputs (Gamma crashes on 0.0)
@@ -915,8 +916,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 n_iter_null = int(len(null_diffs))
                 converged_null = bool(null_diffs and null_diffs[-1] < tol_val)
 
-                y_pred_shuff_tiled = gam_null.predict(X_te_gam)
-                y_pred_shuff = np.mean(y_pred_shuff_tiled.reshape(len(y_te), hist_frames), axis=1)
+                y_pred_shuff = np.exp(np.mean(np.log(gam_null.predict_mu(X_te_gam)).reshape(len(y_te), hist_frames), axis=1))
 
                 # NOTE: We compare the null-model prediction against the *REAL* y_te
                 try:
@@ -1035,8 +1035,8 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                     rec['n_iter'] = int(len(gam_diffs))
                     rec['converged'] = bool(gam_diffs and gam_diffs[-1] < tol_val)
 
-                    y_pred_tiled = gam.predict(X_held_gam)
-                    y_pred = np.mean(y_pred_tiled.reshape(len(y_held), hist_frames), axis=1)
+                    # Link-scale reduction, as in the CV folds above.
+                    y_pred = np.exp(np.mean(np.log(gam.predict_mu(X_held_gam)).reshape(len(y_held), hist_frames), axis=1))
                     try:
                         y_held_safe = np.maximum(y_held, 1e-6)
                         y_pred_safe = np.maximum(y_pred, 1e-6)
