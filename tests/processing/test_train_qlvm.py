@@ -496,6 +496,25 @@ def test_train_accepts_a_full_dataset_build_whose_splits_are_older_than_full_dat
     assert (tmp_path / "out" / "checkpoint.tar").is_file()
 
 
+def test_train_a_full_dataset_set_trains_on_full_data_and_marks_validation_in_sample(tmp_path, mocker):
+    """A set built with full_dataset trains on full_data.npz (every row), not train_data.npz,
+    and the run config records that its validation loss is in-sample; a set without the flag
+    trains on train_data.npz with an out-of-sample validation."""
+    for full, expected in ((True, "full_data.npz"), (False, "train_data.npz")):
+        dataset_dir = tmp_path / f"dataset_{full}"
+        dataset_dir.mkdir()
+        _write_split(dataset_dir / "train_data.npz", 4, seed=0)
+        _write_split(dataset_dir / "val_data.npz", 4, seed=1)
+        _write_split(dataset_dir / "full_data.npz", 8, seed=2)
+        _write_metadata(dataset_dir, n_rows={"n_train": 4, "n_val": 4, "n_full": 8, "full_dataset": full})
+        out = tmp_path / f"out_{full}"
+        _train(dataset_dir, out, _TINY_CFG, mocker)
+        run_config = json.loads((out / "config" / "run_config.json").read_text())
+        assert run_config["train_split"] == expected
+        assert run_config["n_train"] == (8 if full else 4)
+        assert run_config["validation_in_sample"] is full
+
+
 def test_train_refuses_a_split_left_over_from_an_earlier_build(tmp_path, mocker):
     """A split whose row count differs from the count metadata.npz records for it belongs to
     an earlier build and is refused before training, whatever its file time."""

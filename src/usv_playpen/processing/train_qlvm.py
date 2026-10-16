@@ -1110,9 +1110,12 @@ class QLVMTrainer:
         """
         Description
         -----------
-        Finds the training split (``train_data.npz``, else ``full_data.npz``), the
-        validation split (``val_data.npz``, when present) and reads the set's
-        ``metadata.npz``. Refuses a set without ``metadata.npz`` (the training
+        Finds the training split, the validation split (``val_data.npz``, when
+        present) and reads the set's ``metadata.npz``. The training split is
+        ``full_data.npz`` when the set was built with ``full_dataset`` (every
+        eligible row, the point of such a build; its validation rows are then part
+        of the training rows, so the validation loss is in-sample and only tracks
+        convergence), else ``train_data.npz``, else ``full_data.npz``. Refuses a set without ``metadata.npz`` (the training
         contract is built from it) and any split whose row count differs from the
         count ``metadata.npz`` records for it (``n_train`` / ``n_val`` / ``n_full``):
         a split left over from an earlier build, which would otherwise win the lookup.
@@ -1130,7 +1133,8 @@ class QLVMTrainer:
             The fields of ``metadata.npz`` the run records: ``masking_type``,
             ``target_shape``, ``time_stretch``, ``length_threshold`` (``None`` when
             the set records NaN, i.e. no duration bound), ``require_mask``
-            (``False`` when not recorded) and ``floor`` (``None`` when not recorded).
+            (``False`` when not recorded), ``floor`` (``None`` when not recorded) and
+            ``full_dataset`` (``False`` when not recorded).
         """
         dataset_dir = pathlib.Path(self.dataset_directory)
         train_npz = dataset_dir / "train_data.npz"
@@ -1187,7 +1191,15 @@ class QLVMTrainer:
                 "length_threshold": None if math.isnan(length_threshold) else length_threshold,
                 "require_mask": bool(metadata_file["require_mask"]) if "require_mask" in metadata_file.files else False,
                 "floor": float(metadata_file["floor"]) if "floor" in metadata_file.files else None,
+                "full_dataset": bool(metadata_file["full_dataset"]) if "full_dataset" in metadata_file.files else False,
             }
+        if metadata["full_dataset"]:
+            if not full_npz.is_file():
+                error_message = (
+                    f"{dataset_dir}: metadata.npz records a full_dataset build but full_data.npz is missing."
+                )
+                raise FileNotFoundError(error_message)
+            train_path = full_npz
         return train_path, (val_npz if val_npz.is_file() else None), metadata
 
     def train(self) -> None:
@@ -1303,7 +1315,9 @@ class QLVMTrainer:
                 val_c = val_c_all[val_rows]
             self.message_output(
                 f"Validation subset: {val_rows.shape[0]} of {val_split['inputs'].shape[0]} spectrograms in "
-                f"{val_path.name} (at most {cfg['val_samples_per_mask_count']} per masks_len value)."
+                f"{val_path.name} (at most {cfg['val_samples_per_mask_count']} per masks_len value)"
+                + ("; in-sample: this full_dataset set trains on these rows too, so the validation loss "
+                   "tracks convergence, not generalization." if metadata['full_dataset'] else ".")
             )
             del val_split
 
@@ -1507,6 +1521,9 @@ class QLVMTrainer:
             "dataset_path": str(pathlib.Path(self.dataset_directory)),
             "train_split": train_path.name,
             "val_split": None if val_path is None else val_path.name,
+            # A full_dataset set trains on every row, the validation rows included, so its
+            # validation loss is in-sample (convergence only, not generalization).
+            "validation_in_sample": bool(metadata['full_dataset'] and val_path is not None),
             "n_train": n_train,
             "n_val_diagnostic": int(val_rows.shape[0]),
             "dataset_apply_mask": train_split['apply_mask'],
