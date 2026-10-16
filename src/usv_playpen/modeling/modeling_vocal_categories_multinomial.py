@@ -1628,7 +1628,11 @@ class MultinomialModelRunner:
                     train_idx = train_idx_raw
 
                 X_train, X_test = X[train_idx], X[test_idx]
-                y_train, y_test = y[train_idx], y[test_idx]
+                # The 'null' strategy fits on within-session shuffled labels but is
+                # scored, like every strategy and like its held-out refit, against the
+                # TRUE test labels, so `folds['y_true']` is always the truth and the
+                # null's score is the chance a label-blind fit reaches on real data.
+                y_train, y_test = y[train_idx], feat_data['y'][test_idx]
 
                 fold_weights = None
                 fold_basis_coefficients = None

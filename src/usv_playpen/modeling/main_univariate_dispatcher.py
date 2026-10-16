@@ -39,6 +39,7 @@ Computational & Structural Features:
 
 import argparse
 import pickle
+import sys
 import json
 import gc
 import traceback
@@ -57,6 +58,7 @@ from .modeling_usv_manifold_position import ContinuousModelingPipeline, Continuo
 from .modeling_bases_functions import (raised_cosine, bsplines, identity,
                                       laplacian_pyramid, _normalizecols)
 from .modeling_metadata import (build_run_metadata, inject_metadata, RESERVED_METADATA_KEYS)
+from ..os_utils import atomic_output_path
 from .modeling_utils import (format_run_header, format_run_summary,
                              extract_univariate_headline,
                              held_out_session_ids_from_metadata)
@@ -187,7 +189,7 @@ def get_basis_matrix_standardized(
 
     return basis_matrix
 
-def dispatch_univariate_job(args: argparse.Namespace) -> None:
+def dispatch_univariate_job(args: argparse.Namespace) -> int:
     """
     Orchestrates the loading, fitting, and saving of a single behavioral feature.
 
@@ -216,8 +218,13 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
 
     Returns
     -------
-    None
-        Results are persisted to disk as a .pkl file.
+    status (int)
+        0 when the feature's results were written (atomically, via
+        ``os_utils.atomic_output_path``) to a .pkl file; 1 when any stage failed
+        (settings load, feature mapping, fitting, an empty result or the save). The
+        ``__main__`` entry point exits with it, so a failed SLURM array task is a
+        failed job (``--mail-type=FAIL``, ``set -e``) rather than a silent gap in
+        the consolidated candidate pool.
     """
     print(f"--- USV Univariate Dispatcher | Task: {args.analysis_type.upper()} ---")
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -232,7 +239,7 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
             settings = json.load(f)
     except Exception as e:
         print(f"FATAL: Settings load failed: {e}")
-        return
+        return 1
 
     # 2. Semantic Feature Mapping + upstream-metadata harvest
     try:
@@ -252,9 +259,12 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
             # index embedded in the filename.
             if args.feature_idx < 0 or args.feature_idx >= len(all_features):
                 print(f"FATAL: Index {args.feature_idx} out of bounds.")
-                return
+                return 1
 
             feature_name = all_features[args.feature_idx]
+            # Recorded in the per-feature `_run_metadata` so the consolidator can
+            # refuse a merge that is missing a feature (a failed array task).
+            n_features_in_input = len(all_features)
             # Capture this feature's data from THIS load so the CPU branch below does
             # not re-deserialize the whole pickle again (load_pickle_modeling_data is
             # a bare pickle.load of the same file); the JAX branches defer loading and
@@ -274,7 +284,7 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
 
     except Exception as e:
         print(f"FATAL: Feature mapping failed: {e}")
-        return
+        return 1
 
     # Standardized run header: the CPU tasks (onset/category/params) run the
     # configured `model_engine` (pygam / sklearn); the JAX tasks (multinomial /
@@ -369,7 +379,7 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
     except Exception as e:
         print(f"FATAL ERROR: Analysis failed for {feature_name}. Error: {e}")
         traceback.print_exc()
-        return
+        return 1
 
     # 4. Build run-level metadata
     # `n_outer_folds` and `split_strategy` come straight from the model_validation
@@ -382,8 +392,12 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
         split_strategy=settings['model_validation']['split_strategy'],
         settings_path=settings_path,
     )
+    run_metadata['n_features_in_input'] = int(n_features_in_input)
 
     # 5. Atomic Result Serialization
+    if not results:
+        print(f"FATAL: Analysis for {feature_name} produced no results; nothing was saved.")
+        return 1
     if results:
         safe_feat = feature_name.replace('.', '_')
         # Unified per-feature filename: the analysis_tag matches the
@@ -407,11 +421,12 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
 
         saved_ok = False
         try:
-            with out_path.open('wb') as f:
+            with atomic_output_path(out_path) as tmp_out_path, tmp_out_path.open('wb') as f:
                 pickle.dump(results, f)
             saved_ok = True
-        except Exception as e:
+        except (OSError, pickle.PicklingError) as e:
             print(f"FATAL: Saving results failed. Error: {e}")
+            return 1
 
         # Standardized two-line closer: the mean-over-folds headline for ACTUAL
         # vs NULL (and NULL-MF where the task has it) + the full save path. `res`
@@ -427,6 +442,8 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
                 metrics_by_strategy=summary_metrics,
                 out_path=out_path,
             ))
+    return 0
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Consolidated USV Modeling Dispatcher")
@@ -458,4 +475,4 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    dispatch_univariate_job(args)
+    sys.exit(dispatch_univariate_job(args))

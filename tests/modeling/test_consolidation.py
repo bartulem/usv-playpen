@@ -16,6 +16,7 @@ the metadata-mismatch and malformed-input failure modes.
 
 from __future__ import annotations
 
+import pathlib
 import pickle
 import runpy
 import sys
@@ -113,6 +114,29 @@ class TestUnivariateConsolidate:
         assert cons['_input_metadata'] == md_in
         assert cons['_run_metadata'] == md_run
         assert cons['_consolidation_metadata']['n_files_merged'] == 2
+
+    def test_missing_feature_index_raises(self, tmp_path):
+        """A gap in the feature indices (a failed array task) aborts the merge instead of
+        silently dropping that feature from the candidate pool."""
+
+        md_in, md_run = self._md()
+        _write_pkl(tmp_path / 'univariate_tag_0000_a.pkl', _univariate_feature_pkl('feat_a', md_in, md_run))
+        _write_pkl(tmp_path / 'univariate_tag_0002_c.pkl', _univariate_feature_pkl('feat_c', md_in, md_run))
+        with pytest.raises(ValueError, match=r"\[1\] have no per-feature pickle"):
+            cuv.consolidate(str(tmp_path))
+
+    def test_fewer_features_than_the_input_holds_raises(self, tmp_path):
+        """When the run metadata records how many features the input held, a merge missing the
+        last one (no index gap to see) aborts too; a complete merge passes."""
+
+        md_in, _ = self._md()
+        md_run = {'split_strategy': 'mixed', 'n_features_in_input': 3}
+        _write_pkl(tmp_path / 'univariate_tag_0000_a.pkl', _univariate_feature_pkl('feat_a', md_in, md_run))
+        _write_pkl(tmp_path / 'univariate_tag_0001_b.pkl', _univariate_feature_pkl('feat_b', md_in, md_run))
+        with pytest.raises(ValueError, match="input pickle holds 3"):
+            cuv.consolidate(str(tmp_path))
+        _write_pkl(tmp_path / 'univariate_tag_0002_c.pkl', _univariate_feature_pkl('feat_c', md_in, md_run))
+        assert pathlib.Path(cuv.consolidate(str(tmp_path))).is_file()
 
     def test_metadata_mismatch_raises(self, tmp_path):
         """A per-feature file disagreeing on a run-level metadata key

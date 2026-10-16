@@ -898,6 +898,10 @@ class TestMultinomialUnivariateRunner:
 
         actual_auc = np.asarray(results['actual']['folds']['metrics']['auc'], dtype=float)
         assert np.isfinite(actual_auc).any()
+        # every strategy, the label-shuffled null included, is scored against the true test labels
+        for actual_truth, null_truth in zip(results['actual']['folds']['y_true'],
+                                            results['null']['folds']['y_true'], strict=True):
+            np.testing.assert_array_equal(null_truth, actual_truth)
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     @pytest.mark.filterwarnings("ignore::UserWarning")

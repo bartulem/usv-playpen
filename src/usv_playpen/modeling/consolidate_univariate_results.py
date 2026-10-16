@@ -275,7 +275,13 @@ def consolidate(input_dir: str,
     ValueError
         If any per-feature file disagrees on a non-ignored metadata
         key, contains zero or more than one feature, or — when
-        `allow_legacy` is False — lacks the metadata blocks.
+        `allow_legacy` is False — lacks the metadata blocks; or if the
+        merged set is incomplete: the feature indices parsed from the
+        filenames skip a value, or (when the per-feature `_run_metadata`
+        records `n_features_in_input`, as the dispatcher writes it) fewer
+        features were merged than the input pickle holds. A missing
+        feature is a failed array task, and merging without it would drop
+        it from the candidate pool without a trace.
     """
 
     in_dir = Path(input_dir)
@@ -372,6 +378,23 @@ def consolidate(input_dir: str,
         successfully_merged_timestamps.append(_file_mtime_iso(fp))
 
     print(f"[consolidate] Merged {len(consolidated)} feature(s).")
+
+    # Completeness: every feature of the input pickle must be present. The indices
+    # the dispatcher embeds in the filenames must run without gaps from 0, and when
+    # the run metadata records how many features the input held, all of them.
+    merged_indices = sorted(_parse_feature_idx(Path(path).name) for path in successfully_merged_paths)
+    if merged_indices and merged_indices[0] >= 0:
+        gaps = sorted(set(range(merged_indices[-1] + 1)) - set(merged_indices))
+        if gaps:
+            msg = (f"Feature index/indices {gaps} have no per-feature pickle in {input_dir} "
+                   f"(failed or missing array tasks); re-run them before consolidating.")
+            raise ValueError(msg)
+    if canonical_run_md is not None and 'n_features_in_input' in canonical_run_md:
+        n_expected = int(canonical_run_md['n_features_in_input'])
+        if len(consolidated) != n_expected:
+            msg = (f"Merged {len(consolidated)} feature(s) but the input pickle holds {n_expected}; "
+                   f"the missing array task(s) must be re-run before consolidating.")
+            raise ValueError(msg)
 
     cons_md = build_consolidation_metadata(
         n_files_merged=len(successfully_merged_paths),

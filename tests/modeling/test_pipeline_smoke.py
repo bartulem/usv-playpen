@@ -356,7 +356,7 @@ class TestUnivariateDispatcher:
         monkeypatch.setattr(univ_dispatcher.json, 'load', lambda _f: settings)
 
         for feature_idx in range(len(feature_names)):
-            univ_dispatcher.dispatch_univariate_job(
+            status = univ_dispatcher.dispatch_univariate_job(
                 argparse.Namespace(
                     analysis_type='onset',
                     feature_idx=feature_idx,
@@ -364,9 +364,15 @@ class TestUnivariateDispatcher:
                     output_dir=str(out_dir),
                 )
             )
+            assert status == 0
 
         per_feature = sorted(out_dir.glob('univariate_*.pkl'))
         assert len(per_feature) == len(feature_names)
+        # a failed task (here an out-of-range feature index) reports a non-zero status
+        assert univ_dispatcher.dispatch_univariate_job(argparse.Namespace(
+            analysis_type='onset', feature_idx=len(feature_names),
+            input_data=input_pkl, output_dir=str(out_dir),
+        )) == 1
 
         with per_feature[0].open('rb') as fh:
             payload = pickle.load(fh)
