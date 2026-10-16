@@ -227,9 +227,9 @@ def write_qlvm_category_bundle(directory: Path, resolution: int = 20) -> Path:
         "n_categories": 4,
         "uncertain_agreement": 0.6,
         "n_votes": 10,
-        "n_calls": 400,
+        "n_vocalizations": 400,
         "categories": [
-            {"grid_label": label, "name": f"R-{label}", "description": descriptions[label - 1], "n_calls": 100,
+            {"grid_label": label, "name": f"R-{label}", "description": descriptions[label - 1], "n_vocalizations": 100,
              "share": 0.25, "uncertain_share": 0.0, "label_x": centres[label][0], "label_y": centres[label][1]}
             for label in range(1, 5)
         ],
@@ -240,7 +240,7 @@ def write_qlvm_category_bundle(directory: Path, resolution: int = 20) -> Path:
         "positions_file": "/synthetic/positions.csv",
         "positions_file_sha256": "0123456789abcdef" * 4,
         "properties_file": "/synthetic/properties.npz",
-        "n_calls": 400,
+        "n_vocalizations": 400,
         "n_sessions": 4,
         "n_basins": 4,
         "n_votes": 10,

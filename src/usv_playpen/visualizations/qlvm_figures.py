@@ -84,7 +84,7 @@ from ..modeling.modeling_torus_geodesics import (
 )
 from ..os_utils import QLVM_CATEGORY_COLUMN, QLVM_CATEGORY_GRIDS_NAME, configure_path
 from ..processing.build_qlvm_training_set import build_session_masks, stretch_specs
-from ..processing.qlvm_categories import call_pixels, content_fields, property_ranks
+from ..processing.qlvm_categories import vocalization_pixels, content_fields, property_ranks
 from ..processing.qlvm_latents import load_model_cell, normalize_model_inputs
 from ..processing.qlvm_model import embed_data
 from .auxiliary_plot_functions import draw_category_outlines, periodic_density
@@ -209,7 +209,7 @@ def check_categories_match_bundle(usvs: pls.DataFrame, label_grid: np.ndarray) -
     if QLVM_CATEGORY_COLUMN not in usvs.columns:
         error_message = f"The pooled summaries carry no {QLVM_CATEGORY_COLUMN} column; run assign-qlvm-categories first."
         raise ValueError(error_message)
-    rows, cols = call_pixels(np.column_stack([usvs["qlvm1"].to_numpy(), usvs["qlvm2"].to_numpy()]), label_grid.shape[0])
+    rows, cols = vocalization_pixels(np.column_stack([usvs["qlvm1"].to_numpy(), usvs["qlvm2"].to_numpy()]), label_grid.shape[0])
     wrong = label_grid[rows, cols] != usvs[QLVM_CATEGORY_COLUMN].to_numpy()
     if wrong.any():
         sessions = sorted(set(usvs["session_id"].to_numpy()[wrong].tolist()))
@@ -1088,7 +1088,7 @@ def compute_category_similarity(sample: dict, label_grid: np.ndarray, watershed_
                            nan=0.0).astype(np.float32)
     partition_scores = {}
     for name, grid in {f"content ridges\n({n_categories})": label_grid, **watershed_grids}.items():
-        grid_rows, grid_cols = call_pixels(sample["xy"][chosen], grid.shape[0])
+        grid_rows, grid_cols = vocalization_pixels(sample["xy"][chosen], grid.shape[0])
         partition_labels = grid[grid_rows, grid_cols]
         delta = group_contrast(filled, partition_labels)
         partition_scores[name] = np.array([delta[partition_labels == group].mean() for group in np.unique(partition_labels)])
@@ -1147,7 +1147,7 @@ def compute_category_boundary_fields(usvs: pls.DataFrame, bundle: dict, cfg: dic
     build = bundle["build_config"]["build_qlvm_categories"]
     label_grid = bundle["label_grid"]
     resolution = label_grid.shape[0]
-    rows, cols = call_pixels(np.column_stack([usvs["qlvm1"].to_numpy(), usvs["qlvm2"].to_numpy()]), resolution)
+    rows, cols = vocalization_pixels(np.column_stack([usvs["qlvm1"].to_numpy(), usvs["qlvm2"].to_numpy()]), resolution)
     values = np.column_stack([usvs[column].to_numpy() for column, _ in BOUNDARY_PROPERTIES])
     fields = content_fields(rows, cols, property_ranks(values), np.ones(usvs.height), float(build["field_sigma"]), resolution)
     span = int(build["change_span"])
@@ -1525,7 +1525,7 @@ def category_examples(usvs: pls.DataFrame, label_grid: np.ndarray, cfg: dict, se
     for category in range(1, int(label_grid.max()) + 1):
         members = usvs.filter(pls.col(QLVM_CATEGORY_COLUMN) == category)
         points = np.column_stack([members["qlvm1"].to_numpy(), members["qlvm2"].to_numpy()])
-        rows, cols = call_pixels(points, resolution)
+        rows, cols = vocalization_pixels(points, resolution)
         density = periodic_density(rows, cols, resolution, overview["density_bandwidth"])
         density[label_grid != category] = -np.inf
         row, col = np.unravel_index(np.argmax(density), density.shape)
@@ -1594,7 +1594,7 @@ def plot_qlvm_overview(usvs: pls.DataFrame, bundle: dict, roots: dict[str, pathl
     bottom = outer[1].subgridspec(1, len(OVERVIEW_PROPERTIES), wspace=0.06)
 
     points = np.column_stack([usvs["qlvm1"].to_numpy(), usvs["qlvm2"].to_numpy()])
-    rows, cols = call_pixels(points, resolution)
+    rows, cols = vocalization_pixels(points, resolution)
     density = periodic_density(rows, cols, resolution, overview["density_bandwidth"])
     occupied = density[density >= 1.0]
     axis = fig.add_subplot(top[0])

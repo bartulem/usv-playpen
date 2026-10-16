@@ -1738,12 +1738,12 @@ knobs straight from the settings block.
         "s2s": "start-to-start intervals",
         "e2s": "end-to-start intervals",
     }
-    call_label = {"usv": "USV", "squeak": "squeak"}
+    vocal_class_label = {"usv": "USV", "squeak": "squeak"}
 
 * **output_directory** -- where the HDF5 archive is written and where the plot cells look for the newest run.
 * **interval_types** -- both interval definitions (``s2s`` start-to-start, ``e2s`` end-to-start) are computed.
 * **plot_interval_types** -- which of them are DRAWN; ``e2s`` only by default. The peaks-plus-background model is defined on end-to-start gaps: start-to-start intervals include each call's own duration, which smears the gap structure, and the s2s peak test runs to the top of its grid with broad "peaks". Add ``"s2s"`` to draw it anyway.
-* **interval_label** / **call_label** -- titles and legend text; the legend names the call type because the pools are different vocalizations.
+* **interval_label** / **vocal_class_label** -- titles and legend text; the legend names the call type because the pools are different vocalizations.
 * **density_as_bin_means** -- when ``true`` the best-fit overlay draws the mixture as the bar heights it *predicts* (its density averaged over each histogram bin) rather than as the point-wise curve. A histogram bar is a bin average while the curve is a point density, so a point-wise curve necessarily rides above the bars wherever a bin straddles the peak and reads as an overshoot the fit does not have. Set ``false`` to restore the point-wise curve.
 * **plot_log_xlims** / **bins_per_sex** -- plot-only knobs read straight from JSON (not archived in the HDF5); **tau** is likewise read from JSON but *is* archived in the HDF5.
 
@@ -1753,7 +1753,7 @@ the analysis reads (all of them are archived in the root ``/attrs`` except the p
 * **session_lists** -- session-list text files, one session root per line; their union, de-duplicated, is the cohort.
 * **output_directory** -- where the archive is written; **figures_directory** -- where the notebook saves figures (not read by the analysis).
 * **exclude_noise_usvs** -- drop the segments ``detect-usv-noise`` flagged as holding no vocalization.
-* **interval_pools** -- the pools, each ``{sex, call_type, adjacency, fit}``: ``call_type`` ``usv`` or ``squeak``; ``adjacency`` ``filtered`` (other call types removed before pairing) or ``strict`` (two calls pair only if nothing lies between them in the full record -- required for sparse callers and whenever many calls are unassigned); ``fit`` whether the models run on it. A squeak's interval runs from or to the squeak itself (``squeak_start`` / ``squeak_end``, ``os_utils.vocal_event_times``), not its segment, so squeak pools need those columns.
+* **interval_pools** -- the pools, each ``{sex, vocal_class, adjacency, fit}``: ``vocal_class`` ``usv`` or ``squeak``; ``adjacency`` ``filtered`` (other call types removed before pairing) or ``strict`` (two calls pair only if nothing lies between them in the full record -- required for sparse callers and whenever many calls are unassigned); ``fit`` whether the models run on it. A squeak's interval runs from or to the squeak itself (``squeak_start`` / ``squeak_end``, ``os_utils.vocal_event_times``), not its segment, so squeak pools need those columns.
 * **min_intervals_for_fitting** -- a fitted pool smaller than this is archived for description only (5000).
 * **fit_tied_model**, **tied_peak_grid**, **tied_n_background**, **tied_n_init**, **tied_n_init_boot** -- the tied-scale peak model: whether it runs, the peak counts tested (``[1, 2, 3]``, each against one more), the fixed background count (2), and the EM restarts of the observed fits (4) and of the bootstrap refits (2).
 * **design_bootstrap** -- session resamples for the design effect of every corrected test, tied and unconstrained (2000).
@@ -1765,10 +1765,10 @@ the analysis reads (all of them are archived in the root ``/attrs`` except the p
 * **plot_log_xlims**, **bins_per_sex**, **density_as_bin_means** -- plot only, not archived.
 
 **Archive layout.** ``usv_interval_analysis_<YYYYMMDD>_<HHMMSS>.h5``; every table carries ``sex``,
-``call_type`` and ``adjacency``, because a mode group holds several pools.
+``vocal_class`` and ``adjacency``, because a mode group holds several pools.
 
 * root ``/attrs`` -- every setting above except the plot-only ones, plus ``created_at_iso``, ``git_sha``, ``source_lists`` (the list files), ``session_roots`` (the session directories that contributed data) and ``n_sessions_loaded``.
-* ``/<mode>/attrs`` (``s2s``, ``e2s``) -- ``selected_n_peak_<sex>_<call_type>`` and ``alpha_effective_<sex>_<call_type>`` of the tied test; ``K_selected_<sex>`` of the unconstrained sweep.
+* ``/<mode>/attrs`` (``s2s``, ``e2s``) -- ``selected_n_peak_<sex>_<vocal_class>`` and ``alpha_effective_<sex>_<vocal_class>`` of the tied test; ``K_selected_<sex>`` of the unconstrained sweep.
 * ``intervals`` -- one row per interval: ``session_id``, ``source_list``, ``interval_type``, ``interval_s``, ``log_interval``, ``emitter_id`` (the animal; archives before 2026-09-23 have ``male_id`` / ``female_id`` instead), ``chain_id`` (intervals of one animal with the same chain id follow each other without a break, each starting at the vocalization the one before it ended at; another animal's vocalization, an unassigned or non-target row or a dropped non-positive interval starts a new chain).
 * ``drop_counts`` -- non-positive intervals dropped per pool; ``pool_summary`` -- per pool ``n_intervals``, ``n_sessions``, the 5/25/50/75/95th percentiles and whether it was ``fitted``.
 * ``tied_fits``, ``tied_modes``, ``peak_lrt``, ``peak_lrt_null`` -- the tied ladder (one row per peak count and component: role, parameters, likelihood, BIC, shared peak scale), its modes, the peak test per rung (raw and corrected statistic, design effect, threshold, raw and corrected p) and its null draws.
@@ -1826,7 +1826,7 @@ axis:
     for it in plot_interval_types:
         sub = ivs.load_intervals_from_h5(str(h5_path), it)
         pools = {
-            row["sex"]: row["call_type"]
+            row["sex"]: row["vocal_class"]
             for row in ivs.read_usv_interval_h5(str(h5_path))["modes"][it][
                 "pool_summary"
             ].iter_rows(named=True)
@@ -1837,8 +1837,8 @@ axis:
             male_color=male_color,
             female_color=female_color,
             xlims=plot_log_xlims,
-            male_label=f"male {call_label[pools['male']]}",
-            female_label=f"female {call_label[pools['female']]}",
+            male_label=f"male {vocal_class_label[pools['male']]}",
+            female_label=f"female {vocal_class_label[pools['female']]}",
         )
         ax.set_title(f"log_interval distribution -- {interval_label[it]}")
         if save_fig_bool:
@@ -1860,7 +1860,7 @@ the corrected level (dotted). The step-up rule stops at the first rung that keep
         summary = ivs.read_usv_interval_h5(str(h5_path))["modes"][it]["pool_summary"]
         for row in summary.filter(pls.col("fitted")).iter_rows(named=True):
             sweep, alpha_used = ivs.load_peak_lrt_sweep_from_h5(
-                str(h5_path), it, row["sex"], row["call_type"]
+                str(h5_path), it, row["sex"], row["vocal_class"]
             )
             fig, _ = ivs.plot_bootstrap_lrt_panel(
                 sweep,
@@ -1871,7 +1871,7 @@ the corrected level (dotted). The step-up rule stops at the first rung that keep
             )
             fig.suptitle(
                 f"Bootstrap LRT null distributions -- {row['sex']} "
-                f"{call_label[row['call_type']]} {interval_label[it]}",
+                f"{vocal_class_label[row['vocal_class']]} {interval_label[it]}",
                 y=1.08,
             )
             fig.tight_layout()
@@ -1879,7 +1879,7 @@ the corrected level (dotted). The step-up rule stops at the first rung that keep
                 save_figure(fig, f"ivi_bootstrap_lrt_{it}", vis_settings)
             plt.show()
             _, _, n_peak, _ = ivs.load_tied_model_from_h5(
-                str(h5_path), it, row["sex"], row["call_type"]
+                str(h5_path), it, row["sex"], row["vocal_class"]
             )
             print(
                 f"[{interval_label[it]}] step-up (session-corrected) selected: {n_peak} peak(s)"
@@ -1900,10 +1900,10 @@ BIC keeps falling past the selected count because it charges each parameter ``lo
         summary = ivs.read_usv_interval_h5(str(h5_path))["modes"][it]["pool_summary"]
         for row in summary.filter(pls.col("fitted")).iter_rows(named=True):
             df_ic = ivs.load_tied_ic_table_from_h5(
-                str(h5_path), it, row["sex"], row["call_type"]
+                str(h5_path), it, row["sex"], row["vocal_class"]
             )
             _, _, n_peak, _ = ivs.load_tied_model_from_h5(
-                str(h5_path), it, row["sex"], row["call_type"]
+                str(h5_path), it, row["sex"], row["vocal_class"]
             )
             fig, (ax_left, ax_right), _ = ivs.plot_ic_curves(
                 df_results=df_ic,
@@ -1915,7 +1915,7 @@ BIC keeps falling past the selected count because it charges each parameter ``lo
             ax_left.set_xlabel("number of peaks")
             ax_left.set_title(
                 f"BIC vs number of peaks -- {row['sex']} "
-                f"{call_label[row['call_type']]} {interval_label[it]}"
+                f"{vocal_class_label[row['vocal_class']]} {interval_label[it]}"
             )
             if save_fig_bool:
                 save_figure(fig, f"ivi_bic_curve_{it}", vis_settings)
@@ -1948,15 +1948,15 @@ or off.
         sub = ivs.load_intervals_from_h5(str(h5_path), it)
         summary = ivs.read_usv_interval_h5(str(h5_path))["modes"][it]["pool_summary"]
         for row in summary.filter(pls.col("fitted")).iter_rows(named=True):
-            sex, call_type = row["sex"], row["call_type"]
+            sex, vocal_class = row["sex"], row["vocal_class"]
             intervals_sec = sub.filter(
-                (pls.col("sex") == sex) & (pls.col("call_type") == call_type)
+                (pls.col("sex") == sex) & (pls.col("vocal_class") == vocal_class)
             )["interval_s"].to_numpy()
             mixture_model, mixture_model_order, n_peak, rows = ivs.load_tied_model_from_h5(
                 str(h5_path),
                 it,
                 sex,
-                call_type,
+                vocal_class,
             )
             n_background = int(rows["n_background"][0])
             kw = (
@@ -1979,7 +1979,7 @@ or off.
                 **kw,
             )
             ax_fit.set_title(
-                f"{interval_label[it].capitalize()} of {sex} {call_label[call_type]}s -- {model_class_label} "
+                f"{interval_label[it].capitalize()} of {sex} {vocal_class_label[vocal_class]}s -- {model_class_label} "
                 f"mixture model LRT-selected {n_peak} peaks + {n_background} background"
             )
             if save_fig_bool:
@@ -1998,7 +1998,7 @@ layout the modeling pipeline reads; component 0 is the first peak, from which th
         blocks = []
         for row in summary.filter(pls.col("fitted")).iter_rows(named=True):
             _, _, n_peak, rows = ivs.load_tied_model_from_h5(
-                str(h5_path), it, row["sex"], row["call_type"]
+                str(h5_path), it, row["sex"], row["vocal_class"]
             )
             rows = rows.sort("logmean")
             means = [round(float(m), 5) for m in rows["logmean"]]
@@ -2012,7 +2012,7 @@ layout the modeling pipeline reads; component 0 is the first peak, from which th
             )
             threshold_ms = 1000.0 * float(np.exp(means[0] + 2.58 * sds[0]))
             print(
-                f"[{it}] {row['sex']} {call_label[row['call_type']]}: roles {roles}; "
+                f"[{it}] {row['sex']} {vocal_class_label[row['vocal_class']]}: roles {roles}; "
                 f"inter-bout threshold exp(mu_0 + 2.58 sd_0) = {threshold_ms:.1f} ms"
             )
         print("{")
@@ -2052,13 +2052,15 @@ refits stopped at the solver's iteration cap (``serial_dependence_max_iter``).
         sub = ivs.load_intervals_from_h5(str(h5_path), it)
         summary = ivs.read_usv_interval_h5(str(h5_path))["modes"][it]["pool_summary"]
         for row in summary.filter(pls.col("fitted")).iter_rows(named=True):
-            sex, call_type = row["sex"], row["call_type"]
-            pool = sub.filter((pls.col("sex") == sex) & (pls.col("call_type") == call_type))
+            sex, vocal_class = row["sex"], row["vocal_class"]
+            pool = sub.filter(
+                (pls.col("sex") == sex) & (pls.col("vocal_class") == vocal_class)
+            )
             pairs = ivs.serial_dependence_pairs(pool, sex)
             sd_curves, sd_fit = ivs.load_serial_dependence_from_h5(
-                str(h5_path), it, sex, call_type
+                str(h5_path), it, sex, vocal_class
             )
-            _, _, _, rows = ivs.load_tied_model_from_h5(str(h5_path), it, sex, call_type)
+            _, _, _, rows = ivs.load_tied_model_from_h5(str(h5_path), it, sex, vocal_class)
             first_peak = (
                 rows.filter(pls.col("role") == "peak").sort("logmean").row(0, named=True)
             )
@@ -2078,7 +2080,7 @@ refits stopped at the solver's iteration cap (``serial_dependence_max_iter``).
             plt.show()
 
             print(
-                f"  [{it}] [{sex} {call_label[call_type]}]: {sd_stats['n_pairs']} pairs; bout boundary "
+                f"  [{it}] [{sex} {vocal_class_label[vocal_class]}]: {sd_stats['n_pairs']} pairs; bout boundary "
                 f"{boundary_ms:.1f} ms; bend {sd_stats['bend_ms']:.1f} ms ({sd_stats['level']:.0f}% "
                 f"{sd_stats['bend_low_ms']:.1f}-{sd_stats['bend_high_ms']:.1f}), slope {sd_stats['slope']:.3f} "
                 f"below it, flat at {sd_stats['flat_level_ms']:.1f} ms above it; refits at the solver's "

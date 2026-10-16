@@ -340,7 +340,7 @@ def emitter_spectrogram(root_directory: pathlib.Path, calls: pls.DataFrame, sex_
     column_split = np.ones(times.size)
     column_owner = np.full(times.size, 'none', dtype=object)
     inside_window = calls.filter((pls.col('stop') >= t0) & (pls.col('start') <= end_seconds))
-    pad = float(spectrogram['call_pad_seconds'])
+    pad = float(spectrogram['vocal_pad_seconds'])
     # Read through os_utils (text-cast, null -> False): a squeak flag CSV-typed as the strings
     # "true" / "false" would otherwise be truthy for "false" too.
     inside_window = inside_window.with_columns(squeak_bearing_mask(inside_window, 'the USV summary').alias('_squeak_bearing'))
@@ -1611,7 +1611,7 @@ def find_vocal_pose_windows(root_directory: str, visualizations_parameter_dict: 
         frames = slice(int(np.floor(t0 * fps)), int(np.floor(t1 * fps)) + 1)
         if not tracked[frames].all() or gap_cm[frames].max() > max_gap_cm:
             continue
-        rows.append({'start': float(t0), 'end': float(t1), 'n_calls': int(inside.sum()), 'vocal_fraction': float(duration[inside].sum() / window_seconds),
+        rows.append({'start': float(t0), 'end': float(t1), 'n_vocalizations': int(inside.sum()), 'vocal_fraction': float(duration[inside].sum() / window_seconds),
                      'bandwidth_khz': float(np.average(bandwidth[inside], weights=duration[inside]) / 1000.0),
                      'mean_duration_ms': float(duration[inside].mean() * 1000.0), 'gap_median_cm': float(np.median(gap_cm[frames])),
                      'gap_max_cm': float(gap_cm[frames].max()), 'microphone': peak_microphone(calls.filter(pls.Series(inside)))})
@@ -1682,7 +1682,7 @@ def plot_vocal_pose_window_candidates(root_directory: str, windows: pls.DataFram
         ax.set_xticks([])
         for spine in ax.spines.values():
             spine.set_visible(False)
-        ax.set_title(f"{chr(ord('A') + rank)}   {row['start']:.2f} to {row['end']:.2f} s   {row['n_calls']} calls   "
+        ax.set_title(f"{chr(ord('A') + rank)}   {row['start']:.2f} to {row['end']:.2f} s   {row['n_vocalizations']} calls   "
                      f"{row['vocal_fraction'] * 100:.0f}% vocal   bandwidth {row['bandwidth_khz']:.0f} kHz   mean {row['mean_duration_ms']:.0f} ms   "
                      f"animals {row['gap_median_cm']:.0f} cm apart (max {row['gap_max_cm']:.0f})   mic {row['microphone']}",
                      loc='left', fontsize=layout['tick_font_size'], color=layout['ink_color'], pad=layout['tick_pad'])

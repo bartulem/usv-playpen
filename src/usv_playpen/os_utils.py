@@ -717,6 +717,9 @@ def read_qlvm_category_bundle(category_directory: str | pathlib.Path) -> dict:
         error_message = f"{directory}: the label grid holds the labels {present}, not 1..{n_categories}."
         raise ValueError(error_message)
     built = build_config['built']
+    # bundles built before the rename record the count as n_calls
+    n_bundle_vocalizations = int(build_config['n_vocalizations'] if 'n_vocalizations' in build_config
+                                 else build_config['n_calls'])
     positions_sha = build_config['positions_file_sha256']
     return {
         'directory': str(directory),
@@ -734,7 +737,7 @@ def read_qlvm_category_bundle(category_directory: str | pathlib.Path) -> dict:
         'model_id': qlvm_cell_model_id(qlvm_production_cell_directory(QLVM_CATEGORY_MAP)),
         'identity': (
             f"{directory} (built {built}, positions sha256 {positions_sha[:12]}, "
-            f"{int(build_config['n_calls'])} calls, {n_categories} categories)"
+            f"{n_bundle_vocalizations} vocalizations, {n_categories} categories)"
         ),
     }
 

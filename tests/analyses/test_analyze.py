@@ -2314,6 +2314,19 @@ def test_decode_attr_recovers_python_types():
 # ---- _polars_to_h5 / _h5_to_polars round-trip -----------------------------
 
 
+def test_h5_to_polars_renames_the_legacy_call_type_column(tmp_path):
+    """An archive table written before the rename carries ``call_type``; it reads back
+    as ``vocal_class`` with its values, so figures read old archives unchanged."""
+    path = tmp_path / "legacy.h5"
+    legacy = pls.DataFrame({"sex": ["male"], "call_type": ["usv"], "adjacency": ["filtered"]})
+    with h5py.File(path, "w") as f:
+        _polars_to_h5(f, "pools", legacy)
+    with h5py.File(path, "r") as f:
+        table = _h5_to_polars(f["pools"])
+    assert table.columns == ["sex", "vocal_class", "adjacency"]
+    assert table["vocal_class"].to_list() == ["usv"]
+
+
 def test_polars_h5_roundtrip_mixed_dtypes(tmp_path):
     """Numeric / string / bool columns survive the polars↔h5py round-trip."""
     df = pls.DataFrame({
@@ -3722,7 +3735,7 @@ def test_fit_serial_dependence_recovers_a_known_bend():
     c = np.log(0.1)
     y = -1.0 + 0.6 * np.minimum(x, c) + rng.laplace(0.0, 0.25, n)
     sessions = np.repeat(np.arange(30).astype(str), n // 30)
-    identity = {"sex": "male", "call_type": "usv", "adjacency": "filtered"}
+    identity = {"sex": "male", "vocal_class": "usv", "adjacency": "filtered"}
     curves, fit, bends = fit_serial_dependence(
         current=np.exp(x), following=np.exp(y), pair_sessions=sessions, pool_identity=identity,
         n_knots=5, corner_widths=[0.05, 0.15], n_bootstrap=20, level=90.0,

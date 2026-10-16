@@ -1562,7 +1562,7 @@ def load_serial_dependence_from_h5(
     h5_path: str | Path,
     interval_type: str,
     sex: str,
-    call_type: str,
+    vocal_class: str,
 ) -> tuple[pls.DataFrame, dict]:
     """
     Description
@@ -1577,7 +1577,7 @@ def load_serial_dependence_from_h5(
         ``'e2s'`` or ``'s2s'``.
     sex (str)
         ``'male'`` or ``'female'``.
-    call_type (str)
+    vocal_class (str)
         ``'usv'`` or ``'squeak'``.
 
     Returns
@@ -1600,10 +1600,10 @@ def load_serial_dependence_from_h5(
     if mode["serial_dependence_fit"] is None:
         msg = f"{h5_path} has no serial_dependence_fit for {interval_type}; was fit_serial_dependence enabled?"
         raise KeyError(msg)
-    pool = (pls.col("sex") == sex) & (pls.col("call_type") == call_type)
+    pool = (pls.col("sex") == sex) & (pls.col("vocal_class") == vocal_class)
     fit = mode["serial_dependence_fit"].filter(pool)
     if fit.height == 0:
-        msg = f"{h5_path} has no serial-dependence fit for {sex} {call_type} ({interval_type})."
+        msg = f"{h5_path} has no serial-dependence fit for {sex} {vocal_class} ({interval_type})."
         raise KeyError(msg)
     return mode["serial_dependence_curves"].filter(pool).sort("current_ms"), fit.row(0, named=True)
 
@@ -1822,7 +1822,7 @@ def load_tied_model_from_h5(
     h5_path: str | Path,
     interval_type: str,
     sex: str,
-    call_type: str,
+    vocal_class: str,
     n_peak: int | None = None,
 ) -> tuple[TMixture, np.ndarray, int, pls.DataFrame]:
     """
@@ -1834,7 +1834,7 @@ def load_tied_model_from_h5(
     this selects one pool and one peak count and reassembles the :class:`TMixture`, keeping
     the stored role order (peak components first) so the rebuilt model is exactly the fitted
     one. With ``n_peak`` left as None the peak count selected by the session-corrected
-    step-up test is used, read from the mode's ``selected_n_peak_<sex>_<call_type>`` attribute.
+    step-up test is used, read from the mode's ``selected_n_peak_<sex>_<vocal_class>`` attribute.
 
     Parameters
     ----------
@@ -1844,7 +1844,7 @@ def load_tied_model_from_h5(
         ``'e2s'`` or ``'s2s'``.
     sex (str)
         ``'male'`` or ``'female'``.
-    call_type (str)
+    vocal_class (str)
         ``'usv'`` or ``'squeak'``.
     n_peak (int or None)
         Peak count to rebuild; defaults to None, meaning the selected count.
@@ -1868,11 +1868,11 @@ def load_tied_model_from_h5(
         msg = f"{h5_path} has no tied_fits for {interval_type}; was fit_tied_model enabled?"
         raise KeyError(msg)
     if n_peak is None:
-        n_peak = int(mode["attrs"][f"selected_n_peak_{sex}_{call_type}"])
-    rows = fits.filter((pls.col("sex") == sex) & (pls.col("call_type") == call_type)
+        n_peak = int(mode["attrs"][f"selected_n_peak_{sex}_{vocal_class}"])
+    rows = fits.filter((pls.col("sex") == sex) & (pls.col("vocal_class") == vocal_class)
                        & (pls.col("n_peak") == n_peak)).sort("component")
     if rows.height == 0:
-        msg = f"no tied fit for {sex} {call_type} {interval_type} at {n_peak} peak(s)."
+        msg = f"no tied fit for {sex} {vocal_class} {interval_type} at {n_peak} peak(s)."
         raise KeyError(msg)
     model = TMixture(
         weights=rows["weight"].to_numpy(),
@@ -1888,7 +1888,7 @@ def load_peak_lrt_sweep_from_h5(
     h5_path: str | Path,
     interval_type: str,
     sex: str,
-    call_type: str,
+    vocal_class: str,
 ) -> tuple[dict, float]:
     """
     Description
@@ -1911,7 +1911,7 @@ def load_peak_lrt_sweep_from_h5(
         ``'e2s'`` or ``'s2s'``.
     sex (str)
         ``'male'`` or ``'female'``.
-    call_type (str)
+    vocal_class (str)
         ``'usv'`` or ``'squeak'``.
 
     Returns
@@ -1926,7 +1926,7 @@ def load_peak_lrt_sweep_from_h5(
     if mode["peak_lrt"] is None:
         msg = f"{h5_path} has no peak_lrt for {interval_type}; was fit_tied_model enabled?"
         raise KeyError(msg)
-    pool = (pls.col("sex") == sex) & (pls.col("call_type") == call_type)
+    pool = (pls.col("sex") == sex) & (pls.col("vocal_class") == vocal_class)
     rungs = mode["peak_lrt"].filter(pool).sort("n_peak_null")
     nulls = mode["peak_lrt_null"].filter(pool)
     sweep: dict = {sex: {}}
@@ -1945,7 +1945,7 @@ def load_tied_ic_table_from_h5(
     h5_path: str | Path,
     interval_type: str,
     sex: str,
-    call_type: str,
+    vocal_class: str,
 ) -> pls.DataFrame:
     """
     Description
@@ -1965,7 +1965,7 @@ def load_tied_ic_table_from_h5(
         ``'e2s'`` or ``'s2s'``.
     sex (str)
         ``'male'`` or ``'female'``.
-    call_type (str)
+    vocal_class (str)
         ``'usv'`` or ``'squeak'``.
 
     Returns
@@ -1979,7 +1979,7 @@ def load_tied_ic_table_from_h5(
     if fits is None:
         msg = f"{h5_path} has no tied_fits for {interval_type}; was fit_tied_model enabled?"
         raise KeyError(msg)
-    return (fits.filter((pls.col("sex") == sex) & (pls.col("call_type") == call_type))
+    return (fits.filter((pls.col("sex") == sex) & (pls.col("vocal_class") == vocal_class))
             .group_by("n_peak").agg(pls.col("bic").first(), pls.col("log_likelihood").first(),
                                    pls.col("n_parameters").first())
             .sort("n_peak")

@@ -2338,17 +2338,17 @@ def _serial_dependence_tables():
     level near 90 ms, bands around it, a bend at 110 ms, and five replicate bends."""
     grid = np.geomspace(30.0, 20000.0, 40)
     line = np.minimum(grid, 110.0) * 0.8
-    identity = {"sex": ["male"] * grid.size, "call_type": ["usv"] * grid.size,
+    identity = {"sex": ["male"] * grid.size, "vocal_class": ["usv"] * grid.size,
                 "adjacency": ["filtered"] * grid.size}
     curves = pls.DataFrame({**identity, "current_ms": grid, "spline_ms": line,
                             "spline_low_ms": line * 0.95, "spline_high_ms": line * 1.05,
                             "bent_ms": line, "bent_low_ms": line * 0.97, "bent_high_ms": line * 1.03})
-    fit = pls.DataFrame([{"sex": "male", "call_type": "usv", "adjacency": "filtered", "n_pairs": 500,
+    fit = pls.DataFrame([{"sex": "male", "vocal_class": "usv", "adjacency": "filtered", "n_pairs": 500,
                           "n_sessions": 10, "n_knots": 6, "corner_width": 0.05, "bend_ms": 110.0,
                           "bend_low_ms": 100.0, "bend_high_ms": 125.0, "slope": 0.55,
                           "flat_level_ms": 88.0, "level": 99.0, "n_bootstrap": 5,
                           "spline_not_converged": 0, "bent_not_converged": 0, "loss_w_0p05": 1.0}])
-    bends = pls.DataFrame({"sex": ["male"] * 5, "call_type": ["usv"] * 5, "adjacency": ["filtered"] * 5,
+    bends = pls.DataFrame({"sex": ["male"] * 5, "vocal_class": ["usv"] * 5, "adjacency": ["filtered"] * 5,
                            "b": np.arange(5), "bend_ms": [105.0, 108.0, 110.0, 112.0, 120.0]})
     return curves, fit, bends
 
@@ -2396,13 +2396,13 @@ def _tied_archive(tmp_path):
         means = [-2.8, -1.7][:n_peak] + [-1.2, 2.4]
         scales = [0.24] * n_peak + [1.2, 1.1]
         for component, (role, mean, scale) in enumerate(zip(roles, means, scales)):
-            rows.append({"sex": "male", "call_type": "usv", "adjacency": "filtered", "n_peak": n_peak,
+            rows.append({"sex": "male", "vocal_class": "usv", "adjacency": "filtered", "n_peak": n_peak,
                          "n_background": 2, "component": component, "role": role, "logmean": mean,
                          "median_sec": float(np.exp(mean)), "logscale": scale, "nu": 20.0,
                          "weight": 1.0 / len(roles), "log_likelihood": loglik, "n_parameters": 10 + n_peak,
                          "bic": bic, "shared_peak_scale": 0.24})
     peak_lrt = pls.DataFrame({
-        "sex": ["male"] * 2, "call_type": ["usv"] * 2, "adjacency": ["filtered"] * 2,
+        "sex": ["male"] * 2, "vocal_class": ["usv"] * 2, "adjacency": ["filtered"] * 2,
         "n_peak_null": [1, 2], "n_peak_alt": [2, 3], "n_background": [2, 2],
         "lr_obs": [68.0, 11.3], "design_effect": [1.56, 1.35], "design_effect_raw": [1.56, 1.35],
         "effective_n": [6400.0, 7400.0], "lr_corrected": [43.5, 8.4], "null_p95": [6.0, 7.0],
@@ -2410,7 +2410,7 @@ def _tied_archive(tmp_path):
         "negative_fraction": [0.0, 0.01], "B": [3, 3], "n_subsample": [10000, 10000],
         "alpha_used": [0.0033, 0.0033], "rejected": [True, False]})
     peak_lrt_null = pls.DataFrame({
-        "sex": ["male"] * 6, "call_type": ["usv"] * 6, "adjacency": ["filtered"] * 6,
+        "sex": ["male"] * 6, "vocal_class": ["usv"] * 6, "adjacency": ["filtered"] * 6,
         "n_peak_null": [1, 1, 1, 2, 2, 2], "b": [2, 0, 1, 0, 1, 2],
         "lr_b": [3.0, 1.0, 2.0, 4.0, 5.0, 6.0]})
     out = tmp_path / "usv_interval_analysis_20260101_120000.h5"

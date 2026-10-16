@@ -300,7 +300,7 @@ class TestOnSyntheticSession:
         windows = find_vocal_pose_windows(str(session), settings, message_output=lambda *_: None)
         assert windows.height > 0
         for row in windows.iter_rows(named=True):
-            assert row["n_calls"] > 0
+            assert row["n_vocalizations"] > 0
             assert not (row["start"] < 7.2 and row["end"] > 7.0), "a window overlapping the female squeak qualified"
             assert not (row["start"] < 8.05 and row["end"] > 8.0), "a window overlapping the noise detection qualified"
             assert row["gap_max_cm"] <= settings["vocal_pose_figures"]["candidates"]["max_gap_cm"]

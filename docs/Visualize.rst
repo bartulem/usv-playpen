@@ -685,7 +685,7 @@ Both outputs land in ``figures.save_directory`` as ``vocal_pose_<session>_<start
 Every tunable lives in the ``vocal_pose_figures`` block of */usv-playpen/_parameter_settings/visualizations_settings.json*. The keys a run normally changes:
 
 * **window.end_time** : the frame shown, in seconds from video start; **window.history_seconds** the spectrogram / time-bar span before it; **window.trail_end_seconds** the age at which the trail has faded to nothing (0 keeps it for the whole window).
-* **spectrogram.microphone** : ``"peak"`` or a device-channel name such as ``"s04"``; **spectrogram.freq_range_khz** / **freq_ticks_khz** the band shown and its labels; **db_floor** ``"adaptive"`` (``adaptive_floor_above_median_db`` above the band's median power) or a dB value; **n_fft** / **hop_fraction** the STFT (a shorter window widens narrowband sweeps); **male_deep** / **female_deep** / **ramp_split** the darker end of each ramp; **ceiling_percentile** / **gamma** / **call_pad_seconds** the loudness scaling.
+* **spectrogram.microphone** : ``"peak"`` or a device-channel name such as ``"s04"``; **spectrogram.freq_range_khz** / **freq_ticks_khz** the band shown and its labels; **db_floor** ``"adaptive"`` (``adaptive_floor_above_median_db`` above the band's median power) or a dB value; **n_fft** / **hop_fraction** the STFT (a shorter window widens narrowband sweeps); **male_deep** / **female_deep** / **ramp_split** the darker end of each ramp; **ceiling_percentile** / **gamma** / **vocal_pad_seconds** the loudness scaling.
 * **camera.azimuth** : ``"male_side"`` or degrees; **camera.elevation** degrees above the floor (90 is straight down); **camera.top_sex** the animal drawn last, on top where they overlap.
 * **trail** : ``strongest`` (colour strength just behind the present), ``fade_seconds`` (time constant), ``floor`` (strength old silhouettes settle to), ``taper_fraction`` (the last fraction of the trail over which it tapers to nothing).
 * **skeleton** : ``line_width`` / ``node_size`` at the reference zoom (``reference_half_extent_m``), ``body_opacity`` / ``trail_body_opacity`` of the filled bodies, ``margin_m`` / ``z_margin_m`` around the trail, ``history_point``.
@@ -726,7 +726,7 @@ Every tunable lives in the ``vocal_pose_figures`` block of */usv-playpen/_parame
                 "male_deep": 0.4,
                 "female_deep": 1.0,
                 "ramp_split": 0.5,
-                "call_pad_seconds": 0.005
+                "vocal_pad_seconds": 0.005
             },
             "camera": {
                 "azimuth": "male_side",

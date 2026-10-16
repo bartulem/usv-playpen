@@ -215,7 +215,7 @@ def _h5_to_polars(ds: h5py.Dataset) -> pls.DataFrame:
 
     is_empty = bool(ds.attrs["empty"])
     if is_empty:
-        return pls.DataFrame(schema=schema)
+        return _rename_legacy_columns(pls.DataFrame(schema=schema))
 
     arr = ds[()]
     cols: dict[str, list] = {}
@@ -232,7 +232,30 @@ def _h5_to_polars(ds: h5py.Dataset) -> pls.DataFrame:
             # through a Python list; byte-identical values, ~3x faster.
             cols[col] = np.ascontiguousarray(col_data)
 
-    return pls.DataFrame(cols, schema=schema)
+    return _rename_legacy_columns(pls.DataFrame(cols, schema=schema))
+
+
+def _rename_legacy_columns(df: pls.DataFrame) -> pls.DataFrame:
+    """
+    Description
+    -----------
+    Renames the columns an archive written before the current names carries:
+    ``call_type`` (the pools' vocal class, ``usv`` / ``squeak``) is ``vocal_class``.
+
+    Parameters
+    ----------
+    df (pls.DataFrame)
+        A table read from an archive.
+
+    Returns
+    -------
+    df (pls.DataFrame)
+        The table under the current column names.
+    """
+
+    if "call_type" in df.columns and "vocal_class" not in df.columns:
+        return df.rename({"call_type": "vocal_class"})
+    return df
 
 
 def _try_git_sha(repo_root: Path) -> str:
@@ -313,7 +336,7 @@ def write_ivi_h5(
         pool is too small to fit and is archived for description only) may be
         ``None`` and are then not written.
 
-        Every table carries ``sex``, ``call_type`` and ``adjacency`` columns
+        Every table carries ``sex``, ``vocal_class`` and ``adjacency`` columns
         identifying which pool it describes, because a mode group now holds several:
         an inter-USV interval analysis and an inter-squeak interval analysis are
         different measurements of different vocalizations and must not be read as one.

@@ -135,7 +135,7 @@ def _write_fake_package(tmp_path, roots):
             clusters = cell / "inference" / f"clusters_{level}"
             clusters.mkdir(parents=True)
             pls.DataFrame({
-                "label": [1, 2], "n_calls": [30 + index, 20], "peak_x": [0.1, 0.6], "stable": [True, False],
+                "label": [1, 2], "n_vocalizations": [30 + index, 20], "peak_x": [0.1, 0.6], "stable": [True, False],
                 "fine_clusters": ["1;3", "2"],
             }).write_csv(clusters / "clusters.csv")
             pls.DataFrame({"basin_a": [1], "basin_b": [2], "saddle": [0.5], "supported": [True]}).write_csv(

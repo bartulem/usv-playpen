@@ -172,7 +172,7 @@ def load_and_filter_usv_data(
     session_root: str,
     frame_rate: float,
     exclude_noise_usvs: bool,
-    call_type: str | None = None
+    vocal_class: str | None = None
 ) -> pls.DataFrame:
     """
     Description
@@ -185,7 +185,7 @@ def load_and_filter_usv_data(
     (male, female and unassigned). A session whose summary has no ``noise`` column raises there, so a
     missing classification can never be mistaken for a clean session.
 
-    ``call_type`` selects among the vocalizations that survive. Dropping noise leaves ultrasonic
+    ``vocal_class`` selects among the vocalizations that survive. Dropping noise leaves ultrasonic
     calls AND squeaks, and the two are different vocalizations: a squeak is a broadband call with a
     3-8 kHz fundamental, while a USV is ultrasonic. ``detect_usv_squeaks`` writes two booleans for
     every non-noise segment, ``usv`` and ``squeak``: a pure USV is ``usv & ~squeak``, a pure squeak
@@ -216,7 +216,7 @@ def load_and_filter_usv_data(
         The sampling rate of the video recording used to synchronize USVs with behavioral frames.
     exclude_noise_usvs (bool)
         Whether to drop the segments flagged as noise.
-    call_type (str or None)
+    vocal_class (str or None)
         Which vocalizations to keep: ``'usv'`` for pure USVs only (``usv & ~squeak``),
         ``'squeak'`` for pure squeaks only (``squeak & ~usv``; segments holding both and null
         booleans are in neither), or None to keep every row that survives the noise filter.
@@ -226,8 +226,8 @@ def load_and_filter_usv_data(
     Returns
     -------
     usv_info (pls.DataFrame)
-        All columns from the USV summary CSV with noise rows removed, restricted to ``call_type``,
-        each row's ``start`` / ``stop`` the times of the vocalization ``call_type`` asks about,
+        All columns from the USV summary CSV with noise rows removed, restricted to ``vocal_class``,
+        each row's ``start`` / ``stop`` the times of the vocalization ``vocal_class`` asks about,
         sorted by ``start``, plus a newly calculated 'frame_index' column.
 
     Raises
@@ -235,9 +235,9 @@ def load_and_filter_usv_data(
     FileNotFoundError
         The session has no USV summary.
     ValueError
-        ``call_type`` is not ``'usv'``, ``'squeak'`` or None.
+        ``vocal_class`` is not ``'usv'``, ``'squeak'`` or None.
     KeyError
-        ``call_type`` is ``'squeak'`` or None and the summary lacks the ``usv`` / ``squeak``
+        ``vocal_class`` is ``'squeak'`` or None and the summary lacks the ``usv`` / ``squeak``
         booleans or ``squeak_start`` / ``squeak_end``.
     """
 
@@ -252,12 +252,12 @@ def load_and_filter_usv_data(
 
     usv_info_clean = drop_noise_usvs(usv_info, usv_file.name)[0] if exclude_noise_usvs else usv_info
 
-    if call_type is not None:
-        if call_type not in ("usv", "squeak"):
-            msg = f"load_and_filter_usv_data: call_type must be 'usv', 'squeak' or None, got {call_type!r}."
+    if vocal_class is not None:
+        if vocal_class not in ("usv", "squeak"):
+            msg = f"load_and_filter_usv_data: vocal_class must be 'usv', 'squeak' or None, got {vocal_class!r}."
             raise ValueError(msg)
-        usv_info_clean = usv_info_clean.filter(vocal_class_mask(usv_info_clean, (call_type,), usv_file.name))
-    selected_classes = VOCAL_CLASSES if call_type is None else (call_type,)
+        usv_info_clean = usv_info_clean.filter(vocal_class_mask(usv_info_clean, (vocal_class,), usv_file.name))
+    selected_classes = VOCAL_CLASSES if vocal_class is None else (vocal_class,)
     usv_info_clean = vocal_event_times(usv_info_clean, selected_classes, usv_file.name)
 
     return usv_info_clean.with_columns(

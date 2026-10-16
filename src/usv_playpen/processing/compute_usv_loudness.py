@@ -44,7 +44,7 @@ from .generate_spectrograms import excluded_audio_columns, open_hpss_audio
 _POWER_FLOOR = 1e-12
 
 
-def call_image_level_db(
+def usv_image_level_db(
     audio_segment_channels: np.ndarray,
     sampling_rate: int,
     spec_params: dict,
@@ -128,7 +128,7 @@ def session_image_level_db(
     """
     Description
     -----------
-    The image-level loudness (:func:`call_image_level_db`) of a session's calls,
+    The image-level loudness (:func:`usv_image_level_db`) of a session's calls,
     sliced from its HPSS-filtered audio memmap exactly as
     :class:`generate_spectrograms.SpectrogramGenerator` slices them (floor of
     ``start - offset``, ceil of ``stop + offset``) over the channels the session
@@ -153,7 +153,7 @@ def session_image_level_db(
     Returns
     -------
     image_level_db (np.ndarray)
-        ``(N,)`` float32 loudness in dB (NaN where :func:`call_image_level_db` is).
+        ``(N,)`` float32 loudness in dB (NaN where :func:`usv_image_level_db` is).
     """
 
     message_output = message_output if message_output is not None else print
@@ -170,5 +170,5 @@ def session_image_level_db(
         if s1 <= s0:
             continue
         segment = np.asarray(audio[s0:s1, :])[:, eligible_columns]
-        loudness[call_idx] = call_image_level_db(segment, sampling_rate, spec_params, regions[call_idx])
+        loudness[call_idx] = usv_image_level_db(segment, sampling_rate, spec_params, regions[call_idx])
     return loudness

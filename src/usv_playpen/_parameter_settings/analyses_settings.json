@@ -68,13 +68,13 @@
     "interval_pools": [
       {
         "sex": "male",
-        "call_type": "usv",
+        "vocal_class": "usv",
         "adjacency": "filtered",
         "fit": true
       },
       {
         "sex": "female",
-        "call_type": "squeak",
+        "vocal_class": "squeak",
         "adjacency": "strict",
         "fit": false
       }

@@ -91,8 +91,8 @@ def _make_settings(tmp_path, fit_mixture_model=False, fit_tied_model=False, fit_
             "bootstrap_lrt_alpha": 0.05,
             "bootstrap_lrt_bonferroni": True,
             "interval_pools": [
-                {"sex": "male", "call_type": "usv", "adjacency": "filtered", "fit": True},
-                {"sex": "female", "call_type": "squeak", "adjacency": "strict", "fit": False},
+                {"sex": "male", "vocal_class": "usv", "adjacency": "filtered", "fit": True},
+                {"sex": "female", "vocal_class": "squeak", "adjacency": "strict", "fit": False},
             ],
             "min_intervals_for_fitting": 1,
             "fit_tied_model": fit_tied_model,
@@ -210,7 +210,7 @@ def _mock_session_resolution(monkeypatch, tmp_path):
     monkeypatch.setattr(iui_mod, "_session_source_map",
                         lambda lists: {sess_root: "groupA"})
 
-    def fake_compute(session_root, interval_type, exclude_noise_usvs, call_type=None,
+    def fake_compute(session_root, interval_type, exclude_noise_usvs, vocal_class=None,
                      adjacency="filtered"):
         if session_root != sess_root:
             return {}
@@ -262,7 +262,7 @@ def test_save_iui_writes_archive_when_fit_mixture_model_false(tmp_path, mocker, 
     # Both modes have intervals + drop_counts; mixture_model_fits / bootstrap_lrt are None
     for mode in per_mode.values():
         assert mode["intervals"].height == 5  # 3 male USV + 2 female squeak per mode
-        assert set(mode["intervals"]["call_type"].unique()) == {"usv", "squeak"}
+        assert set(mode["intervals"]["vocal_class"].unique()) == {"usv", "squeak"}
         assert mode["pool_summary"].height == 2
         assert mode["mixture_model_fits"] is None
         assert mode["bootstrap_lrt"] is None
@@ -489,7 +489,7 @@ def test_fit_tied_peak_ladder_and_lrt_tables_and_selection():
     """
 
     values, labels = _two_peak_intervals()
-    identity = {"sex": "male", "call_type": "usv"}
+    identity = {"sex": "male", "vocal_class": "usv"}
     messages = []
     fits, modes, lrt, null, selected, alpha_eff = fit_tied_peak_ladder_and_lrt(
         values=values, session_labels=labels, pool_identity=identity, peak_grid=[1, 2],
@@ -512,7 +512,7 @@ def test_fit_tied_peak_ladder_and_lrt_tables_and_selection():
     assert alpha_eff == pytest.approx(0.005)
     assert null.height == 2 * 19
     for table in (fits, modes, lrt, null):
-        assert (table["sex"] == "male").all() and (table["call_type"] == "usv").all()
+        assert (table["sex"] == "male").all() and (table["vocal_class"] == "usv").all()
     assert selected in (1, 2, 3)
     assert any("step-up selection" in m for m in messages)
 
@@ -681,16 +681,16 @@ def _write_summary(root: Path, with_vocal_flags: bool) -> None:
 
 
 def test_load_and_filter_usv_data_call_type_filters(tmp_path):
-    """``call_type='usv'`` keeps the pure USVs (usv true, squeak false) and ``'squeak'`` the pure
+    """``vocal_class='usv'`` keeps the pure USVs (usv true, squeak false) and ``'squeak'`` the pure
     squeaks; a segment with both flags true (usv true is not enough) and an unscored (null) row
     belong to neither, and None keeps every row. Each row is timed as its vocalization: the pure
     squeak at its squeak extent (2.02-2.08 s), and under None the overlap segment at the union of
     the segment and its squeak (4.0-4.15 s); pure USVs keep their segments."""
 
     _write_summary(tmp_path, with_vocal_flags=True)
-    usv = load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, call_type="usv")
-    squeak = load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, call_type="squeak")
-    every = load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, call_type=None)
+    usv = load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, vocal_class="usv")
+    squeak = load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, vocal_class="squeak")
+    every = load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, vocal_class=None)
     assert usv["start"].to_list() == [1.0, 3.0]
     assert squeak["start"].to_list() == [2.02]
     assert squeak["stop"].to_list() == [2.08]
@@ -707,19 +707,19 @@ def test_load_and_filter_usv_data_squeaks_need_the_squeak_extent(tmp_path):
     _write_summary(tmp_path, with_vocal_flags=True)
     summary_path = tmp_path / "audio" / f"{tmp_path.name}_usv_summary.csv"
     pls.read_csv(summary_path).drop("squeak_start", "squeak_end").write_csv(summary_path)
-    for call_type in ("squeak", None):
+    for vocal_class in ("squeak", None):
         with pytest.raises(KeyError, match="squeak_start"):
-            load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, call_type=call_type)
-    usv = load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, call_type="usv")
+            load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, vocal_class=vocal_class)
+    usv = load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, vocal_class="usv")
     assert usv["start"].to_list() == [1.0, 3.0]
 
 
 def test_load_and_filter_usv_data_rejects_unknown_call_type(tmp_path):
-    """An unknown ``call_type`` is a ValueError."""
+    """An unknown ``vocal_class`` is a ValueError."""
 
     _write_summary(tmp_path, with_vocal_flags=True)
-    with pytest.raises(ValueError, match="call_type"):
-        load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, call_type="bark")
+    with pytest.raises(ValueError, match="vocal_class"):
+        load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, vocal_class="bark")
 
 
 def test_load_and_filter_usv_data_without_vocal_flags_raises(tmp_path):
@@ -728,7 +728,7 @@ def test_load_and_filter_usv_data_without_vocal_flags_raises(tmp_path):
 
     _write_summary(tmp_path, with_vocal_flags=False)
     with pytest.raises(KeyError, match="detect-usv-squeaks"):
-        load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, call_type="usv")
+        load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, vocal_class="usv")
 
 
 def _patch_session_identity(monkeypatch) -> None:
@@ -762,11 +762,11 @@ def test_compute_session_usv_intervals_overlap_is_neither_usv_nor_squeak(tmp_pat
     }).write_csv(str(audio / f"{tmp_path.name}_usv_summary.csv"))
 
     filtered = compute_session_usv_intervals(str(tmp_path), "s2s", exclude_noise_usvs=True,
-                                             call_type="squeak", adjacency="filtered")
+                                             vocal_class="squeak", adjacency="filtered")
     strict = compute_session_usv_intervals(str(tmp_path), "s2s", exclude_noise_usvs=True,
-                                           call_type="squeak", adjacency="strict")
+                                           vocal_class="squeak", adjacency="strict")
     usv = compute_session_usv_intervals(str(tmp_path), "s2s", exclude_noise_usvs=True,
-                                        call_type="usv", adjacency="filtered")
+                                        vocal_class="usv", adjacency="filtered")
     np.testing.assert_allclose(filtered["female"], [2.0, 1.0])
     np.testing.assert_allclose(strict["female"], [1.0])
     assert usv["male"].size == 0 and usv["female"].size == 0
@@ -795,7 +795,7 @@ def test_compute_session_usv_intervals_chains_break_at_another_animals_vocalizat
         str(audio / f"{tmp_path.name}_usv_summary.csv"))
 
     out = compute_session_usv_intervals(str(tmp_path), "s2s", exclude_noise_usvs=True,
-                                        call_type="usv", adjacency="filtered")
+                                        vocal_class="usv", adjacency="filtered")
     np.testing.assert_allclose(out["male"], [0.2, 0.3, 0.4, 0.2])
     np.testing.assert_array_equal(out["chain_male"], [1, 1, 2, 3])
     assert out["n_dropped_male"] == 1
@@ -827,8 +827,8 @@ def test_compute_session_usv_intervals_time_squeaks_by_their_extent(tmp_path, mo
 
     for adjacency in ("filtered", "strict"):
         s2s = compute_session_usv_intervals(str(tmp_path), "s2s", exclude_noise_usvs=True,
-                                            call_type="squeak", adjacency=adjacency)
+                                            vocal_class="squeak", adjacency=adjacency)
         e2s = compute_session_usv_intervals(str(tmp_path), "e2s", exclude_noise_usvs=True,
-                                            call_type="squeak", adjacency=adjacency)
+                                            vocal_class="squeak", adjacency=adjacency)
         np.testing.assert_allclose(s2s["female"], [1.15])
         np.testing.assert_allclose(e2s["female"], [1.05])

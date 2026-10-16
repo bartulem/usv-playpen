@@ -757,7 +757,18 @@ def test_read_qlvm_category_bundle_returns_every_file_it_reads(tmp_path):
     assert bundle["build_config"] == build_config
     sha = build_config["positions_file_sha256"]
     assert f"positions sha256 {sha[:12]}," in bundle["identity"]
-    assert f"{int(build_config['n_calls'])} calls, 4 categories)" in bundle["identity"]
+    assert f"{int(build_config['n_vocalizations'])} vocalizations, 4 categories)" in bundle["identity"]
+
+
+def test_read_qlvm_category_bundle_reads_a_bundle_built_before_the_rename(tmp_path):
+    """A bundle built before the count was renamed records it as n_calls; it still reads,
+    with the same count in the provenance line."""
+    directory = write_qlvm_category_bundle(tmp_path / "legacy")
+    config = json.loads((directory / "build_config.json").read_text())
+    config["n_calls"] = config.pop("n_vocalizations")
+    (directory / "build_config.json").write_text(json.dumps(config))
+    bundle = os_utils.read_qlvm_category_bundle(str(directory))
+    assert f"{config['n_calls']} vocalizations, 4 categories)" in bundle["identity"]
 
 
 def test_resolve_consolidated_h5_picks_newest_and_skips_other_h5(tmp_path):

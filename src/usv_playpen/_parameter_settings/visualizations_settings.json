@@ -311,7 +311,7 @@
       "male_deep": 0.4,
       "female_deep": 1.0,
       "ramp_split": 0.5,
-      "call_pad_seconds": 0.005
+      "vocal_pad_seconds": 0.005
     },
     "camera": {
       "azimuth": "male_side",

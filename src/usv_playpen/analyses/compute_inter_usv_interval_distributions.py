@@ -164,7 +164,7 @@ def compute_session_usv_intervals(
     session_root: str,
     interval_type: str,
     exclude_noise_usvs: bool,
-    call_type: str | None = None,
+    vocal_class: str | None = None,
     adjacency: str = "filtered",
 ) -> dict:
     """
@@ -200,7 +200,7 @@ def compute_session_usv_intervals(
     exclude_noise_usvs (bool)
         Whether to drop the segments ``detect_usv_noise`` flagged as holding no
         vocalization before the intervals are measured.
-    call_type (str or None)
+    vocal_class (str or None)
         Restrict to ``'usv'`` (pure USVs, ``usv & ~squeak``) or ``'squeak'`` (pure
         squeaks, ``squeak & ~usv``), or None for every non-noise row.
         Defaults to None. An inter-USV interval analysis wants ``'usv'``: dropping
@@ -276,11 +276,11 @@ def compute_session_usv_intervals(
             session_root=session_root,
             frame_rate=metadata['frame_rate'],
             exclude_noise_usvs=exclude_noise_usvs,
-            call_type=call_type if adjacency == "filtered" else None,
+            vocal_class=vocal_class if adjacency == "filtered" else None,
         )
     except FileNotFoundError:
         return {}
-    if call_type is not None and adjacency == "strict":
+    if vocal_class is not None and adjacency == "strict":
         require_vocal_flags(usv_info, session_root)
 
     # column lookup for the two interval modes
@@ -304,8 +304,8 @@ def compute_session_usv_intervals(
     # Under 'strict' the target-type flag has to survive into the pairing loop, so it is
     # carried alongside start/stop/sex rather than applied as a row filter.
     target_expr = (
-        pls.lit(True).alias("is_target") if (call_type is None or adjacency == "filtered")
-        else vocal_class_mask(usv_info, (call_type,), session_root).alias("is_target")
+        pls.lit(True).alias("is_target") if (vocal_class is None or adjacency == "filtered")
+        else vocal_class_mask(usv_info, (vocal_class,), session_root).alias("is_target")
     )
     if "stop" in usv_info.columns:
         sub = usv_info.with_columns([emitter_expr, target_expr]).select(
@@ -993,7 +993,7 @@ def fit_serial_dependence(
     pair_sessions (np.ndarray)
         A (n_pairs,) array with each pair's session.
     pool_identity (dict)
-        ``{'sex', 'call_type', 'adjacency'}``, written into every output row.
+        ``{'sex', 'vocal_class', 'adjacency'}``, written into every output row.
     n_knots (int)
         Spline knots, placed at quantiles of the log current interval.
     corner_widths (list of float)
@@ -1142,7 +1142,7 @@ def fit_tied_peak_ladder_and_lrt(
     session_labels (np.ndarray)
         A (n_intervals,) ndarray of session identifiers aligned with ``values``.
     pool_identity (dict)
-        ``{'sex', 'call_type', 'adjacency'}`` copied onto every output row.
+        ``{'sex', 'vocal_class', 'adjacency'}`` copied onto every output row.
     peak_grid (list[int])
         Null peak counts to test; the ladder is fitted up to ``max(peak_grid) + 1``.
     n_background (int)
@@ -1504,7 +1504,7 @@ class InterUSVIntervalCalculator:
             "source_list": pls.Utf8,
             "interval_type": pls.Utf8,
             "sex": pls.Utf8,
-            "call_type": pls.Utf8,
+            "vocal_class": pls.Utf8,
             "adjacency": pls.Utf8,
             "interval_s": pls.Float64,
             "log_interval": pls.Float64,
@@ -1526,10 +1526,10 @@ class InterUSVIntervalCalculator:
 
             for spec in interval_pools:
                 sex = spec['sex']
-                call_type = spec['call_type']
+                vocal_class = spec['vocal_class']
                 adjacency = spec['adjacency']
-                identity = {"sex": sex, "call_type": call_type, "adjacency": adjacency}
-                key = (sex, call_type, adjacency)
+                identity = {"sex": sex, "vocal_class": vocal_class, "adjacency": adjacency}
+                key = (sex, vocal_class, adjacency)
                 arrays: list[np.ndarray] = []
                 labels: list[np.ndarray] = []
                 emitters: list[np.ndarray] = []
@@ -1542,7 +1542,7 @@ class InterUSVIntervalCalculator:
                         session_root=session_root,
                         interval_type=interval_type,
                         exclude_noise_usvs=exclude_noise_usvs,
-                        call_type=call_type,
+                        vocal_class=vocal_class,
                         adjacency=adjacency,
                     )
                     if not usv_interval:
@@ -1562,7 +1562,7 @@ class InterUSVIntervalCalculator:
                         "source_list": [(source_map[session_root] if session_root in source_map else "")] * arr.size,
                         "interval_type": [interval_type] * arr.size,
                         "sex": [sex] * arr.size,
-                        "call_type": [call_type] * arr.size,
+                        "vocal_class": [vocal_class] * arr.size,
                         "adjacency": [adjacency] * arr.size,
                         "interval_s": arr.astype(float),
                         "log_interval": np.log(arr),
@@ -1581,7 +1581,7 @@ class InterUSVIntervalCalculator:
                 summary = summarize_interval_pool(values, len(labels))
                 summary_rows.append({**identity, **summary, "fitted": False})
                 message(
-                    f"  [{interval_type}] {sex} {call_type} ({adjacency}): "
+                    f"  [{interval_type}] {sex} {vocal_class} ({adjacency}): "
                     f"n={values.size} from {len(labels)} sessions, "
                     f"median={summary['median_s']:.4f} s (dropped non-positive: {n_dropped})"
                 )
@@ -1605,7 +1605,7 @@ class InterUSVIntervalCalculator:
                     pool_tables["serial_dependence_bends"].append(sd_bends)
                     row = sd_fit.row(0, named=True)
                     message(
-                        f"    [{interval_type}] {sex} {call_type} serial dependence: "
+                        f"    [{interval_type}] {sex} {vocal_class} serial dependence: "
                         f"{row['n_pairs']} pairs from {row['n_sessions']} sessions; bend "
                         f"{row['bend_ms']:.1f} ms ({row['level']:.0f}% "
                         f"{row['bend_low_ms']:.1f}-{row['bend_high_ms']:.1f}), slope "
@@ -1634,8 +1634,8 @@ class InterUSVIntervalCalculator:
                     pool_tables["peak_lrt"].append(lrt)
                     pool_tables["peak_lrt_null"].append(lrt_null)
                     summary_rows[-1]["fitted"] = True
-                    mode_attrs[f"selected_n_peak_{sex}_{call_type}"] = int(selected)
-                    mode_attrs[f"alpha_effective_{sex}_{call_type}"] = float(alpha_eff)
+                    mode_attrs[f"selected_n_peak_{sex}_{vocal_class}"] = int(selected)
+                    mode_attrs[f"alpha_effective_{sex}_{vocal_class}"] = float(alpha_eff)
 
             tidy_df = (pls.concat(tidy_frames) if tidy_frames
                        else pls.DataFrame(schema=usv_interval_schema))
@@ -1658,7 +1658,7 @@ class InterUSVIntervalCalculator:
             # session labels travel with it, and the step-up stops on the corrected p-value);
             # the uncorrected statistic and p-value are archived alongside for comparison.
             if fit_mixture_model:
-                fit_keys = {spec['sex']: (spec['sex'], spec['call_type'], spec['adjacency'])
+                fit_keys = {spec['sex']: (spec['sex'], spec['vocal_class'], spec['adjacency'])
                             for spec in interval_pools if spec['fit']}
                 fit_pools = {k: pool_values[key] for k, key in fit_keys.items()}
                 fit_pools = {k: v for k, v in fit_pools.items() if v.size >= 2}

@@ -789,7 +789,7 @@ def _generate_vocal_trace(event_starts: np.ndarray,
     return trace
 
 
-def _group_calls_into_bouts(starts: np.ndarray,
+def _group_vocalizations_into_bouts(starts: np.ndarray,
                             stops: np.ndarray,
                             ibi_threshold: float) -> tuple[np.ndarray, np.ndarray]:
     """
@@ -854,7 +854,7 @@ def _bout_offset_events(starts: np.ndarray,
     stops : np.ndarray
         Call stop times (s), same order.
     bout_start_indices : np.ndarray
-        First-call index of every bout (see ``_group_calls_into_bouts``).
+        First-call index of every bout (see ``_group_vocalizations_into_bouts``).
     bout_end_indices : np.ndarray
         Last-call index of every bout.
     min_usv_per_bout : int
@@ -1264,7 +1264,7 @@ def find_onset_epochs(root_directories: list = None,
 
                 if len(starts) > 0:
                     # Logic: filter using IBI threshold
-                    bout_start_indices, bout_end_indices = _group_calls_into_bouts(starts, stops, ibi_threshold)
+                    bout_start_indices, bout_end_indices = _group_vocalizations_into_bouts(starts, stops, ibi_threshold)
 
                     for j in range(len(bout_start_indices)):
                         idx_start = bout_start_indices[j]
@@ -1353,7 +1353,7 @@ def find_onset_epochs(root_directories: list = None,
             elif prediction_mode == 'bout_offset':
                 starts = usv_data_dict[session_id][mouse_name]['start']
                 stops = usv_data_dict[session_id][mouse_name]['stop']
-                bout_start_indices, bout_end_indices = _group_calls_into_bouts(starts, stops, ibi_threshold)
+                bout_start_indices, bout_end_indices = _group_vocalizations_into_bouts(starts, stops, ibi_threshold)
                 usv_events_positive, usv_events_negative = _bout_offset_events(
                     starts=starts, stops=stops,
                     bout_start_indices=bout_start_indices, bout_end_indices=bout_end_indices,

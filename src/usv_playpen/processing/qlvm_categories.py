@@ -155,7 +155,7 @@ def property_ranks(values: np.ndarray) -> np.ndarray:
     return np.column_stack([(rankdata(values[:, index]) - 0.5) / n_calls for index in range(values.shape[1])])
 
 
-def call_pixels(coordinates: np.ndarray, resolution: int) -> tuple[np.ndarray, np.ndarray]:
+def vocalization_pixels(coordinates: np.ndarray, resolution: int) -> tuple[np.ndarray, np.ndarray]:
     """
     Description
     -----------
@@ -982,7 +982,7 @@ class QLVMCategoryBuilder:
         n_categories = int(cfg['n_categories'])
         corpus, values = self._load_corpus(cfg)
         ranks = property_ranks(values)
-        rows, cols = call_pixels(corpus[['x', 'y']].to_numpy(dtype=np.float64), resolution)
+        rows, cols = vocalization_pixels(corpus[['x', 'y']].to_numpy(dtype=np.float64), resolution)
         sessions = corpus['session_id'].to_numpy().astype(str)
         pool = np.unique(sessions)
         self.message_output(f"{corpus.shape[0]:,} calls from {pool.size} sessions; properties {list(cfg['properties'])}.")
@@ -1021,14 +1021,14 @@ class QLVMCategoryBuilder:
                 'grid_label': category,
                 'name': f'R-{category}',
                 'description': descriptions[category - 1],
-                'n_calls': int((call_category == category).sum()),
+                'n_vocalizations': int((call_category == category).sum()),
                 'share': round(float((call_category == category).mean()), 4),
                 'uncertain_share': round(float(uncertain[call_category == category].mean()), 4) if (call_category == category).any() else 0.0,
                 'label_x': round(label_x, 4),
                 'label_y': round(label_y, 4),
             })
             self.message_output(
-                f"  R-{category} ({descriptions[category - 1] or 'no description'}): {categories[-1]['n_calls']:,} calls "
+                f"  R-{category} ({descriptions[category - 1] or 'no description'}): {categories[-1]['n_vocalizations']:,} calls "
                 f"({categories[-1]['share']:.1%}), {categories[-1]['uncertain_share']:.1%} uncertain."
             )
 
@@ -1051,7 +1051,7 @@ class QLVMCategoryBuilder:
             'n_categories': n_categories,
             'uncertain_agreement': float(cfg['uncertain_agreement']),
             'n_votes': int(n_votes),
-            'n_calls': int(corpus.shape[0]),
+            'n_vocalizations': int(corpus.shape[0]),
             'categories': categories,
         }
         with atomic_output_path(output_dir / CATEGORY_NOMENCLATURE_NAME) as tmp_path:
@@ -1071,7 +1071,7 @@ class QLVMCategoryBuilder:
             'positions_file': str(self.positions_file),
             'positions_file_sha256': file_sha256(self.positions_file),
             'properties_file': str(self.properties_file),
-            'n_calls': int(corpus.shape[0]),
+            'n_vocalizations': int(corpus.shape[0]),
             'n_sessions': int(pool.size),
             'n_basins': int(layers['basins'].max()),
             'n_votes': int(n_votes),

@@ -15,7 +15,7 @@ import pytest
 import yaml
 
 from usv_playpen.processing.compute_usv_loudness import (
-    call_image_level_db,
+    usv_image_level_db,
     session_image_level_db,
 )
 
@@ -43,8 +43,8 @@ def test_call_image_level_db_scales_with_the_audio_level():
     """Power is kept absolute: ten times the amplitude is 20 dB louder."""
     rng = np.random.default_rng(0)
     segment = _tone(12500, 60000.0, 3000.0, rng)[:, None]
-    quiet = call_image_level_db(segment, _SR, _SPEC_PARAMS, _FULL)
-    loud = call_image_level_db(10.0 * segment, _SR, _SPEC_PARAMS, _FULL)
+    quiet = usv_image_level_db(segment, _SR, _SPEC_PARAMS, _FULL)
+    loud = usv_image_level_db(10.0 * segment, _SR, _SPEC_PARAMS, _FULL)
     assert loud - quiet == pytest.approx(20.0, abs=1e-4)
 
 
@@ -54,11 +54,11 @@ def test_call_image_level_db_weights_channels_by_their_variance():
     rng = np.random.default_rng(1)
     loud = _tone(12500, 60000.0, 6000.0, rng)
     quiet = _tone(12500, 60000.0, 600.0, rng)
-    level_loud = call_image_level_db(loud[:, None], _SR, _SPEC_PARAMS, _FULL)
-    level_quiet = call_image_level_db(quiet[:, None], _SR, _SPEC_PARAMS, _FULL)
+    level_loud = usv_image_level_db(loud[:, None], _SR, _SPEC_PARAMS, _FULL)
+    level_quiet = usv_image_level_db(quiet[:, None], _SR, _SPEC_PARAMS, _FULL)
     w_loud, w_quiet = np.var(loud - loud.mean()), np.var(quiet - quiet.mean())
     expected = (w_loud * level_loud + w_quiet * level_quiet) / (w_loud + w_quiet)
-    got = call_image_level_db(np.stack([loud, quiet], axis=1), _SR, _SPEC_PARAMS, _FULL)
+    got = usv_image_level_db(np.stack([loud, quiet], axis=1), _SR, _SPEC_PARAMS, _FULL)
     assert got == pytest.approx(expected, abs=1e-4)
     assert level_quiet < got < level_loud
 
@@ -72,17 +72,17 @@ def test_call_image_level_db_averages_only_inside_the_region():
     on_tone, off_tone = np.zeros((128, 128), dtype=bool), np.zeros((128, 128), dtype=bool)
     on_tone[tone_row - 1:tone_row + 2, :] = True
     off_tone[110:, :] = True
-    assert call_image_level_db(segment, _SR, _SPEC_PARAMS, on_tone) > call_image_level_db(segment, _SR, _SPEC_PARAMS, off_tone) + 10.0
+    assert usv_image_level_db(segment, _SR, _SPEC_PARAMS, on_tone) > usv_image_level_db(segment, _SR, _SPEC_PARAMS, off_tone) + 10.0
 
 
 def test_call_image_level_db_is_nan_without_a_usable_call():
     """A segment shorter than one STFT window, or a region with no pixel over the
     call's frames, has no level."""
     rng = np.random.default_rng(3)
-    assert np.isnan(call_image_level_db(_tone(1000, 60000.0, 3000.0, rng)[:, None], _SR, _SPEC_PARAMS, _FULL))
+    assert np.isnan(usv_image_level_db(_tone(1000, 60000.0, 3000.0, rng)[:, None], _SR, _SPEC_PARAMS, _FULL))
     late = np.zeros((128, 128), dtype=bool)
     late[:, 120:] = True                              # a 12,500-sample call spans 25 frames
-    assert np.isnan(call_image_level_db(_tone(12500, 60000.0, 3000.0, rng)[:, None], _SR, _SPEC_PARAMS, late))
+    assert np.isnan(usv_image_level_db(_tone(12500, 60000.0, 3000.0, rng)[:, None], _SR, _SPEC_PARAMS, late))
 
 
 def test_session_image_level_db_slices_like_the_generator_and_drops_excluded_channels(tmp_path):
@@ -111,4 +111,4 @@ def test_session_image_level_db_slices_like_the_generator_and_drops_excluded_cha
     assert got.dtype == np.float32
     for call, (start, stop) in enumerate(zip(starts, stops, strict=True)):
         segment = audio[int(np.floor(start * _SR)):int(np.ceil(stop * _SR)), [0, 2]]
-        assert got[call] == np.float32(call_image_level_db(segment, _SR, _SPEC_PARAMS, regions[call]))
+        assert got[call] == np.float32(usv_image_level_db(segment, _SR, _SPEC_PARAMS, regions[call]))

@@ -162,12 +162,12 @@ def test_build_writes_a_category_directory_split_along_the_ridges(tmp_path):
     nomenclature = json.loads((out_dir / qc.CATEGORY_NOMENCLATURE_NAME).read_text())
     assert [category["name"] for category in nomenclature["categories"]] == ["R-1", "R-2"]
     assert [category["description"] for category in nomenclature["categories"]] == ["low", "high"]
-    assert nomenclature["categories"][0]["n_calls"] >= nomenclature["categories"][1]["n_calls"]
+    assert nomenclature["categories"][0]["n_vocalizations"] >= nomenclature["categories"][1]["n_vocalizations"]
     assert nomenclature["n_votes"] == 6
     calls = pls.read_csv(out_dir / qc.CATEGORY_CALL_LABELS_NAME)
     assert calls.height == 1200
     assert calls["category"].value_counts().sort("category")["count"].to_list() == [
-        category["n_calls"] for category in nomenclature["categories"]
+        category["n_vocalizations"] for category in nomenclature["categories"]
     ]
     bundle = qc.load_category_bundle(str(out_dir))
     assigned = qc.assign_categories(calls.select(["x", "y"]).to_numpy(), bundle)
@@ -373,8 +373,8 @@ def test_build_numbers_categories_by_category_order(tmp_path):
 
     size_order = _build(tmp_path, {**_CFG, "category_order": []}, "size")
     reversed_order = _build(tmp_path, {**_CFG, "category_order": [2, 1]}, "reversed")
-    sizes = [category["n_calls"] for category in json.loads((size_order / qc.CATEGORY_NOMENCLATURE_NAME).read_text())["categories"]]
-    reversed_sizes = [category["n_calls"] for category in json.loads((reversed_order / qc.CATEGORY_NOMENCLATURE_NAME).read_text())["categories"]]
+    sizes = [category["n_vocalizations"] for category in json.loads((size_order / qc.CATEGORY_NOMENCLATURE_NAME).read_text())["categories"]]
+    reversed_sizes = [category["n_vocalizations"] for category in json.loads((reversed_order / qc.CATEGORY_NOMENCLATURE_NAME).read_text())["categories"]]
     assert reversed_sizes == sizes[::-1]
     size_grid = np.load(size_order / qc.CATEGORY_GRIDS_NAME)["label_grid"]
     reversed_grid = np.load(reversed_order / qc.CATEGORY_GRIDS_NAME)["label_grid"]
