@@ -149,6 +149,29 @@ def test_counts_are_raw_and_the_shift_is_common_to_every_unit() -> None:
     assert shifted[:, 1].tolist() == [0.0, 0.0]
 
 
+def test_a_null_draw_is_the_mean_of_runs_on_one_shared_shift(mocker) -> None:
+    """A null draw averages runs_per_count decodes, every one counted at the draw's single lag
+    (one common shift), with a fresh unit subset per run -- the same statistic as the observed
+    mean of runs."""
+    lags, subsets = [], []
+
+    def fake_count_matrix(flat, n_bins, trains, duration_seconds, lag_seconds=None):
+        lags.append(lag_seconds)
+        subsets.append(len(trains))
+        return np.zeros((2, n_bins))
+
+    accuracies = iter([0.5, 0.6, 0.7, 0.8])
+    mocker.patch.object(bout_decoder, "count_matrix", side_effect=fake_count_matrix)
+    mocker.patch.object(bout_decoder, "balanced_accuracy", side_effect=lambda *_a, **_k: next(accuracies))
+    trains = [np.array([0.1 * k]) for k in range(1, 7)]
+    draw = bout_decoder._null_draw_mean(
+        flatten_spans([[(0.0, 1.0)], [(2.0, 3.0)]]), np.array([1, 0]), np.array([0, 1]), 2,
+        trains, 3, 100.0, 37.5, 4, np.random.default_rng(0))
+    assert draw == pytest.approx(0.65)
+    assert lags == [37.5] * 4
+    assert subsets == [3] * 4
+
+
 def test_nearest_neighbour_refuses_a_fold_with_one_class() -> None:
     """A training fold missing a class cannot be balanced, and says so."""
     train = np.array([[1.0, 2.0], [1.1, 2.1]])

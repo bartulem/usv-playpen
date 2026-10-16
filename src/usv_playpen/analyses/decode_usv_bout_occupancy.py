@@ -323,6 +323,56 @@ def balanced_accuracy(matrix: np.ndarray, labels: np.ndarray, folds: np.ndarray,
     return float(np.mean([np.mean(predicted[labels == c] == c) for c in (0, 1)]))
 
 
+
+def _null_draw_mean(flat: np.ndarray, labels: np.ndarray, folds: np.ndarray, n_folds: int,
+                    trains: list, count: int, duration_seconds: float, lag_seconds: float,
+                    runs_per_count: int, rng: np.random.Generator) -> float:
+    """
+    Description
+    -----------
+    One null draw of the unit-ladder statistic: every unit is shifted by the same
+    ``lag_seconds`` (one circular shift of the whole session, so the units keep their
+    correlations and lose only their alignment to vocalization), and the balanced accuracy is
+    averaged over ``runs_per_count`` random subsets of ``count`` units, exactly as the observed
+    value averages its runs. A null of single runs would spread wider than a mean of runs and
+    leave the p-value conservative.
+
+    Parameters
+    ----------
+    flat (tuple)
+        The bins' flattened spans, as ``flatten_spans`` returns them.
+    labels (np.ndarray)
+        ``(n_bins,)`` 1 for in-bout, 0 for silent bins.
+    folds (np.ndarray)
+        ``(n_bins,)`` fold index of each bin.
+    n_folds (int)
+        Number of contiguous folds.
+    trains (list)
+        Sorted spike-time arrays of the area's units, in seconds.
+    count (int)
+        Units per subset (one rung of the ladder).
+    duration_seconds (float)
+        Session duration, the circular-shift period.
+    lag_seconds (float)
+        The common shift of this draw.
+    runs_per_count (int)
+        Random subsets averaged per draw.
+    rng (np.random.Generator)
+        Draws the subsets and breaks the decoder's ties.
+
+    Returns
+    -------
+    accuracy (float)
+        Mean balanced accuracy of the draw.
+    """
+
+    return float(np.mean([
+        balanced_accuracy(
+            count_matrix(flat, labels.size, [trains[j] for j in rng.choice(len(trains), count, replace=False)],
+                         duration_seconds, lag_seconds=lag_seconds),
+            labels, folds, n_folds, rng)
+        for _ in range(runs_per_count)]))
+
 class BoutOccupancyDecoder:
 
     def __init__(self, **kwargs) -> None:
@@ -541,15 +591,15 @@ class BoutOccupancyDecoder:
                                      bundle["duration_seconds"]),
                         labels, folds, n_folds, rng)
                     for _ in range(int(params["runs_per_count"]))])
+                # Each null draw is the same statistic as the observed value: the mean over
+                # runs_per_count random unit subsets, here all decoded from ONE common circular
+                # shift of the session. Comparing the observed mean of runs with single-run null
+                # draws (which spread wider) made the p-value conservative and mis-scaled.
                 null = np.asarray([
-                    balanced_accuracy(
-                        count_matrix(flat, labels.size,
-                                     [trains[j] for j in rng.choice(len(trains), count,
-                                                                    replace=False)],
-                                     bundle["duration_seconds"],
-                                     lag_seconds=float(rng.uniform(
-                                         guard, bundle["duration_seconds"] - guard))),
-                        labels, folds, n_folds, rng)
+                    _null_draw_mean(flat, labels, folds, n_folds, trains, count,
+                                    bundle["duration_seconds"],
+                                    float(rng.uniform(guard, bundle["duration_seconds"] - guard)),
+                                    int(params["runs_per_count"]), rng)
                     for _ in range(n_shuffles)])
                 observed_all[str(count)] = observed
                 null_all[f"null_{count}"] = null

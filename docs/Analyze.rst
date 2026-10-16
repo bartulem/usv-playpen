@@ -554,7 +554,11 @@ the label of the training bin its vector correlates with most. Accuracy is balan
 classes, because the negatives outnumber the positives several times over. The sweep repeats with
 increasingly large random subsets of each area's units, so the curve says how much of the
 population the signal needs. The null applies **one common circular shift** to every unit, which
-preserves the correlations between them and breaks only their alignment to vocalization.
+preserves the correlations between them and breaks only their alignment to vocalization. Each
+rung's observed accuracy is the mean over ``runs_per_count`` random unit subsets, and so is each of
+its ``n_shuffles`` null draws (one shift, ``runs_per_count`` subsets): the p-value
+``(1 + #{null >= observed}) / (n_shuffles + 1)`` compares like with like, at the cost of
+``runs_per_count`` decodes per null draw.
 
 .. warning::
 
