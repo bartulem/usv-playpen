@@ -1480,7 +1480,7 @@ Visualize
                         [--beh-features | --no-beh-features]
                         [--beh-features-to-plot TEXT...]
                         [--special-beh-features TEXT...]
-                        [--fig-format TEXT] [--fig-dpi INTEGER]
+                        [--fig-format TEXT]
                         [--animation-codec TEXT]
                         [--animation-codec-preset TEXT]
                         [--animation-codec-tune TEXT]
@@ -1551,7 +1551,6 @@ Visualize
       --beh-features-to-plot           Behavioral feature(s) to display.
       --special-beh-features           Behavioral feature(s) to accentuate in display.
       --fig-format                     Figure format.
-      --fig-dpi                        Figure resolution in dots per inch.
       --animation-codec                The video codec for the animation writer.
       --animation-codec-preset         The preset flag for the animation codec.
       --animation-codec-tune           The tune flag for the animation codec.

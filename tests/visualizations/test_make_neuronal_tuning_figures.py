@@ -2645,6 +2645,55 @@ def test_render_behavioral_pages_renders_social_and_directional_sei():
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 @pytest.mark.filterwarnings("ignore::UserWarning")
+def test_render_behavioral_pages_draws_spatial_maps_x_across_y_up():
+    """
+    Description
+    -----------
+    The spatial rate and occupancy maps are indexed ``[x_bin, y_bin]``; the cells must
+    draw X across and Y up to match their "X (cm)" / "Y (cm)" labels: the image array is
+    the transposed map and the origin is at the bottom. A map that is hot only at large x
+    (last row) must show its hot column on the right.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    rate = np.zeros((6, 6))
+    rate[-1, :] = 5.0
+    cluster_data = {
+        "beh_offset=0s": {"m1.space": {"rate": rate, "occupancy_seconds": rate + 1.0}},
+        "behavioral_metadata": {"behavioral_min_occupancy_seconds": 0.1},
+    }
+    maker = NeuronalTuningFigureMaker(
+        root_directory="/tmp",
+        visualizations_parameter_dict=_make_aggregate_visualizations_parameters(),
+        message_output=lambda *a, **k: None,
+    )
+    images = []
+
+    def _save_fig(fig, _label: str) -> None:
+        """Collect every image drawn on the page, then close it."""
+        for ax in fig.axes:
+            if ax.get_xlabel() == "X (cm)":
+                images.extend(ax.get_images())
+        plt.close(fig)
+
+    maker._render_behavioral_pages(
+        cluster_data=cluster_data, mouse_id_list=["m1"], mouse_colors=["#9AC0CD"], save_fig=_save_fig,
+    )
+    assert len(images) == 2
+    for image, grid in zip(images, (rate, rate + 1.0), strict=True):
+        np.testing.assert_array_equal(np.asarray(image.get_array()), grid.T)
+        assert image.origin == "lower"
+        assert np.asarray(image.get_array())[:, -1].min() > np.asarray(image.get_array())[:, 0].max()
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
 def test_render_behavioral_pages_returns_early_without_beh_offset():
     """
     Description

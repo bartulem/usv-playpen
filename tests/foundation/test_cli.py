@@ -122,6 +122,32 @@ def test_visualize_3d_data_cli_success(runner, mocker, tmp_path):
     mock_create_3d_video.return_value.visualize_in_video.assert_called_once()
 
 
+def test_visualize_3d_data_cli_writes_shared_keys_into_the_video_block(runner, mocker, tmp_path):
+    """
+    The video flags whose keys other blocks share (save_fig, fig_format, other) land in the
+    make_behavioral_videos block, not in the first block that has the key, and leave those
+    blocks as shipped.
+    """
+
+    mock_create_3d_video = mocker.patch('usv_playpen.visualizations.visualize_data.Create3DVideo')
+    result = runner.invoke(visualize_3D_data_cli, [
+        '--root-directory', str(tmp_path),
+        '--arena-directory', str(tmp_path),
+        '--exp-id', 'TestExp',
+        '--save-fig', '--fig-format', 'mp4test', '--other', 'good',
+    ])
+
+    assert result.exit_code == 0, f"CLI failed: {result.output}"
+    settings = mock_create_3d_video.call_args.kwargs['visualizations_parameter_dict']
+    video = settings['make_behavioral_videos']
+    assert video['save_fig'] is True
+    assert video['general_figure_specs']['fig_format'] == 'mp4test'
+    assert video['raster_selection_criteria']['other'] == ['good']
+    assert settings['make_usv_spectrograms']['fig_format'] != 'mp4test'
+    assert settings['figures']['fig_format'] != 'mp4test'
+    assert settings['brain_area_colors']['other'] != ['good']
+
+
 def test_generate_rm_figures_cli_success(runner, mocker, tmp_path):
     """
     Tests the 'generate-rm-figs' (rate map figures) command.

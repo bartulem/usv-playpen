@@ -31,6 +31,7 @@ from usv_playpen.visualizations.make_behavioral_videos import (
     read_ttl_events,
     filter_spikes_for_raster,
     find_region_by_channel,
+    spectrogram_window_columns,
     load_audio_data,
     create_spike_sound_file,
     Create3DVideo,
@@ -180,18 +181,18 @@ def test_find_region_by_channel_returns_color_when_in_group():
     """Channel inside a region's [low, high) group → returns its bucket
     color. `brain_color_scheme` is bucket-keyed (PAG / MRN / ...); raw
     region acronyms are pooled to a bucket before lookup."""
-    brain_areas = {"probeA": {"PAG": [(0, 50)], "MRN": [(50, 100)]}}
+    brain_areas = {"imec0": {"PAG": [(0, 50)], "MRN": [(50, 100)]}}
     colors = {"PAG": "#aabbcc", "MRN": "#112233", "other": "#B8B8B8"}
-    out = find_region_by_channel("cl_ch042_probeA", brain_areas, colors,
+    out = find_region_by_channel("imec0_cl0001_ch042_good", brain_areas, colors,
                                   return_only_color=True)
     assert out == "#aabbcc"
 
 
 def test_find_region_by_channel_returns_area_when_only_area():
     """return_only_area=True → returns the brain region name."""
-    brain_areas = {"probeA": {"V1": [(0, 50)]}}
+    brain_areas = {"imec0": {"V1": [(0, 50)]}}
     colors = {"V1": "#aabbcc"}
-    out = find_region_by_channel("cl_ch042_probeA", brain_areas, colors,
+    out = find_region_by_channel("imec0_cl0001_ch042_good", brain_areas, colors,
                                   return_only_color=False, return_only_area=True)
     assert out == "V1"
 
@@ -200,9 +201,9 @@ def test_find_region_by_channel_returns_pair_when_neither_flag():
     """When both flags are False → returns (raw_region, bucket_color)
     tuple. The raw region acronym is preserved for filter selection;
     the color is resolved through the bucket-keyed palette."""
-    brain_areas = {"probeA": {"PAG": [(0, 50)]}}
+    brain_areas = {"imec0": {"PAG": [(0, 50)]}}
     colors = {"PAG": "#aabbcc", "other": "#B8B8B8"}
-    out = find_region_by_channel("cl_ch042_probeA", brain_areas, colors,
+    out = find_region_by_channel("imec0_cl0001_ch042_good", brain_areas, colors,
                                   return_only_color=False, return_only_area=False)
     assert out == ("PAG", "#aabbcc")
 
@@ -210,15 +211,42 @@ def test_find_region_by_channel_returns_pair_when_neither_flag():
 def test_find_region_by_channel_returns_other_for_unknown_channel():
     """Channel outside any labelled group → the 'other' bucket fallback (never
     None), so eventplot colours / (region, colour) unpacking cannot crash."""
-    brain_areas = {"probeA": {"V1": [(0, 50)]}}
+    brain_areas = {"imec0": {"V1": [(0, 50)]}}
     colors = {"V1": "#aabbcc", "other": "#B8B8B8"}
     # default (return_only_color=True) -> the 'other' colour
-    assert find_region_by_channel("cl_ch200_probeA", brain_areas, colors) == "#B8B8B8"
+    assert find_region_by_channel("imec0_cl0001_ch200_good", brain_areas, colors) == "#B8B8B8"
     # area-only and the (region, colour) pair also fall back to 'other'
-    assert find_region_by_channel("cl_ch200_probeA", brain_areas, colors,
+    assert find_region_by_channel("imec0_cl0001_ch200_good", brain_areas, colors,
                                   return_only_color=False, return_only_area=True) == "other"
-    assert find_region_by_channel("cl_ch200_probeA", brain_areas, colors,
+    assert find_region_by_channel("imec0_cl0001_ch200_good", brain_areas, colors,
                                   return_only_color=False, return_only_area=False) == ("other", "#B8B8B8")
+
+
+def test_find_region_by_channel_reads_the_units_own_probe():
+    """Both probes number their channels from 0, so a unit's region comes from its own probe:
+    channel 42 is PAG on imec0 and MRN on imec1, and an imec1 unit on a channel only imec0
+    labels, or on a probe without anatomy, is 'other'."""
+    brain_areas = {"imec0": {"PAG": [(0, 100)]}, "imec1": {"MRN": [(0, 50)]}}
+    colors = {"PAG": "#aabbcc", "MRN": "#112233", "other": "#B8B8B8"}
+    kwargs = {"return_only_color": False, "return_only_area": True}
+    assert find_region_by_channel("imec0_cl0001_ch042_good", brain_areas, colors, **kwargs) == "PAG"
+    assert find_region_by_channel("imec1_cl0002_ch042_good", brain_areas, colors, **kwargs) == "MRN"
+    assert find_region_by_channel("imec1_cl0003_ch080_good", brain_areas, colors, **kwargs) == "other"
+    assert find_region_by_channel("imec2_cl0004_ch042_good", brain_areas, colors, **kwargs) == "other"
+
+
+def test_spectrogram_window_columns_do_not_drift():
+    """At 250 kHz audio, 150 fps video and a 128-sample hop a frame spans 13.02 columns.
+    After 1500 frames (10 s) the window starts at column round(1500 * 13.0208) = 19531,
+    which is 10 s of audio to within one column (250000 * 10 / 128 = 19531.25); the old
+    whole-column step of 13 would put it at 19500, 31 columns (~16 ms) behind. The window
+    keeps its width."""
+    columns_per_frame = 250000 / (150 * 128)
+    start, end = spectrogram_window_columns(1500, columns_per_frame, 100)
+    assert start == 19531
+    assert end - start == 200
+    assert abs(start * 128 / 250000 - 10.0) < 128 / 250000
+    assert spectrogram_window_columns(0, columns_per_frame, 100) == (0, 200)
 
 
 def test_load_audio_data_reads_mmap_with_correct_shape(tmp_path):

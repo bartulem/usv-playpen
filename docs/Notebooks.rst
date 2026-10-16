@@ -552,6 +552,7 @@ consolidated univariate pickle and set the metric accordingly.
     )
     uni_raw_diff_feature_key = "self.neck_elevation"
     uni_raw_diff_feature_color = "#9AC0CD"
+    uni_raw_diff_history_seconds = 4.0
 
     plot_feature_ranking(
         results_file_loc=uni_ranking_results,
@@ -586,6 +587,7 @@ consolidated univariate pickle and set the metric accordingly.
     plot_raw_feature_difference(
         pickle_file_path=uni_raw_diff_pkl,
         feature_key=uni_raw_diff_feature_key,
+        history_seconds=uni_raw_diff_history_seconds,
         feature_color=uni_raw_diff_feature_color,
         subset_fraction=0.05,
         n_bootstraps=100,
@@ -596,7 +598,7 @@ consolidated univariate pickle and set the metric accordingly.
 * **figures_dir** — shared figure output directory used by every visualisation section.
 * **uni_ranking_results** / **uni_ranking_p_val** — the consolidated univariate pickle to rank and the significance threshold applied to it.
 * **uni_filters_results** / **uni_filters_grid_results** — GAM-result pickles for the single-filter and gridded-filter plots.
-* **uni_raw_diff_pkl** / **uni_raw_diff_feature_key** / **uni_raw_diff_feature_color** — the input pickle, the feature to contrast, and its hex plot colour.
+* **uni_raw_diff_pkl** / **uni_raw_diff_feature_key** / **uni_raw_diff_feature_color** / **uni_raw_diff_history_seconds** — the input pickle, the feature to contrast, its hex plot colour, and the span of each epoch before the event in seconds (the run's ``model_params.filter_history``; the pickle stores frames only).
 
 **Multinomial target** — predicting a USV's vocal category across *all* categories
 jointly (a one-vs-rest multinomial classifier) is **not** a scalar target:

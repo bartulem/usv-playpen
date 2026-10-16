@@ -843,6 +843,7 @@ def plot_significant_filters_grid(
 def plot_raw_feature_difference(
         pickle_file_path: str,
         feature_key: str,
+        history_seconds: float,
         feature_color: str = '#202020',
         subset_fraction: float = 0.05,
         n_bootstraps: int = 1000,
@@ -871,6 +872,11 @@ def plot_raw_feature_difference(
     feature_key : str
         The dictionary key representing the specific feature to analyze
         (e.g., 'nose-nose_1st_der').
+    history_seconds : float
+        The span of each epoch before the event, in seconds: the run's
+        ``model_params.filter_history`` (the pickle stores the epochs as frames
+        only, not their frame rate or span). The time axis runs from
+        ``-history_seconds`` to 0 over the epoch's frames.
     feature_color : str, default '#202020'
         The hex color code used to plot the primary ("Target" or "USV") condition.
     subset_fraction : float, default 0.05
@@ -944,7 +950,8 @@ def plot_raw_feature_difference(
     all_other_epochs = np.concatenate(other_epochs_list, axis=0) if other_epochs_list else np.empty((0, 650))
 
     n_time_points = all_target_epochs.shape[1] if all_target_epochs.shape[0] > 0 else 650
-    time_in_seconds = np.linspace(-4, 0, n_time_points)
+    time_in_seconds = np.linspace(-float(history_seconds), 0, n_time_points)
+    time_ticks = np.arange(-float(history_seconds), 0.5, 0.5)
 
     print(f"Total Epochs -> {label_target}: {all_target_epochs.shape[0]}, {label_other}: {all_other_epochs.shape[0]}")
     # A condition with zero epochs leaves an empty (0, 650) array; np.nanmin below
@@ -1005,8 +1012,8 @@ def plot_raw_feature_difference(
     ax_avg.plot(time_in_seconds, other_mean, color='#D3D3D3', lw=1.0, label=label_other)
     ax_avg.fill_between(time_in_seconds, other_ci_lower, other_ci_upper, color='#D3D3D3', alpha=0.3)
 
-    ax_avg.set_xticks(np.arange(-4, 0.5, 0.5))
-    ax_avg.set_xticklabels([f"{sec:.1f}" for sec in np.arange(-4, 0.5, 0.5)])
+    ax_avg.set_xticks(time_ticks)
+    ax_avg.set_xticklabels([f"{sec:.1f}" for sec in time_ticks])
     ax_avg.set_xlabel('Time prior to event (s)', fontsize=8)
     ax_avg.set_ylabel(f'{feature_key} (z-scored)', fontsize=8)
     ax_avg.legend(fontsize=6)
@@ -1032,7 +1039,7 @@ def plot_raw_feature_difference(
         sorted_target, aspect='auto', cmap='binary',
         vmin=data_min, vmax=data_max,
         interpolation="gaussian",
-        extent=[-4, 0, sorted_target.shape[0], 0]
+        extent=[-float(history_seconds), 0, sorted_target.shape[0], 0]
     )
     axes_heat[0].set_ylabel(label_target, fontsize=8)
 
@@ -1040,7 +1047,7 @@ def plot_raw_feature_difference(
         sorted_other, aspect='auto', cmap='binary',
         vmin=data_min, vmax=data_max,
         interpolation="gaussian",
-        extent=[-4, 0, sorted_other.shape[0], 0]
+        extent=[-float(history_seconds), 0, sorted_other.shape[0], 0]
     )
     axes_heat[1].set_ylabel(label_other, fontsize=8)
 
@@ -1053,8 +1060,8 @@ def plot_raw_feature_difference(
         for spine in ax.spines.values():
             spine.set_edgecolor('#000000')
 
-    axes_heat[1].set_xticks(np.arange(-4, 0.5, 0.5))
-    axes_heat[1].set_xticklabels([f"{x:.1f}" for x in np.arange(-4, 0.5, 0.5)], rotation=0)
+    axes_heat[1].set_xticks(time_ticks)
+    axes_heat[1].set_xticklabels([f"{x:.1f}" for x in time_ticks], rotation=0)
     axes_heat[1].set_xlabel('Time prior to event onset (s)', fontsize=8)
 
     cbar = fig_heat.colorbar(
@@ -3113,7 +3120,9 @@ def plot_multinomial_multivariate_filters(
         cbar_ax = fig.add_axes([0.92, 0.3, 0.012, 0.4])
         sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=-1, vmax=1))
         cbar = fig.colorbar(sm, cax=cbar_ax)
-        cbar.set_label('Predictive Weight (Blue: Suppress | Red: Promote)', color=TEXT_COLOR, fontsize=11, labelpad=15)
+        # The colours come from the configurable diverging map (figures.diverging_cmap), so the
+        # label names the sign, not a colour.
+        cbar.set_label('Predictive Weight (-: suppress | +: promote)', color=TEXT_COLOR, fontsize=11, labelpad=15)
         cbar.ax.yaxis.set_tick_params(color=TEXT_COLOR, labelcolor=TEXT_COLOR)
         cbar.set_ticks([-1, 0, 1])
         cbar.ax.set_yticklabels(['-', '0', '+'], color=TEXT_COLOR)
@@ -5089,7 +5098,9 @@ class DeepResultsVisualizer:
             label.set_color("#202020" if significant_mask[idx] else "#808080")
 
         ax.set_title('Global Permutation Kinematic Importance', fontsize=title_fontsize, color='#000000', pad=20)
-        ax.set_xlabel(r'Mean Increase in Euclidean Error ($\Delta E$)', fontsize=label_fontsize + 1, color="#202020")
+        # torus runs score wrap-aware (geodesic) errors, flat runs Euclidean ones
+        error_name = 'Geodesic' if self.manifold_metric == 'torus' else 'Euclidean'
+        ax.set_xlabel(rf'Mean Increase in {error_name} Error ($\Delta E$)', fontsize=label_fontsize + 1, color="#202020")
 
         # Spine and Tick styling
         ax.tick_params(colors="#202020", which='both')
@@ -5670,7 +5681,8 @@ class DeepResultsVisualizer:
         ax1.set_title('Global Error Landscape (Actual Model)', fontsize=title_fontsize, color='#000000', pad=15)
 
         cbar1 = fig.colorbar(hb1, ax=ax1, pad=0.02, shrink=0.8)
-        cbar1.set_label('Mean Euclidean Error', color='#202020', rotation=270, labelpad=20, fontsize=label_fontsize)
+        cbar1.set_label('Mean Geodesic Error' if self.manifold_metric == 'torus' else 'Mean Euclidean Error',
+                        color='#202020', rotation=270, labelpad=20, fontsize=label_fontsize)
 
         # Panel 2: Error Reduction (Contrast)
         ax2 = axes[1]
@@ -7272,10 +7284,11 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
       stays visible even when the band collapses below pixel
       resolution because the actual peak is large (e.g. nose-nose
       at ρ ≈ 0.3 with cohort-mean null at ±0.001). A triangle
-      marker on the *positive lag axis* indicates the cross-
-      correlation right-side significance horizon, defined as the
-      end (largest lag) of the **earliest-starting sign-consistent
-      outside-null run** on the positive lag axis. Above-null and
+      marker on the *negative lag axis* (behaviour leads, as in
+      `plot_timescale_audit`) indicates the cross-correlation
+      significance horizon, defined as the end (largest |lag|) of the
+      **earliest-starting sign-consistent outside-null run** on the
+      negative lag axis, read outward from 0. Above-null and
       below-null runs are tracked separately; the earliest-starting
       qualifying run wins (ties broken toward the smaller end index)
       and its direction sets the marker shape (▽
@@ -7287,12 +7300,12 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
       the lag-axis spacing) are excluded as scattered fragments.
       Reading: "the first sustained excursion of the curve away
       from the shuffled distribution ends at this lag." When the
-      earliest qualifying run extends to `+max_lag`, the marker
-      lands at the right edge of the panel and the lag annotation
-      gets a trailing `+`. Same min-x text clamp as the ACF marker
-      prevents the label from overrunning the y-axis when the
-      marker is close to lag 0; right-edge alignment when the
-      marker is close to `+max_lag`. Lag annotation is bold,
+      earliest qualifying run extends to `-max_lag`, the marker
+      lands at the left edge of the panel and the lag annotation
+      gets a trailing `+`. A min-|x| text clamp keeps the label off
+      the zero line when the marker is close to lag 0 (right-aligned
+      there); left-edge alignment when the marker is close to
+      `-max_lag`. The annotated value is the (negative) lag. Lag annotation is bold,
       formatted as "{value} s" (or "{value} s+" in the
       exceeds-window case). Y-limits are auto-fit to whatever
       artists are drawn — the actual cohort-mean curve, the SEM
@@ -7527,7 +7540,7 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
         if signal_lags_seconds.size:
             axB.set_xlim(signal_lags_seconds[0], signal_lags_seconds[-1])
 
-        # Cross-correlation right-side significance marker.
+        # Cross-correlation behaviour-leads (negative-lag) significance marker.
         #
         # Algorithm: earliest-starting sign-consistent outside-null
         # run on the symmetric lag axis (above-null and below-null
@@ -7550,15 +7563,21 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
         # while preserving multi-hundred-bin real runs.
         #
         # Edge case: when the picked run extends all the way to
-        # `+max_lag`, the marker is drawn at the right edge of the
+        # `-max_lag`, the marker is drawn at the left edge of the
         # panel and the lag annotation gets a trailing `+` to
         # indicate the horizon exceeds the configured window.
+        # The horizon is read on the behaviour-leads half, the NEGATIVE lags (the audit's
+        # convention: negative lag = feature precedes bout), exactly as the cohort plot
+        # (`plot_timescale_audit`) reads it: the curve and its null are mirrored onto an
+        # ascending 0..+L magnitude axis for the floor / run logic, and the picked bin is
+        # mapped back to its negative lag for drawing.
         if signal_lags_seconds.size > 0:
-            sig_max_lag_s = float(signal_lags_seconds[-1])
+            sig_max_lag_s = float(-signal_lags_seconds[0])
+            lag_magnitudes = -signal_lags_seconds[::-1]
             sig_idx_floor = int(np.searchsorted(
-                signal_lags_seconds, signal_floor_seconds, side='left'
+                lag_magnitudes, signal_floor_seconds, side='left'
             ))
-            sig_idx_max = signal_lags_seconds.size - 1
+            sig_idx_max = lag_magnitudes.size - 1
             # Convert the seconds-valued threshold to bins via the
             # lag-axis spacing. `np.ceil` so 0.2 s on a 150-fps grid
             # gives 30 bins (= 0.2 s exactly), never less.
@@ -7568,9 +7587,9 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
             else:
                 sig_min_run_bins = 1
             sig_hit = _signal_outer_run_marker(
-                mean_curve_plot,
-                rho_signal_null_lo[orig_i],
-                rho_signal_null_hi[orig_i],
+                mean_curve_plot[::-1],
+                rho_signal_null_lo[orig_i][::-1],
+                rho_signal_null_hi[orig_i][::-1],
                 sig_min_run_bins,
                 sig_idx_floor,
                 sig_idx_max,
@@ -7580,7 +7599,8 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
             sig_max_lag_s = 1.0
 
         if sig_hit is not None:
-            sig_idx, sig_sign, sig_exceeds = sig_hit
+            sig_idx_mirrored, sig_sign, sig_exceeds = sig_hit
+            sig_idx = signal_lags_seconds.size - 1 - sig_idx_mirrored
             sig_lag_s = float(signal_lags_seconds[sig_idx])
             sig_y_at = float(mean_curve_plot[sig_idx])
             sig_marker = 'v' if sig_sign > 0 else '^'
@@ -7599,19 +7619,19 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
                      markersize=marker_size, linestyle='None', zorder=5,
                      markeredgecolor='#000000', markeredgewidth=0.6,
                      transform=sig_tip_transform)
-            # Text x-anchor: same min-x clamp + left/center alignment
-            # switch as the ACF marker so the centred label doesn't
-            # overrun the y-axis when sig_lag_s is small. When the
-            # marker sits at +max_lag (exceeds-window case) we right-
-            # align the label so it doesn't run off the right edge.
+            # Text x-anchor, mirrored for the negative half: near lag 0 the
+            # label is right-aligned (clamped off the zero line) so it does not
+            # overrun it, and when the marker sits at -max_lag (exceeds-window
+            # case) it is left-aligned so it does not run off the left edge.
+            sig_lag_magnitude = -sig_lag_s
             sig_min_text_x = 0.04 * sig_max_lag_s
-            sig_left_align_threshold = 0.18 * sig_max_lag_s
-            sig_right_align_threshold = 0.82 * sig_max_lag_s
-            if sig_lag_s < sig_left_align_threshold:
-                sig_text_ha = 'left'
-                sig_text_x_anchor = max(sig_lag_s, sig_min_text_x)
-            elif sig_lag_s > sig_right_align_threshold:
+            sig_near_zero_threshold = 0.18 * sig_max_lag_s
+            sig_near_edge_threshold = 0.82 * sig_max_lag_s
+            if sig_lag_magnitude < sig_near_zero_threshold:
                 sig_text_ha = 'right'
+                sig_text_x_anchor = min(sig_lag_s, -sig_min_text_x)
+            elif sig_lag_magnitude > sig_near_edge_threshold:
+                sig_text_ha = 'left'
                 sig_text_x_anchor = sig_lag_s
             else:
                 sig_text_ha = 'center'

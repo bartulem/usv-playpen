@@ -65,6 +65,7 @@ with warnings.catch_warnings():
         plot_significant_filters_grid,
         plot_timescale_audit,
         plot_timescale_audit_per_feature,
+        _compute_timescale_horizons,
         plot_univariate_multinomial_filters_grid,
         plot_univariate_multinomial_performance,
     )
@@ -757,6 +758,7 @@ class TestPlotRawFeatureDifference:
         plot_raw_feature_difference(
             pickle_file_path=str(pkl),
             feature_key=feature_key,
+            history_seconds=4.0,
             subset_fraction=0.5,
             n_bootstraps=20,
             save_plots=True,
@@ -764,6 +766,35 @@ class TestPlotRawFeatureDifference:
         )
         assert len(list(out_dir.glob(f"*avg_bootstrap_*.{_FIGURE_FORMAT}"))) == 1
         assert len(list(out_dir.glob(f"*heatmap_*.{_FIGURE_FORMAT}"))) == 1
+
+    def test_time_axis_spans_the_given_history(self, tmp_path, mocker):
+        """The time axis is the given history, not a fixed 4 s: a 2 s run's mean traces and
+        heatmaps span [-2, 0] s over the epoch's frames."""
+        n_time = 60
+        feature_key = 'self.speed'
+        rng = np.random.default_rng(5)
+        data = {feature_key: {'session_a': {
+            'usv_feature_arr': rng.standard_normal((30, n_time)),
+            'no_usv_feature_arr': rng.standard_normal((30, n_time)),
+        }}}
+        pkl = tmp_path / "hist2_input.pkl"
+        with pkl.open('wb') as fh:
+            pickle.dump(data, fh)
+        mocker.patch.object(plt, 'show')
+        plt.close('all')
+        plot_raw_feature_difference(pickle_file_path=str(pkl), feature_key=feature_key, history_seconds=2.0,
+                                    subset_fraction=0.5, n_bootstraps=5, save_plots=False)
+        lines = [line for num in plt.get_fignums() for ax in plt.figure(num).axes for line in ax.get_lines()
+                 if len(line.get_xdata()) == n_time]
+        images = [image for num in plt.get_fignums() for ax in plt.figure(num).axes for image in ax.get_images()]
+        plt.close('all')
+        assert lines
+        for line in lines:
+            assert float(line.get_xdata()[0]) == pytest.approx(-2.0)
+            assert float(line.get_xdata()[-1]) == pytest.approx(0.0)
+        assert images
+        for image in images:
+            assert tuple(image.get_extent()[:2]) == (-2.0, 0)
 
     def test_empty_condition_skips_without_crash(self, tmp_path):
         """A feature where one condition contributes zero epochs must skip the plot
@@ -789,6 +820,7 @@ class TestPlotRawFeatureDifference:
         plot_raw_feature_difference(
             pickle_file_path=str(pkl),
             feature_key=feature_key,
+            history_seconds=4.0,
             subset_fraction=0.5,
             n_bootstraps=20,
             save_plots=True,
@@ -825,6 +857,7 @@ class TestPlotRawFeatureDifference:
         plot_raw_feature_difference(
             pickle_file_path=str(pkl),
             feature_key=feature_key,
+            history_seconds=4.0,
             subset_fraction=0.5,
             n_bootstraps=20,
             save_plots=True,
@@ -854,6 +887,7 @@ class TestPlotRawFeatureDifference:
         plot_raw_feature_difference(
             pickle_file_path=str(pkl),
             feature_key='not.a.feature',
+            history_seconds=4.0,
             save_plots=True,
             output_dir=str(out_dir),
         )
@@ -1100,6 +1134,38 @@ class TestPlotTimescaleAuditPerFeature:
         assert result['n_features'] == 4
         assert result['figure_path'].endswith(f'.{_FIGURE_FORMAT}')
         assert len(list(save_dir.glob(f"*.{_FIGURE_FORMAT}"))) == 1
+
+    @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
+    def test_signal_marker_sits_on_the_behaviour_leads_half(self, tmp_path):
+        """The cross-correlation marker is read on the negative (feature leads bout) lags,
+        the same half and the same lag as `_compute_timescale_horizons` gives the cohort plot:
+        with a sustained excursion over [-2.5, -0.6] s and a different one over [0.6, 1.2] s,
+        every feature's marker sits at minus its cohort horizon, near -2.5 s."""
+
+        rng = np.random.default_rng(7)
+        pkl = _write_timescale_pickle(tmp_path, rng)
+        with pathlib.Path(pkl).open('rb') as fh:
+            payload = pickle.load(fh)
+        lags = payload['signal_lags_seconds']
+        rho = np.zeros_like(payload['rho_signal'])
+        rho[:, (lags >= -2.5) & (lags <= -0.6)] = 0.30
+        rho[:, (lags >= 0.6) & (lags <= 1.2)] = 0.30
+        payload['rho_signal'] = rho
+        with pathlib.Path(pkl).open('wb') as fh:
+            pickle.dump(payload, fh)
+        _, xc_horizons, _ = _compute_timescale_horizons(payload)
+
+        plt.close('all')
+        plot_timescale_audit_per_feature(timescale_pkl_path=pkl, save_plot_bool=False)
+        fig = plt.gcf()
+        marker_x = sorted(
+            float(line.get_xdata()[0]) for ax in fig.axes for line in ax.get_lines()
+            if line.get_marker() in ('v', '^') and ax.get_xlim()[0] < 0)
+        plt.close(fig)
+        assert len(marker_x) == 4
+        expected = sorted(-xc_horizons[name] for name in payload['features'])
+        np.testing.assert_allclose(marker_x, expected)
+        assert max(marker_x) == pytest.approx(-2.5, abs=0.06)
 
 
 @pytest.mark.filterwarnings("ignore:FigureCanvasAgg is non-interactive:UserWarning")

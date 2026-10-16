@@ -179,6 +179,33 @@ def test_create_colormap_sequential_returns_listed_colormap():
     assert cm.N == 64
 
 
+def test_create_colormap_scales_rgb_by_255_at_any_length_and_leaves_the_input_alone():
+    """
+    Description
+    -----------
+    The 0-255 end colours become matplotlib's 0-1 by dividing by 255 whatever the
+    colormap's length: a white-to-red map of length 64 runs exactly from (1, 1, 1) to
+    (1, 0, 0), and the caller's dict is not modified by the luminance step, so building
+    twice from one dict gives the same map.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    cm = create_colormap(_cm_params(cm_length=64, equalize_luminance=False))
+    np.testing.assert_allclose(cm.colors[0][:3], [1.0, 1.0, 1.0])
+    np.testing.assert_allclose(cm.colors[-1][:3], [1.0, 0.0, 0.0])
+    params = _cm_params(cm_end=(10, 10, 90))
+    before = dict(params)
+    first = create_colormap(params)
+    assert params == before
+    np.testing.assert_allclose(create_colormap(params).colors, first.colors)
+
+
 def test_create_colormap_diverging_returns_listed_colormap():
     """
     Description

@@ -225,7 +225,6 @@ class Visualizer:
 @click.option('--beh-features-to-plot', 'beh_features_to_plot', multiple=True, type=str, default=None, required=False, help='Behavioral feature(s) to display.')
 @click.option('--special-beh-features', 'special_beh_features', multiple=True, type=str, default=None, required=False, help='Behavioral feature(s) to accentuate in display.')
 @click.option('--fig-format', 'fig_format', type=str, default=None, required=False, help='Figure format.')
-@click.option('--fig-dpi', 'fig_dpi', type=int, default=None, required=False, help='Figure resolution in dots per inch.')
 @click.option('--animation-codec', type=str, default=None, required=False, help='The video codec for the animation writer (e.g., h264_nvenc for GPU).')
 @click.option('--animation-codec-preset', 'animation_codec_preset_flag', type=str, default=None, required=False, help='The preset flag for the animation codec (e.g., p5 for NVENC).')
 @click.option('--animation-codec-tune', 'animation_codec_tune_flag', type=str, default=None, required=False, help='The tune flag for the animation codec (e.g., hq for high quality).')
@@ -288,10 +287,14 @@ def visualize_3D_data_cli(ctx, root_directory, arena_directory, exp_id, speaker_
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
 
+    # Every flag belongs to the make_behavioral_videos block; scoping the overrides to it keeps a
+    # key that other blocks share (save_fig, fig_format, other) from landing in the first block
+    # that has it (make_usv_spectrograms, figures, brain_area_colors) instead of the video's.
     visualizations_settings_parameter_dict = modify_settings_json_for_cli(ctx=ctx,
                                                                           provided_params=provided_params,
                                                                           parameters_lists=parameters_lists,
-                                                                          settings_dict='visualizations_settings')
+                                                                          settings_dict='visualizations_settings',
+                                                                          block='make_behavioral_videos')
 
     Create3DVideo(root_directory=root_directory,
                   arena_directory=arena_directory,

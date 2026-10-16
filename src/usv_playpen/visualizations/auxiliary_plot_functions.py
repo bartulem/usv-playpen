@@ -189,6 +189,9 @@ def create_colormap(input_parameter_dict: dict | None = None) -> ListedColormap:
     if input_parameter_dict is None:
         msg = "create_colormap requires an input_parameter_dict (got None)."
         raise ValueError(msg)
+    # Work on a copy: the luminance step below replaces the end colours, and writing
+    # them into the caller's dict would re-equalize them on every later call with it.
+    input_parameter_dict = dict(input_parameter_dict)
 
     # change luminance|saturation
     if (
@@ -219,30 +222,27 @@ def create_colormap(input_parameter_dict: dict | None = None) -> ListedColormap:
                 )
             )
 
-    # create colormap
+    # create colormap: the end colours are 0-255 RGB, scaled to matplotlib's 0-1 by 255
+    # whatever the colormap's length
     cm_values = np.ones((input_parameter_dict["cm_length"], 4))
     if input_parameter_dict["cm_type"] == "sequential":
         for rgb in range(3):
             cm_values[:, rgb] = np.linspace(
-                input_parameter_dict["cm_end"][rgb] / input_parameter_dict["cm_length"],
-                input_parameter_dict["cm_start"][rgb]
-                / input_parameter_dict["cm_length"],
+                input_parameter_dict["cm_end"][rgb] / 255.0,
+                input_parameter_dict["cm_start"][rgb] / 255.0,
                 input_parameter_dict["cm_length"],
             )
     elif input_parameter_dict["cm_type"] == "diverging":
         for rgb in range(3):
             cm_values[: input_parameter_dict["cm_length"] // 2 + 1, rgb] = np.linspace(
-                input_parameter_dict["cm_start"][rgb]
-                / input_parameter_dict["cm_length"],
-                input_parameter_dict["cm_end"][rgb] / input_parameter_dict["cm_length"],
+                input_parameter_dict["cm_start"][rgb] / 255.0,
+                input_parameter_dict["cm_end"][rgb] / 255.0,
                 input_parameter_dict["cm_length"] // 2 + 1,
             )
             cm_values[input_parameter_dict["cm_length"] // 2 :, rgb] = np.flip(
                 np.linspace(
-                    input_parameter_dict["cm_start_div"][rgb]
-                    / input_parameter_dict["cm_length"],
-                    input_parameter_dict["cm_end"][rgb]
-                    / input_parameter_dict["cm_length"],
+                    input_parameter_dict["cm_start_div"][rgb] / 255.0,
+                    input_parameter_dict["cm_end"][rgb] / 255.0,
                     # length must equal the target slice `[cm_length//2:]` length,
                     # i.e. cm_length - cm_length//2 (== cm_length//2 + 1 for odd
                     # cm_length, but one shorter for even cm_length, which the old

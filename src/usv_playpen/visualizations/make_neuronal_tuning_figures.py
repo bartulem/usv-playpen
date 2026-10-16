@@ -5870,9 +5870,13 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                                 else feat_payload["rate"]
                             )
                             ax1 = fig.add_subplot(gs[gs_x, gs_y])
+                            # The spatial maps are indexed [x_bin, y_bin] (generate_ratemaps);
+                            # imshow draws the first index down the rows, so the map is
+                            # transposed and drawn from the bottom to put X across and Y up,
+                            # matching the axis labels.
                             rm = ax1.imshow(
-                                X=ratemap_2d, cmap=ratemap_cmap, vmin=0,
-                                interpolation="gaussian", aspect="equal",
+                                X=np.asarray(ratemap_2d).T, cmap=ratemap_cmap, vmin=0,
+                                interpolation="gaussian", aspect="equal", origin="lower",
                             )
                             ax1.set_title(
                                 "Spatial tuning", fontsize=13, pad=8.0,
@@ -5900,9 +5904,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
                             ax2 = fig.add_subplot(gs[gs_x, gs_y + 1])
                             occ = ax2.imshow(
-                                X=feat_payload["occupancy_seconds"],
+                                X=np.asarray(feat_payload["occupancy_seconds"]).T,
                                 cmap=mouse_colormap, vmin=0,
-                                interpolation="gaussian", aspect="equal",
+                                interpolation="gaussian", aspect="equal", origin="lower",
                             )
                             ax2.set_xticks([])
                             ax2.set_yticks([])

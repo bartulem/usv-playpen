@@ -288,6 +288,38 @@ def _resolve_brain_area_color(brain_region: str | None,
     return brain_color_scheme['other']
 
 
+def spectrogram_window_columns(relative_frame: int,
+                               columns_per_frame: float,
+                               first_center_column: int) -> tuple[int, int]:
+    """
+    Description
+    -----------
+    The STFT columns ``[start, end)`` the scrolling spectrogram shows at one video
+    frame. The window is ``2 * first_center_column`` columns wide and moves by
+    ``columns_per_frame`` (``audio_sr / (camera_sr * hop)``, fractional) per frame;
+    each frame's offset is rounded from the exact product, so the window never drifts
+    against the video however long it runs (a rounded per-frame step would add its
+    rounding error once per frame).
+
+    Parameters
+    ----------
+    relative_frame (int)
+        The frame's index from the first video frame.
+    columns_per_frame (float)
+        STFT columns per camera frame.
+    first_center_column (int)
+        The column at the window's centre on the first frame (half the window width).
+
+    Returns
+    -------
+    start, end (tuple[int, int])
+        The first column shown and one past the last.
+    """
+
+    offset = round(relative_frame * columns_per_frame)
+    return offset, 2 * first_center_column + offset
+
+
 def find_region_by_channel(cluster_id: str,
                            brain_area_dict: dict,
                            brain_color_scheme: dict,
@@ -308,9 +340,10 @@ def find_region_by_channel(cluster_id: str,
     Parameters
     ----------
     cluster_id (str)
-        Cluster ID.
+        Cluster ID, ``<probe>_cl<id>_ch<channel>_<label>`` (e.g. ``imec1_cl0525_ch354_good``).
     brain_area_dict (dict)
-        Contains brain area information.
+        One session's anatomy: probe id (``imec0`` / ``imec1``) -> region -> channel
+        ranges ``[lo, hi)``.
     brain_color_scheme (dict)
         Bucket-keyed display palette (see
         `visualizations_settings.json["brain_area_colors"]`).
@@ -326,15 +359,20 @@ def find_region_by_channel(cluster_id: str,
     """
 
     cluster_ch = int(cluster_id[cluster_id.index('_ch') + 3:cluster_id.index('_ch') + 6])
-    for probe_id, probe_regions in brain_area_dict.items():
-        for brain_region, channel_groups in probe_regions.items():
-            for channel_group in channel_groups:
-                if channel_group[0] <= cluster_ch < channel_group[1]:
-                    if return_only_color:
-                        return _resolve_brain_area_color(brain_region, brain_color_scheme)
-                    if return_only_area:
-                        return brain_region
-                    return brain_region, _resolve_brain_area_color(brain_region, brain_color_scheme)
+    # The channel ranges are per probe and both probes number their channels from 0, so the
+    # lookup is confined to the cluster's own probe (its id's prefix, e.g. 'imec1' in
+    # 'imec1_cl0525_ch354_good'); searching every probe would give an imec1 unit the region
+    # imec0 has at the same channel number. A probe without anatomy falls through to 'other'.
+    probe_id = cluster_id.split('_', 1)[0]
+    probe_regions = brain_area_dict[probe_id] if probe_id in brain_area_dict else {}
+    for brain_region, channel_groups in probe_regions.items():
+        for channel_group in channel_groups:
+            if channel_group[0] <= cluster_ch < channel_group[1]:
+                if return_only_color:
+                    return _resolve_brain_area_color(brain_region, brain_color_scheme)
+                if return_only_area:
+                    return brain_region
+                return brain_region, _resolve_brain_area_color(brain_region, brain_color_scheme)
 
     # Channel falls outside every labelled anatomy range -> assign the 'other'
     # bucket (region 'other', bucket-resolved colour) instead of returning None,
@@ -1806,14 +1844,18 @@ class Create3DVideo:
                 audio_data, audio_sr = load_audio_data(root_directory=self.root_directory)
 
                 half_window_size_sec = self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['spectrogram_plot_window_size'] / 2
-                camera_frame_in_samples = int(np.ceil(1 / empirical_camera_sr * audio_sr))
 
                 half_window_size_samples = int(np.floor(half_window_size_sec * audio_sr))
                 window_start_signal = int(self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'] * audio_sr) - half_window_size_samples
                 window_end_signal = int((self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'] + self.visualizations_parameter_dict['make_behavioral_videos']['video_duration']) * audio_sr) + half_window_size_samples
 
                 stft_hop = self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['spectrogram_stft_nfft'] // 4
-                spectrogram_step = int(camera_frame_in_samples // stft_hop)
+                # STFT columns per camera frame, kept fractional: a frame spans
+                # audio_sr / camera_sr samples, which is rarely a whole number of hops,
+                # and rounding the per-frame step (ceil of the samples, then floor of
+                # the hops) accumulated into a drift of the scrolling window against
+                # the video. Each frame's offset is rounded from the exact product.
+                spectrogram_step = audio_sr / (empirical_camera_sr * stft_hop)
                 first_fr_spectrogram_center = int((audio_sr * half_window_size_sec) // stft_hop)
 
                 if self.speaker_audio_file != '' and pathlib.Path(self.speaker_audio_file).is_file():
@@ -1998,8 +2040,8 @@ class Create3DVideo:
                 plot_usv_segments_bool = self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['plot_usv_segments_bool'] and self.speaker_audio_file == '' and not self.visualizations_parameter_dict['make_behavioral_videos']['speaker_bool']
 
                 relative_fr = 0
-                spec_start = relative_fr * spectrogram_step
-                spec_end = (first_fr_spectrogram_center * 2) + (relative_fr * spectrogram_step)
+                spec_start, spec_end = spectrogram_window_columns(relative_fr, spectrogram_step,
+                                                                  first_fr_spectrogram_center)
 
                 plot_spectrogram(plot_axes=ax[1],
                                  figure_object=fig,
@@ -2242,8 +2284,8 @@ class Create3DVideo:
                 if self.visualizations_parameter_dict['make_behavioral_videos']['spectrogram_bool']:
                     ax[1].clear()
                     current_relative_fr = frame_num - frame_start
-                    current_spec_start = current_relative_fr * spectrogram_step
-                    current_spec_end = (first_fr_spectrogram_center * 2) + (current_relative_fr * spectrogram_step)
+                    current_spec_start, current_spec_end = spectrogram_window_columns(
+                        current_relative_fr, spectrogram_step, first_fr_spectrogram_center)
 
                     if self.speaker_audio_file == '' and not self.visualizations_parameter_dict['make_behavioral_videos']['speaker_bool']:
                         # find USV onsets/offsets for given frame
