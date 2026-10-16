@@ -3527,8 +3527,12 @@ def bout_parameter_model_selection(
                     for i in range(1, len(current_model_features)):
                         gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
                     held_gam = GAM(gam_terms, distribution='gamma', link='log', **gam_kwargs).fit(X_dev_gam, y_dev_gam)
-                    y_pred_tiled = held_gam.predict(X_held_gam)
-                    y_pred = np.mean(y_pred_tiled.reshape(len(y_held), history_frames), axis=1)
+                    # Same per-event reduction as the CV folds the selection ranked on:
+                    # average the frame predictions on the LINK (log) scale, then apply
+                    # the inverse link, exp(mean(eta)), not mean(exp(eta)), so the held-out
+                    # D^2 is comparable with the CV D^2.
+                    eta_held = np.log(held_gam.predict_mu(X_held_gam)).reshape(len(y_held), history_frames)
+                    y_pred = np.exp(np.mean(eta_held, axis=1))
 
                 y_held_safe = np.maximum(y_held, 1e-6)
                 y_pred_safe = np.maximum(y_pred, 1e-6)

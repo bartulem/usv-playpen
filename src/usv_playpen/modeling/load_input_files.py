@@ -1161,6 +1161,11 @@ def find_onset_epochs(root_directories: list = None,
             # Legacy blocks carry log-space lognormal 'means'/'sds'; an
             # inverse-Gaussian block declares itself via 'model_class': 'ig'
             # and carries linear-time 'mus'/'lambdas' instead.
+            # A negative index would silently pick a component from the END of the
+            # mixture (Python wrap-around) and set the wrong inter-bout threshold.
+            if mixture_model_component_index < 0:
+                msg = f"Invalid mixture_model_component_index {mixture_model_component_index} for {sex_label}: must be >= 0."
+                raise ValueError(msg)
             try:
                 if 'model_class' in params and params['model_class'] == 'ig':
                     comp_mu = params['mus'][mixture_model_component_index]
@@ -1168,8 +1173,9 @@ def find_onset_epochs(root_directories: list = None,
                 else:
                     comp_mean = params['means'][mixture_model_component_index]
                     comp_sd = params['sds'][mixture_model_component_index]
-            except IndexError:
-                raise ValueError(f"Invalid mixture_model_component_index {mixture_model_component_index} for {sex_label}.")
+            except IndexError as error:
+                msg = f"Invalid mixture_model_component_index {mixture_model_component_index} for {sex_label}."
+                raise ValueError(msg) from error
 
             if 'model_class' in params and params['model_class'] == 'ig':
                 ibi_threshold = _calculate_ibi_threshold_ig(comp_mu, comp_lam, mixture_model_z_score)
@@ -1549,6 +1555,10 @@ def find_usv_categories(root_directories: list = None,
             if exclude_noise_usvs:
                 mouse_usvs = drop_noise_usvs(mouse_usvs, f"{session_id} ({mouse_name})")[0]
 
+            # The predictor traces cover the whole session, history period included, so
+            # an event shortly after `filter_history` still sees the vocalizations in its
+            # history window (the onset and bout loaders build theirs the same way).
+            mouse_usvs_all = mouse_usvs
             # Filter history period (at start of session)
             mouse_usvs = mouse_usvs.filter(pls.col('start') > filter_history)
 
@@ -1577,7 +1587,7 @@ def find_usv_categories(root_directories: list = None,
 
             # Predictor traces, one per entry of `predictor_classes`.
             usv_data_dict[session_id][mouse_name]['continuous_vocal_signals'] = build_vocal_predictor_signals(
-                mouse_usvs=mouse_usvs, predictor_classes=predictor_classes, vocal_output_type=vocal_output_type,
+                mouse_usvs=mouse_usvs_all, predictor_classes=predictor_classes, vocal_output_type=vocal_output_type,
                 category_column=category_column, duration_frames=session_duration_frames, fps=session_fps,
                 smooth_sd=proportion_smoothing_sd, source=f"{session_id} ({mouse_name})")
 
@@ -1877,6 +1887,11 @@ def find_variable_length_bouts(root_directories: list = None,
             # Legacy blocks carry log-space lognormal 'means'/'sds'; an
             # inverse-Gaussian block declares itself via 'model_class': 'ig'
             # and carries linear-time 'mus'/'lambdas' instead.
+            # A negative index would silently pick a component from the END of the
+            # mixture (Python wrap-around) and set the wrong inter-bout threshold.
+            if mixture_model_component_index < 0:
+                msg = f"Invalid mixture_model_component_index {mixture_model_component_index} for {sex_label}: must be >= 0."
+                raise ValueError(msg)
             try:
                 if 'model_class' in params and params['model_class'] == 'ig':
                     comp_mu = params['mus'][mixture_model_component_index]
@@ -1884,8 +1899,9 @@ def find_variable_length_bouts(root_directories: list = None,
                 else:
                     comp_mean = params['means'][mixture_model_component_index]
                     comp_sd = params['sds'][mixture_model_component_index]
-            except IndexError:
-                raise ValueError(f"Invalid mixture_model_component_index {mixture_model_component_index} for {sex_label}.")
+            except IndexError as error:
+                msg = f"Invalid mixture_model_component_index {mixture_model_component_index} for {sex_label}."
+                raise ValueError(msg) from error
 
             if 'model_class' in params and params['model_class'] == 'ig':
                 ibi_threshold = _calculate_ibi_threshold_ig(comp_mu, comp_lam, mixture_model_z_score)

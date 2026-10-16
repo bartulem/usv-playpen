@@ -863,18 +863,20 @@ class TestFindBoutEpochs:
                              **kwargs)
 
     def test_invalid_mixture_model_component_index_raises(self, tmp_path):
-        """An out-of-range ``mixture_model_component_index`` raises ``ValueError``."""
+        """An out-of-range or negative ``mixture_model_component_index`` raises ``ValueError``
+        (a negative index would wrap to the last component)."""
 
         kwargs = self._build(tmp_path, {
             'emitter': ['male'], 'start': [2.0], 'stop': [2.05],
             'usv_category': [1],
         })
-        with pytest.raises(ValueError, match='Invalid mixture_model_component_index'):
-            find_onset_epochs(prediction_mode='bout_onset', filter_history=1.0,
-                             usv_bout_time=0.5, min_usv_per_bout=2,
-                             mixture_model_component_index=5,
-                             proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
-                             **kwargs)
+        for bad_index in (5, -1):
+            with pytest.raises(ValueError, match='Invalid mixture_model_component_index'):
+                find_onset_epochs(prediction_mode='bout_onset', filter_history=1.0,
+                                 usv_bout_time=0.5, min_usv_per_bout=2,
+                                 mixture_model_component_index=bad_index,
+                                 proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
+                                 **kwargs)
 
     def test_bout_mode_rejects_bout_with_dirty_history(self, tmp_path):
         """A multi-syllable bout whose immediately-preceding USV is within
@@ -989,6 +991,26 @@ class TestFindUsvCategories:
         np.testing.assert_allclose(male['other_events'], [3.0])
         assert set(male['events_by_category'].keys()) == {1, 2}
         assert 1 in male['category_streams']
+
+    def test_predictor_traces_include_the_history_period(self, tmp_path):
+        """The vocal predictor traces cover the whole session: a USV inside the history
+        period (0.5 s, before ``filter_history`` = 1.0 s) is no event target but still appears
+        in the trace, so an event soon after the history period sees it in its history window."""
+
+        rows = {
+            'emitter': ['male', 'male'],
+            'start': [0.5, 3.0],
+            'stop': [0.55, 3.05],
+            'usv_category': [2, 4],
+        }
+        out = find_usv_categories(target_category=None, filter_history=1.0,
+                                  vocal_output_type='pooled_binary', proportion_smoothing_sd=None,
+                                  **self._kwargs(tmp_path, rows))
+        male = out['sess_D']['male']
+        assert set(male['events_by_category'].keys()) == {4}
+        trace = male['continuous_vocal_signals']['usv_event']
+        assert trace[50] > 0
+        assert trace[300] > 0
 
     def test_multinomial_mode_events_by_category(self, tmp_path):
         """With ``target_category=None`` the function populates
@@ -1466,16 +1488,19 @@ class TestFindVariableLengthBouts:
         assert out['sess_E']['male']['ibi_threshold_used'] == pytest.approx(1.0)
 
     def test_invalid_mixture_model_component_index_raises(self, tmp_path):
-        """An out-of-range ``mixture_model_component_index`` raises ``ValueError``."""
+        """An out-of-range or negative ``mixture_model_component_index`` raises ``ValueError``
+        (a negative index would wrap to the last component)."""
 
         rows = {
             'emitter': ['male'], 'start': [2.0], 'stop': [2.05],
             'usv_category': [1], 'mask_number': [1],
         }
-        with pytest.raises(ValueError, match='Invalid mixture_model_component_index'):
-            find_variable_length_bouts(min_vocalizations=2, filter_history=1.0,
-                                       mixture_model_component_index=9, mixture_model_params=_mixture_model_params(),
-                                       **self._kwargs(tmp_path, rows))
+        for bad_index in (9, -1):
+            with pytest.raises(ValueError, match='Invalid mixture_model_component_index'):
+                find_variable_length_bouts(min_vocalizations=2, filter_history=1.0,
+                                           mixture_model_component_index=bad_index,
+                                           mixture_model_params=_mixture_model_params(),
+                                           **self._kwargs(tmp_path / str(bad_index), rows))
 
     def test_missing_summary_csv_skips_session(self, tmp_path, capsys):
         """A session lacking the USV summary CSV is skipped with a warning."""
