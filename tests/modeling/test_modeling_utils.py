@@ -1626,3 +1626,122 @@ class TestFeatureSelectionKnownAnswers:
         np.testing.assert_array_equal(y, [1, 1, 1, 0, 0])
         assert np.isnan(mu.pearson_r_safe(np.ones(5), np.arange(5.0)))
         assert np.isnan(mu.spearman_r_safe(np.ones(5), np.arange(5.0)))
+
+
+class TestSecondMutationRoundKnownAnswers:
+    """Known-answer checks for the changes the second mutation run (with the first round's tests
+    in place) still let through: sampling the majority POSITIVES with replacement, a wrong ECE bin
+    count or bin-edge inclusion, the acceleration / allo_pitch / TTI predictor rules, a `break`
+    for a `continue` in the engagement loop, engagement derivatives, the dyad rename, the target
+    side of the vocal existence map, single-row sessions in pooling, the one-session test
+    proportion, the paired gate's default direction, the z-score wrapper's pass-through and the
+    category / null headlines."""
+
+    def test_balance_never_redraws_a_row_and_keeps_a_single_positive(self):
+        """Whichever class is the majority, its rows are drawn without replacement (checked over
+        many seeds with a 6-to-5 split, where drawing with replacement repeats a row 91% of the
+        time); one positive against many negatives still gives one row per class."""
+        small = np.arange(5 * 2, dtype=float).reshape(5, 2)
+        large = np.arange(100, 100 + 6 * 2, dtype=float).reshape(6, 2)
+        for seed in range(40):
+            np.random.seed(seed)  # noqa: NPY002 -- the helper draws from the global RNG by design
+            bal_pos, bal_neg = mu.balance_two_class_arrays(large, small)
+            assert len({tuple(row) for row in bal_pos}) == 5
+            np.testing.assert_array_equal(bal_neg, small)
+            bal_pos, bal_neg = mu.balance_two_class_arrays(small, large)
+            assert len({tuple(row) for row in bal_neg}) == 5
+        one_pos, few_neg = mu.balance_two_class_arrays(np.ones((1, 2)), large)
+        assert one_pos.shape == (1, 2)
+        assert few_neg.shape == (1, 2)
+        many_pos, one_neg = mu.balance_two_class_arrays(large, np.ones((1, 2)))
+        assert many_pos.shape == (1, 2)
+        assert one_neg.shape == (1, 2)
+
+    def test_expected_calibration_error_uses_n_bins_with_half_open_edges(self):
+        """Confidences 0.62 / 0.68 share the bin (0.6, 0.7] with 10 bins (so a correct and a wrong
+        prediction average out), but would fall in different bins with 8 or 11; a confidence of
+        exactly 0.6 belongs to (0.5, 0.6] only. A single prediction is a valid ECE of
+        |correct - confidence|."""
+        proba = np.array([[0.62, 0.38], [0.68, 0.32], [0.6, 0.4], [0.9, 0.1]])
+        y_pred = np.zeros(4, dtype=int)
+        y_true = np.array([0, 1, 1, 0])
+        # bins: (0.5,0.6] holds 0.6 (wrong) -> 0.25*|0-0.6|; (0.6,0.7] holds 0.62 (right) and 0.68
+        # (wrong) -> 0.5*|0.5-0.65|; (0.8,0.9] holds 0.9 (right) -> 0.25*|1-0.9|
+        expected = 0.25 * 0.6 + 0.5 * 0.15 + 0.25 * 0.1
+        assert mu.expected_calibration_error(y_true, y_pred, proba, n_bins=10) == pytest.approx(expected)
+        single = mu.expected_calibration_error(np.array([1]), np.array([0]), np.array([[0.7, 0.3]]), n_bins=10)
+        assert single == pytest.approx(0.7)
+
+    def test_select_kinematic_columns_acceleration_pitch_tti_and_engagement(self):
+        """Acceleration never gets derivatives; allo_pitch is asymmetric like allo_yaw, and a TTI
+        partner side follows the opposite slot rule; a non-target dyad listed BEFORE the target dyad
+        does not stop the engagement search; engagement derivatives are kept when switched on."""
+        columns = ['M.acceleration', 'M.acceleration_1st_der',
+                   'M-F.allo_pitch-nose', 'M-F.nose-allo_pitch', 'M-F.nose-TTI', 'M-F.TTI-nose',
+                   'F-M.orofacial-sei', 'M-F.orofacial-sei', 'M-F.orofacial-sei_1st_der']
+        kin = {'egocentric': ['acceleration'],
+               'dyadic_pose': ['allo_pitch-nose', 'nose-allo_pitch', 'nose-TTI', 'TTI-nose'],
+               'dyadic_engagement': ['orofacial-sei'], 'dyadic_pose_symmetric': False,
+               'include_1st_derivatives': True, 'include_2nd_derivatives': False}
+        shared = ['M-F.orofacial-sei', 'M-F.orofacial-sei_1st_der', 'M.acceleration']
+        got = mu.select_kinematic_columns(columns, 'M', 'F', kin, predictor_idx=0)
+        assert got == sorted([*shared, 'M-F.nose-allo_pitch', 'M-F.TTI-nose'])
+        got = mu.select_kinematic_columns(columns, 'M', 'F', kin, predictor_idx=1)
+        assert got == sorted([*shared, 'M-F.allo_pitch-nose', 'M-F.nose-TTI'])
+
+    def test_harmonize_renames_dyads_keeping_values_and_fills_the_target_side(self):
+        """A dyad column is renamed to its bare suffix with its values (not replaced by a zero
+        column next to the old name), and a vocal suffix present only for the TARGET somewhere is
+        zero-filled for the target where missing, never for the predictor."""
+        d = {
+            's1': pls.DataFrame({'mF.speed': [1.0, 2.0], 'mM-mF.nose-nose': [0.1, 0.2], 'mF.usv_rate': [5.0, 6.0]}),
+            's2': pls.DataFrame({'mF.speed': [3.0, 4.0], 'mM.speed': [7.0, 8.0]}),
+        }
+        names = {'s1': ['mM', 'mF'], 's2': ['mM', 'mF']}
+        out, suffixes = harmonize_session_columns(d, names, target_idx=1, predictor_idx=0)
+        assert out['s1']['nose-nose'].to_list() == [0.1, 0.2]
+        assert 'mM-mF.nose-nose' not in out['s1'].columns
+        assert out['s2']['mF.usv_rate'].to_list() == [0.0, 0.0]
+        assert 'mM.usv_rate' not in out['s1'].columns
+        assert 'mM.usv_rate' not in out['s2'].columns
+        assert suffixes == ['nose-nose', 'speed', 'usv_rate']
+
+    def test_pooling_keeps_single_row_sessions_and_one_session_needs_the_whole_set(self):
+        """A session contributing a single row of either class is pooled (not dropped as empty);
+        with one session the test proportion is 1 (the one session), with two it is at least 1/2."""
+        data = {'a': {'pos': np.ones((1, 3)), 'neg': np.zeros((1, 3))}, 'b': {'pos': np.full((2, 3), 2.0), 'neg': None}}
+        X_pos, X_neg = mu.pool_session_arrays(data, ['a', 'b'], pos_key='pos', neg_key='neg', n_frames=3)
+        np.testing.assert_array_equal(X_pos, np.array([[1.0] * 3, [2.0] * 3, [2.0] * 3]))
+        np.testing.assert_array_equal(X_neg, np.zeros((1, 3)))
+        assert mu.bounded_test_proportion(0.2, n_sessions=1) == 1.0
+        assert mu.bounded_test_proportion(0.2, n_sessions=2) == 0.5
+        assert mu.bounded_test_proportion(0.2, n_sessions=0) == 0.2
+
+    def test_paired_gate_defaults_to_higher_is_better(self):
+        """Without `higher_is_better` the gate treats larger scores as better: a candidate scoring
+        0.1 above the incumbent on every fold is a +0.1 improvement."""
+        improvement, _ = mu.paired_one_se_improvement([0.6, 0.7, 0.8], [0.5, 0.6, 0.7])
+        assert improvement == pytest.approx(0.1)
+
+    def test_zscore_wrapper_passes_every_argument_through(self, mocker):
+        """The cross-session z-score wrapper hands every argument, the absolute-value lists
+        included, to zscore_different_sessions_together unchanged."""
+        inner = mocker.patch.object(mu, 'zscore_different_sessions_together', return_value={'ok': 1})
+        out = mu.zscore_features_across_sessions({'s': 1}, ['speed'], {'speed': (0, 1)}, abs_features=['a'],
+                                                 smooth_abs_features={'b': 2}, stats_out={}, reference_sessions=['s'])
+        assert out == {'ok': 1}
+        assert inner.call_args.kwargs == {
+            'data_dict': {'s': 1}, 'feature_lst': ['speed'], 'feature_bounds': {'speed': (0, 1)},
+            'abs_features': ['a'], 'smooth_abs_features': {'b': 2}, 'stats_out': {}, 'reference_sessions': ['s']}
+
+    def test_headline_for_the_category_task_and_the_continuous_nulls(self):
+        """The category task reports AUC like the onset task, and the continuous task reports the
+        same headline metric for its two null strategies."""
+        res = {'actual': {'auc': [0.8, 0.6]}, 'null': {'auc': [0.5, 0.4]}}
+        assert extract_univariate_headline('category', res) == {'Mean Actual': {'AUC': 0.7}, 'Mean Null': {'AUC': 0.45}}
+        cont = {'actual': {'folds': {'metrics': {'vm_logscore': [0.3]}}},
+                'null': {'folds': {'metrics': {'vm_logscore': [0.1]}}},
+                'null_model_free': {'folds': {'metrics': {'vm_logscore': [-0.2]}}}}
+        out = extract_univariate_headline('continuous', cont)
+        assert out['Mean Null'] == {'vm_logscore': 0.1}
+        assert out['Mean Null-MF'] == {'vm_logscore': -0.2}
