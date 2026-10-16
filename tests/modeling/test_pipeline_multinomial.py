@@ -1124,6 +1124,72 @@ class TestMultinomialModelSelection:
         # The forward search never drops an already-accepted feature.
         assert accepted_counts == sorted(accepted_counts)
 
+    def test_multinomial_selection_resume_restores_the_accepted_state(self, tmp_path, capsys):
+        """A resume rebuilds the state the fresh run held after its last checkpoint: with every
+        step file present the search had converged and it finalizes on the same features; with the
+        last step deleted it resumes from the remaining checkpoint (continuing from the incumbent,
+        or finalizing when that checkpoint already holds every ranked feature) and reaches the same
+        model."""
+
+        settings, _ = _build_extraction_settings(
+            tmp_path, model_engine='sklearn', split_strategy='mixed', split_num=2,
+            test_proportion=0.4,
+        )
+        feature_names = ['self.speed', 'other.speed', 'self.neck_elevation']
+        session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
+        input_pkl = str(build_multinomial_input_pickle(
+            save_path=tmp_path / 'modeling_multinomial_input.pkl',
+            feature_names=feature_names, session_ids=session_ids,
+            history_frames=HISTORY_FRAMES, n_categories=N_CATEGORIES, n_per_class_per_session=18,
+        ))
+        univ_pkl = str(build_univariate_ranking_pickle(
+            save_path=tmp_path / 'univariate_combined.pkl', feature_names=feature_names,
+            n_splits=settings['model_validation']['n_cv_folds'],
+        ))
+        settings_json = tmp_path / 'settings.json'
+        settings_json.write_text(json.dumps(settings))
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+
+        def _run():
+            multinomial_vocal_category_model_selection(
+                univariate_results_path=univ_pkl, input_data_path=input_pkl,
+                settings_path=str(settings_json), output_directory=str(ms_dir),
+                use_top_rank_as_anchor=True, p_val=0.05,
+            )
+
+        def _steps():
+            return sorted(ms_dir.glob('model_selection_multinomial_*_step_*.pkl'),
+                          key=lambda path: int(path.stem.rsplit('_', 1)[-1]))
+
+        def _final_features():
+            for path in _steps():
+                with path.open('rb') as fh:
+                    step = pickle.load(fh)
+                if 'final_model_features' in step:
+                    return step['final_model_features'], len(_steps())
+            return None, len(_steps())
+
+        _run()
+        fresh = _final_features()
+        assert fresh[0] is not None
+
+        capsys.readouterr()
+        _run()
+        out = capsys.readouterr().out
+        assert "already converged" in out
+        assert "Resume failed" not in out
+        assert _final_features() == fresh
+
+        _steps()[-1].unlink()
+        _run()
+        out = capsys.readouterr().out
+        # The remaining checkpoint either leaves candidates to try (the run continues) or already
+        # holds every ranked feature (the run finalizes); either way it is the fresh model.
+        assert "Continuing from Step" in out or "already converged" in out
+        assert "Resume failed" not in out
+        assert _final_features()[0] == fresh[0]
+
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     @pytest.mark.filterwarnings("ignore::UserWarning")
     @pytest.mark.filterwarnings("ignore::DeprecationWarning")

@@ -426,13 +426,11 @@ class TestBoutOnsetSelectionBranches:
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     def test_resume_from_existing_step_pickle(self, tmp_path):
         """
-        Dropping a pre-existing ``model_selection_..._step_0.pkl`` into the output
-        directory drives the resume-from-checkpoint branch: the selector detects
-        the prior run, loads the last step's ``current_features`` /
-        ``baseline_score`` / ``candidates_summary``, and (because the saved
-        candidate beats the baseline by more than its SE) promotes that candidate
-        and continues from the next step. The run completes and at least one
-        further step pickle is produced.
+        Dropping a pre-existing ``model_selection_..._step_0.pkl`` (an anchor step that
+        accepted ``self.speed``) into the output directory drives the resume branch: the
+        selector restores the recorded decision, starts the next step from
+        ``['self.speed']`` with its per-fold log-losses as the reference, and completes,
+        writing at least one further step pickle.
         """
 
         settings, _ = _build_settings(tmp_path, model_engine='sklearn',
@@ -445,15 +443,14 @@ class TestBoutOnsetSelectionBranches:
 
         # The prefix the selector computes for an 'unknown' target condition.
         prefix = 'model_selection_unknown_bout_onset_mixed_step_'
-        # A checkpoint whose stored candidate ('self.speed') clears the
-        # (baseline - score) > se promotion test, so resume appends it.
+        # An anchor checkpoint that accepted 'self.speed'; the resume restores it.
         checkpoint = {
             'step_idx': 0,
-            'current_features': [],
+            'current_features': ['self.speed'],
             'baseline_score': float(np.log(2)),
-            'selected_feature': None,
+            'selected_feature': 'self.speed',
             'candidates_summary': {
-                'self.speed': {'mean_ll': 0.10, 'se_ll': 0.01},
+                'self.speed': {'mean_ll': 0.10, 'se_ll': 0.01, 'll': [0.10, 0.10]},
             },
         }
         with (ms_dir / f'{prefix}0.pkl').open('wb') as fh:
@@ -930,12 +927,10 @@ class TestCategorySelectionBranches:
     @pytest.mark.filterwarnings("ignore::sklearn.exceptions.UndefinedMetricWarning")
     def test_resume_from_existing_step_pickle(self, tmp_path):
         """
-        A pre-existing category Step pickle in the output directory drives the
-        resume branch: the selector loads the last step's ``current_features`` /
-        ``baseline_score`` / ``candidates_summary`` and (because the saved
-        candidate beats the baseline by more than its SE) promotes it and
-        continues from the next step. The run completes and a further step pickle
-        is produced.
+        A pre-existing category Step pickle (an anchor step that accepted
+        ``self.speed``) drives the resume branch: the selector restores the recorded
+        decision, continues from the next step with ``['self.speed']``, and completes,
+        writing a further step pickle.
         """
 
         settings, _ = _build_settings(tmp_path, model_engine='sklearn',
@@ -953,11 +948,11 @@ class TestCategorySelectionBranches:
         prefix = f'model_selection_category_{CATEGORY_COLUMN}_unknown_unknown_step_'
         checkpoint = {
             'step_idx': 0,
-            'current_features': [],
+            'current_features': ['self.speed'],
             'baseline_score': float(np.log(2)),
-            'selected_feature': None,
+            'selected_feature': 'self.speed',
             'candidates_summary': {
-                'self.speed': {'mean_ll': 0.10, 'se_ll': 0.01},
+                'self.speed': {'mean_ll': 0.10, 'se_ll': 0.01, 'll': [0.10, 0.10]},
             },
         }
         with (ms_dir / f'{prefix}0.pkl').open('wb') as fh:
@@ -1281,8 +1276,8 @@ class TestBoutParameterSelectionBranches:
 
     def test_resume_stale_checkpoint_restarts_fresh(self, tmp_path):
         """
-        A pre-existing bout-parameter step pickle whose ``candidates_summary`` has
-        no finite-scored candidate is a stale/broken checkpoint: the resume logic
+        A pre-existing bout-parameter step pickle that accepted a feature whose
+        candidate entry has no finite score is a broken checkpoint: the resume logic
         discards it, clears ``existing_steps``, and the run re-establishes the
         baseline and re-fires the auto-anchor, completing and writing at least one
         step pickle under the canonical prefix.
@@ -1300,12 +1295,12 @@ class TestBoutParameterSelectionBranches:
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
         prefix = 'model_selection_bout_durations_unknown_mixed_step_'
-        # Stale checkpoint: a candidate with a non-finite mean deviance.
+        # Broken checkpoint: the accepted feature has a non-finite mean deviance.
         stale = {
             'step_idx': 0,
             'current_features': [],
             'baseline_score': 0.0,
-            'selected_feature': None,
+            'selected_feature': 'self.speed',
             'candidates_summary': {
                 'self.speed': {'mean_explained_deviance': float('nan'),
                                'se_explained_deviance': 0.0},
@@ -1324,6 +1319,8 @@ class TestBoutParameterSelectionBranches:
             p_val=0.5,
         )
         assert len(list(ms_dir.glob(f'{prefix}*.pkl'))) >= 1
+        with (ms_dir / f'{prefix}0.pkl').open('rb') as fh:
+            assert np.isfinite(pickle.load(fh)['candidates_summary'][feature_names[0]]['mean_explained_deviance'])
 
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     def test_params_selection_holdout_refit_runs(self, tmp_path):

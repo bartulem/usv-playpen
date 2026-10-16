@@ -82,6 +82,7 @@ with warnings.catch_warnings():
     from usv_playpen.modeling.jax_bivariate_regression import (
         SmoothBivariateRegression,
     )
+    import usv_playpen.modeling.model_selection as model_selection_module
     from usv_playpen.modeling.model_selection import (
         _frozen_selection_kappa,
         continuous_vocal_manifold_model_selection,
@@ -977,6 +978,75 @@ class TestManifoldModelSelection:
         assert final_step['_run_metadata']['selection_metric'] == 'vm_logscore'
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    @pytest.mark.parametrize(("selection_score", "expects_regions"), [("macro", True), ("micro", False)])
+    def test_selection_torus_gates_bootstrap_the_ranking_score(self, tmp_path, monkeypatch,
+                                                              selection_score, expects_regions):
+        """Every fold bootstrap (screen, anchor and forward-step gates) scores the margin of
+        the score that ranks the candidates: a macro run hands it the region map, a micro run
+        hands it none, so a micro run never accepts or rejects on the macro margin."""
+
+        settings, _save_dir = _build_manifold_settings(
+            tmp_path, split_strategy='session', split_num=10, test_proportion=0.3,
+        )
+        settings['vocal_features']['usv_manifold_metric'] = 'torus'
+        settings['vocal_features']['usv_manifold_selection_score'] = selection_score
+        settings['hyperparameters']['linear_models']['manifold_regression']['bin_resizing_factor'] = 1
+        feature_names = ['self.speed', 'other.speed', 'self.neck_elevation']
+        session_ids = [f'session_{i}' for i in range(25)]
+        input_md = {
+            'analysis_type': 'continuous',
+            'analysis_tag': 'manifold_qlvm_category',
+            'session_ids': session_ids,
+            'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
+            'analysis_specific': {
+                'usv_category_column_name': 'qlvm_category',
+                'manifold_metric': 'torus',
+                'manifold_period': 1.0,
+            },
+        }
+        input_pkl = str(_build_signal_continuous_pickle(
+            save_path=tmp_path / 'manifold_input.pkl',
+            feature_names=feature_names,
+            session_ids=session_ids,
+            history_frames=HISTORY_FRAMES,
+            input_metadata=input_md,
+            target_kind='wound_torus',
+        ))
+        runner = ContinuousModelRunner(ContinuousModelingPipeline(modeling_settings_dict=settings))
+        combined = {feature: runner.run_univariate_training(input_pkl, feature) for feature in feature_names}
+        combined['_input_metadata'] = input_md
+        combined_path = tmp_path / 'univariate_combined.pkl'
+        with combined_path.open('wb') as fh:
+            pickle.dump(combined, fh)
+        settings_json = tmp_path / 'settings.json'
+        settings_json.write_text(json.dumps(settings))
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+
+        region_maps = []
+        original_bootstrap = model_selection_module._fold_paired_margin_bootstrap
+
+        def recording_bootstrap(*args, **kwargs):
+            region_maps.append(kwargs['event_to_region'])
+            return original_bootstrap(*args, **kwargs)
+
+        monkeypatch.setattr(model_selection_module, '_fold_paired_margin_bootstrap', recording_bootstrap)
+        continuous_vocal_manifold_model_selection(
+            univariate_results_path=str(combined_path),
+            input_data_path=input_pkl,
+            output_directory=str(ms_dir),
+            settings_path=str(settings_json),
+            use_top_rank_as_anchor=True,
+            p_val=0.5,
+        )
+        # the screen bootstraps every feature, then at least the anchor gate runs
+        assert len(region_maps) > len(feature_names)
+        if expects_regions:
+            assert all(region_map is not None for region_map in region_maps)
+        else:
+            assert all(region_map is None for region_map in region_maps)
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_selection_torus_bspline_basis_stores_frame_filters(self, tmp_path):
         """
         The torus forward search with ``temporal_basis.type = 'bspline'``: the
@@ -1420,6 +1490,81 @@ class TestManifoldModelSelection:
         final = sorted(ms_dir.glob('*_step_*.pkl'))[-1]
         with final.open('rb') as fh:
             assert pickle.load(fh)['_run_metadata']['selection_metric'] == 'vm_logscore'
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    def test_selection_torus_resume_restores_the_accepted_state(self, tmp_path, capsys):
+        """A resume rebuilds the state the fresh run held after its last checkpoint: with every
+        step file present the search had converged, so it finalizes without a new step; with the
+        final (rejecting) step deleted it resumes from the remaining checkpoint (continuing from the
+        incumbent's folds, or finalizing when that checkpoint already holds every ranked feature)
+        and reaches the same model, never failing on a missing reference model."""
+
+        settings, _ = _build_manifold_settings(
+            tmp_path, split_strategy='session', split_num=10, test_proportion=0.3,
+        )
+        settings['vocal_features']['usv_manifold_metric'] = 'torus'
+        settings['hyperparameters']['linear_models']['manifold_regression']['bin_resizing_factor'] = 1
+        feature_names = ['self.speed', 'other.speed', 'self.neck_elevation']
+        session_ids = [f'session_{i}' for i in range(25)]
+        input_md = {
+            'analysis_type': 'continuous',
+            'analysis_tag': 'manifold_qlvm_category',
+            'session_ids': session_ids,
+            'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
+            'analysis_specific': {
+                'usv_category_column_name': 'qlvm_category',
+                'manifold_metric': 'torus', 'manifold_period': 1.0,
+            },
+        }
+        input_pkl = str(_build_signal_continuous_pickle(
+            save_path=tmp_path / 'manifold_input.pkl',
+            feature_names=feature_names, session_ids=session_ids,
+            history_frames=HISTORY_FRAMES, input_metadata=input_md,
+            target_kind='wound_torus',
+        ))
+        runner = ContinuousModelRunner(ContinuousModelingPipeline(modeling_settings_dict=settings))
+        combined = {f: runner.run_univariate_training(input_pkl, f) for f in feature_names}
+        combined['_input_metadata'] = input_md
+        combined_path = tmp_path / 'univariate_combined.pkl'
+        with combined_path.open('wb') as fh:
+            pickle.dump(combined, fh)
+        settings_json = tmp_path / 'settings.json'
+        settings_json.write_text(json.dumps(settings))
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+
+        def _run():
+            continuous_vocal_manifold_model_selection(
+                univariate_results_path=str(combined_path), input_data_path=input_pkl,
+                output_directory=str(ms_dir), settings_path=str(settings_json),
+                use_top_rank_as_anchor=True, p_val=0.5,
+            )
+
+        def _final_features():
+            steps = sorted(ms_dir.glob('*_step_*.pkl'), key=lambda path: int(path.stem.rsplit('_', 1)[-1]))
+            with steps[-1].open('rb') as fh:
+                return pickle.load(fh)['final_model_features'], len(steps)
+
+        _run()
+        fresh_features, fresh_n_steps = _final_features()
+        assert fresh_features
+
+        capsys.readouterr()
+        _run()
+        out = capsys.readouterr().out
+        assert "already converged" in out
+        assert "Resume failed" not in out
+        assert _final_features() == (fresh_features, fresh_n_steps)
+
+        steps = sorted(ms_dir.glob('*_step_*.pkl'), key=lambda path: int(path.stem.rsplit('_', 1)[-1]))
+        steps[-1].unlink()
+        _run()
+        out = capsys.readouterr().out
+        # The remaining checkpoint either leaves candidates to try (the run continues) or already
+        # holds every ranked feature (the run finalizes); either way it is the fresh model.
+        assert "Continuing from Step" in out or "already converged" in out
+        assert "Resume failed" not in out
+        assert _final_features()[0] == fresh_features
 
     def test_metric_aware_centroid_and_r2_math(self):
         """

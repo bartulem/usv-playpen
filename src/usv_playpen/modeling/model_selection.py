@@ -10,7 +10,9 @@ import re
 import gc
 import time
 import warnings
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 from pygam import LogisticGAM, GAM, te
 from scipy.stats import spearmanr
 from sklearn.linear_model import LogisticRegressionCV, GammaRegressor
@@ -258,6 +260,80 @@ def _frozen_selection_kappa(y_dev: np.ndarray, w_dev: np.ndarray, *, metric: str
     mu_dev = circular_mean(y_dev, metric=metric, period=period, weights=w_cov)
     r_dev = signed_diff(y_dev, mu_dev[None, :], metric=metric, period=period) * (2.0 * np.pi / period)
     return _fit_von_mises_kappa(r_dev.ravel())
+
+
+def _restore_selection_checkpoint(
+    last_res: dict,
+    score_key: str,
+    se_key: str,
+    folds_of: Callable[[dict], Any],
+) -> dict | None:
+    """
+    Description
+    -----------
+    Rebuilds the state a forward model selection held right after the step a checkpoint
+    records, from the decision written in it, never by re-deciding with another rule. A
+    step file's ``selected_feature`` is what the live gate accepted (``'null_model_free'``
+    for a model-free Step-0 baseline, the anchor for the anchor step, the step winner for a
+    forward step) or None when the step rejected its winner and the search finished, which
+    is a valid record of convergence whatever its candidates hold (no candidate left, or
+    every candidate's folds failed: the live run stopped there too). The anchor file stores
+    the features after acceptance and a forward-step file the features before it, so the
+    selected feature is appended only when missing. The incumbent's per-fold scores become
+    the reference the next gate compares against.
+
+    Parameters
+    ----------
+    last_res (dict)
+        The loaded step pickle (``step_idx``, ``current_features``, ``baseline_score``,
+        ``selected_feature``, ``candidates_summary`` and, on forward steps,
+        ``baseline_folds``).
+    score_key (str)
+        The candidate entry's fold-mean score key (e.g. ``'mean_auc'``).
+    se_key (str)
+        The candidate entry's standard-error key (e.g. ``'se_auc'``).
+    folds_of (Callable[[dict], Any])
+        Returns a candidate entry's per-fold reference (the folds bundle or the per-fold
+        score list the selector's gate consumes).
+
+    Returns
+    -------
+    state (dict | None)
+        None when the step accepted a feature that has no scored folds (a broken
+        checkpoint: the caller starts fresh). Otherwise ``features`` (list),
+        ``score`` (float), ``se`` (float), ``folds`` (the incumbent's per-fold
+        reference; on a converged step the step's ``baseline_folds`` when stored, else
+        None), ``next_step`` (int: the step to run next, or the converged step itself)
+        and ``converged`` (bool).
+    """
+
+    candidates = (last_res['candidates_summary'] if 'candidates_summary' in last_res else None) or {}
+    selected = last_res['selected_feature']
+    features = list(last_res['current_features'])
+    step_idx = int(last_res['step_idx'])
+    if selected is None:
+        return {
+            'features': features,
+            'score': last_res['baseline_score'],
+            'se': 0.0,
+            'folds': last_res['baseline_folds'] if 'baseline_folds' in last_res else None,
+            'next_step': step_idx,
+            'converged': True,
+        }
+    if selected not in candidates or not isinstance(candidates[selected], dict) \
+            or score_key not in candidates[selected] or not np.isfinite(candidates[selected][score_key]):
+        return None
+    entry = candidates[selected]
+    if selected != 'null_model_free' and selected not in features:
+        features.append(selected)
+    return {
+        'features': features,
+        'score': entry[score_key],
+        'se': entry[se_key],
+        'folds': folds_of(entry),
+        'next_step': step_idx + 1,
+        'converged': False,
+    }
 
 
 def _fold_paired_margin_bootstrap(
@@ -949,6 +1025,9 @@ def vocal_onset_model_selection(univariate_results_path: str,
     best_current_folds = chance_ll
     time_indices = np.arange(history_frames, dtype=float)
     step_counter = 0
+    # True when the checkpoint a resume restores ends a finished search: the anchor and
+    # the forward loop are skipped and finalization runs.
+    resume_converged = False
 
     fname = Path(univariate_results_path).name
     cond_match = re.search(r'((?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
@@ -986,37 +1065,40 @@ def vocal_onset_model_selection(univariate_results_path: str,
         try:
             with open(model_selection_dir / f"{prefix}{last_step}.pkl", 'rb') as f:
                 last_results = pickle.load(f)
-            current_model_features = last_results['current_features']
-            best_current_score = last_results['baseline_score']
-            cand_dict = last_results['candidates_summary']
-            if cand_dict:
-                cand_stats = []
-                # A checkpoint written before per-fold baselines were stored has no
-                # `baseline_folds`; fall back to the scalar baseline score, which
-                # reproduces the unpaired comparison that wrote the file.
-                _resume_baseline_folds = (last_results['baseline_folds']
-                                          if 'baseline_folds' in last_results
-                                          else best_current_score)
-                for feat, res in cand_dict.items():
-                    m = res['mean_ll']
-                    s = res['se_ll']
-                    # A checkpoint may predate per-fold storage; its mean then
-                    # stands in as a constant, reproducing the unpaired test.
-                    f = res['ll'] if 'll' in res else m
-                    cand_stats.append((feat, m, s, f))
-                if cand_stats:
-                    cand_stats.sort(key=lambda x: x[1])
-                    b_name, b_score, b_se, b_folds = cand_stats[0]
-                    b_improvement, b_improvement_se = paired_one_se_improvement(
-                        b_folds, _resume_baseline_folds, higher_is_better=False)
-                    if np.isfinite(b_improvement) and b_improvement > b_improvement_se:
-                        current_model_features.append(b_name)
-                        best_current_score, best_current_se, step_counter = b_score, b_se, last_step + 1
-                        best_current_folds = b_folds
-        except Exception as e:
-            print(f"Resume failed: {e}")
+            # Rebuild the state right after `last_step` from its recorded decision
+            # (`_restore_selection_checkpoint`); the incumbent's per-fold log-losses are
+            # the reference the next paired-1SE gate compares against.
+            state = _restore_selection_checkpoint(
+                last_results, 'mean_ll', 'se_ll', lambda entry: entry['ll'],
+            )
+            if state is None:
+                print(
+                    f"[RESUME] Step {last_step} accepted a feature without scored folds "
+                    "(broken checkpoint); ignoring and starting fresh."
+                )
+                existing_steps = []
+            else:
+                current_model_features = state['features']
+                best_current_score = state['score']
+                best_current_se = state['se']
+                best_current_folds = state['folds']
+                step_counter = state['next_step']
+                # A search that had accepted every ranked feature stopped on that, with no
+                # rejecting step; it is converged too.
+                resume_converged = state['converged'] or len(current_model_features) == len(ranked_features)
+                # Finalization reads the step file the loop last wrote (`fname`); a converged
+                # resume skips the loop, so it points at the restored checkpoint.
+                fname = f"{prefix}{last_step}.pkl"
+                if resume_converged:
+                    print(f"[RESUME] Step {last_step}: selection already converged on "
+                          f"{current_model_features}; finalizing.")
+                else:
+                    print(f"[RESUME] Continuing from Step {step_counter} with {current_model_features}.")
+        except (OSError, pickle.UnpicklingError, KeyError, EOFError) as e:
+            print(f"Resume failed: {e}. Starting fresh.")
+            existing_steps = []
 
-    if use_top_rank_as_anchor and step_counter == 0:
+    if use_top_rank_as_anchor and step_counter == 0 and not resume_converged:
         anchor_to_force = ranked_features[0]
         print(format_selection_step('Anchor', feature=anchor_to_force,
                                     detail='top-ranked; forcing as start'))
@@ -1154,7 +1236,8 @@ def vocal_onset_model_selection(univariate_results_path: str,
                 pickle.dump(_wrap_step(step_0_metadata), f)
             step_counter = 1
 
-    while True:
+    # A resume that restored a converged search skips the loop and finalizes directly.
+    while not resume_converged:
         print(format_selection_step(f"Step {step_counter}",
                                     detail=f"best so far LL={best_current_score:.4f}"))
         step_results_metadata = {
@@ -1983,6 +2066,9 @@ def vocal_category_model_selection(
     # Per-fold scores of the incumbent, paired against a candidate's in the 1SE
     # test below. Before Step 0 the incumbent is the constant chance floor.
     best_current_folds = chance_ll
+    # True when the checkpoint a resume restores ends a finished search: the anchor and
+    # the forward loop are skipped and finalization runs.
+    resume_converged = False
 
     if existing_steps:
         last_step = max(existing_steps)
@@ -1990,36 +2076,37 @@ def vocal_category_model_selection(
         try:
             with open(model_selection_dir / f"{prefix}{last_step}.pkl", 'rb') as f:
                 last_results = pickle.load(f)
-            current_model_features = last_results['current_features']
-            best_current_score = last_results['baseline_score']
-            cand_dict = last_results['candidates_summary'] if 'candidates_summary' in last_results else {}
+            # Rebuild the state right after `last_step` from its recorded decision
+            # (`_restore_selection_checkpoint`); the incumbent's per-fold log-losses are
+            # the reference the next paired-1SE gate compares against.
+            state = _restore_selection_checkpoint(
+                last_results, 'mean_ll', 'se_ll', lambda entry: entry['ll'],
+            )
+            if state is None:
+                print(
+                    f"[RESUME] Step {last_step} accepted a feature without scored folds "
+                    "(broken checkpoint); ignoring and starting fresh."
+                )
+                existing_steps = []
+            else:
+                current_model_features = state['features']
+                best_current_score = state['score']
+                best_current_se = state['se']
+                best_current_folds = state['folds']
+                step_counter = state['next_step']
+                # A search that had accepted every ranked feature stopped on that, with no
+                # rejecting step; it is converged too.
+                resume_converged = state['converged'] or len(current_model_features) == len(ranked_features)
+                if resume_converged:
+                    print(f"[RESUME] Step {last_step}: selection already converged on "
+                          f"{current_model_features}; finalizing.")
+                else:
+                    print(f"[RESUME] Continuing from Step {step_counter} with {current_model_features}.")
+        except (OSError, pickle.UnpicklingError, KeyError, EOFError) as e:
+            print(f"Resume failed: {e}. Starting fresh.")
+            existing_steps = []
 
-            if cand_dict:
-                cand_stats = []
-                # A checkpoint written before per-fold baselines were stored has no
-                # `baseline_folds`; fall back to the scalar baseline score, which
-                # reproduces the unpaired comparison that wrote the file.
-                _resume_baseline_folds = (last_results['baseline_folds']
-                                          if 'baseline_folds' in last_results
-                                          else best_current_score)
-                for feat, res in cand_dict.items():
-                    m = res['mean_ll'] if 'mean_ll' in res else chance_ll
-                    s = res['se_ll'] if 'se_ll' in res else 0.0
-                    f = res['ll'] if 'll' in res else m
-                    cand_stats.append((feat, m, s, f))
-                if cand_stats:
-                    cand_stats.sort(key=lambda x: x[1])
-                    b_name, b_score, b_se, b_folds = cand_stats[0]
-                    b_improvement, b_improvement_se = paired_one_se_improvement(
-                        b_folds, _resume_baseline_folds, higher_is_better=False)
-                    if np.isfinite(b_improvement) and b_improvement > b_improvement_se:
-                        current_model_features.append(b_name)
-                        best_current_score, best_current_se, step_counter = b_score, b_se, last_step + 1
-                        best_current_folds = b_folds
-        except Exception as e:
-            print(f"Resume failed: {e}")
-
-    if use_top_rank_as_anchor and step_counter == 0:
+    if use_top_rank_as_anchor and step_counter == 0 and not resume_converged:
         anchor = ranked_features[0]
         print(format_selection_step('Anchor', feature=anchor, detail='forcing as start'))
         current_model_features = [anchor]
@@ -2163,7 +2250,8 @@ def vocal_category_model_selection(
             step_counter = 1
 
     print("\n--- Starting Forward Selection ---")
-    while True:
+    # A resume that restored a converged search skips the loop and finalizes directly.
+    while not resume_converged:
         print(format_selection_step(f"Step {step_counter}",
                                     detail=f"best so far LL={best_current_score:.4f}"))
         step_results_metadata = {
@@ -2899,6 +2987,9 @@ def bout_parameter_model_selection(
     # Per-fold scores of the incumbent, paired against a candidate's in the 1SE
     # test below. Before Step 0 the incumbent is the constant zero-D^2 floor.
     best_current_folds = 0.0
+    # True when the checkpoint a resume restores is a step that rejected its winner: the
+    # search had already finished, so the anchor and the forward loop are skipped.
+    resume_converged = False
     step_counter = 0
 
     fname = Path(univariate_results_path).name
@@ -2957,63 +3048,39 @@ def bout_parameter_model_selection(
             with open(model_selection_dir / f"{prefix}{last_step}.pkl", 'rb') as f:
                 last_res = pickle.load(f)
 
-            # Filter to candidates with a finite mean score. An entry
-            # whose mean is non-finite (or an entirely empty
-            # candidates_summary) is the same broken-fold artifact and
-            # should not look like convergence to the resume logic.
-            _cand_summary = (last_res['candidates_summary'] if 'candidates_summary' in last_res else None) or {}
-            cand_dict = {
-                n: s for n, s in _cand_summary.items()
-                if isinstance(s, dict) and 'mean_explained_deviance' in s and np.isfinite(s['mean_explained_deviance'])
-            }
-
-            if not cand_dict:
-                # Stale / broken checkpoint: discard and start fresh
-                # so the baseline block re-establishes the marginal
-                # prior and the auto-anchor re-fires. See the manifold
-                # variant for the full rationale.
+            # Rebuild the state right after `last_step` from its recorded decision
+            # (`_restore_selection_checkpoint`); the incumbent's per-fold deviances are the
+            # reference the next paired-1SE gate compares against.
+            state = _restore_selection_checkpoint(
+                last_res, 'mean_explained_deviance', 'se_explained_deviance',
+                lambda entry: entry['explained_deviance'],
+            )
+            if state is None:
                 print(
-                    f"[RESUME] Step {last_step} has no scored candidates "
-                    "(stale checkpoint); ignoring and starting fresh."
+                    f"[RESUME] Step {last_step} accepted a feature without scored folds "
+                    "(broken checkpoint); ignoring and starting fresh."
                 )
                 existing_steps = []
             else:
-                current_model_features = last_res['current_features']
-                best_current_score = last_res['baseline_score']
-
-                best_cand_in_file = max(cand_dict.items(), key=lambda x: x[1]['mean_explained_deviance'])
-                name, stats = best_cand_in_file
-
-                # A checkpoint written before per-fold baselines were stored has no
-                # `baseline_folds`; fall back to the scalar baseline score, which
-                # reproduces the unpaired comparison that wrote the file.
-                _resume_baseline_folds = (last_res['baseline_folds']
-                                          if 'baseline_folds' in last_res
-                                          else best_current_score)
-                # A checkpoint may predate per-fold storage; its mean then stands in
-                # as a constant, reproducing the unpaired test that wrote the file.
-                _resume_cand_folds = (stats['explained_deviance']
-                                      if 'explained_deviance' in stats
-                                      else stats['mean_explained_deviance'])
-                _resume_improvement, _resume_improvement_se = paired_one_se_improvement(
-                    _resume_cand_folds, _resume_baseline_folds, higher_is_better=True)
-
-                if np.isfinite(_resume_improvement) and _resume_improvement > _resume_improvement_se:
-                    if name not in current_model_features:
-                        current_model_features.append(name)
-                    best_current_score = stats['mean_explained_deviance']
-                    best_current_se = stats['se_explained_deviance']
-                    best_current_folds = _resume_cand_folds
-                    step_counter = last_step + 1
+                current_model_features = state['features']
+                best_current_score = state['score']
+                best_current_se = state['se']
+                best_current_folds = state['folds']
+                step_counter = state['next_step']
+                # A search that had accepted every ranked feature stopped on that, with no
+                # rejecting step; it is converged too.
+                resume_converged = state['converged'] or len(current_model_features) == len(ranked_features)
+                if resume_converged:
+                    print(f"[RESUME] Step {last_step}: selection already converged on "
+                          f"{current_model_features}; finalizing.")
                 else:
-                    print("[RESUME] Selection already converged. Stopping loop.")
-                    step_counter = last_step
-        except Exception as e:
+                    print(f"[RESUME] Continuing from Step {step_counter} with {current_model_features}.")
+        except (OSError, pickle.UnpicklingError, KeyError, EOFError) as e:
             print(f"Resume failed: {e}. Starting fresh.")
             existing_steps = []
 
     # 5. Auto-Anchor Logic
-    if use_top_rank_as_anchor and step_counter == 0:
+    if use_top_rank_as_anchor and step_counter == 0 and not resume_converged:
         anchor = ranked_features[0]
         print(format_selection_step('Anchor', feature=anchor, detail='initializing'))
         # Metric set is aligned with the univariate runner so downstream
@@ -3155,7 +3222,8 @@ def bout_parameter_model_selection(
 
     # 6. Forward Selection Loop
     print("\n--- Starting Forward Selection ---")
-    while True:
+    # A resume that restored a converged search skips the loop and finalizes directly.
+    while not resume_converged:
         fold_base_X_tr, fold_base_X_te = [], []
         for tr_idx, te_idx in cv_folds:
             fold_base_X_tr.append([all_feature_data[f]['X'][tr_idx] for f in current_model_features])
@@ -3939,6 +4007,9 @@ def multinomial_vocal_category_model_selection(
     # test below. Replaced by the model-free marginal baseline's per-fold AUCs
     # as soon as that block runs.
     best_current_folds = 0.0
+    # True when the checkpoint a resume restores is a step that rejected its winner: the
+    # search had already finished, so the anchor and the forward loop are skipped.
+    resume_converged = False
     step_counter = 0
 
     fname = Path(univariate_results_path).name
@@ -4000,59 +4071,34 @@ def multinomial_vocal_category_model_selection(
             with open(model_selection_dir / f"{prefix}{last_step}.pkl", 'rb') as f:
                 last_res = pickle.load(f)
 
-            # Filter to candidates with a finite mean score. An entry
-            # whose mean is non-finite (or an entirely empty
-            # candidates_summary) is the same broken-fold artifact and
-            # should not look like convergence to the resume logic.
-            _cand_summary = (last_res['candidates_summary'] if 'candidates_summary' in last_res else None) or {}
-            cand_dict = {
-                n: s for n, s in _cand_summary.items()
-                if isinstance(s, dict) and 'mean_auc' in s and np.isfinite(s['mean_auc'])
-            }
-
-            if not cand_dict:
-                # Stale / broken checkpoint: discard and start fresh
-                # so the baseline block re-establishes the marginal
-                # prior and the auto-anchor re-fires. See the manifold
-                # variant for the full rationale.
+            # Rebuild the state right after `last_step` from its recorded decision
+            # (`_restore_selection_checkpoint`); the incumbent's per-fold AUCs are the
+            # reference the next paired-1SE gate compares against.
+            state = _restore_selection_checkpoint(
+                last_res, 'mean_auc', 'se_auc',
+                lambda entry: entry['folds']['metrics']['auc'],
+            )
+            if state is None:
                 print(
-                    f"[RESUME] Step {last_step} has no scored candidates "
-                    "(stale checkpoint); ignoring and starting fresh."
+                    f"[RESUME] Step {last_step} accepted a feature without scored folds "
+                    "(broken checkpoint); ignoring and starting fresh."
                 )
                 existing_steps = []
             else:
-                current_model_features = last_res['current_features']
-                best_current_score = last_res['baseline_score']
-
-                best_cand_in_file = max(cand_dict.items(), key=lambda x: x[1]['mean_auc'])
-                name, stats = best_cand_in_file
-
-                # A checkpoint written before per-fold baselines were stored has no
-                # `baseline_folds`; fall back to the scalar baseline score, which
-                # reproduces the unpaired comparison that wrote the file.
-                _resume_baseline_folds = (last_res['baseline_folds']
-                                          if 'baseline_folds' in last_res
-                                          else best_current_score)
-                # A checkpoint may predate per-fold storage; its mean then stands in
-                # as a constant, reproducing the unpaired test that wrote the file.
-                _resume_cand_folds = (stats['folds']['metrics']['auc']
-                                      if 'folds' in stats and 'metrics' in stats['folds']
-                                      and 'auc' in stats['folds']['metrics']
-                                      else stats['mean_auc'])
-                _resume_improvement, _resume_improvement_se = paired_one_se_improvement(
-                    _resume_cand_folds, _resume_baseline_folds, higher_is_better=True)
-
-                if np.isfinite(_resume_improvement) and _resume_improvement > _resume_improvement_se:
-                    if name not in current_model_features:
-                        current_model_features.append(name)
-                    best_current_score = stats['mean_auc']
-                    best_current_se = stats['se_auc']
-                    best_current_folds = _resume_cand_folds
-                    step_counter = last_step + 1
+                current_model_features = state['features']
+                best_current_score = state['score']
+                best_current_se = state['se']
+                best_current_folds = state['folds']
+                step_counter = state['next_step']
+                # A search that had accepted every ranked feature stopped on that, with no
+                # rejecting step; it is converged too.
+                resume_converged = state['converged'] or len(current_model_features) == len(ranked_features)
+                if resume_converged:
+                    print(f"[RESUME] Step {last_step}: selection already converged on "
+                          f"{current_model_features}; finalizing.")
                 else:
-                    print("[RESUME] Selection already converged. Stopping loop.")
-                    step_counter = last_step
-        except Exception as e:
+                    print(f"[RESUME] Continuing from Step {step_counter} with {current_model_features}.")
+        except (OSError, pickle.UnpicklingError, KeyError, EOFError) as e:
             print(f"Resume failed: {e}. Starting fresh.")
             existing_steps = []
 
@@ -4176,7 +4222,7 @@ def multinomial_vocal_category_model_selection(
         step_counter = 1
 
     # Auto-anchor logic
-    if use_top_rank_as_anchor and step_counter == 1:
+    if use_top_rank_as_anchor and step_counter == 1 and not resume_converged:
         anchor = ranked_features[0]
         print(format_selection_step('Anchor', feature=anchor, detail='testing against baseline'))
 
@@ -4369,7 +4415,8 @@ def multinomial_vocal_category_model_selection(
                 detail='every fold errored out; continuing from empty model'))
 
     # Main Forward Selection Loop
-    while True:
+    # A resume that restored a converged search skips the loop and finalizes directly.
+    while not resume_converged:
         print(format_selection_step(f"Step {step_counter}",
                                     detail=f"best so far AUC={best_current_score:.4f}"))
         step_results = {
@@ -5326,8 +5373,12 @@ def continuous_vocal_manifold_model_selection(
     # `region_global` is aligned to the same full-event index space as
     # `groups_global` (sorted-session order), so it doubles as the
     # `event_to_region` map the greedy gate indexes by each fold's test_indices
-    # (the torus screen above built the same map from the same pickle).
-    event_to_region = region_global
+    # (the torus screen above built the same map from the same pickle). The gate
+    # bootstraps the margin of the score that ranks the candidates, exactly as the
+    # screen does: the region-balanced (macro) score needs the map, while the
+    # event-weighted (micro) `vm_logscore_pooled` scores without it (None), so a
+    # micro run never accepts or rejects on the macro margin.
+    event_to_region = region_global if SELECTION_SCORE_KEY == 'vm_logscore' else None
     warn_if_no_region_labels(region_global, metric=_selection_manifold_metric,
                              context="continuous manifold model selection")
 
@@ -5504,6 +5555,9 @@ def continuous_vocal_manifold_model_selection(
     best_current_score = float('-inf')
     best_current_se = 0.0
     step_counter = 0
+    # True when the checkpoint a resume restores is a step that rejected its winner: the
+    # search had already finished, so the forward loop is skipped and finalization runs.
+    resume_converged = False
 
     fname = Path(univariate_results_path).name
     # Use a non-capturing alternation so conditions like `male_mute_partner`
@@ -5600,56 +5654,35 @@ def continuous_vocal_manifold_model_selection(
                     "scores are on different scales. Ignoring checkpoint and starting fresh."
                 )
                 existing_steps = []
-                cand_dict = {}
+                selected_scored = False
             else:
-                # Filter to candidates with a finite mean score. An entry
-                # whose mean is non-finite (or an entirely empty
-                # candidates_summary) is the same broken-fold artifact and
-                # should not look like convergence to the resume logic.
-                _cand_summary = (last_res['candidates_summary'] if 'candidates_summary' in last_res else None) or {}
-                cand_dict = {
-                    n: s for n, s in _cand_summary.items()
-                    if isinstance(s, dict) and 'mean_r2' in s and np.isfinite(s['mean_r2'])
-                }
-
-            if not cand_dict:
-                # Stale / broken checkpoint: every saved candidate
-                # crashed or was never scored. Discard it and fall
-                # through to the fresh-start path so the baseline block
-                # re-establishes the empirical-density Step-0 baseline and
-                # the auto-anchor re-fires. Previously this case slipped
-                # through silently with `step_counter` left at its
-                # initial value, producing a misleading "Restoring from
-                # Step N" banner followed by a Step 0 forward selection.
-                # Guarded by `existing_steps` so we do not double-log when the
-                # metric-mismatch branch above already explained the discard.
-                if existing_steps:
-                    print(
-                        f"[RESUME] Step {last_step} has no scored candidates "
-                        "(stale checkpoint); ignoring and starting fresh."
-                    )
-                existing_steps = []
-            else:
-                current_model_features = last_res['current_features']
-                best_current_score = last_res['baseline_score']
-
-                # Best-of-file is the candidate with highest mean R^2.
-                best_cand_in_file = max(
-                    cand_dict.items(),
-                    key=lambda x: x[1]['mean_r2'],
+                # Rebuild the state right after `last_step` from its recorded decision
+                # (`_restore_selection_checkpoint`); the incumbent's folds are the
+                # reference the next fold-bootstrap gate compares against.
+                state = _restore_selection_checkpoint(
+                    last_res, 'mean_r2', 'se_r2', lambda entry: entry['folds'],
                 )
-                name, stats = best_cand_in_file
-
-                if (stats['mean_r2'] - best_current_score) > stats['se_r2']:
-                    if name not in current_model_features:
-                        current_model_features.append(name)
-                    best_current_score = stats['mean_r2']
-                    best_current_se = stats['se_r2']
-                    step_counter = last_step + 1
+                if state is None:
+                    print(
+                        f"[RESUME] Step {last_step} accepted a feature without scored folds "
+                        "(broken checkpoint); ignoring and starting fresh."
+                    )
+                    existing_steps = []
                 else:
-                    print("[RESUME] Selection already converged. Stopping loop.")
-                    step_counter = last_step
-        except Exception as e:
+                    current_model_features = state['features']
+                    best_current_score = state['score']
+                    best_current_se = state['se']
+                    current_model_folds = state['folds']
+                    step_counter = state['next_step']
+                    # A search that had accepted every ranked feature stopped on that, with no
+                    # rejecting step; it is converged too.
+                    resume_converged = state['converged'] or len(current_model_features) == len(ranked_features)
+                    if resume_converged:
+                        print(f"[RESUME] Step {last_step}: selection already converged on "
+                              f"{current_model_features}; finalizing.")
+                    else:
+                        print(f"[RESUME] Continuing from Step {step_counter} with {current_model_features}.")
+        except (OSError, pickle.UnpicklingError, KeyError, EOFError) as e:
             print(f"Resume failed: {e}. Starting fresh.")
             existing_steps = []
 
@@ -5965,7 +5998,7 @@ def continuous_vocal_manifold_model_selection(
         return lam_sm_win, lam_l2_win, grid_audit_, True
 
     # Auto-anchor logic
-    if use_top_rank_as_anchor and step_counter == 1:
+    if use_top_rank_as_anchor and step_counter == 1 and not resume_converged:
         anchor = ranked_features[0]
         print(format_selection_step('Anchor', feature=anchor, detail='testing against baseline'))
 
@@ -6120,7 +6153,8 @@ def continuous_vocal_manifold_model_selection(
 
     # Forward stepwise selection loop
     print("\n--- Starting Forward Selection ---")
-    while True:
+    # A resume that restored a converged search skips the loop and finalizes directly.
+    while not resume_converged:
         print(f"\n=== Step {step_counter} === Best {SELECTION_SCORE_KEY}: {best_current_score:.5f}")
         step_results = {
             'step_idx': step_counter, 'current_features': list(current_model_features),
