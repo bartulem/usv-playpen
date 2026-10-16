@@ -452,8 +452,10 @@ class BoutOccupancyDecoder:
         # Bouts are grouped from PURE USVs only (`is_usv`: usv & ~squeak), so pure squeaks,
         # overlap segments and unscored nulls never join or split a bout. Noise was already
         # dropped by the loader. Silence, though, is judged against every vocalization of the
-        # emitter (any class) and every one assigned to no animal, so neither a negative bin nor
-        # a positive bin's kept time can hold a squeak or an overlap segment.
+        # emitter (any class) and every one assigned to no animal, each spanning the full extent of
+        # its sound (the loader's occupancy times: a squeak-bearing row covers its segment and its
+        # squeak extent), so neither a negative bin nor a positive bin's kept time can hold a squeak
+        # or an overlap segment.
         if keep:
             emitter_any = np.isin(bundle["emitters"], keep)
         else:
@@ -462,11 +464,16 @@ class BoutOccupancyDecoder:
         order = np.argsort(bundle["starts"][emitter_rows], kind="mergesort")
         usv_starts = bundle["starts"][emitter_rows][order]
         usv_stops = bundle["stops"][emitter_rows][order]
-        unassigned = np.array([name is None for name in bundle["emitters"]], dtype=bool)
-        silence_rows = emitter_any | unassigned
-        silence_order = np.argsort(bundle["starts"][silence_rows], kind="mergesort")
-        silence_starts = bundle["starts"][silence_rows][silence_order]
-        silence_stops = bundle["stops"][silence_rows][silence_order]
+        occupancy_emitters = bundle["occupancy_emitters"]
+        if keep:
+            occupancy_any = np.isin(occupancy_emitters, keep)
+        else:
+            occupancy_any = np.ones(bundle["occupancy_starts"].size, dtype=bool)
+        unassigned = np.array([name is None for name in occupancy_emitters], dtype=bool)
+        silence_rows = occupancy_any | unassigned
+        silence_order = np.argsort(bundle["occupancy_starts"][silence_rows], kind="mergesort")
+        silence_starts = bundle["occupancy_starts"][silence_rows][silence_order]
+        silence_stops = bundle["occupancy_stops"][silence_rows][silence_order]
 
         # The threshold belongs to whoever is vocalizing, so 'partner' reads the partner's
         # mixture, not the recorded animal's. Under 'all' the emitter set is mixed (and includes

@@ -54,9 +54,11 @@ from ..analyses.decode_experiment_label import extract_information
 from ..os_utils import (
     QLVM_CATEGORY_COLUMN,
     QLVM_CATEGORY_COLUMNS,
+    VOCAL_CLASSES,
     drop_noise_usvs,
     first_match_or_raise,
     load_qlvm_category_bundle,
+    vocal_event_times,
 )
 from .plot_style import apply_plot_style
 from ..time_utils import is_gui_context, smart_wait
@@ -836,9 +838,13 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 recursive=True,
                 label="USV summary CSV",
             )
-            # Same rule as the tuning curves these rasters accompany: the segments the noise
-            # classifier flagged are not vocalizations, so they are not drawn.
+            # Same rules as the tuning curves these rasters accompany: the segments the noise
+            # classifier flagged are not vocalizations, so they are not drawn, and every row is
+            # timed as its vocalization (os_utils.vocal_event_times over every class: a pure
+            # squeak at its squeak extent, an overlap segment at the union of segment and squeak),
+            # so the bouts drawn are the bouts the statistics used.
             usv_summary_df = drop_noise_usvs(pls.read_csv(str(csv_path)), csv_path.name)[0]
+            usv_summary_df = vocal_event_times(usv_summary_df, VOCAL_CLASSES, csv_path.name)
         except (StopIteration, FileNotFoundError):
             pass
 

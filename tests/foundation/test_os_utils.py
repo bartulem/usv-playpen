@@ -1238,6 +1238,21 @@ def test_vocal_occupancy_times_span_segment_and_squeak():
     timed = os_utils.vocal_occupancy_times(_timed_summary(), "s")
     assert timed["start"].to_list() == [0.50, 1.00, 1.98, 3.00]
     assert timed["stop"].to_list() == [0.65, 1.10, 2.10, 3.10]
+
+
+def test_event_times_keep_duration_on_the_event():
+    """A re-timed row's ``duration`` is the length of its new times; an untouched row keeps the
+    stored value exactly."""
+
+    table = _timed_summary().with_columns((pls.col("stop") - pls.col("start")).alias("duration"))
+    timed = os_utils.vocal_event_times(table, ("squeak",), "s")
+    by_flags = dict(zip(zip(timed["usv"].to_list(), timed["squeak"].to_list(), strict=True),
+                        timed["duration"].to_list(), strict=True))
+    assert by_flags[(False, True)] == pytest.approx(2.05 - 1.98)
+    assert by_flags[(True, True)] == pytest.approx(0.65 - 0.54)
+    assert by_flags[(True, False)] == table["duration"][0]
+    occupied = os_utils.vocal_occupancy_times(table, "s")
+    assert (occupied["duration"] - (occupied["stop"] - occupied["start"])).abs().max() == pytest.approx(0.0)
     with pytest.raises(KeyError, match="silence reference"):
         os_utils.vocal_occupancy_times(_timed_summary().drop("squeak_end"), "s")
 

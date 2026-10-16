@@ -1918,6 +1918,38 @@ def _squeak_extent(usv_summary: Any, squeak_rows: Any, source: str, needed_by: s
     return squeak_start, squeak_end
 
 
+def _with_event_times(usv_summary: Any, start: np.ndarray, stop: np.ndarray, retimed: np.ndarray) -> Any:
+    """
+    Description
+    -----------
+    Writes re-timed ``start`` / ``stop`` into a USV summary table and sorts it by the new onset.
+    When the table carries ``duration`` (the segment's ``stop - start``), the re-timed rows get
+    ``stop - start`` of their new times, so a row's duration always spans its own ``start`` /
+    ``stop``; the other rows keep their stored value untouched.
+
+    Parameters
+    ----------
+    usv_summary (polars.DataFrame)
+        The table to re-time.
+    start, stop (np.ndarray)
+        Float64, one value per row: the new times.
+    retimed (np.ndarray)
+        Boolean, one value per row: the rows whose times changed.
+
+    Returns
+    -------
+    timed (polars.DataFrame)
+        The same rows and columns, ``start`` / ``stop`` (and ``duration``) replaced, sorted by
+        ``start``.
+    """
+
+    columns = {"start": start, "stop": stop}
+    if "duration" in usv_summary.columns:
+        duration = usv_summary["duration"].cast(float).to_numpy()
+        columns["duration"] = np.where(retimed, stop - start, duration)
+    return usv_summary.with_columns(**columns).sort("start")
+
+
 def vocal_event_times(usv_summary: Any, classes: Iterable[str], source: str) -> Any:
     """
     Description
@@ -1958,8 +1990,9 @@ def vocal_event_times(usv_summary: Any, classes: Iterable[str], source: str) -> 
     Returns
     -------
     timed (polars.DataFrame)
-        The same rows and columns, ``start`` / ``stop`` (Float64) replaced by the event times,
-        sorted by the new ``start``.
+        The same rows and columns, ``start`` / ``stop`` (Float64) replaced by the event times
+        (and ``duration``, when present, by ``stop - start`` on every re-timed row), sorted by the
+        new ``start``.
 
     Raises
     ------
@@ -1995,7 +2028,7 @@ def vocal_event_times(usv_summary: Any, classes: Iterable[str], source: str) -> 
     squeak_start, squeak_end = _squeak_extent(usv_summary, by_squeak | by_union, source, needed_by)
     event_start = np.where(by_squeak, squeak_start, np.where(by_union, np.fmin(start, squeak_start), start))
     event_stop = np.where(by_squeak, squeak_end, np.where(by_union, np.fmax(stop, squeak_end), stop))
-    return usv_summary.with_columns(start=event_start, stop=event_stop).sort("start")
+    return _with_event_times(usv_summary, event_start, event_stop, by_squeak | by_union)
 
 
 def vocal_occupancy_times(usv_summary: Any, source: str) -> Any:
@@ -2019,8 +2052,9 @@ def vocal_occupancy_times(usv_summary: Any, source: str) -> Any:
     Returns
     -------
     timed (polars.DataFrame)
-        The same rows and columns, ``start`` / ``stop`` (Float64) replaced by the occupancy times,
-        sorted by the new ``start``.
+        The same rows and columns, ``start`` / ``stop`` (Float64) replaced by the occupancy times
+        (and ``duration``, when present, by ``stop - start`` on every squeak-bearing row), sorted by
+        the new ``start``.
 
     Raises
     ------
@@ -2039,7 +2073,7 @@ def vocal_occupancy_times(usv_summary: Any, source: str) -> Any:
     stop = usv_summary["stop"].cast(float).to_numpy()
     occupancy_start = np.where(squeak_rows, np.fmin(start, squeak_start), start)
     occupancy_stop = np.where(squeak_rows, np.fmax(stop, squeak_end), stop)
-    return usv_summary.with_columns(start=occupancy_start, stop=occupancy_stop).sort("start")
+    return _with_event_times(usv_summary, occupancy_start, occupancy_stop, squeak_rows)
 
 
 def squeak_class_selection(selection: str) -> tuple[str, ...]:

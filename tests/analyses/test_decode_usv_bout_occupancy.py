@@ -304,7 +304,9 @@ def _synthetic_bundle(*, extra_rows: tuple = (), emitter_of_bouts: str = "m1") -
     -------
     bundle (dict)
         A dict with the documented `load_vocal_inputs` keys: `usv_df`, `track_names`,
-        `animal_sex`, `duration_seconds`, `starts`, `stops`, `emitters` and `is_usv`.
+        `animal_sex`, `duration_seconds`, `starts`, `stops`, `emitters`, `is_usv` and the
+        silence reference `occupancy_starts` / `occupancy_stops` / `occupancy_emitters` (here the
+        same rows and times: no synthetic row holds a squeak extent).
     """
 
     rows = [(onset + offset, onset + offset + 0.1, emitter_of_bouts, True)
@@ -320,7 +322,8 @@ def _synthetic_bundle(*, extra_rows: tuple = (), emitter_of_bouts: str = "m1") -
                             "emitter": [row[2] for row in rows]})
     return {"usv_df": usv_df, "track_names": ["m1", "f1"],
             "animal_sex": {"m1": "male", "f1": "female"}, "duration_seconds": 300.0,
-            "starts": starts, "stops": stops, "emitters": emitters, "is_usv": is_usv}
+            "starts": starts, "stops": stops, "emitters": emitters, "is_usv": is_usv,
+            "occupancy_starts": starts, "occupancy_stops": stops, "occupancy_emitters": emitters}
 
 
 def _write_decoder_session(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:

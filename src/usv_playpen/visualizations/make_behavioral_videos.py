@@ -26,7 +26,7 @@ from numba import njit
 from scipy.io import wavfile
 
 from ..analyses.generate_audio_files import AudioGenerator
-from ..os_utils import drop_noise_usvs, find_audio_mmap, first_match_or_raise
+from ..os_utils import drop_noise_usvs, find_audio_mmap, first_match_or_raise, vocal_occupancy_times
 from ..time_utils import is_gui_context, smart_wait
 from ..yaml_utils import extract_animal_sexes
 from .auxiliary_plot_functions import choose_animal_colors, create_colormap
@@ -1856,6 +1856,10 @@ class Create3DVideo:
                     # drawn as USVs (os_utils.drop_noise_usvs, the shared noise rule; a summary
                     # without the noise column raises: run detect-usv-noise first).
                     usv_summary_df = drop_noise_usvs(usv_summary_df, usv_summary_file.name, message_output=self.message_output)[0]
+                    # Each bar spans the whole sound its segment holds (os_utils.vocal_occupancy_times:
+                    # a squeak-bearing segment covers its segment and its squeak extent, which may
+                    # reach past it); a summary without the squeak columns raises.
+                    usv_summary_df = vocal_occupancy_times(usv_summary_df, usv_summary_file.name)
                     usv_summary_df = usv_summary_df.filter((pls.col('stop') >= self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'] - half_window_size_sec) &
                                                            (pls.col('start') <= self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'] + self.visualizations_parameter_dict['make_behavioral_videos']['video_duration'] + half_window_size_sec))
 

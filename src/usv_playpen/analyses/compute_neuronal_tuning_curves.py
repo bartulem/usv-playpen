@@ -67,6 +67,7 @@ from ..os_utils import (
     first_match_or_raise,
     vocal_class_mask,
     vocal_event_times,
+    vocal_occupancy_times,
 )
 from ..time_utils import is_gui_context, smart_wait
 from ..yaml_utils import extract_animal_sexes
@@ -1628,7 +1629,12 @@ def load_vocal_inputs(root_directory: str | pathlib.Path) -> dict | None:
         `duration_seconds`, `starts`, `stops`,
         `emitters`, `is_usv` (bool per row; True only on pure USVs,
         ``usv & ~squeak``, so pure squeaks, overlap segments and
-        null booleans are False).
+        null booleans are False), and the silence reference
+        `occupancy_starts`, `occupancy_stops`, `occupancy_emitters`
+        (every row timed by the full extent of its sound,
+        ``os_utils.vocal_occupancy_times``: a squeak-bearing row spans
+        the union of its segment and its squeak extent; sorted by that
+        onset, so not aligned with `starts`).
     """
 
     root = pathlib.Path(root_directory)
@@ -1654,6 +1660,9 @@ def load_vocal_inputs(root_directory: str | pathlib.Path) -> dict | None:
     # segment holding both at the union of the segment and its squeak extent (in practice the
     # USV's earlier onset), a pure USV at its segment. A summary without squeak_start / squeak_end
     # raises rather than silently anchoring squeaks at their segments.
+    # The silence reference is taken before the re-timing: a pure squeak's segment and its squeak
+    # extent both block silence, and the re-timed table keeps only the extent.
+    occupancy = vocal_occupancy_times(df, usv_csv.name)
     df = vocal_event_times(df, VOCAL_CLASSES, usv_csv.name)
     # Segments that are not pure USVs (usv & ~squeak: pure squeaks, overlap segments,
     # unscored nulls) are dropped from the anchors per side (exclude_squeaks_self /
@@ -1699,6 +1708,11 @@ def load_vocal_inputs(root_directory: str | pathlib.Path) -> dict | None:
         "stops": stops,
         "emitters": np.array(emitters, dtype=object),
         "is_usv": is_usv,
+        "occupancy_starts": occupancy["start"].to_numpy(),
+        "occupancy_stops": occupancy["stop"].to_numpy(),
+        "occupancy_emitters": np.array(
+            [(e.strip() if e is not None else None) for e in occupancy["emitter"].to_list()], dtype=object
+        ),
     }
 
 
@@ -3033,8 +3047,8 @@ class NeuronalTuning(FeatureZoo):
             Emitter-filtered USV start / stop times in seconds, sorted
             ascending by start.
         em_durations (np.ndarray, shape (n_emitter_usvs,))
-            `em_stops − em_starts`. Passed in rather than recomputed so
-            we honor the CSV's stored duration when present.
+            `em_stops − em_starts`, the length of each re-timed event
+            (a squeak's own extent, not its segment's CSV `duration`).
         bout_quiet_s (float)
             Silence threshold for both bout segmentation AND baseline
             window length (one parameter for both, since the 2-s clean
@@ -3396,11 +3410,10 @@ class NeuronalTuning(FeatureZoo):
         all_emitters = voc_inputs["emitters"]
         all_starts = voc_inputs["starts"]
         all_stops = voc_inputs["stops"]
-        usv_durations_full = (
-            voc_inputs["usv_df"]["duration"].to_numpy()
-            if "duration" in voc_inputs["usv_df"].columns
-            else (all_stops - all_starts)
-        )
+        # The rows are timed as their vocalizations (load_vocal_inputs re-times a squeak to its
+        # squeak extent), so the rate's denominator is that event's own length, never the CSV
+        # segment `duration`, which no longer spans the counted window on a squeak row.
+        usv_durations_full = all_stops - all_starts
         for role, ps in side_precompute.items():
             if role == "_grid":
                 continue

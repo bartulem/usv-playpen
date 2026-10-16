@@ -2005,8 +2005,9 @@ def test_squeaks_are_dropped_from_self_anchors_and_never_categorised(synthetic_c
 
 
 def test_a_pure_squeak_is_anchored_at_its_own_onset(synthetic_compute_session):
-    """A pure squeak's anchor is its squeak's onset (squeak_start), not its segment's start; a
-    summary without the squeak extent raises rather than anchoring squeaks at their segments."""
+    """A pure squeak's anchor is its squeak's onset (squeak_start), not its segment's start, while
+    the silence reference still spans its whole segment; a summary without the squeak extent raises
+    rather than anchoring squeaks at their segments."""
     root, _ = synthetic_compute_session
     usv_csv = next(root.rglob("*_usv_summary.csv"))
     df = pls.read_csv(usv_csv).sort("start")
@@ -2023,6 +2024,7 @@ def test_a_pure_squeak_is_anchored_at_its_own_onset(synthetic_compute_session):
     voc_inputs = _make_neuronal_tuning(root)._load_vocal_inputs()
     assert voc_inputs["starts"][0] == pytest.approx(squeak_onset)
     assert not voc_inputs["is_usv"][0]
+    assert voc_inputs["occupancy_starts"][0] == pytest.approx(first_start)
     pls.read_csv(usv_csv).drop("squeak_start").write_csv(usv_csv)
     with pytest.raises(KeyError, match="squeak_start"):
         _make_neuronal_tuning(root)._load_vocal_inputs()
