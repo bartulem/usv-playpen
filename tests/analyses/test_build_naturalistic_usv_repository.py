@@ -284,6 +284,39 @@ def test_build_writes_repository_h5(tmp_path, _patched_env):
         assert str(session_root) in roots
 
 
+def test_build_preceding_isi_is_measured_from_the_previous_vocalization(tmp_path, _patched_env):
+    """
+    Description
+    -----------
+    A bout's stored preceding inter-bout gap is the real silence before it: from the
+    emitter's previous vocalization, even a lone one that forms no candidate bout, not
+    from the previous KEPT bout. Lone USVs at 0.01-0.03 s and 0.60-0.62 s precede the
+    bouts at 0.30 s and 0.90 s, so the gaps are 0.27 s and 0.28 s (measuring from the
+    previous kept bout would give NaN and 0.54 s).
+    """
+
+    session_root = tmp_path / "session_root"
+    _write_fake_session(
+        session_root,
+        starts=[0.01, 0.30, 0.34, 0.60, 0.90, 0.94],
+        stops=[0.03, 0.32, 0.36, 0.62, 0.92, 0.96],
+    )
+    repo_out = tmp_path / "repo"
+    NaturalisticUsvRepositoryBuilder(
+        root_directories=[str(session_root)],
+        input_parameter_dict={
+            "build_naturalistic_usv_repository": _build_cfg("same_sex_male"),
+            "data_roots": {"naturalistic_usv_repository_dir": str(repo_out)},
+        },
+        message_output=lambda *_a, **_kw: None,
+    ).build()
+
+    written = list((repo_out / "male").glob("naturalistic_usv_repository_same_sex_*.h5"))
+    with h5py.File(str(written[0]), "r") as h5_file:
+        np.testing.assert_array_equal(h5_file["bout/usv_count"][:], [2, 2])
+        np.testing.assert_allclose(h5_file["bout/preceding_isi_s"][:], [0.27, 0.28])
+
+
 def test_build_no_complete_bouts_writes_nothing(tmp_path, _patched_env):
     """When no bout meets ``min_vocalizations`` (every USV is isolated by a
     supra-threshold gap) nothing is written and the build still completes."""

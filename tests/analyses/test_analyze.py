@@ -21,6 +21,7 @@ from sklearn.mixture import GaussianMixture
 # Headless matplotlib for the mixture_model_utils plotting smoke tests.
 matplotlib.use("Agg")
 
+from usv_playpen.analyses import compute_neuronal_tuning_curves as tuning_module
 from usv_playpen.analyses.analyze_data import Analyst, generate_beh_features_cli
 from usv_playpen.analyses.decode_experiment_label import extract_information
 from usv_playpen.analyses.compute_behavioral_features import (
@@ -40,8 +41,8 @@ from usv_playpen.analyses.compute_inter_usv_interval_distributions import (
     _read_session_lists,
     _session_source_map,
     compute_session_usv_intervals,
+    consecutive_interval_pairs,
 )
-from usv_playpen.analyses import compute_neuronal_tuning_curves as tuning_module
 from usv_playpen.analyses.compute_neuronal_tuning_curves import (
     generate_ratemaps,
     shuffle_spikes,
@@ -3687,14 +3688,24 @@ def test_anchor_bin_validity_grid_cuts_post_onset_bins_at_the_next_onset():
 def test_consecutive_interval_pairs_stay_within_one_animal_of_one_session():
     """Neighbouring intervals pair only when they share the session AND the animal: the switch
     from female A to female B, and from one session to the next, never forms a pair."""
-    from usv_playpen.analyses.compute_inter_usv_interval_distributions import consecutive_interval_pairs
     values = np.array([0.1, 0.2, 0.3, 5.0, 6.0, 0.4, 0.5])
     sessions = np.array(["s1"] * 5 + ["s2"] * 2)
     emitters = np.array(["A", "A", "A", "B", "B", "A", "A"])
-    current, following, pair_sessions = consecutive_interval_pairs(values, sessions, emitters)
+    chains = np.ones(values.size, dtype=np.int64)
+    current, following, pair_sessions = consecutive_interval_pairs(values, sessions, emitters, chains)
     np.testing.assert_allclose(current, [0.1, 0.2, 5.0, 0.4])
     np.testing.assert_allclose(following, [0.2, 0.3, 6.0, 0.5])
     assert list(pair_sessions) == ["s1", "s1", "s1", "s2"]
+
+
+def test_consecutive_interval_pairs_never_cross_a_chain_break():
+    """Two intervals of one animal pair only within one chain: a break between them (chain
+    1 -> 2) forms no pair, the rest of each chain still does."""
+    values = np.array([0.1, 0.2, 0.3, 0.4, 0.5])
+    current, following, _ = consecutive_interval_pairs(
+        values, np.array(["s1"] * 5), np.array(["A"] * 5), np.array([1, 1, 2, 2, 2]))
+    np.testing.assert_allclose(current, [0.1, 0.3, 0.4])
+    np.testing.assert_allclose(following, [0.2, 0.4, 0.5])
 
 
 def test_fit_serial_dependence_recovers_a_known_bend():

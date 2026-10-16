@@ -221,6 +221,8 @@ def _mock_session_resolution(monkeypatch, tmp_path):
             "n_dropped_female": 0,
             "emitter_male": np.array(["M"] * 3, dtype=object),
             "emitter_female": np.array(["F"] * 2, dtype=object),
+            "chain_male": np.ones(3, dtype=np.int64),
+            "chain_female": np.ones(2, dtype=np.int64),
             "animal_sex": {"M": "male", "F": "female"},
             "interval_type": interval_type,
         }
@@ -768,6 +770,39 @@ def test_compute_session_usv_intervals_overlap_is_neither_usv_nor_squeak(tmp_pat
     np.testing.assert_allclose(filtered["female"], [2.0, 1.0])
     np.testing.assert_allclose(strict["female"], [1.0])
     assert usv["male"].size == 0 and usv["female"].size == 0
+
+
+def test_compute_session_usv_intervals_chains_break_at_another_animals_vocalization(tmp_path, monkeypatch):
+    """The male's intervals carry a chain id that changes wherever his run is broken: his
+    intervals 1->2 and 2->3 share vocalization 2 (one chain), the female's USV between his
+    vocalizations 3 and 4 records no male interval and starts a new chain for 4->5, and a
+    zero interval (5 -> 5 again) is dropped and breaks the chain too. Only neighbours within
+    a chain pair."""
+
+    _patch_session_identity(monkeypatch)
+    audio = tmp_path / "audio"
+    audio.mkdir(parents=True, exist_ok=True)
+    pls.DataFrame({
+        "start": [1.0, 1.2, 1.5, 1.7, 2.0, 2.4, 2.4, 2.6],
+        "stop": [1.1, 1.3, 1.6, 1.8, 2.1, 2.5, 2.5, 2.7],
+        "emitter": ["M", "M", "M", "F", "M", "M", "M", "M"],
+        "noise": [False] * 8,
+        "usv": [True] * 8,
+        "squeak": [False] * 8,
+        "squeak_start": [None] * 8,
+        "squeak_end": [None] * 8,
+    }, schema_overrides={"squeak_start": pls.Float64, "squeak_end": pls.Float64}).write_csv(
+        str(audio / f"{tmp_path.name}_usv_summary.csv"))
+
+    out = compute_session_usv_intervals(str(tmp_path), "s2s", exclude_noise_usvs=True,
+                                        call_type="usv", adjacency="filtered")
+    np.testing.assert_allclose(out["male"], [0.2, 0.3, 0.4, 0.2])
+    np.testing.assert_array_equal(out["chain_male"], [1, 1, 2, 3])
+    assert out["n_dropped_male"] == 1
+    current, following, _ = iui_mod.consecutive_interval_pairs(
+        out["male"], np.array(["s"] * 4), out["emitter_male"], out["chain_male"])
+    np.testing.assert_allclose(current, [0.2])
+    np.testing.assert_allclose(following, [0.3])
 
 
 def test_compute_session_usv_intervals_time_squeaks_by_their_extent(tmp_path, monkeypatch):

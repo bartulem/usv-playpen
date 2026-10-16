@@ -1137,10 +1137,16 @@ def _t_update_nu(z_k: np.ndarray, u_k: np.ndarray, nu_old: float, n_k: float) ->
     -----------
     Solves the 1D Peel & McLachlan equation for the degrees-of-freedom
     update of one t-component, given current responsibilities and
-    latent weights. Brent's method on a wide bracket; falls back to a
-    near-Gaussian default of ``nu = 50.0`` when the equation does not
-    change sign in the bracket (which happens when the component is
-    effectively Gaussian and ``nu`` is unidentifiable above ~50).
+    latent weights. Brent's method on a wide bracket. The score equation
+    decreases monotonically in ``nu`` (``-digamma(nu / 2) + log(nu / 2)``
+    falls toward 0), so when it does not change sign in the bracket the
+    root lies outside it on the side the sign says: still positive at the
+    upper end (the component is effectively Gaussian and ``nu`` is
+    unidentifiable above ~50) gives the near-Gaussian default ``nu = 50.0``;
+    already negative at the lower end (tails heavier than the bracket
+    allows) gives the lower bound ``2.001``, the closest admissible value,
+    rather than the near-Gaussian default that would discard exactly the
+    heavy tails the t-component is there to fit.
 
     Parameters
     ----------
@@ -1184,10 +1190,12 @@ def _t_update_nu(z_k: np.ndarray, u_k: np.ndarray, nu_old: float, n_k: float) ->
         """
         return -digamma(nu / 2.0) + np.log(nu / 2.0) + 1.0 + psi_old + avg
 
-    try:
-        return brentq(f, 2.001, 200.0)
-    except ValueError:
+    nu_low, nu_high = 2.001, 200.0
+    if f(nu_low) <= 0.0:
+        return nu_low
+    if f(nu_high) >= 0.0:
         return 50.0
+    return brentq(f, nu_low, nu_high)
 
 
 class TMixture:

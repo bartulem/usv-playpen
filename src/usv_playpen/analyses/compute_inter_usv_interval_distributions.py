@@ -233,7 +233,12 @@ def compute_session_usv_intervals(
         ``'emitter_male'``, ``'emitter_female'`` (np.ndarray of str, the
         animal each interval belongs to, aligned with ``'male'`` /
         ``'female'`` and grouped animal by animal, each animal's
-        intervals in time order), ``'n_dropped_male'``,
+        intervals in time order), ``'chain_male'``, ``'chain_female'``
+        (np.ndarray of int, aligned the same way: intervals of one animal
+        with the same chain id follow each other without a break, each
+        starting at the vocalization the one before it ended at, so only
+        neighbours within a chain are consecutive intervals),
+        ``'n_dropped_male'``,
         ``'n_dropped_female'`` (int), ``'animal_sex'`` (dict, stripped
         track name -> sex) and ``'interval_type'``.
         Returns an empty dict ``{}`` if the session is missing
@@ -286,6 +291,7 @@ def compute_session_usv_intervals(
         return {
             "male": empty, "female": empty,
             "emitter_male": np.array([], dtype=object), "emitter_female": np.array([], dtype=object),
+            "chain_male": np.array([], dtype=np.int64), "chain_female": np.array([], dtype=np.int64),
             "n_dropped_male": 0, "n_dropped_female": 0,
             "animal_sex": animal_sex,
             "interval_type": interval_type,
@@ -323,6 +329,13 @@ def compute_session_usv_intervals(
     usv1_col = col_for_tag[usv1_tag]
 
     intervals = {animal: [] for animal in animal_sex}
+    # Chain id of every recorded interval: two intervals of one animal are consecutive (share
+    # their middle vocalization) only when the second starts at the row the first ended at, so
+    # a pair broken by another animal's vocalization, an unassigned or non-target row or a
+    # dropped non-positive interval starts a new chain.
+    chains = {animal: [] for animal in animal_sex}
+    last_end_row = dict.fromkeys(animal_sex)
+    n_chains = dict.fromkeys(animal_sex, 0)
     n_dropped = {"male": 0, "female": 0}
 
     usv0_time = usv0_col[0]
@@ -341,7 +354,11 @@ def compute_session_usv_intervals(
                 and usv0_target and usv1_target:
             interval = usv1_time - usv0_time
             if interval > 0:
+                if last_end_row[usv0_emitter] != r - 1:
+                    n_chains[usv0_emitter] += 1
                 intervals[usv0_emitter].append(interval)
+                chains[usv0_emitter].append(n_chains[usv0_emitter])
+                last_end_row[usv0_emitter] = r
             else:
                 n_dropped[animal_sex[usv0_emitter]] += 1
 
@@ -355,8 +372,10 @@ def compute_session_usv_intervals(
         animals = [animal for animal, animal_sex_value in animal_sex.items() if animal_sex_value == sex]
         values = [np.asarray(intervals[animal], dtype=float) for animal in animals]
         owners = [np.full(len(intervals[animal]), animal, dtype=object) for animal in animals]
+        chain_arrays = [np.asarray(chains[animal], dtype=np.int64) for animal in animals]
         out[sex] = np.concatenate(values) if values else np.array([], dtype=float)
         out[f"emitter_{sex}"] = np.concatenate(owners) if owners else np.array([], dtype=object)
+        out[f"chain_{sex}"] = np.concatenate(chain_arrays) if chain_arrays else np.array([], dtype=np.int64)
         out[f"n_dropped_{sex}"] = int(n_dropped[sex])
 
     # boundary safety: log() is taken downstream and requires strictly positive input
@@ -691,17 +710,22 @@ def consecutive_interval_pairs(
     values: np.ndarray,
     session_labels: np.ndarray,
     emitter_ids: np.ndarray,
+    chain_ids: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Description
     -----------
-    Every (current interval, next interval) pair of one animal in one session.
+    Every (current interval, next interval) pair of one animal in one session that share their
+    middle vocalization.
 
     A pool is built session by session and, within a session, animal by animal in time order,
     so two neighbouring entries are consecutive intervals of the same animal exactly when they
-    share both the session and the animal. Pairing on the session alone would, in a session
+    share the session, the animal and the chain (``chain_<sex>`` of
+    :func:`compute_session_usv_intervals`). Pairing on the session alone would, in a session
     holding two animals of the pool's sex (female-female), chain the last interval of one
-    animal to the first of the other.
+    animal to the first of the other; pairing without the chain would pair two intervals of
+    one animal across a break (another animal's vocalization, an unassigned or non-target row,
+    or a dropped non-positive interval between them), which are not consecutive.
 
     Parameters
     ----------
@@ -711,6 +735,8 @@ def consecutive_interval_pairs(
         A (n_intervals,) array of session identifiers aligned with ``values``.
     emitter_ids (np.ndarray)
         A (n_intervals,) array of animal identifiers aligned with ``values``.
+    chain_ids (np.ndarray)
+        A (n_intervals,) array of chain ids aligned with ``values``.
 
     Returns
     -------
@@ -725,7 +751,8 @@ def consecutive_interval_pairs(
     values = np.asarray(values, dtype=float)
     sessions = np.asarray(session_labels)
     emitters = np.asarray(emitter_ids)
-    same = (sessions[1:] == sessions[:-1]) & (emitters[1:] == emitters[:-1])
+    chain = np.asarray(chain_ids)
+    same = (sessions[1:] == sessions[:-1]) & (emitters[1:] == emitters[:-1]) & (chain[1:] == chain[:-1])
     return values[:-1][same], values[1:][same], sessions[:-1][same]
 
 
@@ -1481,6 +1508,7 @@ class InterUSVIntervalCalculator:
             "interval_s": pls.Float64,
             "log_interval": pls.Float64,
             "emitter_id": pls.Utf8,
+            "chain_id": pls.Int64,
         }
 
         for interval_type in interval_types:
@@ -1504,6 +1532,7 @@ class InterUSVIntervalCalculator:
                 arrays: list[np.ndarray] = []
                 labels: list[np.ndarray] = []
                 emitters: list[np.ndarray] = []
+                chain_ids: list[np.ndarray] = []
                 n_dropped = 0
                 rows: list[dict] = []
 
@@ -1526,6 +1555,7 @@ class InterUSVIntervalCalculator:
                     arrays.append(arr)
                     labels.append(np.full(arr.size, session_id, dtype=object))
                     emitters.append(usv_interval[f"emitter_{sex}"].astype(str))
+                    chain_ids.append(usv_interval[f"chain_{sex}"])
                     rows.append({
                         "session_id": [session_id] * arr.size,
                         "source_list": [source_map.get(session_root, "")] * arr.size,
@@ -1536,6 +1566,7 @@ class InterUSVIntervalCalculator:
                         "interval_s": arr.astype(float),
                         "log_interval": np.log(arr),
                         "emitter_id": usv_interval[f"emitter_{sex}"].astype(str),
+                        "chain_id": usv_interval[f"chain_{sex}"],
                     })
 
                 values = np.concatenate(arrays) if arrays else np.array([], dtype=float)
@@ -1557,7 +1588,7 @@ class InterUSVIntervalCalculator:
                 if (fit_serial_dependence_bool and spec['fit']
                         and values.size >= min_intervals_for_fitting):
                     current, following, pair_sessions = consecutive_interval_pairs(
-                        values, session_labels, np.concatenate(emitters))
+                        values, session_labels, np.concatenate(emitters), np.concatenate(chain_ids))
                     curves, sd_fit, sd_bends = fit_serial_dependence(
                         current=current, following=following, pair_sessions=pair_sessions,
                         pool_identity=identity, n_knots=serial_dependence_n_knots,

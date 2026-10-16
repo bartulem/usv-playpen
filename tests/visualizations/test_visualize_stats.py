@@ -829,10 +829,28 @@ def test_serial_dependence_pairs_never_chains_two_animals_of_one_sex():
         "sex": ["female"] * 5,
         "interval_s": [0.1, 0.2, 0.3, 5.0, 6.0],
         "emitter_id": ["A", "A", "A", "B", "B"],
+        "chain_id": [1, 1, 1, 1, 1],
     })
     current, following = serial_dependence_pairs(df, "female")
     np.testing.assert_allclose(current, [0.1, 0.2, 5.0])
     np.testing.assert_allclose(following, [0.2, 0.3, 6.0])
+
+
+def test_serial_dependence_pairs_respect_chains_and_refuse_an_archive_without_them():
+    """Intervals of one animal across a chain break do not pair, and a table without the
+    chain_id column is refused rather than paired across breaks."""
+    df = pls.DataFrame({
+        "session_id": ["s1"] * 4,
+        "sex": ["male"] * 4,
+        "interval_s": [0.1, 0.2, 0.3, 0.4],
+        "emitter_id": ["M"] * 4,
+        "chain_id": [1, 1, 2, 2],
+    })
+    current, following = serial_dependence_pairs(df, "male")
+    np.testing.assert_allclose(current, [0.1, 0.3])
+    np.testing.assert_allclose(following, [0.2, 0.4])
+    with pytest.raises(KeyError, match="chain_id"):
+        serial_dependence_pairs(df.drop("chain_id"), "male")
 
 
 def test_load_lrt_sweep_from_h5_missing_tables_raises(tmp_path):

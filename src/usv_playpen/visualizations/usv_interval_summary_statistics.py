@@ -1515,13 +1515,16 @@ def serial_dependence_pairs(usv_interval_df: pls.DataFrame, sex: str) -> tuple[n
     the same sex (a female-female session puts both females in the ``'female'`` pool), where
     pairing by session alone would chain the last interval of one female to the first of the
     other. Archives written before ``emitter_id`` existed hold one animal per sex per session,
-    so for them the session alone identifies the animal and is used instead.
+    so for them the session alone identifies the animal and is used instead. The ``chain_id``
+    column says which neighbouring intervals of one animal share their middle vocalization;
+    an archive without it cannot tell a consecutive pair from one across a break and is
+    refused.
 
     Parameters
     ----------
     usv_interval_df (pls.DataFrame)
         Tidy interval table for ONE interval type (columns ``session_id``, ``sex``, ``interval_s``,
-        and ``emitter_id`` in archives that record it).
+        ``chain_id``, and ``emitter_id`` in archives that record it).
     sex (str)
         ``'male'`` or ``'female'``.
 
@@ -1531,12 +1534,22 @@ def serial_dependence_pairs(usv_interval_df: pls.DataFrame, sex: str) -> tuple[n
         A (n_pairs,) ndarray of current intervals, in seconds.
     following (np.ndarray)
         A (n_pairs,) ndarray of the interval that follows each, in seconds.
+
+    Raises
+    ------
+    KeyError
+        The table has no ``chain_id`` column (an archive written before it was recorded).
     """
 
+    if "chain_id" not in usv_interval_df.columns:
+        msg = ("The interval table has no 'chain_id' column, so consecutive intervals cannot be told from "
+               "intervals across a break; re-run the interval computation to rewrite the archive.")
+        raise KeyError(msg)
     subset = usv_interval_df.filter(pls.col("sex") == sex)
     sessions = subset["session_id"].to_numpy()
     animals = subset["emitter_id"].to_numpy() if "emitter_id" in subset.columns else sessions
-    current, following, _ = consecutive_interval_pairs(subset["interval_s"].to_numpy(), sessions, animals)
+    current, following, _ = consecutive_interval_pairs(
+        subset["interval_s"].to_numpy(), sessions, animals, subset["chain_id"].to_numpy())
     return current, following
 
 

@@ -24,6 +24,7 @@ import numpy as np
 import pytest
 from numpy.linalg import cholesky, inv
 from scipy import stats
+from scipy.special import digamma
 from sklearn.mixture import GaussianMixture
 
 # Headless matplotlib in case any imported helper touches a backend.
@@ -271,15 +272,14 @@ def test_gmm_modes_general_d_rejects_saddle_seed():
 
 def test_t_update_nu_brentq_fallback_returns_50():
     """
-    Drives the ``brentq`` ValueError fallback in :func:`_t_update_nu`
-    (source lines 1109-1110).
+    Drives the near-Gaussian side of the no-root case in :func:`_t_update_nu`.
 
     The degrees-of-freedom update solves a score equation via Brent's method
-    on the bracket ``[2.001, 200.0]``. When the score function does not change
-    sign across that bracket ``brentq`` raises ``ValueError`` and the function
-    must return the conservative default of ``50.0``. A degenerate
+    on the bracket ``[2.001, 200.0]``. When the score is still positive at the
+    upper end (the root lies above the bracket: effectively Gaussian) the
+    function returns the near-Gaussian default of ``50.0``. A degenerate
     responsibility / latent-scale configuration (all-zero weights and unit
-    latent scales) yields a monotone score with no sign change in the bracket.
+    latent scales) yields a score positive across the whole bracket.
     """
     n_components = 1
     z = np.zeros((n_components, 10))      # zero responsibilities
@@ -290,6 +290,31 @@ def test_t_update_nu_brentq_fallback_returns_50():
     out = _t_update_nu(z[0], u[0], nu[0], n_k[0])
 
     assert out == 50.0
+
+
+def test_t_update_nu_heavy_tails_clamp_to_the_lower_bound():
+    """
+    When the score is already negative at the lower end of the bracket (latent
+    scales far from 1, i.e. tails heavier than ``nu = 2.001`` allows), the root
+    lies below the bracket and the update returns the lower bound ``2.001``, not
+    the near-Gaussian default. Inside the bracket the update is the score's root:
+    the returned ``nu`` zeroes the score, and a larger mean of ``log(u) - u``
+    (lighter tails) gives a larger ``nu``.
+    """
+    z = np.ones(50)
+    heavy = _t_update_nu(z, np.full(50, 0.1), 10.0, 50.0)
+    assert heavy == 2.001
+
+    def score(nu, u, nu_old):
+        psi_old = digamma((nu_old + 1.0) / 2.0) - np.log((nu_old + 1.0) / 2.0)
+        return -digamma(nu / 2.0) + np.log(nu / 2.0) + 1.0 + psi_old + np.mean(np.log(u) - u)
+
+    u_mid = np.full(50, 0.6)
+    nu_mid = _t_update_nu(z, u_mid, 10.0, 50.0)
+    assert 2.001 < nu_mid < 200.0
+    assert score(nu_mid, u_mid, 10.0) == pytest.approx(0.0, abs=1e-9)
+    u_light = np.full(50, 0.8)
+    assert _t_update_nu(z, u_light, 10.0, 50.0) > nu_mid
 
 
 def test_sample_from_mixture_gauss_skips_empty_component():

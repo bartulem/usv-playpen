@@ -553,7 +553,7 @@ class NaturalisticUsvRepositoryBuilder:
         is kept only if every USV in it has a detected mask and reconstructs
         successfully (complete-bout rule); incomplete bouts are dropped and logged.
         Records the real within-bout gap to the next USV and the real preceding
-        inter-bout gap.
+        inter-bout gap (from the emitter's previous vocalization, kept or not).
 
         Parameters
         ----------
@@ -586,7 +586,6 @@ class NaturalisticUsvRepositoryBuilder:
         """
 
         acc["sampling_rate_hz"] = sampling_rate
-        prev_bout_last_stop = None
         dropped = 0
         for positions in candidate_bout_positions:
             bout_rows = rows_sorted[positions]
@@ -625,9 +624,17 @@ class NaturalisticUsvRepositoryBuilder:
                 dropped += 1
                 continue
 
-            # Complete bout kept: record per-bout row + each USV.
-            preceding_isi = (float('nan') if prev_bout_last_stop is None
-                             else float(bout_starts[0] - prev_bout_last_stop))
+            # Complete bout kept: record per-bout row + each USV. The preceding
+            # inter-bout gap is the real silence before the bout: from the latest
+            # stop among ALL of the emitter's earlier vocalizations (sorted by
+            # start, so an earlier long one can end last) to the bout's first
+            # start, whether or not the bout before it was a candidate or was
+            # kept -- measuring from the last KEPT bout would span every dropped
+            # or non-candidate bout in between. NaN for the emitter's first
+            # vocalization of the session.
+            first_position = int(positions[0])
+            preceding_isi = (float('nan') if first_position == 0
+                             else float(bout_starts[0] - np.max(stops_sorted[:first_position])))
             acc["bout_session"].append(session_id)
             acc["bout_emitter"].append(emitter_norm)
             acc["bout_usv_start"].append(acc["usv_cursor"])
@@ -652,7 +659,6 @@ class NaturalisticUsvRepositoryBuilder:
                 acc["usv_cursor"] += 1
 
             acc["bout_cursor"] += 1
-            prev_bout_last_stop = float(bout_stops[-1])
 
         if dropped:
             self.message_output(f"{session_id}: dropped {dropped} incomplete bout(s).")
