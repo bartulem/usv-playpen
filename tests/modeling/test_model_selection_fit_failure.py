@@ -402,3 +402,75 @@ class TestManifoldFoldFailure:
         # No learned candidate produced a finite fold, so nothing was accepted.
         assert last_step['selected_feature'] is None
         assert last_step['candidates_summary'] == {}
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    @pytest.mark.filterwarnings("ignore::UserWarning")
+    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
+    def test_one_failed_fold_keeps_every_per_fold_list_aligned(self, tmp_path, monkeypatch):
+        """A single failed fold pads every per-fold list, `basis_coefficients` included, so the
+        accepted anchor's lists all keep one entry per CV fold and fold i lines up across keys."""
+
+        settings, _ = _build_manifold_settings(
+            tmp_path, split_strategy='session', split_num=10, test_proportion=0.3,
+        )
+        feature_names = ['self.speed', 'other.speed', 'self.neck_elevation']
+        session_ids = [f'session_{i}' for i in range(25)]
+        input_md = {
+            'analysis_type': 'continuous',
+            'analysis_tag': 'manifold_qlvm_category',
+            'session_ids': session_ids,
+            'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
+            'analysis_specific': {
+                'usv_category_column_name': 'qlvm_category',
+                'manifold_metric': 'euclidean',
+                'manifold_period': 1.0,
+            },
+        }
+        input_pkl = str(_build_signal_continuous_pickle(
+            save_path=tmp_path / 'manifold_input.pkl', feature_names=feature_names,
+            session_ids=session_ids, history_frames=MF_HISTORY_FRAMES, input_metadata=input_md,
+        ))
+        runner = ContinuousModelRunner(ContinuousModelingPipeline(modeling_settings_dict=settings))
+        combined = {feature: runner.run_univariate_training(input_pkl, feature) for feature in feature_names}
+        combined['_input_metadata'] = input_md
+        combined_path = tmp_path / 'univariate_combined.pkl'
+        with combined_path.open('wb') as fh:
+            pickle.dump(combined, fh)
+
+        real_resolve = ms.resolve_manifold_regressor_cls
+
+        def resolve_first_fit_fails(*args, **kwargs):
+            real_cls = real_resolve(*args, **kwargs)
+
+            class _FirstFitFails(real_cls):
+                """The real regressor, except that the first fit of the run raises."""
+
+                calls = 0
+
+                def fit(self, *fit_args, **fit_kwargs):
+                    """Raise on the first call of the run, fit normally afterwards."""
+                    _FirstFitFails.calls += 1
+                    if _FirstFitFails.calls == 1:
+                        msg = "forced first-fold failure"
+                        raise RuntimeError(msg)
+                    return super().fit(*fit_args, **fit_kwargs)
+
+            return _FirstFitFails
+
+        monkeypatch.setattr(ms, 'resolve_manifold_regressor_cls', resolve_first_fit_fails)
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+        continuous_vocal_manifold_model_selection(
+            univariate_results_path=str(combined_path), input_data_path=input_pkl,
+            output_directory=str(ms_dir), settings_path=_settings_json(tmp_path, settings),
+            use_top_rank_as_anchor=True, p_val=0.5,
+        )
+        anchor_pkl = next(ms_dir.glob('model_selection_continuous_manifold_*_step_1.pkl'))
+        with anchor_pkl.open('rb') as fh:
+            anchor_step = pickle.load(fh)
+        folds = anchor_step['candidates_summary'][anchor_step['selected_feature']]['folds']
+        n_folds = settings['model_validation']['n_cv_folds']
+        per_fold = {key: value for key, value in folds.items() if isinstance(value, list)}
+        assert {key: len(value) for key, value in per_fold.items()} == dict.fromkeys(per_fold, n_folds)
+        assert folds['weights'][0] is None
+        assert folds['basis_coefficients'][0] is None

@@ -1310,7 +1310,11 @@ class MultinomialModelRunner:
                         raise ValueError(
                             f"bin_size={bin_size} exceeds history length {T} for feature {feat}"
                         )
-                    X_sess = X_sess[:, :new_T * bin_size].reshape(N, new_T, bin_size).mean(axis=2)
+                    # Keep the MOST RECENT `new_T * bin_size` columns (drop the oldest
+                    # `T % bin_size`), as the continuous loader does: the last column is
+                    # the frame before onset, so truncating the tail would drop the frames
+                    # nearest onset and misalign the filter time axis.
+                    X_sess = X_sess[:, T - new_T * bin_size:].reshape(N, new_T, bin_size).mean(axis=2)
                 if basis is not None:
                     X_sess = project_history_onto_basis(X_sess, basis)
 

@@ -886,8 +886,8 @@ class TestCategorySelectionBranches:
         selection fold fail; the per-fold ``except`` appends NaN placeholders
         (and a NaN-filled (2, 2) confusion matrix), the anchored Step-0 records no
         valid log-loss, the forward loop's no-finite-folds skip fires, the REJECT
-        branch persists the (empty-candidate) step pickle, and the final-refit
-        ``try/except`` swallows the forced failure so the run still returns.
+        branch persists the (empty-candidate) step pickle, and the final refit then
+        raises the forced failure instead of passing as a finished selection.
         """
 
         class _BoomLRCV:
@@ -911,14 +911,15 @@ class TestCategorySelectionBranches:
 
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
-        vocal_category_model_selection(
-            univariate_results_path=ranking_pkl,
-            input_data_path=input_pkl,
-            settings_path=_settings_json(tmp_path, settings),
-            output_directory=str(ms_dir),
-            use_top_rank_as_anchor=True,
-            p_val=0.5,
-        )
+        with pytest.raises(RuntimeError, match="forced LRCV failure"):
+            vocal_category_model_selection(
+                univariate_results_path=ranking_pkl,
+                input_data_path=input_pkl,
+                settings_path=_settings_json(tmp_path, settings),
+                output_directory=str(ms_dir),
+                use_top_rank_as_anchor=True,
+                p_val=0.5,
+            )
         # Every fold failed -> the forward loop rejects immediately and the
         # REJECT branch still persists the (empty-candidate) step pickle.
         assert len(list(ms_dir.glob('model_selection_category_*_step_*.pkl'))) >= 1

@@ -2462,200 +2462,199 @@ def vocal_category_model_selection(
             break
 
     print("\n--- Final Refit for Visualization (CV-based) ---")
-    try:
-        last_file = model_selection_dir / f"{prefix}{step_counter}.pkl"
-        if not last_file.exists():
-            last_file = model_selection_dir / f"{prefix}{step_counter - 1}.pkl"
+    # No blanket except: a failed final refit or save must stop the run loudly, not
+    # pass as a finished selection with no final model.
+    last_file = model_selection_dir / f"{prefix}{step_counter}.pkl"
+    if not last_file.exists():
+        last_file = model_selection_dir / f"{prefix}{step_counter - 1}.pkl"
 
-        final_fold_shapes = []
-        print(f"  Calculating filter shapes across {len(cv_folds)} folds...")
+    final_fold_shapes = []
+    print(f"  Calculating filter shapes across {len(cv_folds)} folds...")
 
-        for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
+    for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
 
-            if split_strategy == 'session':
-                X_tr_t_raw, X_tr_o_raw = _pool_category_features(all_feature_data, current_model_features, all_sessions_arr[tr_idx], history_frames)
-            else:
-                # Reuse the pre-pooled target / other arrays for the final
-                # refit so the visualisation loop doesn't re-pool the full
-                # dataset per fold.
-                X_all_t_raw = [pooled_category_cache[f]['target'] for f in current_model_features]
-                X_all_o_raw = [pooled_category_cache[f]['other'] for f in current_model_features]
+        if split_strategy == 'session':
+            X_tr_t_raw, X_tr_o_raw = _pool_category_features(all_feature_data, current_model_features, all_sessions_arr[tr_idx], history_frames)
+        else:
+            # Reuse the pre-pooled target / other arrays for the final
+            # refit so the visualisation loop doesn't re-pool the full
+            # dataset per fold.
+            X_all_t_raw = [pooled_category_cache[f]['target'] for f in current_model_features]
+            X_all_o_raw = [pooled_category_cache[f]['other'] for f in current_model_features]
 
-                tr_targ_idx = tr_idx[tr_idx < n_targ_total]
-                tr_other_idx = tr_idx[tr_idx >= n_targ_total] - n_targ_total
+            tr_targ_idx = tr_idx[tr_idx < n_targ_total]
+            tr_other_idx = tr_idx[tr_idx >= n_targ_total] - n_targ_total
 
-                X_tr_t_raw = [x[tr_targ_idx] for x in X_all_t_raw]
-                X_tr_o_raw = [x[tr_other_idx] for x in X_all_o_raw]
+            X_tr_t_raw = [x[tr_targ_idx] for x in X_all_t_raw]
+            X_tr_o_raw = [x[tr_other_idx] for x in X_all_o_raw]
 
-            X_tr_t, X_tr_o, y_tr_t, y_tr_o = _balance_multivariate_arrays(X_tr_t_raw, X_tr_o_raw, random_seed + fold_idx)
+        X_tr_t, X_tr_o, y_tr_t, y_tr_o = _balance_multivariate_arrays(X_tr_t_raw, X_tr_o_raw, random_seed + fold_idx)
 
-            if not X_tr_t:
-                continue
+        if not X_tr_t:
+            continue
 
-            X_tr_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_tr_t, X_tr_o)]
-            y_tr = np.concatenate([y_tr_t, y_tr_o])
+        X_tr_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_tr_t, X_tr_o)]
+        y_tr = np.concatenate([y_tr_t, y_tr_o])
 
-            if model_type == 'sklearn':
-                X_tr_stacked = np.hstack([np.dot(x, basis_matrix) for x in X_tr_list])
+        if model_type == 'sklearn':
+            X_tr_stacked = np.hstack([np.dot(x, basis_matrix) for x in X_tr_list])
 
-                model = LogisticRegressionCV(
-                    penalty=lr_params['penalty'],
-                    Cs=lr_params['cs'],
-                    cv=lr_params['cv'],
-                    class_weight='balanced',
-                    solver=lr_params['solver'],
-                    max_iter=lr_params['max_iter'],
-                    random_state=random_seed
-                )
-                model.fit(X_tr_stacked, y_tr)
-
-                coefs = model.coef_.flatten()
-                n_bases = basis_matrix.shape[1]
-
-                fold_res = {}
-                for k, f_name in enumerate(current_model_features):
-                    feat_coefs = coefs[k * n_bases: (k + 1) * n_bases]
-                    fold_res[f_name] = np.dot(feat_coefs, basis_matrix.T).flatten()
-
-                final_fold_shapes.append(fold_res)
-
-            else:
-                X_gam_tr = get_unrolled_X_for_multivariate(X_tr_list, history_frames)
-                y_gam_tr = np.repeat(y_tr.astype(float), history_frames)
-
-                gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
-                for i in range(1, len(current_model_features)):
-                    gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
-
-                gam_fold = LogisticGAM(gam_terms, **gam_kwargs).fit(X_gam_tr, y_gam_tr)
-
-                time_idx = np.arange(history_frames)
-                base_grid = np.zeros((history_frames, 2 * len(current_model_features)))
-                for k in range(len(current_model_features)):
-                    base_grid[:, k * 2 + 1] = time_idx
-
-                base_prob = gam_fold.predict_mu(base_grid)
-
-                fold_res = {}
-                for k, f_name in enumerate(current_model_features):
-                    test_grid = base_grid.copy()
-                    test_grid[:, k * 2] = 1.0
-                    fold_res[f_name] = (gam_fold.predict_mu(test_grid) - base_prob).flatten()
-
-                final_fold_shapes.append(fold_res)
-
-                del gam_fold, X_gam_tr, y_gam_tr
-
-            gc.collect()
-
-        # Honest held-out score (category). Refit the accepted feature set on ALL
-        # development sessions (balanced target-vs-other training pool) and score
-        # it once on the reserved held-out sessions at their natural class prior
-        # (LL), mirroring the finalization fold fit for the active engine, plus a
-        # shuffled-label null control for the held-out chance floor. This is the
-        # only number untouched by screening, greedy acceptance, or the per-fold
-        # balancing. Skipped when holdout is disabled (`held_sessions_arr` empty),
-        # no feature was accepted, or the pooled data is degenerate -- leaving
-        # `heldout` None so no-holdout runs are byte-identical to before.
-        heldout_result = None
-        if held_sessions_arr.size > 0 and len(current_model_features) > 0:
-            dev_t_raw, dev_o_raw = _pool_category_features(
-                all_feature_data, current_model_features, all_sessions_arr, history_frames
+            model = LogisticRegressionCV(
+                penalty=lr_params['penalty'],
+                Cs=lr_params['cs'],
+                cv=lr_params['cv'],
+                class_weight='balanced',
+                solver=lr_params['solver'],
+                max_iter=lr_params['max_iter'],
+                random_state=random_seed
             )
-            held_t_raw, held_o_raw = _pool_category_features(
-                all_feature_data, current_model_features, held_sessions_arr, history_frames
-            )
-            # Distinct-but-deterministic seed for the balanced development draw and
-            # the null permutation; offset the fold seeds by `n_splits`.
-            held_seed = random_seed + n_splits + 1
-            X_tr_t, X_tr_o, y_tr_t, y_tr_o = _balance_multivariate_arrays(dev_t_raw, dev_o_raw, held_seed)
-            n_held_targ = held_t_raw[0].shape[0] if held_t_raw else 0
-            n_held_other = held_o_raw[0].shape[0] if held_o_raw else 0
-            heldout_result = {
-                'features': list(current_model_features),
-                'n_held_out_sessions': int(held_sessions_arr.size),
-                'n_held_out_events': int(n_held_targ + n_held_other),
-            }
-            if X_tr_t and n_held_targ > 0 and n_held_other > 0:
-                X_tr_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_tr_t, X_tr_o)]
-                y_tr_bal = np.concatenate([y_tr_t, y_tr_o])
-                X_te_list = [np.concatenate([t, o], axis=0) for t, o in zip(held_t_raw, held_o_raw)]
-                y_test_held = np.concatenate([np.ones(n_held_targ), np.zeros(n_held_other)])
-                y_te_int = y_test_held.astype(int)
-                held_rng = np.random.default_rng(held_seed)
-                for branch in ('actual', 'null'):
-                    y_tr = y_tr_bal if branch == 'actual' else held_rng.permutation(y_tr_bal)
-                    rec = {'ll': np.nan, 'auc': np.nan, 'score': np.nan,
-                           'deviance_explained': np.nan, 'brier': np.nan}
-                    try:
-                        if model_type == 'sklearn':
-                            X_tr_stacked = np.hstack([np.dot(x, basis_matrix) for x in X_tr_list])
-                            X_te_stacked = np.hstack([np.dot(x, basis_matrix) for x in X_te_list])
-                            model = LogisticRegressionCV(
-                                penalty=lr_params['penalty'],
-                                Cs=lr_params['cs'],
-                                cv=lr_params['cv'],
-                                class_weight='balanced',
-                                solver=lr_params['solver'],
-                                max_iter=lr_params['max_iter'],
-                                random_state=random_seed
-                            ).fit(X_tr_stacked, y_tr)
-                            y_prob = model.predict_proba(X_te_stacked)[:, 1]
-                            y_pred = model.predict(X_te_stacked)
-                        else:
-                            X_gam_tr = get_unrolled_X_for_multivariate(X_tr_list, history_frames)
-                            y_gam_tr = np.repeat(y_tr.astype(float), history_frames)
-                            gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
-                            for i in range(1, len(current_model_features)):
-                                gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
-                            gam = LogisticGAM(gam_terms, **gam_kwargs).fit(X_gam_tr, y_gam_tr)
-                            X_gam_te = get_unrolled_X_for_multivariate(X_te_list, history_frames)
-                            y_prob_frame = gam.predict_proba(X_gam_te)
-                            y_prob = np.mean(y_prob_frame.reshape(len(y_test_held), history_frames), axis=1)
-                            y_pred = (y_prob >= settings['diagnostics']['binary_decision_threshold']).astype(int)
-                        y_prob_clipped = np.clip(y_prob, 1e-15, 1 - 1e-15)
-                        rec['ll'] = log_loss(y_te_int, y_prob_clipped)
-                        rec['deviance_explained'] = 1.0 - rec['ll'] / np.log(2)
-                        rec['score'] = balanced_accuracy_score(y_te_int, y_pred)
-                        rec['brier'] = float(brier_score_loss(y_te_int, y_prob))
-                        if len(np.unique(y_te_int)) > 1:
-                            rec['auc'] = roc_auc_score(y_te_int, y_prob)
-                    except Exception as e:
-                        print(f"Held-out refit failed (category {branch}): {e}")
-                    heldout_result[branch] = rec
+            model.fit(X_tr_stacked, y_tr)
 
-        final_res = {
-            'final_model_features': current_model_features,
-            'filter_shapes': final_fold_shapes,
-            'heldout': heldout_result,
-            'univariate_results_path': univariate_results_path,
-            'input_data_path': input_data_path
+            coefs = model.coef_.flatten()
+            n_bases = basis_matrix.shape[1]
+
+            fold_res = {}
+            for k, f_name in enumerate(current_model_features):
+                feat_coefs = coefs[k * n_bases: (k + 1) * n_bases]
+                fold_res[f_name] = np.dot(feat_coefs, basis_matrix.T).flatten()
+
+            final_fold_shapes.append(fold_res)
+
+        else:
+            X_gam_tr = get_unrolled_X_for_multivariate(X_tr_list, history_frames)
+            y_gam_tr = np.repeat(y_tr.astype(float), history_frames)
+
+            gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
+            for i in range(1, len(current_model_features)):
+                gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
+
+            gam_fold = LogisticGAM(gam_terms, **gam_kwargs).fit(X_gam_tr, y_gam_tr)
+
+            time_idx = np.arange(history_frames)
+            base_grid = np.zeros((history_frames, 2 * len(current_model_features)))
+            for k in range(len(current_model_features)):
+                base_grid[:, k * 2 + 1] = time_idx
+
+            base_prob = gam_fold.predict_mu(base_grid)
+
+            fold_res = {}
+            for k, f_name in enumerate(current_model_features):
+                test_grid = base_grid.copy()
+                test_grid[:, k * 2] = 1.0
+                fold_res[f_name] = (gam_fold.predict_mu(test_grid) - base_prob).flatten()
+
+            final_fold_shapes.append(fold_res)
+
+            del gam_fold, X_gam_tr, y_gam_tr
+
+        gc.collect()
+
+    # Honest held-out score (category). Refit the accepted feature set on ALL
+    # development sessions (balanced target-vs-other training pool) and score
+    # it once on the reserved held-out sessions at their natural class prior
+    # (LL), mirroring the finalization fold fit for the active engine, plus a
+    # shuffled-label null control for the held-out chance floor. This is the
+    # only number untouched by screening, greedy acceptance, or the per-fold
+    # balancing. Skipped when holdout is disabled (`held_sessions_arr` empty),
+    # no feature was accepted, or the pooled data is degenerate -- leaving
+    # `heldout` None so no-holdout runs are byte-identical to before.
+    heldout_result = None
+    if held_sessions_arr.size > 0 and len(current_model_features) > 0:
+        dev_t_raw, dev_o_raw = _pool_category_features(
+            all_feature_data, current_model_features, all_sessions_arr, history_frames
+        )
+        held_t_raw, held_o_raw = _pool_category_features(
+            all_feature_data, current_model_features, held_sessions_arr, history_frames
+        )
+        # Distinct-but-deterministic seed for the balanced development draw and
+        # the null permutation; offset the fold seeds by `n_splits`.
+        held_seed = random_seed + n_splits + 1
+        X_tr_t, X_tr_o, y_tr_t, y_tr_o = _balance_multivariate_arrays(dev_t_raw, dev_o_raw, held_seed)
+        n_held_targ = held_t_raw[0].shape[0] if held_t_raw else 0
+        n_held_other = held_o_raw[0].shape[0] if held_o_raw else 0
+        heldout_result = {
+            'features': list(current_model_features),
+            'n_held_out_sessions': int(held_sessions_arr.size),
+            'n_held_out_events': int(n_held_targ + n_held_other),
         }
+        if X_tr_t and n_held_targ > 0 and n_held_other > 0:
+            X_tr_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_tr_t, X_tr_o)]
+            y_tr_bal = np.concatenate([y_tr_t, y_tr_o])
+            X_te_list = [np.concatenate([t, o], axis=0) for t, o in zip(held_t_raw, held_o_raw)]
+            y_test_held = np.concatenate([np.ones(n_held_targ), np.zeros(n_held_other)])
+            y_te_int = y_test_held.astype(int)
+            held_rng = np.random.default_rng(held_seed)
+            for branch in ('actual', 'null'):
+                y_tr = y_tr_bal if branch == 'actual' else held_rng.permutation(y_tr_bal)
+                rec = {'ll': np.nan, 'auc': np.nan, 'score': np.nan,
+                       'deviance_explained': np.nan, 'brier': np.nan}
+                try:
+                    if model_type == 'sklearn':
+                        X_tr_stacked = np.hstack([np.dot(x, basis_matrix) for x in X_tr_list])
+                        X_te_stacked = np.hstack([np.dot(x, basis_matrix) for x in X_te_list])
+                        model = LogisticRegressionCV(
+                            penalty=lr_params['penalty'],
+                            Cs=lr_params['cs'],
+                            cv=lr_params['cv'],
+                            class_weight='balanced',
+                            solver=lr_params['solver'],
+                            max_iter=lr_params['max_iter'],
+                            random_state=random_seed
+                        ).fit(X_tr_stacked, y_tr)
+                        y_prob = model.predict_proba(X_te_stacked)[:, 1]
+                        y_pred = model.predict(X_te_stacked)
+                    else:
+                        X_gam_tr = get_unrolled_X_for_multivariate(X_tr_list, history_frames)
+                        y_gam_tr = np.repeat(y_tr.astype(float), history_frames)
+                        gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
+                        for i in range(1, len(current_model_features)):
+                            gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
+                        gam = LogisticGAM(gam_terms, **gam_kwargs).fit(X_gam_tr, y_gam_tr)
+                        X_gam_te = get_unrolled_X_for_multivariate(X_te_list, history_frames)
+                        y_prob_frame = gam.predict_proba(X_gam_te)
+                        y_prob = np.mean(y_prob_frame.reshape(len(y_test_held), history_frames), axis=1)
+                        y_pred = (y_prob >= settings['diagnostics']['binary_decision_threshold']).astype(int)
+                    y_prob_clipped = np.clip(y_prob, 1e-15, 1 - 1e-15)
+                    rec['ll'] = log_loss(y_te_int, y_prob_clipped)
+                    rec['deviance_explained'] = 1.0 - rec['ll'] / np.log(2)
+                    rec['score'] = balanced_accuracy_score(y_te_int, y_pred)
+                    rec['brier'] = float(brier_score_loss(y_te_int, y_prob))
+                    if len(np.unique(y_te_int)) > 1:
+                        rec['auc'] = roc_auc_score(y_te_int, y_prob)
+                except Exception as e:
+                    print(f"Held-out refit failed (category {branch}): {e}")
+                heldout_result[branch] = rec
 
-        with open(last_file, 'rb') as f:
-            data = pickle.load(f)
+    final_res = {
+        'final_model_features': current_model_features,
+        'filter_shapes': final_fold_shapes,
+        'heldout': heldout_result,
+        'univariate_results_path': univariate_results_path,
+        'input_data_path': input_data_path
+    }
 
-        for _k in RESERVED_METADATA_KEYS:
-            data.pop(_k, None)
-        data.update(final_res)
+    with open(last_file, 'rb') as f:
+        data = pickle.load(f)
 
-        with open(last_file, 'wb') as f:
-            pickle.dump(_wrap_step(data), f)
+    for _k in RESERVED_METADATA_KEYS:
+        data.pop(_k, None)
+    data.update(final_res)
 
-        metrics_by_strategy = {'Final': {'LL': best_current_score},
-                               'Chance': {'LL': chance_ll}}
-        # Held-out LL (development-refit, scored once) -- the honest number
-        # alongside the optimistic development-CV `Final`.
-        if heldout_result is not None and 'actual' in heldout_result:
-            metrics_by_strategy['Held-out'] = {'LL': heldout_result['actual']['ll']}
-        print(format_run_summary(
-            label=f"category model-selection ({len(current_model_features)} features)",
-            metrics_by_strategy=metrics_by_strategy,
-            out_path=str(last_file),
-        ))
+    with open(last_file, 'wb') as f:
+        pickle.dump(_wrap_step(data), f)
 
-    except Exception as e:
-        print(f"Final fit failed: {e}")
+    metrics_by_strategy = {'Final': {'LL': best_current_score},
+                           'Chance': {'LL': chance_ll}}
+    # Held-out LL (development-refit, scored once) -- the honest number
+    # alongside the optimistic development-CV `Final`.
+    if heldout_result is not None and 'actual' in heldout_result:
+        metrics_by_strategy['Held-out'] = {'LL': heldout_result['actual']['ll']}
+    print(format_run_summary(
+        label=f"category model-selection ({len(current_model_features)} features)",
+        metrics_by_strategy=metrics_by_strategy,
+        out_path=str(last_file),
+    ))
+
 
 
 def bout_parameter_model_selection(
@@ -3413,166 +3412,165 @@ def bout_parameter_model_selection(
 
     # 7. Final Model Fit for Visualization
     print("\n--- Final Model Fit for Visualization (CV-based) ---")
-    try:
-        last_file = model_selection_dir / f"{prefix}{step_counter}.pkl"
-        if not last_file.exists():
-            last_file = model_selection_dir / f"{prefix}{step_counter - 1}.pkl"
+    # No blanket except: a failed final refit or save must stop the run loudly, not
+    # pass as a finished selection with no final model.
+    last_file = model_selection_dir / f"{prefix}{step_counter}.pkl"
+    if not last_file.exists():
+        last_file = model_selection_dir / f"{prefix}{step_counter - 1}.pkl"
 
-        final_fold_shapes = []
-        print(f"  Calculating filter shapes across {len(cv_folds)} folds...")
+    final_fold_shapes = []
+    print(f"  Calculating filter shapes across {len(cv_folds)} folds...")
 
-        for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
+    for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
 
-            X_list_tr = [all_feature_data[f]['X'][tr_idx] for f in current_model_features]
-            y_tr = y_global[tr_idx]
+        X_list_tr = [all_feature_data[f]['X'][tr_idx] for f in current_model_features]
+        y_tr = y_global[tr_idx]
 
-            fold_res = {}
-            if model_type == 'sklearn':
-                X_tr_stacked = np.hstack([np.dot(x, basis_matrix) for x in X_list_tr])
-                y_tr_pos = np.maximum(y_tr, 1e-6)
+        fold_res = {}
+        if model_type == 'sklearn':
+            X_tr_stacked = np.hstack([np.dot(x, basis_matrix) for x in X_list_tr])
+            y_tr_pos = np.maximum(y_tr, 1e-6)
 
-                model = GridSearchCV(
-                    GammaRegressor(),
-                    {'alpha': list(lr_params['alphas'])},
-                    cv=lr_params['cv'],
-                    scoring='neg_mean_gamma_deviance',
-                ).fit(X_tr_stacked, y_tr_pos)
-                coefs = model.best_estimator_.coef_.flatten()
-                n_bases = basis_matrix.shape[1]
+            model = GridSearchCV(
+                GammaRegressor(),
+                {'alpha': list(lr_params['alphas'])},
+                cv=lr_params['cv'],
+                scoring='neg_mean_gamma_deviance',
+            ).fit(X_tr_stacked, y_tr_pos)
+            coefs = model.best_estimator_.coef_.flatten()
+            n_bases = basis_matrix.shape[1]
 
-                for k, f_name in enumerate(current_model_features):
-                    feat_coefs = coefs[k * n_bases: (k + 1) * n_bases]
-                    fold_res[f_name] = np.dot(feat_coefs, basis_matrix.T).flatten()
-            else:
-                X_tr_gam = get_unrolled_X_for_multivariate(X_list_tr, history_frames)
-                y_tr_gam = np.repeat(y_tr + 1e-6, history_frames)
+            for k, f_name in enumerate(current_model_features):
+                feat_coefs = coefs[k * n_bases: (k + 1) * n_bases]
+                fold_res[f_name] = np.dot(feat_coefs, basis_matrix.T).flatten()
+        else:
+            X_tr_gam = get_unrolled_X_for_multivariate(X_list_tr, history_frames)
+            y_tr_gam = np.repeat(y_tr + 1e-6, history_frames)
 
-                gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
-                for i in range(1, len(current_model_features)):
-                    gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
+            gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
+            for i in range(1, len(current_model_features)):
+                gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
 
-                gam_fold = GAM(gam_terms, distribution='gamma', link='log', **gam_kwargs).fit(X_tr_gam, y_tr_gam)
+            gam_fold = GAM(gam_terms, distribution='gamma', link='log', **gam_kwargs).fit(X_tr_gam, y_tr_gam)
 
-                time_idx = np.arange(history_frames)
-                base_grid = np.zeros((history_frames, 2 * len(current_model_features)))
-                for k in range(len(current_model_features)): base_grid[:, k * 2 + 1] = time_idx
+            time_idx = np.arange(history_frames)
+            base_grid = np.zeros((history_frames, 2 * len(current_model_features)))
+            for k in range(len(current_model_features)): base_grid[:, k * 2 + 1] = time_idx
 
-                pred_base = gam_fold.predict(base_grid)
+            pred_base = gam_fold.predict(base_grid)
 
-                for k, feat in enumerate(current_model_features):
-                    grid = base_grid.copy()
-                    grid[:, k * 2] = 1.0
-                    pred_feat = gam_fold.predict(grid)
-                    fold_res[feat] = (pred_feat - pred_base).flatten()
+            for k, feat in enumerate(current_model_features):
+                grid = base_grid.copy()
+                grid[:, k * 2] = 1.0
+                pred_feat = gam_fold.predict(grid)
+                fold_res[feat] = (pred_feat - pred_base).flatten()
 
-                del gam_fold, X_tr_gam, y_tr_gam
+            del gam_fold, X_tr_gam, y_tr_gam
 
-            final_fold_shapes.append(fold_res)
-            gc.collect()
+        final_fold_shapes.append(fold_res)
+        gc.collect()
 
-        # Honest held-out score (bout parameters). Refit the accepted feature set
-        # on ALL development rows and score it once on the reserved held-out rows
-        # (D^2 = explained Gamma deviance), mirroring the finalization fold fit for
-        # the active engine, plus a shuffled-label null control for the held-out
-        # chance floor. This is the only number untouched by screening, greedy
-        # acceptance, or inner-CV alpha selection. Skipped when holdout is disabled
-        # (`_held_positions` empty) or no feature was accepted, leaving `heldout`
-        # None so no-holdout runs are byte-identical to before.
-        heldout_result = None
-        if _held_positions.size > 0 and len(current_model_features) > 0:
-            y_dev = y_global[_dev_positions]
-            y_held = y_global[_held_positions]
-            # Distinct-but-deterministic seed for the held-out null permutation;
-            # offset the fold seeds by `n_splits` so it never collides with a fold.
-            held_rng = np.random.default_rng(random_seed + n_splits + 1)
+    # Honest held-out score (bout parameters). Refit the accepted feature set
+    # on ALL development rows and score it once on the reserved held-out rows
+    # (D^2 = explained Gamma deviance), mirroring the finalization fold fit for
+    # the active engine, plus a shuffled-label null control for the held-out
+    # chance floor. This is the only number untouched by screening, greedy
+    # acceptance, or inner-CV alpha selection. Skipped when holdout is disabled
+    # (`_held_positions` empty) or no feature was accepted, leaving `heldout`
+    # None so no-holdout runs are byte-identical to before.
+    heldout_result = None
+    if _held_positions.size > 0 and len(current_model_features) > 0:
+        y_dev = y_global[_dev_positions]
+        y_held = y_global[_held_positions]
+        # Distinct-but-deterministic seed for the held-out null permutation;
+        # offset the fold seeds by `n_splits` so it never collides with a fold.
+        held_rng = np.random.default_rng(random_seed + n_splits + 1)
 
-            heldout_result = {
-                'engine': model_type,
-                'features': list(current_model_features),
-                'n_held_out_sessions': int(len(np.unique(groups_global[_held_positions]))),
-                'n_held_out_events': int(_held_positions.size),
-            }
-            for branch in ('actual', 'null'):
-                y_dev_use = y_dev if branch == 'actual' else held_rng.permutation(y_dev)
-                rec = {'explained_deviance': np.nan, 'residual_deviance': np.nan}
-                try:
-                    if model_type == 'sklearn':
-                        X_dev_stacked = np.hstack(
-                            [np.dot(all_feature_data[f]['X'][_dev_positions], basis_matrix)
-                             for f in current_model_features]
-                        )
-                        X_held_stacked = np.hstack(
-                            [np.dot(all_feature_data[f]['X'][_held_positions], basis_matrix)
-                             for f in current_model_features]
-                        )
-                        y_dev_pos = np.maximum(y_dev_use, 1e-6)
-                        held_model = GridSearchCV(
-                            GammaRegressor(),
-                            {'alpha': list(lr_params['alphas'])},
-                            cv=lr_params['cv'],
-                            scoring='neg_mean_gamma_deviance',
-                        ).fit(X_dev_stacked, y_dev_pos)
-                        y_pred = held_model.best_estimator_.predict(X_held_stacked)
-                    else:
-                        X_dev_gam = get_unrolled_X_for_multivariate(
-                            [all_feature_data[f]['X'][_dev_positions] for f in current_model_features],
-                            history_frames,
-                        )
-                        X_held_gam = get_unrolled_X_for_multivariate(
-                            [all_feature_data[f]['X'][_held_positions] for f in current_model_features],
-                            history_frames,
-                        )
-                        y_dev_gam = np.repeat(y_dev_use + 1e-6, history_frames)
-                        gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
-                        for i in range(1, len(current_model_features)):
-                            gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
-                        held_gam = GAM(gam_terms, distribution='gamma', link='log', **gam_kwargs).fit(X_dev_gam, y_dev_gam)
-                        y_pred_tiled = held_gam.predict(X_held_gam)
-                        y_pred = np.mean(y_pred_tiled.reshape(len(y_held), history_frames), axis=1)
-
-                    y_held_safe = np.maximum(y_held, 1e-6)
-                    y_pred_safe = np.maximum(y_pred, 1e-6)
-                    y_null_pred = np.full_like(y_held_safe, np.mean(y_held_safe))
-                    res_dev = mean_gamma_deviance(y_held_safe, y_pred_safe)
-                    null_dev = mean_gamma_deviance(y_held_safe, y_null_pred)
-                    rec['residual_deviance'] = res_dev
-                    rec['explained_deviance'] = 0.0 if null_dev == 0 else 1 - (res_dev / null_dev)
-                except Exception as e:
-                    print(f"Held-out refit failed (params {branch}): {e}")
-                heldout_result[branch] = rec
-
-        final_res = {
-            'final_model_features': current_model_features,
-            'filter_shapes': final_fold_shapes,
-            'heldout': heldout_result,
-            'univariate_results_path': univariate_results_path,
-            'input_data_path': input_data_path
+        heldout_result = {
+            'engine': model_type,
+            'features': list(current_model_features),
+            'n_held_out_sessions': int(len(np.unique(groups_global[_held_positions]))),
+            'n_held_out_events': int(_held_positions.size),
         }
+        for branch in ('actual', 'null'):
+            y_dev_use = y_dev if branch == 'actual' else held_rng.permutation(y_dev)
+            rec = {'explained_deviance': np.nan, 'residual_deviance': np.nan}
+            try:
+                if model_type == 'sklearn':
+                    X_dev_stacked = np.hstack(
+                        [np.dot(all_feature_data[f]['X'][_dev_positions], basis_matrix)
+                         for f in current_model_features]
+                    )
+                    X_held_stacked = np.hstack(
+                        [np.dot(all_feature_data[f]['X'][_held_positions], basis_matrix)
+                         for f in current_model_features]
+                    )
+                    y_dev_pos = np.maximum(y_dev_use, 1e-6)
+                    held_model = GridSearchCV(
+                        GammaRegressor(),
+                        {'alpha': list(lr_params['alphas'])},
+                        cv=lr_params['cv'],
+                        scoring='neg_mean_gamma_deviance',
+                    ).fit(X_dev_stacked, y_dev_pos)
+                    y_pred = held_model.best_estimator_.predict(X_held_stacked)
+                else:
+                    X_dev_gam = get_unrolled_X_for_multivariate(
+                        [all_feature_data[f]['X'][_dev_positions] for f in current_model_features],
+                        history_frames,
+                    )
+                    X_held_gam = get_unrolled_X_for_multivariate(
+                        [all_feature_data[f]['X'][_held_positions] for f in current_model_features],
+                        history_frames,
+                    )
+                    y_dev_gam = np.repeat(y_dev_use + 1e-6, history_frames)
+                    gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
+                    for i in range(1, len(current_model_features)):
+                        gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
+                    held_gam = GAM(gam_terms, distribution='gamma', link='log', **gam_kwargs).fit(X_dev_gam, y_dev_gam)
+                    y_pred_tiled = held_gam.predict(X_held_gam)
+                    y_pred = np.mean(y_pred_tiled.reshape(len(y_held), history_frames), axis=1)
 
-        with open(last_file, 'rb') as open_pkl_file:
-            data = pickle.load(open_pkl_file)
+                y_held_safe = np.maximum(y_held, 1e-6)
+                y_pred_safe = np.maximum(y_pred, 1e-6)
+                y_null_pred = np.full_like(y_held_safe, np.mean(y_held_safe))
+                res_dev = mean_gamma_deviance(y_held_safe, y_pred_safe)
+                null_dev = mean_gamma_deviance(y_held_safe, y_null_pred)
+                rec['residual_deviance'] = res_dev
+                rec['explained_deviance'] = 0.0 if null_dev == 0 else 1 - (res_dev / null_dev)
+            except Exception as e:
+                print(f"Held-out refit failed (params {branch}): {e}")
+            heldout_result[branch] = rec
 
-        for _k in RESERVED_METADATA_KEYS:
-            data.pop(_k, None)
-        data.update(final_res)
+    final_res = {
+        'final_model_features': current_model_features,
+        'filter_shapes': final_fold_shapes,
+        'heldout': heldout_result,
+        'univariate_results_path': univariate_results_path,
+        'input_data_path': input_data_path
+    }
 
-        with open(last_file, 'wb') as save_pkl_file:
-            pickle.dump(_wrap_step(data), save_pkl_file)
+    with open(last_file, 'rb') as open_pkl_file:
+        data = pickle.load(open_pkl_file)
 
-        metrics_by_strategy = {'Final': {'D^2': best_current_score},
-                               'Baseline': {'D^2': 0.0}}
-        # Held-out D^2 (development-refit, scored once) -- the honest number
-        # alongside the optimistic development-CV `Final`.
-        if heldout_result is not None:
-            metrics_by_strategy['Held-out'] = {'D^2': heldout_result['actual']['explained_deviance']}
-        print(format_run_summary(
-            label=f"params model-selection ({len(current_model_features)} features)",
-            metrics_by_strategy=metrics_by_strategy,
-            out_path=str(last_file),
-        ))
+    for _k in RESERVED_METADATA_KEYS:
+        data.pop(_k, None)
+    data.update(final_res)
 
-    except Exception as e:
-        print(f"Final fit failed: {e}")
+    with open(last_file, 'wb') as save_pkl_file:
+        pickle.dump(_wrap_step(data), save_pkl_file)
+
+    metrics_by_strategy = {'Final': {'D^2': best_current_score},
+                           'Baseline': {'D^2': 0.0}}
+    # Held-out D^2 (development-refit, scored once) -- the honest number
+    # alongside the optimistic development-CV `Final`.
+    if heldout_result is not None:
+        metrics_by_strategy['Held-out'] = {'D^2': heldout_result['actual']['explained_deviance']}
+    print(format_run_summary(
+        label=f"params model-selection ({len(current_model_features)} features)",
+        metrics_by_strategy=metrics_by_strategy,
+        out_path=str(last_file),
+    ))
+
 
 
 def multinomial_vocal_category_model_selection(
@@ -3805,7 +3803,14 @@ def multinomial_vocal_category_model_selection(
             N, T = X_s.shape
             if bin_size > 1:
                 new_T = T // bin_size
-                X_s = X_s[:, :new_T * bin_size].reshape(N, new_T, bin_size).mean(axis=2)
+                if new_T < 1:
+                    msg = f"bin_size={bin_size} exceeds the history window length T={T} for feature '{feat}'."
+                    raise ValueError(msg)
+                # Keep the MOST RECENT `new_T * bin_size` columns (drop the oldest
+                # `T % bin_size`), exactly as the univariate loader bins: the last
+                # column is the frame before onset, so truncating the tail would drop
+                # the frames nearest onset and shift the design against the filters.
+                X_s = X_s[:, T - new_T * bin_size:].reshape(N, new_T, bin_size).mean(axis=2)
             if temporal_basis is not None:
                 X_s = project_history_onto_basis(X_s, temporal_basis)
 
@@ -4327,12 +4332,13 @@ def multinomial_vocal_category_model_selection(
                 # Keep every per-fold list aligned on failure so downstream
                 # consumers can safely zip / stack across keys. Metrics get
                 # scalar NaNs; confusion_matrix needs a (K, K) NaN placeholder
-                # (to stay stackable); weights / intercepts become None; and
+                # (to stay stackable); weights / basis_coefficients / intercepts become None; and
                 # the fold-level data arrays become empty-but-well-shaped.
                 K = len(canonical_classes)
                 for _k, _v in cand_data['folds']['metrics'].items():
                     _v.append(np.nan)
                 cand_data['folds']['weights'].append(None)
+                cand_data['folds']['basis_coefficients'].append(None)
                 cand_data['folds']['intercepts'].append(None)
                 cand_data['folds']['y_true'].append(np.empty((0,), dtype=np.int32))
                 cand_data['folds']['y_pred'].append(np.empty((0,), dtype=np.int32))
@@ -4592,6 +4598,7 @@ def multinomial_vocal_category_model_selection(
                     for _k, _v in cand_data['folds']['metrics'].items():
                         _v.append(np.nan)
                     cand_data['folds']['weights'].append(None)
+                    cand_data['folds']['basis_coefficients'].append(None)
                     cand_data['folds']['intercepts'].append(None)
                     cand_data['folds']['y_true'].append(np.empty((0,), dtype=np.int32))
                     cand_data['folds']['y_pred'].append(np.empty((0,), dtype=np.int32))
@@ -4672,86 +4679,123 @@ def multinomial_vocal_category_model_selection(
 
     # 7. Final Data Promotion for Visualization
     print("\n--- Finalizing Results for Visualization ---")
-    try:
-        last_file_path = model_selection_dir / f"{prefix}{max(0, step_counter - 1)}.pkl"
-        with open(last_file_path, 'rb') as f:
-            step_data = pickle.load(f)
+    # No blanket except: a failed final refit or save must stop the run loudly, not
+    # pass as a finished selection with no final model.
+    last_file_path = model_selection_dir / f"{prefix}{max(0, step_counter - 1)}.pkl"
+    with open(last_file_path, 'rb') as f:
+        step_data = pickle.load(f)
 
-        winner = step_data['selected_feature'] or current_model_features[-1]
-        winning_cand_data = step_data['candidates_summary'][winner]
+    winner = step_data['selected_feature'] or current_model_features[-1]
+    winning_cand_data = step_data['candidates_summary'][winner]
 
-        # Only process reshaping if the winning candidate was a real model with weights
-        if winner != 'null_model_free':
-            # CV folds that hit a fitting exception are recorded as
-            # `None` in `cand_data['folds']['weights']`. `np.array` on
-            # a mixed list of `None` + 2D arrays raises an
-            # inhomogeneous-shape error under numpy>=1.24, so swap
-            # each failed-fold `None` for a same-shape NaN block
-            # taken from the first successful fold. Downstream
-            # consumers of `weights_reshaped` should already treat
-            # NaNs as missing folds.
-            weights_list = list(winning_cand_data['folds']['weights'])
-            first_valid = next((w for w in weights_list if w is not None), None)
-            if first_valid is None:
-                reshaped_weights = None
-            else:
-                nan_block = np.full_like(first_valid, np.nan, dtype=float)
-                weights_list = [
-                    nan_block if w is None else w for w in weights_list
-                ]
-                raw_weights = np.array(weights_list)
-                n_folds, n_classes, _ = raw_weights.shape
-                n_final_feats = len(current_model_features)
-                # The stored weights are on the frame axis (B-spline coefficients are
-                # converted back at storage), so the per-feature length is derived
-                # from them rather than from `n_time_bins` (the fitted column count).
-                reshaped_weights = raw_weights.reshape(
-                    n_folds, n_classes, n_final_feats, -1,
-                )
-        else:
+    # Only process reshaping if the winning candidate was a real model with weights
+    if winner != 'null_model_free':
+        # CV folds that hit a fitting exception are recorded as
+        # `None` in `cand_data['folds']['weights']`. `np.array` on
+        # a mixed list of `None` + 2D arrays raises an
+        # inhomogeneous-shape error under numpy>=1.24, so swap
+        # each failed-fold `None` for a same-shape NaN block
+        # taken from the first successful fold. Downstream
+        # consumers of `weights_reshaped` should already treat
+        # NaNs as missing folds.
+        weights_list = list(winning_cand_data['folds']['weights'])
+        first_valid = next((w for w in weights_list if w is not None), None)
+        if first_valid is None:
             reshaped_weights = None
+        else:
+            nan_block = np.full_like(first_valid, np.nan, dtype=float)
+            weights_list = [
+                nan_block if w is None else w for w in weights_list
+            ]
+            raw_weights = np.array(weights_list)
+            n_folds, n_classes, _ = raw_weights.shape
+            n_final_feats = len(current_model_features)
+            # The stored weights are on the frame axis (B-spline coefficients are
+            # converted back at storage), so the per-feature length is derived
+            # from them rather than from `n_time_bins` (the fitted column count).
+            reshaped_weights = raw_weights.reshape(
+                n_folds, n_classes, n_final_feats, -1,
+            )
+    else:
+        reshaped_weights = None
 
-        # Honest held-out score: refit the accepted feature set on ALL
-        # development sessions and score it once on the reserved held-out block,
-        # mirroring the per-fold candidate fit (train := development, test :=
-        # held-out). This is the only number untouched by screening, greedy
-        # acceptance, or lambda-tuning -- every one of those saw development data
-        # only. When the winner is `null_model_free` the honest model is the
-        # empirical development prior. Skipped when holdout is disabled
-        # (`_held_positions` empty), leaving `heldout` None so no-holdout runs are
-        # byte-identical to before.
-        heldout_result = None
-        if _held_positions.size > 0:
-            y_dev = y_global[_dev_positions]
-            y_held = y_global[_held_positions]
-            held_seed_mn = int(hp['random_state']) + n_splits + 1
+    # Honest held-out score: refit the accepted feature set on ALL
+    # development sessions and score it once on the reserved held-out block,
+    # mirroring the per-fold candidate fit (train := development, test :=
+    # held-out). This is the only number untouched by screening, greedy
+    # acceptance, or lambda-tuning -- every one of those saw development data
+    # only. When the winner is `null_model_free` the honest model is the
+    # empirical development prior. Skipped when holdout is disabled
+    # (`_held_positions` empty), leaving `heldout` None so no-holdout runs are
+    # byte-identical to before.
+    heldout_result = None
+    if _held_positions.size > 0:
+        y_dev = y_global[_dev_positions]
+        y_held = y_global[_held_positions]
+        held_seed_mn = int(hp['random_state']) + n_splits + 1
 
-            if winner != 'null_model_free' and len(current_model_features) > 0:
-                n_final_feats = len(current_model_features)
-                X_dev = np.hstack([binned_data[f][_dev_positions] for f in current_model_features])
-                X_held = np.hstack([binned_data[f][_held_positions] for f in current_model_features])
+        if winner != 'null_model_free' and len(current_model_features) > 0:
+            n_final_feats = len(current_model_features)
+            X_dev = np.hstack([binned_data[f][_dev_positions] for f in current_model_features])
+            X_held = np.hstack([binned_data[f][_held_positions] for f in current_model_features])
 
-                # Mirror the fold body's optional class balancing on the training
-                # (development) rows.
-                if balance_train:
-                    balance_rng = np.random.default_rng(held_seed_mn)
-                    dev_train_idx = _balance_multinomial_train_indices(
-                        np.arange(len(y_dev)), y_dev, balance_rng
-                    )
-                    X_dev_fit = X_dev[dev_train_idx]
-                    y_dev_fit = y_dev[dev_train_idx]
-                else:
-                    X_dev_fit = X_dev
-                    y_dev_fit = y_dev
-
-                final_lambda_smooth, final_l2_reg, final_grid_audit, final_tuned_flag = (
-                    _pick_multinomial_fold_hyperparams(
-                        X_dev_fit, y_dev_fit,
-                        n_feats_=n_final_feats,
-                        fold_idx_=n_splits,
-                    )
+            # Mirror the fold body's optional class balancing on the training
+            # (development) rows.
+            if balance_train:
+                balance_rng = np.random.default_rng(held_seed_mn)
+                dev_train_idx = _balance_multinomial_train_indices(
+                    np.arange(len(y_dev)), y_dev, balance_rng
                 )
-                held_model = SmoothMultinomialLogisticRegression(
+                X_dev_fit = X_dev[dev_train_idx]
+                y_dev_fit = y_dev[dev_train_idx]
+            else:
+                X_dev_fit = X_dev
+                y_dev_fit = y_dev
+
+            final_lambda_smooth, final_l2_reg, final_grid_audit, final_tuned_flag = (
+                _pick_multinomial_fold_hyperparams(
+                    X_dev_fit, y_dev_fit,
+                    n_feats_=n_final_feats,
+                    fold_idx_=n_splits,
+                )
+            )
+            held_model = SmoothMultinomialLogisticRegression(
+                n_features=n_final_feats, n_time_bins=n_time_bins,
+                lambda_smooth=final_lambda_smooth,
+                l2_reg=final_l2_reg,
+                smoothness_derivative_order=smoothness_order,
+                smoothness_reflective_edges=reflective_edges,
+                focal_gamma=model_focal_gamma,
+                uniform_class_weights=model_uniform_weights,
+                learning_rate=hp['learning_rate'],
+                max_iter=hp['max_iter'],
+                tol=hp['tol'],
+                random_state=held_seed_mn,
+                _use_lax_loop=use_lax_loop_mn,
+            )
+            held_model.fit(X_dev_fit, y_dev_fit)
+            y_proba = held_model.predict_proba(X_held, balanced=hp['balance_predictions_bool'])
+            y_pred = held_model.predict(X_held, balanced=hp['balance_predictions_bool'])
+            model_classes = held_model.classes_
+            held_weights = (basis_coefficients_to_frames(held_model.coef_, temporal_basis, n_features=n_final_feats, axis=1) if temporal_basis is not None else held_model.coef_)
+            held_basis_coefficients = (np.asarray(held_model.coef_) if temporal_basis is not None else None)
+            held_intercepts = held_model.intercept_
+            held_n_iter = int(held_model.n_iter_)
+            held_converged = bool(held_model.converged_)
+            held_fit_time = float(held_model.fit_time_)
+            p_train_labels = y_dev_fit
+            model_type = 'multinomial_logistic'
+            # No-signal filter band: the same model and hyperparameters refit on
+            # the development rows with the category labels permuted within each
+            # session; the filter figures draw the final filters against it.
+            groups_dev_fit = (groups_global[_dev_positions][dev_train_idx] if balance_train
+                              else groups_global[_dev_positions])
+            n_null_permutations = int(settings['model_params']['filter_null_permutations'])
+            null_rng = np.random.default_rng(held_seed_mn)
+            held_null_weights = []
+            for _ in range(n_null_permutations):
+                perm = _within_group_permutation(groups_dev_fit, null_rng)
+                null_model = SmoothMultinomialLogisticRegression(
                     n_features=n_final_feats, n_time_bins=n_time_bins,
                     lambda_smooth=final_lambda_smooth,
                     l2_reg=final_l2_reg,
@@ -4765,156 +4809,118 @@ def multinomial_vocal_category_model_selection(
                     random_state=held_seed_mn,
                     _use_lax_loop=use_lax_loop_mn,
                 )
-                held_model.fit(X_dev_fit, y_dev_fit)
-                y_proba = held_model.predict_proba(X_held, balanced=hp['balance_predictions_bool'])
-                y_pred = held_model.predict(X_held, balanced=hp['balance_predictions_bool'])
-                model_classes = held_model.classes_
-                held_weights = (basis_coefficients_to_frames(held_model.coef_, temporal_basis, n_features=n_final_feats, axis=1) if temporal_basis is not None else held_model.coef_)
-                held_basis_coefficients = (np.asarray(held_model.coef_) if temporal_basis is not None else None)
-                held_intercepts = held_model.intercept_
-                held_n_iter = int(held_model.n_iter_)
-                held_converged = bool(held_model.converged_)
-                held_fit_time = float(held_model.fit_time_)
-                p_train_labels = y_dev_fit
-                model_type = 'multinomial_logistic'
-                # No-signal filter band: the same model and hyperparameters refit on
-                # the development rows with the category labels permuted within each
-                # session; the filter figures draw the final filters against it.
-                groups_dev_fit = (groups_global[_dev_positions][dev_train_idx] if balance_train
-                                  else groups_global[_dev_positions])
-                n_null_permutations = int(settings['model_params']['filter_null_permutations'])
-                null_rng = np.random.default_rng(held_seed_mn)
-                held_null_weights = []
-                for _ in range(n_null_permutations):
-                    perm = _within_group_permutation(groups_dev_fit, null_rng)
-                    null_model = SmoothMultinomialLogisticRegression(
-                        n_features=n_final_feats, n_time_bins=n_time_bins,
-                        lambda_smooth=final_lambda_smooth,
-                        l2_reg=final_l2_reg,
-                        smoothness_derivative_order=smoothness_order,
-                        smoothness_reflective_edges=reflective_edges,
-                        focal_gamma=model_focal_gamma,
-                        uniform_class_weights=model_uniform_weights,
-                        learning_rate=hp['learning_rate'],
-                        max_iter=hp['max_iter'],
-                        tol=hp['tol'],
-                        random_state=held_seed_mn,
-                        _use_lax_loop=use_lax_loop_mn,
-                    )
-                    null_model.fit(X_dev_fit, y_dev_fit[perm])
-                    held_null_weights.append(basis_coefficients_to_frames(null_model.coef_, temporal_basis, n_features=n_final_feats, axis=1)
-                                             if temporal_basis is not None else np.asarray(null_model.coef_))
-                held_null_weights = np.stack(held_null_weights).astype(np.float32) if held_null_weights else None
-            else:
-                # No feature accepted: the empirical development prior is the model.
-                unique_classes, counts = np.unique(y_dev, return_counts=True)
-                class_priors = counts / float(np.sum(counts))
-                y_proba = np.tile(class_priors, (len(y_held), 1))
-                majority_class = unique_classes[np.argmax(class_priors)]
-                y_pred = np.full(len(y_held), majority_class)
-                model_classes = unique_classes
-                held_weights = None
-                held_basis_coefficients = None
-                held_intercepts = None
-                held_n_iter = 0
-                held_converged = True
-                held_fit_time = 0.0
-                held_null_weights = None
-                final_lambda_smooth = float('nan')
-                final_l2_reg = float('nan')
-                final_grid_audit = {
-                    'grid_scores': {}, 'grid_ses': {},
-                    'argmax_pair': None,
-                    'one_se_applied': False, 'one_se_threshold': None,
-                }
-                final_tuned_flag = False
-                p_train_labels = y_dev
-                model_type = 'null_model_free'
-
-            eps = 1e-15
-            y_proba_clipped = np.clip(y_proba, eps, 1 - eps)
-            h_score = balanced_accuracy_score(y_held, y_pred)
-            try:
-                h_ll = log_loss(y_held, y_proba_clipped, labels=model_classes)
-            except ValueError:
-                h_ll = np.nan
-            try:
-                h_auc = roc_auc_score(y_held, y_proba, multi_class='ovr', average='macro', labels=model_classes)
-            except ValueError:
-                h_auc = np.nan
-            probs_canonical = align_probs_to_canonical(y_proba, model_classes, canonical_classes)
-            try:
-                h_brier = brier_score_multi(y_held, probs_canonical, canonical_classes)
-            except Exception:
-                h_brier = np.nan
-            try:
-                h_ece = expected_calibration_error(y_held, y_pred, probs_canonical, n_bins=_ECE_N_BINS)
-            except Exception:
-                h_ece = np.nan
-            h_mcc = safe_matthews_corrcoef(y_held, y_pred)
-
-            heldout_result = {
-                'model_type': model_type,
-                'features': list(current_model_features),
-                'metrics': {
-                    'score': h_score, 'll': h_ll, 'auc': h_auc,
-                    'recall': recall_score(y_held, y_pred, average='macro', zero_division=0),
-                    'f1': f1_score(y_held, y_pred, average='macro', zero_division=0),
-                    'brier': h_brier, 'ece': h_ece, 'mcc': h_mcc,
-                },
-                'weights': held_weights,
-                'null_weights': held_null_weights,
-                'basis_coefficients': held_basis_coefficients,
-                'intercepts': held_intercepts,
-                'y_true': y_held,
-                'y_pred': y_pred,
-                'y_probs': y_proba,
-                'test_indices': _held_positions,
-                'p_train': _class_proportions(p_train_labels),
-                'p_test': _class_proportions(y_held),
-                'confusion_matrix': safe_confusion_matrix(y_held, y_pred, labels=canonical_classes),
-                'n_iter': held_n_iter,
-                'converged': held_converged,
-                'fit_time': held_fit_time,
-                'selected_lambda_smooth': final_lambda_smooth,
-                'selected_l2_reg': final_l2_reg,
-                'hyperparam_grid_audit': final_grid_audit,
-                'hyperparams_tuned': final_tuned_flag,
-                'n_held_out_sessions': len(_held_out_session_ids),
-                'n_held_out_events': int(_held_positions.size),
+                null_model.fit(X_dev_fit, y_dev_fit[perm])
+                held_null_weights.append(basis_coefficients_to_frames(null_model.coef_, temporal_basis, n_features=n_final_feats, axis=1)
+                                         if temporal_basis is not None else np.asarray(null_model.coef_))
+            held_null_weights = np.stack(held_null_weights).astype(np.float32) if held_null_weights else None
+        else:
+            # No feature accepted: the empirical development prior is the model.
+            unique_classes, counts = np.unique(y_dev, return_counts=True)
+            class_priors = counts / float(np.sum(counts))
+            y_proba = np.tile(class_priors, (len(y_held), 1))
+            majority_class = unique_classes[np.argmax(class_priors)]
+            y_pred = np.full(len(y_held), majority_class)
+            model_classes = unique_classes
+            held_weights = None
+            held_basis_coefficients = None
+            held_intercepts = None
+            held_n_iter = 0
+            held_converged = True
+            held_fit_time = 0.0
+            held_null_weights = None
+            final_lambda_smooth = float('nan')
+            final_l2_reg = float('nan')
+            final_grid_audit = {
+                'grid_scores': {}, 'grid_ses': {},
+                'argmax_pair': None,
+                'one_se_applied': False, 'one_se_threshold': None,
             }
+            final_tuned_flag = False
+            p_train_labels = y_dev
+            model_type = 'null_model_free'
 
-        step_data.update({
-            'final_model_features': current_model_features,
-            'weights_reshaped': reshaped_weights,
-            'classes': winning_cand_data['classes'],
-            'heldout': heldout_result,
-        })
-        for _k in RESERVED_METADATA_KEYS:
-            step_data.pop(_k, None)
-        with open(last_file_path, 'wb') as f:
-            pickle.dump(_wrap_step(step_data), f)
+        eps = 1e-15
+        y_proba_clipped = np.clip(y_proba, eps, 1 - eps)
+        h_score = balanced_accuracy_score(y_held, y_pred)
+        try:
+            h_ll = log_loss(y_held, y_proba_clipped, labels=model_classes)
+        except ValueError:
+            h_ll = np.nan
+        try:
+            h_auc = roc_auc_score(y_held, y_proba, multi_class='ovr', average='macro', labels=model_classes)
+        except ValueError:
+            h_auc = np.nan
+        probs_canonical = align_probs_to_canonical(y_proba, model_classes, canonical_classes)
+        try:
+            h_brier = brier_score_multi(y_held, probs_canonical, canonical_classes)
+        except Exception:
+            h_brier = np.nan
+        try:
+            h_ece = expected_calibration_error(y_held, y_pred, probs_canonical, n_bins=_ECE_N_BINS)
+        except Exception:
+            h_ece = np.nan
+        h_mcc = safe_matthews_corrcoef(y_held, y_pred)
 
-        baseline_score = float('nan')
-        step0_path = model_selection_dir / f"{prefix}0.pkl"
-        if step0_path.exists():
-            with open(step0_path, 'rb') as f:
-                _step0 = pickle.load(f)
-            if 'baseline_score' in _step0:
-                baseline_score = _step0['baseline_score']
-        metrics_by_strategy = {'Final': {'AUC': best_current_score},
-                               'Baseline': {'AUC': baseline_score}}
-        # Held-out AUC (development-refit, scored once) -- the honest number
-        # alongside the optimistic development-CV `Final`.
-        if heldout_result is not None:
-            metrics_by_strategy['Held-out'] = {'AUC': heldout_result['metrics']['auc']}
-        print(format_run_summary(
-            label=f"multinomial model-selection ({len(current_model_features)} features)",
-            metrics_by_strategy=metrics_by_strategy,
-            out_path=str(last_file_path),
-        ))
-    except Exception as e:
-        print(f"Final promotion failed: {e}")
+        heldout_result = {
+            'model_type': model_type,
+            'features': list(current_model_features),
+            'metrics': {
+                'score': h_score, 'll': h_ll, 'auc': h_auc,
+                'recall': recall_score(y_held, y_pred, average='macro', zero_division=0),
+                'f1': f1_score(y_held, y_pred, average='macro', zero_division=0),
+                'brier': h_brier, 'ece': h_ece, 'mcc': h_mcc,
+            },
+            'weights': held_weights,
+            'null_weights': held_null_weights,
+            'basis_coefficients': held_basis_coefficients,
+            'intercepts': held_intercepts,
+            'y_true': y_held,
+            'y_pred': y_pred,
+            'y_probs': y_proba,
+            'test_indices': _held_positions,
+            'p_train': _class_proportions(p_train_labels),
+            'p_test': _class_proportions(y_held),
+            'confusion_matrix': safe_confusion_matrix(y_held, y_pred, labels=canonical_classes),
+            'n_iter': held_n_iter,
+            'converged': held_converged,
+            'fit_time': held_fit_time,
+            'selected_lambda_smooth': final_lambda_smooth,
+            'selected_l2_reg': final_l2_reg,
+            'hyperparam_grid_audit': final_grid_audit,
+            'hyperparams_tuned': final_tuned_flag,
+            'n_held_out_sessions': len(_held_out_session_ids),
+            'n_held_out_events': int(_held_positions.size),
+        }
+
+    step_data.update({
+        'final_model_features': current_model_features,
+        'weights_reshaped': reshaped_weights,
+        'classes': winning_cand_data['classes'],
+        'heldout': heldout_result,
+    })
+    for _k in RESERVED_METADATA_KEYS:
+        step_data.pop(_k, None)
+    with open(last_file_path, 'wb') as f:
+        pickle.dump(_wrap_step(step_data), f)
+
+    baseline_score = float('nan')
+    step0_path = model_selection_dir / f"{prefix}0.pkl"
+    if step0_path.exists():
+        with open(step0_path, 'rb') as f:
+            _step0 = pickle.load(f)
+        if 'baseline_score' in _step0:
+            baseline_score = _step0['baseline_score']
+    metrics_by_strategy = {'Final': {'AUC': best_current_score},
+                           'Baseline': {'AUC': baseline_score}}
+    # Held-out AUC (development-refit, scored once) -- the honest number
+    # alongside the optimistic development-CV `Final`.
+    if heldout_result is not None:
+        metrics_by_strategy['Held-out'] = {'AUC': heldout_result['metrics']['auc']}
+    print(format_run_summary(
+        label=f"multinomial model-selection ({len(current_model_features)} features)",
+        metrics_by_strategy=metrics_by_strategy,
+        out_path=str(last_file_path),
+    ))
 
 def continuous_vocal_manifold_model_selection(
         univariate_results_path: str,
@@ -5349,7 +5355,14 @@ def continuous_vocal_manifold_model_selection(
             N, T = X_s.shape
             if bin_size > 1:
                 new_T = T // bin_size
-                X_s = X_s[:, :new_T * bin_size].reshape(N, new_T, bin_size).mean(axis=2)
+                if new_T < 1:
+                    msg = f"bin_size={bin_size} exceeds the history window length T={T} for feature '{feat}'."
+                    raise ValueError(msg)
+                # Keep the MOST RECENT `new_T * bin_size` columns (drop the oldest
+                # `T % bin_size`), exactly as the univariate loader bins: the last
+                # column is the frame before onset, so truncating the tail would drop
+                # the frames nearest onset and shift the design against the filters.
+                X_s = X_s[:, T - new_T * bin_size:].reshape(N, new_T, bin_size).mean(axis=2)
             if temporal_basis is not None:
                 X_s = project_history_onto_basis(X_s, temporal_basis)
 
@@ -5922,6 +5935,7 @@ def continuous_vocal_manifold_model_selection(
         for _mk in cand_data_['folds']['metrics']:
             cand_data_['folds']['metrics'][_mk].append(np.nan)
         cand_data_['folds']['weights'].append(None)
+        cand_data_['folds']['basis_coefficients'].append(None)
         cand_data_['folds']['intercepts'].append(None)
         cand_data_['folds']['test_indices'].append(np.empty((0,), dtype=np.int64))
         cand_data_['folds']['y_true'].append(np.empty((0, 2), dtype=np.float32))
@@ -6374,64 +6388,119 @@ def continuous_vocal_manifold_model_selection(
             break
 
     print("\n--- Finalizing Results ---")
-    try:
-        last_file_path = model_selection_dir / f"{prefix}{step_counter}.pkl"
-        if not last_file_path.exists():
-            last_file_path = model_selection_dir / f"{prefix}{step_counter - 1}.pkl"
+    # No blanket except: a failed final refit or save must stop the run loudly, not
+    # pass as a finished selection with no final model.
+    last_file_path = model_selection_dir / f"{prefix}{step_counter}.pkl"
+    if not last_file_path.exists():
+        last_file_path = model_selection_dir / f"{prefix}{step_counter - 1}.pkl"
 
-        with open(last_file_path, 'rb') as f:
-            step_data = pickle.load(f)
+    with open(last_file_path, 'rb') as f:
+        step_data = pickle.load(f)
 
-        final_res = {
-            'final_model_features': current_model_features,
-            'univariate_results_path': univariate_results_path,
-            'input_data_path': input_data_path
-        }
+    final_res = {
+        'final_model_features': current_model_features,
+        'univariate_results_path': univariate_results_path,
+        'input_data_path': input_data_path
+    }
 
-        # Honest held-out score: refit the accepted feature set on ALL development
-        # sessions and score it once on the reserved held-out block. This is the
-        # only number in the run untouched by feature nomination, screening,
-        # greedy acceptance, or lambda-tuning -- every one of those saw
-        # development data only. Hyperparameters are chosen on the development set
-        # via the same `_pick_fold_hyperparams` the folds use (with torus tuning
-        # now re-enabled, this runs the inner-CV pooled-vM search on development).
-        # Equal-region reweighting is applied to the development fit on the torus,
-        # and the held-out score is the per-region macro von Mises log-lik. When no
-        # feature was accepted the honest model is the same empirical-density draw
-        # that defines the Step-0 baseline, drawn from development Y. When holdout
-        # is disabled (`_held_positions` empty, i.e. `held_out_test_proportion=0`
-        # or a pre-v2 pickle) the block is skipped and `heldout` stays None, so
-        # legacy / no-holdout runs are byte-identical to before.
-        heldout_result = None
-        if _held_positions.size > 0:
-            Y_dev = y_global[_dev_positions]
-            w_dev = w_global[_dev_positions]
-            Y_held = y_global[_held_positions]
-            w_held = w_global[_held_positions]
-            region_dev = region_global[_dev_positions]
-            region_held = region_global[_held_positions]
-            held_seed = int(hp['random_state']) + n_splits + 1
+    # Honest held-out score: refit the accepted feature set on ALL development
+    # sessions and score it once on the reserved held-out block. This is the
+    # only number in the run untouched by feature nomination, screening,
+    # greedy acceptance, or lambda-tuning -- every one of those saw
+    # development data only. Hyperparameters are chosen on the development set
+    # via the same `_pick_fold_hyperparams` the folds use (with torus tuning
+    # now re-enabled, this runs the inner-CV pooled-vM search on development).
+    # Equal-region reweighting is applied to the development fit on the torus,
+    # and the held-out score is the per-region macro von Mises log-lik. When no
+    # feature was accepted the honest model is the same empirical-density draw
+    # that defines the Step-0 baseline, drawn from development Y. When holdout
+    # is disabled (`_held_positions` empty, i.e. `held_out_test_proportion=0`
+    # or a pre-v2 pickle) the block is skipped and `heldout` stays None, so
+    # legacy / no-holdout runs are byte-identical to before.
+    heldout_result = None
+    if _held_positions.size > 0:
+        Y_dev = y_global[_dev_positions]
+        w_dev = w_global[_dev_positions]
+        Y_held = y_global[_held_positions]
+        w_held = w_global[_held_positions]
+        region_dev = region_global[_dev_positions]
+        region_held = region_global[_held_positions]
+        held_seed = int(hp['random_state']) + n_splits + 1
 
-            if manifold_metric == 'torus':
-                w_dev_fit = w_dev * inverse_region_frequency_weights(region_dev)
-            else:
-                w_dev_fit = w_dev
+        if manifold_metric == 'torus':
+            w_dev_fit = w_dev * inverse_region_frequency_weights(region_dev)
+        else:
+            w_dev_fit = w_dev
 
-            if len(current_model_features) > 0:
-                X_dev = np.hstack([binned_data[f][_dev_positions] for f in current_model_features])
-                X_held = np.hstack([binned_data[f][_held_positions] for f in current_model_features])
-                groups_dev = groups_global[_dev_positions]
-                n_feats_final = len(current_model_features)
+        if len(current_model_features) > 0:
+            X_dev = np.hstack([binned_data[f][_dev_positions] for f in current_model_features])
+            X_held = np.hstack([binned_data[f][_held_positions] for f in current_model_features])
+            groups_dev = groups_global[_dev_positions]
+            n_feats_final = len(current_model_features)
 
-                final_lambda_smooth, final_l2_reg, final_grid_audit, final_tuned_flag = (
-                    _pick_fold_hyperparams(
-                        X_dev, Y_dev, w_dev, groups_dev,
-                        n_feats_=n_feats_final,
-                        fold_idx_=n_splits,
-                        region_tr_=region_dev,
-                    )
+            final_lambda_smooth, final_l2_reg, final_grid_audit, final_tuned_flag = (
+                _pick_fold_hyperparams(
+                    X_dev, Y_dev, w_dev, groups_dev,
+                    n_feats_=n_feats_final,
+                    fold_idx_=n_splits,
+                    region_tr_=region_dev,
                 )
-                held_model = manifold_regressor_cls(
+            )
+            held_model = manifold_regressor_cls(
+                n_features=n_feats_final, n_time_bins=n_time_bins,
+                lambda_smooth=final_lambda_smooth, l2_reg=final_l2_reg,
+                smoothness_derivative_order=smoothness_order,
+                smoothness_reflective_edges=reflective_edges,
+                huber_delta=hp['huber_delta'],
+                learning_rate=hp['learning_rate'], max_iter=hp['max_iter'],
+                tol=hp['tol'], random_state=held_seed,
+                _use_lax_loop=use_lax_loop,
+                metric=manifold_metric, period=manifold_period,
+            )
+            held_model.fit(X_dev, Y_dev, sample_weight=w_dev_fit)
+            held_metrics = held_model.evaluate_metrics(
+                X_held, Y_held, weights=w_held,
+                region_labels=region_held, min_region_events=_min_region_events,
+                kappa=kappa_frozen,
+            )
+            held_pred_xy = held_model.predict(X_held, snap=True).astype(np.float32)
+            held_metrics.update(geodesic_mae_columns(
+                held_pred_xy, Y_held, geodesic_ctx,
+                region_labels=region_held, min_region_events=_min_region_events))
+            heldout_result = {
+                'model_type': 'manifold_regressor',
+                'features': list(current_model_features),
+                'metrics': {_mk: float(held_metrics[_mk]) for _mk in MANIFOLD_METRIC_KEYS},
+                'weights': (basis_coefficients_to_frames(held_model.coef_, temporal_basis, n_features=n_feats_final, axis=0) if temporal_basis is not None else held_model.coef_),
+                'basis_coefficients': (np.asarray(held_model.coef_) if temporal_basis is not None else None),
+                'intercept': held_model.intercept_,
+                'test_indices': _held_positions,
+                'y_true': Y_held,
+                'w_test': w_held,
+                'y_pred_xy': held_pred_xy,
+                'n_iter': int(held_model.n_iter_),
+                'converged': bool(held_model.converged_),
+                'fit_time': float(held_model.fit_time_),
+                'selected_lambda_smooth': final_lambda_smooth,
+                'selected_l2_reg': final_l2_reg,
+                'hyperparam_grid_audit': final_grid_audit,
+                'hyperparams_tuned': final_tuned_flag,
+                'n_held_out_sessions': len(_held_out_session_ids),
+                'n_held_out_events': int(_held_positions.size),
+            }
+            # No-signal filter band: the same model, hyperparameters and
+            # reweighting refit on the development sessions with the positions
+            # (with their weights and regions) permuted within each session; the
+            # filter figures draw the final filters against it.
+            n_null_permutations = int(settings['model_params']['filter_null_permutations'])
+            null_rng = np.random.default_rng(held_seed)
+            null_weights = []
+            for _ in range(n_null_permutations):
+                perm = _within_group_permutation(groups_dev, null_rng)
+                w_perm = w_dev[perm]
+                w_perm_fit = (w_perm * inverse_region_frequency_weights(region_dev[perm])
+                              if manifold_metric == 'torus' else w_perm)
+                null_model = manifold_regressor_cls(
                     n_features=n_feats_final, n_time_bins=n_time_bins,
                     lambda_smooth=final_lambda_smooth, l2_reg=final_l2_reg,
                     smoothness_derivative_order=smoothness_order,
@@ -6442,136 +6511,79 @@ def continuous_vocal_manifold_model_selection(
                     _use_lax_loop=use_lax_loop,
                     metric=manifold_metric, period=manifold_period,
                 )
-                held_model.fit(X_dev, Y_dev, sample_weight=w_dev_fit)
-                held_metrics = held_model.evaluate_metrics(
-                    X_held, Y_held, weights=w_held,
-                    region_labels=region_held, min_region_events=_min_region_events,
-                    kappa=kappa_frozen,
-                )
-                held_pred_xy = held_model.predict(X_held, snap=True).astype(np.float32)
-                held_metrics.update(geodesic_mae_columns(
-                    held_pred_xy, Y_held, geodesic_ctx,
-                    region_labels=region_held, min_region_events=_min_region_events))
-                heldout_result = {
-                    'model_type': 'manifold_regressor',
-                    'features': list(current_model_features),
-                    'metrics': {_mk: float(held_metrics[_mk]) for _mk in MANIFOLD_METRIC_KEYS},
-                    'weights': (basis_coefficients_to_frames(held_model.coef_, temporal_basis, n_features=n_feats_final, axis=0) if temporal_basis is not None else held_model.coef_),
-                    'basis_coefficients': (np.asarray(held_model.coef_) if temporal_basis is not None else None),
-                    'intercept': held_model.intercept_,
-                    'test_indices': _held_positions,
-                    'y_true': Y_held,
-                    'w_test': w_held,
-                    'y_pred_xy': held_pred_xy,
-                    'n_iter': int(held_model.n_iter_),
-                    'converged': bool(held_model.converged_),
-                    'fit_time': float(held_model.fit_time_),
-                    'selected_lambda_smooth': final_lambda_smooth,
-                    'selected_l2_reg': final_l2_reg,
-                    'hyperparam_grid_audit': final_grid_audit,
-                    'hyperparams_tuned': final_tuned_flag,
-                    'n_held_out_sessions': len(_held_out_session_ids),
-                    'n_held_out_events': int(_held_positions.size),
-                }
-                # No-signal filter band: the same model, hyperparameters and
-                # reweighting refit on the development sessions with the positions
-                # (with their weights and regions) permuted within each session; the
-                # filter figures draw the final filters against it.
-                n_null_permutations = int(settings['model_params']['filter_null_permutations'])
-                null_rng = np.random.default_rng(held_seed)
-                null_weights = []
-                for _ in range(n_null_permutations):
-                    perm = _within_group_permutation(groups_dev, null_rng)
-                    w_perm = w_dev[perm]
-                    w_perm_fit = (w_perm * inverse_region_frequency_weights(region_dev[perm])
-                                  if manifold_metric == 'torus' else w_perm)
-                    null_model = manifold_regressor_cls(
-                        n_features=n_feats_final, n_time_bins=n_time_bins,
-                        lambda_smooth=final_lambda_smooth, l2_reg=final_l2_reg,
-                        smoothness_derivative_order=smoothness_order,
-                        smoothness_reflective_edges=reflective_edges,
-                        huber_delta=hp['huber_delta'],
-                        learning_rate=hp['learning_rate'], max_iter=hp['max_iter'],
-                        tol=hp['tol'], random_state=held_seed,
-                        _use_lax_loop=use_lax_loop,
-                        metric=manifold_metric, period=manifold_period,
-                    )
-                    null_model.fit(X_dev, Y_dev[perm], sample_weight=w_perm_fit)
-                    null_weights.append(basis_coefficients_to_frames(null_model.coef_, temporal_basis, n_features=n_feats_final, axis=0)
-                                        if temporal_basis is not None else np.asarray(null_model.coef_))
-                heldout_result['null_weights'] = (np.stack(null_weights).astype(np.float32) if null_weights else None)
-            else:
-                # No feature survived selection: the honest held-out model is the
-                # empirical-density draw (the Step-0 baseline) from development Y,
-                # scored on the held-out block -- the same chance floor used above.
-                w_cov = w_dev / (np.sum(w_dev) + 1e-12)
-                mu = circular_mean(
-                    Y_dev, metric=manifold_metric, period=manifold_period, weights=w_cov
-                )
-                diff_dev = signed_diff(
-                    Y_dev, mu[None, :], metric=manifold_metric, period=manifold_period
-                )
-                cov_dev = (w_cov[:, None] * diff_dev).T @ diff_dev
-                cov_inv = np.linalg.pinv(cov_dev)
-                draw_rng = np.random.default_rng(held_seed)
-                draw_idx = draw_rng.choice(len(Y_dev), size=len(Y_held), replace=True)
-                held_pred_xy = Y_dev[draw_idx].astype(np.float32)
-                held_bundle = manifold_prediction_metrics(
-                    Y_held, held_pred_xy, w_held,
-                    metric=manifold_metric, period=manifold_period,
-                    train_cov_inv=cov_inv, random_state=held_seed,
-                    region_labels=region_held, min_region_events=_min_region_events,
-                    kappa=kappa_frozen,
-                )
-                held_bundle.update(geodesic_mae_columns(
-                    held_pred_xy, Y_held, geodesic_ctx,
-                    region_labels=region_held, min_region_events=_min_region_events))
-                heldout_result = {
-                    'model_type': 'null_model_free',
-                    'features': [],
-                    'metrics': {_mk: float(held_bundle[_mk]) for _mk in MANIFOLD_METRIC_KEYS},
-                    'y_pred_xy': held_pred_xy,
-                    'y_true': Y_held,
-                    'w_test': w_held,
-                    'test_indices': _held_positions,
-                    'n_held_out_sessions': len(_held_out_session_ids),
-                    'n_held_out_events': int(_held_positions.size),
-                }
-            final_res['heldout'] = heldout_result
-
-        for _k in RESERVED_METADATA_KEYS:
-            step_data.pop(_k, None)
-        step_data.update(final_res)
-        with open(last_file_path, 'wb') as f:
-            pickle.dump(_wrap_step(step_data), f)
-
-        # Standardized end summary: selected-feature count + final vs Step-0
-        # baseline score + the full save path. The Step-0 baseline is read back
-        # from its pickle so the comparison is correct on both fresh and resume
-        # runs (where `best_current_score` no longer holds the baseline).
-        baseline_score = float('nan')
-        step0_path = model_selection_dir / f"{prefix}0.pkl"
-        if step0_path.exists():
-            with open(step0_path, 'rb') as f:
-                _step0 = pickle.load(f)
-            if 'baseline_score' in _step0:
-                baseline_score = _step0['baseline_score']
-        metrics_by_strategy = {
-            'Final': {SELECTION_SCORE_KEY: best_current_score},
-            'Baseline': {SELECTION_SCORE_KEY: baseline_score},
-        }
-        # The held-out row (development-refit, scored once on the reserved block)
-        # is the honest, selection-leakage-free number; it sits alongside the
-        # optimistic development-CV `Final` for a direct at/below sanity check.
-        if heldout_result is not None:
-            metrics_by_strategy['Held-out'] = {
-                SELECTION_SCORE_KEY: heldout_result['metrics'][SELECTION_SCORE_KEY]
+                null_model.fit(X_dev, Y_dev[perm], sample_weight=w_perm_fit)
+                null_weights.append(basis_coefficients_to_frames(null_model.coef_, temporal_basis, n_features=n_feats_final, axis=0)
+                                    if temporal_basis is not None else np.asarray(null_model.coef_))
+            heldout_result['null_weights'] = (np.stack(null_weights).astype(np.float32) if null_weights else None)
+        else:
+            # No feature survived selection: the honest held-out model is the
+            # empirical-density draw (the Step-0 baseline) from development Y,
+            # scored on the held-out block -- the same chance floor used above.
+            w_cov = w_dev / (np.sum(w_dev) + 1e-12)
+            mu = circular_mean(
+                Y_dev, metric=manifold_metric, period=manifold_period, weights=w_cov
+            )
+            diff_dev = signed_diff(
+                Y_dev, mu[None, :], metric=manifold_metric, period=manifold_period
+            )
+            cov_dev = (w_cov[:, None] * diff_dev).T @ diff_dev
+            cov_inv = np.linalg.pinv(cov_dev)
+            draw_rng = np.random.default_rng(held_seed)
+            draw_idx = draw_rng.choice(len(Y_dev), size=len(Y_held), replace=True)
+            held_pred_xy = Y_dev[draw_idx].astype(np.float32)
+            held_bundle = manifold_prediction_metrics(
+                Y_held, held_pred_xy, w_held,
+                metric=manifold_metric, period=manifold_period,
+                train_cov_inv=cov_inv, random_state=held_seed,
+                region_labels=region_held, min_region_events=_min_region_events,
+                kappa=kappa_frozen,
+            )
+            held_bundle.update(geodesic_mae_columns(
+                held_pred_xy, Y_held, geodesic_ctx,
+                region_labels=region_held, min_region_events=_min_region_events))
+            heldout_result = {
+                'model_type': 'null_model_free',
+                'features': [],
+                'metrics': {_mk: float(held_bundle[_mk]) for _mk in MANIFOLD_METRIC_KEYS},
+                'y_pred_xy': held_pred_xy,
+                'y_true': Y_held,
+                'w_test': w_held,
+                'test_indices': _held_positions,
+                'n_held_out_sessions': len(_held_out_session_ids),
+                'n_held_out_events': int(_held_positions.size),
             }
-        print(format_run_summary(
-            label=f"continuous model-selection ({len(current_model_features)} features)",
-            metrics_by_strategy=metrics_by_strategy,
-            out_path=str(last_file_path),
-        ))
+        final_res['heldout'] = heldout_result
 
-    except Exception as e:
-        print(f"Final promotion failed: {e}")
+    for _k in RESERVED_METADATA_KEYS:
+        step_data.pop(_k, None)
+    step_data.update(final_res)
+    with open(last_file_path, 'wb') as f:
+        pickle.dump(_wrap_step(step_data), f)
+
+    # Standardized end summary: selected-feature count + final vs Step-0
+    # baseline score + the full save path. The Step-0 baseline is read back
+    # from its pickle so the comparison is correct on both fresh and resume
+    # runs (where `best_current_score` no longer holds the baseline).
+    baseline_score = float('nan')
+    step0_path = model_selection_dir / f"{prefix}0.pkl"
+    if step0_path.exists():
+        with open(step0_path, 'rb') as f:
+            _step0 = pickle.load(f)
+        if 'baseline_score' in _step0:
+            baseline_score = _step0['baseline_score']
+    metrics_by_strategy = {
+        'Final': {SELECTION_SCORE_KEY: best_current_score},
+        'Baseline': {SELECTION_SCORE_KEY: baseline_score},
+    }
+    # The held-out row (development-refit, scored once on the reserved block)
+    # is the honest, selection-leakage-free number; it sits alongside the
+    # optimistic development-CV `Final` for a direct at/below sanity check.
+    if heldout_result is not None:
+        metrics_by_strategy['Held-out'] = {
+            SELECTION_SCORE_KEY: heldout_result['metrics'][SELECTION_SCORE_KEY]
+        }
+    print(format_run_summary(
+        label=f"continuous model-selection ({len(current_model_features)} features)",
+        metrics_by_strategy=metrics_by_strategy,
+        out_path=str(last_file_path),
+    ))
