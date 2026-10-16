@@ -963,3 +963,27 @@ class TestKnownAnswers:
         ca, cb = centre(dist_a), centre(dist_b)
         expected = np.sqrt((ca * cb).mean() / np.sqrt((ca * ca).mean() * (cb * cb).mean()))
         assert distance_correlation(dist_a, dist_b) == pytest.approx(expected, rel=1e-10)
+
+    @pytest.mark.parametrize("period", [1.0, 2.5])
+    def test_weighted_circular_mean_torus_embed_and_dispersion_known_values(self, period):
+        """The weighted torus centroid is the per-axis atan2 of the weighted mean sin / cos (in
+        [0, period)); torus_embed is (cos, sin) of 2*pi*Y/period; the weighted dispersion with
+        uniform weights equals the unweighted one and with general weights is
+        N * sum(w_i/sum(w) * d_i^2) about the weighted centroid."""
+        rng = np.random.default_rng(5)
+        Y = np.mod(rng.normal(0.9 * period, 0.15 * period, (60, 2)), period)
+        w = rng.uniform(0.1, 2.0, 60)
+        angles = 2.0 * np.pi * Y / period
+        expected = np.mod(np.arctan2((w[:, None] * np.sin(angles)).sum(0), (w[:, None] * np.cos(angles)).sum(0))
+                          * period / (2.0 * np.pi), period)
+        centroid = circular_mean(Y, metric='torus', period=period, weights=w)
+        np.testing.assert_allclose(centroid, expected, atol=1e-12)
+        assert ((centroid >= 0.0) & (centroid < period)).all()
+        np.testing.assert_allclose(torus_embed(Y, period), np.concatenate([np.cos(angles), np.sin(angles)], axis=1))
+        assert total_dispersion(Y, metric='torus', period=period, weights=np.ones(60)) == pytest.approx(
+            total_dispersion(Y, metric='torus', period=period), rel=1e-12)
+        diff = signed_diff(Y, centroid[None, :], metric='torus', period=period)
+        weighted = 60 * float(np.sum((w / w.sum())[:, None] * diff ** 2))
+        assert total_dispersion(Y, metric='torus', period=period, weights=w) == pytest.approx(weighted, rel=1e-12)
+        with pytest.raises(ValueError):
+            total_dispersion(Y, metric='torus', period=period, weights=np.zeros(60))
