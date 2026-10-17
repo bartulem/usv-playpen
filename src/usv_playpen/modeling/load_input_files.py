@@ -1574,7 +1574,7 @@ def find_usv_categories(root_directories: list = None,
                 usv_data_dict[session_id][mouse_name]['other_events'] = np.sort(other_usvs['start'].to_numpy())
 
             # Get data for all categories separately (none without a label column)
-            unique_cats = mouse_usvs[category_column].unique().to_list() if use_categories else []
+            unique_cats = mouse_usvs[category_column].drop_nulls().unique().to_list() if use_categories else []
 
             for cat_id in unique_cats:
                 try:

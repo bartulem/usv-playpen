@@ -623,7 +623,10 @@ def gmm_modes(
     * 1D (``gmm.means_.shape[1] == 1``): the mixture density is
       evaluated on a dense grid spanning
       ``[mu_min - 4 * sigma_max, mu_max + 4 * sigma_max]`` and local
-      maxima are detected as strict interior peaks. Each candidate is
+      maxima are detected as interior peaks (a point at least as high as
+      its left neighbour and strictly higher than its right one, so the
+      two equal centre points of a symmetric grid around a single
+      component still yield a peak). Each candidate is
       then polished by one Newton step on the analytic
       ``d/dx log p(x)``. This is robust against saddle-point pitfalls
       that the general-d fixed-point iteration is known to have, and
@@ -680,9 +683,9 @@ def gmm_modes(
         grid = np.linspace(lo, hi, grid_size).reshape(-1, 1)
         log_p = gmm.score_samples(grid)
 
-        # strict interior local maxima
+        # interior local maxima; the left tie keeps a two-point plateau
         peaks_idx = np.where(
-            (log_p[1:-1] > log_p[:-2]) & (log_p[1:-1] > log_p[2:])
+            (log_p[1:-1] >= log_p[:-2]) & (log_p[1:-1] > log_p[2:])
         )[0] + 1
 
         # Loop-invariant across every peak and every Newton iteration
@@ -2182,7 +2185,10 @@ def t_mixture_modes(
     The 1D strategy mirrors the Gaussian path: the mixture density is
     evaluated on a dense grid spanning
     ``[mu_min - span_scales * s_max, mu_max + span_scales * s_max]``,
-    strict interior local maxima are detected, and each candidate is
+    interior local maxima are detected (at least as high as the left
+    neighbour and strictly higher than the right one, so the two equal
+    centre points of a symmetric grid around a single component still
+    yield a peak), and each candidate is
     polished by Newton iterations on the analytic ``d/dx log p(x)``.
     For a Student-t component with location ``mu_k``, squared scale
     ``sigma2_k`` and degrees of freedom ``nu_k``,
@@ -2236,7 +2242,7 @@ def t_mixture_modes(
     log_p = model.score_samples(grid)
 
     peaks_idx = np.where(
-        (log_p[1:-1] > log_p[:-2]) & (log_p[1:-1] > log_p[2:])
+        (log_p[1:-1] >= log_p[:-2]) & (log_p[1:-1] > log_p[2:])
     )[0] + 1
 
     polished = []
@@ -3339,6 +3345,36 @@ def stable_subsample(values: np.ndarray, n_subsample: int, seed: int,
     return sample_values[chosen]
 
 
+def _bootstrap_p_value(lr_null: np.ndarray, statistic: float) -> float:
+    """
+    Description
+    -----------
+    Computes the one-sided parametric-bootstrap p-value of a likelihood-ratio
+    statistic as ``(1 + #{LR_b >= statistic}) / (1 + B)``. The observed
+    statistic counts as one draw of the null, so the p-value is never exactly
+    zero and its smallest value is ``1 / (1 + B)``; this is the same convention
+    the tuning and decoding nulls of the package use.
+
+    Parameters
+    ----------
+    lr_null (np.ndarray)
+        The ``B`` likelihood-ratio statistics computed on data simulated under
+        the null model.
+    statistic (float)
+        The observed statistic (raw or session-corrected) scored against the
+        null.
+
+    Returns
+    -------
+    p_value (float)
+        ``(1 + number of null draws >= statistic) / (1 + B)``, in
+        ``[1 / (1 + B), 1]``.
+    """
+
+    lr_null = np.asarray(lr_null, dtype=float)
+    return float((1 + np.sum(lr_null >= statistic)) / (1 + lr_null.size))
+
+
 def _lr_statistic(model_null, model_alt, log_x: np.ndarray) -> float:
     """
     Description
@@ -3493,8 +3529,9 @@ def bootstrap_lrt(
          ``n_subsample`` from the fitted ``K_null`` model
          (parametric bootstrap), refit both ``K_null`` and ``K_alt``,
          compute LR_b on the synthetic data.
-      4. p_value = fraction of LR_b values that meet or exceed
-         LR_obs. Small p_value rejects ``K_null`` in favor of
+      4. p_value = (1 + number of LR_b values that meet or exceed
+         LR_obs) / (1 + B), so the observed statistic counts as one
+         null draw and the p-value is never zero. Small p_value rejects ``K_null`` in favor of
          ``K_alt``.
 
     The dispatch on ``model_class`` (``'gauss'``, ``'t'`` or ``'ig'``) selects
@@ -3662,12 +3699,12 @@ def bootstrap_lrt(
         "model_class": model_class,
         "lr_obs": float(lr_obs),
         "lr_null": lr_null,
-        "p_value": float(np.mean(lr_null >= lr_obs)),
+        "p_value": _bootstrap_p_value(lr_null, lr_obs),
         "null_mean": float(lr_null.mean()),
         "null_p95": float(np.percentile(lr_null, 95)),
         "null_max": float(lr_null.max()),
         **correction,
-        **({"p_value_corrected": float(np.mean(lr_null >= correction["lr_corrected"]))}
+        **({"p_value_corrected": _bootstrap_p_value(lr_null, correction["lr_corrected"])}
            if correction and np.isfinite(correction["lr_corrected"]) else {}),
     }
 
@@ -3972,12 +4009,12 @@ def tied_peak_bootstrap_lrt(
         "n_subsample": int(subsample.size),
         "lr_obs": float(lr_obs),
         "lr_null": lr_null,
-        "p_value": float(np.mean(lr_null >= lr_obs)),
+        "p_value": _bootstrap_p_value(lr_null, lr_obs),
         "null_p95": float(np.percentile(lr_null, 95)),
         "negative_fraction": float(np.mean(lr_null < 0)),
         "shared_scale_null": float(shared_scale),
         **correction,
-        **({"p_value_corrected": float(np.mean(lr_null >= correction["lr_corrected"]))}
+        **({"p_value_corrected": _bootstrap_p_value(lr_null, correction["lr_corrected"])}
            if correction and np.isfinite(correction["lr_corrected"]) else {}),
     }
 
