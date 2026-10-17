@@ -22,8 +22,12 @@ a stronger control only SHRINKS the added score, and a weaker one makes the clai
 the day holdout buys is the one thing needed -- the unit's own calls stay out of the training set, so the
 reduced score is genuinely held out.
 
-THE TORUS COLUMNS ARE NOT IN THE DATA TREE. Its ``usv_summary`` files carry no QLVM columns at all; they
-live under ``data_roots.vocal_summary_root``, which is why that key exists.
+THE TORUS COLUMNS COME FROM THE DATA TREE, read through ``load_session_usvs`` so this model and the
+analyses it serves see ONE source. They did once live under a separate ``data_roots.vocal_summary_root``,
+because the ``Data`` tree summaries carried no QLVM columns; those summaries now carry ``qlvm1`` /
+``qlvm2`` and the category labels, so that key is gone. The second copy is how this control silently
+went unfitted -- the columns were renamed in the live tree while the copy kept the old
+``qlvm_dim1`` / ``qlvm_dim2`` names, and every session was skipped for lacking the configured columns.
 """
 
 from __future__ import annotations
@@ -33,14 +37,15 @@ import pickle
 from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
-import polars as pl
 
 from ..modeling.modeling_metadata import compute_settings_sha256
 from .neural_design_assembly import (
     build_zscored_feature_frames,
     emitter_names,
     lagged_design,
+    load_session_usvs,
     session_timebase,
+    worker_process_context,
 )
 from .neural_nested_decoding import (
     NestedTorusRegression,
@@ -144,14 +149,21 @@ def session_call_design(session_directory: str, settings: dict, n_lags: int) -> 
         return {"session_id": session_id, "reason": f"{len(track_names)} tracked animals"}
     recorded = track_names[0]
 
-    usv_path = (pathlib.Path(settings["data_roots"]["vocal_summary_root"]) / session_id
-                / f"{session_id}_usv_summary.csv")
-    if not usv_path.exists():
-        return {"session_id": session_id, "reason": f"no usv_summary at {usv_path}"}
-    usv = pl.read_csv(usv_path, separator=",", infer_schema_length=5000)
+    try:
+        usv = load_session_usvs(data_root, session_id)
+    except FileNotFoundError as error:
+        return {"session_id": session_id, "reason": str(error)}
+    # A session with no summary at all is a property of that session, so it is skipped. A summary
+    # missing the CONFIGURED columns is not: it hits every session alike, and skipping it quietly is
+    # exactly how this control came to be unfitted while the position columns were renamed under it.
+    # It therefore raises, naming the two settings that have to agree with the summary.
     absent = [column for column in (*position_columns, region_column) if column not in usv.columns]
     if absent:
-        return {"session_id": session_id, "reason": f"summary lacks {absent}"}
+        msg = (f"{session_id}: usv_summary lacks {absent}. Reconcile "
+               f"vocal_decoding.usv_manifold_column_names and "
+               f"nested_vocal_manifold_position_decoding.region_label_column with the summary's "
+               f"columns.")
+        raise KeyError(msg)
 
     focal_name = emitter_names(track_names, recorded,
                                settings["vocalization_settings"]["vocal_emitter"])[0]
@@ -214,7 +226,7 @@ def assemble_cohort(session_directories: list, settings: dict, n_lags: int,
     """
 
     blocks, skipped = [], {}
-    with ProcessPoolExecutor(max_workers=n_workers) as pool:
+    with ProcessPoolExecutor(max_workers=n_workers, mp_context=worker_process_context()) as pool:
         for block in pool.map(_assemble_one, [(directory, settings, n_lags)
                                               for directory in session_directories]):
             if "reason" in block:
@@ -655,7 +667,7 @@ def select_control_features(cohort: dict, settings: dict, n_lags: int, n_workers
         tasks = [(design_path, feature_columns(canonical, [*selected, name], n_lags), positions,
                   regions, days, settings, n_lags, len(selected) + 1, (*selected, name))
                  for name in remaining]
-        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+        with ProcessPoolExecutor(max_workers=n_workers, mp_context=worker_process_context()) as pool:
             results = list(pool.map(_score_candidate, tasks))
         ranked = sorted(((paired_gain(per_day, incumbent), pooled, per_day, candidate)
                          for candidate, per_day, pooled in results),

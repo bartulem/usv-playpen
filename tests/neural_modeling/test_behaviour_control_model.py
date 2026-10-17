@@ -195,15 +195,40 @@ class TestLoadControlModel:
 
 
 class TestReducedModelFeaturesRepoint:
-    """The control is selected on the ephys cohort; P1's own result is no longer the source."""
+    """Either artifact shape may define the feature set, and both are checked against the freeze.
 
-    def test_a_p1_format_file_is_refused_with_an_explanation(self, settings: dict,
-                                                             tmp_path) -> None:
-        """P1's schema would otherwise raise an unhelpful KeyError deep in the reader."""
-        path = tmp_path / "p1.pkl"
-        path.write_bytes(pickle.dumps({"steps": [{"final_model_features": ["a"]}]}))
+    A behavioural selection's FEATURE SET is adopted while its COEFFICIENTS never are -- the control
+    is always refitted in domain, which is what the non-transferring fitted map requires. So the
+    reader accepts both shapes and the drift assertion is what guards meaning, not the schema.
+    """
+
+    def test_a_behavioural_selection_feature_set_is_adopted(self, settings: dict,
+                                                            tmp_path) -> None:
+        """The last forward step's `current_features` is the selected set."""
+        path = tmp_path / "behavioural.pkl"
+        chosen = ["allo_yaw-head", "self.neck_elevation", "head-head"]
+        path.write_bytes(pickle.dumps({"steps": [{"current_features": chosen[:1]},
+                                                 {"current_features": chosen}]}))
         settings["data"]["behaviour_selection_result_path"] = str(path)
-        with pytest.raises(ValueError, match="not a cohort selection result"):
+        settings["nested_vocal_manifold_position_decoding"]["reduced_model_features"] = chosen
+        assert reduced_model_features(settings) == chosen
+
+    def test_a_behavioural_selection_is_still_drift_checked(self, settings: dict,
+                                                            tmp_path) -> None:
+        """Adopting a feature set must not let a re-selection silently redefine the control."""
+        path = tmp_path / "behavioural.pkl"
+        path.write_bytes(pickle.dumps({"steps": [{"current_features": ["head-head"]}]}))
+        settings["data"]["behaviour_selection_result_path"] = str(path)
+        settings["nested_vocal_manifold_position_decoding"]["reduced_model_features"] = ["nose-nose"]
+        with pytest.raises(ValueError, match="behaviour selection drift"):
+            reduced_model_features(settings)
+
+    def test_an_unrecognised_artifact_is_refused(self, settings: dict, tmp_path) -> None:
+        """Neither shape present would otherwise raise an unhelpful KeyError deep in the reader."""
+        path = tmp_path / "mystery.pkl"
+        path.write_bytes(pickle.dumps({"something_else": ["a"]}))
+        settings["data"]["behaviour_selection_result_path"] = str(path)
+        with pytest.raises(ValueError, match="neither a cohort selection result"):
             reduced_model_features(settings)
 
     def test_a_cohort_selection_is_read_and_checked(self, settings: dict, tmp_path) -> None:

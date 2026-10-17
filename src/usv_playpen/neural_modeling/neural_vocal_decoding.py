@@ -435,11 +435,20 @@ def decoding_context(positions: np.ndarray, session_index: np.ndarray, settings:
 
 
 def score_events(beta: np.ndarray, rows: np.ndarray, counts: np.ndarray, fold: dict,
-                 truth_cell: np.ndarray, alpha: float, with_detail: bool = False):
+                 truth_cell: np.ndarray, alpha: float, with_detail: bool = False,
+                 log_prior_events: np.ndarray | None = None):
     """
     Description
     -----------
     Per-event decode gain -- log posterior minus log prior at the event's true position, in nats.
+
+    THE PRIOR IS THE ONE PLACE THIS FUNCTION CAN BE CONDITIONED. By default every event in the fold
+    shares the fold's occupancy prior, and the gain is the vocalization-identity statistic: what the
+    neuron adds over where calls generally sit. Given ``log_prior_events`` -- one log-density per event,
+    here a von Mises around the behaviour control's prediction for that event -- the same posterior is
+    formed against THAT prior and the gain becomes what the neuron adds beyond behaviour. Nothing
+    else changes: surface, amplitude, exposure, mask and grid are identical, which is what makes the
+    nested statistic identity's statistic under a different prior rather than a second method.
 
     The surface is decomposed into SHAPE and LEVEL before ``alpha`` is applied, which is the whole point
     of the calibration. The shape is centred on its PRIOR-WEIGHTED mean, so scaling it by ``alpha``
@@ -472,6 +481,11 @@ def score_events(beta: np.ndarray, rows: np.ndarray, counts: np.ndarray, fold: d
         Also return the per-event decode error, posterior entropy and decoded position. Read off the
         posterior already built, so free here -- but this function runs inside every permutation
         draw, so the detail is taken only on the observed pass.
+    log_prior_events (np.ndarray)
+        ``(n_events, n_cells)`` log prior density per event over the fold's grid, already masked and
+        normalised, indexed in the order counts are paired with; or None for the fold's shared
+        occupancy prior. The gain is always measured against the prior the posterior was formed
+        with, so passing a conditioned prior measures what the neuron adds BEYOND it.
 
     Returns
     -------
@@ -481,6 +495,8 @@ def score_events(beta: np.ndarray, rows: np.ndarray, counts: np.ndarray, fold: d
     """
 
     shape = fold["grid_basis"] @ beta[:-1]
+    # the shape is centred on the fold's OCCUPANCY prior whichever prior the posterior uses: the centre
+    # is a property of the surface (it fixes what `alpha` scales), not of what is being conditioned on
     weights = fold["masked_prior"] * fold["cell_area"]
     centre = float(np.sum(shape * weights) / max(float(np.sum(weights)), 1e-12))
 
@@ -491,14 +507,17 @@ def score_events(beta: np.ndarray, rows: np.ndarray, counts: np.ndarray, fold: d
 
     loglik = (scored_counts[:, None] * log_rate[None, :] - rate[None, :]
               - gammaln(scored_counts + 1.0)[:, None])
-    posterior = fold["log_prior"][None, :] + loglik
+    log_prior = (fold["log_prior"][None, :] if log_prior_events is None
+                 else np.asarray(log_prior_events)[rows])
+    posterior = log_prior + loglik
     posterior -= posterior.max(axis=1, keepdims=True)
     density = np.exp(posterior)
     density /= density.sum(axis=1, keepdims=True) * fold["cell_area"]
 
     cells = truth_cell[rows]
     at_truth = density[np.arange(scored_counts.size), cells]
-    prior_at_truth = fold["masked_prior"][cells]
+    prior_at_truth = (fold["masked_prior"][cells] if log_prior_events is None
+                      else np.exp(log_prior[np.arange(scored_counts.size), cells]))
     outside = ~fold["mask"][cells]
 
     posterior_log = np.log(np.clip(at_truth, 1e-300, None))
@@ -528,7 +547,8 @@ def score_events(beta: np.ndarray, rows: np.ndarray, counts: np.ndarray, fold: d
 
 def tuned_amplitude(counts: np.ndarray, fold: dict, basis: np.ndarray, truth_cell: np.ndarray,
                     ridge: float, alpha_grid: list, n_steps: int,
-                    session_rate_offsets: bool = True) -> float:
+                    session_rate_offsets: bool = True,
+                    log_prior_events: np.ndarray | None = None) -> float:
     """
     Description
     -----------
@@ -570,6 +590,10 @@ def tuned_amplitude(counts: np.ndarray, fold: dict, basis: np.ndarray, truth_cel
         IRLS iteration cap.
     session_rate_offsets (bool)
         Whether the inner fits carry per-session exposure offsets; must match the outer fit.
+    log_prior_events (np.ndarray)
+        Per-event log prior in the same order as ``basis``, or None for the fold's occupancy prior.
+        The calibration is tuned under the SAME prior the statistic is scored with, so a conditioned
+        statistic gets an amplitude chosen for it rather than one borrowed from the unconditioned one.
 
     Returns
     -------
@@ -592,7 +616,7 @@ def tuned_amplitude(counts: np.ndarray, fold: dict, basis: np.ndarray, truth_cel
     best_alpha, best_gain = float(alpha_grid[0]), -np.inf
     for candidate in alpha_grid:
         scores = [finite_mean(score_events(beta, inner_test, counts, fold, truth_cell,
-                                           float(candidate)))
+                                           float(candidate), log_prior_events=log_prior_events))
                   for beta, inner_test in inner_betas]
         mean_gain = finite_mean(np.asarray(scores))
         if mean_gain > best_gain:
@@ -601,7 +625,8 @@ def tuned_amplitude(counts: np.ndarray, fold: dict, basis: np.ndarray, truth_cel
 
 
 def decode_gain(counts: np.ndarray, folds: list, settings: dict,
-                permutation: np.ndarray = None, with_detail: bool = False) -> dict:
+                permutation: np.ndarray = None, with_detail: bool = False,
+                log_prior_events: list | None = None) -> dict:
     """
     Description
     -----------
@@ -633,6 +658,12 @@ def decode_gain(counts: np.ndarray, folds: list, settings: dict,
         Also collect the per-event gain, decode error, posterior entropy and the overdispersion index.
         Read off quantities already computed, but this function IS the permutation draw, so the detail
         is taken once on the observed pass and never inside the null.
+    log_prior_events (list)
+        One ``(n_events, n_cells)`` per-event log prior per fold, in the folds' order and in the
+        UNPERMUTED event order, or None for each fold's occupancy prior. A prior row belongs to its
+        event's POSITION, so under a permutation draw it is reordered exactly as the positions are
+        and the conditioning it carries stays attached to the right call; only the neuron's pairing
+        moves. This is how the nested statistic shares this function, and its null, with identity.
 
     Returns
     -------
@@ -677,21 +708,24 @@ def decode_gain(counts: np.ndarray, folds: list, settings: dict,
     posterior_entropy = np.full(counts.size, np.nan, dtype=np.float64)
     per_fold, n_masked, dispersion = [], 0, []
 
-    for fold in folds:
+    for fold_index, fold in enumerate(folds):
         basis = fold["event_basis"][order]
         truth_cell = fold["truth_cell"][order]
+        # the prior row travels with its POSITION under a draw, never with the count
+        prior = (None if log_prior_events is None
+                 else np.asarray(log_prior_events[fold_index])[order])
         train_rows, test_rows = fold["train_rows"], fold["test_rows"]
         ridge = ridge_fraction * float(counts[train_rows].sum())
 
         alpha = tuned_amplitude(counts, fold, basis, truth_cell, ridge, alpha_grid, n_steps,
-                                surface["session_rate_offsets"])
+                                surface["session_rate_offsets"], log_prior_events=prior)
         offsets = (session_exposure_offsets(counts[train_rows], fold["train_session_index"])
                    if surface["session_rate_offsets"] else None)
         beta = poisson_tuning_fit(basis[train_rows], counts[train_rows], ridge, n_steps, offsets)
 
         if with_detail:
             fold_gains, fold_detail = score_events(beta, test_rows, counts, fold, truth_cell, alpha,
-                                                   with_detail=True)
+                                                   with_detail=True, log_prior_events=prior)
             calibrated[test_rows] = fold_gains
             decode_error[test_rows] = fold_detail["decode_error"]
             posterior_entropy[test_rows] = fold_detail["posterior_entropy"]
@@ -702,8 +736,10 @@ def decode_gain(counts: np.ndarray, folds: list, settings: dict,
             dispersion.append(float(np.mean((counts[test_rows] - expected) ** 2
                                             / np.clip(expected, 1e-9, None))))
         else:
-            calibrated[test_rows] = score_events(beta, test_rows, counts, fold, truth_cell, alpha)
-        uncalibrated[test_rows] = score_events(beta, test_rows, counts, fold, truth_cell, 1.0)
+            calibrated[test_rows] = score_events(beta, test_rows, counts, fold, truth_cell, alpha,
+                                                 log_prior_events=prior)
+        uncalibrated[test_rows] = score_events(beta, test_rows, counts, fold, truth_cell, 1.0,
+                                               log_prior_events=prior)
         fold_masked = int(np.sum(~fold["mask"][truth_cell[test_rows]]))
         n_masked += fold_masked
         per_fold.append({"held_out": fold["held_out"], "n_events": int(test_rows.size),

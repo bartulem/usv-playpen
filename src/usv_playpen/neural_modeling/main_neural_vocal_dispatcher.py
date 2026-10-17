@@ -34,7 +34,6 @@ the two nulls are simply draw-paired rather than independent.
 from __future__ import annotations
 
 import argparse
-import multiprocessing
 import sys
 import traceback
 from concurrent.futures import ProcessPoolExecutor
@@ -49,13 +48,16 @@ from .neural_design_assembly import (
     assemble_unit_sessions,
     assemble_unit_vocal_events,
     load_unit_spike_frames,
+    worker_process_context,
 )
 from .neural_nested_decoding import (
+    behaviour_priors,
     nested_design,
     nested_scores,
     nested_settings,
     no_behaviour_predictions,
     pooled_macro_score,
+    posterior_nested_gain,
     reduced_model_features,
     reduced_predictions,
     shifted_neural_column,
@@ -127,7 +129,7 @@ def spawn_pool(n_workers: int, state: dict) -> ProcessPoolExecutor:
         The pool, to be used as a context manager.
     """
 
-    return ProcessPoolExecutor(max_workers=n_workers, mp_context=multiprocessing.get_context("spawn"),
+    return ProcessPoolExecutor(max_workers=n_workers, mp_context=worker_process_context(),
                                initializer=initialise_worker, initargs=(state,))
 
 
@@ -251,6 +253,109 @@ def vocal_occurrence_null_chunk(start: int, n_draws: int) -> np.ndarray:
                                        start, n_draws, state["seed"], state["guard_seconds"],
                                        state["ridge_fraction"], state["sigma_floor"], state["irls_steps"],
                                        state["calibration_steps"])
+
+
+def posterior_nested_null_chunk(start: int, n_draws: int) -> np.ndarray:
+    """
+    Description
+    -----------
+    One worker's share of the posterior nested statistic's null: identity's exact within-session
+    permutation, extended so the behaviour prior travels with its position.
+
+    A draw re-pairs the events' positions -- and the priors built on them -- against the counts within
+    each session, seeded ``seed + start + draw`` exactly as the identity chunk seeds its draws. The
+    behaviour control is never broken, because what it predicts for a call stays with that call's true
+    position; only the neuron's pairing moves. The priors are read from the installed state and never
+    rebuilt, since nothing a draw changes enters them.
+
+    Parameters
+    ----------
+    start (int)
+        Global index of this chunk's first draw.
+    n_draws (int)
+        Draws to produce.
+
+    Returns
+    -------
+    values (np.ndarray)
+        Added scores under permuted pairings.
+    """
+
+    state = _WORKER
+    values = np.empty(int(n_draws), dtype=np.float64)
+    for draw in range(int(n_draws)):
+        permutation = within_session_permutation(state["session_index"],
+                                                 np.random.default_rng(state["seed"] + start + draw))
+        values[draw] = posterior_nested_gain(state["counts"], state["folds"], state["decoding"],
+                                             state["priors"], state["kappas"], permutation)["added"]
+    return values
+
+
+def posterior_nested_payload(posterior: dict, regression: dict, no_behaviour: float, session_ids: list,
+                             null: np.ndarray, p_value: float, at_floor: bool,
+                             behaviour_control: dict) -> dict:
+    """
+    Description
+    -----------
+    The nested section: the posterior statistic with its null, the ladder, the fine-position
+    regression as a descriptor, and the control's provenance -- metrics and p-values only, no verdict.
+
+    Parameters
+    ----------
+    posterior (dict)
+        From ``posterior_nested_gain`` on the observed pass, with detail.
+    regression (dict)
+        From ``nested_scores``: the point-regression form, observed only.
+    no_behaviour (float)
+        The regression ladder's first rung, pooled macro score of the no-behaviour model.
+    session_ids (list)
+        Session id per slot, to name each fold's held-out session.
+    null (np.ndarray)
+        The permutation null of ``added``.
+    p_value, at_floor (float, bool)
+        From the escalated empirical test.
+    behaviour_control (dict)
+        From ``apply_behaviour_control``: the control's features, held-out day and settings hash.
+
+    Returns
+    -------
+    payload (dict)
+        The section as written.
+    """
+
+    per_fold = [{"held_out_session": session_ids[int(fold["held_out"])], "n_events": fold["n_events"],
+                 "added": fold["added"], "alpha": fold["alpha"], "ridge": fold["ridge"],
+                 "kappa": fold["kappa"], "n_masked": fold["n_masked"],
+                 "coefficients": fold["coefficients"]}
+                for fold in posterior["per_fold"]]
+    detail = {key: posterior[key] for key in ("per_event_gain", "decode_error", "posterior_entropy",
+                                               "mean_decode_error", "mean_posterior_entropy",
+                                               "overdispersion_index") if key in posterior}
+    return {"added": posterior["added"], "added_uncalibrated": posterior["added_uncalibrated"],
+            "nats_per_spike": posterior["nats_per_spike"],
+            "behaviour_over_no_behaviour": posterior["behaviour_over_no_behaviour"],
+            "full_over_no_behaviour": posterior["full_over_no_behaviour"],
+            "n_events": int(sum(fold["n_events"] for fold in per_fold)),
+            "n_masked": posterior["n_masked"], "n_folds_positive": posterior["n_folds_positive"],
+            "min_leave_one_fold_out": posterior["min_leave_one_fold_out"],
+            "per_fold": per_fold, "alphas": posterior["alphas"], "ridges": posterior["ridges"],
+            "kappas": posterior["kappas"], **detail,
+            "null": null, "p": p_value, "at_floor": at_floor, "z": null_z(posterior["added"], null),
+            "n_permutations": int(null.size),
+            # the point-regression form, a FINE-POSITION descriptor: observed only, no null, never a
+            # route to passing
+            "point_regression": {"added": regression["added"], "reduced": regression["reduced"],
+                                 "full": regression["full"], "no_behaviour": no_behaviour,
+                                 "behaviour_over_no_behaviour": regression["reduced"] - no_behaviour,
+                                 "n_events": regression["n_events"],
+                                 "n_regions_scored": regression["n_regions_scored"],
+                                 "min_leave_one_fold_out": regression["min_leave_one_fold_out"],
+                                 "per_fold": [{"held_out_session": session_ids[int(fold["held_out"])],
+                                               "n_events": fold["n_events"], "added": fold["added"]}
+                                              for fold in regression["per_fold"]]},
+            "behaviour_control": {"features": list(behaviour_control["features"]),
+                                  "held_out_day": behaviour_control["held_out_day"],
+                                  "settings_sha256": behaviour_control["settings_sha256"]}}
 
 
 def nested_decoding_null_chunk(start: int, n_draws: int) -> np.ndarray:
@@ -680,7 +785,6 @@ def run_nested_vocal_manifold_position_decoding(unit: dict, events: dict, settin
 
     nested = nested_settings(settings)
     encoding = settings["kinematic_encoding"]
-    window = settings["vocalization_settings"]["spike_window"]
     per_session = assemble_unit_sessions(unit, data_root, settings["kinematic_features"],
                                          encoding["history_pre_seconds"], encoding["clean_post_seconds"],
                                          settings["vocalization_settings"]["clean_against"],
@@ -697,30 +801,40 @@ def run_nested_vocal_manifold_position_decoding(unit: dict, events: dict, settin
     # estimated on the unit. `n_lags` changes with the block, which is why the swap returns both.
     control = load_control_model(settings)
     design, n_lags = apply_behaviour_control(design, control, str(unit["rec_date"]), settings)
-    reduced_predicted = reduced_predictions(design, nested, n_lags)
-    scores = nested_scores(design, nested, n_lags, reduced_predicted=reduced_predicted)
-    message_output(f"  NESTED DECODING  added {scores['added']:+.5f} over {scores['n_events']} events")
-
-    no_behaviour = pooled_macro_score(no_behaviour_predictions(design, nested, n_lags), design["positions"],
-                                      design["region_labels"], nested)
-    message_output(f"    behaviour model over no behaviour: {scores['reduced'] - no_behaviour:+.5f}")
     del per_session
 
-    state = {"design": design, "settings": nested, "n_lags": n_lags,
-             "window_edges": events["call_start"][design["kept"]] - window["pre_offset_seconds"],
-             "spike_seconds": session_spike_seconds(events, data_root, unit),
-             "durations": session_durations(events), "width": window["width_seconds"],
-             "seed": int(settings["null"]["shuffle_seed"]),
-             "guard_seconds": settings["null"]["shuffle_guard_seconds"],
-             "sigma_floor": nested["sigma_floor"], "reduced_predicted": reduced_predicted}
+    # The point-regression form, kept as a FINE-POSITION descriptor: observed only, no null. It is
+    # structurally blind to coarse tuning -- a neuron whose counts separate regions can reweight a
+    # distribution but cannot move a predicted point without spreading it -- so it never decides.
+    reduced_predicted = reduced_predictions(design, nested, n_lags)
+    regression = nested_scores(design, nested, n_lags, reduced_predicted=reduced_predicted)
+    no_behaviour = pooled_macro_score(no_behaviour_predictions(design, nested, n_lags), design["positions"],
+                                      design["region_labels"], nested)
+
+    # THE STATISTIC: identity's decoder with behaviour as the prior, on the same kept events -- the
+    # ones with a full kinematic history, which the control's prediction needs. Counts, positions and
+    # sessions are the kept rows of the vocal-decoding event set, so `folds` here and identity's agree
+    # on every shared event.
+    decoding = settings["vocal_decoding"]
+    counts = np.asarray(events["counts"], dtype=np.float64)[design["kept"]]
+    folds = decoding_context(design["positions"], design["session_index"], decoding)
+    kappas, priors = behaviour_priors(folds, design["behaviour_control"]["predicted_positions"],
+                                      design["positions"], nested)
+    posterior = posterior_nested_gain(counts, folds, decoding, priors, kappas, with_detail=True)
+    message_output(f"  NESTED DECODING  added {posterior['added']:+.5f} nats/event over {counts.size} events "
+                   f"| behaviour over no behaviour {posterior['behaviour_over_no_behaviour']:+.5f} "
+                   f"| point regression {regression['added']:+.5f}")
+
+    state = {"counts": counts, "folds": folds, "decoding": decoding, "priors": priors, "kappas": kappas,
+             "session_index": design["session_index"], "seed": int(settings["null"]["shuffle_seed"])}
     with spawn_pool(n_workers, state) as pool:
-        draw_more = parallel_draw_more(pool, nested_decoding_null_chunk, n_workers)
-        null = draw_more(settings["null"]["n_shuffles"])
-        p_value, at_floor, null = escalated_empirical_pvalue(scores["added"], draw_more,
+        draw_more = parallel_draw_more(pool, posterior_nested_null_chunk, n_workers)
+        null = draw_more(nested["discrimination_null"]["n_permutations"])
+        p_value, at_floor, null = escalated_empirical_pvalue(posterior["added"], draw_more,
                                                              settings["significance"]["escalation_ladder"],
                                                              null, message_output)
-    payload = nested_decoding_payload(scores, events["session_ids"], null, p_value, at_floor,
-                                      no_behaviour, design["behaviour_control"])
+    payload = posterior_nested_payload(posterior, regression, no_behaviour, events["session_ids"], null,
+                                       p_value, at_floor, design["behaviour_control"])
     message_output(f"    null z {payload['z']:+.1f} | p {p_value:.4e}{' (at floor)' if at_floor else ''} "
                    f"| {null.size:,} draws")
     write_unit_section(output_directory, unit, "nested_vocal_manifold_position_decoding", payload, settings)

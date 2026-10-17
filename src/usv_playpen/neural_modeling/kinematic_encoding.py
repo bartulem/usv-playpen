@@ -29,12 +29,12 @@ from __future__ import annotations
 import numpy as np
 
 from ..modeling.jax_group_elastic_net import GroupElasticNetGLM
+from ..modeling.modeling_bases_functions import gam_bspline_basis
 from ..modeling.modeling_utils import paired_one_se_improvement
 from .deviance_metrics import (
-    batched_calibrated_explained_deviance,
-    binned_calibrated_explained_deviance,
-    calibrated_explained_deviance,
     finite_mean,
+    frozen_model_null_scores,
+    frozen_model_score,
 )
 from .neural_design_assembly import (
     lagged_design,
@@ -50,6 +50,139 @@ from .shift_null_inference import (
 # Memory budget for one batched null block. The Newton iteration holds several (n_frames, block)
 # float64 arrays at once, so this caps the working set at a few hundred MB per block.
 _NULL_BLOCK_BYTES = 32 * 1024 * 1024
+TEMPORAL_BASIS_TYPES = ("none", "bspline")
+SPIKE_END_CORRECTIONS = ("none", "drop_outside_and_rescale")
+
+
+class FrameFilterModel:
+    """
+    Description
+    -----------
+    A fitted encoding model expressed as one weight per frame, whatever space it was fitted in.
+
+    The spline path fits ``n_splines`` coefficients per feature and maps them back through the basis, so
+    the object every consumer sees -- the screen, forward selection, the transfer, the band, the artifact
+    -- carries the same ``coef_`` (feature-major, ``n_lags`` per feature), ``intercept_``, ``converged_``
+    and ``n_iter_`` the raw solver carries, and predicts from a raw lagged design exactly as it does.
+
+    Parameters
+    ----------
+    coef (np.ndarray)
+        Frame-space weights, ``(n_features * n_lags,)``.
+    intercept (float)
+        Fitted intercept on the true-population scale.
+    converged (bool)
+        Whether the underlying solve reached its tolerance.
+    n_iter (int)
+        Iterations the underlying solve took.
+    """
+
+    def __init__(self, coef: np.ndarray, intercept: float, converged: bool, n_iter: int) -> None:
+        self.coef_ = np.asarray(coef, dtype=np.float64)
+        self.intercept_ = float(intercept)
+        self.converged_ = bool(converged)
+        self.n_iter_ = int(n_iter)
+
+    def predict_eta(self, x_design: np.ndarray, offset: np.ndarray | None = None) -> np.ndarray:
+        """
+        Description
+        -----------
+        Linear predictor at the rows of a raw lagged design.
+
+        Parameters
+        ----------
+        x_design (np.ndarray)
+            ``(n_rows, n_features * n_lags)`` lagged design, the same layout the raw solver takes.
+        offset (np.ndarray | None)
+            Optional per-row offset added to the predictor.
+
+        Returns
+        -------
+        eta (np.ndarray)
+            ``(n_rows,)`` linear predictor.
+        """
+
+        eta = x_design @ self.coef_ + self.intercept_
+        return eta if offset is None else eta + np.asarray(offset, dtype=np.float64)
+
+
+def lag_basis(n_lags: int, temporal_basis: dict) -> np.ndarray | None:
+    """
+    Description
+    -----------
+    The lag-axis basis the quiet fit is parametrised in, or None for one free weight per frame.
+
+    ``"bspline"`` is the modeling pipeline's own layer (``gam_bspline_basis``: ``n_splines`` cubic
+    B-splines on knots spaced evenly over the history), with its lag-varying ridge applied the same way
+    -- each column scaled by ``1 / sqrt(1 + alpha * lag_fraction**2)``, ``lag_fraction`` the spline
+    centre's distance from the spike's frame as a fraction of the window, so a uniform ridge on the
+    scaled coefficients is a ridge that grows with distance from onset -- and then the WHOLE basis
+    divided by its mean column sum. That last constant is what the neural solver needs that the modeling
+    solver did not: it turns each projected column into a lag-average on the feature's own scale, and
+    FISTA, whose step follows the design's Lipschitz constant, converged on the raw column sums only
+    with a far smaller step than its iteration cap allows.
+
+    Measured on three PAG units (2026-10-14, LOSO, identical subsamples): at ridge 0.1 on the rescaled
+    coefficients the basis reproduced the raw-600 ridge+D1 model's held-out quiet D2 to the second
+    decimal (.161 vs .162, .101 vs .105, .085 vs .083), its filter shapes at r 0.95-0.98 and both
+    transfers to three decimals, at 0.3-0.5 s per fit against 25-130 s. Ridge 1e-3 does not converge,
+    ridge 10 loses ~15 %, dropping the lag ridge loses ~10 %, and an added second-difference smoothness
+    bought nothing, hence a default of 0.
+
+    ``spike_end_correction`` repairs what a uniform coefficient ridge does at the spike end. The knots
+    are spaced evenly and run past both edges of the window, so the last spline lies mostly OUTSIDE it
+    (in-window mass 1.6 against 35 for an interior spline at 20 splines over 600 lags) and the one before
+    it about half outside (18). A coefficient on such a spline moves the filter very little per unit,
+    so the ridge makes it expensive and every fitted filter sagged back toward zero over the last
+    50-210 ms before the spike -- a reversal of 3-27 % of the peak that the raw 600-lag fit does not
+    have, and that the basis itself can express (the raw filter projected onto it unpenalised keeps its
+    end exactly). ``"drop_outside_and_rescale"`` removes the outermost spline at the spike end and scales
+    every remaining spline by ``sqrt(largest in-window mass / its own in-window mass)``, so a spline
+    partly outside the window pays a smaller penalty per unit of effect; the square root because full
+    equalisation overshoots (endpoint 3-4x the raw fit). Measured on four PAG units (2026-10-15, full
+    rotation): the reversal falls to 1-8 %, no verdict moves, 15 of 16 folds select the same features,
+    and quiet and transfer D2 rise slightly. ``"none"`` keeps the uncorrected basis.
+
+    Parameters
+    ----------
+    n_lags (int)
+        History length in frames.
+    temporal_basis (dict)
+        The ``kinematic_encoding.temporal_basis`` settings block: ``type`` ("none" or "bspline"),
+        ``n_splines``, ``spline_order``, ``l2_lag_alpha``, ``lambda_ridge``, ``lambda_smooth``,
+        ``spike_end_correction`` ("none" or "drop_outside_and_rescale").
+
+    Returns
+    -------
+    basis (np.ndarray | None)
+        ``(n_lags, n_columns)`` scaled basis -- ``n_splines`` columns, one fewer under the spike-end
+        correction -- or None when every frame keeps its own weight.
+    """
+
+    kind = temporal_basis["type"]
+    if kind not in TEMPORAL_BASIS_TYPES:
+        msg = f"temporal_basis.type must be one of {TEMPORAL_BASIS_TYPES}; got {kind!r}."
+        raise ValueError(msg)
+    if kind == "none":
+        return None
+    correction = temporal_basis["spike_end_correction"]
+    if correction not in SPIKE_END_CORRECTIONS:
+        msg = f"temporal_basis.spike_end_correction must be one of {SPIKE_END_CORRECTIONS}; got {correction!r}."
+        raise ValueError(msg)
+    basis = np.asarray(gam_bspline_basis(n_lags, temporal_basis["n_splines"], temporal_basis["spline_order"]),
+                       dtype=np.float64)
+    if correction == "drop_outside_and_rescale":
+        # The spike's frame is the LAST lag, so the outermost spline at that end is the last column.
+        basis = basis[:, :-1]
+        mass = basis.sum(axis=0)
+        basis = basis * np.sqrt(mass.max() / mass)[None, :]
+    alpha = float(temporal_basis["l2_lag_alpha"])
+    if alpha > 0.0:
+        frames = np.arange(n_lags, dtype=np.float64)
+        centres = (basis * frames[:, None]).sum(axis=0) / basis.sum(axis=0)
+        lag_fraction = np.clip((n_lags - 1.0 - centres) / max(n_lags - 1.0, 1.0), 0.0, 1.0)
+        basis = basis / np.sqrt(1.0 + alpha * lag_fraction ** 2)[None, :]
+    return basis / float(basis.sum(axis=0).mean())
 
 def inner_folds(pool_session_ids: list) -> list:
     """
@@ -137,6 +270,10 @@ def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices:
     across training sessions, because the design is assembled from all of them at once and it is the total
     that has to stay in memory.
 
+    Each training session carries its own unpenalised baseline (``session_intercepts``), backfitted against
+    the penalised filters, so a session that simply fires faster is not explained by a kinematic feature
+    that happens to differ in it; the filters describe within-session modulation only.
+
     Parameters
     ----------
     per_session (dict)
@@ -154,8 +291,10 @@ def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices:
 
     Returns
     -------
-    estimator (GroupElasticNetGLM)
-        The fitted model.
+    estimator (GroupElasticNetGLM | FrameFilterModel)
+        The fitted model, always in frame space: the raw solver itself, or -- under
+        ``temporal_basis.type == "bspline"`` -- the spline fit mapped back to one weight per frame. Its
+        intercept is the training sessions' anchor-weighted mean baseline.
     base_rate (float)
         Pooled training spike rate before subsampling, on the true-population scale.
     """
@@ -171,10 +310,10 @@ def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices:
                f"subsampling_correction is {encoding_settings['subsampling_correction']!r}.")
         raise ValueError(msg)
     columns = list(feature_indices)
-    design_blocks, label_blocks, offset_blocks = [], [], []
+    design_blocks, label_blocks, offset_blocks, owner_blocks = [], [], [], []
     n_positive_total, n_negative_total = 0, 0
     per_session_cap = max(int(encoding_settings["max_train_total"] / max(len(train_session_ids), 1)), 1)
-    for session_id in train_session_ids:
+    for position, session_id in enumerate(train_session_ids):
         session = per_session[session_id]
         anchors, labels, offsets, n_positive, n_negative = subsample_quiet_anchors(
             session["quiet"], session["spike_frames"], session["n_frames"],
@@ -182,17 +321,105 @@ def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices:
         design_blocks.append(lagged_design(session["feature_time_series"][:, columns], anchors, n_lags))
         label_blocks.append(labels)
         offset_blocks.append(offsets)
+        owner_blocks.append(np.full(anchors.size, position))
         n_positive_total += n_positive
         n_negative_total += n_negative
 
-    estimator = GroupElasticNetGLM(
-        n_features=len(columns), n_time_bins=n_lags, family="bernoulli",
-        lambda_group=penalties["lambda_group"], lambda_smooth=penalties["lambda_smooth"],
-        lambda_ridge=penalties["lambda_ridge"], smoothness_order=encoding_settings["smoothness_order"],
-        debias_refit=False, max_iter=encoding_settings["solver"]["max_iter"],
-        tol=encoding_settings["solver"]["tol"])
-    estimator.fit(np.vstack(design_blocks), np.concatenate(label_blocks),
-                  offset=np.concatenate(offset_blocks))
+    design = np.vstack(design_blocks)
+    labels_all, offsets_all = np.concatenate(label_blocks), np.concatenate(offset_blocks)
+    owner = np.concatenate(owner_blocks)
+    basis = lag_basis(n_lags, encoding_settings["temporal_basis"])
+    if basis is not None:
+        # Every feature's history collapses to the basis's lag-averages; the solver fits those coefficients
+        # (ridge on the lag-scaled basis, optional second-difference smoothness across neighbouring
+        # splines) and the same basis maps them back to one weight per frame, so everything downstream
+        # still handles a per-frame filter. The lagged design is feature-major, n_lags columns per
+        # feature, which is what the reshape relies on.
+        design = (design.reshape(design.shape[0], len(columns), n_lags) @ basis).reshape(design.shape[0], -1)
+
+    def solve(session_offsets: np.ndarray, x: np.ndarray, n_groups: int) -> GroupElasticNetGLM:
+        """One penalised fit of ``x`` (``n_groups`` column groups) with per-anchor session baselines added
+        to the case-control offsets."""
+        if basis is None:
+            solver = GroupElasticNetGLM(
+                n_features=n_groups, n_time_bins=n_lags, family="bernoulli",
+                lambda_group=penalties["lambda_group"], lambda_smooth=penalties["lambda_smooth"],
+                lambda_ridge=penalties["lambda_ridge"], smoothness_order=encoding_settings["smoothness_order"],
+                debias_refit=False, max_iter=encoding_settings["solver"]["max_iter"],
+                tol=encoding_settings["solver"]["tol"])
+        else:
+            basis_settings = encoding_settings["temporal_basis"]
+            solver = GroupElasticNetGLM(
+                n_features=n_groups, n_time_bins=basis.shape[1], family="bernoulli", lambda_group=0.0,
+                lambda_smooth=basis_settings["lambda_smooth"], lambda_ridge=basis_settings["lambda_ridge"],
+                smoothness_order=2, debias_refit=False, max_iter=encoding_settings["solver"]["max_iter"],
+                tol=encoding_settings["solver"]["tol"])
+        solver.fit(x, labels_all, offset=offsets_all + session_offsets)
+        return solver
+
+    # PER-SESSION INTERCEPTS. A session that fires faster must not be explained by whatever kinematic
+    # feature also happens to differ in it, so each training session gets its own baseline and the filters
+    # learn only within-session modulation. The solver has one intercept and penalises every column, so:
+    #   spline basis -- the k - 1 session indicators (relative to the first session, whose level the
+    #     solver's intercept carries) enter as ONE extra column group scaled by `indicator_scale`, so the
+    #     uniform coefficient ridge reaches them at 1 / indicator_scale**2 of its strength: one fit,
+    #     effectively unpenalised. The basis path has no smoothness penalty across columns
+    #     (`lambda_smooth` 0 is shipped), which is what makes a padded indicator group safe.
+    #   raw per-frame lags -- the first-difference smoothness would couple neighbouring indicator columns,
+    #     so the baselines are BACKFITTED instead: fit with the baselines as offsets, Newton on each
+    #     baseline given the filters, repeat to a fixed point. Exact, but every sweep is a full refit.
+    # Measured 2026-10-16 against the full backfit: indicator filters within 0.4-1.4 % in norm at
+    # r >= 0.9999, at 1-2x the cost of a shared intercept against 13-25x for the backfit.
+    settings_block = encoding_settings["session_intercepts"]
+    n_sessions = len(train_session_ids)
+    weights = np.bincount(owner, minlength=n_sessions).astype(np.float64)
+    deltas = np.zeros(n_sessions)
+    use_sessions = settings_block["compute"] and n_sessions > 1
+    if use_sessions and basis is not None:
+        n_columns = basis.shape[1]
+        if n_sessions - 1 > n_columns:
+            msg = (f"{n_sessions} training sessions need {n_sessions - 1} indicator columns but one column "
+                   f"group holds {n_columns}.")
+            raise ValueError(msg)
+        indicators = np.zeros((design.shape[0], n_columns))
+        for k in range(1, n_sessions):
+            indicators[owner == k, k - 1] = float(settings_block["indicator_scale"])
+        solver = solve(np.zeros(owner.size), np.hstack([design, indicators]), len(columns) + 1)
+        coefficients = np.asarray(solver.coef_, dtype=np.float64).reshape(len(columns) + 1, n_columns)
+        deltas[1:] = coefficients[-1, :n_sessions - 1] * float(settings_block["indicator_scale"])
+        filter_coefficients = coefficients[:len(columns)]
+    else:
+        solver = solve(deltas[owner], design, len(columns))
+        if use_sessions:
+            for _sweep in range(settings_block["max_sweeps"]):
+                eta = design @ np.asarray(solver.coef_, dtype=np.float64) + float(solver.intercept_) + offsets_all
+                previous = deltas.copy()
+                for k in range(1, n_sessions):
+                    rows = owner == k
+                    for _step in range(25):
+                        p = 1.0 / (1.0 + np.exp(-(eta[rows] + deltas[k])))
+                        hessian = float(np.sum(p * (1.0 - p)))
+                        if hessian <= 0.0:
+                            break
+                        step = float(np.sum(labels_all[rows] - p)) / hessian
+                        deltas[k] += step
+                        if abs(step) < 1e-10:
+                            break
+                solver = solve(deltas[owner], design, len(columns))
+                if np.max(np.abs(deltas - previous)) < settings_block["tolerance"]:
+                    break
+        filter_coefficients = (np.asarray(solver.coef_, dtype=np.float64).reshape(len(columns), -1)
+                               if basis is not None else None)
+    # The returned intercept is the training sessions' anchor-weighted mean baseline: a new session's own
+    # level is unknown to the model, and every consumer either recalibrates it on that session's frames or
+    # uses it only as a population-level reference.
+    intercept = float(solver.intercept_) + float(np.average(deltas, weights=weights))
+    if basis is None:
+        solver.intercept_ = intercept
+        estimator = solver
+    else:
+        frame_weights = filter_coefficients @ basis.T
+        estimator = FrameFilterModel(frame_weights.ravel(), intercept, bool(solver.converged_), int(solver.n_iter_))
 
     # A FISTA run that exhausts max_iter returns whatever iterate it reached, and it is otherwise
     # indistinguishable from a converged fit -- same type, same attributes, a filter that looks
@@ -252,7 +479,7 @@ def linear_predictor_at_frames(estimator, feature_time_series: np.ndarray, featu
 
 def frozen_null_scores(eta: np.ndarray, frames: np.ndarray, spike_frames: np.ndarray, n_frames: int,
                        fps: float, n_shuffles: int, rng, guard_seconds: float,
-                       calibration_steps: int, calibration_bins: int) -> np.ndarray:
+                       calibration_steps: int, calibration_bins: int, calibration: dict) -> np.ndarray:
     """
     Description
     -----------
@@ -283,6 +510,9 @@ def frozen_null_scores(eta: np.ndarray, frames: np.ndarray, spike_frames: np.nda
         Equal-count predictor bins for the binned calibration. ``0`` runs the exact path instead. The
         responses are exact either way; see ``binned_calibrated_explained_deviance`` for the measured
         cost of the approximation.
+    calibration (dict)
+        The ``kinematic_encoding.calibration`` block; every draw is scored by the same rule as the
+        observed score (:func:`deviance_metrics.frozen_model_score`).
 
     Returns
     -------
@@ -306,11 +536,8 @@ def frozen_null_scores(eta: np.ndarray, frames: np.ndarray, spike_frames: np.nda
         for column, draw in enumerate(range(start, stop)):
             shifted = shifted_spike_frames(spike_frames, shifts[draw], fps, n_frames)
             labels[:, column] = spike_labels_at_frames(shifted, frames, n_frames)
-        if calibration_bins > 0:
-            null[start:stop] = binned_calibrated_explained_deviance(
-                eta, labels, calibration_steps, calibration_bins)
-        else:
-            null[start:stop] = batched_calibrated_explained_deviance(eta, labels, calibration_steps)
+        null[start:stop] = frozen_model_null_scores(eta, labels, calibration_steps, calibration_bins,
+                                                    calibration)
     return null
 
 
@@ -382,14 +609,16 @@ def screen_features(per_session: dict, pool_session_ids: list, n_lags: int, rng,
                                              session["quiet"], n_lags, encoding["chunk_rows"])
             labels = spike_labels_at_frames(session["spike_frames"], session["quiet"],
                                             session["n_frames"])
-            score, slope = calibrated_explained_deviance(eta, labels, encoding["solver"]["calibration_steps"])
+            score, slope = frozen_model_score(eta, labels, np.zeros(labels.size, dtype=np.int64),
+                                              encoding["solver"]["calibration_steps"], "bernoulli", 1.0,
+                                              encoding["calibration"])
             fold_scores.append(score)
             fold_slopes.append(slope)
             fold_nulls.append(frozen_null_scores(
                 eta, session["quiet"], session["spike_frames"], session["n_frames"], session["fps"],
                 settings["null"]["screen_n_shuffles"], rng, settings["null"]["shuffle_guard_seconds"],
                 encoding["solver"]["calibration_steps"],
-                encoding["solver"]["null_calibration_bins"]))
+                encoding["solver"]["null_calibration_bins"], encoding["calibration"]))
         score = finite_mean(np.asarray(fold_scores))
         slope = finite_mean(np.asarray(fold_slopes))
         p_value, at_floor = empirical_pvalue(np.vstack(fold_nulls).mean(axis=0), score)
@@ -479,8 +708,9 @@ def forward_select(per_session: dict, pool_session_ids: list, survivors: list, n
                                              session["quiet"], n_lags, encoding["chunk_rows"])
             labels = spike_labels_at_frames(session["spike_frames"], session["quiet"],
                                             session["n_frames"])
-            values.append(calibrated_explained_deviance(
-                eta, labels, encoding["solver"]["calibration_steps"])[0])
+            values.append(frozen_model_score(eta, labels, np.zeros(labels.size, dtype=np.int64),
+                                             encoding["solver"]["calibration_steps"], "bernoulli", 1.0,
+                                             encoding["calibration"])[0])
         return np.asarray(values, dtype=np.float64), converged
 
     scored = [(feature, *fold_scores([feature])) for feature in survivors]

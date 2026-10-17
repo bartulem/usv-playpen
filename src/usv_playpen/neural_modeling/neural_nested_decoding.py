@@ -3,24 +3,37 @@
 Nested vocal-manifold position decoding: does a neuron carry vocal output type BEYOND the behaviour that
 predicts it?
 
-Two nested decoders of the same target, the upcoming call's position on the QLVM torus:
+Two nested models of the same target, the upcoming call's position on the QLVM torus, differing in
+exactly the neuron:
 
-    reduced:  position ~ kinematics
-    full:     position ~ kinematics + prevocal spike count
+    reduced:  behaviour
+    full:     behaviour + the neuron's window count
 
-and the statistic is the out-of-sample added ``vm_logscore``, full minus reduced. A PURE RELAY, whose
-spiking is a function of the behaviour, adds nothing the kinematics did not already carry and fails.
-A unit that adds something passes -- and what it adds is either genuinely internal, or behaviour that
-was not measured. This test cannot separate those two, which is why the paper says "beyond MEASURED
+and the statistic is what the neuron ADDS, held out, full minus reduced. A PURE RELAY, whose spiking
+is a function of the behaviour, adds nothing the behaviour did not already carry and fails. A unit
+that adds something passes -- and what it adds is either genuinely internal, or behaviour that was
+not measured. This test cannot separate those two, which is why the paper says "beyond MEASURED
 behaviour" rather than "computes the transformation", and why measuring behaviour more completely
 makes this test STRONGER rather than weaker.
 
-The asymmetry is deliberate and runs conservative. The behaviour block is a rich 4 s history of five
-features -- 3,000 columns -- and the neuron is ONE column, its 50 ms prevocal count. The neuron must
-earn its place against a control as complete as we can make it, because a weak control would let a
-unit pass by proxying behaviour the control missed. The cost is power, not validity: contribution
-that is nonlinear in the count, or that lives in the time course within the window, cannot be
-expressed, so the transformation count is a lower bound.
+THE TESTED STATISTIC IS THE POSTERIOR FORM (ruled 2026-10-12): identity's own Bayes decoder with the
+behaviour control entering as the PRIOR -- a von Mises on the torus grid around the control's predicted
+position, with a concentration fitted on training events -- so ``added`` is log posterior(truth |
+neuron, behaviour) minus log prior(truth | behaviour), in nats per event. Identity's gain is the same
+quantity under the unconditioned occupancy prior, which makes the two claims one statistic under two
+priors. The reason is measured, not aesthetic: cl0401, whose counts run 3.4 to 5.7 across the four
+acoustic regions and decode +0.049 nats/event categorically, added NOTHING (-0.012) to the earlier
+point-regression form, because "probably this region" can reweight a distribution but cannot move a
+single predicted point without spreading it, and a concentration-fitting score punishes the spread.
+The regression form is RETAINED as a fine-position DESCRIPTOR (``point_regression`` in the section),
+never a route to passing.
+
+The point-regression form, for the record: ``reduced`` is the control's predicted position as four
+sine/cosine columns, ``full`` adds the neuron's z-scored count as one column, both fit by the torus
+ridge regression and scored by the macro von Mises log-score. Its asymmetry was deliberate and ran
+conservative -- the neuron earns its place as ONE column -- and its cost was power, not validity:
+contribution that is nonlinear in the count cannot be expressed. The posterior form removes that
+limitation for coarse tuning; the transformation count remains a lower bound.
 
 Three things are settled and should not be re-derived.
 
@@ -51,11 +64,15 @@ import numpy as np
 from scipy.linalg import block_diag
 
 from ..modeling.manifold_metric import (
+    _fit_von_mises_kappa,
     inverse_region_frequency_weights,
     macro_von_mises_logscore,
+    signed_diff,
 )
 from ..modeling.manifold_torus_regression import SmoothTorusManifoldRegression
+from .deviance_metrics import finite_mean
 from .neural_design_assembly import lagged_design
+from .neural_vocal_decoding import decode_gain
 from .neural_vocal_occurrence import counts_in_windows
 from .shift_null_inference import shift_range_seconds
 
@@ -175,11 +192,18 @@ def reduced_model_features(settings: dict, require_selection_file: bool = True) 
     the selection it is meant to be. Doing both catches the drift instead of absorbing it, and is the
     same "check rather than assume" the emitter and dyad resolutions use.
 
-    REPOINTED 2026-09-23. This used to read P1's selection, from 121 untethered behavioural sessions.
-    P1's FITTED MAP does not transfer to the ephys preparation -- measured at -0.00113 over 41,087 calls
-    -- while the same estimator refitted in domain predicts perfectly well, so the control is now
-    selected and fitted on the ephys cohort. A file in P1's format is REFUSED with that explanation
-    rather than read, because its schema would otherwise raise an unhelpful KeyError.
+    WHAT MAY BE ADOPTED FROM A BEHAVIOURAL SELECTION, AND WHAT MAY NOT. Its FITTED MAP does not
+    transfer to the ephys preparation -- measured at -0.00113 over 41,087 calls -- while the same
+    estimator refitted in domain predicts perfectly well. That is a statement about COEFFICIENTS, not
+    about which features to use, so a behavioural selection's feature set is read here while the
+    control itself is always refitted in domain by ``fit_control_models``. An externally chosen set is
+    in one respect preferable: those features were never selected on the preparation the claim is made
+    about, so selection optimism is zero rather than merely bounded.
+
+    Both artifact shapes are therefore accepted -- a cohort selection's ``selected_features``, or a
+    behavioural selection's ``steps`` (its last step's ``current_features``) -- and either way the
+    result is ASSERTED against the frozen list, so a re-run of a selection cannot quietly redefine the
+    behaviour the neuron is measured against.
 
     The file is an INPUT to the run, so it lives in the ``data`` block beside the session lists.
 
@@ -209,14 +233,23 @@ def reduced_model_features(settings: dict, require_selection_file: bool = True) 
 
     with path.open("rb") as handle:
         selection = pickle.load(handle)
-    if "selected_features" not in selection:
-        msg = (f"{path.name} is not a cohort selection result"
-               f"{' (it carries P1 selection steps)' if 'steps' in selection else ''}. The behaviour "
-               f"control is now selected and fitted on the ephys cohort, because P1's fitted map does "
-               f"not transfer to this preparation. Point data.behaviour_selection_result_path at the "
-               f"artifact written by behaviour_control_model.select_control_features.")
+    if "selected_features" in selection:
+        selected = list(selection["selected_features"])
+    elif "steps" in selection:
+        # A behavioural-modelling selection, whose FEATURE SET may be adopted while its COEFFICIENTS
+        # may not. Only the names are taken here; the control is still fitted in domain by
+        # `fit_control_models`, which is the guard that matters -- the fitted map is what failed to
+        # transfer (-0.00113 over 41,087 calls), not the choice of features. Adopting an external set
+        # also removes selection optimism outright instead of bounding it, since those features were
+        # never chosen on the preparation the claim is made about.
+        selected = list(selection["steps"][-1]["current_features"])
+    else:
+        msg = (f"{path.name} is neither a cohort selection result ('selected_features') nor a "
+               f"behavioural-modelling selection ('steps'). Point "
+               f"data.behaviour_selection_result_path at the artifact written by "
+               f"behaviour_control_model.select_control_features, or at a behavioural selection "
+               f"whose feature set is being adopted.")
         raise ValueError(msg)
-    selected = list(selection["selected_features"])
     if selected != frozen:
         msg = (f"behaviour selection drift: {path.name} selected {selected}, but settings freeze "
                f"{frozen}. The behaviour control would silently change meaning; update the settings "
@@ -336,18 +369,266 @@ def nested_design(events: dict, per_session: dict, feature_names: list, n_lags: 
             "per_session": bookkeeping}
 
 
+def behaviour_prior_log_density(fold: dict, predicted_positions: np.ndarray, positions: np.ndarray,
+                                period: float, settings: dict) -> tuple[float, np.ndarray]:
+    """
+    Description
+    -----------
+    Behaviour as a PRIOR over the torus grid: for each event, the fold's occupancy prior MULTIPLIED by
+    the von Mises evidence the behaviour control supplies for that call, with a concentration measured
+    on the training events alone.
+
+    This is how the nested statistic conditions on behaviour without asking the neuron to compete for a
+    point. The regression form forced every model to answer "where exactly", one point per call, and a
+    neuron whose knowledge is "probably this region" cannot help with that -- measured on cl0401, whose
+    counts run 3.4 to 5.7 across regions and decode +0.049 nats/event categorically, yet add nothing to
+    a point. A prior can be reweighted without being moved, so the same knowledge is worth nats here.
+
+    THE PRODUCT FORM IS BAYES, AND THE FLAT FORM WAS A BIAS -- found before it produced a number. The
+    control gives a point ``x_hat`` whose residual around the truth is von Mises with concentration
+    ``kappa``; by symmetry ``p(x_hat | x) = vM(x; x_hat, kappa)``, so with the occupancy base rate
+    ``p(x)`` the conditioned prior is ``p(x | x_hat) ~ occupancy(x) * vM(x; x_hat, kappa)``. The first
+    draft used the von Mises ALONE, the flat-prior special case, and on cl0401 that scored 0.22 nats
+    WORSE at the truth than identity's occupancy prior -- not because behaviour misled, but because the
+    prior had forgotten where calls live. A neuron is then credited for restoring that, which inflates
+    ``added``. In the product form a control that knows nothing (``kappa`` to 0) reduces to the
+    occupancy prior, the ladder's first step goes to zero rather than -0.22, and a control that knows
+    something sharpens the base rate instead of replacing it.
+
+    The concentration is ONE shared kappa per fold, set on the training sessions alone, two ways.
+    ``train_residuals`` fits it on the training events' wrap-aware angular residuals around the
+    control's prediction -- the macro scorer's own convention (``_fit_von_mises_kappa`` over both
+    dimensions ravelled). ``train_tuned_inner_loso`` chooses it from ``kappa_grid`` by inner
+    leave-one-session-out on the training sessions, maximising the held-in log prior at the truth over
+    the occupancy prior -- the same discipline as the amplitude calibration, and for the same reason:
+    a residual fit is MIS-SPECIFIED for a shrunk predictor (see the branch comment) and only a
+    held-out criterion can tell a control that knows nothing from one that knows something. Either
+    way the evidence is only as sharp as behaviour has earned on data the scored session never sees.
+    The occupancy term already carries the fold's mask, so the product can put no mass where no
+    training call ever sat; renormalising over the masked grid absorbs ``log I0(kappa)`` and no second
+    copy of the density formula is needed.
+
+    Parameters
+    ----------
+    fold (dict)
+        From ``neural_vocal_decoding.decoding_context``; its ``train_rows``, ``grid_positions``,
+        ``mask`` and ``cell_area`` are read.
+    predicted_positions (np.ndarray)
+        ``(n_events, 2)`` the behaviour control's predicted torus position per event, unpermuted.
+    positions (np.ndarray)
+        ``(n_events, 2)`` true torus positions, unpermuted.
+    period (float)
+        Torus period.
+    settings (dict)
+        The nested block; ``behaviour_prior.form``, ``behaviour_prior.concentration`` and, for the
+        tuned concentration, ``behaviour_prior.kappa_grid`` (candidates, all ``>= 0``) are read.
+
+    Returns
+    -------
+    kappa, log_density (tuple)
+        The fitted concentration, and ``(n_events, n_cells)`` log prior density per event over the
+        grid, masked and normalised, floored at identity's own ``log(1e-300)``.
+    """
+
+    prior = settings["behaviour_prior"]
+    if prior["form"] != "von_mises":
+        msg = f"behaviour_prior.form must be 'von_mises'; got {prior['form']!r}. Ruled, not missing."
+        raise ValueError(msg)
+    scale = 2.0 * np.pi / period
+
+    def tilted(kappa: float) -> np.ndarray:
+        # Bayes: the occupancy base rate times the behaviour evidence. Starting from the fold's own
+        # (masked) log occupancy prior is what makes a know-nothing control reduce to identity's prior.
+        grid = fold["grid_positions"]
+        log_density = np.repeat(fold["log_prior"][None, :], predicted_positions.shape[0], axis=0)
+        for dimension in range(2):
+            delta = scale * (grid[None, :, dimension] - predicted_positions[:, None, dimension])
+            log_density += kappa * np.cos(delta)
+        log_density = np.where(fold["mask"][None, :], log_density, -np.inf)
+        peak = log_density.max(axis=1, keepdims=True)
+        log_norm = peak + np.log(np.sum(np.exp(log_density - peak), axis=1, keepdims=True)
+                                 * fold["cell_area"])
+        return np.maximum(log_density - log_norm, np.log(1e-300))
+
+    if prior["concentration"] == "train_residuals":
+        train = fold["train_rows"]
+        residual = signed_diff(positions[train], predicted_positions[train], metric="torus",
+                               period=period) * scale
+        kappa = float(_fit_von_mises_kappa(residual.ravel()))
+    elif prior["concentration"] == "train_tuned_inner_loso":
+        # MEASURED on cl0401 (2026-10-12): residual kappa (0.62-0.85) scored the prior 0.10 nats BELOW
+        # occupancy at the truth, because a shrunk predictor's residual spread is mostly the truth's
+        # own spread, which occupancy already carries -- the evidence double-counts the base rate.
+        # Tuning kappa on the training rotation, exactly as the amplitude is tuned, lets a control
+        # that knows nothing settle at kappa = 0 (the inner curve was monotone decreasing from zero
+        # on every fold) and a control that knows something sharpen the base rate by what it has
+        # earned. kappa >= 0 by construction: the evidence can be declined, never inverted.
+        #
+        # What this measures is evidence beyond the occupancy prior AS FITTED. If that prior is
+        # over-smoothed -- a KDE bandwidth too wide for a tight cluster -- a control that merely
+        # returns the cluster's centre earns a positive kappa by re-sharpening the base rate (seen on
+        # the coarse test grid: 0.5 for a constant predictor). That is CONSERVATIVE for `added`, since
+        # a sharper prior leaves the neuron less to add, but it is misattributed on the ladder's first
+        # rung. The shipped bandwidth is selected by held-out position likelihood, under which cl0401
+        # tuned to exactly 0, so it does not arise there; it is the reason the bandwidth must stay
+        # held-out-selected and never be widened for speed on real data.
+        kappa = float(prior["kappa_grid"][0])
+        if fold["inner_splits"]:
+            best = -np.inf
+            for candidate in (float(k) for k in prior["kappa_grid"]):
+                log_density = tilted(candidate)
+                held_in = []
+                for _inner_train, inner_test in fold["inner_splits"]:
+                    cells = fold["truth_cell"][inner_test]
+                    value = log_density[inner_test, cells] - fold["log_prior"][cells]
+                    value[~fold["mask"][cells]] = np.nan
+                    held_in.append(finite_mean(value))
+                score = finite_mean(np.asarray(held_in))
+                if score > best:
+                    best, kappa = score, candidate
+    else:
+        msg = (f"behaviour_prior.concentration must be 'train_residuals' or "
+               f"'train_tuned_inner_loso'; got {prior['concentration']!r}. Ruled, not missing.")
+        raise ValueError(msg)
+    return kappa, tilted(kappa)
+
+
+def behaviour_priors(folds: list, predicted_positions: np.ndarray, positions: np.ndarray,
+                     nested: dict) -> tuple[list, list]:
+    """
+    Description
+    -----------
+    The behaviour prior for every fold, built ONCE.
+
+    A prior depends only on positions, the control's predictions and the fold's geometry -- none of
+    which a null draw changes -- so it is computed here and handed to every draw, rather than rebuilt
+    a thousand times inside the null for a quantity that does not move. The grid matrices are the
+    largest arrays this statistic holds (events x cells per fold), so building them once is also what
+    keeps the worker processes' memory flat.
+
+    Parameters
+    ----------
+    folds (list)
+        From ``decoding_context``.
+    predicted_positions (np.ndarray)
+        The behaviour control's predicted position per event, unpermuted.
+    positions (np.ndarray)
+        True positions per event, unpermuted.
+    nested (dict)
+        The nested block (``nested_settings``); its ``torus_period`` and ``behaviour_prior`` are read.
+
+    Returns
+    -------
+    kappas, priors (tuple)
+        One fitted concentration per fold, and one ``(n_events, n_cells)`` log prior per fold.
+    """
+
+    kappas, priors = [], []
+    for fold in folds:
+        kappa, log_prior = behaviour_prior_log_density(fold, predicted_positions, positions,
+                                                       nested["torus_period"], nested)
+        kappas.append(kappa)
+        priors.append(log_prior)
+    return kappas, priors
+
+
+def posterior_nested_gain(counts: np.ndarray, folds: list, decoding: dict, priors: list,
+                          kappas: list, permutation: np.ndarray = None,
+                          with_detail: bool = False) -> dict:
+    """
+    Description
+    -----------
+    The nested statistic in identity's currency: what the neuron adds, in nats per event, once
+    behaviour has already set the prior.
+
+    It IS ``decode_gain`` -- same tuning surface, ridge, exposure offsets, amplitude calibration, grid
+    and mask -- with the fold's occupancy prior replaced by :func:`behaviour_prior_log_density`. So
+    ``added`` is log posterior(truth | neuron, behaviour) minus log prior(truth | behaviour), averaged
+    over held-out events, and identity's gain is the same quantity under the unconditioned prior. The
+    two claims are one statistic under two priors, which is what combining their p-values assumes.
+
+    Reported beside it, the LADDER the regression form also drew: ``behaviour_over_no_behaviour`` is
+    log prior(truth | behaviour) minus log occupancy prior(truth) -- what behaviour alone buys -- and
+    ``full_over_no_behaviour`` is the sum. The ladder's first step is INVARIANT under the permutation
+    null because a prior row travels with its position; only ``added`` is tested.
+
+    Parameters
+    ----------
+    counts (np.ndarray)
+        Spike count per event; never permuted.
+    folds (list)
+        From ``decoding_context`` built on these events' positions and sessions.
+    decoding (dict)
+        The ``vocal_decoding`` block, whose tuning-surface settings the shared decoder reads.
+    priors (list)
+        From :func:`behaviour_priors`: one ``(n_events, n_cells)`` log prior per fold, unpermuted.
+    kappas (list)
+        From :func:`behaviour_priors`: the concentration each prior was built with.
+    permutation (np.ndarray)
+        Event reordering applied to positions AND their priors together, or None.
+    with_detail (bool)
+        Carry the per-event detail through, observed pass only.
+
+    Returns
+    -------
+    result (dict)
+        ``added``, ``added_uncalibrated``, ``nats_per_spike``, ``behaviour_over_no_behaviour``,
+        ``full_over_no_behaviour``, ``n_masked``, ``n_folds_positive``, ``min_leave_one_fold_out``,
+        ``per_fold`` (each with its ``kappa``), ``alphas``, ``ridges``, ``kappas``, and the detail.
+    """
+
+    full = decode_gain(counts, folds, decoding, permutation, with_detail, log_prior_events=priors)
+
+    order = np.arange(counts.size) if permutation is None else np.asarray(permutation)
+    behaviour_over = np.full(counts.size, np.nan, dtype=np.float64)
+    for fold, log_prior in zip(folds, priors, strict=True):
+        test = fold["test_rows"]
+        cells = fold["truth_cell"][order][test]
+        value = log_prior[order][test, cells] - fold["log_prior"][cells]
+        value[~fold["mask"][cells]] = np.nan
+        behaviour_over[test] = value
+    behaviour_gain = finite_mean(behaviour_over)
+
+    per_fold = [{**fold_result, "kappa": kappa, "added": fold_result["gain"]}
+                for fold_result, kappa in zip(full["per_fold"], kappas, strict=True)]
+    for fold_result in per_fold:
+        del fold_result["gain"]
+    renamed = {"added": full["gain"], "added_uncalibrated": full["gain_uncalibrated"],
+               "nats_per_spike": full["nats_per_spike"], "n_masked": full["n_masked"],
+               "n_folds_positive": full["n_folds_positive"],
+               "min_leave_one_fold_out": full["min_leave_one_fold_out"],
+               "per_fold": per_fold, "alphas": full["alphas"], "ridges": full["ridges"],
+               "kappas": kappas,
+               "behaviour_over_no_behaviour": behaviour_gain,
+               "full_over_no_behaviour": full["gain"] + behaviour_gain}
+    detail = {key: full[key] for key in ("per_event_gain", "decode_error", "posterior_entropy",
+                                          "mean_decode_error", "mean_posterior_entropy",
+                                          "overdispersion_index") if key in full}
+    return {**renamed, **detail}
+
+
 #: The only value implemented for each option `nested_vocal_manifold_position_decoding` names. Every one of these
 #: keys described a real alternative the plan discusses, and every one was read by NOTHING -- so a run
 #: could declare `vm_score_mode: "micro"`, be reported as micro, and score macro. The plan RULED macro
 #: for this test (micro leaves the behaviour control suboptimal for it, which biases it toward
 #: passing), RULED the rich behaviour window, and RULED the neuron as ONE z-scored count -- so
 #: these are settled decisions, and the guard makes a deviation from them loud instead of silent.
+#: `statistic` is the 2026-10-12 ruling: the posterior form is the tested statistic and the point
+#: regression is kept as a fine-position DESCRIPTOR, never a route to passing.
 IMPLEMENTED_OPTIONS = {
     "vm_score_mode": ("macro",),
     "behaviour_control": ("rich",),
     "prevocal_window_n_bins": (1,),
     "rate_transform": ("none",),
     "rate_basis": ("linear",),
+    "statistic": ("posterior",),
+}
+
+#: Nested-key options, ``(outer key, inner key) -> implemented values``, guarded the same way.
+IMPLEMENTED_NESTED_OPTIONS = {
+    ("behaviour_prior", "form"): ("von_mises",),
+    ("behaviour_prior", "concentration"): ("train_residuals", "train_tuned_inner_loso"),
+    ("discrimination_null", "method"): ("within_session_pair_permutation",),
 }
 
 
@@ -401,6 +682,14 @@ def check_settings(settings: dict) -> None:
             others = ", ".join(repr(a) for a in allowed)
             msg = (f"nested_vocal_manifold_position_decoding.{key} = {value!r} is not implemented; this module supports "
                    f"{others}. This is a ruled decision, not a missing feature -- see the plan.")
+            raise ValueError(msg)
+    for (outer, inner), allowed in IMPLEMENTED_NESTED_OPTIONS.items():
+        value = settings[outer][inner]
+        if value not in allowed:
+            others = ", ".join(repr(a) for a in allowed)
+            msg = (f"nested_vocal_manifold_position_decoding.{outer}.{inner} = {value!r} is not "
+                   f"implemented; this module supports {others}. This is a ruled decision, not a "
+                   f"missing feature -- see the plan.")
             raise ValueError(msg)
 
 

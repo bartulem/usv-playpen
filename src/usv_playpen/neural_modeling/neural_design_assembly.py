@@ -36,6 +36,8 @@ is what lets one guard band serve the kinematic encoding, the vocal-occurrence a
 
 from __future__ import annotations
 
+import multiprocessing
+import os
 from pathlib import Path
 
 import h5py
@@ -54,6 +56,47 @@ from ..modeling.modeling_utils import (
 )
 from ..os_utils import configure_path
 from .neural_vocal_occurrence import counts_in_windows, quiet_tile_edges
+
+#: The environment variables through which the common BLAS and OpenMP runtimes take their thread count.
+BLAS_THREAD_VARIABLES = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+                         "NUMEXPR_NUM_THREADS")
+
+
+def worker_process_context() -> multiprocessing.context.BaseContext:
+    """
+    Description
+    -----------
+    The multiprocessing context for a pool of numerical workers, with every worker's BLAS held to ONE
+    thread -- so that ``n_workers`` bounds the cores a pool takes, which on its own it does not.
+
+    A process pool limits the number of WORKERS, not the number of threads. Each worker that imports
+    numpy receives a BLAS thread pool sized to the whole machine, so ``n_workers`` workers claim
+    ``n_workers x nproc`` threads and the box oversubscribes by that factor. MEASURED 2026-10-12: six
+    gating workers at 65 threads and ~480% CPU each took 29 of 32 cores, starved six concurrent
+    encoding folds from ~350% to ~100% CPU, drove the load average past 200, and ran twelve times over
+    the gating stage's measured budget -- thrashing rather than progressing. With single-threaded
+    workers ``n_workers`` means what it says, and the parallelism lives where it was intended, across
+    workers rather than inside each one.
+
+    The variables are set in THIS process's environment, which spawned children inherit and read when
+    their BLAS initialises; ``setdefault`` so an explicit value already in the shell wins. The context
+    is SPAWN rather than fork for the same reason: a forked child shares the parent's already-initialised
+    BLAS pool and ignores the variables, while a spawned one starts its runtimes afresh under them. The
+    parent's own threading is left alone -- numpy is long imported by the time any pool is built.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    context (multiprocessing.context.BaseContext)
+        The spawn context, to pass as ``mp_context`` to a ``ProcessPoolExecutor``.
+    """
+
+    for name in BLAS_THREAD_VARIABLES:
+        os.environ.setdefault(name, "1")
+    return multiprocessing.get_context("spawn")
 
 
 def quiet_anchor_frames(usv_starts_seconds: np.ndarray, usv_stops_seconds: np.ndarray, n_frames: int,

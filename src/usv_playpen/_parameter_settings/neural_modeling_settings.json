@@ -4,7 +4,7 @@
       "/mnt/falkner/Bartul/modeling/input_files/ephys_courtship_intact_partners_sessions_list.txt",
       "/mnt/falkner/Bartul/modeling/input_files/ephys_courtship_mute_female_sessions_list.txt"
     ],
-    "behaviour_selection_result_path": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_selection_ephys_cohort.pkl",
+    "behaviour_selection_result_path": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_selection_ephys_newmap.pkl",
     "brain_areas": ["PAG"],
     "area_mode": "include",
     "pool_areas": false,
@@ -14,8 +14,7 @@
   "data_roots": {
     "ephys_root": "/mnt/falkner/Bartul/EPHYS",
     "catalog_path": "/mnt/falkner/Bartul/EPHYS/unit_catalog.csv",
-    "data_root": "/mnt/falkner/Bartul/Data",
-    "vocal_summary_root": "/mnt/falkner/Bartul/PC_transfer/backedup_vocal/Bartul"
+    "data_root": "/mnt/falkner/Bartul/Data"
   },
   "data_sufficiency": {
     "min_courtship_sessions": 2,
@@ -85,6 +84,16 @@
     },
     "subsample_negatives": true,
     "negatives_per_positive": 10,
+    "calibration": {
+      "scheme": "crossfit",
+      "n_blocks": 5
+    },
+    "session_intercepts": {
+      "compute": true,
+      "indicator_scale": 10.0,
+      "max_sweeps": 30,
+      "tolerance": 1e-4
+    },
     "significance_model": {
       "lambda_group": 0.0,
       "lambda_smooth": 1000.0,
@@ -104,9 +113,23 @@
     },
     "transfer": {
       "calibration_grain": "pooled_across_folds",
-      "d2_reference_rate": "scored_frames"
+      "d2_reference_rate": "scored_frames",
+      "universe": "bout_window",
+      "pre_bout_seconds": 4.0,
+      "inter_bout_threshold_seconds": 0.1155,
+      "grain": "count",
+      "bin_seconds": 0.1
     },
     "subsampling_correction": "log_prior_offset",
+    "temporal_basis": {
+      "type": "bspline",
+      "n_splines": 20,
+      "spline_order": 3,
+      "l2_lag_alpha": 100.0,
+      "lambda_ridge": 0.1,
+      "lambda_smooth": 0.0,
+      "spike_end_correction": "drop_outside_and_rescale"
+    },
     "max_train_total": 70000,
     "chunk_rows": 4000
   },
@@ -203,15 +226,14 @@
   "nested_vocal_manifold_position_decoding": {
     "behaviour_control": "rich",
     "reduced_model_features": [
-      "self.neck_elevation",
-      "nose-nose",
-      "allo_yaw-nose",
-      "self.back_pitch",
-      "self.allo_roll"
+      "head-head",
+      "allo_yaw-head",
+      "allo_pitch-head",
+      "self.speed"
     ],
     "behaviour_control_model_path": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_model_ephys_cohort.pkl",
     "vm_score_mode": "macro",
-    "region_label_column": "qlvm_supercategory",
+    "region_label_column": "qlvm_category",
     "min_region_events": 20,
     "lambda_smooth": 1.0,
     "l2_reg": 0.01,
@@ -219,19 +241,30 @@
     "sigma_floor": 0.05,
     "prevocal_window_n_bins": 1,
     "rate_transform": "none",
-    "rate_basis": "linear"
+    "rate_basis": "linear",
+    "statistic": "posterior",
+    "behaviour_prior": {
+      "form": "von_mises",
+      "concentration": "train_tuned_inner_loso",
+      "kappa_grid": [0.0, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0]
+    },
+    "discrimination_null": {
+      "method": "within_session_pair_permutation",
+      "n_permutations": 1000,
+      "sided": "one_sided_upper"
+    }
   },
   "null": {
     "n_shuffles": 1000,
     "shuffle_guard_seconds": 20.0,
     "shuffle_seed": 0,
-    "screen_n_shuffles": 10000
+    "screen_n_shuffles": 2000
   },
   "significance": {
     "pvalue_method": "empirical_escalated",
     "fdr_method": "bh",
     "fdr_q": 0.01,
-    "escalation_ladder": [10000, 100000],
+    "escalation_ladder": [],
     "report_bh_floor_requirement": true
   },
   "robustness": {

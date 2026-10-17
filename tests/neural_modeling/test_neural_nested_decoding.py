@@ -34,17 +34,28 @@ with warnings.catch_warnings():
     )
     from usv_playpen.neural_modeling.neural_nested_decoding import (
         NestedTorusRegression,
+        behaviour_prior_log_density,
+        behaviour_priors,
+        check_settings,
         nested_design,
         nested_scores,
         nested_settings,
         no_behaviour_predictions,
         null_draw_factory,
         pooled_macro_score,
+        posterior_nested_gain,
         reduced_model_features,
         reduced_predictions,
         shifted_neural_column,
     )
-    from usv_playpen.neural_modeling.neural_vocal_decoding import PERIOD
+    from usv_playpen.neural_modeling.neural_significance import (
+        within_session_permutation,
+    )
+    from usv_playpen.neural_modeling.neural_vocal_decoding import (
+        PERIOD,
+        decode_gain,
+        decoding_context,
+    )
     from usv_playpen.neural_modeling.shift_null_inference import (
         escalated_empirical_pvalue,
     )
@@ -159,13 +170,13 @@ class TestTheBehaviourControl:
     """Read the COHORT selection AND assert it against the frozen list -- reading alone lets a re-run
     silently redefine 'beyond behaviour'; freezing alone lets the control drift from the selection.
 
-    REPOINTED 2026-09-23: the control used to be P1's selection, from untethered behavioural sessions.
-    P1's fitted map does not transfer to the ephys preparation (-0.00113 over 41,087 calls) while the
-    same estimator refitted in domain predicts perfectly well, so the control is selected and fitted on
-    the ephys cohort. A file in P1's format is now REFUSED rather than read."""
+    A behavioural selection's FEATURE SET may be adopted; its COEFFICIENTS may not. The fitted map is
+    what fails to transfer to the ephys preparation (-0.00113 over 41,087 calls), while the same
+    estimator refitted in domain predicts perfectly well -- so the names are read from either artifact
+    shape and the control is always refitted in domain. An externally chosen set also carries NO
+    selection optimism, since those features were never chosen on this preparation."""
 
-    FROZEN: ClassVar[list[str]] = ["self.neck_elevation", "nose-nose", "allo_yaw-nose",
-                                   "self.back_pitch", "self.allo_roll"]
+    FROZEN: ClassVar[list[str]] = ["head-head", "allo_yaw-head", "allo_pitch-head", "self.speed"]
 
     @staticmethod
     def _fake_selection(tmp_path, features):
@@ -175,22 +186,40 @@ class TestTheBehaviourControl:
         return path
 
     @staticmethod
-    def _p1_selection(tmp_path, features):
-        """A file in P1's own format, which is no longer what the control is selected from."""
-        path = tmp_path / "p1_selection.pkl"
+    def _behavioural_selection(tmp_path, features):
+        """A behavioural-modelling selection, whose last forward step carries the chosen set."""
+        path = tmp_path / "behavioural_selection.pkl"
         with path.open("wb") as handle:
-            pickle.dump({"steps": [{"final_model_features": list(features)}]}, handle)
+            pickle.dump({"steps": [{"current_features": list(features[:1])},
+                                   {"current_features": list(features)}]}, handle)
         return path
 
-    def test_a_p1_format_file_is_refused_rather_than_read(self, tmp_path):
-        """Its schema would otherwise raise an unhelpful KeyError deep inside the reader."""
+    def test_a_behavioural_selection_feature_set_is_adopted(self, tmp_path):
+        """The last forward step's `current_features` defines the set; coefficients are never read."""
         settings = _settings()
         settings["data"]["behaviour_selection_result_path"] = str(
-            self._p1_selection(tmp_path, self.FROZEN))
-        with pytest.raises(ValueError, match="not a cohort selection result"):
+            self._behavioural_selection(tmp_path, self.FROZEN))
+        assert reduced_model_features(settings) == self.FROZEN
+
+    def test_a_behavioural_selection_is_drift_checked_too(self, tmp_path):
+        """Accepting the shape must not exempt it from the freeze."""
+        settings = _settings()
+        settings["data"]["behaviour_selection_result_path"] = str(
+            self._behavioural_selection(tmp_path, [*self.FROZEN, "self.speed"]))
+        with pytest.raises(ValueError, match="behaviour selection drift"):
             reduced_model_features(settings)
 
-    def test_the_shipped_settings_freeze_p1s_five_features(self):
+    def test_an_unrecognised_artifact_is_refused(self, tmp_path):
+        """Neither shape present would otherwise raise an unhelpful KeyError inside the reader."""
+        path = tmp_path / "mystery.pkl"
+        with path.open("wb") as handle:
+            pickle.dump({"something_else": ["a"]}, handle)
+        settings = _settings()
+        settings["data"]["behaviour_selection_result_path"] = str(path)
+        with pytest.raises(ValueError, match="neither a cohort selection result"):
+            reduced_model_features(settings)
+
+    def test_the_shipped_settings_freeze_the_selected_features(self):
         assert _settings()["nested_vocal_manifold_position_decoding"]["reduced_model_features"] == self.FROZEN
 
     def test_a_matching_file_returns_the_selection_order(self, tmp_path):
@@ -615,3 +644,199 @@ class TestNoBehaviourBaseline:
         baseline = pooled_macro_score(no_behaviour_predictions(design, self.SETTINGS, n_lags=3),
                                       design["positions"], design["region_labels"], self.SETTINGS)
         assert nested_scores(design, self.SETTINGS, n_lags=3)["reduced"] > baseline
+
+
+def _decoding(**surface_overrides) -> dict:
+    """The SHIPPED vocal_decoding block with only the tiny-run knobs overridden, as the identity tests
+    build it: coarser grid, wider bandwidth, nothing structural touched."""
+    block = copy.deepcopy(_settings()["vocal_decoding"])
+    block["tuning_surface"].update({"grid_n": 24, "kde_bandwidth": 0.10, **surface_overrides})
+    return block
+
+
+class TestPosteriorNested:
+    """The TESTED nested statistic: identity's decoder with behaviour entering as the prior.
+
+    Synthetic events on the torus. The behaviour control predicts each position with wrapped noise --
+    a weak or a strong control -- and the neuron either separates REGIONS with a count ladder (the
+    case the point regression is structurally blind to), RELAYS what the control predicts, or
+    carries nothing. The gate is the one a nested test must pass: region tuning adds beyond a weak
+    control, a relay adds nothing beyond a strong one, and noise adds nothing beyond anything.
+    """
+
+    NESTED: ClassVar[dict] = nested_settings(_settings())
+    DECODING: ClassVar[dict] = _decoding()
+
+    @staticmethod
+    def _unit(n_sessions=3, per_session=240, seed=0, neuron="region", control_noise=0.25):
+        rng = np.random.default_rng(seed)
+        n = n_sessions * per_session
+        positions = rng.random((n, 2))
+        sessions = np.repeat(np.arange(n_sessions), per_session)
+        predicted = (positions + control_noise * rng.normal(size=(n, 2))) % 1.0
+        quadrant = np.floor(positions[:, 0] * 4.0)
+        if neuron == "region":
+            log_rate = np.log(2.0) + 0.45 * quadrant            # a 2 -> 7.7 ladder across q1
+        elif neuron == "relay":
+            log_rate = np.log(3.0) + np.cos(2.0 * np.pi * predicted[:, 0])   # a function of the CONTROL
+        else:
+            log_rate = np.full(n, np.log(3.0))
+        counts = rng.poisson(np.exp(log_rate)).astype(float)
+        return counts, positions, predicted, sessions
+
+    def _run(self, neuron, control_noise, seed=0, permutation=None):
+        counts, positions, predicted, sessions = self._unit(seed=seed, neuron=neuron,
+                                                            control_noise=control_noise)
+        folds = decoding_context(positions, sessions, self.DECODING)
+        kappas, priors = behaviour_priors(folds, predicted, positions, self.NESTED)
+        result = posterior_nested_gain(counts, folds, self.DECODING, priors, kappas,
+                                       permutation=permutation)
+        return result, kappas, (counts, positions, predicted, sessions, folds)
+
+    def test_a_region_tuned_neuron_adds_beyond_a_weak_control(self):
+        result, _kappas, _ = self._run("region", control_noise=0.25)
+        assert result["added"] > 0.02
+        assert result["behaviour_over_no_behaviour"] > 0.0     # the control is still worth something
+        assert result["full_over_no_behaviour"] == pytest.approx(
+            result["added"] + result["behaviour_over_no_behaviour"])
+
+    def test_a_relay_adds_nothing_beyond_a_strong_control(self):
+        """What the neuron knows is what behaviour predicts; conditioning on behaviour must remove it.
+        The same neuron is informative UNCONDITIONED, which is what shows the prior did the work."""
+        result, _kappas, (counts, _p, _pr, _s, folds) = self._run("relay", control_noise=0.05)
+        unconditioned = decode_gain(counts, folds, self.DECODING)["gain"]
+        assert unconditioned > 0.02
+        assert abs(result["added"]) < 0.015
+
+    def test_a_null_neuron_adds_nothing(self):
+        result, _kappas, _ = self._run("none", control_noise=0.25)
+        assert abs(result["added"]) < 0.012
+
+    def test_the_prior_is_a_density_over_the_masked_grid(self):
+        _result, _kappas, (_c, positions, predicted, _s, folds) = self._run("none", 0.25)
+        fold = folds[0]
+        kappa, log_prior = behaviour_prior_log_density(fold, predicted, positions, PERIOD, self.NESTED)
+        mass = np.exp(log_prior).sum(axis=1) * fold["cell_area"]
+        assert np.allclose(mass, 1.0, rtol=1e-6)
+        assert np.all(np.exp(log_prior)[:, ~fold["mask"]] <= 1e-299)
+        assert kappa > 0.0
+
+    def test_kappa_sharpens_with_the_control(self):
+        _r, sharp, _ = self._run("none", control_noise=0.05)
+        _r, broad, _ = self._run("none", control_noise=0.30)
+        assert min(sharp) > max(broad)
+
+    def test_the_ladders_first_step_is_invariant_under_the_null_and_added_is_not(self):
+        """A prior row travels with its position, so re-pairing positions against counts leaves what
+        behaviour buys untouched and moves only what the neuron adds."""
+        observed, _k, (_c, _p, _pr, sessions, _f) = self._run("region", 0.25)
+        permutation = within_session_permutation(sessions, np.random.default_rng(7))
+        drawn, _k, _ = self._run("region", 0.25, permutation=permutation)
+        assert drawn["behaviour_over_no_behaviour"] == pytest.approx(observed["behaviour_over_no_behaviour"])
+        assert drawn["added"] != pytest.approx(observed["added"])
+        assert drawn["added"] < observed["added"]
+
+    def test_the_same_permutation_reproduces_a_draw(self):
+        permutation = within_session_permutation(np.repeat(np.arange(3), 240),
+                                                 np.random.default_rng(3))
+        first, _k, _ = self._run("region", 0.25, permutation=permutation)
+        second, _k, _ = self._run("region", 0.25, permutation=permutation)
+        assert first["added"] == second["added"]
+
+    def test_the_section_pieces_are_all_there(self):
+        result, _kappas, _ = self._run("region", 0.25)
+        for key in ("added", "added_uncalibrated", "nats_per_spike", "behaviour_over_no_behaviour",
+                    "full_over_no_behaviour", "n_masked", "n_folds_positive", "min_leave_one_fold_out",
+                    "per_fold", "alphas", "ridges", "kappas"):
+            assert key in result
+        assert all("kappa" in fold and "added" in fold for fold in result["per_fold"])
+
+    @staticmethod
+    def _shrunk_control(n_sessions=3, per_session=240, seed=5):
+        """A CONCENTRATED occupancy (calls cluster on the torus) with a SHRUNK control that returns
+        the cluster's centre whatever the truth. It knows nothing beyond the base rate, so the right
+        prior is the occupancy prior itself, kappa = 0 -- yet its residual spread is the truth's own
+        spread, which is exactly what makes a residual-fitted kappa double-count the base rate."""
+        rng = np.random.default_rng(seed)
+        n = n_sessions * per_session
+        positions = (0.5 + rng.vonmises(0.0, 2.0, size=(n, 2)) / (2.0 * np.pi)) % 1.0
+        predicted = (0.5 + 0.02 * rng.normal(size=(n, 2))) % 1.0
+        sessions = np.repeat(np.arange(n_sessions), per_session)
+        return positions, predicted, sessions
+
+    @staticmethod
+    def _over_occupancy(folds, priors):
+        """Held-out log prior(truth) minus log occupancy(truth), pooled over the folds' test rows."""
+        values = []
+        for fold, log_prior in zip(folds, priors, strict=True):
+            cells = fold["truth_cell"][fold["test_rows"]]
+            values.append(log_prior[fold["test_rows"], cells] - fold["log_prior"][cells])
+        return float(np.nanmean(np.concatenate(values)))
+
+    def test_a_residual_kappa_double_counts_the_base_rate_for_a_shrunk_control(self):
+        """What this test pins is the MIS-SPECIFICATION: a shrunk predictor's residual spread is the
+        truth's own spread, so the fitted kappa is well above zero and the prior it builds scores
+        BELOW the occupancy prior at the truth -- measured on cl0401 at -0.10 nats/event."""
+        positions, predicted, sessions = self._shrunk_control()
+        folds = decoding_context(positions, sessions, self.DECODING)
+        nested = copy.deepcopy(self.NESTED)
+        nested["behaviour_prior"]["concentration"] = "train_residuals"
+        kappas, priors = behaviour_priors(folds, predicted, positions, nested)
+        assert min(kappas) > 0.5
+        assert self._over_occupancy(folds, priors) < -0.02
+
+    def test_an_inner_loso_kappa_never_leaves_the_behaviour_rung_below_occupancy(self):
+        """The guarantee the tuned concentration gives: kappa = 0 is always on the grid, so the
+        held-out prior cannot score below the occupancy prior by more than tuning noise, and the
+        neuron is never credited for repairing a deficit the prior created. It is a NARROWER promise
+        than kappa = 0 for a shrunk control -- on this fast grid the KDE over-smooths a tight cluster,
+        so a tilt toward the centre re-sharpens the BASE RATE and legitimately earns a kappa of 0.5
+        here; at the shipped bandwidth (selected by held-out likelihood) cl0401 tuned to 0."""
+        positions, predicted, sessions = self._shrunk_control()
+        folds = decoding_context(positions, sessions, self.DECODING)
+        nested = copy.deepcopy(self.NESTED)
+        nested["behaviour_prior"]["concentration"] = "train_tuned_inner_loso"
+        tuned_kappas, tuned_priors = behaviour_priors(folds, predicted, positions, nested)
+        nested["behaviour_prior"]["concentration"] = "train_residuals"
+        residual_kappas, residual_priors = behaviour_priors(folds, predicted, positions, nested)
+        tuned, residual = (self._over_occupancy(folds, tuned_priors),
+                           self._over_occupancy(folds, residual_priors))
+        assert max(tuned_kappas) < min(residual_kappas)
+        assert tuned > residual
+        assert tuned > -0.005
+
+    def test_an_inner_loso_kappa_is_at_the_floor_for_a_know_nothing_control_on_a_broad_occupancy(self):
+        """Where the occupancy prior is already well calibrated (a broad cluster the KDE does not
+        over-smooth), a control unrelated to position has nothing to add and kappa sits at the
+        bottom of the grid, to within the resolution the held-in criterion can tell apart."""
+        rng = np.random.default_rng(11)
+        n = 3 * 240
+        positions = (0.5 + rng.vonmises(0.0, 0.3, size=(n, 2)) / (2.0 * np.pi)) % 1.0
+        predicted = rng.random((n, 2))
+        sessions = np.repeat(np.arange(3), 240)
+        folds = decoding_context(positions, sessions, self.DECODING)
+        nested = copy.deepcopy(self.NESTED)
+        nested["behaviour_prior"]["concentration"] = "train_tuned_inner_loso"
+        kappas, _priors = behaviour_priors(folds, predicted, positions, nested)
+        assert max(kappas) <= nested["behaviour_prior"]["kappa_grid"][1]
+
+    def test_an_inner_loso_kappa_is_positive_when_the_control_knows_something(self):
+        _counts, positions, predicted, sessions = self._unit(control_noise=0.05)
+        folds = decoding_context(positions, sessions, self.DECODING)
+        nested = copy.deepcopy(self.NESTED)
+        nested["behaviour_prior"]["concentration"] = "train_tuned_inner_loso"
+        kappas, _priors = behaviour_priors(folds, predicted, positions, nested)
+        assert min(kappas) > 0.0
+
+    @pytest.mark.parametrize(("path", "bad"), [(("statistic",), "point_regression"),
+                                           (("behaviour_prior", "form"), "kde"),
+                                           (("behaviour_prior", "concentration"), "cohort_fit"),
+                                           (("discrimination_null", "method"), "circular_shift")])
+    def test_unimplemented_posterior_options_are_refused(self, path, bad):
+        block = copy.deepcopy(self.NESTED)
+        target = block
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = bad
+        with pytest.raises(ValueError, match="not implemented"):
+            check_settings(block)

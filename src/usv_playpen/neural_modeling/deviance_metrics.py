@@ -191,6 +191,132 @@ def newton_logistic(x: np.ndarray, y: np.ndarray, ridge_vector: np.ndarray,
     return beta
 
 
+def newton_poisson(x: np.ndarray, counts: np.ndarray, ridge_vector: np.ndarray, n_steps: int,
+                   offset: np.ndarray = None) -> np.ndarray:
+    """
+    Description
+    -----------
+    Ridge-penalized Poisson regression (log link) by damped Newton steps, with an optional fixed offset.
+
+    The count-grain transfer's calibration core, mirroring :func:`newton_logistic` so the two grains
+    share one numerical discipline. Steps are damped to a largest coordinate change of 2 because a
+    Poisson fit started from zero can overshoot wildly on the first iteration when counts are large.
+
+    Parameters
+    ----------
+    x (np.ndarray)
+        Design matrix.
+    counts (np.ndarray)
+        Non-negative integer counts.
+    ridge_vector (np.ndarray)
+        Per-column ridge penalties; pass zeros for an unpenalized fit.
+    n_steps (int)
+        Maximum Newton iterations.
+    offset (np.ndarray)
+        Fixed additive term in the linear predictor (e.g. log exposure), or None.
+
+    Returns
+    -------
+    beta (np.ndarray)
+        Fitted coefficients.
+    """
+
+    fixed = np.zeros(counts.size, dtype=np.float64) if offset is None else offset
+    beta = np.zeros(x.shape[1], dtype=np.float64)
+    for _ in range(n_steps):
+        mu = np.exp(np.clip(x @ beta + fixed, -30.0, 30.0))
+        gradient = x.T @ (counts - mu) - ridge_vector * beta
+        hessian = (x * mu[:, None]).T @ x + np.diag(ridge_vector) + 1e-12 * np.eye(beta.size)
+        try:
+            step = np.linalg.solve(hessian, gradient)
+        except np.linalg.LinAlgError:
+            break
+        step = step / max(1.0, float(np.max(np.abs(step))) / 2.0)
+        beta = beta + step
+        if np.max(np.abs(step)) < 1e-9:
+            break
+    return beta
+
+
+def poisson_deviance(eta: np.ndarray, counts: np.ndarray) -> float:
+    """
+    Description
+    -----------
+    Poisson deviance of counts against the rates ``exp(eta)``.
+
+    Parameters
+    ----------
+    eta (np.ndarray)
+        Linear predictor, offset included.
+    counts (np.ndarray)
+        Observed counts.
+
+    Returns
+    -------
+    deviance (float)
+        ``2 * sum(counts * log(counts / mu) - (counts - mu))`` with the zero-count convention.
+    """
+
+    mu = np.exp(np.clip(eta, -30.0, 30.0))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        term = np.where(counts > 0, counts * np.log(counts / mu), 0.0)
+    return float(2.0 * np.sum(term - (counts - mu)))
+
+
+def pooled_poisson_explained_deviance(x: np.ndarray, counts: np.ndarray, session_index: np.ndarray,
+                                      n_steps: int, exposure: float) -> tuple[float, float]:
+    """
+    Description
+    -----------
+    :func:`pooled_calibrated_explained_deviance` for COUNTS: one shared gain on the standardised predictor,
+    one intercept per session, ``log(exposure)`` as a fixed offset, scored as Poisson deviance explained
+    over the intercepts-only model.
+
+    This is the transfer's scoring under ``kinematic_encoding.transfer.grain == "count"``: the frozen quiet
+    filter's log-odds averaged per bin is the predictor, the spikes per bin the response. Counts keep the
+    multi-spike frames a binarised 6.7 ms frame throws away and have no ceiling at one, which is what the
+    per-frame score lacked inside vocal episodes where these units sit at 0.3-0.6 spikes per frame. Measured
+    2026-10-14 on nine 20250919 units: two marginal units moved to the null floor, every passer stayed, the
+    known-flat unit stayed null; on twelve low-rate 20250927 units it was neutral.
+
+    Parameters
+    ----------
+    x (np.ndarray)
+        Per-bin predictor, concatenated across sessions.
+    counts (np.ndarray)
+        Spikes per bin at the same bins.
+    session_index (np.ndarray)
+        Integer session index per bin.
+    n_steps (int)
+        Maximum Newton iterations for the calibration refit.
+    exposure (float)
+        Bin width in frames (or seconds -- any common unit), entered as a log offset.
+
+    Returns
+    -------
+    explained_deviance (float)
+        Poisson deviance explained over the per-session-intercept baseline.
+    slope (float)
+        The shared gain on standardized ``x``.
+    """
+
+    spread = float(np.std(x))
+    if spread < 1e-12 or counts.size == 0 or counts.sum() == 0:
+        return np.nan, np.nan
+    standardized = (x - np.mean(x)) / spread
+    dummies = np.column_stack([(session_index == session).astype(np.float64)
+                               for session in np.unique(session_index)])
+    offset = np.full(counts.size, np.log(float(exposure)), dtype=np.float64)
+    design = np.column_stack([standardized, dummies])
+    beta = newton_poisson(design, counts, np.zeros(design.shape[1], dtype=np.float64), n_steps, offset)
+    baseline_beta = newton_poisson(dummies, counts, np.zeros(dummies.shape[1], dtype=np.float64), n_steps,
+                                   offset)
+    baseline = poisson_deviance(dummies @ baseline_beta + offset, counts)
+    if baseline <= 0:
+        return np.nan, float(beta[0])
+    return float(1.0 - poisson_deviance(design @ beta + offset, counts) / baseline), float(beta[0])
+
+
 def intercept_only_deviance(y: np.ndarray, rate: float) -> float:
     """
     Description
@@ -633,3 +759,326 @@ def encoding_metrics(eta: np.ndarray, y: np.ndarray, n_steps: int) -> dict:
             "auroc": area_under_roc(eta, labels),
             "spike_rate": float(labels.mean()), "n_frames": int(labels.size),
             "n_spikes": int(n_spikes)}
+
+
+CALIBRATION_SCHEMES = ("in_sample", "crossfit")
+
+
+def contiguous_blocks(group_index: np.ndarray, n_blocks: int) -> np.ndarray:
+    """
+    Description
+    -----------
+    Contiguous blocks within each group, numbered ``0 .. n_blocks - 1``, for cross-fitted scoring.
+
+    Rows are assumed to be in time order within each group (scored frames and bins are built that way).
+    Contiguous rather than interleaved because neighbouring frames share their kinematic history and their
+    spikes are autocorrelated: an interleaved split would put near-copies of a scored frame into the data
+    its calibration is estimated on.
+
+    Parameters
+    ----------
+    group_index (np.ndarray)
+        Integer group (session) per row.
+    n_blocks (int)
+        Blocks per group.
+
+    Returns
+    -------
+    blocks (np.ndarray)
+        Block number per row.
+    """
+
+    blocks = np.zeros(group_index.size, dtype=np.int64)
+    for group in np.unique(group_index):
+        rows = np.flatnonzero(group_index == group)
+        blocks[rows] = np.minimum((np.arange(rows.size) * n_blocks) // max(rows.size, 1), n_blocks - 1)
+    return blocks
+
+
+def _log_likelihood(eta: np.ndarray, y: np.ndarray, family: str) -> float:
+    """Summed log-likelihood up to terms that cancel in a deviance ratio (Bernoulli logit or Poisson log)."""
+    if family == "bernoulli":
+        return float(np.sum(y * eta - np.logaddexp(0.0, eta)))
+    return float(np.sum(y * eta - np.exp(np.clip(eta, -30.0, 30.0))))
+
+
+def crossfitted_explained_deviance(x: np.ndarray, y: np.ndarray, group_index: np.ndarray, n_blocks: int,
+                                   family: str, n_steps: int, exposure: float = 1.0) -> tuple[float, float]:
+    """
+    Description
+    -----------
+    Explained deviance of a frozen predictor where every number a scored row is judged by is estimated
+    WITHOUT that row.
+
+    The scored rows are cut into contiguous blocks within each group. For every block, the calibration --
+    one intercept per group and one shared scale on the standardised predictor -- is fitted on the OTHER
+    blocks, and the block is then scored with it. The reference is the same cross-fitted per-group
+    intercepts with no predictor. Both sides are therefore out of sample, which is what the in-sample
+    calibration (:func:`calibrated_explained_deviance`, :func:`pooled_calibrated_explained_deviance`,
+    :func:`pooled_poisson_explained_deviance`) is not: those fit intercept and scale on the very rows they
+    score. The scale is kept, rather than fixed at 1, for the reason the in-sample calibration was adopted:
+    a filter carried into new data typically gets the ordering right while overstating the magnitude, and
+    at a fixed scale of 1 shuffled draws score far below zero, so the null loses most of its resolution
+    (measured 2026-10-16: the scale-1 variant flipped a clearly transferring unit's transfer negative).
+
+    Parameters
+    ----------
+    x (np.ndarray)
+        Frozen predictor per row (per-frame log-odds, or a bin's mean log-odds).
+    y (np.ndarray)
+        Response per row: 0/1 labels (Bernoulli) or counts (Poisson).
+    group_index (np.ndarray)
+        Integer group per row; each group gets its own intercept (sessions).
+    n_blocks (int)
+        Contiguous blocks per group.
+    family (str)
+        ``"bernoulli"`` or ``"poisson"``.
+    n_steps (int)
+        Maximum Newton iterations per calibration fit.
+    exposure (float)
+        Poisson exposure (bin width), entered as ``log(exposure)``; ignored for Bernoulli.
+
+    Returns
+    -------
+    explained_deviance (float)
+        Cross-fitted deviance explained over the cross-fitted intercepts-only reference; NaN when the
+        predictor is flat, the response degenerate, or a block's training rows leave a group without
+        any events to estimate its intercept from.
+    slope (float)
+        Mean over blocks of the cross-fitted scale on the standardised predictor.
+    """
+
+    spread = float(np.std(x))
+    if spread < 1e-12 or y.size == 0 or float(np.sum(y)) == 0.0 or (family == "bernoulli" and y.min() == y.max()):
+        return np.nan, np.nan
+    standardized = (x - np.mean(x)) / spread
+    groups = np.unique(group_index)
+    position = np.searchsorted(groups, group_index)
+    dummies = (position[:, None] == np.arange(groups.size)[None, :]).astype(np.float64)
+    design = np.column_stack([standardized, dummies])
+    offset = np.full(y.size, np.log(float(exposure)) if family == "poisson" else 0.0, dtype=np.float64)
+    newton = newton_logistic if family == "bernoulli" else newton_poisson
+    blocks = contiguous_blocks(position, n_blocks)
+    ll_model, ll_reference, slopes = 0.0, 0.0, []
+    for block in np.unique(blocks):
+        train, test = blocks != block, blocks == block
+        if np.any(np.bincount(position[train], weights=y[train], minlength=groups.size) <= 0.0):
+            return np.nan, np.nan
+        if family == "bernoulli" and np.any(np.bincount(position[train], weights=1.0 - y[train],
+                                                        minlength=groups.size) <= 0.0):
+            return np.nan, np.nan
+        beta = newton(design[train], y[train], np.zeros(design.shape[1], dtype=np.float64), n_steps,
+                      offset[train])
+        beta_reference = newton(dummies[train], y[train], np.zeros(dummies.shape[1], dtype=np.float64),
+                                n_steps, offset[train])
+        ll_model += _log_likelihood(design[test] @ beta + offset[test], y[test], family)
+        ll_reference += _log_likelihood(dummies[test] @ beta_reference + offset[test], y[test], family)
+        slopes.append(float(beta[0]))
+    if family == "bernoulli":
+        ll_saturated = 0.0
+    else:
+        positive = y > 0
+        ll_saturated = float(np.sum(y[positive] * np.log(y[positive]) - y[positive]))
+    denominator = ll_saturated - ll_reference
+    if denominator <= 0.0:
+        return np.nan, float(np.mean(slopes))
+    return float((ll_model - ll_reference) / denominator), float(np.mean(slopes))
+
+
+def batched_crossfitted_explained_deviance(eta: np.ndarray, labels: np.ndarray, n_blocks: int, n_steps: int,
+                                           n_bins: int) -> np.ndarray:
+    """
+    Description
+    -----------
+    :func:`crossfitted_explained_deviance` for many 0/1 label vectors sharing one frozen predictor and one
+    group -- the inner loop of a quiet-frame circular-shift null.
+
+    The same identity as :func:`binned_calibrated_explained_deviance` makes it fast: given the fixed
+    standardised predictor, the responses enter a block's training fit only through ``z @ y`` and
+    ``sum(y)`` over its training rows, and its test log-likelihood only through the same two sums over its
+    test rows, all computed exactly. Only the predictor-side sums over ``log(1 + exp(a + b z))`` are taken
+    over equal-count bins (``n_bins > 0``); ``n_bins == 0`` treats every row as its own bin, i.e. exact.
+    The reference's cross-fitted intercept is closed-form (the training rows' rate).
+
+    Parameters
+    ----------
+    eta (np.ndarray)
+        Frozen predictor at the scored frames, shape ``(n_frames,)``, in time order.
+    labels (np.ndarray)
+        Binary responses, ``(n_frames, n_draws)``.
+    n_blocks (int)
+        Contiguous blocks.
+    n_steps (int)
+        Maximum Newton iterations.
+    n_bins (int)
+        Equal-count predictor bins, or 0 for the exact computation.
+
+    Returns
+    -------
+    scores (np.ndarray)
+        Cross-fitted explained deviance per draw, ``nan`` where a block's training rows are degenerate.
+    """
+
+    spread = float(np.std(eta))
+    n_draws = labels.shape[1]
+    if spread < 1e-12 or eta.size == 0 or n_draws == 0:
+        return np.full(n_draws, np.nan, dtype=np.float64)
+    standardized = ((eta - np.mean(eta)) / spread).astype(np.float64)
+    response = labels.astype(np.float64, copy=False)
+    blocks = contiguous_blocks(np.zeros(eta.size, dtype=np.int64), n_blocks)
+    if n_bins > 0:
+        edges = np.quantile(standardized, np.linspace(0.0, 1.0, n_bins + 1))
+        edges[0], edges[-1] = -np.inf, np.inf
+        assignment = np.clip(np.searchsorted(edges, standardized, side="right") - 1, 0, n_bins - 1)
+        n_cells = n_bins
+    else:
+        assignment = np.arange(eta.size)
+        n_cells = eta.size
+
+    def cell_sums(rows):
+        """Per-cell row count, sum of z and sum of z^2 over the given rows, occupied cells only."""
+        count = np.bincount(assignment[rows], minlength=n_cells).astype(np.float64)
+        first = np.bincount(assignment[rows], weights=standardized[rows], minlength=n_cells)
+        second = np.bincount(assignment[rows], weights=standardized[rows] ** 2, minlength=n_cells)
+        occupied = count > 0
+        return count[occupied], first[occupied], second[occupied]
+
+    ll_model = np.zeros(n_draws, dtype=np.float64)
+    ll_reference = np.zeros(n_draws, dtype=np.float64)
+    usable = np.ones(n_draws, dtype=bool)
+    for block in np.unique(blocks):
+        train, test = blocks != block, blocks == block
+        cross_train = standardized[train] @ response[train]
+        total_train = response[train].sum(axis=0)
+        cross_test = standardized[test] @ response[test]
+        total_test = response[test].sum(axis=0)
+        n_train, n_test = float(train.sum()), float(test.sum())
+        usable &= (total_train > 0.0) & (total_train < n_train)
+        count, first, second = cell_sums(train)
+        centre = first / count
+        count_test, first_test, _ = cell_sums(test)
+        centre_test = first_test / count_test
+        slope = np.zeros(n_draws, dtype=np.float64)
+        intercept = np.zeros(n_draws, dtype=np.float64)
+        active = usable.copy()
+        for _ in range(n_steps):
+            linear = np.clip(centre[:, None] * slope[None, :] + intercept[None, :], -30.0, 30.0)
+            mean = 1.0 / (1.0 + np.exp(-linear))
+            weights = np.clip(mean * (1.0 - mean), 1e-8, None)
+            gradient_slope = cross_train - (first @ mean)
+            gradient_intercept = total_train - (count @ mean)
+            hessian_ss = second @ weights
+            hessian_si = first @ weights
+            hessian_ii = count @ weights
+            determinant = hessian_ss * hessian_ii - hessian_si * hessian_si
+            solvable = active & (np.abs(determinant) > 1e-30)
+            if not np.any(solvable):
+                break
+            safe = np.where(solvable, determinant, 1.0)
+            step_slope = np.where(solvable, (hessian_ii * gradient_slope - hessian_si * gradient_intercept) / safe,
+                                  0.0)
+            step_intercept = np.where(solvable,
+                                      (hessian_ss * gradient_intercept - hessian_si * gradient_slope) / safe, 0.0)
+            slope = slope + step_slope
+            intercept = intercept + step_intercept
+            active = solvable & (np.maximum(np.abs(step_slope), np.abs(step_intercept)) >= 1e-9)
+            if not np.any(active):
+                break
+        linear_test = np.clip(centre_test[:, None] * slope[None, :] + intercept[None, :], -30.0, 30.0)
+        ll_model += slope * cross_test + intercept * total_test - count_test @ np.logaddexp(0.0, linear_test)
+        rate = np.clip(total_train / n_train, 1e-12, 1.0 - 1e-12)
+        reference_intercept = np.log(rate / (1.0 - rate))
+        ll_reference += reference_intercept * total_test - n_test * np.logaddexp(0.0, reference_intercept)
+    scores = np.full(n_draws, np.nan, dtype=np.float64)
+    valid = usable & (ll_reference < 0.0)
+    scores[valid] = (ll_model[valid] - ll_reference[valid]) / (-ll_reference[valid])
+    return scores
+
+
+def frozen_model_score(x: np.ndarray, y: np.ndarray, group_index: np.ndarray, n_steps: int, family: str,
+                       exposure: float, calibration: dict) -> tuple[float, float]:
+    """
+    Description
+    -----------
+    The ONE scoring rule for a frozen kinematic model, wherever it is scored: the per-feature screen,
+    forward selection, the quiet score and the transfer (and every null draw of each).
+
+    ``calibration["scheme"]`` decides how the frozen predictor is turned into a score:
+    ``"crossfit"`` (shipped, ruled 2026-10-16) -- per-group intercepts and one shared scale estimated on
+    the other contiguous blocks, see :func:`crossfitted_explained_deviance`; ``"in_sample"`` -- the
+    earlier rule, intercepts and scale refitted on the scored rows themselves.
+
+    Parameters
+    ----------
+    x (np.ndarray)
+        Frozen predictor per row.
+    y (np.ndarray)
+        Response per row (0/1 or counts).
+    group_index (np.ndarray)
+        Integer group (session) per row.
+    n_steps (int)
+        Maximum Newton iterations.
+    family (str)
+        ``"bernoulli"`` or ``"poisson"``.
+    exposure (float)
+        Poisson exposure; ignored for Bernoulli.
+    calibration (dict)
+        The ``kinematic_encoding.calibration`` block: ``scheme`` and ``n_blocks``.
+
+    Returns
+    -------
+    explained_deviance (float)
+        The score.
+    slope (float)
+        The scale on the standardised predictor (cross-fitted mean, or the in-sample fit).
+    """
+
+    scheme = calibration["scheme"]
+    if scheme not in CALIBRATION_SCHEMES:
+        msg = f"kinematic_encoding.calibration.scheme must be one of {CALIBRATION_SCHEMES}; got {scheme!r}."
+        raise ValueError(msg)
+    if scheme == "crossfit":
+        return crossfitted_explained_deviance(x, y, group_index, int(calibration["n_blocks"]), family, n_steps,
+                                              exposure)
+    if family == "poisson":
+        return pooled_poisson_explained_deviance(x, y, group_index, n_steps, exposure)
+    if np.unique(group_index).size == 1:
+        return calibrated_explained_deviance(x, y, n_steps)
+    return pooled_calibrated_explained_deviance(x, y, group_index, n_steps)
+
+
+def frozen_model_null_scores(eta: np.ndarray, labels: np.ndarray, n_steps: int, n_bins: int,
+                             calibration: dict) -> np.ndarray:
+    """
+    Description
+    -----------
+    :func:`frozen_model_score` for many 0/1 label vectors on one group (a quiet-frame null block), batched.
+
+    Parameters
+    ----------
+    eta (np.ndarray)
+        Frozen predictor at the scored frames.
+    labels (np.ndarray)
+        ``(n_frames, n_draws)`` binary responses.
+    n_steps (int)
+        Maximum Newton iterations.
+    n_bins (int)
+        Equal-count predictor bins for the fast path; 0 for exact.
+    calibration (dict)
+        The ``kinematic_encoding.calibration`` block.
+
+    Returns
+    -------
+    scores (np.ndarray)
+        One score per draw.
+    """
+
+    scheme = calibration["scheme"]
+    if scheme not in CALIBRATION_SCHEMES:
+        msg = f"kinematic_encoding.calibration.scheme must be one of {CALIBRATION_SCHEMES}; got {scheme!r}."
+        raise ValueError(msg)
+    if scheme == "crossfit":
+        return batched_crossfitted_explained_deviance(eta, labels, int(calibration["n_blocks"]), n_steps, n_bins)
+    if n_bins > 0:
+        return binned_calibrated_explained_deviance(eta, labels, n_steps, n_bins)
+    return batched_calibrated_explained_deviance(eta, labels, n_steps)

@@ -20,14 +20,18 @@ import pytest
 
 from usv_playpen.neural_modeling import main_neural_encoding_dispatcher as dispatcher
 from usv_playpen.neural_modeling.deviance_metrics import (
+    calibrated_explained_deviance,
     pooled_calibrated_explained_deviance,
 )
 from usv_playpen.neural_modeling.kinematic_encoding import (
+    FrameFilterModel,
     block_resample_anchors,
     filter_band,
     fit_quiet_model,
     forward_select,
     inner_folds,
+    lag_basis,
+    linear_predictor_at_frames,
     quiet_block_sessions,
 )
 from usv_playpen.neural_modeling.main_neural_encoding_dispatcher import (
@@ -188,7 +192,11 @@ class TestFilterBand:
                                        "lambda_ridge": 0.01},
                 "smoothness_order": 1, "negatives_per_positive": 10, "max_train_total": 4000,
                 "solver": {"max_iter": 300, "tol": 1e-6},
-                "subsampling_correction": "log_prior_offset"}
+                "subsampling_correction": "log_prior_offset",
+                "calibration": {"scheme": "crossfit", "n_blocks": 5},
+                "session_intercepts": {"compute": True, "indicator_scale": 10.0, "max_sweeps": 30, "tolerance": 1e-4},
+                "temporal_basis": {"type": "none", "n_splines": 8, "spline_order": 3, "l2_lag_alpha": 100.0,
+                                   "lambda_ridge": 0.1, "lambda_smooth": 0.0, "spike_end_correction": "none"}}
 
     def test_block_resampling_keeps_the_count_and_the_ordering(self):
         anchors = np.arange(1000)
@@ -469,4 +477,176 @@ class TestTransferGuards:
             encoding = json.load(handle)["kinematic_encoding"]
         assert encoding["feature_selection"]["screen_require_positive_slope"] is True
         assert "require_positive_slope" not in encoding["transfer"]
-        assert set(encoding["transfer"]) == {"calibration_grain", "d2_reference_rate"}
+        assert set(encoding["transfer"]) == {"calibration_grain", "d2_reference_rate", "universe", "pre_bout_seconds",
+                                             "inter_bout_threshold_seconds", "grain", "bin_seconds"}
+
+
+class TestTemporalBasis:
+    """The optional spline lag basis: the modeling pipeline's layer on the neural quiet fit. It exists for
+    compute -- measured at 50-250x less fit time with the same held-out D2, filter shape and transfer on
+    three PAG units -- and must therefore hand every consumer the same kind of object the raw solver does:
+    a per-frame filter."""
+
+    N_LAGS = 60
+
+    @staticmethod
+    def _basis_settings(kind="bspline", alpha=100.0, correction="none"):
+        return {"type": kind, "n_splines": 8, "spline_order": 3, "l2_lag_alpha": alpha,
+                "lambda_ridge": 0.1, "lambda_smooth": 0.0, "spike_end_correction": correction}
+
+    @classmethod
+    def _encoding(cls, kind):
+        return {"significance_model": {"lambda_group": 0.0, "lambda_smooth": 1000.0, "lambda_ridge": 0.01},
+                "smoothness_order": 1, "negatives_per_positive": 10, "max_train_total": 6000,
+                "solver": {"max_iter": 3000, "tol": 1e-6}, "subsampling_correction": "log_prior_offset",
+                "calibration": {"scheme": "crossfit", "n_blocks": 5},
+                "session_intercepts": {"compute": True, "indicator_scale": 10.0, "max_sweeps": 30, "tolerance": 1e-4},
+                "temporal_basis": cls._basis_settings(kind)}
+
+    @classmethod
+    def _session(cls, seed, n_frames=6000):
+        """A unit whose log-odds follow a smooth 0.4 s filter of one slow feature."""
+        generator = np.random.default_rng(seed)
+        feature = np.cumsum(generator.normal(size=n_frames)) / 25.0
+        lags = np.arange(cls.N_LAGS)
+        planted = np.exp(-0.5 * ((lags - (cls.N_LAGS - 12)) / 6.0) ** 2)
+        planted = 0.9 * planted / planted.sum()
+        eta = np.convolve(feature, planted[::-1], mode="full")[: n_frames] - 2.2
+        spikes = np.flatnonzero(generator.random(n_frames) < 1.0 / (1.0 + np.exp(-eta)))
+        return {"feature_time_series": feature[:, None], "n_frames": n_frames, "spike_frames": spikes,
+                "quiet": np.arange(cls.N_LAGS, n_frames - 5)}
+
+    def test_an_unknown_basis_type_is_refused(self):
+        with pytest.raises(ValueError, match=r"temporal_basis\.type"):
+            lag_basis(self.N_LAGS, self._basis_settings("fourier"))
+
+    def test_none_keeps_one_weight_per_frame(self):
+        assert lag_basis(self.N_LAGS, self._basis_settings("none")) is None
+
+    def test_the_basis_spans_the_window_and_is_scaled_to_lag_averages(self):
+        basis = lag_basis(self.N_LAGS, self._basis_settings())
+        assert basis.shape == (self.N_LAGS, 8)
+        assert np.all(np.isfinite(basis))
+        assert np.all(basis >= 0.0)
+        assert np.isclose(basis.sum(axis=0).mean(), 1.0)
+
+    def test_an_unknown_spike_end_correction_is_refused(self):
+        with pytest.raises(ValueError, match=r"spike_end_correction"):
+            lag_basis(self.N_LAGS, self._basis_settings(correction="clamp"))
+
+    def test_the_spike_end_correction_drops_the_outside_spline_and_cheapens_the_edge(self):
+        """The outermost spline at the spike end (the last lag) is removed, and a spline partly outside
+        the window is scaled up by the square root of its missing mass relative to an interior one."""
+        plain = lag_basis(self.N_LAGS, self._basis_settings(alpha=0.0))
+        corrected = lag_basis(self.N_LAGS, self._basis_settings(alpha=0.0, correction="drop_outside_and_rescale"))
+        assert corrected.shape == (self.N_LAGS, 7)
+        assert np.all(np.isfinite(corrected))
+        assert np.isclose(corrected.sum(axis=0).mean(), 1.0)
+        kept = plain[:, :-1].sum(axis=0)
+        expected = kept * np.sqrt(kept.max() / kept)
+        ratio = corrected.sum(axis=0) / corrected.sum(axis=0).max()
+        np.testing.assert_allclose(ratio, expected / expected.max())
+        assert ratio[-1] > (kept[-1] / kept.max())
+
+    def test_the_lag_ridge_shrinks_the_oldest_splines_most(self):
+        """Columns are scaled by 1/sqrt(1 + alpha lag^2), lag measured from the spike's frame, so under
+        the ridge the oldest spline's column is the smallest relative to the newest."""
+        flat = lag_basis(self.N_LAGS, self._basis_settings(alpha=0.0))
+        ridged = lag_basis(self.N_LAGS, self._basis_settings(alpha=100.0))
+        ratio = ridged.sum(axis=0) / flat.sum(axis=0)
+        assert ratio[0] < ratio[-1]
+        assert np.all(np.diff(ratio) >= -1e-12)
+
+    def test_the_spline_fit_is_a_frame_filter_that_matches_the_raw_one(self):
+        """Same data, same subsample: the spline fit must return a filter of n_lags weights per feature
+        whose shape and held-out score agree with the raw solver's, and predict from a raw lagged design
+        exactly as its coefficients say."""
+        fit_session, test_session = self._session(seed=3), self._session(seed=4)
+        raw, _ = fit_quiet_model({"a": fit_session}, ["a"], [0], self.N_LAGS, np.random.default_rng(0),
+                                 self._encoding("none"), message_output=lambda *_a: None)
+        spline, _ = fit_quiet_model({"a": fit_session}, ["a"], [0], self.N_LAGS, np.random.default_rng(0),
+                                    self._encoding("bspline"), message_output=lambda *_a: None)
+        assert isinstance(spline, FrameFilterModel)
+        assert spline.coef_.shape == (self.N_LAGS,)
+        assert spline.converged_
+        assert np.corrcoef(raw.coef_, spline.coef_)[0, 1] > 0.8
+        frames = test_session["quiet"]
+        labels = spike_labels_at_frames(test_session["spike_frames"], frames, test_session["n_frames"])
+        scores = {}
+        for name, model in (("raw", raw), ("spline", spline)):
+            eta = linear_predictor_at_frames(model, test_session["feature_time_series"], [0], frames,
+                                             self.N_LAGS, 2000)
+            scores[name], _slope = calibrated_explained_deviance(eta, labels, 30)
+        assert scores["spline"] > 0.0
+        assert abs(scores["spline"] - scores["raw"]) < 0.3 * max(scores["raw"], 1e-6)
+        design = lagged_design(test_session["feature_time_series"][:, [0]], frames[:50], self.N_LAGS)
+        np.testing.assert_allclose(spline.predict_eta(design), design @ spline.coef_ + spline.intercept_)
+
+    @classmethod
+    def _shifted_session(cls, seed, feature_shift, baseline_shift, n_frames=8000):
+        """The planted unit, with the feature's mean and the session's firing level both moved."""
+        generator = np.random.default_rng(seed)
+        feature = np.cumsum(generator.normal(size=n_frames)) / 25.0
+        feature = feature - feature.mean() + feature_shift
+        lags = np.arange(cls.N_LAGS)
+        planted = np.exp(-0.5 * ((lags - (cls.N_LAGS - 12)) / 6.0) ** 2)
+        planted = 0.9 * planted / planted.sum()
+        eta = np.convolve(feature, planted[::-1], mode="full")[: n_frames] - 2.2 + baseline_shift
+        spikes = np.flatnonzero(generator.random(n_frames) < 1.0 / (1.0 + np.exp(-eta)))
+        return {"feature_time_series": feature[:, None], "n_frames": n_frames, "spike_frames": spikes,
+                "quiet": np.arange(cls.N_LAGS, n_frames - 5)}
+
+    def test_session_intercepts_keep_a_rate_difference_out_of_the_filter(self):
+        """Two sessions share one filter (summed weight 0.9) but the second sits higher on the feature AND
+        fires faster for reasons of its own. A single intercept can only explain the faster session through
+        the feature, so its filter over-states the tuning; per-session intercepts recover it."""
+        sessions = {"a": self._shifted_session(7, 0.0, 0.0), "b": self._shifted_session(8, 1.5, 1.0)}
+        summed = {}
+        for name, compute in (("shared", False), ("per_session", True)):
+            encoding = self._encoding("bspline")
+            encoding["session_intercepts"] = {"compute": compute, "indicator_scale": 10.0, "max_sweeps": 30,
+                                          "tolerance": 1e-4}
+            model, _ = fit_quiet_model(sessions, ["a", "b"], [0], self.N_LAGS, np.random.default_rng(0),
+                                       encoding, message_output=lambda *_a: None)
+            summed[name] = float(model.coef_.sum())
+        assert abs(summed["per_session"] - 0.9) < abs(summed["shared"] - 0.9)
+        assert summed["shared"] > 0.9
+
+    def test_the_raw_path_backfits_the_same_session_baselines(self):
+        """The per-frame path cannot carry indicator columns (its smoothness penalty would couple them), so
+        it backfits the baselines; it must correct the same confound the spline path's indicators do."""
+        sessions = {"a": self._shifted_session(7, 0.0, 0.0), "b": self._shifted_session(8, 1.5, 1.0)}
+        summed = {}
+        for name, compute in (("shared", False), ("per_session", True)):
+            encoding = self._encoding("none")
+            encoding["session_intercepts"] = {"compute": compute, "indicator_scale": 10.0, "max_sweeps": 30,
+                                              "tolerance": 1e-4}
+            model, _ = fit_quiet_model(sessions, ["a", "b"], [0], self.N_LAGS, np.random.default_rng(0),
+                                       encoding, message_output=lambda *_a: None)
+            summed[name] = float(np.asarray(model.coef_).sum())
+        assert abs(summed["per_session"] - 0.9) < abs(summed["shared"] - 0.9)
+
+    def test_the_shipped_default_is_the_spline_basis(self):
+        """Ruled 2026-10-14 after the other-day test: the shipped fit is parametrised in the basis, the
+        raw per-frame path staying selectable as ``"none"``."""
+        with (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"
+              / "_parameter_settings" / "neural_modeling_settings.json").open() as handle:
+            block = json.load(handle)["kinematic_encoding"]["temporal_basis"]
+        assert block["type"] == "bspline"
+        assert block["spike_end_correction"] == "drop_outside_and_rescale"
+        assert set(block) == {"type", "n_splines", "spline_order", "l2_lag_alpha", "lambda_ridge", "lambda_smooth",
+                              "spike_end_correction"}
+
+    def test_the_shipped_scoring_is_cross_fitted(self):
+        """Ruled 2026-10-17: every frozen-model score is calibrated on blocks that exclude the scored block."""
+        with (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"
+              / "_parameter_settings" / "neural_modeling_settings.json").open() as handle:
+            block = json.load(handle)["kinematic_encoding"]["calibration"]
+        assert block == {"scheme": "crossfit", "n_blocks": 5}
+
+    def test_the_shipped_fit_has_per_session_intercepts(self):
+        """Ruled 2026-10-16: each training session gets its own unpenalised baseline."""
+        with (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"
+              / "_parameter_settings" / "neural_modeling_settings.json").open() as handle:
+            block = json.load(handle)["kinematic_encoding"]["session_intercepts"]
+        assert block == {"compute": True, "indicator_scale": 10.0, "max_sweeps": 30, "tolerance": 1e-4}

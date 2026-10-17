@@ -27,7 +27,7 @@ from zlib import crc32
 
 import numpy as np
 
-from .deviance_metrics import calibrated_explained_deviance, encoding_metrics
+from .deviance_metrics import encoding_metrics, frozen_model_score
 from .kinematic_encoding import (
     filter_band,
     filter_descriptors,
@@ -49,7 +49,7 @@ from .neural_design_assembly import (
     spike_labels_at_frames,
     vocal_span_frames,
 )
-from .quiet_to_vocal_transfer import combine_folds, score_fold
+from .quiet_to_vocal_transfer import combine_folds, score_fold, transfer_frames
 from .shift_null_inference import escalated_empirical_pvalue
 
 
@@ -273,8 +273,11 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
     # no-model early returns below have to report them. Computing them here rather than after the
     # split is what stops the block-CV branch raising NameError instead of returning its artifact.
     session = per_session[test_id]
+    transfer_settings = settings["kinematic_encoding"]["transfer"]
     vocal_frames, pointer, gaps = focal_vocal_frames(session, test_id, data_root, unit["mouse_id"],
                                                      fps, n_lags, settings["vocalization_settings"])
+    vocal_frames = transfer_frames(vocal_frames, pointer, fps, session["n_frames"], n_lags, session["quiet"],
+                                   transfer_settings)
 
     inner_sessions, inner_ids = per_session, pool_ids
     if len(pool_ids) == 1:
@@ -348,22 +351,24 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
                                            session["quiet"], n_lags, encoding["chunk_rows"])
     labels_quiet = spike_labels_at_frames(session["spike_frames"], session["quiet"],
                                           session["n_frames"])
-    quiet_score, quiet_slope = calibrated_explained_deviance(eta_quiet, labels_quiet,
-                                                             encoding["solver"]["calibration_steps"])
+    quiet_score, quiet_slope = frozen_model_score(eta_quiet, labels_quiet,
+                                                  np.zeros(labels_quiet.size, dtype=np.int64),
+                                                  encoding["solver"]["calibration_steps"], "bernoulli", 1.0,
+                                                  encoding["calibration"])
     def draw_quiet_null(count):
         """Fresh quiet-null draws for the escalation ladder; the generator carries on where it left off."""
         return frozen_null_scores(eta_quiet, session["quiet"], session["spike_frames"],
                                   session["n_frames"], fps, count, rng,
                                   settings["null"]["shuffle_guard_seconds"],
                                   encoding["solver"]["calibration_steps"],
-                                  encoding["solver"]["null_calibration_bins"])
+                                  encoding["solver"]["null_calibration_bins"], encoding["calibration"])
 
     quiet_null = draw_quiet_null(settings["null"]["n_shuffles"])
     quiet_p, quiet_at_floor, quiet_null = escalated_empirical_pvalue(
         quiet_score, draw_quiet_null, settings["significance"]["escalation_ladder"], quiet_null,
         message_output)
     vocal = score_fold(estimator, session, selected, vocal_frames, n_lags, base_rate, encoding,
-                       linear_predictor_at_frames)
+                       linear_predictor_at_frames, transfer_settings)
 
     # This fold's model is also carried onto EVERY session's vocal frames, not just its own. The
     # transfer is a statement about ONE model, and pooling eta from a different model per fold would
@@ -382,8 +387,10 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
         other_frames, other_pointer, other_gaps = focal_vocal_frames(
             per_session[other_id], other_id, data_root, unit["mouse_id"], fps, n_lags,
             settings["vocalization_settings"])
+        other_frames = transfer_frames(other_frames, other_pointer, fps, per_session[other_id]["n_frames"],
+                                       n_lags, per_session[other_id]["quiet"], transfer_settings)
         scored = score_fold(estimator, per_session[other_id], selected, other_frames, n_lags,
-                            base_rate, encoding, linear_predictor_at_frames)
+                            base_rate, encoding, linear_predictor_at_frames, transfer_settings)
         scored["session_id"] = other_id
         scored["pointer"], scored["gaps"] = other_pointer, other_gaps
         scored["frames"] = other_frames
@@ -653,15 +660,17 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
                                            session["quiet"], n_lags, encoding["chunk_rows"])
     labels_quiet = spike_labels_at_frames(session["spike_frames"], session["quiet"],
                                           session["n_frames"])
-    quiet_score, quiet_slope = calibrated_explained_deviance(eta_quiet, labels_quiet,
-                                                             encoding["solver"]["calibration_steps"])
+    quiet_score, quiet_slope = frozen_model_score(eta_quiet, labels_quiet,
+                                                  np.zeros(labels_quiet.size, dtype=np.int64),
+                                                  encoding["solver"]["calibration_steps"], "bernoulli", 1.0,
+                                                  encoding["calibration"])
     def draw_quiet_null(count):
         """Fresh quiet-null draws for the escalation ladder; the generator carries on where it left off."""
         return frozen_null_scores(eta_quiet, session["quiet"], session["spike_frames"],
                                   session["n_frames"], fps, count, rng,
                                   settings["null"]["shuffle_guard_seconds"],
                                   encoding["solver"]["calibration_steps"],
-                                  encoding["solver"]["null_calibration_bins"])
+                                  encoding["solver"]["null_calibration_bins"], encoding["calibration"])
 
     quiet_null = draw_quiet_null(settings["null"]["n_shuffles"])
     quiet_p, quiet_at_floor, quiet_null = escalated_empirical_pvalue(
@@ -678,13 +687,16 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
     # The two session sets come from the cohort builder for exactly this reason.
     vocal_results, vocal_frames_by_session = [], {}
     vocal_ids = [s for s in sessions if s in set(unit["vocal_sessions"])]
+    transfer_settings = settings["kinematic_encoding"]["transfer"]
     for session_id in vocal_ids:
         frames, pointer, gaps = focal_vocal_frames(per_session[session_id], session_id, data_root,
                                                    unit["mouse_id"], fps, n_lags,
                                                    settings["vocalization_settings"])
+        frames = transfer_frames(frames, pointer, fps, per_session[session_id]["n_frames"], n_lags,
+                                 per_session[session_id]["quiet"], transfer_settings)
         vocal_frames_by_session[session_id] = frames
         result = score_fold(estimator, per_session[session_id], selected, frames, n_lags, base_rate,
-                            encoding, linear_predictor_at_frames)
+                            encoding, linear_predictor_at_frames, transfer_settings)
         result["pointer"], result["gaps"] = pointer, gaps
         vocal_results.append(result)
     transfer = combine_folds(vocal_results, per_session, vocal_ids, vocal_frames_by_session, settings,
@@ -718,9 +730,15 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
                 "transfer_score": transfer["score"], "transfer_slope": transfer["slope"],
                 "transfer_p": transfer["p"], "transfer_at_floor": transfer["at_floor"],
                 "transfer_null": transfer["null"], "transfer_folds": transfer["folds"],
+                "transfer_n_bins": transfer["n_bins"], "transfer_bin_width_frames": transfer["bin_width_frames"],
+                "transfer_grain": transfer["grain"], "transfer_universe": transfer["universe"],
                 "transfer_leave_one_session_out": transfer["leave_one_session_out"],
                 "transfer_min_leave_one_session_out": transfer["min_leave_one_session_out"],
                 "n_vocal_frames": transfer["n_frames"], "final_fit_converged": final_converged,
+                # the fitted filter itself, feature-major with n_lags weights per feature, so a scorer
+                # can carry this exact model to another universe without refitting it
+                "filter": np.asarray(estimator.coef_, dtype=np.float64),
+                "filter_intercept": float(estimator.intercept_),
                 "n_lags": n_lags, "fps": fps}
     written = write_unit_section(output_directory, unit, "kinematic_encoding", artifact, settings)
     message_output(f"    wrote {written.name} [kinematic_encoding, single-split]")
@@ -897,6 +915,8 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
               "transfer_score": transfer["score"], "transfer_slope": transfer["slope"],
               "transfer_p": transfer["p"], "transfer_at_floor": transfer["at_floor"],
               "transfer_null": transfer["null"], "transfer_n_frames": transfer["n_frames"],
+              "transfer_n_bins": transfer["n_bins"], "transfer_bin_width_frames": transfer["bin_width_frames"],
+              "transfer_grain": transfer["grain"], "transfer_universe": transfer["universe"],
               "transfer_leave_one_session_out": transfer["leave_one_session_out"],
               "transfer_min_leave_one_session_out": transfer["min_leave_one_session_out"],
               "transfer_per_session": fold_results, "transfer_session_ids": scored_ids,

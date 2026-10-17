@@ -49,8 +49,12 @@ from pathlib import Path
 import polars as pl
 
 from ..os_utils import configure_path
-from .neural_design_assembly import (emitter_names, filter_vocalizations, load_session_usvs,
-                                     session_timebase)
+from .neural_design_assembly import (
+    emitter_names,
+    filter_vocalizations,
+    load_session_usvs,
+    session_timebase,
+)
 
 
 def load_courtship_session_ids(session_list_files: list[str]) -> set[str]:
