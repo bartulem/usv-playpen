@@ -375,7 +375,7 @@ class TestSettingsInvariants:
             "behaviour_control", "reduced_model_features", "behaviour_control_model_path",
             "vm_score_mode", "region_label_column", "min_region_events", "lambda_smooth", "l2_reg",
             "smoothness_derivative_order", "sigma_floor", "prevocal_window_n_bins", "rate_transform",
-            "rate_basis"}
+            "rate_basis", "statistic", "discrimination_null", "behaviour_prior"}
 
     def test_the_nested_decoding_matches_p1_where_it_must(self):
         """The nested decoding is "P1 plus the neuron", so the control has to be fitted and SCORED the way P1

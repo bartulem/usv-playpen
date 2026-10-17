@@ -207,6 +207,11 @@ filterwarnings = [
     # something about the host, not the code; under the `error` filter it would fail
     # every test that touches autograd. Matched by message + category.
     "ignore:CUDA initialization:UserWarning",
+    # optax (pulled in by the neural_modeling optimisers) sets the
+    # `jax_pmap_shmap_merge` config flag at import time, which JAX 0.9 marks as
+    # deprecated. The warning is raised inside optax's own import, so it cannot be
+    # avoided from our code; under the `error` filter it would abort collection.
+    "ignore:Setting `jax_pmap_shmap_merge` is deprecated:DeprecationWarning",
 ]
 log_cli_level = "INFO"
 testpaths = [
