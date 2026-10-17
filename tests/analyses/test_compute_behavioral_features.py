@@ -46,21 +46,21 @@ class TestResolveFeatureLabel:
         assert FeatureZoo.resolve_feature_label('self.ego_yaw', 'male') == 'male head yaw'
 
     def test_dyadic_distance_is_sex_neutral(self):
-        """Dyadic distances carry no sex word."""
+        """Dyadic distances carry no sex word; nose-nose reads as partner distance."""
 
-        assert FeatureZoo.resolve_feature_label('nose-nose', 'male', 'female') == 'nose-nose distance'
+        assert FeatureZoo.resolve_feature_label('nose-nose', 'male', 'female') == 'partner distance'
         assert FeatureZoo.resolve_feature_label('nose-TTI', 'male', 'female') == 'nose-TTI distance'
         assert FeatureZoo.resolve_feature_label('head-head', 'male', 'female') == 'inter-partner distance'
 
     def test_dyadic_angle_forward_and_reverse(self):
         """Both key orders (``allo_*-X`` and ``X-allo_*``) are labelled
-        ``{self}-partner`` (self first); the ``-TTI`` variant shares wording
-        with the ``-nose`` variant."""
+        ``self-partner`` (self first, literal role words even when sexes are
+        supplied); the ``-TTI`` variant shares wording with the ``-nose`` variant."""
 
-        assert FeatureZoo.resolve_feature_label('allo_yaw-nose', 'male', 'female') == 'male-partner yaw'
-        assert FeatureZoo.resolve_feature_label('allo_yaw-TTI', 'male', 'female') == 'male-partner yaw'
-        assert FeatureZoo.resolve_feature_label('nose-allo_yaw', 'male', 'female') == 'male-partner yaw'
-        assert FeatureZoo.resolve_feature_label('allo_pitch-nose', 'female', 'male') == 'female-partner pitch'
+        assert FeatureZoo.resolve_feature_label('allo_yaw-nose', 'male', 'female') == 'self-partner yaw'
+        assert FeatureZoo.resolve_feature_label('allo_yaw-TTI', 'male', 'female') == 'self-partner yaw'
+        assert FeatureZoo.resolve_feature_label('nose-allo_yaw', 'male', 'female') == 'self-partner yaw'
+        assert FeatureZoo.resolve_feature_label('allo_pitch-nose', 'female', 'male') == 'self-partner pitch'
 
     def test_sei_engagement(self):
         """SEI engagement features keep the literal 'SEI' tag."""
@@ -73,7 +73,7 @@ class TestResolveFeatureLabel:
         base label is resolved (prefix + sex still applied)."""
 
         assert FeatureZoo.resolve_feature_label('self.speed_1st_der', 'male') == 'male speed (1st derivative)'
-        assert FeatureZoo.resolve_feature_label('nose-nose_2nd_der') == 'nose-nose distance (2nd derivative)'
+        assert FeatureZoo.resolve_feature_label('nose-nose_2nd_der') == 'partner distance (2nd derivative)'
 
     def test_missing_sex_falls_back_to_role_word(self):
         """With no sexes supplied, the literal 'self'/'other'/'partner'
@@ -130,7 +130,7 @@ class TestSocialHeadYawColumns:
         for head_feature, nose_feature in (('allo_yaw-head', 'allo_yaw-nose'), ('head-allo_yaw', 'nose-allo_yaw')):
             for suffix in ('', '_1st_der', '_2nd_der'):
                 assert FeatureZoo.feature_boundaries[f'{head_feature}{suffix}'] == FeatureZoo.feature_boundaries[f'{nose_feature}{suffix}']
-            assert FeatureZoo.resolve_feature_label(head_feature, 'male', 'female') == 'male-partner yaw'
+            assert FeatureZoo.resolve_feature_label(head_feature, 'male', 'female') == 'self-partner yaw'
 
     def test_head_pitch_is_registered_like_the_nose_pitch(self):
         """allo_pitch-head / head-allo_pitch must share the axis range, axis units and display label
@@ -138,7 +138,7 @@ class TestSocialHeadYawColumns:
         for head_feature, nose_feature in (('allo_pitch-head', 'allo_pitch-nose'), ('head-allo_pitch', 'nose-allo_pitch')):
             for suffix in ('', '_1st_der', '_2nd_der'):
                 assert FeatureZoo.feature_boundaries[f'{head_feature}{suffix}'] == FeatureZoo.feature_boundaries[f'{nose_feature}{suffix}']
-            assert FeatureZoo.resolve_feature_label(head_feature, 'male', 'female') == 'male-partner pitch'
+            assert FeatureZoo.resolve_feature_label(head_feature, 'male', 'female') == 'self-partner pitch'
 
 
 class TestBehavioralFeaturesCsvIsWrittenAtomically:
