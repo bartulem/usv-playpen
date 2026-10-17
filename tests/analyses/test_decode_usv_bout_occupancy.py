@@ -71,6 +71,26 @@ def test_bout_grouping_splits_on_the_threshold_and_honours_the_minimum() -> None
     assert ibi_bout_runs(split, split + 0.1, 0.1155, 3) == []
 
 
+def test_bout_grouping_measures_silence_from_the_latest_stop_so_a_nested_usv_does_not_split() -> None:
+    """
+    A short USV nested inside a longer one (start 0.10-0.15 s within 0-0.50 s) does not end the
+    sound: the next silence runs from the latest stop so far (0.50 s), not from the nested USV's
+    stop, so the four USVs (true silences all <= 0.07 s) are one bout, and the bout ends at the
+    latest stop of its USVs (0.60 s), not at the last row's stop.
+    """
+    starts = np.array([0.00, 0.10, 0.40, 0.55])
+    stops = np.array([0.50, 0.15, 0.48, 0.60])
+    assert [list(r) for r in ibi_bout_runs(starts, stops, 0.1155, 3)] == [[0, 1, 2, 3]]
+
+    low, high = ibi_bout_extents(starts, stops, 0.1155, 2)
+    assert low.tolist() == [0.0]
+    assert high.tolist() == pytest.approx([0.6])
+
+    # a bout whose last row is nested ends at the enclosing USV's stop
+    nested_last = ibi_bout_extents(np.array([0.0, 0.1]), np.array([0.5, 0.2]), 0.1155, 2)
+    assert nested_last[1].tolist() == pytest.approx([0.5])
+
+
 def test_free_intervals_returns_only_uncovered_time() -> None:
     """The kept sub-intervals of a bin are exactly those no USV covers."""
     starts, stops = np.array([0.10, 0.30]), np.array([0.20, 0.35])
@@ -840,3 +860,27 @@ def test_silent_lattice_bin_inside_a_bout_is_not_a_negative() -> None:
     assert negatives
     assert all(lo >= 0.5 - 1e-9 for lo, _hi in negatives)
     assert not any(lo == pytest.approx(0.10) for lo, _hi in negatives)
+
+
+def test_decoding_figure_opacity_spans_every_session_of_a_repeated_mouse(
+        tmp_path: pathlib.Path) -> None:
+    """
+    Description
+    -----------
+    Two focal sessions of one mouse each keep their own USV count in the opacity range. Keying
+    the counts by mouse kept only the last session per mouse, so the first session's count fell
+    below the range, its weight went negative and the blended colour was not a valid hex string.
+    """
+
+    session_a, session_b, session_c = "20250101_000000", "20250102_000000", "20250103_000000"
+    for session in (session_a, session_b, session_c):
+        _write_area_archive(tmp_path, session, "PAG", (5, 10))
+        _write_area_archive(tmp_path, session, "MRN", (5, 10))
+    maker = _decoding_maker(tmp_path)
+    destination = maker.make_bout_decoding_figure(
+        focal_area="PAG",
+        focal_sessions=(("mouseA", session_a, 100), ("mouseA", session_b, 500),
+                        ("mouseB", session_c, 300)),
+        comparisons=(("MRN", session_a, session_a, "same session"),) * 3,
+        unit_counts=(5, 10), out_dir=tmp_path / "figures")
+    assert pathlib.Path(destination).exists()

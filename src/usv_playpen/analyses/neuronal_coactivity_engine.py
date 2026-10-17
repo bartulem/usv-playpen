@@ -5,6 +5,8 @@ pairwise spike count correlations and population vector similarity, with
 bootstrapping and circular shuffle controls for statistical validation.
 """
 
+from __future__ import annotations
+
 import pathlib
 from collections import defaultdict
 from typing import Any
@@ -14,7 +16,13 @@ import librosa
 import numpy as np
 import polars as pls
 
-from ..os_utils import drop_noise_usvs, find_audio_mmap, first_match_or_raise, parse_audio_mmap_name, vocal_class_mask
+from ..os_utils import (
+    drop_noise_usvs,
+    find_audio_mmap,
+    first_match_or_raise,
+    parse_audio_mmap_name,
+    vocal_class_mask,
+)
 
 
 def extract_snippet_matrix(
@@ -313,25 +321,96 @@ def compute_coactivity_metrics(count_matrix: np.ndarray) -> dict[str, Any]:
         "pop_corr": mean_pop_corr
     }
 
+def resolve_subsample_size(
+    n_target: int,
+    n_available: int,
+    subsample_fraction: float,
+) -> int:
+    """
+    Description
+    -----------
+    Resolves how many trials each subsample of the trial-level resampling holds. The
+    resampling draws trials WITHOUT replacement (see
+    :func:`bootstrap_coactivity_distribution`), so a subsample can never be as large as
+    the pool it is drawn from without becoming the pool itself (every draw identical,
+    a zero-spread distribution). The rule is therefore:
+
+    1. ``n_target < n_available``: keep ``n_target`` (the requested matched trial count
+       is a genuine subsample of the pool);
+    2. otherwise: use ``floor(subsample_fraction * n_available)`` trials, i.e. a fixed
+       fraction of the smallest pool.
+
+    For example, ``n_target = 300`` with ``n_available = 1000`` keeps 300, while
+    ``n_target = 300`` with ``n_available = 120`` and ``subsample_fraction = 0.8``
+    gives ``floor(0.8 * 120) = 96``.
+
+    Parameters
+    ----------
+    n_target : int
+        The requested trial count per subsample (e.g. the ``bootstrap_n`` setting, or
+        ``min(bootstrap_n, n_a, n_b)``).
+    n_available : int
+        The number of trials in the smallest pool that will be subsampled (for a
+        two-group comparison, ``min(n_a, n_b)`` so both groups get the same size).
+    subsample_fraction : float
+        Fraction of ``n_available`` used when ``n_target`` is not below it; must lie in
+        the open interval (0, 1). Shipped as
+        ``analyses_settings.json -> neuronal_coactivity -> bootstrap_subsample_fraction``.
+
+    Returns
+    -------
+    n_subsample : int
+        The resolved subsample size, at least 2 (a coactivity metric needs two trials).
+
+    Raises
+    ------
+    ValueError
+        If ``subsample_fraction`` is outside (0, 1), or the pool holds fewer than 3
+        trials (no subsample of at least 2 trials that differs from the pool exists).
+    """
+
+    if not 0.0 < subsample_fraction < 1.0:
+        msg = f"subsample_fraction must lie in (0, 1), got {subsample_fraction}."
+        raise ValueError(msg)
+    if n_available < 3:
+        msg = (f"Trial-level subsampling needs at least 3 trials in the pool (a subsample of "
+               f"at least 2 that differs from the pool), got {n_available}.")
+        raise ValueError(msg)
+    if n_target < n_available:
+        return int(max(2, n_target))
+    return int(max(2, np.floor(subsample_fraction * n_available)))
+
+
 def bootstrap_coactivity_distribution(
     count_matrix: np.ndarray,
     n_target: int,
     n_iterations: int = 1000,
-    seed: int | None = None
+    seed: int | None = None,
+    *,
+    subsample_fraction: float,
 ) -> dict[str, np.ndarray]:
     """
-    Performs trial-level bootstrap resampling of a coactivity count
-    matrix to build an empirical distribution of each metric at a
-    fixed `n_target`. Used to equalise trial counts between two
-    vocalization groups before comparing their coactivity, so the
-    statistical power for both is identical.
+    Performs trial-level resampling of a coactivity count matrix to build
+    an empirical distribution of each metric at a fixed subsample size.
+    Used to equalise trial counts between two vocalization groups before
+    comparing their coactivity, so the statistical power for both is
+    identical.
 
-    For each iteration the function draws `n_target` trial indices
-    with replacement, slices the input matrix to those columns, and
-    evaluates `compute_coactivity_metrics` on the resample. The
-    per-iteration metric values are accumulated into per-metric
-    arrays which the caller can summarise as means, percentiles or
-    confidence intervals.
+    For each iteration the function draws trial indices WITHOUT
+    replacement, slices the input matrix to those columns, and evaluates
+    `compute_coactivity_metrics` on the subsample. Drawing without
+    replacement matters: a trial drawn twice pairs with itself, and the
+    self-pair has population-vector similarity (and correlation) exactly
+    1, which inflated the `similarity` and `pop_corr` distributions
+    above the chained circular-shuffle null even when no real effect
+    existed. The subsample size is `n_target` when it is below the
+    number of trials, otherwise `floor(subsample_fraction * n_trials)`
+    (see `resolve_subsample_size`). The mean of a metric over
+    without-replacement subsamples is an unbiased estimate of the
+    full-pool value, because each metric is a mean over pairs. The
+    per-iteration metric values are accumulated into per-metric arrays
+    which the caller can summarise as means, percentiles or confidence
+    intervals.
 
     Parameters
     ----------
@@ -342,21 +421,27 @@ def bootstrap_coactivity_distribution(
         bootstrapped the "simple" USV group); the function has
         always been group-agnostic and works on any count matrix.
     n_target : int
-        The target trial count per resample. Typically the size of
+        The requested trial count per subsample. Typically the size of
         the smaller of the two groups being compared, so the larger
-        group is sampled down to match.
+        group is sampled down to match. When it is not below the number
+        of trials, `subsample_fraction` sets the size instead.
     n_iterations : int, optional
-        Number of bootstrap iterations. Defaults to 1000.
+        Number of resampling iterations. Defaults to 1000.
     seed : int | None, optional
         Seed for the NumPy random generator driving the trial
-        resampling. Pass a fixed integer to make the bootstrap
-        distribution reproducible across runs; leave as `None`
-        (the default) for fresh entropy on every call.
+        resampling. Pass a fixed integer to make the distribution
+        reproducible across runs; leave as `None` (the default) for
+        fresh entropy on every call.
+    subsample_fraction : float
+        Keyword-only, required. Fraction of the trials drawn per
+        subsample when `n_target` is not below the number of trials;
+        must lie in (0, 1). Read from
+        `analyses_settings.json -> neuronal_coactivity -> bootstrap_subsample_fraction`.
 
     Returns
     -------
     dict[str, np.ndarray]
-        Per-metric bootstrap distributions:
+        Per-metric resampling distributions:
         * `r_sc`        — mean pairwise neuron spike-count correlations
         * `similarity`  — mean population-vector cosine similarities
         * `pop_corr`    — mean population-vector Pearson correlations
@@ -367,11 +452,12 @@ def bootstrap_coactivity_distribution(
     boot_pop = np.zeros(n_iterations)
 
     num_trials = count_matrix.shape[1]
+    n_subsample = resolve_subsample_size(n_target, num_trials, subsample_fraction)
     rng = np.random.default_rng(seed)
 
     for i in range(n_iterations):
-        # Sample trial indices with replacement to match n_target
-        idx = rng.choice(num_trials, n_target, replace=True)
+        # Sample distinct trial indices (no trial twice, so no self-pairs)
+        idx = rng.choice(num_trials, n_subsample, replace=False)
         resampled_matrix = count_matrix[:, idx]
 
         # Calculate coactivity metrics for the resampled matrix
@@ -650,7 +736,8 @@ def perform_label_permutation_test(
         Mapping `metric -> {observed_delta, null, null_mean, null_std,
         p_a_gt_b, p_two_tailed, z_score}`. `metric` covers every key returned
         by `compute_coactivity_metrics` (`r_sc`, `similarity`,
-        `pop_corr`).
+        `pop_corr`). Both p-values are NaN when the observed delta is not
+        finite or no permutation gave a finite delta.
     """
 
     n_a = counts_a.shape[1]
@@ -686,9 +773,12 @@ def perform_label_permutation_test(
         # (which would be anticonservative). Only finite draws count: a NaN draw
         # (an all-constant permuted group) can never reach the observed value, so
         # counting it in the total would shrink p for no reason.
+        # A non-finite observed delta (e.g. a group whose neurons are all silent, so its
+        # metric is undefined) can never meet a null draw; without this guard it counted
+        # zero exceedances and was reported as the most significant result, 1 / (n + 1).
         finite_null = null[np.isfinite(null)]
         n_perm = int(finite_null.size)
-        if n_perm == 0:
+        if n_perm == 0 or not np.isfinite(obs):
             p_a_gt_b = float('nan')
             p_two = float('nan')
         else:
@@ -1054,7 +1144,9 @@ def load_animal_sessions(
     sessions_data = []
     for session_name in chosen_session_names:
         directory = data_root / session_name
-        tracking_file = first_match_or_raise(root=directory, pattern="*_translated_rotated_metric.h5", recursive=True, label="tracking H5")
+        # `[!speaker]` skips the speaker track a USV-playback session keeps beside the mouse track
+        tracking_file = first_match_or_raise(root=directory, pattern="[!speaker]*_translated_rotated_metric.h5",
+                                             recursive=True, label="tracking H5")
         with h5py.File(name=tracking_file, mode="r") as track_file:
             # Stripped like every other track-name reader: some track H5 files carry stray
             # whitespace in the names (e.g. ' 158800_0'), which would then match no emitter.
@@ -1210,7 +1302,8 @@ def bootstrap_vs_null_stats(
     -------
     boot_mean, null_mean, p_val, z (tuple[float, float, float, float])
         Bootstrap mean, null mean, ``(#{null >= boot_mean} + 1) / (n_null + 1)`` over the
-        finite null draws (NaN when there are none), and
+        finite null draws (NaN when there are none or when the bootstrap mean is not
+        finite), and
         ``(boot_mean - null_mean) / null_std`` (0.0 when the null has zero spread).
     """
 
@@ -1224,7 +1317,10 @@ def bootstrap_vs_null_stats(
     # boot_mean, so counting it in the total would shrink p.
     finite_null = np.asarray(null_data)[np.isfinite(null_data)]
     n_null = int(finite_null.size)
-    p_val = float((np.sum(finite_null >= boot_mean) + 1) / (n_null + 1)) if n_null > 0 else float('nan')
+    # A bootstrap with no finite value has a NaN mean, which meets no null draw and would
+    # otherwise be reported as the smallest possible p; it is undefined instead.
+    p_val = (float((np.sum(finite_null >= boot_mean) + 1) / (n_null + 1))
+             if n_null > 0 and np.isfinite(boot_mean) else float('nan'))
     z = (boot_mean - null_mean) / null_std if null_std > 0 else 0.0
     return boot_mean, null_mean, p_val, z
 
@@ -1284,13 +1380,17 @@ def compare_groups(
     n_boot: int = 1000,
     n_permutations: int = 1000,
     seed: int | None = None,
+    subsample_fraction: float,
 ) -> dict[str, Any]:
     """
     Description
     -----------
     Matched-N comparison of the coactivity of two already-pooled trial groups.
-    Bootstraps ``pooled_a`` and ``pooled_b`` to the same ``bootstrap_n`` trials
-    (equalising statistical power) via :func:`bootstrap_coactivity_distribution`, and
+    Subsamples ``pooled_a`` and ``pooled_b`` (without replacement) to the same trial
+    count (equalising statistical power) via :func:`bootstrap_coactivity_distribution`.
+    That count is ``bootstrap_n`` when it is below both group sizes, otherwise
+    ``floor(subsample_fraction * min(n_a, n_b))`` (:func:`resolve_subsample_size`), and
+    it is resolved once here so both groups use the same size. The function also
     runs a direct trial-label permutation test between them via
     :func:`perform_label_permutation_test`. This is the shared core of the notebook's
     single-animal, cross-animal and amplitude-stratified analyses; the caller supplies
@@ -1308,32 +1408,41 @@ def compare_groups(
     pooled_a, pooled_b : np.ndarray
         ``Neurons x Trials`` count matrices for the two groups (same row dimension).
     bootstrap_n : int
-        Number of trials each group is bootstrap-resampled to.
+        Requested number of trials per subsample (see above for when it is replaced).
     n_boot : int
-        Bootstrap iterations per group (default 1000).
+        Resampling iterations per group (default 1000).
     n_permutations : int
         Label-permutation iterations (default 1000).
     seed : int | None
         Base RNG seed; sub-routines use ``seed``, ``seed + 1``, ``seed + 2``.
+    subsample_fraction : float
+        Keyword-only, required. Fraction of ``min(n_a, n_b)`` used as the subsample size
+        when ``bootstrap_n`` is not below both group sizes; in (0, 1). Read from
+        ``neuronal_coactivity -> bootstrap_subsample_fraction``.
 
     Returns
     -------
     dict[str, Any]
         ``{"boot_a", "boot_b", "perm", "bootstrap_n"}`` where ``boot_a`` / ``boot_b``
-        are the per-metric bootstrap-distribution dicts, ``perm`` is the
-        :func:`perform_label_permutation_test` result, and ``bootstrap_n`` echoes the
-        matched trial count used.
+        are the per-metric resampling-distribution dicts, ``perm`` is the
+        :func:`perform_label_permutation_test` result, and ``bootstrap_n`` is the
+        matched trial count actually used (after :func:`resolve_subsample_size`).
     """
 
     seed_a = None if seed is None else seed
     seed_b = None if seed is None else seed + 1
     seed_perm = None if seed is None else seed + 2
-    boot_a = bootstrap_coactivity_distribution(pooled_a, bootstrap_n, n_boot, seed=seed_a)
-    boot_b = bootstrap_coactivity_distribution(pooled_b, bootstrap_n, n_boot, seed=seed_b)
+    n_subsample = resolve_subsample_size(
+        bootstrap_n, min(pooled_a.shape[1], pooled_b.shape[1]), subsample_fraction,
+    )
+    boot_a = bootstrap_coactivity_distribution(pooled_a, n_subsample, n_boot, seed=seed_a,
+                                               subsample_fraction=subsample_fraction)
+    boot_b = bootstrap_coactivity_distribution(pooled_b, n_subsample, n_boot, seed=seed_b,
+                                               subsample_fraction=subsample_fraction)
     perm = perform_label_permutation_test(
         counts_a=pooled_a, counts_b=pooled_b, n_permutations=n_permutations, seed=seed_perm,
     )
-    return {"boot_a": boot_a, "boot_b": boot_b, "perm": perm, "bootstrap_n": bootstrap_n}
+    return {"boot_a": boot_a, "boot_b": boot_b, "perm": perm, "bootstrap_n": n_subsample}
 
 
 def per_session_group_metrics(
@@ -1433,6 +1542,7 @@ def run_group_comparison(
     min_shift_s: float = 20.0,
     max_shift_s: float = 60.0,
     seed: int | None = None,
+    subsample_fraction: float,
 ) -> dict[str, Any]:
     """
     Description
@@ -1443,10 +1553,11 @@ def run_group_comparison(
 
     1. pool the per-session count matrices for both groups
        (:func:`pool_group_count_matrices`);
-    2. matched-N pooled bootstrap of each group + a direct label permutation test
-       (:func:`compare_groups`);
+    2. matched-N pooled without-replacement subsampling of each group + a direct
+       label permutation test (:func:`compare_groups`), at the matched trial count
+       resolved by :func:`resolve_subsample_size`;
     3. a chained circular-shuffle null per group, drawn at the same matched
-       ``bootstrap_n`` onsets across sessions (:func:`sample_onsets_across_sessions`
+       trial count of onsets across sessions (:func:`sample_onsets_across_sessions`
        + :func:`perform_chained_circular_shuffle`);
     4. the per-session observed-metric breakdown (:func:`per_session_group_metrics`).
 
@@ -1462,7 +1573,9 @@ def run_group_comparison(
     window_s : float
         Post-onset spike-count window (seconds).
     bootstrap_n : int
-        Matched trial count for the pooled bootstrap and the chained null.
+        Requested matched trial count for the pooled subsampling and the chained null
+        (replaced by ``floor(subsample_fraction * min(n_a, n_b))`` when it is not below
+        both pooled group sizes).
     n_boot : int
         Bootstrap iterations per group (default 1000).
     n_shuffles : int
@@ -1475,24 +1588,30 @@ def run_group_comparison(
         Maximum circular time shift (seconds) for the chained null, by default 60.0.
     seed : int | None
         Base RNG seed for the whole pipeline.
+    subsample_fraction : float
+        Keyword-only, required. See :func:`compare_groups`; read from
+        ``neuronal_coactivity -> bootstrap_subsample_fraction``.
 
     Returns
     -------
     dict[str, Any]
         ``{"pooled_a", "pooled_b", "boot_a", "boot_b", "perm", "chained_null_a",
-        "chained_null_b", "per_session", "bootstrap_n"}``.
+        "chained_null_b", "per_session", "bootstrap_n"}``; ``bootstrap_n`` is the matched
+        trial count actually used.
     """
 
     pooled_a, pooled_b = pool_group_count_matrices(sessions, window_s)
     comparison = compare_groups(
         pooled_a, pooled_b,
         bootstrap_n=bootstrap_n, n_boot=n_boot, n_permutations=n_permutations, seed=seed,
+        subsample_fraction=subsample_fraction,
     )
+    matched_n = comparison["bootstrap_n"]
     onsets_a = sample_onsets_across_sessions(
-        sessions, "group_a_df", bootstrap_n, seed=None if seed is None else seed + 3,
+        sessions, "group_a_df", matched_n, seed=None if seed is None else seed + 3,
     )
     onsets_b = sample_onsets_across_sessions(
-        sessions, "group_b_df", bootstrap_n, seed=None if seed is None else seed + 4,
+        sessions, "group_b_df", matched_n, seed=None if seed is None else seed + 4,
     )
     neural = [session["neural_data"] for session in sessions]
     durations = [session["total_duration"] for session in sessions]
@@ -1516,5 +1635,5 @@ def run_group_comparison(
         "chained_null_a": chained_null_a,
         "chained_null_b": chained_null_b,
         "per_session": per_session,
-        "bootstrap_n": bootstrap_n,
+        "bootstrap_n": matched_n,
     }

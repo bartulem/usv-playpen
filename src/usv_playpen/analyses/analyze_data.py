@@ -142,16 +142,15 @@ class Analyst:
                 InterUSVIntervalCalculator(input_parameter_dict=self.input_parameter_dict,
                               message_output=self.message_output).save_inter_usv_interval_distributions_to_file()
 
-            # # # create USV playback WAV files
-            if self.input_parameter_dict['analyses_booleans']['create_usv_playback_wav_bool'] or self.input_parameter_dict['analyses_booleans']['create_naturalistic_usv_playback_wav_bool']:
-                if self.input_parameter_dict['analyses_booleans']['create_usv_playback_wav_bool']:
-                    AudioGenerator(exp_id=self.input_parameter_dict['send_email']['experimenter'],
-                                   create_playback_settings_dict=self.input_parameter_dict['create_usv_playback_wav'],
-                                   message_output=self.message_output).create_usv_playback_wav()
-                else:
-                    AudioGenerator(exp_id=self.input_parameter_dict['send_email']['experimenter'],
-                                   create_playback_settings_dict=self.input_parameter_dict['create_naturalistic_usv_playback_wav'],
-                                   message_output=self.message_output).create_naturalistic_usv_playback_wav()
+            # # # create USV playback WAV files (the two kinds are independent; both run when both are on)
+            if self.input_parameter_dict['analyses_booleans']['create_usv_playback_wav_bool']:
+                AudioGenerator(exp_id=self.input_parameter_dict['send_email']['experimenter'],
+                               create_playback_settings_dict=self.input_parameter_dict['create_usv_playback_wav'],
+                               message_output=self.message_output).create_usv_playback_wav()
+            if self.input_parameter_dict['analyses_booleans']['create_naturalistic_usv_playback_wav_bool']:
+                AudioGenerator(exp_id=self.input_parameter_dict['send_email']['experimenter'],
+                               create_playback_settings_dict=self.input_parameter_dict['create_naturalistic_usv_playback_wav'],
+                               message_output=self.message_output).create_naturalistic_usv_playback_wav()
 
             for one_directory in self.root_directories:
                 try:
@@ -189,7 +188,7 @@ class Analyst:
                     self.message_output(traceback.format_exc())
                     failed_directories.append((one_directory, f"{type(exc).__name__}: {exc}"))
         finally:
-            # The completion e-mail must report failures honestly: previously it
+            # The completion e-mail must report every failure: previously it
             # always announced success even when every directory had errored and
             # been swallowed by the except above, so a silent total failure looked
             # like a clean run to whoever was waiting on the notification.
@@ -241,7 +240,7 @@ def generate_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
         The click context; its parameter sources tell which options were given on the command line.
     exp_id (str)
         Experimenter ID.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -283,7 +282,7 @@ def generate_naturalistic_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
         The click context; its parameter sources tell which options were given on the command line.
     exp_id (str)
         Experimenter ID.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -338,7 +337,7 @@ def generate_rm_files_cli(ctx, root_directory, **kwargs) -> None:
         The click context; its parameter sources tell which options were given on the command line.
     root_directory (str)
         Session root directory path.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -378,7 +377,7 @@ def generate_beh_features_cli(ctx, root_directory, **kwargs) -> None:
         The click context; its parameter sources tell which options were given on the command line.
     root_directory (str)
         Session root directory path.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -442,7 +441,7 @@ def generate_usv_interval_distributions_cli(ctx, **kwargs) -> None:
     ----------
     ctx (click.Context)
         The click context; its parameter sources tell which options were given on the command line.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns

@@ -307,6 +307,7 @@
     "window_s": 0.03,
     "bootstrap_n": 300,
     "n_boot": 1000,
+    "bootstrap_subsample_fraction": 0.8,
     "n_shuffles": 1000,
     "n_permutations": 1000,
     "per_session_n_shuffles": 500,

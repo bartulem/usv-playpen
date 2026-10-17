@@ -49,7 +49,7 @@ from matplotlib import gridspec
 from matplotlib.backends.backend_pdf import PdfPages
 from scipy.optimize import minimize
 
-from ..os_utils import first_match_or_raise
+from ..os_utils import atomic_output_path, first_match_or_raise
 from ..visualizations.plot_style import apply_plot_style
 from ..time_utils import is_gui_context, smart_wait
 from ..visualizations.auxiliary_plot_functions import (
@@ -167,7 +167,7 @@ def calculate_derivatives(
     ----------
     input_arr (np.ndarray)
          A (n_frames, n_features) shape ndarray containing feature data to compute derivatives on.
-    diff_bins : int
+    diff_bins (int)
         Number of bins for the central difference derivative; required.
     is_angle (bool)
         Is the feature data in angles or not; defaults to False.
@@ -176,9 +176,15 @@ def calculate_derivatives(
 
     Returns
     -------
-    first_der, second_der (tuple (np.ndarray, np.ndarray))
-        A tuple of 2 (n_frames, n_features) shape np.ndarray
-        w/ first and second derivatives for selected features.
+    first_der (np.ndarray)
+        The first element of the returned tuple: a (n_frames, n_features)
+        shape np.ndarray w/ first derivatives for selected features.
+    second_der (np.ndarray)
+        The second element of the returned tuple: a (n_frames, n_features)
+        shape np.ndarray w/ second derivatives for selected features.
+        Together, first_der and second_der form a tuple of 2
+        (n_frames, n_features) shape np.ndarray w/ first and second
+        derivatives for selected features.
     """
 
     nan_positions = np.isnan(input_arr)
@@ -275,28 +281,28 @@ def calculate_sei(
 
     Parameters
     ----------
-    tracks : np.ndarray
+    tracks (np.ndarray)
         3D tracking data of shape (n_frames, n_animals, n_bodypoints, 3).
-    speed_arr : np.ndarray
+    speed_arr (np.ndarray)
         (n_frames,) array of instantaneous speed for the observer mouse.
-    observer_idx : int
+    observer_idx (int)
         Index of the animal whose engagement is being measured.
-    observed_idx : int
+    observed_idx (int)
         Index of the social partner animal.
-    observed_node_idx : int
+    observed_node_idx (int)
         The index of the target body point on the observed partner (e.g., Nose or TTI).
-    idx_nose : int, optional
+    idx_nose (int, optional)
         Index for the observer's Nose (default 0).
-    idx_tti : int, optional
+    idx_tti (int, optional)
         Index for the observer's Tail-Thorax Interface/Tail-base (default 3).
-    idx_head : int, optional
+    idx_head (int, optional)
         Index for the observer's Head/Pivot (default 5).
-    v_max : float, optional
+    v_max (float, optional)
         Normalization factor for speed. Defaults to the 99th percentile of speed_arr.
 
     Returns
     -------
-    sei : np.ndarray
+    sei (np.ndarray)
         A (n_frames,) array of signed SEI values in `[-1, 1]`.
         Negative values correspond to "partner-behind" frames where
         the cosine of the gaze-target angle is negative; downstream
@@ -1524,13 +1530,16 @@ class FeatureZoo:
 
         Parameters
         ----------
-        root_directory (str)
-            Root directory for data; defaults to None.
-        behavioral_parameters_dict (dict)
-            The ``compute_behavioral_features`` analyses-settings block;
-            defaults to None.
-        message_output (function)
-            Defines output messages; defaults to None.
+        **kwargs (dict)
+            Keyword arguments, each stored as an attribute of the same name;
+            any key outside the three below raises ``TypeError``. The keys are:
+            root_directory (str)
+                Root directory for data; defaults to None.
+            behavioral_parameters_dict (dict)
+                The ``compute_behavioral_features`` analyses-settings block;
+                defaults to None.
+            message_output (function)
+                Defines output messages; defaults to None.
 
         Returns
         -------
@@ -1581,19 +1590,22 @@ class FeatureZoo:
 
         Parameters
         ----------
-        feature_dict (dict)
-            Mapping from feature column name to a dict with keys
-            "occ_array", "bin_centers", and "bin_edges" (as produced by
-            `generate_feature_distributions`); must be supplied for any
-            output to be produced.
-        mouse_id_list (list of str)
-            Track names of the mice in the recording, used to colorize
-            traces and label panels.
-        session_exp_code (str)
-            Experimental code string (used by `extract_information` to
-            pick the per-experiment animal palette).
-        plot_file_name (str)
-            Path for the output PDF.
+        **kwargs (dict)
+            Keyword arguments that describe what to plot and where to save
+            it. The keys are:
+            feature_dict (dict)
+                Mapping from feature column name to a dict with keys
+                "occ_array", "bin_centers", and "bin_edges" (as produced by
+                `generate_feature_distributions`); must be supplied for any
+                output to be produced.
+            mouse_id_list (list of str)
+                Track names of the mice in the recording, used to colorize
+                traces and label panels.
+            session_exp_code (str)
+                Experimental code string (used by `extract_information` to
+                pick the per-experiment animal palette).
+            plot_file_name (str)
+                Path for the output PDF.
 
         Returns
         -------
@@ -2922,9 +2934,11 @@ class FeatureZoo:
             plot_file_name=f"{tracked_file_loc.with_suffix('')}_behavioral_features_histograms.pdf",
         )
 
-        # # # # save data to .csv file
-        behavioral_features_df.write_csv(
-            file=f"{tracked_file_loc.with_suffix('')}_behavioral_features.csv",
-            separator=",",
-            include_header=True,
-        )
+        # # # # save data to .csv file (temp sibling + rename: every later step reads
+        # this CSV, so a crash mid-write must not leave a truncated file behind)
+        with atomic_output_path(f"{tracked_file_loc.with_suffix('')}_behavioral_features.csv") as tmp_csv_path:
+            behavioral_features_df.write_csv(
+                file=tmp_csv_path,
+                separator=",",
+                include_header=True,
+            )

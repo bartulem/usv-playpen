@@ -289,6 +289,38 @@ def test_create_naturalistic_usv_playback_wav_routing(mock_settings, mock_depend
     mock_audio_generator.return_value.create_usv_playback_wav.assert_not_called()
 
 
+def test_both_playback_booleans_run_both_generators(mock_settings, mock_dependencies):
+    """
+    Description
+    -----------
+    The standard and the naturalistic playback generators are independent steps.
+    With both booleans on, both must run, each with its own settings block; the
+    dispatcher used to be an if/else that silently skipped the naturalistic one.
+
+    Parameters
+    ----------
+    mock_settings (dict)
+        Analyses settings fixture.
+    mock_dependencies (dict)
+        Mocked analysis classes keyed by name.
+
+    Returns
+    -------
+    None
+    """
+
+    mock_settings['analyses_booleans']['create_usv_playback_wav_bool'] = True
+    mock_settings['analyses_booleans']['create_naturalistic_usv_playback_wav_bool'] = True
+
+    Analyst(input_parameter_dict=mock_settings, root_directories=[]).analyze_data()
+
+    mock_audio_generator = mock_dependencies['AudioGenerator']
+    assert mock_audio_generator.call_count == 2
+    settings_passed = [c.kwargs['create_playback_settings_dict'] for c in mock_audio_generator.call_args_list]
+    assert settings_passed == [mock_settings['create_usv_playback_wav'], mock_settings['create_naturalistic_usv_playback_wav']]
+    mock_audio_generator.return_value.create_usv_playback_wav.assert_called_once()
+    mock_audio_generator.return_value.create_naturalistic_usv_playback_wav.assert_called_once()
+
 def test_frequency_shift_logic(mock_settings, mock_dependencies):
     """
     Tests that `AudioGenerator.frequency_shift_audio_segment` is called correctly.
@@ -2214,7 +2246,10 @@ def test_rerun_replaces_each_side_and_clears_a_skipped_or_failed_side(synthetic_
     assert rerun["unrelated"] == 1
 
     mocker.patch.object(NeuronalTuning, "_compute_one_cluster_vocal", side_effect=RuntimeError("boom"))
-    _make_neuronal_tuning(root).calculate_neuronal_tuning_curves()
+    # every cluster is still attempted, then the run fails loudly naming the failed cluster
+    # (the broad handler used to log the failure and report a finished run)
+    with pytest.raises(RuntimeError, match=r"Vocal tuning failed for 1 of 1 clusters.*boom"):
+        _make_neuronal_tuning(root).calculate_neuronal_tuning_curves()
     failed = read_pkl()
     for key in ("usv_peth", "usv_property_tuning", "usv_category_tuning", "usv_category_peth",
                 "usv_ibi_bout_onset", "usv_metadata"):

@@ -41,6 +41,7 @@ import polars as pls
 import statsmodels.api as sm
 from joblib import Parallel, delayed
 from scipy.optimize import minimize_scalar
+from scipy.stats import invgauss
 from sklearn.preprocessing import SplineTransformer
 from statsmodels.tools.sm_exceptions import IterationLimitWarning
 
@@ -460,7 +461,10 @@ def fit_mixture_model_sweep(
         One row per ``(key, n_comp, rep)`` with: ``bic``, ``aic``,
         ``icl``, ``cv_neg_loglik`` (constant across reps for a given
         K), per-component ``logmean_k`` / ``logsd_k`` /
-        ``median_sec_k`` / ``weight_k`` / ``nu_k`` (NaN-padded to
+        ``median_sec_k`` (the component median in seconds: ``exp(logmean_k)``
+        for ``gauss`` / ``t``, the inverse-Gaussian median of
+        ``IG(mu_k, lambda_k)`` for ``ig``, whose ``logmean_k`` is the log of
+        the component mean) / ``weight_k`` / ``nu_k`` (NaN-padded to
         ``n_components_max`` and NaN for ``nu_k`` under
         ``gauss``), the first ``max_modes_reported`` mixture modes
         (``mode_sec_k`` / ``density_k``), kept in ascending-location
@@ -626,7 +630,15 @@ def fit_mixture_model_sweep(
                 for k in range(n_components):
                     results[f"logmean_{k+1}"].append(float(logmeans[k]))
                     results[f"logsd_{k+1}"].append(float(logsds[k]))
-                    results[f"median_sec_{k+1}"].append(float(np.exp(logmeans[k])))
+                    # exp(logmean) is the median of a log-Gaussian or log-Student-t component
+                    # (both symmetric in log time), but for an IG component logmean is the log
+                    # of its MEAN and the distribution is right-skewed, so its median is taken
+                    # from IG(mu, lambda) itself: scipy's invgauss(mu / lambda, scale=lambda).
+                    if model_class == "ig":
+                        results[f"median_sec_{k+1}"].append(float(invgauss.median(
+                            np.exp(logmeans[k]) / lambdas[k], scale=lambdas[k])))
+                    else:
+                        results[f"median_sec_{k+1}"].append(float(np.exp(logmeans[k])))
                     results[f"weight_{k+1}"].append(float(weights[k]))
                     results[f"nu_{k+1}"].append(float(nus[k]))
                     results[f"lambda_{k+1}"].append(
@@ -1149,7 +1161,9 @@ def fit_tied_peak_ladder_and_lrt(
     runs every rung ``n -> n+1`` for ``n`` in ``peak_grid`` through
     :func:`tied_peak_bootstrap_lrt` with session labels, so each observed statistic is divided
     by its session design effect before being scored against the parametric null (Rao & Scott,
-    1981). Intervals are nested in sessions and the iid null has no session structure; without
+    1981). Each rung's observed null is laddered: the observed alternative of rung ``n - 1``
+    (same subsample) is passed as rung ``n``'s ``null_start`` and the better of it and the
+    scratch restarts is kept, so the observed null is warm-started like every replicate's. Intervals are nested in sessions and the iid null has no session structure; without
     the correction the male end-to-start ladder was non-monotonic (2v3 kept, 3v4 rejected), with
     it every rung past 1v2 keeps. All rungs are run rather than stopping at the first keep, so
     later rungs are reported as tested rather than merely unreached; selection is still the
@@ -1260,12 +1274,20 @@ def fit_tied_peak_ladder_and_lrt(
     lrt_rows: list[dict] = []
     null_rows: list[dict] = []
     selected_n_peak = None
+    previous_rung: tuple[int, object] | None = None
     for n_peak in peak_grid:
+        # The rung below's observed alternative was fitted on this same subsample (it depends
+        # only on the pool and the seed), so it seeds this rung's observed null; the test keeps
+        # the better of it and the scratch restarts. Every replicate's null is warm-started, so
+        # a scratch-only observed null that stops short would inflate the statistic.
+        null_start = (previous_rung[1] if previous_rung is not None
+                      and previous_rung[0] == n_peak - 1 else None)
         result = tied_peak_bootstrap_lrt(
             intervals_sec=values, n_peak_null=n_peak, n_background=n_background, B=B,
             n_subsample=n_subsample, n_init_obs=n_init, n_init_boot=n_init_boot,
             reg_covar=reg_covar, seed=seed, n_jobs=n_jobs, session_labels=session_labels,
-            n_design_bootstrap=n_design_bootstrap)
+            n_design_bootstrap=n_design_bootstrap, null_start=null_start)
+        previous_rung = (n_peak, result["alt_model"])
         threshold = float(np.percentile(result["lr_null"], 100.0 * (1.0 - alpha_effective)))
         rejected = bool(result["p_value_corrected"] < alpha_effective)
         if not rejected and selected_n_peak is None:
@@ -1306,6 +1328,85 @@ def fit_tied_peak_ladder_and_lrt(
             pls.DataFrame(null_rows), int(selected_n_peak), float(alpha_effective))
 
 
+def validate_interval_pools(interval_pools: list[dict], fit_tied_model: bool,
+                            fit_mixture_model: bool) -> None:
+    """
+    Description
+    -----------
+    Checks the ``interval_pools`` declaration before any session is read, so a declaration the
+    archive cannot hold fails at once instead of after the full computation.
+
+    Every pool must name a sex (``'male'`` / ``'female'``), a vocal class (``'usv'`` /
+    ``'squeak'``) and an adjacency rule (``'filtered'`` / ``'strict'``). A missing vocal class
+    (``null`` in the JSON) used to run the whole analysis and then crash writing the archive,
+    whose string columns cannot hold a null. No ``(sex, vocal_class, adjacency)`` may be declared
+    twice, since the pools are keyed by it. Fitted pools must also not collide on the keys their
+    results are archived under: the tied peak test writes ``selected_n_peak_<sex>_<vocal_class>``
+    and ``alpha_effective_<sex>_<vocal_class>``, and the unconstrained sweep (when enabled) keys
+    its ``mixture_model_fits`` / ``bootstrap_lrt`` rows and ``K_selected_<sex>`` attribute by sex
+    alone, so two such pools would silently overwrite each other.
+
+    Parameters
+    ----------
+    interval_pools (list[dict])
+        The pools, each ``{'sex', 'vocal_class', 'adjacency', 'fit'}``.
+    fit_tied_model (bool)
+        Whether the tied peak ladder runs on the fitted pools.
+    fit_mixture_model (bool)
+        Whether the unconstrained sweep and its LRT run on the fitted pools.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    ValueError
+        A pool has an unknown sex, vocal class or adjacency, a pool identity is declared twice,
+        or two fitted pools would write the same archive key.
+    """
+
+    seen_identities: set[tuple] = set()
+    tied_keys: dict[tuple, tuple] = {}
+    sweep_keys: dict[str, tuple] = {}
+    for spec in interval_pools:
+        sex, vocal_class, adjacency = spec['sex'], spec['vocal_class'], spec['adjacency']
+        identity = (sex, vocal_class, adjacency)
+        if sex not in ('male', 'female'):
+            msg = f"interval_pools: sex must be 'male' or 'female', got {sex!r} in {identity}."
+            raise ValueError(msg)
+        if vocal_class not in ('usv', 'squeak'):
+            msg = (f"interval_pools: vocal_class must be 'usv' or 'squeak', got {vocal_class!r} "
+                   f"in {identity}.")
+            raise ValueError(msg)
+        if adjacency not in ('filtered', 'strict'):
+            msg = (f"interval_pools: adjacency must be 'filtered' or 'strict', got {adjacency!r} "
+                   f"in {identity}.")
+            raise ValueError(msg)
+        if identity in seen_identities:
+            msg = f"interval_pools: pool {identity} is declared more than once."
+            raise ValueError(msg)
+        seen_identities.add(identity)
+        if not spec['fit']:
+            continue
+        if fit_tied_model:
+            if (sex, vocal_class) in tied_keys:
+                msg = (f"interval_pools: fitted pools {tied_keys[(sex, vocal_class)]} and "
+                       f"{identity} share sex {sex!r} and vocal_class {vocal_class!r}, so their "
+                       f"tied-test attribute selected_n_peak_{sex}_{vocal_class} would collide; "
+                       "fit only one of them.")
+                raise ValueError(msg)
+            tied_keys[(sex, vocal_class)] = identity
+        if fit_mixture_model:
+            if sex in sweep_keys:
+                msg = (f"interval_pools: fitted pools {sweep_keys[sex]} and {identity} share sex "
+                       f"{sex!r}, and the unconstrained sweep (fit_mixture_model) archives its "
+                       f"tables and K_selected_{sex} by sex alone; fit only one pool per sex or "
+                       "turn fit_mixture_model off.")
+                raise ValueError(msg)
+            sweep_keys[sex] = identity
+
+
 class InterUSVIntervalCalculator:
     """
     Description
@@ -1329,11 +1430,14 @@ class InterUSVIntervalCalculator:
 
         Parameters
         ----------
-        input_parameter_dict (dict)
-            Full ``analyses_settings`` dictionary; the
-            ``compute_inter_usv_interval_distributions`` block is read from it.
-        message_output (callable)
-            Logging callable (typically ``print``).
+        **kwargs (dict)
+            Keyword arguments, each stored as an attribute of the same name;
+            any key outside the two below raises ``TypeError``. The keys are:
+            input_parameter_dict (dict)
+                Full ``analyses_settings`` dictionary; the
+                ``compute_inter_usv_interval_distributions`` block is read from it.
+            message_output (callable)
+                Logging callable (typically ``print``).
 
         Returns
         -------
@@ -1483,6 +1587,8 @@ class InterUSVIntervalCalculator:
             raise ValueError(
                 msg
             )
+        validate_interval_pools(interval_pools, fit_tied_model=fit_tied_model,
+                                fit_mixture_model=fit_mixture_model)
 
         message = self.message_output
 
@@ -1680,6 +1786,8 @@ class InterUSVIntervalCalculator:
             # session labels travel with it, and the step-up stops on the corrected p-value);
             # the uncorrected statistic and p-value are archived alongside for comparison.
             if fit_mixture_model:
+                # One fitted pool per sex is guaranteed by validate_interval_pools, so the
+                # sex -> pool identity map below cannot drop a pool.
                 fit_keys = {spec['sex']: (spec['sex'], spec['vocal_class'], spec['adjacency'])
                             for spec in interval_pools if spec['fit']}
                 fit_pools = {k: pool_values[key] for k, key in fit_keys.items()}

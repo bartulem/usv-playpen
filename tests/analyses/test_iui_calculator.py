@@ -17,6 +17,7 @@ import h5py
 import numpy as np
 import polars as pls
 import pytest
+from scipy.stats import invgauss
 
 import usv_playpen.analyses.compute_inter_usv_interval_distributions as iui_mod
 from usv_playpen.analyses._usv_io import (
@@ -24,6 +25,7 @@ from usv_playpen.analyses._usv_io import (
     extract_animal_sexes,
     load_and_filter_usv_data,
     sex_track_ids,
+    unique_match_or_none,
 )
 from usv_playpen.yaml_utils import extract_animal_sexes as yaml_extract_animal_sexes
 from usv_playpen.analyses.compute_inter_usv_interval_distributions import (
@@ -342,6 +344,85 @@ def test_save_iui_writes_archive_when_fit_mixture_model_true(tmp_path, mocker, m
     assert all(res["p_value"] == 0.5 for inputs in selector_inputs for res in inputs.values())
 
 
+@pytest.mark.parametrize(("pools", "match"), [
+    ([{"sex": "male", "vocal_class": None, "adjacency": "filtered", "fit": False}],
+     "vocal_class must be 'usv' or 'squeak'"),
+    ([{"sex": "male", "vocal_class": "usv", "adjacency": "filtered", "fit": False},
+      {"sex": "male", "vocal_class": "usv", "adjacency": "filtered", "fit": True}],
+     "declared more than once"),
+    ([{"sex": "male", "vocal_class": "usv", "adjacency": "filtered", "fit": True},
+      {"sex": "male", "vocal_class": "usv", "adjacency": "strict", "fit": True}],
+     "share sex 'male' and vocal_class 'usv'"),
+    ([{"sex": "male", "vocal_class": "usv", "adjacency": "filtered", "fit": True},
+      {"sex": "male", "vocal_class": "squeak", "adjacency": "strict", "fit": True}],
+     "share sex 'male'"),
+])
+def test_save_iui_rejects_pools_the_archive_cannot_hold_before_computing(tmp_path, monkeypatch,
+                                                                         pools, match):
+    """
+    Pool declarations are validated before any session is read: a pool without a named vocal
+    class (``vocal_class: null``, which used to crash the archive write after the full run), a
+    pool declared twice (whose values silently collapsed onto one key), two fitted pools that
+    would write the same tied-test attribute ``selected_n_peak_<sex>_<vocal_class>``, and, with
+    ``fit_mixture_model`` on, two fitted pools of one sex, which the unconstrained sweep's
+    ``sex``-keyed tables and ``K_selected_<sex>`` attribute cannot tell apart.
+    """
+    list_file = tmp_path / "sessions.txt"
+    list_file.write_text("/dummy/session\n")
+    settings = _make_settings(tmp_path, fit_mixture_model=True, fit_tied_model=True)
+    block = settings["compute_inter_usv_interval_distributions"]
+    block["session_lists"] = [str(list_file)]
+    block["interval_pools"] = pools
+    computed: list = []
+    monkeypatch.setattr(iui_mod, "_read_session_lists", lambda lists, msg: ["/dummy/session"])
+    monkeypatch.setattr(iui_mod, "_session_source_map", lambda lists: {})
+    monkeypatch.setattr(iui_mod, "compute_session_usv_intervals",
+                        lambda **kwargs: computed.append(kwargs) or {})
+
+    with pytest.raises(ValueError, match=match):
+        InterUSVIntervalCalculator(input_parameter_dict=settings,
+                                   message_output=lambda *_a, **_kw: None
+                                   ).save_inter_usv_interval_distributions_to_file()
+    assert computed == []
+
+
+def test_save_iui_two_fitted_pools_of_one_sex_without_the_sweep_keep_both_selections(
+        tmp_path, mocker, monkeypatch):
+    """
+    Two fitted pools of one sex with different vocal classes are legal while the unconstrained
+    sweep is off: each pool's tied-test selection lands under its own
+    ``selected_n_peak_<sex>_<vocal_class>`` attribute and neither overwrites the other.
+    """
+    list_file = tmp_path / "sessions.txt"
+    list_file.write_text("/dummy/session\n")
+    settings = _make_settings(tmp_path, fit_tied_model=True)
+    block = settings["compute_inter_usv_interval_distributions"]
+    block["session_lists"] = [str(list_file)]
+    block["interval_pools"] = [
+        {"sex": "male", "vocal_class": "usv", "adjacency": "filtered", "fit": True},
+        {"sex": "male", "vocal_class": "squeak", "adjacency": "strict", "fit": True}]
+    _mock_session_resolution(monkeypatch, tmp_path)
+
+    def fake_tied(**kwargs):
+        """Returns a selection that identifies the pool."""
+        identity = kwargs["pool_identity"]
+        one = pls.DataFrame([{**identity, "n_peak": 1}])
+        return one, one, one, one, (1 if identity["vocal_class"] == "usv" else 3), 0.01
+
+    monkeypatch.setattr(iui_mod, "fit_tied_peak_ladder_and_lrt", fake_tied)
+    write_mock = mocker.patch.object(iui_mod, "write_ivi_h5",
+                                     return_value=Path(tmp_path / "out" / "stub.h5"))
+    monkeypatch.setattr(iui_mod, "git_sha_for_provenance", lambda _p: "stub")
+
+    InterUSVIntervalCalculator(input_parameter_dict=settings,
+                               message_output=lambda *_a, **_kw: None
+                               ).save_inter_usv_interval_distributions_to_file()
+
+    for mode in write_mock.call_args.kwargs["per_mode"].values():
+        assert mode["attrs"]["selected_n_peak_male_usv"] == 1
+        assert mode["attrs"]["selected_n_peak_male_squeak"] == 3
+
+
 def test_save_iui_creates_output_directory(tmp_path, mocker, monkeypatch):
     """The output_directory is created with parents=True, exist_ok=True before
     the archive is written. We verify by pointing at a deeply-nested path."""
@@ -519,6 +600,43 @@ def test_fit_tied_peak_ladder_and_lrt_tables_and_selection():
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 @pytest.mark.filterwarnings("ignore::UserWarning")
+def test_fit_tied_peak_ladder_and_lrt_ladders_each_rung_null_from_the_previous_alternative(
+        monkeypatch):
+    """
+    Rung ``n``'s observed null is seeded by rung ``n - 1``'s observed alternative (the same
+    subsample, since the subsample depends only on the pool and the seed), while the first rung
+    and any rung whose predecessor is not ``n - 1`` start from scratch. The test function is
+    replaced by a recorder so only the hand-over is checked.
+    """
+
+    values, labels = _two_peak_intervals()
+    starts: list = []
+    alternatives: dict = {}
+
+    def fake_lrt(**kwargs):
+        """Records the null start and returns a scripted rung result with a unique alternative."""
+        starts.append((kwargs["n_peak_null"], kwargs["null_start"]))
+        alternatives[kwargs["n_peak_null"]] = object()
+        return {"lr_obs": 1.0, "design_effect": 1.0, "design_effect_raw": 1.0, "effective_n": 10.0,
+                "lr_corrected": 1.0, "null_p95": 2.0, "p_value": 0.5, "p_value_corrected": 0.5,
+                "negative_fraction": 0.0, "B": 2, "n_subsample": 10, "lr_null": np.zeros(2),
+                "alt_model": alternatives[kwargs["n_peak_null"]]}
+
+    monkeypatch.setattr(iui_mod, "tied_peak_bootstrap_lrt", fake_lrt)
+    fit_tied_peak_ladder_and_lrt(
+        values=values, session_labels=labels, pool_identity={"sex": "male"}, peak_grid=[1, 2, 4],
+        n_background=1, n_init=1, n_init_boot=1, reg_covar=1e-4, B=2, n_subsample=300,
+        alpha=0.05, bonferroni=False, n_design_bootstrap=10, seed=0, n_jobs=1,
+        message=lambda _m: None)
+
+    assert [n for n, _ in starts] == [1, 2, 4]
+    assert starts[0][1] is None
+    assert starts[1][1] is alternatives[1]
+    assert starts[2][1] is None
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
 def test_fit_tied_peak_ladder_and_lrt_without_bonferroni_keeps_alpha():
     """
     With ``bonferroni=False`` the per-rung level is the family level itself, and a single-rung
@@ -566,6 +684,31 @@ def test_fit_mixture_model_sweep_model_class_branches(model_class):
     female_cv = table.filter(pls.col("sex") == "female")["cv_neg_loglik"].to_numpy()
     assert np.isfinite(male_cv).all()
     assert np.isnan(female_cv).all()
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+def test_fit_mixture_model_sweep_ig_median_is_the_component_median():
+    """
+    For an inverse-Gaussian component ``logmean_k`` is the log of the component MEAN ``mu``, and
+    the IG is right-skewed, so ``exp(logmean_k)`` is not its median. ``median_sec_k`` must be the
+    true median of IG(mu_k, lambda_k) in seconds (``scipy.stats.invgauss(mu / lambda,
+    scale=lambda).median()``), and it must lie below the mean.
+    """
+
+    rng = np.random.default_rng(0)
+    values = np.concatenate([invgauss.rvs(0.07 / 0.2, scale=0.2, size=600, random_state=rng),
+                             invgauss.rvs(3.0 / 2.0, scale=2.0, size=300, random_state=rng)])
+    table = fit_mixture_model_sweep(
+        intervals_by_key={"male": values}, n_components_min=1, n_components_max=2, n_repeats=1,
+        max_modes_reported=2, random_seed_base=0, cv_n_folds=5, cv_n_init=1,
+        mixture_model_n_init=1, model_class="ig")
+
+    for row in table.iter_rows(named=True):
+        for k in range(1, row["n_comp"] + 1):
+            mu, lam = float(np.exp(row[f"logmean_{k}"])), row[f"lambda_{k}"]
+            assert row[f"median_sec_{k}"] == pytest.approx(
+                float(invgauss(mu / lam, scale=lam).median()), rel=1e-9)
+            assert row[f"median_sec_{k}"] < mu
 
 
 def test_fit_mixture_model_sweep_rejects_unknown_model_class():
@@ -832,3 +975,27 @@ def test_compute_session_usv_intervals_time_squeaks_by_their_extent(tmp_path, mo
                                             vocal_class="squeak", adjacency=adjacency)
         np.testing.assert_allclose(s2s["female"], [1.15])
         np.testing.assert_allclose(e2s["female"], [1.05])
+
+
+def test_unique_match_or_none_rejects_ambiguous_globs(tmp_path):
+    """One match is returned, none gives None, and two raise naming both candidates (the
+    ``sorted(glob)[0]`` idiom silently took the alphabetically-first file)."""
+
+    assert unique_match_or_none([], label="x") is None
+    only = tmp_path / "a.csv"
+    assert unique_match_or_none([only], label="x") == only
+    with pytest.raises(ValueError, match=r"Expected one USV summary CSV, found 2"):
+        unique_match_or_none([tmp_path / "b.csv", only], label="USV summary CSV")
+
+
+def test_load_and_filter_usv_data_raises_on_two_summaries(tmp_path):
+    """A session holding two ``*_usv_summary.csv`` files (e.g. a stale copy beside the current
+    one) is ambiguous: the loader used to read the alphabetically-first one without a word, and
+    must now raise."""
+
+    _write_summary(tmp_path, with_vocal_flags=True)
+    stale = tmp_path / "audio" / "old" / f"{tmp_path.name}_usv_summary.csv"
+    stale.parent.mkdir()
+    stale.write_text((tmp_path / "audio" / f"{tmp_path.name}_usv_summary.csv").read_text())
+    with pytest.raises(ValueError, match="Expected one USV summary CSV"):
+        load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, vocal_class="usv")

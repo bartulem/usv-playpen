@@ -102,10 +102,10 @@ def test_frequency_shift_audio_segment_logs_not_found(tmp_path, mocker):
     # Mock noisereduce.reduce_noise → return the input unchanged.
     mocker.patch("usv_playpen.analyses.generate_audio_files.nr.reduce_noise",
                  side_effect=lambda y, **_kw: y)
-    # Mock subprocess.Popen so static_sox is never invoked.
+    # Mock subprocess.run so static_sox is never invoked.
     fake_popen = mocker.patch(
-        "usv_playpen.analyses.generate_audio_files.subprocess.Popen",
-        return_value=MagicMock(wait=lambda *_a, **_kw: 0),
+        "usv_playpen.analyses.generate_audio_files.subprocess.run",
+        return_value=MagicMock(returncode=0),
     )
     mocker.patch("usv_playpen.analyses.generate_audio_files.smart_wait")
     # Mock pathlib.Path.unlink to avoid the missing-file error when the
@@ -139,8 +139,8 @@ def test_frequency_shift_audio_segment_volume_adjustment_double_sox(tmp_path, mo
     mocker.patch("usv_playpen.analyses.generate_audio_files.nr.reduce_noise",
                  side_effect=lambda y, **_kw: y)
     fake_popen = mocker.patch(
-        "usv_playpen.analyses.generate_audio_files.subprocess.Popen",
-        return_value=MagicMock(wait=lambda *_a, **_kw: 0),
+        "usv_playpen.analyses.generate_audio_files.subprocess.run",
+        return_value=MagicMock(returncode=0),
     )
     mocker.patch("usv_playpen.analyses.generate_audio_files.smart_wait")
     mocker.patch("pathlib.Path.unlink", return_value=None)
@@ -170,8 +170,8 @@ def test_frequency_shift_audio_segment_filtered_branch_skips_sinc(tmp_path, mock
     mocker.patch("usv_playpen.analyses.generate_audio_files.nr.reduce_noise",
                  side_effect=lambda y, **_kw: y)
     fake_popen = mocker.patch(
-        "usv_playpen.analyses.generate_audio_files.subprocess.Popen",
-        return_value=MagicMock(wait=lambda *_a, **_kw: 0),
+        "usv_playpen.analyses.generate_audio_files.subprocess.run",
+        return_value=MagicMock(returncode=0),
     )
     mocker.patch("usv_playpen.analyses.generate_audio_files.smart_wait")
     mocker.patch("pathlib.Path.unlink", return_value=None)
@@ -190,6 +190,39 @@ def test_frequency_shift_audio_segment_filtered_branch_skips_sinc(tmp_path, mock
     assert "tempo" in last_call_args
 
 
+def test_frequency_shift_audio_segment_sox_failure_raises_and_uses_a_timeout(tmp_path, mocker):
+    """Every SoX pass runs with a timeout and a checked return code. The passes used to be
+    ``subprocess.Popen(...).wait()`` with no timeout and the return code discarded, so a failed
+    SoX run went unnoticed and the next step read a missing intermediate WAV; a non-zero exit
+    must now raise RuntimeError naming the return code."""
+    audio_dir = tmp_path / "audio" / "original"
+    audio_dir.mkdir(parents=True)
+    (audio_dir / "m_001_ch01_session.wav").write_bytes(b"\x00\x00")
+
+    mocker.patch("usv_playpen.analyses.generate_audio_files.librosa.load",
+                 return_value=(np.zeros(1024, dtype=np.float32), 250000))
+    mocker.patch("usv_playpen.analyses.generate_audio_files.sf.write")
+    mocker.patch("usv_playpen.analyses.generate_audio_files.nr.reduce_noise",
+                 side_effect=lambda y, **_kw: y)
+    fake_run = mocker.patch("usv_playpen.analyses.generate_audio_files.subprocess.run",
+                            return_value=MagicMock(returncode=2))
+    fake_popen = mocker.patch("usv_playpen.analyses.generate_audio_files.subprocess.Popen",
+                              return_value=MagicMock(wait=lambda *_a, **_kw: 2))
+    mocker.patch("usv_playpen.analyses.generate_audio_files.smart_wait")
+    mocker.patch("pathlib.Path.unlink", return_value=None)
+
+    ag = AudioGenerator(
+        exp_id="test_exp",
+        root_directory=str(tmp_path),
+        freq_shift_settings_dict=_fs_settings(),
+        message_output=lambda *_a, **_kw: None,
+    )
+    with pytest.raises(RuntimeError, match="return code 2"):
+        ag.frequency_shift_audio_segment()
+    assert fake_popen.call_count == 0
+    assert fake_run.call_args.kwargs["timeout"] > 0
+
+
 def test_frequency_shift_audio_segment_no_match_logs_and_returns(tmp_path, mocker):
     """Zero glob matches: log "Requested audio file not found." and return
     without spawning any sox subprocess. (Previously this path hit an
@@ -201,8 +234,8 @@ def test_frequency_shift_audio_segment_no_match_logs_and_returns(tmp_path, mocke
     (audio_dir / "m_001_ch99_session.wav").write_bytes(b"\x00\x00")
 
     fake_popen = mocker.patch(
-        "usv_playpen.analyses.generate_audio_files.subprocess.Popen",
-        return_value=MagicMock(wait=lambda *_a, **_kw: 0),
+        "usv_playpen.analyses.generate_audio_files.subprocess.run",
+        return_value=MagicMock(returncode=0),
     )
     mocker.patch("usv_playpen.analyses.generate_audio_files.smart_wait")
 
@@ -234,8 +267,8 @@ def test_frequency_shift_audio_segment_returns_path_with_explicit_window(tmp_pat
     mocker.patch("usv_playpen.analyses.generate_audio_files.sf.write")
     mocker.patch("usv_playpen.analyses.generate_audio_files.nr.reduce_noise",
                  side_effect=lambda y, **_kw: y)
-    mocker.patch("usv_playpen.analyses.generate_audio_files.subprocess.Popen",
-                 return_value=MagicMock(wait=lambda *_a, **_kw: 0))
+    mocker.patch("usv_playpen.analyses.generate_audio_files.subprocess.run",
+                 return_value=MagicMock(returncode=0))
     mocker.patch("usv_playpen.analyses.generate_audio_files.smart_wait")
     mocker.patch("pathlib.Path.unlink", return_value=None)
 
@@ -263,8 +296,8 @@ def test_frequency_shift_audio_segment_returns_none_when_source_missing(tmp_path
     located, so callers can fall back gracefully (the video step skips the
     audio mux when None is returned)."""
     (tmp_path / "audio" / "original").mkdir(parents=True)  # empty dir -> 0 glob matches
-    mocker.patch("usv_playpen.analyses.generate_audio_files.subprocess.Popen",
-                 return_value=MagicMock(wait=lambda *_a, **_kw: 0))
+    mocker.patch("usv_playpen.analyses.generate_audio_files.subprocess.run",
+                 return_value=MagicMock(returncode=0))
     mocker.patch("usv_playpen.analyses.generate_audio_files.smart_wait")
 
     ag = AudioGenerator(
@@ -329,9 +362,13 @@ def test_create_usv_playback_wav_seed_is_reproducible_and_varies(tmp_path, mocke
     assert seq_a != seq_c
 
 
-def _write_fake_repository(path, sampling_rate=250000):
+def _write_fake_repository(path, sampling_rate=250000, gap_to_next_s=None):
     """Write a tiny fake naturalistic USV repository H5: 2 sessions, 5 USVs in 2
-    bouts (distinct int16 audio), with known real within-bout + inter-bout gaps."""
+    bouts (distinct int16 audio), with known real within-bout + inter-bout gaps.
+    ``gap_to_next_s`` (a length-5 sequence) replaces the default within-bout gaps
+    ``[0.01, 0.01, nan, 0.01, nan]`` when given."""
+    if gap_to_next_s is None:
+        gap_to_next_s = [0.01, 0.01, np.nan, 0.01, np.nan]
     str_dtype = h5py.string_dtype(encoding="utf-8")
     usv_len = 2000
     n_usv = 5
@@ -347,7 +384,7 @@ def _write_fake_repository(path, sampling_rate=250000):
         usv.create_dataset("length", data=np.full(n_usv, usv_len, dtype=np.int64))
         usv.create_dataset("session", data=np.asarray(["sessA", "sessA", "sessA", "sessB", "sessB"], dtype=object), dtype=str_dtype)
         usv.create_dataset("usv_row", data=np.asarray([0, 1, 2, 5, 6], dtype=np.int64))
-        usv.create_dataset("gap_to_next_s", data=np.asarray([0.01, 0.01, np.nan, 0.01, np.nan], dtype=np.float64))
+        usv.create_dataset("gap_to_next_s", data=np.asarray(gap_to_next_s, dtype=np.float64))
         features = usv.create_group("features")
         # usv 0/1/2 (session A) are simple (mask 1); usv 3/4 (session B) are complex (mask 3/4).
         features.create_dataset("mask_number", data=np.asarray([1, 1, 1, 3, 4], dtype=np.int64))
@@ -373,7 +410,8 @@ def _bout_runs(labels):
     return runs
 
 
-def _run_naturalistic_playback(tmp_path, mocker, *, seed, exp_id, context_label="courtship_male", total_time=8, complexity=None):
+def _run_naturalistic_playback(tmp_path, mocker, *, seed, exp_id, context_label="courtship_male", total_time=8, complexity=None,
+                               gap_to_next_s=None):
     """
     Description
     -----------
@@ -399,6 +437,8 @@ def _run_naturalistic_playback(tmp_path, mocker, *, seed, exp_id, context_label=
         Target naturalistic playback time (s).
     complexity (tuple | None)
         Optional ``(enabled, mask_threshold, start_fraction, end_fraction)``.
+    gap_to_next_s (sequence | None)
+        Optional per-USV within-bout gaps written into the fake repository.
 
     Returns
     -------
@@ -410,7 +450,8 @@ def _run_naturalistic_playback(tmp_path, mocker, *, seed, exp_id, context_label=
     token, sex = _PLAYBACK_CONTEXTS[context_label]
     repo_root = tmp_path / "repo_root"
     (repo_root / sex).mkdir(parents=True, exist_ok=True)
-    _write_fake_repository(repo_root / sex / f"naturalistic_usv_repository_{token}_20230101_000000.h5")
+    _write_fake_repository(repo_root / sex / f"naturalistic_usv_repository_{token}_20230101_000000.h5",
+                           gap_to_next_s=gap_to_next_s)
 
     playback_out = tmp_path / "playback_out"
     mocker.patch(
@@ -443,6 +484,44 @@ def _run_naturalistic_playback(tmp_path, mocker, *, seed, exp_id, context_label=
     spacing = sorted(out_dir.glob("*_spacing.txt"))[0].read_text().split("\n")
     usvids = sorted(out_dir.glob("*_usvids.txt"))[0].read_text().split("\n")
     return spacing, usvids, write_mock
+
+
+def test_create_naturalistic_usv_playback_wav_clamps_an_overlap_gap_at_zero(tmp_path, mocker):
+    """
+    Description
+    -----------
+    A repository that holds both animals' USVs unattributed can store a NEGATIVE within-bout
+    gap (the next USV starts before the current one stops). Playback must treat it as no
+    silence at all, a zero-sample IUI, instead of allocating a negative-length silence (which
+    raised ``ValueError: negative dimensions``); the positive gaps are unchanged.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory.
+    mocker (pytest_mock.MockerFixture)
+        Used to patch the audio-I/O boundary.
+
+    Returns
+    -------
+    None
+    """
+
+    spacing, usvids, write_mock = _run_naturalistic_playback(
+        tmp_path, mocker, seed=0, exp_id="expOverlap", total_time=8,
+        gap_to_next_s=[-0.004, 0.01, np.nan, 0.01, np.nan])
+
+    assert write_mock.call_count == 1
+    pairs = [(label.strip(), count.strip()) for label, count in zip(usvids, spacing, strict=True)
+             if label.strip()]
+    after_first = [int(pairs[i + 1][1]) for i, (label, _) in enumerate(pairs[:-1])
+                   if label == "sessA_usv00000"]
+    after_second = [int(pairs[i + 1][1]) for i, (label, _) in enumerate(pairs[:-1])
+                    if label == "sessA_usv00001"]
+    assert after_first
+    assert all(n == 0 for n in after_first)
+    assert after_second
+    assert all(n == int(np.ceil(0.01 * 250000)) for n in after_second)
 
 
 def test_create_naturalistic_usv_playback_wav_emits_sequences(tmp_path, mocker):

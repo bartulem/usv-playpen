@@ -878,6 +878,9 @@ def _load_default_thresholds() -> dict:
     `analyses_settings.json` so the aggregator and per-session detector
     share defaults. The caller may override any field via kwargs.
 
+    Parameters
+    ----------
+
     Returns
     -------
     cfg (dict)
@@ -951,7 +954,15 @@ def _aggregate_modality_stats(mod_key: str, per_session: list[dict]) -> dict:
       * `spatial_*`          -> max_info_rate_bps, median_info_rate_bps
       * `usv_category_*`     -> max_peak_abs_z, median_peak_abs_z
         (only when NOT a `usv_category_peth_*` key)
+      * `ibi_bout_onset_*`   -> median_onset_gain, min_onset_gain_p
+      * `ibi_bout_first_usv_*` -> median_first_over_later,
+        min_first_over_later_p
       * everything else      -> max_abs_peak_z, median_peak_z
+
+    The IBI bout-onset records carry no `peak_z` (their statistics are a
+    rate ratio and a first-over-later ratio, each with a two-sided shift-null
+    p), so they get their own branch; falling through to the run-based
+    default would always return `None`.
 
     The aggregates summarize the full distribution across *all* tested
     sessions in `per_session` regardless of each session's `significant`
@@ -1032,6 +1043,16 @@ def _aggregate_modality_stats(mod_key: str, per_session: list[dict]) -> dict:
             "median_peak_abs_z": (
                 float(np.median(pzs)) if pzs else None
             ),
+        }
+    if mod_key.startswith(("ibi_bout_onset_", "ibi_bout_first_usv_")):
+        statistic = "onset_gain" if mod_key.startswith("ibi_bout_onset_") else "first_over_later"
+        observed = _vals(statistic)
+        ps = _vals(f"{statistic}_p")
+        return {
+            f"median_{statistic}": (
+                float(np.median(observed)) if observed else None
+            ),
+            f"min_{statistic}_p": min(ps, default=None),
         }
     # run-based: usv_peth_, usv_property_, usv_category_peth_, behavioral_
     pzs = _vals("peak_z")

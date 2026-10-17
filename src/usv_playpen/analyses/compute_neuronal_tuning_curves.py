@@ -786,7 +786,11 @@ def ibi_bout_runs(starts: np.ndarray, stops: np.ndarray, ibi_threshold: float,
     The USV indices of every qualifying IBI bout, found before any binning or windowing.
 
     A bout is a maximal run of USVs whose consecutive silences all fall under `ibi_threshold`.
-    Runs shorter than `min_vocalizations` are not bouts and their USVs are left unassigned. The
+    Each silence is measured from the latest stop of every earlier USV (the running maximum of
+    `stops`), not from the previous row's stop: a short USV nested inside a longer one does not
+    end the sound, and measuring from its stop would open a "silence" while the longer USV is
+    still going and split the bout there. Runs shorter than `min_vocalizations` are not bouts and
+    their USVs are left unassigned. The
     `>=` comparison matches `build_naturalistic_usv_repository._segment_bouts`; `_detect_bouts`
     uses `>` and a different threshold, and answers a different question.
 
@@ -807,7 +811,8 @@ def ibi_bout_runs(starts: np.ndarray, stops: np.ndarray, ibi_threshold: float,
 
     if starts.size == 0:
         return []
-    breaks = np.flatnonzero(starts[1:] - stops[:-1] >= ibi_threshold) + 1
+    latest_stop = np.maximum.accumulate(np.asarray(stops, dtype=float))
+    breaks = np.flatnonzero(starts[1:] - latest_stop[:-1] >= ibi_threshold) + 1
     return [r for r in np.split(np.arange(starts.size), breaks) if r.size >= min_vocalizations]
 
 
@@ -816,7 +821,10 @@ def ibi_bout_extents(starts: np.ndarray, stops: np.ndarray, ibi_threshold: float
     """
     Description
     -----------
-    First USV onset and last USV offset of every qualifying IBI bout.
+    First USV onset and latest USV offset of every qualifying IBI bout.
+
+    The bout ends at the latest stop of any of its USVs, which is the last row's stop only when no
+    earlier USV of the bout outlasts it (a nested last USV would otherwise cut the bout short).
 
     Parameters
     ----------
@@ -837,7 +845,7 @@ def ibi_bout_extents(starts: np.ndarray, stops: np.ndarray, ibi_threshold: float
     if not runs:
         return np.empty(0, dtype=float), np.empty(0, dtype=float)
     return (np.array([starts[r[0]] for r in runs], dtype=float),
-            np.array([stops[r[-1]] for r in runs], dtype=float))
+            np.array([stops[r].max() for r in runs], dtype=float))
 
 
 def weighted_usv_response(spike_times: np.ndarray, usv_start: float, response_window: float,
@@ -1777,7 +1785,7 @@ class NeuronalTuning(FeatureZoo):
 
         Parameters
         ----------
-        **kwargs
+        **kwargs (dict)
             The expected keys are `root_directory`, `tuning_parameters_dict`
             and `message_output`; each is set as an attribute and any other
             key raises ``TypeError``.
@@ -2059,7 +2067,11 @@ class NeuronalTuning(FeatureZoo):
         Raises FileNotFoundError if no spike .npy files are found under
         `<root>/ephys/**/cluster_data/` (no-cluster sessions are not a
         valid input). Missing behavioral CSV or vocal CSV are logged and
-        the corresponding side is skipped.
+        the corresponding side is skipped. A cluster whose vocal compute
+        raises has its previous vocal results removed from its pkl and is
+        logged; the remaining clusters are still computed, and once the loop
+        is done a RuntimeError names every failed cluster (the failure is
+        never reported as a finished run).
 
         Parameters
         ----------
@@ -2068,6 +2080,14 @@ class NeuronalTuning(FeatureZoo):
         Returns
         -------
         None
+
+        Raises
+        ------
+        FileNotFoundError
+            No spike ``.npy`` files under ``<root>/ephys/**/cluster_data/``.
+        RuntimeError
+            The vocal compute raised for at least one cluster (raised after
+            every cluster was attempted; the original errors are logged).
         """
 
         message_output = (
@@ -2130,6 +2150,7 @@ class NeuronalTuning(FeatureZoo):
             return
 
         message_output("  computing vocal tuning curves ...")
+        failed_clusters: list[str] = []
         for cluster_file in tqdm(cluster_files, desc="vocal tuning per cluster"):
             try:
                 voc_partial = self._compute_one_cluster_vocal(
@@ -2143,8 +2164,15 @@ class NeuronalTuning(FeatureZoo):
                     f"    vocal: cluster {cluster_file.name} failed: {exc}"
                     + ("; its previous vocal results were removed from the pkl." if cleared else "")
                 )
+                failed_clusters.append(f"{cluster_file.name} ({type(exc).__name__}: {exc})")
                 continue
             self._save_partial_to_cluster_pkl(cluster_file.stem, voc_partial, "vocal")
+        if failed_clusters:
+            failure_message = (
+                f"Vocal tuning failed for {len(failed_clusters)} of {len(cluster_files)} clusters "
+                f"in {root}: {'; '.join(failed_clusters)}"
+            )
+            raise RuntimeError(failure_message)
 
     def _report_cleared_side(self, cluster_files: list, side: str, message_output) -> None:
         """
@@ -2613,8 +2641,9 @@ class NeuronalTuning(FeatureZoo):
                     # has not labelled); all-NaN -> the null-drop below yields an empty category set
                     # (n_cats == 0), so this feature produces no tuning instead of crashing.
                     cat_values = np.full(anchor_durations.shape[0], np.nan, dtype=float)
-                # Anchors that are not pure USVs (squeak / both segments kept on a side
-                # that does not exclude them) carry no USV category: blank their label
+                # Anchors that are not pure USVs (squeak-only segments and segments holding a
+                # USV and a squeak, kept on a side that does not exclude them) carry no USV
+                # category: blank their label
                 # before the category set is built, so neither the category tuning nor the
                 # per-category PETH uses them and a category held only by them does not appear.
                 anchor_not_usv = ~is_usv[anchor_idx]
@@ -2655,8 +2684,9 @@ class NeuronalTuning(FeatureZoo):
 
                     Parameters
                     ----------
-                    c
-                        Category label from the USV summary CSV.
+                    c (int | float | str | None)
+                        Category label from the USV summary CSV; None, NaN
+                        and non-numeric labels count as unassigned.
                     mapping (dict[int, int])
                         `category_id -> dense_index` map (default-bound
                         to the enclosing scope's `cat_to_idx`).

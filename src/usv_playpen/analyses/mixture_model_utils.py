@@ -224,9 +224,9 @@ def plot_gmm_fit(
         kernel = np.ones(window, dtype=float) / window
         smoothed = np.convolve(dense_pdf, kernel, mode='same')
         inside = (dense_grid >= val_min) & (dense_grid <= val_max)
-        ax.plot(dense_grid[inside], smoothed[inside], '-k', lw=2, label='mixture')
+        ax.plot(dense_grid[inside], smoothed[inside], linestyle='-', color='#000000', lw=2, label='mixture')
     else:
-        ax.plot(xx, pdf, '-k', lw=2, label='mixture')
+        ax.plot(xx, pdf, linestyle='-', color='#000000', lw=2, label='mixture')
 
     if show_components:
         responsibilities = model.predict_proba(xx)
@@ -481,7 +481,7 @@ def qqplot_gmm(
     fig = plt.figure(figsize=(5.5, 4))
     plt.plot(obs_q, model_q, '.', alpha=0.7)
     lo, hi = obs_q.min(), obs_q.max()
-    plt.plot([lo, hi], [lo, hi], 'r--', lw=1)
+    plt.plot([lo, hi], [lo, hi], linestyle='--', color='#FF0000', lw=1)
     plt.xscale('log'); plt.yscale('log')
     plt.xlabel('Observed quantiles (s)')
     plt.ylabel('Model quantiles (s)')
@@ -3178,8 +3178,9 @@ def _sample_from_mixture(model, N: int, rng: np.random.Generator) -> np.ndarray:
 
     Parameters
     ----------
-    model
-        A fitted ``TMixture`` or ``sklearn.mixture.GaussianMixture``.
+    model (IGMixture | TMixture | sklearn.mixture.GaussianMixture)
+        A fitted ``TMixture`` or ``sklearn.mixture.GaussianMixture``
+        (an ``IGMixture`` is dispatched on as well).
     N (int)
         Number of samples.
     rng (np.random.Generator)
@@ -3390,9 +3391,9 @@ def _lr_statistic(model_null, model_alt, log_x: np.ndarray) -> float:
 
     Parameters
     ----------
-    model_null
+    model_null (IGMixture | TMixture | sklearn.mixture.GaussianMixture)
         Fitted mixture under H0.
-    model_alt
+    model_alt (IGMixture | TMixture | sklearn.mixture.GaussianMixture)
         Fitted mixture under H1.
     log_x (np.ndarray)
         Log-space sample points.
@@ -3430,7 +3431,8 @@ def _bootstrap_lrt_replicate(
     null model using a per-replicate deterministic RNG seeded by
     ``(seed, b)``, refits null and alternative models with fit seed
     ``seed + b`` (identical to the sequential path's fit seeds), and
-    returns the replicate's LR statistic.
+    returns the replicate's LR statistic. :func:`bootstrap_lrt` runs every
+    replicate through this function on both its serial and parallel paths.
 
     Parameters
     ----------
@@ -3438,7 +3440,7 @@ def _bootstrap_lrt_replicate(
         Replicate index.
     seed (int)
         Base seed of the enclosing :func:`bootstrap_lrt` call.
-    model_null_obs
+    model_null_obs (IGMixture | TMixture | sklearn.mixture.GaussianMixture)
         The observed-data null-model fit to resample from.
     fit_fn (Callable)
         Family fitter (``fit_log_gmm`` / ``fit_log_t_mixture`` /
@@ -3451,11 +3453,6 @@ def _bootstrap_lrt_replicate(
         Sample size per replicate.
     n_init_boot (int)
         EM restarts per replicate fit.
-    n_jobs (int)
-        Number of parallel workers for the bootstrap replicates;
-        defaults to 1 (the legacy sequential path, bit-identical to
-        prior runs). With ``n_jobs > 1`` each replicate uses its own
-        deterministic RNG seeded by ``(seed, b)``.
     reg_covar (float)
         Forwarded to the fitter.
 
@@ -3545,7 +3542,11 @@ def bootstrap_lrt(
     K_null (int)
         Number of components under H0.
     K_alt (int)
-        Number of components under H1 (must be > ``K_null``).
+        Number of components under H1 (must be > ``K_null``). For
+        ``model_class='t'`` it must equal ``K_null + 1``: both sides are built
+        by splitting up a ladder (from one component when ``K_null = 1``, from
+        two otherwise), so the alternative is always one split of the null, and
+        any other value raises ``ValueError``.
     B (int)
         Number of bootstrap replicates; defaults to 50. Standard
         practice is 50-200; B=50 gives a p-value standard error of
@@ -3564,9 +3565,10 @@ def bootstrap_lrt(
         Number of EM restarts for each bootstrap fit; defaults to 3.
     n_jobs (int)
         Number of parallel workers (joblib ``Parallel``) for the bootstrap
-        replicates; defaults to 1, the sequential path with one shared
-        resampling RNG stream. With ``n_jobs > 1`` each replicate draws
-        from its own deterministic RNG seeded by ``(seed, b)``.
+        replicates; defaults to 1 (in-process). Every replicate runs
+        :func:`_bootstrap_lrt_replicate` with its own deterministic RNG seeded
+        by ``(seed, b)`` whatever ``n_jobs`` is, so the serial and parallel
+        paths return identical statistics.
     reg_covar (float)
         Component variance floor.
     seed (int)
@@ -3617,8 +3619,14 @@ def bootstrap_lrt(
         raise ValueError(
             f"bootstrap_lrt: model_class must be 'gauss', 't' or 'ig', got {model_class!r}."
         )
+    if fit_fn is fit_log_t_mixture and K_alt != K_null + 1:
+        # The Student-t alternative is one split of the null, observed and in every replicate,
+        # so it always has K_null + 1 components; any wider rung would silently be tested as
+        # K_null vs K_null + 1 under a K_alt label.
+        msg = (f"bootstrap_lrt: model_class='t' tests one rung at a time and requires "
+               f"K_alt = K_null + 1, got K_null={K_null}, K_alt={K_alt}.")
+        raise ValueError(msg)
 
-    rng = np.random.default_rng(seed)
     # Keyed on the interval VALUES, not their positions, so that a small change to the pool makes a
     # small change to the subsample. See stable_subsample for the measurement that motivated it.
     intervals_sub, chosen = stable_subsample(intervals_sec, n_subsample, seed, return_indices=True)
@@ -3629,11 +3637,13 @@ def bootstrap_lrt(
     # starts where random restarts still converge: a K >= 5 mixture fitted from scratch stops 15.9
     # nats short on the male end-to-start pool, and a null left in that state makes the next rung's
     # alternative look like it found a component when it only repaired the null.
+    # A one-component null is its own bottom rung (random restarts trivially converge there).
     if fit_fn is fit_log_t_mixture:
-        m_null_obs, _ = fit_fn(log_x, 2, seed=seed, n_init=n_init_obs,
+        ladder_start = min(int(K_null), 2)
+        m_null_obs, _ = fit_fn(log_x, ladder_start, seed=seed, n_init=n_init_obs,
                                reg_covar=reg_covar, x_is_log=True)
         ll_null_obs = float(np.sum(m_null_obs.score_samples(log_x.reshape(-1, 1))))
-        for _ in range(K_null - 2):
+        for _ in range(K_null - ladder_start):
             m_null_obs, ll_null_obs = fit_nested_by_splitting(
                 log_x, m_null_obs, n_init=n_init_obs, seed=seed, reg_covar=reg_covar)
         m_alt_obs, ll_alt_obs = fit_nested_by_splitting(
@@ -3664,20 +3674,17 @@ def bootstrap_lrt(
             lr_obs, delta, session_labels, np.asarray(intervals_sec).size, chosen,
             n_design_bootstrap, seed, "bootstrap_lrt")
 
-    # Bootstrap null distribution. n_jobs == 1 preserves the legacy sequential
-    # path bit-for-bit (one shared resampling RNG stream); n_jobs > 1 runs the
-    # replicates in parallel with per-replicate deterministic RNGs seeded by
-    # (seed, b) -- statistically equivalent and fully reproducible for a given
-    # (seed, B), but not bit-identical to the sequential stream.
+    # Bootstrap null distribution. Both paths run the SAME replicate function,
+    # _bootstrap_lrt_replicate, with a per-replicate RNG seeded by (seed, b), so n_jobs only
+    # decides scheduling: the serial and parallel statistics are identical. The serial path used
+    # to run its own procedure (one shared RNG stream and, for the Student-t family, from-scratch
+    # null and alternative refits instead of the truth-started null and split alternative), which
+    # gave 17% negative replicates where the parallel path gave almost none.
     lr_null = np.empty(B)
     if n_jobs == 1:
         for b in range(B):
-            log_x_b = _sample_from_mixture(m_null_obs, N_sub, rng)
-            m_null_b, _ = fit_fn(log_x_b, K_null, seed=seed + b, n_init=n_init_boot,
-                                 reg_covar=reg_covar, x_is_log=True)
-            m_alt_b, _ = fit_fn(log_x_b, K_alt, seed=seed + b, n_init=n_init_boot,
-                                reg_covar=reg_covar, x_is_log=True)
-            lr_null[b] = _lr_statistic(m_null_b, m_alt_b, log_x_b)
+            lr_null[b] = _bootstrap_lrt_replicate(
+                b, seed, m_null_obs, fit_fn, K_null, K_alt, N_sub, n_init_boot, reg_covar)
             if message_output is not None and (b + 1) % 10 == 0:
                 message_output(f"      bootstrap [{b + 1}/{B}]")
     else:
@@ -3786,6 +3793,12 @@ def _session_design_effect(
     parametric null built from iid draws has no session structure at all, so without this
     factor every rung of a step-up test is compared against a null that is too narrow.
 
+    Both resamplings use ``delta`` centred on its mean. A session resample holds a random number
+    of observations, so uncentred session totals would vary with the session sizes times
+    ``mean(delta)`` and report unequal session sizes as clustering whenever the alternative fits
+    better on average; centred totals ``sum_j - n_j * mean(delta)`` measure the within-session
+    dependence alone, and on independent data the design effect is one.
+
     Parameters
     ----------
     delta (np.ndarray)
@@ -3808,12 +3821,19 @@ def _session_design_effect(
     """
 
     n_sessions = int(session_index.max()) + 1
-    per_session = np.bincount(session_index, weights=delta, minlength=n_sessions)
+    # Centred before resampling: a resample of sessions holds a random NUMBER of observations,
+    # so uncentred session totals carry ``n_j * mean(delta)`` and their spread grows with the
+    # unequal session sizes times the mean, not with any within-session dependence. On iid data
+    # with mean(delta) = 0.005 that alone returned a design effect of 9.02 (0.99 centred).
+    # Subtracting the mean makes each session total ``sum_j - n_j * mean(delta)``, the
+    # linearised (ratio-estimator) form whose spread measures clustering only.
+    centred = np.asarray(delta, dtype=float) - float(np.mean(delta))
+    per_session = np.bincount(session_index, weights=centred, minlength=n_sessions)
     rng = np.random.default_rng(seed)
     draws = rng.integers(0, n_sessions, size=(int(n_bootstrap), n_sessions))
     clustered_se = float(np.std(2.0 * per_session[draws].sum(axis=1), ddof=1))
     interval_draws = rng.integers(0, delta.size, size=(min(int(n_bootstrap), 400), delta.size))
-    independent_se = float(np.std(2.0 * delta[interval_draws].sum(axis=1), ddof=1))
+    independent_se = float(np.std(2.0 * centred[interval_draws].sum(axis=1), ddof=1))
     if independent_se <= 0.0:
         return np.nan, clustered_se, independent_se
     return (clustered_se / independent_se) ** 2, clustered_se, independent_se
@@ -3909,6 +3929,7 @@ def tied_peak_bootstrap_lrt(
     n_jobs: int = 1,
     session_labels: np.ndarray | None = None,
     n_design_bootstrap: int = 2000,
+    null_start: TMixture | None = None,
 ) -> dict:
     """
     Description
@@ -3964,24 +3985,53 @@ def tied_peak_bootstrap_lrt(
         is not. Defaults to None, which reports the uncorrected statistic only.
     n_design_bootstrap (int)
         Session-resampling replicates for the design effect; defaults to 2000.
+    null_start (TMixture or None)
+        Optional warm start for the observed null fit, with ``n_peak_null + n_background``
+        components, peak components first. A step-up ladder passes the previous rung's
+        observed alternative (``result['alt_model']`` of the ``n_peak_null - 1`` rung, fitted
+        on the same subsample because the subsample depends only on the pool and the seed).
+        It is run as one extra restart next to the ``n_init_obs`` scratch restarts and the
+        higher-likelihood fit is kept, so the observed null can only improve. Without it the
+        observed null is fitted from scratch while every replicate's null is warm-started at
+        the truth, and a scratch null that stops short inflates the statistic: on the male
+        end-to-start pool the scratch 3-peak null sat 2.13 nats below the laddered one, which
+        moved the 3v4 statistic from 1.61 to 12.10. Defaults to None (scratch restarts only).
 
     Returns
     -------
     result (dict)
         Keys: ``'n_peak_null'``, ``'n_peak_alt'``, ``'n_background'``, ``'B'``,
         ``'n_subsample'``, ``'lr_obs'``, ``'lr_null'`` (length-B array), ``'p_value'``,
-        ``'null_p95'``, ``'negative_fraction'``, ``'shared_scale_null'``, and -- when
+        ``'null_p95'``, ``'negative_fraction'``, ``'shared_scale_null'``, ``'null_model'``
+        and ``'alt_model'`` (the observed fits, so the alternative can seed the next rung's
+        null; not archived), and -- when
         ``session_labels`` is given -- ``'design_effect'`` (floored at one),
         ``'design_effect_raw'``, ``'clustered_se'``,
         ``'independent_se'``, ``'effective_n'``, ``'lr_corrected'``, ``'p_value_corrected'``.
     """
 
+    null_start_kwargs: dict = {}
+    if null_start is not None:
+        start_weights = np.asarray(null_start.weights_, dtype=float).ravel()
+        if start_weights.size != n_peak_null + n_background:
+            msg = (f"tied_peak_bootstrap_lrt: null_start has {start_weights.size} components, "
+                   f"expected n_peak_null + n_background = {n_peak_null + n_background}.")
+            raise ValueError(msg)
+        null_start_kwargs["init_params"] = (
+            start_weights,
+            np.asarray(null_start.means_, dtype=float).ravel(),
+            np.asarray(null_start.covariances_, dtype=float).ravel(),
+            np.asarray(null_start.nus_, dtype=float).ravel())
+
     values = np.asarray(intervals_sec, dtype=float).ravel()
     subsample, chosen = stable_subsample(values, int(n_subsample), seed, return_indices=True)
     log_sub = np.log(subsample)
 
+    # With a null_start the warm start is one more restart beside the scratch ones and the
+    # best-scoring fit wins, i.e. the better of the scratch and the laddered null is kept.
     null_model, null_ll, shared_scale = fit_tied_scale_t_mixture(
-        log_sub, n_peak_null, n_background, seed=seed, n_init=n_init_obs, reg_covar=reg_covar)
+        log_sub, n_peak_null, n_background, seed=seed, n_init=n_init_obs, reg_covar=reg_covar,
+        **null_start_kwargs)
     alt_model, alt_ll, _ = fit_tied_nested_by_splitting(
         log_sub, null_model, n_peak_null, n_background, seed=seed, n_init=n_init_obs,
         reg_covar=reg_covar)
@@ -4013,6 +4063,8 @@ def tied_peak_bootstrap_lrt(
         "null_p95": float(np.percentile(lr_null, 95)),
         "negative_fraction": float(np.mean(lr_null < 0)),
         "shared_scale_null": float(shared_scale),
+        "null_model": null_model,
+        "alt_model": alt_model,
         **correction,
         **({"p_value_corrected": _bootstrap_p_value(lr_null, correction["lr_corrected"])}
            if correction and np.isfinite(correction["lr_corrected"]) else {}),

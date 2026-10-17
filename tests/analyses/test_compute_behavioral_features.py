@@ -139,3 +139,37 @@ class TestSocialHeadYawColumns:
             for suffix in ('', '_1st_der', '_2nd_der'):
                 assert FeatureZoo.feature_boundaries[f'{head_feature}{suffix}'] == FeatureZoo.feature_boundaries[f'{nose_feature}{suffix}']
             assert FeatureZoo.resolve_feature_label(head_feature, 'male', 'female') == 'male-partner pitch'
+
+
+class TestBehavioralFeaturesCsvIsWrittenAtomically:
+
+    def test_write_csv_goes_through_atomic_output_path(self):
+        """
+        Description
+        -----------
+        Every later step (modeling, tuning curves, figures) reads the per-session
+        ``*_behavioral_features.csv``; a direct ``write_csv`` to the final path left a
+        truncated file after a crash. Running the whole feature pipeline needs a
+        tracked session, so this pins the structure instead: the only ``write_csv``
+        call in ``save_behavioral_features_to_file`` sits inside a
+        ``with atomic_output_path(...)`` block and writes to the temp path it yields.
+        """
+
+        import ast
+        import inspect
+        import textwrap
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(FeatureZoo.save_behavioral_features_to_file)))
+        write_calls = [node for node in ast.walk(tree)
+                       if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                       and node.func.attr == "write_csv"]
+        assert len(write_calls) == 1
+        atomic_withs = [node for node in ast.walk(tree) if isinstance(node, ast.With)
+                        and any(isinstance(item.context_expr, ast.Call)
+                                and getattr(item.context_expr.func, "id", None) == "atomic_output_path"
+                                for item in node.items)]
+        assert len(atomic_withs) == 1
+        temp_name = atomic_withs[0].items[0].optional_vars.id
+        assert write_calls[0] in list(ast.walk(atomic_withs[0]))
+        file_kw = next(kw for kw in write_calls[0].keywords if kw.arg == "file")
+        assert isinstance(file_kw.value, ast.Name) and file_kw.value.id == temp_name

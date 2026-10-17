@@ -38,7 +38,7 @@ Shared settings
 ---------------
 Besides the per-analysis blocks documented under each function below, *analyses_settings.json* carries the blocks the Analyze window and every analysis share. The GUI writes the first four from its fields; the ``data_roots`` block is edited in the file only. Every path in the file is stored with the shipped experimenter folder (``Bartul``) and is re-keyed to the experimenter selected on the GUI main display (or, for the CLI, to the ``experimenter`` of *behavioral_experiments_settings.toml* / the ``EXPERIMENTER_ID`` environment variable) and to the host OS mount before it is used:
 
-* **analyses_booleans** : one toggle per analysis, set by the orange fields of the window — ``compute_behavioral_features_bool``, ``compute_neuronal_tuning_bool``, ``frequency_shift_audio_segment_bool``, ``create_usv_playback_wav_bool`` and ``create_naturalistic_usv_playback_wav_bool``. The sixth, ``compute_inter_usv_interval_distributions_bool``, has no GUI field: the inter-USV interval analysis runs from the command line (``generate-usv-interval-distributions``, see :doc:`CLI`) or from its notebook (see :doc:`Notebooks`), and runs in a GUI session only when the boolean is set to ``true`` in the file by hand
+* **analyses_booleans** : one toggle per analysis, set by the orange fields of the window — ``compute_behavioral_features_bool``, ``compute_neuronal_tuning_bool``, ``frequency_shift_audio_segment_bool``, ``create_usv_playback_wav_bool`` and ``create_naturalistic_usv_playback_wav_bool``. The sixth and seventh have no GUI field and run in a GUI session only when set to ``true`` in the file by hand: ``compute_inter_usv_interval_distributions_bool`` (the inter-USV interval analysis, which otherwise runs from the command line, ``generate-usv-interval-distributions``, see :doc:`CLI`, or from its notebook, see :doc:`Notebooks`) and ``decode_usv_bout_occupancy_bool`` (the per-session vocal-bout occupancy decoder, see *Decode vocal-bout occupancy* below)
 * **analyze_data.root_directories** : the *Root directories* field above (one session root per row)
 * **credentials_directory** : the *Credentials directory* field — the directory holding *email_config.ini*, read to send the PC-usage e-mails
 * **send_email** : ``analyses_pc_list`` (the PC names offered in the *Analyses PC of choice* dropdown), ``analyses_pc_choice`` (the selected one, named in the e-mail subject), ``experimenter`` (the selected experimenter, named in the e-mail body) and ``send_message.receivers`` (the *Notify e-mail(s) of PC usage* field)
@@ -52,7 +52,8 @@ Besides the per-analysis blocks documented under each function below, *analyses_
         "compute_inter_usv_interval_distributions_bool": false,
         "create_usv_playback_wav_bool": false,
         "create_naturalistic_usv_playback_wav_bool": false,
-        "frequency_shift_audio_segment_bool": false
+        "frequency_shift_audio_segment_bool": false,
+        "decode_usv_bout_occupancy_bool": false
     },
     "analyze_data": {
         "root_directories": []
@@ -82,7 +83,7 @@ The remaining blocks of the file belong to analyses that have no window in the G
 
 Compute 3D behavioral features
 ------------------------------
-Once 3D tracking data is available, you can compute behavioral features. These can be *individual features* specific to each mouse (*i.e.*, spatial location, speed, posture, *etc.*) or *social features* (assuming two or more mice) that describe the relationship between the mice (*i.e.*, distance, angle, *etc.*). The output of this analysis are two files: [1] CSV file containing each measured feature in each column, and [2] a PDF file containing graphs for the observed distribution of each feature. To run this analysis in the GUI, you need to list the root directories of interest, select *Compute 3D behavioral features*, click *Next* and then *Analyze*:
+Once 3D tracking data is available, you can compute behavioral features. These can be *individual features* specific to each mouse (*i.e.*, spatial location, speed, posture, *etc.*) or *social features* (assuming two or more mice) that describe the relationship between the mice (*i.e.*, distance, angle, *etc.*). The output of this analysis are two files: [1] CSV file containing each measured feature in each column, and [2] a PDF file containing graphs for the observed distribution of each feature. The CSV is written to a temporary file next to its final name and renamed into place, so an interrupted run never leaves a truncated features file for the modeling, tuning-curve and figure steps that read it. The features are computed by ``usv_playpen.analyses.compute_behavioral_features``; the experiment code a session carries (the manipulation, e.g. ephys, optogenetics or playback, the social setting, the lighting, the number, sex and housing of the animals and the female's estrous stage) is decoded by ``usv_playpen.analyses.decode_experiment_label``. To run this analysis in the GUI, you need to list the root directories of interest, select *Compute 3D behavioral features*, click *Next* and then *Analyze*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/analyze_step_1.png
    :align: center
@@ -177,7 +178,7 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 
 Compute neuronal tuning curves
 ------------------------------
-Having recorded unit activity, social behavior, and ultrasonic vocalizations (USVs), you might be interested whether individual units encode specific behavioral features and / or vocal properties. To get at this, you can compute session-averaged *tuning curves* capturing the relationship between the firing rate of each unit and (a) each 3D behavioral feature, and (b) USV-anchored quantities — a pooled peri-USV-onset PETH (peri-event time histogram; ``usv_peth``, by default from 2 s before to 0.5 s after each USV's onset), within-USV firing rate as a function of each continuous acoustic property (``usv_property_tuning`` over duration, mean / peak frequency, bandwidth, mean / max amplitude (relative to each USV's own peak), absolute loudness (``loudness_db``), spectral entropy, mask number), within-USV firing rate as a function of categorical USV labels (``usv_category_tuning`` over the QLVM (quasi-Monte Carlo latent variable model) category column of the summary, ``qlvm_category``: the content-ridge categories R-1 … R-k of the regular map; the conditional maps carry no category), and a per-category time-resolved peri-USV PETH (``usv_category_peth``; saved in the pickle, not plotted). Noise segments are always dropped. Squeaks are dropped from the self side's anchors by default (``exclude_squeaks_self``; ``exclude_squeaks_partner`` for the partner side, off by default) and never enter the QLVM category tuning — the QLVM maps were trained without squeaks, which get their own embedding. Behavioral features listed in ``excluded_behavioral_features`` (by default the nose-anchored dyadic features, whose head-anchored versions are tuned instead) are left out, derivatives included. Behavioral and vocal payloads are produced together and serialized into a single per-cluster pickle; a re-run replaces each part's keys whole, and a part that is skipped (missing inputs, no eligible emitter side) or fails for a cluster removes that part's previous results from the pickle rather than leaving them next to the new ones. To trigger this in the GUI, list the root directories of interest, select *Compute neuronal tuning curves*, click *Next* and then *Analyze* (a progress bar will appear in the terminal while the analysis is running):
+Having recorded unit activity, social behavior, and ultrasonic vocalizations (USVs), you might be interested whether individual units encode specific behavioral features and / or vocal properties. To get at this, you can compute session-averaged *tuning curves* capturing the relationship between the firing rate of each unit and (a) each 3D behavioral feature, and (b) USV-anchored quantities — a pooled peri-USV-onset PETH (peri-event time histogram; ``usv_peth``, by default from 2 s before to 0.5 s after each USV's onset), within-USV firing rate as a function of each continuous acoustic property (``usv_property_tuning`` over duration, mean / peak frequency, bandwidth, mean / max amplitude (relative to each USV's own peak), absolute loudness (``loudness_db``), spectral entropy, mask number), within-USV firing rate as a function of categorical USV labels (``usv_category_tuning`` over the QLVM (quasi-Monte Carlo latent variable model) category column of the summary, ``qlvm_category``: the content-ridge categories R-1 … R-k of the regular map; the conditional maps carry no category), and a per-category time-resolved peri-USV PETH (``usv_category_peth``; saved in the pickle, not plotted). Noise segments are always dropped. Squeaks are dropped from the self side's anchors by default (``exclude_squeaks_self``; ``exclude_squeaks_partner`` for the partner side, off by default) and never enter the QLVM category tuning — the QLVM maps were trained without squeaks, which get their own embedding. Behavioral features listed in ``excluded_behavioral_features`` (by default the nose-anchored dyadic features, whose head-anchored versions are tuned instead) are left out, derivatives included. Behavioral and vocal payloads are produced together and serialized into a single per-cluster pickle; a re-run replaces each part's keys whole, and a part that is skipped (missing inputs, no eligible emitter side) or fails for a cluster removes that part's previous results from the pickle rather than leaving them next to the new ones. A cluster whose vocal part fails is logged and the remaining clusters are still computed, but the session then ends with an error naming every failed cluster, so a partial run is never reported as finished. The computation lives in ``usv_playpen.analyses.compute_neuronal_tuning_curves``. To trigger this in the GUI, list the root directories of interest, select *Compute neuronal tuning curves*, click *Next* and then *Analyze* (a progress bar will appear in the terminal while the analysis is running):
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/analyze_step_2.png
    :align: center
@@ -215,7 +216,7 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 * **peth_window_seconds** : ``[start, stop]`` of the PETH window relative to each USV's onset (in s); default ``[-2, 0.5]``. Bins before onset honour the two cleanliness rules below; a bin after onset is kept only while it ends before the next USV's onset (any emitter, squeak and overlap segments included), so the post-onset PETH covers the USV itself and the silence after it, never a following USV
 * **peth_bin_seconds** : PETH bin width (in s)
 * **bout_quiet_seconds** : inter-bout silence required to define a new bout (in s)
-* **ibi_bout_onset** : per-unit statistics around the onset of IBI bouts, the respiratory-tempo grouping (not the ``bout_quiet_seconds`` one), stored as ``usv_ibi_bout_onset`` in the pkl and in ``triage_stats``. Each statistic is referenced to the unit's own session rate, never to a pre-onset baseline (the window before an onset is occupied by the previous bout on roughly half of all bouts), and gets a circular-shift null and a two-sided empirical p:
+* **ibi_bout_onset** : per-unit statistics around the onset of IBI bouts, the respiratory-tempo grouping (not the ``bout_quiet_seconds`` one; each silence is measured from the latest stop of every earlier USV, so a USV nested inside a longer one does not split a bout, and a bout ends at the latest stop of its USVs), stored as ``usv_ibi_bout_onset`` in the pkl and in ``triage_stats``. Each statistic is referenced to the unit's own session rate, never to a pre-onset baseline (the window before an onset is occupied by the previous bout on roughly half of all bouts), and gets a circular-shift null and a two-sided empirical p:
 
   * **ibi_z_score** / **ibi_component_index** : the inter-bout threshold, as the emitter sex's inter-syllable mixture component at this many standard deviations (the construction ``decode_usv_bout_occupancy`` and ``build-naturalistic-usv-repository`` use; 115.5 ms for the male at 2.58)
   * **min_vocalizations** : fewest USVs a run needs to count as a bout
@@ -307,7 +308,7 @@ For presentation purposes, one might want to play audio data of mouse USVs. Sinc
 
    <br>
 
-The analysis results in the creation of a *frequency_shifted_audio_segments* subdirectory (if it is not already there) and a *wave* file in it containing the frequency-shifted segment:
+The analysis results in the creation of a *frequency_shifted_audio_segments* subdirectory (if it is not already there) and a *wave* file in it containing the frequency-shifted segment. The volume and tempo passes run SoX with a time limit, and a SoX pass that fails or hangs raises instead of leaving a missing or stale intermediate file for the next step. This function, and both playback builders below, live in ``usv_playpen.analyses.generate_audio_files``:
 
 .. parsed-literal::
 
@@ -413,7 +414,7 @@ Each run builds exactly **one (sex, social context) database**, chosen by ``cont
 
     <naturalistic_usv_repository_dir>/<sex>/naturalistic_usv_repository_<context>_<datestring>.h5
 
-where ``naturalistic_usv_repository_dir`` is configured once under the shared ``data_roots`` block, ``<sex>`` is ``male`` / ``female`` / ``mixed``, and ``<context>`` is the filename token (``courtship`` / ``same_sex`` / ``lone`` / ``mixed``). The datestring suffix means rebuilding a context never overwrites an earlier build, and each H5 also records the exact session lists it was built from (provenance). To run it from the command line, see :doc:`CLI`.
+where ``naturalistic_usv_repository_dir`` is configured once under the shared ``data_roots`` block, ``<sex>`` is ``male`` / ``female`` / ``mixed``, and ``<context>`` is the filename token (``courtship`` / ``same_sex`` / ``lone`` / ``mixed``). The datestring suffix means rebuilding a context never overwrites an earlier build, and each H5 also records the exact session lists it was built from (provenance). The H5 is written to a temporary file next to its final name and renamed into place, so an interrupted build never leaves a truncated repository for the playback step to read. A session whose inputs cannot be resolved (a missing or unreadable file, a missing column, or a failed consistency check) is skipped and logged, and every skipped session is listed again once the build finishes; an error while reconstructing a session's audio stops the build, since the repository would otherwise hold part of that session. To run it from the command line, see :doc:`CLI`.
 
 The */usv-playpen/_parameter_settings/analyses_settings.json* ``build_naturalistic_usv_repository`` section:
 
@@ -456,7 +457,7 @@ The repository root itself lives under the shared ``data_roots`` block:
 Create naturalistic playback .WAV
 ---------------------------------
 This function creates a .WAV file that replays **real vocalization bouts** drawn from a naturalistic USV repository (built by ``build-naturalistic-usv-repository``, above). Instead of stitching randomly-chosen single snippets, it replays whole recorded bouts in their natural emission order (``1-2-3-4-5-6``) with their real timing, so the playback reproduces natural USV sequences. The resulting .WAV file can be used for playback experiments.
-To achieve this in the GUI, select *Create naturalistic playback .WAV file* (no need to list root directories!), set the parameters described below — the **vocalization context** (a dropdown listing only the contexts that have actually been built), the **playback duration** and **number of files**, the optional **complexity steering** (a Yes/No dropdown plus threshold / start / end / bandwidth sliders that grey out when it is off), and the **playback seed** — then click *Next* and *Analyze*:
+To achieve this in the GUI, select *Create naturalistic playback .WAV file* (no need to list root directories!), set the parameters described below — the **vocalization context** (a dropdown listing only the contexts that have actually been built; a context picked before that listing returns is kept when it is among them), the **playback duration** and **number of files**, the optional **complexity steering** (a Yes/No dropdown plus threshold / start / end / bandwidth sliders that grey out when it is off), and the **playback seed** — then click *Next* and *Analyze*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/analyze_step_5.png
    :align: center
@@ -471,7 +472,7 @@ From ``context_label`` the generator opens the **newest** matching repository H5
 * draw a random **intact bout** and append its USVs in their natural emission order, separated by their real within-bout **inter-USV intervals (IUI)** of silence
 * between bouts (not before the first), insert the drawn bout's real preceding **inter-sequence interval (ISI)** of silence — a session-first bout (no recorded pause) uses a sampled real ISI — **clipped to** ``max_isi_seconds`` so no single pause is huge
 
-It keeps adding whole bouts, skipping any that (with the lead-out) would overrun the target, until the remaining time is too small; it then writes a fixed ``edge_silence_seconds`` lead-out silence. The within-bout and between-bout gaps are genuine recorded values (no interval model). Because the file is built of whole bouts framed by the fixed edge silences, it is **up to** ``total_acceptable_naturalistic_playback_time`` seconds — opening and closing on the edge silence and ending on a complete bout — rather than exactly that length.
+It keeps adding whole bouts, skipping any that (with the lead-out) would overrun the target, until the remaining time is too small; it then writes a fixed ``edge_silence_seconds`` lead-out silence. The within-bout and between-bout gaps are genuine recorded values (no interval model); a negative within-bout gap (two overlapping USVs, possible in a repository that keeps both animals' USVs unattributed) is played as no silence. Because the file is built of whole bouts framed by the fixed edge silences, it is **up to** ``total_acceptable_naturalistic_playback_time`` seconds — opening and closing on the edge silence and ending on a complete bout — rather than exactly that length.
 
 The three files are written into the ``naturalistic_usv_playback_dir`` directory configured under the shared ``data_roots`` block. The analysis creates: [1] the WAV file, [2] a *spacing* text file with the sample count of each chunk in order, and [3] a *usvids* text file with the identity of each chunk — ``<session>_usv<row>`` for a vocalization (so you can trace it back to the source session and USV), or ``ISI`` / ``IUI`` for a silence gap:
 
@@ -592,12 +593,19 @@ pooled**: assembling across them is a later step, done in the notebook (see :doc
       "n_folds": 3,
       "n_shuffles": 1000,
       "shuffle_guard_seconds": 20.0,
-      "shuffle_seed": 0
+      "shuffle_seed": 0,
+      "catalog_path": "/mnt/falkner/Bartul/EPHYS/unit_catalog.csv",
+      "output_directory": "/mnt/falkner/Bartul/EPHYS/bout_decoding"
     }
 
 ``emitter`` takes ``self`` (the recorded animal), ``partner`` or ``all``; the inter-bout threshold
-follows whoever is calling, so a female side is not segmented by a male rhythm. ``brain_areas``
-set to ``null`` means every area clearing the unit floor.
+follows the sex of whichever animal is vocalizing, so a female side is not segmented by a male
+rhythm. ``brain_areas`` set to ``null`` means every area clearing the unit floor. ``catalog_path``
+is the unit catalog the brain areas and unit filters are read from, and ``output_directory`` is
+where each area's compressed archive is written (both re-keyed to the experimenter in use). A
+unit's spike file is looked up by name under the session's ``ephys`` tree; a name matching no file,
+or more than one, raises instead of decoding whichever file sorts first. The decoder is implemented
+in ``usv_playpen.analyses.decode_usv_bout_occupancy``.
 
 .. note::
 

@@ -33,7 +33,46 @@ __all__ = [
     'extract_session_metadata',
     'load_and_filter_usv_data',
     'sex_track_ids',
+    'unique_match_or_none',
 ]
+
+
+def unique_match_or_none(matches: list[Path], label: str) -> Path | None:
+    """
+    Description
+    -----------
+    Returns the one path of a glob result, ``None`` when there is none, and raises when
+    there are several. The ``next(iter(sorted(glob)), None)`` / ``sorted(glob)[0]``
+    idiom this replaces silently took the alphabetically-first file when a session held
+    two candidates (e.g. a stale copy of a USV summary next to the current one, or two
+    probes' ``cluster_data`` folders holding the same file name), so an analysis could
+    read the wrong file without any sign of it. The caller keeps its own handling of
+    the zero-match case.
+
+    Parameters
+    ----------
+    matches (list[pathlib.Path])
+        The glob / rglob result (any order).
+    label (str)
+        Short description of what was searched for, used in the error message (e.g.
+        ``'USV summary CSV in /data/20250919_155842'``).
+
+    Returns
+    -------
+    match (pathlib.Path | None)
+        The single match, or None when ``matches`` is empty.
+
+    Raises
+    ------
+    ValueError
+        If ``matches`` holds more than one path; the message lists every candidate.
+    """
+
+    matches = sorted(matches)
+    if len(matches) > 1:
+        msg = f"Expected one {label}, found {len(matches)}: {[str(m) for m in matches]}."
+        raise ValueError(msg)
+    return matches[0] if matches else None
 
 
 def extract_session_metadata(session_root: str) -> dict[str, Any]:
@@ -74,7 +113,9 @@ def extract_session_metadata(session_root: str) -> dict[str, Any]:
     """
 
     session_path = Path(session_root)
-    tracking_file = next(iter(sorted(session_path.glob('**/*_points3d_translated_rotated_metric.h5'))), None)
+    # `[!speaker]` skips the speaker track a USV-playback session keeps beside the mouse track
+    tracking_file = unique_match_or_none(list(session_path.glob('**/[!speaker]*_points3d_translated_rotated_metric.h5')),
+                                         label=f"3D tracking file in {session_root}")
 
     if tracking_file is None:
         msg = f"No tracking file found in {session_root}"
@@ -242,7 +283,8 @@ def load_and_filter_usv_data(
     """
 
     session_path = Path(session_root)
-    usv_file = next(iter(sorted(session_path.glob('**/*_usv_summary.csv'))), None)
+    usv_file = unique_match_or_none(list(session_path.glob('**/*_usv_summary.csv')),
+                                    label=f"USV summary CSV in {session_root}")
 
     if usv_file is None:
         msg = f"USV summary file missing in {session_root}"

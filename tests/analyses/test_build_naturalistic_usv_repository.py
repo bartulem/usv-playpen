@@ -89,6 +89,17 @@ def test_segment_bouts_threshold_is_inclusive():
     np.testing.assert_array_equal(out, [0, 1])
 
 
+def test_segment_bouts_measures_silence_from_the_latest_stop():
+    """A USV nested inside a longer one does not end the sound: the next gap is measured from
+    the latest stop so far, so no bout starts while the long USV (0-2 s) is still sounding,
+    and the stored preceding silence of a later bout can never come out negative."""
+
+    starts = np.array([0.0, 0.5, 1.0, 1.2, 3.0])
+    stops = np.array([2.0, 0.6, 1.1, 1.3, 3.1])
+    out = _segment_bouts(starts, stops, ibi_threshold=0.3)
+    np.testing.assert_array_equal(out, [0, 0, 0, 0, 1])
+
+
 # reconstruct_usv_waveform
 
 
@@ -583,3 +594,87 @@ def test_cli_routes_to_builder(mocker, tmp_path):
     assert result.exit_code == 0, result.output
     fake_builder.assert_called_once()
     fake_builder.return_value.build.assert_called_once()
+
+
+def test_build_raises_when_reconstruction_fails(tmp_path, mocker, _patched_env):
+    """
+    Description
+    -----------
+    Only the input-resolution phase may skip a session. A failure inside the audio
+    reconstruction (here a RuntimeError from ``_reconstruct_and_store``) used to be
+    swallowed by a broad ``except Exception`` and logged as a skipped session, which could
+    leave a half-written session in the shared accumulator; it must now propagate.
+    """
+
+    session_root = tmp_path / "session_root"
+    _write_fake_session(session_root, starts=[0.01, 0.05, 0.09], stops=[0.03, 0.07, 0.11])
+    mocker.patch.object(NaturalisticUsvRepositoryBuilder, "_reconstruct_and_store",
+                        side_effect=RuntimeError("reconstruction broke"))
+    builder = NaturalisticUsvRepositoryBuilder(
+        root_directories=[str(session_root)],
+        input_parameter_dict={
+            "build_naturalistic_usv_repository": _build_cfg("same_sex_male"),
+            "data_roots": {"naturalistic_usv_repository_dir": str(tmp_path / "repo")},
+        },
+        message_output=lambda *_a, **_kw: None,
+    )
+    with pytest.raises(RuntimeError, match="reconstruction broke"):
+        builder.build()
+
+
+def test_build_logs_the_skipped_sessions_summary(tmp_path, _patched_env):
+    """
+    Description
+    -----------
+    After the session loop the builder lists every skipped session once more, so a
+    large batch's skips are visible in one line rather than scattered through the log.
+    """
+
+    good_root = tmp_path / "good_session"
+    _write_fake_session(good_root, starts=[0.01, 0.05, 0.09], stops=[0.03, 0.07, 0.11])
+    bad_root = tmp_path / "bad_session"
+    (bad_root / "audio").mkdir(parents=True, exist_ok=True)
+    messages = []
+    NaturalisticUsvRepositoryBuilder(
+        root_directories=[str(bad_root), str(good_root)],
+        input_parameter_dict={
+            "build_naturalistic_usv_repository": _build_cfg("same_sex_male"),
+            "data_roots": {"naturalistic_usv_repository_dir": str(tmp_path / "repo")},
+        },
+        message_output=lambda *m, **_k: messages.append(" ".join(str(x) for x in m)),
+    ).build()
+    assert any("1 of 2 sessions were skipped" in m and "bad_session" in m for m in messages)
+
+
+def test_write_repository_is_atomic(tmp_path, mocker, _patched_env):
+    """
+    Description
+    -----------
+    The repository H5 is written to a sibling temp file and renamed into place, so a
+    failure mid-write leaves no truncated ``naturalistic_usv_repository_*.h5`` behind
+    (the direct ``h5py.File(out_path, 'w')`` left a partial file that the playback step
+    would later read).
+    """
+
+    session_root = tmp_path / "session_root"
+    _write_fake_session(session_root, starts=[0.01, 0.05, 0.09], stops=[0.03, 0.07, 0.11])
+    repo_out = tmp_path / "repo"
+    original_create_group = h5py.Group.create_group
+
+    def failing_create_group(self, name, *args, **kwargs):
+        if name == "bout":
+            raise OSError("disk full")
+        return original_create_group(self, name, *args, **kwargs)
+
+    mocker.patch.object(h5py.Group, "create_group", failing_create_group)
+    builder = NaturalisticUsvRepositoryBuilder(
+        root_directories=[str(session_root)],
+        input_parameter_dict={
+            "build_naturalistic_usv_repository": _build_cfg("same_sex_male"),
+            "data_roots": {"naturalistic_usv_repository_dir": str(repo_out)},
+        },
+        message_output=lambda *_a, **_kw: None,
+    )
+    with pytest.raises(OSError, match="disk full"):
+        builder.build()
+    assert list((repo_out / "male").iterdir()) == []

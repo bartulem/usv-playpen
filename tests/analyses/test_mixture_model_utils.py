@@ -919,6 +919,26 @@ def test_session_design_effect_is_one_for_independent_data():
     assert design_effect == pytest.approx(1.0, abs=0.2)
 
 
+def test_session_design_effect_is_one_for_independent_data_with_a_mean_and_unequal_sessions():
+    """
+    Independent observations with a non-zero mean, spread over sessions of unequal size, carry
+    no clustering, so the design effect must still sit near one. A session resample holds a
+    random number of observations; resampling uncentred session totals makes their spread grow
+    with the session sizes times the mean (a design effect of ~9 here), so the totals have to
+    be centred, ``sum_j - n_j * mean(delta)``, before they are resampled.
+    """
+    rng = np.random.default_rng(1)
+    sizes = rng.geometric(1 / 85, size=118)
+    session_index = np.repeat(np.arange(sizes.size), sizes)
+    estimates = []
+    for rep in range(5):
+        delta = rng.normal(0.005, 0.02, size=session_index.size)
+        design_effect, _, _ = _session_design_effect(delta, session_index, n_bootstrap=1500, seed=rep)
+        estimates.append(design_effect)
+
+    assert float(np.mean(estimates)) == pytest.approx(1.0, abs=0.25)
+
+
 def test_session_design_effect_grows_with_session_level_shifts():
     """When every observation in a session shares a common offset, the statistic's variance under
     session resampling exceeds the iid one, and the design effect must say so. A shift with
@@ -2023,6 +2043,65 @@ def test_tied_peak_bootstrap_lrt_plumbing_and_summary_without_sessions(monkeypat
     assert result["shared_scale_null"] == 0.25
     assert "lr_corrected" not in result
     assert "p_value_corrected" not in result
+
+
+def test_tied_peak_bootstrap_lrt_null_start_joins_the_observed_null_fit(monkeypatch):
+    """
+    A supplied ``null_start`` (the previous rung's alternative) is handed to the observed null
+    fit as its warm start, next to the caller's scratch restarts, so the fit keeps the better of
+    the two; the returned null and alternative models are the observed fits, so a caller can pass
+    this rung's alternative to the next rung.
+    """
+    pool = np.exp(np.linspace(-3.0, 0.0, 40))
+    record = {}
+    null_model, alt_model = _t_patch_tied_lrt(monkeypatch, record, [1.0, 2.0], np.zeros(40),
+                                              np.ones(40))
+    start = TMixture(weights=[0.5, 0.3, 0.2], means=[-2.5, -1.5, 0.0],
+                     covariances=[0.04, 0.04, 1.0], nus=[8.0, 9.0, 4.0])
+
+    result = tied_peak_bootstrap_lrt(pool, 2, 1, B=2, n_subsample=1000, n_init_obs=3, seed=5,
+                                     null_start=start)
+
+    _, n_peak, n_background, kwargs = record["null"]
+    assert (n_peak, n_background) == (2, 1)
+    assert (kwargs["seed"], kwargs["n_init"]) == (5, 3)
+    np.testing.assert_array_equal(kwargs["init_params"][0], [0.5, 0.3, 0.2])
+    np.testing.assert_array_equal(kwargs["init_params"][1], [-2.5, -1.5, 0.0])
+    np.testing.assert_array_equal(kwargs["init_params"][2], [0.04, 0.04, 1.0])
+    np.testing.assert_array_equal(kwargs["init_params"][3], [8.0, 9.0, 4.0])
+    assert result["null_model"] is null_model
+    assert result["alt_model"] is alt_model
+
+
+def test_tied_peak_bootstrap_lrt_rejects_a_null_start_of_the_wrong_size():
+    """A ``null_start`` whose component count is not ``n_peak_null + n_background`` cannot seed
+    the null and must raise before any fitting."""
+    pool = np.exp(np.linspace(-3.0, 0.0, 40))
+    start = TMixture(weights=[0.5, 0.5], means=[-2.5, 0.0], covariances=[0.04, 1.0], nus=[8.0, 4.0])
+    with pytest.raises(ValueError, match="null_start has 2 components"):
+        tied_peak_bootstrap_lrt(pool, 2, 1, B=1, n_subsample=1000, null_start=start)
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+def test_tied_peak_bootstrap_lrt_laddered_null_is_never_worse_than_its_start():
+    """
+    With real fits, the observed null of rung ``n`` seeded by rung ``n - 1``'s alternative
+    attains at least that alternative's log-likelihood on the same subsample (EM from a tied
+    start cannot descend), so a scratch null that stops short can no longer inflate the
+    statistic. One scratch restart is used so the warm start has to do the work.
+    """
+    rng = np.random.default_rng(3)
+    pool = np.exp(np.concatenate([rng.normal(-2.77, 0.24, 1400), rng.normal(-1.7, 0.24, 300),
+                                  rng.normal(-1.0, 0.24, 200), rng.normal(-0.5, 1.2, 400)]))
+    first = tied_peak_bootstrap_lrt(pool, 1, 1, B=1, n_subsample=1500, n_init_obs=2,
+                                    n_init_boot=1, seed=0)
+    second = tied_peak_bootstrap_lrt(pool, 2, 1, B=1, n_subsample=1500, n_init_obs=1,
+                                     n_init_boot=1, seed=0, null_start=first["alt_model"])
+    log_sub = np.log(stable_subsample(pool, 1500, 0))
+
+    ll_start = float(np.sum(first["alt_model"].score_samples(log_sub)))
+    ll_null = float(np.sum(second["null_model"].score_samples(log_sub)))
+    assert ll_null >= ll_start - 1e-6
 
 
 def test_tied_peak_bootstrap_lrt_session_correction_uses_the_observed_delta(monkeypatch):
@@ -4296,8 +4375,8 @@ def test_step_up_lrt_all_rejections_return_the_largest_alternative():
 
 def _c_design_effect_by_hand(delta, session_index, n_bootstrap, seed):
     """
-    Loop-based re-derivation of :func:`_session_design_effect`: per-session
-    sums, ``n_bootstrap`` session resamples and ``min(n_bootstrap, 400)``
+    Loop-based re-derivation of :func:`_session_design_effect`: the differences
+    centred on their mean, per-session sums of the centred values, ``n_bootstrap`` session resamples and ``min(n_bootstrap, 400)``
     observation resamples from one seeded stream, sample standard deviations
     (ddof 1) of twice the resampled sums, and their squared ratio.
 
@@ -4318,6 +4397,8 @@ def _c_design_effect_by_hand(delta, session_index, n_bootstrap, seed):
         ``(design_effect, clustered_se, independent_se)``.
     """
     n_sessions = int(max(session_index.tolist())) + 1
+    mean_delta = sum(delta.tolist()) / delta.size
+    delta = np.array([d - mean_delta for d in delta.tolist()])
     per_session = [sum(d for d, s in zip(delta.tolist(), session_index.tolist()) if s == j)
                    for j in range(n_sessions)]
     rng = np.random.default_rng(seed)
@@ -4628,8 +4709,10 @@ def test_bootstrap_lrt_t_family_builds_both_sides_by_splitting(monkeypatch):
     restart fit (K = 2, log data, caller seed / restarts / floor) and exactly
     two splits (K 2 -> 3 for the null, 3 -> 4 for the alternative), and the
     observed statistic is ``2 (logL_alt - logL_null) = 2 N (L4 - L3)``. The
-    sequential replicates refit with ``x_is_log=True``, seed ``seed + b`` and
-    the bootstrap restarts.
+    sequential replicates run the same procedure as the parallel ones: each
+    refits the null (K = 3) from the observed null's parameters with
+    ``x_is_log=True``, seed ``seed + b`` and the bootstrap restarts, and grows
+    the alternative by one split of that refit.
     """
     level = {2: -1.0, 3: -0.75, 4: -0.5}
     fitter = _CFakeFitter(lambda n_components, seed, x_is_log: level[n_components] + 0.0 * seed)
@@ -4646,16 +4729,71 @@ def test_bootstrap_lrt_t_family_builds_both_sides_by_splitting(monkeypatch):
     assert (first["K"], first["seed"], first["n_init"], first["reg_covar"], first["x_is_log"]) \
         == (2, 7, 2, 1e-3, True)
     np.testing.assert_allclose(first["x"], np.log(pool), rtol=1e-12)
-    assert [c["base"].n_components for c in splitter.requests] == [2, 3]
-    assert splitter.requests[0]["base"] is first["model"]
-    assert splitter.requests[1]["base"] is splitter.requests[0]["model"]
-    for request in splitter.requests:
+    observed_splits, replicate_splits = splitter.requests[:2], splitter.requests[2:]
+    assert [c["base"].n_components for c in observed_splits] == [2, 3]
+    assert observed_splits[0]["base"] is first["model"]
+    assert observed_splits[1]["base"] is observed_splits[0]["model"]
+    for request in observed_splits:
         assert (request["n_init"], request["seed"], request["reg_covar"]) == (2, 7, 1e-3)
         np.testing.assert_allclose(request["log_x"], np.log(pool), rtol=1e-12)
-    assert [(c["K"], c["seed"]) for c in fitter.requests[1:]] == [(3, 7), (4, 7), (3, 8), (4, 8)]
-    for request in fitter.requests[1:]:
+    assert [(c["K"], c["seed"]) for c in fitter.requests[1:]] == [(3, 7), (3, 8)]
+    for request, split in zip(fitter.requests[1:], replicate_splits, strict=True):
         assert (request["n_init"], request["reg_covar"], request["x_is_log"]) == (1, 1e-3, True)
+        assert request["init_params"] is not _C_MISSING
+        assert split["base"] is request["model"]
+        assert (split["n_init"], split["seed"], split["reg_covar"]) == (1, request["seed"], 1e-3)
     np.testing.assert_array_equal(result["lr_null"], [20.0, 20.0])
+
+
+def test_bootstrap_lrt_t_family_rejects_a_rung_wider_than_one_component():
+    """
+    The Student-t alternative is built by ONE split of the null, so it always has
+    ``K_null + 1`` components; a request for ``K_alt > K_null + 1`` cannot be honoured and must
+    raise before any fitting instead of silently testing ``K_null`` vs ``K_null + 1``.
+    """
+    with pytest.raises(ValueError, match="K_alt = K_null \\+ 1"):
+        bootstrap_lrt(_c_pool(), K_null=2, K_alt=4, B=1, n_subsample=100, model_class="t")
+
+
+def test_bootstrap_lrt_t_family_one_component_null_is_one_component(monkeypatch):
+    """
+    With ``K_null = 1`` the observed null must be a one-component fit and the alternative its
+    single split; the ladder must not start at two components (which made the "null" the
+    alternative and the alternative a three-component fit).
+    """
+    level = {1: -1.0, 2: -0.75, 3: -0.5}
+    fitter = _CFakeFitter(lambda n_components, seed, x_is_log: level[n_components] + 0.0 * seed)
+    splitter = _CFakeSplitter(lambda n_components, seed: level[n_components] + 0.0 * seed)
+    monkeypatch.setattr(mixture_model_utils, "fit_log_t_mixture", fitter)
+    monkeypatch.setattr(mixture_model_utils, "fit_nested_by_splitting", splitter)
+
+    result = bootstrap_lrt(_c_pool(), K_null=1, K_alt=2, B=1, n_subsample=100, model_class="t",
+                           n_init_obs=2, n_init_boot=1, seed=7)
+
+    assert fitter.requests[0]["K"] == 1
+    assert splitter.requests[0]["base"] is fitter.requests[0]["model"]
+    assert splitter.requests[0]["model"].n_components == 2
+    assert result["lr_obs"] == pytest.approx(2.0 * 40 * (-0.75 + 1.0))
+
+
+@pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
+@pytest.mark.parametrize("model_class", ["gauss", "t"])
+def test_bootstrap_lrt_serial_and_parallel_paths_run_the_same_null(model_class):
+    """
+    ``n_jobs`` chooses how the replicates are scheduled, not which null procedure runs: the
+    serial path must produce exactly the replicate statistics of the parallel one (per-replicate
+    RNG seeded by ``(seed, b)``, and for the Student-t family the truth-started null refit and
+    split alternative of :func:`_bootstrap_lrt_replicate`).
+    """
+    rng = np.random.default_rng(4)
+    pool = np.exp(np.concatenate([rng.normal(-2.8, 0.25, 200), rng.normal(-0.5, 0.8, 100)]))
+    kwargs = {"K_null": 1, "K_alt": 2, "B": 3, "n_subsample": 300, "model_class": model_class,
+              "n_init_obs": 3, "n_init_boot": 1, "seed": 1}
+
+    serial = bootstrap_lrt(pool, n_jobs=1, **kwargs)
+    parallel = bootstrap_lrt(pool, n_jobs=2, **kwargs)
+
+    np.testing.assert_allclose(serial["lr_null"], parallel["lr_null"], rtol=1e-10, atol=1e-8)
 
 
 def test_bootstrap_lrt_replicate_gauss_path_arguments_and_statistic():

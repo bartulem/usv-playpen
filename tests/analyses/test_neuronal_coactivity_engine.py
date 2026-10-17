@@ -185,12 +185,104 @@ def test_bootstrap_distribution_is_seed_reproducible():
     matrix = engine.extract_snippet_matrix(
         np.array([10.0, 30.0, 50.0, 70.0, 90.0]), _neural_data(), 5.0,
     )
-    a = engine.bootstrap_coactivity_distribution(matrix, n_target=5, n_iterations=16, seed=42)
-    b = engine.bootstrap_coactivity_distribution(matrix, n_target=5, n_iterations=16, seed=42)
-    c = engine.bootstrap_coactivity_distribution(matrix, n_target=5, n_iterations=16, seed=43)
+    a = engine.bootstrap_coactivity_distribution(matrix, n_target=5, n_iterations=16, seed=42, subsample_fraction=0.8)
+    b = engine.bootstrap_coactivity_distribution(matrix, n_target=5, n_iterations=16, seed=42, subsample_fraction=0.8)
+    c = engine.bootstrap_coactivity_distribution(matrix, n_target=5, n_iterations=16, seed=43, subsample_fraction=0.8)
     for key in ("r_sc", "similarity", "pop_corr"):
         np.testing.assert_array_equal(a[key], b[key])
     assert not np.array_equal(a["r_sc"], c["r_sc"])
+
+
+def test_bootstrap_draws_distinct_trials_and_resolves_the_subsample_size(monkeypatch):
+    """
+    Description
+    -----------
+    Every resample holds distinct trials (a duplicated trial pairs with itself, and the
+    self-pair has similarity 1, which inflated the similarity and pop_corr distributions).
+    Row 0 of the matrix carries the trial index, so the columns a resample received are
+    readable inside the patched metric function. The size rule: ``n_target`` is kept
+    when it is below the trial count (6 of 10), otherwise
+    ``floor(subsample_fraction * n_trials)`` is used (``n_target = 10`` of 10 -> 8;
+    ``n_target = 50`` of 10 -> 8).
+    """
+
+    seen: list[np.ndarray] = []
+
+    def recording_metrics(count_matrix):
+        seen.append(count_matrix[0].copy())
+        return {"r_sc": 0.0, "similarity": 0.0, "pop_corr": 0.0}
+
+    monkeypatch.setattr(engine, "compute_coactivity_metrics", recording_metrics)
+    matrix = np.vstack([np.arange(10.0), np.ones(10)])
+    for n_target, expected_size in ((6, 6), (10, 8), (50, 8)):
+        seen.clear()
+        engine.bootstrap_coactivity_distribution(matrix, n_target, n_iterations=40, seed=0,
+                                                 subsample_fraction=0.8)
+        assert len(seen) == 40
+        for columns in seen:
+            assert columns.size == expected_size
+            assert np.unique(columns).size == columns.size, "a trial was drawn twice"
+
+
+def test_resolve_subsample_size_rule_and_validation():
+    """
+    Description
+    -----------
+    ``resolve_subsample_size`` keeps a target below the pool, applies the fraction
+    otherwise (floored, never below 2), and rejects a fraction outside (0, 1) or a pool
+    too small to hold a proper subsample.
+    """
+
+    assert engine.resolve_subsample_size(300, 1000, 0.8) == 300
+    assert engine.resolve_subsample_size(300, 120, 0.8) == 96
+    assert engine.resolve_subsample_size(120, 120, 0.8) == 96
+    assert engine.resolve_subsample_size(3, 3, 0.1) == 2
+    for bad_fraction in (0.0, 1.0, 1.5):
+        with pytest.raises(ValueError, match="subsample_fraction"):
+            engine.resolve_subsample_size(10, 10, bad_fraction)
+    with pytest.raises(ValueError, match="at least 3 trials"):
+        engine.resolve_subsample_size(2, 2, 0.8)
+
+
+@pytest.mark.filterwarnings("ignore:Mean of empty slice:RuntimeWarning")
+@pytest.mark.filterwarnings("ignore:invalid value encountered:RuntimeWarning")
+@pytest.mark.filterwarnings("ignore:Degrees of freedom <= 0:RuntimeWarning")
+def test_bootstrap_vs_null_false_positive_rate_is_near_alpha_under_a_true_null():
+    """
+    Description
+    -----------
+    Under a true null the pooled resampling distribution compared against a null drawn
+    from the same process must reject at about the nominal rate. Each simulation draws a
+    group of 40 independent Poisson trials (20 sparse neurons, 0.05-0.3 spikes per window
+    as in short post-onset windows, per-neuron rates fixed across the simulation) and resamples it at the matched size the pipeline uses
+    (``n_target = n_trials`` -> ``floor(0.8 * 40) = 32``); the null is the metric of 99
+    fresh, independent 32-trial groups from the same process (what the chained
+    circular-shuffle null estimates). With replacement, ~37% of each resample were
+    duplicated trials whose self-pairs have similarity 1, which lifted the resampling mean
+    above the null (measured: 38% of simulations rejected on similarity and 75% on
+    pop_corr at alpha = 0.1); without replacement both stay near alpha (5% and 8%).
+    """
+
+    alpha = 0.1
+    n_sims = 60
+    rng = np.random.default_rng(2026)
+    rates = rng.uniform(0.05, 0.3, size=(20, 1))
+    n_subsample = engine.resolve_subsample_size(40, 40, 0.8)
+    null = {"similarity": [], "pop_corr": []}
+    for _ in range(99):
+        metrics = engine.compute_coactivity_metrics(rng.poisson(rates, size=(20, n_subsample)).astype(float))
+        for metric in null:
+            null[metric].append(metrics[metric])
+    rejections = dict.fromkeys(null, 0)
+    for sim in range(n_sims):
+        group = rng.poisson(rates, size=(20, 40)).astype(float)
+        boot = engine.bootstrap_coactivity_distribution(group, 40, n_iterations=30, seed=sim,
+                                                        subsample_fraction=0.8)
+        for metric in null:
+            _, _, p_val, _ = engine.bootstrap_vs_null_stats(boot[metric], np.asarray(null[metric]))
+            rejections[metric] += int(p_val <= alpha)
+    for metric, count in rejections.items():
+        assert count / n_sims <= 1.5 * alpha, f"{metric}: false-positive rate {count / n_sims:.2f}"
 
 
 @pytest.mark.filterwarnings("ignore:Mean of empty slice:RuntimeWarning")
@@ -551,6 +643,36 @@ def test_label_permutation_test_counts_only_finite_null_draws(monkeypatch):
     assert result["p_two_tailed"] == pytest.approx((np.sum(np.abs(finite) >= 10.0) + 1) / 6)
 
 
+@pytest.mark.filterwarnings("ignore:Mean of empty slice:RuntimeWarning")
+def test_bootstrap_vs_null_stats_non_finite_bootstrap_gives_nan_p():
+    """A bootstrap distribution with no finite value has an undefined mean; comparing NaN with
+    the null counts no exceedances, which used to return the smallest possible p (1 / (n + 1)).
+    The p-value must be NaN instead."""
+
+    _, _, p_val, _ = engine.bootstrap_vs_null_stats(np.full(5, np.nan),
+                                                    np.array([0.0, 1.0, 2.0, 3.0]))
+    assert np.isnan(p_val)
+
+
+def test_label_permutation_test_non_finite_observed_delta_gives_nan_p(monkeypatch):
+    """An observed group difference that is NaN (e.g. every neuron silent in one group) can
+    never meet a null draw, which used to report it as the most significant possible result.
+    Both p-values must be NaN, whatever the finite null holds."""
+
+    calls = {"n": 0}
+
+    def fake_metrics(count_matrix):
+        calls["n"] += 1
+        return {"r_sc": np.nan if calls["n"] == 1 else float(count_matrix.sum())}
+
+    monkeypatch.setattr(engine, "compute_coactivity_metrics", fake_metrics)
+    result = engine.perform_label_permutation_test(np.array([[0.0, 0.0]]), np.array([[1.0, 2.0]]),
+                                                   n_permutations=9, seed=0)["r_sc"]
+    assert np.isfinite(result["null"]).all()
+    assert np.isnan(result["p_a_gt_b"])
+    assert np.isnan(result["p_two_tailed"])
+
+
 def test_filter_units_by_catalog():
     """
     Description
@@ -742,7 +864,7 @@ def _write_session_dir(
         train = np.arange(n_neural_samples, dtype=np.float64) + float(idx)
         np.save(session_dir / f"{stem}.npy", train.reshape(1, -1))
 
-    track_path = session_dir / "sess_translated_rotated_metric.h5"
+    track_path = session_dir / "mouse_translated_rotated_metric.h5"
     with h5py.File(name=track_path, mode="w") as track_file:
         track_file.create_dataset(
             "track_names",
@@ -880,7 +1002,7 @@ def test_load_animal_sessions_strips_track_names_and_logs_unattributed_sessions(
     catalog = {(animal_id, "20240101", "u_a_good"): {"cluster_group": "good", "somatic": "True", "brain_area": "PAG"}}
     session = tmp_path / "20240101_run0"
     _write_session_dir(session, unit_stems=["u_a_good"])
-    with h5py.File(name=session / "sess_translated_rotated_metric.h5", mode="r+") as track_file:
+    with h5py.File(name=session / "mouse_translated_rotated_metric.h5", mode="r+") as track_file:
         del track_file["track_names"]
         track_file.create_dataset("track_names", data=np.array([b" mouse_focal", b"mouse_other "]))
     load_kwargs = dict(
@@ -1032,7 +1154,7 @@ def test_shipped_neuronal_coactivity_block_schema():
         "_parameter_settings", "analyses_settings.json"
     )
     block = _json.loads(settings_traversable.read_text())["neuronal_coactivity"]
-    for key in ("seed", "window_s", "bootstrap_n", "n_boot", "n_shuffles",
+    for key in ("seed", "window_s", "bootstrap_n", "n_boot", "bootstrap_subsample_fraction", "n_shuffles",
                 "n_permutations", "per_session_n_shuffles", "n_amplitude_bins",
                 "min_bin_trials", "min_shift_s", "max_shift_s"):
         assert key in block, f"missing neuronal_coactivity key: {key}"
@@ -1129,12 +1251,13 @@ def test_compare_groups_matches_manual_composition():
     rng = np.random.default_rng(0)
     pooled_a = rng.integers(0, 5, size=(4, 12)).astype(float)
     pooled_b = rng.integers(0, 5, size=(4, 10)).astype(float)
-    out = engine.compare_groups(pooled_a, pooled_b, bootstrap_n=8, n_boot=64, n_permutations=64, seed=3)
+    out = engine.compare_groups(pooled_a, pooled_b, bootstrap_n=8, n_boot=64, n_permutations=64, seed=3,
+                                subsample_fraction=0.8)
     assert set(out) == {"boot_a", "boot_b", "perm", "bootstrap_n"}
     assert out["bootstrap_n"] == 8
 
-    boot_a = engine.bootstrap_coactivity_distribution(pooled_a, 8, 64, seed=3)
-    boot_b = engine.bootstrap_coactivity_distribution(pooled_b, 8, 64, seed=4)
+    boot_a = engine.bootstrap_coactivity_distribution(pooled_a, 8, 64, seed=3, subsample_fraction=0.8)
+    boot_b = engine.bootstrap_coactivity_distribution(pooled_b, 8, 64, seed=4, subsample_fraction=0.8)
     perm = engine.perform_label_permutation_test(counts_a=pooled_a, counts_b=pooled_b, n_permutations=64, seed=5)
     for metric in ("r_sc", "similarity", "pop_corr"):
         np.testing.assert_array_equal(out["boot_a"][metric], boot_a[metric])
@@ -1142,9 +1265,11 @@ def test_compare_groups_matches_manual_composition():
         assert out["perm"][metric]["observed_delta"] == perm[metric]["observed_delta"]
         assert out["perm"][metric]["p_two_tailed"] == perm[metric]["p_two_tailed"]
 
-    again = engine.compare_groups(pooled_a, pooled_b, bootstrap_n=8, n_boot=64, n_permutations=64, seed=3)
+    again = engine.compare_groups(pooled_a, pooled_b, bootstrap_n=8, n_boot=64, n_permutations=64, seed=3,
+                                  subsample_fraction=0.8)
     np.testing.assert_array_equal(out["boot_a"]["pop_corr"], again["boot_a"]["pop_corr"])
-    other = engine.compare_groups(pooled_a, pooled_b, bootstrap_n=8, n_boot=64, n_permutations=64, seed=9)
+    other = engine.compare_groups(pooled_a, pooled_b, bootstrap_n=8, n_boot=64, n_permutations=64, seed=9,
+                                  subsample_fraction=0.8)
     assert not np.array_equal(out["boot_a"]["pop_corr"], other["boot_a"]["pop_corr"])
 
 
@@ -1194,7 +1319,8 @@ def test_run_group_comparison_keys_and_reproducibility():
     """
 
     sessions = _group_sessions()
-    kwargs = dict(window_s=1.0, bootstrap_n=6, n_boot=32, n_shuffles=16, n_permutations=32)
+    kwargs = dict(window_s=1.0, bootstrap_n=6, n_boot=32, n_shuffles=16, n_permutations=32,
+                  subsample_fraction=0.8)
     out = engine.run_group_comparison(sessions, seed=1, **kwargs)
     assert set(out) == {
         "pooled_a", "pooled_b", "boot_a", "boot_b", "perm",
@@ -1206,3 +1332,29 @@ def test_run_group_comparison_keys_and_reproducibility():
     again = engine.run_group_comparison(sessions, seed=1, **kwargs)
     np.testing.assert_array_equal(out["chained_null_a"]["pop_corr"], again["chained_null_a"]["pop_corr"])
     np.testing.assert_array_equal(out["boot_b"]["pop_corr"], again["boot_b"]["pop_corr"])
+
+
+def test_load_animal_sessions_skips_the_playback_speaker_track(tmp_path):
+    """
+    Description
+    -----------
+    A USV-playback session keeps a ``speaker_*`` tracking file beside the mouse one. The
+    one-match lookup raises on two candidates, so the speaker track must be excluded by
+    name and the mouse track read (frame rate 150 Hz here, the speaker file says 1 Hz).
+    """
+
+    session = tmp_path / "20240102_run0"
+    _write_session_dir(session, unit_stems=["u_a_good"], frame_rate=150.0, n_frames=300)
+    with h5py.File(name=session / "speaker_translated_rotated_metric.h5", mode="w") as speaker:
+        speaker.create_dataset("track_names", data=np.array([b"speaker"]))
+        speaker.create_dataset("recording_frame_rate", data=np.float64(1.0))
+        speaker.create_dataset("tracks", data=np.zeros((5, 1, 3), dtype=np.float64))
+    catalog = {("mouse_focal", "20240102", "u_a_good"): {
+        "cluster_group": "good", "somatic": "True", "brain_area": "PAG"}}
+    out = engine.load_animal_sessions(
+        "mouse_focal", ["20240102_run0"], data_root=tmp_path, catalog=catalog,
+        category_column="qlvm_category", group_a_ids=[1], group_b_ids=[3],
+        cluster_group="good", require_somatic=True, brain_areas={"PAG"},
+        message_output=lambda *_a: None,
+    )
+    assert out[0]["fs"] == pytest.approx(150.0)

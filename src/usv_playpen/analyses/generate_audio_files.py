@@ -2,6 +2,7 @@
 @author: bartulem
 Generates playback WAV files and frequency shifts audio segment.
 """
+
 from __future__ import annotations
 
 import os
@@ -25,6 +26,11 @@ from ..time_utils import is_gui_context, smart_wait
 # prefix). Mirrors the build-side _CONTEXT_LABELS in build_naturalistic_usv_repository; the
 # generator opens the newest ``naturalistic_usv_repository_<token>_*.h5`` under
 # ``<naturalistic_usv_repository_dir>/<sex>/``.
+# Upper bound (seconds) on one SoX pass over a frequency-shifted segment. The segments are
+# presentation clips of seconds to minutes, which SoX processes in well under a second per
+# minute of audio, so a pass that runs this long has hung (e.g. waiting on a broken pipe).
+_SOX_TIMEOUT_S = 600
+
 _PLAYBACK_CONTEXTS = {
     "courtship_male":   ("courtship", "male"),
     "courtship_female": ("courtship", "female"),
@@ -137,19 +143,19 @@ class AudioGenerator:
             name. Only the keys listed below are accepted; any other key raises
             ``TypeError``. A key that is not passed leaves its attribute unset
             (there is no ``None`` fallback), so a method that reads it raises
-            ``AttributeError``.
-        exp_id (str)
-            Base file server directory: the experimenter's directory name under
-            the file-server root, used to build the ``usv_playback_experiments``
-            input and output paths.
-        root_directory (str)
-            Root directory for data; optional (see above).
-        create_playback_settings_dict (dict)
-            Settings for creating USV playback files; optional (see above).
-        freq_shift_settings_dict (dict)
-            Frequency shift settings; optional (see above).
-        message_output (function)
-            Defines output messages; optional (see above).
+            ``AttributeError``. The keys are:
+            exp_id (str)
+                Base file server directory: the experimenter's directory name under
+                the file-server root, used to build the ``usv_playback_experiments``
+                input and output paths.
+            root_directory (str)
+                Root directory for data; optional (see above).
+            create_playback_settings_dict (dict)
+                Settings for creating USV playback files; optional (see above).
+            freq_shift_settings_dict (dict)
+                Frequency shift settings; optional (see above).
+            message_output (function)
+                Defines output messages; optional (see above).
 
         Returns
         -------
@@ -370,7 +376,9 @@ class AudioGenerator:
                         # cost of this whole bout: its ISI + all USV audio + the real within-bout
                         # inter-USV gaps (IUIs are natural + small, so they are not clipped)
                         bout_usv_seconds = sum(int(usv_length[usv_start + p]) for p in range(usv_count)) / sampling_rate
-                        bout_iui_seconds = sum(float(usv_gap_to_next[usv_start + p]) for p in range(usv_count - 1))
+                        # a negative stored gap (overlapping USVs of a repository that keeps both
+                        # animals unattributed) is replayed as no silence, so it costs nothing
+                        bout_iui_seconds = sum(max(0.0, float(usv_gap_to_next[usv_start + p])) for p in range(usv_count - 1))
                         bout_seconds = isi + bout_usv_seconds + bout_iui_seconds
 
                         # skip a bout that (with the fixed lead-out) would overrun the target and
@@ -404,7 +412,9 @@ class AudioGenerator:
                             total_playback_time_created += usv_audio.shape[0] / sampling_rate
 
                             if position < (usv_count - 1):
-                                iui = float(usv_gap_to_next[usv])
+                                # clamped at zero: two overlapping USVs (a negative stored gap)
+                                # are played back to back, never as a negative-length silence
+                                iui = max(0.0, float(usv_gap_to_next[usv]))
                                 iui_samples = int(np.ceil(iui * sampling_rate))
                                 total_playback_time_created += iui
                                 replay_chunks.append(usv_audio)
@@ -557,6 +567,48 @@ class AudioGenerator:
 
         self.message_output(f"Creating USV playback file(s) ended at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
 
+    def _run_sox(self, sox_args: str, cwd: Path) -> None:
+        """
+        Description
+        -----------
+        Runs one SoX command of the frequency-shift pipeline and fails loudly. The
+        command used to be started with ``subprocess.Popen(...).wait()``, which had no
+        timeout and discarded the return code, so a failed SoX pass went unnoticed and
+        the next step read a missing or stale intermediate WAV. Here the command runs
+        with a timeout of ``_SOX_TIMEOUT_S`` seconds (``subprocess.TimeoutExpired``
+        propagates) and a non-zero exit raises.
+
+        Parameters
+        ----------
+        sox_args (str)
+            The full SoX command line (including ``self.command_addition``), run through
+            the shell when ``self.shell_usage_bool`` is True.
+        cwd (pathlib.Path)
+            Working directory of the command.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        RuntimeError
+            If SoX exits with a non-zero return code.
+        subprocess.TimeoutExpired
+            If SoX runs longer than ``_SOX_TIMEOUT_S`` seconds.
+        """
+
+        completed = subprocess.run(args=sox_args,
+                                   cwd=cwd,
+                                   stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.STDOUT,
+                                   shell=self.shell_usage_bool,
+                                   timeout=_SOX_TIMEOUT_S,
+                                   check=False)
+        if completed.returncode != 0:
+            message = f"SoX exited with return code {completed.returncode}: {sox_args}"
+            raise RuntimeError(message)
+
     def frequency_shift_audio_segment(self, seq_start: float = None, seq_duration: float = None) -> Path | None:
         """
         Description
@@ -651,11 +703,7 @@ class AudioGenerator:
 
         # perform volume adjustment with SoX (if needed)
         if volume_adjustment:
-            subprocess.Popen(args=f'''{self.command_addition}static_sox {temp_resampled_file} {temp_audible_file} compand {compand_transfer}''',
-                             cwd=output_dir,
-                             stdout=subprocess.DEVNULL,
-                             stderr=subprocess.STDOUT,
-                             shell=self.shell_usage_bool).wait()
+            self._run_sox(sox_args=f'''{self.command_addition}static_sox {temp_resampled_file} {temp_audible_file} compand {compand_transfer}''', cwd=output_dir)
 
             processed_audio, _ = librosa.load(temp_audible_file, sr=new_sr)
         else:
@@ -670,17 +718,9 @@ class AudioGenerator:
 
         if 'filtered' not in audio_dir:
             upper_cutoff_freq = int(np.ceil(sinc_upper_cutoff_hz / (2 ** abs(octave_shift))))
-            subprocess.Popen(args=f'''{self.command_addition}static_sox {temp_denoised_file} {final_output_file} sinc {upper_cutoff_freq}-0 tempo -s {tempo_adjustment_factor}''',
-                             cwd=output_dir,
-                             stdout=subprocess.DEVNULL,
-                             stderr=subprocess.STDOUT,
-                             shell=self.shell_usage_bool).wait()
+            self._run_sox(sox_args=f'''{self.command_addition}static_sox {temp_denoised_file} {final_output_file} sinc {upper_cutoff_freq}-0 tempo -s {tempo_adjustment_factor}''', cwd=output_dir)
         else:
-            subprocess.Popen(args=f'''{self.command_addition}static_sox {temp_denoised_file} {final_output_file} tempo -s {tempo_adjustment_factor}''',
-                             cwd=output_dir,
-                             stdout=subprocess.DEVNULL,
-                             stderr=subprocess.STDOUT,
-                             shell=self.shell_usage_bool).wait()
+            self._run_sox(sox_args=f'''{self.command_addition}static_sox {temp_denoised_file} {final_output_file} tempo -s {tempo_adjustment_factor}''', cwd=output_dir)
 
         temp_resampled_file.unlink()
         if volume_adjustment:

@@ -58,12 +58,14 @@ from tqdm import tqdm
 
 from ..os_utils import atomic_output_path, resolve_experimenter_path
 from ..time_utils import is_gui_context, smart_wait
+from ._usv_io import unique_match_or_none
 from .compute_neuronal_tuning_curves import (
     _circular_shift_spike_times,
     ibi_bout_extents,
     ibi_bout_threshold,
     load_vocal_inputs,
 )
+
 
 def free_intervals(lo: float, hi: float, starts: np.ndarray, stops: np.ndarray) -> list:
     """
@@ -402,7 +404,7 @@ class BoutOccupancyDecoder:
 
         Parameters
         ----------
-        **kwargs
+        **kwargs (dict)
             The expected keys are `root_directory`, `decoding_parameters_dict` and
             `message_output`; each is set as an attribute and any other key raises ``TypeError``.
 
@@ -594,9 +596,15 @@ class BoutOccupancyDecoder:
         guard = float(params["shuffle_guard_seconds"])
 
         for area, roster in sorted(rosters.items()):
-            trains = [np.sort(np.load(p)[0].astype(float))
-                      for p in (sorted((root / "ephys").rglob(f"cluster_data/{u}.npy"))[0]
-                                for u in roster)]
+            spike_files = []
+            for u in roster:
+                spike_file = unique_match_or_none(list((root / "ephys").rglob(f"cluster_data/{u}.npy")),
+                                                  label=f"cluster_data/{u}.npy under {root / 'ephys'}")
+                if spike_file is None:
+                    msg = f"No cluster_data/{u}.npy under {root / 'ephys'}."
+                    raise FileNotFoundError(msg)
+                spike_files.append(spike_file)
+            trains = [np.sort(np.load(p)[0].astype(float)) for p in spike_files]
             ladder = [c for c in params["unit_ladder"] if c < len(roster)] + [len(roster)]
             rng = np.random.default_rng(int(params["shuffle_seed"]))
             observed_all, null_all = {}, {}

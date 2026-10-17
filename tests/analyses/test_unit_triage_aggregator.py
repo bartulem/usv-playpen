@@ -569,6 +569,32 @@ def test_aggregate_modality_stats_dispatch_by_prefix():
     assert run_agg["median_peak_z"] == pytest.approx(5.0)
 
 
+def test_aggregate_modality_stats_ibi_bout_keys_get_their_own_aggregate():
+    """
+    Description
+    -----------
+    The IBI bout-onset records (`ibi_bout_onset_<role>_<dir>` and
+    `ibi_bout_first_usv_<role>_<dir>`) carry no `peak_z`, so the run-based
+    default returned an all-None aggregate for them. Each is summarised by
+    its own statistic instead: the median observed value across sessions and
+    the smallest two-sided p, from the per-session entries built by
+    `flag_one_cluster`.
+    """
+
+    entries = [{"onset_gain": 1.5, "onset_gain_p": 0.004, "first_over_later": 1.2,
+                "first_over_later_p": 0.03},
+               {"onset_gain": 2.5, "onset_gain_p": 0.001, "first_over_later": 1.6,
+                "first_over_later_p": 0.002}]
+    onset_agg = _aggregate_modality_stats("ibi_bout_onset_self_excit", entries)
+    assert onset_agg == {"median_onset_gain": pytest.approx(2.0),
+                         "min_onset_gain_p": pytest.approx(0.001)}
+    first_agg = _aggregate_modality_stats("ibi_bout_first_usv_self_first", entries)
+    assert first_agg == {"median_first_over_later": pytest.approx(1.4),
+                         "min_first_over_later_p": pytest.approx(0.002)}
+    empty_agg = _aggregate_modality_stats("ibi_bout_onset_partner_suppress", [])
+    assert empty_agg == {"median_onset_gain": None, "min_onset_gain_p": None}
+
+
 # Aggregator end-to-end tests (synthetic on-disk session tree + catalog)
 
 

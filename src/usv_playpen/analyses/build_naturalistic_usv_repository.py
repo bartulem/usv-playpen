@@ -42,7 +42,7 @@ from click.core import ParameterSource
 from scipy.ndimage import binary_dilation, gaussian_filter
 
 from ..cli_utils import modify_settings_json_for_cli
-from ..os_utils import drop_noise_usvs, find_audio_mmap, first_match_or_raise, resolve_experimenter_path
+from ..os_utils import atomic_output_path, drop_noise_usvs, find_audio_mmap, first_match_or_raise, resolve_experimenter_path
 from ..processing.build_qlvm_training_set import build_session_masks
 from ..time_utils import is_gui_context, smart_wait
 from ._usv_io import extract_animal_sexes, extract_session_metadata, sex_track_ids
@@ -96,8 +96,12 @@ def _segment_bouts(starts: np.ndarray, stops: np.ndarray, ibi_threshold: float) 
     Description
     -----------
     Assign each USV (of one emitter, sorted ascending by start) to a bout. A new bout
-    begins at the first USV and whenever the end-to-start gap from the previous USV is
-    at least ``ibi_threshold``. Mirrors ``NeuronalTuning._detect_bouts`` but uses ``>=``
+    begins at the first USV and whenever the end-to-start gap is at least
+    ``ibi_threshold``, the gap measured from the latest stop of every earlier USV (the
+    running maximum of ``stops``), not from the previous row's stop: a short USV nested
+    inside a longer one does not end the sound, so measuring from its stop would start a
+    bout while the longer USV is still sounding and give that bout a negative
+    ``bout_preceding_isi_s`` (which is measured from the same running maximum). Mirrors ``NeuronalTuning._detect_bouts`` but uses ``>=``
     (rather than strict ``>``) to match the modeling bout definition
     (``find_variable_length_bouts``).
 
@@ -118,7 +122,8 @@ def _segment_bouts(starts: np.ndarray, stops: np.ndarray, ibi_threshold: float) 
 
     if starts.size == 0:
         return np.empty(0, dtype=int)
-    is_bout_start = np.concatenate([[True], (starts[1:] - stops[:-1]) >= ibi_threshold])
+    latest_stop = np.maximum.accumulate(np.asarray(stops, dtype=float))
+    is_bout_start = np.concatenate([[True], (starts[1:] - latest_stop[:-1]) >= ibi_threshold])
     return np.cumsum(is_bout_start.astype(int)) - 1
 
 
@@ -322,8 +327,11 @@ class NaturalisticUsvRepositoryBuilder:
         natural bouts, reconstructs
         every USV of each complete bout, and accumulates audio + per-USV/per-bout metadata;
         after all sessions it writes one timestamped H5 that also records the input session
-        lists as provenance. A session that cannot be read is skipped and logged so a large
-        batch always completes.
+        lists as provenance (written atomically: temp file, then rename). A session whose
+        inputs cannot be resolved (a missing or unreadable file, a missing column, or a
+        failed consistency check) is skipped and logged, and the skipped sessions are listed
+        once more after the loop; an error while reconstructing the audio raises, because the
+        shared accumulator may already hold part of that session.
 
         Parameters
         ----------
@@ -384,8 +392,16 @@ class NaturalisticUsvRepositoryBuilder:
             "sampling_rate_hz": None,
         }
 
+        skipped_sessions: list[str] = []
         for root_directory in root_directories:
             root = pathlib.Path(root_directory)
+            # Only the input-resolution phase may skip a session: missing / unreadable
+            # inputs (OSError, which covers FileNotFoundError and an unreadable H5), a
+            # summary without a required column (KeyError) and the explicit
+            # consistency checks below (ValueError). The reconstruction
+            # runs after the try, so a failure there (a bug, or a write into the shared
+            # accumulator that stopped half-way) raises instead of leaving a partial
+            # session in the repository.
             try:
                 # The 30 kHz high-passed ('ultrasonic' band) memmap the spectrograms and
                 # masks were built from (exact folder, exact name, exactly one).
@@ -513,24 +529,31 @@ class NaturalisticUsvRepositoryBuilder:
                     n_time = int(spec_params['num_time_bins'])
                     masks, masks_len = build_session_masks(h5_file, session_id, selected_rows, n_freq, n_time)
                     row_to_pos = {int(r): i for i, r in enumerate(selected_rows)}
-
-                    usv_cursor_before = store["usv_cursor"]
-                    self._reconstruct_and_store(
-                        store, target_sex if target_sex is not None else "mixed", session_id,
-                        stored_emitter, candidate_bout_positions,
-                        rows_sorted, starts_sorted, stops_sorted, masks, masks_len,
-                        row_to_pos, audio_file_data, sample_num, sampling_rate, spec_params,
-                        mask_dilation, feather_sigma_time, fade_ms, peak_normalize,
-                        peak_target_fraction, spec_params['offset'],
-                    )
-                    # Carry the FULL usv_summary row for every USV just stored (in the same
-                    # order), so the repository holds every per-USV feature column.
-                    new_rows = store["usv_row"][usv_cursor_before:]
-                    if new_rows:
-                        store["feature_frames"].append(usv_summary_df[new_rows])
-            except Exception as session_error:  # batch robustness: skip + log a bad session
+            except (OSError, KeyError, ValueError) as session_error:
                 self.message_output(f"Skipping {root.name}: {session_error}")
+                skipped_sessions.append(root.name)
                 continue
+
+            usv_cursor_before = store["usv_cursor"]
+            self._reconstruct_and_store(
+                store, session_id,
+                stored_emitter, candidate_bout_positions,
+                rows_sorted, starts_sorted, stops_sorted, masks, masks_len,
+                row_to_pos, audio_file_data, sample_num, sampling_rate, spec_params,
+                mask_dilation, feather_sigma_time, fade_ms, peak_normalize,
+                peak_target_fraction, spec_params['offset'],
+            )
+            # Carry the FULL usv_summary row for every USV just stored (in the same
+            # order), so the repository holds every per-USV feature column.
+            new_rows = store["usv_row"][usv_cursor_before:]
+            if new_rows:
+                store["feature_frames"].append(usv_summary_df[new_rows])
+
+        if skipped_sessions:
+            self.message_output(
+                f"{len(skipped_sessions)} of {len(root_directories)} sessions were skipped "
+                f"(reasons logged above): {', '.join(skipped_sessions)}."
+            )
 
         timestamp = datetime.today().strftime('%Y%m%d_%H%M%S')
         self._write_repository(
@@ -540,7 +563,7 @@ class NaturalisticUsvRepositoryBuilder:
         self.message_output("Naturalistic USV repository build finished.")
 
     def _reconstruct_and_store(
-        self, acc, sex, session_id, emitter_norm, candidate_bout_positions, rows_sorted,
+        self, acc, session_id, emitter_norm, candidate_bout_positions, rows_sorted,
         starts_sorted, stops_sorted, masks, masks_len, row_to_pos,
         audio_file_data, sample_num, sampling_rate, spec_params, mask_dilation,
         feather_sigma_time, fade_ms, peak_normalize, peak_target_fraction, offset,
@@ -548,7 +571,7 @@ class NaturalisticUsvRepositoryBuilder:
         """
         Description
         -----------
-        Reconstruct each USV of every complete candidate bout for one (session, sex)
+        Reconstruct each USV of every complete candidate bout for one session
         and append its audio + per-USV + per-bout metadata to the accumulator. A bout
         is kept only if every USV in it has a detected mask and reconstructs
         successfully (complete-bout rule); incomplete bouts are dropped and logged.
@@ -559,26 +582,46 @@ class NaturalisticUsvRepositoryBuilder:
         ----------
         acc (dict)
             The per-sex accumulator being filled.
-        sex, session_id, emitter_norm (str)
-            Sex label, session id and normalized emitter id.
+        session_id (str)
+            Session id recorded with every stored USV and bout.
+        emitter_norm (str)
+            Normalized emitter id recorded with every stored USV and bout.
         candidate_bout_positions (list[np.ndarray])
             Sorted-position index arrays, one per candidate bout.
-        rows_sorted, starts_sorted, stops_sorted (np.ndarray)
-            The emitter's usv_summary rows / starts / stops, sorted ascending by start.
-        masks, masks_len (np.ndarray)
-            Per-selected-row SAM masks and instance counts from ``build_session_masks``.
+        rows_sorted (np.ndarray)
+            The emitter's usv_summary rows, sorted ascending by start.
+        starts_sorted (np.ndarray)
+            The matching USV start times (seconds).
+        stops_sorted (np.ndarray)
+            The matching USV stop times (seconds).
+        masks (np.ndarray)
+            Per-selected-row SAM masks from ``build_session_masks``.
+        masks_len (np.ndarray)
+            Per-selected-row mask instance counts from ``build_session_masks``.
         row_to_pos (dict)
             Maps a usv_summary row to its index into ``masks`` / ``masks_len``.
         audio_file_data (np.memmap)
             The session's raw multichannel audio.
-        sample_num, sampling_rate (int)
-            Total sample count and sampling rate (Hz) of the mmap.
-        spec_params (dict), mask_dilation (int), feather_sigma_time (float),
-        fade_ms (float), peak_normalize (bool), peak_target_fraction (float),
+        sample_num (int)
+            Total sample count of the mmap.
+        sampling_rate (int)
+            Sampling rate (Hz) of the mmap.
+        spec_params (dict)
+            The ``generate_spectrograms`` settings block (STFT geometry the masks were
+            built with); see :func:`reconstruct_usv_waveform`.
+        mask_dilation (int)
+            Bins the SAM mask is grown by before inversion (0 = tight).
+        feather_sigma_time (float)
+            Gaussian sigma (time bins) of the time-only mask feather.
+        fade_ms (float)
+            Raised-cosine onset/offset fade length (milliseconds).
+        peak_normalize (bool)
+            Peak-normalize each snippet to a uniform level, or keep relative amplitude.
+        peak_target_fraction (float)
+            Fraction of the int16 ceiling each peak-normalized snippet is scaled to.
         offset (float)
-            Reconstruction parameters (``peak_target_fraction`` scales each
-            peak-normalized snippet toward the int16 ceiling; see
-            :func:`reconstruct_usv_waveform`).
+            Padding (seconds) added before each USV start and after each stop when its
+            audio is cut, i.e. the ``generate_spectrograms`` offset the masks were built with.
 
         Returns
         -------
@@ -689,10 +732,14 @@ class NaturalisticUsvRepositoryBuilder:
             Resolved output directory for this build.
         timestamp (str)
             Build timestamp (``%Y%m%d_%H%M%S``) used in the filename.
-        ibi_z_score (float), ibi_component_index (int)
-            Bout-segmentation parameters, recorded as root attributes.
-        session_lists (list), root_directories (list)
-            The input session-list files and resolved session roots, stored as provenance.
+        ibi_z_score (float)
+            Bout-segmentation z-score, recorded as a root attribute.
+        ibi_component_index (int)
+            Mixture component of the bout-gap threshold, recorded as a root attribute.
+        session_lists (list)
+            The input session-list files, stored as provenance.
+        root_directories (list)
+            The resolved session roots, stored as provenance.
 
         Returns
         -------
@@ -711,7 +758,9 @@ class NaturalisticUsvRepositoryBuilder:
         n_usv = len(acc["usv_row"])
         n_bout = len(acc["bout_usv_start"])
 
-        with h5py.File(str(out_path), "w") as h5_file:
+        # Written to a sibling temp file and renamed into place, so a crash mid-write never
+        # leaves a truncated repository that the playback step would later read.
+        with atomic_output_path(out_path) as tmp_path, h5py.File(str(tmp_path), "w") as h5_file:
             h5_file.attrs["sex"] = target_label
             h5_file.attrs["social_context"] = context_token
             h5_file.attrs["context_label"] = context_label
