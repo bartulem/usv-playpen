@@ -18,6 +18,7 @@ from __future__ import annotations
 import numpy as np
 import polars as pls
 import pytest
+from sklearn.model_selection import StratifiedGroupKFold
 
 import usv_playpen.modeling.modeling_utils as mu
 from usv_playpen.modeling.modeling_utils import (
@@ -1786,3 +1787,669 @@ class TestSessionLabelsThroughPooledTasks:
         assert mu.classification_inner_cv_splits(y, np.full(30, "a"), 5, 0) == 5
         single_class_sessions = np.repeat(np.array(["a", "b"]), 15)
         assert mu.classification_inner_cv_splits(np.repeat([1, 0], 15), single_class_sessions, 5, 0) == 5
+
+
+def _assert_same_kwargs(actual: dict, expected: dict) -> None:
+    """
+    Description
+    -----------
+    Asserts that the keyword arguments a spy recorded are exactly the expected
+    ones: the same key set (so a dropped keyword fails) and equal values, where
+    NumPy arrays compare element-wise, dicts and tuples compare recursively,
+    floats compare with NaN equal to NaN, and every other value compares with
+    ``==``.
+
+    Parameters
+    ----------
+    actual (dict)
+        The recorded keyword arguments (``spy.call_args.kwargs``).
+    expected (dict)
+        The keyword arguments the wrapper must have passed.
+
+    Returns
+    -------
+    None
+    """
+
+    assert set(actual) == set(expected), (sorted(actual), sorted(expected))
+    for key in expected:
+        _assert_same_value(actual[key], expected[key], key)
+
+
+def _assert_same_value(actual, expected, where: str) -> None:
+    """
+    Description
+    -----------
+    Recursive value comparison behind ``_assert_same_kwargs``: arrays must match
+    in shape, dtype kind and values; dicts must have the same keys and equal
+    values; tuples must have the same length and equal items; floats must be
+    equal, or both NaN; anything else must be ``==`` and of the same type. The
+    very object expected (e.g. the caller's own dict of DataFrames) always passes.
+
+    Parameters
+    ----------
+    actual (object)
+        The recorded value.
+    expected (object)
+        The expected value.
+    where (str)
+        The keyword (and nested key path) being compared, for the failure message.
+
+    Returns
+    -------
+    None
+    """
+
+    if actual is expected:
+        return
+    if isinstance(expected, np.ndarray):
+        assert isinstance(actual, np.ndarray), where
+        assert actual.dtype.kind == expected.dtype.kind, where
+        np.testing.assert_array_equal(actual, expected, err_msg=where)
+    elif isinstance(expected, dict):
+        assert isinstance(actual, dict), where
+        assert set(actual) == set(expected), where
+        for sub_key in expected:
+            _assert_same_value(actual[sub_key], expected[sub_key], f"{where}[{sub_key!r}]")
+    elif isinstance(expected, tuple):
+        assert isinstance(actual, tuple) and len(actual) == len(expected), where
+        for i, (a_item, e_item) in enumerate(zip(actual, expected)):
+            _assert_same_value(a_item, e_item, f"{where}[{i}]")
+    elif isinstance(expected, float):
+        assert isinstance(actual, float), where
+        assert (np.isnan(actual) and np.isnan(expected)) or actual == expected, where
+    else:
+        assert type(actual) is type(expected), where
+        assert actual == expected, where
+
+
+class TestThirdMutationRoundKnownAnswers:
+    """Known-answer checks for the changes the third mutation run still let through: the
+    second manifold column naming the tag, 3-part column names in the kinematic selector and
+    the dyad rename, derivatives of speed / acceleration in the dyadic buckets, the vocal
+    column loop's skips, the float32 zero-fill, None / single-row / 1-D empty arrays in
+    pooling, group labels through balancing, cross-group shuffling, the inner-CV fold count
+    and seed, the ECE bin count, bin-edge inclusion and top-bin tolerance, and the NaN paths
+    of the safe metrics."""
+
+    def test_manifold_tag_segment_reads_only_the_first_column(self):
+        """The segment comes from the FIRST manifold column alone: a one-column list works
+        and a second column with a different prefix never leaks into the tag."""
+
+        assert manifold_tag_segment(['qlvm_duration1']) == 'qlvm_duration'
+        assert manifold_tag_segment(['qlvm1', 'umap2']) == 'qlvm'
+
+    def test_select_kinematic_columns_matches_the_last_dot_part(self):
+        """Dyadic-pose and dyadic-engagement columns are matched on the LAST dot-separated
+        part of the column name, so a 3-part name ``dyad.extra.feature`` is kept by its
+        feature, while a column whose MIDDLE part equals the feature is not."""
+
+        cols = ['mM-mF.extra.nose-nose', 'mM-mF.nose-nose.zzz',
+                'mF-mM.extra.orofacial-sei', 'mF-mM.orofacial-sei.zzz']
+        kin = {'egocentric': [], 'dyadic_pose': ['nose-nose'],
+               'dyadic_engagement': ['orofacial-sei'], 'dyadic_pose_symmetric': True,
+               'include_1st_derivatives': False, 'include_2nd_derivatives': False}
+        out = select_kinematic_columns(cols, target_name='mF', predictor_name='mM',
+                                       kin_settings=kin, predictor_idx=0)
+        assert out == ['mF-mM.extra.orofacial-sei', 'mM-mF.extra.nose-nose']
+
+    def test_dyadic_speed_and_acceleration_never_get_derivatives(self):
+        """The speed / acceleration derivative exclusion applies in the dyadic buckets too:
+        a dyadic-pose ``speed`` and a dyadic-engagement ``acceleration`` keep their base
+        column but not their present ``_1st_der`` / ``_2nd_der`` columns, while a dyadic
+        ``nose-nose`` keeps both of its derivatives."""
+
+        cols = ['mM-mF.speed', 'mM-mF.speed_1st_der', 'mM-mF.speed_2nd_der',
+                'mF-mM.acceleration', 'mF-mM.acceleration_1st_der', 'mF-mM.acceleration_2nd_der',
+                'mM-mF.nose-nose', 'mM-mF.nose-nose_1st_der', 'mM-mF.nose-nose_2nd_der']
+        kin = {'egocentric': [], 'dyadic_pose': ['speed', 'nose-nose'],
+               'dyadic_engagement': ['acceleration'], 'dyadic_pose_symmetric': True,
+               'include_1st_derivatives': True, 'include_2nd_derivatives': True}
+        out = select_kinematic_columns(cols, target_name='mF', predictor_name='mM',
+                                       kin_settings=kin, predictor_idx=0)
+        assert out == ['mF-mM.acceleration', 'mM-mF.nose-nose', 'mM-mF.nose-nose_1st_der',
+                       'mM-mF.nose-nose_2nd_der', 'mM-mF.speed']
+
+    def test_vocal_columns_skip_and_keep_going(self):
+        """A target mouse absent from the session does not stop the partner's columns, and a
+        pooled target trace listed BEFORE a per-category trace does not stop the target's
+        per-category trace from being emitted (skips, not stops)."""
+
+        settings = {'vocal_predictor_type': 'continuous', 'vocal_predictor_partner_only': False}
+        absent_target = {'sess': {'mPartner': {'continuous_vocal_signals': {
+            'usv_rate': np.zeros(2)}}}}
+        _cols, names = build_vocal_signal_columns(absent_target, 'sess', 'mTarget', 'mPartner',
+                                                  voc_settings=settings)
+        assert names == ['mPartner.usv_rate']
+        pooled_first = {'sess': {
+            'mTarget': {'continuous_vocal_signals': {'usv_rate': np.zeros(2), 'usv_cat_3': np.ones(2)}},
+            'mPartner': {'continuous_vocal_signals': {'usv_cat_3': np.ones(2)}}}}
+        _cols, names = build_vocal_signal_columns(pooled_first, 'sess', 'mTarget', 'mPartner',
+                                                  voc_settings=settings)
+        assert names == ['mTarget.usv_cat_3', 'mPartner.usv_cat_3']
+
+    def test_harmonize_renames_by_the_dyad_prefix_and_last_part(self):
+        """A dyad column with three dot-parts is renamed to its LAST part, and a per-mouse
+        column whose suffix (not prefix) contains a dash is NOT renamed, since the rename is
+        keyed on a dash in the part before the first dot."""
+
+        d = {'s1': pls.DataFrame({'mM-mF.extra.nose-nose': [1.0, 2.0],
+                                  'mF.orofacial-sei': [3.0, 4.0]})}
+        out, _suffixes = harmonize_session_columns(d, {'s1': ['mM', 'mF']}, target_idx=1, predictor_idx=0)
+        assert out['s1']['nose-nose'].to_list() == [1.0, 2.0]
+        assert 'extra' not in out['s1'].columns
+        assert out['s1']['mF.orofacial-sei'].to_list() == [3.0, 4.0]
+
+    def test_harmonize_zero_fills_are_float32(self):
+        """Every zero-filled column is float32 whichever rule filled it: a missing dyadic
+        column, a missing non-vocal per-mouse column, and a missing vocal column whose role
+        was populated elsewhere (float64 inputs, so the dtype comes from the fill)."""
+
+        d = {'s1': pls.DataFrame({'nose-nose': [0.5, 0.6], 'mF.speed': [1.0, 2.0],
+                                  'mF.usv_rate': [0.1, 0.2]}),
+             's2': pls.DataFrame({'mF2.dummy': [9.0, 9.0]})}
+        names = {'s1': ['mM', 'mF'], 's2': ['mM2', 'mF2']}
+        out, _suffixes = harmonize_session_columns(d, names, target_idx=1, predictor_idx=0)
+        s2 = out['s2']
+        for filled in ('nose-nose', 'mF2.speed', 'mM2.speed', 'mF2.usv_rate'):
+            assert s2[filled].dtype == pls.Float32, filled
+            assert s2[filled].to_list() == [0.0, 0.0]
+        assert 'mM2.usv_rate' not in s2.columns
+        assert out['s1']['mM.speed'].dtype == pls.Float32
+
+    def test_pool_skips_none_and_keeps_single_values(self):
+        """A ``None`` class array is skipped while the other class of that session is kept,
+        a 1x1 array (a single row of a single frame) is kept, and the session labels are
+        object arrays holding each row's session."""
+
+        data = {'s1': {'pos': None, 'neg': np.ones((2, 1))},
+                's2': {'pos': np.array([[7.0]]), 'neg': None}}
+        X_pos, X_neg, g_pos, g_neg = pool_session_arrays(data, ['s1', 's2'], pos_key='pos',
+                                                         neg_key='neg', n_frames=1, return_groups=True)
+        np.testing.assert_array_equal(X_pos, np.array([[7.0]]))
+        np.testing.assert_array_equal(X_neg, np.ones((2, 1)))
+        assert g_pos.dtype == object and list(g_pos) == ['s2']
+        assert g_neg.dtype == object and list(g_neg) == ['s1', 's1']
+        X_pos, X_neg = pool_session_arrays({'s1': {'pos': np.array([[7.0]]), 'neg': np.array([[3.0]])}},
+                                           ['s1'], pos_key='pos', neg_key='neg', n_frames=1)
+        np.testing.assert_array_equal(X_pos, np.array([[7.0]]))
+        np.testing.assert_array_equal(X_neg, np.array([[3.0]]))
+
+    def test_pool_drops_size_zero_arrays_of_any_shape(self):
+        """A size-0 array is dropped whatever its shape (here 1-D ``np.array([])``, which
+        cannot be stacked with 2-D rows), and a class that is empty everywhere returns a
+        ``(0, n_frames)`` placeholder and a size-0 object label array."""
+
+        data = {'s1': {'pos': np.array([]), 'neg': np.array([])},
+                's2': {'pos': np.ones((2, 4)), 'neg': np.ones((1, 4))}}
+        X_pos, X_neg, g_pos, g_neg = pool_session_arrays(data, ['s1', 's2'], pos_key='pos',
+                                                         neg_key='neg', n_frames=4, return_groups=True)
+        assert X_pos.shape == (2, 4) and X_neg.shape == (1, 4)
+        assert list(g_pos) == ['s2', 's2'] and list(g_neg) == ['s2']
+        X_pos, X_neg, g_pos, g_neg = pool_session_arrays({'s1': {'pos': np.array([]), 'neg': None}}, ['s1'],
+                                                         pos_key='pos', neg_key='neg', n_frames=4,
+                                                         return_groups=True)
+        assert X_pos.shape == (0, 4) and X_neg.shape == (0, 4)
+        assert g_pos.shape == (0,) and g_pos.dtype == object
+        assert g_neg.shape == (0,) and g_neg.dtype == object
+
+    def test_balance_one_empty_class_returns_empty_labels_without_drawing(self):
+        """When one class is empty both classes come back empty with size-0 OBJECT label
+        arrays (whatever dtype the labels came in) and the generator is left untouched."""
+
+        rng = np.random.default_rng(0)
+        out = balance_two_class_arrays(np.empty((0, 2)), np.ones((3, 2)), rng,
+                                       groups_pos=np.array([], dtype='<U2'),
+                                       groups_neg=np.array(['s1', 's1', 's2']))
+        assert len(out) == 4
+        bp, bn, gp, gn = out
+        assert bp.shape == (0, 2) and bn.shape == (0, 2)
+        assert gp.shape == (0,) and gp.dtype == object
+        assert gn.shape == (0,) and gn.dtype == object
+        assert rng.random() == np.random.default_rng(0).random()
+
+    def test_balance_labels_follow_subsampled_rows_and_need_both_label_arrays(self):
+        """Labels are subsampled with their rows whichever class is the majority, and labels
+        given for one class only are ignored (the 2-tuple comes back)."""
+
+        X_big = np.arange(6, dtype=float).reshape(6, 1)
+        g_big = np.array([f"s{int(v)}" for v in X_big[:, 0]], dtype=object)
+        X_small = np.array([[10.0], [11.0]])
+        g_small = np.array(['s10', 's11'], dtype=object)
+        bp, bn, gp, gn = balance_two_class_arrays(X_big, X_small, np.random.default_rng(1),
+                                                  groups_pos=g_big, groups_neg=g_small)
+        assert list(gp) == [f"s{int(v)}" for v in bp[:, 0]]
+        assert list(gn) == ['s10', 's11']
+        bp, bn, gp, gn = balance_two_class_arrays(X_small, X_big, np.random.default_rng(1),
+                                                  groups_pos=g_small, groups_neg=g_big)
+        assert list(gn) == [f"s{int(v)}" for v in bn[:, 0]]
+        assert gn.shape == (2,)
+        out = balance_two_class_arrays(X_big, X_small, np.random.default_rng(1), groups_pos=g_big, groups_neg=None)
+        assert len(out) == 2
+        assert out[0].shape == (2, 1)
+
+    def test_within_group_permutation_moves_rows_only_inside_their_group(self):
+        """With three groups the permutation actually shuffles every group (it is not the
+        identity) and never sends a row to another group's position."""
+
+        groups = np.repeat(np.array(['a', 'b', 'c']), 10)
+        perm = mu.within_group_permutation(groups, np.random.default_rng(0))
+        np.testing.assert_array_equal(np.sort(perm), np.arange(30))
+        np.testing.assert_array_equal(groups[perm], groups)
+        for g in ('a', 'b', 'c'):
+            rows = np.where(groups == g)[0]
+            assert not np.array_equal(perm[rows], rows), g
+
+    def test_inner_cv_two_sessions_seed_and_fold_count(self):
+        """Two sessions are enough for session folds; the folds are exactly the seeded
+        ``StratifiedGroupKFold`` split with ``min(n_folds, n_sessions)`` folds (sessions with
+        different class balances, so the seed actually changes the assignment)."""
+
+        groups2 = np.repeat(np.array(['a', 'b']), 4)
+        y2 = np.tile(np.array([1, 0]), 4)
+        splits = mu.classification_inner_cv_splits(y2, groups2, 5, 0)
+        assert isinstance(splits, list) and len(splits) == 2
+        assert sorted(set(groups2[val]).pop() for _train, val in splits) == ['a', 'b']
+        counts = [(3, 1), (1, 3), (3, 1), (1, 3), (2, 2), (2, 2), (3, 1), (1, 3), (4, 0), (0, 4), (2, 2), (3, 1)]
+        groups = np.concatenate([[f"s{i:02d}"] * (n_pos + n_neg) for i, (n_pos, n_neg) in enumerate(counts)])
+        y = np.concatenate([[1] * n_pos + [0] * n_neg for n_pos, n_neg in counts])
+        splits = mu.classification_inner_cv_splits(y, groups, 3, 11)
+        assert isinstance(splits, list)
+        expected = list(StratifiedGroupKFold(n_splits=3, shuffle=True, random_state=11).split(
+            np.zeros(len(y)), y, groups))
+        assert len(splits) == 3
+        for (train, val), (e_train, e_val) in zip(splits, expected):
+            np.testing.assert_array_equal(train, e_train)
+            np.testing.assert_array_equal(val, e_val)
+
+    def test_inner_cv_falls_back_when_only_a_validation_fold_misses_a_class(self):
+        """A session holding only one class becomes a validation fold without the other class
+        (while its training side still has both), which is enough to fall back to the int."""
+
+        groups = np.repeat(np.array(['a', 'b', 'c']), 4)
+        y = np.array([1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1])
+        assert mu.classification_inner_cv_splits(y, groups, 3, 0) == 3
+
+    def test_ece_hand_computed_with_ten_bins(self):
+        """Hand-computed ECE: confidences 0.52 / 0.58 share the (0.5, 0.6] bin (accuracy 0.5,
+        mean confidence 0.55, gap 0.05) and 0.61 / 0.64 share (0.6, 0.7] (gap 0.125), so ECE
+        = 0.5 * 0.05 + 0.5 * 0.125 = 0.0875; 8 or 11 bins would split a pair differently."""
+
+        conf = np.array([0.52, 0.58, 0.61, 0.64])
+        proba = np.column_stack([1.0 - conf, conf])
+        y_pred = np.ones(4, dtype=int)
+        y_true = np.array([1, 0, 1, 0])
+        assert expected_calibration_error(y_true, y_pred, proba) == pytest.approx(0.0875, abs=1e-12)
+
+    def test_ece_bin_edges_are_right_closed(self):
+        """A confidence exactly on an inner bin edge belongs only to the bin it closes; one
+        just above the edge (by less than the top bin's 1e-9 tolerance) belongs only to the
+        next bin. Hand values: edge 0.6 correct + 0.7 wrong -> 0.5*0.4 + 0.5*0.7 = 0.55; a
+        single correct confidence 0.6 + 5e-10 -> 0.4 - 5e-10."""
+
+        edges = np.linspace(0.0, 1.0, 11)
+        on_edge = edges[6]
+        proba = np.array([[1.0 - on_edge, on_edge], [0.3, 0.7]])
+        val = expected_calibration_error(np.array([1, 0]), np.array([1, 1]), proba)
+        assert val == pytest.approx(0.5 * (1.0 - on_edge) + 0.5 * 0.7, abs=1e-12)
+        above = edges[6] + 5e-10
+        val = expected_calibration_error(np.array([1]), np.array([1]), np.array([[1.0 - above, above]]))
+        assert val == pytest.approx(1.0 - above, abs=1e-12)
+
+    def test_ece_top_bin_tolerance(self):
+        """The top bin takes confidences up to 1 + 1e-9 inclusive (rounding just above 1)
+        and nothing beyond: a wrong prediction at 1 + 1e-9 counts with gap 1 + 1e-9 and one
+        at 1 + 1e-6 is unbinned but still counts in N, so ECE = (1 + 1e-9) / 2."""
+
+        proba = np.array([[0.0, 1.0 + 1e-9], [0.0, 1.0 + 1e-6]])
+        val = expected_calibration_error(np.array([0, 0]), np.array([1, 1]), proba)
+        assert val == pytest.approx((1.0 + 1e-9) / 2.0, rel=1e-12, abs=0.0)
+        val = expected_calibration_error(np.array([1]), np.array([1]), np.array([[0.0, 1.0]]))
+        assert val == pytest.approx(0.0, abs=1e-12)
+
+    def test_ece_empty_input_is_nan(self):
+        """No samples -> NaN (the documented empty-input return)."""
+
+        assert np.isnan(expected_calibration_error(np.array([]), np.array([]), np.empty((0, 2))))
+
+    def test_safe_metric_nan_paths(self):
+        """Inputs the libraries reject (mismatched lengths) give NaN from MCC, Pearson and
+        Spearman, a constant y_true gives NaN, and an input whose standard deviation is
+        exactly 1.0 is a valid (finite) correlation."""
+
+        assert np.isnan(safe_matthews_corrcoef(np.array([0, 1]), np.array([0, 1, 1])))
+        assert np.isnan(pearson_r_safe(np.array([1.0, 2.0, 3.0]), np.array([1.0, 2.0])))
+        assert np.isnan(spearman_r_safe(np.array([1.0, 2.0, 3.0]), np.array([1.0, 2.0])))
+        assert np.isnan(pearson_r_safe(np.ones(4), np.arange(4.0)))
+        assert np.isnan(spearman_r_safe(np.ones(4), np.arange(4.0)))
+        y_unit_sd = np.array([-1.0, -1.0, 1.0, 1.0])
+        assert np.std(y_unit_sd) == 1.0
+        y_pred = np.array([0.0, 1.0, 2.0, 4.0])
+        assert pearson_r_safe(y_unit_sd, y_pred) == pytest.approx(np.corrcoef(y_unit_sd, y_pred)[0, 1])
+        assert spearman_r_safe(y_unit_sd, y_pred) == pytest.approx(0.8944271909999159)
+
+    def test_safe_fold_mean_paths(self):
+        """The fold mean ignores NaNs (and ``None``, read as NaN), and an empty or all-NaN
+        list gives NaN without a RuntimeWarning."""
+
+        assert mu._safe_fold_mean([1.0, float('nan'), 3.0]) == pytest.approx(2.0)
+        assert mu._safe_fold_mean([1.0, None, 3.0]) == pytest.approx(2.0)
+        assert np.isnan(mu._safe_fold_mean([float('nan'), float('nan')]))
+        assert np.isnan(mu._safe_fold_mean([]))
+
+    def test_align_rejects_duplicates_and_keeps_dtype(self):
+        """A canonical ordering with a repeated class is not strictly ascending and is
+        rejected; the aligned matrix keeps the input probabilities' dtype (float32 here)."""
+
+        with pytest.raises(ValueError):
+            align_probs_to_canonical(np.array([[0.5, 0.5]]), model_classes=np.array([0, 1]),
+                                     canonical_classes=np.array([0, 1, 1]))
+        out = align_probs_to_canonical(np.array([[0.25, 0.75]], dtype=np.float32),
+                                       model_classes=np.array([0, 2]), canonical_classes=np.array([0, 1, 2]))
+        assert out.dtype == np.float32
+        np.testing.assert_array_equal(out, np.array([[0.25, 0.0, 0.75]], dtype=np.float32))
+
+
+class TestRunPredictorAuditsForwarding:
+    """The audit wrapper's exact hand-off to both audits: every keyword it forwards, the event
+    times, intervals and onset times it builds (and the sessions it skips on the way), the
+    seeded per-session balancing, the IBI thresholds and the timescale settings validation."""
+
+    @staticmethod
+    def _settings(seed=None, collinearity=True, timescale=True):
+        """
+        Description
+        -----------
+        A complete diagnostics settings dictionary with distinct values for every knob the
+        wrapper forwards.
+
+        Parameters
+        ----------
+        seed (int | None)
+            ``model_validation.random_seed``.
+        collinearity (bool)
+            Whether the collinearity audit is enabled.
+        timescale (bool)
+            Whether the timescale audit is enabled.
+
+        Returns
+        -------
+        settings (dict)
+            The settings dictionary.
+        """
+
+        return {
+            'diagnostics': {
+                'collinearity_audit': collinearity,
+                'collinearity_concern_threshold': 0.7,
+                'collinearity_exclude_threshold': 0.85,
+                'timescale_audit': timescale,
+                'timescale_max_lag_seconds': 5.0,
+                'timescale_n_shuffles': 3,
+                'timescale_shuffle_range': [20.0, 60.0],
+                'timescale_signal_floor_seconds': 0.5,
+                'timescale_signal_min_run_seconds': 0.2,
+            },
+            'model_params': {'filter_history': 1.5, 'mixture_model_component_index': 0,
+                             'mixture_model_z_score': 1.0},
+            'model_validation': {'random_seed': seed},
+            'mixture_model_params': {'male': {'means': [0.1], 'sds': [0.05]},
+                                     'female': {'means': [0.12], 'sds': [0.06]}},
+        }
+
+    @staticmethod
+    def _skip_inputs():
+        """
+        Description
+        -----------
+        Sessions that every extraction loop must skip, listed BEFORE the one valid session
+        (so a ``break`` in place of a ``continue`` loses the valid session): absent from the
+        USV dict, target mouse absent, no ``stop``, empty ``start``, empty ``stop``; the valid
+        session has a single start/stop pair and unsorted onsets.
+
+        Returns
+        -------
+        inputs (tuple)
+            ``(beh, usv, names, fps)``.
+        """
+
+        names = {sess: ['mM', 'mF'] for sess in
+                 ('s_absent', 's_no_target', 's_no_stop', 's_empty_start', 's_empty_stop', 's_ok')}
+        usv = {
+            's_no_target': {'mM': {'positive_events': np.array([0.1]),
+                                   'start': np.array([0.1]), 'stop': np.array([0.2])}},
+            's_no_stop': {'mF': {'positive_events': np.array([]), 'start': np.array([0.1])}},
+            's_empty_start': {'mF': {'start': np.array([]), 'stop': np.array([0.2])}},
+            's_empty_stop': {'mF': {'start': np.array([0.1]), 'stop': np.array([])}},
+            's_ok': {'mF': {'positive_events': np.array([1.5, 0.5]),
+                            'start': np.array([0.5]), 'stop': np.array([0.6])}},
+        }
+        beh = {'s_ok': pls.DataFrame({'mF.speed': [0.0, 1.0, 2.0]})}
+        fps = {'s_ok': 150.0}
+        return beh, usv, names, fps
+
+    def test_exact_keywords_and_built_inputs(self, mocker, tmp_path):
+        """Both audits get exactly the expected keywords: the inputs passed through, the
+        artifact paths, the thresholds, the IBI thresholds of component 0, the seed (None ->
+        0), the validated timescale settings, and the event times / intervals / onsets built
+        from the one valid session only (a missing event key is skipped, not a stop)."""
+
+        coll = mocker.patch.object(mu, 'audit_predictor_collinearity')
+        ts = mocker.patch.object(mu, 'audit_predictor_timescales')
+        beh, usv, names, fps = self._skip_inputs()
+        meta = {'cohort': 'unit-test'}
+        run_predictor_audits(beh, usv, names, fps, target_idx=1, predictor_idx=0, history_frames=5,
+                             event_keys=['missing_key', 'positive_events'], settings=self._settings(),
+                             save_dir=str(tmp_path), pickle_basename='myinput.pkl', input_metadata=meta)
+        coll.assert_called_once()
+        ts.assert_called_once()
+        assert coll.call_args.kwargs['processed_beh_dict'] is beh
+        assert ts.call_args.kwargs['processed_beh_dict'] is beh
+        _assert_same_kwargs(coll.call_args.kwargs, {
+            'processed_beh_dict': beh,
+            'event_times_per_session': {'s_ok': np.array([0.5, 1.5])},
+            'mouse_names_dict': names,
+            'target_idx': 1,
+            'predictor_idx': 0,
+            'history_frames': 5,
+            'camera_fps_dict': fps,
+            'save_path': str(tmp_path / 'myinput_collinearity.pkl'),
+            'source_pickle': 'myinput.pkl',
+            'concern_thresh': 0.7,
+            'exclude_thresh': 0.85,
+            'input_metadata': meta,
+        })
+        _assert_same_kwargs(ts.call_args.kwargs, {
+            'processed_beh_dict': beh,
+            'mouse_names_dict': names,
+            'target_idx': 1,
+            'predictor_idx': 0,
+            'configured_filter_history': 1.5,
+            'camera_fps_dict': fps,
+            'max_lag_seconds': 5.0,
+            'n_shuffles': 3,
+            'ibi_thresholds': {'male': float(mu._calculate_ibi_threshold(0.1, 0.05, 1.0)),
+                               'female': float(mu._calculate_ibi_threshold(0.12, 0.06, 1.0))},
+            'save_path': str(tmp_path / 'myinput_timescales.pkl'),
+            'source_pickle': 'myinput.pkl',
+            'random_seed': 0,
+            'input_metadata': meta,
+            'shuffle_range_seconds': (20.0, 60.0),
+            'event_intervals_per_session': {'s_ok': (np.array([0.5]), np.array([0.6]))},
+            'onset_times_per_session': {'s_ok': np.array([0.5, 1.5])},
+            'signal_floor_seconds': 0.5,
+            'signal_min_run_seconds': 0.2,
+        })
+
+    def test_configured_seed_reaches_the_timescale_audit(self, mocker, tmp_path):
+        """A configured ``random_seed`` (7) is forwarded as is."""
+
+        mocker.patch.object(mu, 'audit_predictor_collinearity')
+        ts = mocker.patch.object(mu, 'audit_predictor_timescales')
+        beh, usv, names, fps = self._skip_inputs()
+        run_predictor_audits(beh, usv, names, fps, target_idx=1, predictor_idx=0, history_frames=5,
+                             event_keys=['positive_events'], settings=self._settings(seed=7),
+                             save_dir=str(tmp_path), pickle_basename='s.pkl')
+        assert ts.call_args.kwargs['random_seed'] == 7
+
+    @staticmethod
+    def _balance_inputs():
+        """
+        Description
+        -----------
+        One session whose target has 3 ``other_events`` and 8 ``target_events``.
+
+        Returns
+        -------
+        inputs (tuple)
+            ``(beh, usv, names, fps, small, large)``.
+        """
+
+        small = np.array([100.0, 101.0, 102.0])
+        large = np.arange(8, dtype=float)
+        usv = {'s1': {'mF': {'other_events': small, 'target_events': large,
+                             'start': np.array([0.1]), 'stop': np.array([0.2])}}}
+        beh = {'s1': pls.DataFrame({'mF.speed': [0.0, 1.0]})}
+        return beh, usv, {'s1': ['mM', 'mF']}, {'s1': 30.0}, small, large
+
+    @pytest.mark.parametrize('seed,rng_seed', [(7, 7), (None, 0), (3, 3)])
+    def test_balanced_pool_is_the_seeded_draw(self, mocker, tmp_path, seed, rng_seed):
+        """With ``balance_event_keys`` the smallest key (listed first) is kept whole WITHOUT
+        consuming the generator, and the larger key is cut to its size by one draw without
+        replacement from ``default_rng(random_seed)`` (``None`` -> 0); the pooled times are
+        that draw, sorted."""
+
+        coll = mocker.patch.object(mu, 'audit_predictor_collinearity')
+        mocker.patch.object(mu, 'audit_predictor_timescales')
+        beh, usv, names, fps, small, large = self._balance_inputs()
+        run_predictor_audits(beh, usv, names, fps, target_idx=1, predictor_idx=0, history_frames=5,
+                             event_keys=['other_events', 'target_events'],
+                             settings=self._settings(seed=seed, timescale=False),
+                             save_dir=str(tmp_path), pickle_basename='b.pkl', balance_event_keys=True)
+        pick = np.random.default_rng(rng_seed).choice(8, size=3, replace=False)
+        expected = np.sort(np.concatenate([small, large[pick]]))
+        np.testing.assert_array_equal(coll.call_args.kwargs['event_times_per_session']['s1'], expected)
+
+    def test_unbalanced_pool_keeps_every_event(self, mocker, tmp_path):
+        """Without ``balance_event_keys`` every event of every key is pooled (sorted)."""
+
+        coll = mocker.patch.object(mu, 'audit_predictor_collinearity')
+        mocker.patch.object(mu, 'audit_predictor_timescales')
+        beh, usv, names, fps, small, large = self._balance_inputs()
+        run_predictor_audits(beh, usv, names, fps, target_idx=1, predictor_idx=0, history_frames=5,
+                             event_keys=['other_events', 'target_events'],
+                             settings=self._settings(timescale=False),
+                             save_dir=str(tmp_path), pickle_basename='b.pkl')
+        np.testing.assert_array_equal(coll.call_args.kwargs['event_times_per_session']['s1'],
+                                      np.sort(np.concatenate([small, large])))
+
+    def _run_timescale(self, mocker, tmp_path, settings, **extra):
+        """
+        Description
+        -----------
+        Runs the wrapper with only the timescale audit enabled on the skip inputs and
+        returns the timescale spy.
+
+        Parameters
+        ----------
+        mocker (pytest_mock.MockerFixture)
+            The mocker fixture.
+        tmp_path (pathlib.Path)
+            The save directory.
+        settings (dict)
+            The settings dictionary.
+        **extra
+            Further keyword arguments for ``run_predictor_audits``.
+
+        Returns
+        -------
+        ts (unittest.mock.MagicMock)
+            The timescale-audit spy.
+        """
+
+        mocker.patch.object(mu, 'audit_predictor_collinearity')
+        ts = mocker.patch.object(mu, 'audit_predictor_timescales')
+        beh, usv, names, fps = self._skip_inputs()
+        run_predictor_audits(beh, usv, names, fps, target_idx=1, predictor_idx=0, history_frames=5,
+                             event_keys=['positive_events'], settings=settings,
+                             save_dir=str(tmp_path), pickle_basename='t.pkl', **extra)
+        return ts
+
+    def test_ibi_threshold_component_index_bounds(self, mocker, tmp_path):
+        """Component index 1 of two components gives that component's threshold; index 1 of
+        one component (== the component count) is out of range and gives NaN, and the audit
+        still runs."""
+
+        settings = self._settings(timescale=True, collinearity=False)
+        settings['model_params']['mixture_model_component_index'] = 1
+        settings['mixture_model_params'] = {'male': {'means': [0.1, 0.3], 'sds': [0.05, 0.07]},
+                                            'female': {'means': [0.12], 'sds': [0.06]}}
+        ts = self._run_timescale(mocker, tmp_path, settings)
+        ts.assert_called_once()
+        thr = ts.call_args.kwargs['ibi_thresholds']
+        assert thr['male'] == float(mu._calculate_ibi_threshold(0.3, 0.07, 1.0))
+        assert np.isnan(thr['female'])
+
+    @pytest.mark.parametrize('bad_key,bad_val', [
+        ('timescale_shuffle_range', [20.0, 40.0, 60.0]),   # three elements
+        ('timescale_shuffle_range', [0.0, 60.0]),          # min not > 0
+        ('timescale_shuffle_range', [30.0, 30.0]),         # min == max
+    ])
+    def test_rejected_timescale_settings(self, mocker, tmp_path, capsys, bad_key, bad_val):
+        """A three-element shuffle range, a zero minimum and an equal min / max are rejected
+        (the audit is not run and the non-fatal warning is printed)."""
+
+        settings = self._settings(collinearity=False)
+        settings['diagnostics'][bad_key] = bad_val
+        ts = self._run_timescale(mocker, tmp_path, settings)
+        ts.assert_not_called()
+        assert 'timescale audit failed' in capsys.readouterr().out
+
+    @pytest.mark.parametrize('key,val,kwarg,expected', [
+        ('timescale_shuffle_range', [0.5, 60.0], 'shuffle_range_seconds', (0.5, 60.0)),
+        ('timescale_signal_floor_seconds', 0.0, 'signal_floor_seconds', 0.0),
+    ])
+    def test_accepted_boundary_timescale_settings(self, mocker, tmp_path, key, val, kwarg, expected):
+        """A shuffle-range minimum below 1 s and a zero signal floor are valid and forwarded."""
+
+        settings = self._settings(collinearity=False)
+        settings['diagnostics'][key] = val
+        ts = self._run_timescale(mocker, tmp_path, settings)
+        ts.assert_called_once()
+        assert ts.call_args.kwargs[kwarg] == expected
+
+    def test_single_precomputed_onset_is_kept(self, mocker, tmp_path):
+        """A precomputed onset array with ONE onset is a non-empty session and is kept."""
+
+        ts = self._run_timescale(mocker, tmp_path, self._settings(collinearity=False),
+                                 precomputed_onset_times={'s_ok': np.array([2.0])})
+        np.testing.assert_array_equal(ts.call_args.kwargs['onset_times_per_session']['s_ok'], np.array([2.0]))
+
+    def test_no_target_entries_is_not_a_wrong_key(self, mocker, tmp_path):
+        """When no session carries a target-mouse entry at all, an empty onset set is not
+        the wrong-key error: the audit runs with no onsets."""
+
+        mocker.patch.object(mu, 'audit_predictor_collinearity')
+        ts = mocker.patch.object(mu, 'audit_predictor_timescales')
+        run_predictor_audits({}, {'s1': {'mM': {}}}, {'s1': ['mM', 'mF']}, {}, target_idx=1, predictor_idx=0,
+                             history_frames=5, event_keys=['positive_events'],
+                             settings=self._settings(collinearity=False),
+                             save_dir=str(tmp_path), pickle_basename='e.pkl')
+        ts.assert_called_once()
+        assert ts.call_args.kwargs['onset_times_per_session'] == {}
+
+    def test_wrong_key_message_counts_sessions_with_a_target(self, mocker, tmp_path, capsys):
+        """The wrong-key warning names the key and the number of sessions that had a target
+        entry (here 2 of 3)."""
+
+        mocker.patch.object(mu, 'audit_predictor_collinearity')
+        ts = mocker.patch.object(mu, 'audit_predictor_timescales')
+        names = {'s1': ['mM', 'mF'], 's2': ['mM', 'mF'], 's3': ['mM', 'mF']}
+        usv = {'s1': {'mF': {'start': np.array([0.1])}}, 's2': {'mF': {}}, 's3': {'mM': {}}}
+        run_predictor_audits({}, usv, names, {}, target_idx=1, predictor_idx=0, history_frames=5,
+                             event_keys=['positive_events'], settings=self._settings(collinearity=False),
+                             save_dir=str(tmp_path), pickle_basename='w.pkl', onset_event_key='bout_onsets')
+        ts.assert_not_called()
+        out = capsys.readouterr().out
+        assert "`onset_event_key='bout_onsets'`" in out
+        assert 'found in any of the 2 session(s)' in out

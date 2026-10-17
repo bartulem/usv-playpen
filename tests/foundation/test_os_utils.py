@@ -1470,3 +1470,379 @@ def test_event_and_occupancy_times_are_self_consistent_on_random_summaries(seed)
             occupancy_start, occupancy_stop = occupancy_by_row[row]
             assert occupancy_start <= min(start, by_row[row][0]) + 1e-12
             assert occupancy_stop >= max(stop, by_row[row][1]) - 1e-12
+
+
+# host-config error paths, cluster detection fallback
+
+
+def test_host_lab_shares_raises_when_lab_shares_table_is_empty(monkeypatch, tmp_path):
+    """A host config whose ``lab_shares`` entry is present but EMPTY raises the same
+    KeyError as a missing one: an empty table would leave every path untranslated
+    (and ``find_base_path`` without a default share), so it must fail loud rather
+    than return an empty share tuple."""
+    cfg = tmp_path / "host.toml"
+    cfg.write_text('lab_shares = []\nfile_server = "cup"\n')
+    monkeypatch.setattr(os_utils, "_HOST_SHARES_CACHE", [])
+    monkeypatch.setattr(os_utils, "_HOST_CONFIG_PATH", cfg)
+    with pytest.raises(KeyError, match="has no non-empty 'lab_shares' table"):
+        os_utils._host_lab_shares()
+    assert os_utils._HOST_SHARES_CACHE == []
+
+
+def test_host_experimenter_raises_naming_the_missing_entry(monkeypatch, tmp_path):
+    """A host config that parses but has no ``experimenter`` key raises a KeyError
+    whose message names the missing entry and the consequence (experimenter-scoped
+    paths cannot be re-keyed), and nothing is cached."""
+    cfg = tmp_path / "host.toml"
+    cfg.write_text('file_server = "cup"\n')
+    monkeypatch.setattr(os_utils, "_HOST_EXPERIMENTER_CACHE", [])
+    monkeypatch.delenv("EXPERIMENTER_ID", raising=False)
+    monkeypatch.setattr(os_utils, "_HOST_CONFIG_PATH", cfg)
+    with pytest.raises(KeyError, match="has no 'experimenter' entry; cannot re-key experimenter-scoped data paths"):
+        os_utils._host_experimenter()
+    assert os_utils._HOST_EXPERIMENTER_CACHE == []
+
+
+def test_host_experimenter_list_reads_and_fails_loud(monkeypatch, tmp_path):
+    """The experimenter roster is read from the ``experimenter_list`` key and cached
+    as a list; an unreadable host config raises RuntimeError naming the roster
+    lookup, and a config without the key raises KeyError naming the entry."""
+    cfg = tmp_path / "host.toml"
+    cfg.write_text('experimenter_list = ["Ann", "Bob"]\n')
+    monkeypatch.setattr(os_utils, "_HOST_EXPERIMENTER_LIST_CACHE", [])
+    monkeypatch.setattr(os_utils, "_HOST_CONFIG_PATH", cfg)
+    assert os_utils._host_experimenter_list() == ["Ann", "Bob"]
+    assert os_utils._HOST_EXPERIMENTER_LIST_CACHE == [["Ann", "Bob"]]
+
+    monkeypatch.setattr(os_utils, "_HOST_EXPERIMENTER_LIST_CACHE", [])
+    monkeypatch.setattr(os_utils, "_HOST_CONFIG_PATH", tmp_path / "absent.toml")
+    with pytest.raises(RuntimeError, match=r"Cannot read the host config .* experimenter roster for path re-keying: FileNotFoundError"):
+        os_utils._host_experimenter_list()
+
+    no_key = tmp_path / "no_key.toml"
+    no_key.write_text('experimenter = "Ann"\n')
+    monkeypatch.setattr(os_utils, "_HOST_CONFIG_PATH", no_key)
+    with pytest.raises(KeyError, match="has no 'experimenter_list' entry; cannot re-key experimenter-scoped paths"):
+        os_utils._host_experimenter_list()
+
+
+def test_on_cluster_false_and_cached_when_host_config_unreadable(monkeypatch, tmp_path):
+    """When the share table cannot be resolved (no host config on this machine) the
+    host is treated as a workstation: ``_on_cluster`` returns exactly False (not a
+    falsy None) and caches that False, so a second query answers False without
+    re-reading the config."""
+    monkeypatch.setattr(os_utils, "_HOST_SHARES_CACHE", [])
+    monkeypatch.setattr(os_utils, "_ON_CLUSTER_CACHE", [])
+    monkeypatch.setattr(os_utils, "_HOST_CONFIG_PATH", tmp_path / "absent.toml")
+    assert os_utils._on_cluster() is False
+    assert os_utils._ON_CLUSTER_CACHE == [False]
+    assert os_utils._on_cluster() is False
+
+
+# rebase_experimenter_in_paths: occurrence scanning
+
+
+def test_rebase_experimenter_in_paths_scans_every_occurrence_in_order():
+    """The occurrence scan walks forward one occurrence at a time: a name at the very
+    start of a path is rewritten and the scan resumes right after the substituted id
+    (so a later component is still found), three bounded occurrences are all
+    rewritten (none skipped by jumping to the last), and an unbounded occurrence
+    followed by two bounded ones rewrites both bounded ones."""
+    rebase = os_utils.rebase_experimenter_in_paths
+    assert rebase("Bartul/x/Bartul", ["Bartul"], "Ivan") == "Ivan/x/Ivan"
+    assert rebase("/B/x/B/y/B", ["B"], "Q") == "/Q/x/Q/y/Q"
+    assert rebase("/Bx/B/y/B", ["B"], "Q") == "/Bx/Q/y/Q"
+
+
+# read_qlvm_category_bundle: pickle refusal and nomenclature labels
+
+
+def test_read_qlvm_category_bundle_refuses_pickled_grids(tmp_path):
+    """The grids are loaded with ``allow_pickle=False``: a bundle whose label grid
+    was saved as an object array (which would need unpickling) is refused with
+    NumPy's pickle error instead of executing pickled content."""
+    directory = write_qlvm_category_bundle(tmp_path / "pickled")
+    with np.load(directory / "category_grids.npz") as grids:
+        arrays = {key: grids[key] for key in grids.files}
+    arrays["label_grid"] = arrays["label_grid"].astype(object)
+    np.savez_compressed(directory / "category_grids.npz", **arrays)
+    with pytest.raises(ValueError, match="allow_pickle"):
+        os_utils.read_qlvm_category_bundle(str(directory))
+
+
+def test_read_qlvm_category_bundle_refuses_out_of_order_nomenclature(tmp_path):
+    """A nomenclature whose categories do not carry ``grid_label`` 1..k in order is
+    refused, with a message naming the labels it holds and the expected range."""
+    directory = write_qlvm_category_bundle(tmp_path / "swapped")
+    nomenclature = json.loads((directory / "category_nomenclature.json").read_text())
+    nomenclature["categories"][0]["grid_label"] = 2
+    nomenclature["categories"][1]["grid_label"] = 1
+    (directory / "category_nomenclature.json").write_text(json.dumps(nomenclature))
+    with pytest.raises(ValueError, match=r"the nomenclature's grid labels \[2, 1, 3, 4\] are not 1\.\.4\."):
+        os_utils.read_qlvm_category_bundle(str(directory))
+
+
+# ephys_base_for_data_root: components near the path root
+
+
+@pytest.mark.parametrize(("data_root", "expected"), [
+    ("/Data/s1", "/EPHYS"),
+    ("Data/s1", "EPHYS"),
+    ("/Data/a/s1", "/EPHYS/a"),
+    ("/x/Data/a/b/s1", "/x/EPHYS/a/b"),
+])
+def test_ephys_base_for_data_root_checks_every_component_down_to_the_root(data_root, expected):
+    """The backward scan visits every component of the parent, including the first
+    one(s) next to the root and components separated from the end by an odd number
+    of others, so a ``Data`` component anywhere in the parent is found."""
+    assert os_utils.ephys_base_for_data_root(data_root) == pathlib.Path(expected)
+
+
+# wait_for_subprocesses on a simulated clock
+
+
+class FakeClock:
+    """A deterministic stand-in for the ``time`` module ``wait_for_subprocesses``
+    uses (``os_utils._time``): ``monotonic()`` returns a simulated time that only
+    advances through ``sleep(seconds)``, and every sleep is recorded."""
+
+    def __init__(self, start=100.0):
+        self.now = start
+        self.sleeps = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+class StubbornPopen:
+    """A Popen stand-in that never exits on its own and, once terminated, keeps
+    running for ``exit_delay`` simulated seconds before reporting -15; ``kill()``
+    makes it exit at once with -9 (or never, when ``survives_kill``)."""
+
+    def __init__(self, clock, exit_delay, survives_kill=False):
+        self.clock = clock
+        self.exit_delay = exit_delay
+        self.survives_kill = survives_kill
+        self.terminated_at = None
+        self.killed = False
+
+    def poll(self):
+        if self.killed and not self.survives_kill:
+            return -9
+        if self.terminated_at is not None and self.clock.now >= self.terminated_at + self.exit_delay:
+            return -15
+        return None
+
+    def terminate(self):
+        self.terminated_at = self.clock.now
+
+    def kill(self):
+        self.killed = True
+
+
+def test_wait_waits_until_the_deadline_before_timing_out(monkeypatch):
+    """The deadline is ``now + max_seconds``: a process that finishes after a few
+    polls inside the budget is waited for (one sleep of ``poll_interval_s`` per
+    unfinished poll) and its code returned, with no timeout."""
+    clock = FakeClock()
+    monkeypatch.setattr(os_utils, "_time", clock)
+    codes = os_utils.wait_for_subprocesses([FakePopen(returncode=0, finish_after=2)], max_seconds=5,
+                                           label="slow", poll_interval_s=0.5, message_output=lambda *_: None)
+    assert codes == [0]
+    assert clock.sleeps == [0.5, 0.5]
+
+
+def test_wait_times_out_exactly_at_the_deadline(monkeypatch):
+    """The timeout fires when the clock reaches the deadline (``>=``): with a zero
+    budget an unfinished process is terminated on the very first poll, before any
+    poll-interval sleep, even though it would have finished on the next poll."""
+    clock = FakeClock()
+    monkeypatch.setattr(os_utils, "_time", clock)
+    proc = FakePopen(returncode=0, finish_after=1)
+    with pytest.raises(TimeoutError, match="1 subprocess"):
+        os_utils.wait_for_subprocesses([proc], max_seconds=0, label="zero", poll_interval_s=1.0,
+                                       message_output=lambda *_: None)
+    assert proc.terminated
+    assert 1.0 not in clock.sleeps
+
+
+def test_wait_timeout_logs_and_spares_a_process_that_exits_in_the_grace_period(monkeypatch):
+    """On timeout the group logs which share is still running, terminates it, and
+    polls every 0.25 s while it is still running; a process that exits 1 s after
+    terminate() is never killed, and the grace loop stops as soon as it exits
+    (four 0.25 s sleeps), not at the end of the 3 s window."""
+    clock = FakeClock()
+    monkeypatch.setattr(os_utils, "_time", clock)
+    logs = []
+    proc = StubbornPopen(clock, exit_delay=1.0)
+    status = os_utils.wait_for_subprocesses([proc], max_seconds=2, label="grace", poll_interval_s=1.0,
+                                            message_output=logs.append, raise_on_timeout=False)
+    assert status == [-15]
+    assert proc.terminated_at == 102.0
+    assert not proc.killed
+    assert clock.sleeps == [1.0, 1.0, 0.25, 0.25, 0.25, 0.25]
+    assert logs[0] == "[grace] timed out after 2 s with 1/1 subprocess(es) still running; terminating."
+    assert logs[1] == "[grace] 1/1 subprocess(es) exited with non-zero status: #0(rc=-15)."
+
+
+def test_wait_timeout_kills_a_process_still_running_after_three_seconds(monkeypatch):
+    """The grace period is exactly 3 s: a process that would need 3.5 s to exit
+    after terminate() is still running when the grace loop ends (at 3.00 s, twelve
+    0.25 s sleeps, not one more) and is killed; a process already exited by then is
+    not killed."""
+    clock = FakeClock()
+    monkeypatch.setattr(os_utils, "_time", clock)
+    stubborn = StubbornPopen(clock, exit_delay=3.5)
+    status = os_utils.wait_for_subprocesses([stubborn], max_seconds=0, label="kill", poll_interval_s=1.0,
+                                            message_output=lambda *_: None, raise_on_timeout=False)
+    assert stubborn.killed
+    assert status == [-9]
+    assert clock.sleeps == [0.25] * 12
+    assert clock.now == 103.0
+
+
+def test_wait_timeout_status_none_is_not_reported_as_a_failure(monkeypatch):
+    """A process that survives even kill() leaves a None slot in the returned status;
+    None means 'still running', not a non-zero exit, so no failure line is logged."""
+    clock = FakeClock()
+    monkeypatch.setattr(os_utils, "_time", clock)
+    logs = []
+    immortal = StubbornPopen(clock, exit_delay=10 ** 9, survives_kill=True)
+    status = os_utils.wait_for_subprocesses([immortal], max_seconds=0, label="immortal", poll_interval_s=1.0,
+                                            message_output=logs.append, raise_on_timeout=False)
+    assert status == [None]
+    assert immortal.killed
+    assert not any("non-zero" in message for message in logs)
+
+
+def test_wait_reports_exactly_the_nonzero_codes():
+    """Only codes other than 0 count as failures: an all-zero group logs nothing,
+    and a mixed group's failure line lists each failing slot with its code (an exit
+    code of 1 is a failure like any other)."""
+    logs = []
+    assert os_utils.wait_for_subprocesses([FakePopen(returncode=0), FakePopen(returncode=0)], max_seconds=5,
+                                          label="ok", message_output=logs.append) == [0, 0]
+    assert logs == []
+    codes = os_utils.wait_for_subprocesses([FakePopen(returncode=1), FakePopen(returncode=0), FakePopen(returncode=3)],
+                                           max_seconds=5, label="mix", message_output=logs.append)
+    assert codes == [1, 0, 3]
+    assert logs == ["[mix] 2/3 subprocess(es) exited with non-zero status: #0(rc=1), #2(rc=3)."]
+
+
+# drop_noise_usvs / vocal-class helpers: messages name the source
+
+
+def test_drop_noise_usvs_messages_name_the_source():
+    """A summary without ``noise`` raises naming the source and the remedies, and a
+    drop is logged as one line naming the source, the dropped count and the total."""
+    with pytest.raises(KeyError, match=r"old\.csv has no 'noise' column, so its noise segments cannot be excluded"):
+        os_utils.drop_noise_usvs(pls.DataFrame({"start": [0.1]}), "old.csv", message_output=lambda *_: None)
+    logs = []
+    kept, n_dropped = os_utils.drop_noise_usvs(
+        pls.DataFrame({"start": [0.1, 0.2, 0.3], "noise": [True, False, True]}), "s1", message_output=logs.append)
+    assert kept["start"].to_list() == [0.2]
+    assert n_dropped == 2
+    assert logs == ["    s1: dropped 2 noise segment(s) of 3."]
+
+
+@pytest.mark.parametrize("helper", [
+    lambda table: os_utils.vocal_class_mask(table, ["usv"], "old_summary.csv"),
+    lambda table: os_utils.pure_usv_mask(table, "old_summary.csv"),
+    lambda table: os_utils.pure_squeak_mask(table, "old_summary.csv"),
+    lambda table: os_utils.overlap_mask(table, "old_summary.csv"),
+    lambda table: os_utils.squeak_bearing_mask(table, "old_summary.csv"),
+    lambda table: os_utils.vocal_event_times(table, ["usv"], "old_summary.csv"),
+    lambda table: os_utils.vocal_occupancy_times(table, "old_summary.csv"),
+])
+def test_vocal_helpers_name_the_source_when_the_flags_are_missing(helper):
+    """Every vocal-class helper passes its caller's source on to the flag check, so
+    the KeyError for a summary without ``usv`` names the file it came from."""
+    table = pls.DataFrame({"start": [0.1], "stop": [0.2], "squeak": [True]})
+    with pytest.raises(KeyError, match=r"old_summary\.csv has no \['usv'\] column"):
+        helper(table)
+
+
+def test_squeak_extent_errors_name_the_source_and_the_consumer():
+    """The missing-extent KeyError and the empty-extent ValueError name the source
+    and what needed the extent: the class group's event times, or the silence
+    reference."""
+    no_extent = _timed_summary().drop("squeak_start", "squeak_end")
+    with pytest.raises(KeyError, match=r"s7 has no \['squeak_start', 'squeak_end'\] column\(s\), which the \['squeak'\] event times needs"):
+        os_utils.vocal_event_times(no_extent, ("squeak",), "s7")
+    holed = _timed_summary().with_columns(pls.lit(None, dtype=pls.Float64).alias("squeak_start"))
+    with pytest.raises(ValueError, match=r"s7: 2 squeak-bearing row\(s\) have no squeak_start / squeak_end, which the \['squeak'\] event times needs"):
+        os_utils.vocal_event_times(holed, ("squeak",), "s7")
+    with pytest.raises(KeyError, match=r"s8 has no \['squeak_start', 'squeak_end'\] column\(s\), which the silence reference needs"):
+        os_utils.vocal_occupancy_times(no_extent, "s8")
+    with pytest.raises(ValueError, match=r"s8: 2 squeak-bearing row\(s\) have no squeak_start / squeak_end, which the silence reference needs"):
+        os_utils.vocal_occupancy_times(holed, "s8")
+
+
+def test_squeak_extent_tolerates_unparseable_text_off_squeak_rows():
+    """The extent is cast non-strictly: a text column holding a non-numeric value on
+    a row that is not timed by the squeak (a pure USV) does not raise, and the
+    numeric text on the squeak rows is used."""
+    table = _timed_summary().with_columns(
+        pls.Series("squeak_start", ["n/a", "1.98", "0.54", None]),
+        pls.Series("squeak_end", ["n/a", "2.05", "0.65", None]),
+    )
+    timed = os_utils.vocal_event_times(table, ("squeak",), "s")
+    assert timed["start"].to_list() == [0.54, 1.00, 1.98, 3.00]
+    assert timed["stop"].to_list() == [0.65, 1.10, 2.05, 3.10]
+
+
+def test_vocal_event_times_union_takes_the_earlier_squeak_onset():
+    """In a union group an overlap segment whose squeak starts BEFORE its segment
+    onset takes the squeak onset (the earlier of the two) and the later offset."""
+    table = _timed_summary().with_columns(pls.Series("squeak_start", [None, 1.98, 0.45, None]))
+    timed = os_utils.vocal_event_times(table, ("overlap",), "s")
+    assert timed["start"].to_list()[0] == 0.45
+    assert timed["stop"].to_list()[0] == 0.65
+
+
+def test_vocal_event_times_usv_only_group_casts_both_times_to_float():
+    """A USV-only group returns every row with its segment times, both ``start`` and
+    ``stop`` replaced by Float64 copies (integer-typed times included)."""
+    table = pls.DataFrame({"start": [3, 1], "stop": [4, 2], "usv": [True, True], "squeak": [False, False]})
+    timed = os_utils.vocal_event_times(table, ("usv",), "s")
+    assert timed["start"].dtype == pls.Float64
+    assert timed["stop"].dtype == pls.Float64
+    assert timed["start"].to_list() == [1.0, 3.0]
+    assert timed["stop"].to_list() == [2.0, 4.0]
+
+
+# glob helpers: messages and ordering keys
+
+
+def test_first_match_message_names_the_glob_kind(tmp_path):
+    """The no-match error names the glob kind used: ``glob`` for a flat search and
+    ``rglob`` for a recursive one."""
+    with pytest.raises(FileNotFoundError, match=r"thing: no match for glob pattern '\*\.nope'"):
+        os_utils.first_match_or_raise(tmp_path, "*.nope", label="thing")
+    with pytest.raises(FileNotFoundError, match=r"thing: no match for rglob pattern '\*\.nope'"):
+        os_utils.first_match_or_raise(tmp_path, "*.nope", recursive=True, label="thing")
+
+
+def test_resolve_consolidated_h5_error_names_the_store(tmp_path):
+    """With no consolidated store the error opens with the store's label, not the
+    bare glob pattern."""
+    with pytest.raises(FileNotFoundError, match=r"^consolidated spectrogram \.h5: no match for glob pattern"):
+        os_utils.resolve_consolidated_h5_path(str(tmp_path))
+
+
+def test_resolve_squeak_spectrogram_store_orders_by_mtime_not_ctime(tmp_path):
+    """The squeak store resolver orders by modification time: the store with the
+    later mtime wins even when the other one's metadata (ctime) changed last."""
+    old = tmp_path / "squeak_spectrograms_old.h5"
+    new = tmp_path / "squeak_spectrograms_new.h5"
+    old.write_bytes(b"x")
+    new.write_bytes(b"x")
+    os.utime(new, (10 ** 9, 10 ** 9))
+    time.sleep(0.05)
+    os.utime(old, (10 ** 8, 10 ** 8))
+    assert old.stat().st_ctime >= new.stat().st_ctime
+    assert os_utils.resolve_squeak_spectrogram_store_path(str(tmp_path)) == str(new)

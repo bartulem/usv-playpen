@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import pickle
+import re
 
 import h5py
 import numpy as np
@@ -25,10 +26,15 @@ from scipy import integrate
 from scipy.stats import norm
 
 from usv_playpen.modeling.load_input_files import (
+    _bout_offset_events,
+    _build_binary_occupancy,
     _calculate_ibi_threshold,
     _calculate_ibi_threshold_ig,
     _generate_vocal_trace,
     _get_clean_tiled_epochs,
+    _group_vocalizations_into_bouts,
+    _history_is_dirty,
+    _smooth_occupancy,
     build_vocal_predictor_signals,
     find_onset_epochs,
     find_usv_categories,
@@ -1923,3 +1929,955 @@ class TestCategoryLabelRequirement:
         require_labels_for_vocal_predictors(voc)
         with pytest.raises(ValueError, match='absent from s.csv'):
             require_usv_category_column(voc['usv_category_column_name'], 'x', summary_columns=['qlvm1'], source='s.csv')
+
+
+# Exact-value tests of the pure helpers: tiling boundaries, occupancy rasterisation,
+# smoothing edges, bout grouping and the bout-offset pairing rules.
+
+
+def _write_behavior_session(session_root, with_features: bool, with_track: bool, csv_sep: str = ',') -> None:
+    """
+    Description
+    -----------
+    Writes a synthetic behavioral session under ``<session_root>/video`` for
+    ``load_behavioral_feature_data``: a three-row, two-column features CSV and/or a
+    metric track H5 carrying a 150 fps ``recording_frame_rate`` and the track names
+    ``male`` / ``female``. Either file can be left out to build the "missing input"
+    sessions the loader must skip.
+
+    Parameters
+    ----------
+    session_root (pathlib.Path)
+        The session ROOT directory; the ``video`` subdir is created.
+    with_features (bool)
+        Whether to write the ``*_points3d_translated_rotated_metric_behavioral_features.csv``.
+    with_track (bool)
+        Whether to write the ``*_points3d_translated_rotated_metric.h5``.
+    csv_sep (str)
+        Field separator of the features CSV.
+
+    Returns
+    -------
+    None
+    """
+
+    video_dir = session_root / 'video'
+    video_dir.mkdir(parents=True)
+    if with_features:
+        pls.DataFrame({'speed': [0.1, 0.2, 0.3], 'angle': [1.0, 2.0, 3.0]}).write_csv(
+            file=video_dir / 'x_points3d_translated_rotated_metric_behavioral_features.csv', separator=csv_sep)
+    if with_track:
+        with h5py.File(name=video_dir / 'x_points3d_translated_rotated_metric.h5', mode='w') as h5f:
+            h5f['recording_frame_rate'] = 150.0
+            h5f['track_names'] = np.array([b'male', b'female'])
+
+
+class TestLoadBehavioralFeatureDataSkips:
+
+    def test_missing_inputs_skip_only_their_session(self, tmp_path, capsys):
+        """A session without the features CSV and a session without the track H5 are
+        each skipped with a warning naming them (either file missing is enough, the
+        glob lookup never raises), and the loader carries on to the next session: a
+        valid session listed after both is still read, with its ';'-separated CSV
+        split by ``csv_sep`` into its two columns."""
+
+        no_features = tmp_path / 'sess_no_features'
+        no_track = tmp_path / 'sess_no_track'
+        valid = tmp_path / 'sess_valid'
+        _write_behavior_session(no_features, with_features=False, with_track=True)
+        _write_behavior_session(no_track, with_features=True, with_track=False)
+        _write_behavior_session(valid, with_features=True, with_track=True, csv_sep=';')
+
+        beh, fps, names = load_behavioral_feature_data(
+            behavior_file_paths=[str(no_features), str(no_track), str(valid)], csv_sep=';')
+
+        assert list(beh) == ['sess_valid']
+        assert list(fps) == ['sess_valid']
+        assert list(names) == ['sess_valid']
+        assert beh['sess_valid'].columns == ['speed', 'angle']
+        assert beh['sess_valid'].shape == (3, 2)
+        assert fps['sess_valid'] == 150.0
+        printed = capsys.readouterr().out
+        assert 'Missing behavioral feature/track file for sess_no_features' in printed
+        assert 'Missing behavioral feature/track file for sess_no_track' in printed
+
+
+class TestUsvSummaryTableWarning:
+
+    def test_separator_and_emitter_warning_cases(self, tmp_path, capsys):
+        """The summary is split by ``csv_sep`` (a ';' file gives its three columns), and
+        the no-emitter warning fires only when an ``emitter`` column exists, the table
+        has rows and every emitter is null: an assigned emitter, a table without the
+        column and a header-only table all read silently."""
+
+        assigned = tmp_path / 'assigned_usv_summary.csv'
+        pls.DataFrame({'usv_id': ['0001', '0002'], 'start': [1.0, 2.0], 'emitter': ['male', None]}).write_csv(
+            assigned, separator=';')
+        table = read_usv_summary_table(assigned, ';')
+        assert table.columns == ['usv_id', 'start', 'emitter']
+        assert table['usv_id'].to_list() == ['0001', '0002']
+
+        no_column = tmp_path / 'no_column_usv_summary.csv'
+        pls.DataFrame({'usv_id': ['0001'], 'start': [1.0]}).write_csv(no_column)
+        assert read_usv_summary_table(no_column, ',').height == 1
+
+        header_only = tmp_path / 'header_only_usv_summary.csv'
+        header_only.write_text('usv_id,start,emitter\n')
+        assert read_usv_summary_table(header_only, ',').height == 0
+
+        assert 'no assigned emitter' not in capsys.readouterr().out
+
+
+class TestVocalSettingMessages:
+
+    def test_trace_name_clash_names_the_clashing_lists(self):
+        """The duplicate-trace error names exactly the lists that clash (the two USV
+        lists), not the list that gives its own trace name (the squeak list)."""
+
+        with pytest.raises(ValueError, match=re.escape("entries [['usv'], ['usv', 'overlap']] all give the trace name(s) ['usv']")):
+            validate_vocal_class_settings(None, [['usv'], ['usv', 'overlap'], ['squeak']], None)
+
+    @pytest.mark.parametrize('column', ['other.x.usv_rate', 'a.b.squeak_event', 'a.b.usv_cat_1'])
+    def test_only_the_first_dot_separates_the_animal(self, column):
+        """Only the text before the FIRST '.' is the animal: ``'other.x.usv_rate'`` has
+        the bare signal ``'x.usv_rate'``, which is no vocal trace."""
+
+        assert is_vocal_signal(column) is False
+        assert is_pooled_vocal_signal(column) is False
+
+    def test_unknown_predictor_type_is_named(self):
+        """An unknown ``vocal_predictor_type`` raises naming the bad value."""
+
+        rows = pls.DataFrame({'start': [0.1], 'stop': [0.2], 'usv': [True], 'squeak': [False]})
+        with pytest.raises(ValueError, match=re.escape("Unknown vocal_features.vocal_predictor_type 'bogus'")):
+            build_vocal_predictor_signals(rows, [['usv']], 'bogus', None, 10, 10.0, None, 's')
+
+    def test_label_requirement_names_the_predictor_type(self):
+        """The settings-level label check names the predictor type that needs labels."""
+
+        with pytest.raises(ValueError, match=re.escape("vocal_features.vocal_predictor_type 'categories_rate' needs")):
+            require_labels_for_vocal_predictors({'vocal_predictor_type': 'categories_rate',
+                                                 'vocal_predictor_classes': [['usv']],
+                                                 'usv_category_column_name': None})
+
+
+class TestPredictorSignalsExact:
+
+    @staticmethod
+    def _rows() -> pls.DataFrame:
+        """Four pure USVs at 100 fps frames 10, 20, 30 and 40: categories 1, null, 2 and
+        1; no squeaks."""
+
+        return pls.DataFrame({
+            'start': [0.10, 0.20, 0.30, 0.40],
+            'stop': [0.11, 0.21, 0.31, 0.41],
+            'qlvm_category': [1, None, 2, 1],
+            'usv': [True, True, True, True],
+            'squeak': [False, False, False, False],
+            'squeak_start': pls.Series([None] * 4, dtype=pls.Float64),
+            'squeak_end': pls.Series([None] * 4, dtype=pls.Float64),
+        })
+
+    @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
+    def test_rate_traces_are_smoothed_with_the_given_sd(self):
+        """``all_rate`` smooths the pooled trace and every category trace with the
+        configured sd: each equals ``_generate_vocal_trace`` of its rows at that sd. A
+        null category is skipped without ending the category loop (categories 1 and 2
+        still get their traces although the null one sorts first)."""
+
+        rows = self._rows()
+        signals = build_vocal_predictor_signals(rows, [['usv']], 'all_rate', 'qlvm_category',
+                                                duration_frames=60, fps=100.0, smooth_sd=2.0, source='s')
+        assert sorted(signals) == ['usv_cat_1', 'usv_cat_2', 'usv_rate']
+        np.testing.assert_allclose(signals['usv_rate'], _generate_vocal_trace(
+            np.array([0.10, 0.20, 0.30, 0.40]), np.array([0.11, 0.21, 0.31, 0.41]), 60, 100.0, smooth_sd=2.0))
+        np.testing.assert_allclose(signals['usv_cat_1'], _generate_vocal_trace(
+            np.array([0.10, 0.40]), np.array([0.11, 0.41]), 60, 100.0, smooth_sd=2.0))
+        np.testing.assert_allclose(signals['usv_cat_2'], _generate_vocal_trace(
+            np.array([0.30]), np.array([0.31]), 60, 100.0, smooth_sd=2.0))
+        assert signals['usv_rate'].max() < 1.0
+
+    def test_single_row_still_gets_its_category_trace(self):
+        """One USV is enough for a per-category trace."""
+
+        rows = self._rows().head(1)
+        signals = build_vocal_predictor_signals(rows, [['usv']], 'categories_rate', 'qlvm_category',
+                                                duration_frames=60, fps=100.0, smooth_sd=None, source='s')
+        assert sorted(signals) == ['usv_cat_1']
+        assert np.flatnonzero(signals['usv_cat_1']).tolist() == [10]
+
+    def test_errors_name_the_source(self):
+        """A table without the class flags, or a squeak list without the squeak extent,
+        raises naming the source the caller passed."""
+
+        with pytest.raises(KeyError, match="summary_X has no"):
+            build_vocal_predictor_signals(self._rows().drop('usv', 'squeak'), [['usv']], 'pooled_binary', None,
+                                          60, 100.0, None, 'summary_X')
+        with pytest.raises(KeyError, match="summary_X has no"):
+            build_vocal_predictor_signals(self._rows().drop('squeak_start', 'squeak_end'), [['squeak']],
+                                          'pooled_binary', None, 60, 100.0, None, 'summary_X')
+
+
+class TestCleanTiledEpochsExact:
+
+    def test_unsorted_overlapping_zones_merge_and_every_gap_is_tiled(self):
+        """Unsorted USVs at 5.0, 1.5, 2.0 and 8.0 s (fh 1 s, 12 s session) give the
+        forbidden zones [1.5, 3.2], [5.0, 6.5] and [8.0, 9.1] after sorting and merging
+        the two overlapping early ones; the clean gaps are [1.0, 1.5] (too short),
+        [3.2, 5.0] -> 4.2, [6.5, 8.0] -> 7.5 and [9.1, 12] -> 10.1, 11.1."""
+
+        ts = _get_clean_tiled_epochs(np.array([5.0, 1.5, 2.0, 8.0]), np.array([5.5, 1.6, 2.2, 8.1]),
+                                     filter_history=1.0, session_duration_sec=12.0)
+        np.testing.assert_allclose(ts, [4.2, 7.5, 10.1, 11.1])
+
+    @pytest.mark.parametrize(('filter_history', 'duration', 'expected'), [
+        (1.0, 2.0, [2.0]),             # a gap exactly one window long holds one window
+        (1.0, 3.0, [2.0, 3.0]),        # the session end is a valid window end
+        (0.5, 2.0, [1.0, 1.5, 2.0]),   # windows step by filter_history, not by 1 s
+    ])
+    def test_tiling_boundaries_without_usvs(self, filter_history, duration, expected):
+        """Without USVs the clean zone is [filter_history, duration] and its windows
+        end at every multiple of ``filter_history`` from ``2 * filter_history`` up to
+        and including the session end."""
+
+        ts = _get_clean_tiled_epochs(np.array([]), np.array([]),
+                                     filter_history=filter_history, session_duration_sec=duration)
+        np.testing.assert_allclose(ts, expected)
+
+
+class TestHistoryIsDirty:
+
+    def test_window_edge_is_inclusive_and_the_onset_itself_is_excluded(self):
+        """A reference vocalization ending exactly at ``onset - filter_history`` is in
+        the window (the negatives' forbidden zone is closed at stop + filter_history);
+        one ending just before is not; one starting AT the onset is the onset's own."""
+
+        assert _history_is_dirty(3.0, np.array([1.5]), np.array([2.0]), 1.0) is True
+        assert _history_is_dirty(3.0, np.array([1.5]), np.array([1.99]), 1.0) is False
+        assert _history_is_dirty(3.0, np.array([3.0]), np.array([3.5]), 1.0) is False
+
+
+class TestOccupancyAndSmoothing:
+
+    def test_event_starting_before_the_session_is_clipped_to_frame_zero(self):
+        """An event from -0.5 s to 0.3 s (10 fps) covers frames 0..2: its start index is
+        clipped to 0 instead of wrapping to the end of the trace."""
+
+        trace = _build_binary_occupancy(np.array([-0.5]), np.array([0.3]), duration_frames=10, fps=10.0)
+        assert trace.tolist() == [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    def test_smoothing_extends_the_edges_and_keeps_nans(self):
+        """The edges are extended (an all-ones trace stays all ones, no zero padding),
+        and a NaN frame stays NaN while its neighbours are smoothed around it."""
+
+        np.testing.assert_allclose(_smooth_occupancy(np.ones(10), 2.0), np.ones(10))
+        trace = np.zeros(10)
+        trace[3] = np.nan
+        trace[5] = 1.0
+        smoothed = _smooth_occupancy(trace, 1.0)
+        assert np.isnan(smoothed[3])
+        assert np.isfinite(np.delete(smoothed, 3)).all()
+        assert smoothed[5] < 1.0
+
+    @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
+    def test_zero_sd_is_binary_and_sub_unit_sd_smooths(self):
+        """``smooth_sd=0`` returns the binary trace; any positive sd, also one below 1
+        frame, smooths it."""
+
+        starts, stops = np.array([1.0]), np.array([1.05])
+        binary = _generate_vocal_trace(starts, stops, 40, 10.0)
+        np.testing.assert_array_equal(_generate_vocal_trace(starts, stops, 40, 10.0, smooth_sd=0), binary)
+        half = _generate_vocal_trace(starts, stops, 40, 10.0, smooth_sd=0.5)
+        np.testing.assert_allclose(half, _smooth_occupancy(binary, 0.5))
+        assert half[10] < 1.0
+
+
+class TestGroupVocalizationsIntoBouts:
+
+    def test_empty_single_and_threshold_gap(self):
+        """No vocalizations give empty INTEGER index arrays (usable as indices); one
+        vocalization is one bout (0, 0); a gap exactly equal to the threshold starts a
+        new bout."""
+
+        empty_starts, empty_ends = _group_vocalizations_into_bouts(np.array([]), np.array([]), 1.0)
+        assert empty_starts.dtype.kind == 'i'
+        assert empty_ends.dtype.kind == 'i'
+        assert empty_starts.size == 0
+        assert empty_ends.size == 0
+        one_starts, one_ends = _group_vocalizations_into_bouts(np.array([2.0]), np.array([2.5]), 1.0)
+        assert one_starts.tolist() == [0]
+        assert one_ends.tolist() == [0]
+        split_starts, split_ends = _group_vocalizations_into_bouts(np.array([0.0, 1.5, 1.75]),
+                                                                   np.array([0.5, 1.6, 2.0]), 1.0)
+        assert split_starts.tolist() == [0, 1]
+        assert split_ends.tolist() == [0, 2]
+
+
+class TestBoutOffsetPairingRules:
+    """``_bout_offset_events`` on explicit bout indices, with binary-exact times where
+    a boundary is tested."""
+
+    def test_min_usv_per_bout_counts_each_bout(self):
+        """With a three-vocalization floor the three-vocalization bout (0..2) counts and
+        the two-vocalization bout (3..4) does not: within the first, the negative is the
+        latest interior offset (0.75 s) and the positive its end (1.25 s)."""
+
+        starts = np.array([0.0, 0.5, 1.0, 10.0, 10.5])
+        stops = np.array([0.25, 0.75, 1.25, 10.25, 10.75])
+        positives, negatives = _bout_offset_events(starts, stops, np.array([0, 3]), np.array([2, 4]),
+                                                   min_usv_per_bout=3, negative_scheme='within_bout',
+                                                   min_singing_after_negative=0.0,
+                                                   time_since_bout_onset_tolerance=None, max_negatives_per_bout=None)
+        assert positives.tolist() == [1.25]
+        assert negatives.tolist() == [0.75]
+
+    def test_within_bout_minimum_singing_is_inclusive(self):
+        """An interior offset exactly ``min_singing_after_negative`` before the bout's end
+        (1.0 - 0.5 = 0.5 s) is eligible and, being the latest, is the negative."""
+
+        positives, negatives = _bout_offset_events(np.array([0.0, 0.3, 0.75]), np.array([0.25, 0.5, 1.0]),
+                                                   np.array([0]), np.array([2]), min_usv_per_bout=2,
+                                                   negative_scheme='within_bout', min_singing_after_negative=0.5,
+                                                   time_since_bout_onset_tolerance=None, max_negatives_per_bout=None)
+        assert positives.tolist() == [1.0]
+        assert negatives.tolist() == [0.5]
+
+    def test_cross_bout_singing_and_tolerance_bounds_are_inclusive(self):
+        """Bout A's interior offset at 0.5 s has exactly 0.5 s of singing left and sits at
+        position 0.5 s, exactly bout B's end position, so with a zero tolerance it is
+        B's negative; A's own end (position 1.0 s) finds no partner in B."""
+
+        starts = np.array([0.0, 0.25, 0.5, 10.0, 10.25])
+        stops = np.array([0.125, 0.5, 1.0, 10.125, 10.5])
+        positives, negatives = _bout_offset_events(starts, stops, np.array([0, 3]), np.array([2, 4]),
+                                                   min_usv_per_bout=2, negative_scheme='cross_bout',
+                                                   min_singing_after_negative=0.5,
+                                                   time_since_bout_onset_tolerance=0.0, max_negatives_per_bout=None)
+        assert positives.tolist() == [10.5]
+        assert negatives.tolist() == [0.5]
+
+    @pytest.mark.parametrize(('scheme', 'expected_positives', 'expected_negatives'), [
+        ('cross_bout', [10.3], [0.1]),
+        ('within_bout', [1.1], [0.6]),
+    ])
+    def test_candidates_come_from_their_own_bout_only(self, scheme, expected_positives, expected_negatives):
+        """Bout B (two vocalizations 0.2 s apart) has no interior vocalization with 0.5 s
+        of singing left, so it offers no negative: under ``cross_bout`` its end pairs
+        with A's nearest candidate (0.1 s) and A's end stays unpaired; under
+        ``within_bout`` only A contributes. B never borrows A's vocalizations."""
+
+        starts = np.array([0.0, 0.5, 1.0, 10.0, 10.2])
+        stops = np.array([0.1, 0.6, 1.1, 10.1, 10.3])
+        positives, negatives = _bout_offset_events(starts, stops, np.array([0, 3]), np.array([2, 4]),
+                                                   min_usv_per_bout=2, negative_scheme=scheme,
+                                                   min_singing_after_negative=0.5,
+                                                   time_since_bout_onset_tolerance=100.0, max_negatives_per_bout=None)
+        np.testing.assert_allclose(np.sort(positives), expected_positives)
+        np.testing.assert_allclose(np.sort(negatives), expected_negatives)
+
+    def test_cross_bout_takes_the_nearest_candidate(self):
+        """Bout B ends at position 0.55 s; of A's candidates (0.1 s and 0.6 s) the nearer
+        is 0.6 s, not the first. A's end then takes B's only candidate (10.05 s)."""
+
+        starts = np.array([0.0, 0.5, 1.0, 10.0, 10.5])
+        stops = np.array([0.1, 0.6, 1.1, 10.05, 10.55])
+        positives, negatives = _bout_offset_events(starts, stops, np.array([0, 3]), np.array([2, 4]),
+                                                   min_usv_per_bout=2, negative_scheme='cross_bout',
+                                                   min_singing_after_negative=0.4,
+                                                   time_since_bout_onset_tolerance=100.0, max_negatives_per_bout=None)
+        np.testing.assert_allclose(np.sort(positives), [1.1, 10.55])
+        np.testing.assert_allclose(np.sort(negatives), [0.6, 10.05])
+
+    def test_cross_bout_with_a_single_candidate(self):
+        """One candidate in the whole session (A's first offset, the only one with 0.8 s
+        of singing left) is still used."""
+
+        starts = np.array([0.0, 0.5, 1.0, 10.0, 10.2])
+        stops = np.array([0.1, 0.6, 1.1, 10.1, 10.3])
+        positives, negatives = _bout_offset_events(starts, stops, np.array([0, 3]), np.array([2, 4]),
+                                                   min_usv_per_bout=2, negative_scheme='cross_bout',
+                                                   min_singing_after_negative=0.8,
+                                                   time_since_bout_onset_tolerance=100.0, max_negatives_per_bout=None)
+        np.testing.assert_allclose(positives, [10.3])
+        np.testing.assert_allclose(negatives, [0.1])
+
+    def test_unmatched_positive_does_not_stop_later_ones(self):
+        """Positions in order: B (0.3 s) finds no candidate within 0.05 s and is skipped;
+        C (1.1 s) still pairs with A's interior offset at position 1.1 s (1.1 s); A
+        (1.6 s) finds none."""
+
+        starts = np.array([0.0, 0.5, 1.0, 1.5, 10.0, 10.2, 20.0, 20.5, 21.0])
+        stops = np.array([0.1, 0.6, 1.1, 1.6, 10.1, 10.3, 20.1, 20.6, 21.1])
+        positives, negatives = _bout_offset_events(starts, stops, np.array([0, 4, 6]), np.array([3, 5, 8]),
+                                                   min_usv_per_bout=2, negative_scheme='cross_bout',
+                                                   min_singing_after_negative=0.5,
+                                                   time_since_bout_onset_tolerance=0.05, max_negatives_per_bout=None)
+        np.testing.assert_allclose(positives, [21.1])
+        np.testing.assert_allclose(negatives, [1.1])
+
+
+# find_onset_epochs: exact event sets, loop control, sex-specific thresholds and messages
+
+
+def _onset_kwargs(tmp_path, rows: dict, session: str = 'sess_B', n_frames: int = 600, fps: float = 100.0) -> dict:
+    """
+    Description
+    -----------
+    Writes one synthetic session ``<tmp_path>/<session>`` (male and female) and returns
+    the session kwargs every loader takes: ``root_directories``, ``mouse_ids_dict``,
+    ``camera_fps_dict`` and ``features_dict``.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Parent directory of the session.
+    rows (dict)
+        USV summary columns (see ``_write_usv_summary``).
+    session (str)
+        Session id (the directory name).
+    n_frames (int)
+        Session length in camera frames.
+    fps (float)
+        Camera frame rate.
+
+    Returns
+    -------
+    kwargs (dict)
+        The four session kwargs.
+    """
+
+    sess = tmp_path / session
+    _write_usv_summary(sess, rows)
+    return {
+        'root_directories': [str(sess)],
+        'mouse_ids_dict': {session: ['male', 'female']},
+        'camera_fps_dict': {session: fps},
+        'features_dict': {session: _features_df(n_frames)},
+    }
+
+
+def _drop_summary_columns(tmp_path, session: str, *columns: str) -> None:
+    """
+    Description
+    -----------
+    Removes columns from a session's synthetic USV summary written by
+    ``_write_usv_summary`` (e.g. the class flags or the squeak extent) to build a
+    summary an older pipeline stage would have left.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Parent directory of the session.
+    session (str)
+        Session id (the directory name).
+    *columns (str)
+        Columns to drop.
+
+    Returns
+    -------
+    None
+    """
+
+    csv_path = tmp_path / session / 'audio' / f'{session}_usv_summary.csv'
+    pls.read_csv(csv_path).drop(*columns).write_csv(csv_path)
+
+
+# The sampling settings the exact-value onset tests share (overridden per test where needed).
+_ONSET_COMMON = {'filter_history': 1.0, 'usv_bout_time': 0.5, 'min_usv_per_bout': 2, 'proportion_smoothing_sd': None}
+
+
+class TestOnsetEpochsExact:
+
+
+    def test_bout_onset_negatives_are_exact(self, tmp_path):
+        """Three male USVs from 2.0 to 2.25 s (6 s session, fh 1 s): the forbidden zone
+        is [2.0, 3.25], so the tiled windows end at 2.0, 4.25 and 5.25 s, and the one at
+        2.0 s is dropped because a USV starts within its 0.5 s future. The silent female
+        tiles the whole session: 2, 3, 4, 5, 6 s."""
+
+        rows = {'emitter': ['male'] * 3, 'start': [2.0, 2.1, 2.2], 'stop': [2.05, 2.15, 2.25]}
+        out = find_onset_epochs(prediction_mode='bout_onset', mixture_model_params=_mixture_model_params(),
+                                **_ONSET_COMMON, **_onset_kwargs(tmp_path, rows))['sess_B']
+        np.testing.assert_allclose(out['male']['positive_events'], [2.0])
+        np.testing.assert_allclose(out['male']['negative_events'], [4.25, 5.25])
+        np.testing.assert_allclose(out['female']['negative_events'], [2.0, 3.0, 4.0, 5.0, 6.0])
+
+    def test_bout_onset_rejections_do_not_stop_the_bout_loop(self, tmp_path):
+        """Four male bouts in time order (1 s threshold): one starting exactly at
+        ``filter_history`` (rejected, the bound is exclusive), a one-USV bout (below
+        the floor), one whose history holds a vocalization assigned to no animal
+        (dirty), and a clean one at 7.0 s, which is the only positive."""
+
+        rows = {
+            'emitter': ['male', 'male', 'male', None, 'male', 'male', 'male', 'male'],
+            'start': [1.0, 1.1, 3.0, 4.6, 5.0, 5.1, 7.0, 7.1],
+            'stop': [1.05, 1.15, 3.05, 4.65, 5.05, 5.15, 7.05, 7.15],
+        }
+        out = find_onset_epochs(prediction_mode='bout_onset', mixture_model_params=_mixture_model_params(),
+                                **_ONSET_COMMON, **_onset_kwargs(tmp_path, rows, n_frames=900))
+        np.testing.assert_allclose(out['sess_B']['male']['positive_events'], [7.0])
+
+    def test_individual_mode_bound_and_negatives(self, tmp_path):
+        """'individual' mode excludes an onset exactly at ``filter_history`` (1.0 s) and
+        keeps 2.0 s; the forbidden zone [1.0, 3.05] leaves windows ending at 4.05 and
+        5.05 s. Without a target category it needs no label column."""
+
+        rows = {'emitter': ['male', 'male'], 'start': [1.0, 2.0], 'stop': [1.05, 2.05]}
+        out = find_onset_epochs(prediction_mode='individual', mixture_model_params=_mixture_model_params(),
+                                category_column=None, target_category=None,
+                                **_ONSET_COMMON, **_onset_kwargs(tmp_path, rows))
+        male = out['sess_B']['male']
+        np.testing.assert_allclose(male['positive_events'], [2.0])
+        np.testing.assert_allclose(male['negative_events'], [4.05, 5.05])
+
+    @pytest.mark.parametrize(('n_frames', 'fps', 'filter_history', 'start', 'stop', 'positives', 'negatives'), [
+        (600, 100.0, 1.0, 2.0, 2.9, [2.0], [1.0, 3.0, 4.0, 5.0]),
+        (21, 10.0, 0.5, 1.0, 1.04, [1.0], [0.5, 1.5, 2.0]),
+        (15, 10.0, 1.0, 1.0, 1.05, [1.0], []),
+    ])
+    def test_state_mode_grid(self, tmp_path, n_frames, fps, filter_history, start, stop, positives, negatives):
+        """'state' mode samples every ``filter_history`` from ``filter_history`` on, keeps
+        the grid points whose frame lies in the session (the last frame, 20 of 21,
+        included) and labels them by the target occupancy; a grid of a single point
+        still yields its label."""
+
+        rows = {'emitter': ['male'], 'start': [start], 'stop': [stop]}
+        common = dict(_ONSET_COMMON, filter_history=filter_history)
+        out = find_onset_epochs(prediction_mode='state', mixture_model_params=_mixture_model_params(),
+                                **common, **_onset_kwargs(tmp_path, rows, n_frames=n_frames, fps=fps))
+        male = out['sess_B']['male']
+        np.testing.assert_allclose(male['positive_events'], positives)
+        np.testing.assert_allclose(male['negative_events'], negatives)
+
+    @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
+    @pytest.mark.parametrize('smoothing_sd', [None, 0, 0.5, 2.0])
+    def test_usv_rate_and_predictor_smoothing(self, tmp_path, smoothing_sd):
+        """``usv_rate`` is ``usv_count`` smoothed with ``proportion_smoothing_sd`` when it
+        is positive (also below one frame) and ``usv_count`` itself when it is None or
+        0; the pooled predictor trace is smoothed with the same sd. The one-frame USV
+        (frame 200) makes any smoothing lower the peak below 1."""
+
+        rows = {'emitter': ['male'], 'start': [2.0], 'stop': [2.005]}
+        common = dict(_ONSET_COMMON, proportion_smoothing_sd=smoothing_sd)
+        male = find_onset_epochs(prediction_mode='individual', mixture_model_params=_mixture_model_params(),
+                                 vocal_output_type='pooled_rate', **common,
+                                 **_onset_kwargs(tmp_path, rows))['sess_B']['male']
+        binary = _generate_vocal_trace(np.array([2.0]), np.array([2.005]), 600, 100.0)
+        assert np.flatnonzero(binary).tolist() == [200]
+        np.testing.assert_array_equal(male['usv_count'], binary)
+        if smoothing_sd:
+            expected = _smooth_occupancy(binary, smoothing_sd)
+            assert male['usv_rate'].max() < 1.0
+        else:
+            expected = binary
+        np.testing.assert_allclose(male['usv_rate'], expected)
+        np.testing.assert_allclose(male['continuous_vocal_signals']['usv_rate'], expected)
+
+    def test_skipped_sessions_do_not_stop_the_session_loop(self, tmp_path, capsys):
+        """A session without a summary and a session missing from ``mouse_ids_dict``,
+        both listed first, are skipped with their warnings and the valid session after
+        them is still loaded."""
+
+        (tmp_path / 'a_nocsv' / 'audio').mkdir(parents=True)
+        _write_usv_summary(tmp_path / 'b_unreg', {'emitter': ['male'], 'start': [2.0], 'stop': [2.05]})
+        _write_usv_summary(tmp_path / 'c_valid', {'emitter': ['male'], 'start': [3.0], 'stop': [3.05]})
+        out = find_onset_epochs(root_directories=[str(tmp_path / name) for name in ('a_nocsv', 'b_unreg', 'c_valid')],
+                                mouse_ids_dict={'a_nocsv': ['male', 'female'], 'c_valid': ['male', 'female']},
+                                camera_fps_dict=dict.fromkeys(('a_nocsv', 'b_unreg', 'c_valid'), 100.0),
+                                features_dict={name: _features_df(600) for name in ('a_nocsv', 'b_unreg', 'c_valid')},
+                                prediction_mode='individual', mixture_model_params=_mixture_model_params(),
+                                **_ONSET_COMMON)
+        assert out['a_nocsv'] == {}
+        assert out['b_unreg'] == {}
+        np.testing.assert_allclose(out['c_valid']['male']['positive_events'], [3.0])
+        printed = capsys.readouterr().out
+        assert 'No USV summary found for a_nocsv' in printed
+        assert 'No mouse names registered for b_unreg' in printed
+
+    def test_each_sex_uses_its_own_mixture_parameters(self, tmp_path):
+        """The first track (male) groups bouts with the male threshold (0.3 s) and the
+        second (female) with the female one (1 s): the same 0.45 s gap splits the male's
+        pair into two one-USV bouts (no positive) and keeps the female's pair as one
+        bout (positive at 4.0 s)."""
+
+        rows = {'emitter': ['male', 'male', 'female', 'female'],
+                'start': [2.0, 2.5, 4.0, 4.5], 'stop': [2.05, 2.55, 4.05, 4.55]}
+        params = {'male': {'means': [np.log(0.3)], 'sds': [0.0]}, 'female': {'means': [0.0], 'sds': [0.0]}}
+        out = find_onset_epochs(prediction_mode='bout_onset', mixture_model_params=params,
+                                **_ONSET_COMMON, **_onset_kwargs(tmp_path, rows))['sess_B']
+        assert out['male']['positive_events'].size == 0
+        np.testing.assert_allclose(out['female']['positive_events'], [4.0])
+
+    def test_inverse_gaussian_threshold_groups_the_bouts(self, tmp_path):
+        """An inverse-Gaussian block (``model_class`` 'ig', mean 0.1 s, shape 1 s) sets a
+        0.21 s threshold: gaps of 0.15 s join and the 0.30 s gap splits, so
+        'within_bout' offsets give two bouts (ends 2.25 and 2.8 s, negatives 2.05 and
+        2.6 s) where the 1 s lognormal default would give one."""
+
+        rows = {'emitter': ['male'] * 4, 'start': [2.0, 2.2, 2.55, 2.75], 'stop': [2.05, 2.25, 2.6, 2.8]}
+        params = {'male': {'model_class': 'ig', 'mus': [0.1], 'lambdas': [1.0]},
+                  'female': {'model_class': 'ig', 'mus': [0.1], 'lambdas': [1.0]}}
+        assert 0.15 < _calculate_ibi_threshold_ig(0.1, 1.0, 2.58) < 0.30
+        male = find_onset_epochs(prediction_mode='bout_offset', mixture_model_params=params,
+                                 negative_scheme='within_bout', min_singing_after_negative=0.0,
+                                 time_since_bout_onset_tolerance=None, max_negatives_per_bout=None,
+                                 **_ONSET_COMMON, **_onset_kwargs(tmp_path, rows))['sess_B']['male']
+        np.testing.assert_allclose(male['positive_events'], [2.25, 2.8])
+        np.testing.assert_allclose(male['negative_events'], [2.05, 2.6])
+
+    @pytest.mark.parametrize(('params', 'sex'), [
+        ({'male': {'means': [], 'sds': []}, 'female': {'means': [0.0], 'sds': [0.0]}}, 'male'),
+        ({'male': {'means': [0.0], 'sds': [0.0]}, 'female': {'means': [], 'sds': []}}, 'female'),
+    ])
+    def test_invalid_component_index_names_the_sex(self, tmp_path, params, sex):
+        """A component index the block lacks raises naming the sex whose block it is."""
+
+        rows = {'emitter': ['male'], 'start': [2.0], 'stop': [2.05]}
+        with pytest.raises(ValueError, match=f"Invalid mixture_model_component_index 0 for {sex}"):
+            find_onset_epochs(prediction_mode='bout_onset', mixture_model_params=params,
+                              **_ONSET_COMMON, **_onset_kwargs(tmp_path, rows))
+
+    def test_predictor_lists_are_validated(self, tmp_path):
+        """With vocal predictors on, two predictor lists giving one trace name are
+        refused before any session is read."""
+
+        rows = {'emitter': ['male'], 'start': [2.0], 'stop': [2.05]}
+        with pytest.raises(ValueError, match="give the trace name"):
+            find_onset_epochs(prediction_mode='individual', mixture_model_params=_mixture_model_params(),
+                              vocal_output_type='pooled_rate', predictor_classes=[['usv'], ['usv', 'overlap']],
+                              **_ONSET_COMMON, **_onset_kwargs(tmp_path, rows))
+
+    def test_messages_name_the_summary(self, tmp_path, capsys):
+        """The absent-label error, the noise-drop report and the missing-squeak-extent
+        errors (of the target timing and of the silence reference) all name the
+        session's summary file."""
+
+        rows = {'emitter': ['male', 'male', 'male'], 'start': [2.0, 3.0, 4.0], 'stop': [2.05, 3.05, 4.05],
+                'noise': [False, True, False]}
+        kwargs = _onset_kwargs(tmp_path, rows)
+        with pytest.raises(ValueError, match=_LABELS_UNAVAILABLE) as excinfo:
+            find_onset_epochs(prediction_mode='individual', mixture_model_params=_mixture_model_params(),
+                              category_column='qlvm_category', target_category=3, **_ONSET_COMMON, **kwargs)
+        assert 'sess_B_usv_summary.csv' in str(excinfo.value)
+        male = find_onset_epochs(prediction_mode='individual', mixture_model_params=_mixture_model_params(),
+                                 **_ONSET_COMMON, **kwargs)['sess_B']['male']
+        np.testing.assert_allclose(male['positive_events'], [2.0, 4.0])
+        assert 'sess_B_usv_summary.csv: dropped 1 noise segment(s) of 3.' in capsys.readouterr().out
+        _drop_summary_columns(tmp_path, 'sess_B', 'squeak_start', 'squeak_end')
+        for target in (['squeak'], ['usv']):
+            with pytest.raises(KeyError, match=re.escape("sess_B_usv_summary.csv has no")):
+                find_onset_epochs(prediction_mode='individual', mixture_model_params=_mixture_model_params(),
+                                  target_classes=target, **_ONSET_COMMON, **kwargs)
+
+
+# find_usv_categories: exact event sets, loop control, counts and messages
+
+
+class TestUsvCategoriesExact:
+
+    @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
+    def test_events_streams_and_traces_are_exact(self, tmp_path):
+        """The male's only USV starts exactly at ``filter_history`` and is dropped (the
+        bound is exclusive), leaving him the default dict, while the female after him is
+        still processed: her null-category USV is skipped in ``events_by_category``
+        without ending the loop and has no category stream; categories 1 and 2 carry
+        their own onsets and stop times; her pooled trace (history period included) is
+        smoothed with ``proportion_smoothing_sd``. The stream loop compares the label
+        column with the null label, which polars flags with a UserWarning (filtered
+        here); the comparison matches no row, so the null label gets no stream."""
+
+        rows = {
+            'emitter': ['male', 'female', 'female', 'female', 'female'],
+            'start': [1.0, 2.0, 3.0, 4.0, 5.0],
+            'stop': [1.05, 2.05, 3.05, 4.05, 5.05],
+            'usv_category': [1, None, 2, 1, 2],
+        }
+        out = find_usv_categories(target_category=None, filter_history=1.0, vocal_output_type='pooled_rate',
+                                  proportion_smoothing_sd=2.0, **_onset_kwargs(tmp_path, rows, session='sess_D'))
+        male = out['sess_D']['male']
+        assert male['events_by_category'] == {}
+        assert male['category_streams'] == {}
+        assert male['continuous_vocal_signals'] == {}
+        female = out['sess_D']['female']
+        assert sorted(female['events_by_category']) == [1, 2]
+        np.testing.assert_allclose(female['events_by_category'][1], [4.0])
+        np.testing.assert_allclose(female['events_by_category'][2], [3.0, 5.0])
+        assert sorted(female['category_streams']) == [1, 2]
+        np.testing.assert_allclose(female['category_streams'][1]['start'], [4.0])
+        np.testing.assert_allclose(female['category_streams'][1]['stop'], [4.05])
+        np.testing.assert_allclose(female['category_streams'][2]['start'], [3.0, 5.0])
+        np.testing.assert_allclose(female['category_streams'][2]['stop'], [3.05, 5.05])
+        np.testing.assert_allclose(female['continuous_vocal_signals']['usv_rate'], _generate_vocal_trace(
+            np.array([2.0, 3.0, 4.0, 5.0]), np.array([2.05, 3.05, 4.05, 5.05]), 600, 100.0, smooth_sd=2.0))
+
+    def test_skipped_sessions_do_not_stop_the_session_loop(self, tmp_path):
+        """Sessions without a summary, without registered mice and without feature data,
+        all listed first, are skipped and the valid session after them is loaded."""
+
+        names = ('a_nocsv', 'b_unreg', 'c_nofeat', 'd_valid')
+        (tmp_path / 'a_nocsv' / 'audio').mkdir(parents=True)
+        for name in names[1:]:
+            _write_usv_summary(tmp_path / name, {'emitter': ['male'], 'start': [2.0], 'stop': [2.05],
+                                                 'usv_category': [3]})
+        out = find_usv_categories(root_directories=[str(tmp_path / name) for name in names],
+                                  mouse_ids_dict={name: ['male', 'female'] for name in names if name != 'b_unreg'},
+                                  camera_fps_dict=dict.fromkeys(names, 100.0),
+                                  features_dict={name: _features_df(600) for name in names if name != 'c_nofeat'},
+                                  target_category=None, filter_history=1.0)
+        assert out['a_nocsv'] == {}
+        assert out['b_unreg'] == {}
+        assert out['c_nofeat'] == {}
+        np.testing.assert_allclose(out['d_valid']['male']['events_by_category'][3], [2.0])
+
+    def test_unplaced_counts_per_pair_and_in_total(self, tmp_path, capsys):
+        """Unplaced vocalizations are counted per session-mouse pair (male 1 of 3, female
+        2 of 3) and summed over every pair (3 in 2 pairs); a session whose vocalizations
+        are all placed adds no line and no pair."""
+
+        rows_p = {
+            'emitter': ['male', 'male', 'male', 'female', 'female', 'female'],
+            'start': [2.0, 3.0, 4.0, 2.5, 3.5, 4.5],
+            'stop': [2.05, 3.05, 4.05, 2.55, 3.55, 4.55],
+            'qlvm1': [0.1, None, 0.3, None, 0.2, None],
+            'qlvm2': [0.4, 0.5, 0.6, 0.1, 0.2, 0.3],
+        }
+        rows_q = {'emitter': ['male', 'female'], 'start': [2.0, 3.0], 'stop': [2.05, 3.05],
+                  'qlvm1': [0.1, 0.2], 'qlvm2': [0.3, 0.4]}
+        kwargs_p = _onset_kwargs(tmp_path, rows_p, session='sess_P')
+        kwargs_q = _onset_kwargs(tmp_path, rows_q, session='sess_Q')
+        kwargs = {key: ({**kwargs_p[key], **kwargs_q[key]} if isinstance(kwargs_p[key], dict)
+                        else kwargs_p[key] + kwargs_q[key]) for key in kwargs_p}
+        out = find_usv_categories(target_category=None, filter_history=1.0, category_column=None,
+                                  manifold_column_names=['qlvm1', 'qlvm2'], **kwargs)
+        np.testing.assert_allclose(out['sess_P']['male']['continuous_onsets'], [2.0, 4.0])
+        np.testing.assert_allclose(out['sess_P']['female']['continuous_onsets'], [3.5])
+        printed = capsys.readouterr().out
+        assert 'sess_P (male): dropped 1 of 3 vocalizations' in printed
+        assert 'sess_P (female): dropped 2 of 3 vocalizations' in printed
+        assert 'sess_Q' not in printed
+        assert 'dropped 3 vocalizations with null/NaN coordinates in total (2 session-mouse pairs affected).' in printed
+
+    def test_text_coordinates_are_unplaced_not_fatal(self, tmp_path):
+        """A manifold column CSV inference reads as text (an 'NA' marker) casts leniently:
+        the marked vocalization is unplaced and dropped, the rest keep their targets."""
+
+        rows = {'emitter': ['male'] * 3, 'start': [2.0, 3.0, 4.0], 'stop': [2.05, 3.05, 4.05],
+                'qlvm1': ['0.1', 'NA', '0.3'], 'qlvm2': [0.4, 0.5, 0.6]}
+        male = find_usv_categories(target_category=None, filter_history=1.0, category_column=None,
+                                   manifold_column_names=['qlvm1', 'qlvm2'],
+                                   **_onset_kwargs(tmp_path, rows, session='sess_D'))['sess_D']['male']
+        np.testing.assert_allclose(male['continuous_onsets'], [2.0, 4.0])
+        np.testing.assert_allclose(male['continuous_targets'], [[0.1, 0.4], [0.3, 0.6]])
+
+    def test_squeak_map_refilters_the_history_on_the_squeak_onset(self, tmp_path):
+        """On the squeak map the history bound applies to the squeak's own onset: a squeak
+        whose extent starts exactly at ``filter_history`` (1.0 s) is dropped even though
+        its segment starts later (1.2 s)."""
+
+        rows = {'emitter': ['male', 'male'], 'start': [1.2, 2.0], 'stop': [1.3, 2.1],
+                'usv': [False, False], 'squeak': [True, True],
+                'squeak_start': [1.0, 2.02], 'squeak_end': [1.3, 2.08],
+                'qlvm_squeak1': [0.1, 0.2], 'qlvm_squeak2': [0.3, 0.4]}
+        male = find_usv_categories(target_category=None, filter_history=1.0, category_column=None,
+                                   manifold_column_names=['qlvm_squeak1', 'qlvm_squeak2'],
+                                   **_onset_kwargs(tmp_path, rows, session='sess_D'))['sess_D']['male']
+        np.testing.assert_allclose(male['continuous_onsets'], [2.02])
+        np.testing.assert_allclose(male['continuous_targets'], [[0.2, 0.4]])
+
+    def test_purposes_and_sources_are_named(self, tmp_path, capsys):
+        """Every error names what needs the labels or the flags: the category models, the
+        binomial target, the configured label column, the pair whose summary lacks the
+        class flags or the squeak extent; the noise-drop report names the pair; and
+        clashing predictor lists are refused."""
+
+        rows = {'emitter': ['male', 'male'], 'start': [2.0, 3.0], 'stop': [2.05, 3.05],
+                'qlvm1': [0.1, 0.2], 'qlvm2': [0.3, 0.4], 'noise': [False, True]}
+        kwargs = _onset_kwargs(tmp_path, rows, session='sess_D')
+        with pytest.raises(ValueError, match=re.escape("The USV category models (multinomial / binomial) needs")):
+            find_usv_categories(target_category=None, filter_history=1.0, category_column=None, **kwargs)
+        with pytest.raises(ValueError, match="The binomial target category 3 needs"):
+            find_usv_categories(target_category=3, filter_history=1.0, category_column=None,
+                                manifold_column_names=['qlvm1', 'qlvm2'], **kwargs)
+        with pytest.raises(ValueError, match=re.escape("vocal_features.usv_category_column_name needs the column 'absent'")):
+            find_usv_categories(target_category=None, filter_history=1.0, category_column='absent',
+                                manifold_column_names=['qlvm1', 'qlvm2'], **kwargs)
+        with pytest.raises(ValueError, match="give the trace name"):
+            find_usv_categories(target_category=None, filter_history=1.0, category_column=None,
+                                manifold_column_names=['qlvm1', 'qlvm2'], vocal_output_type='pooled_rate',
+                                predictor_classes=[['usv'], ['usv', 'overlap']], **kwargs)
+        male = find_usv_categories(target_category=None, filter_history=1.0, category_column=None,
+                                   manifold_column_names=['qlvm1', 'qlvm2'], **kwargs)['sess_D']['male']
+        np.testing.assert_allclose(male['continuous_onsets'], [2.0])
+        assert 'sess_D (male): dropped 1 noise segment(s) of 2.' in capsys.readouterr().out
+        _drop_summary_columns(tmp_path, 'sess_D', 'usv', 'squeak')
+        with pytest.raises(KeyError, match=r"sess_D \(male\) has no"):
+            find_usv_categories(target_category=None, filter_history=1.0, category_column=None,
+                                manifold_column_names=['qlvm1', 'qlvm2'], vocal_output_type='pooled_rate', **kwargs)
+
+    def test_squeak_map_without_extent_names_the_pair(self, tmp_path):
+        """The squeak map on a summary without the squeak extent raises naming the pair."""
+
+        rows = {'emitter': ['male'], 'start': [2.0], 'stop': [2.05], 'usv': [False], 'squeak': [True],
+                'qlvm_squeak1': [0.1], 'qlvm_squeak2': [0.2]}
+        kwargs = _onset_kwargs(tmp_path, rows, session='sess_D')
+        _drop_summary_columns(tmp_path, 'sess_D', 'squeak_start', 'squeak_end')
+        with pytest.raises(KeyError, match=r"sess_D \(male\) has no"):
+            find_usv_categories(target_category=None, filter_history=1.0, category_column=None,
+                                manifold_column_names=['qlvm_squeak1', 'qlvm_squeak2'], **kwargs)
+
+
+# find_variable_length_bouts: exact bouts, loop control, sex-specific thresholds and messages
+
+
+class TestVariableLengthBoutsExact:
+
+    def test_bout_metrics_and_rejections_are_exact(self, tmp_path):
+        """Four male bouts (1 s threshold): one starting exactly at ``filter_history``
+        (rejected, exclusive bound), a one-USV bout (below the floor), and two valid ones
+        whose onsets, durations, counts and mask sums cover their own USVs only (masks
+        1+2+3 and 4+5, not the next bout's first)."""
+
+        rows = {
+            'emitter': ['male'] * 8,
+            'start': [1.0, 1.1, 3.0, 5.0, 5.1, 5.2, 7.0, 7.1],
+            'stop': [1.05, 1.15, 3.05, 5.05, 5.15, 5.25, 7.05, 7.15],
+            'mask_number': [9, 9, 9, 1, 2, 3, 4, 5],
+        }
+        male = find_variable_length_bouts(min_vocalizations=2, filter_history=1.0,
+                                          mixture_model_params=_mixture_model_params(),
+                                          **_onset_kwargs(tmp_path, rows, session='sess_E', n_frames=900))['sess_E']['male']
+        np.testing.assert_allclose(male['bout_onsets'], [5.0, 7.0])
+        np.testing.assert_allclose(male['bout_durations'], [0.25, 0.15])
+        assert male['bout_syllable_counts'].tolist() == [3, 2]
+        assert male['total_mask_complexity'].tolist() == [6, 9]
+        np.testing.assert_allclose(male['mean_mask_complexity'], [2.0, 4.5])
+        assert isinstance(male['ibi_threshold_used'], float)
+        assert not isinstance(male['ibi_threshold_used'], np.ndarray)
+
+    def test_single_usv_bout(self, tmp_path):
+        """A single USV with a one-vocalization floor is one bout of count 1."""
+
+        rows = {'emitter': ['male'], 'start': [2.0], 'stop': [2.05], 'mask_number': [3]}
+        male = find_variable_length_bouts(min_vocalizations=1, filter_history=1.0,
+                                          mixture_model_params=_mixture_model_params(),
+                                          **_onset_kwargs(tmp_path, rows, session='sess_E'))['sess_E']['male']
+        np.testing.assert_allclose(male['bout_onsets'], [2.0])
+        assert male['bout_syllable_counts'].tolist() == [1]
+        assert male['total_mask_complexity'].tolist() == [3]
+
+    def test_mouse_without_targets_does_not_stop_the_mouse_loop(self, tmp_path):
+        """A male holding only squeaks (no target USVs) is skipped and the female after
+        him still gets her bout."""
+
+        rows = {'emitter': ['male', 'female', 'female'], 'start': [2.0, 3.0, 3.1], 'stop': [2.05, 3.05, 3.15],
+                'usv': [False, True, True], 'squeak': [True, False, False]}
+        out = find_variable_length_bouts(min_vocalizations=2, filter_history=1.0,
+                                         mixture_model_params=_mixture_model_params(),
+                                         **_onset_kwargs(tmp_path, rows, session='sess_E'))['sess_E']
+        assert out['male']['bout_onsets'] == []
+        np.testing.assert_allclose(out['female']['bout_onsets'], [3.0])
+
+    def test_skipped_sessions_do_not_stop_the_session_loop(self, tmp_path):
+        """A session without a summary and one missing from ``mouse_ids_dict``, listed
+        first, are skipped and the valid session after them is loaded."""
+
+        names = ('a_nocsv', 'b_unreg', 'c_valid')
+        (tmp_path / 'a_nocsv' / 'audio').mkdir(parents=True)
+        for name in names[1:]:
+            _write_usv_summary(tmp_path / name, {'emitter': ['male', 'male'], 'start': [2.0, 2.1],
+                                                 'stop': [2.05, 2.15]})
+        out = find_variable_length_bouts(root_directories=[str(tmp_path / name) for name in names],
+                                         mouse_ids_dict={name: ['male', 'female'] for name in names if name != 'b_unreg'},
+                                         camera_fps_dict=dict.fromkeys(names, 100.0),
+                                         features_dict={name: _features_df(600) for name in names},
+                                         min_vocalizations=2, filter_history=1.0,
+                                         mixture_model_params=_mixture_model_params())
+        assert out['a_nocsv'] == {}
+        assert out['b_unreg'] == {}
+        np.testing.assert_allclose(out['c_valid']['male']['bout_onsets'], [2.0])
+
+    def test_each_sex_uses_its_own_lognormal_threshold(self, tmp_path):
+        """The male's threshold comes from the male block (exp(log 0.3) = 0.3 s), the
+        female's from the female block (1 s)."""
+
+        rows = {'emitter': ['male'], 'start': [2.0], 'stop': [2.05]}
+        params = {'male': {'means': [np.log(0.3)], 'sds': [0.0]}, 'female': {'means': [0.0], 'sds': [0.0]}}
+        out = find_variable_length_bouts(min_vocalizations=2, filter_history=1.0, mixture_model_params=params,
+                                         **_onset_kwargs(tmp_path, rows, session='sess_E'))['sess_E']
+        assert out['male']['ibi_threshold_used'] == pytest.approx(0.3)
+        assert out['female']['ibi_threshold_used'] == pytest.approx(1.0)
+
+    def test_inverse_gaussian_threshold_per_sex(self, tmp_path):
+        """Inverse-Gaussian blocks give each sex the IG quantile of its own component
+        (male mean 0.1 s / shape 1 s ~ 0.21 s, female 0.05 s / 0.5 s ~ 0.105 s), and the
+        male's 0.15 s gaps join while his 0.30 s gap splits."""
+
+        rows = {'emitter': ['male'] * 4, 'start': [5.0, 5.2, 5.55, 5.75], 'stop': [5.05, 5.25, 5.6, 5.8]}
+        params = {'male': {'model_class': 'ig', 'mus': [0.1], 'lambdas': [1.0]},
+                  'female': {'model_class': 'ig', 'mus': [0.05], 'lambdas': [0.5]}}
+        out = find_variable_length_bouts(min_vocalizations=2, filter_history=1.0, mixture_model_params=params,
+                                         **_onset_kwargs(tmp_path, rows, session='sess_E'))['sess_E']
+        assert out['male']['ibi_threshold_used'] == pytest.approx(_calculate_ibi_threshold_ig(0.1, 1.0, 2.58))
+        assert out['female']['ibi_threshold_used'] == pytest.approx(_calculate_ibi_threshold_ig(0.05, 0.5, 2.58))
+        np.testing.assert_allclose(out['male']['bout_onsets'], [5.0, 5.55])
+
+    @pytest.mark.parametrize(('params', 'sex'), [
+        ({'male': {'means': [], 'sds': []}, 'female': {'means': [0.0], 'sds': [0.0]}}, 'male'),
+        ({'male': {'means': [0.0], 'sds': [0.0]}, 'female': {'means': [], 'sds': []}}, 'female'),
+    ])
+    def test_invalid_component_index_names_the_sex(self, tmp_path, params, sex):
+        """A component index the block lacks raises naming the sex whose block it is."""
+
+        rows = {'emitter': ['male'], 'start': [2.0], 'stop': [2.05]}
+        with pytest.raises(ValueError, match=f"Invalid mixture_model_component_index 0 for {sex}"):
+            find_variable_length_bouts(min_vocalizations=2, filter_history=1.0, mixture_model_params=params,
+                                       **_onset_kwargs(tmp_path, rows, session='sess_E'))
+
+    @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
+    def test_predictor_traces_span_the_session_and_are_smoothed(self, tmp_path):
+        """The predictor traces have one value per camera frame (600, the feature table's
+        row count), the binary one marks frames 200..205 of the USV at 2.0-2.05 s, and
+        the rate one is smoothed with ``proportion_smoothing_sd``."""
+
+        rows = {'emitter': ['male'], 'start': [2.0], 'stop': [2.05]}
+        kwargs = _onset_kwargs(tmp_path, rows, session='sess_E')
+        binary = find_variable_length_bouts(min_vocalizations=2, filter_history=1.0,
+                                            mixture_model_params=_mixture_model_params(),
+                                            vocal_output_type='pooled_binary', **kwargs)['sess_E']['male']
+        assert np.flatnonzero(binary['continuous_vocal_signals']['usv_event']).tolist() == [200, 201, 202, 203, 204]
+        assert binary['continuous_vocal_signals']['usv_event'].shape == (600,)
+        rate = find_variable_length_bouts(min_vocalizations=2, filter_history=1.0, proportion_smoothing_sd=2.0,
+                                          mixture_model_params=_mixture_model_params(),
+                                          vocal_output_type='pooled_rate', **kwargs)['sess_E']['male']
+        np.testing.assert_allclose(rate['continuous_vocal_signals']['usv_rate'], _generate_vocal_trace(
+            np.array([2.0]), np.array([2.05]), 600, 100.0, smooth_sd=2.0))
+
+    def test_purposes_and_sources_are_named(self, tmp_path, capsys):
+        """Every error names its purpose or source: the predictor type that needs labels
+        (before and after a summary is read, the latter with the file), clashing
+        predictor lists, the pair whose summary lacks the class flags (whether the
+        predictor traces or the bout grouping reads them first) or the squeak extent;
+        the noise-drop report names the pair."""
+
+        rows = {'emitter': ['male', 'male', 'male'], 'start': [2.0, 2.1, 2.2], 'stop': [2.05, 2.15, 2.25],
+                'noise': [False, True, False]}
+        kwargs = _onset_kwargs(tmp_path, rows, session='sess_E')
+        common = {'min_vocalizations': 2, 'filter_history': 1.0, 'mixture_model_params': _mixture_model_params()}
+        with pytest.raises(ValueError, match=re.escape("vocal_features.vocal_predictor_type 'categories_rate' needs a per-USV")):
+            find_variable_length_bouts(vocal_output_type='categories_rate', category_column=None, **common, **kwargs)
+        with pytest.raises(ValueError, match="vocal_predictor_type 'categories_rate' needs the column 'absent'") as excinfo:
+            find_variable_length_bouts(vocal_output_type='categories_rate', category_column='absent', **common, **kwargs)
+        assert 'sess_E_usv_summary.csv' in str(excinfo.value)
+        with pytest.raises(ValueError, match="give the trace name"):
+            find_variable_length_bouts(vocal_output_type='pooled_rate', predictor_classes=[['usv'], ['usv', 'overlap']],
+                                       **common, **kwargs)
+        male = find_variable_length_bouts(**common, **kwargs)['sess_E']['male']
+        np.testing.assert_allclose(male['bout_onsets'], [2.0])
+        assert 'sess_E (male): dropped 1 noise segment(s) of 3.' in capsys.readouterr().out
+        _drop_summary_columns(tmp_path, 'sess_E', 'squeak_start', 'squeak_end')
+        with pytest.raises(KeyError, match=r"sess_E \(male\) has no"):
+            find_variable_length_bouts(target_classes=['overlap'], **common, **kwargs)
+        _drop_summary_columns(tmp_path, 'sess_E', 'usv', 'squeak')
+        for vocal_output_type in (None, 'pooled_rate'):
+            with pytest.raises(KeyError, match=r"sess_E \(male\) has no"):
+                find_variable_length_bouts(vocal_output_type=vocal_output_type, **common, **kwargs)

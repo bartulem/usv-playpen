@@ -198,3 +198,136 @@ class TestZscorePooled:
         # The smooth fold has no hard corner: the zero input maps to eps,
         # strictly above 0 (unlike plain |0| == 0).
         assert transformed[1] == pytest.approx(eps)
+
+    def test_unprefixed_and_multi_prefix_columns_match_by_last_suffix(self):
+        """The feature suffix is the text after the LAST dot: a bare column
+        (``speed``, no prefix) and a doubly-prefixed one (``a.b.speed``) are
+        both clipped, pooled and z-scored. Values [1, 3] and [5, 7] pool to
+        mean 4 and sample std sqrt(20/3); the out-of-bounds 99 is nulled."""
+
+        data = {
+            'sess1': pls.DataFrame({'speed': [1.0, 3.0, 99.0]}),
+            'sess2': pls.DataFrame({'a.b.speed': [5.0, 7.0, 99.0]}),
+        }
+        stats = {}
+        out = zscore_different_sessions_together(
+            data, feature_lst=['speed'], feature_bounds={'speed': (0.0, 10.0)}, stats_out=stats,
+        )
+        std = np.sqrt(20.0 / 3.0)
+        assert stats == {'speed': {'mean': pytest.approx(4.0), 'std': pytest.approx(std, rel=1e-6)}}
+        s1 = out['sess1']['speed'].to_list()
+        s2 = out['sess2']['a.b.speed'].to_list()
+        assert s1[:2] == pytest.approx([-3.0 / std, -1.0 / std], rel=1e-6)
+        assert s1[2] is None
+        assert s2[:2] == pytest.approx([1.0 / std, 3.0 / std], rel=1e-6)
+        assert s2[2] is None
+
+    def test_non_feature_column_before_a_feature_column_is_skipped_not_fatal(self):
+        """A column that is not a listed feature (``time``, placed FIRST) is
+        skipped and left untouched; the feature column after it is still
+        clipped (99 nulled) and z-scored ([0, 2] -> [-1/sqrt(2), 1/sqrt(2)])."""
+
+        data = {'sess1': pls.DataFrame({'time': [10.0, 20.0, 30.0], 'self.speed': [0.0, 2.0, 99.0]})}
+        out = zscore_different_sessions_together(
+            data, feature_lst=['speed'], feature_bounds={'speed': (0.0, 10.0)},
+        )
+        assert out['sess1']['time'].to_list() == [10.0, 20.0, 30.0]
+        z = out['sess1']['self.speed'].to_list()
+        assert z[:2] == pytest.approx([-1.0 / np.sqrt(2.0), 1.0 / np.sqrt(2.0)], rel=1e-6)
+        assert z[2] is None
+
+    def test_smooth_abs_uses_eps_squared(self):
+        """With eps = 2 the smooth fold adds eps^2 = 4 (not eps/eps = 1): inputs
+        [0, 0, 0] (constant, std 0 -> std 1) map to sqrt(4) = 2, so the reported
+        pooled mean is exactly 2."""
+
+        data = {'sess1': pls.DataFrame({'self.ego_yaw': [0.0, 0.0, 0.0]})}
+        stats = {}
+        zscore_different_sessions_together(
+            data, feature_lst=['ego_yaw'], feature_bounds={'ego_yaw': (-180.0, 180.0)},
+            smooth_abs_features={'ego_yaw': 2.0}, stats_out=stats,
+        )
+        assert stats['ego_yaw']['mean'] == pytest.approx(2.0)
+
+    def test_bounds_clip_keeps_values_exactly_at_the_bounds(self):
+        """The theoretical bounds are inclusive: values exactly at the minimum
+        and the maximum are kept, only values strictly outside are nulled.
+        [-1, 0, 10, 11] with bounds (0, 10) keeps 0 and 10 -> z = [-1, 1]
+        times 1/sqrt(2)."""
+
+        data = {'sess1': pls.DataFrame({'self.speed': [-1.0, 0.0, 10.0, 11.0]})}
+        out = zscore_different_sessions_together(
+            data, feature_lst=['speed'], feature_bounds={'speed': (0.0, 10.0)},
+        )
+        z = out['sess1']['self.speed'].to_list()
+        assert z[0] is None
+        assert z[3] is None
+        assert z[1:3] == pytest.approx([-1.0 / np.sqrt(2.0), 1.0 / np.sqrt(2.0)], rel=1e-6)
+
+    def test_reference_sessions_set_the_scale_for_every_session(self):
+        """With ``reference_sessions`` only the listed sessions shape the pooled
+        mean/std (dev [0, 2] -> mean 1, std sqrt(2)); the held-out session
+        [100] is z-scored with that scale, (100 - 1) / sqrt(2)."""
+
+        data = {
+            'dev': pls.DataFrame({'self.speed': [0.0, 2.0]}),
+            'held': pls.DataFrame({'self.speed': [100.0]}),
+        }
+        stats = {}
+        out = zscore_different_sessions_together(
+            data, feature_lst=['speed'], feature_bounds={'speed': (0.0, 1000.0)},
+            stats_out=stats, reference_sessions=['dev'],
+        )
+        assert stats['speed']['mean'] == pytest.approx(1.0)
+        assert stats['speed']['std'] == pytest.approx(np.sqrt(2.0), rel=1e-6)
+        assert out['held']['self.speed'].to_list() == pytest.approx([99.0 / np.sqrt(2.0)], rel=1e-6)
+
+    def test_reference_session_missing_from_the_data_raises(self):
+        """A listed reference session absent from ``data_dict`` raises a KeyError
+        naming the missing session(s), sorted."""
+
+        data = {'dev': pls.DataFrame({'self.speed': [0.0, 2.0]})}
+        with pytest.raises(KeyError, match=r"reference session\(s\) \['gone_a', 'gone_b'\] are not in the data"):
+            zscore_different_sessions_together(
+                data, feature_lst=['speed'], feature_bounds={'speed': (0.0, 10.0)},
+                reference_sessions=['gone_b', 'dev', 'gone_a'],
+            )
+
+    def test_absent_feature_does_not_stop_later_features(self):
+        """A feature listed first but present in no session is skipped; the
+        feature listed after it is still pooled and z-scored."""
+
+        data = {'sess1': pls.DataFrame({'self.speed': [0.0, 2.0]})}
+        stats = {}
+        out = zscore_different_sessions_together(
+            data, feature_lst=['absent', 'speed'],
+            feature_bounds={'absent': (0.0, 1.0), 'speed': (0.0, 10.0)}, stats_out=stats,
+        )
+        assert list(stats) == ['speed']
+        assert out['sess1']['self.speed'].to_list() == pytest.approx([-1.0 / np.sqrt(2.0), 1.0 / np.sqrt(2.0)], rel=1e-6)
+
+    def test_constant_feature_is_centred_with_unit_scale(self):
+        """A constant feature (std 0) keeps its pooled mean and uses std 1, so
+        every value z-scores to exactly 0 and the reported stats are
+        {'mean': 5, 'std': 1}."""
+
+        data = {'sess1': pls.DataFrame({'self.speed': [5.0, 5.0, 5.0]})}
+        stats = {}
+        out = zscore_different_sessions_together(
+            data, feature_lst=['speed'], feature_bounds={'speed': (0.0, 10.0)}, stats_out=stats,
+        )
+        assert out['sess1']['self.speed'].to_list() == [0.0, 0.0, 0.0]
+        assert stats == {'speed': {'mean': 5.0, 'std': 1.0}}
+
+    def test_all_null_feature_reports_zero_mean_unit_std(self):
+        """A feature whose every value is nulled (all out of bounds) has no mean
+        and no std; the stats fall back to {'mean': 0, 'std': 1} and the column
+        stays all-null."""
+
+        data = {'sess1': pls.DataFrame({'self.speed': [50.0, 60.0]})}
+        stats = {}
+        out = zscore_different_sessions_together(
+            data, feature_lst=['speed'], feature_bounds={'speed': (0.0, 10.0)}, stats_out=stats,
+        )
+        assert stats == {'speed': {'mean': 0.0, 'std': 1.0}}
+        assert out['sess1']['self.speed'].to_list() == [None, None]
