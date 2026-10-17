@@ -17,6 +17,9 @@ import numpy as np
 import pytest
 from click.testing import CliRunner
 
+from usv_playpen.os_utils import load_qlvm_category_bundle
+from usv_playpen.visualizations import qlvm_torus_traversal_video as traversal_module
+
 from usv_playpen.visualizations.qlvm_torus_traversal_video import (
     QLVMTorusTraversalVideo,
     build_phases,
@@ -139,6 +142,37 @@ def test_make_video_writes_gif(tmp_path, qlvm_category_bundle):
     assert out.stat().st_size > 0
     assert any("4 categories" in message and str(qlvm_category_bundle) in message for message in messages)
 
+
+
+def test_make_video_outlines_sit_on_the_bundle_pixel_centres(tmp_path, qlvm_category_bundle, monkeypatch):
+    """
+    Description
+    -----------
+    The category outlines are contoured on the bundle's pixel centres (its ``axis``,
+    (k + 0.5) / res), the grid the heatmap's ``extent=(0, 1, 0, 1)`` places each pixel at;
+    contouring on ``linspace(0, 1, res)`` shifted every outline by up to half a pixel.
+    """
+
+    recorded = []
+    real_outlines = traversal_module.draw_category_outlines
+
+    def _record_outlines(ax, xx, yy, labels, **kwargs):
+        """Record the grid the outlines are contoured on, then draw them."""
+        recorded.append((np.asarray(xx), np.asarray(yy)))
+        return real_outlines(ax, xx, yy, labels, **kwargs)
+
+    monkeypatch.setattr(traversal_module, "draw_category_outlines", _record_outlines)
+    spec_dir = _write_inputs(tmp_path)
+    QLVMTorusTraversalVideo(
+        output_path=str(tmp_path / "traversal.gif"),
+        input_parameter_dict=_tiny_cfg(spec_dir),
+        message_output=lambda *_: None,
+    ).make_video()
+    axis = load_qlvm_category_bundle()["axis"]
+    assert recorded
+    for xx, yy in recorded:
+        np.testing.assert_allclose(xx, axis)
+        np.testing.assert_allclose(yy, axis)
 
 def test_make_video_ignores_a_conditional_shared_map(tmp_path, qlvm_category_bundle):
     """The bundle's regions are defined on the regular map only, so the video always

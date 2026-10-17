@@ -58,6 +58,7 @@ from ..os_utils import (
     QLVM_CATEGORY_MAP,
     QLVM_MAPS,
     VOCAL_FLAG_COLUMNS,
+    atomic_output_path,
     configure_path,
     drop_noise_usvs,
     find_audio_mmap,
@@ -138,8 +139,9 @@ def _open_path_in_default_viewer(path, message_output: Callable | None = None) -
     -----------
     Open a saved file in the operating system's default viewer (``open`` on
     macOS, ``os.startfile`` on Windows, ``xdg-open`` elsewhere). Best-effort: any
-    failure is reported via ``message_output`` (defaulting to ``print``) rather
-    than raised, so a missing opener never aborts a render. Shared by the
+    failure (including an opener that does not return within 60 s) is reported
+    via ``message_output`` (defaulting to ``print``) rather than raised, so a
+    missing or hung opener never aborts a render. Shared by the
     ``USVSpectrogramPlotter`` figures and the cohort embedding-thumbnails driver.
 
     Parameters
@@ -157,12 +159,12 @@ def _open_path_in_default_viewer(path, message_output: Callable | None = None) -
     log = message_output or print
     try:
         if sys.platform == "darwin":
-            subprocess.run(["open", str(path)], check=False)
+            subprocess.run(["open", str(path)], check=False, timeout=60)
         elif os.name == "nt":
             os.startfile(str(path))  # noqa: S606 -- Windows-only default opener
         else:
-            subprocess.run(["xdg-open", str(path)], check=False)
-    except OSError as exc:
+            subprocess.run(["xdg-open", str(path)], check=False, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as exc:
         log(f"Could not open {path} in a viewer: {exc}")
 
 
@@ -206,7 +208,7 @@ class USVSpectrogramPlotter:
 
         Parameters
         ----------
-        **kwargs
+        **kwargs (dict)
             Forwarded as-is to ``self.__dict__``. ``root_directory`` and
             ``visualizations_parameter_dict`` are REQUIRED (a missing one
             raises ``ValueError``); ``message_output`` and
@@ -265,6 +267,9 @@ class USVSpectrogramPlotter:
         is a required field of the settings dict). Either form is
         accepted by matplotlib's ``imshow`` / ``specshow`` ``cmap=``
         argument.
+
+        Parameters
+        ----------
 
         Returns
         -------
@@ -2195,7 +2200,8 @@ def _read_session_track_names(session_root: str) -> list[str]:
 
     tracking_file = first_match_or_raise(
         root=pathlib.Path(session_root) / "video",
-        pattern="*_points3d_translated_rotated_metric.h5",
+        # `[!speaker]` skips the speaker track a USV-playback session keeps beside the mouse track
+        pattern="[!speaker]*_points3d_translated_rotated_metric.h5",
         recursive=True,
         label="3D tracking h5",
     )
@@ -2302,8 +2308,20 @@ def plot_session_usv_timeline(
         short timeline strip.
     fig_dpi (int)
         Figure DPI; default ``300``.
-    male_color / female_color / unassigned_color (str)
-        Per-emitter rectangle colors.
+    male_color (str)
+        Per-emitter rectangle color (hex string) for USVs whose emitter the
+        session metadata records as male; defaults to
+        ``USV_TIMELINE_MALE_COLOR`` (the first entry of the project male
+        palette).
+    female_color (str)
+        Per-emitter rectangle color (hex string) for USVs whose emitter the
+        session metadata records as female; defaults to
+        ``USV_TIMELINE_FEMALE_COLOR`` (the first entry of the project female
+        palette).
+    unassigned_color (str)
+        Per-emitter rectangle color (hex string) for USVs with no identified
+        emitter (or an emitter of unknown sex); defaults to
+        ``USV_TIMELINE_UNASSIGNED_COLOR`` (a neutral grey).
     rectangle_height (float)
         Vertical extent of each USV rectangle (axes-data units; the
         y-axis is hidden so the absolute value mainly controls the
@@ -2530,10 +2548,13 @@ def _pooled_summaries_fingerprint(
         digest.update(f"{session_root}\t{csv_path}\t{csv_stat.st_size}\t{csv_stat.st_mtime_ns}\n".encode())
         # The 'sex' column is read from the session metadata, so an edited
         # metadata file (a corrected Subjects sex) also makes the cache stale.
+        # Every metadata file is hashed (not just the first), so an edit to any of them
+        # invalidates the cache whichever one the sex lookup ends up reading.
         metadata_paths = sorted(pathlib.Path(session_root).glob("*_metadata.yaml"))
         if metadata_paths:
-            metadata_stat = metadata_paths[0].stat()
-            digest.update(f"{metadata_paths[0]}\t{metadata_stat.st_size}\t{metadata_stat.st_mtime_ns}\n".encode())
+            for metadata_path in metadata_paths:
+                metadata_stat = metadata_path.stat()
+                digest.update(f"{metadata_path}\t{metadata_stat.st_size}\t{metadata_stat.st_mtime_ns}\n".encode())
         else:
             digest.update(f"{session_root}\tno-metadata\n".encode())
     return digest.hexdigest(), located
@@ -2957,7 +2978,9 @@ def build_pooled_embeddings_df(
 
     if cache_p is not None:
         cache_p.parent.mkdir(parents=True, exist_ok=True)
-        pooled.write_parquet(str(cache_p), metadata={POOLED_CACHE_FINGERPRINT_KEY: summaries_fingerprint})
+        # Temp sibling + rename: a truncated cache would be read back on the next call.
+        with atomic_output_path(cache_p) as tmp_cache_p:
+            pooled.write_parquet(str(tmp_cache_p), metadata={POOLED_CACHE_FINGERPRINT_KEY: summaries_fingerprint})
         message_output(
             f"Cached pooled embeddings DF to {cache_p} "
             f"({pooled.height:,} rows, {pooled.select('session_id').unique().height} sessions)"
@@ -2979,6 +3002,7 @@ def _pick_spiral_with_grid(
     n_turns: int = 4,
     n_dense: int = 4000,
     rng: np.random.Generator | None = None,
+    periodic: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Description
@@ -3007,8 +3031,12 @@ def _pick_spiral_with_grid(
         ``(res_y, res_x)`` category label grid (the category bundle's
         ``label_grid`` on the regular map). ``None`` disables the filter.
     xx, yy (np.ndarray | None)
-        ``(res_x,)`` and ``(res_y,)`` axis ticks corresponding to
-        ``labels_grid`` columns and rows respectively.
+        ``(res_x,)`` and ``(res_y,)`` evenly spaced pixel-centre
+        coordinates of ``labels_grid`` columns and rows respectively.
+        A spiral position is looked up in the pixel whose centre is
+        nearest to it (the pixel whose extent holds it), and a
+        position more than half a pixel outside the outermost centres
+        is outside the grid.
     cluster_label (int)
         Integer label of THIS category in ``labels_grid``.
     n_turns (int)
@@ -3022,6 +3050,16 @@ def _pick_spiral_with_grid(
         ``theta_offset`` in ``[0, 2 pi)`` that rotates the whole
         spiral. ``None`` disables the rotation (deterministic spiral
         starting from theta=0), which matches the original behavior.
+    periodic (bool)
+        ``True`` treats the coordinates as a periodic unit torus
+        (``[0, 1)`` in both dimensions, as every QLVM map is): the
+        spiral positions are wrapped into ``[0, 1)`` for the
+        label-grid lookup (no position is outside the grid), each
+        position snaps to the USV at the smallest WRAPPED distance,
+        and the returned path is wrapped into ``[0, 1)`` with a NaN
+        inserted wherever it crosses a seam, so a line plot of it
+        breaks there instead of drawing a chord across the map.
+        ``False`` (default) uses plain Euclidean coordinates.
 
     Returns
     -------
@@ -3032,7 +3070,9 @@ def _pick_spiral_with_grid(
         filter (i.e., only the segments that fall inside this
         cluster's footprint). The caller plots these as the visible
         trajectory so the spiral never extends past the cluster's
-        actual region — matching the picks' actual positions.
+        actual region — matching the picks' actual positions. With
+        ``periodic`` the path is wrapped into ``[0, 1)`` and holds
+        NaN breaks at the seams.
     """
 
     if pts.shape[0] == 0 or n_per <= 0:
@@ -3068,11 +3108,18 @@ def _pick_spiral_with_grid(
         # grid axis has a single distinct coordinate (gx_hi == gx_lo).
         gx_span = (gx_hi - gx_lo) or 1.0
         gy_span = (gy_hi - gy_lo) or 1.0
-        px = ((xs_d - gx_lo) / gx_span * (res_x - 1)).astype(int)
-        py = ((ys_d - gy_lo) / gy_span * (res_y - 1)).astype(int)
+        lookup_x = xs_d % 1.0 if periodic else xs_d
+        lookup_y = ys_d % 1.0 if periodic else ys_d
+        # xx / yy are pixel CENTRES, so a position belongs to the pixel
+        # whose centre is nearest: round, not truncate (truncation put a
+        # position in the pixel to its left about half the time).
+        px = np.rint((lookup_x - gx_lo) / gx_span * (res_x - 1)).astype(int)
+        py = np.rint((lookup_y - gy_lo) / gy_span * (res_y - 1)).astype(int)
+        half_x = 0.5 * gx_span / max(res_x - 1, 1)
+        half_y = 0.5 * gy_span / max(res_y - 1, 1)
         inside_box = (
-            (xs_d >= gx_lo) & (xs_d <= gx_hi)
-            & (ys_d >= gy_lo) & (ys_d <= gy_hi)
+            (lookup_x >= gx_lo - half_x) & (lookup_x <= gx_hi + half_x)
+            & (lookup_y >= gy_lo - half_y) & (lookup_y <= gy_hi + half_y)
         )
         px_safe = np.clip(px, 0, res_x - 1)
         py_safe = np.clip(py, 0, res_y - 1)
@@ -3103,7 +3150,12 @@ def _pick_spiral_with_grid(
     used: set[int] = set()
     picks: list[int] = []
     for tx, ty in zip(xs_in_pick, ys_in_pick):
-        d2 = (pts[:, 0] - tx) ** 2 + (pts[:, 1] - ty) ** 2
+        dx = pts[:, 0] - tx
+        dy = pts[:, 1] - ty
+        if periodic:
+            dx = (dx + 0.5) % 1.0 - 0.5
+            dy = (dy + 0.5) % 1.0 - 0.5
+        d2 = dx ** 2 + dy ** 2
         for kk in np.argsort(d2):
             kk_int = int(kk)
             if kk_int not in used:
@@ -3112,7 +3164,39 @@ def _pick_spiral_with_grid(
                 break
         if len(picks) >= n_take:
             break
+    if periodic:
+        xs_in_dense = xs_in_dense % 1.0
+        ys_in_dense = ys_in_dense % 1.0
+        seams = np.flatnonzero((np.abs(np.diff(xs_in_dense)) > 0.5) | (np.abs(np.diff(ys_in_dense)) > 0.5)) + 1
+        xs_in_dense = np.insert(xs_in_dense, seams, np.nan)
+        ys_in_dense = np.insert(ys_in_dense, seams, np.nan)
     return np.asarray(picks, dtype=int), xs_in_dense, ys_in_dense
+
+
+def _torus_circular_mean(pts: np.ndarray) -> np.ndarray:
+    """
+    Description
+    -----------
+    Per-dimension circular mean of points on the periodic unit torus
+    (``[0, 1)`` in both dimensions): each coordinate is read as an
+    angle ``2 pi x``, the unit vectors are averaged and the mean angle
+    is mapped back into ``[0, 1)``. Unlike the arithmetic mean it puts
+    a group that straddles a seam (USVs near 0 and near 1) at the
+    seam, where its USVs are, not in the middle of the map.
+
+    Parameters
+    ----------
+    pts (np.ndarray)
+        ``(M, 2)`` torus coordinates, ``M >= 1``.
+
+    Returns
+    -------
+    centre (np.ndarray)
+        ``(2,)`` circular mean in ``[0, 1)``.
+    """
+
+    angles = 2.0 * np.pi * np.asarray(pts, dtype=float)
+    return (np.arctan2(np.sin(angles).mean(axis=0), np.cos(angles).mean(axis=0)) / (2.0 * np.pi)) % 1.0
 
 
 def _medoid_xy(
@@ -3175,6 +3259,7 @@ def _pick_category_samples(
     n_per: int,
     method: str,
     rng: np.random.Generator,
+    periodic: bool = False,
 ) -> np.ndarray:
     """
     Description
@@ -3215,6 +3300,15 @@ def _pick_category_samples(
         Random generator used by ``"random"`` and by the ``"spiral"``
         fallback when every point sits on the centroid; the other
         strategies are deterministic.
+    periodic (bool)
+        ``True`` treats ``pts`` as coordinates on the periodic unit
+        torus (``[0, 1)`` in both dimensions, as every QLVM map is):
+        before any strategy runs, the points are replaced by their
+        wrapped displacements from the category's circular mean
+        (``_torus_circular_mean``), so the centroid, the distances and
+        the bounding box are those of the torus and a category that
+        straddles a seam is not centred in the middle of the map.
+        ``False`` (default) uses the coordinates as given.
 
     Returns
     -------
@@ -3239,6 +3333,9 @@ def _pick_category_samples(
     if method == "random":
         idxs = rng.choice(pts.shape[0], n_take, replace=False)
         return np.sort(idxs)
+
+    if periodic:
+        pts = (pts - _torus_circular_mean(pts) + 0.5) % 1.0 - 0.5
 
     cx0 = float(np.mean(pts[:, 0]))
     cy0 = float(np.mean(pts[:, 1]))
@@ -3418,7 +3515,11 @@ def plot_embedding_with_category_thumbnails(
         and are drawn on the regular map only; on a conditional map there are
         no boundaries (the colours show each vocalization's category), the spiral
         sampler walks without a boundary filter, and the centres are the
-        per-category means of that map's vocalizations.
+        per-category circular means of that map's vocalizations. Every map is a
+        periodic unit torus, so centres, spiral radii and pick distances are
+        computed with wrapped displacements (``_torus_circular_mean``,
+        ``_pick_spiral_with_grid`` / ``_pick_category_samples`` with
+        ``periodic=True``), and the spiral overlay breaks at the seams.
     n_samples_per_category (int)
         How many spectrograms to display per category row.
     apply_mask (bool)
@@ -3487,8 +3588,8 @@ def plot_embedding_with_category_thumbnails(
         taken from ``cluster_centers_xy`` / ``cluster_centers_json_path``
         when supplied, else the category bundle on the regular map
         (same priority chain as the spiral overlay); on a conditional
-        map without explicit centres, the per-category mean of the
-        displayed scatter points.
+        map without explicit centres, the per-category circular mean
+        (on the torus) of the displayed scatter points.
     cluster_id_fontsize (float)
         Font size used for the cluster-ID labels when
         ``annotate_cluster_ids`` is ``True``.
@@ -3732,14 +3833,17 @@ def plot_embedding_with_category_thumbnails(
             # lets the caller shrink the visible spiral to a tighter
             # neighborhood of the cluster center instead of covering
             # the full cluster footprint.
+            # Every QLVM map is a periodic unit torus, so the fallback
+            # centre is the circular mean and distances are wrapped (a
+            # category straddling a seam would otherwise be centred in
+            # the middle of the map, where it has no USVs).
             if int(cat) in cluster_centers_resolved:
                 sp_cx, sp_cy = cluster_centers_resolved[int(cat)]
             else:
-                sp_cx = float(np.mean(cat_pts[:, 0]))
-                sp_cy = float(np.mean(cat_pts[:, 1]))
-            dists_c = np.sqrt(
-                (cat_pts[:, 0] - sp_cx) ** 2 + (cat_pts[:, 1] - sp_cy) ** 2
-            )
+                sp_cx, sp_cy = (float(v) for v in _torus_circular_mean(cat_pts))
+            wrapped_dx = (cat_pts[:, 0] - sp_cx + 0.5) % 1.0 - 0.5
+            wrapped_dy = (cat_pts[:, 1] - sp_cy + 0.5) % 1.0 - 0.5
+            dists_c = np.sqrt(wrapped_dx ** 2 + wrapped_dy ** 2)
             # Two ways to size the spiral:
             #   - ``spiral_radius_abs`` (when not None): a fixed radius
             #     in embedding-space units applied identically to every
@@ -3762,6 +3866,7 @@ def plot_embedding_with_category_thumbnails(
                 cluster_label=int(cat),
                 n_turns=int(spiral_n_turns),
                 rng=rng if spiral_random_phase else None,
+                periodic=True,
             )
             picks_per_category[cat] = cat_df[local_idx.tolist()]
             if xs_path.size:
@@ -3769,6 +3874,7 @@ def plot_embedding_with_category_thumbnails(
         else:
             local_idx = _pick_category_samples(
                 cat_pts, n_per=n, method=sampling_method, rng=rng,
+                periodic=True,
             )
             picks_per_category[cat] = cat_df[local_idx.tolist()]
 
@@ -3874,7 +3980,8 @@ def plot_embedding_with_category_thumbnails(
     # already-resolved ``cluster_centers_resolved`` map (caller-
     # supplied xy / json, else the category bundle on the regular map);
     # on a conditional map without explicit centres they are the
-    # per-category means of the points plotted on its scatter.
+    # per-category circular means (the map is a torus) of the points
+    # plotted on its scatter.
     if annotate_cluster_ids:
         if cluster_centers_resolved:
             cluster_id_centres = {
@@ -3888,9 +3995,12 @@ def plot_embedding_with_category_thumbnails(
                 cat_mask = cat_all == cat
                 if not np.any(cat_mask):
                     continue
+                circular_centre = _torus_circular_mean(
+                    np.column_stack([x_all[cat_mask], y_all[cat_mask]])
+                )
                 cluster_id_centres[int(cat)] = (
-                    float(np.mean(x_all[cat_mask])),
-                    float(np.mean(y_all[cat_mask])),
+                    float(circular_centre[0]),
+                    float(circular_centre[1]),
                 )
         for cat_id, (cx, cy) in cluster_id_centres.items():
             ax_scatter.text(

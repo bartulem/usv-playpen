@@ -2368,6 +2368,29 @@ def test_plot_serial_dependence_draws_spline_and_bent_panels():
     plt.close(f)
 
 
+
+def test_plot_serial_dependence_labels_the_axes_with_the_pool_vocal_type():
+    """
+    Description
+    -----------
+    A squeak pool's axes read "inter-squeak interval", not the USV wording, and the default
+    stays the USV wording.
+    """
+
+    curves, fit, _ = _serial_dependence_tables()
+    rng = np.random.default_rng(1)
+    current = np.exp(rng.uniform(np.log(0.03), np.log(5.0), 200))
+    following = np.exp(rng.uniform(np.log(0.03), np.log(5.0), 200))
+    f, axes, _ = plot_serial_dependence((current, following), "#4C9BB5", curves,
+                                        fit.row(0, named=True), vocal_label="squeak")
+    assert axes[0].get_ylabel() == "next inter-squeak interval (ms)"
+    assert {ax.get_xlabel() for ax in axes} == {"current inter-squeak interval (ms)"}
+    plt.close(f)
+    f, axes, _ = plot_serial_dependence((current, following), "#4C9BB5", curves,
+                                        fit.row(0, named=True))
+    assert axes[0].get_ylabel() == "next inter-USV interval (ms)"
+    plt.close(f)
+
 def _tied_archive(tmp_path):
     """An archive holding a male USV tied ladder at 1 and 2 peaks (plus 2 background components
     each), the session-corrected peak test for both rungs with their null draws, and the
@@ -2617,3 +2640,16 @@ def test_plot_session_squeak_time_heatmap_missing_summary_raises(tmp_path):
     session_list.write_text(f"{tmp_path / 's_empty'}\n")
     with pytest.raises(FileNotFoundError, match="usv_summary"):
         _squeak_heatmap({"courtship": [str(session_list)]}, exclude_noise_usvs=True, min_session_segments=2)
+
+
+def test_extract_session_metadata_skips_the_playback_speaker_track(tmp_path):
+    """A USV-playback session keeps a ``speaker_*`` track beside the mouse track; the
+    metadata reader must take the mouse track, not raise on two candidates."""
+    sess = tmp_path / "20260101_120000"
+    _make_synthetic_session(sess, male_id="Mx", female_id="Fy", frame_rate=150.0, experiment_code="e")
+    mouse_file = next((sess / "video").rglob("*_points3d_translated_rotated_metric.h5"))
+    with h5py.File(mouse_file.parent / f"speaker_{mouse_file.name}", "w") as speaker:
+        speaker.create_dataset("track_names", data=[b"speaker"])
+    md = extract_session_metadata(str(sess))
+    assert md["track_names"] == ["Mx", "Fy"]
+    assert not md["tracking_file"].name.startswith("speaker")

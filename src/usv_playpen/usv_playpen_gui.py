@@ -68,7 +68,15 @@ from PyQt6.QtWidgets import (
 
 from .analyses.analyze_data import Analyst
 from .analyses.generate_audio_files import _PLAYBACK_CONTEXTS
-from .os_utils import QLVM_CATEGORY_MAP, QLVM_MAP_DISPLAY_NAMES, QLVM_MAPS, configure_path, rebase_experimenter_in_paths, resolve_data_root
+from .os_utils import (
+    QLVM_CATEGORY_MAP,
+    QLVM_MAP_DISPLAY_NAMES,
+    QLVM_MAPS,
+    atomic_output_path,
+    configure_path,
+    rebase_experimenter_in_paths,
+    resolve_data_root,
+)
 from .processing.preprocess_data import Stylist
 from .recording.behavioral_experiments import ExperimentController
 from .visualizations.visualize_data import Visualizer
@@ -1265,15 +1273,12 @@ class VideoSettings(QWidget):
     """
     Description
     -----------
-    Bare QWidget container for the second and third recording page of the usv-playpen GUI. The
+    Bare QWidget container for the second recording page of the usv-playpen GUI. The
     class adds no behaviour of its own beyond ``QWidget``: it exists so the page
     has a distinct type and object to parent its widgets to. It is constructed
     (with the main window as ``parent``) and populated by
-    ``USVPlaypenWindow.record_two`` and
-    ``USVPlaypenWindow.record_three``, which sets it as the window's central widget
-    and places (in ``record_two``) the audio, sync and video settings and
-    (in ``record_three``) the session metadata fields; each of the two pages
-    constructs its own instance on it.
+    ``USVPlaypenWindow.record_two``, which sets it as the window's central widget
+    and places the audio, sync and video settings on it.
 
     The only constructor input is ``parent`` (QWidget), the owning window.
     """
@@ -1294,6 +1299,40 @@ class VideoSettings(QWidget):
         None
         """
         super(VideoSettings, self).__init__(parent)
+
+
+class Metadata(QWidget):
+    """
+    Description
+    -----------
+    Bare QWidget container for the third recording page of the usv-playpen GUI. The
+    class adds no behaviour of its own beyond ``QWidget``: it exists so the page
+    has a distinct type and object to parent its widgets to. It is constructed
+    (with the main window as ``parent``) and populated by
+    ``USVPlaypenWindow.record_three``, which sets it as the window's central widget
+    and places the session metadata fields on it; the subject-removal and
+    intervention-edit buttons drawn by ``USVPlaypenWindow._update_subject_ui`` are
+    parented to it as well.
+
+    The only constructor input is ``parent`` (QWidget), the owning window.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        """
+        Description
+        -----------
+        Initializes the Metadata class.
+
+        Parameters
+        ----------
+        parent (QWidget)
+            Parent widget (the main window passes itself); None makes a top-level widget.
+
+        Returns
+        -------
+        None
+        """
+        super(Metadata, self).__init__(parent)
 
 class ConductRecording(QWidget):
     """
@@ -1538,6 +1577,17 @@ class USVPlaypenWindow(QMainWindow):
 
         Parameters
         ----------
+        **kwargs (dict)
+            Initial GUI state, each key set as an attribute of the same name on
+            the window (``setattr(self, key, value)``). The launcher passes the
+            ``initial_values_dict`` it builds from the recording TOML and the
+            processing / analyses / visualizations settings files: the
+            experimenter (``exp_id``), recording options (e.g.
+            ``conduct_audio_cb_bool``, ``recording_codec``, ``usgh_sr``),
+            the ``*_cb_bool`` step toggles (all False at start-up), figure and
+            QLVM-map defaults (e.g. ``fig_format``, ``default_cmap``,
+            ``qlvm_map``), one ``<camera_serial>_rec_checkbox_bool`` per camera
+            and one ``<share_name>_checkbox_bool`` per lab share.
 
         Returns
         -------
@@ -1780,9 +1830,11 @@ class USVPlaypenWindow(QMainWindow):
 
         try:
             self.subject_repo_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.subject_repo_path, 'w') as f:
+            with atomic_output_path(self.subject_repo_path) as tmp_settings_path, open(tmp_settings_path, 'w') as f:
                 json.dump(self.subject_repository, f, indent=4)
-        except Exception as e:
+        except OSError as e:
+            # A write failure (permissions, full disk) leaves the previous repository file
+            # intact (atomic rename) and is reported; any other error is a bug and raises.
             print(f"Error saving subject repository: {e}")
 
     def _on_subject_form_changed(self):
@@ -2117,7 +2169,7 @@ class USVPlaypenWindow(QMainWindow):
         # port, USGH sample rate, video frame rates / codec, and the
         # camera-derived sensor fields.
         if sync_equipment_dynamic_fields(self.metadata_settings, self.exp_settings_dict):
-            with open(Path(__file__).parent / '_config/_metadata.yaml', 'w') as metadata_file:
+            with atomic_output_path(Path(__file__).parent / '_config/_metadata.yaml') as tmp_settings_path, open(tmp_settings_path, 'w') as metadata_file:
                 yaml.dump(
                     self.metadata_settings,
                     metadata_file,
@@ -2367,7 +2419,7 @@ class USVPlaypenWindow(QMainWindow):
             button_x = start_x_remove + (col * horizontal_spacing_remove)
             button_y = start_y_remove + (row * vertical_spacing_remove)
 
-            button = QPushButton(QIcon(remove_icon), f"{subject_id}", self.VideoSettings)
+            button = QPushButton(QIcon(remove_icon), f"{subject_id}", self.Metadata)
             button.setStyleSheet('QPushButton { min-width: 90px; min-height: 12px; max-width: 90px; max-height: 13px; }')
             button.move(button_x, button_y)
             button.clicked.connect(partial(self._remove_subject, index_to_remove=i))
@@ -2402,7 +2454,7 @@ class USVPlaypenWindow(QMainWindow):
                         short_name = (abbreviation_map[interv_key] if interv_key in abbreviation_map else interv_key)
                         btn_text = f"{short_name} ({subject_id})"
 
-                        button = QPushButton(btn_text, self.VideoSettings)
+                        button = QPushButton(btn_text, self.Metadata)
                         button.setStyleSheet('QPushButton { min-width: 105px; min-height: 12px; max-width: 105px; max-height: 13px; }')
                         button.move(button_x, button_y)
                         button.clicked.connect(partial(self._open_edit_intervention_dialog, subject_id=subject_id, intervention_key=interv_key))
@@ -2673,7 +2725,7 @@ class USVPlaypenWindow(QMainWindow):
         if isinstance(equipment, dict) and isinstance((equipment['sync_LEDs'] if 'sync_LEDs' in equipment else None), dict):
             set_sync_LEDs_device_port(self.metadata_settings, text)
             metadata_path = Path(__file__).parent / '_config/_metadata.yaml'
-            with open(metadata_path, 'w') as metadata_file:
+            with atomic_output_path(metadata_path) as tmp_settings_path, open(tmp_settings_path, 'w') as metadata_file:
                 yaml.dump(
                     self.metadata_settings,
                     metadata_file,
@@ -2697,9 +2749,9 @@ class USVPlaypenWindow(QMainWindow):
         Persist the current ``self.metadata_settings`` to the package
         ``_config/_metadata.yaml``. This is the bare write, with no UI /
         central-widget guard, shared by :meth:`_save_metadata_to_yaml` (which first
-        refreshes the VideoSettings form fields and updates the preview) and by the
+        refreshes the Metadata form fields and updates the preview) and by the
         post-recording persistence in :meth:`_start_recording`, where the central
-        widget is ConductRecording (not VideoSettings) so the guarded saver would
+        widget is ConductRecording (not Metadata) so the guarded saver would
         otherwise return without writing and the recording-updated metadata would be
         silently lost.
 
@@ -2712,7 +2764,7 @@ class USVPlaypenWindow(QMainWindow):
         """
 
         metadata_path = Path(__file__).parent / '_config/_metadata.yaml'
-        with open(metadata_path, 'w') as metadata_file:
+        with atomic_output_path(metadata_path) as tmp_settings_path, open(tmp_settings_path, 'w') as metadata_file:
             yaml.dump(
                 self.metadata_settings,
                 metadata_file,
@@ -2736,7 +2788,7 @@ class USVPlaypenWindow(QMainWindow):
         None
         """
 
-        if not isinstance(self.centralWidget(), VideoSettings):
+        if not isinstance(self.centralWidget(), Metadata):
             return
 
         if not hasattr(self, 'institution_edit'):
@@ -3155,9 +3207,9 @@ class USVPlaypenWindow(QMainWindow):
         self.remove_subject_buttons.clear()
         self.edit_intervention_widgets.clear()
 
-        self.VideoSettings = VideoSettings(self)
+        self.Metadata = Metadata(self)
         self.setWindowTitle(f'{app_name} (Record > Metadata)')
-        self.setCentralWidget(self.VideoSettings)
+        self.setCentralWidget(self.Metadata)
         record_three_x, record_three_y = (950, 1050)
         self.setFixedSize(record_three_x, record_three_y)
 
@@ -3166,50 +3218,50 @@ class USVPlaypenWindow(QMainWindow):
         x_widget = 160
         widget_width = 250
 
-        title_label = QLabel('Session Metadata', self.VideoSettings)
+        title_label = QLabel('Session Metadata', self.Metadata)
         title_label.setFont(QFont(self.font_id, 13 + self.font_size_increase))
         title_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         title_label.move(x_label, y_pos)
         y_pos += 30
 
-        institution_label = QLabel('Institution:', self.VideoSettings)
+        institution_label = QLabel('Institution:', self.Metadata)
         institution_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         institution_label.move(x_label, y_pos)
-        self.institution_edit = QLineEdit(self.metadata_settings['Session']['institution'], self.VideoSettings)
+        self.institution_edit = QLineEdit(self.metadata_settings['Session']['institution'], self.Metadata)
         self.institution_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.institution_edit.setFixedWidth(widget_width)
         self.institution_edit.move(x_widget, y_pos + 2)
         self.institution_edit.textChanged.connect(self._save_metadata_to_yaml)
         y_pos += 30
 
-        lab_label = QLabel('Lab:', self.VideoSettings)
+        lab_label = QLabel('Lab:', self.Metadata)
         lab_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         lab_label.move(x_label, y_pos)
-        self.lab_edit = QLineEdit(self.metadata_settings['Session']['lab'], self.VideoSettings)
+        self.lab_edit = QLineEdit(self.metadata_settings['Session']['lab'], self.Metadata)
         self.lab_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.lab_edit.setFixedWidth(widget_width)
         self.lab_edit.move(x_widget, y_pos + 2)
         self.lab_edit.textChanged.connect(self._save_metadata_to_yaml)
         y_pos += 30
 
-        experimenter_label = QLabel('Experimenter:', self.VideoSettings)
+        experimenter_label = QLabel('Experimenter:', self.Metadata)
         experimenter_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         experimenter_label.move(x_label, y_pos)
-        self.experimenter_edit = QLineEdit(self.exp_id, self.VideoSettings)
+        self.experimenter_edit = QLineEdit(self.exp_id, self.Metadata)
         self.experimenter_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.experimenter_edit.setFixedWidth(widget_width)
         self.experimenter_edit.move(x_widget, y_pos + 2)
         self.experimenter_edit.textChanged.connect(self._save_metadata_to_yaml)
         y_pos += 30
 
-        ambient_light_label = QLabel('Ambient Light:', self.VideoSettings)
+        ambient_light_label = QLabel('Ambient Light:', self.Metadata)
         ambient_light_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         ambient_light_label.move(x_label, y_pos)
 
         self.ambient_light_bool = (self.metadata_settings['Session']['ambient_light'] if 'ambient_light' in self.metadata_settings['Session'] else False)
         on_off_list = ['on', 'off'] if self.ambient_light_bool else ['off', 'on']
 
-        self.ambient_light_cb = QComboBox(self.VideoSettings)
+        self.ambient_light_cb = QComboBox(self.Metadata)
         self.ambient_light_cb.addItems(on_off_list)
         self.ambient_light_cb.setStyleSheet('QComboBox { width: 220px; }')
         self.ambient_light_cb.move(x_widget, y_pos)
@@ -3239,10 +3291,10 @@ class USVPlaypenWindow(QMainWindow):
         self.ambient_light_cb.currentIndexChanged.connect(on_ambient_light_changed)
         y_pos += 30
 
-        exp_code_label = QLabel('Experiment Code:', self.VideoSettings)
+        exp_code_label = QLabel('Experiment Code:', self.Metadata)
         exp_code_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         exp_code_label.move(x_label, y_pos)
-        self.session_experiment_code_edit = QLineEdit(self.metadata_settings['Session']['session_experiment_code'], self.VideoSettings)
+        self.session_experiment_code_edit = QLineEdit(self.metadata_settings['Session']['session_experiment_code'], self.Metadata)
         self.session_experiment_code_edit.setPlaceholderText('e.g., ECL2MSFSd')
         self.session_experiment_code_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.session_experiment_code_edit.setFixedWidth(widget_width)
@@ -3250,10 +3302,10 @@ class USVPlaypenWindow(QMainWindow):
         self.session_experiment_code_edit.textChanged.connect(self._save_metadata_to_yaml)
         y_pos += 30
 
-        calibration_label = QLabel('Calibration Session:', self.VideoSettings)
+        calibration_label = QLabel('Calibration Session:', self.Metadata)
         calibration_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         calibration_label.move(x_label, y_pos)
-        self.calibration_session_edit = QLineEdit(self.metadata_settings['Session']['calibration_session'], self.VideoSettings)
+        self.calibration_session_edit = QLineEdit(self.metadata_settings['Session']['calibration_session'], self.Metadata)
         self.calibration_session_edit.setPlaceholderText('Tracking calibration session')
         self.calibration_session_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.calibration_session_edit.setFixedWidth(widget_width)
@@ -3261,10 +3313,10 @@ class USVPlaypenWindow(QMainWindow):
         self.calibration_session_edit.textChanged.connect(self._save_metadata_to_yaml)
         y_pos += 30
 
-        playback_file_label = QLabel('USV Playback File:', self.VideoSettings)
+        playback_file_label = QLabel('USV Playback File:', self.Metadata)
         playback_file_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         playback_file_label.move(x_label, y_pos)
-        self.session_usv_playback_file_edit = QLineEdit(self.metadata_settings['Session']['session_usv_playback_file'], self.VideoSettings)
+        self.session_usv_playback_file_edit = QLineEdit(self.metadata_settings['Session']['session_usv_playback_file'], self.Metadata)
         self.session_usv_playback_file_edit.setPlaceholderText('Playback .wav file (if any)')
         self.session_usv_playback_file_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.session_usv_playback_file_edit.setFixedWidth(widget_width)
@@ -3272,20 +3324,20 @@ class USVPlaypenWindow(QMainWindow):
         self.session_usv_playback_file_edit.textChanged.connect(self._save_metadata_to_yaml)
         y_pos += 30
 
-        description_label = QLabel('Session Description:', self.VideoSettings)
+        description_label = QLabel('Session Description:', self.Metadata)
         description_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         description_label.move(x_label, y_pos)
-        self.session_description_edit = QLineEdit(self.metadata_settings['Session']['session_description'], self.VideoSettings)
+        self.session_description_edit = QLineEdit(self.metadata_settings['Session']['session_description'], self.Metadata)
         self.session_description_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.session_description_edit.setFixedWidth(widget_width)
         self.session_description_edit.move(x_widget, y_pos + 2)
         self.session_description_edit.textChanged.connect(self._save_metadata_to_yaml)
         y_pos += 30
 
-        keywords_label = QLabel('Keywords:', self.VideoSettings)
+        keywords_label = QLabel('Keywords:', self.Metadata)
         keywords_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         keywords_label.move(x_label, y_pos)
-        self.keywords_edit = QLineEdit(','.join(self.metadata_settings['Session']['keywords']), self.VideoSettings)
+        self.keywords_edit = QLineEdit(','.join(self.metadata_settings['Session']['keywords']), self.Metadata)
         self.keywords_edit.setPlaceholderText('Comma-separated, e.g., social, e-phys, etc.')
         self.keywords_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.keywords_edit.setFixedWidth(widget_width)
@@ -3293,10 +3345,10 @@ class USVPlaypenWindow(QMainWindow):
         self.keywords_edit.textChanged.connect(self._save_metadata_to_yaml)
         y_pos += 30
 
-        notes_label = QLabel('Extra Notes:', self.VideoSettings)
+        notes_label = QLabel('Extra Notes:', self.Metadata)
         notes_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         notes_label.move(x_label, y_pos)
-        self.notes_edit = QLineEdit(self.metadata_settings['Session']['notes'], self.VideoSettings)
+        self.notes_edit = QLineEdit(self.metadata_settings['Session']['notes'], self.Metadata)
         self.notes_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.notes_edit.setFixedWidth(widget_width)
         self.notes_edit.move(x_widget, y_pos + 2)
@@ -3305,7 +3357,7 @@ class USVPlaypenWindow(QMainWindow):
 
         # Equipment
         y_pos += 10
-        equipment_title_label = QLabel('Equipment', self.VideoSettings)
+        equipment_title_label = QLabel('Equipment', self.Metadata)
         equipment_title_label.setFont(QFont(self.font_id, 13 + self.font_size_increase))
         equipment_title_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         equipment_title_label.move(x_label, y_pos)
@@ -3334,7 +3386,7 @@ class USVPlaypenWindow(QMainWindow):
             equipment_dict = (self.metadata_settings['Equipment'] if 'Equipment' in self.metadata_settings else None)
             is_checked = bool(equipment_dict and yaml_key in equipment_dict)
 
-            checkbox = QCheckBox(label_text, self.VideoSettings)
+            checkbox = QCheckBox(label_text, self.Metadata)
             checkbox.setFont(QFont(self.font_id, 11 + self.font_size_increase))
             checkbox.setStyleSheet("""QCheckBox {spacing: 5px;}
                                       QCheckBox::indicator {border: 1px solid grey; width: 15px; height: 15px; border-radius: 7.5px;}
@@ -3351,7 +3403,7 @@ class USVPlaypenWindow(QMainWindow):
 
         # Subjects
         y_pos += 20
-        subjects_title_label = QLabel('Add Subjects', self.VideoSettings)
+        subjects_title_label = QLabel('Add Subjects', self.Metadata)
         subjects_title_label.setFont(QFont(self.font_id, 13 + self.font_size_increase))
         subjects_title_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         subjects_title_label.move(x_label, y_pos)
@@ -3370,21 +3422,21 @@ class USVPlaypenWindow(QMainWindow):
         self.subject_form_widgets.clear()
 
         for key, (label_text, placeholder) in subject_fields.items():
-            label = QLabel(label_text, self.VideoSettings)
+            label = QLabel(label_text, self.Metadata)
             label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
             label.move(x_label, y_pos)
 
             if key == 'sex':
-                widget = QComboBox(self.VideoSettings)
+                widget = QComboBox(self.Metadata)
                 widget.addItems(['male', 'female'])
             elif key == 'housing':
-                widget = QComboBox(self.VideoSettings)
+                widget = QComboBox(self.Metadata)
                 widget.addItems(['group', 'single'])
             elif key == 'estrous_stage':
-                widget = QComboBox(self.VideoSettings)
+                widget = QComboBox(self.Metadata)
                 widget.addItems(['N/A', 'proestrus', 'estrus', 'metestrus', 'diestrus'])
             else:
-                widget = QLineEdit('', self.VideoSettings)
+                widget = QLineEdit('', self.Metadata)
                 widget.setPlaceholderText(placeholder)
 
             widget.setFont(QFont(self.font_id, 10 + self.font_size_increase))
@@ -3422,13 +3474,13 @@ class USVPlaypenWindow(QMainWindow):
 
         completer.activated.connect(self._on_subject_selected_from_completer)
 
-        clear_subject_form_btn = QPushButton(QIcon(clear_icon), "Clear Form", self.VideoSettings)
+        clear_subject_form_btn = QPushButton(QIcon(clear_icon), "Clear Form", self.Metadata)
         clear_subject_form_btn.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         clear_subject_form_btn.setStyleSheet('QPushButton { min-width: 90px; min-height: 12px; max-width: 90px; max-height: 13px; }')
         clear_subject_form_btn.move(180, subjects_y_pos)
         clear_subject_form_btn.clicked.connect(self._clear_subject_form)
 
-        self.add_subject_btn = QPushButton(QIcon(add_icon), 'Add Subject', self.VideoSettings)
+        self.add_subject_btn = QPushButton(QIcon(add_icon), 'Add Subject', self.Metadata)
         self.add_subject_btn.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.add_subject_btn.setStyleSheet('QPushButton { min-width: 90px; min-height: 12px; max-width: 90px; max-height: 13px; }')
         self.add_subject_btn.move(297, subjects_y_pos)
@@ -3437,10 +3489,10 @@ class USVPlaypenWindow(QMainWindow):
 
         # intervention for subject
         y_pos += 10
-        self.add_chemo_btn = QPushButton(QIcon(add_icon), "chemo", self.VideoSettings)
-        self.add_ephys_btn = QPushButton(QIcon(add_icon), "e-phys", self.VideoSettings)
-        self.add_lesion_btn = QPushButton(QIcon(add_icon), "lesion", self.VideoSettings)
-        self.add_opto_btn = QPushButton(QIcon(add_icon), "opto", self.VideoSettings)
+        self.add_chemo_btn = QPushButton(QIcon(add_icon), "chemo", self.Metadata)
+        self.add_ephys_btn = QPushButton(QIcon(add_icon), "e-phys", self.Metadata)
+        self.add_lesion_btn = QPushButton(QIcon(add_icon), "lesion", self.Metadata)
+        self.add_opto_btn = QPushButton(QIcon(add_icon), "opto", self.Metadata)
 
         buttons = [self.add_chemo_btn, self.add_ephys_btn, self.add_lesion_btn, self.add_opto_btn]
         callbacks = [self._open_chemo_dialog, self._open_ephys_dialog, self._open_lesion_dialog, self._open_opto_dialog]
@@ -3470,7 +3522,7 @@ class USVPlaypenWindow(QMainWindow):
         edit_interv_title_y = 910
         edit_interv_title_x = 10
 
-        edit_interv_title = QLabel("Edit Subject Interventions", self.VideoSettings)
+        edit_interv_title = QLabel("Edit Subject Interventions", self.Metadata)
         edit_interv_title.setFont(QFont(self.font_id, 13 + self.font_size_increase))
         edit_interv_title.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         edit_interv_title.move(edit_interv_title_x, edit_interv_title_y - 30)
@@ -3480,12 +3532,12 @@ class USVPlaypenWindow(QMainWindow):
         preview_width = 490
         preview_height = record_three_y - 100
 
-        preview_label = QLabel('Live Preview (_metadata.yaml)', self.VideoSettings)
+        preview_label = QLabel('Live Preview (_metadata.yaml)', self.Metadata)
         preview_label.setFont(QFont(self.font_id, 13 + self.font_size_increase))
         preview_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
         preview_label.move(preview_x, 10)
 
-        self.metadata_preview_edit = QPlainTextEdit(self.VideoSettings)
+        self.metadata_preview_edit = QPlainTextEdit(self.Metadata)
         self.metadata_preview_edit.setReadOnly(True)
         self.metadata_preview_edit.setFixedSize(preview_width, preview_height)
         self.metadata_preview_edit.move(preview_x, 40)
@@ -3495,7 +3547,7 @@ class USVPlaypenWindow(QMainWindow):
         self._update_subject_ui()
         self._update_metadata_preview()
 
-        self._create_buttons_record(seq=2, class_option=self.VideoSettings,
+        self._create_buttons_record(seq=2, class_option=self.Metadata,
                                     button_pos_y=record_three_y - 35, next_button_x_pos=record_three_x - 100)
 
     def record_four(self) -> None:
@@ -3523,7 +3575,7 @@ class USVPlaypenWindow(QMainWindow):
         self.txt_edit.setReadOnly(True)
         self.txt_edit.move((record_four_x - self.txt_edit.width()) // 2, 5)
 
-        with open((Path(__file__).parent / '_config/behavioral_experiments_settings.toml'), 'w') as updated_toml_file:
+        with atomic_output_path(Path(__file__).parent / '_config/behavioral_experiments_settings.toml') as tmp_settings_path, open(tmp_settings_path, 'w') as updated_toml_file:
             toml.dump(self.exp_settings_dict, updated_toml_file)
 
         self.run_exp = ExperimentController(message_output=self._message,
@@ -4302,14 +4354,16 @@ class USVPlaypenWindow(QMainWindow):
         self.txt_edit_process.setFixedSize(855, 940)
         self.txt_edit_process.setReadOnly(True)
 
-        with open((Path(__file__).parent / '_config/behavioral_experiments_settings.toml'), 'w') as updated_toml_file:
+        with atomic_output_path(Path(__file__).parent / '_config/behavioral_experiments_settings.toml') as tmp_settings_path, open(tmp_settings_path, 'w') as updated_toml_file:
             toml.dump(self.exp_settings_dict, updated_toml_file)
 
-        with open((Path(__file__).parent / '_parameter_settings/processing_settings.json'), 'w') as processing_settings_file:
+        with atomic_output_path(Path(__file__).parent / '_parameter_settings/processing_settings.json') as tmp_settings_path, open(tmp_settings_path, 'w') as processing_settings_file:
             json.dump(self.processing_input_dict, processing_settings_file, indent=2)
 
+        # A deep copy: the processing steps fill derived model paths into their settings in place
+        # (derive_spectrogram_model_paths), and those must never reach the dict the GUI saves and re-keys.
         self.run_processing = Stylist(message_output=self._process_message,
-                                      input_parameter_dict=self.processing_input_dict,
+                                      input_parameter_dict=copy.deepcopy(self.processing_input_dict),
                                       root_directories=self.processing_input_dict['preprocess_data']['root_directories'],
                                       exp_settings_dict=self.exp_settings_dict)
 
@@ -4687,7 +4741,7 @@ class USVPlaypenWindow(QMainWindow):
         self.txt_edit_analyze.setFixedSize(855, 740)
         self.txt_edit_analyze.setReadOnly(True)
 
-        with open((Path(__file__).parent / '_parameter_settings/analyses_settings.json'), 'w') as analyses_settings_file:
+        with atomic_output_path(Path(__file__).parent / '_parameter_settings/analyses_settings.json') as tmp_settings_path, open(tmp_settings_path, 'w') as analyses_settings_file:
             json.dump(self.analyses_input_dict, analyses_settings_file, indent=2)
 
         self.run_analyses = Analyst(message_output=self._analyses_message,
@@ -5382,7 +5436,7 @@ class USVPlaypenWindow(QMainWindow):
         self.txt_edit_visualize.setFixedSize(855, 740)
         self.txt_edit_visualize.setReadOnly(True)
 
-        with open((Path(__file__).parent / '_parameter_settings/visualizations_settings.json'), 'w') as visualizations_settings_file:
+        with atomic_output_path(Path(__file__).parent / '_parameter_settings/visualizations_settings.json') as tmp_settings_path, open(tmp_settings_path, 'w') as visualizations_settings_file:
             json.dump(self.visualizations_input_dict, visualizations_settings_file, indent=2)
 
         self.run_visualizations = Visualizer(message_output=self._visualizations_message,
@@ -5839,8 +5893,6 @@ class USVPlaypenWindow(QMainWindow):
         None
         """
 
-        self.config_dir_global = Path(__file__).parent / '_config'
-
         das_model_dir = configure_path(self.processing_input_dict['usv_inference']['FindMouseVocalizations']['das_command_line_inference']['das_model_directory'])
         sleap_inference_dir = configure_path(self.processing_input_dict['prepare_cluster_job']['inference_root_dir'])
         vcl_model_dir = configure_path(self.processing_input_dict['vocalocator']['vcl_model_directory'])
@@ -6075,7 +6127,7 @@ class USVPlaypenWindow(QMainWindow):
 
         Parameters
         ----------
-        *_args
+        *_args (tuple)
             Ignored positional args (the combo ``currentIndexChanged`` signal passes an
             index this slot reads from the combo itself instead).
 
@@ -6099,7 +6151,7 @@ class USVPlaypenWindow(QMainWindow):
 
         Parameters
         ----------
-        *_args
+        *_args (tuple)
             Ignored positional args (the combo ``activated`` signal passes an index this slot
             does not use).
 
@@ -6126,7 +6178,10 @@ class USVPlaypenWindow(QMainWindow):
         built repository once the background listing (``_available_playback_contexts``,
         submitted when the window was built) has returned; until then it re-checks every
         250 ms on the GUI thread, so the window opens without waiting on the network share.
-        The context selected in the settings stays first when it is available. A listing
+        The context currently selected (``self.playback_context``, which the user may already
+        have changed while the listing ran) stays first, and so stays shown and stored, when
+        it is available; otherwise the context selected in the settings stays first when it
+        is available; otherwise the first available context is taken. A listing
         that belongs to an earlier opening of the window (``_playback_context_future`` has
         moved on), or a dropdown that no longer exists because the user left the window,
         is ignored.
@@ -6146,8 +6201,12 @@ class USVPlaypenWindow(QMainWindow):
         if not playback_context_future.done():
             QTimer.singleShot(250, partial(self._apply_available_playback_contexts, playback_context_future))
             return
-        selected = self.analyses_input_dict['create_naturalistic_usv_playback_wav']['context_label']
-        available = sorted(playback_context_future.result(), key=lambda x: x == selected, reverse=True)
+        listed = playback_context_future.result()
+        if self.playback_context in listed:
+            selected = self.playback_context
+        else:
+            selected = self.analyses_input_dict['create_naturalistic_usv_playback_wav']['context_label']
+        available = sorted(listed, key=lambda x: x == selected, reverse=True)
         try:
             self.playback_context_cb.clear()
             self.playback_context_cb.addItems(available)
@@ -6169,9 +6228,11 @@ class USVPlaypenWindow(QMainWindow):
         one directory listing per sex on the share (two), not one per context (seven); a listing
         on the network share can take seconds when the link is busy. The playback-context
         dropdown offers only these, so a user cannot select a context that has not been built.
-        Falls back to every context if the repository root cannot be resolved or nothing is found
-        (fail-open, so a transient mount issue does not empty the dropdown; the run-time
-        FileNotFoundError from the generator remains the backstop).
+        Falls back to every context if the settings file cannot be read (OSError), a sex folder
+        cannot be listed, or nothing is found (fail-open, so a transient mount issue does not
+        empty the dropdown; the run-time FileNotFoundError from the generator remains the
+        backstop). A settings file without the ``naturalistic_usv_repository_dir`` key raises
+        KeyError rather than silently offering every context.
 
         Parameters
         ----------
@@ -6184,7 +6245,9 @@ class USVPlaypenWindow(QMainWindow):
 
         try:
             repository_root = resolve_data_root('naturalistic_usv_repository_dir')
-        except Exception:
+        except OSError:
+            # An unreadable settings file falls back to every context; a missing
+            # 'naturalistic_usv_repository_dir' key is a settings bug and raises.
             return list(_PLAYBACK_CONTEXTS)
         repository_names = {}
         for sex in {sex for _token, sex in _PLAYBACK_CONTEXTS.values()}:
@@ -6281,7 +6344,7 @@ class USVPlaypenWindow(QMainWindow):
 
         Parameters
         ----------
-         index (int)
+        index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
@@ -6410,7 +6473,7 @@ class USVPlaypenWindow(QMainWindow):
 
         Parameters
         ----------
-         index (int)
+        index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
@@ -6435,7 +6498,7 @@ class USVPlaypenWindow(QMainWindow):
 
         Parameters
         ----------
-         index (int)
+        index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
@@ -6460,7 +6523,7 @@ class USVPlaypenWindow(QMainWindow):
 
         Parameters
         ----------
-         index (int)
+        index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
@@ -6485,7 +6548,7 @@ class USVPlaypenWindow(QMainWindow):
 
         Parameters
         ----------
-         index (int)
+        index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
@@ -6601,7 +6664,7 @@ class USVPlaypenWindow(QMainWindow):
 
         Parameters
         ----------
-         index (int)
+        index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
@@ -6626,7 +6689,7 @@ class USVPlaypenWindow(QMainWindow):
 
         Parameters
         ----------
-         index (int)
+        index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
@@ -6651,7 +6714,7 @@ class USVPlaypenWindow(QMainWindow):
 
         Parameters
         ----------
-         index (int)
+        index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
@@ -6676,7 +6739,7 @@ class USVPlaypenWindow(QMainWindow):
 
         Parameters
         ----------
-         index (int)
+        index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.
@@ -6702,7 +6765,7 @@ class USVPlaypenWindow(QMainWindow):
 
         Parameters
         ----------
-         index (int)
+        index (int)
             Index of selected choice (completes automatically).
         variable_id (str)
             Attribute to be created based on the choice.

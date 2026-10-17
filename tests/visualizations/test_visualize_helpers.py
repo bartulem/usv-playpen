@@ -77,6 +77,8 @@ def _make_fig_maker(root_directory: str, **viz_overrides) -> NeuronalTuningFigur
     viz = {
         "male_colors": ["#1f77b4"],
         "female_colors": ["#d62728"],
+        "figures": {"sequential_cmap": "inferno", "diverging_cmap": "BrBG_r",
+                    "fig_format": "pdf", "dpi": 300, "seed": 0, "timestamp_in_name": False},
     }
     viz.update(viz_overrides)
     return NeuronalTuningFigureMaker(

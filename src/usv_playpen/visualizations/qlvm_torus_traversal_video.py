@@ -66,8 +66,12 @@ import click
 import h5py
 import matplotlib
 import matplotlib.gridspec as gridspec
+import matplotlib.pyplot as plt
 import numpy as np
 from click.core import ParameterSource
+from matplotlib.animation import FFMpegWriter, FuncAnimation, PillowWriter
+from matplotlib.collections import LineCollection
+from matplotlib.colors import to_rgb
 from sklearn.neighbors import NearestNeighbors
 
 from ..cli_utils import modify_settings_json_for_cli
@@ -83,11 +87,10 @@ from ..time_utils import is_gui_context, smart_wait
 from .auxiliary_plot_functions import create_colormap, draw_category_outlines
 from .plot_style import apply_plot_style
 
+# The video is rendered off-screen frame by frame, so the non-interactive Agg
+# backend is selected (pyplot allows switching the backend after import as long
+# as no figure is open yet).
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # Agg backend is selected above, before importing pyplot
-from matplotlib.animation import FFMpegWriter, FuncAnimation, PillowWriter
-from matplotlib.collections import LineCollection
-from matplotlib.colors import to_rgb
 
 # Register the bundled Helvetica weights + activate the project mplstyle so all
 # text in the video renders in Helvetica, instead of matplotlib's default font.
@@ -734,7 +737,6 @@ class QLVMTorusTraversalVideo:
         heatmap = bundle['density']
         ws_labels = bundle['label_grid']
         centers = bundle['centers']
-        res = heatmap.shape[0]
         K = len(centers)
 
         if self.output_path is None:
@@ -952,8 +954,10 @@ class QLVMTorusTraversalVideo:
             vmax = float(np.percentile(nz, 95)) if nz.size else None
             ax_l.imshow(heatmap, origin='lower', extent=(0, 1, 0, 1),
                         cmap=spec_cmap, vmin=0, vmax=vmax, aspect='equal')
-            xx = np.linspace(0, 1, res)
-            yy = np.linspace(0, 1, res)
+            # The bundle's pixel centres ((k + 0.5) / res), where the heatmap's
+            # extent=(0, 1, 0, 1) places each pixel; linspace(0, 1, res) would shift
+            # every outline by up to half a pixel against the heatmap.
+            xx = yy = bundle['axis']
             # one outline per category (draw_category_outlines), so every border has the same width
             draw_category_outlines(ax_l, xx, yy, ws_labels, colors=_C_WHITE, linewidths=2.5, zorder=2)
             ax_l.set_xlim(0, 1); ax_l.set_ylim(0, 1); ax_l.set_aspect('equal')
@@ -1443,7 +1447,7 @@ def qlvm_torus_traversal_video_cli(ctx, output_path, **kwargs) -> None:
         The click context; its parameter sources tell which options were given on the command line.
     output_path (str)
         Output .mp4 / .gif path (default: figures.save_directory + timestamp).
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns

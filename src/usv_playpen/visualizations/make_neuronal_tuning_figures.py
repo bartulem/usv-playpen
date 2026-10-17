@@ -42,6 +42,7 @@ from scipy import ndimage
 from scipy.stats import gaussian_kde, spearmanr
 from tqdm import tqdm
 
+from ..analyses._usv_io import unique_match_or_none
 from ..analyses.compute_behavioral_features import FeatureZoo
 from ..analyses.compute_neuronal_tuning_curves import (
     CONTINUOUS_PROPERTIES,
@@ -60,10 +61,10 @@ from ..os_utils import (
     load_qlvm_category_bundle,
     vocal_event_times,
 )
-from .plot_style import apply_plot_style
 from ..time_utils import is_gui_context, smart_wait
 from .auxiliary_plot_functions import choose_animal_colors, create_colormap
 from .figure_io import save_figure
+from .plot_style import apply_plot_style
 
 apply_plot_style()
 
@@ -295,19 +296,11 @@ BEHAVIORAL_TIER_LABELS: dict[str, str] = {
 }
 
 
-# The vocal page's size and vertical layout are fixed by its layout invariants
-# (the section-(a) raster + usv_peth on top, the 5x4 usv_property_tuning grid of
-# section (b) below it, and the section-(c) category row at the bottom, which sits
-# on the same page so no page carries a lone row). They scale with the page
-# dimensions, not with anything user-tunable, so are constants rather than
-# settings. Section (c) is one row of the 4-column section-(b) grid, as tall as one
-# section-(b) row (the 17.5 units of section (b) hold 5 rows and 4 gaps of 0.45 row
-# heights), and the outer gaps keep the section-(a) / section-(b) spacing of the
-# two-section page (3.375 units).
+# Height of one row of the continuous-property grid on the vocal page, in gridspec
+# height-ratio units: 17.5 units hold the grid's rows plus a 0.45-row gap between
+# consecutive rows. It scales with the page layout, not with anything user-tunable,
+# so it is a constant rather than a setting.
 VOCAL_SECTION_B_ROW_HEIGHT = 17.5 / (len(PROPERTY_ROW_ORDER) + 0.45 * (len(PROPERTY_ROW_ORDER) - 1))
-VOCAL_SECTION_HEIGHT_RATIOS = (5.0, 17.5, VOCAL_SECTION_B_ROW_HEIGHT * len(SECTION_C_ROWS))
-VOCAL_SECTION_HSPACE = 3.375 / (sum(VOCAL_SECTION_HEIGHT_RATIOS) / len(VOCAL_SECTION_HEIGHT_RATIOS))
-VOCAL_PAGE_FIGSIZE_INCHES = (16, 30.7)
 
 # The vocal page is ONE page, four columns wide: the two rate traces take three quarters of the
 # width with the bout-triggered raster and the first-versus-later scatter stacked in the
@@ -519,7 +512,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         Parameters
         ----------
-        **kwargs
+        **kwargs (dict)
             Required keys: `root_directory`, `visualizations_parameter_dict`,
             `message_output`. Optional unit-filter keys: `kslabels` (default
             `("good",)`) and `somatic_filter` (default `"somatic"`). Each
@@ -547,16 +540,12 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         # Output resolution and cosmetic-RNG seed, read once from the shared
         # `figures` block so every figure this class builds uses the project-wide
-        # values instead of hard-coded dpi / seed literals. The same defensive
-        # fallback as the save path is kept so a figures-less settings dict (e.g.
-        # in unit tests) still constructs.
-        figures_settings = (
-            self.visualizations_parameter_dict["figures"]
-            if "figures" in self.visualizations_parameter_dict
-            else {}
-        )
-        self._figure_dpi = int(figures_settings["dpi"] if "dpi" in figures_settings else 300)
-        self._figure_seed = int(figures_settings["seed"] if "seed" in figures_settings else 0)
+        # values instead of hard-coded dpi / seed literals. Both keys are read
+        # directly: a settings dict without them is a configuration error, not a
+        # reason to draw at a silently substituted 300 dpi / seed 0.
+        figures_settings = self.visualizations_parameter_dict["figures"]
+        self._figure_dpi = int(figures_settings["dpi"])
+        self._figure_seed = int(figures_settings["seed"])
 
         # Unit-selection filter (applied at the figure layer; the aggregator
         # pickle holds every unit). Defaults reproduce the historical
@@ -781,6 +770,12 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         `figures.fig_format` (`pdf` produces a single multi-page file;
         other formats produce one file per page). Pkls
         with neither behavioral nor vocal payload are skipped silently.
+        A cluster whose pkl cannot be loaded, or whose rendering raises, is
+        reported and the remaining clusters are still rendered; every figure
+        a failing cluster opened is closed, so it leaks no figure into the
+        rest of the run. Once every cluster was attempted, a RuntimeError
+        names the failed clusters, so a partial run is never reported as
+        finished.
 
         Parameters
         ----------
@@ -789,6 +784,12 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Returns
         -------
         None
+
+        Raises
+        ------
+        RuntimeError
+            At least one cluster's pkl failed to load or its figure failed to
+            render (raised after every cluster was attempted).
         """
 
         message_output = self.message_output if hasattr(self, "message_output") else print
@@ -809,16 +810,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             message_output(f"  neuronal-figs: no tuning pkls in {tuning_dir}; skipping.")
             return
 
-        figures_settings = (
-            self.visualizations_parameter_dict["figures"]
-            if "figures" in self.visualizations_parameter_dict
-            else {}
-        )
-        fig_format = str(
-            figures_settings["fig_format"]
-            if "fig_format" in figures_settings
-            else "pdf"
-        ).lower()
+        fig_format = str(self.visualizations_parameter_dict["figures"]["fig_format"]).lower()
 
         # try to load USV summary for the bout raster (left subplot of section a).
         usv_summary_df = None
@@ -883,12 +875,14 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         # double the spine thickness for all axes (mplstyle uses 0.75 default).
         spine_lw = 2.0 * float(plt.rcParams["axes.linewidth"])
+        failed_clusters: list[str] = []
         for pkl_file in tqdm(pkl_files, desc="neuronal tuning figures"):
             try:
                 with pkl_file.open("rb") as fh:
                     cluster_data = pickle.load(fh)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 -- collected and re-raised after the loop
                 message_output(f"  neuronal-figs: failed to load {pkl_file.name}: {exc}")
+                failed_clusters.append(f"{pkl_file.name} (load: {type(exc).__name__}: {exc})")
                 continue
             cluster_id = pkl_file.stem.replace("_tuning_curves_data", "")
             has_behavioral = any(k.startswith("beh_offset=") for k in cluster_data)
@@ -909,6 +903,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             if not (behavioral_renderable or has_vocal):
                 continue
             out_path = tuning_dir / f"{cluster_id}_neuronal_tuning.{fig_format}"
+            # Figures open before this cluster; a page that raises halfway is never handed to
+            # `save_fig` (which closes it), so the handler below closes whatever this cluster
+            # opened instead of leaking one large figure per failing cluster.
+            figures_open_before = set(plt.get_fignums())
             try:
                 with plt.rc_context({"axes.linewidth": spine_lw}), self._open_save_target(
                     out_path=out_path,
@@ -929,11 +927,20 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                             segmentation=segmentation,
                             save_fig=save_fig,
                         )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 -- collected and re-raised after the loop
+                for figure_number in set(plt.get_fignums()) - figures_open_before:
+                    plt.close(figure_number)
                 message_output(
                     f"  neuronal-figs: failed to render {cluster_id}: {exc}"
                 )
+                failed_clusters.append(f"{cluster_id} (render: {type(exc).__name__}: {exc})")
                 continue
+        if failed_clusters:
+            failure_message = (
+                f"Neuronal tuning figures failed for {len(failed_clusters)} of {len(pkl_files)} "
+                f"clusters in {tuning_dir}: {'; '.join(failed_clusters)}"
+            )
+            raise RuntimeError(failure_message)
 
     # population VMI summary figures
 
@@ -1040,6 +1047,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         The `Other` group is intentionally matched against the
         lowercase `other` settings key so the JSON stays
         biologically-readable.
+
+        Parameters
+        ----------
 
         Returns
         -------
@@ -3430,8 +3440,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         outside it (a pickle computed with another window), so pre- and
         post-onset peaks are both shown.
 
-        Consistency filter is the one agreed during the PETH design
-        session: per-unit `peak_t` values across significant excit
+        Consistency filter: per-unit `peak_t` values across significant excit
         sessions must contain a `k_min`-or-larger subset whose
         max-min spread is no greater than `tol_s` (defaults to 100
         ms full width, k_min=2), with an optional majority gate
@@ -4366,11 +4375,11 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         `selectivity` high) or broadly responsive
         (`n_sig_categories` many, `selectivity` low).
 
-        Parameters
-        ----------
         See `make_category_peak_distribution_figure` for the shared
         consistency-rule parameters. Otherwise identical.
 
+        Parameters
+        ----------
         triage_pkl_path (str | pathlib.Path)
             Absolute path to the `unit_triage_*.pkl` artifact.
         segmentation (str)
@@ -4583,10 +4592,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         list of output paths in render order so the caller can log
         and cross-reference them.
 
-        Parameters
-        ----------
         See per-segmentation method docstrings; identical knobs.
 
+        Parameters
+        ----------
         triage_pkl_path (str | pathlib.Path)
             Absolute path to the `unit_triage_*.pkl` artifact.
         catalog_csv_path (str | pathlib.Path | None)
@@ -4801,10 +4810,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         interface so figure (1)'s collector can iterate one unit at
         a time without knowing the bool-tuple → tier mapping.
 
-        Parameters
-        ----------
         See `_compute_behavioral_bucket_flags`; identical signature.
 
+        Parameters
+        ----------
         unit (dict)
             One entry from `triage["units"]`.
         recorded_mouse_id (str)
@@ -5429,12 +5438,35 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             / USV-property / USV-category / USV-category-PETH passes
             the same per-modality consistency rule.
 
+        The parameters have the same semantics as
+        `make_behavioral_tuning_summary_figure`.
+
         Parameters
         ----------
-        triage_pkl_path, catalog_csv_path, condition, k_min,
-        require_majority, out_dir, fig_format
-            Same semantics as
-            `make_behavioral_tuning_summary_figure`.
+        triage_pkl_path (str | pathlib.Path)
+            Absolute path to the `unit_triage_*.pkl` artifact.
+        catalog_csv_path (str | pathlib.Path | None)
+            Optional override of the catalog CSV path; defaults to the
+            `catalog_path` embedded in the triage pickle (None uses
+            the embedded path; the default is None).
+        condition (str)
+            Which `unit["conditions"][...]` block to walk. Defaults to
+            `"intact_female"` (the headline condition).
+        k_min (int)
+            Minimum sig-session count per modality (the same
+            per-feature consistency rule as
+            `_compute_behavioral_bucket_flags` and `_compute_vocal_flag`);
+            defaults to 2.
+        require_majority (bool)
+            Apply the strict-majority gate on top of `k_min` (the
+            significant sessions must form a strict majority of the
+            tested sessions); defaults to True.
+        out_dir (str | pathlib.Path | None)
+            Directory override; `None` (the default) falls back to
+            `figures.save_directory`.
+        fig_format (str | None)
+            Output format override; `None` (the default) falls back to
+            `figures.fig_format`.
 
         Returns
         -------
@@ -5503,10 +5535,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         region plus the total `n_eligible` across all regions (used
         by the aggregate panel of the per-region figure).
 
+        The parameters are the same as `_collect_three_set_overlap_counts`.
+
         Parameters
         ----------
-        Same as `_collect_three_set_overlap_counts`.
-
         triage_pkl_path (str | pathlib.Path)
             Absolute path to the `unit_triage_*.pkl` artifact.
         catalog_csv_path (str | pathlib.Path | None)
@@ -5598,12 +5630,35 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         the title. The aggregate panel uses the project's
         unassigned-grey for its Vocal circle.
 
+        The parameters have identical semantics to
+        `make_three_set_overlap_venn_figure`.
+
         Parameters
         ----------
-        triage_pkl_path, catalog_csv_path, condition, k_min,
-        require_majority, out_dir, fig_format
-            Identical semantics to
-            `make_three_set_overlap_venn_figure`.
+        triage_pkl_path (str | pathlib.Path)
+            Absolute path to the `unit_triage_*.pkl` artifact.
+        catalog_csv_path (str | pathlib.Path | None)
+            Optional override of the catalog CSV path; defaults to the
+            `catalog_path` embedded in the triage pickle (None uses
+            the embedded path; the default is None).
+        condition (str)
+            Which `unit["conditions"][...]` block to walk. Defaults to
+            `"intact_female"` (the headline condition).
+        k_min (int)
+            Minimum sig-session count per modality (the same
+            per-feature consistency rule as
+            `_compute_behavioral_bucket_flags` and `_compute_vocal_flag`);
+            defaults to 2.
+        require_majority (bool)
+            Apply the strict-majority gate on top of `k_min` (the
+            significant sessions must form a strict majority of the
+            tested sessions); defaults to True.
+        out_dir (str | pathlib.Path | None)
+            Directory override; `None` (the default) falls back to
+            `figures.save_directory`.
+        fig_format (str | None)
+            Output format override; `None` (the default) falls back to
+            `figures.fig_format`.
 
         Returns
         -------
@@ -5707,14 +5762,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         None
         """
 
-        figures_settings = (
-            self.visualizations_parameter_dict["figures"]
-            if "figures" in self.visualizations_parameter_dict
-            else {}
-        )
-        dpi = int(
-            figures_settings["dpi"] if "dpi" in figures_settings else 300
-        )
+        figures_settings = self.visualizations_parameter_dict["figures"]
+        dpi = int(figures_settings["dpi"])
 
         if fig_format == "pdf":
             with PdfPages(out_path) as pdf:
@@ -5868,14 +5917,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             else:
                 plot_features.setdefault("social", []).append(feature_key)
 
-        figures_settings = (
-            self.visualizations_parameter_dict["figures"]
-            if "figures" in self.visualizations_parameter_dict
-            else {}
-        )
-        ratemap_cmap = (
-            figures_settings["sequential_cmap"] if "sequential_cmap" in figures_settings else "inferno"
-        )
+        figures_settings = self.visualizations_parameter_dict["figures"]
+        ratemap_cmap = figures_settings["sequential_cmap"]
         # behavioral occupancy threshold lives on the analyses side (it's
         # a tuning-curve config alongside usv_property_min_occupancy_seconds);
         # compute writes it into behavioral_metadata, and the plotter reads
@@ -6252,8 +6295,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 candidates = list(pathlib.Path(root).rglob(f"cluster_data/{cluster_id}.npy"))
             except OSError:
                 continue
-            if candidates:
-                return np.sort(np.asarray(np.load(candidates[0])[0, :], dtype=float))
+            spike_file = unique_match_or_none(candidates, label=f"cluster_data/{cluster_id}.npy under {root}")
+            if spike_file is not None:
+                return np.sort(np.asarray(np.load(spike_file)[0, :], dtype=float))
         return np.empty(0, dtype=float)
 
     @staticmethod
@@ -6367,7 +6411,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         bout_cfg (dict)
             The ``neuronal_tuning_figures`` visualization settings block: the density
             grid (``bout_density_grid``) and the bout shares the contours enclose
-            (``bout_density_levels``, at most three, one per line style).
+            (``bout_density_levels``, at most three, in any order; sorted ascending,
+            the smallest share takes the first line style, and each contour and its
+            legend entry share one style). More than three raises ``ValueError``.
 
         Returns
         -------
@@ -6398,10 +6444,17 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         estimate = gaussian_kde(np.vstack([later, first]))
         density = estimate(np.vstack([grid_x.ravel(), grid_y.ravel()])).reshape(grid_x.shape)
         density = (density - density.min()) / (density.max() - density.min() + 1e-12)
-        # contour levels enclosing a stated share of the bouts, read off the sorted density
+        if len(bout_cfg["bout_density_levels"]) > len(BOUT_DENSITY_STYLES):
+            msg = (f"neuronal_tuning_figures.bout_density_levels holds {len(bout_cfg['bout_density_levels'])} "
+                   f"levels; at most {len(BOUT_DENSITY_STYLES)} (one per line style) can be drawn.")
+            raise ValueError(msg)
+        # contour levels enclosing a stated share of the bouts, read off the sorted density;
+        # ONE pairing of (share, level, style), ascending in share, drives both the contours
+        # and the legend so each contour carries its own share's style
         flat = np.sort(density.ravel())[::-1]
         share = np.cumsum(flat) / flat.sum()
-        levels = sorted({float(flat[np.searchsorted(share, q)]) for q in bout_cfg["bout_density_levels"]})
+        contour_styles = [(float(q), float(flat[np.searchsorted(share, q)]), style)
+                          for q, style in zip(sorted(bout_cfg["bout_density_levels"]), BOUT_DENSITY_STYLES)]
 
         ax.imshow(density.T,
                   cmap=LinearSegmentedColormap.from_list("density", ["#FFFFFF", colour]),
@@ -6410,14 +6463,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         ax.scatter(later, first, s=16, facecolor=colour, edgecolor=COLOR_BLACK, linewidth=0.3,
                    zorder=2)
         ax.plot([0, limit], [0, limit], color=COLOR_BLACK, linewidth=1.0, zorder=3)
-        for level, style in zip(levels, BOUT_DENSITY_STYLES[::-1]):
+        for _quantile, level, style in contour_styles:
             ax.contour(grid_x, grid_y, density, levels=[level], colors=COLOR_BLACK,
                        linestyles=style, linewidths=1.0, zorder=4)
-        if len(bout_cfg["bout_density_levels"]) > len(BOUT_DENSITY_STYLES):
-            msg = (f"neuronal_tuning_figures.bout_density_levels holds {len(bout_cfg['bout_density_levels'])} "
-                   f"levels; at most {len(BOUT_DENSITY_STYLES)} (one per line style) can be drawn.")
-            raise ValueError(msg)
-        for style, quantile in zip(BOUT_DENSITY_STYLES, bout_cfg["bout_density_levels"]):
+        for quantile, _level, style in contour_styles:
             ax.plot([], [], color=COLOR_BLACK, linestyle=style, linewidth=1.0,
                     label=f"{100 * quantile:.0f}%")
         ax.scatter([later.mean()], [first.mean()], marker="D", s=46, facecolor="#FFFFFF",
@@ -6607,7 +6656,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Description
         -----------
         Lay out and draw the single vocal page. Split from `_render_vocal_page` only so the
-        font context wraps the whole of it without indenting the body twice.
+        font context wraps the whole of it without indenting the body twice. `save_fig` closes
+        the figure once the page is drawn; if any panel raises first, the figure is closed here
+        before the error propagates, so a failing page leaks no figure.
 
         Parameters
         ----------
@@ -6630,41 +6681,45 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
 
         fig = plt.figure(figsize=VOCAL_ONE_PAGE_FIGSIZE_INCHES, tight_layout=False)
-        height_ratios = [3.2, 3.2, 3.6] + [VOCAL_SECTION_B_ROW_HEIGHT] * len(PROPERTY_ROW_ORDER)
-        outer = gridspec.GridSpec(
-            nrows=len(height_ratios), ncols=VOCAL_PAGE_COLUMNS, height_ratios=height_ratios,
-            hspace=0.75, wspace=0.52, left=0.07, right=0.94, top=0.97, bottom=0.03,
-        )
+        try:
+            height_ratios = [3.2, 3.2, 3.6] + [VOCAL_SECTION_B_ROW_HEIGHT] * len(PROPERTY_ROW_ORDER)
+            outer = gridspec.GridSpec(
+                nrows=len(height_ratios), ncols=VOCAL_PAGE_COLUMNS, height_ratios=height_ratios,
+                hspace=0.75, wspace=0.52, left=0.07, right=0.94, top=0.97, bottom=0.03,
+            )
 
-        # A pickle from before the bout-onset statistics carries no block, and an emitter the
-        # analysis skipped has no entry; either way there is nothing to draw.
-        bout_blocks = (cluster_data["usv_ibi_bout_onset"]
-                       if "usv_ibi_bout_onset" in cluster_data and cluster_data["usv_ibi_bout_onset"] else {})
-        payload = bout_blocks[emitter] if emitter in bout_blocks else None
-        drawable = payload is not None and usv_summary_df is not None
-        if drawable:
-            self._draw_bout_rows(fig=fig, outer=outer, emitter=emitter,
-                                 cluster_data=cluster_data, usv_summary_df=usv_summary_df,
-                                 payload=payload)
-            # `_draw_section_a` draws the raster and the pooled PETH together, so it is handed
-            # the two axes it needs even though they now sit in different rows of the page.
-            self._draw_section_a(
-                ax_raster=fig.add_subplot(outer[0, VOCAL_PAGE_COLUMNS - 1]),
-                ax_peth=fig.add_subplot(outer[2, 0]),
-                emitter=emitter, cluster_data=cluster_data, usv_summary_df=usv_summary_df)
+            # A pickle from before the bout-onset statistics carries no block, and an emitter the
+            # analysis skipped has no entry; either way there is nothing to draw.
+            bout_blocks = (cluster_data["usv_ibi_bout_onset"]
+                           if "usv_ibi_bout_onset" in cluster_data and cluster_data["usv_ibi_bout_onset"] else {})
+            payload = bout_blocks[emitter] if emitter in bout_blocks else None
+            drawable = payload is not None and usv_summary_df is not None
+            if drawable:
+                self._draw_bout_rows(fig=fig, outer=outer, emitter=emitter,
+                                     cluster_data=cluster_data, usv_summary_df=usv_summary_df,
+                                     payload=payload)
+                # `_draw_section_a` draws the raster and the pooled PETH together, so it is handed
+                # the two axes it needs even though they now sit in different rows of the page.
+                self._draw_section_a(
+                    ax_raster=fig.add_subplot(outer[0, VOCAL_PAGE_COLUMNS - 1]),
+                    ax_peth=fig.add_subplot(outer[2, 0]),
+                    emitter=emitter, cluster_data=cluster_data, usv_summary_df=usv_summary_df)
 
-        gs_c = gridspec.GridSpecFromSubplotSpec(
-            len(SECTION_C_ROWS), 3, subplot_spec=outer[2, 1:VOCAL_PAGE_COLUMNS],
-            wspace=0.40, hspace=0.45,
-        )
-        self._draw_section_c(fig=fig, gs=gs_c, emitter=emitter, cluster_data=cluster_data,
-                             segmentation=segmentation)
+            gs_c = gridspec.GridSpecFromSubplotSpec(
+                len(SECTION_C_ROWS), 3, subplot_spec=outer[2, 1:VOCAL_PAGE_COLUMNS],
+                wspace=0.40, hspace=0.45,
+            )
+            self._draw_section_c(fig=fig, gs=gs_c, emitter=emitter, cluster_data=cluster_data,
+                                 segmentation=segmentation)
 
-        gs_b = gridspec.GridSpecFromSubplotSpec(
-            len(PROPERTY_ROW_ORDER), VOCAL_PAGE_COLUMNS, subplot_spec=outer[3:, :],
-            wspace=0.40, hspace=0.45,
-        )
-        self._draw_section_b(fig=fig, gs=gs_b, emitter=emitter, cluster_data=cluster_data)
+            gs_b = gridspec.GridSpecFromSubplotSpec(
+                len(PROPERTY_ROW_ORDER), VOCAL_PAGE_COLUMNS, subplot_spec=outer[3:, :],
+                wspace=0.40, hspace=0.45,
+            )
+            self._draw_section_b(fig=fig, gs=gs_b, emitter=emitter, cluster_data=cluster_data)
+        except BaseException:
+            plt.close(fig)
+            raise
 
         save_fig(fig, page_label)
 
@@ -7147,14 +7202,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         log_threshold = VOCAL_STRIP_LOG_RATIO_THRESHOLD
         symlog_linthresh = VOCAL_STRIP_SYMLOG_LINTHRESH
-        figures_settings = (
-            self.visualizations_parameter_dict["figures"]
-            if "figures" in self.visualizations_parameter_dict
-            else {}
-        )
-        ratemap_cmap = (
-            figures_settings["sequential_cmap"] if "sequential_cmap" in figures_settings else "inferno"
-        )
+        figures_settings = self.visualizations_parameter_dict["figures"]
+        ratemap_cmap = figures_settings["sequential_cmap"]
 
         # build a sequential colormap for the occupancy watershed from
         # the emitter's sex color (mirrors the per-mouse colormap that
@@ -7360,18 +7409,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             colors=COLOR_BLACK, linewidths=0.8,
         )
 
-        # optionally annotate each category region with its category ID
-        # at the centroid of the category mask. When the mask does not
-        # wrap, the arithmetic mean of (xx, yy) over the mask lands
-        # inside the blob and we use it. On the QLVM torus a category
-        # can wrap across the embedding boundary, in
-        # which case the arithmetic centroid falls in the empty gap
-        # between halves; we detect that case (closest pixel to the
-        # arithmetic centroid is NOT inside the mask) and fall back to
-        # the circular mean on each axis using period = bounds range.
+        # optionally annotate each category region with its category ID, placed at the
+        # deepest point of the region's largest contiguous piece (see below).
         if annotate_categories:
-            period_x = x_max - x_min
-            period_y = y_max - y_min
             cluster_cats = set(int(c) for c in np.asarray(categories).tolist())
             for cat_label in unique_labels_in_grid:
                 cat_id = int(cat_label)

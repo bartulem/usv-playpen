@@ -1624,6 +1624,7 @@ def _draw_serial_dependence_panel(
     grid_bins: int,
     bend: tuple | None,
     colorbar: bool,
+    vocal_label: str = "USV",
 ) -> None:
     """
     Description
@@ -1658,6 +1659,9 @@ def _draw_serial_dependence_panel(
         interval, or None.
     colorbar (bool)
         Whether this panel carries the pair-count colorbar.
+    vocal_label (str)
+        Vocal type of the pool, written into the x-axis label as
+        ``'current inter-<vocal_label> interval (ms)'``; defaults to ``'USV'``.
 
     Returns
     -------
@@ -1699,7 +1703,7 @@ def _draw_serial_dependence_panel(
     ax.set_xlim(lim)
     ax.set_ylim(lim)
     ax.set_aspect("equal", adjustable="box")
-    ax.set_xlabel("current inter-USV interval (ms)")
+    ax.set_xlabel(f"current inter-{vocal_label} interval (ms)")
     # The legend sits at the top, just right of the bout boundary, in the sparse region between
     # the boundary line and the diagonal; anchored at the upper left it ran over the boundary.
     # Its longest entry (the bend) can still reach the diagonal, so it gets an opaque white
@@ -1733,6 +1737,7 @@ def plot_serial_dependence(
     lims_ms: tuple = (15.0, 20000.0),
     grid_bins: int = 70,
     figsize: tuple = (6.2, 2.6),
+    vocal_label: str = "USV",
 ) -> tuple[plt.Figure, np.ndarray, dict]:
     """
     Description
@@ -1775,6 +1780,9 @@ def plot_serial_dependence(
         Bins per axis of the 2-D histogram; defaults to 70.
     figsize (tuple)
         Figure size in inches; defaults to (6.2, 2.6).
+    vocal_label (str)
+        Vocal type of the pool (e.g. ``'USV'`` or ``'squeak'``), written into both axis labels
+        as ``'current / next inter-<vocal_label> interval (ms)'``; defaults to ``'USV'``.
 
     Returns
     -------
@@ -1797,7 +1805,8 @@ def plot_serial_dependence(
     _draw_serial_dependence_panel(
         f, axes[0], log_current, log_following, color, grid_ms, curves["spline_ms"].to_numpy(),
         curves["spline_low_ms"].to_numpy(), curves["spline_high_ms"].to_numpy(),
-        "median next interval (fit)", boundary_ms, lims_ms, grid_bins, bend=None, colorbar=False)
+        "median next interval (fit)", boundary_ms, lims_ms, grid_bins, bend=None, colorbar=False,
+        vocal_label=vocal_label)
     bent_ms = curves["bent_ms"].to_numpy()
     _draw_serial_dependence_panel(
         f, axes[1], log_current, log_following, color, grid_ms, bent_ms,
@@ -1805,8 +1814,8 @@ def plot_serial_dependence(
         "median next interval (fit)", boundary_ms, lims_ms, grid_bins,
         bend=(fit["bend_ms"], fit["bend_low_ms"], fit["bend_high_ms"], fit["level"],
               float(np.exp(np.interp(np.log(fit["bend_ms"]), np.log(grid_ms), np.log(bent_ms))))),
-        colorbar=True)
-    axes[0].set_ylabel("next inter-USV interval (ms)")
+        colorbar=True, vocal_label=vocal_label)
+    axes[0].set_ylabel(f"next inter-{vocal_label} interval (ms)")
     axes[0].set_title("A: median spline", fontsize=7)
     axes[1].set_title("B: bent-line median fit", fontsize=7)
 

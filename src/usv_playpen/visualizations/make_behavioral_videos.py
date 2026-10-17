@@ -2,6 +2,7 @@
 @author: bartulem
 Makes behavioral videos from 3D tracked points.
 """
+
 from __future__ import annotations
 
 import json
@@ -46,6 +47,15 @@ apply_plot_style()
 # size desyncs from the figure and the video glitches in PowerPoint.
 _VIDEO_FIGSIZE = (7.5, 4.8)
 _VIDEO_DPI = 540
+
+# Upper bound (seconds) on one ffmpeg audio mux. The mux copies the video stream
+# (``-c:v copy``) and encodes only the audio track, which takes seconds even for long
+# videos, so a mux that runs this long has hung.
+_FFMPEG_MUX_TIMEOUT_S = 1800
+
+# Upper bound (seconds) on the command that hands a saved frame to the desktop image
+# viewer (``open`` / ``xdg-open`` return as soon as the viewer is launched).
+_VIEWER_OPEN_TIMEOUT_S = 60
 _VIDEO_COLOR_MODES = {
     "light_mode": {
         "background_color": "#FFFFFF",
@@ -421,7 +431,9 @@ def load_arena_tracks(arena_directory: str) -> tuple[pathlib.Path, np.ndarray, l
 
     h5_file_arena = first_match_or_raise(
         root=pathlib.Path(arena_directory) / 'video',
-        pattern='*_points3d_translated_rotated_metric.h5',
+        # `[!speaker]` skips the speaker track a USV-playback session keeps beside the
+        # main track, so a playback session given as the arena directory resolves to one file
+        pattern='[!speaker]*_points3d_translated_rotated_metric.h5',
         recursive=True,
         label="arena points3d .h5",
     )
@@ -499,57 +511,56 @@ def plot_mouse_data(data: np.ndarray,
 
     Parameters
     ----------
-    Contains the following set of parameters
-        data (np.ndarray)
-            A (n_frames, n_mice, n_nodes, n_dim) shape ndarray of 3D mouse data.
-        plot_axes (plt.Axes)
-            Axes object for plotting.
-        frame_number (int)
-            Frame to be plotted.
-        animal_node_names (list)
-            Mouse node names.
-        animal_color (list)
-            List of mouse colors.
-        animal_cm (list)
-            List of mouse colormaps.
-        animal_line_width (int / float)
-            Line width of lines connecting mouse nodes.
-        node_bool (bool)
-            If true, plots body nodes.
-        node_connections (list)
-            Mouse node connections.
-        node_polygons (list)
-            Mouse node polygon vertices.
-        node_lw (int / float)
-            Line width of mouse nodes.
-        node_size (int / float)
-            Size of mouse nodes.
-        node_opacity (int / float)
-            Opacity of mouse nodes.
-        node_edge_color (str)
-            Mouse node edge color.
-        polygon_color (list)
-            List of face colors of mouse polygons.
-        polygon_opacity (int/ float)
-            Opacity of mouse polygons.
-        body_edge_color (str)
-            Color of mouse body outer edges
-        history_bool (bool)
-            Boolean for plotting mouse movement history.
-        history_frame_span (int)
-            Number of frames to plot for mouse movement history.
-        history_point (str)
-            Node to use for plotting mouse movement history.
-        history_ls (str)
-            Line style of mouse movement history.
-        history_lw (int / float)
-            Line width of mouse movement history.
-        xlim_ (int / float)
-            X-axis limit.
-        ylim_ (int / float)
-            Y-axis limit.
-        zlim_ (int / float)
-            Z-axis limit.
+    data (np.ndarray)
+        A (n_frames, n_mice, n_nodes, n_dim) shape ndarray of 3D mouse data.
+    plot_axes (plt.Axes)
+        Axes object for plotting.
+    frame_number (int)
+        Frame to be plotted.
+    animal_node_names (list)
+        Mouse node names.
+    animal_color (list)
+        List of mouse colors.
+    animal_cm (list)
+        List of mouse colormaps.
+    animal_line_width (int / float)
+        Line width of lines connecting mouse nodes.
+    node_bool (bool)
+        If true, plots body nodes; defaults to False.
+    node_connections (list)
+        Mouse node connections.
+    node_polygons (list)
+        Mouse node polygon vertices.
+    node_lw (int / float)
+        Line width of mouse nodes.
+    node_size (int / float)
+        Size of mouse nodes.
+    node_opacity (int / float)
+        Opacity of mouse nodes.
+    node_edge_color (str)
+        Mouse node edge color.
+    polygon_color (list)
+        List of face colors of mouse polygons.
+    polygon_opacity (int/ float)
+        Opacity of mouse polygons.
+    body_edge_color (str)
+        Color of mouse body outer edges
+    history_bool (bool)
+        Boolean for plotting mouse movement history; defaults to False.
+    history_frame_span (int)
+        Number of frames to plot for mouse movement history.
+    history_point (str)
+        Node to use for plotting mouse movement history.
+    history_ls (str)
+        Line style of mouse movement history.
+    history_lw (int / float)
+        Line width of mouse movement history.
+    xlim_ (int / float)
+        X-axis limit.
+    ylim_ (int / float)
+        Y-axis limit.
+    zlim_ (int / float)
+        Z-axis limit.
 
     Returns
     -------
@@ -622,17 +633,16 @@ def plot_speaker_data(speaker_data: np.ndarray,
 
     Parameters
     ----------
-    Contains the following set of parameters
-        speaker_data (np.ndarray)
-            A (n_frames, 1, 1, n_dim) shape ndarray of the 3D speaker point.
-        plot_axes (ax)
-            Axes object for plotting.
-        frame_number (int)
-            Frame to be plotted.
-        speaker_color (str)
-            Speaker color.
-        speaker_alpha (int / float)
-            Speaker opacity.
+    speaker_data (np.ndarray)
+        A (n_frames, 1, 1, n_dim) shape ndarray of the 3D speaker point.
+    plot_axes (plt.Axes)
+        Axes object for plotting.
+    frame_number (int)
+        Frame to be plotted.
+    speaker_color (str)
+        Speaker color.
+    speaker_alpha (int / float)
+        Speaker opacity.
 
     Returns
     -------
@@ -671,47 +681,47 @@ def plot_spectrogram(plot_axes: plt.Axes,
 
     Parameters
     ----------
-    Contains the following set of parameters
-        plot_axes (ax)
-            Axes object for plotting.
-        figure_object (fig)
-            Figure object for plotting.
-        spec_start (int)
-            Start index of spectrogram.
-        spec_end (int)
-            End index of spectrogram.
-        audio_sr (int)
-            Audio sampling rate.
-        stft_hop (int)
-            STFT hop size.
-        half_window_size_sec (int / float)
-            Half window size in seconds.
-        cbar_bool (bool)
-            Boolean for plotting color bar.
-        color_mode_preferences (dict)
-            Contains color mode preferences.
-        spectrogram_amplitude (np.ndarray)
-            Input data w/ spectrogram amplitude.
-        power_limit (list)
-            Power limits [vmin, vmax] for spectrogram.
-        freq_limit (list)
-            Frequency y-axis limits [fmin, fmax] for spectrogram.
-        freq_yticks (list)
-            Frequency y-axis tick positions (Hz) for the spectrogram, from the
-            ``spectrogram_yticks`` setting; labelled in kHz. Empty list = no ticks.
-        plot_usv_segments_bool (bool)
-            Boolean for plotting assignment of USV segments.
-        usv_segments_list (list)
-            Contains information about start/stop of each USV segment.
-        usv_segment_lw (int / float)
-            Line width of USV segments.
-        usv_segment_colors_list (list)
-            USVs segments colored by mouse identity.
-        usv_segments_ypos (int / float)
-            Y-position of USV segments.
-        spectrogram_cmap (str)
-            Matplotlib colormap name for the spectrogram image; supplied from
-            the shared ``figures.sequential_cmap`` setting by the callers.
+    plot_axes (plt.Axes)
+        Axes object for plotting.
+    figure_object (plt.Figure)
+        Figure object for plotting.
+    spec_start (int)
+        Start index of spectrogram.
+    spec_end (int)
+        End index of spectrogram.
+    audio_sr (int)
+        Audio sampling rate.
+    stft_hop (int)
+        STFT hop size.
+    half_window_size_sec (int / float)
+        Half window size in seconds.
+    cbar_bool (bool)
+        Boolean for plotting color bar; defaults to False.
+    color_mode_preferences (dict)
+        Contains color mode preferences.
+    spectrogram_amplitude (np.ndarray)
+        Input data w/ spectrogram amplitude.
+    power_limit (list)
+        Power limits [vmin, vmax] for spectrogram.
+    freq_limit (list)
+        Frequency y-axis limits [fmin, fmax] for spectrogram.
+    freq_yticks (list)
+        Frequency y-axis tick positions (Hz) for the spectrogram, from the
+        ``spectrogram_yticks`` setting; labelled in kHz. Empty list = no ticks.
+    plot_usv_segments_bool (bool)
+        Boolean for plotting assignment of USV segments; defaults to False.
+    usv_segments_list (list)
+        Contains information about start/stop of each USV segment.
+    usv_segment_lw (int / float)
+        Line width of USV segments.
+    usv_segment_colors_list (list)
+        USVs segments colored by mouse identity.
+    usv_segments_ypos (int / float)
+        Y-position of USV segments.
+    spectrogram_cmap (str)
+        Matplotlib colormap name for the spectrogram image; supplied from
+        the shared ``figures.sequential_cmap`` setting by the callers;
+        defaults to 'inferno'.
 
     Returns
     -------
@@ -807,33 +817,32 @@ def plot_raster(plot_axes: plt.Axes,
 
     Parameters
     ----------
-    Contains the following set of parameters
-        plot_axes (ax)
-            Axes object for plotting.
-        figure_object (fig)
-            Figure object for plotting.
-        unit_num (int)
-            Number of units.
-        raster_data (list of np.ndarray)
-            Input data for plotting a spike raster.
-        raster_half_window (int)
-            Half window size in frames.
-        raster_half_window_sec (int / float)
-            Half window size in seconds.
-        raster_brain_area (dict)
-            Brain areas recorded from by each probe.
-        raster_line_lengths (list)
-            Line lengths for raster events.
-        raster_line_widths (list)
-            Line widths for raster events.
-        filtered_brain_areas (list)
-            Brain areas to be denoted on plot.
-        color_mode_preferences (dict)
-            Contains color mode preferences.
-        event_plot_colors (list)
-            Colors for plotting raster events.
-        brain_area_color_scheme (dict)
-            Brain area color scheme.
+    plot_axes (plt.Axes)
+        Axes object for plotting.
+    figure_object (plt.Figure)
+        Figure object for plotting.
+    unit_num (int)
+        Number of units.
+    raster_data (list of np.ndarray)
+        Input data for plotting a spike raster.
+    raster_half_window (int)
+        Half window size in frames.
+    raster_half_window_sec (int / float)
+        Half window size in seconds.
+    raster_brain_area (dict)
+        Brain areas recorded from by each probe.
+    raster_line_lengths (list)
+        Line lengths for raster events.
+    raster_line_widths (list)
+        Line widths for raster events.
+    filtered_brain_areas (list)
+        Brain areas to be denoted on plot.
+    color_mode_preferences (dict)
+        Contains color mode preferences.
+    event_plot_colors (list)
+        Colors for plotting raster events.
+    brain_area_color_scheme (dict)
+        Brain area color scheme.
 
     Returns
     -------
@@ -931,51 +940,50 @@ def plot_behavioral_features(plot_axes: plt.Axes,
 
     Parameters
     ----------
-    Contains the following set of parameters
-        plot_axes (ax)
-            Full axes object for plotting.
-        figure_object (fig)
-            Figure object for plotting.
-        mouse_track_names (list)
-            List of mouse track names.
-        special_features (list)
-            Features that will be accentuated, and others made transparent.
-        beh_features_to_plot (list)
-            List of behavioral features to plot.
-        beh_feature_data (DataFrame)
-            Input data for plotting behavioral features.
-        beh_features_fig_position (list)
-            List of figure positions for behavioral features.
-        beh_window_size_frames (int)
-            Window size in frames.
-        beh_window_size_sec (int / float)
-            Half window size in seconds (per-side +/- x-axis bound; equals beh_features_window_size / 2).
-        beh_half_window_size_frames (int)
-            Half window size in frames.
-        beh_features_ylabels (dict)
-            Dictionary containing y-axis labels for behavioral features.
-        feature_ts_fr_start (int)
-            Start index of feature time series.
-        feature_ts_fr_end (int)
-            End index of feature time series.
-        feature_ts_fr_middle (int)
-            Middle index of feature time series.
-        x_axis_start (int)
-            Start index of x-axis.
-        x_axis_middle (int)
-            Middle index of x-axis.
-        x_axis_end (int)
-            End index of x-axis.
-        ylim_dict (dict)
-            Dictionary containing y-axis limits for behavioral features.
-        plot_theme (str)
-            If 'dark', dark theme.
-        color_mode_preferences (dict)
-            Dictionary containing color mode preferences.
-        animal_colors (list)
-            List of animal colors.
-        remove_axes_bool (bool)
-            Boolean for removing axes.
+    plot_axes (plt.Axes)
+        Full axes object for plotting.
+    figure_object (plt.Figure)
+        Figure object for plotting.
+    mouse_track_names (list)
+        List of mouse track names.
+    special_features (list)
+        Features that will be accentuated, and others made transparent.
+    beh_features_to_plot (list)
+        List of behavioral features to plot.
+    beh_feature_data (pls.DataFrame)
+        Input data for plotting behavioral features.
+    beh_features_fig_position (list)
+        List of figure positions for behavioral features.
+    beh_window_size_frames (int)
+        Window size in frames.
+    beh_window_size_sec (int / float)
+        Half window size in seconds (per-side +/- x-axis bound; equals beh_features_window_size / 2).
+    beh_half_window_size_frames (int)
+        Half window size in frames.
+    beh_features_ylabels (dict)
+        Dictionary containing y-axis labels for behavioral features.
+    feature_ts_fr_start (int)
+        Start index of feature time series.
+    feature_ts_fr_end (int)
+        End index of feature time series.
+    feature_ts_fr_middle (int)
+        Middle index of feature time series.
+    x_axis_start (int)
+        Start index of x-axis.
+    x_axis_middle (int)
+        Middle index of x-axis.
+    x_axis_end (int)
+        End index of x-axis.
+    ylim_dict (dict)
+        Dictionary containing y-axis limits for behavioral features.
+    plot_theme (str)
+        If 'dark', dark theme.
+    color_mode_preferences (dict)
+        Dictionary containing color mode preferences.
+    animal_colors (list)
+        List of animal colors.
+    remove_axes_bool (bool)
+        Boolean for removing axes; defaults to False.
 
     Returns
     -------
@@ -1140,71 +1148,71 @@ def plot_arena_corners_mics(data: np.ndarray,
 
     Parameters
     ----------
-    Contains the following set of parameters
-        data (np.ndarray)
-            Input data w/ 3D arena and mic points.
-        plot_axes (ax)
-            Axes object for plotting.
-        frame_number (int)
-            Frame to be plotted.
-        session_id (str)
-            Session ID.
-        esr (int / float)
-            Empirical camera frame rate.
-        animal_id (dict)
-            Contains animal ID (name: sex symbol) information.
-        animal_colors (list)
-            List of animal colors.
-        color_mode_preferences (dict)
-            Contains color mode preferences.
-        arena_node_connections_bool (bool)
-            If True, plots arena node connections.
-        arena_node_connections (list)
-            List of arena node connections.
-        arena_node_names (list)
-            List of arena node names.
-        arena_axes_lw (int / float)
-            Line width of arena axes.
-        arena_mics_lw (int / float)
-            Line width of arena-mic depictions.
-        arena_mics_opacity (int / float)
-            Opacity of arena-mic depictions.
-        plot_corners_bool (bool)
-            If True, plots corner points.
-        corner_size (int / float)
-            Size of corner points.
-        corner_opacity (int / float)
-            Opacity of corner points.
-        plot_mesh_walls_bool (bool)
-           If True, plots mesh walls around playpen.
-        mesh_color (str)
-            Color of mesh walls.
-        mesh_opacity (int / float)
-            Opacity of mesh walls.
-        active_mic_bool (bool)
-            If True, plots active mic.
-        active_mic_position (int)
-            Channel of active mic (required; the caller supplies 0 when no spectrogram channel is selected).
-        active_mic_color (str)
-            Color of active mic.
-        inactive_mic_bool (bool)
-            If True, plots inactive mics.
-        inactive_mic_color (str)
-            Color of inactive mics.
-        text_start_coords (list)
-            Starting coordinates for text.
-        main_text_offset (int / float)
-            Offset for main text.
-        mouse_id_text_offset (int / float)
-            Offset for mouse ID text.
-        text_fontsize (int)
-            Font size for text.
-        corner_colors (dict | None)
-            Per-corner hex colours keyed ``'North'`` / ``'West'`` / ``'South'`` /
-            ``'East'`` (the ``corner_colors`` settings block, supplied by the
-            callers); used only when ``plot_corners_bool`` is True. None falls back
-            to the shipped mapping (North ``#FF0000``, West ``#FFFF00``, South
-            ``#008000``, East ``#0000FF``).
+    data (np.ndarray)
+        Input data w/ 3D arena and mic points.
+    plot_axes (plt.Axes)
+        Axes object for plotting.
+    frame_number (int)
+        Frame to be plotted.
+    session_id (str)
+        Session ID.
+    esr (int / float)
+        Empirical camera frame rate.
+    animal_id (dict)
+        Contains animal ID (name: sex symbol) information.
+    animal_colors (list)
+        List of animal colors.
+    color_mode_preferences (dict)
+        Contains color mode preferences.
+    arena_node_connections_bool (bool)
+        If True, plots arena node connections; defaults to False.
+    arena_node_connections (list)
+        List of arena node connections.
+    arena_node_names (list)
+        List of arena node names.
+    arena_axes_lw (int / float)
+        Line width of arena axes.
+    arena_mics_lw (int / float)
+        Line width of arena-mic depictions.
+    arena_mics_opacity (int / float)
+        Opacity of arena-mic depictions.
+    plot_corners_bool (bool)
+        If True, plots corner points; defaults to False.
+    corner_size (int / float)
+        Size of corner points.
+    corner_opacity (int / float)
+        Opacity of corner points.
+    plot_mesh_walls_bool (bool)
+        If True, plots mesh walls around playpen; defaults to False.
+    mesh_color (str)
+        Color of mesh walls.
+    mesh_opacity (int / float)
+        Opacity of mesh walls.
+    active_mic_bool (bool)
+        If True, plots active mic; defaults to False.
+    active_mic_position (int)
+        Channel of active mic (required; the caller supplies 0 when no spectrogram channel is selected).
+    active_mic_color (str)
+        Color of active mic.
+    inactive_mic_bool (bool)
+        If True, plots inactive mics (drawn only when ``active_mic_bool`` is
+        also True); defaults to False.
+    inactive_mic_color (str)
+        Color of inactive mics.
+    text_start_coords (list)
+        Starting coordinates for text.
+    main_text_offset (int / float)
+        Offset for main text.
+    mouse_id_text_offset (int / float)
+        Offset for mouse ID text.
+    text_fontsize (int)
+        Font size for text.
+    corner_colors (dict | None)
+        Per-corner hex colours keyed ``'North'`` / ``'West'`` / ``'South'`` /
+        ``'East'`` (the ``corner_colors`` settings block, supplied by the
+        callers); used only when ``plot_corners_bool`` is True. None falls back
+        to the shipped mapping (North ``#FF0000``, West ``#FFFF00``, South
+        ``#008000``, East ``#0000FF``).
 
     Returns
     -------
@@ -1435,18 +1443,21 @@ class Create3DVideo:
 
         Parameters
         ----------
-        exp_id (str)
-            Experiment ID (needed for figure naming).
-        root_directory (str)
-            Root directory containing mouse tracking data.
-        arena_directory (str)
-            Root directory containing arena tracking data.
-        speaker_audio_file (str)
-            File path to speaker tracking data.
-        visualizations_parameter_dict (dict)
-            Visualization params; defaults to None.
-        message_output (function)
-            Defines output messages; defaults to None.
+        **kwargs (dict)
+            Keyword arguments, each stored as an attribute of the same name;
+            any key outside the six below raises ``TypeError``. The keys are:
+            exp_id (str)
+                Experiment ID (needed for figure naming).
+            root_directory (str)
+                Root directory containing mouse tracking data.
+            arena_directory (str)
+                Root directory containing arena tracking data.
+            speaker_audio_file (str)
+                File path to speaker tracking data.
+            visualizations_parameter_dict (dict)
+                Visualization params; defaults to None.
+            message_output (function)
+                Defines output messages; defaults to None.
 
         Returns
         -------
@@ -2493,11 +2504,18 @@ class Create3DVideo:
                     for unit_id in self.visualizations_parameter_dict['make_behavioral_videos']['raster_special_units']:
                         audio_file_name = f"{session_id}_3D_{frame_start}-{frame_start + frame_span}fr_spike_sound_{unit_id}.wav"
                         output_video_name = animation_file_name + f"_spike_sound_{unit_id}.{self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_format']}"
-                        subprocess.Popen(args=f"{self.command_addition}ffmpeg -y -i {animation_file_name}.{self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_format']} -i {audio_file_name} -c:v copy -c:a aac {output_video_name}",
-                                         stdout=subprocess.DEVNULL,
-                                         stderr=subprocess.STDOUT,
-                                         cwd=putative_save_directory,
-                                         shell=self.shell_usage_bool).wait()
+                        spike_mux = subprocess.run(args=f"{self.command_addition}ffmpeg -y -i {animation_file_name}.{self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']['animation_format']} -i {audio_file_name} -c:v copy -c:a aac {output_video_name}",
+                                                   stdout=subprocess.DEVNULL,
+                                                   stderr=subprocess.STDOUT,
+                                                   cwd=putative_save_directory,
+                                                   shell=self.shell_usage_bool,
+                                                   timeout=_FFMPEG_MUX_TIMEOUT_S,
+                                                   check=False)
+                        if spike_mux.returncode != 0:
+                            # The spike-sound WAV is kept so the mux can be redone by hand.
+                            mux_error = (f"ffmpeg mux of the spike sound for unit {unit_id} failed "
+                                         f"(return code {spike_mux.returncode}); kept {audio_file_name}.")
+                            raise RuntimeError(mux_error)
                         (putative_save_directory / audio_file_name).unlink()
 
                 mbv = self.visualizations_parameter_dict['make_behavioral_videos']
@@ -2512,11 +2530,13 @@ class Create3DVideo:
                                                                                                                       seq_duration=mbv['video_duration'])
                     if usv_sound_path is not None and pathlib.Path(usv_sound_path).is_file():
                         output_video_name = animation_file_name + f"_with_USV_sound.{mbv['general_figure_specs']['animation_format']}"
-                        mux_return_code = subprocess.Popen(args=f"{self.command_addition}ffmpeg -y -i {animation_file_name}.{mbv['general_figure_specs']['animation_format']} -i {usv_sound_path} -c:v copy -c:a aac {output_video_name}",
-                                                           stdout=subprocess.DEVNULL,
-                                                           stderr=subprocess.STDOUT,
-                                                           cwd=putative_save_directory,
-                                                           shell=self.shell_usage_bool).wait()
+                        mux_return_code = subprocess.run(args=f"{self.command_addition}ffmpeg -y -i {animation_file_name}.{mbv['general_figure_specs']['animation_format']} -i {usv_sound_path} -c:v copy -c:a aac {output_video_name}",
+                                                         stdout=subprocess.DEVNULL,
+                                                         stderr=subprocess.STDOUT,
+                                                         cwd=putative_save_directory,
+                                                         shell=self.shell_usage_bool,
+                                                         timeout=_FFMPEG_MUX_TIMEOUT_S,
+                                                         check=False).returncode
                         if mux_return_code != 0:
                             self.message_output(f"WARNING: ffmpeg mux of pitch-shifted audio failed (return code {mux_return_code}).")
 
@@ -2547,10 +2567,10 @@ class Create3DVideo:
                         os.startfile(str(fig_loc.resolve()))
                 elif os_type == 'Darwin':
                     if 'DISPLAY' in os.environ:
-                        subprocess.run(args=['open', str(fig_loc.resolve())], check=True)
+                        subprocess.run(args=['open', str(fig_loc.resolve())], check=True, timeout=_VIEWER_OPEN_TIMEOUT_S)
                 elif os_type == 'Linux':
                     if 'DISPLAY' in os.environ:
-                        subprocess.run(args=['xdg-open', str(fig_loc.resolve())], check=True)
+                        subprocess.run(args=['xdg-open', str(fig_loc.resolve())], check=True, timeout=_VIEWER_OPEN_TIMEOUT_S)
                 else:
                     self.message_output("Unsupported operating system for opening image.")
 

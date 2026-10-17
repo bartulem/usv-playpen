@@ -114,7 +114,7 @@ class NeuronalDecodingFigureMaker:
 
         Parameters
         ----------
-        **kwargs
+        **kwargs (dict)
             The expected keys are `decoding_directory`, `visualizations_parameter_dict` and
             `message_output`; each is set as an attribute and any other key raises ``TypeError``.
 
@@ -293,7 +293,9 @@ class NeuronalDecodingFigureMaker:
         focal_area (str)
             Area drawn in the main panel.
         focal_sessions (tuple)
-            One ``(mouse, session, usv_count)`` per curve; `usv_count` drives the opacity.
+            One ``(mouse, session, usv_count)`` per curve; `usv_count` drives the opacity,
+            scaled between the smallest and largest count over ALL listed sessions (one mouse
+            may appear in several sessions, each keeping its own count).
         comparisons (tuple)
             Up to three ``(area, area_session, focal_partner_session, note)`` entries. `note`
             is drawn on the panel and should say whether the comparison is exact.
@@ -316,8 +318,8 @@ class NeuronalDecodingFigureMaker:
             msg = "No focal sessions given; there is nothing to draw."
             raise ValueError(msg)
 
-        counts = {mouse: int(usvs) for mouse, _session, usvs in focal_sessions}
-        low, high = min(counts.values()), max(counts.values())
+        counts = [int(usvs) for _mouse, _session, usvs in focal_sessions]
+        low, high = min(counts), max(counts)
         focal_colour = self._area_colour(focal_area)
 
         side = (MAIN_PANEL_INCHES[1] - 2 * PANEL_GAP_INCHES) / 3

@@ -49,7 +49,7 @@ from matplotlib.lines import Line2D
 from matplotlib.transforms import Bbox
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
-from usv_playpen.os_utils import resolve_data_root
+from usv_playpen.os_utils import atomic_output_path, resolve_data_root
 from usv_playpen.visualizations.plot_style import apply_plot_style
 from usv_playpen.visualizations.figure_io import resolve_pdf_path, save_figure
 from usv_playpen.visualizations.make_behavioral_videos import pool_brain_area
@@ -149,7 +149,10 @@ def _download_allen_mesh(structure_id: int) -> pathlib.Path:
     url = _ALLEN_MESH_URL.format(structure_id=structure_id)
     with urllib.request.urlopen(url, timeout=60) as resp:
         data = resp.read()
-    path.write_bytes(data)
+    # Temp sibling + rename: the cache is trusted whenever the file exists, so a
+    # download interrupted mid-write must never leave a truncated mesh under the final name.
+    with atomic_output_path(path) as tmp_path:
+        tmp_path.write_bytes(data)
     return path
 
 
@@ -986,7 +989,7 @@ class AnatomyFigureMaker:
             mp4 / mov use the ffmpeg writer; gif uses Pillow.
         dpi (int)
             Resolution for each rendered frame.
-        **build_kwargs
+        **build_kwargs (dict)
             Forwarded to `build_unit_positions_figure` so the caller
             can dial in shell density, region alpha, dot size, etc.
 

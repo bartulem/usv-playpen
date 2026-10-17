@@ -199,17 +199,25 @@ class TestLastBinOfConsecutiveRun:
 
 
 @pytest.fixture(autouse=True)
-def _close_all_figures():
+def _close_all_figures(monkeypatch):
     """
-    Close every open matplotlib figure after each test.
+    Close every open matplotlib figure after each test, and fail any test whose
+    plotter calls ``plt.show()``.
 
-    The plotters call ``plt.show()`` (a no-op under the ``Agg`` backend)
-    but never close the non-saved figures themselves, so without this
-    teardown the open-figure count accumulates across tests and matplotlib
-    raises the "More than 20 figures have been opened" RuntimeWarning —
-    which ``filterwarnings = ["error"]`` would promote to a failure.
+    The plotters return their figures to the caller instead of showing them
+    (library code never calls ``plt.show()``; the caller displays and closes),
+    so ``plt.show`` is replaced by a function that raises: every plotting test
+    below doubles as the regression test for that rule. Returned figures stay
+    open, so without this teardown the open-figure count accumulates across
+    tests and matplotlib raises the "More than 20 figures have been opened"
+    RuntimeWarning — which ``filterwarnings = ["error"]`` would promote to a
+    failure.
     """
 
+    def _no_show(*_args, **_kwargs):
+        raise AssertionError("library plotting code must return its figure, not call plt.show()")
+
+    monkeypatch.setattr(plt, "show", _no_show)
     yield
     plt.close('all')
 
@@ -342,11 +350,15 @@ class TestPlotFeatureRanking:
 
     @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
     def test_runs_without_saving(self, tmp_path):
-        """Default ``save_plot=False`` returns None and writes nothing."""
+        """Default ``save_plot=False`` writes nothing and returns the two open ranking figures
+        (evaluation metric, secondary metric) for the caller to display and close."""
 
         rng = np.random.default_rng(8)
         pkl = _write_univariate_pickle(tmp_path, rng)
-        assert plot_feature_ranking(results_file_loc=pkl, evaluation_metric='auc') is None
+        figures = plot_feature_ranking(results_file_loc=pkl, evaluation_metric='auc')
+        assert len(figures) == 2 and all(isinstance(figure, plt.Figure) for figure in figures)
+        assert all(plt.fignum_exists(figure.number) for figure in figures)
+        assert not list(tmp_path.glob(f"*_ranking_*.{_FIGURE_FORMAT}"))
 
 
 @pytest.mark.filterwarnings("ignore:FigureCanvasAgg is non-interactive:UserWarning")
@@ -2142,7 +2154,7 @@ def _write_cnn_results_pickle(tmp_path, rng, n_folds: int = 8,
 
     The artifact carries the two top-level blocks the lightweight
     interpretation methods read: ``metadata`` (``features_list``,
-    ``n_time_bins``, ``save_dir``) and the per-method data blocks
+    ``n_time_bins``, ``manifold_metric``, ``manifold_period``) and the per-method data blocks
     ``cross_validation`` (a list of fold dicts each with ``error_actual``
     and ``error_null_model_free`` plus the per-sample manifold arrays
     ``Y_true`` / ``Y_pred_actual`` / ``Y_pred_null_model_free`` (each
@@ -2202,7 +2214,8 @@ def _write_cnn_results_pickle(tmp_path, rng, n_folds: int = 8,
         'metadata': {
             'features_list': features,
             'n_time_bins': n_bins,
-            'save_dir': str(tmp_path / "cnn_default_save"),
+            'manifold_metric': 'euclidean',
+            'manifold_period': 1.0,
         },
         'cross_validation': cv_folds,
         'feature_importance': {
@@ -2497,7 +2510,6 @@ def _write_cnn_torus_results_pickle(tmp_path, rng, n_folds: int = 6,
         'metadata': {
             'features_list': features,
             'n_time_bins': n_bins,
-            'save_dir': str(tmp_path / "cnn_torus_default_save"),
             'manifold_metric': 'torus',
             'manifold_period': float(period),
         },
@@ -2778,15 +2790,10 @@ class TestReportableEffect:
 class TestBehavioralResponseFigures:
     """Both behavioural-response plotters run end to end on a written artifact."""
 
-    # Every plotter in the module ends on `plt.show()`, which under the Agg
-    # backend warns that the canvas is non-interactive. The suite promotes
-    # warnings to errors, so the call is wrapped rather than the convention
-    # changed for these two functions alone.
     @staticmethod
     def _draw(function, **kwargs):
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
-            function(**kwargs)
+        figure = function(**kwargs)
+        assert isinstance(figure, plt.Figure)
         plt.close("all")
 
     def test_forest_plot_writes_a_file(self, tmp_path):
@@ -2799,6 +2806,30 @@ class TestBehavioralResponseFigures:
         self._draw(plot_behavioral_response_forest,
                    contrast_results_path=_contrast_artifact(tmp_path), save_plot=False)
         assert not list(tmp_path.glob(f'behavioral_response_forest*.{_FIGURE_FORMAT}'))
+
+    def test_forest_plot_draws_when_every_feature_shares_one_likelihood(self, tmp_path):
+        # Both features are non-negative (lognormal), so the signed group is empty; an
+        # empty group must not become a zero-height grid row (LinAlgError) or an empty panel.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            plot_behavioral_response_forest(
+                contrast_results_path=_contrast_artifact(tmp_path, n_features=2), save_plot=False)
+        figure = plt.gcf()
+        estimate_axes = [axis for axis in figure.axes if axis.get_yticklabels()
+                         and axis.get_xlabel() == '% change in median']
+        assert len(estimate_axes) == 2
+        assert not [axis for axis in figure.axes if axis.get_xlabel() == 'degrees']
+        plt.close("all")
+
+    def test_forest_plot_titles_state_the_interval_level_of_alpha(self, tmp_path):
+        # alpha = 0.001 is a 99.9% interval; truncating to an integer titled it 99%.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            plot_behavioral_response_forest(
+                contrast_results_path=_contrast_artifact(tmp_path), alpha=0.001, save_plot=False)
+        titles = [axis.get_title() for axis in plt.gcf().axes if axis.get_title()]
+        assert titles and all("99.9% CI" in title for title in titles)
+        plt.close("all")
 
     def test_matched_divergence_writes_a_file(self, tmp_path):
         self._draw(plot_matched_divergence,
@@ -2818,3 +2849,43 @@ class TestBehavioralResponseFigures:
         with pytest.raises(KeyError):
             plot_matched_divergence(divergence_results_path=path)
         plt.close('all')
+
+
+class TestDeepResultsVisualizerRequiresManifoldMetadata:
+    """The visualizer refuses a pickle whose metadata lacks the manifold metric / period."""
+
+    @pytest.mark.parametrize("missing", ["manifold_metric", "manifold_period"])
+    def test_missing_manifold_key_raises(self, tmp_path, missing):
+        # The old __init__ silently assumed a flat euclidean plane with period 1.0, which
+        # mis-measured every prediction error of a torus run.
+        rng = np.random.default_rng(3)
+        pkl = _write_cnn_results_pickle(tmp_path, rng)
+        with open(pkl, 'rb') as handle:
+            artifact = pickle.load(handle)
+        del artifact['metadata'][missing]
+        with open(pkl, 'wb') as handle:
+            pickle.dump(artifact, handle)
+        with pytest.raises(KeyError, match=missing):
+            DeepResultsVisualizer(results_pkl_path=pkl, modeling_settings={}, visualization_settings={})
+
+    def test_default_save_dir_is_the_pickle_directory(self, tmp_path):
+        # The metadata holds no save directory, so the old './plots' fallback wrote into
+        # whatever the working directory happened to be.
+        rng = np.random.default_rng(3)
+        pkl = _write_cnn_results_pickle(tmp_path, rng)
+        viz = DeepResultsVisualizer(results_pkl_path=pkl, modeling_settings={}, visualization_settings={})
+        assert pathlib.Path(viz.save_dir) == pathlib.Path(pkl).parent
+
+
+def test_modeling_plots_has_no_plt_show_and_no_print():
+    """Library plotting code returns figures instead of showing them and routes messages
+    through ``message_output`` (CONTRIBUTING: no ``print`` in library code)."""
+    import ast
+
+    import usv_playpen.visualizations.modeling_plots as modeling_plots_module
+
+    tree = ast.parse(pathlib.Path(modeling_plots_module.__file__).read_text())
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+    assert not [c for c in calls if isinstance(c.func, ast.Attribute) and c.func.attr == 'show'
+                and isinstance(c.func.value, ast.Name) and c.func.value.id == 'plt']
+    assert not [c for c in calls if isinstance(c.func, ast.Name) and c.func.id == 'print']

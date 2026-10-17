@@ -224,7 +224,7 @@ def test_engine_results_feed_figures():
 
     sessions = _sessions()
     results = engine.run_group_comparison(
-        sessions, window_s=1.0, bootstrap_n=6, n_boot=16, n_shuffles=8, n_permutations=16, seed=0,
+        sessions, window_s=1.0, bootstrap_n=6, n_boot=16, n_shuffles=8, n_permutations=16, seed=0, subsample_fraction=0.8,
     )
     fig = mcf.plot_null_distributions(results, category_column="qlvm_category", group_a_ids=[1], group_b_ids=[7])
     assert len(fig.axes) == 6

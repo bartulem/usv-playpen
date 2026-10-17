@@ -671,7 +671,7 @@ def test_visualize_in_video_static_render(tmp_path, mocker):
     (arena_dir / "video" / "sess").mkdir(parents=True)
 
     _write_tracks_h5(
-        arena_dir / "video" / "sess" / "arena_points3d_translated_rotated_metric.h5",
+        arena_dir / "video" / "sess" / "20250919155842_points3d_translated_rotated_metric.h5",
         np.zeros((1, 1, len(_VIS_ARENA_NODES), 3)), _VIS_ARENA_NODES,
     )
     _write_tracks_h5(
@@ -765,7 +765,7 @@ def test_visualize_in_video_animate_path(tmp_path, mocker):
     (arena_dir / "video" / "sess").mkdir(parents=True)
 
     _write_tracks_h5(
-        arena_dir / "video" / "sess" / "arena_points3d_translated_rotated_metric.h5",
+        arena_dir / "video" / "sess" / "20250919155842_points3d_translated_rotated_metric.h5",
         np.zeros((1, 1, len(_VIS_ARENA_NODES), 3)), _VIS_ARENA_NODES,
     )
     _write_tracks_h5(
@@ -834,7 +834,7 @@ def _build_animate_maker(tmp_path, msgs=None, **mbv_extra):
     arena_dir = tmp_path / "Data" / "20250919_155842_calib"
     (arena_dir / "video" / "sess").mkdir(parents=True)
     _write_tracks_h5(
-        arena_dir / "video" / "sess" / "arena_points3d_translated_rotated_metric.h5",
+        arena_dir / "video" / "sess" / "20250919155842_points3d_translated_rotated_metric.h5",
         np.zeros((1, 1, len(_VIS_ARENA_NODES), 3)), _VIS_ARENA_NODES,
     )
     _write_tracks_h5(
@@ -883,9 +883,9 @@ def test_animate_path_auto_produces_and_muxes_pitch_shifted_audio(tmp_path, mock
         "usv_playpen.visualizations.make_behavioral_videos.AudioGenerator.frequency_shift_audio_segment",
         return_value=produced_wav,
     )
-    fake_popen = mocker.patch(
-        "usv_playpen.visualizations.make_behavioral_videos.subprocess.Popen",
-        return_value=MagicMock(wait=lambda *_a, **_kw: 0),
+    fake_run = mocker.patch(
+        "usv_playpen.visualizations.make_behavioral_videos.subprocess.run",
+        return_value=MagicMock(returncode=0),
     )
 
     maker = _build_animate_maker(tmp_path, pitch_shifted_audio_bool=True)
@@ -894,10 +894,12 @@ def test_animate_path_auto_produces_and_muxes_pitch_shifted_audio(tmp_path, mock
     # auto-producer ran once, windowed to the video (video_start_time/_duration)
     fake_shift.assert_called_once()
     assert fake_shift.call_args.kwargs == {"seq_start": 0.0, "seq_duration": 0.05}
-    # ffmpeg muxed the produced file (exactly one Popen call carries its path)
-    mux_calls = [c for c in fake_popen.call_args_list
+    # ffmpeg muxed the produced file (exactly one run call carries its path), with a
+    # timeout (the earlier Popen(...).wait() could block forever on a hung ffmpeg)
+    mux_calls = [c for c in fake_run.call_args_list
                  if "args" in c.kwargs and str(produced_wav) in c.kwargs["args"]]
     assert len(mux_calls) == 1
+    assert mux_calls[0].kwargs["timeout"] > 0
 
 
 def test_animate_path_warns_when_pitch_shift_mux_fails(tmp_path, mocker):
@@ -929,11 +931,28 @@ def test_animate_path_warns_when_pitch_shift_mux_fails(tmp_path, mocker):
         "usv_playpen.visualizations.make_behavioral_videos.AudioGenerator.frequency_shift_audio_segment",
         return_value=produced_wav,
     )
-    mocker.patch("usv_playpen.visualizations.make_behavioral_videos.subprocess.Popen",
-                 return_value=MagicMock(wait=lambda *_a, **_kw: 1))
+    mocker.patch("usv_playpen.visualizations.make_behavioral_videos.subprocess.run",
+                 return_value=MagicMock(returncode=1))
 
     msgs: list[str] = []
     maker = _build_animate_maker(tmp_path, msgs=msgs, pitch_shifted_audio_bool=True)
     maker.visualize_in_video()
 
     assert any("ffmpeg mux of pitch-shifted audio failed" in m for m in msgs)
+
+
+def test_load_arena_tracks_skips_the_playback_speaker_track(tmp_path):
+    """A USV-playback session given as the arena directory holds a ``speaker_*`` track beside
+    the main one; the arena lookup must resolve to the main file rather than raise on two."""
+    from usv_playpen.visualizations.make_behavioral_videos import load_arena_tracks
+
+    video = tmp_path / "video" / "20260101120000"
+    video.mkdir(parents=True)
+    with h5py.File(video / "20260101120000_points3d_translated_rotated_metric.h5", "w") as arena:
+        arena.create_dataset("tracks", data=np.zeros((1, 1, 2, 3)))
+        arena.create_dataset("node_names", data=[b"North", b"South"])
+    with h5py.File(video / "speaker_20260101120000_points3d_translated_rotated_metric.h5", "w") as speaker:
+        speaker.create_dataset("tracks", data=np.ones((1, 1, 1, 3)))
+        speaker.create_dataset("node_names", data=[b"speaker"])
+    directory, tracks, nodes = load_arena_tracks(str(tmp_path))
+    assert nodes == ["North", "South"] and tracks.shape == (1, 1, 2, 3)

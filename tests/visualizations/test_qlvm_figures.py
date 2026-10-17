@@ -17,6 +17,7 @@ geometry).
 from __future__ import annotations
 
 import pathlib
+import warnings
 
 import h5py
 import numpy as np
@@ -224,6 +225,28 @@ def test_group_contrast_is_positive_for_coherent_groups():
     assert np.allclose(qf.group_contrast(filled, labels), 0.7)
 
 
+
+def test_group_contrast_marks_a_single_usv_group_undefined_and_partition_skips_it():
+    """
+    Description
+    -----------
+    A group holding one USV has no other USV of its own group, so its own-group mean is 0/0: the
+    contrast marks that USV NaN without a division warning, and the per-group partition values
+    leave the group out instead of carrying a NaN into the bar of panel (iv).
+    """
+
+    labels = np.array([1, 1, 1, 2, 2, 2, 3])
+    filled = np.where(labels[:, None] == labels[None, :], 0.9, 0.2).astype(np.float32)
+    np.fill_diagonal(filled, 0.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        delta = qf.group_contrast(filled, labels)
+    assert np.isnan(delta[-1]) and np.all(np.isfinite(delta[:-1]))
+    values = qf.partition_group_values(delta, labels)
+    assert values.shape == (2,) and np.all(np.isfinite(values))
+    with pytest.raises(ValueError, match="no group holds two or more"):
+        qf.partition_group_values(np.full(3, np.nan), np.array([1, 2, 3]))
+
 def test_standardized_property_ranks_fills_missing_and_standardizes():
     """Each property becomes zero-mean, unit-variance ranks; a missing value takes the property's median, so it
     ties with the median row's rank."""
@@ -361,3 +384,90 @@ def test_three_figures_render_on_synthetic_sessions(tmp_path, monkeypatch):
     assert similarity["matrix"][0, 0] > similarity["matrix"][0, 1]
     assert np.allclose(similarity["neighbor_shares"].sum(axis=1), 1.0)
     assert isinstance(qf.plot_category_boundaries(fields, similarity, bundle, cfg, "inferno", "BrBG_r"), Figure)
+
+
+def _quality_inputs(n_seeds: int, fidelity_high: float) -> tuple[dict, dict]:
+    """
+    Description
+    -----------
+    A hand-built ``build_qlvm_figure_sample`` / ``compute_qlvm_quality_metrics`` pair for the
+    quality plotter: 50 USVs, the three maps, two folds per readout, ``n_seeds`` trainings in
+    panel (c) and distance correlations reaching ``fidelity_high``.
+
+    Parameters
+    ----------
+    n_seeds (int)
+        Trainings in ``per_seed``.
+    fidelity_high (float)
+        Largest distance correlation of panel (b').
+
+    Returns
+    -------
+    sample (dict)
+        ``properties`` only.
+    metrics (dict)
+        Every key the plotter reads.
+    """
+
+    rng = np.random.default_rng(0)
+    n = 50
+    columns = [column for column, _, _ in qf.FIGURE_PROPERTIES]
+    maps = {"QLVM": (rng.random((n, 2)), True), "PCA": (rng.normal(size=(n, 2)), False), "UMAP": (rng.normal(size=(n, 2)), False)}
+    folds = {name: {column: [0.4, 0.5] for column in columns} for name in maps}
+    metrics = {"maps": maps, "readout_folds": folds, "readout_null": {name: {column: 0.0 for column in columns} for name in maps},
+               "per_seed": {f"seed{k}": {column: [0.4, 0.5] for column in columns} for k in range(n_seeds)},
+               "neighborhoods": {name: {"overlap": [0.3, 0.4], "false_neighbors": [0.1, 0.2], "torn_neighbors": [0.1, 0.2]}
+                                 for name in maps},
+               "distance_fidelity": {label: [0.5 * fidelity_high, fidelity_high] for label in qf.DISTANCE_COLORS}}
+    return {"properties": rng.random((n, len(columns)))}, metrics
+
+
+def test_plot_qlvm_quality_refuses_more_trainings_than_seed_colours():
+    """
+    Description
+    -----------
+    Panel (c) has one colour per training; with more trainings than colours the extra ones were
+    silently left out of the panel. The plotter now raises, naming the limit.
+    """
+
+    sample, metrics = _quality_inputs(n_seeds=len(qf.SEED_COLORS) + 1, fidelity_high=0.5)
+    with pytest.raises(ValueError, match="at most 4 trainings"):
+        qf.plot_qlvm_quality(sample, metrics, _cfg(), "inferno", 0)
+    sample, metrics = _quality_inputs(n_seeds=len(qf.SEED_COLORS), fidelity_high=0.5)
+    assert isinstance(qf.plot_qlvm_quality(sample, metrics, _cfg(), "inferno", 0), Figure)
+
+
+def test_plot_qlvm_quality_distance_axis_holds_every_correlation():
+    """
+    Description
+    -----------
+    Panel (b') was pinned to x in [0, 0.7], clipping any distance correlation above 0.7; its
+    limit now comes from the data, keeping 0.7 as the floor.
+    """
+
+    sample, metrics = _quality_inputs(n_seeds=0, fidelity_high=0.9)
+    fig = qf.plot_qlvm_quality(sample, metrics, _cfg(), "inferno", 0)
+    fidelity_axis = next(axis for axis in fig.axes if axis.get_title().startswith("(b')"))
+    assert fidelity_axis.get_xlim()[1] >= 0.9
+    sample, metrics = _quality_inputs(n_seeds=0, fidelity_high=0.5)
+    fig = qf.plot_qlvm_quality(sample, metrics, _cfg(), "inferno", 0)
+    fidelity_axis = next(axis for axis in fig.axes if axis.get_title().startswith("(b')"))
+    assert fidelity_axis.get_xlim() == (0.0, 0.7)
+
+
+def test_figure_sample_cache_write_is_atomic(tmp_path, monkeypatch):
+    """The sample cache is written to a temp sibling and renamed: a write that fails half-way
+    leaves no ``sample.npz`` behind (the direct ``np.savez(cache_path)`` left a truncated archive,
+    which the next call would try to serve)."""
+    usvs, roots = _synthetic_cohort(tmp_path)
+    monkeypatch.setattr(qf, "load_model_cell", lambda directory: {"contract": {"input_normalization": "none"}})
+    cache = tmp_path / "cache" / "sample.npz"
+
+    def half_savez(file, **arrays):
+        file.write(b"PK\x03\x04 truncated")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(qf.np, "savez", half_savez)
+    with pytest.raises(OSError, match="disk full"):
+        qf.build_qlvm_figure_sample(usvs, roots, 10, 0, "cell", str(cache), message_output=lambda *_a, **_k: None)
+    assert list(cache.parent.iterdir()) == []

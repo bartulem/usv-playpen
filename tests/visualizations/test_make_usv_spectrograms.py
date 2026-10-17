@@ -321,7 +321,7 @@ def _write_usv_summary_csv(
 def _write_tracking_h5(
     video_dir: pathlib.Path,
     track_names: tuple[str, ...] = ("male_x", "female_y"),
-    name: str = "session_points3d_translated_rotated_metric.h5",
+    name: str = "20230101000000_points3d_translated_rotated_metric.h5",
     sexes: tuple[str, ...] = ("male", "female"),
 ) -> pathlib.Path:
     """
@@ -1619,6 +1619,74 @@ def test_pick_category_samples_spiral_degenerate():
     assert out.max() < 10
 
 
+
+def test_pick_spiral_with_grid_reads_the_pixel_a_position_falls_in():
+    """
+    Description
+    -----------
+    The label-grid filter reads the pixel whose extent holds each spiral position. The grid
+    axes are pixel centres ((k + 0.5) / res), so truncating (x - xx[0]) / step put a position
+    in the pixel to its left about half the time: on a 32-pixel grid split at column 8
+    (x = 0.25), a category-2 path never reached x in [0.25, 0.266) and a category-1 path ran
+    past 0.25.
+    """
+
+    resolution = 32
+    axis = (np.arange(resolution) + 0.5) / resolution
+    labels = np.ones((resolution, resolution))
+    labels[:, 8:] = 2.0
+    pts = np.column_stack([np.linspace(0.2, 0.3, 40), np.full(40, 0.5)])
+    _, xs_two, _ = _pick_spiral_with_grid(
+        pts, n_per=4, cx0=0.25, cy0=0.5, r_max=0.03,
+        labels_grid=labels, xx=axis, yy=axis, cluster_label=2, rng=None,
+    )
+    _, xs_one, _ = _pick_spiral_with_grid(
+        pts, n_per=4, cx0=0.25, cy0=0.5, r_max=0.03,
+        labels_grid=labels, xx=axis, yy=axis, cluster_label=1, rng=None,
+    )
+    assert xs_two.min() >= 0.25 and xs_two.min() < 0.25 + 0.5 / resolution
+    assert xs_one.max() < 0.25
+
+
+def test_pick_spiral_with_grid_periodic_snaps_across_the_seam():
+    """
+    Description
+    -----------
+    On the periodic unit torus a spiral position just right of x = 0 is closest to a USV just
+    left of x = 1, not to one in the middle of the map; with ``periodic=False`` the plain
+    Euclidean distance picks the middle one.
+    """
+
+    pts = np.array([[0.5, 0.5], [0.99, 0.5]])
+    flat, _, _ = _pick_spiral_with_grid(
+        pts, n_per=1, cx0=0.01, cy0=0.5, r_max=1e-6,
+        labels_grid=None, xx=None, yy=None, cluster_label=1, rng=None,
+    )
+    wrapped, xs, ys = _pick_spiral_with_grid(
+        pts, n_per=1, cx0=0.01, cy0=0.5, r_max=1e-6,
+        labels_grid=None, xx=None, yy=None, cluster_label=1, rng=None, periodic=True,
+    )
+    assert flat.tolist() == [0] and wrapped.tolist() == [1]
+    finite = np.isfinite(xs)
+    assert np.all((xs[finite] >= 0.0) & (xs[finite] < 1.0)) and np.all((ys[finite] >= 0.0) & (ys[finite] < 1.0))
+
+
+def test_pick_category_samples_periodic_nearest_uses_the_circular_centre():
+    """
+    Description
+    -----------
+    A category straddling the x seam of the unit torus has its centre at the seam, not at the
+    arithmetic mean x = 0.5: with ``periodic=True`` the nearest picks are the USVs closest to the
+    seam; without it they are the ones closest to x = 0.5.
+    """
+
+    pts = np.array([[0.90, 0.5], [0.99, 0.5], [0.01, 0.5], [0.10, 0.5]])
+    picks = _pick_category_samples(pts, n_per=2, method="nearest", rng=np.random.default_rng(0), periodic=True)
+    assert set(picks.tolist()) == {1, 2}
+    picks_flat = _pick_category_samples(pts, n_per=2, method="nearest", rng=np.random.default_rng(0))
+    assert set(picks_flat.tolist()) == {0, 3}
+
+
 # plot_embedding_with_category_thumbnails
 
 
@@ -1740,7 +1808,43 @@ def test_plot_umap_thumbnails_conditional_map_colours_by_qlvm_category(tmp_path)
     placed = {text.get_text(): tuple(text.get_position()) for text in scatter_ax.texts if text.get_text() in ("1", "2")}
     for label in (1, 2):
         rows = pooled.filter(pls.col("qlvm_category") == label)
-        assert placed[str(label)] == pytest.approx((rows["qlvm_duration1"].mean(), rows["qlvm_duration2"].mean()))
+        angles = 2.0 * np.pi * np.column_stack([rows["qlvm_duration1"].to_numpy(), rows["qlvm_duration2"].to_numpy()])
+        circular = (np.arctan2(np.sin(angles).mean(axis=0), np.cos(angles).mean(axis=0)) / (2.0 * np.pi)) % 1.0
+        assert placed[str(label)] == pytest.approx(tuple(circular))
+
+
+@pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
+@pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
+def test_plot_umap_thumbnails_conditional_map_centres_wrap_around_the_torus(tmp_path):
+    """
+    Description
+    -----------
+    A category whose USVs straddle the x seam of a conditional map's torus is labelled at the
+    seam (circular mean), next to its USVs, not at the arithmetic mean x = 0.5 where it has none,
+    and its spiral picks are its USVs nearest the seam.
+    """
+
+    pooled = _make_pooled_df("sessW", n_per_cat=6)
+    seam_x = np.array([0.95, 0.96, 0.97, 0.03, 0.04, 0.05] + [0.45, 0.47, 0.5, 0.52, 0.55, 0.53])
+    pooled = pooled.with_columns(pls.Series("qlvm_duration1", seam_x), pls.lit(0.5).alias("qlvm_duration2"))
+    h5_path = tmp_path / "store.h5"
+    _write_consolidated_h5(h5_path, "sessW", n_usvs=12, n_freq=16, n_time=24)
+    fig = plot_embedding_with_category_thumbnails(
+        sessions_txt_path="unused",
+        consolidated_h5_path=str(h5_path),
+        qlvm_map="qlvm_duration",
+        n_samples_per_category=2,
+        sampling_method="spiral",
+        spiral_random_phase=False,
+        annotate_cluster_ids=True,
+        annotate_picks_on_scatter=False,
+        pooled_df=pooled,
+        message_output=lambda *_: None,
+    )
+    placed = {text.get_text(): tuple(text.get_position()) for text in fig.axes[0].texts if text.get_text() in ("1", "2")}
+    label_x = placed["1"][0]
+    assert min(label_x, 1.0 - label_x) < 0.01
+    plt.close(fig)
 
 
 @pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
@@ -2560,3 +2664,38 @@ def test_explorer_colours_by_qlvm_category_and_draws_bundle_boundaries_on_the_re
     else:
         assert not isinstance(chart, alt.LayerChart)
         assert "defined on the qlvm map" in chart.title
+
+
+def test_build_pooled_embeddings_df_cache_write_is_atomic(tmp_path, monkeypatch):
+    """The pooled parquet cache is written to a temp sibling and renamed: a write that fails
+    half-way leaves no ``cache.parquet`` behind (the direct ``write_parquet(cache_path)`` left a
+    truncated file that the next call would try to read)."""
+    sess = tmp_path / "20230101_000000"
+    _write_embedding_session(sess, "20230101_000000")
+    txt = _write_sessions_txt(tmp_path, [sess])
+    cache_dir = tmp_path / "cache_dir"
+    cache = cache_dir / "cache.parquet"
+
+    def half_write_parquet(self, file, **kwargs):
+        pathlib.Path(file).write_bytes(b"PAR1 truncated")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(pls.DataFrame, "write_parquet", half_write_parquet)
+    with pytest.raises(OSError, match="disk full"):
+        build_pooled_embeddings_df(sessions_txt_path=str(txt), cache_path=str(cache), message_output=lambda *_: None)
+    assert list(cache_dir.iterdir()) == []
+
+
+def test_read_session_track_names_skips_the_playback_speaker_track(tmp_path):
+    """A USV-playback session keeps a ``speaker_*`` track beside the mouse track; with the
+    one-match lookup a loose pattern would raise on the two files, so the speaker track is
+    excluded by name."""
+    from usv_playpen.visualizations.make_usv_spectrograms import _read_session_track_names
+
+    video = tmp_path / "video" / "20260101120000"
+    video.mkdir(parents=True)
+    with h5py.File(video / "20260101120000_points3d_translated_rotated_metric.h5", "w") as mouse:
+        mouse.create_dataset("track_names", data=[b"M1", b"F1"])
+    with h5py.File(video / "speaker_20260101120000_points3d_translated_rotated_metric.h5", "w") as speaker:
+        speaker.create_dataset("track_names", data=[b"speaker"])
+    assert _read_session_track_names(str(tmp_path)) == ["M1", "F1"]

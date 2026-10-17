@@ -10,7 +10,7 @@ from PyQt6.QtCore import Qt  # Added import
 from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import QPushButton
 
-from usv_playpen import usv_playpen_gui
+from usv_playpen import os_utils, usv_playpen_gui
 from usv_playpen.usv_playpen_gui import (
     ChemoDialog, EphysDialog, LesionDialog, OptoDialog, _safe_literal_eval,
     replace_name_in_path,
@@ -514,7 +514,7 @@ def test_start_handlers_invoke_backends(app):
     app._write_metadata_to_disk.assert_not_called()
 
     # Recording that returns updated metadata -> persisted DIRECTLY, not via the
-    # VideoSettings-gated _save_metadata_to_yaml (which would return without writing
+    # Metadata-gated _save_metadata_to_yaml (which would return without writing
     # while the central widget is ConductRecording, silently losing the metadata).
     app.run_exp.conduct_behavioral_recording = MagicMock(return_value={"Session": {}})
     app._start_recording()
@@ -593,11 +593,11 @@ def test_update_subject_in_repository_adds_then_updates(app):
     assert len(app.subject_repository) == 1
 
 
-def test_save_metadata_to_yaml_early_return_off_video_settings(app):
+def test_save_metadata_to_yaml_early_return_off_the_metadata_page(app):
     """
     Description
     -----------
-    On the main window (where the central widget is not ``VideoSettings``),
+    On the main window (where the central widget is not ``Metadata``),
     ``_save_metadata_to_yaml`` must early-return without touching the bundled
     ``_config/_metadata.yaml``.
 
@@ -615,6 +615,44 @@ def test_save_metadata_to_yaml_early_return_off_video_settings(app):
     before = meta_path.read_text()
     app._save_metadata_to_yaml()
     assert meta_path.read_text() == before, "metadata YAML was written on early-return path"
+
+
+def test_record_pages_have_their_own_containers_and_only_metadata_saves(qtbot, monkeypatch, tmp_path):
+    """
+    Description
+    -----------
+    The second recording page (audio, sync and video settings) is built on a
+    ``VideoSettings`` container and the third (session metadata) on its own
+    ``Metadata`` container. ``_save_metadata_to_yaml`` reads the metadata form
+    fields, so it must write only while the metadata page is shown: after the
+    metadata page has been visited (its form attributes still exist on the window)
+    and the user moves to the audio/video page, a save must return without
+    writing, since the form widgets it would read belong to a page that is gone.
+
+    Parameters
+    ----------
+    qtbot (pytestqt.qtbot.QtBot)
+        Qt test helper that owns the window.
+    monkeypatch (pytest.MonkeyPatch)
+        Redirects the persistent write to a recorder.
+    tmp_path (pathlib.Path)
+        Working directory, so no real config file is touched.
+
+    Returns
+    -------
+    None
+    """
+
+    win = _subject_window(qtbot, monkeypatch, tmp_path)
+    assert type(win.centralWidget()) is usv_playpen_gui.Metadata
+
+    writes = []
+    monkeypatch.setattr(win, '_write_metadata_to_disk', lambda: writes.append(True))
+    win.record_two()
+    assert type(win.centralWidget()) is usv_playpen_gui.VideoSettings
+    assert hasattr(win, 'institution_edit')
+    win._save_metadata_to_yaml()
+    assert writes == []
 
 
 @pytest.mark.parametrize("raw, expected", [
@@ -855,3 +893,158 @@ def test_analyze_window_opens_without_listing_and_narrows_contexts_later(app, qt
     qtbot.waitUntil(lambda: app.playback_context_cb.count() == 1, timeout=5000)
     assert app.playback_context_cb.itemText(0) == 'lone_female'
     assert app.playback_context == 'lone_female'
+
+
+
+def test_late_playback_listing_keeps_the_context_the_user_already_chose(app, qtbot, preserve_all_settings, monkeypatch):
+    """
+    Description
+    -----------
+    A context the user picks while the background repository listing is still
+    running survives the listing's return when it is among the built contexts:
+    the dropdown is narrowed, the user's choice stays shown and stored, and the
+    settings default does not replace it.
+
+    Parameters
+    ----------
+    app (USVPlaypenWindow)
+        The main GUI window fixture.
+    qtbot (pytestqt.qtbot.QtBot)
+        Qt test driver.
+    preserve_all_settings (None)
+        Fixture backing up / restoring the package config files.
+    monkeypatch (pytest.MonkeyPatch)
+        Replaces the listing with one that blocks until released.
+
+    Returns
+    -------
+    None
+    """
+
+    release = threading.Event()
+    default = app.analyses_input_dict['create_naturalistic_usv_playback_wav']['context_label']
+    chosen = next(label for label in usv_playpen_gui._PLAYBACK_CONTEXTS if label != default)
+
+    def slow_listing(self):
+        release.wait(10)
+        return [default, chosen]
+
+    monkeypatch.setattr(usv_playpen_gui.USVPlaypenWindow, '_available_playback_contexts', slow_listing)
+    qtbot.mouseClick(app.button_map['Analyze'], Qt.MouseButton.LeftButton)
+    app.playback_context_cb.setCurrentIndex(app.playback_context_list.index(chosen))
+    app._combo_box_playback_context(app.playback_context_list.index(chosen), variable_id='playback_context')
+    assert app.playback_context == chosen
+    release.set()
+    qtbot.waitUntil(lambda: app.playback_context_cb.count() == 2, timeout=5000)
+    assert app.playback_context == chosen
+    assert app.playback_context_cb.currentText() == chosen
+
+def test_processing_runner_gets_a_copy_of_the_settings_it_may_fill(app, qtbot, preserve_all_settings):
+    """
+    Description
+    -----------
+    The 'Conduct Processing' window hands the processing runner (``Stylist``) a
+    deep copy of the processing settings, not the dict the GUI saves to
+    ``processing_settings.json`` and re-keys on every experimenter change. The
+    processing steps fill the derived model paths (the production QLVM cells,
+    the category bundle, the squeak cell) into their settings in place; on the
+    shared dict those paths would be saved and then re-keyed to another
+    experimenter's directory. After the runner's settings are derived, the
+    GUI's own dict must still hold the empty keys the shipped JSON carries.
+
+    Parameters
+    ----------
+    app (USVPlaypenWindow)
+        The main GUI window fixture.
+    qtbot (pytestqt.qtbot.QtBot)
+        Qt test driver used to synthesise the button clicks.
+    preserve_all_settings (None)
+        Fixture backing up / restoring the package config files.
+
+    Returns
+    -------
+    None
+    """
+
+    qtbot.mouseClick(app.button_map['Process'], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(app.button_map['Next'], Qt.MouseButton.LeftButton)
+    runner_settings = app.run_processing.input_parameter_dict
+    assert runner_settings is not app.processing_input_dict
+    os_utils.derive_spectrogram_model_paths(runner_settings)
+    assert runner_settings['infer_qlvm_latents']['model_cells']
+    assert app.processing_input_dict['infer_qlvm_latents']['model_cells'] == {}
+    assert app.processing_input_dict['assign_qlvm_categories']['category_directory'] == ''
+    assert app.processing_input_dict['infer_qlvm_squeak_latents']['model_cell_directory'] == ''
+
+
+def test_available_playback_contexts_raises_on_a_missing_settings_key(monkeypatch):
+    """
+    Description
+    -----------
+    Only an unreadable settings file (OSError) falls back to offering every playback
+    context. A settings file without the ``naturalistic_usv_repository_dir`` key is a
+    configuration bug; the broad ``except Exception`` used to hide it behind the
+    every-context fallback, and it must now raise.
+
+    Parameters
+    ----------
+    monkeypatch (pytest.MonkeyPatch)
+        Replaces ``resolve_data_root`` with a raising stub.
+
+    Returns
+    -------
+    None
+    """
+
+    def unreadable(key):
+        raise OSError("share offline")
+
+    monkeypatch.setattr(usv_playpen_gui, 'resolve_data_root', unreadable)
+    assert usv_playpen_gui.USVPlaypenWindow._available_playback_contexts(None) == list(usv_playpen_gui._PLAYBACK_CONTEXTS)
+
+    def missing_key(key):
+        raise KeyError(key)
+
+    monkeypatch.setattr(usv_playpen_gui, 'resolve_data_root', missing_key)
+    with pytest.raises(KeyError, match="naturalistic_usv_repository_dir"):
+        usv_playpen_gui.USVPlaypenWindow._available_playback_contexts(None)
+
+
+def test_save_subject_to_repository_is_atomic_and_raises_on_non_io_errors(tmp_path, capsys):
+    """
+    Description
+    -----------
+    The subject repository is written to a temp sibling and renamed into place: a dump
+    that fails half-way leaves the previous file intact (the direct ``open(path, 'w')``
+    truncated it first). An I/O failure is reported and swallowed (the GUI keeps
+    running); any other error (here a non-serialisable record, TypeError) used to be
+    swallowed by ``except Exception`` and must now raise.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Temporary directory holding the repository file.
+    capsys (pytest.CaptureFixture)
+        Captures the reported I/O error.
+
+    Returns
+    -------
+    None
+    """
+
+    repo_path = tmp_path / 'subjects.json'
+    repo_path.write_text('[{"subject_id": "OLD"}]')
+    holder = MagicMock()
+    holder.subject_repo_path = repo_path
+    holder.subject_repository = [{"subject_id": "NEW", "bad": object()}]
+    with pytest.raises(TypeError):
+        usv_playpen_gui.USVPlaypenWindow._save_subject_to_repository(holder)
+    assert repo_path.read_text() == '[{"subject_id": "OLD"}]'
+    assert [p.name for p in tmp_path.iterdir()] == ['subjects.json']
+
+    holder.subject_repo_path = tmp_path / 'missing_dir_is_a_file'
+    holder.subject_repo_path.write_text('x')
+    holder.subject_repo_path = holder.subject_repo_path / 'subjects.json'
+    holder.subject_repository = [{"subject_id": "NEW"}]
+    usv_playpen_gui.USVPlaypenWindow._save_subject_to_repository(holder)
+    assert "Error saving subject repository" in capsys.readouterr().out

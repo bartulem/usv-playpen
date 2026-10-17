@@ -251,8 +251,10 @@ def _make_visualizations_parameters() -> dict:
     -----------
     Return the minimum `visualizations_parameter_dict` the figure maker
     reads: `male_colors` / `female_colors` palettes (only first entry of
-    each is touched) and the shipped `neuronal_tuning_figures` block (the
-    bout panels' binning, smoothing and contour settings).
+    each is touched), a `figures` block (PDF output, dpi, seed and the
+    colormaps, read directly by the figure maker) and the shipped
+    `neuronal_tuning_figures` block (the bout panels' binning, smoothing and
+    contour settings).
 
     Parameters
     ----------
@@ -266,6 +268,8 @@ def _make_visualizations_parameters() -> dict:
     return {
         "male_colors":   ["#202020"],
         "female_colors": ["#a83232"],
+        "figures":       {"sequential_cmap": "inferno", "diverging_cmap": "BrBG_r",
+                          "fig_format": "pdf", "dpi": 300, "seed": 0, "timestamp_in_name": False},
         "neuronal_tuning_figures": _SHIPPED_VIZ_SETTINGS["neuronal_tuning_figures"],
     }
 
@@ -1639,7 +1643,7 @@ def _make_aggregate_visualizations_parameters() -> dict:
         "female_colors":     ["#FF6347", "#B851B4"],
         "social_colors":     ["#5A6470"],
         "figures":           {"sequential_cmap": "inferno", "diverging_cmap": "BrBG_r",
-                              "fig_format": "png", "dpi": 80, "timestamp_in_name": False},
+                              "fig_format": "png", "dpi": 80, "seed": 0, "timestamp_in_name": False},
         "neuronal_tuning_figures": _SHIPPED_VIZ_SETTINGS["neuronal_tuning_figures"],
     }
 
@@ -2544,7 +2548,7 @@ def test_per_cluster_pipeline_png_writes_per_page_files(tmp_path, qlvm_category_
     nt.calculate_neuronal_tuning_curves()
 
     viz = _make_visualizations_parameters()
-    viz["figures"] = {"fig_format": "png", "dpi": 80, "timestamp_in_name": False,
+    viz["figures"] = {"fig_format": "png", "dpi": 80, "seed": 0, "timestamp_in_name": False,
                       "sequential_cmap": "inferno", "diverging_cmap": "BrBG_r"}
     figure_maker = NeuronalTuningFigureMaker(
         root_directory=str(root),
@@ -2803,14 +2807,14 @@ def test_qlvm_segmentation_unreadable_bundle_raises(tmp_path, monkeypatch):
 
 def test_vocal_page_layout_puts_section_c_on_the_vocal_page():
     """Section (c) is a single row, so it shares the vocal page with sections (a) and
-    (b) instead of a page of its own: three outer rows, the last one as tall as one
-    section-(b) row, and the a/b gap of the two-section page kept."""
+    (b) instead of a page of its own. The property-grid row height keeps 17.5 units for
+    the grid's rows and their 0.45-row gaps; the constants of the retired two-section
+    layout (the page size and the three outer height ratios / gap) are gone."""
     assert len(tuning_figures.SECTION_C_ROWS) == 1
-    heights = tuning_figures.VOCAL_SECTION_HEIGHT_RATIOS
-    assert len(heights) == 3 and heights[:2] == (5.0, 17.5)
     n_rows = len(tuning_figures.PROPERTY_ROW_ORDER)
-    assert heights[2] * (n_rows + 0.45 * (n_rows - 1)) == pytest.approx(17.5)
-    assert tuning_figures.VOCAL_SECTION_HSPACE * sum(heights) / 3 == pytest.approx(3.375)
+    assert tuning_figures.VOCAL_SECTION_B_ROW_HEIGHT * (n_rows + 0.45 * (n_rows - 1)) == pytest.approx(17.5)
+    for retired in ("VOCAL_PAGE_FIGSIZE_INCHES", "VOCAL_SECTION_HEIGHT_RATIOS", "VOCAL_SECTION_HSPACE"):
+        assert not hasattr(tuning_figures, retired)
     assert not hasattr(tuning_figures, "VOCAL_PAGE2_FIGSIZE_INCHES")
     assert not hasattr(NeuronalTuningFigureMaker, "_render_page2")
 
@@ -2973,3 +2977,146 @@ def test_bout_onset_panels_without_payload_or_bouts_say_so(tmp_path):
                           cluster_data=cluster_data, usv_summary_df=None)
     assert "raster omitted" in ax_raster.texts[0].get_text()
     assert ax_peth.get_title() == "PETH (n_USVs = 57)"
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_draw_vocal_page_closes_its_figure_when_drawing_fails():
+    """
+    Description
+    -----------
+    The vocal page's figure is closed by `save_fig` only once drawing has finished; when a
+    panel raises, the page must close the figure before the error propagates, or each failing
+    cluster (the per-cluster loop catches the error and moves on) leaks one large figure.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    maker = _make_figure_maker()
+    open_before = set(plt.get_fignums())
+    with pytest.raises(KeyError):
+        maker._draw_vocal_page(emitter="m1", cluster_data={}, usv_summary_df=None,
+                               segmentation={}, save_fig=lambda fig, label: plt.close(fig),
+                               page_label="vocal_m1")
+    assert set(plt.get_fignums()) == open_before
+
+
+def test_failed_cluster_render_closes_the_figures_it_opened(tmp_path, monkeypatch):
+    """
+    Description
+    -----------
+    When rendering a cluster raises, the per-cluster loop reports it and moves on; the figures
+    that cluster opened (a behavioral page drawn halfway, for example) are closed rather than
+    left open for the rest of the run, while figures open before the run are left alone. After
+    the loop a RuntimeError names every failed cluster.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest-provided per-test temp directory.
+    monkeypatch (pytest.MonkeyPatch)
+        Replaces the segmentation loader and the vocal renderer.
+
+    Returns
+    -------
+    None
+    """
+
+    tuning_dir = tmp_path / "ephys" / "tuning_curves"
+    tuning_dir.mkdir(parents=True)
+    for cluster in ("imec0_cl0001", "imec0_cl0002"):
+        with (tuning_dir / f"{cluster}_tuning_curves_data.pkl").open("wb") as fh:
+            pickle.dump({"usv_peth": {}}, fh)
+
+    def _half_drawn_page(self, **_kwargs):
+        """Open a page figure and fail before it is saved."""
+        plt.figure()
+        raise ValueError("panel failed")
+
+    messages: list[str] = []
+    maker = NeuronalTuningFigureMaker(
+        root_directory=str(tmp_path),
+        visualizations_parameter_dict=_make_visualizations_parameters(),
+        message_output=messages.append,
+    )
+    monkeypatch.setattr(NeuronalTuningFigureMaker, "_load_segmentation", lambda self: {})
+    monkeypatch.setattr(NeuronalTuningFigureMaker, "_render_vocal_pages", _half_drawn_page)
+    monkeypatch.setattr(tuning_figures, "smart_wait", lambda **_kwargs: None)
+    kept = plt.figure()
+    open_before = set(plt.get_fignums())
+    # both clusters are attempted, then the run fails loudly naming both (the broad handler
+    # used to log each failure and report a finished run)
+    with pytest.raises(RuntimeError, match=r"failed for 2 of 2 clusters.*imec0_cl0001.*imec0_cl0002"):
+        maker.make_neuronal_tuning_figures()
+    assert sum("failed to render" in message for message in messages) == 2
+    assert set(plt.get_fignums()) == open_before
+    plt.close(kept)
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+@pytest.mark.parametrize("density_levels", [[0.5, 0.9], [0.9, 0.5, 0.75]])
+def test_first_vs_later_contour_styles_match_their_legend_entries(density_levels):
+    """
+    Description
+    -----------
+    Each density contour is drawn in the line style its legend entry shows for the same share
+    of bouts. The contours and the legend were paired in different orders, which agreed only
+    for exactly three ascending shares: with two shares, or shares out of order, a contour
+    carried another share's style.
+
+    Parameters
+    ----------
+    density_levels (list)
+        Bout shares the contours enclose.
+
+    Returns
+    -------
+    None
+    """
+
+    rng = np.random.default_rng(4)
+    usv_starts = np.sort(rng.uniform(0.0, 300.0, 90))
+    runs = [np.arange(3 * k, 3 * k + 3) for k in range(30)]
+    spike_times = np.sort(rng.uniform(0.0, 300.0, 3000))
+    fig, ax = plt.subplots()
+    contour_calls, legend_styles = [], {}
+    draw_contour, draw_line = ax.contour, ax.plot
+
+    def _record_contour(*args, **kwargs):
+        """Record the level and line style of every contour drawn."""
+        contour_calls.append((float(kwargs["levels"][0]), kwargs["linestyles"]))
+        return draw_contour(*args, **kwargs)
+
+    def _record_line(*args, **kwargs):
+        """Record the line style of every labelled legend proxy."""
+        if "label" in kwargs:
+            legend_styles[kwargs["label"]] = kwargs["linestyle"]
+        return draw_line(*args, **kwargs)
+
+    ax.contour, ax.plot = _record_contour, _record_line
+    NeuronalTuningFigureMaker._draw_first_vs_later(
+        ax, spike_times, usv_starts, runs,
+        {"response_window_seconds": 0.2, "response_kernel_seconds": 0.05}, "#9AC0CD",
+        {"bout_density_grid": 60, "bout_density_levels": density_levels})
+    plt.close(fig)
+    assert len(contour_calls) == len(density_levels)
+    # a larger share of bouts is enclosed by a LOWER density level
+    by_level = [style for _level, style in sorted(contour_calls, reverse=True)]
+    expected = [legend_styles[f"{100 * share:.0f}%"] for share in sorted(density_levels)]
+    assert by_level == expected
+
+
+def test_figure_maker_requires_the_figures_dpi_and_seed(tmp_path):
+    """A settings dict without ``figures.dpi`` / ``figures.seed`` is a configuration error; the
+    figure maker used to substitute 300 dpi / seed 0 silently and must now raise KeyError."""
+    viz = _make_visualizations_parameters()
+    del viz["figures"]["seed"]
+    with pytest.raises(KeyError, match="seed"):
+        NeuronalTuningFigureMaker(root_directory=str(tmp_path), visualizations_parameter_dict=viz,
+                                  message_output=lambda *_a: None)

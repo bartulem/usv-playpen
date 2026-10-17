@@ -40,17 +40,15 @@ between steps 1 and 3, and **step 4** (the IBL ephys-alignment GUI) between step
 3 and 5.
 
 The cells are
-organised as *(1) imports* then *(2) per-section execution*, and **each section
-cell defines its own parameters inline at the top** (edit those values plus
-``EXPERIMENTER`` in the imports cell). ``analyses_settings.json`` is loaded once
-in the imports cell, and each section pulls its own stable-tunable block from it.
+organised as *(1) imports*, *(2) settings*, then *(3) per-section execution*, and
+**each section cell defines its own parameters inline at the top** (edit those values
+plus ``EXPERIMENTER`` in the imports cell). ``analyses_settings.json`` is loaded once
+in the settings cell, and each section pulls its own stable-tunable block from it.
 Paths are written ``/mnt/...`` and wrapped in ``configure_path()`` so they resolve
 on macOS (``/Volumes/...``) too.
 
-**Imports.** Set the experimenter, import the histology helpers, apply the plot style, and
-load ``analyses_settings.json`` once (each section cell below pulls its own
-stable-tunable block from it). The cell also enables ``autoreload`` so source
-edits are picked up without a kernel restart.
+**Imports.** Set the experimenter, import the histology helpers and apply the plot style.
+The cell also enables ``autoreload`` so source edits are picked up without a kernel restart.
 
 .. code-block:: python
 
@@ -81,14 +79,19 @@ edits are picked up without a kernel restart.
 
     apply_plot_style()
 
-    # Load the analyses settings once; each section cell pulls its stable-tunable block.
+**Settings.** Load ``analyses_settings.json`` once; each section cell below pulls its own
+stable-tunable block from it.
+
+.. code-block:: python
+
+    # Load the analyses settings once; each section cell below pulls its stable-tunable block.
     with open(
         Path.cwd().parent / "_parameter_settings" / "analyses_settings.json", "r"
     ) as analyses_settings_file:
         analyses_settings = json.load(analyses_settings_file)
 
 * **EXPERIMENTER** — must be set *before* the ``usv_playpen`` imports, because the data paths are re-keyed at import time. The paths are written under the shipped experimenter (``Bartul``) and re-keyed to the experimenter in use by ``resolve_experimenter_path``. ``None`` uses this machine's configured experimenter (from ``_config/behavioral_experiments_settings.toml``); another experimenter's id (which sets ``EXPERIMENTER_ID``) resolves every path under that experimenter's tree instead (restart the kernel to change it after import).
-* **analyses_settings** — the parsed ``_parameter_settings/analyses_settings.json``, loaded once here; each section below indexes into it for its own settings block.
+* **analyses_settings** — the parsed ``_parameter_settings/analyses_settings.json``, loaded once in the settings cell; each section below indexes into it for its own settings block.
 
 **1. Light-sheet assembly.** Combine a raw light-sheet microscopy acquisition into one BigTIFF volume (the large-image TIFF format) per channel (wavelength) for brainreg / napari (the image viewer) registration. Two acquisition modalities are supported:
 
@@ -330,7 +333,7 @@ Modeling analyses
 
 **modeling_analyses.ipynb** is the end-to-end, interactive entry point for the
 **vocal-modeling pipelines** in ``usv_playpen.modeling``. Run its sections in
-order: extract per-session loader output into per-pipeline modeling-input
+order: extract per-session loader output into per-pipeline modelling-input
 pickles, audit the predictors, consolidate the univariate / model-selection
 outputs that the cluster produced, then render every diagnostic figure and,
 finally, fit the CNN — each stage consumes artifacts written by an earlier one.
@@ -346,14 +349,16 @@ the host OS), and nothing downstream redefines them. Every pipeline reads
 ``_parameter_settings/modeling_settings.json`` via ``modeling_settings_dict=None``
 (the project default); pass an explicit dict for a one-off override.
 
-**Imports.** Import the modeling pipelines, consolidators, and plotters, and apply the shared
+**Imports.** Import the modelling pipelines, consolidators, and plotters, and apply the shared
 matplotlib style. There is no experimenter knob here — configuration flows
 entirely through ``modeling_settings.json`` and the per-section Parameters cells.
 
 .. code-block:: python
 
+    import json
     import pathlib
 
+    import usv_playpen
     from usv_playpen.os_utils import configure_path
     from usv_playpen.visualizations.plot_style import apply_plot_style
 
@@ -362,6 +367,11 @@ entirely through ``modeling_settings.json`` and the per-section Parameters cells
     )
     from usv_playpen.modeling.consolidate_model_selection_results import (
         consolidate as consolidate_model_selection,
+    )
+    from usv_playpen.modeling.modeling_behavioral_response import (
+        BehavioralResponsePipeline,
+        MatchedDivergencePipeline,
+        behavioral_response_contrast,
     )
     from usv_playpen.modeling.modeling_usv_manifold_position import (
         ContinuousModelingPipeline,
@@ -375,10 +385,12 @@ entirely through ``modeling_settings.json`` and the per-section Parameters cells
 
     from usv_playpen.visualizations.modeling_plots import (
         DeepResultsVisualizer,
+        plot_behavioral_response_forest,
         plot_collinearity_audit,
         plot_feature_ranking,
         plot_manifold_filter_atlas,
         plot_manifold_selection_trajectory,
+        plot_matched_divergence,
         plot_model_selection_results,
         plot_multinomial_multivariate_filters,
         plot_multinomial_selection_diagnosis,
@@ -393,10 +405,28 @@ entirely through ``modeling_settings.json`` and the per-section Parameters cells
 
     apply_plot_style()
 
-**1. Extract input data.** Convert session-level loader output into the modeling-input pickle that the
-downstream univariate / model-selection runners consume. The four calls differ
+**Settings.** The settings the notebook needs are loaded once, here. Every pipeline reads
+``modeling_settings.json`` itself (``modeling_settings_dict=None``); the only in-memory
+settings object is the copy the bout-OFFSET extraction in section 1 runs on, with
+``model_params.model_target_vocal_type`` set to ``bout_offset`` (the shipped value is
+``bout_onset``), so the file on disk is untouched.
+
+.. code-block:: python
+
+    modeling_settings_path = (
+        pathlib.Path(usv_playpen.__file__).parent
+        / "_parameter_settings"
+        / "modeling_settings.json"
+    )
+    offset_settings = json.loads(modeling_settings_path.read_text())
+    offset_settings["model_params"]["model_target_vocal_type"] = "bout_offset"
+
+* **offset_settings** — the in-memory copy of ``modeling_settings.json`` with the bout-offset target, passed to the second ``VocalOnsetModelingPipeline`` call in section 1.
+
+**1. Extract input data.** Convert session-level loader output into the modelling-input pickle that the
+downstream univariate / model-selection runners consume. The calls differ
 only in **what gets predicted** (and therefore which event timestamps populate
-the timescale audit's ``Y(t)`` impulse trace). Each call writes the modeling-input
+the timescale audit's ``Y(t)`` impulse trace). Each call writes the modelling-input
 pickle to ``io.save_directory`` (filename embeds the cohort label, e.g.
 ``male_mute_partner``, plus a timestamp) and the paired predictor-diagnostics
 audits ``*_collinearity.pkl`` and ``*_timescales.pkl``; the cohort label is
@@ -407,6 +437,9 @@ derived from ``io.session_list_file``.
     VocalOnsetModelingPipeline(
         modeling_settings_dict=None
     ).extract_and_save_modeling_input_data()
+    VocalOnsetModelingPipeline(
+        modeling_settings_dict=offset_settings
+    ).extract_and_save_modeling_input_data()
     BoutParameterPipeline(
         modeling_settings_dict=None
     ).extract_and_save_modeling_input_data()
@@ -416,14 +449,25 @@ derived from ``io.session_list_file``.
     ContinuousModelingPipeline(
         modeling_settings_dict=None
     ).extract_and_save_continuous_data()
+    BehavioralResponsePipeline(
+        modeling_settings_dict=None
+    ).extract_and_save_modeling_input_data()
 
-* **VocalOnsetModelingPipeline** — "does a frame start a vocal event (bout / USV)?"; ``Y(t)`` impulses at bout / USV onsets.
+* **VocalOnsetModelingPipeline** — "does a frame start a vocal event (bout / USV)?"; ``Y(t)`` impulses at bout / USV onsets. Run a second time on ``offset_settings`` it builds the bout-OFFSET target ("does a frame end a bout?").
 * **BoutParameterPipeline** — per-bout duration / complexity / intensity; ``Y(t)`` impulses at bout starts.
 * **MultinomialModelingPipeline** — per-USV vocal category; ``Y(t)`` impulses at per-USV starts.
 * **ContinuousModelingPipeline** — per-USV QLVM torus position; ``Y(t)`` impulses at per-USV starts.
+* **BehavioralResponsePipeline** — the female's kinematics around the male's bouts and inter-bout silences, consumed by section 8.
 
-Passing ``modeling_settings_dict=None`` loads the project default settings; no
-Parameters-cell variables are consumed here.
+Passing ``modeling_settings_dict=None`` loads the project default settings; only the
+bout-offset call consumes a Settings-cell variable (``offset_settings``).
+
+Every plotter **returns** the figure(s) it draws (a list, a tuple of two, or for the audit
+plots a summary dict whose ``figure`` entry holds the open figure when nothing is saved)
+instead of calling ``plt.show()``; the notebook binds the return value to a name so a
+figure is displayed once by the inline backend, and ``plt.close`` releases it. With the
+save flag on, the figure is written to disk before it is returned (the audit plots close
+it after saving).
 
 **2. Predictor diagnostics.** Run after the extract step has produced the paired ``_collinearity.pkl`` and
 ``_timescales.pkl`` audits. The three plots share feature ordering and per-group
@@ -445,28 +489,28 @@ collinearity heatmap.
 
     diag_save_fig_directory.mkdir(exist_ok=True, parents=True)
 
-    plot_timescale_audit_per_feature(
+    timescale_per_feature_summary = plot_timescale_audit_per_feature(
         diag_timescale_pkl,
         save_plot_bool=diag_save_fig_bool,
         save_dir=diag_save_fig_directory,
         plot_format=diag_save_fig_format,
     )
 
-    plot_timescale_audit(
+    timescale_summary = plot_timescale_audit(
         diag_timescale_pkl,
         save_plot_bool=diag_save_fig_bool,
         save_dir=diag_save_fig_directory,
         plot_format=diag_save_fig_format,
     )
 
-    plot_collinearity_audit(
+    collinearity_summary = plot_collinearity_audit(
         diag_collinearity_pkl,
         save_plot_bool=diag_save_fig_bool,
         save_dir=diag_save_fig_directory,
         plot_format=diag_save_fig_format,
     )
 
-* **diag_timescale_pkl** — the ``_timescales.pkl`` audit written next to the modeling input pickle; feeds both timescale plots.
+* **diag_timescale_pkl** — the ``_timescales.pkl`` audit written next to the modelling input pickle; feeds both timescale plots.
 * **diag_collinearity_pkl** — derived by string-swapping the suffix, so it always pairs with the same run.
 * **diag_save_fig_bool** / **diag_save_fig_format** / **diag_save_fig_directory** — whether to write figures, the output format, and the destination directory (created if missing).
 
@@ -544,7 +588,7 @@ consolidated univariate pickle and set the metric accordingly.
     uni_raw_diff_feature_color = "#9AC0CD"
     uni_raw_diff_history_seconds = 4.0
 
-    plot_feature_ranking(
+    ranking_figures = plot_feature_ranking(
         results_file_loc=uni_ranking_results,
         p_val=uni_ranking_p_val,
         evaluation_metric="ll",
@@ -556,7 +600,7 @@ consolidated univariate pickle and set the metric accordingly.
         output_dir=figures_dir,
     )
 
-    plot_significant_filters(
+    filter_figures = plot_significant_filters(
         results_file_loc=uni_filters_results,
         metric="ll",
         ignore_features=None,
@@ -565,7 +609,7 @@ consolidated univariate pickle and set the metric accordingly.
         output_dir=figures_dir,
     )
 
-    plot_significant_filters_grid(
+    filter_grid_figure = plot_significant_filters_grid(
         results_file_loc=uni_filters_grid_results,
         ignore_features=None,
         metric="ll",
@@ -574,7 +618,7 @@ consolidated univariate pickle and set the metric accordingly.
         output_dir=figures_dir,
     )
 
-    plot_raw_feature_difference(
+    raw_difference_figures = plot_raw_feature_difference(
         pickle_file_path=uni_raw_diff_pkl,
         feature_key=uni_raw_diff_feature_key,
         history_seconds=uni_raw_diff_history_seconds,
@@ -601,7 +645,7 @@ plotter reading the consolidated univariate-multinomial pickle.
         ".../univariate_results/univariate_multinomial_<...>.pkl"
     )
 
-    plot_univariate_multinomial_performance(
+    multinomial_performance_figures = plot_univariate_multinomial_performance(
         results_file_loc=mn_univariate_results,
         evaluation_metric="auc",
         evaluation_metric_name="Area Under the ROC Curve",
@@ -633,7 +677,7 @@ analysis's consolidated ``model_selection_final_*.pkl``.
         ".../model_selection_results/<...>/model_selection_final_<...>.pkl"
     )
 
-    plot_model_selection_results(
+    selection_figures = plot_model_selection_results(
         selection_results_path=msv_results_path,
         metric_secondary="score",
         save_plots=True,
@@ -654,7 +698,7 @@ multinomial selection artifacts.
     mn_filters_results = configure_path(".../model_selection_results/<...>")
     mn_diagnosis_results = configure_path(".../model_selection_results/<...>")
 
-    plot_multinomial_selection_trajectory(
+    trajectory_figure = plot_multinomial_selection_trajectory(
         selection_results_path=mn_trajectory_results,
         metric_primary="auc",
         primary_metric_name="Area Under the ROC Curve",
@@ -665,7 +709,7 @@ multinomial selection artifacts.
         secondary_ylim_max=0.26,
     )
 
-    plot_multinomial_multivariate_filters(
+    filters_figure = plot_multinomial_multivariate_filters(
         selection_results_path=mn_filters_results,
         history_window_sec=4.0,
         cmap="bwr",
@@ -673,7 +717,7 @@ multinomial selection artifacts.
         output_dir=figures_dir,
     )
 
-    plot_multinomial_selection_diagnosis(
+    diagnosis_figures = plot_multinomial_selection_diagnosis(
         selection_results_path=mn_diagnosis_results,
         save_plot=True,
         output_dir=figures_dir,
@@ -705,7 +749,7 @@ region-balanced ``*_macro`` twins; euclidean: ``r2_spatial``, ``mahalanobis_mae`
     # score (the pooled euclidean_mae / pullback_geodesic_mae charge a
     # region-balanced model for resting away from the dominant regions). Pass
     # metric BASE names -- the panels append " (held-out data)" / " improvement (%)".
-    plot_manifold_selection_trajectory(
+    trajectory_figure = plot_manifold_selection_trajectory(
         selection_results_path=man_trajectory_results,
         metric_primary="vm_logscore",
         primary_metric_name="von Mises log-score",
@@ -718,7 +762,7 @@ region-balanced ``*_macro`` twins; euclidean: ``r2_spatial``, ``mahalanobis_mae`
         output_dir=figures_dir,
     )
 
-    plot_manifold_filter_atlas(
+    atlas_figure = plot_manifold_filter_atlas(
         selection_results_path=man_filters_results,
         save_plot=False,
         output_dir=figures_dir,
@@ -807,6 +851,73 @@ labels (the QLVM category; the pre-flight check inside ``run_cnn_training`` fail
 * **cnn_results_pkl** — the predictions pickle written at the end of ``run_cnn_training``, read by every visualisation mode.
 * **cnn_choose_analysis** — selects the diagnostic projection: ``permutation_test``, ``feature_importance``, ``spatial_precision_grid``, ``error_landscape``, or ``regional_saliency``.
 
+``DeepResultsVisualizer`` requires the results pickle's ``metadata`` to carry ``manifold_metric``
+and ``manifold_period`` (every CNN run writes them; a pickle without them raises ``KeyError``
+rather than being drawn as a flat plane), and saves figures next to the results pickle unless
+``output_dir`` is given.
+
+**8. Behavioural response: male bouts vs inter-bout silence.** Consumes the pickle written by
+``BehavioralResponsePipeline`` in section 1 and fits the event-anchored contrast — no cluster
+stages in between, since this analysis has no screen and no forward selection. One fit answers
+two questions: whether a bout, versus comparable silence, changes the female's behaviour
+(``vocal``), and whether bout **duration** matters (``vocal_x_log_duration``, a continuous slope
+in log duration rather than a set of bands, so the two questions cannot compete under
+correction). The same model is refit per bin, giving the effect as a time course as well as a
+single number. Standard errors are clustered on session. The likelihood is derived per feature
+from its support — Gaussian for the signed features (``allo_pitch``, ``back_pitch``), lognormal
+otherwise, so their coefficients are ratios of medians rather than of means. Covariates are
+Yeo-Johnson transformed with one power per column fitted by maximum likelihood
+(``behavioral_response.covariate_transform``); ``behavioral_response.covariate_features``
+(``self``, ``partner`` or ``both``) sets whose pre-anchor kinematics adjust the contrast, and the
+dyadic geometry stays in under every choice. The fit writes
+``behavioral_response_contrast_<control>_<timestamp>.pkl`` to ``output_directory``, and
+``plot_behavioral_response_forest`` draws both questions, one row per feature.
+
+.. code-block:: python
+
+    behavioral_response_contrast(
+        input_pickle_path=configure_path(
+            "/mnt/falkner/Bartul/modeling/modeling_behavioral_response_<...>.pkl"
+        ),
+        output_directory=configure_path(
+            "/mnt/falkner/Bartul/modeling/behavioral_response_contrast"
+        ),
+    )
+
+    forest_figure = plot_behavioral_response_forest(
+        contrast_results_path=configure_path(
+            "/mnt/falkner/Bartul/modeling/behavioral_response_contrast/"
+            "behavioral_response_contrast_<...>.pkl"
+        ),
+        save_plot=False,
+        output_dir=configure_path("/mnt/falkner/Bartul/modeling/figures"),
+    )
+
+The **baseline-matched divergence** answers the same question with almost disjoint
+assumptions: instead of holding pre-anchor state fixed with a covariate block, each vocal anchor
+is paired with the silent anchors whose pre-anchor level in that same feature matches, and the
+two curves are compared directly. One leans on the functional form of an adjustment, the other
+on the choice of what to match, so an effect that appears in **both** is much harder to explain
+away. Silence is judged against **every** USV, not merely the predictor's bouts, so singleton
+USVs, unassigned ones and the partner's all break a window.
+``MatchedDivergencePipeline.extract_and_save_matched_divergence`` writes
+``matched_divergence_<cohort>_<timestamp>.pkl`` to ``io.save_directory``, and
+``plot_matched_divergence`` draws the paired curves.
+
+.. code-block:: python
+
+    MatchedDivergencePipeline(
+        modeling_settings_dict=None
+    ).extract_and_save_matched_divergence()
+
+    divergence_figure = plot_matched_divergence(
+        divergence_results_path=configure_path(
+            "/mnt/falkner/Bartul/modeling/matched_divergence_<...>.pkl"
+        ),
+        save_plot=False,
+        output_dir=configure_path("/mnt/falkner/Bartul/modeling/figures"),
+    )
+
 Source: `modeling_analyses.ipynb <https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/notebooks/modeling_analyses.ipynb>`_.
 
 .. _unit-triage-aggregator:
@@ -830,13 +941,16 @@ it cell by cell.
 
 Every figure / section cell defines its
 own knobs at the top, so you edit a cell's parameters in place to sweep values
-across the same set of pkls without re-computing tuning. Shared values are
-reassigned wherever they are used (``CATALOG_PATH`` is set again in the anatomy
-cell, ``figure_condition`` is set again in each behavioural cell), while the two
-figure-output routing knobs (``SAVE_FIGURES`` / ``SCRATCH_FIG_DIR``) live in the
-Setup cell and thread ``FIG_OUT_DIR`` into every figure call. Significance
-thresholds default to the ``detect_interesting_tuning_neurons`` block of
-``_parameter_settings/analyses_settings.json``.
+across the same set of pkls without re-computing tuning. The settings, and the
+values shared across sections, live in the Setup cell: ``vis_settings`` /
+``analyses_settings``, the significance ``THRESHOLDS`` (read from the
+``detect_interesting_tuning_neurons`` block of
+``_parameter_settings/analyses_settings.json``), ``CATALOG_PATH`` (read by the
+aggregator and by the anatomy figures) and the figure-output routing
+(``SAVE_FIGURES`` / ``SCRATCH_FIG_DIR``, threaded into every figure call as
+``FIG_OUT_DIR``). ``figure_condition`` is set again in each behavioural cell.
+The last two cells read the vocal-bout occupancy decoder's outputs (see
+*Vocal-bout occupancy decoding* below).
 
 **Imports.** Import the aggregator and the two figure builders (plus the shared plot-style
 helper).
@@ -851,42 +965,66 @@ helper).
     from usv_playpen.analyses.unit_triage_aggregator import (
         aggregate_units_across_conditions,
     )
+    from usv_playpen.os_utils import configure_path, resolve_data_root
     from usv_playpen.visualizations.make_anatomy_figures import AnatomyFigureMaker
+    from usv_playpen.visualizations.make_neuronal_decoding_figures import (
+        NeuronalDecodingFigureMaker,
+    )
     from usv_playpen.visualizations.make_neuronal_tuning_figures import (
         NeuronalTuningFigureMaker,
     )
     from usv_playpen.visualizations.plot_style import apply_plot_style
 
-**Setup.** Font/style registration, ``visualizations_settings.json`` load, and figure-output
-routing. The two routing knobs (``SAVE_FIGURES`` / ``SCRATCH_FIG_DIR``) sit at the
-top of the cell; everything below them is derived. ``apply_plot_style()``
+**Setup.** Font/style registration, the one load of ``visualizations_settings.json`` and
+``analyses_settings.json``, the shared values derived from them, and figure-output
+routing. The routing knob (``SAVE_FIGURES``) sits at the top of the cell; everything
+below it is derived. ``apply_plot_style()``
 registers the five bundled Helvetica weights with matplotlib and activates the
 project mplstyle; the weight is then nudged to ``light`` so SVG export resolves to
 Helvetica-Light.
 
 .. code-block:: python
 
-    # Figure-output routing knobs (top, editable)
+    # Figure-output routing knob (top, editable)
     SAVE_FIGURES = True
-    SCRATCH_FIG_DIR = "/tmp/usv_figures_scratch"
 
     apply_plot_style()
     mpl.rcParams["font.weight"] = "light"
     mpl.rcParams["axes.labelweight"] = "light"
     mpl.rcParams["svg.fonttype"] = "none"
 
+    # Settings, loaded once for the whole notebook.
     with open(
         Path.cwd().parent / "_parameter_settings" / "visualizations_settings.json"
     ) as f:
         vis_settings = json.load(f)
+    with open(Path.cwd().parent / "_parameter_settings" / "analyses_settings.json") as f:
+        analyses_settings = json.load(f)
+
+    THRESHOLDS = {
+        key: analyses_settings["detect_interesting_tuning_neurons"][key]
+        for key in (
+            "z_threshold",
+            "min_consecutive_bins",
+            "vmi_alpha",
+            "vmi_min_bouts",
+            "spatial_info_bps_threshold",
+        )
+    }
+    CATALOG_PATH = resolve_data_root("catalog_path")
 
     # SAVE_FIGURES=True -> canonical figures.save_directory; False -> SCRATCH_FIG_DIR
+    SCRATCH_FIG_DIR = str(
+        Path(configure_path(vis_settings["figures"]["save_directory"])) / "scratch"
+    )
     FIG_OUT_DIR = None if SAVE_FIGURES else SCRATCH_FIG_DIR
     if FIG_OUT_DIR is not None:
         Path(FIG_OUT_DIR).mkdir(parents=True, exist_ok=True)
 
 * **SAVE_FIGURES** — ``True`` writes every figure to the canonical ``figures.save_directory`` from ``visualizations_settings.json``; ``False`` sets ``FIG_OUT_DIR`` to ``SCRATCH_FIG_DIR`` so the canonical directory stays clean while iterating.
-* **SCRATCH_FIG_DIR** — the scratch directory used when ``SAVE_FIGURES`` is ``False``; ``FIG_OUT_DIR`` (derived) is threaded into every figure call as ``out_dir``.
+* **SCRATCH_FIG_DIR** — the scratch directory used when ``SAVE_FIGURES`` is ``False``: the ``scratch`` subdirectory of ``figures.save_directory``, which, unlike ``/tmp``, the OS never cleans. ``FIG_OUT_DIR`` (derived) is threaded into every figure call as ``out_dir``.
+* **THRESHOLDS** — the aggregator's significance knobs, read from the ``detect_interesting_tuning_neurons`` block (override an entry in the aggregator cell to sweep without re-computing tuning): ``z_threshold`` (the magnitude a run-analysis or categorical modality's ``peak_z`` must reach, ``3.0``), ``min_consecutive_bins`` (the shortest run of bins that counts for a run-analysis modality, ``3``), ``vmi_alpha`` (the Wilcoxon p-value cutoff for a Vocalization Modulation Index label, ``0.01``), ``vmi_min_bouts`` (fewest bouts before a unit gets a VMI label at all, ``10``) and ``spatial_info_bps_threshold`` (spatial information, in bits per spike, a spatial map must reach, ``0.5``). Two more knobs of that block are not in the dict and take their settings values: ``ibi_bout_alpha`` (two-sided level for the IBI bout-onset labels, ``0.01``) and ``ibi_bout_min_bouts`` (fewest IBI bouts before a unit gets a bout-onset label at all, ``10``).
+* **CATALOG_PATH** — the authoritative ``unit_catalog.csv`` (``data_roots.catalog_path``), supplying each cluster's anatomy to the aggregator and the units to the anatomy figures.
 
 **Aggregator.** Build or load the aggregator pickle keyed by ``(animal_id, YYYYMMDD, imec,
 cluster_id)``. Each unit carries its identity, the catalog ``anatomy_region``, and
@@ -900,21 +1038,15 @@ defined at the top of this cell.
 
 .. code-block:: python
 
-    # Significance thresholds (default to detect_interesting_tuning_neurons)
-    THRESHOLDS = {
-        "z_threshold": 3.0,
-        "min_consecutive_bins": 3,
-        "vmi_alpha": 0.01,
-        "vmi_min_bouts": 10,
-        "spatial_info_bps_threshold": 0.5,
-    }
+    # THRESHOLDS (Setup cell) holds the detect_interesting_tuning_neurons values;
+    # override an entry here to sweep without re-computing tuning.
 
-    # One .txt of session roots per condition; authoritative catalog; output + data roots
+    # One .txt of session roots per condition; output + data roots
+    # (the unit catalog is CATALOG_PATH from the Setup cell)
     CONDITION_TO_SESSION_LIST = {
         "intact_female": "/mnt/falkner/.../ephys_courtship_intact_partners_sessions_list.txt",
         "mute_female": "/mnt/falkner/.../ephys_courtship_mute_female_sessions_list.txt",
     }
-    CATALOG_PATH = "/mnt/falkner/Bartul/EPHYS/unit_catalog.csv"
     AGGREGATOR_OUT_DIR = "/mnt/falkner/Bartul/neuronal_tuning"
     DATA_ROOT = "/mnt/falkner/Bartul/Data"
 
@@ -943,9 +1075,7 @@ defined at the top of this cell.
     else:
         aggregator_pkl_path = Path(AGGREGATOR_PKL)
 
-* **THRESHOLDS** — significance knobs applied by the aggregator; default to the ``detect_interesting_tuning_neurons`` block, override here to sweep without re-computing tuning. Two more knobs of that block are not listed in the cell and take their settings values: ``ibi_bout_alpha`` (two-sided level for the IBI bout-onset labels, ``0.01``) and ``ibi_bout_min_bouts`` (fewest IBI bouts before a unit gets a bout-onset label at all, ``10``).
 * **CONDITION_TO_SESSION_LIST** — one ``.txt`` of session roots (one per line) per condition; each condition becomes a block in every unit's pickle entry.
-* **CATALOG_PATH** — the authoritative ``unit_catalog.csv`` supplying each cluster's anatomy (reassigned again in the anatomy cell below).
 * **AGGREGATOR_OUT_DIR** / **DATA_ROOT** — where ``unit_triage_<YYYYMMDD>_<HHMMSS>.pkl`` is written, and the root the aggregator walks for ``*_tuning_curves_data.pkl``.
 * **AGGREGATOR_PKL** — pickle source: ``None`` rebuilds and saves (~minutes, ~1.9 GB); ``"auto"`` reuses the newest existing pickle (rebuild only if none); an absolute path loads that file verbatim.
 
@@ -954,14 +1084,10 @@ defined at the top of this cell.
 aggregator pickle): a two-panel recording-yield bar, per-probe unit waveforms on a
 four-shank schematic, a 360° rotating-brain video, and a static unit-positions
 still. Each method writes one timestamped file; output directory, format and dpi
-default to the ``figures`` block of ``visualizations_settings.json``. ``CATALOG_PATH``
-is reassigned at the top of the first cell, and each figure cell sets its own knobs
-at the top.
+default to the ``figures`` block of ``visualizations_settings.json``. The builder reads
+``CATALOG_PATH`` from the Setup cell, and each figure cell sets its own knobs at the top.
 
 .. code-block:: python
-
-    # authoritative unit catalog (also read by the aggregator cell above)
-    CATALOG_PATH = "/mnt/falkner/Bartul/EPHYS/unit_catalog.csv"
 
     anatomy_maker = AnatomyFigureMaker(
         catalog_path=CATALOG_PATH,
@@ -1005,7 +1131,6 @@ at the top.
         out_dir=FIG_OUT_DIR,
     )
 
-* **CATALOG_PATH** — the same authoritative ``unit_catalog.csv`` from the aggregator cell, reassigned at the top of this cell so anatomy figures can be run independently.
 * **ANATOMY_WAVEFORM_MOUSE** / **ANATOMY_WAVEFORM_SESSION** — the one ``(mouse_id, session_id)`` pair whose top-amplitude single-unit (SU)-somatic templates are drawn, one figure per probe (schematic side flips so rostral sits on the left for both).
 * **video_n_frames** / **video_fps** / **video_format** — frame count, frame rate, and container of the 360° rotating-brain video; ``n_frames`` / ``fps`` set both duration and rotation smoothness.
 * **still_fig_format** / **still_view_elev** / **still_view_azim** — format and camera elevation / azimuth of the static unit-positions still (tilted from above, AP axis running left-right so both hemispheres are visible).
@@ -1098,6 +1223,50 @@ condition-scoped behavioural summaries. Each call returns the written path.
 * **PROPERTY_DIRECTION** — ``"excit"`` or ``"suppress"``; selects excit- vs suppress-tuned units for the eight per-property distribution figures. Set at the top of the property cell.
 * **figure_condition** — one key of ``CONDITION_TO_SESSION_LIST``; selects which condition's per-session evidence feeds the behavioural heatmap and the overlap Venns. Reassigned at the top of each of the two behavioural cells.
 
+**Vocal-bout occupancy decoding.** The last two cells read the per-session outputs of the
+vocal-bout occupancy decoder (``decode_usv_bout_occupancy``, see :doc:`Analyze`) through a
+``NeuronalDecodingFigureMaker``. The first, ``summarize``, gathers the named sessions into one
+table; the second, ``make_bout_decoding_figure``, draws one focal area across animals beside
+three comparison panels. Both raise rather than quietly producing a short table or an empty
+panel, because a missing session looks exactly like a session that decoded at chance.
+
+Read the figure's limitations before reusing it on a different session set: the sessions are
+chosen by the caller rather than discovered, only a **same-session** comparison is exact —
+accuracy falls steeply with how much the animal vocalised, so a cross-session comparison has to
+be matched on USV density by hand — and the geometry holds exactly three comparison panels.
+
+.. code-block:: python
+
+    DECODING_DIR = "<...>"  # decode_usv_bout_occupancy.output_directory of the run to plot
+    DECODED_SESSIONS = ("20250919_152924", "20251011_145914", ...)
+
+    decoding_maker = NeuronalDecodingFigureMaker(
+        decoding_directory=DECODING_DIR,
+        visualizations_parameter_dict=vis_settings,
+        message_output=print,
+    )
+    bout_decoding_summary = decoding_maker.summarize(sessions=DECODED_SESSIONS)
+
+    # (mouse, session, clean focal USV count); the count drives each curve's opacity
+    FOCAL_SESSIONS = (("181316_0", "20250919_152924", 1054), ...)
+    # (comparison area, its session, the focal-area session it is drawn against, panel note)
+    COMPARISONS = (
+        ("MRN", "20241115_165038", "20241115_165038", "same session"),
+        ("CENT2", "20250909_151929", "20250909_151929", "same session"),
+        ("VTA", "20250923_200538", "20241115_165038", "density matched"),
+    )
+    decoding_maker.make_bout_decoding_figure(
+        focal_area="PAG",
+        focal_sessions=FOCAL_SESSIONS,
+        comparisons=COMPARISONS,
+        unit_counts=(5, 10, 20, 50, 100, 200),
+        out_dir=FIG_OUT_DIR,
+    )
+
+* **DECODING_DIR** — the decoder's output root (``decode_usv_bout_occupancy.output_directory``) of the run to read.
+* **DECODED_SESSIONS** — the sessions gathered into the summary table; every one must already have been decoded.
+* **FOCAL_SESSIONS** / **COMPARISONS** — the focal area's sessions (with their clean focal USV counts) and the three comparison panels.
+
 Source: `neuronal_tuning_summary.ipynb <https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/notebooks/neuronal_tuning_summary.ipynb>`_.
 
 USV neuronal coactivity analyses
@@ -1107,7 +1276,8 @@ population (PAG by default) is during one class of USV versus another. For a
 30 ms window locked to each USV onset it computes three coactivity metrics —
 pairwise spike-count correlation (``r_sc``), population-vector cosine similarity
 (``similarity``), and population-vector Pearson correlation (``pop_corr``) — and
-tests them with a pooled trial-count bootstrap, a chained circular-shuffle null,
+tests them with pooled trial-level subsampling (trials drawn **without**
+replacement, so no trial pairs with itself), a chained circular-shuffle null,
 and a direct label-permutation test. Its coactivity hyperparameters are read from
 the ``neuronal_coactivity`` block of ``analyses_settings.json``; every other knob
 lives in the **Parameters** cell.
@@ -1130,9 +1300,9 @@ module, so every routine is called as ``engine.<fn>``), and the ``plot_*`` /
 
 .. code-block:: python
 
+    import json
     import pathlib
 
-    import matplotlib.pyplot as plt
     import numpy as np
 
     from usv_playpen.os_utils import configure_path
@@ -1151,7 +1321,8 @@ module, so every routine is called as ``engine.<fn>``), and the ``plot_*`` /
 
     apply_plot_style()
 
-**Parameters.** Every user-tweakable knob for a run lives in this one cell: the segmentation
+**Parameters.** This cell also loads ``analyses_settings.json`` once (the notebook's
+settings cell). Every user-tweakable knob for a run lives in this one cell: the segmentation
 column and the two category-id groups to contrast, the three-criteria unit
 filter, the animal→sessions map and chosen animal, the coactivity
 hyperparameters, and the per-group plot colours. Nothing downstream redefines
@@ -1159,6 +1330,13 @@ these. Paths are written ``/mnt/falkner/...`` and wrapped in ``configure_path()`
 so they resolve on macOS (``/Volumes/falkner``) too.
 
 .. code-block:: python
+
+    # Load the analyses settings once; the coactivity hyperparameters come from its
+    # `neuronal_coactivity` block rather than being hard-coded below.
+    with open(
+        pathlib.Path.cwd().parent / "_parameter_settings" / "analyses_settings.json", "r"
+    ) as analyses_settings_file:
+        analyses_settings = json.load(analyses_settings_file)
 
     # Segmentation configuration
     # content-ridge categories R-1..R-4 of the regular map
@@ -1197,7 +1375,7 @@ so they resolve on macOS (``/Volumes/falkner``) too.
     CHOSEN_ANIMAL = "178621_2"
 
     # Coactivity hyperparameters — read from the `neuronal_coactivity` block of
-    # analyses_settings.json (loaded once in the Imports cell) rather than
+    # analyses_settings.json (loaded at the top of this cell) rather than
     # hard-coded here. Edit the JSON to retune.
     COACTIVITY_SETTINGS = analyses_settings["neuronal_coactivity"]
     SEED = COACTIVITY_SETTINGS[
@@ -1205,6 +1383,9 @@ so they resolve on macOS (``/Volumes/falkner``) too.
     ]  # base RNG seed; each routine draws a reproducible stream at SEED + offset
     USV_BOOTSTRAP_NUM = COACTIVITY_SETTINGS["bootstrap_n"]
     N_BOOT_ITERATIONS = COACTIVITY_SETTINGS["n_boot"]
+    # trials are subsampled WITHOUT replacement; this fraction of the smaller group
+    # is used when bootstrap_n is not below it
+    BOOTSTRAP_SUBSAMPLE_FRACTION = COACTIVITY_SETTINGS["bootstrap_subsample_fraction"]
     N_SHUFFLES = COACTIVITY_SETTINGS["n_shuffles"]
     N_PERMUTATIONS = COACTIVITY_SETTINGS["n_permutations"]
     WINDOW_S = COACTIVITY_SETTINGS["window_s"]
@@ -1226,9 +1407,37 @@ so they resolve on macOS (``/Volumes/falkner``) too.
 * **CATEGORY_COLUMN** / **GROUP_A_IDS** / **GROUP_B_IDS** — the ``usv_summary`` column that labels each USV and the two sets of ``qlvm_category`` ids (1..4, meaning R-1..R-4) contrasted (default ``complex`` [4] vs ``simple`` [1], i.e. R-4 vs R-1; the names and descriptions come from the category bundle's ``category_nomenclature.json``, ``os_utils.load_qlvm_category_bundle``); ``*_LABEL`` names them in tables and plots.
 * **CATALOG_PATH** / **UNIT_BRAIN_AREAS** / **UNIT_REQUIRE_SOMATIC** / **UNIT_CLUSTER_GROUP** — the unit-catalog file and the three-criteria filter (region, somatic waveform, Kilosort ``cluster_group``) applied to select the population.
 * **ANIMALS_TO_SESSIONS** / **CHOSEN_ANIMAL** / **DATA_ROOT** — the per-animal session lists (Kilosort is per-day, so the loader keeps the single best-populated day), the focal animal for single-animal cells, and the data root.
-* The coactivity hyperparameters below are read from the ``neuronal_coactivity`` block of ``analyses_settings.json`` (loaded once in the Imports cell), so they are tuned in one place — edit the JSON to retune. The segmentation / unit-filter / animal-map values above stay inline as per-run edits.
+* The coactivity hyperparameters below are read from the ``neuronal_coactivity`` block of ``analyses_settings.json`` (loaded once at the top of this cell), so they are tuned in one place — edit the JSON to retune. The segmentation / unit-filter / animal-map values above stay inline as per-run edits. The block's keys map onto the cell's names as ``seed`` → ``SEED``, ``window_s`` → ``WINDOW_S``, ``bootstrap_n`` → ``USV_BOOTSTRAP_NUM``, ``n_boot`` → ``N_BOOT_ITERATIONS``, ``bootstrap_subsample_fraction`` → ``BOOTSTRAP_SUBSAMPLE_FRACTION``, ``n_shuffles`` → ``N_SHUFFLES``, ``n_permutations`` → ``N_PERMUTATIONS``, ``per_session_n_shuffles`` → ``PER_SESSION_N_SHUFFLES``, ``n_amplitude_bins`` → ``N_AMPLITUDE_BINS``, ``min_bin_trials`` → ``MIN_BIN_TRIALS``, ``min_shift_s`` / ``max_shift_s`` → ``MIN_SHIFT_S`` / ``MAX_SHIFT_S`` and ``acoustics`` → ``ACOUSTICS_PARAMS``:
+
+  .. code-block:: json
+
+      "neuronal_coactivity": {
+        "seed": 0,
+        "window_s": 0.03,
+        "bootstrap_n": 300,
+        "n_boot": 1000,
+        "bootstrap_subsample_fraction": 0.8,
+        "n_shuffles": 1000,
+        "n_permutations": 1000,
+        "per_session_n_shuffles": 500,
+        "n_amplitude_bins": 5,
+        "min_bin_trials": 15,
+        "min_shift_s": 20.0,
+        "max_shift_s": 60.0,
+        "acoustics": {
+          "nperseg": 2048,
+          "hop_length": 512,
+          "window": "blackmanharris",
+          "min_freq": 30000.0,
+          "max_freq": 120000.0,
+          "low_energy_frac": 0.05,
+          "high_energy_frac": 0.95
+        }
+      }
+
 * **SEED** — base RNG seed; each stochastic routine offsets it (``SEED + k``) for an independent, reproducible stream.
-* **USV_BOOTSTRAP_NUM** / **N_BOOT_ITERATIONS** / **N_SHUFFLES** / **N_PERMUTATIONS** / **PER_SESSION_N_SHUFFLES** — matched trial count and iteration counts for the pooled bootstrap, chained/per-session shuffle nulls, and label permutation.
+* **USV_BOOTSTRAP_NUM** / **N_BOOT_ITERATIONS** / **N_SHUFFLES** / **N_PERMUTATIONS** / **PER_SESSION_N_SHUFFLES** — requested matched trial count and iteration counts for the pooled subsampling, chained/per-session shuffle nulls, and label permutation.
+* **BOOTSTRAP_SUBSAMPLE_FRACTION** — the pooled subsampling draws trials **without replacement**: a trial drawn twice would pair with itself, and that self-pair has similarity and correlation exactly 1, which lifted ``similarity`` and ``pop_corr`` above the chained null even with no real effect (in a simulation of sparse independent trials, 38% / 75% of runs rejected at α = 0.1; without replacement, 5% / 8%). Each subsample therefore holds ``USV_BOOTSTRAP_NUM`` trials when that is below the smaller group's trial count, and ``floor(BOOTSTRAP_SUBSAMPLE_FRACTION × smaller group)`` otherwise (``engine.resolve_subsample_size``); the chained null is drawn at the same size, and the result's ``bootstrap_n`` reports the size used. Shipped as ``0.8``.
 * **WINDOW_S** — the post-onset window (30 ms) over which spikes are counted per USV.
 * **MIN_SHIFT_S** / **MAX_SHIFT_S** — the circular-shift range (seconds) for the shuffle nulls, forwarded to ``run_group_comparison`` / ``per_session_group_metrics``.
 * **N_AMPLITUDE_BINS** / **MIN_BIN_TRIALS** — the amplitude-stratification quantile-bin count and the per-group-per-bin trial floor for the amplitude-stratified section.
@@ -1362,13 +1571,14 @@ group-A-vs-group-B permutation test.
         n_shuffles=N_SHUFFLES,
         n_permutations=N_PERMUTATIONS,
         seed=SEED,
+        subsample_fraction=BOOTSTRAP_SUBSAMPLE_FRACTION,
     )
 
     # Per-session deltas, each group vs its chained null, and the direct A-vs-B permutation test.
     print(summarize_group_comparison(results, label_a=GROUP_A_LABEL, label_b=GROUP_B_LABEL))
 
 * **WINDOW_S** — the per-USV spike-count window used to build every matrix.
-* **USV_BOOTSTRAP_NUM** — the matched trial count both groups are bootstrapped (and onset-sampled) to.
+* **USV_BOOTSTRAP_NUM** / **BOOTSTRAP_SUBSAMPLE_FRACTION** — the requested matched trial count both groups are subsampled (without replacement) and onset-sampled to; when it is not below the smaller group's trial count, ``floor(BOOTSTRAP_SUBSAMPLE_FRACTION × smaller group)`` is used instead, and ``results["bootstrap_n"]`` reports the size used.
 * **N_BOOT_ITERATIONS** / **N_SHUFFLES** / **N_PERMUTATIONS** — iteration counts for the pooled bootstrap, the chained null, and the label permutation.
 * **SEED** — the base seed the engine offsets per internal routine for independent, reproducible streams.
 
@@ -1465,6 +1675,7 @@ to ``pop_corr(group B)``, coloured by the permutation significance.
             n_boot=N_BOOT_ITERATIONS,
             n_permutations=N_PERMUTATIONS,
             seed=SEED + 200 + 3 * animal_idx,
+            subsample_fraction=BOOTSTRAP_SUBSAMPLE_FRACTION,
         )
         pop_a_obs = float(np.mean(comparison["boot_a"]["pop_corr"]))
         pop_b_obs = float(np.mean(comparison["boot_b"]["pop_corr"]))
@@ -1500,28 +1711,29 @@ to ``pop_corr(group B)``, coloured by the permutation significance.
     )
 
 * **ANIMALS_TO_SESSIONS** — the full set of focal mice looped over (not just ``CHOSEN_ANIMAL``).
-* **USV_BOOTSTRAP_NUM** / **N_BOOT_ITERATIONS** — matched-N target (capped at each animal's trial count) and bootstrap iterations.
+* **USV_BOOTSTRAP_NUM** / **N_BOOT_ITERATIONS** — matched-N target (capped at each animal's trial count; when the cap binds, ``compare_groups`` subsamples ``floor(BOOTSTRAP_SUBSAMPLE_FRACTION × smaller group)`` trials without replacement) and resampling iterations.
 * **N_PERMUTATIONS** — permutation count for the per-animal A-vs-B test.
 * **SEED** — offset per animal (``SEED + 200 + 3 * animal_idx``) for independent streams.
 
 **Amplitude-stratified.** The confound check shows the groups differ acoustically (complex USVs are
 louder); this cell asks whether loudness actually *drives* the ``pop_corr`` gap.
 It bins all USVs by their 30 ms RMS into quantile bins and, for bins holding at
-least ``MIN_BIN_TRIALS`` of both groups (the overlap region), bootstraps each
-group to a matched N and re-runs the same ``complex``-vs-``simple``
+least ``MIN_BIN_TRIALS`` of both groups (the overlap region), subsamples each
+group without replacement to a matched N (``floor(BOOTSTRAP_SUBSAMPLE_FRACTION ×
+smaller group)``, since the requested N is the smaller group itself) and re-runs the same ``complex``-vs-``simple``
 label-permutation test (``engine.compare_groups``) *within* the loudness-matched
 bin. ``summarize_amplitude_stratified`` prints the per-bin table and
 ``plot_amplitude_stratified`` draws the per-bin ``pop_corr`` with the
-unstratified matched-N bootstrap means as references. If the gap persists within
+unstratified matched-N subsampling means as references. If the gap persists within
 bins, loudness is not the explanation; if it collapses, amplitude is a confound.
-``N_AMPLITUDE_BINS`` and ``MIN_BIN_TRIALS`` are local knobs; the per-USV RMS is
-reused from the acoustic confound-check cell, so re-run that first.
+``N_AMPLITUDE_BINS`` and ``MIN_BIN_TRIALS`` come from the Parameters cell (the
+``neuronal_coactivity`` block); the per-USV RMS is reused from the acoustic
+confound-check cell, so re-run that first.
 
 .. code-block:: python
 
-    # Stratification knobs.
-    N_AMPLITUDE_BINS = 5
-    MIN_BIN_TRIALS = 15  # required per group, per bin, for a bin to be compared
+    # Stratification knobs (N_AMPLITUDE_BINS / MIN_BIN_TRIALS) come from the Parameters
+    # cell above (the neuronal_coactivity settings block).
 
     # Reuse the per-USV RMS from the acoustic confound check above (aligned to the same
     # session + dataframe order as the pooled spike-count matrices built here).
@@ -1562,25 +1774,39 @@ reused from the acoustic confound-check cell, so re-run that first.
                 n_boot=N_BOOT_ITERATIONS,
                 n_permutations=N_PERMUTATIONS,
                 seed=SEED + 300 + 3 * bin_idx,
+                subsample_fraction=BOOTSTRAP_SUBSAMPLE_FRACTION,
             )
             row["pop_a"] = float(np.mean(comparison["boot_a"]["pop_corr"]))
             row["pop_b"] = float(np.mean(comparison["boot_b"]["pop_corr"]))
             row["p_two"] = comparison["perm"]["pop_corr"]["p_two_tailed"]
         stratified_rows.append(row)
 
-    # Unstratified reference (all trials, matched-N bootstrap) for context.
-    n_overall = min(a_counts.shape[1], b_counts.shape[1], USV_BOOTSTRAP_NUM)
+    # Unstratified reference (all trials, matched-N subsampling without replacement);
+    # the matched size is resolved once from the smaller group so both groups use the same N.
+    n_overall = engine.resolve_subsample_size(
+        USV_BOOTSTRAP_NUM,
+        min(a_counts.shape[1], b_counts.shape[1]),
+        BOOTSTRAP_SUBSAMPLE_FRACTION,
+    )
     pop_a_overall = float(
         np.mean(
             engine.bootstrap_coactivity_distribution(
-                a_counts, n_overall, N_BOOT_ITERATIONS, seed=SEED + 600
+                a_counts,
+                n_overall,
+                N_BOOT_ITERATIONS,
+                seed=SEED + 600,
+                subsample_fraction=BOOTSTRAP_SUBSAMPLE_FRACTION,
             )["pop_corr"]
         )
     )
     pop_b_overall = float(
         np.mean(
             engine.bootstrap_coactivity_distribution(
-                b_counts, n_overall, N_BOOT_ITERATIONS, seed=SEED + 601
+                b_counts,
+                n_overall,
+                N_BOOT_ITERATIONS,
+                seed=SEED + 601,
+                subsample_fraction=BOOTSTRAP_SUBSAMPLE_FRACTION,
             )["pop_corr"]
         )
     )
@@ -1648,11 +1874,11 @@ tiles a little more of the misfit around the second peak -- whereas tying the pe
 the timescales from the nuisance background. The number of peaks is chosen by a **step-up parametric
 bootstrap likelihood-ratio test**, with each rung's statistic divided by its **session design
 effect** before it is scored: intervals are nested in sessions and the bootstrap null is not, so an
-uncorrected test rejects too readily.
+uncorrected test rejects too readily. The mixture families, their EM fits, the information criteria
+and the bootstrap likelihood-ratio machinery live in ``usv_playpen.analyses.mixture_model_utils``.
 
-**Imports.** Import the analysis and plotting helpers, apply the shared plot style, and load the
-``visualizations_settings.json`` / ``analyses_settings.json`` blocks that drive the run (the cell also
-enables ``autoreload`` so source edits are picked up without a kernel restart).
+**Imports.** Import the analysis and plotting helpers and apply the shared plot style (the cell
+also enables ``autoreload`` so source edits are picked up without a kernel restart).
 
 .. code-block:: python
 
@@ -1677,6 +1903,15 @@ enables ``autoreload`` so source edits are picked up without a kernel restart).
 
     apply_plot_style()
 
+**Configuration.** Load ``visualizations_settings.json`` / ``analyses_settings.json`` once (the
+notebook's settings cell), resolve the session lists, name the interval definitions, and read the
+plot-only knobs straight from the settings block.
+
+.. code-block:: python
+
+    # Single source of truth for settings, paths and labels: the settings files are
+    # loaded here, once. All numeric parameters live in analyses_settings.json; this
+    # cell only assigns notebook-local convenience aliases.
     base_path = Path.cwd().parent
     with open(
         base_path / "_parameter_settings" / "visualizations_settings.json", "r"
@@ -1694,17 +1929,6 @@ enables ``autoreload`` so source edits are picked up without a kernel restart).
     # All compute / display knobs live in analyses_settings.json -> compute_inter_usv_interval_distributions
     usv_interval_cfg = ana_settings["compute_inter_usv_interval_distributions"]
 
-* **usv_interval_cfg** -- the ``compute_inter_usv_interval_distributions`` block; every numeric compute / display knob lives here, so the notebook itself only assigns convenience aliases.
-* **male_color** / **female_color** -- per-sex palette entries pulled from the visualizations settings.
-
-**Configuration.** Resolve the session lists, name the interval definitions, and read the plot-only
-knobs straight from the settings block.
-
-.. code-block:: python
-
-    # Single source of truth for paths and labels. All numeric parameters live
-    # in analyses_settings.json; this cell only assigns notebook-local convenience
-    # aliases.
     output_directory = usv_interval_cfg["output_directory"]
     session_lists = [
         str(Path(configure_path(p))) for p in usv_interval_cfg["session_lists"]
@@ -1740,6 +1964,8 @@ knobs straight from the settings block.
     }
     vocal_class_label = {"usv": "USV", "squeak": "squeak"}
 
+* **usv_interval_cfg** -- the ``compute_inter_usv_interval_distributions`` block; every numeric compute / display knob lives here, so the notebook itself only assigns convenience aliases.
+* **male_color** / **female_color** -- per-sex palette entries pulled from the visualisations settings.
 * **output_directory** -- where the HDF5 archive is written and where the plot cells look for the newest run.
 * **interval_types** -- both interval definitions (``s2s`` start-to-start, ``e2s`` end-to-start) are computed.
 * **plot_interval_types** -- which of them are DRAWN; ``e2s`` only by default. The peaks-plus-background model is defined on end-to-start gaps: start-to-start intervals include each vocalization's own duration, which smears the gap structure, and the s2s peak test runs to the top of its grid with broad "peaks". Add ``"s2s"`` to draw it anyway.
@@ -1753,10 +1979,10 @@ the analysis reads (all of them are archived in the root ``/attrs`` except the p
 * **session_lists** -- session-list text files, one session root per line; their union, de-duplicated, is the cohort.
 * **output_directory** -- where the archive is written; **figures_directory** -- where the notebook saves figures (not read by the analysis).
 * **exclude_noise_usvs** -- drop the segments ``detect-usv-noise`` flagged as holding no vocalization.
-* **interval_pools** -- the pools, each ``{sex, vocal_class, adjacency, fit}``: ``vocal_class`` ``usv`` or ``squeak``; ``adjacency`` ``filtered`` (other vocal classes removed before pairing) or ``strict`` (two vocalizations pair only if nothing lies between them in the full record -- required for sparse vocalizers and whenever many vocalizations are unassigned); ``fit`` whether the models run on it. A squeak's interval runs from or to the squeak itself (``squeak_start`` / ``squeak_end``, ``os_utils.vocal_event_times``), not its segment, so squeak pools need those columns.
+* **interval_pools** -- the pools, each ``{sex, vocal_class, adjacency, fit}``: ``vocal_class`` ``usv`` or ``squeak``; ``adjacency`` ``filtered`` (other vocal classes removed before pairing) or ``strict`` (two vocalizations pair only if nothing lies between them in the full record -- required for sparse vocalizers and whenever many vocalizations are unassigned); ``fit`` whether the models run on it. A squeak's interval runs from or to the squeak itself (``squeak_start`` / ``squeak_end``, ``os_utils.vocal_event_times``), not its segment, so squeak pools need those columns. The declaration is checked before any session is read: an unknown sex, vocal class (including ``null``) or adjacency, a pool declared twice, two fitted pools of one sex and vocal class (they would share ``selected_n_peak_<sex>_<vocal_class>``) and, with ``fit_mixture_model`` on, two fitted pools of one sex (the sweep archives by sex) all raise.
 * **min_intervals_for_fitting** -- a fitted pool smaller than this is archived for description only (5000).
-* **fit_tied_model**, **tied_peak_grid**, **tied_n_background**, **tied_n_init**, **tied_n_init_boot** -- the tied-scale peak model: whether it runs, the peak counts tested (``[1, 2, 3]``, each against one more), the fixed background count (2), and the EM restarts of the observed fits (4) and of the bootstrap refits (2).
-* **design_bootstrap** -- session resamples for the design effect of every corrected test, tied and unconstrained (2000).
+* **fit_tied_model**, **tied_peak_grid**, **tied_n_background**, **tied_n_init**, **tied_n_init_boot** -- the tied-scale peak model: whether it runs, the peak counts tested (``[1, 2, 3]``, each against one more), the fixed background count (2), and the EM restarts of the observed fits (4) and of the bootstrap refits (2). Each rung's observed null is laddered: rung ``n - 1``'s observed alternative (same subsample) seeds rung ``n``'s null, and the better of it and the scratch restarts is kept.
+* **design_bootstrap** -- session resamples for the design effect of every corrected test, tied and unconstrained (2000). The per-observation log-likelihood differences are centred on their mean before sessions are resampled, so unequal session sizes are not counted as clustering.
 * **bootstrap_lrt_B**, **bootstrap_lrt_n_subsample**, **bootstrap_lrt_alpha**, **bootstrap_lrt_bonferroni**, **bootstrap_lrt_n_jobs** -- shared by both tests: bootstrap replicates per rung (1000), the subsample the observed and null statistics are computed on (10000), the step-up level (0.01), Bonferroni across the rungs (``true``), and parallel workers (24, also used by the serial-dependence resamples).
 * **fit_mixture_model**, **model_class**, **n_components_min**, **n_components_max**, **n_repeats**, **mixture_model_n_init**, **mixture_model_reg_covar**, **bootstrap_lrt_n_init**, **cv_n_folds**, **cv_n_init**, **max_modes_reported** -- the unconstrained sweep: whether it runs, the family (``t``), the K range (2-6), fits per K (10) with their EM restarts (10), the variance floor (1e-4, also used by the tied model), the EM restarts of its bootstrap refits (10), the cross-validation folds and restarts of the diagnostic CV likelihood (5, 5), and the modes recorded per fit (6).
 * **random_seed_base** -- seeds every fit, subsample, bootstrap null and session resample (0).
@@ -1772,7 +1998,7 @@ the analysis reads (all of them are archived in the root ``/attrs`` except the p
 * ``intervals`` -- one row per interval: ``session_id``, ``source_list``, ``interval_type``, ``interval_s``, ``log_interval``, ``emitter_id`` (the animal; archives before 2026-09-23 have ``male_id`` / ``female_id`` instead), ``chain_id`` (intervals of one animal with the same chain id follow each other without a break, each starting at the vocalization the one before it ended at; another animal's vocalization, an unassigned or non-target row or a dropped non-positive interval starts a new chain).
 * ``drop_counts`` -- non-positive intervals dropped per pool; ``pool_summary`` -- per pool ``n_intervals``, ``n_sessions``, the 5/25/50/75/95th percentiles and whether it was ``fitted``.
 * ``tied_fits``, ``tied_modes``, ``peak_lrt``, ``peak_lrt_null`` -- the tied ladder (one row per peak count and component: role, parameters, likelihood, BIC, shared peak scale), its modes, the peak test per rung (raw and corrected statistic, design effect, threshold, raw and corrected p) and its null draws.
-* ``mixture_model_fits``, ``bootstrap_lrt``, ``bootstrap_lrt_null`` -- the unconstrained sweep (every K and rep, with per-component parameters and the diagnostic information criteria), its LRT per rung (raw and corrected, with the step-up selection) and its null draws.
+* ``mixture_model_fits``, ``bootstrap_lrt``, ``bootstrap_lrt_null`` -- the unconstrained sweep (every K and rep, with per-component parameters and the diagnostic information criteria; ``median_sec_k`` is the component median in seconds, for ``ig`` the inverse-Gaussian median rather than the mean ``exp(logmean_k)``), its LRT per rung (raw and corrected, with the step-up selection) and its null draws.
 * ``serial_dependence_curves``, ``serial_dependence_fit``, ``serial_dependence_bends`` -- the spline and bent line with their bands on a grid of the current interval; the bend, its interval, slope, flat level and the counts of refits at the iteration cap; and the replicate bends.
 
 **Compute.** Run once (about an hour, dominated by the peak-count test; the serial-dependence fits add a few minutes per fitted pool). It runs
@@ -1867,7 +2093,7 @@ the corrected level (dotted). The step-up rule stops at the first rung that keep
                 alpha=alpha_used,
                 pair_title="{key}: {K_n} vs {K_a} peaks",
                 obs_label="LR corrected",
-                threshold_label="corrected 99%",
+                threshold_label=f"corrected {100 * (1 - alpha_used):.4g}%",
             )
             fig.suptitle(
                 f"Bootstrap LRT null distributions -- {row['sex']} "
@@ -1876,7 +2102,11 @@ the corrected level (dotted). The step-up rule stops at the first rung that keep
             )
             fig.tight_layout()
             if save_fig_bool:
-                save_figure(fig, f"ivi_bootstrap_lrt_{it}", vis_settings)
+                save_figure(
+                    fig,
+                    f"ivi_bootstrap_lrt_{it}_{row['sex']}_{row['vocal_class']}",
+                    vis_settings,
+                )
             plt.show()
             _, _, n_peak, _ = ivs.load_tied_model_from_h5(
                 str(h5_path), it, row["sex"], row["vocal_class"]
@@ -1918,7 +2148,11 @@ BIC keeps falling past the selected count because it charges each parameter ``lo
                 f"{vocal_class_label[row['vocal_class']]} {interval_label[it]}"
             )
             if save_fig_bool:
-                save_figure(fig, f"ivi_bic_curve_{it}", vis_settings)
+                save_figure(
+                    fig,
+                    f"ivi_bic_curve_{it}_{row['sex']}_{row['vocal_class']}",
+                    vis_settings,
+                )
             plt.show()
 
 **Best-fit overlay.** The selected tied model, rebuilt from the archive (no refit), over the
@@ -1988,7 +2222,7 @@ or off.
             print(f"  [{sex}] log-log Pearson r (Q-Q) = {fit_summary['qq_pearson_r']:.4f}")
 
 **Fitted parameters.** The selected model's components, ascending, in the ``mixture_model_params``
-layout the modeling pipeline reads; component 0 is the first peak, from which the inter-bout threshold
+layout the modelling pipeline reads; component 0 is the first peak, from which the inter-bout threshold
 ``exp(mu_0 + 2.58 * sd_0)`` is derived.
 
 .. code-block:: python
@@ -2074,9 +2308,12 @@ refits stopped at the solver's iteration cap (``serial_dependence_max_iter``).
                 curves=sd_curves,
                 fit=sd_fit,
                 boundary_ms=boundary_ms,
+                vocal_label=vocal_class_label[vocal_class],
             )
             if save_fig_bool:
-                save_figure(fig_sd, f"ivi_serial_dependence_{sex}_{it}", vis_settings)
+                save_figure(
+                    fig_sd, f"ivi_serial_dependence_{it}_{sex}_{vocal_class}", vis_settings
+                )
             plt.show()
 
             print(
@@ -2093,9 +2330,9 @@ Source: `inter_usv_interval_analyses.ipynb <https://github.com/bartulem/usv-play
 USV general analyses
 --------------------
 
-**usv_general_analyses.ipynb** is the single home for the descriptive / cross-session USV analyses — the non-neural, non-modeling views of a set of recording sessions' ultrasonic vocalizations (USVs). It runs *after* the processing pipeline has produced, per session, a concatenated multi-channel ``*_int16.mmap`` audio file, a ``*_usv_summary.csv`` (per-USV start / stop / duration / category / emitter), and the 3D translated / rotated / metric tracks; the spectrogram views also read the consolidated SAM2 + spectrogram HDF5 store.
+**usv_general_analyses.ipynb** is the single home for the descriptive / cross-session USV analyses — the non-neural, non-modelling views of a set of recording sessions' ultrasonic vocalizations (USVs). It runs *after* the processing pipeline has produced, per session, a concatenated multi-channel ``*_int16.mmap`` audio file, a ``*_usv_summary.csv`` (per-USV start / stop / duration / category / emitter), and the 3D translated / rotated / metric tracks; the spectrogram views also read the consolidated SAM2 + spectrogram HDF5 store.
 
-It has two parts: **Individual USV views** — render the spectrogram(s) of one session (single-channel / all-channel / stitched), driven from ``make_usv_spectrograms``, and the vocal-pose still and video of one window of a session, from ``make_vocal_pose_figures``; and **Cross-session summaries** — pooled acoustic-property histograms, per-session-type USV counts, and per-session timelines (also from ``make_usv_spectrograms``), followed by the full behavioral summary-statistics suite from ``usv_summary_statistics`` (assignment, participation, rate / fatigue, proximity, estrous-stage, and spatial-distribution figures).
+It has two parts: **Individual USV views** — render the spectrogram(s) of one session (single-channel / all-channel / stitched), driven from ``make_usv_spectrograms``, and the vocal-pose still and video of one window of a session, from ``make_vocal_pose_figures``; and **Cross-session summaries** — pooled acoustic-property histograms, per-session-type USV counts, and per-session timelines (also from ``make_usv_spectrograms``), followed by the full behavioural summary-statistics suite from ``usv_summary_statistics`` (assignment, participation, rate / fatigue, proximity, estrous-stage, and spatial-distribution figures).
 
 Parameters follow a **hybrid layout**: each spectrogram figure defines its own knobs at the top of its cell (the cells are independent of one another), while the statistics suite is driven by one shared **Statistics parameters** cell plus a **Statistics setup** cell that builds the master per-USV dataframe every statistics section consumes. Paths are written ``/mnt/...`` and wrapped in ``configure_path()`` so they resolve on macOS too.
 
@@ -2128,14 +2365,12 @@ Parameters follow a **hybrid layout**: each spectrogram figure defines its own k
 
     apply_plot_style()
 
-**Individual USV views.** The first part renders the spectrogram(s) of a single session and its vocal-pose figures. Each figure cell carries its own parameters at the top (the per-figure half of the hybrid layout); the spectrogram cell builds the per-sex colormaps it needs inline.
-
-**1. Spectrogram plotter.** ``USVSpectrogramPlotter`` renders one session's USV spectrograms in the mode set by ``vis_settings['make_usv_spectrograms']['mode']``: ``"single"`` (one channel, optional stacked raw waveform, dB scale), ``"all"`` (every channel vertically stacked, dB scale), or ``"stitched"`` (a session-timeline spectrogram assembled from the pre-computed ``[0, 1]``-normalized per-USV spectrograms in the consolidated HDF5 store, placed at their on-session start times with linear normalized amplitude and a fixed ``[0, 1]`` colorbar). The cell defines its own two knobs, loads ``visualizations_settings.json`` into ``vis_settings``, builds one sequential per-sex (base-color → white) colormap, resolves the ``cmap_override`` from the string choice, and runs the plotter.
+**Settings.** ``visualizations_settings.json`` is loaded once, into ``vis_settings``, together with
+the per-sex colours and one sequential per-sex (base-colour → white) colormap. Sections override
+individual keys on ``vis_settings`` in their own cells (e.g. the vocal-pose window and camera);
+no later cell reloads the file.
 
 .. code-block:: python
-
-    spectrogram_session_root = configure_path("/mnt/falkner/Bartul/Data/20230124_192908")
-    spectrogram_cmap_choice = "female"
 
     with open(
         Path.cwd().parent / "_parameter_settings" / "visualizations_settings.json", "r"
@@ -2144,6 +2379,7 @@ Parameters follow a **hybrid layout**: each spectrogram figure defines its own k
 
     male_color = vis_settings["male_colors"][0]
     female_color = vis_settings["female_colors"][0]
+    unassigned_color = vis_settings["unassigned_colors"][0]
 
     # One sequential base-color -> white colormap per sex.
     sex_cmaps = {}
@@ -2164,6 +2400,15 @@ Parameters follow a **hybrid layout**: each spectrogram figure defines its own k
         )
     female_cmap = sex_cmaps["female_cm"]
     male_cmap = sex_cmaps["male_cm"]
+
+**Individual USV views.** The first part renders the spectrogram(s) of a single session and its vocal-pose figures. Each figure cell carries its own parameters at the top (the per-figure half of the hybrid layout); the per-sex colormaps come from the Settings cell.
+
+**1. Spectrogram plotter.** ``USVSpectrogramPlotter`` renders one session's USV spectrograms in the mode set by ``vis_settings['make_usv_spectrograms']['mode']``: ``"single"`` (one channel, optional stacked raw waveform, dB scale), ``"all"`` (every channel vertically stacked, dB scale), or ``"stitched"`` (a session-timeline spectrogram assembled from the pre-computed ``[0, 1]``-normalised per-USV spectrograms in the consolidated HDF5 store, placed at their on-session start times with linear normalised amplitude and a fixed ``[0, 1]`` colorbar). The cell defines its own two knobs, resolves the ``cmap_override`` from the string choice (using the Settings cell's per-sex colormaps), and runs the plotter.
+
+.. code-block:: python
+
+    spectrogram_session_root = configure_path("/mnt/falkner/Bartul/Data/20230124_192908")
+    spectrogram_cmap_choice = "female"
 
     spectrogram_cmap_override = {"female": female_cmap, "male": male_cmap, None: None}[
         spectrogram_cmap_choice
@@ -2187,11 +2432,6 @@ Parameters follow a **hybrid layout**: each spectrogram figure defines its own k
 .. code-block:: python
 
     vocal_pose_session_root = configure_path("/mnt/falkner/Jinrun/Data/20250516_122134")
-
-    with open(
-        Path.cwd().parent / "_parameter_settings" / "visualizations_settings.json", "r"
-    ) as vis_settings_file:
-        vis_settings = json.load(vis_settings_file)
 
     vocal_pose_windows = find_vocal_pose_windows(vocal_pose_session_root, vis_settings)
     display(vocal_pose_windows.head(12))
@@ -2293,7 +2533,7 @@ Fourth, the video, which ends on the still's frame and camera — the window pla
 * **male_female_txt_path** / **female_female_txt_path** / **lone_male_txt_path** — the three per-session-type session lists (each a bar in the chart).
 * **session_counts_output_path** / **session_counts_fig_format** — save location and format for the figure.
 
-**4. Session timeline.** ``plot_session_usv_timeline`` draws every non-noise USV in one session as a colored rectangle spanning its ``[start, stop]`` interval on a single horizontal strip. The session's track names are read from ``<session>/video/*_points3d_translated_rotated_metric.h5`` and each animal's sex from the ``Subjects`` block of the session's ``*_metadata.yaml`` (the ``subject_id`` matching the track name; never the track slot, so a female-female session draws both animals female, and a track the metadata cannot resolve raises); each USV's CSV ``emitter`` field is matched against the track names — a male → ``#9AC0CD``, a female → ``#FF6347``, anything else → ``#C0C0C0`` (unassigned). The title reports the total non-noise count.
+**4. Session timeline.** ``plot_session_usv_timeline`` draws every non-noise USV in one session as a coloured rectangle spanning its ``[start, stop]`` interval on a single horizontal strip. The session's track names are read from ``<session>/video/*_points3d_translated_rotated_metric.h5`` and each animal's sex from the ``Subjects`` block of the session's ``*_metadata.yaml`` (the ``subject_id`` matching the track name; never the track slot, so a female-female session draws both animals female, and a track the metadata cannot resolve raises); each USV's CSV ``emitter`` field is matched against the track names — a male → ``#9AC0CD``, a female → ``#FF6347``, anything else → ``#C0C0C0`` (unassigned). The title reports the total non-noise count.
 
 .. code-block:: python
 
@@ -2378,13 +2618,13 @@ Fourth, the video, which ends on the still's frame and camera — the window pla
     jointplot_hist_color = "#A0A0A0"
 
 * **sessions_list_path** — the ``.txt`` file listing one session root per line; its name also derives ``session_type``, the prefix on every saved figure.
-* **usv_category_col** — the per-USV category basis: ``"qlvm_category"``, the content-ridge categories R-1 … R-k of the regular map (``assign-qlvm-categories``; the summary's only category column). The section-6 embedding panel plots ``qlvm1`` / ``qlvm2`` (``usv_continuous_cols``, set in the Setup cell).
+* **usv_category_col** — the per-USV category basis: ``"qlvm_category"``, the content-ridge categories R-1 … R-k of the regular map (``assign-qlvm-categories``; the summary's only category column). The section-6 embedding panel plots the torus position of ``embedding_qlvm_map`` (``usv_continuous_cols``, set in the Setup cell; ``qlvm1`` / ``qlvm2`` for the regular map).
 * **exclude_noise_usvs** — whether the USV segments ``detect-usv-noise`` flagged as holding no vocalization are dropped during extraction. A session whose summary lacks the ``noise`` column raises rather than contributing unfiltered detections.
-* **distance_suffix** / **mf_angle_suffix** / **fm_angle_suffix** — which behavioral-feature columns become ``distance`` / ``mf_angle`` / ``fm_angle``.
+* **distance_suffix** / **mf_angle_suffix** / **fm_angle_suffix** — which behavioural-feature columns become ``distance`` / ``mf_angle`` / ``fm_angle``.
 * **save_fig_bool** — when ``True``, every cell writes its figures to disk via ``save_figure``; when ``False`` figures are only shown inline.
 * The remaining knobs are per-figure styling / binning / thresholds consumed by the individual statistics sections below.
 
-**Statistics setup.** The **Statistics setup** cell builds objects that follow from the parameters plus ``visualizations_settings.json`` — the ``session_type`` label, the fatigue bin count ``n_bins``, the embedding coordinates ``usv_continuous_cols``, the per-sex colors, and one sequential per-sex colormap. You should not need to edit it.
+**Statistics setup.** The **Statistics setup** cell builds objects that follow from the parameters — the ``session_type`` label, the fatigue bin count ``n_bins`` and the embedding coordinates ``usv_continuous_cols`` (the torus position ``<embedding_qlvm_map>1`` / ``<embedding_qlvm_map>2`` of the map chosen in the Parameters cell). The per-sex colours and colormaps come from the Settings cell. You should not need to edit it.
 
 .. code-block:: python
 
@@ -2395,36 +2635,11 @@ Fourth, the video, which ends on the still's frame and camera — the window pla
     )
     n_bins = max_time_seconds // bin_width_seconds
 
-    usv_continuous_cols = ("qlvm1", "qlvm2")
+    # Section-6 embedding coordinates: the QLVM torus position of embedding_qlvm_map.
+    usv_continuous_cols = (f"{embedding_qlvm_map}1", f"{embedding_qlvm_map}2")
 
-    with open(
-        Path.cwd().parent / "_parameter_settings" / "visualizations_settings.json", "r"
-    ) as vis_settings_file:
-        vis_settings = json.load(vis_settings_file)
-
-    male_color = vis_settings["male_colors"][0]
-    female_color = vis_settings["female_colors"][0]
-    unassigned_color = vis_settings["unassigned_colors"][0]
-
-    # One sequential base-color -> white colormap per sex.
-    sex_cmaps = {}
-    for cmap_name, base_hex in (("female_cm", female_color), ("male_cm", male_color)):
-        sex_cmaps[cmap_name] = create_colormap(
-            input_parameter_dict={
-                "cm_length": 255,
-                "cm_name": cmap_name,
-                "cm_type": "sequential",
-                "cm_start": (
-                    int(base_hex[1:3], 16),
-                    int(base_hex[3:5], 16),
-                    int(base_hex[5:7], 16),
-                ),
-                "cm_end": (255, 255, 255),
-                # ...
-            }
-        )
-    female_cmap = sex_cmaps["female_cm"]
-    male_cmap = sex_cmaps["male_cm"]
+    # Colors and the per-sex colormaps (male_color / female_color / unassigned_color,
+    # male_cmap / female_cmap) come from the Settings cell.
 
 **Load the session.** The **Extract data** cell fans the sessions-list file out into per-session roots and folds them into one master per-USV frame (``usv_pls``) plus a background-frames frame (``bg_pls``), filtering the noise bucket in the process and, with ``usv_only=True``, keeping only the segments ``detect-usv-squeaks`` classed as pure USVs (``usv`` true and ``squeak`` false), so every USV count, rate and category statistic downstream counts USVs alone (squeaks and segments holding both a squeak and a USV are left out; the number left out is printed). A summary without the ``usv`` / ``squeak`` booleans raises. It also derives the pandas view ``usv_df`` with a ``duration_ms`` column. Every statistics cell downstream consumes these in-memory objects.
 
@@ -2449,7 +2664,7 @@ Fourth, the video, which ends on the still's frame and camera — the window pla
     usv_df = usv_pls.to_pandas()
     usv_df["duration_ms"] = usv_df["duration"] * 1000
 
-**Assignment & participation (§5–7).** Three cells summarise *who* vocalized. **§5 Per-session assignment summary** draws per-session stacked bars (raw counts and proportions) plus a global assignment summary panel of USVs attributed to male / female / unassigned. **§6 Assignment status by USV category** overlays category prevalence on the embedding, split by assignment. **§7 Per-mouse participation** reports per-animal participation (sessions and total USVs) for males and females separately. All three share the per-sex colors resolved in the Setup cell.
+**Assignment & participation (§5–7).** Three cells summarise *who* vocalised. **§5 Per-session assignment summary** draws per-session stacked bars (raw counts and proportions) plus a global assignment summary panel of USVs attributed to male / female / unassigned. **§6 Assignment status by USV category** overlays category prevalence on the embedding, split by assignment. **§7 Per-mouse participation** reports per-animal participation (sessions and total USVs) for males and females separately. All three share the per-sex colours resolved in the Setup cell.
 
 .. code-block:: python
 
@@ -2479,7 +2694,7 @@ Fourth, the video, which ends on the still's frame and camera — the window pla
 The §6 category-embedding panel reads its own knobs from the **Statistics parameters** cell (``embedding_qlvm_map``, ``embedding_boundary_color``, ``embedding_log_scale_bars``, ``embedding_plot_type``, ``embedding_grid_res``) and first extracts the embedding via ``uss.extract_category_embedding_data`` (``usv_only=True``: pure USVs only) before calling ``uss.plot_category_prevalence_and_embedding``. §7 builds per-animal ``session_count`` / ``total_usvs`` dicts for each sex and passes them to ``uss.plot_animal_participation_stats``.
 
 * **embedding_qlvm_map** — the QLVM map the panel draws (``'qlvm'``, ``'qlvm_duration'``, ``'qlvm_entropy'``, ``'qlvm_bandwidth'`` or ``'qlvm_loudness'``; its ``P1`` / ``P2`` become ``usv_continuous_cols``). The prevalence bars count the USVs' ``qlvm_category`` on every map; the category boundaries are the QLVM category bundle's label grid (``os_utils.load_qlvm_category_bundle``), drawn only on ``'qlvm'``, the map the bundle is defined on (a conditional map shows no boundaries and says so in the panel titles; boundaries are never estimated from the data). Each category is outlined as the 0.5 contour of its own mask (``auxiliary_plot_functions.draw_category_outlines``, the method the embedding explorer uses), so a border between two non-consecutive categories is one line of the same width as every other, not the doubled line half-integer contours of the label grid would draw.
-* **embedding_boundary_color** / **embedding_log_scale_bars** — category-boundary color and log/linear scaling of the prevalence bars.
+* **embedding_boundary_color** / **embedding_log_scale_bars** — category-boundary colour and log/linear scaling of the prevalence bars.
 * **embedding_plot_type** — ``"density"`` vs. scatter rendering of the embedding.
 * **embedding_grid_res** — resolution of the density grid.
 
@@ -2506,7 +2721,7 @@ The §6 category-embedding panel reads its own knobs from the **Statistics param
 * **fatigue_facet_figsize** — figure size for the category-faceted local-fatigue heatmap.
 * **colormap** / **smoothing_sigma** — colormap and Gaussian smoothing applied to both category fatigue heatmaps.
 
-**Proximity & duration (§12–14).** Three cells relate USV assignment and duration to spatial behavior. **§12 Unassigned-rate vs. proximity (session-level)** aggregates per session (median distance vs. unassigned proportion, as a jointplot); **§13 Unassigned-rate vs. proximity (per-USV level)** asks the same per USV (distance-by-assignment KDEs with an analysis of variance, ANOVA); **§14 USV duration vs. spatial behavior** is a regression grid of USV duration on each spatial / postural feature, computed separately for males and females.
+**Proximity & duration (§12–14).** Three cells relate USV assignment and duration to spatial behaviour. **§12 Unassigned-rate vs. proximity (session-level)** aggregates per session (median distance vs. unassigned proportion, as a jointplot); **§13 Unassigned-rate vs. proximity (per-USV level)** asks the same per USV (distance-by-assignment KDEs with an analysis of variance, ANOVA); **§14 USV duration vs. spatial behavior** is a regression grid of USV duration on each spatial / postural feature, computed separately for males and females.
 
 .. code-block:: python
 
@@ -2533,7 +2748,7 @@ The §6 category-embedding panel reads its own knobs from the **Statistics param
     # and the duration regression grid (uss.plot_behavior_duration_regressions)
 
 * **min_samples_anova** — minimum per-group sample size before a group enters the distance ANOVA.
-* **jointplot_scatter_color** / **jointplot_line_color** / **jointplot_hist_color** — scatter, fit-line, and marginal-histogram colors of the session-level proximity jointplot.
+* **jointplot_scatter_color** / **jointplot_line_color** / **jointplot_hist_color** — scatter, fit-line, and marginal-histogram colours of the session-level proximity jointplot.
 
 **Estrous stage (§15–16).** Two cells aggregate USV metrics by the female's estrous stage (decoded from ``experiment_code``). **§15 Estrous-stage USV metrics** attaches the stage, then draws a stage-distribution pie, a per-stage USV-rates bar, and a male-to-female ratio scatter; **§16 Estrous metrics by category** is the category-resolved version — facet grids of per-category rates and of M:F ratios broken down both by category and by stage. Both read the estrous knobs from the **Statistics parameters** cell.
 
@@ -2564,7 +2779,7 @@ The §6 category-embedding panel reads its own knobs from the **Statistics param
 
 * **estrous_code_index** — slice offset into ``experiment_code`` that yields the one-letter stage.
 * **valid_stages** / **label_map** / **category_order** — the recognised stage codes, their display names, and their plotting order.
-* **estrous_colors** — the four per-stage slice / scatter colors.
+* **estrous_colors** — the four per-stage slice / scatter colours.
 * **estrous_confidence_level** / **estrous_use_log_scale** — confidence interval and log scaling for the M:F ratio scatter.
 
 **Spatial distributions (§17–19).** Three cells map *where* USVs occur relative to each animal's body axis, normalised by background occupancy. **§17 Spatial vocalization distributions** draws one polar KDE of distance vs. angle per sex; **§18 Spatial likelihood grid by category** is a per-category likelihood grid for males and females; **§19 Spatial likelihood, category × estrous-stage** crosses USV category with estrous stage. All three read the spatial knobs from the **Statistics parameters** cell and use the per-sex colormaps built in Setup.
@@ -2690,7 +2905,7 @@ The §6 category-embedding panel reads its own knobs from the **Statistics param
 * **sweep_colormap_floor** — lowest point of the colormap used, in [0, 1).
 * **sweep_seed** — seed of the random order within tied values.
 
-**§22 QLVM figures: data.** One cell loads the inputs of the three QLVM figures (§23–§25), module ``qlvm_figures``. The USVs are the cohort's: every ``*sessions_list.txt`` in ``shared_resources.input_files_directory`` (playback lists dropped), read with ``make_usv_spectrograms.load_regular_map_cohort_usvs`` — the pooled-embeddings parquet cache under ``<spectrograms_dir>/embeddings`` when **qlvm_use_pooled_cache** is set, rebuilt automatically when the summaries change — and kept when they are pure USVs (no noise, no squeak, the USV maps being trained on USVs only) with a regular-map position (``qlvm1`` / ``qlvm2``) and all six properties (duration, spectral entropy, frequency bandwidth, mean frequency, loudness, SAM-mask count). The spectrogram-based panels use a per-session sample, ``build_qlvm_figure_sample``: up to ``usvs_per_session`` random USVs of every session, whose spectrograms are read from each session's ``audio/spectrograms/<session>_spectrograms.h5`` (row = summary row) and kept twice — as the regular QLVM's decoder input (spectrogram and SAM-mask union time-stretched to 128 × 128, the mask binarized, the masked spectrogram normalized by the production cell's training contract and masked again, exactly what ``infer-qlvm-latents`` embeds) and as the masked spectrogram at its native length (zeros after the USV). With ``sample_cache_file`` set the sample is written there and served again while the USVs drawn (session, row and position) are the same; a sample of other or older summaries is rebuilt. Every knob lives in the ``qlvm_figures`` block of ``visualizations_settings.json``:
+**§22 QLVM figures: data.** One cell loads the inputs of the three QLVM figures (§23–§25), module ``qlvm_figures``. The USVs are the cohort's: every ``*sessions_list.txt`` in ``shared_resources.input_files_directory`` (playback lists dropped), read with ``make_usv_spectrograms.load_regular_map_cohort_usvs`` — the pooled-embeddings parquet cache under ``<spectrograms_dir>/embeddings`` when **qlvm_use_pooled_cache** is set, rebuilt automatically when the summaries change — and kept when they are pure USVs (no noise, no squeak, the USV maps being trained on USVs only) with a regular-map position (``qlvm1`` / ``qlvm2``) and all six properties (duration, spectral entropy, frequency bandwidth, mean frequency, loudness, SAM-mask count). The spectrogram-based panels use a per-session sample, ``build_qlvm_figure_sample``: up to ``usvs_per_session`` random USVs of every session, whose spectrograms are read from each session's ``audio/spectrograms/<session>_spectrograms.h5`` (row = summary row) and kept twice — as the regular QLVM's decoder input (spectrogram and SAM-mask union time-stretched to 128 × 128, the mask binarized, the masked spectrogram normalised by the production cell's training contract and masked again, exactly what ``infer-qlvm-latents`` embeds) and as the masked spectrogram at its native length (zeros after the USV). With ``sample_cache_file`` set the sample is written there and served again while the USVs drawn (session, row and position) are the same; a sample of other or older summaries is rebuilt. Every knob lives in the ``qlvm_figures`` block of ``visualizations_settings.json``:
 
 * **n_usvs** — most cohort USVs drawn for the map panels (overview, density and content-change fields).
 * **usvs_per_session** — most USVs per session in the spectrogram sample.
@@ -2708,7 +2923,7 @@ The seed is ``figures.seed`` and the colormap ``figures.sequential_cmap``; **qlv
 
 **§24 QLVM map quality.** ``compute_qlvm_quality_metrics`` and ``plot_qlvm_quality`` compare the regular QLVM with two standard two-dimensional maps of the same decoder inputs: PCA (the first two of ``n_pcs`` components) and UMAP of those components. Every comparison compares neighbor identity or uses each map's own distance, never distance values across maps; on the QLVM map nearest neighbors respect the torus (flat-torus distance, ``modeling.modeling_torus_geodesics``). Top: the three maps coloured by the six properties. **(a) Acoustic readout** — each property's rank predicted for the USVs of a held-out fold of sessions as the mean rank of their ``readout_neighbors`` nearest USVs of the other folds; the score is the coefficient of determination R² of the ranks (1 = the neighbors always share the USV's rank, 0 = no better than the mean rank); dots are the folds, red the same with positions shuffled. **(b1–b3) Neighborhoods** — a USV's true neighbors are its ``neighborhood_k`` nearest in the six standardized property ranks, its map neighbors its ``neighborhood_k`` nearest on the map: neighbor overlap is the share of true neighbors found; since every intruder displaces one true neighbor, the two severities weigh the same errors from the two directions — false-neighbor severity (1 − trustworthiness: how dissimilar the USVs a map wrongly puts together are) and torn-apart severity (1 − continuity: how far the map places the true neighbors it misses); dots are disjoint subsets of USVs. **(b′) Distance fidelity** — the distance correlation between each map's pairwise distances and the pairwise property distances over all pairs of a subset (0 = independent, 1 = determined); for the QLVM three torus distances: the decoder pullback geodesic (how much the decoded spectrogram changes along the shortest path), the density geodesic and the flat torus distance; PCA and UMAP use plain Euclidean distance. **(c) Readout per training seed** — the readout of (a) on the production map and on the same USVs embedded with each cell of ``seed_cell_directories`` (``embed_with_cells``; **qlvm_embed_seeds** = ``False`` skips the embedding): the layout of a QLVM map depends on its random initialization, so this asks whether every training run gives an equally informative map.
 
-**§25 QLVM categories.** ``compute_category_boundary_fields``, ``compute_category_similarity`` and ``plot_category_boundaries`` show what the content-ridge category boundaries follow and whether the categories group similar USVs. The boundaries are the bundle's; the density and the content fields are recomputed from ``n_usvs`` random cohort USVs with the category build's own functions and settings (``property_ranks``, ``content_fields`` with the bundle's ``field_sigma``, the content change with its ``change_span``). Row 1: each category's aligned mean spectrogram (``average_size`` random USVs, each shifted up to ``align_max_shift`` bins to match the category template, ``align_iterations`` rounds — the typical shape, which understates the spread); the USV density and the content change with the boundaries; the along-boundary test — each field's mean on the boundary pixels divided by its map mean, against the same boundary pattern shifted rigidly around the torus ``n_shifts`` times; each property's share of the content change on the boundaries. Row 2: the content change per property. Row 3, on the spectrograms themselves, which the category construction never compares pairwise. The raw similarity of two USVs is the Pearson correlation of their masked, native-length spectrograms (averaged to 64 × 64) after alignment (the best of shifts up to ``similarity_max_shift`` bins, zero padded). It is normalized per USV: for USV *i*, the correlation with *j* becomes its percentile among *i*'s correlations with a reference set (*i* itself left out), and the two percentiles of a pair are averaged — so a multi-part USV, which correlates weakly with everything, is judged against its own typical level; 0.5 is a typical random pair. On ``balanced_per_category`` random USVs per category (reference: ``balanced_reference_per_category`` per category): **(i)** the mean normalized similarity over all pairs between two categories, on a diverging scale centred on 0.5; **(ii)** per USV, its mean similarity to the other USVs of its own category minus its mean similarity to the USVs of all other categories (violins; the share above 0 is written to one decimal); **(iii)** per USV, the share of its ``closest_matches`` most similar USVs in each category, averaged per category (rows sum to 1, chance 1 / number of categories), coloured by log₂(share / chance) symmetric to ±``closest_log2_limit`` (shares below the scale take the deepest blue, the arrow on the colour bar). On ``partition_sample_size`` random USVs (not balanced, so no partition is favoured): **(iv)** each partition's score — per USV its similarity to its own group minus to the other groups, averaged per group (dots) and then over the groups (bar) — for the content-ridge categories and the density-watershed clusters of ``watershed_levels_file`` (coarse 3, intermediate 4 and fine 6 clusters).
+**§25 QLVM categories.** ``compute_category_boundary_fields``, ``compute_category_similarity`` and ``plot_category_boundaries`` show what the content-ridge category boundaries follow and whether the categories group similar USVs. The boundaries are the bundle's; the density and the content fields are recomputed from ``n_usvs`` random cohort USVs with the category build's own functions and settings (``property_ranks``, ``content_fields`` with the bundle's ``field_sigma``, the content change with its ``change_span``). Row 1: each category's aligned mean spectrogram (``average_size`` random USVs, each shifted up to ``align_max_shift`` bins to match the category template, ``align_iterations`` rounds — the typical shape, which understates the spread); the USV density and the content change with the boundaries; the along-boundary test — each field's mean on the boundary pixels divided by its map mean, against the same boundary pattern shifted rigidly around the torus ``n_shifts`` times; each property's share of the content change on the boundaries. Row 2: the content change per property. Row 3, on the spectrograms themselves, which the category construction never compares pairwise. The raw similarity of two USVs is the Pearson correlation of their masked, native-length spectrograms (averaged to 64 × 64) after alignment (the best of shifts up to ``similarity_max_shift`` bins, zero padded). It is normalised per USV: for USV *i*, the correlation with *j* becomes its percentile among *i*'s correlations with a reference set (*i* itself left out), and the two percentiles of a pair are averaged — so a multi-part USV, which correlates weakly with everything, is judged against its own typical level; 0.5 is a typical random pair. On ``balanced_per_category`` random USVs per category (reference: ``balanced_reference_per_category`` per category): **(i)** the mean normalised similarity over all pairs between two categories, on a diverging scale centred on 0.5; **(ii)** per USV, its mean similarity to the other USVs of its own category minus its mean similarity to the USVs of all other categories (violins; the share above 0 is written to one decimal); **(iii)** per USV, the share of its ``closest_matches`` most similar USVs in each category, averaged per category (rows sum to 1, chance 1 / number of categories), coloured by log₂(share / chance) symmetric to ±``closest_log2_limit`` (shares below the scale take the deepest blue, the arrow on the colour bar). On ``partition_sample_size`` random USVs (not balanced, so no partition is favoured): **(iv)** each partition's score — per USV its similarity to its own group minus to the other groups, averaged per group (dots) and then over the groups (bar) — for the content-ridge categories and the density-watershed clusters of ``watershed_levels_file`` (coarse 3, intermediate 4 and fine 6 clusters).
 
 Source: `usv_general_analyses.ipynb <https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/notebooks/usv_general_analyses.ipynb>`_.
 
@@ -2809,18 +3024,3 @@ Launch it from the repo root in either of two modes:
 Both open in the browser at ``http://localhost:2718``. Source:
 `usv_embedding_explorer.py
 <https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/notebooks/usv_embedding_explorer.py>`_.
-
-
-Vocal-bout occupancy decoding
------------------------------
-The last two cells of ``neuronal_tuning_summary.ipynb`` read the decoder's per-session outputs.
-The first gathers the named sessions into one table; the second draws one focal area across
-animals beside three comparison panels.
-
-Both raise rather than quietly producing a short table or an empty panel, because a missing
-session looks exactly like a session that decoded at chance.
-
-Read the figure's limitations before reusing it on a different session set: the sessions are
-chosen by the caller rather than discovered, only a **same-session** comparison is exact — accuracy
-falls steeply with how much the animal vocalised, so a cross-session comparison has to be matched
-on USV density by hand — and the geometry holds exactly three comparison panels.

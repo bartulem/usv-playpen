@@ -27,7 +27,7 @@ Deep non-linear USV manifold visualizations
 A specialized interpretation suite for Dual-Stream MLP/CNN models that
 quantitatively and qualitatively assess how behavioral kinematics map onto
 the continuous acoustic manifold (the QLVM torus; legacy pickles without
-a ``manifold_metric`` are drawn on a flat UMAP plane).
+a ``manifold_metric`` / ``manifold_period`` are rejected).
 
 1.  Statistical validation: Bootstrapped permutation testing against null
     models.
@@ -39,37 +39,41 @@ a ``manifold_metric`` are drawn on a flat UMAP plane).
     specific motifs.
 """
 
-import h5py
+from __future__ import annotations
+
 import json
 import math
-import warnings
-from datetime import datetime
-import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
-import matplotlib.transforms as mtransforms
-from matplotlib.collections import LineCollection
-from matplotlib.transforms import offset_copy
-from matplotlib.colors import ListedColormap, Normalize
-from matplotlib.patches import Patch, Rectangle
-from matplotlib.lines import Line2D
-import numpy as np
 import os
 import pathlib
 import pickle
 import re
-import seaborn as sns
-from scipy import stats
-from scipy.stats import gaussian_kde
-from sklearn.metrics import confusion_matrix, roc_auc_score
-from sklearn.cluster import KMeans
+import warnings
+from collections.abc import Callable
+from datetime import datetime
 from typing import Optional
+
+import h5py
+import matplotlib.gridspec as gridspec
+import matplotlib.pyplot as plt
+import matplotlib.transforms as mtransforms
+import numpy as np
+import seaborn as sns
+from matplotlib.collections import LineCollection
+from matplotlib.colors import ListedColormap, Normalize
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch, Rectangle
+from matplotlib.transforms import offset_copy
+from scipy import stats
 from scipy.interpolate import interp1d
 from scipy.ndimage import gaussian_filter1d
+from scipy.stats import gaussian_kde
+from sklearn.cluster import KMeans
+from sklearn.metrics import confusion_matrix, roc_auc_score
 
-from ..modeling.modeling_metadata import RESERVED_METADATA_KEYS, load_selection_results
-from ..modeling.manifold_metric import pairwise_distance
-from ..modeling.modeling_utils import manifold_tag_segment
 from ..analyses.compute_behavioral_features import FeatureZoo
+from ..modeling.manifold_metric import pairwise_distance
+from ..modeling.modeling_metadata import RESERVED_METADATA_KEYS, load_selection_results
+from ..modeling.modeling_utils import manifold_tag_segment
 from ..os_utils import (
     QLVM_CATEGORY_MAP,
     QLVM_REGULAR_MAP,
@@ -80,7 +84,6 @@ from ..os_utils import (
 )
 from .plot_style import apply_plot_style
 from .qlvm_figures import neighbor_indices, read_thumbnail
-
 
 apply_plot_style()
 
@@ -177,8 +180,9 @@ def plot_feature_ranking(
         secondary_metric_name: str = "Spearman's Rho",
         ignore_features: list | None = None,
         save_plot: bool = False,
-        output_dir: str = None
-) -> None:
+        output_dir: str = None,
+        message_output: Callable = print
+) -> list[plt.Figure] | None:
     """
     Generates ranking plots for univariate modeling feature importance.
 
@@ -207,10 +211,18 @@ def plot_feature_ranking(
         If True, saves figures to output_dir.
     output_dir : str, optional
         Directory to save the figure.
+    message_output : Callable
+        Sink for user-facing messages (progress, skips, saved-file paths);
+        defaults to ``print``.
 
     Returns
     -------
-    None
+    ranking_figures : list[matplotlib.figure.Figure] | None
+        One ranking figure per metric, in the order (evaluation metric, secondary
+        metric); None when nothing is drawn (the reason is reported).
+        The figure is not shown or closed here: the caller displays it (e.g. as a
+        notebook cell's output) and closes it with ``plt.close``; with ``save_plot`` it
+        is also written to disk first.
     """
 
     results_file_loc = configure_path(str(results_file_loc))
@@ -252,19 +264,19 @@ def plot_feature_ranking(
     first_feat = modeling_data[feature_keys[0]]
     if 'shuffled' in first_feat:
         null_key = 'shuffled'
-        print("Detected 'shuffled' key (Bout Analysis mode)")
+        message_output("Detected 'shuffled' key (Bout Analysis mode)")
     elif 'null' in first_feat:
         null_key = 'null'
-        print("Detected 'null' key (Category Analysis mode)")
+        message_output("Detected 'null' key (Category Analysis mode)")
     else:
         raise KeyError("Could not find 'shuffled' or 'null' key in results dictionary.")
 
-    print(f"Calculating significance based on: {evaluation_metric_name}...")
+    message_output(f"Calculating significance based on: {evaluation_metric_name}...")
 
     valid_features = [k for k in feature_keys if k not in ignore_features]
     n_features = len(valid_features)
     if n_features == 0:
-        print("No valid features found for significance calculation; nothing to plot.")
+        message_output("No valid features found for significance calculation; nothing to plot.")
         return
     corrected_p_top = (1 - (p_val / n_features)) * 100
     corrected_p_bottom = (p_val / n_features) * 100
@@ -301,8 +313,9 @@ def plot_feature_ranking(
         (secondary_metric, secondary_metric_name)
     ]
 
+    ranking_figures = []
     for metric_key, metric_label in plot_configs:
-        print(f"Plotting: {metric_label}...")
+        message_output(f"Plotting: {metric_label}...")
 
         kept_features = []
         means_list = []
@@ -404,9 +417,11 @@ def plot_feature_ranking(
                 output_dir = results_path.parent
             out_name = pathlib.Path(output_dir) / _figure_filename(f"{results_path.stem}_{metric_key}_ranking")
             fig.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI)
-            print(f"Plot saved to {out_name}")
+            message_output(f"Plot saved to {out_name}")
 
-        plt.show()
+        ranking_figures.append(fig)
+
+    return ranking_figures
 
 def plot_significant_filters(
         results_file_loc: str,
@@ -414,8 +429,9 @@ def plot_significant_filters(
         ignore_features: list | None = None,
         p_val: float = 0.01,
         save_plot: bool = False,
-        output_dir: str = None
-) -> None:
+        output_dir: str = None,
+        message_output: Callable = print
+) -> list[plt.Figure]:
     """
     Plots the temporal filters (kernels) for significantly predictive features.
 
@@ -445,10 +461,17 @@ def plot_significant_filters(
     output_dir : str, optional
         Directory to save plots. If None, defaults to the parent directory
         of `results_file_loc`.
+    message_output : Callable
+        Sink for user-facing messages (progress, skips, saved-file paths);
+        defaults to ``print``.
 
     Returns
     -------
-    None
+    filter_figures : list[matplotlib.figure.Figure]
+        One filter figure per significant feature (empty when none is significant).
+        The figure is not shown or closed here: the caller displays it (e.g. as a
+        notebook cell's output) and closes it with ``plt.close``; with ``save_plot`` it
+        is also written to disk first.
     """
 
     results_file_loc = configure_path(str(results_file_loc))
@@ -487,6 +510,7 @@ def plot_significant_filters(
     p_lower = (p_val / n_feats / 2) * 100
     p_upper = (1 - (p_val / n_feats / 2)) * 100
 
+    filter_figures = []
     for feature in valid_features:
         actual_vals = modeling_data[feature]['actual'][metric]
         null_vals = modeling_data[feature][null_key][metric]
@@ -520,7 +544,7 @@ def plot_significant_filters(
             p_high = np.nanpercentile(filter_data, q=99.5, axis=0)
 
         except KeyError:
-            print(f"Filter shapes missing for {feature}")
+            message_output(f"Filter shapes missing for {feature}")
             continue
 
         if any(x in feature for x in DYADIC_KEYWORDS):
@@ -565,13 +589,11 @@ def plot_significant_filters(
             safe_name = feature.replace('.', '_')
             out_name = pathlib.Path(output_dir) / _figure_filename(f"{results_path.stem}_filter_{safe_name}")
             fig.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI, facecolor='#FFFFFF', transparent=False)
-            print(f"Saved: {out_name.name}")
+            message_output(f"Saved: {out_name.name}")
 
-        plt.show()
-        # Close the figure unconditionally so per-feature figures don't
-        # accumulate (and trip matplotlib's >20-open-figures warning)
-        # when save_plot is False.
-        plt.close(fig)
+        filter_figures.append(fig)
+
+    return filter_figures
 
 
 def plot_significant_filters_grid(
@@ -581,7 +603,8 @@ def plot_significant_filters_grid(
         p_val_threshold: float = 0.01,
         save_plot: bool = False,
         output_dir: str = None,
-) -> None:
+        message_output: Callable = print,
+) -> plt.Figure | None:
     """
     Loads results, calculates significance, baseline-corrects, and plots filter shapes.
 
@@ -613,11 +636,18 @@ def plot_significant_filters_grid(
     output_dir : str, optional
         The directory where the SVG plot will be saved. If None, defaults to
         the parent directory of `results_file_loc`.
+    message_output : Callable
+        Sink for user-facing messages (progress, skips, saved-file paths);
+        defaults to ``print``.
 
     Returns
     -------
-    None
-        The function displays the plot and saves it to disk; it does not return objects.
+    fig_grid : matplotlib.figure.Figure | None
+        The small-multiples filter grid; None when nothing is drawn (the reason is
+        reported).
+        The figure is not shown or closed here: the caller displays it (e.g. as a
+        notebook cell's output) and closes it with ``plt.close``; with ``save_plot`` it
+        is also written to disk first.
     """
 
     results_file_loc = configure_path(str(results_file_loc))
@@ -627,12 +657,12 @@ def plot_significant_filters_grid(
     if ignore_features is None:
         ignore_features = []
 
-    print(f"Loading results from: {results_file_loc}")
+    message_output(f"Loading results from: {results_file_loc}")
     try:
         with open(results_file_loc, 'rb') as f:
             modeling_data = pickle.load(f)
     except FileNotFoundError:
-        print(f"Error: File not found at {results_file_loc}")
+        message_output(f"Error: File not found at {results_file_loc}")
         return
 
     dyadic_color = DYADIC_COLOR
@@ -649,7 +679,7 @@ def plot_significant_filters_grid(
     all_shuffled_values_list = []
     all_filter_shapes = {}
 
-    print(f"--- Processing features for metric: {metric} ---")
+    message_output(f"--- Processing features for metric: {metric} ---")
 
     for feature in modeling_data.keys():
         if feature in RESERVED_METADATA_KEYS:
@@ -685,7 +715,7 @@ def plot_significant_filters_grid(
             all_filter_shapes[feature] = modeling_data[feature]['actual']['filter_shapes']
 
     if not kept_features:
-        print("No valid features found. Exiting.")
+        message_output("No valid features found. Exiting.")
         return
 
     behavioral_features = np.array(kept_features)
@@ -714,7 +744,7 @@ def plot_significant_filters_grid(
     sig_indices = [i for i, x in enumerate(is_significant_list) if x]
 
     if not sig_indices:
-        print(f"Found 0 significant features (Corrected p < {p_thresh_corrected:.5f}).")
+        message_output(f"Found 0 significant features (Corrected p < {p_thresh_corrected:.5f}).")
         return
 
     significant_features = behavioral_features[sig_indices]
@@ -729,7 +759,7 @@ def plot_significant_filters_grid(
     significant_feature_means = significant_feature_means[sort_idx]
 
     n_significant = len(significant_features)
-    print(f"Found {n_significant} significant features.")
+    message_output(f"Found {n_significant} significant features.")
 
     plot_data = []
     all_y_values = []
@@ -841,11 +871,9 @@ def plot_significant_filters_grid(
         if output_dir is None: output_dir = pathlib.Path(results_file_loc).parent
         out_name = pathlib.Path(output_dir) / _figure_filename(f"{pathlib.Path(results_file_loc).stem}_filter_grid")
         fig_grid.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI, facecolor='#FFFFFF', transparent=False)
-        print(f"Saved: {out_name.name}")
-        plt.close(fig_grid)
+        message_output(f"Saved: {out_name.name}")
 
-    plt.tight_layout()
-    plt.show()
+    return fig_grid
 
 
 def plot_raw_feature_difference(
@@ -857,8 +885,9 @@ def plot_raw_feature_difference(
         n_bootstraps: int = 1000,
         save_plots: bool = False,
         output_dir: str = None,
-        value_sanity_cap: float | None = 90.0
-) -> None:
+        value_sanity_cap: float | None = 90.0,
+        message_output: Callable = print
+) -> tuple[plt.Figure, plt.Figure] | None:
     """
     Visualizes the raw difference of a specific feature between two conditions.
 
@@ -903,23 +932,30 @@ def plot_raw_feature_difference(
         of 90 suits angular features measured in
         degrees; pass a feature-appropriate cap for non-angular features, or
         ``None`` to disable the filter entirely.
+    message_output : Callable
+        Sink for user-facing messages (progress, skips, saved-file paths);
+        defaults to ``print``.
 
     Returns
     -------
-    None
-        Displays the plots and optionally saves them to disk.
+    figures : tuple[matplotlib.figure.Figure, matplotlib.figure.Figure] | None
+        ``(fig_avg, fig_heat)``: the bootstrap-averaged profile figure and the heatmap
+        figure; None when nothing is drawn (the reason is reported).
+        The figure is not shown or closed here: the caller displays it (e.g. as a
+        notebook cell's output) and closes it with ``plt.close``; with ``save_plots`` it
+        is also written to disk first.
     """
 
     pickle_file_path = configure_path(str(pickle_file_path))
     if output_dir is not None:
         output_dir = configure_path(str(output_dir))
 
-    print(f"Loading data from: {pickle_file_path}")
+    message_output(f"Loading data from: {pickle_file_path}")
     with open(pickle_file_path, 'rb') as pickle_file:
         modeling_input_data = pickle.load(pickle_file)
 
     if feature_key not in modeling_input_data:
-        print(f"Error: Feature '{feature_key}' not found in pickle file.")
+        message_output(f"Error: Feature '{feature_key}' not found in pickle file.")
         return
 
     first_session = next(iter(modeling_input_data[feature_key].values()))
@@ -930,7 +966,7 @@ def plot_raw_feature_difference(
         label_target = 'USV Trials'
         label_other = 'No-USV Trials'
         figure_name_label = 'vocal_onset'
-        print("Detected mode: Vocal Onset (USV vs No-USV)")
+        message_output("Detected mode: Vocal Onset (USV vs No-USV)")
 
     elif 'target_feature_arr' in first_session:
         key_target = 'target_feature_arr'
@@ -938,10 +974,10 @@ def plot_raw_feature_difference(
         label_target = 'Target Category'
         label_other = 'Other Categories'
         figure_name_label = 'vocal_categories'
-        print("Detected mode: Vocal Categories (Target vs Other)")
+        message_output("Detected mode: Vocal Categories (Target vs Other)")
 
     else:
-        print("Error: Could not detect standard array keys (usv_feature_arr or target_feature_arr).")
+        message_output("Error: Could not detect standard array keys (usv_feature_arr or target_feature_arr).")
         return
 
     target_epochs_list = []
@@ -961,14 +997,14 @@ def plot_raw_feature_difference(
     time_in_seconds = np.linspace(-float(history_seconds), 0, n_time_points)
     time_ticks = np.arange(-float(history_seconds), 0.5, 0.5)
 
-    print(f"Total Epochs -> {label_target}: {all_target_epochs.shape[0]}, {label_other}: {all_other_epochs.shape[0]}")
+    message_output(f"Total Epochs -> {label_target}: {all_target_epochs.shape[0]}, {label_other}: {all_other_epochs.shape[0]}")
     # A condition with zero epochs leaves an empty (0, 650) array; np.nanmin below
     # would warn and return nan, and rng.choice(0, size>=1, replace=False)
     # would raise. Skip the plot for this degenerate feature instead.
     if all_target_epochs.shape[0] == 0 or all_other_epochs.shape[0] == 0:
-        print(f"  Skipping raw feature difference plot: no epochs for {label_target} or {label_other}.")
+        message_output(f"  Skipping raw feature difference plot: no epochs for {label_target} or {label_other}.")
         return
-    print(f"Data Range Check -> Min: {np.nanmin(all_target_epochs):.2f}, Max: {np.nanmax(all_target_epochs):.2f}")
+    message_output(f"Data Range Check -> Min: {np.nanmin(all_target_epochs):.2f}, Max: {np.nanmax(all_target_epochs):.2f}")
 
     target_subset_size = max(1, int(all_target_epochs.shape[0] * subset_fraction))
     other_subset_size = max(1, int(all_other_epochs.shape[0] * subset_fraction))
@@ -1090,8 +1126,6 @@ def plot_raw_feature_difference(
     cbar.outline.set_edgecolor('#000000')
     cbar.ax.xaxis.label.set_color('#000000')
 
-    plt.show()
-
     if save_plots:
         if output_dir is None:
             output_dir = pathlib.Path(pickle_file_path).parent
@@ -1105,6 +1139,8 @@ def plot_raw_feature_difference(
 
         heat_path = output_dir / _figure_filename(f"{figure_name_label}_{feature_key}_zscored_data_heatmap")
         fig_heat.savefig(heat_path, bbox_inches='tight', dpi=_FIGURE_DPI)
+
+    return fig_avg, fig_heat
 
 
 def _resolve_cohort_sexes(selection_metadata: dict | None) -> tuple:
@@ -1186,7 +1222,8 @@ def plot_model_selection_results(
         save_plots: bool = False,
         output_dir: str = None,
         feature_label_overrides: dict = None,
-) -> None:
+        message_output: Callable = print,
+) -> tuple[plt.Figure, plt.Figure | None] | None:
     """
     Plot a Forward Sequential Feature Selection result set and the
     temporal filters of the final accepted model.
@@ -1243,10 +1280,19 @@ def plot_model_selection_results(
         in the summary figure. Features not present in the map are
         rendered with their raw name. The filter grid keeps the raw
         feature names so it can be cross-referenced with the pickle.
+    message_output : Callable
+        Sink for user-facing messages (progress, skips, saved-file paths);
+        defaults to ``print``.
 
     Returns
     -------
-    None
+    figures : tuple[matplotlib.figure.Figure, matplotlib.figure.Figure | None] | None
+        ``(fig_traj, fig_grid)``: the selection-trajectory figure and the final-model
+        filter grid (None when no step carries filter shapes); None when nothing is
+        drawn (the reason is reported).
+        The figure is not shown or closed here: the caller displays it (e.g. as a
+        notebook cell's output) and closes it with ``plt.close``; with ``save_plot`` it
+        is also written to disk first.
     """
 
     BG_COLOR = '#FFFFFF'
@@ -1267,7 +1313,7 @@ def plot_model_selection_results(
     selection_steps, display_name, selection_metadata = load_selection_results(selection_results_path)
 
     if not selection_steps:
-        print(f"No step data found in {selection_results_path}")
+        message_output(f"No step data found in {selection_results_path}")
         return
 
     if '_male_' in display_name:
@@ -1282,12 +1328,12 @@ def plot_model_selection_results(
     if len(selection_steps) > 1:
         last_data = selection_steps[-1]
         if last_data['selected_feature'] is None:
-            print("Last step was a rejection. Excluding it from trajectory plots.")
+            message_output("Last step was a rejection. Excluding it from trajectory plots.")
             valid_steps_for_plot = selection_steps[:-1]
 
     # 2. Process Trajectory Data
     steps_data = []
-    print(f"Processing {len(valid_steps_for_plot)} steps for trajectory...")
+    message_output(f"Processing {len(valid_steps_for_plot)} steps for trajectory...")
 
     first_data = valid_steps_for_plot[0]
     # step pickles name the candidate block 'candidates' or (newer) 'candidates_summary'
@@ -1309,7 +1355,7 @@ def plot_model_selection_results(
             is_minimization = True
             metric_label = 'Negative Log-Likelihood'
 
-    print(f"Primary Metric Detected: {metric_label}")
+    message_output(f"Primary Metric Detected: {metric_label}")
 
     # Secondary-metric panel selection. When ``metric_secondary`` is not given
     # explicitly (None), it defaults per analysis type -- onset -> 'score',
@@ -1335,7 +1381,7 @@ def plot_model_selection_results(
                 metric_secondary = _candidate_metric
                 break
     chance_secondary, secondary_label = (_secondary_spec[metric_secondary] if metric_secondary in _secondary_spec else (0.0, metric_secondary))
-    print(f"Secondary Metric: {secondary_label}")
+    message_output(f"Secondary Metric: {secondary_label}")
 
     for i, data in enumerate(valid_steps_for_plot):
         candidates = (data['candidates'] if 'candidates' in data
@@ -1383,7 +1429,7 @@ def plot_model_selection_results(
 
     n_steps = len(steps_data)
     if n_steps == 0:
-        print("No valid step data extracted.")
+        message_output("No valid step data extracted.")
         return
 
     # 3. Summary figure: NLL trajectory (left) + score bars (right)
@@ -1740,9 +1786,7 @@ def plot_model_selection_results(
         out_traj = _out_dir / _figure_filename("model_selection_trajectory")
         fig_traj.savefig(out_traj, bbox_inches='tight', dpi=_FIGURE_DPI,
                          facecolor=BG_COLOR, transparent=False)
-        print(f"Saved trajectory figure to: {out_traj}")
-
-    plt.show()
+        message_output(f"Saved trajectory figure to: {out_traj}")
 
     # 4. Filter Grid Visualization
     # Always inspect the LAST step (even if it was a rejection) to try and
@@ -1752,16 +1796,16 @@ def plot_model_selection_results(
     raw_filter_data = (final_data['filter_shapes'] if 'filter_shapes' in final_data else None)
 
     if not raw_filter_data:
-        print(f"DEBUG: 'filter_shapes' not found in last step (idx {len(selection_steps) - 1})")
+        message_output(f"DEBUG: 'filter_shapes' not found in last step (idx {len(selection_steps) - 1})")
         if len(selection_steps) > 1:
             prev_data = selection_steps[-2]
             if 'filter_shapes' in prev_data:
-                print(f"DEBUG: Found 'filter_shapes' in previous step (idx {len(selection_steps) - 2})")
+                message_output(f"DEBUG: Found 'filter_shapes' in previous step (idx {len(selection_steps) - 2})")
                 raw_filter_data = prev_data['filter_shapes']
 
     if not raw_filter_data:
-        print("Could not extract filter_shapes from final steps. Skipping filter grid.")
-        return
+        message_output("Could not extract filter_shapes from final steps. Skipping filter grid.")
+        return fig_traj, None
 
     # Determine feature keys and structure type
     feature_keys = []
@@ -1778,7 +1822,7 @@ def plot_model_selection_results(
         is_cv_list = False
         feature_keys = list(raw_filter_data.keys())
 
-    print(f"Found {len(feature_keys)} features in final model: {feature_keys}")
+    message_output(f"Found {len(feature_keys)} features in final model: {feature_keys}")
 
     n_feats = len(feature_keys)
     ncols = 4
@@ -1874,7 +1918,13 @@ def plot_model_selection_results(
 
 
         except Exception as e:
-            print(f"Error plotting feature {feature}: {e}")
+            # A feature that cannot be drawn is a defect in the artifact or the
+            # plotter, not something to hide behind an empty panel: report which
+            # feature broke, close both figures, and re-raise.
+            message_output(f"Error plotting feature {feature}: {e}")
+            plt.close(fig_grid)
+            plt.close(fig_traj)
+            raise
 
     for i in range(n_feats, len(axes_grid)):
         fig_grid.delaxes(axes_grid[i])
@@ -1889,9 +1939,9 @@ def plot_model_selection_results(
             output_dir = _fallback.parent if _fallback.is_file() else _fallback
         out_name = pathlib.Path(output_dir) / _figure_filename("model_selection_final_model_filters")
         fig_grid.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI, facecolor=BG_COLOR, transparent=False)
-        print(f"Saved final model filter grid to: {out_name}")
+        message_output(f"Saved final model filter grid to: {out_name}")
 
-    plt.show()
+    return fig_traj, fig_grid
 
 
 def plot_univariate_multinomial_performance(
@@ -1904,8 +1954,9 @@ def plot_univariate_multinomial_performance(
         base_cmap: str = 'mako',
         diff_cmap: str = _DIVERGING_CMAP,
         save_plot: bool = False,
-        output_dir: str = None
-) -> None:
+        output_dir: str = None,
+        message_output: Callable = print
+) -> tuple[plt.Figure, plt.Figure | None] | None:
     """
     Evaluates and ranks feature importance while diagnosing categorical
     prediction errors across the USV repertoire.
@@ -1957,10 +2008,19 @@ def plot_univariate_multinomial_performance(
     output_dir : str, optional
         Target directory for saved plots. Defaults to the same directory as the
         results file if None.
+    message_output : Callable
+        Sink for user-facing messages (progress, skips, saved-file paths);
+        defaults to ``print``.
 
     Returns
     -------
-    None
+    figures : tuple[matplotlib.figure.Figure, matplotlib.figure.Figure | None] | None
+        ``(fig_ranking, fig_trio)``: the ranking figure and the confusion trio of the
+        top significant feature (None when no feature is significant); None when nothing
+        is drawn (the reason is reported).
+        The figure is not shown or closed here: the caller displays it (e.g. as a
+        notebook cell's output) and closes it with ``plt.close``; with ``save_plot`` it
+        is also written to disk first.
     """
 
     results_file_loc = configure_path(str(results_file_loc))
@@ -1988,7 +2048,7 @@ def plot_univariate_multinomial_performance(
     if n_features == 0:
         # A results pickle with only reserved-metadata keys would divide by zero in the
         # Bonferroni correction below; exit cleanly (as the multivariate sibling does).
-        print("No feature entries found in modeling_data; nothing to plot.")
+        message_output("No feature entries found in modeling_data; nothing to plot.")
         return
 
     lower_is_better = ['ll', 'nll', 'log_loss', 'loss', 'mse', 'rmse']
@@ -2003,7 +2063,7 @@ def plot_univariate_multinomial_performance(
             null_eval = np.array(modeling_data[feat]['null']['folds']['metrics'][evaluation_metric])
             actual_sec = np.array(modeling_data[feat]['actual']['folds']['metrics'][secondary_metric])
         except KeyError as e:
-            print(f"Skipping {feat} - Missing metric data: {e}")
+            message_output(f"Skipping {feat} - Missing metric data: {e}")
             continue
 
         actual_eval = actual_eval[~np.isnan(actual_eval)]
@@ -2051,7 +2111,7 @@ def plot_univariate_multinomial_performance(
         })
 
     if not feature_stats:
-        print("No valid features remaining after parsing.")
+        message_output("No valid features remaining after parsing.")
         return
 
     # 1. Prepare the two different sort orders
@@ -2125,15 +2185,13 @@ def plot_univariate_multinomial_performance(
             bbox_extra_artists=(leg,),
             facecolor='#FFFFFF'
         )
-        print(f"Ranking plot saved to: {ranking_out.name}")
-
-    plt.show()
+        message_output(f"Ranking plot saved to: {ranking_out.name}")
 
     # Confusion Trio Plot
     top_sig_feat = next((s for s in primary_stats if s['is_sig']), None)
 
     if top_sig_feat:
-        print(f"\nGenerating Confusion Trio for top significant feature: {top_sig_feat['name']}")
+        message_output(f"\nGenerating Confusion Trio for top significant feature: {top_sig_feat['name']}")
         fig_trio, axes_trio = plt.subplots(1, 3, figsize=(18, 5), dpi=_FIGURE_DPI)
         fig_trio.patch.set_facecolor('#FFFFFF')
         class_names = modeling_data[top_sig_feat['name']]['actual']['classes']
@@ -2198,11 +2256,12 @@ def plot_univariate_multinomial_performance(
         if save_plot:
             trio_out = out_dir / _figure_filename(f"{results_path.stem}_{top_sig_feat['name'].replace('.', '_')}_confusion_trio")
             fig_trio.savefig(trio_out, bbox_inches='tight', facecolor='#FFFFFF')
-            print(f"Confusion Trio plot saved to: {trio_out.name}")
-
-        plt.show()
+            message_output(f"Confusion Trio plot saved to: {trio_out.name}")
     else:
-        print("\nNo significant features found. Skipping Confusion Trio.")
+        fig_trio = None
+        message_output("\nNo significant features found. Skipping Confusion Trio.")
+
+    return fig_ranking, fig_trio
 
 
 def plot_univariate_multinomial_filters_grid(
@@ -2212,8 +2271,9 @@ def plot_univariate_multinomial_filters_grid(
         history_window_sec: float = 4.0,
         cmap: str = _DIVERGING_CMAP,
         save_plot: bool = False,
-        output_dir: str = None
-) -> None:
+        output_dir: str = None,
+        message_output: Callable = print
+) -> plt.Figure | None:
     """
     Plots the temporal behavioral filters for all significant features in a
     small-multiples grid of heatmaps.
@@ -2250,10 +2310,17 @@ def plot_univariate_multinomial_filters_grid(
         If True, saves the figure as an SVG.
     output_dir : str, optional
         Target directory for saved plots.
+    message_output : Callable
+        Sink for user-facing messages (progress, skips, saved-file paths);
+        defaults to ``print``.
 
     Returns
     -------
-    None
+    fig : matplotlib.figure.Figure | None
+        The filter grid; None when nothing is drawn (the reason is reported).
+        The figure is not shown or closed here: the caller displays it (e.g. as a
+        notebook cell's output) and closes it with ``plt.close``; with ``save_plot`` it
+        is also written to disk first.
     """
 
     results_file_loc = configure_path(str(results_file_loc))
@@ -2277,7 +2344,7 @@ def plot_univariate_multinomial_filters_grid(
     if n_features == 0:
         # A results pickle with only reserved-metadata keys would divide by zero in the
         # Bonferroni correction below; exit cleanly (as the multivariate sibling does).
-        print("No feature entries found in modeling_data; nothing to plot.")
+        message_output("No feature entries found in modeling_data; nothing to plot.")
         return
 
     lower_is_better = ['ll', 'nll', 'log_loss', 'loss', 'mse', 'rmse']
@@ -2334,13 +2401,13 @@ def plot_univariate_multinomial_filters_grid(
         })
 
     if not plot_data:
-        print(f"No significant features found for metric '{evaluation_metric}'. Exiting.")
+        message_output(f"No significant features found for metric '{evaluation_metric}'. Exiting.")
         return
 
     # sort by metric performance (the best comes first)
     plot_data.sort(key=lambda x: x['mean_eval'], reverse=not eval_is_lower_better)
     n_significant = len(plot_data)
-    print(f"Found {n_significant} significant features. Plotting grid...")
+    message_output(f"Found {n_significant} significant features. Plotting grid...")
 
     ncols = 4
     nrows = math.ceil(n_significant / ncols)
@@ -2404,9 +2471,9 @@ def plot_univariate_multinomial_filters_grid(
         out_dir.mkdir(parents=True, exist_ok=True)
         out_name = out_dir / _figure_filename(f"{results_path.stem}_multinomial_filters_grid")
         fig.savefig(out_name, bbox_inches='tight', facecolor='#FFFFFF')
-        print(f"Filter grid saved to: {out_name.name}")
+        message_output(f"Filter grid saved to: {out_name.name}")
 
-    plt.show()
+    return fig
 
 
 def plot_multinomial_selection_trajectory(
@@ -2419,7 +2486,8 @@ def plot_multinomial_selection_trajectory(
         output_dir: str = None,
         feature_label_overrides: dict = None,
         secondary_ylim_max: float = None,
-) -> None:
+        message_output: Callable = print,
+) -> plt.Figure | None:
     """
     Plot the multinomial forward-selection trajectory as a compact
     two-panel summary, mirroring the design of
@@ -2490,10 +2558,18 @@ def plot_multinomial_selection_trajectory(
         The visible tick range stops at this value; the label-stack
         above each bar still extends past it if needed so feature
         annotations are not clipped.
+    message_output : Callable
+        Sink for user-facing messages (progress, skips, saved-file paths);
+        defaults to ``print``.
 
     Returns
     -------
-    None
+    fig_traj : matplotlib.figure.Figure | None
+        The selection-trajectory figure; None when nothing is drawn (the reason is
+        reported).
+        The figure is not shown or closed here: the caller displays it (e.g. as a
+        notebook cell's output) and closes it with ``plt.close``; with ``save_plot`` it
+        is also written to disk first.
     """
 
     selection_results_path = configure_path(str(selection_results_path))
@@ -2505,7 +2581,7 @@ def plot_multinomial_selection_trajectory(
     selection_steps, display_name, selection_metadata = load_selection_results(selection_results_path)
 
     if not selection_steps:
-        print(f"No multinomial step data found in {selection_results_path}")
+        message_output(f"No multinomial step data found in {selection_results_path}")
         return
 
     # Sex-aware self/other palette inferred from the filename, matching
@@ -2563,7 +2639,7 @@ def plot_multinomial_selection_trajectory(
         if s['selected_feature'] not in (None, 'null_model_free')
     ]
     if not accepted_steps:
-        print(f"No accepted feature steps in {selection_results_path}")
+        message_output(f"No accepted feature steps in {selection_results_path}")
         return
 
     def _fold_mean(folds_metrics: dict, key: str) -> float:
@@ -2951,9 +3027,9 @@ def plot_multinomial_selection_trajectory(
         save_path = _out_dir / fname
         fig_traj.savefig(save_path, bbox_inches='tight', dpi=_FIGURE_DPI,
                          facecolor=BG_COLOR, transparent=False)
-        print(f"Trajectory plot saved to: {save_path}")
+        message_output(f"Trajectory plot saved to: {save_path}")
 
-    plt.show()
+    return fig_traj
 
 
 def _final_null_filter_weights(selection_steps: list, features: list, layout: str):
@@ -3010,8 +3086,9 @@ def plot_multinomial_multivariate_filters(
         history_window_sec: float = 4.0,
         cmap: str = _DIVERGING_CMAP,
         save_plot: bool = False,
-        output_dir: str = None
-) -> None:
+        output_dir: str = None,
+        message_output: Callable = print
+) -> plt.Figure | None:
     """
     Visualizes the converged multivariate multinomial model as a comprehensive
     atlas of temporal-categorical behavioral influence.
@@ -3078,11 +3155,18 @@ def plot_multinomial_multivariate_filters(
         Directory for saving the figure. Defaults to the parent dir
         of ``selection_results_path`` (or to the path itself if a
         directory was supplied).
+    message_output : Callable
+        Sink for user-facing messages (progress, skips, saved-file paths);
+        defaults to ``print``.
 
     Returns
     -------
-    None
-        Displays the high-resolution Matplotlib grid.
+    fig : matplotlib.figure.Figure | None
+        The final-model filter grid; None when nothing is drawn (the reason is
+        reported).
+        The figure is not shown or closed here: the caller displays it (e.g. as a
+        notebook cell's output) and closes it with ``plt.close``; with ``save_plot`` it
+        is also written to disk first.
     """
 
     selection_results_path = configure_path(str(selection_results_path))
@@ -3100,7 +3184,7 @@ def plot_multinomial_multivariate_filters(
     selection_steps, _, _ = load_selection_results(selection_results_path)
 
     if not selection_steps:
-        print(f"No step data found in {selection_results_path}")
+        message_output(f"No step data found in {selection_results_path}")
         return
 
     # Find the last step that actually selected a feature (ignores the final rejection step)
@@ -3111,7 +3195,7 @@ def plot_multinomial_multivariate_filters(
             break
 
     if valid_data is None:
-        print("No valid features were selected in this run.")
+        message_output("No valid features were selected in this run.")
         return
 
     # Apply the local rcParams overrides only around the actual render, and restore them in
@@ -3126,7 +3210,7 @@ def plot_multinomial_multivariate_filters(
             features = valid_data['final_model_features']
             classes = valid_data['classes']
         else:
-            print("Finalized matrix not found. Reconstructing weights on the fly...")
+            message_output("Finalized matrix not found. Reconstructing weights on the fly...")
             winner = valid_data['selected_feature']
             features = valid_data['current_features'] + [winner]
             winner_data = valid_data['candidates_summary'][winner]
@@ -3251,10 +3335,10 @@ def plot_multinomial_multivariate_filters(
             out_dir = pathlib.Path(output_dir) if output_dir else _fallback
             fname = _figure_filename(f"model_selection_multinomial_usv_category_{condition}_filters_final")
             fig.savefig(out_dir / fname, facecolor='#FFFFFF', bbox_inches=None)
-
-        plt.show()
     finally:
         plt.rcParams.update(_saved_rcp)
+
+    return fig
 
 
 def plot_multinomial_selection_diagnosis(
@@ -3262,7 +3346,8 @@ def plot_multinomial_selection_diagnosis(
         save_plot: bool = False,
         output_dir: str = None,
         feature_label_overrides: dict = None,
-) -> None:
+        message_output: Callable = print,
+) -> tuple[plt.Figure, plt.Figure] | None:
     """
     Two-figure post-hoc audit of the final multinomial selection model
     -- replaces the prior 3-heatmap + slope-chart layout, which was
@@ -3307,10 +3392,18 @@ def plot_multinomial_selection_diagnosis(
         Mapping from raw modeling feature names to presentation-
         friendly labels; used in the figure title that names the
         final-model feature set.
+    message_output : Callable
+        Sink for user-facing messages (progress, skips, saved-file paths);
+        defaults to ``print``.
 
     Returns
     -------
-    None
+    figures : tuple[matplotlib.figure.Figure, matplotlib.figure.Figure] | None
+        ``(fig_auc, fig_rec)``: the pairwise-AUC figure and the per-class recall figure;
+        None when nothing is drawn (the reason is reported).
+        The figure is not shown or closed here: the caller displays it (e.g. as a
+        notebook cell's output) and closes it with ``plt.close``; with ``save_plot`` it
+        is also written to disk first.
     """
 
     selection_results_path = configure_path(str(selection_results_path))
@@ -3320,7 +3413,7 @@ def plot_multinomial_selection_diagnosis(
 
     selection_steps, _, selection_metadata = load_selection_results(selection_results_path)
     if not selection_steps:
-        print(f"No multinomial step data found in {selection_results_path}")
+        message_output(f"No multinomial step data found in {selection_results_path}")
         return
     _pretty = _make_feature_pretty(feature_label_overrides, selection_metadata)
 
@@ -3333,7 +3426,7 @@ def plot_multinomial_selection_diagnosis(
             final_step = s
             break
     if final_step is None:
-        print(f"No accepted multivariate step in {selection_results_path}")
+        message_output(f"No accepted multivariate step in {selection_results_path}")
         return
 
     winner = final_step['selected_feature']
@@ -3381,7 +3474,7 @@ def plot_multinomial_selection_diagnosis(
     y_true_pool = _concat_finite('y_true')
     y_probs_pool = _concat_finite('y_probs')
     if y_true_pool is None or y_probs_pool is None:
-        print(
+        message_output(
             "No valid (y_true, y_probs) pairs across any fold of "
             f"the final step in {selection_results_path}"
         )
@@ -3419,7 +3512,7 @@ def plot_multinomial_selection_diagnosis(
             continue
         summed_cms.append(arr)
     if not summed_cms:
-        print(
+        message_output(
             "No valid confusion matrices in the final step of "
             f"{selection_results_path}"
         )
@@ -3519,7 +3612,7 @@ def plot_multinomial_selection_diagnosis(
         fname = _figure_filename(f"multinomial_pairwise_auc_{condition}")
         fig_auc.savefig(out_dir / fname, bbox_inches='tight', dpi=_FIGURE_DPI,
                         facecolor=BG_COLOR, transparent=False)
-        print(f"Pairwise AUC figure saved to: {out_dir / fname}")
+        message_output(f"Pairwise AUC figure saved to: {out_dir / fname}")
 
     # Figure 2 -- per-class recall (log y-axis, bars touch)
     fig_rec, ax_r = plt.subplots(figsize=(3.6, 2.2), dpi=_FIGURE_DPI)
@@ -3559,18 +3652,18 @@ def plot_multinomial_selection_diagnosis(
         fname = _figure_filename(f"multinomial_per_class_recall_{condition}")
         fig_rec.savefig(out_dir / fname, bbox_inches='tight', dpi=_FIGURE_DPI,
                         facecolor=BG_COLOR, transparent=False)
-        print(f"Per-class recall figure saved to: {out_dir / fname}")
+        message_output(f"Per-class recall figure saved to: {out_dir / fname}")
 
     # Surface which feature set this audit was computed on, so a reader
     # who sees the two figures can connect them back to a specific
     # selection run.
     pretty_feats = [_pretty(f) for f in final_features]
-    print(
+    message_output(
         f"Multinomial audit: final-model features = {pretty_feats}; "
         f"K = {K}; condition = {condition}"
     )
 
-    plt.show()
+    return fig_auc, fig_rec
 
 
 def plot_manifold_selection_trajectory(
@@ -3584,7 +3677,8 @@ def plot_manifold_selection_trajectory(
         save_plot: bool = False,
         output_dir: str = None,
         feature_label_overrides: dict = None,
-) -> None:
+        message_output: Callable = print,
+) -> plt.Figure | None:
     """
     Plot the continuous-vocal-manifold forward-selection trajectory as
     a compact two-panel summary, mirroring
@@ -3670,10 +3764,18 @@ def plot_manifold_selection_trajectory(
         Mapping from raw feature names (as stored in the pickle) to
         presentation-friendly labels used for every annotation. Raw
         names not in the map render unchanged.
+    message_output : Callable
+        Sink for user-facing messages (progress, skips, saved-file paths);
+        defaults to ``print``.
 
     Returns
     -------
-    None
+    fig_traj : matplotlib.figure.Figure | None
+        The selection-trajectory figure; None when nothing is drawn (the reason is
+        reported).
+        The figure is not shown or closed here: the caller displays it (e.g. as a
+        notebook cell's output) and closes it with ``plt.close``; with ``save_plot`` it
+        is also written to disk first.
     """
 
     selection_results_path = configure_path(str(selection_results_path))
@@ -3685,7 +3787,7 @@ def plot_manifold_selection_trajectory(
     selection_steps, display_name, selection_metadata = load_selection_results(selection_results_path)
 
     if not selection_steps:
-        print(f"No manifold selection step data found in {selection_results_path}")
+        message_output(f"No manifold selection step data found in {selection_results_path}")
         return
 
     # Sex-aware palette inferred from the filename, matching the
@@ -3788,7 +3890,7 @@ def plot_manifold_selection_trajectory(
         if s['selected_feature'] not in (None, 'null_model_free')
     ]
     if not accepted_steps:
-        print(f"No accepted feature steps in {selection_results_path}")
+        message_output(f"No accepted feature steps in {selection_results_path}")
         return
 
     chance_primary = _chance_value(metric_primary, is_minimization_primary)
@@ -4072,9 +4174,9 @@ def plot_manifold_selection_trajectory(
         save_path = _out_dir / fname
         fig_traj.savefig(save_path, bbox_inches='tight', dpi=_FIGURE_DPI,
                          facecolor=BG_COLOR, transparent=False)
-        print(f"Manifold trajectory plot saved to: {save_path}")
+        message_output(f"Manifold trajectory plot saved to: {save_path}")
 
-    plt.show()
+    return fig_traj
 
 
 def _draw_secondary_gain_panel(ax, *, sec_means, chance, is_min, marginals,
@@ -4185,7 +4287,8 @@ def _draw_secondary_gain_panel(ax, *, sec_means, chance, is_min, marginals,
 
 
 def _extract_manifold_final_bivariate_weights(selection_results_path,
-                                              collapse_magnitude: bool = True):
+                                              collapse_magnitude: bool = True,
+                                              message_output: Callable = print):
     """
     Load the converged multivariate manifold (bivariate-regression) model
     from a ``continuous_vocal_manifold_model_selection`` artifact and return
@@ -4213,6 +4316,9 @@ def _extract_manifold_final_bivariate_weights(selection_results_path,
         per-coordinate weights are returned unchanged (2 columns on euclidean, 4
         on the torus) for callers that need the signed filter itself -- e.g. the
         ``e(theta).W`` torus-tuning field; ``is_magnitude`` is then always False.
+    message_output : Callable
+        Sink for user-facing messages (progress, skips, saved-file paths);
+        defaults to ``print``.
 
     Returns
     -------
@@ -4242,7 +4348,7 @@ def _extract_manifold_final_bivariate_weights(selection_results_path,
 
     selection_steps, _, selection_metadata = load_selection_results(selection_results_path)
     if not selection_steps:
-        print(f"No manifold selection step data found in {selection_results_path}")
+        message_output(f"No manifold selection step data found in {selection_results_path}")
         return None
 
     # Last step with an actual selected feature -- skips the
@@ -4255,7 +4361,7 @@ def _extract_manifold_final_bivariate_weights(selection_results_path,
             valid_data = data
             break
     if valid_data is None:
-        print("No accepted feature steps in this run.")
+        message_output("No accepted feature steps in this run.")
         return None
 
     winner = valid_data['selected_feature']
@@ -4269,7 +4375,7 @@ def _extract_manifold_final_bivariate_weights(selection_results_path,
 
     raw_weights = np.array(winner_data['folds']['weights'])
     if raw_weights.ndim != 3 or raw_weights.shape[-1] not in (2, 4):
-        print(
+        message_output(
             f"Unexpected weight shape {raw_weights.shape}; expected "
             f"(n_folds, n_features*n_time_bins, 2) for the euclidean coordinate "
             f"model or (..., 4) for the torus sin/cos embedding. Aborting."
@@ -4278,7 +4384,7 @@ def _extract_manifold_final_bivariate_weights(selection_results_path,
     n_folds, n_total_inputs, output_dim = raw_weights.shape
     n_features = len(features)
     if n_features == 0 or n_total_inputs % n_features != 0:
-        print(
+        message_output(
             f"Cannot reshape weights: {n_total_inputs} columns is not "
             f"divisible by {n_features} features. Aborting."
         )
@@ -4318,7 +4424,7 @@ def _extract_manifold_final_bivariate_weights(selection_results_path,
     return mean_weights, features, n_time_bins, selection_metadata, is_magnitude
 
 
-def _atlas_manifold_columns(selection_metadata: dict | None) -> list:
+def _atlas_manifold_columns(selection_metadata: dict | None, message_output: Callable = print) -> list:
     """
     Description
     -----------
@@ -4335,6 +4441,9 @@ def _atlas_manifold_columns(selection_metadata: dict | None) -> list:
     ----------
     selection_metadata (dict | None)
         The metadata block ``load_selection_results`` returns for the artifact.
+    message_output : Callable
+        Sink for user-facing messages (progress, skips, saved-file paths);
+        defaults to ``print``.
 
     Returns
     -------
@@ -4349,14 +4458,15 @@ def _atlas_manifold_columns(selection_metadata: dict | None) -> list:
             if analysis_specific and 'usv_manifold_column_names' in analysis_specific:
                 return list(analysis_specific['usv_manifold_column_names'])
     regular_columns = [f"{QLVM_REGULAR_MAP}1", f"{QLVM_REGULAR_MAP}2"]
-    print(f"plot_manifold_filter_atlas: the artifact records no usv_manifold_column_names (it predates the "
+    message_output(f"plot_manifold_filter_atlas: the artifact records no usv_manifold_column_names (it predates the "
           f"record), so it is read as a {QLVM_REGULAR_MAP!r} map run ({regular_columns}).")
     return regular_columns
 
 
 def _resolve_atlas_tiles_and_categories(qlvm_map: str = QLVM_REGULAR_MAP,
                                         session_ids: list | None = None,
-                                        n_per_dim: int = 12) -> tuple[np.ndarray, np.ndarray, dict | None, str]:
+                                        n_per_dim: int = 12,
+                                        message_output: Callable = print) -> tuple[np.ndarray, np.ndarray, dict | None, str]:
     """
     Description
     -----------
@@ -4406,6 +4516,9 @@ def _resolve_atlas_tiles_and_categories(qlvm_map: str = QLVM_REGULAR_MAP,
         session of the store.
     n_per_dim (int)
         Tiling density: ``n_per_dim ** 2`` node centres ``(i + 0.5) / n_per_dim``.
+    message_output : Callable
+        Sink for user-facing messages (progress, skips, saved-file paths);
+        defaults to ``print``.
 
     Returns
     -------
@@ -4458,7 +4571,7 @@ def _resolve_atlas_tiles_and_categories(qlvm_map: str = QLVM_REGULAR_MAP,
                   f"{len(set(owner_session))} sessions in {pathlib.Path(store_path).name} "
                   f"(positions of cell {store_model_id})")
     if qlvm_map != QLVM_CATEGORY_MAP:
-        print(f"plot_manifold_filter_atlas: map {qlvm_map!r}, {tiles_note}; no category boundaries "
+        message_output(f"plot_manifold_filter_atlas: map {qlvm_map!r}, {tiles_note}; no category boundaries "
               f"(the categories are defined on the {QLVM_CATEGORY_MAP!r} map).")
         return lattice, tiles, None, store_model_id
     bundle = load_qlvm_category_bundle()
@@ -4468,7 +4581,7 @@ def _resolve_atlas_tiles_and_categories(qlvm_map: str = QLVM_REGULAR_MAP,
             f"{bundle['model_id']} (map {bundle['map']!r}), but the store's {qlvm_map!r} positions were "
             f"embedded with {store_model_id}."
         )
-    print(f"plot_manifold_filter_atlas: map {qlvm_map!r}, {tiles_note}; categories {bundle['identity']}.")
+    message_output(f"plot_manifold_filter_atlas: map {qlvm_map!r}, {tiles_note}; categories {bundle['identity']}.")
     return lattice, tiles, bundle, store_model_id
 
 
@@ -4482,7 +4595,8 @@ def plot_manifold_filter_atlas(
         save_plot: bool = False,
         output_dir: str = None,
         feature_label_overrides: dict = None,
-) -> None:
+        message_output: Callable = print,
+) -> plt.Figure | None:
     """
     Single-figure "atlas" summary of the converged multivariate torus-manifold
     model, replacing the separate magnitude / torus-tuning plotters with one
@@ -4574,11 +4688,17 @@ def plot_manifold_filter_atlas(
     map is read from the artifact's
     ``_input_metadata.analysis_specific.usv_manifold_column_names``
     (``_atlas_manifold_columns``).
+    message_output : Callable
+        Sink for user-facing messages (progress, skips, saved-file paths);
+        defaults to ``print``.
 
     Returns
     -------
-    None
-        Displays (and optionally saves) the Matplotlib figure.
+    fig : matplotlib.figure.Figure | None
+        The filter-atlas figure; None when nothing is drawn (the reason is reported).
+        The figure is not shown or closed here: the caller displays it (e.g. as a
+        notebook cell's output) and closes it with ``plt.close``; with ``save_plot`` it
+        is also written to disk first.
     """
 
     selection_results_path = configure_path(str(selection_results_path))
@@ -4586,12 +4706,12 @@ def plot_manifold_filter_atlas(
         output_dir = configure_path(str(output_dir))
 
     extracted = _extract_manifold_final_bivariate_weights(
-        selection_results_path, collapse_magnitude=False)
+        selection_results_path, collapse_magnitude=False, message_output=message_output)
     if extracted is None:
         return
     raw_weights, features, n_time_bins, selection_metadata, _ = extracted
     if raw_weights.shape[-1] != 4:
-        print(
+        message_output(
             f"plot_manifold_filter_atlas is torus-only (it needs the 4-D "
             f"(sin, cos) embedding filter, metric='torus'); got last dim "
             f"{raw_weights.shape[-1]}. Nothing plotted."
@@ -4612,12 +4732,13 @@ def plot_manifold_filter_atlas(
     # production spectrogram store, at the positions of the artifact's map) and,
     # on the regular map, the category grid (the category bundle) from the code
     # constants; they must share a torus.
-    manifold_columns = _atlas_manifold_columns(selection_metadata)
+    manifold_columns = _atlas_manifold_columns(selection_metadata, message_output=message_output)
     _run_sessions = (list(selection_metadata['_input_metadata']['session_ids'])
                      if selection_metadata and '_input_metadata' in selection_metadata
                      and 'session_ids' in selection_metadata['_input_metadata'] else None)
     _lattice, atlas, category_bundle, _ = _resolve_atlas_tiles_and_categories(
-        manifold_tag_segment(manifold_columns), _run_sessions, int(atlas_grid_n))
+        manifold_tag_segment(manifold_columns), _run_sessions, int(atlas_grid_n),
+        message_output=message_output)
 
     # Feature colours: self / partner by cohort, dyadic social; features sharing a
     # category are separated by OPACITY only (mirrors the trajectory plotter).
@@ -4714,8 +4835,8 @@ def plot_manifold_filter_atlas(
     else:
         vmax = 0.1
 
-    # Approved layout constants (data-unit geometry of the filmstrip decks and the
-    # labelled-time axis; tuned once with the user, kept here as named values).
+    # Layout constants (data-unit geometry of the filmstrip decks and the
+    # labelled-time axis), fixed by the figure design and kept here as named values.
     stack_dx = 0.12          # horizontal overlap offset per time slice
     row_pitch = 1.22         # vertical spacing between feature rows
     time_tick_step = 0.5     # data units between labelled seconds on the filmstrip
@@ -4897,9 +5018,9 @@ def plot_manifold_filter_atlas(
         out_dir.mkdir(parents=True, exist_ok=True)
         fname = _figure_filename(f"model_selection_manifold_{condition}_filter_atlas")
         fig.savefig(out_dir / fname, facecolor='#FFFFFF', bbox_inches='tight')
-        print(f"Manifold filter-atlas plot saved to: {out_dir / fname}")
+        message_output(f"Manifold filter-atlas plot saved to: {out_dir / fname}")
 
-    plt.show()
+    return fig
 
 
 class DeepResultsVisualizer:
@@ -4923,16 +5044,32 @@ class DeepResultsVisualizer:
     n_bins : int
         Number of temporal bins in the history window.
     save_dir : str
-        Default directory for saving generated plots.
+        Default directory for saving generated plots: the directory holding the
+        results pickle (used when a plot method gets no ``output_dir``).
+    manifold_metric : str
+        ``'torus'`` or ``'euclidean'``, read from the pickle's metadata.
+    manifold_period : float
+        Period of the torus axes, read from the pickle's metadata.
     default_color : str
         The primary color (male_color or female_color) detected from the filename.
+    message_output : Callable
+        Sink for user-facing messages (defaults to ``print``).
     """
 
     def __init__(self, results_pkl_path: str,
                  modeling_settings: dict | None,
-                 visualization_settings: dict | None,):
+                 visualization_settings: dict | None,
+                 message_output: Callable = print):
         """
         Initializes the visualizer, loads results, and detects subject sex for coloring.
+
+        The pickle's ``metadata`` must carry ``manifold_metric`` and
+        ``manifold_period`` (every CNN run writes them); a pickle without them is
+        rejected with a KeyError instead of being silently drawn as a flat
+        euclidean plane with period 1.0, which mis-measured every error on a torus
+        run. Figures are saved next to the results pickle unless a plot method is
+        given an ``output_dir`` (the metadata holds no save directory, so the
+        previous ``'./plots'`` fallback wrote into whatever the working directory was).
 
         Parameters
         ----------
@@ -4946,12 +5083,23 @@ class DeepResultsVisualizer:
             A nested dictionary containing visualization settings, including
             animal colors, etc. If None is provided, it loads from the default
             visualizations_settings.json configuration file.
+        message_output : Callable
+            Sink for user-facing messages, such as the path of a saved figure
+            (defaults to ``print``).
 
         Returns
         -------
         None
+
+        Raises
+        ------
+        FileNotFoundError
+            The results pickle (or a default settings file) does not exist.
+        KeyError
+            The pickle's metadata lacks ``manifold_metric`` or ``manifold_period``.
         """
 
+        self.message_output = message_output
         results_pkl_path = configure_path(str(results_pkl_path))
         if not os.path.exists(results_pkl_path):
             raise FileNotFoundError(f"Results file not found: {results_pkl_path}")
@@ -4964,19 +5112,22 @@ class DeepResultsVisualizer:
         self.metadata = self.data['metadata']
         self.features = self.metadata['features_list']
         self.n_bins = self.metadata['n_time_bins']
-        self.save_dir = (self.metadata['save_dir'] if 'save_dir' in self.metadata else './plots')
+        self.save_dir = str(pathlib.Path(results_pkl_path).parent)
 
-        # Manifold-metric provenance. Recent CNN runs save the
-        # `(metric, period)` pair into `data['metadata']`; legacy
-        # pickles predate this and default to flat-space euclidean
-        # so the visualisations remain back-compatible without any
-        # caller-side awareness. The plots that compute distances
+        # Manifold-metric provenance. CNN runs save the `(metric, period)`
+        # pair into `data['metadata']`; the plots that compute distances
         # between predictions and ground truth (`spatial_precision_grid`,
-        # `error_landscape`, `regional_saliency_inset`) read these
-        # via `signed_diff` so torus pickles render with wrap-aware
-        # error magnitudes.
-        self.manifold_metric = (self.metadata['manifold_metric'] if 'manifold_metric' in self.metadata else 'euclidean')
-        self.manifold_period = float(self.metadata['manifold_period'] if 'manifold_period' in self.metadata else 1.0)
+        # `error_landscape`, `regional_saliency_inset`) read these via
+        # `signed_diff` so torus pickles render with wrap-aware error
+        # magnitudes. A pickle without them cannot be drawn correctly, so
+        # it is rejected rather than assumed euclidean.
+        for required_key in ('manifold_metric', 'manifold_period'):
+            if required_key not in self.metadata:
+                missing_message = (f"{results_pkl_path}: metadata has no '{required_key}'; re-run the CNN "
+                                   f"training so the pickle records its manifold metric and period.")
+                raise KeyError(missing_message)
+        self.manifold_metric = self.metadata['manifold_metric']
+        self.manifold_period = float(self.metadata['manifold_period'])
 
         if modeling_settings is None:
             settings_path = pathlib.Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
@@ -5041,7 +5192,7 @@ class DeepResultsVisualizer:
         save_path = target_dir / _figure_filename(name, ext)
 
         fig.savefig(save_path, dpi=_FIGURE_DPI, bbox_inches='tight', facecolor='#FFFFFF')
-        print(f"[+] Figure saved: {save_path}")
+        self.message_output(f"[+] Figure saved: {save_path}")
 
     def plot_permutation_test(self,
                               actual_color: str = None,
@@ -5053,7 +5204,7 @@ class DeepResultsVisualizer:
                               n_bootstraps: int = 1000,
                               save_plot: bool = False,
                               output_dir: str = None,
-                              file_format: str = _FIGURE_FORMAT) -> None:
+                              file_format: str = _FIGURE_FORMAT) -> plt.Figure:
         """
         Plots the bootstrapped permutation test histograms to prove model validity.
 
@@ -5095,7 +5246,11 @@ class DeepResultsVisualizer:
 
         Returns
         -------
-        None
+        fig : matplotlib.figure.Figure
+            The permutation-test figure.
+            The figure is not shown or closed here: the caller displays it (e.g. as a
+            notebook cell's output) and closes it with ``plt.close``; with ``save_plot``
+            it is also written to disk first.
         """
 
         c_act = actual_color if actual_color is not None else getattr(self, 'default_color', '#1f77b4')
@@ -5265,7 +5420,7 @@ class DeepResultsVisualizer:
         if hasattr(self, '_handle_save'):
             self._handle_save(fig, save_filename, save_plot, output_dir, file_format)
 
-        plt.show()
+        return fig
 
     def plot_feature_importance(self,
                                 snr_threshold: float = 3.0,
@@ -5276,7 +5431,7 @@ class DeepResultsVisualizer:
                                 figsize: tuple = (4, 6),
                                 save_plot: bool = False,
                                 output_dir: Optional[str] = None,
-                                file_format: str = _FIGURE_FORMAT) -> None:
+                                file_format: str = _FIGURE_FORMAT) -> plt.Figure:
         r"""
         Visualizes Post-Hoc Permutation feature importance with dynamic Signal-to-Noise Ratio (SNR) thresholding.
 
@@ -5312,8 +5467,11 @@ class DeepResultsVisualizer:
 
         Returns
         -------
-        None
-            Displays the generated matplotlib figure and optionally saves it to disk.
+        fig : matplotlib.figure.Figure
+            The feature-importance figure.
+            The figure is not shown or closed here: the caller displays it (e.g. as a
+            notebook cell's output) and closes it with ``plt.close``; with ``save_plot``
+            it is also written to disk first.
         """
 
         # Access the nested CNN importance structure
@@ -5391,7 +5549,7 @@ class DeepResultsVisualizer:
         if hasattr(self, '_handle_save'):
             self._handle_save(fig, save_filename, save_plot, output_dir, file_format)
 
-        plt.show()
+        return fig
 
     def plot_spatial_precision_grid(self,
                                     plot_type: str = 'density',
@@ -5406,7 +5564,7 @@ class DeepResultsVisualizer:
                                     grid_shape: Optional[tuple] = None,
                                     save_plot: bool = False,
                                     output_dir: Optional[str] = None,
-                                    file_format: str = _FIGURE_FORMAT) -> None:
+                                    file_format: str = _FIGURE_FORMAT) -> plt.Figure:
         """
         Generates a tiled grid of 'Hero Shot' panels focusing on representative regions across the manifold.
 
@@ -5459,12 +5617,15 @@ class DeepResultsVisualizer:
 
         Returns
         -------
-        None
-            Displays the generated matplotlib figure and optionally saves it to disk.
+        fig : matplotlib.figure.Figure
+            The precision-grid figure (the torus variant's figure on a torus manifold).
+            The figure is not shown or closed here: the caller displays it (e.g. as a
+            notebook cell's output) and closes it with ``plt.close``; with ``save_plot``
+            it is also written to disk first.
         """
 
         if self.manifold_metric == 'torus':
-            self._plot_spatial_precision_grid_torus(
+            return self._plot_spatial_precision_grid_torus(
                 plot_type=plot_type,
                 grid_shape=grid_shape,
                 patch_size=patch_size,
@@ -5478,7 +5639,6 @@ class DeepResultsVisualizer:
                 output_dir=output_dir,
                 file_format=file_format,
             )
-            return
         if patch_size is None:
             patch_size = 2.5
 
@@ -5500,7 +5660,7 @@ class DeepResultsVisualizer:
         white_inferno = ListedColormap(cmap_colors)
 
         # 3. K-Means Guided Search (Ensures Island Capture)
-        print(f"Identifying {n_patches} representative neighborhoods using K-Means...")
+        self.message_output(f"Identifying {n_patches} representative neighborhoods using K-Means...")
         kmeans = KMeans(n_clusters=n_patches, n_init=10, random_state=_FIGURE_SEED)
         kmeans.fit(Y_true)
         centers = kmeans.cluster_centers_
@@ -5646,7 +5806,7 @@ class DeepResultsVisualizer:
         if hasattr(self, '_handle_save'):
             self._handle_save(fig, save_filename, save_plot, output_dir, file_format)
 
-        plt.show()
+        return fig
 
     def _plot_spatial_precision_grid_torus(
             self,
@@ -5662,7 +5822,7 @@ class DeepResultsVisualizer:
             save_plot: bool,
             output_dir: Optional[str],
             file_format: str,
-    ) -> None:
+    ) -> plt.Figure:
         """
         Torus-manifold counterpart to ``plot_spatial_precision_grid``.
 
@@ -5717,7 +5877,11 @@ class DeepResultsVisualizer:
 
         Returns
         -------
-        None
+        fig : matplotlib.figure.Figure
+            The torus precision-grid figure.
+            The figure is not shown or closed here: the caller displays it (e.g. as a
+            notebook cell's output) and closes it with ``plt.close``; with ``save_plot``
+            it is also written to disk first.
         """
 
         period = float(self.manifold_period)
@@ -5895,7 +6059,7 @@ class DeepResultsVisualizer:
             self._handle_save(fig, save_filename, save_plot, output_dir,
                               file_format)
 
-        plt.show()
+        return fig
 
     def plot_error_landscape(self,
                              gridsize: int = 30,
@@ -5907,7 +6071,7 @@ class DeepResultsVisualizer:
                              figsize: tuple = (12, 5),
                              save_plot: bool = False,
                              output_dir: Optional[str] = None,
-                             file_format: str = _FIGURE_FORMAT) -> None:
+                             file_format: str = _FIGURE_FORMAT) -> plt.Figure:
         """
         Visualizes the spatial distribution of prediction errors and error reduction for the CNN.
 
@@ -5944,8 +6108,11 @@ class DeepResultsVisualizer:
 
         Returns
         -------
-        None
-            Shows the figure, and writes it to ``output_dir`` when ``save_plot`` is True.
+        fig : matplotlib.figure.Figure
+            The error-landscape figure.
+            The figure is not shown or closed here: the caller displays it (e.g. as a
+            notebook cell's output) and closes it with ``plt.close``; with ``save_plot``
+            it is also written to disk first.
         """
 
         # 1. Data Preparation (Aggregating Across CNN Folds)
@@ -6038,7 +6205,7 @@ class DeepResultsVisualizer:
         if hasattr(self, '_handle_save'):
             self._handle_save(fig, save_filename, save_plot, output_dir, file_format)
 
-        plt.show()
+        return fig
 
     def plot_regional_saliency_inset(self,
                                      region_key: str,
@@ -6052,7 +6219,7 @@ class DeepResultsVisualizer:
                                      smoothing_sigma: float = 60.0,
                                      save_plot: bool = False,
                                      output_dir: Optional[str] = None,
-                                     file_format: str = _FIGURE_FORMAT) -> None:
+                                     file_format: str = _FIGURE_FORMAT) -> plt.Figure | None:
         """
         Visualizes regional manifold dynamics for one pre-computed
         saliency region. The region is defined by the (centroid,
@@ -6126,7 +6293,12 @@ class DeepResultsVisualizer:
 
         Returns
         -------
-        None
+        fig : matplotlib.figure.Figure | None
+            The regional-saliency figure; None when nothing is drawn (the reason is
+            reported).
+            The figure is not shown or closed here: the caller displays it (e.g. as a
+            notebook cell's output) and closes it with ``plt.close``; with ``save_plot``
+            it is also written to disk first.
         """
 
         # 0. COLOR MANAGEMENT
@@ -6168,13 +6340,13 @@ class DeepResultsVisualizer:
         contrastive_map = np.mean(raw_saliency, axis=0)
         if radius is None:
             effective_radius = stored_radius
-            print(
+            self.message_output(
                 f"   > Extracting pre-computed saliency for {region_key} "
                 f"(centroid={centroid.tolist()}, radius={effective_radius:.3f})"
             )
         else:
             effective_radius = float(radius)
-            print(
+            self.message_output(
                 f"   > Extracting pre-computed saliency for {region_key} "
                 f"(centroid={centroid.tolist()}); USING radius override "
                 f"{effective_radius:.3f} for sample selection + display "
@@ -6195,7 +6367,7 @@ class DeepResultsVisualizer:
         r_idx = np.where(r_mask)[0]
 
         if len(r_idx) < 3:
-            print(f"Warning: Region '{region_key}' contains only {len(r_idx)} samples. Skipping.")
+            self.message_output(f"Warning: Region '{region_key}' contains only {len(r_idx)} samples. Skipping.")
             return
 
         # Wrap-aware per-trial error magnitudes for the in-region
@@ -6249,7 +6421,9 @@ class DeepResultsVisualizer:
                 ax1.contour(xx, yy, zz, levels=3, cmap=white_inferno, linewidths=2.0, zorder=3)
                 peak_idx = np.unravel_index(np.argmax(zz), zz.shape)
                 ax1.scatter(xx[peak_idx], yy[peak_idx], marker='x', color=highlight_color, s=120, linewidths=3, zorder=4)
-            except Exception:
+            except (np.linalg.LinAlgError, ValueError) as kde_error:
+                # A singular (e.g. collinear) or too-small region has no KDE; its points are drawn instead.
+                self.message_output(f"Region '{region_key}': no density contour ({kde_error}); drawing the points.")
                 ax1.scatter(y_p_region[:, 0], y_p_region[:, 1], c=highlight_color, s=15, alpha=0.6, edgecolors='none', zorder=2)
 
         elif prediction_plot_type.lower() == 'density':
@@ -6269,7 +6443,9 @@ class DeepResultsVisualizer:
                 ax1.imshow(zz_norm, cmap=white_inferno, interpolation='bilinear', origin='lower',
                            extent=[x_min_plot, x_max_plot, y_min_plot, y_max_plot], aspect='auto', zorder=0)
                 ax1.scatter([peak_x], [peak_y], marker='x', color='#00FFFF', s=120, linewidths=3, zorder=4)
-            except Exception:
+            except (np.linalg.LinAlgError, ValueError) as kde_error:
+                # A singular (e.g. collinear) or too-small region has no KDE; its points are drawn instead.
+                self.message_output(f"Region '{region_key}': no density map ({kde_error}); drawing the points.")
                 ax1.scatter(y_p_region[:, 0], y_p_region[:, 1], c=highlight_color, s=15, alpha=0.7, edgecolors='none', zorder=2)
 
         elif prediction_plot_type.lower() == 'hexbin':
@@ -6412,7 +6588,7 @@ class DeepResultsVisualizer:
 
         self._handle_save(fig, f"cnn_regional_saliency_{region_key}_{sex_mod}",
                           save_plot, output_dir, file_format)
-        plt.show()
+        return fig
 
 
 # Predictor diagnostics: plotting for the audits in
@@ -6838,7 +7014,8 @@ def plot_collinearity_audit(audit_pkl_path: str,
                             plot_format: str = _FIGURE_FORMAT,
                             cmap: str = _DIVERGING_CMAP,
                             outline_threshold: float = 0.7,
-                            outline_color: str = '#000000') -> dict:
+                            outline_color: str = '#000000',
+                            message_output: Callable = print) -> dict:
     """
     Renders the collinearity audit produced by
     `modeling.modeling_collinearity_audit.audit_predictor_collinearity`
@@ -6927,14 +7104,20 @@ def plot_collinearity_audit(audit_pkl_path: str,
         in-cell numeric ρ annotation. Pick a colour that contrasts
         with the chosen `cmap` so the outline reads against the
         cell fill.
+    message_output : Callable
+        Sink for user-facing messages (progress, skips, saved-file paths);
+        defaults to ``print``.
 
     Returns
     -------
     dict
-        `{'figure_path': str, 'n_features': int, 'n_flagged': int,
-        'condition_number': float, 'mean_vif': float,
-        'median_vif': float}`. `figure_path` is `''` when
-        `save_plot_bool` is False; `mean_vif` / `median_vif` are
+        `{'figure': matplotlib.figure.Figure | None, 'figure_path': str,
+        'n_features': int, 'n_flagged': int, 'condition_number': float,
+        'mean_vif': float, 'median_vif': float}`. When `save_plot_bool` is
+        True the figure is saved and closed (`figure` is None); otherwise
+        `figure_path` is `''` and `figure` is the open figure, which the
+        caller displays and closes. `figure` is also None when there is
+        nothing to draw; `mean_vif` / `median_vif` are
         computed over the finite VIF values only and are NaN if
         no feature has a finite VIF.
     """
@@ -6956,8 +7139,9 @@ def plot_collinearity_audit(audit_pkl_path: str,
 
     n_features = len(feature_names)
     if n_features == 0:
-        print(f"[plot] collinearity audit at {audit_pkl_path} has no features — skipping.")
+        message_output(f"[plot] collinearity audit at {audit_pkl_path} has no features — skipping.")
         return {
+            'figure': None,
             'figure_path': '',
             'n_features': 0,
             'n_flagged': 0,
@@ -7173,11 +7357,14 @@ def plot_collinearity_audit(audit_pkl_path: str,
         out_path = _save_audit_figure(fig, save_dir, base,
                                       file_format=plot_format)
         plt.close(fig)
-        print(f"[plot] collinearity figure written: {out_path}")
+        message_output(f"[plot] collinearity figure written: {out_path}")
+        returned_figure = None
     else:
         out_path = ''
+        returned_figure = fig
 
     return {
+        'figure': returned_figure,
         'figure_path': out_path,
         'n_features': n_features,
         'n_flagged': len(flagged),
@@ -7316,7 +7503,8 @@ def plot_timescale_audit(timescale_pkl_path: str,
                          save_dir: str = None,
                          save_plot_bool: bool = True,
                          plot_format: str = _FIGURE_FORMAT,
-                         signal_smooth_window: int = 0) -> dict:
+                         signal_smooth_window: int = 0,
+                         message_output: Callable = print) -> dict:
     """
     Cohort-level summary companion to `plot_timescale_audit_per_feature`.
 
@@ -7394,16 +7582,23 @@ def plot_timescale_audit(timescale_pkl_path: str,
         cross-correlation mean curve before computing the XC marker.
         Forwarded to `_compute_timescale_horizons`. Same default as
         the per-feature plot.
+    message_output : Callable
+        Sink for user-facing messages (progress, skips, saved-file paths);
+        defaults to ``print``.
 
     Returns
     -------
     dict
-        `{'figure_path': str, 'n_features_acf': int, 'n_features_xc': int,
+        `{'figure': matplotlib.figure.Figure | None, 'figure_path': str,
+        'n_features_acf': int, 'n_features_xc': int,
         'mean_acf_horizon_s': float, 'median_acf_horizon_s': float,
         'mean_xc_horizon_s': float, 'median_xc_horizon_s': float,
         'configured_filter_history': float}`.
         Mean / median entries are NaN when the corresponding panel is
-        empty. `figure_path` is `''` when `save_plot_bool` is False.
+        empty. When `save_plot_bool` is True the figure is saved and
+        closed (`figure` is None); otherwise `figure_path` is `''` and
+        `figure` is the open figure, which the caller displays and
+        closes. `figure` is also None when there is nothing to draw.
     """
 
     with open(timescale_pkl_path, 'rb') as fh:
@@ -7436,9 +7631,10 @@ def plot_timescale_audit(timescale_pkl_path: str,
     n_xc = len(xc_items)
 
     if n_acf == 0 and n_xc == 0:
-        print(f"[plot] timescale audit at {timescale_pkl_path}: no features "
+        message_output(f"[plot] timescale audit at {timescale_pkl_path}: no features "
               f"with markers in either panel — skipping.")
         return {
+            'figure': None,
             'figure_path': '',
             'n_features_acf': 0,
             'n_features_xc': 0,
@@ -7612,10 +7808,13 @@ def plot_timescale_audit(timescale_pkl_path: str,
         base = os.path.splitext(os.path.basename(timescale_pkl_path))[0]
         out_path = _save_audit_figure(fig, save_dir, base, file_format=plot_format)
         plt.close(fig)
-        print(f"[plot] timescale figure written: {out_path}")
+        message_output(f"[plot] timescale figure written: {out_path}")
+        returned_figure = None
     else:
         out_path = ''
+        returned_figure = fig
     return {
+        'figure': returned_figure,
         'figure_path': out_path,
         'n_features_acf': n_acf,
         'n_features_xc': n_xc,
@@ -7632,7 +7831,8 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
                                      save_dir: str = None,
                                      save_plot_bool: bool = True,
                                      plot_format: str = _FIGURE_FORMAT,
-                                     signal_smooth_window: int = 0) -> dict:
+                                     signal_smooth_window: int = 0,
+                                     message_output: Callable = print) -> dict:
     """
     Renders the timescale audit as a small-multiples grid: one row per
     feature, two columns (ACF on the left, signal correlation on the
@@ -7718,12 +7918,19 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
         the artifact remains raw. `0` or `1` disables smoothing.
         `10` ≈ 67 ms at 150 fps. Even windows are bumped odd-up so
         the smoothing stays centred.
+    message_output : Callable
+        Sink for user-facing messages (progress, skips, saved-file paths);
+        defaults to ``print``.
 
     Returns
     -------
     dict
-        `{'figure_path': str, 'n_features': int, 'configured_filter_history': float}`.
-        `figure_path` is `''` when `save_plot_bool` is False.
+        `{'figure': matplotlib.figure.Figure | None, 'figure_path': str,
+        'n_features': int, 'configured_filter_history': float}`. When
+        `save_plot_bool` is True the figure is saved and closed (`figure`
+        is None); otherwise `figure_path` is `''` and `figure` is the open
+        figure, which the caller displays and closes. `figure` is also
+        None when there is nothing to draw.
     """
 
     with open(timescale_pkl_path, 'rb') as fh:
@@ -7770,16 +7977,16 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
 
     n_features = len(feature_names)
     if n_features == 0:
-        print(f"[plot] timescale audit at {timescale_pkl_path} has no features — skipping.")
-        return {'figure_path': '', 'n_features': 0, 'configured_filter_history': cfg_hist}
+        message_output(f"[plot] timescale audit at {timescale_pkl_path} has no features — skipping.")
+        return {'figure': None, 'figure_path': '', 'n_features': 0, 'configured_filter_history': cfg_hist}
 
     # Group + colour features: self → SEI → other → social-dyadic.
     order, ordered_colors = _order_and_color_predictor_features(
         feature_names, source
     )
 
-    # Run-length used for the ACF "leaves the band" marker. 15 bins
-    # ≈ 100 ms at 150 fps — request from the user.
+    # Run-length used for the ACF "leaves the band" marker: 15 bins
+    # ≈ 100 ms at 150 fps.
     acf_run_length = 15
 
     # Compact layout: each subplot is near-square with the horizontal
@@ -8068,10 +8275,13 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
         out_path = _save_audit_figure(fig, save_dir, f"{base}_per-feature",
                                       file_format=plot_format)
         plt.close(fig)
-        print(f"[plot] per-feature timescale figure written: {out_path}")
+        message_output(f"[plot] per-feature timescale figure written: {out_path}")
+        returned_figure = None
     else:
         out_path = ''
+        returned_figure = fig
     return {
+        'figure': returned_figure,
         'figure_path': out_path,
         'n_features': n_features,
         'configured_filter_history': cfg_hist,
@@ -8162,7 +8372,8 @@ def plot_behavioral_response_forest(
         duration_sd_factor: float = 2.25,
         save_plot: bool = False,
         output_dir: str = None,
-) -> None:
+        message_output: Callable = print,
+) -> plt.Figure:
     """
     Both behavioural-response questions as forest plots, one row per feature.
 
@@ -8180,7 +8391,8 @@ def plot_behavioral_response_forest(
     and is shown as a percent change; the signed ones (``allo_pitch``,
     ``back_pitch``) are fitted on ``y`` and land in degrees. A percent of a
     signed angle is undefined -- zero means horizontal, not "none of it" -- so
-    the two groups get separate rows with their own axes.
+    the two groups get separate rows with their own axes. A group that holds no
+    feature (every feature non-negative, or every feature signed) gets no row.
 
     The duration slope reads per STANDARD DEVIATION of log duration, not per
     e-fold: ``build_continuous_design_matrix`` z-scores the log term across the
@@ -8207,7 +8419,9 @@ def plot_behavioral_response_forest(
     contrast_results_path : str
         Pickle written by ``behavioral_response_contrast``.
     alpha : float
-        Two-sided error rate for the plotted intervals.
+        Two-sided error rate for the plotted intervals; the column titles state
+        the level as ``100 (1 - alpha)`` to four significant digits (99.9% at
+        0.001).
     false_discovery_rate : float
         Level for the Benjamini-Hochberg correction deciding marker fill.
     axis_limits : tuple
@@ -8221,10 +8435,17 @@ def plot_behavioral_response_forest(
         Whether to write the figure to ``output_dir``.
     output_dir : str
         Destination directory when saving.
+    message_output : Callable
+        Sink for user-facing messages (progress, skips, saved-file paths);
+        defaults to ``print``.
 
     Returns
     -------
-    None
+    fig : matplotlib.figure.Figure
+        The forest-plot figure.
+        The figure is not shown or closed here: the caller displays it (e.g. as a
+        notebook cell's output) and closes it with ``plt.close``; with ``save_plot`` it
+        is also written to disk first.
     """
 
     with open(contrast_results_path, 'rb') as handle:
@@ -8236,6 +8457,9 @@ def plot_behavioral_response_forest(
                 'vocal_x_log_duration'))
     groups = [[f for f in features if likelihoods[f] == 'lognormal'],
               [f for f in features if likelihoods[f] != 'lognormal']]
+    # Only likelihood groups holding a feature get a panel row; each keeps its index
+    # in `groups` (0 percent, 1 degrees) to pick its pair from `axis_limits`.
+    drawn_groups = [(group_index, group) for group_index, group in enumerate(groups) if group]
 
     equations = (
         (r'$\log y_i = \beta_0 + \beta_V V_i + \beta_D\, V_i \log d_i'
@@ -8258,20 +8482,20 @@ def plot_behavioral_response_forest(
     )
 
     fig = plt.figure(figsize=(3.4 * (len(columns) + 1.45), 0.42 * len(features) + 2.4))
-    grid = fig.add_gridspec(len(groups), len(columns) + 1,
+    grid = fig.add_gridspec(len(drawn_groups), len(columns) + 1,
                             width_ratios=[1.45] + [1.0] * len(columns),
-                            height_ratios=[len(group) for group in groups])
+                            height_ratios=[len(group) for _group_index, group in drawn_groups])
     axes = [[fig.add_subplot(grid[row, column + 1]) for column in range(len(columns))]
-            for row in range(len(groups))]
+            for row in range(len(drawn_groups))]
 
     for column, (heading, term_name) in enumerate(columns):
         raw = np.array([payload['per_feature'][f]['window']['terms'][term_name]['p_value']
                         for f in features])
         corrected = _benjamini_hochberg(raw, false_discovery_rate)
-        print(f"  {term_name}: BH q<{false_discovery_rate} passes "
+        message_output(f"  {term_name}: BH q<{false_discovery_rate} passes "
               f"{[f for f, flag in zip(features, corrected) if flag] or 'nothing'}")
 
-        for row, group in enumerate(groups):
+        for row, (group_index, group) in enumerate(drawn_groups):
             axis = axes[row][column]
             for offset, feature in enumerate(reversed(group)):
                 term = payload['per_feature'][feature]['window']['terms'][term_name]
@@ -8285,7 +8509,7 @@ def plot_behavioral_response_forest(
                           color=colour if significant else '#FFFFFF',
                           markeredgecolor=colour, markeredgewidth=1.2)
 
-            axis.set_xlim(*axis_limits[column * len(groups) + row])
+            axis.set_xlim(*axis_limits[column * len(groups) + group_index])
             axis.axvline(0.0, color='#000000', linewidth=0.8, linestyle=':')
             axis.set_yticks(range(len(group)))
             axis.set_yticklabels([_BEHAVIORAL_RESPONSE_NAMES[f] for f in reversed(group)],
@@ -8294,7 +8518,7 @@ def plot_behavioral_response_forest(
             axis.tick_params(labelsize=7)
             axis.set_xlabel(unit, fontsize=8)
             if row == 0:
-                axis.set_title(f"{heading}\n{int((1 - alpha) * 100)}% CI, "
+                axis.set_title(f"{heading}\n{100 * (1 - alpha):.4g}% CI, "
                                f"filled = BH q<{false_discovery_rate}", fontsize=9)
 
     _draw_behavioral_response_key(fig=fig, grid=grid, payload=payload,
@@ -8305,8 +8529,8 @@ def plot_behavioral_response_forest(
         out_name = os.path.join(output_dir,
                                 _figure_filename('behavioral_response_forest'))
         fig.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI)
-        print(f"Figure saved to: {out_name}")
-    plt.show()
+        message_output(f"Figure saved to: {out_name}")
+    return fig
 
 
 def _draw_behavioral_response_key(fig, grid, payload: dict, features: list,
@@ -8420,7 +8644,8 @@ def plot_matched_divergence(
         onset_run_seconds: float = 1.0,
         save_plot: bool = False,
         output_dir: str = None,
-) -> None:
+        message_output: Callable = print,
+) -> plt.Figure | None:
     """
     Female kinematics around a male bout offset, against baseline-matched silence.
 
@@ -8475,10 +8700,18 @@ def plot_matched_divergence(
         Whether to write the figure to ``output_dir``.
     output_dir : str
         Destination directory when saving.
+    message_output : Callable
+        Sink for user-facing messages (progress, skips, saved-file paths);
+        defaults to ``print``.
 
     Returns
     -------
-    None
+    fig : matplotlib.figure.Figure | None
+        The matched-divergence figure; None when nothing is drawn (the reason is
+        reported).
+        The figure is not shown or closed here: the caller displays it (e.g. as a
+        notebook cell's output) and closes it with ``plt.close``; with ``save_plot`` it
+        is also written to disk first.
     """
 
     with open(divergence_results_path, 'rb') as handle:
@@ -8627,7 +8860,7 @@ def plot_matched_divergence(
             for spine in key.spines.values():
                 spine.set_visible(False)
 
-        print(f"  {feature:16s} n={vocal.shape[0]:5d}  BH {int(corrected.sum()):4d}/"
+        message_output(f"  {feature:16s} n={vocal.shape[0]:5d}  BH {int(corrected.sum()):4d}/"
               f"{corrected.size}  peak {mean[peak]:+.3f} at {time_axis[peak]:+.2f}s  "
               f"onset {f'{onset:+.2f}s' if onset is not None else 'none':>8s}")
 
@@ -8639,5 +8872,5 @@ def plot_matched_divergence(
     if save_plot:
         out_name = os.path.join(output_dir, _figure_filename('matched_divergence'))
         fig.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI)
-        print(f"Figure saved to: {out_name}")
-    plt.show()
+        message_output(f"Figure saved to: {out_name}")
+    return fig

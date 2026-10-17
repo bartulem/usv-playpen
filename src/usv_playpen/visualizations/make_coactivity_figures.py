@@ -21,6 +21,7 @@ printed tables. Function-style plotters (each returns a
 Plus text-summary builders (each returns a ``str``): ``summarize_acoustic_confound``,
 ``summarize_group_comparison`` and ``summarize_amplitude_stratified``.
 """
+
 from __future__ import annotations
 
 import json
@@ -93,26 +94,47 @@ def _null_panel(
 
     Parameters
     ----------
-    ax : matplotlib.axes.Axes
+    ax (matplotlib.axes.Axes)
         Target axis.
-    null_values : numpy.ndarray
+    null_values (numpy.ndarray)
         Null-distribution samples to histogram.
-    observed : list[tuple[float, str, str]]
+    observed (list[tuple[float, str, str]])
         ``(value, hex_color, legend_label)`` triples, one solid line each.
-    null_color, threshold_color : str
-        Hex colours for the histogram and the percentile line.
-    null_label : str | None
-        Legend label for the histogram; ``None`` omits it.
-    label_threshold : bool
-        Whether the percentile line carries a legend label.
-    percentile : float
+    null_color (str)
+        Hex colour for the histogram (hex colours for the histogram and the
+        percentile line are set by ``null_color`` and ``threshold_color``);
+        defaults to ``COACTIVITY_NULL_COLOR``.
+    threshold_color (str)
+        Hex colour for the percentile line; defaults to
+        ``COACTIVITY_THRESHOLD_COLOR``.
+    null_label (str | None)
+        Legend label for the histogram; ``None`` omits it. Defaults to
+        ``"Chained Null"``.
+    label_threshold (bool)
+        Whether the percentile line carries a legend label (default True).
+    percentile (float)
         Percentile for the dashed threshold line (default 99).
-    bins, null_alpha, obs_linewidth, threshold_linewidth, legend_fontsize, legend_loc
-        Style knobs for the histogram, lines and legend.
+    bins (int)
+        Style knob for the histogram: number of histogram bins passed to
+        ``ax.hist`` (default 40).
+    null_alpha (float)
+        Style knob for the histogram: opacity of the null histogram bars
+        (default 0.5).
+    obs_linewidth (float)
+        Style knob for the lines: line width of each solid observed-value line
+        (default 3.0).
+    threshold_linewidth (float)
+        Style knob for the lines: line width of the dashed percentile line
+        (default 1.0).
+    legend_fontsize (int | float)
+        Style knob for the legend: legend font size (default 8).
+    legend_loc (str)
+        Style knob for the legend: matplotlib legend location string
+        (default ``"best"``).
 
     Returns
     -------
-    float
+    threshold (float)
         The computed ``percentile`` threshold of ``null_values``.
     """
 
@@ -150,22 +172,33 @@ def plot_acoustic_confound(
 
     Parameters
     ----------
-    group_a_acoustics, group_b_acoustics : dict[str, numpy.ndarray]
-        Per-feature pooled per-USV values for each group.
-    features : sequence[str]
+    group_a_acoustics (dict[str, numpy.ndarray])
+        Per-feature pooled per-USV values for group A (per-feature pooled
+        per-USV values for each group).
+    group_b_acoustics (dict[str, numpy.ndarray])
+        Per-feature pooled per-USV values for group B (per-feature pooled
+        per-USV values for each group).
+    features (sequence[str])
         Feature keys to plot, in order.
-    feature_labels : dict[str, str]
+    feature_labels (dict[str, str])
         Axis label per feature key.
-    chosen_animal : str
+    chosen_animal (str)
         Animal id for the figure title.
-    label_a, label_b : str
-        Group labels.
-    group_a_color, group_b_color : str
-        Hex colours per group.
+    label_a (str)
+        Group label for group A (group labels); defaults to ``"complex"``.
+    label_b (str)
+        Group label for group B (group labels); defaults to ``"simple"``.
+    group_a_color (str)
+        Hex colour for group A (hex colours per group); defaults to
+        ``COACTIVITY_GROUP_A_COLOR``.
+    group_b_color (str)
+        Hex colour for group B (hex colours per group); defaults to
+        ``COACTIVITY_GROUP_B_COLOR``.
 
     Returns
     -------
-    matplotlib.figure.Figure
+    fig (matplotlib.figure.Figure)
+        The assembled figure.
     """
 
     fig, axes = plt.subplots(1, len(features), figsize=(4.0 * len(features), 3.2))
@@ -208,21 +241,36 @@ def plot_null_distributions(
 
     Parameters
     ----------
-    results : dict
+    results (dict)
         A :func:`run_group_comparison` result (uses ``boot_a`` / ``boot_b`` /
         ``chained_null_a`` / ``chained_null_b``).
-    category_column : str
+    category_column (str)
         Segmentation column name, for the figure title.
-    group_a_ids, group_b_ids : sequence
-        Category ids per group, for the figure title.
-    label_a, label_b : str
-        Group labels.
-    group_a_color, group_b_color, null_color, threshold_color : str
-        Hex colours.
+    group_a_ids (sequence)
+        Category ids of group A (category ids per group), for the figure title.
+    group_b_ids (sequence)
+        Category ids of group B (category ids per group), for the figure title.
+    label_a (str)
+        Group label for group A (group labels); defaults to ``"complex"``.
+    label_b (str)
+        Group label for group B (group labels); defaults to ``"simple"``.
+    group_a_color (str)
+        Hex colour for group A (hex colours); defaults to
+        ``COACTIVITY_GROUP_A_COLOR``.
+    group_b_color (str)
+        Hex colour for group B (hex colours); defaults to
+        ``COACTIVITY_GROUP_B_COLOR``.
+    null_color (str)
+        Hex colour for the null histogram / non-significant elements (hex
+        colours); defaults to ``COACTIVITY_NULL_COLOR``.
+    threshold_color (str)
+        Hex colour for the threshold / reference line (hex colours); defaults
+        to ``COACTIVITY_THRESHOLD_COLOR``.
 
     Returns
     -------
-    matplotlib.figure.Figure
+    fig (matplotlib.figure.Figure)
+        The assembled figure.
     """
 
     boot_a, boot_b = results["boot_a"], results["boot_b"]
@@ -278,20 +326,34 @@ def plot_per_session_pop_corr(
 
     Parameters
     ----------
-    per_session_rows : list[dict]
+    per_session_rows (list[dict])
         :func:`per_session_group_metrics` rows (need ``null`` / ``metrics_a`` /
         ``metrics_b`` / ``session_id`` / ``n_a`` / ``n_b``).
-    chosen_animal, category_column : str
-        For the figure title.
-    label_a, label_b : str
-        Group labels.
-    group_a_color, group_b_color, null_color, threshold_color : str
-        Hex colours.
+    chosen_animal (str)
+        Animal id, for the figure title.
+    category_column (str)
+        Segmentation column name, for the figure title.
+    label_a (str)
+        Group label for group A (group labels); defaults to ``"complex"``.
+    label_b (str)
+        Group label for group B (group labels); defaults to ``"simple"``.
+    group_a_color (str)
+        Hex colour for group A (hex colours); defaults to
+        ``COACTIVITY_GROUP_A_COLOR``.
+    group_b_color (str)
+        Hex colour for group B (hex colours); defaults to
+        ``COACTIVITY_GROUP_B_COLOR``.
+    null_color (str)
+        Hex colour for the null histogram / non-significant elements (hex
+        colours); defaults to ``COACTIVITY_NULL_COLOR``.
+    threshold_color (str)
+        Hex colour for the threshold / reference line (hex colours); defaults
+        to ``COACTIVITY_THRESHOLD_COLOR``.
 
     Returns
     -------
-    matplotlib.figure.Figure or None
-        ``None`` when no session carries a null block (nothing to draw).
+    fig (matplotlib.figure.Figure or None)
+        The assembled figure; ``None`` when no session carries a null block (nothing to draw).
     """
 
     rows = [row for row in per_session_rows if "null" in row]
@@ -355,22 +417,37 @@ def plot_cross_animal_slope(
 
     Parameters
     ----------
-    cross_animal_results : dict[str, dict]
+    cross_animal_results (dict[str, dict])
         Per-animal records with ``pop_a`` / ``pop_b`` / ``p_two``.
-    category_column : str
+    category_column (str)
         Segmentation column name, for the title.
-    group_a_ids, group_b_ids : sequence
-        Category ids per group, for the x tick labels.
-    label_a, label_b : str
-        Group labels.
-    group_a_color, group_b_color, null_color, threshold_color : str
-        Hex colours.
-    sig_alpha : float
+    group_a_ids (sequence)
+        Category ids of group A (category ids per group), for the x tick labels.
+    group_b_ids (sequence)
+        Category ids of group B (category ids per group), for the x tick labels.
+    label_a (str)
+        Group label for group A (group labels); defaults to ``"complex"``.
+    label_b (str)
+        Group label for group B (group labels); defaults to ``"simple"``.
+    group_a_color (str)
+        Hex colour for group A (hex colours); defaults to
+        ``COACTIVITY_GROUP_A_COLOR``.
+    group_b_color (str)
+        Hex colour for group B (hex colours); defaults to
+        ``COACTIVITY_GROUP_B_COLOR``.
+    null_color (str)
+        Hex colour for the null histogram / non-significant elements (hex
+        colours); defaults to ``COACTIVITY_NULL_COLOR``.
+    threshold_color (str)
+        Hex colour for the threshold / reference line (hex colours); defaults
+        to ``COACTIVITY_THRESHOLD_COLOR``.
+    sig_alpha (float)
         Two-tailed significance threshold (default 0.05).
 
     Returns
     -------
-    matplotlib.figure.Figure
+    fig (matplotlib.figure.Figure)
+        The assembled figure.
     """
 
     fig, ax = plt.subplots(figsize=(6.5, 5.0))
@@ -424,21 +501,33 @@ def plot_amplitude_stratified(
 
     Parameters
     ----------
-    stratified_rows : list[dict]
+    stratified_rows (list[dict])
         Per-bin records with ``lo`` / ``hi`` / ``pop_a`` / ``pop_b`` / ``p_two``
         (NaN ``pop_a`` marks a bin with too few trials, skipped here).
-    pop_a_overall, pop_b_overall : float
-        Unstratified bootstrap-mean ``pop_corr`` per group.
-    chosen_animal : str
+    pop_a_overall (float)
+        Unstratified bootstrap-mean ``pop_corr`` of group A (per group).
+    pop_b_overall (float)
+        Unstratified bootstrap-mean ``pop_corr`` of group B (per group).
+    chosen_animal (str)
         For the title.
-    label_a, label_b : str
-        Group labels.
-    group_a_color, group_b_color, threshold_color : str
-        Hex colours.
+    label_a (str)
+        Group label for group A (group labels); defaults to ``"complex"``.
+    label_b (str)
+        Group label for group B (group labels); defaults to ``"simple"``.
+    group_a_color (str)
+        Hex colour for group A (hex colours); defaults to
+        ``COACTIVITY_GROUP_A_COLOR``.
+    group_b_color (str)
+        Hex colour for group B (hex colours); defaults to
+        ``COACTIVITY_GROUP_B_COLOR``.
+    threshold_color (str)
+        Hex colour for the significance asterisks (hex colours); defaults to
+        ``COACTIVITY_THRESHOLD_COLOR``.
 
     Returns
     -------
-    matplotlib.figure.Figure
+    fig (matplotlib.figure.Figure)
+        The assembled figure.
     """
 
     valid = [row for row in stratified_rows if not np.isnan(row["pop_a"])]
@@ -486,18 +575,24 @@ def summarize_acoustic_confound(
 
     Parameters
     ----------
-    group_a_acoustics, group_b_acoustics : dict[str, numpy.ndarray]
-        Per-feature pooled per-USV values for each group.
-    features : sequence[str]
+    group_a_acoustics (dict[str, numpy.ndarray])
+        Per-feature pooled per-USV values for group A (per-feature pooled
+        per-USV values for each group).
+    group_b_acoustics (dict[str, numpy.ndarray])
+        Per-feature pooled per-USV values for group B (per-feature pooled
+        per-USV values for each group).
+    features (sequence[str])
         Feature keys to report.
-    chosen_animal : str
+    chosen_animal (str)
         Animal id for the header.
-    label_a, label_b : str
-        Group labels.
+    label_a (str)
+        Group label for group A (group labels); defaults to ``"complex"``.
+    label_b (str)
+        Group label for group B (group labels); defaults to ``"simple"``.
 
     Returns
     -------
-    str
+    summary (str)
         Multi-line summary table.
     """
 
@@ -530,14 +625,16 @@ def summarize_group_comparison(results, *, label_a="complex", label_b="simple") 
 
     Parameters
     ----------
-    results : dict
+    results (dict)
         A :func:`run_group_comparison` result.
-    label_a, label_b : str
-        Group labels.
+    label_a (str)
+        Group label for group A (group labels); defaults to ``"complex"``.
+    label_b (str)
+        Group label for group B (group labels); defaults to ``"simple"``.
 
     Returns
     -------
-    str
+    summary (str)
         Multi-line summary tables.
     """
 
@@ -605,21 +702,25 @@ def summarize_amplitude_stratified(
 
     Parameters
     ----------
-    stratified_rows : list[dict]
+    stratified_rows (list[dict])
         Per-bin records (``lo`` / ``hi`` / ``n_a`` / ``n_b`` / ``pop_a`` /
         ``pop_b`` / ``p_two``).
-    pop_a_overall, pop_b_overall : float
-        Unstratified bootstrap-mean ``pop_corr`` per group.
-    chosen_animal : str
+    pop_a_overall (float)
+        Unstratified bootstrap-mean ``pop_corr`` of group A (per group).
+    pop_b_overall (float)
+        Unstratified bootstrap-mean ``pop_corr`` of group B (per group).
+    chosen_animal (str)
         Animal id for the header.
-    n_bins : int
+    n_bins (int)
         Number of amplitude quantile bins.
-    label_a, label_b : str
-        Group labels.
+    label_a (str)
+        Group label for group A (group labels); defaults to ``"complex"``.
+    label_b (str)
+        Group label for group B (group labels); defaults to ``"simple"``.
 
     Returns
     -------
-    str
+    summary (str)
         Multi-line summary table.
     """
 

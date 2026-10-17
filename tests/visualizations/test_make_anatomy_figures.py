@@ -787,3 +787,51 @@ def test_anatomy_maker_raises_on_missing_catalog(tmp_path, viz_settings) -> None
             visualizations_parameter_dict=viz_settings,
             message_output=lambda *a, **k: None,
         )
+
+
+def test_download_allen_mesh_never_leaves_a_truncated_cache(tmp_path, monkeypatch) -> None:
+    """
+    Description
+    -----------
+    The mesh cache is trusted whenever the file exists, so a write that fails
+    half-way must not leave a truncated OBJ under the final name (the direct
+    ``path.write_bytes`` did, and every later call reused the broken mesh). The
+    download is written to a temp sibling and renamed; here the write raises after
+    putting half the bytes on disk, and the cache directory must stay empty.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Cache directory.
+    monkeypatch (pytest.MonkeyPatch)
+        Stubs the network and makes the byte write fail half-way.
+
+    Returns
+    -------
+    None
+    """
+
+    import usv_playpen.visualizations.make_anatomy_figures as maf
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return b"v 0 0 0\n" * 100
+
+    monkeypatch.setattr(maf, "_ALLEN_MESH_CACHE", tmp_path)
+    monkeypatch.setattr(maf.urllib.request, "urlopen", lambda url, timeout: _Response())
+    original_write_bytes = pathlib.Path.write_bytes
+
+    def half_write(self, data):
+        original_write_bytes(self, data[: len(data) // 2])
+        raise OSError("connection reset")
+
+    monkeypatch.setattr(pathlib.Path, "write_bytes", half_write)
+    with pytest.raises(OSError, match="connection reset"):
+        maf._download_allen_mesh(997)
+    assert list(tmp_path.iterdir()) == []

@@ -82,7 +82,7 @@ from ..modeling.modeling_torus_geodesics import (
     flat_torus_distance_matrix,
     make_qlvm_decode_fn_from_model_cell,
 )
-from ..os_utils import QLVM_CATEGORY_COLUMN, QLVM_CATEGORY_GRIDS_NAME, configure_path
+from ..os_utils import QLVM_CATEGORY_COLUMN, QLVM_CATEGORY_GRIDS_NAME, atomic_output_path, configure_path
 from ..processing.build_qlvm_training_set import build_session_masks, stretch_specs
 from ..processing.qlvm_categories import vocalization_pixels, content_fields, property_ranks
 from ..processing.qlvm_latents import load_model_cell, normalize_model_inputs
@@ -332,7 +332,10 @@ def build_qlvm_figure_sample(
               "inputs": inputs, "images": images, "lengths": lengths}
     if cache_file:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez(cache_path, **sample)
+        # Temp sibling + rename (through an open handle, so np.savez does not append
+        # ".npz" to the temp name): a truncated cache would be read back on the next call.
+        with atomic_output_path(cache_path) as tmp_cache_path, open(tmp_cache_path, "wb") as cache_handle:
+            np.savez(cache_handle, **sample)
         log(f"[qlvm-figures] sample of {n:,} USVs from {unique_sessions.size} sessions written to {cache_path}.")
     return sample
 
@@ -707,8 +710,12 @@ def plot_qlvm_quality(sample: dict, metrics: dict, cfg: dict, cmap_name: str, se
     Draws the QLVM quality figure from ``compute_qlvm_quality_metrics``: the three
     maps (rows) coloured by the six properties (columns, 1st-99th percentile);
     (a) readout, bars = mean of the folds, dots = folds, red = shuffled positions;
-    (c) readout per training seed (when computed); (b1-b3) neighborhood scores,
-    dots = disjoint subsets; (b') distance fidelity, dots = disjoint samples.
+    (c) readout per training seed (when computed; at most ``len(SEED_COLORS)``
+    trainings, the production cell included, else ValueError rather than
+    leaving the extra ones out); (b1-b3) neighborhood scores, dots = disjoint
+    subsets; (b') distance fidelity, dots = disjoint samples, on an x axis from
+    ``min(0, 1.05 * smallest)`` to ``max(0.7, 1.05 * largest)`` correlation so
+    no sample is clipped.
 
     Parameters
     ----------
@@ -727,6 +734,11 @@ def plot_qlvm_quality(sample: dict, metrics: dict, cfg: dict, cmap_name: str, se
     -------
     fig (Figure)
         The figure.
+
+    Raises
+    ------
+    ValueError
+        ``metrics["per_seed"]`` holds more trainings than ``SEED_COLORS`` has colours.
     """
 
     apply_plot_style()
@@ -786,6 +798,11 @@ def plot_qlvm_quality(sample: dict, metrics: dict, cfg: dict, cmap_name: str, se
     axis = fig.add_subplot(middle[1])
     if metrics["per_seed"]:
         seeds = list(metrics["per_seed"])
+        if len(seeds) > len(SEED_COLORS):
+            msg = (f"Panel (c) draws at most {len(SEED_COLORS)} trainings (one colour of SEED_COLORS each, the production "
+                   f"cell included), but {len(seeds)} were given ({seeds}); list at most {len(SEED_COLORS) - 1} cells in "
+                   f"qlvm_figures.seed_cell_directories.")
+            raise ValueError(msg)
         offsets = np.linspace(-0.27, 0.27, len(seeds)) if len(seeds) > 1 else np.zeros(1)
         width = 0.135 if len(seeds) <= 3 else 0.54 / len(seeds) / 2
         for offset, name, color in zip(offsets, seeds, SEED_COLORS, strict=False):
@@ -825,7 +842,8 @@ def plot_qlvm_quality(sample: dict, metrics: dict, cfg: dict, cmap_name: str, se
         axis.text(0.01, index, label, va="center", ha="left", fontsize=QUALITY_TICK_SIZE, color=TEXT_COLOR, zorder=4)
     axis.set_yticks([])
     axis.set_ylim(len(DISTANCE_COLORS) - 0.5, -0.5)
-    axis.set_xlim(0, 0.7)
+    all_fidelity = np.concatenate([np.asarray(metrics["distance_fidelity"][label], dtype=float) for label in DISTANCE_COLORS])
+    axis.set_xlim(min(0.0, 1.05 * float(all_fidelity.min())), max(0.7, 1.05 * float(all_fidelity.max())))
     axis.set_xlabel("distance correlation:\nmap distance vs acoustic difference", fontsize=QUALITY_LABEL_SIZE, color=TEXT_COLOR)
     axis.set_title(f"(b') distance fidelity, all pairs\n({quality['n_distance_samples']} samples of "
                    f"{quality['distance_sample_size']:,} USVs)", fontsize=QUALITY_TITLE_SIZE, color=TEXT_COLOR)
@@ -953,6 +971,12 @@ def group_contrast(filled: np.ndarray, labels: np.ndarray) -> np.ndarray:
     Per USV: its mean normalized similarity to the other USVs of its own group
     minus its mean normalized similarity to the USVs of all other groups.
 
+    A USV that is the only member of its group has no other USV of its own group,
+    so its own-group mean is undefined (0/0); its difference is returned as NaN
+    explicitly, without a division warning, and callers leave such groups out
+    (``partition_group_values``). Likewise a USV whose group holds every USV has
+    no other group, and its difference is NaN.
+
     Parameters
     ----------
     filled (np.ndarray)
@@ -963,7 +987,8 @@ def group_contrast(filled: np.ndarray, labels: np.ndarray) -> np.ndarray:
     Returns
     -------
     delta (np.ndarray)
-        ``(m,)`` differences.
+        ``(m,)`` differences; NaN where the own-group or other-group mean is
+        undefined.
     """
 
     groups = np.unique(labels)
@@ -973,7 +998,48 @@ def group_contrast(filled: np.ndarray, labels: np.ndarray) -> np.ndarray:
     own_index = np.searchsorted(groups, labels)
     own_sum = sums[np.arange(labels.size), own_index]
     own_count = counts[own_index] - 1
-    return own_sum / own_count - (sums.sum(axis=1) - own_sum) / (labels.size - 1 - own_count)
+    other_count = labels.size - 1 - own_count
+    delta = np.full(labels.size, np.nan)
+    defined = (own_count > 0) & (other_count > 0)
+    delta[defined] = own_sum[defined] / own_count[defined] - (sums.sum(axis=1)[defined] - own_sum[defined]) / other_count[defined]
+    return delta
+
+
+def partition_group_values(delta: np.ndarray, labels: np.ndarray) -> np.ndarray:
+    """
+    Description
+    -----------
+    Per group of a partition: the mean ``group_contrast`` difference of its USVs,
+    the per-group values whose mean is the partition score of panel (iv). A group
+    with a single USV in the sample has no own-group comparison (its difference
+    is NaN), so it is left out rather than drawn as a NaN dot or carried into a
+    NaN bar.
+
+    Parameters
+    ----------
+    delta (np.ndarray)
+        ``(m,)`` ``group_contrast`` output.
+    labels (np.ndarray)
+        ``(m,)`` group of every USV.
+
+    Returns
+    -------
+    values (np.ndarray)
+        One value per group with two or more USVs in the sample, in ascending
+        group order.
+
+    Raises
+    ------
+    ValueError
+        No group holds two or more USVs, so the partition has no score.
+    """
+
+    groups, counts = np.unique(labels, return_counts=True)
+    kept = groups[counts > 1]
+    if kept.size == 0:
+        msg = "The partition has no score: no group holds two or more USVs of the sample."
+        raise ValueError(msg)
+    return np.array([delta[labels == group].mean() for group in kept])
 
 
 def aligned_category_mean(stack: np.ndarray, max_shift: int, iterations: int) -> np.ndarray:
@@ -1038,7 +1104,8 @@ def compute_category_similarity(sample: dict, label_grid: np.ndarray, watershed_
       partition is favoured), ranked against ``partition_reference_size`` random
       references. (iv) per partition, the per-USV own-group-minus-other-groups
       similarity averaged per group; the partition score is the mean of its group
-      values.
+      values. A group with a single sampled USV has no own-group comparison and is
+      left out (``partition_group_values``), with a logged count.
     * Category averages: the aligned mean (``aligned_category_mean``) of
       ``average_size`` random masked, not time-stretched spectrograms per category.
 
@@ -1108,7 +1175,10 @@ def compute_category_similarity(sample: dict, label_grid: np.ndarray, watershed_
         grid_rows, grid_cols = vocalization_pixels(sample["xy"][chosen], grid.shape[0])
         partition_labels = grid[grid_rows, grid_cols]
         delta = group_contrast(filled, partition_labels)
-        partition_scores[name] = np.array([delta[partition_labels == group].mean() for group in np.unique(partition_labels)])
+        partition_scores[name] = partition_group_values(delta, partition_labels)
+        n_single = int((np.unique(partition_labels, return_counts=True)[1] == 1).sum())
+        if n_single:
+            log(f"[qlvm-categories] {name!r}: {n_single} group(s) with a single sampled USV left out of the partition score.")
     del filled
     log("[qlvm-categories] partition scores done.")
 

@@ -184,7 +184,7 @@ class Visualizer:
                 self.message_output(traceback.format_exc())
                 failed_directories.append(("embedding_thumbnails", f"{type(exc).__name__}: {exc}"))
 
-        # Report failures honestly: the completion e-mail previously always
+        # Report every failure: the completion e-mail previously always
         # announced success even when directories had errored and been swallowed
         # by the except above.
         if failed_directories:
@@ -303,7 +303,7 @@ def visualize_3D_data_cli(ctx, root_directory, arena_directory, exp_id, speaker_
         Experimenter ID.
     speaker_audio_file (str)
         Speaker audio file path.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -357,7 +357,7 @@ def generate_rm_figures_cli(ctx, root_directory, **kwargs) -> None:
         The click context; its parameter sources tell which options were given on the command line.
     root_directory (str)
         Session root directory path.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns

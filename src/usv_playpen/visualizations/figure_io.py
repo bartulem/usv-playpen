@@ -238,12 +238,28 @@ def save_figure(
     viz_settings (dict | None)
         Visualisation-settings dict; the ``figures`` block supplies every
         value not overridden (a missing key raises a KeyError).
-    override_dir, override_format, override_dpi, timestamp_in_name
-        Per-call overrides; same semantics as ``resolve_save_path``.
+    override_dir (str | pathlib.Path | None)
+        Per-call directory override; same semantics as ``resolve_save_path``.
+        ``None`` (the default) falls back to
+        ``viz_settings["figures"]["save_directory"]``; an empty string
+        raises a ValueError.
+    override_format (str | None)
+        Per-call format override; same semantics as ``resolve_save_path``.
+        ``None`` (the default) falls back to
+        ``viz_settings["figures"]["fig_format"]``.
+    override_dpi (int | None)
+        Per-call dpi override; same semantics as ``resolve_save_path``.
+        ``None`` (the default) falls back to
+        ``viz_settings["figures"]["dpi"]``.
+    timestamp_in_name (bool | None)
+        Per-call timestamp toggle; same semantics as ``resolve_save_path``.
+        ``None`` (the default) falls back to
+        ``viz_settings["figures"]["timestamp_in_name"]``; when it resolves
+        to True, ``_<YYYYMMDD>_<HHMMSS>`` is appended to the stem.
     bbox_inches (str | None)
         Forwarded to ``fig.savefig`` (default ``"tight"`` matches the
         repo's prior convention).
-    **savefig_kwargs
+    **savefig_kwargs (dict)
         Additional kwargs forwarded to ``fig.savefig``. Caller may
         pass e.g. ``transparent=True`` or ``facecolor=...`` here.
 
@@ -294,8 +310,21 @@ def resolve_pdf_path(
     viz_settings (dict | None)
         Visualisation-settings dict; the ``figures`` block supplies every
         value not overridden (a missing key raises a KeyError).
-    override_dir, override_dpi, timestamp_in_name
-        Per-call overrides; same semantics as ``resolve_save_path``.
+    override_dir (str | pathlib.Path | None)
+        Per-call directory override; same semantics as ``resolve_save_path``.
+        ``None`` (the default) falls back to
+        ``viz_settings["figures"]["save_directory"]``; an empty string
+        raises a ValueError.
+    override_dpi (int | None)
+        Per-call dpi override; same semantics as ``resolve_save_path``.
+        ``None`` (the default) falls back to
+        ``viz_settings["figures"]["dpi"]``. The format is always forced
+        to ``"pdf"``.
+    timestamp_in_name (bool | None)
+        Per-call timestamp toggle; same semantics as ``resolve_save_path``.
+        ``None`` (the default) falls back to
+        ``viz_settings["figures"]["timestamp_in_name"]``; when it resolves
+        to True, ``_<YYYYMMDD>_<HHMMSS>`` is appended to the stem.
 
     Returns
     -------

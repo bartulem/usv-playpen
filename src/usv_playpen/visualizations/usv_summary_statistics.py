@@ -23,6 +23,7 @@ from __future__ import annotations
 import collections
 import json
 import pathlib
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,7 @@ from ..analyses._usv_io import (
     extract_session_metadata,
     load_and_filter_usv_data,
     sex_track_ids,
+    unique_match_or_none,
 )
 from ..os_utils import (
     QLVM_CATEGORY_MAP,
@@ -81,7 +83,7 @@ except FileNotFoundError:
 # strip/swarm x-jitter and the KDE point subsampling -- read from the shared
 # `figures.seed` so that re-rendering a figure yields pixel-identical output
 # instead of a slightly different cloud / density estimate each run.
-_FIGURE_RNG_SEED = _VIZ_FIGURES["seed"] if "seed" in _VIZ_FIGURES else 0
+_FIGURE_RNG_SEED = _VIZ_FIGURES["seed"]
 
 
 def _figure_rng() -> np.random.Generator:
@@ -132,17 +134,17 @@ def extract_category_embedding_data(
 
     Parameters
     ----------
-    session_roots : list[str]
+    session_roots (list[str])
         A list of absolute paths pointing to the session directories to be analyzed.
-    exclude_noise_usvs : bool
+    exclude_noise_usvs (bool)
         Whether to drop the segments ``detect_usv_noise`` flagged as holding no vocalization.
-    usv_category_col : str
+    usv_category_col (str)
         The name of the column containing the integer category/cluster ID
         (e.g., 'qlvm_category').
-    usv_continuous_cols : tuple[str, str]
+    usv_continuous_cols (tuple[str, str])
         A tuple of two strings specifying the column names for the 2D embedding
         coordinates (e.g., ('qlvm1', 'qlvm2')).
-    usv_only : bool
+    usv_only (bool)
         Keep only pure USVs, ``usv & ~squeak`` (default ``True``); a summary
         without the ``usv`` / ``squeak`` booleans then raises a KeyError naming the session.
 
@@ -218,7 +220,8 @@ def get_session_behavioral_features(session_root: str) -> pls.DataFrame:
     """
 
     session_path = Path(session_root)
-    features_file = next(iter(sorted(session_path.glob('**/*_behavioral_features.csv'))), None)
+    features_file = unique_match_or_none(list(session_path.glob('**/*_behavioral_features.csv')),
+                                         label=f"behavioral features CSV in {session_root}")
 
     if features_file is None:
         msg = f"Behavioral features file missing in {session_root}"
@@ -312,6 +315,7 @@ def build_master_usv_dataframe(
     mf_angle_suffix: str,
     fm_angle_suffix: str,
     usv_only: bool = True,
+    message_output: Callable = print,
 ) -> tuple[pls.DataFrame, pls.DataFrame, int]:
     """
     Description
@@ -370,6 +374,9 @@ def build_master_usv_dataframe(
         Keep only pure USVs, ``usv & ~squeak`` (default ``True``). A summary without
         the ``usv`` / ``squeak`` booleans (not yet scored by ``detect-usv-squeaks``) then raises a
         KeyError naming the file, rather than counting its squeaks as USVs.
+    message_output (Callable)
+        Sink for the end-of-run report (segments left out, sessions skipped by reason);
+        defaults to ``print``.
 
     Returns
     -------
@@ -416,7 +423,8 @@ def build_master_usv_dataframe(
         frame_rate = metadata['frame_rate']
         experiment_code = metadata['experiment_code']
 
-        usv_file = next(iter(sorted(session_path.glob('**/*_usv_summary.csv'))), None)
+        usv_file = unique_match_or_none(list(session_path.glob('**/*_usv_summary.csv')),
+                                        label=f"USV summary CSV in {session_root}")
         if usv_file is None:
             skipped_sessions['missing USV summary CSV'] += 1
             continue
@@ -524,15 +532,15 @@ def build_master_usv_dataframe(
 
     # Report skipped sessions once, by reason, rather than dropping them silently.
     if usv_only:
-        print(
+        message_output(
             f"build_master_usv_dataframe kept pure USVs only (usv true, squeak false): "
-            f"{total_squeak_rows_dropped} squeak / both / unclassed segment(s) left out."
+            f"{total_squeak_rows_dropped} squeak, USV-plus-squeak or unclassed segment(s) left out."
         )
     if skipped_sessions:
         reason_summary = ', '.join(
             f"{count}x {reason}" for reason, count in skipped_sessions.items()
         )
-        print(
+        message_output(
             f"build_master_usv_dataframe skipped {sum(skipped_sessions.values())} of "
             f"{len(session_roots)} session(s): {reason_summary}."
         )
@@ -930,35 +938,36 @@ def plot_polar_kde_distance_angle(
 
     Parameters
     ----------
-    usv_distances : np.ndarray
+    usv_distances (np.ndarray)
         1D array of nose-to-nose distances (cm) during USV emission.
-    usv_angles_deg : np.ndarray
+    usv_angles_deg (np.ndarray)
         1D array of relative angles (degrees) during USV emission.
-    all_distances : np.ndarray
+    all_distances (np.ndarray)
         1D array of nose-to-nose distances (cm) across all video frames.
-    all_angles_deg : np.ndarray
+    all_angles_deg (np.ndarray)
         1D array of relative angles (degrees) across all video frames.
-    max_distance : float
+    max_distance (float)
         Maximum radial distance (cm) to include in the KDE and plot.
-    colormap : mcolors.Colormap | str
+    colormap (mcolors.Colormap | str)
         Matplotlib colormap for the filled contours.
-    ylabel : str
+    ylabel (str)
         Label for the radial (distance) axes.
-    occupancy_threshold : float
+    occupancy_threshold (float)
         Minimum occupancy density value required to calculate likelihood.
         Areas below this threshold are masked to prevent division-by-zero
         artifacts in the normalized plot.
-    max_kde_points : int, default 50000
+    max_kde_points (int)
         Maximum number of points used for KDE calculation. Data exceeding this
         is randomly subsampled to optimize performance.
+        Defaults to 50000.
 
     Returns
     -------
-    fig : plt.Figure
+    fig (plt.Figure)
         The generated matplotlib figure.
-    axes : tuple[plt.Axes, plt.Axes]
+    axes (tuple[plt.Axes, plt.Axes])
         The (ax_raw, ax_norm) polar axes objects.
-    stats_dict : dict[str, Any]
+    stats_dict (dict[str, Any])
         Dictionary containing 'n_usv_points' and 'n_all_points' reflecting
         original counts before subsampling.
     """
@@ -1708,29 +1717,32 @@ def plot_category_local_fatigue_heatmap(
 
     Parameters
     ----------
-    binned_df : pd.DataFrame
+    binned_df (pd.DataFrame)
         A Pandas DataFrame containing the columns 'session_id', 'sex',
         'category', 'time_bin', and 'usv_count'. This should be the
         concatenated result of multiple sessions.
-    bin_width_seconds : int
+    bin_width_seconds (int)
         The duration of each time bin in seconds (used for axis labeling).
-    n_bins : int
+    n_bins (int)
         The total number of sequential time bins to display on the x-axis.
-    smoothing_sigma : float, default 0.75
+    smoothing_sigma (float)
         The standard deviation for the Gaussian kernel applied along the
         time axis. Set to 0 to disable smoothing.
-    colormap : str, default `figures.sequential_cmap` (currently 'inferno')
+        Defaults to 0.75.
+    colormap (str)
         The matplotlib colormap used for the heatmap intensity.
-    facet_figsize : tuple[int, int], default (12, 10)
+        Defaults to `figures.sequential_cmap` (currently 'inferno').
+    facet_figsize (tuple[int, int])
         The total size of the generated figure.
+        Defaults to (12, 10).
 
     Returns
     -------
-    fig : plt.Figure
+    fig (plt.Figure)
         The generated matplotlib figure.
-    axes : np.ndarray
+    axes (np.ndarray)
         A 1D array containing the two Axes objects (ax_male, ax_female).
-    stats_dict : dict
+    stats_dict (dict)
         A dictionary containing the peak raw vocal rates for each category
         before normalization, used for referencing absolute magnitude.
     """
@@ -1842,10 +1854,12 @@ def plot_estrous_ratio_scatter(
         Color for the mean and error bars.
     text_color (str)
         Color for the statistical annotations.
-    confidence_level (float), default 0.99
+    confidence_level (float)
         Confidence level for CI bounds.
-    use_log_scale (bool), default False
+        Defaults to 0.99.
+    use_log_scale (bool)
         If True, applies a standard base-10 logarithmic scale to the y-axis.
+        Defaults to False.
 
     Returns
     -------
@@ -2211,33 +2225,37 @@ def plot_category_prevalence_and_embedding(
 
     Parameters
     ----------
-    df_embedding : pls.DataFrame
+    df_embedding (pls.DataFrame)
         The Polars DataFrame output from `extract_category_embedding_data`.
-    male_color : str
+    male_color (str)
         Hex color string used for the male bar chart and scatter plot.
-    female_color : str
+    female_color (str)
         Hex color string used for the female bar chart and scatter plot.
-    unassigned_color : str
+    unassigned_color (str)
         Hex color string used for the unassigned bar chart and scatter plot.
-    qlvm_map : str
+    qlvm_map (str)
         The QLVM map whose coordinates ``dim1`` / ``dim2`` hold (one of
         ``os_utils.QLVM_MAPS``, e.g. ``'qlvm'`` for ``qlvm1`` / ``qlvm2``);
         boundaries are drawn only for ``os_utils.QLVM_CATEGORY_MAP``.
-    plot_type : str, default 'density'
+    plot_type (str)
         Visual style for the embedding space. Must be 'density' or 'scatter'.
-    boundary_color : str, default '#00FF00'
+        Defaults to 'density'.
+    boundary_color (str)
         Hex color for the category boundary lines overlaid on the embedding.
-    log_scale_bars : bool, default False
+        Defaults to '#00FF00'.
+    log_scale_bars (bool)
         If True, applies a base-10 logarithmic scale to the y-axis of the raw count bar charts.
-    grid_res : int, default 300
+        Defaults to False.
+    grid_res (int)
         The resolution of the meshgrid the density (KDE) maps are evaluated
         on. Higher values produce smoother maps but increase computation time.
+        Defaults to 300.
 
     Returns
     -------
-    fig : matplotlib.figure.Figure
+    fig (matplotlib.figure.Figure)
         The generated 4x2 matplotlib figure.
-    axes : numpy.ndarray
+    axes (numpy.ndarray)
         A 2D array of the matplotlib axes objects.
     """
 
@@ -2444,24 +2462,24 @@ def plot_category_global_fatigue_heatmap(
 
     Parameters
     ----------
-    global_usv_df : pls.DataFrame
+    global_usv_df (pls.DataFrame)
         Consolidated Polars DataFrame with one row per vocalization, containing
         at least 'session_id', 'sex', 'category', and 'hour' (the raw per-USV
         hour). The per-(session, sex, category, 2-hour-bin) count is computed
         internally.
-    smoothing_sigma : float
+    smoothing_sigma (float)
         Standard deviation for the Gaussian kernel applied along the 2-hour
         time bins (X-axis).
-    colormap : str
+    colormap (str)
         Matplotlib colormap used to represent normalized vocal intensity.
 
     Returns
     -------
-    fig : plt.Figure
+    fig (plt.Figure)
         The matplotlib Figure object containing the two cleaned heatmap panels.
-    axes : np.ndarray
+    axes (np.ndarray)
         A 1D array containing the two Axes objects (ax_male, ax_female).
-    stats_dict : dict
+    stats_dict (dict)
         Contains the processed, truncated, and smoothed pivot tables for
         both sexes.
     """
@@ -2567,23 +2585,23 @@ def plot_category_estrous_rates_grid(
 
     Parameters
     ----------
-    estrous_data : dict
+    estrous_data (dict)
         A nested dictionary keyed by category ID containing session counts
         and raw USV counts per stage and sex.
-    valid_stages : list[str]
+    valid_stages (list[str])
         A list of characters representing the estrous stages in biological order.
-    male_color : str
+    male_color (str)
         Hex color code for the male vocal rate bars (left axis).
-    female_color : str
+    female_color (str)
         Hex color code for the female vocal rate bars (right axis).
 
     Returns
     -------
-    fig : plt.Figure
+    fig (plt.Figure)
         The matplotlib Figure object containing the facet grid with dual Y-axes.
-    axes : np.ndarray
+    axes (np.ndarray)
         An array of the primary (left) Axes objects.
-    stats_dict : dict
+    stats_dict (dict)
         A dictionary mapping category IDs to their respective mean rates
         for males and females across all stages.
     """
@@ -2691,21 +2709,21 @@ def plot_category_estrous_ratio_grid(
 
     Parameters
     ----------
-    estrous_data : dict
+    estrous_data (dict)
         A nested dictionary keyed by category ID containing lists of
         session-wise ratios per stage.
-    valid_stages : list[str]
+    valid_stages (list[str])
         A list of characters representing the estrous stages in biological order.
-    scatter_colors : list[str]
+    scatter_colors (list[str])
         A list of 4 hex color codes corresponding to the stages in valid_stages.
 
     Returns
     -------
-    figs : tuple[plt.Figure, plt.Figure]
+    figs (tuple[plt.Figure, plt.Figure])
         A tuple containing (fig_categories, fig_stages).
-    axes : tuple[np.ndarray, np.ndarray]
+    axes (tuple[np.ndarray, np.ndarray])
         A tuple containing the axes arrays for both figures.
-    stats_dict : dict
+    stats_dict (dict)
         A nested dictionary containing Mean and SEM for every category-stage pair.
     """
 
@@ -2866,25 +2884,25 @@ def plot_category_polar_kde_grid(
 
     Parameters
     ----------
-    global_behavior_metrics : dict
+    global_behavior_metrics (dict)
         Nested dictionary containing 'all_frames' tracking data and
         per-category USV coordinates.
-    sex_key : str
+    sex_key (str)
         The target sex for plotting. Must be either 'male' or 'female'.
-    max_distance : float
+    max_distance (float)
         The maximum radial distance (cm) to include in the polar plots.
-    threshold : int
+    threshold (int)
         The minimum number of USV points required to generate a valid density map.
-    colormap : str
+    colormap (str)
         The matplotlib colormap for spatial density.
 
     Returns
     -------
-    fig : plt.Figure
+    fig (plt.Figure)
         The matplotlib Figure object containing the polar grid.
-    axes : np.ndarray
+    axes (np.ndarray)
         An array of polar Axes objects (one per category).
-    stats_dict : dict
+    stats_dict (dict)
         Contains the global_vmax scaling factor and point counts per category.
     """
 
@@ -3045,12 +3063,14 @@ def plot_estrous_category_kde_grid(
         this threshold are masked to zero to prevent division-by-noise artefacts.
     colormap (mcolors.Colormap | str)
         Matplotlib colormap for the filled contours.
-    threshold (int), default 30
+    threshold (int)
         Minimum number of USV points required per (category, stage) cell to
         attempt KDE fitting. Cells below this are displayed as "N/A".
-    max_kde_points (int), default 50000
+        Defaults to 30.
+    max_kde_points (int)
         Maximum number of background frame points used for KDE calculation.
         Data exceeding this is randomly subsampled for performance.
+        Defaults to 50000.
 
     Returns
     -------
@@ -3367,10 +3387,12 @@ def plot_session_squeak_time_heatmap(
     segment_starts: dict[str, np.ndarray] = {}
     segment_is_squeak: dict[str, np.ndarray] = {}
     for session_id, root in session_roots.items():
-        summaries = sorted((Path(root) / 'audio').glob('*_usv_summary.csv'))
-        if not summaries:
+        summary_path = unique_match_or_none(list((Path(root) / 'audio').glob('*_usv_summary.csv')),
+                                            label=f"USV summary CSV in {Path(root) / 'audio'}")
+        if summary_path is None:
             msg = f"No *_usv_summary.csv in {Path(root) / 'audio'}."
             raise FileNotFoundError(msg)
+        summaries = [summary_path]
         summary = pls.read_csv(str(summaries[0]))
         n_noise_dropped = 0
         if exclude_noise_usvs:
