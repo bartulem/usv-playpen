@@ -333,3 +333,10 @@ def test_preprocessing_summary_missing_wav_raises(tmp_path, mocker):
         plotter.preprocessing_summary(
             ipi_discrepancy_dict=ipi, phidget_data_dictionary=phidget,
         )
+
+
+def test_summary_plotter_requires_a_root_directory():
+    """root_directory is required: None raises a ValueError instead of a KeyError on
+    a settings key that does not exist."""
+    with pytest.raises(ValueError, match="needs a root_directory"):
+        SummaryPlotter(root_directory=None)

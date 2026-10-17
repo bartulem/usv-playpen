@@ -39,20 +39,25 @@ class Gatherer:
             contain the nesting ['extract_phidget_data']['Gatherer'] (with a
             'prepare_data_for_analyses' sub-dict providing 'extra_data_camera').
         root_directory (str)
-            Root directory for data; defaults to None.
+            Session root directory; required (None raises a ValueError, since
+            the processing settings hold no session root).
 
         Returns
         -------
         None
         """
 
-        if root_directory is None or input_parameter_dict is None:
+        if root_directory is None:
+            msg = "Gatherer needs a root_directory (the session root); the processing settings hold none."
+            raise ValueError(msg)
+
+        if input_parameter_dict is None:
             with open(
                 pathlib.Path(__file__).parent.parent / "_parameter_settings/processing_settings.json"
             ) as json_file:
                 _settings = json.load(json_file)["extract_phidget_data"]
 
-        self.root_directory = root_directory if root_directory is not None else _settings["root_directory"]
+        self.root_directory = root_directory
         self.input_parameter_dict = (
             input_parameter_dict["extract_phidget_data"]["Gatherer"]
             if input_parameter_dict is not None
@@ -84,6 +89,9 @@ class Gatherer:
         FileNotFoundError
             If the video directory, the requested camera sub-directory, or the
             phidget '*extra_data*.json' files within it are missing.
+        ValueError
+            If the camera has more than one recording directory (its
+            ``calibration_*`` directories do not count).
         KeyError
             If any loaded phidget record lacks the 'sensor_time' key, which is
             required on every record because the exported arrays are sorted and
@@ -91,25 +99,30 @@ class Gatherer:
             which are guarded with 'in' and default to NaN when absent).
         """
 
-        # Find the camera sub-directory holding the phidget data. Iterate sorted
-        # for a deterministic choice (was iterdir-order-dependent), skip non-dirs,
-        # and raise a clear error when none matches (was a None.glob crash).
+        # Find the ONE recording directory of the camera holding the phidget data.
+        # The camera's calibration recordings ('calibration_<ts>.<serial>', present
+        # in some sessions) are skipped; a second recording directory (e.g. an
+        # aborted first recording) raises with both listed instead of one being
+        # picked, and none raises a clear error (was a None.glob crash).
         video_dir = pathlib.Path(self.root_directory) / "video"
         if not video_dir.exists():
             raise FileNotFoundError(f"Video directory not found: '{video_dir}'.")
         extra_data_camera = self.input_parameter_dict["prepare_data_for_analyses"]["extra_data_camera"]
-        sub_directory = next(
-            (
-                one_dir
-                for one_dir in sorted(video_dir.iterdir())
-                if one_dir.is_dir() and extra_data_camera in one_dir.name
-            ),
-            None,
-        )
-        if sub_directory is None:
+        camera_directories = [
+            one_dir
+            for one_dir in sorted(video_dir.iterdir())
+            if one_dir.is_dir() and extra_data_camera in one_dir.name and not one_dir.name.startswith("calibration_")
+        ]
+        if not camera_directories:
             raise FileNotFoundError(
                 f"No camera directory containing '{extra_data_camera}' found under '{video_dir}'."
             )
+        if len(camera_directories) > 1:
+            raise ValueError(
+                f"{len(camera_directories)} recording directories of camera '{extra_data_camera}' under '{video_dir}', "
+                f"expected exactly one: {', '.join(one_dir.name for one_dir in camera_directories)}."
+            )
+        sub_directory = camera_directories[0]
 
         # Load raw phidget data. The files are named '<n>.extra_data.json' and
         # each holds a list of ~1 Hz sensor records; glob specifically for them so

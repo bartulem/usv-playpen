@@ -1,9 +1,16 @@
 """
+@author: bartulem
 Tests for usv_playpen.processing.extract_phidget_data.Gatherer.prepare_data_for_analyses:
 the happy path (single + multi file, missing-key -> NaN) and the three error
 paths that previously crashed with AttributeError / IndexError / a raw
 iterdir FileNotFoundError (no matching camera dir, no json files, no video dir).
+
+Coverage: Gatherer construction (a required root_directory), the camera
+folder choice (calibration folders skipped, exactly one recording folder) and
+prepare_data_for_analyses.
 """
+
+from __future__ import annotations
 
 import json
 
@@ -112,4 +119,33 @@ def test_empty_json_set_raises(tmp_path):
 
 def test_missing_video_dir_raises(tmp_path):
     with pytest.raises(FileNotFoundError, match="Video directory not found"):
+        _gatherer(tmp_path).prepare_data_for_analyses()
+
+
+def test_gatherer_requires_a_root_directory():
+    """root_directory is required: the processing settings hold no session root, so
+    None raises a ValueError instead of a KeyError on a key that does not exist."""
+    with pytest.raises(ValueError, match="needs a root_directory"):
+        Gatherer(input_parameter_dict=None, root_directory=None)
+
+
+def test_camera_calibration_directory_is_skipped(tmp_path):
+    """A 'calibration_<ts>.<serial>' directory of the camera is not its recording
+    directory and is skipped even where it would sort first."""
+    _make_session(tmp_path, [[{"sensor_time": 1.0, "hum_h": 50.0, "lux": 100.0, "hum_t": 22.0}]])
+    calibration_dir = tmp_path / "video" / f"calibration_20241107_110512.{CAM}"
+    calibration_dir.mkdir()
+    (calibration_dir / "000000.extra_data.json").write_text(json.dumps([{"sensor_time": 9.0, "lux": 1.0}]))
+    out = _gatherer(tmp_path).prepare_data_for_analyses()
+    assert out["lux"].tolist() == [100.0]
+
+
+def test_two_recording_directories_of_the_camera_raise(tmp_path):
+    """Two recording directories of the camera (e.g. an aborted first recording)
+    raise a ValueError naming both instead of the first sorted one being read."""
+    _make_session(tmp_path, [[{"sensor_time": 1.0, "lux": 100.0}]])
+    second = tmp_path / "video" / f"20250101_120500.{CAM}"
+    second.mkdir()
+    (second / "000000.extra_data.json").write_text(json.dumps([{"sensor_time": 2.0, "lux": 5.0}]))
+    with pytest.raises(ValueError, match=rf"2 recording directories of camera '{CAM}'"):
         _gatherer(tmp_path).prepare_data_for_analyses()

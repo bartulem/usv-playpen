@@ -51,7 +51,7 @@ import polars as pls
 from click.core import ParameterSource
 
 from ..cli_utils import modify_settings_json_for_cli
-from ..os_utils import first_match_or_raise, order_usv_summary_columns
+from ..os_utils import atomic_output_path, first_match_or_raise, order_usv_summary_columns
 from ..time_utils import is_gui_context, smart_wait
 from .build_qlvm_training_set import build_session_masks
 from .compute_usv_loudness import session_image_level_db
@@ -495,8 +495,14 @@ class USVAcousticFeatureExtractor:
 
         usv_df = usv_df.drop([c for c in FEATURE_COLUMNS if c in usv_df.columns])
         usv_df = usv_df.with_row_index(name="_usv_row")
-        merged = order_usv_summary_columns(usv_df.join(features_df, on="_usv_row", how="left").drop("_usv_row"))
-        merged.write_csv(file=str(usv_summary_loc))
+        # The left join is re-sorted on the row index so the summary keeps its row
+        # order whatever order the join returns, and the summary is replaced
+        # atomically (a crash mid-write leaves the previous file whole).
+        merged = order_usv_summary_columns(
+            usv_df.join(features_df, on="_usv_row", how="left").sort("_usv_row").drop("_usv_row")
+        )
+        with atomic_output_path(usv_summary_loc) as tmp_summary_path:
+            merged.write_csv(file=str(tmp_summary_path))
 
         self.message_output(
             f"Merged acoustic features for {len(usv_indices)} USVs into {usv_summary_loc.name}."
@@ -524,7 +530,7 @@ def compute_usv_acoustic_features_cli(ctx, root_directory, **kwargs) -> None:
         The click context; its parameter sources tell which options were given on the command line.
     root_directory (str)
         Session root directory path.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns

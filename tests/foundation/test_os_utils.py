@@ -1,7 +1,9 @@
 """
+@author: bartulem
 Tests for usv_playpen.os_utils: cross-OS path translation (find_base_path /
 configure_path), the Data->EPHYS sibling-tree mapping (ephys_base_for_data_root),
-the deterministic glob helpers (first_match_or_raise / newest_match_or_raise),
+the glob helpers (first_match_or_raise, which refuses several matches, and
+newest_match_or_raise),
 the band-explicit audio memmap lookup (find_audio_mmap / parse_audio_mmap_name,
 including that every reader gets the 'ultrasonic' memmap when both bands exist)
 and the subprocess-group waiter (wait_for_subprocesses).
@@ -10,7 +12,13 @@ and the subprocess-group waiter (wait_for_subprocesses).
 monkeypatching `os_utils.platform.system`; the cases include the two bugs the
 mount-mapping table was introduced to fix (all-occurrence substring corruption,
 and the previously-unhandled `murthy` share).
+
+Coverage: path translation, experimenter re-keying, atomic_output_path, the glob
+helpers, the audio memmap lookup, the QLVM model-path helpers and
+wait_for_subprocesses (including that failures and timeouts name the command).
 """
+
+from __future__ import annotations
 
 import json
 import os
@@ -452,10 +460,26 @@ def test_atomic_output_path_preserves_original_on_error(tmp_path):
 
 # first_match_or_raise
 
-def test_first_match_returns_alphabetically_first(tmp_path):
-    for name in ("c.txt", "a.txt", "b.txt"):
+def test_first_match_returns_the_single_match(tmp_path):
+    """One matching file is returned; files the pattern does not match are ignored."""
+    for name in ("a.txt", "b.csv", "c.json"):
         (tmp_path / name).touch()
     assert os_utils.first_match_or_raise(tmp_path, "*.txt").name == "a.txt"
+
+
+def test_first_match_refuses_several_matches_and_lists_them(tmp_path):
+    """More than one match raises a ValueError naming every match (a stray copy
+    must never be read, or rewritten, in place of the real file), also for a
+    recursive search that finds a copy in a subfolder."""
+    for name in ("c.txt", "a.txt", "b.txt"):
+        (tmp_path / name).touch()
+    with pytest.raises(ValueError, match=r"my-thing: 3 matches .* expected exactly one: .*a\.txt, .*b\.txt, .*c\.txt"):
+        os_utils.first_match_or_raise(tmp_path, "*.txt", label="my-thing")
+    (tmp_path / "deep").mkdir()
+    (tmp_path / "x_usv_summary.csv").touch()
+    (tmp_path / "deep" / "x_usv_summary.csv").touch()
+    with pytest.raises(ValueError, match="2 matches for rglob pattern"):
+        os_utils.first_match_or_raise(tmp_path, "*_usv_summary.csv", recursive=True)
 
 
 def test_first_match_recursive(tmp_path):
@@ -1145,7 +1169,8 @@ def test_resolve_pooled_embeddings_cache_convention(tmp_path):
 class FakePopen:
     """Minimal subprocess.Popen stand-in with a scriptable poll()."""
 
-    def __init__(self, returncode=0, finish_after=0, terminate_code=-15):
+    def __init__(self, returncode=0, finish_after=0, terminate_code=-15, args=("fake", "command")):
+        self.args = list(args)
         self._returncode = returncode
         self._finish_after = finish_after
         self._polls = 0
@@ -1190,6 +1215,20 @@ def test_wait_nonzero_logged_and_optionally_raised():
     with pytest.raises(RuntimeError, match="failed"):
         os_utils.wait_for_subprocesses([FakePopen(returncode=2)], max_seconds=5,
                                        label="mix", raise_on_nonzero=True)
+
+
+def test_wait_failure_and_timeout_messages_name_the_command():
+    """A failed subprocess is reported (logged and raised) with its return code and
+    its command, and a timeout names the command of every terminated subprocess, so
+    a fail-loud caller says what to re-run."""
+    logs = []
+    with pytest.raises(RuntimeError, match=r"#0\(rc=3, command: \['sox', 'in.wav', 'out.wav'\]\)"):
+        os_utils.wait_for_subprocesses([FakePopen(returncode=3, args=("sox", "in.wav", "out.wav"))], max_seconds=5,
+                                       label="cut", message_output=logs.append, raise_on_nonzero=True)
+    assert "command: ['sox', 'in.wav', 'out.wav']" in logs[-1]
+    with pytest.raises(TimeoutError, match=r"#0: \['das', 'predict'\]"):
+        os_utils.wait_for_subprocesses([FakePopen(finish_after=10 ** 9, args=("das", "predict"))], max_seconds=0.1,
+                                       label="hang", poll_interval_s=0.05, message_output=logs.append)
 
 
 def test_wait_timeout_terminates_and_raises():
@@ -1624,6 +1663,7 @@ class StubbornPopen:
     makes it exit at once with -9 (or never, when ``survives_kill``)."""
 
     def __init__(self, clock, exit_delay, survives_kill=False):
+        self.args = ["stubborn", "command"]
         self.clock = clock
         self.exit_delay = exit_delay
         self.survives_kill = survives_kill
@@ -1686,7 +1726,7 @@ def test_wait_timeout_logs_and_spares_a_process_that_exits_in_the_grace_period(m
     assert not proc.killed
     assert clock.sleeps == [1.0, 1.0, 0.25, 0.25, 0.25, 0.25]
     assert logs[0] == "[grace] timed out after 2 s with 1/1 subprocess(es) still running; terminating."
-    assert logs[1] == "[grace] 1/1 subprocess(es) exited with non-zero status: #0(rc=-15)."
+    assert logs[1] == "[grace] 1/1 subprocess(es) exited with non-zero status: #0(rc=-15, command: ['stubborn', 'command'])."
 
 
 def test_wait_timeout_kills_a_process_still_running_after_three_seconds(monkeypatch):
@@ -1730,7 +1770,8 @@ def test_wait_reports_exactly_the_nonzero_codes():
     codes = os_utils.wait_for_subprocesses([FakePopen(returncode=1), FakePopen(returncode=0), FakePopen(returncode=3)],
                                            max_seconds=5, label="mix", message_output=logs.append)
     assert codes == [1, 0, 3]
-    assert logs == ["[mix] 2/3 subprocess(es) exited with non-zero status: #0(rc=1), #2(rc=3)."]
+    assert logs == ["[mix] 2/3 subprocess(es) exited with non-zero status: #0(rc=1, command: ['fake', 'command']), "
+                    "#2(rc=3, command: ['fake', 'command'])."]
 
 
 # drop_noise_usvs / vocal-class helpers: messages name the source
@@ -1846,3 +1887,69 @@ def test_resolve_squeak_spectrogram_store_orders_by_mtime_not_ctime(tmp_path):
     os.utime(old, (10 ** 8, 10 ** 8))
     assert old.stat().st_ctime >= new.stat().st_ctime
     assert os_utils.resolve_squeak_spectrogram_store_path(str(tmp_path)) == str(new)
+
+
+def test_rebase_experimenter_in_paths_leaves_the_fixed_qlvm_paths_alone():
+    """The production QLVM cells and the category bundle are lab constants under one experimenter's
+    spectrograms directory; once `derive_spectrogram_model_paths` has written them into a settings
+    dict, re-keying that dict to another experimenter must not move them (it would point at a
+    folder holding no cell, or at a different cell). The derive-rebase-derive cycle the GUI runs
+    (derive, save, re-key on relaunch, derive again) keeps every cell at its constant, while an
+    ordinary experimenter path in the same dict still follows the experimenter."""
+
+    settings = {
+        "spectrograms_root": "/mnt/falkner/Bartul/spectrograms",
+        "generate_masks": {"sam2_model_dir": "", "sam2_model_path": "", "yolo_weights": ""},
+        "infer_qlvm_latents": {"model_cells": {}, "masking_type": "sam"},
+        "infer_qlvm_squeak_latents": {"model_cell_directory": ""},
+        "assign_qlvm_categories": {"category_directory": "", "coordinate_prefix": ""},
+        "detect_usv_squeaks": {"squeak_model_path": ""},
+        "detect_usv_noise": {"noise_model_path": ""},
+    }
+    os_utils.derive_spectrogram_model_paths(settings)
+    reloaded = os_utils.rebase_experimenter_in_paths(json.loads(json.dumps(settings)), ["Bartul", "Jinrun"], "Jinrun")
+    os_utils.derive_spectrogram_model_paths(reloaded)
+    assert reloaded["infer_qlvm_latents"]["model_cells"]["qlvm"] == f"{os_utils.QLVM_MODEL_PACKAGE_ROOT}/qlvm"
+    assert reloaded["infer_qlvm_squeak_latents"]["model_cell_directory"] == f"{os_utils.QLVM_SQUEAK_PACKAGE_ROOT}/{os_utils.QLVM_SQUEAK_PRODUCTION_CELL}"
+    assert reloaded["assign_qlvm_categories"]["category_directory"] == os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY
+    assert reloaded["spectrograms_root"] == "/mnt/falkner/Jinrun/spectrograms"
+    rebase = os_utils.rebase_experimenter_in_paths
+    assert rebase(os_utils.QLVM_MODEL_PACKAGE_ROOT, ["Bartul"], "Jinrun") == os_utils.QLVM_MODEL_PACKAGE_ROOT
+    assert rebase(f"{os_utils.QLVM_MODEL_PACKAGE_ROOT}_old/x", ["Bartul"], "Jinrun") == "/mnt/falkner/Jinrun/spectrograms/qlvm_old/x"
+
+
+def test_rebase_experimenter_in_paths_rejects_an_empty_name():
+    """An empty name in the experimenter roster would match every position of every path (the
+    empty string is in every string and is bounded before every separator) and corrupt the paths,
+    so it raises instead."""
+
+    with pytest.raises(ValueError, match="empty experimenter name"):
+        os_utils.rebase_experimenter_in_paths("/mnt/Bartul", ["", "Bartul"], "Jinrun")
+    with pytest.raises(ValueError, match="empty experimenter name"):
+        os_utils.rebase_experimenter_in_paths({"p": ["/mnt/Bartul"]}, ["Bartul", ""], "Jinrun")
+
+
+def test_event_times_keep_a_null_duration_null_on_rows_not_retimed():
+    """A row the re-timing leaves alone keeps its stored ``duration`` exactly, a null included; it
+    must not come back as NaN."""
+
+    table = _timed_summary().with_columns(pls.Series("duration", [None, 0.10, 0.10, 0.10], dtype=pls.Float64))
+    occupied = os_utils.vocal_occupancy_times(table, "s")
+    pure_usv = occupied.filter(pls.col("start") == 1.00)
+    assert pure_usv["duration"].null_count() == 1
+    assert occupied["duration"].is_nan().fill_null(False).sum() == 0
+    assert occupied.filter(pls.col("start") == 1.98)["duration"][0] == pytest.approx(2.10 - 1.98)
+
+
+def test_vocal_flags_read_integer_zero_one_columns():
+    """A flag stored as integer 0 / 1 (a table that went through pandas or numpy) reads as the
+    booleans it encodes, nulls as False; an integer column holding anything other than 0 / 1 is
+    not a flag and raises."""
+
+    table = pls.DataFrame({"noise": [1, 0, None], "usv": [1, 1, 0], "squeak": [0, 1, 1]})
+    assert os_utils.noise_mask(table, "s").to_list() == [True, False, False]
+    assert os_utils.pure_usv_mask(table, "s").to_list() == [True, False, False]
+    assert os_utils.overlap_mask(table, "s").to_list() == [False, True, False]
+    assert os_utils.pure_squeak_mask(table.with_columns(pls.col("usv").cast(pls.Float64)), "s").to_list() == [False, False, True]
+    with pytest.raises(ValueError, match="0 / 1"):
+        os_utils.noise_mask(pls.DataFrame({"noise": [2, 0]}), "s")

@@ -608,7 +608,10 @@ def condition_quantile_value(condition_bins: dict, decode: str | None, quantile:
     ``condition_bins.npz``, whose ``edges`` are the bin edges of ``c`` and whose
     ``group_sizes`` count the training rows in each bin (phase 11 /
     ``train-qlvm`` cells); the quantile is interpolated linearly inside the bin it
-    falls in. A phase 10 table (``edges`` + ``bin_mean``, no ``group_sizes``) holds
+    falls in. Each size is placed in the bin its ``group_ids`` entry names, so a
+    table that lists only its occupied bins (cells written before ``train-qlvm``
+    recorded one size per bin, an empty bin included) reads the same as one that
+    lists every bin: the bins it does not list hold no rows. A phase 10 table (``edges`` + ``bin_mean``, no ``group_sizes``) holds
     corpus quantile bins, so each of its bins is taken to hold an equal share. The
     value is therefore the same for every run, cohort and session subset (it does
     not depend on which USVs a run happens to hold), and ``quantile`` ``0.5`` is
@@ -634,7 +637,8 @@ def condition_quantile_value(condition_bins: dict, decode: str | None, quantile:
     ------
     ValueError
         ``quantile`` is outside ``[0, 1]``, or the table holds no usable ``edges``
-        (or its ``group_sizes`` do not match them).
+        (or its ``group_sizes`` do not match them: fewer sizes than bins with no
+        ``group_ids`` to place them, ``group_ids`` outside the bins, or no row).
     """
     quantile = float(quantile)
     if not 0.0 <= quantile <= 1.0:
@@ -646,6 +650,22 @@ def condition_quantile_value(condition_bins: dict, decode: str | None, quantile:
     edges = np.asarray(condition_bins["edges"], dtype=np.float64).reshape(-1)
     if "group_sizes" in condition_bins:
         sizes = np.asarray(condition_bins["group_sizes"], dtype=np.float64).reshape(-1)
+        n_bins = edges.shape[0] - 1
+        if sizes.shape[0] != n_bins and "group_ids" in condition_bins:
+            group_ids = np.asarray(condition_bins["group_ids"]).reshape(-1)
+            if group_ids.shape[0] != sizes.shape[0] or np.any(group_ids < 0) or np.any(group_ids >= n_bins):
+                error_message = (
+                    f"condition_quantile_value: {group_ids.shape[0]} group_ids {group_ids.tolist()} for "
+                    f"{sizes.shape[0]} group_sizes over {n_bins} bins; each size needs the id of one of the bins."
+                )
+                raise ValueError(error_message)
+            sizes = np.bincount(group_ids, weights=sizes, minlength=n_bins)
+        elif sizes.shape[0] != n_bins:
+            error_message = (
+                f"condition_quantile_value: {sizes.shape[0]} group_sizes for {n_bins} bins and no group_ids "
+                f"to place them in their bins; retrain the cell (train-qlvm writes one size per bin)."
+            )
+            raise ValueError(error_message)
     else:
         sizes = np.ones(edges.shape[0] - 1, dtype=np.float64)
     if edges.shape[0] != sizes.shape[0] + 1 or sizes.sum() <= 0.0:
@@ -753,7 +773,7 @@ def normalize_model_inputs(spectrograms: np.ndarray, contract: dict) -> np.ndarr
     return inputs.astype(np.float32, copy=False)
 
 
-def enforce_training_contract(contract: dict, cfg: dict, params: dict[str, jnp.ndarray]) -> float:
+def enforce_training_contract(contract: dict, cfg: dict, params: dict[str, jnp.ndarray]) -> float | None:
     """
     Description
     -----------
@@ -763,7 +783,9 @@ def enforce_training_contract(contract: dict, cfg: dict, params: dict[str, jnp.n
     disagreement is collected and raised together: ``masking_type``,
     ``target_shape``, ``time_stretch`` and ``latent_dim`` must equal the
     contract's; a ``length_threshold`` set in the settings must equal the training
-    set's; the weights' head (:func:`qlvm_model.decoder_head`) must be the
+    set's (a contract whose ``length_threshold`` is null -- a training set built
+    with no duration bound, recorded by ``train-qlvm`` as null -- accepts only a
+    null setting); the weights' head (:func:`qlvm_model.decoder_head`) must be the
     contract's ``decoder_head``. The contract must also describe a decoder this
     module can run: no conditioning input (``c_dim`` 0) or one conditioning value
     of a model package's ``"duration"`` / ``"mean_freq"`` / ``"bandwidth"`` /
@@ -784,9 +806,10 @@ def enforce_training_contract(contract: dict, cfg: dict, params: dict[str, jnp.n
 
     Returns
     -------
-    length_threshold (float)
+    length_threshold (float | None)
         The training set's duration bound: USVs with ``duration >= length_threshold``
-        were never trained on.
+        were never trained on. None when the contract records no bound (the
+        training set had none), so every USV of positive duration is embedded.
     """
     mismatches = [
         f"{key}: settings {cfg[key]!r}, trained {contract[key]!r}"
@@ -795,7 +818,9 @@ def enforce_training_contract(contract: dict, cfg: dict, params: dict[str, jnp.n
     ]
     if [int(value) for value in cfg["target_shape"]] != contract["target_shape"]:
         mismatches.append(f"target_shape: settings {list(cfg['target_shape'])!r}, trained {contract['target_shape']!r}")
-    if cfg["length_threshold"] is not None and float(cfg["length_threshold"]) != contract["length_threshold"]:
+    if cfg["length_threshold"] is not None and contract["length_threshold"] is None:
+        mismatches.append(f"length_threshold: settings {cfg['length_threshold']!r}, trained without a duration bound (null)")
+    elif cfg["length_threshold"] is not None and float(cfg["length_threshold"]) != contract["length_threshold"]:
         mismatches.append(f"length_threshold: settings {cfg['length_threshold']!r}, trained {contract['length_threshold']!r}")
     weights_head = decoder_head(params)
     if contract["decoder_head"] != weights_head:
@@ -828,6 +853,8 @@ def enforce_training_contract(contract: dict, cfg: dict, params: dict[str, jnp.n
             + "\n  ".join(mismatches)
         )
         raise ValueError(error_message)
+    if contract["length_threshold"] is None:
+        return None
     return float(contract["length_threshold"])
 
 
@@ -1099,7 +1126,7 @@ def load_package_session_rows(model_cell_directory: str, session_id: str) -> dic
     }
 
 
-def session_h5_call_table(h5_loc: pathlib.Path, session_id: str) -> tuple[np.ndarray, np.ndarray]:
+def session_h5_vocalization_table(h5_loc: pathlib.Path, session_id: str) -> tuple[np.ndarray, np.ndarray]:
     """
     Description
     -----------
@@ -1173,9 +1200,9 @@ def package_route_verdict(
     n_summary_rows (int)
         Rows of ``usv_summary.csv``.
     h5_durations (np.ndarray)
-        ``(n_rows,)`` H5 durations (:func:`session_h5_call_table`).
+        ``(n_rows,)`` H5 durations (:func:`session_h5_vocalization_table`).
     h5_mask_counts (np.ndarray)
-        ``(n_rows,)`` H5 mask-instance counts (:func:`session_h5_call_table`).
+        ``(n_rows,)`` H5 mask-instance counts (:func:`session_h5_vocalization_table`).
     package_rows (Callable[[], dict[str, np.ndarray]])
         Returns the cell's rows of the session (:func:`load_package_session_rows`).
 
@@ -1439,7 +1466,7 @@ class QLVMLatentInference:
             f"{int(np.count_nonzero(is_pure_squeak))} pure squeak(s) (squeak true, usv false) are skipped by every "
             f"model and get null coordinates."
         )
-        h5_durations, h5_mask_counts = session_h5_call_table(h5_loc, root.name)
+        h5_durations, h5_mask_counts = session_h5_vocalization_table(h5_loc, root.name)
         # The coordinates are written to the summary by row position (H5 row i -> summary
         # row i), so a summary and an H5 of different lengths (one rebuilt without the
         # other) would put coordinates on the wrong USVs. Refused before anything is
@@ -1506,7 +1533,9 @@ class QLVMLatentInference:
         merged = usv_df.drop([column for column in stale if column in usv_df.columns]).with_row_index(name="_usv_row")
         for frame in coordinate_frames:
             merged = merged.join(frame, on="_usv_row", how="left")
-        merged = order_usv_summary_columns(merged.drop("_usv_row"))
+        # Re-sorted on the row index: the summary keeps its own row order whatever
+        # order the left joins return.
+        merged = order_usv_summary_columns(merged.sort("_usv_row").drop("_usv_row"))
         # usv_summary.csv holds every other per-USV column too: publish atomically so
         # a failed write leaves the previous file intact instead of a truncated one.
         with atomic_output_path(usv_summary_loc) as tmp_summary_path:
@@ -1603,14 +1632,14 @@ class QLVMLatentInference:
             # USV, even for a decoder fed unmasked (floored) spectrograms, so it needs
             # the masks too.
             condition = contract['condition'] if contract['c_dim'] else None
-            masked_call_condition = condition is not None and condition['name'] in ('mean_freq', 'loudness')
+            masked_vocalization_condition = condition is not None and condition['name'] in ('mean_freq', 'loudness')
             require_mask = contract['require_mask']
             # build_session_masks gives a USV without mask instances an all-ones mask.
             # A set built with require_mask left such USVs out, and their mean frequency
             # or loudness would span the whole USV, so those decoders give them null
             # columns. Sets without require_mask (e.g. a build-qlvm-training-set set)
             # trained on them under that all-ones mask, so they are embedded as before.
-            drop_maskless = require_mask or masked_call_condition
+            drop_maskless = require_mask or masked_vocalization_condition
             masks = None
             if cfg['masking_type'] == 'sam' or drop_maskless:
                 # Without a mask group every USV would get the all-ones fallback.
@@ -1876,7 +1905,7 @@ def infer_qlvm_latents_cli(ctx, root_directory, **kwargs) -> None:
         The click context; its parameter sources tell which options were given on the command line.
     root_directory (str)
         Session root directory path.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns

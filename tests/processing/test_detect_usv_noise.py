@@ -405,6 +405,24 @@ def test_train_noise_model_writes_a_bundle_the_detector_loads(tmp_path, mocker):
         trainer.train()
 
 
+def test_train_noise_model_publishes_no_bundle_that_fails_to_load(tmp_path, mocker):
+    """The bundle is saved to a temporary sibling and loaded back from it before it
+    is renamed into place, so a bundle that does not load leaves nothing under the
+    final name (which would otherwise block the path for the next run)."""
+    root = _build_session(tmp_path)
+    labels_path, calibration_path = _write_training_files(tmp_path, root)
+    mocker.patch("usv_playpen.processing.detect_usv_noise.torch.cuda.is_available", return_value=False)
+    mocker.patch("usv_playpen.processing.detect_usv_noise.load_noise_model", side_effect=ValueError("unloadable"))
+    bundle_path = tmp_path / "out" / "noise_bundle.pt"
+    trainer = noise.USVNoiseModelTrainer(
+        labels_csv_path=str(labels_path), bundle_path=str(bundle_path),
+        input_parameter_dict=_training_settings(calibration_path), message_output=lambda *_a, **_kw: None,
+    )
+    with pytest.raises(ValueError, match="unloadable"):
+        trainer.train()
+    assert list(bundle_path.parent.iterdir()) == []
+
+
 def test_train_noise_model_cli_routes(mocker, tmp_path):
     """train-noise-model resolves settings (repeated --seed into a list) and calls USVNoiseModelTrainer.train once."""
     labels_path = tmp_path / "labels.csv"
@@ -428,3 +446,80 @@ def test_current_noise_decision_keys_reads_a_block_written_before_the_rename():
     assert current == {"exclude_at_or_above": 0.5, "real_vocalizations_excluded_per_10000": 71.0}
     assert "real_calls_excluded_per_10000" in legacy
     assert noise.current_noise_decision_keys(current) == current
+
+
+def test_detect_and_merge_nulls_the_squeak_map_on_rows_newly_marked_noise(tmp_path, mocker):
+    """
+    A fresh pipeline never embeds noise rows on the squeak map, so a row a noise re-run newly marks as
+    noise must lose its squeak-map coordinates (and the category read off them), exactly as it loses its
+    vocal class; rows that stay vocalizations keep theirs.
+    """
+    root = _build_session(tmp_path)
+    summary_path = root / "audio" / f"{SESSION_ID}_usv_summary.csv"
+    pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String}).with_columns(
+        pls.lit(False).alias("noise"), pls.lit(0.01).alias("noise_probability"),
+        pls.lit(False).alias("usv"), pls.lit(True).alias("squeak"),
+        pls.Series("qlvm_squeak1", [0.4, 0.5, 0.6]), pls.Series("qlvm_squeak2", [0.7, 0.8, 0.9]),
+        pls.Series("qlvm_squeak_category", ["S-A1", "S-A2", "S-B1"]),
+    ).write_csv(summary_path)
+
+    mocker.patch("usv_playpen.processing.detect_usv_noise.smart_wait")
+    mocker.patch("usv_playpen.processing.detect_usv_noise.torch.cuda.is_available", return_value=False)
+    mocker.patch("usv_playpen.processing.detect_usv_noise.load_noise_model", return_value=_forced_bundle(4.0))
+    mocker.patch(
+        "usv_playpen.processing.detect_usv_noise.score_noise_rows",
+        return_value=pls.DataFrame({"noise": [False, True, False], "noise_probability": [0.01, 0.9, 0.02]}),
+    )
+    noise.USVNoiseDetector(
+        root_directory=str(root),
+        input_parameter_dict={
+            "detect_usv_noise": {
+                "noise_model_path": "unused.pt",
+                "exclude_metadata_audio_channels": True,
+                "batch_size": 256,
+            }
+        },
+        message_output=lambda message: None,
+    ).detect_and_merge()
+
+    written = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})
+    assert written["squeak"].to_list() == [True, None, True]
+    assert written["qlvm_squeak1"].to_list() == [0.4, None, 0.6]
+    assert written["qlvm_squeak2"].to_list() == [0.7, None, 0.9]
+    assert written["qlvm_squeak_category"].to_list() == ["S-A1", None, "S-B1"]
+
+
+@pytest.mark.parametrize("recording_id", ["250913193920", "20250913_193920"])
+def test_squeak_audio_channels_drops_excluded_channels_when_the_recording_id_holds_underscores(tmp_path, recording_id):
+    """
+    The excluded microphone is matched on the device prefix and the ``chNN`` token of its source wav
+    name wherever that token sits, so a recording id that itself contains ``_`` does not shift the
+    parse and silently keep the excluded channel in the average.
+    """
+    root = tmp_path / SESSION_ID
+    rng = np.random.default_rng(1)
+    write_broadband_audio(root, [
+        (f"{device}_{recording_id}_ch{channel:02d}_cropped_to_video_hpss.wav", rng.integers(-3000, 3000, size=4096, dtype=np.int16))
+        for device, channel in (("m", 1), ("m", 2), ("s", 1), ("s", 2))
+    ], SAMPLING_RATE)
+    metadata = {"Equipment": {"audio_Avisoft": {"excluded_channels": ["m_ch02"]}}}
+    (root / f"{SESSION_ID}_metadata.yaml").write_text(yaml.dump(metadata))
+
+    readers = noise.squeak_audio_channels(root, True, lambda message: None)
+
+    assert [reader._column for reader in readers] == [0, 2, 3]
+
+
+def test_squeak_audio_channels_refuses_a_source_name_without_a_channel_token(tmp_path):
+    """A source wav name the channel cannot be read from raises instead of keeping the column unmatched."""
+    root = tmp_path / SESSION_ID
+    rng = np.random.default_rng(2)
+    write_broadband_audio(root, [
+        (f"m_250913193920_{name}_hpss.wav", rng.integers(-3000, 3000, size=4096, dtype=np.int16))
+        for name in ("a", "b")
+    ], SAMPLING_RATE)
+    metadata = {"Equipment": {"audio_Avisoft": {"excluded_channels": ["m_ch02"]}}}
+    (root / f"{SESSION_ID}_metadata.yaml").write_text(yaml.dump(metadata))
+
+    with pytest.raises(ValueError, match="m_250913193920_a_hpss.wav"):
+        noise.squeak_audio_channels(root, True, lambda message: None)

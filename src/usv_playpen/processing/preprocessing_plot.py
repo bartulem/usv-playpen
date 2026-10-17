@@ -29,9 +29,9 @@ class SummaryPlotter:
     Draws the one-page summary figure of a session's first preprocessing stage:
     session details, the phidget measurements (illumination, humidity,
     temperature) and the audio/video synchronization error statistics. It holds
-    ``root_directory`` and ``message_output``; when ``root_directory`` is None it
-    is read from the ``preprocessing_plot`` block of
-    ``_parameter_settings/processing_settings.json``.
+    ``root_directory`` and ``message_output``; ``root_directory`` is required
+    (the processing settings hold no session root), and None raises a
+    ``ValueError``.
 
     The entry method is ``preprocessing_summary``, which takes the per-device
     IPI discrepancy dictionary and the phidget data dictionary and saves the
@@ -50,7 +50,7 @@ class SummaryPlotter:
         Parameters
         ----------
         root_directory (str)
-            Root directory for data; defaults to None.
+            Session root directory; required (None raises a ValueError).
         message_output (Callable | None)
             Logging/message callback used to surface progress and warnings;
             defaults to None, in which case the built-in ``print`` is used.
@@ -61,12 +61,10 @@ class SummaryPlotter:
         """
 
         if root_directory is None:
-            with open(
-                pathlib.Path(__file__).parent.parent / "_parameter_settings/processing_settings.json"
-            ) as json_file:
-                _settings = json.load(json_file)["preprocessing_plot"]
+            msg = "SummaryPlotter needs a root_directory (the session root); the processing settings hold none."
+            raise ValueError(msg)
 
-        self.root_directory = root_directory if root_directory is not None else _settings["root_directory"]
+        self.root_directory = root_directory
         self.message_output = message_output if message_output is not None else print
 
     def preprocessing_summary(
@@ -170,6 +168,8 @@ class SummaryPlotter:
                 f"'{pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video'}' — "
                 f"expected cropped-to-video audio before preprocessing plot."
             )
+        # One WAV per channel (24), all of one sampling rate and length, which is
+        # all that is read here, so the first in sorted order is the explicit choice.
         with wave.open(str(wav_audio_files[0]), mode="rb") as example_audio_file:
             audio_sampling_rate = example_audio_file.getframerate()
             audio_sample_number = example_audio_file.getnframes()

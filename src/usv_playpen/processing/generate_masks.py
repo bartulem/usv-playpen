@@ -26,10 +26,15 @@ to. A spec's masks are selected with ``spectrogram_index == spec_row`` and combi
 rows get no masks, and masks are stored at the full ``(F, T)`` size -- the reader crops
 each to the spec's ``duration``.
 
-The heavy compute dependencies (``torch``, ``sam2``, ``ultralytics``) are imported
-lazily inside :meth:`MaskGenerator.generate_session_masks` -- importing this module
-never pulls them in, and a missing SAM2 checkpoint / YOLO weights raises a clear,
-actionable error BEFORE any GPU library is touched.
+The compute dependencies (``torch``, ``sam2``, ``ultralytics``, through the
+vendored ``processing/masks`` kernels) are imported at module load, like every
+other import of the repository; a missing SAM2 checkpoint / YOLO weights raises a
+clear, actionable error BEFORE any model is built or the GPU is touched.
+
+The masks are written into the session's spectrogram H5 through a copy that is
+renamed onto the original (``os_utils.atomic_output_path``), so a crash while
+writing never leaves a half-written file (HDF5 does not journal; an interrupted
+append can corrupt the spectrograms too).
 """
 
 from __future__ import annotations
@@ -38,6 +43,7 @@ import gc
 import logging
 import os
 import pathlib
+import shutil
 import sys
 from collections.abc import Callable
 from datetime import datetime
@@ -49,7 +55,7 @@ import numpy as np
 from click.core import ParameterSource
 
 from ..cli_utils import modify_settings_json_for_cli
-from ..os_utils import configure_path, derive_spectrogram_model_paths, first_match_or_raise
+from ..os_utils import atomic_output_path, configure_path, derive_spectrogram_model_paths, first_match_or_raise
 from ..time_utils import is_gui_context, smart_wait
 from .masks._common_memory import setup_device
 from .masks.box_detectors.detect import get_detector
@@ -128,6 +134,63 @@ def flatten_session_masks(
             row_idx += 1
 
     return segmentations, spectrogram_index
+
+
+def write_mask_group(
+    h5_loc: pathlib.Path,
+    mask_group_key: str,
+    method: str,
+    detector: str,
+    segmentations: np.ndarray,
+    spectrogram_index: np.ndarray,
+) -> None:
+    """
+    Description
+    -----------
+    Replaces the ``mask/<session>`` group of a spectrogram H5 (the caller passes
+    the temporary copy that is then renamed onto the session's file) with the
+    given instance masks: attrs ``created``, ``method``, ``detector`` and
+    ``total_masks``, and the datasets ``segmentations`` / ``spectrogram_index``
+    (gzip level 6 when there is at least one mask).
+
+    Parameters
+    ----------
+    h5_loc (pathlib.Path)
+        The H5 file to write into (opened in append mode).
+    mask_group_key (str)
+        ``mask/<session>``.
+    method (str)
+        The mask-generation method, stored as an attr.
+    detector (str)
+        The box detector, stored as an attr.
+    segmentations (np.ndarray)
+        ``(M, F, T)`` boolean instance masks.
+    spectrogram_index (np.ndarray)
+        ``(M,)`` summary row of every mask.
+
+    Returns
+    -------
+    None
+    """
+
+    with h5py.File(h5_loc, "a") as h5_file:
+        if mask_group_key in h5_file:
+            del h5_file[mask_group_key]
+        mask_group = h5_file.create_group(mask_group_key)
+        mask_group.attrs["created"] = "generate_masks"
+        mask_group.attrs["method"] = method
+        mask_group.attrs["detector"] = detector
+        mask_group.attrs["total_masks"] = int(segmentations.shape[0])
+        if segmentations.shape[0] > 0:
+            mask_group.create_dataset(
+                "segmentations", data=segmentations, compression="gzip", compression_opts=6
+            )
+            mask_group.create_dataset(
+                "spectrogram_index", data=spectrogram_index, compression="gzip", compression_opts=6
+            )
+        else:
+            mask_group.create_dataset("segmentations", data=segmentations)
+            mask_group.create_dataset("spectrogram_index", data=spectrogram_index)
 
 
 class MaskGenerator:
@@ -331,9 +394,9 @@ class MaskGenerator:
             )
             raise ValueError(error_message)
 
-        # Validate the model paths BEFORE importing torch/sam2/ultralytics so a
-        # misconfiguration surfaces immediately with the offending setting rather than
-        # as an opaque failure deep inside the GPU stack.
+        # Validate the model paths BEFORE any model is built so a misconfiguration
+        # surfaces immediately with the offending setting rather than as an opaque
+        # failure deep inside the GPU stack.
         if not sam2_model_dir or not pathlib.Path(sam2_model_dir).is_dir():
             error_message = (
                 f"SAM2 model directory not configured or missing: {sam2_model_dir!r}. "
@@ -500,24 +563,9 @@ class MaskGenerator:
                 num_time_bins=num_time_bins,
             )
 
-        with h5py.File(h5_loc, "a") as h5_file:
-            if mask_group_key in h5_file:
-                del h5_file[mask_group_key]
-            mask_group = h5_file.create_group(mask_group_key)
-            mask_group.attrs["created"] = "generate_masks"
-            mask_group.attrs["method"] = method
-            mask_group.attrs["detector"] = detector
-            mask_group.attrs["total_masks"] = int(segmentations.shape[0])
-            if segmentations.shape[0] > 0:
-                mask_group.create_dataset(
-                    "segmentations", data=segmentations, compression="gzip", compression_opts=6
-                )
-                mask_group.create_dataset(
-                    "spectrogram_index", data=spectrogram_index, compression="gzip", compression_opts=6
-                )
-            else:
-                mask_group.create_dataset("segmentations", data=segmentations)
-                mask_group.create_dataset("spectrogram_index", data=spectrogram_index)
+        with atomic_output_path(h5_loc) as tmp_h5_loc:
+            shutil.copy2(h5_loc, tmp_h5_loc)
+            write_mask_group(tmp_h5_loc, mask_group_key, method, detector, segmentations, spectrogram_index)
 
         # Drop this call's predictor/detector and return the allocator's free
         # blocks to the driver. This REDUCES but does not eliminate the device
@@ -588,7 +636,7 @@ def generate_masks_cli(ctx, root_directory, **kwargs) -> None:
         The click context; its parameter sources tell which options were given on the command line.
     root_directory (str)
         Session root directory path.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns

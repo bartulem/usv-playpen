@@ -18,7 +18,7 @@ import numpy as np
 import sleap_anipose
 from imgstore import new_for_filename
 
-from ..os_utils import configure_path, first_match_or_raise, wait_for_subprocesses
+from ..os_utils import atomic_output_path, configure_path, first_match_or_raise, wait_for_subprocesses
 from ..time_utils import is_gui_context, smart_wait
 from ..yaml_utils import load_session_metadata, save_session_metadata
 
@@ -331,11 +331,14 @@ class ConvertTo3D:
     video directory (``session_root_joint_date_dir``, the underscore-free
     subdirectory of ``<root_directory>/video``, with its name in
     ``session_root_name``). The constructor raises ``FileNotFoundError`` when no
-    such subdirectory exists. The entry methods are ``sleap_file_conversion``,
-    ``conduct_anipose_calibration``, ``conduct_anipose_triangulation`` and
-    ``translate_rotate_metric``. When ``input_parameter_dict`` or
-    ``root_directory`` is None the missing value is read from
-    ``_parameter_settings/processing_settings.json``. It is constructed by the
+    such subdirectory exists, and ``ValueError`` when there are several (a
+    second recording folder or a stray copy must be resolved by hand). The entry
+    methods are ``sleap_file_conversion``, ``conduct_anipose_calibration``,
+    ``conduct_anipose_triangulation`` and ``translate_rotate_metric``. When
+    ``input_parameter_dict`` is None it is read from
+    ``_parameter_settings/processing_settings.json``; ``root_directory`` is
+    required (the settings hold no session root), and None raises a
+    ``ValueError``. It is constructed by the
     processing pipeline (``processing/preprocess_data.py``).
     """
 
@@ -353,9 +356,11 @@ class ConvertTo3D:
         Parameters
         ----------
         root_directory (str)
-            Root directory for data; defaults to None.
+            Session root directory; required (None raises a ValueError, since
+            the processing settings hold no session root).
         input_parameter_dict (dict)
-            Processing parameters; defaults to None.
+            Processing parameters; defaults to None, which reads
+            ``_parameter_settings/processing_settings.json``.
         message_output (function)
             Output messages; defaults to None.
 
@@ -364,7 +369,11 @@ class ConvertTo3D:
         None
         """
 
-        if input_parameter_dict is None or root_directory is None:
+        if root_directory is None:
+            msg = "ConvertTo3D needs a root_directory (the session root); the processing settings hold none."
+            raise ValueError(msg)
+
+        if input_parameter_dict is None:
             with open(
                 pathlib.Path(__file__).parent.parent
                 / "_parameter_settings/processing_settings.json"
@@ -372,16 +381,15 @@ class ConvertTo3D:
                 _settings = json.load(json_file)["anipose_operations"]
 
         self.input_parameter_dict = input_parameter_dict["anipose_operations"]["ConvertTo3D"] if input_parameter_dict is not None else _settings["ConvertTo3D"]
-        self.root_directory = root_directory if root_directory is not None else _settings["root_directory"]
+        self.root_directory = root_directory
         self.message_output = message_output if message_output is not None else print
 
-        # Deterministic, loud-failing session-root resolution (mirrors
-        # first_match_or_raise used elsewhere in this file): the joint-date dir is
-        # the underscore-free '<root>/video' subdirectory. Sort for determinism
-        # (iterdir() order is filesystem-dependent, so an unsorted last-wins loop
-        # is non-deterministic on multiple matches) and raise on zero matches
-        # rather than silently leaving the path as cwd ('.'), which would route
-        # downstream reads/writes into the working directory.
+        # Loud-failing session-root resolution (mirrors first_match_or_raise used
+        # elsewhere in this file): the joint-date dir is the ONE underscore-free
+        # '<root>/video' subdirectory. Zero matches raise rather than silently
+        # leaving the path as cwd ('.'), which would route downstream reads/writes
+        # into the working directory, and several raise rather than picking one
+        # (every session on the lab share has exactly one).
         candidate_dirs = sorted(
             one_object
             for one_object in (pathlib.Path(self.root_directory) / 'video').iterdir()
@@ -394,6 +402,12 @@ class ConvertTo3D:
                 f"{pathlib.Path(self.root_directory) / 'video'}."
             )
             raise FileNotFoundError(msg)
+        if len(candidate_dirs) > 1:
+            msg = (
+                f"{len(candidate_dirs)} session joint-date directories (underscore-free '<root>/video' "
+                f"subdirectories) found, expected exactly one: {', '.join(str(one_dir) for one_dir in candidate_dirs)}."
+            )
+            raise ValueError(msg)
         self.session_root_joint_date_dir = candidate_dirs[0]
         self.session_root_name = candidate_dirs[0].name
 
@@ -452,8 +466,8 @@ class ConvertTo3D:
             label=".slp→.analysis.h5 conversion",
             poll_interval_s=1,
             message_output=self.message_output,
-            raise_on_nonzero=False,
-            raise_on_timeout=False,
+            raise_on_nonzero=True,
+            raise_on_timeout=True,
         )
 
     def conduct_anipose_calibration(self) -> None:
@@ -547,6 +561,12 @@ class ConvertTo3D:
                    f"{self.input_parameter_dict['conduct_anipose_triangulation']['calibration_file_loc']}: "
                    f"run the calibration first and give its path; nothing was triangulated.")
             raise FileNotFoundError(msg)
+        elif len(calibration_dir_search) > 1:
+            msg = (f"{len(calibration_dir_search)} *_calibration.toml files under "
+                   f"{self.input_parameter_dict['conduct_anipose_triangulation']['calibration_file_loc']}, expected exactly one: "
+                   f"{', '.join(str(one_file) for one_file in calibration_dir_search)}. Point calibration_file_loc at the "
+                   f"folder of the one to use, or remove the stray copy; nothing was triangulated.")
+            raise ValueError(msg)
         else:
             calibration_toml_file = calibration_dir_search[0]
 
@@ -848,10 +868,9 @@ class ConvertTo3D:
             ]
             == "arena"
         ):
-            with h5py.File(
-                name=arena_data_original_h5.parent / f"{arena_data_original_h5.name[:-3]}_translated_rotated_metric.h5",
-                mode="w",
-            ) as h5_file_write:
+            with atomic_output_path(
+                arena_data_original_h5.parent / f"{arena_data_original_h5.name[:-3]}_translated_rotated_metric.h5"
+            ) as tmp_h5_path, h5py.File(name=tmp_h5_path, mode="w") as h5_file_write:
                 h5_file_write.create_dataset(name="tracks", data=arena_data)
                 h5_file_write.create_dataset(name="node_names", data=arena_nodes)
 
@@ -930,10 +949,9 @@ class ConvertTo3D:
 
             mouse_track_names = find_mouse_names(root_directory=self.root_directory, metadata=metadata)
 
-            with h5py.File(
-                name=self.session_root_joint_date_dir / f"{self.session_root_name}_points3d_translated_rotated_metric.h5",
-                mode="w",
-            ) as h5_file_write:
+            with atomic_output_path(
+                self.session_root_joint_date_dir / f"{self.session_root_name}_points3d_translated_rotated_metric.h5"
+            ) as tmp_h5_path, h5py.File(name=tmp_h5_path, mode="w") as h5_file_write:
                 h5_file_write.create_dataset(name="tracks", data=mouse_data)
                 h5_file_write.create_dataset(name="node_names", data=mouse_nodes)
                 h5_file_write.create_dataset(name="track_names", data=mouse_track_names)

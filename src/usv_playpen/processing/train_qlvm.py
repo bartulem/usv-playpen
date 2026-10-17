@@ -111,10 +111,15 @@ table; ``data/conditionals.py``, ``data/mouse_data.py`` and ``train/train.py``):
 * **Output.** The cell's contract names the condition (a ``condition`` block in
   the form of the shipped phase 11 contracts: the value's definition, its
   constants and its decode rule) and ``config/condition_bins.npz`` records the
-  bins (``edges``, ``group_ids``, ``group_sizes``, ``group_means``), the training
+  bins (``edges``, ``group_ids``, ``group_sizes``, ``group_means``; one entry
+  per bin between consecutive edges, so ``group_ids`` is ``0..n - 1`` and an empty
+  bin -- a capped piece of a sparse tail -- has size 0 and a NaN mean), the training
   range of the value (``train_c_min``, ``train_c_max``) and the decode grid
   (``decode_grid``, ``condition_decode_grid_step`` apart from ``train_c_min``
-  past ``train_c_max``). ``infer-qlvm-latents`` decodes a new USV as the package
+  past ``train_c_max``). The bins are written only once training has succeeded,
+  together with the checkpoint, the diagnostics and the contract, so a failed
+  re-run into an existing cell directory leaves the earlier run's bins in place.
+  ``infer-qlvm-latents`` decodes a new USV as the package
   decoded its corpus: at its own value clamped to the training range for
   duration and bandwidth (``decode`` ``"exact"``: few distinct values, 120
   durations and 128 bandwidth steps) and at the nearest grid point for mean
@@ -1326,34 +1331,40 @@ class QLVMTrainer:
         (output_dir / METRICS_DIRECTORY).mkdir(exist_ok=True)
 
         # Conditional runs: the bins, written to config/condition_bins.npz with the
-        # training range and the decode grid, and the batches drawn from them.
+        # training range and the decode grid once training has succeeded (with the
+        # checkpoint and the contract, so a failed re-run into an existing cell never
+        # leaves its bins next to an earlier run's checkpoint), and the batches drawn
+        # from them. group_sizes / group_means hold one entry per bin, an empty bin
+        # (a capped piece of a sparse tail) included, so group_sizes[i] is the size of
+        # bin i between edges[i] and edges[i + 1].
         condition_record = {}
+        condition_bins_arrays = None
         train_groups = None
         if conditional is not None:
             condition_stats["train"] = condition_value_stats(conditional, train_c)
             edges = condition_bin_edges(train_c, cfg['condition_n_bins'], cfg['condition_bin_scheme'])
             train_groups = condition_group_ids(train_c, edges)
             group_labels = np.unique(train_groups)
-            group_sizes = np.array([int(np.count_nonzero(train_groups == group)) for group in group_labels], dtype=np.int64)
-            group_means = np.array([train_c[train_groups == group].mean() for group in group_labels])
+            all_group_sizes = np.bincount(train_groups, minlength=edges.size - 1).astype(np.int64)
+            all_group_means = np.full(all_group_sizes.size, np.nan, dtype=train_c.dtype)
+            for group in group_labels:
+                all_group_means[group] = train_c[train_groups == group].mean()
+            group_sizes = all_group_sizes[group_labels]
             train_c_min, train_c_max = train_c.min(), train_c.max()
             decode_grid = condition_decode_grid(float(train_c_min), float(train_c_max), cfg['condition_decode_grid_step'])
-            condition_bins_path = output_dir / CONFIG_DIRECTORY / "condition_bins.npz"
-            with atomic_output_path(condition_bins_path) as tmp_bins_path, tmp_bins_path.open("wb") as bins_file:
-                np.savez(
-                    bins_file,
-                    conditional=np.array(conditional),
-                    bin_scheme=np.array(cfg['condition_bin_scheme']),
-                    n_bins=np.array(cfg['condition_n_bins']),
-                    edges=edges,
-                    group_ids=group_labels,
-                    group_sizes=group_sizes,
-                    group_means=group_means,
-                    train_c_min=np.array(train_c_min),
-                    train_c_max=np.array(train_c_max),
-                    decode_grid=decode_grid,
-                    decode_grid_step=np.array(float(cfg['condition_decode_grid_step'])),
-                )
+            condition_bins_arrays = {
+                "conditional": np.array(conditional),
+                "bin_scheme": np.array(cfg['condition_bin_scheme']),
+                "n_bins": np.array(cfg['condition_n_bins']),
+                "edges": edges,
+                "group_ids": np.arange(all_group_sizes.size),
+                "group_sizes": all_group_sizes,
+                "group_means": all_group_means,
+                "train_c_min": np.array(train_c_min),
+                "train_c_max": np.array(train_c_max),
+                "decode_grid": decode_grid,
+                "decode_grid_step": np.array(float(cfg['condition_decode_grid_step'])),
+            }
             n_batches = int(sum(math.ceil(size / batch_size) for size in group_sizes))
             condition_record = {
                 "condition_source": (
@@ -1463,6 +1474,11 @@ class QLVMTrainer:
                         f"(validation took {time.perf_counter() - validation_start:.1f} s)"
                     )
                 self.message_output(f"{message}; {epoch_seconds[-1]:.2f} s per training epoch.")
+
+        if condition_bins_arrays is not None:
+            condition_bins_path = output_dir / CONFIG_DIRECTORY / "condition_bins.npz"
+            with atomic_output_path(condition_bins_path) as tmp_bins_path, tmp_bins_path.open("wb") as bins_file:
+                np.savez(bins_file, **condition_bins_arrays)
 
         checkpoint_path = output_dir / CHECKPOINT_NAME
         with atomic_output_path(checkpoint_path) as tmp_checkpoint_path, tmp_checkpoint_path.open("wb") as checkpoint_file:
@@ -1592,7 +1608,7 @@ def train_qlvm_cli(ctx, dataset_directory, output_directory, **kwargs) -> None:
         Directory holding the .npz training set (train_data.npz or full_data.npz, val_data.npz, metadata.npz).
     output_directory (str)
         Directory the model package cell (checkpoint.tar, config/, metrics/) is written to.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns

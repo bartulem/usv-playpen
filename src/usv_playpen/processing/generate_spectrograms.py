@@ -27,6 +27,7 @@ before trusting downstream embeddings.
 from __future__ import annotations
 
 import pathlib
+import shutil
 from collections.abc import Callable
 from datetime import datetime
 
@@ -38,7 +39,7 @@ import polars as pls
 from click.core import ParameterSource
 
 from ..cli_utils import modify_settings_json_for_cli
-from ..os_utils import find_audio_mmap, first_match_or_raise
+from ..os_utils import atomic_output_path, find_audio_mmap, first_match_or_raise
 from ..time_utils import is_gui_context, smart_wait
 from ..yaml_utils import read_excluded_audio_channels
 
@@ -340,9 +341,13 @@ class SpectrogramGenerator:
         """
         Description
         -----------
-        Overwrites individual spectrogram rows in an existing session HDF5 file
-        in place, leaving every other row -- and the session's ``mask/`` group --
-        untouched.
+        Overwrites individual spectrogram rows of an existing session HDF5 file,
+        leaving every other row -- and the session's ``mask/`` group -- untouched.
+        The file is copied to a temporary sibling, the copy is patched and then
+        renamed onto the original (``os_utils.atomic_output_path``), so a crash
+        or a refused patch never leaves a half-written file: HDF5 does not
+        journal, and an interrupted ``r+`` write can corrupt the whole file,
+        masks included.
 
         Used by the ``row_subset`` mode of :meth:`generate_session_spectrograms`
         to refresh only the USVs whose ``start``/``stop`` changed (e.g. after the
@@ -378,7 +383,52 @@ class SpectrogramGenerator:
             )
             raise FileNotFoundError(msg)
 
-        with h5py.File(h5_file_path, "r+") as h5_file:
+        with atomic_output_path(h5_file_path) as tmp_h5_path:
+            shutil.copy2(h5_file_path, tmp_h5_path)
+            self._patch_rows_of_copy(tmp_h5_path, h5_file_path, session_id, computed_specs, computed_durations, expected_rows)
+
+        self.message_output(
+            f"Patched {len(computed_specs)} spectrogram row(s) for session {session_id} -> {h5_file_path}."
+        )
+
+    @staticmethod
+    def _patch_rows_of_copy(
+        tmp_h5_path: pathlib.Path,
+        h5_file_path: pathlib.Path,
+        session_id: str,
+        computed_specs: dict[int, np.ndarray],
+        computed_durations: dict[int, int],
+        expected_rows: int,
+    ) -> None:
+        """
+        Description
+        -----------
+        Writes the recomputed rows into the temporary copy of a session's
+        spectrogram HDF5 file (see :meth:`_patch_session_spectrogram_rows`) and
+        recounts its ``valid_spectrograms`` attribute. Every check raises before
+        the copy is renamed, so a refused patch leaves the original untouched.
+
+        Parameters
+        ----------
+        tmp_h5_path (pathlib.Path)
+            The temporary copy to patch.
+        h5_file_path (pathlib.Path)
+            The original file, named in the error messages.
+        session_id (str)
+            Session identifier keying the ``spectrogram/<session>`` group.
+        computed_specs (dict[int, np.ndarray])
+            Mapping ``row index -> (F, T)`` float32 spectrogram to write.
+        computed_durations (dict[int, int])
+            Mapping ``row index -> original time-bin count`` to write.
+        expected_rows (int)
+            Row count of the session's ``*_usv_summary.csv``.
+
+        Returns
+        -------
+        None
+        """
+
+        with h5py.File(tmp_h5_path, "r+") as h5_file:
             group_key = f"spectrogram/{session_id}"
             if group_key not in h5_file:
                 msg = f"Cannot patch spectrogram rows: group '{group_key}' missing from '{h5_file_path}'"
@@ -396,10 +446,6 @@ class SpectrogramGenerator:
                 durations_dset[row_index] = computed_durations[row_index]
             h5_file.attrs["valid_spectrograms"] = int(np.count_nonzero(durations_dset[:] > 0))
 
-        self.message_output(
-            f"Patched {len(computed_specs)} spectrogram row(s) for session {session_id} -> {h5_file_path}."
-        )
-
     def generate_session_spectrograms(self, row_subset: set[int] | None = None) -> None:
         """
         Description
@@ -416,8 +462,8 @@ class SpectrogramGenerator:
         ``valid_spectrograms``.
 
         With ``row_subset`` the method switches to patch mode: only those rows
-        are recomputed and written **in place** into the existing file, so the
-        session's ``mask/`` group survives (a full pass opens the file with mode
+        are recomputed and written into a copy of the existing file that then
+        replaces it, so the session's ``mask/`` group survives (a full pass opens the file with mode
         ``"w"`` and necessarily drops it, which is why masks are regenerated
         after a full pass). Because a row's spectrogram depends solely on that
         row's own ``start``/``stop``, patch mode is equivalent to a full pass for
@@ -565,7 +611,7 @@ class SpectrogramGenerator:
         spectrograms_dir = root / "audio" / "spectrograms"
         spectrograms_dir.mkdir(parents=True, exist_ok=True)
         h5_file_path = spectrograms_dir / f"{session_id}_spectrograms.h5"
-        with h5py.File(h5_file_path, "w") as h5_file:
+        with atomic_output_path(h5_file_path) as tmp_h5_path, h5py.File(tmp_h5_path, "w") as h5_file:
             h5_file.attrs["created"] = "generate_spectrograms"
             h5_file.attrs["total_spectrograms"] = len(all_specs)
             h5_file.attrs["valid_spectrograms"] = int(np.count_nonzero(durations_arr > 0))
@@ -594,7 +640,6 @@ class SpectrogramGenerator:
 @click.option('--nperseg', 'nperseg', type=int, default=None, required=False, help='STFT window length (n_fft).')
 @click.option('--min-freq', 'min_freq', type=float, default=None, required=False, help='Lower frequency cutoff (Hz).')
 @click.option('--max-freq', 'max_freq', type=float, default=None, required=False, help='Upper frequency cutoff (Hz).')
-@click.option('--noverlap', 'noverlap', type=int, default=None, required=False, help='STFT segment overlap in samples (nperseg - hop_length); legacy scipy-style overlap kept in the block for parity with the QLVM training config.')
 @click.option('--hop-length', 'hop_length', type=int, default=None, required=False, help='STFT hop length in samples (frames advance); falls back to nperseg // 4 when unset.')
 @click.option('--window', 'window', type=str, default=None, required=False, help='STFT window function name passed to librosa.stft (e.g. blackmanharris).')
 @click.option('--offset', 'offset', type=float, default=None, required=False, help='Symmetric padding in seconds added to each USV before/after its start/stop bounds when slicing the audio.')
@@ -612,7 +657,7 @@ def generate_spectrograms_cli(ctx, root_directory, **kwargs) -> None:
         The click context; its parameter sources tell which options were given on the command line.
     root_directory (str)
         Session root directory path.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns

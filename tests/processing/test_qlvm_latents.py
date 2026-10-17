@@ -256,6 +256,35 @@ def test_infer_and_merge_idempotent_preserves_other_columns(tmp_path, mocker):
     assert df["qlvm1"][1] is None
 
 
+def test_infer_and_merge_keeps_row_order_whatever_order_the_join_returns(tmp_path, mocker):
+    """The coordinates are joined back on the row index and the summary is written
+    in its own row order even when the left join returns its rows in another order
+    (polars does not promise the left order by default)."""
+    rng = np.random.default_rng(2)
+    grid = rng.integers(1, 8, size=(8, 8)).astype(np.int16)
+    root, session_id, cfg = _make_inference_session(tmp_path, rng)
+    cell = _make_model_cell(tmp_path, rng, masking_type="none", floor=0.2, fine_grid=grid, coarse_grid=grid)
+    cfg["model_cells"] = {"qlvm": str(cell)}
+    summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
+    ids_before = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})["usv_id"].to_list()
+    original_join = pls.DataFrame.join
+
+    def _reversed_join(self, *args, **kwargs):
+        return original_join(self, *args, **kwargs).reverse()
+
+    mocker.patch.object(pls.DataFrame, "join", _reversed_join)
+    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
+    ql.QLVMLatentInference(
+        root_directory=str(root),
+        input_parameter_dict={"infer_qlvm_latents": cfg},
+        message_output=lambda *_a, **_kw: None,
+    ).infer_and_merge()
+    df = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})
+    assert df["usv_id"].to_list() == ids_before
+    assert df["qlvm1"][0] is not None
+    assert df["qlvm1"][1] is None
+
+
 def _matching_contract(cfg, **overrides):
     """A training contract that agrees with ``cfg`` (the fields a model package cell's
     contract records, for an unconditional legacy-head decoder), with ``overrides``
@@ -301,6 +330,19 @@ def test_enforce_training_contract_returns_the_training_window():
     assert ql.enforce_training_contract(_matching_contract(cfg, length_threshold=100.0), cfg, params) == 100.0
     cfg["length_threshold"] = 100
     assert ql.enforce_training_contract(_matching_contract(cfg, length_threshold=100.0), cfg, params) == 100.0
+
+
+def test_enforce_training_contract_passes_an_unbounded_training_set_through():
+    """A cell trained on a set with no duration bound records ``length_threshold`` null; its
+    contract is enforced like any other and returns None (embed every positive duration), and a
+    bound set in the settings is reported as a mismatch against the unbounded training set."""
+    cfg = _contract_cfg()
+    params = {"0.weight": np.zeros((2, 4)), "1.weight": np.zeros((2, 2))}
+    unbounded = _matching_contract(cfg, length_threshold=None)
+    assert ql.enforce_training_contract(unbounded, cfg, params) is None
+    cfg["length_threshold"] = 100
+    with pytest.raises(ValueError, match="length_threshold: settings 100, trained without a duration bound"):
+        ql.enforce_training_contract(unbounded, cfg, params)
 
 
 def test_enforce_training_contract_names_every_mismatch():
@@ -1590,3 +1632,19 @@ def test_infer_and_merge_refuses_a_summary_and_h5_of_different_lengths(tmp_path,
     with pytest.raises(ValueError, match="rows must match one to one"):
         _run_model_cells(root, cfg, mocker)
     assert summary_path.read_bytes() == before
+
+
+def test_condition_quantile_value_places_sizes_by_their_group_ids():
+    """A cell written before condition_bins.npz held one size per bin lists sizes for its occupied
+    bins only, each under its bin's ``group_ids`` entry; the reader places every size in its own
+    bin (the empty bins hold none), so such a cell still decodes at its corpus quantile. A short
+    ``group_sizes`` with no ``group_ids`` to place it cannot be read and raises a clear error."""
+    bins = _phase11_bins("bandwidth", 0.0, 1.0, 0.01)
+    bins["edges"] = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
+    bins["group_ids"] = np.array([0, 3])
+    bins["group_sizes"] = np.array([30, 10])
+    assert float(ql.condition_quantile_value(bins, "exact", 0.5)) == pytest.approx(0.25 * 20 / 30, abs=1e-6)
+    assert float(ql.condition_quantile_value(bins, "exact", 0.875)) == pytest.approx(0.75 + 0.25 * 0.5, abs=1e-6)
+    no_ids = {key: value for key, value in bins.items() if key != "group_ids"}
+    with pytest.raises(ValueError, match="group_ids"):
+        ql.condition_quantile_value(no_ids, "exact", 0.5)

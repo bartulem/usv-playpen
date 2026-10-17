@@ -27,7 +27,9 @@ not carry and the store computes with the assigner's pixel rule
   embedded (the squeak map is NaN on every row without a squeak);
 * ``qlvm/<session>/status`` -- ``(n,)`` int8 bit field of the USV maps'
   embedding rule (``PRODUCTION_STATUS_CODES``): 0 embedded, bit 0 (1) too long
-  (duration at or above the regular cell's ``length_threshold``), bit 1 (2) no
+  (duration at or above the regular cell's ``length_threshold``; never set for a
+  cell trained without a duration bound, whose ``length_threshold`` attr is
+  NaN), bit 1 (2) no
   SAM mask, bit 2 (4) pure squeak (``squeak`` true, ``usv`` false), bit 3 (8)
   no vocalization frames (duration 0);
 * ``qlvm/<session>/qlvm_category`` -- ``(n,)`` int16 category ``1..k`` (0 where
@@ -72,7 +74,8 @@ tables needed to interpret it:
   (``qlvm_category``, ``qlvm_supercategory``, ``qlvm_dur_category``, ...),
   0 where the summary has no label (package labels start at 1);
 * ``qlvm/<session>/status`` -- ``(n,)`` int8 per vocalization: 0 embedded, 1 too long
-  (duration at or above the regular cell's ``length_threshold``), 2 no SAM
+  (duration at or above the regular cell's ``length_threshold``; never for an
+  unbounded cell, ``length_threshold`` attr NaN), 2 no SAM
   mask, 3 both;
 * ``qlvm_models/<prefix>/`` -- provenance attrs of each model's package cell
   and its cluster tables (``clusters_<level>``, ``boundaries_<level>``,
@@ -236,6 +239,11 @@ STORE_NAME_PREFIX = "spectrograms_qlvmv3"
 # production embedding has moved to other cells (os_utils.QLVM_PRODUCTION_MODEL_CELLS)
 # that this store's v3 provenance checks cannot describe.
 V3_PACKAGE_ROOT = "/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/v3"
+# The share the v3 package's SESSION_H5_BASELINE.tsv paths are relative to (they
+# start at the experimenter folder, e.g. ``<experimenter>/Data/<session>/audio/...``),
+# in the canonical ``/mnt/<share>`` form every stored path uses; configure_path
+# translates it to the host's mount. A property of that fixed package, not a setting.
+V3_PACKAGE_BASELINE_SHARE_ROOT = "/mnt/falkner"
 V3_MODEL_CELLS = {
     "qlvm": "phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor",
     "qlvm_dur": "phase11_cond_duration_floor/natural_5strata_N29000_unmasked_floor",
@@ -301,7 +309,7 @@ def package_corpus_root_directories(package_root: str | pathlib.Path) -> list[st
     its ``SESSION_H5_BASELINE.tsv`` lists them. The baseline's ``path`` column
     names each session's spectrogram H5 relative to the lab share
     (``<experimenter>/Data/<session>/audio/spectrograms/<session>_spectrograms.h5``);
-    the session root is that file's third parent under ``/mnt/falkner``, run
+    the session root is that file's third parent under ``V3_PACKAGE_BASELINE_SHARE_ROOT``, run
     through ``configure_path`` so it resolves on the host OS (and on the
     cluster).
 
@@ -334,7 +342,7 @@ def package_corpus_root_directories(package_root: str | pathlib.Path) -> list[st
         raise ValueError(error_message)
     root_directories = []
     for session_id, relative_path in zip(table["session"].to_list(), table["path"].to_list(), strict=True):
-        root = pathlib.PurePosixPath("/mnt/falkner", relative_path).parents[2]
+        root = pathlib.PurePosixPath(V3_PACKAGE_BASELINE_SHARE_ROOT, relative_path).parents[2]
         if root.name != session_id:
             error_message = (
                 f"{baseline_path}: the path of session {session_id} ({relative_path}) does not lie in a "
@@ -434,7 +442,77 @@ def model_cell_metadata(package_root: pathlib.Path, relative_cell: str, manifest
     }
 
 
-def embedding_status(durations: np.ndarray, mask_counts: np.ndarray, length_threshold: float) -> np.ndarray:
+def contract_length_threshold(contract: dict) -> float | None:
+    """
+    Description
+    -----------
+    Reads a cell's ``length_threshold`` from its training contract. A cell
+    trained on a set built without a duration bound stores ``null`` there
+    (``train-qlvm`` writes the training set's NaN as null), and such a cell is
+    unbounded: it is returned as None, and no vocalization is ever too long for
+    it, the rule ``qlvm_latents.enforce_training_contract`` applies when it
+    embeds with that cell.
+
+    Parameters
+    ----------
+    contract (dict)
+        The cell's ``config/training_contract.json``.
+
+    Returns
+    -------
+    length_threshold (float | None)
+        The duration bound in time bins, or None for an unbounded cell.
+    """
+
+    if contract['length_threshold'] is None:
+        return None
+    return float(contract['length_threshold'])
+
+
+def length_threshold_label(length_threshold: float | None) -> str:
+    """
+    Description
+    -----------
+    The log text of a cell's duration bound: the bound formatted with ``:g``,
+    or ``none (unbounded)`` for a cell trained without one.
+
+    Parameters
+    ----------
+    length_threshold (float | None)
+        The duration bound in time bins, or None.
+
+    Returns
+    -------
+    label (str)
+        The text for the log.
+    """
+
+    return "none (unbounded)" if length_threshold is None else f"{length_threshold:g}"
+
+
+def length_threshold_attr(length_threshold: float | None) -> float:
+    """
+    Description
+    -----------
+    The value of the store's ``qlvm`` ``length_threshold`` attribute: the bound,
+    or NaN for a cell trained without one (an HDF5 attribute cannot hold None;
+    NaN reads as "no bound").
+
+    Parameters
+    ----------
+    length_threshold (float | None)
+        The duration bound in time bins, or None.
+
+    Returns
+    -------
+    attr (float)
+        The bound, or NaN.
+    """
+
+    return float("nan") if length_threshold is None else float(length_threshold)
+
+
+def embedding_status(durations: np.ndarray, mask_counts: np.ndarray, length_threshold: float | None) -> np.ndarray:
     """
     Description
     -----------
@@ -443,6 +521,7 @@ def embedding_status(durations: np.ndarray, mask_counts: np.ndarray, length_thre
     ``length_threshold`` and it has at least one SAM mask instance; otherwise
     its status sets bit 0 when it is too long (``duration >= length_threshold``)
     and bit 1 when it has no SAM mask, so 1 = too long, 2 = no mask, 3 = both.
+    A cell without a duration bound (``length_threshold`` None) never sets bit 0.
 
     Parameters
     ----------
@@ -451,15 +530,18 @@ def embedding_status(durations: np.ndarray, mask_counts: np.ndarray, length_thre
     mask_counts (np.ndarray)
         ``(n,)`` SAM mask instances per row (bincount of
         ``mask/<session>/spectrogram_index``).
-    length_threshold (float)
-        The regular cell's ``length_threshold``.
+    length_threshold (float | None)
+        The regular cell's ``length_threshold``; None for an unbounded cell.
 
     Returns
     -------
     status (np.ndarray)
         ``(n,)`` int8 status codes.
     """
-    too_long = (np.asarray(durations) >= length_threshold).astype(np.int8)
+    if length_threshold is None:
+        too_long = np.zeros(np.asarray(durations).shape[0], dtype=np.int8)
+    else:
+        too_long = (np.asarray(durations) >= length_threshold).astype(np.int8)
     no_mask = (np.asarray(mask_counts) == 0).astype(np.int8)
     return (too_long * STATUS_TOO_LONG + no_mask * STATUS_NO_MASK).astype(np.int8)
 
@@ -468,7 +550,7 @@ def production_embedding_status(
     durations: np.ndarray,
     mask_counts: np.ndarray,
     pure_squeak: np.ndarray,
-    length_threshold: float,
+    length_threshold: float | None,
 ) -> np.ndarray:
     """
     Description
@@ -481,7 +563,8 @@ def production_embedding_status(
     pure squeak (``squeak`` true, ``usv`` false; the USV maps skip those). Every
     reason a vocalization is not embedded sets one bit (``PRODUCTION_STATUS_CODES``):
     1 too long, 2 no SAM mask, 4 pure squeak, 8 no vocalization frames, so e.g. 6 is a
-    pure squeak without a SAM mask.
+    pure squeak without a SAM mask. A regular cell without a duration bound
+    (``length_threshold`` None) never sets the too-long bit.
 
     Parameters
     ----------
@@ -493,8 +576,8 @@ def production_embedding_status(
     pure_squeak (np.ndarray)
         ``(n,)`` bool, True on the pure squeak rows of the summary
         (``os_utils.pure_squeak_mask``).
-    length_threshold (float)
-        The regular cell contract's ``length_threshold``.
+    length_threshold (float | None)
+        The regular cell contract's ``length_threshold``; None for an unbounded cell.
 
     Returns
     -------
@@ -504,7 +587,8 @@ def production_embedding_status(
 
     durations = np.asarray(durations)
     status = np.zeros(durations.shape[0], dtype=np.int8)
-    status[durations >= length_threshold] |= PRODUCTION_STATUS_TOO_LONG
+    if length_threshold is not None:
+        status[durations >= length_threshold] |= PRODUCTION_STATUS_TOO_LONG
     status[np.asarray(mask_counts) == 0] |= PRODUCTION_STATUS_NO_MASK
     status[np.asarray(pure_squeak, dtype=bool)] |= PRODUCTION_STATUS_PURE_SQUEAK
     status[durations <= 0] |= PRODUCTION_STATUS_NO_FRAMES
@@ -703,7 +787,7 @@ class SpectrogramStoreConsolidator:
             prefix: model_cell_metadata(package_root, relative_cell, manifest_sha256)
             for prefix, relative_cell in V3_MODEL_CELLS.items()
         }
-        length_threshold = float(models[REGULAR_MODEL_PREFIX]['contract']['length_threshold'])
+        length_threshold = contract_length_threshold(models[REGULAR_MODEL_PREFIX]['contract'])
         session_types = package_session_types(package_root / V3_MODEL_CELLS[REGULAR_MODEL_PREFIX])
         default_label_columns = model_cell_label_columns(
             {prefix: str(package_root / relative_cell) for prefix, relative_cell in V3_MODEL_CELLS.items()},
@@ -713,7 +797,7 @@ class SpectrogramStoreConsolidator:
         candidate_label_columns = [model_cell_label_column(prefix, level) for prefix in models for level in LABEL_LEVELS]
         self.message_output(
             f"Package {package_root} ({len(baseline)} corpus sessions); models {', '.join(models)}; "
-            f"length_threshold {length_threshold:g}."
+            f"length_threshold {length_threshold_label(length_threshold)}."
         )
 
         # Pass 1: read and validate every session; nothing is written until all pass.
@@ -831,7 +915,7 @@ class SpectrogramStoreConsolidator:
 
             qlvm_group = store_h5.create_group("qlvm")
             qlvm_group.attrs["status_codes"] = json.dumps({str(code): meaning for code, meaning in STATUS_CODES.items()})
-            qlvm_group.attrs["length_threshold"] = length_threshold
+            qlvm_group.attrs["length_threshold"] = length_threshold_attr(length_threshold)
             qlvm_group.attrs["coordinates_not_embedded"] = "NaN"
             qlvm_group.attrs["label_not_embedded"] = 0
             qlvm_group.attrs["coordinate_datasets"] = json.dumps(list(models))
@@ -1021,7 +1105,7 @@ class SpectrogramStoreConsolidator:
                 f"embedded) would not describe its embedding."
             )
             raise ValueError(error_message)
-        length_threshold = float(regular_contract['length_threshold'])
+        length_threshold = contract_length_threshold(regular_contract)
         bundle = load_qlvm_category_bundle()
         bundle['uncertain_agreement'] = float(bundle['nomenclature']['uncertain_agreement'])
         qlvm_columns = [
@@ -1031,7 +1115,7 @@ class SpectrogramStoreConsolidator:
         required_columns = [*qlvm_columns, USV_FLAG_COLUMN, SQUEAK_FLAG_COLUMN]
         model_listing = ", ".join(f"{qlvm_map} ({metadata['model_id']})" for qlvm_map, metadata in models.items())
         self.message_output(
-            f"Production maps {model_listing}; length_threshold {length_threshold:g}; "
+            f"Production maps {model_listing}; length_threshold {length_threshold_label(length_threshold)}; "
             f"category bundle {bundle['identity']}."
         )
 
@@ -1130,7 +1214,7 @@ class SpectrogramStoreConsolidator:
             qlvm_group = store_h5.create_group("qlvm")
             qlvm_group.attrs["status_codes"] = json.dumps({str(code): meaning for code, meaning in PRODUCTION_STATUS_CODES.items()})
             qlvm_group.attrs["status_is_bit_field"] = True
-            qlvm_group.attrs["length_threshold"] = length_threshold
+            qlvm_group.attrs["length_threshold"] = length_threshold_attr(length_threshold)
             qlvm_group.attrs["coordinates_not_embedded"] = "NaN"
             qlvm_group.attrs["category_not_embedded"] = 0
             qlvm_group.attrs["coordinate_datasets"] = json.dumps(list(PRODUCTION_STORE_MAPS))
@@ -1335,7 +1419,7 @@ def consolidate_spectrogram_store_cli(ctx, root_directories, session_lists, pack
         QLVM model package root whose models' columns and tables a v3 store carries, and whose corpus --package-corpus lists; defaults to the v3 package (qlvm_models_latest/v3).
     spectrograms_root (str)
         Output directory the consolidated store is written to (the spectrograms_root setting when not given).
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns

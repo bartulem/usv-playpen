@@ -29,7 +29,6 @@ dynamic = ["version"]
 dependencies = [
     "astropy",
     "click",
-    "cmasher",
     "ffmpeg-binaries",
     "h5py",
     "hydra-core",
@@ -50,11 +49,12 @@ dependencies = [
     "pillow",
     "platformdirs",
     "polars",
+    "probeinterface",
     "psutil",
     "pyarrow",
     "pygam",
     "PyQt6",
-    "requests",
+    "PyYAML",
     "sam-2",
     "scikit-image",
     "scikit-learn",
@@ -189,8 +189,9 @@ filterwarnings = [
     "error",
     # colorspacious 1.1.2 (latest; unmaintained) ships `\Delta` in docstrings, an
     # invalid escape sequence that Python 3.13 raises as a SyntaxWarning at import
-    # time. It reaches us transitively (cmasher -> colorspacious) and, under the
-    # `error` filter above, escalates to a SyntaxError during test collection.
+    # time. It reached us transitively (cmasher -> colorspacious; cmasher is no longer
+    # a dependency, so the filter can go once every environment is re-synced) and,
+    # under the `error` filter above, escalates to a SyntaxError during test collection.
     # Module-scoping cannot target it (the warning fires at compile time, before the
     # offending module has a stack frame), so it is matched by message + category.
     "ignore:invalid escape sequence:SyntaxWarning",
@@ -199,6 +200,13 @@ filterwarnings = [
     # visualizations/qlvm_figures). Under the `error` filter that ImportWarning
     # would abort test collection, so it is matched by message + category.
     "ignore:Tensorflow not installed:ImportWarning",
+    # torch warns "CUDA initialization: Unexpected error from cudaGetDeviceCount()"
+    # when the host's NVIDIA driver and kernel module disagree (Error 804 after a
+    # driver update without a reboot). torch then reports no CUDA device and the
+    # tests run on the CPU exactly as on a GPU-less machine, so the warning says
+    # something about the host, not the code; under the `error` filter it would fail
+    # every test that touches autograd. Matched by message + category.
+    "ignore:CUDA initialization:UserWarning",
 ]
 log_cli_level = "INFO"
 testpaths = [

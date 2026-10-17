@@ -11,6 +11,7 @@ be exercised without any external software installed.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -34,7 +35,7 @@ from usv_playpen.processing.das_inference import (
     _repaired_facing_edges,
     _remerge_from_consensus,
 )
-from usv_playpen.processing.assign_vocalizations import Vocalocator
+from usv_playpen.processing.assign_vocalizations import Vocalocator, vocalocator_subprocess_timeout_s
 from usv_playpen.processing.assign_vocalizations_utils import are_points_in_conf_set
 
 
@@ -402,6 +403,63 @@ def test_vocalocator_run_vocalocator_subprocess_invocation(tmp_path, processing_
     assert (sl_dir / "assessment_assn.npy").is_file()
 
 
+def test_vocalocator_subprocess_timeout_setting(tmp_path, processing_settings, mocker):
+    """vocalocator.subprocess_timeout_hours sets each subprocess's budget (null, the
+    shipped value, waits however long it runs); a subprocess that overruns it stops
+    the step with a RuntimeError naming the command, and a non-positive budget is
+    refused."""
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    video_dir = tmp_path / "video"
+    video_dir.mkdir()
+    with h5py.File(video_dir / "20230207213549_points3d_translated_rotated_metric.h5", "w") as f:
+        f.create_dataset("track_names", data=np.array([b"M", b"F"]))
+    pls.DataFrame({"usv_id": ["x"]}).write_csv(audio_dir / "x_usv_summary.csv")
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    np.savez(model_dir / "calibration.npz", x=np.array([0.0]))
+    processing_settings['vocalocator']['vcl_model_directory'] = str(model_dir)
+    mocker.patch("usv_playpen.processing.assign_vocalizations.smart_wait")
+    assert processing_settings['vocalocator']['subprocess_timeout_hours'] is None
+    assert vocalocator_subprocess_timeout_s(processing_settings) is None
+    processing_settings['vocalocator']['subprocess_timeout_hours'] = 0.5
+    assert vocalocator_subprocess_timeout_s(processing_settings) == 1800.0
+    sub_run = mocker.patch(
+        "usv_playpen.processing.assign_vocalizations.subprocess.run",
+        side_effect=subprocess.TimeoutExpired(cmd=["conda", "run", "vocalocatorssl"], timeout=1800.0),
+    )
+    voc = Vocalocator(root_directory=str(tmp_path), input_parameter_dict=processing_settings, message_output=lambda *_a: None)
+    with pytest.raises(RuntimeError, match=r"did not finish within 1800 s and was killed: conda run vocalocatorssl"):
+        voc.run_vocalocator_ssl()
+    assert sub_run.call_args.kwargs["timeout"] == 1800.0
+    processing_settings['vocalocator']['subprocess_timeout_hours'] = 0
+    with pytest.raises(ValueError, match="must be positive or null"):
+        vocalocator_subprocess_timeout_s(processing_settings)
+
+
+def test_vocalocator_run_vocalocator_ssl_refuses_two_calibrations(tmp_path, processing_settings, mocker):
+    """Two *cal*.npz files in the model directory raise a ValueError naming both
+    before any subprocess runs, instead of the first sorted one being used."""
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    video_dir = tmp_path / "video"
+    video_dir.mkdir()
+    with h5py.File(video_dir / "20230207213549_points3d_translated_rotated_metric.h5", "w") as f:
+        f.create_dataset("track_names", data=np.array([b"M", b"F"]))
+    pls.DataFrame({"usv_id": ["x"]}).write_csv(audio_dir / "x_usv_summary.csv")
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    for name in ("cal.npz", "old_cal.npz"):
+        np.savez(model_dir / name, x=np.array([0.0]))
+    processing_settings['vocalocator']['vcl_model_directory'] = str(model_dir)
+    mocker.patch("usv_playpen.processing.assign_vocalizations.smart_wait")
+    sub_run = mocker.patch("usv_playpen.processing.assign_vocalizations.subprocess.run")
+    voc = Vocalocator(root_directory=str(tmp_path), input_parameter_dict=processing_settings, message_output=lambda *_a: None)
+    with pytest.raises(ValueError, match="2 calibration NPZ files"):
+        voc.run_vocalocator_ssl()
+    assert sub_run.call_count == 0
+
+
 def test_vocalocator_run_vocalocator_ssl_handles_missing_calibration(tmp_path,
                                                                      processing_settings,
                                                                      mocker, monkeypatch):
@@ -599,6 +657,26 @@ def test_usv_id_is_six_digit_zero_padded_and_widens_past_the_pad(tmp_path):
     # A session larger than the pad widens rather than truncating, so ids stay
     # unique; only the uniform width (and with it numeric sort order) is lost.
     assert f"{1234567:06d}" == "1234567"
+
+
+def test_write_usv_summary_csv_replaces_atomically(tmp_path, mocker):
+    """The DAS summary is written to a temporary sibling and renamed into place,
+    so a write that dies part-way leaves the earlier summary byte-identical and
+    no temporary file behind."""
+    out_path = tmp_path / "x_usv_summary.csv"
+    out_path.write_text("usv_id,start,stop\n000000,0.0,0.1\n")
+    before = out_path.read_bytes()
+
+    def _failing_write(self, file, *args, **kwargs):
+        Path(file).write_text("usv_id,sta")
+        raise OSError("disk full")
+
+    mocker.patch.object(pls.DataFrame, "write_csv", _failing_write)
+    interval = {'start': 0.0, 'stop': 0.05, 'peak_amp_ch': 0.0, 'mean_amp_ch': 0.0, 'chs_count': 1, 'chs_detected': [0]}
+    with pytest.raises(OSError, match="disk full"):
+        _write_usv_summary_csv([interval], out_path)
+    assert out_path.read_bytes() == before
+    assert [path.name for path in tmp_path.iterdir()] == [out_path.name]
 
 
 def test_summarize_das_findings_no_filter_keeps_all_and_skips_quality_checks(
@@ -1571,6 +1649,17 @@ def test_repaired_facing_edges_cap_rejects_oversized_shift():
     ) is None  # onset recovery would be 44 ms > 34 ms cap
 
 
+def test_repaired_facing_edges_rejects_edges_that_would_overlap():
+    """Each edge is clamped outward on its own, so a re-detection whose trailing segment starts inside the
+    leading USV's recorded extent would give the second USV a start before the first USV's stop; such a
+    pair is rejected (None) rather than written as two overlapping USVs."""
+    assert _repaired_facing_edges(
+        annotation_starts=np.array([0.10, 0.195]), annotation_stops=np.array([0.19, 0.40]),
+        snippet_offset=0.8, stop_first=1.000, start_second=1.0164,
+        mid_first=0.95, mid_second=1.0582, max_boundary_shift=0.034,
+    ) is None
+
+
 def _make_seam_repair_fixture(tmp_path: Path, with_ladder: bool = True) -> Path:
     """Builds the on-disk inputs repair_seam_snapped_boundaries expects:
 
@@ -1846,6 +1935,33 @@ def test_consensus_remerge_recurses_into_its_own_sub_intervals():
                                       0.08, 2.0, 2, 3, max_depth=4, min_gap_s=0.015)
     assert len(shallow) == 4, "one pass cannot separate the close pair"
     assert len(deep) == 5, "recursion separates it"
+
+
+def test_consensus_remerge_credits_an_outer_dissenter_on_pieces_cut_deeper():
+    """A channel set aside at the top level is credited in ``chs_detected`` on every final piece its own
+    segment covers, including the pieces a deeper level cuts: the deeper level rebuilds its pieces from
+    segments that never held the outer dissenter's segment, so the credit must be applied after the
+    recursion, not only to the top-level sub-intervals.
+
+    The fixture is the nested one above: ch08 spans everything and is set aside at the top level; the
+    close pair is separated only one level down, where ch09 is set aside.
+    """
+    segments = []
+    for channel in (f'ch{n:02d}' for n in range(1, 8)):
+        segments.append((0.00, 0.30, channel))
+        segments.append((0.50, 0.55, channel))
+        segments.append((0.80, 0.85, channel))
+        segments.append((1.10, 1.15, channel))
+        segments.append((1.17, 1.22, channel))
+    segments.append((0.00, 1.22, 'ch08'))
+    segments.append((1.10, 1.22, 'ch09'))
+    segments.sort(key=lambda seg: seg[0])
+
+    deep, _ = _remerge_from_consensus(_greedy_merge_segments(segments),
+                                      0.08, 2.0, 2, 3, max_depth=4, min_gap_s=0.015)
+    assert len(deep) == 5
+    assert all('ch08' in piece['chs_detected'] for piece in deep)
+    assert [len(piece['chs_detected']) for piece in deep] == [8, 8, 8, 9, 9]
 
 
 def test_consensus_remerge_preserves_the_outer_boundaries():

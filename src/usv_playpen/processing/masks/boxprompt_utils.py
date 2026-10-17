@@ -213,8 +213,9 @@ def process_single_spec_boxprompt(
     predictor: SAM2ImagePredictor,
     detector_cfg: Optional[BoxDetectorConfig],
     cmap,
+    *,
     multimask_output: bool = True,
-    iou_floor: float = 0.70,
+    iou_floor: float,
     drop_below_iou: bool = False,
     tiny_mask_floor_px: int = 12,
     split_disconnected: bool = True,
@@ -266,6 +267,8 @@ def process_single_spec_boxprompt(
         multimask_output: Ask SAM2 for several candidate masks per box and keep the
             one with the highest predicted IoU.
         iou_floor: Predicted-IoU threshold below which a mask counts as low-IoU.
+            Required, keyword-only: the caller passes the ``generate_masks.iou_floor``
+            setting (no default here, so it can never disagree with the settings).
         drop_below_iou: Discard low-IoU masks instead of keeping them.
         tiny_mask_floor_px: Minimum mask / component area in pixels.
         split_disconnected: Emit each 8-connected component of a mask separately.
@@ -436,10 +439,11 @@ def process_session_batch_boxprompt(
     predictor: SAM2ImagePredictor,
     detector_cfg: Optional[BoxDetectorConfig],
     cmap,
-    duration_min: int = 10,
+    *,
+    duration_min: int,
     batch_size: int = 12,
     multimask_output: bool = True,
-    iou_floor: float = 0.70,
+    iou_floor: float,
     drop_below_iou: bool = False,
     split_disconnected: bool = True,
     max_iters: int = 1,
@@ -461,7 +465,10 @@ def process_session_batch_boxprompt(
         predictor: SAM2ImagePredictor instance.
         detector_cfg: Connected-component box detector config.
         cmap: Matplotlib colormap (viridis) for RGB conversion.
-        duration_min: Minimum duration threshold for processing.
+        duration_min: Minimum duration threshold for processing (time bins).
+            Required, keyword-only: the caller passes the ``generate_masks.duration_min``
+            setting (no default here, so it can never disagree with the settings).
+            Every argument after ``cmap`` is keyword-only.
         batch_size: Number of spectrograms to process before memory cleanup.
         multimask_output / iou_floor / drop_below_iou / split_disconnected / max_iters /
         merge_instances / merge_iou / merge_containment: see ``process_single_spec_boxprompt``.

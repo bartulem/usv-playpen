@@ -490,6 +490,49 @@ def test_validate_ephys_video_sync_writes_changepoints(tmp_path, processing_sett
     assert rec["total_num_channels"] == 5
 
 
+def test_validate_ephys_video_sync_failed_rewrite_keeps_the_old_changepoints(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    The changepoints JSON (and the extracted sync channel) are written through a
+    temporary sibling: after a successful run, a re-run whose JSON dump dies
+    part-way leaves the earlier changepoints JSON byte-identical and no
+    temporary file behind.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp dir.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        No-ops `smart_wait` and fails the second JSON dump.
+
+    Returns
+    -------
+    None
+    """
+
+    test_validate_ephys_video_sync_writes_changepoints(tmp_path, processing_settings, mocker)
+    root = tmp_path / "Data" / "20250919_155842"
+    ephys_dir = tmp_path / "EPHYS" / "20250919_imec0"
+    cp = ephys_dir / "changepoints_info_20250919_imec0.json"
+    before = cp.read_bytes()
+    assert (root / "ephys" / "imec0" / "20250919_155842_imec0_sync_ch_data.npy").is_file()
+
+    def _failing_dump(obj, file_handle, **_kwargs):
+        file_handle.write('{"20250919_155842.imec0": {')
+        raise OSError("disk full")
+
+    mocker.patch("usv_playpen.processing.synchronize_files.json.dump", side_effect=_failing_dump)
+    sync = Synchronizer(root_directory=str(root), input_parameter_dict=processing_settings,
+                        message_output=lambda *_a, **_k: None)
+    with pytest.raises(OSError, match="disk full"):
+        sync.validate_ephys_video_sync()
+    assert cp.read_bytes() == before
+    assert [path.name for path in ephys_dir.iterdir()] == [cp.name]
+
+
 # _phase_shift_correct_in_place — Neuropixels ADC sample-time de-skew
 
 
@@ -1004,6 +1047,45 @@ def test_find_audio_sync_trains_keeps_original_audio_unless_every_device_passes(
 
     sync.find_audio_sync_trains()
     assert (tmp_path / "audio" / "original").exists() is original_kept
+
+
+def test_find_audio_sync_trains_deletes_original_audio_with_two_sync_cameras(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    With two sync cameras whose pulse sequences are identical, only the first camera
+    is compared against each audio device, so the deletion of audio/original must
+    expect one comparison per audio device, not one per device x camera: two in-sync
+    devices delete it, as they do with a single camera.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        Patch factory; no-ops ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
+    sync = _make_sync(tmp_path, processing_settings)
+    video_frames = np.array([10, 20, 30, 40])
+    audio_starts = (video_frames / 150.0 * 250000).astype(np.int64)
+    _wire_audio_sync(sync, mocker, audio_durations_ms=np.array([300.0, 300.0, 300.0, 300.0]), audio_starts=audio_starts,
+                     video_seq=np.array([300, 300, 300, 300]), video_frames=video_frames, root=tmp_path,
+                     wave_keys=("m_240101_ch02_cropped_to_video.wav", "s_240101_ch02_cropped_to_video.wav"))
+    mocker.patch.object(sync, "find_video_sync_trains",
+                        return_value=(video_frames, {"21372315": np.array([300, 300, 300, 300]),
+                                                     "21372316": np.array([300, 300, 300, 300])}))
+    (tmp_path / "audio" / "original").mkdir(parents=True, exist_ok=True)
+
+    sync.find_audio_sync_trains()
+    assert not (tmp_path / "audio" / "original").exists()
 
 
 def test_find_audio_sync_trains_audio_start_precedes_all_frames_nan(tmp_path, processing_settings, mocker):
@@ -1649,11 +1731,36 @@ def _crop_both_m_longer(tmp_path, mocker, read_side_effect):
 
     mocker.patch("usv_playpen.processing.synchronize_files.wavfile.read",
                  side_effect=read_side_effect)
-    mocker.patch("usv_playpen.processing.synchronize_files.wavfile.write")
+    mocker.patch("usv_playpen.processing.synchronize_files.wavfile.write", side_effect=_touch_wav)
 
     sync = Synchronizer(root_directory=str(root), input_parameter_dict=settings,
                         message_output=lambda *_a, **_k: None)
     sync.crop_wav_files_to_video()
+
+
+def _touch_wav(filename, rate, data):
+    """
+    Description
+    -----------
+    Stand-in for ``wavfile.write`` that only creates an empty file at
+    ``filename`` (the rewritten WAV goes to a temporary sibling that is then
+    renamed into place, so the file must exist).
+
+    Parameters
+    ----------
+    filename (str | pathlib.Path)
+        The path the WAV would be written to.
+    rate (int)
+        Sampling rate (ignored).
+    data (np.ndarray)
+        Samples (ignored).
+
+    Returns
+    -------
+    None
+    """
+
+    Path(filename).write_bytes(b"")
 
 
 def _make_read_side_effect(cropped_size, real_read):
@@ -1766,7 +1873,7 @@ def _crop_both_s_longer(tmp_path, mocker, read_side_effect):
 
     mocker.patch("usv_playpen.processing.synchronize_files.wavfile.read",
                  side_effect=read_side_effect)
-    mocker.patch("usv_playpen.processing.synchronize_files.wavfile.write")
+    mocker.patch("usv_playpen.processing.synchronize_files.wavfile.write", side_effect=_touch_wav)
 
     sync = Synchronizer(root_directory=str(root), input_parameter_dict=settings,
                         message_output=lambda *_a, **_k: None)
@@ -1795,3 +1902,43 @@ def test_crop_wav_files_to_video_s_longer_oversized_cropped(tmp_path, mocker):
 
     # master window 200..225 inclusive = 26 samples; 40 > 26 -> '>' branch.
     _crop_both_s_longer(tmp_path, mocker, _make_read_side_effect(cropped_size=40, real_read=_real_wavfile_read))
+
+
+def test_synchronizer_requires_a_root_directory(processing_settings):
+    """root_directory is required: None raises a ValueError instead of a KeyError on
+    a settings key that does not exist."""
+    with pytest.raises(ValueError, match="needs a root_directory"):
+        Synchronizer(root_directory=None, input_parameter_dict=processing_settings)
+    with pytest.raises(ValueError, match="needs a root_directory"):
+        Synchronizer()
+
+
+def test_validate_ephys_video_sync_refuses_a_second_changepoints_file(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    The probe folder's changepoints JSON is read and rewritten by its own name;
+    another ``changepoints_info_*.json`` in that folder raises a ValueError naming
+    it, instead of the first sorted file being read and a different one written.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp dir.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        No-ops `smart_wait`.
+
+    Returns
+    -------
+    None
+    """
+
+    test_validate_ephys_video_sync_writes_changepoints(tmp_path, processing_settings, mocker)
+    ephys_dir = tmp_path / "EPHYS" / "20250919_imec0"
+    (ephys_dir / "changepoints_info_20250919_imec0_copy.json").write_text("{}")
+    sync = Synchronizer(root_directory=str(tmp_path / "Data" / "20250919_155842"), input_parameter_dict=processing_settings,
+                        message_output=lambda *_a, **_k: None)
+    with pytest.raises(ValueError, match="changepoints_info_20250919_imec0_copy.json"):
+        sync.validate_ephys_video_sync()

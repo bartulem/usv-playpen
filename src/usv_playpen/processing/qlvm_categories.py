@@ -267,9 +267,12 @@ def periodic_basins(change: np.ndarray, marker_sigma: float, marker_distance: in
     Marker watershed of the content-change field on the torus. The field is
     blurred (``marker_sigma`` pixels, wrapped); its markers are the pixels equal
     to the minimum of the blurred field over a ``2 * marker_distance + 1`` pixel
-    window (wrapped), joined into connected markers (8-connectivity) on a 3 x 3
-    tiling so a marker crossing a seam stays one marker, and numbered ``1..n`` in
-    the order of their labels in the central tile. The flood runs on the 3 x 3
+    window (wrapped), joined into connected markers (8-connectivity) on the
+    torus: the minima are labelled on the single tile, and two labels that touch
+    across the opposite edges (8-connectivity, corners included) are merged, so a
+    marker crossing a seam stays one marker. The merged markers are numbered
+    ``1..n`` in the raster order of their first pixel in the tile (the order a
+    marker that does not touch a seam always had). The flood runs on the 3 x 3
     tiling of the blurred field with every copy of a marker carrying the same
     label, and the central tile is returned.
 
@@ -291,11 +294,23 @@ def periodic_basins(change: np.ndarray, marker_sigma: float, marker_distance: in
     resolution = change.shape[0]
     smooth = gaussian_filter(change, marker_sigma, mode='wrap')
     minima = smooth == minimum_filter(smooth, size=2 * marker_distance + 1, mode='wrap')
-    tiled_labels, _ = label(np.tile(minima, (3, 3)), structure=np.ones((3, 3)))
-    centre = tiled_labels[resolution:2 * resolution, resolution:2 * resolution]
+    tile_labels, n_labels = label(minima, structure=np.ones((3, 3)))
+    # Every label maps to the smallest label of its marker; two labels touching across an edge
+    # pair (8-connectivity) move every label of the larger marker onto the smaller one.
+    marker_of = np.arange(n_labels + 1)
+    last = resolution - 1
+    for index in range(resolution):
+        for step in (-1, 0, 1):
+            neighbour = (index + step) % resolution
+            for first, second in ((tile_labels[index, last], tile_labels[neighbour, 0]),
+                                  (tile_labels[last, index], tile_labels[0, neighbour])):
+                if first and second and marker_of[first] != marker_of[second]:
+                    low, high = sorted((marker_of[first], marker_of[second]))
+                    marker_of[marker_of == high] = low
+    merged = marker_of[tile_labels]
     markers = np.zeros((resolution, resolution), dtype=int)
-    for new, old in enumerate(np.unique(centre[centre > 0]), start=1):
-        markers[centre == old] = new
+    for new, old in enumerate(np.unique(merged[merged > 0]), start=1):
+        markers[merged == old] = new
     flooded = watershed(np.tile(smooth, (3, 3)), np.tile(markers, (3, 3)))
     return flooded[resolution:2 * resolution, resolution:2 * resolution]
 
@@ -1242,7 +1257,7 @@ def build_qlvm_categories_cli(ctx, positions_file, properties_file, output_direc
         Per-USV properties (.npz / .parquet / .csv with spec_id, session_id and every property column), e.g. a build-qlvm-training-set split; its rows are the corpus.
     output_directory (str)
         Directory to write category_grids.npz, category_nomenclature.json, category_usv_labels.csv and build_config.json into.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -1293,7 +1308,7 @@ def assign_qlvm_categories_cli(ctx, root_directory, **kwargs) -> None:
         The click context; its parameter sources tell which options were given on the command line.
     root_directory (str)
         Session root directory path.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns

@@ -15,12 +15,15 @@ the usv_summary row it belongs to (placeholder ``duration == 0`` rows getting no
 
 from __future__ import annotations
 
+import inspect
+
 import h5py
 import numpy as np
 import pytest
 
 from usv_playpen.processing import generate_masks as generate_masks_module
 from usv_playpen.processing.generate_masks import MaskGenerator, flatten_session_masks
+from usv_playpen.processing.masks import boxprompt_utils
 
 _SESSION_ID = "20230119_155302"
 _N_FREQ = 128
@@ -236,6 +239,36 @@ def test_generate_session_masks_overwrites_existing_group(tmp_path, monkeypatch)
     assert spectrogram_index.tolist() == [0, 1]
 
 
+def test_generate_session_masks_failed_write_keeps_the_old_file(tmp_path, monkeypatch):
+    """The mask group is written into a copy of the spectrogram H5 that is renamed
+    onto it, so a write that dies part-way leaves the old file -- its earlier mask
+    group included -- byte-identical and no temporary file behind."""
+    root = _make_session_h5(tmp_path, [40, 60])
+    h5_path = root / "audio" / "spectrograms" / f"{_SESSION_ID}_spectrograms.h5"
+    with h5py.File(h5_path, "a") as h5_file:
+        stale = h5_file.create_group(f"mask/{_SESSION_ID}")
+        stale.create_dataset("segmentations", data=np.ones((1, _N_FREQ, _N_TIME), dtype=bool))
+        stale.create_dataset("spectrogram_index", data=np.zeros((1,), dtype=np.int64))
+    before = h5_path.read_bytes()
+    _install_fake_kernels(monkeypatch, {0: [{"segmentation": _seg(40)}], 1: [{"segmentation": _seg(60)}]})
+    original_create = h5py.Group.create_dataset
+
+    def _failing_create(self, name, *args, **kwargs):
+        if name == "spectrogram_index":
+            raise OSError("disk full")
+        return original_create(self, name, *args, **kwargs)
+
+    monkeypatch.setattr(h5py.Group, "create_dataset", _failing_create)
+    with pytest.raises(OSError, match="disk full"):
+        MaskGenerator(
+            root_directory=str(root),
+            input_parameter_dict=_base_settings(tmp_path),
+            message_output=lambda *_: None,
+        ).generate_session_masks()
+    assert h5_path.read_bytes() == before
+    assert [path.name for path in h5_path.parent.iterdir()] == [h5_path.name]
+
+
 def test_generate_session_masks_cc_detector_skips_yolo_weights(tmp_path, monkeypatch):
     """The cc detector path needs no YOLO weights: a blank yolo_weights is fine and
     the mask group is still written (detect_fn is None, handled by the kernel)."""
@@ -403,3 +436,15 @@ def test_generate_session_masks_row_subset_rejects_out_of_range(tmp_path, monkey
             input_parameter_dict=_base_settings(tmp_path),
             message_output=lambda *_: None,
         ).generate_session_masks(row_subset={5})
+
+
+def test_boxprompt_kernels_take_iou_floor_and_duration_min_from_the_caller():
+    """The box-prompt kernels carry no defaults for iou_floor / duration_min (they
+    used to default to 0.7 / 10 while the settings ship 0.3 / 5), so the only
+    values that reach them are the settings generate_masks passes."""
+    single = inspect.signature(boxprompt_utils.process_single_spec_boxprompt).parameters
+    batch = inspect.signature(boxprompt_utils.process_session_batch_boxprompt).parameters
+    for parameters, names in ((single, ("iou_floor",)), (batch, ("iou_floor", "duration_min"))):
+        for name in names:
+            assert parameters[name].default is inspect.Parameter.empty
+            assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY

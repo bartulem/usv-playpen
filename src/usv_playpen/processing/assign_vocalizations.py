@@ -30,6 +30,37 @@ from .assign_vocalizations_utils import (
 )
 
 
+def vocalocator_subprocess_timeout_s(input_parameter_dict: dict) -> float | None:
+    """
+    Description
+    -----------
+    The time budget of each vocalocator subprocess (``vocalocator.assess``, and
+    ``vocalocatorssl`` prediction and assignment), from the
+    ``vocalocator.subprocess_timeout_hours`` setting. ``null`` (the shipped
+    value) sets no budget: the step waits for the subprocess however long it
+    runs, as it always has. A number of hours makes a subprocess that runs
+    longer get killed and the step stop with a RuntimeError naming the command.
+
+    Parameters
+    ----------
+    input_parameter_dict (dict)
+        The processing settings.
+
+    Returns
+    -------
+    timeout_s (float | None)
+        The budget in seconds, or None for no budget.
+    """
+
+    timeout_hours = input_parameter_dict['vocalocator']['subprocess_timeout_hours']
+    if timeout_hours is None:
+        return None
+    if float(timeout_hours) <= 0:
+        msg = f"vocalocator.subprocess_timeout_hours must be positive or null, got {timeout_hours!r}."
+        raise ValueError(msg)
+    return float(timeout_hours) * 3600.0
+
+
 class Vocalocator:
     """
     Description
@@ -287,14 +318,20 @@ class Vocalocator:
         conda_exe = (os.environ['CONDA_EXE'] if 'CONDA_EXE' in os.environ else 'conda')
         clean_env = os.environ.copy()
         clean_env.pop('PYTHONHOME', None)
-        subprocess.run(
-            args=[conda_exe, 'run', '--no-capture-output', '-n', vcl_conda_name, 'python', '-m', 'vocalocator.assess',
-                  '--config', model_config_path, '--data', data_file_path, '--inference', '-o', output_file_path],
-            cwd=model_directory,
-            env=clean_env,
-            shell=False,
-            check=True
-        )
+        assess_command = [conda_exe, 'run', '--no-capture-output', '-n', vcl_conda_name, 'python', '-m', 'vocalocator.assess',
+                          '--config', model_config_path, '--data', data_file_path, '--inference', '-o', output_file_path]
+        try:
+            subprocess.run(
+                args=assess_command,
+                cwd=model_directory,
+                env=clean_env,
+                shell=False,
+                check=True,
+                timeout=vocalocator_subprocess_timeout_s(self.input_parameter_dict),
+            )
+        except subprocess.TimeoutExpired as error:
+            msg = f"The vocalocator subprocess did not finish within {error.timeout:.0f} s and was killed: {' '.join(map(str, error.cmd))}."
+            raise RuntimeError(msg) from error
 
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
@@ -343,7 +380,8 @@ class Vocalocator:
         self.message_output(f"Vocalization count attributed to mouse #2: {mouse_two_vocalizations.sum()}")
         self.message_output(f"Vocalization count attributed to BOTH mice: {two_in_set.sum()}")
 
-        np.save(pathlib.Path(self.root_directory) / 'audio' / 'sound_localization' / 'assessment_assn.npy', assignments)
+        with atomic_output_path(pathlib.Path(self.root_directory) / 'audio' / 'sound_localization' / 'assessment_assn.npy') as tmp_assignment_path, open(tmp_assignment_path, 'wb') as assignment_file:
+            np.save(assignment_file, assignments)
 
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
@@ -430,10 +468,16 @@ class Vocalocator:
             # subprocess is raised below as a RuntimeError, so the step fails rather
             # than returning as if the session had been assigned
             cal_file = next(f.name for f in sorted(pathlib.Path(model_directory).glob("*cal*.npz")))
+            calibration_files = sorted(pathlib.Path(model_directory).glob("*cal*.npz"))
+            if len(calibration_files) > 1:
+                msg = (f"{len(calibration_files)} calibration NPZ files (*cal*.npz) in the vocalocator model directory "
+                       f"{model_directory}, expected exactly one: {', '.join(f.name for f in calibration_files)}.")
+                raise ValueError(msg)
 
             conda_exe = (os.environ['CONDA_EXE'] if 'CONDA_EXE' in os.environ else 'conda')
             clean_env = os.environ.copy()
             clean_env.pop('PYTHONHOME', None)
+            subprocess_timeout_s = vocalocator_subprocess_timeout_s(self.input_parameter_dict)
             subprocess.run(
                 args=[conda_exe, 'run', '--no-capture-output', '-n', vcl_conda_name, 'python', '-m', 'vocalocatorssl',
                       '--data', str(data_file_path), '--save-path', model_directory, '--predict',
@@ -441,7 +485,8 @@ class Vocalocator:
                 cwd=model_directory,
                 env=clean_env,
                 shell=False,
-                check=True
+                check=True,
+                timeout=subprocess_timeout_s,
             )
             subprocess.run(
                 args=[conda_exe, 'run', '--no-capture-output', '-n', vcl_conda_name, 'python', '-m', 'vocalocatorssl.assign',
@@ -450,13 +495,17 @@ class Vocalocator:
                 cwd=model_directory,
                 env=clean_env,
                 shell=False,
-                check=True
+                check=True,
+                timeout=subprocess_timeout_s,
             )
         except StopIteration as error:
             msg = f"No calibration NPZ file (*cal*.npz) in the vocalocator model directory {model_directory}."
             raise RuntimeError(msg) from error
         except subprocess.CalledProcessError as error:
             msg = f"The vocalocator-ssl subprocess failed (exit code {error.returncode}): {' '.join(map(str, error.cmd))}."
+            raise RuntimeError(msg) from error
+        except subprocess.TimeoutExpired as error:
+            msg = f"The vocalocator-ssl subprocess did not finish within {error.timeout:.0f} s and was killed: {' '.join(map(str, error.cmd))}."
             raise RuntimeError(msg) from error
 
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)

@@ -10,9 +10,9 @@ module fine-tunes that YOLO detector from a COCO-pretrained checkpoint
 that ``generate_masks``' ``yolo_weights`` setting can point at.
 
 Only the YOLO *box detector* is trained here -- SAM2 is used pretrained (it is
-not fine-tuned in usv-playpen). Ultralytics + torch are imported lazily inside
-:meth:`MaskDetectorTrainer.train`, so importing this module never pulls them in;
-a missing ``data.yaml`` raises a clear error before any GPU library is touched.
+not fine-tuned in usv-playpen). Ultralytics (and with it torch) is imported at
+module load, like every other import of the repository; a missing ``data.yaml``
+raises a clear error before training starts.
 """
 
 from __future__ import annotations
@@ -85,9 +85,8 @@ class MaskDetectorTrainer:
         then copies the run's ``best.pt`` to ``<output_directory>/best.pt`` -- the
         path to set as ``generate_masks``' ``yolo_weights``.
 
-        Ultralytics + torch are imported here, not at module load; a missing
-        ``data.yaml`` raises ``FileNotFoundError`` before any GPU library is
-        imported.
+        A missing ``data.yaml`` raises ``FileNotFoundError`` before the YOLO
+        model is built or any GPU work starts.
 
         Parameters
         ----------
@@ -189,7 +188,7 @@ def train_masks_cli(ctx, dataset_directory, output_directory, **kwargs) -> None:
         YOLO dataset directory (export-yolo-dataset output, with data.yaml).
     output_directory (str)
         Directory for the Ultralytics run + copied best.pt.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns

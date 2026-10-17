@@ -331,6 +331,21 @@ def rebase_experimenter_in_paths(obj: object = None,
     already equals ``exp_id`` is a no-op -- so repeated application (on load
     and on every experimenter change) is idempotent.
 
+    The lab's fixed QLVM model paths are never re-keyed: a string equal to, or
+    a path inside, ``QLVM_MODEL_PACKAGE_ROOT`` (the production QLVM cells,
+    squeak cell included) or ``QLVM_CATEGORY_BUNDLE_DIRECTORY`` (the category
+    bundle) is returned unchanged. Those locations are module constants under
+    one experimenter's spectrograms directory precisely so the re-keying
+    cannot move them, but ``derive_spectrogram_model_paths`` writes them into
+    a settings dict; if such a dict were saved and re-keyed (the GUI re-keys
+    its settings on launch and on every experimenter change), the cells would
+    otherwise be rewritten under the active experimenter's directory, where no
+    cell (or a different one) exists.
+
+    An empty name in ``experimenter_list`` is refused: the empty string occurs
+    in every string and is bounded before every separator, so it would splice
+    ``exp_id`` into every path.
+
     Parameters
     ----------
     obj (dict | list | str | object)
@@ -345,6 +360,12 @@ def rebase_experimenter_in_paths(obj: object = None,
     -------
     rebased (dict | list | str | object)
         A structurally identical copy with experimenter references rewritten.
+
+    Raises
+    ------
+    ValueError
+        ``experimenter_list`` holds an empty name (checked when a string leaf
+        is rewritten).
     """
 
     if isinstance(obj, dict):
@@ -352,6 +373,15 @@ def rebase_experimenter_in_paths(obj: object = None,
     if isinstance(obj, list):
         return [rebase_experimenter_in_paths(value, experimenter_list, exp_id) for value in obj]
     if isinstance(obj, str):
+        if any(not name for name in experimenter_list):
+            error_message = (
+                f"rebase_experimenter_in_paths: the experimenter roster {list(experimenter_list)} holds an "
+                f"empty experimenter name, which would rewrite every path; remove it from 'experimenter_list'."
+            )
+            raise ValueError(error_message)
+        for fixed_directory in (QLVM_MODEL_PACKAGE_ROOT, QLVM_CATEGORY_BUNDLE_DIRECTORY):
+            if obj == fixed_directory or obj.startswith(f"{fixed_directory}/"):
+                return obj
         rebased_string = obj
         is_pathlike = ('/' in rebased_string) or ('\\' in rebased_string)
         for name in experimenter_list:
@@ -1378,9 +1408,15 @@ def wait_for_subprocesses(
         the built-in print() when None.
     raise_on_nonzero (bool)
         If True, raises RuntimeError when any subprocess exits with a
-        non-zero return code.
+        non-zero return code; the message (and the log line, raised or not)
+        names each failed subprocess's index, return code and command
+        (``Popen.args``).
     raise_on_timeout (bool)
-        If True, raises TimeoutError when the group exceeds max_seconds.
+        If True, raises TimeoutError when the group exceeds max_seconds; the
+        message names the command of every subprocess that was terminated.
+        A caller whose next step reads the subprocesses' outputs passes True
+        for both, so a failed or killed child stops the step instead of
+        leaving a missing or truncated file for that step to read.
 
     Returns
     -------
@@ -1426,8 +1462,10 @@ def wait_for_subprocesses(
                     except OSError:
                         pass
             if raise_on_timeout:
+                commands_str = "; ".join(f"#{i}: {subps_list[i].args}" for i in still_running_idx)
                 raise TimeoutError(
-                    f"{label}: {len(still_running_idx)} subprocess(es) did not finish within {max_seconds:.0f} s."
+                    f"{label}: {len(still_running_idx)} subprocess(es) did not finish within {max_seconds:.0f} s "
+                    f"and were terminated -- {commands_str}."
                 )
             # refresh status after termination
             status = [p.poll() for p in subps_list]
@@ -1436,7 +1474,7 @@ def wait_for_subprocesses(
 
     failed = [(i, s) for i, s in enumerate(status) if s is not None and s != 0]
     if failed:
-        failures_str = ", ".join(f"#{i}(rc={s})" for i, s in failed)
+        failures_str = ", ".join(f"#{i}(rc={s}, command: {subps_list[i].args})" for i, s in failed)
         log(f"[{label}] {len(failed)}/{len(subps_list)} subprocess(es) exited with non-zero status: {failures_str}.")
         if raise_on_nonzero:
             raise RuntimeError(
@@ -1661,8 +1699,11 @@ def _vocal_flag(usv_summary: Any, column: str) -> Any:
     Description
     -----------
     One of the summary's boolean flags (``usv``, ``squeak`` or ``noise``) as a null-free boolean
-    Series (null -> False). The column is cast through text, so a flag read from CSV as Boolean, as
-    the strings "true" / "false", or as an all-null column of any type all give the same answer.
+    Series (null -> False). A non-numeric column is cast through text, so a flag read from CSV as
+    Boolean, as the strings "true" / "false", or as an all-null column of any type all give the
+    same answer. A numeric column (a flag stored as integer 0 / 1, e.g. by a table that went
+    through pandas or numpy) reads 1 as True and 0 as False; read through text it would give "1"
+    and so all False. A numeric column holding any value other than 0 / 1 is not a flag and raises.
 
     Parameters
     ----------
@@ -1675,9 +1716,23 @@ def _vocal_flag(usv_summary: Any, column: str) -> Any:
     -------
     flag (polars.Series)
         Boolean, False where the value is null.
+
+    Raises
+    ------
+    ValueError
+        The column is numeric and holds a value other than 0 / 1.
     """
 
-    return usv_summary[column].cast(str).str.to_lowercase().eq("true").fill_null(False)
+    values = usv_summary[column]
+    if values.dtype.is_numeric():
+        if not values.drop_nulls().is_in([0, 1]).all():
+            error_message = (
+                f"The '{column}' flag is numeric but holds values other than 0 / 1 "
+                f"({sorted(set(values.drop_nulls().to_list()))[:10]}), so it cannot be read as a boolean."
+            )
+            raise ValueError(error_message)
+        return values.eq(1).fill_null(False)
+    return values.cast(str).str.to_lowercase().eq("true").fill_null(False)
 
 
 def noise_mask(usv_summary: Any, source: str) -> Any:
@@ -1686,8 +1741,8 @@ def noise_mask(usv_summary: Any, source: str) -> Any:
     -----------
     Marks the rows of a USV summary that ``detect-usv-noise`` flagged as noise (``noise`` true), as
     a null-free boolean Series: a null ``noise`` (a segment too short to score) counts as not noise.
-    The column is read through text exactly like the ``usv`` / ``squeak`` booleans
-    (:func:`_vocal_flag`), so the answer is the same whether the CSV reader typed ``noise`` as
+    The column is read exactly like the ``usv`` / ``squeak`` booleans (:func:`_vocal_flag`: through
+    text, or as integer 0 / 1 when it is numeric), so the answer is the same whether the CSV reader typed ``noise`` as
     Boolean, as the strings ``"true"`` / ``"false"`` (which ``polars.read_csv`` does when the rows it
     infers the schema from hold no value) or as an all-null column. A plain
     ``.cast(polars.Boolean)`` raises on a string column, which is why every noise reader goes
@@ -1942,7 +1997,7 @@ def _with_event_times(usv_summary: Any, start: np.ndarray, stop: np.ndarray, ret
     Writes re-timed ``start`` / ``stop`` into a USV summary table and sorts it by the new onset.
     When the table carries ``duration`` (the segment's ``stop - start``), the re-timed rows get
     ``stop - start`` of their new times, so a row's duration always spans its own ``start`` /
-    ``stop``; the other rows keep their stored value untouched.
+    ``stop``; the other rows keep their stored value untouched (a null stays null).
 
     Parameters
     ----------
@@ -1962,8 +2017,13 @@ def _with_event_times(usv_summary: Any, start: np.ndarray, stop: np.ndarray, ret
 
     columns = {"start": start, "stop": stop}
     if "duration" in usv_summary.columns:
-        duration = usv_summary["duration"].cast(float).to_numpy()
-        columns["duration"] = np.where(retimed, stop - start, duration)
+        # Scattered into the stored Series (not rebuilt through numpy), so a null duration on a row
+        # that is not re-timed stays null instead of turning into NaN.
+        duration = usv_summary["duration"].cast(float).clone()
+        retimed_rows = np.flatnonzero(retimed)
+        if retimed_rows.size:
+            duration = duration.scatter(retimed_rows, (stop - start)[retimed_rows])
+        columns["duration"] = duration
     return usv_summary.with_columns(**columns).sort("start")
 
 
@@ -2239,20 +2299,22 @@ def first_match_or_raise(
     """
     Description
     -----------
-    Returns the alphabetically-first path matching a glob pattern under
-    ``root``, or raises a FileNotFoundError with a clear, debuggable message
-    naming both the pattern and the root that produced zero matches. Replaces
-    the common 'sorted(root.glob(...))[0]' / 'list(root.rglob(...))[0]' idiom,
-    which surfaced as bare IndexError with no hint about which pattern failed.
+    Returns the ONE path matching a glob pattern under ``root``. It raises a
+    FileNotFoundError naming the pattern and the root when nothing matches, and
+    a ValueError listing every match when more than one does. Replaces the
+    common 'sorted(root.glob(...))[0]' / 'list(root.rglob(...))[0]' idiom,
+    which surfaced as a bare IndexError with no hint about which pattern
+    failed, and which silently took whichever file sorted first when a stray
+    copy (a duplicated summary, a second recording folder, a playback
+    session's speaker track next to the mouse track) also matched -- and then
+    read, and sometimes rewrote, the wrong file.
 
-    Matches are sorted deterministically before selection so that callers get
-    the same answer across runs, platforms, and filesystems. Earlier revisions
-    used 'next(iter(glob))' which returned matches in directory-entry order;
-    that caused non-deterministic behavior when the pattern matched multiple
-    files (ext4's hash-order directory listing, in particular, is effectively
-    random). Every known caller was the post-refactor equivalent of
-    'sorted(glob)[0]', so sorting is restored as the default — there is no
-    opt-out because non-deterministic first-match is not a feature we want.
+    Every caller's pattern was checked against the lab's sessions (796
+    sessions of two experimenters, the EPHYS probe folders and the model
+    folders): each matches at most one file there. A caller whose pattern
+    legitimately matches several files (per-channel WAVs, versioned files)
+    must choose among them explicitly instead (e.g. ``newest_match_or_raise``,
+    or a documented choice of its own).
 
     Parameters
     ----------
@@ -2269,7 +2331,7 @@ def first_match_or_raise(
     Returns
     -------
     match (pathlib.Path)
-        The alphabetically-first match.
+        The single match.
     """
 
     root = pathlib.Path(root)
@@ -2278,10 +2340,16 @@ def first_match_or_raise(
             f"{label or pattern}: search root '{root}' does not exist."
         )
     matches = sorted(root.rglob(pattern) if recursive else root.glob(pattern))
+    kind = "rglob" if recursive else "glob"
     if not matches:
-        kind = "rglob" if recursive else "glob"
         raise FileNotFoundError(
             f"{label or pattern}: no match for {kind} pattern '{pattern}' under '{root}'."
+        )
+    if len(matches) > 1:
+        matches_str = ", ".join(str(match) for match in matches)
+        raise ValueError(
+            f"{label or pattern}: {len(matches)} matches for {kind} pattern '{pattern}' under '{root}', "
+            f"expected exactly one: {matches_str}. Remove or rename the stray file(s)."
         )
     return matches[0]
 

@@ -10,6 +10,8 @@ each spec_id), with USVs absent from the H5 left null.
 
 from __future__ import annotations
 
+import pathlib
+
 import h5py
 import numpy as np
 import polars as pls
@@ -295,3 +297,81 @@ def test_merge_features_uses_mask_group_when_present(tmp_path, mocker):
     np.testing.assert_array_equal(measured["starts"], [0.1])
     assert measured["spec_params"] is spec_params
     assert df["loudness_db"][0] == pytest.approx(61.5)
+
+
+def _feature_session(tmp_path):
+    """
+    Description
+    -----------
+    Writes one synthetic session (a 4-row summary with distinct usv_ids and a
+    matching spectrogram H5 whose rows 0, 1 and 3 carry spectrograms) for the
+    write-safety tests.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest's per-test directory.
+
+    Returns
+    -------
+    root, summary_path (tuple[pathlib.Path, pathlib.Path])
+        The session root and its usv_summary.csv.
+    """
+
+    session_id = "20230119_155302"
+    root = tmp_path / session_id
+    (root / "audio" / "spectrograms").mkdir(parents=True)
+    summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
+    pls.DataFrame({
+        "usv_id": [f"{i:06d}" for i in range(4)],
+        "start": [0.1, 0.3, 0.5, 0.7],
+        "stop": [0.15, 0.35, 0.55, 0.75],
+    }).write_csv(summary_path)
+    _write_h5(root / "audio" / "spectrograms" / f"{session_id}_spectrograms.h5",
+              session_id, n_usv=4, valid_rows=[0, 1, 3])
+    return root, summary_path
+
+
+def test_merge_features_keeps_row_order_whatever_order_the_join_returns(tmp_path, mocker):
+    """The summary is written back in its own row order even when the left join
+    returns its rows in another order (polars does not promise the left order by
+    default), so no feature lands on the wrong USV row."""
+    root, summary_path = _feature_session(tmp_path)
+    original_join = pls.DataFrame.join
+
+    def _reversed_join(self, *args, **kwargs):
+        return original_join(self, *args, **kwargs).reverse()
+
+    mocker.patch.object(pls.DataFrame, "join", _reversed_join)
+    mocker.patch("usv_playpen.processing.compute_usv_acoustic_features.smart_wait")
+    USVAcousticFeatureExtractor(
+        root_directory=str(root),
+        input_parameter_dict={"compute_usv_acoustic_features": _CFG},
+        message_output=lambda *_a, **_kw: None,
+    ).merge_features_into_summary()
+    df = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})
+    assert df["usv_id"].to_list() == [f"{i:06d}" for i in range(4)]
+    assert df["mean_amplitude"][2] is None
+    assert df["mean_amplitude"].null_count() == 1
+
+
+def test_merge_features_leaves_the_summary_whole_when_the_write_fails(tmp_path, mocker):
+    """The summary is replaced atomically: a write that dies part-way leaves the
+    previous summary byte-identical and no temporary file behind."""
+    root, summary_path = _feature_session(tmp_path)
+    before = summary_path.read_bytes()
+
+    def _failing_write(self, file, *args, **kwargs):
+        pathlib.Path(file).write_text("usv_id,sta")
+        raise OSError("disk full")
+
+    mocker.patch.object(pls.DataFrame, "write_csv", _failing_write)
+    mocker.patch("usv_playpen.processing.compute_usv_acoustic_features.smart_wait")
+    with pytest.raises(OSError, match="disk full"):
+        USVAcousticFeatureExtractor(
+            root_directory=str(root),
+            input_parameter_dict={"compute_usv_acoustic_features": _CFG},
+            message_output=lambda *_a, **_kw: None,
+        ).merge_features_into_summary()
+    assert summary_path.read_bytes() == before
+    assert sorted(path.name for path in summary_path.parent.iterdir()) == sorted(["spectrograms", summary_path.name])

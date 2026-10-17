@@ -932,8 +932,9 @@ def read_usv_squeak_labels(label_sets: list[dict], label_overrides: list[dict], 
     ``row_index``, ``start``, ``stop``), joined on ``panel_id`` (every labelled panel must have a sample
     row); ``sample_id`` is ``<set name>_<panel_id>``, so panel ids may repeat across sets. Each override
     (a review CSV in the labels format) replaces the label and spans of the panels it lists in the named
-    set; the set's own CSV is never edited, and an override panel that the set does not hold stops the
-    run. Unsure answers (``label`` 3) are dropped and counted; any other label outside 0 / 1 / 2 stops the
+    set (an empty extents cell in a review row means no span, so a review can relabel a squeak / overlap
+    panel as usv); the set's own CSV is never edited, and an override panel that the set does not hold,
+    or a panel the override lists more than once, stops the run. Unsure answers (``label`` 3) are dropped and counted; any other label outside 0 / 1 / 2 stops the
     run, as does a ``usv`` label with spans or a ``squeak`` / ``overlap`` label without any. Row order is
     the sets' order, then each labels CSV's order.
 
@@ -957,8 +958,8 @@ def read_usv_squeak_labels(label_sets: list[dict], label_overrides: list[dict], 
     FileNotFoundError
         A listed CSV does not exist.
     ValueError
-        A file lacks a column, a panel lacks a sample row, an override names an unknown set or panel,
-        set names repeat, or a label / span combination is invalid.
+        A file lacks a column, a panel lacks a sample row, an override names an unknown set or panel
+        or lists a panel more than once, set names repeat, or a label / span combination is invalid.
     """
 
     if not label_sets:
@@ -1023,6 +1024,13 @@ def read_usv_squeak_labels(label_sets: list[dict], label_overrides: list[dict], 
             if override['name'] != label_set['name']:
                 continue
             review = _read(override['override_csv'], USV_SQUEAK_LABEL_COLUMNS)
+            repeated = sorted(review.filter(pls.col("panel_id").is_duplicated())["panel_id"].unique())
+            if repeated:
+                error_message = (
+                    f"{override['override_csv']}: panel(s) {repeated} are listed more than once; keep one answer per panel "
+                    f"(each repeat would add another training row)."
+                )
+                raise ValueError(error_message)
             unknown = sorted(set(review["panel_id"]) - set(joined["panel_id"]))
             if unknown:
                 error_message = f"{override['override_csv']}: panel(s) {unknown} are not in label set {label_set['name']!r}."
@@ -1031,7 +1039,10 @@ def read_usv_squeak_labels(label_sets: list[dict], label_overrides: list[dict], 
                 joined.join(review.rename({"label": "review_label", "squeak_extents_s": "review_extents"}), on="panel_id", how="left", maintain_order="left")
                 .with_columns(
                     pls.coalesce("review_label", "label").alias("label"),
-                    pls.coalesce("review_extents", "squeak_extents_s").alias("squeak_extents_s"),
+                    pls.when(pls.col("review_label").is_not_null())
+                    .then(pls.col("review_extents").fill_null("[]"))
+                    .otherwise(pls.col("squeak_extents_s"))
+                    .alias("squeak_extents_s"),
                     (pls.col("reviewed") | pls.col("review_label").is_not_null()).alias("reviewed"),
                 )
                 .drop("review_label", "review_extents")
@@ -1259,7 +1270,7 @@ def train_usv_squeak_seed(
     ``recipe['batch_size']``, augmented by :func:`detect_usv_noise.augment_noise_batch` (a CPU generator
     seeded with ``seed``; the indicator channel is never augmented). The loss is the class
     cross-entropy (label smoothing ``recipe['label_smoothing']``; with ``recipe['class_weighted']``
-    weighted by inverse training class frequency) plus ``recipe['frame_loss_weight']`` times the frame
+    weighted by inverse training class frequency, which needs every class among the labels) plus ``recipe['frame_loss_weight']`` times the frame
     binary cross-entropy, averaged over the supervised frames of the batch: every valid frame of a
     squeak / overlap segment (the labeller marked every squeak in view), but only the segment's own frames
     of a usv segment (the label says the segment holds no squeak, not that its context holds none).
@@ -1295,7 +1306,8 @@ def train_usv_squeak_seed(
     Raises
     ------
     ValueError
-        The trunk weights hold keys the network does not have.
+        The trunk weights hold keys the network does not have, or ``recipe['class_weighted']`` is set
+        and a class has no training label (its inverse-frequency weight would be infinite).
     """
 
     torch.manual_seed(seed)
@@ -1307,6 +1319,13 @@ def train_usv_squeak_seed(
             error_message = f"The noise trunk holds keys the vocal-class network lacks: {loaded.unexpected_keys}."
             raise ValueError(error_message)
     counts = np.bincount(y, minlength=len(VOCAL_CLASSES)).astype(np.float64)
+    if recipe['class_weighted'] and np.any(counts == 0):
+        absent = [name for name, count in zip(VOCAL_CLASSES, counts, strict=True) if count == 0]
+        error_message = (
+            f"class_weighted needs every class in the training labels, but {absent} have none (an inverse-frequency "
+            f"weight would be infinite and the loss NaN); add labels of those classes or turn class_weighted off."
+        )
+        raise ValueError(error_message)
     class_weight = (torch.tensor(counts.sum() / (len(VOCAL_CLASSES) * counts), dtype=torch.float32, device=device)
                     if recipe['class_weighted'] else None)
     class_loss = nn.CrossEntropyLoss(weight=class_weight, label_smoothing=recipe['label_smoothing'])
@@ -1487,8 +1506,12 @@ class USVSqueakModelTrainer:
             "created": datetime.now().isoformat(timespec="seconds"),
         }
         bundle_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(bundle, bundle_path)
-        load_usv_squeak_model(str(bundle_path), torch.device("cpu"))
+        # Saved to a temporary sibling, loaded back from it and only then renamed
+        # into place: an interrupted save or a bundle that does not load never
+        # leaves a file under the final name.
+        with atomic_output_path(bundle_path) as tmp_bundle_path:
+            torch.save(bundle, tmp_bundle_path)
+            load_usv_squeak_model(str(tmp_bundle_path), torch.device("cpu"))
 
         elapsed_minutes = (datetime.now() - start_time).total_seconds() / 60
         self.message_output(f"Wrote {bundle_path} ({bundle_path.stat().st_size / 1e6:.1f} MB) in {elapsed_minutes:.1f} min; detect-usv-squeaks loads it.")
@@ -1644,6 +1667,20 @@ def squeak_extent_frames(
     ``floor((squeak_end - window_start) / FRAME_DT_S)``, with a 1e-9-frame tolerance against float
     error. This is the frame rule the vocal-class model's frame targets use, so a squeak's crop holds
     exactly the frames its span was labelled on.
+
+    Known one-frame asymmetry, kept on purpose until the next squeak-QLVM retrain: the detector writes
+    extents whose edges sit half a hop from frame centres (:func:`frames_to_session_seconds`), so an
+    ``n``-frame squeak spans exactly ``n`` hops. When the window starts at the segment start (the squeak
+    lies inside its segment), the edges fall between frame centres and the closed rule keeps ``n``
+    frames. When the squeak starts before its segment, :func:`squeak_crop_window` starts the window at
+    ``squeak_start - SQUEAK_QLVM_CONTEXT_FRAMES * FRAME_DT_S``, both edges then fall exactly on frame
+    centres, and the closed rule keeps ``n + 1`` frames (one frame wider; the extra frame is the one
+    centred on ``squeak_end``). With the time-stretched production cell the same squeak is therefore
+    stretched very slightly differently depending on where the segmenter cut. The rule is kept because
+    the embedding of every squeak already stored was made with it and because which rule the shipped
+    cell's training crops used is not verified; switching to the half-open rule
+    (``last = ceil((squeak_end - window_start) / FRAME_DT_S - 1e-9) - 1``) belongs with the next retrain
+    of the squeak cell, after which every ``qlvm_squeak1`` / ``qlvm_squeak2`` must be re-embedded.
 
     Parameters
     ----------
@@ -2283,7 +2320,9 @@ class USVSqueakQLVMEmbedder:
             },
             schema={"_usv_row": pls.UInt32, SQUEAK_QLVM_COLUMNS[0]: pls.Float64, SQUEAK_QLVM_COLUMNS[1]: pls.Float64},
         )
-        merged = usv_df.with_row_index(name="_usv_row").join(coordinate_frame, on="_usv_row", how="left")
+        # Re-sorted on the row index: the summary keeps its own row order whatever
+        # order the left join returns.
+        merged = usv_df.with_row_index(name="_usv_row").join(coordinate_frame, on="_usv_row", how="left").sort("_usv_row")
         merged = order_usv_summary_columns(merged.drop("_usv_row"))
         with atomic_output_path(usv_summary_loc) as tmp_summary_path:
             merged.write_csv(file=str(tmp_summary_path))
@@ -2315,7 +2354,7 @@ def detect_usv_squeaks_cli(ctx, root_directory, **kwargs) -> None:
         The click context; its parameter sources tell which options were given on the command line.
     root_directory (str)
         Session root directory path.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -2373,7 +2412,7 @@ def train_usv_squeak_model_cli(ctx, bundle_path, label_set, label_override, **kw
         NAME LABELS_CSV SAMPLE_CSV of one label set (labelling-tool labels and their sample); repeat per set (replaces the label_sets setting).
     label_override (tuple[str, ...])
         NAME OVERRIDE_CSV: a review CSV (labels format) whose panels replace those of label set NAME; repeat per file (replaces the label_overrides setting).
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -2426,7 +2465,7 @@ def infer_qlvm_squeak_latents_cli(ctx, root_directory, **kwargs) -> None:
         The click context; its parameter sources tell which options were given on the command line.
     root_directory (str)
         Session root directory path.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns

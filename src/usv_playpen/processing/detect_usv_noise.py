@@ -58,6 +58,7 @@ from __future__ import annotations
 import json
 import math
 import pathlib
+import re
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -71,6 +72,7 @@ from torch import nn
 
 from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import (
+    QLVM_SQUEAK_MAP,
     USV_SUMMARY_COLUMN_ORDER,
     atomic_output_path,
     configure_path,
@@ -83,6 +85,7 @@ from ..os_utils import (
 from ..time_utils import is_gui_context, smart_wait
 from ..yaml_utils import read_excluded_audio_channels
 from .generate_spectrograms import compute_usv_spectrogram
+from .qlvm_latents import model_cell_stale_columns
 
 # Columns written into the USV summary CSV.
 NOISE_COLUMNS = ("noise", "noise_probability")
@@ -272,6 +275,40 @@ class BroadbandChannelReader:
         self._memmap = None
 
 
+def source_channel_name(source_name: str) -> str:
+    """
+    Description
+    -----------
+    The metadata channel name (``m_ch02``, ``s_ch11``) of one source wav of the broadband memmap: the
+    device prefix (``m`` / ``s``, the name's first token) joined to its ``chNN`` token, wherever that
+    token sits in the name. The token is searched for rather than taken at a fixed ``_``-separated
+    position, so a recording id that itself contains ``_`` (``m_20240101_123456_ch02_...``) still
+    yields ``m_ch02``.
+
+    Parameters
+    ----------
+    source_name (str)
+        The source wav file name, e.g. ``m_250913193920_ch02_cropped_to_video_hpss.wav``.
+
+    Returns
+    -------
+    channel_name (str)
+        The channel name, e.g. ``m_ch02``.
+
+    Raises
+    ------
+    ValueError
+        The name does not start with ``m_`` / ``s_`` or holds no ``_chNN`` token, so its channel cannot
+        be matched against the metadata's excluded channels.
+    """
+
+    match = re.match(r"^([ms])_.*?_(ch\d{2})(?=[_.]|$)", source_name)
+    if match is None:
+        error_message = f"Cannot read the device and the chNN channel from the broadband source name {source_name!r}."
+        raise ValueError(error_message)
+    return f"{match[1]}_{match[2]}"
+
+
 def squeak_audio_channels(
     session_root: pathlib.Path,
     exclude_metadata_audio_channels: bool,
@@ -289,7 +326,8 @@ def squeak_audio_channels(
     complete and describe exactly this memmap, and must hold every column's low-band variance
     (``low_band_variance.per_column``, written by ``broadband-filter-audio`` or added by
     ``add-broadband-low-band-variance``), which each reader carries; the memmap must be sampled at
-    250 kHz. Every audio
+    250 kHz. A column's channel name is its source name's device prefix joined to its ``chNN`` token
+    (:func:`source_channel_name`), so recording ids that contain ``_`` parse correctly. Every audio
     classifier of the pipeline averages over exactly these channels: the noise model (this module), the
     vocal-class model and the squeak QLVM embedding (:mod:`detect_usv_squeaks`) and the squeak
     spectrogram store, at inference and in training. It lives here, in the module every one of them
@@ -314,8 +352,9 @@ def squeak_audio_channels(
     FileNotFoundError
         The session has no broadband memmap or no broadband record (run ``broadband-filter-audio``).
     ValueError
-        The record is incomplete, does not match the memmap or lacks the low-band variances, or the
-        memmap is not sampled at 250 kHz.
+        The record is incomplete, does not match the memmap or lacks the low-band variances, the
+        memmap is not sampled at 250 kHz, or channels are to be excluded and a source name holds no
+        readable device / ``chNN`` channel.
     """
 
     mmap_path = find_audio_mmap(session_root, "broadband")
@@ -346,7 +385,7 @@ def squeak_audio_channels(
         excluded_channels = set(read_excluded_audio_channels(str(session_root), logger=message_output))
         if excluded_channels:
             message_output(f"Excluding audio channel(s) {sorted(excluded_channels)} from the spectrogram average per session metadata.")
-        columns = [column for column in columns if f"{names[column].split('_')[0]}_{names[column].split('_')[2]}" not in excluded_channels]
+            columns = [column for column in columns if source_channel_name(names[column]) not in excluded_channels]
     memmap = np.memmap(mmap_path, dtype=np.int16, mode="r", shape=(layout["n_samples"], layout["n_channels"]))
     return [BroadbandChannelReader(memmap, column, layout["sampling_rate"], names[column], low_band[column]) for column in columns]
 
@@ -1322,8 +1361,10 @@ class USVNoiseDetector:
         -----------
         Loads the model bundle, takes the exclusion threshold from its ``decision`` block, scores every
         row of the session's USV summary and writes ``noise`` and ``noise_probability`` into it,
-        replacing any existing noise columns. Run it after ``das_summarize``: re-summarizing rewrites the CSV with its
-        base columns only and would remove these.
+        replacing any existing noise columns. A row this run marks as noise loses its vocal-class block
+        (``usv`` ... ``squeak_end``) and its squeak-map placement (``qlvm_squeak1`` / ``qlvm_squeak2`` and
+        the squeak category columns), which a fresh pipeline never writes for noise rows. Run it after
+        ``das_summarize``: re-summarizing rewrites the CSV with its base columns only and would remove these.
 
         Parameters
         ----------
@@ -1375,9 +1416,12 @@ class USVNoiseDetector:
         # detect-usv-squeaks) is null on noise rows, and the class masks rely on it: a row this
         # run marks as noise must not keep the class an earlier classification gave it, or it
         # would pass as a USV / squeak. A row that stops being noise has no class until
-        # detect-usv-squeaks runs again.
+        # detect-usv-squeaks runs again. The squeak map's coordinates (and the category read off
+        # them) are cleared on the same rows: a fresh pipeline never embeds noise rows on the
+        # squeak map, so a re-run must leave them null too.
         class_block = USV_SUMMARY_COLUMN_ORDER[USV_SUMMARY_COLUMN_ORDER.index("usv"):
                                                USV_SUMMARY_COLUMN_ORDER.index("squeak_end") + 1]
+        class_block = [*class_block, *model_cell_stale_columns(QLVM_SQUEAK_MAP)]
         class_columns = [column for column in class_block if column not in NOISE_COLUMNS and column in merged.columns]
         if class_columns:
             is_noise = merged["noise"].fill_null(False)
@@ -1531,8 +1575,12 @@ class USVNoiseModelTrainer:
             "created": datetime.now().isoformat(timespec="seconds"),
         }
         bundle_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(bundle, bundle_path)
-        load_noise_model(str(bundle_path), torch.device("cpu"))
+        # Saved to a temporary sibling, loaded back from it and only then renamed
+        # into place: an interrupted save or a bundle that does not load never
+        # leaves a file under the final name.
+        with atomic_output_path(bundle_path) as tmp_bundle_path:
+            torch.save(bundle, tmp_bundle_path)
+            load_noise_model(str(tmp_bundle_path), torch.device("cpu"))
 
         elapsed_minutes = (datetime.now() - start_time).total_seconds() / 60
         self.message_output(f"Wrote {bundle_path} ({bundle_path.stat().st_size / 1e6:.1f} MB) in {elapsed_minutes:.1f} min; detect-usv-noise loads it.")
@@ -1558,7 +1606,7 @@ def detect_usv_noise_cli(ctx, root_directory, **kwargs) -> None:
         The click context; its parameter sources tell which options were given on the command line.
     root_directory (str)
         Session root directory path.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -1610,7 +1658,7 @@ def train_noise_model_cli(ctx, labels_csv_path, bundle_path, **kwargs) -> None:
         Labels CSV: sample_id, session_dir, start, stop, chs_count, noise (1 = no vocalization, 0 = vocalization).
     bundle_path (str)
         Output bundle (.pt); must not exist yet.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns

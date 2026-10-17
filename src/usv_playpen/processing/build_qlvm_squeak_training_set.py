@@ -65,7 +65,11 @@ the resize (:func:`build_qlvm_training_set.stretch_specs`). The steps:
    ``squeak_probability + overlap_probability``; not the summary's
    ``squeak_probability`` alone, which is the pure-squeak class),
    ``crop_first``, ``crop_last`` (frames of the audio window),
-   ``n_frames_original`` (frames of the window) and ``apply_mask`` False.
+   ``n_frames_original`` (frames of the window) and ``apply_mask`` False. The
+   data files of an earlier build in the output directory are removed first and
+   every file is written to a temporary sibling and renamed into place, so a
+   rebuild leaves no split of an earlier build behind (e.g. a ``full_data.npz``)
+   and a crash no partial file.
 
 Reproducing the phase 3 sets needs ``crop_window`` ``"first_128_frames"`` and
 ``exclude_metadata_audio_channels`` false (the setting the bit-identical rebuild
@@ -93,12 +97,14 @@ from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import (
     SQUEAK_FLAG_COLUMN,
     USV_FLAG_COLUMN,
+    atomic_output_path,
     first_match_or_raise,
     noise_mask,
     squeak_bearing_mask,
 )
 from ..time_utils import is_gui_context, smart_wait
 from .build_qlvm_training_set import (
+    TRAINING_SET_DATA_FILES,
     parse_int_list,
     session_type_from_metadata,
     split_sessions_by_type,
@@ -533,6 +539,11 @@ class QLVMSqueakTrainingSetBuilder:
         writes. :meth:`build` feeds it the summary candidates; a caller can feed it
         candidates from another source in the same layout (e.g. the phase 3 sets'
         own squeak index, to rebuild them), in the row order to draw them in.
+        When no candidate is left after the gates (and the per-session cap), the
+        build stops before anything is written, with the count each gate left.
+        Before the first file is written the data files of an earlier build in
+        ``output_directory`` (``TRAINING_SET_DATA_FILES``) are removed, and every
+        file is written atomically (:func:`os_utils.atomic_output_path`).
 
         Parameters
         ----------
@@ -552,6 +563,12 @@ class QLVMSqueakTrainingSetBuilder:
         Returns
         -------
         None
+
+        Raises
+        ------
+        ValueError
+            ``validation_split`` is outside ``(0, 1)``, or no candidate passed the
+            curation gates.
         """
 
         cfg = self.input_parameter_dict['build_qlvm_squeak_training_set']
@@ -588,6 +605,13 @@ class QLVMSqueakTrainingSetBuilder:
             gates.append((f"per-session/stratum cap {cap}", int(pool["row"].size)))
         for label, count in gates:
             self.message_output(f"    {label:<32s} {count:>7,d}")
+        if pool["row"].size == 0:
+            error_message = (
+                "no squeak candidate passed the curation gates (crop_window "
+                f"{crop_window!r}, context_frames {context_frames}, min_trimmed_frames {min_trimmed_frames}); "
+                "rows left after each gate: " + ", ".join(f"{label} {count}" for label, count in gates) + "."
+            )
+            raise ValueError(error_message)
         available = np.bincount(pool["bin"], minlength=n_bins)
         if full_dataset:
             chosen = np.arange(pool["row"].size)
@@ -628,70 +652,78 @@ class QLVMSqueakTrainingSetBuilder:
         session_types = np.array([session_type_by_key[session_id] for session_id in drawn["session_id"]])
         selected_counts = {session_id: int(count) for session_id, count in zip(*np.unique(drawn["session_id"], return_counts=True), strict=True)}
         type_by_key = {session_id: session_type_by_key[session_id] for session_id in selected_counts}
-        train_sessions, val_sessions = split_sessions_by_type(
+        train_sessions, val_sessions, single_session_types = split_sessions_by_type(
             list(selected_counts), type_by_key, selected_counts, validation_split, random_state
         )
+        for session_type in single_session_types:
+            self.message_output(
+                f"Session type {session_type} has a single session; it goes to training whole and has no validation rows."
+            )
         is_val = np.isin(drawn["session_id"], val_sessions)
+        for filename in TRAINING_SET_DATA_FILES:
+            (output_dir / filename).unlink(missing_ok=True)
         splits = [("train_data.npz", np.flatnonzero(~is_val)), ("val_data.npz", np.flatnonzero(is_val))]
         if full_dataset:
             splits.append(("full_data.npz", np.arange(n_rows)))
         written: dict[str, int] = {}
         for filename, rows in splits:
             resized = stretch_specs(specs[rows], widths[rows], target_shape, False).astype(np.float32)
-            np.savez(
-                output_dir / filename,
-                spectrograms=resized,
-                masks=np.zeros_like(resized, dtype=np.float32),
-                masks_len=np.zeros(rows.size, dtype=np.int64),
-                durations=widths[rows].astype(np.int64),
-                spec_id=spec_ids[rows],
-                session_id=drawn["session_id"][rows].astype(str),
-                session_type=session_types[rows],
-                duration_bin=drawn["bin"][rows].astype(np.int64),
-                squeak_probability=drawn["probability"][rows].astype(np.float32),
-                crop_first=drawn["first"][rows].astype(np.int64),
-                crop_last=drawn["last"][rows].astype(np.int64),
-                n_frames_original=drawn["n_frames"][rows].astype(np.int64),
-                apply_mask=np.array(False),
-            )
+            with atomic_output_path(output_dir / filename) as tmp_split_path, tmp_split_path.open("wb") as split_file:
+                np.savez(
+                    split_file,
+                    spectrograms=resized,
+                    masks=np.zeros_like(resized, dtype=np.float32),
+                    masks_len=np.zeros(rows.size, dtype=np.int64),
+                    durations=widths[rows].astype(np.int64),
+                    spec_id=spec_ids[rows],
+                    session_id=drawn["session_id"][rows].astype(str),
+                    session_type=session_types[rows],
+                    duration_bin=drawn["bin"][rows].astype(np.int64),
+                    squeak_probability=drawn["probability"][rows].astype(np.float32),
+                    crop_first=drawn["first"][rows].astype(np.int64),
+                    crop_last=drawn["last"][rows].astype(np.int64),
+                    n_frames_original=drawn["n_frames"][rows].astype(np.int64),
+                    apply_mask=np.array(False),
+                )
             written[filename] = int(rows.size)
             self.message_output(f"  Wrote {rows.size:,} -> {output_dir / filename}.")
 
         type_counts = {session_type: int(count) for session_type, count in zip(*np.unique(session_types, return_counts=True), strict=True)}
-        np.savez(
-            output_dir / "metadata.npz",
-            root_directories=np.array([session_roots[session_id] for session_id in sorted(session_roots)]),
-            candidate_source=candidate_source,
-            length_threshold=np.nan,
-            validation_split=validation_split,
-            random_state=random_state,
-            full_dataset=full_dataset,
-            target_shape=np.array(target_shape),
-            time_stretch=False,
-            masking_type="none",
-            apply_mask=False,
-            require_mask=False,
-            split_by_session=True,
-            draw=draw_mode,
-            duration_bin_edges=np.array(edges),
-            per_session_bin_cap=cap,
-            n_total_target=n_total,
-            bin_available=available,
-            bin_realized=realized,
-            context_frames=context_frames,
-            min_trimmed_frames=min_trimmed_frames,
-            crop_window=crop_window,
-            normalization=crop_normalization,
-            exclude_noise=cfg['exclude_noise'],
-            exclude_metadata_audio_channels=exclude_metadata_audio_channels,
-            curation_gates=json.dumps(gates),
-            session_type_counts=json.dumps(type_counts),
-            session_type_by_key=json.dumps(type_by_key),
-            split_sessions=json.dumps({"train": train_sessions, "validation": val_sessions}),
-            n_train=written["train_data.npz"],
-            n_val=written["val_data.npz"],
-            n_full=written["full_data.npz"] if full_dataset else 0,
-        )
+        metadata_fields = {
+            "root_directories": np.array([session_roots[session_id] for session_id in sorted(session_roots)]),
+            "candidate_source": candidate_source,
+            "length_threshold": np.nan,
+            "validation_split": validation_split,
+            "random_state": random_state,
+            "full_dataset": full_dataset,
+            "target_shape": np.array(target_shape),
+            "time_stretch": False,
+            "masking_type": "none",
+            "apply_mask": False,
+            "require_mask": False,
+            "split_by_session": True,
+            "draw": draw_mode,
+            "duration_bin_edges": np.array(edges),
+            "per_session_bin_cap": cap,
+            "n_total_target": n_total,
+            "bin_available": available,
+            "bin_realized": realized,
+            "context_frames": context_frames,
+            "min_trimmed_frames": min_trimmed_frames,
+            "crop_window": crop_window,
+            "normalization": crop_normalization,
+            "exclude_noise": cfg['exclude_noise'],
+            "exclude_metadata_audio_channels": exclude_metadata_audio_channels,
+            "curation_gates": json.dumps(gates),
+            "session_type_counts": json.dumps(type_counts),
+            "session_type_by_key": json.dumps(type_by_key),
+            "split_sessions": json.dumps({"train": train_sessions, "validation": val_sessions}),
+            "n_train": written["train_data.npz"],
+            "n_val": written["val_data.npz"],
+            "n_full": written["full_data.npz"] if full_dataset else 0,
+        }
+        with atomic_output_path(output_dir / "metadata.npz") as tmp_metadata_path, tmp_metadata_path.open("wb") as metadata_file:
+            np.savez(metadata_file, **metadata_fields)
 
 
 @click.command(name="build-qlvm-squeak-training-set")
@@ -727,7 +759,7 @@ def build_qlvm_squeak_training_set_cli(ctx, root_directories, output_directory, 
         Comma-separated string of session root directory paths.
     output_directory (str)
         Directory to write the .npz training set.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns

@@ -268,7 +268,8 @@
     "vcl_audio_band": "ultrasonic",
     "vcl_conda_env_name": "vcl-ssl-ss",
     "vcl_model_directory": "/mnt/falkner/Bartul/sound_localization/mouse_all_model_June2026",
-    "vcl_version": "vcl-ssl"
+    "vcl_version": "vcl-ssl",
+    "subprocess_timeout_hours": null
   },
   "assign_vocalizations": {
     "temperature": 1.0,
@@ -283,7 +284,6 @@
     "num_freq_bins": 128,
     "num_time_bins": 128,
     "nperseg": 2048,
-    "noverlap": 1792,
     "min_freq": 30000,
     "max_freq": 120000,
     "hop_length": 512,
@@ -405,7 +405,7 @@
     "length_threshold": 128.0,
     "require_mask": true,
     "exclude_squeaks": true,
-    "strict_squeak_exclusion": false,
+    "squeak_exclusion_source": "union",
     "reference_squeak_index_path": "",
     "exclude_noise": true,
     "row_exclusion_table": null,

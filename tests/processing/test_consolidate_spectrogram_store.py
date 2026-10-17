@@ -753,3 +753,35 @@ def test_cli_store_mode_reaches_the_settings_block(tmp_path, mocker):
     assert settings["spectrograms_root"] == str(tmp_path)
     result = CliRunner().invoke(css.consolidate_spectrogram_store_cli, ["--root-directories", "/a/b", "--store-mode", "v4"])
     assert result.exit_code == 2
+
+
+def test_status_rules_accept_an_unbounded_cell():
+    """A cell trained without a duration bound (contract length_threshold null)
+    reads as None, never marks a vocalization too long, and is stored as a NaN
+    attr; a bounded cell still sets the too-long bit."""
+    assert css.contract_length_threshold({"length_threshold": None}) is None
+    assert css.contract_length_threshold({"length_threshold": 128}) == 128.0
+    durations = np.array([10, 200, 0])
+    masks = np.array([1, 1, 0])
+    np.testing.assert_array_equal(css.embedding_status(durations, masks, None), [0, 0, 2])
+    np.testing.assert_array_equal(css.embedding_status(durations, masks, 128.0), [0, 1, 2])
+    np.testing.assert_array_equal(
+        css.production_embedding_status(durations, masks, np.array([False, False, True]), None), [0, 0, 14]
+    )
+    assert np.isnan(css.length_threshold_attr(None))
+    assert css.length_threshold_attr(128) == 128.0
+    assert css.length_threshold_label(None) == "none (unbounded)"
+
+
+def test_production_store_reads_an_unbounded_regular_cell(tmp_path, mocker, production_corpus):
+    """With a regular cell whose contract length_threshold is null the production
+    store reads the contract instead of crashing on float(None): the long rows 1
+    (masked) now have status 0, so the session check reports that the regular map
+    does not place them."""
+    roots = production_corpus
+    contract_path = pathlib.Path(qlvm_map_cell_directory("qlvm")) / "config" / "training_contract.json"
+    contract = json.loads(contract_path.read_text())
+    contract["length_threshold"] = None
+    contract_path.write_text(json.dumps(contract))
+    with pytest.raises(ValueError, match="1 rows with status 0 have no qlvm1/qlvm2"):
+        _consolidate_production(tmp_path, roots, mocker)

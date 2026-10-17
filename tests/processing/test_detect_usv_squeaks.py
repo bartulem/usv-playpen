@@ -655,6 +655,44 @@ def test_read_usv_squeak_labels_sets_and_overrides(tmp_path):
         )
 
 
+def test_read_usv_squeak_labels_refuses_a_review_that_lists_a_panel_twice(tmp_path):
+    """A review CSV that lists a panel twice would duplicate that panel's training row (one per answer);
+    the read stops and names the repeated panels instead."""
+    root = _build_session(tmp_path)
+    labels, sample, _ = _write_label_set(tmp_path / "labels", root)
+    pls.DataFrame({
+        "panel_id": ["P1", "P1", "P0"],
+        "label": [2, 1, 0],
+        "squeak_extents_s": ["[[0.35, 0.40]]", "[[0.35, 0.40]]", "[]"],
+    }).write_csv(tmp_path / "repeat_review.csv")
+    with pytest.raises(ValueError, match=r"\['P1'\]"):
+        squeaks.read_usv_squeak_labels(
+            [{"name": "r1", "labels_csv": str(labels), "sample_csv": str(sample)}],
+            [{"name": "r1", "override_csv": str(tmp_path / "repeat_review.csv")}],
+            lambda *_a, **_kw: None,
+        )
+
+
+def test_read_usv_squeak_labels_review_to_usv_with_empty_extents_clears_the_spans(tmp_path):
+    """A review that relabels a squeak panel as usv and leaves its extents cell empty clears the panel's
+    spans (an empty review cell means no span, not the original spans), so the read succeeds."""
+    root = _build_session(tmp_path)
+    labels, sample, _ = _write_label_set(tmp_path / "labels", root)
+    pls.DataFrame(
+        {"panel_id": ["P1"], "label": ["0"], "squeak_extents_s": [None]},
+        schema={"panel_id": pls.String, "label": pls.String, "squeak_extents_s": pls.String},
+    ).write_csv(tmp_path / "clear_review.csv")
+    table = squeaks.read_usv_squeak_labels(
+        [{"name": "r1", "labels_csv": str(labels), "sample_csv": str(sample)}],
+        [{"name": "r1", "override_csv": str(tmp_path / "clear_review.csv")}],
+        lambda *_a, **_kw: None,
+    )
+    assert table["sample_id"].to_list() == ["r1_P0", "r1_P1", "r1_P4"]
+    assert table["label"].to_list() == [0, 0, 0]
+    assert table["squeak_extents_s"].to_list() == ["[]", "[]", "[]"]
+    assert table["reviewed"].to_list() == [False, True, False]
+
+
 def test_usv_squeak_frame_targets_mark_frame_centres_inside_spans():
     """A frame is 1 when its centre lies inside a labelled span (closed), in the context too."""
     window = {"x": np.zeros((3, 128, 20), dtype=np.float32), "read_start_s": 1.0}
@@ -685,6 +723,21 @@ def test_train_usv_squeak_seed_from_a_noise_trunk():
     assert not torch.equal(model.state_dict()["body.0.0.weight"], trunk["body.0.0.weight"])
 
 
+def test_train_usv_squeak_seed_refuses_class_weighting_with_an_absent_class():
+    """With class_weighted, a class with no training label would get an infinite weight (a NaN loss and a
+    NaN bundle under label smoothing), so the member refuses to train and names the absent class."""
+    rng = np.random.default_rng(0)
+    inputs = [rng.uniform(-1, 1, size=(3, 128, n_frames)).astype(np.float32) for n_frames in (20, 30, 25, 18)]
+    targets = [np.zeros(item.shape[2], dtype=np.float32) for item in inputs]
+    with pytest.raises(ValueError, match="overlap"):
+        squeaks.train_usv_squeak_seed(
+            inputs, np.zeros((4, 2), dtype=np.float32), np.array([0, 1, 1, 0]), targets, 3,
+            {"epochs": 1, "batch_size": 2, "learning_rate": 1e-3, "weight_decay": 1e-4, "label_smoothing": 0.05,
+             "frame_loss_weight": 1.0, "class_weighted": True},
+            None, torch.device("cpu"), lambda *_a, **_kw: None,
+        )
+
+
 def test_usv_squeak_model_trainer_writes_a_loadable_bundle(tmp_path, mocker):
     """The trainer reads the label set, builds the inputs with the detector's window, trains and writes
     a bundle the detector's loader accepts, carrying the extent threshold and the label provenance; an existing
@@ -713,6 +766,30 @@ def test_usv_squeak_model_trainer_writes_a_loadable_bundle(tmp_path, mocker):
     assert len(squeaks.load_usv_squeak_model(str(bundle_path), torch.device("cpu"))["models"]) == 2
     with pytest.raises(FileExistsError):
         squeaks.USVSqueakModelTrainer(str(bundle_path), settings, print).train()
+
+
+def test_usv_squeak_model_trainer_publishes_no_bundle_that_fails_to_load(tmp_path, mocker):
+    """The bundle is loaded back from a temporary sibling before the rename, so a
+    bundle that does not load leaves nothing under the final name."""
+    root = _build_session(tmp_path)
+    labels, sample, review = _write_label_set(tmp_path / "labels", root)
+    settings = {
+        "detect_usv_noise": {"noise_model_path": ""},
+        "train_usv_squeak_model": {
+            "label_sets": [{"name": "r1", "labels_csv": str(labels), "sample_csv": str(sample)}],
+            "label_overrides": [{"name": "r1", "override_csv": str(review)}],
+            "pretrained": False, "span_threshold": 0.6,
+            "exclude_metadata_audio_channels": True, "n_workers": 2, "seeds": [0],
+            "epochs": 1, "batch_size": 2, "learning_rate": 1e-3, "weight_decay": 1e-4,
+            "label_smoothing": 0.05, "frame_loss_weight": 1.0, "class_weighted": False,
+        },
+    }
+    mocker.patch("usv_playpen.processing.detect_usv_squeaks.torch.cuda.is_available", return_value=False)
+    mocker.patch("usv_playpen.processing.detect_usv_squeaks.load_usv_squeak_model", side_effect=ValueError("unloadable"))
+    bundle_dir = tmp_path / "bundles"
+    with pytest.raises(ValueError, match="unloadable"):
+        squeaks.USVSqueakModelTrainer(str(bundle_dir / "bundle.pt"), settings, lambda *_a, **_kw: None).train()
+    assert list(bundle_dir.iterdir()) == []
 
 
 def test_train_usv_squeak_model_cli_routes_label_sets(mocker, tmp_path):
@@ -1066,6 +1143,44 @@ def test_embed_and_merge_writes_the_two_squeak_torus_columns(tmp_path, mocker):
     assert written["qlvm_squeak1"].is_null().to_list() == [False, True, False, True, True, True, True, True]
     assert written["qlvm_squeak1"][0] == pytest.approx(0.1, abs=1e-6)
     assert written["qlvm_squeak2"][2] == pytest.approx(0.4, abs=1e-6)
+
+
+def test_embed_and_merge_keeps_row_order_whatever_order_the_join_returns(tmp_path, mocker):
+    """The squeak coordinates land on their own rows and the summary keeps its row
+    order even when the left join returns its rows in another order."""
+    root = _build_squeak_embedding_session(tmp_path)
+    summary_path = root / "audio" / f"{SESSION_ID}_usv_summary.csv"
+    ids_before = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})["usv_id"].to_list()
+    mocker.patch("usv_playpen.processing.detect_usv_squeaks.smart_wait")
+    mocker.patch(
+        "usv_playpen.processing.detect_usv_squeaks.load_squeak_qlvm_cell",
+        return_value={
+            "params": {}, "lattice": np.zeros((21, 2)), "lattice_m": 8, "head": "legacy", "model_id": "p/c",
+            "layout": "phase 3", "time_stretch": False, "input_contract": dict(squeaks.SQUEAK_QLVM_INPUT_CONTRACT),
+        },
+    )
+    mocker.patch(
+        "usv_playpen.processing.detect_usv_squeaks.embed_data",
+        return_value=jnp.asarray(np.array([[0.1, 0.2], [0.3, 0.4]], dtype=np.float32)),
+    )
+    original_join = pls.DataFrame.join
+
+    def _reversed_join(self, *args, **kwargs):
+        return original_join(self, *args, **kwargs).reverse()
+
+    mocker.patch.object(pls.DataFrame, "join", _reversed_join)
+    squeaks.USVSqueakQLVMEmbedder(
+        root_directory=str(root),
+        input_parameter_dict={"infer_qlvm_squeak_latents": {
+            "model_cell_directory": "cell", "exclude_metadata_audio_channels": True,
+            "lattice_batch_size": 7, "data_batch_size": 3,
+        }},
+        message_output=lambda *_a, **_kw: None,
+    ).embed_and_merge()
+    written = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})
+    assert written["usv_id"].to_list() == ids_before
+    assert written["qlvm_squeak1"].is_null().to_list() == [False, True, False, True, True, True, True, True]
+    assert written["qlvm_squeak1"][0] == pytest.approx(0.1, abs=1e-6)
 
 
 def test_embed_and_merge_refuses_an_empty_model_cell(tmp_path, mocker):

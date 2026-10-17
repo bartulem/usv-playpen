@@ -80,21 +80,37 @@ def test_convert_to_3d_init_raises_when_no_matching_session_dir(processing_setti
         )
 
 
-def test_convert_to_3d_init_picks_first_sorted_session_dir(processing_settings, tmp_path):
-    """With multiple underscore-free subdirs the FIRST sorted one is chosen
-    deterministically (not the filesystem-order last entry); underscore-bearing
-    session dirs are ignored."""
+def test_convert_to_3d_init_refuses_several_session_dirs(processing_settings, tmp_path):
+    """With several underscore-free subdirs construction raises a ValueError
+    listing them instead of picking the first sorted one (every session on the lab
+    share has exactly one); underscore-bearing session dirs are ignored."""
     video = tmp_path / "video"
     video.mkdir()
     (video / "20230301").mkdir()
     (video / "20230101").mkdir()
     (video / "20230207_213549").mkdir()   # has an underscore -> ignored
+    with pytest.raises(ValueError, match=r"2 session joint-date directories .*20230101.*20230301"):
+        ConvertTo3D(
+            root_directory=str(tmp_path),
+            input_parameter_dict=processing_settings,
+            message_output=lambda *_a, **_kw: None,
+        )
+    (video / "20230301").rmdir()
     converter = ConvertTo3D(
         root_directory=str(tmp_path),
         input_parameter_dict=processing_settings,
         message_output=lambda *_a, **_kw: None,
     )
     assert converter.session_root_name == "20230101"
+
+
+def test_convert_to_3d_init_requires_a_root_directory(processing_settings):
+    """root_directory is required: the processing settings hold no session root,
+    so None raises a ValueError instead of a KeyError on a key that does not exist."""
+    with pytest.raises(ValueError, match="needs a root_directory"):
+        ConvertTo3D(root_directory=None, input_parameter_dict=processing_settings, message_output=lambda *_a, **_kw: None)
+    with pytest.raises(ValueError, match="needs a root_directory"):
+        ConvertTo3D()
 
 
 # sleap_file_conversion (subprocess + wait_for_subprocesses)
@@ -138,6 +154,32 @@ def test_sleap_file_conversion_invokes_subprocess_per_slp(
         assert "sleap-convert" in argv
         assert "--format" in argv
         assert "analysis" in argv
+
+
+def test_sleap_file_conversion_failure_stops_the_step(processing_settings, session_with_video_dir, mocker):
+    """A conversion subprocess that exits non-zero stops the step with its command
+    and return code, instead of leaving the missing .analysis.h5 for the
+    triangulation to trip over."""
+
+    class _FailedConversion:
+        """A finished Popen stand-in whose conversion failed (return code 1)."""
+
+        def __init__(self, args, **_kwargs):
+            self.args = args
+
+        def poll(self):
+            return 1
+
+    root, sess_dir = session_with_video_dir
+    cam1 = sess_dir / "cam1"
+    cam1.mkdir()
+    (cam1 / "v1.slp").write_bytes(b"")
+    mocker.patch("usv_playpen.processing.anipose_operations.subprocess.Popen", _FailedConversion)
+    mocker.patch("usv_playpen.processing.anipose_operations.smart_wait")
+    converter = ConvertTo3D(root_directory=str(root), input_parameter_dict=processing_settings,
+                            message_output=lambda *_a, **_kw: None)
+    with pytest.raises(RuntimeError, match=r"rc=1, command: .*sleap-convert"):
+        converter.sleap_file_conversion()
 
 
 def test_sleap_file_conversion_no_slp_files(processing_settings,
@@ -243,6 +285,26 @@ def test_conduct_anipose_triangulation_raises_when_no_calibration(
     with pytest.raises(FileNotFoundError, match=r"calibration\.toml"):
         converter.conduct_anipose_triangulation()
 
+    assert triangulate_mock.call_count == 0
+
+
+def test_conduct_anipose_triangulation_refuses_several_calibrations(
+    processing_settings, session_with_video_dir, mocker, tmp_path
+):
+    """Two *_calibration.toml under calibration_file_loc (a stray copy in a
+    subfolder) raise a ValueError listing both, and nothing is triangulated."""
+    root, _ = session_with_video_dir
+    calib_dir = tmp_path / "calib"
+    (calib_dir / "20240918122335").mkdir(parents=True)
+    (calib_dir / "20240918113726_calibration.toml").write_text("")
+    (calib_dir / "20240918122335" / "20240918113726_calibration.toml").write_text("")
+    processing_settings["anipose_operations"]["ConvertTo3D"]["conduct_anipose_triangulation"]["calibration_file_loc"] = str(calib_dir)
+    triangulate_mock = mocker.patch("usv_playpen.processing.anipose_operations.sleap_anipose.triangulate")
+    mocker.patch("usv_playpen.processing.anipose_operations.smart_wait")
+    converter = ConvertTo3D(root_directory=str(root), input_parameter_dict=processing_settings,
+                            message_output=lambda *_a, **_kw: None)
+    with pytest.raises(ValueError, match="2 \\*_calibration.toml files"):
+        converter.conduct_anipose_triangulation()
     assert triangulate_mock.call_count == 0
 
 
@@ -535,6 +597,57 @@ def test_translate_rotate_metric_animal_branch_writes_transformed_mouse(
 
 
 # find_mouse_names — legacy imgstore metadata branch (no cage/subject keys)
+def test_translate_rotate_metric_failed_write_keeps_the_old_output(processing_settings, tmp_path, mocker):
+    """
+    Description
+    -----------
+    The transformed mouse H5 is written to a temporary sibling and renamed into
+    place, so a write that dies part-way leaves an earlier output byte-identical,
+    no temporary file behind, and the original points3d H5 undeleted.
+
+    Parameters
+    ----------
+    processing_settings (dict)
+        Package settings fixture.
+    tmp_path (pathlib.Path)
+        Per-test temp directory.
+    mocker (pytest_mock.MockerFixture)
+        Used to no-op `smart_wait` and fail one dataset write.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.anipose_operations.smart_wait")
+    video_dir = tmp_path / "video"
+    video_dir.mkdir()
+    (video_dir / "sess_camera_frame_count_dict.json").write_text(json.dumps({"median_empirical_camera_sr": 150.0}))
+    (tmp_path / "sess_metadata.yaml").write_text("Session:\n  id: s001\nSubjects:\n  - subject_id: m1\n")
+    session_dir = video_dir / "20260101120000"
+    session_dir.mkdir()
+    with h5py.File(session_dir / "20260101120000_points3d.h5", "w") as f:
+        f.create_dataset("tracks", data=np.full((5, 1, 15, 3), 0.1))
+    out_h5 = session_dir / "20260101120000_points3d_translated_rotated_metric.h5"
+    out_h5.write_bytes(b"earlier output")
+    arena_dir = tmp_path / "arena_src"
+    _write_arena_h5(arena_dir)
+    settings = _trm_settings(processing_settings, arena_dir, mode="animal", exp_codes=["E2MF"], delete=True)
+    original_create = h5py.Group.create_dataset
+
+    def _failing_create(self, name, *args, **kwargs):
+        if name == "track_names":
+            raise OSError("disk full")
+        return original_create(self, name, *args, **kwargs)
+
+    mocker.patch.object(h5py.Group, "create_dataset", _failing_create)
+    converter = ConvertTo3D(root_directory=str(tmp_path), input_parameter_dict=settings, message_output=lambda *_a, **_k: None)
+    with pytest.raises(OSError, match="disk full"):
+        converter.translate_rotate_metric(session_idx=0)
+    assert out_h5.read_bytes() == b"earlier output"
+    assert sorted(path.name for path in session_dir.iterdir()) == sorted([out_h5.name, "20260101120000_points3d.h5"])
+
+
 def test_find_mouse_names_legacy_keeps_present_m2_with_empty_cage(tmp_path, mocker):
     """
     Description

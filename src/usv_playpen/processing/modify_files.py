@@ -483,6 +483,10 @@ class _BroadbandChannelStream:
         -----------
         Closes the wav.
 
+        Parameters
+        ----------
+        None
+
         Returns
         -------
         None
@@ -914,9 +918,10 @@ class Operator:
     ``concatenate_binary_files``, ``multichannel_to_channel_audio``,
     ``hpss_audio``, ``filter_audio_files``, ``concatenate_audio_files``,
     ``broadband_filter_audio``, ``concatenate_video_files`` and
-    ``rectify_video_fps``. When ``input_parameter_dict`` or ``root_directory``
-    is None the missing value is read from
-    ``_parameter_settings/processing_settings.json``. It is constructed by the
+    ``rectify_video_fps``. When ``input_parameter_dict`` is None it is read
+    from ``_parameter_settings/processing_settings.json``; ``root_directory``
+    is required (the settings hold no session root), and None raises a
+    ``ValueError``. It is constructed by the
     processing pipeline (``processing/preprocess_data.py``) and by the
     broadband-filtering helpers in this module.
     """
@@ -932,9 +937,12 @@ class Operator:
         Parameters
         ----------
         root_directory (str / list of str)
-            Root directory for data; defaults to None.
+            Session root directory (or a list of them for the multi-session
+            operations); required (None raises a ValueError, since the
+            processing settings hold no session root).
         input_parameter_dict (dict)
-            Processing parameters; defaults to None.
+            Processing parameters; defaults to None, which reads
+            ``_parameter_settings/processing_settings.json``.
         message_output (function)
             Defines output messages; defaults to None.
 
@@ -943,7 +951,11 @@ class Operator:
         None
         """
 
-        if input_parameter_dict is None or root_directory is None:
+        if root_directory is None:
+            msg = "Operator needs a root_directory (a session root or a list of them); the processing settings hold none."
+            raise ValueError(msg)
+
+        if input_parameter_dict is None:
             with open(pathlib.Path(__file__).parent.parent / '_parameter_settings/processing_settings.json') as json_file:
                 _settings = json.load(json_file)
 
@@ -954,7 +966,7 @@ class Operator:
             self.input_parameter_dict = _settings['modify_files']['Operator']
             self.input_parameter_dict_2 = _settings['synchronize_files']['Synchronizer']
 
-        self.root_directory = root_directory if root_directory is not None else _settings['modify_files']['root_directory']
+        self.root_directory = root_directory
         self.message_output = message_output if message_output is not None else print
 
         self.app_context_bool = is_gui_context()
@@ -1122,7 +1134,9 @@ class Operator:
                             # save spiking data
                             if session_spikes_sec.shape[0] > self.input_parameter_dict['get_spike_times']['min_spike_num']:
                                 cluster_id = f"{probe_id}_cl{cluster_info[idx, 'cluster_id']:04d}_ch{cluster_info[idx, 'ch']:03d}_{cluster_info[idx, 'group']}"
-                                np.save(file=pathlib.Path(root_dict[session_key]) / 'ephys' / probe_id / 'cluster_data' / cluster_id, arr=session_spikes)
+                                cluster_file = pathlib.Path(root_dict[session_key]) / 'ephys' / probe_id / 'cluster_data' / f"{cluster_id}.npy"
+                                with atomic_output_path(cluster_file) as tmp_cluster_file, open(tmp_cluster_file, 'wb') as cluster_output_file:
+                                    np.save(file=cluster_output_file, arr=session_spikes)
 
                                 unit_count_dict[session_key][cluster_info[idx, 'group']] += 1
 
@@ -1290,13 +1304,20 @@ class Operator:
             # save concatenated META file
             concatenated_meta_file = concat_save_path / f"concatenated_{concat_save_path.name}.{npx_file_type}.meta"
             if not concatenated_meta_file.is_file():
-                src_meta_file = first_match_or_raise(
-                    root=ephys_probe_dir,
-                    pattern=f"*{npx_file_type}.meta*",
-                    label=f"source .{npx_file_type}.meta for concatenation",
-                )
+                # A probe folder may hold several recordings (each concatenated
+                # above); they share the probe's acquisition settings, so the meta of
+                # the first one in sorted order is the explicit template, and only its
+                # size and duration fields are replaced by the concatenation's totals.
+                src_meta_files = sorted(ephys_probe_dir.glob(f"*{npx_file_type}.meta*"))
+                if not src_meta_files:
+                    raise FileNotFoundError(
+                        f"source .{npx_file_type}.meta for concatenation: no match for glob pattern "
+                        f"'*{npx_file_type}.meta*' under '{ephys_probe_dir}'."
+                    )
+                src_meta_file = src_meta_files[0]
                 with open(src_meta_file, 'r', encoding='utf-8') as f_in, \
-                        open(concatenated_meta_file, 'w', encoding='utf-8') as f_out:
+                        atomic_output_path(concatenated_meta_file) as tmp_meta_file, \
+                        open(tmp_meta_file, 'w', encoding='utf-8') as f_out:
                     for line in f_in:
                         if line.strip().startswith('fileSizeBytes='):
                             f_out.write(f"fileSizeBytes={total_size_bytes}\n")
@@ -1313,7 +1334,7 @@ class Operator:
             # save changepoint information in JSON file
             changepoints_json = concat_save_path / f'changepoints_info_{concat_save_path.name}.json'
             if not changepoints_json.exists():
-                with open(changepoints_json, 'w') as binary_info_output_file:
+                with atomic_output_path(changepoints_json) as tmp_changepoints_json, open(tmp_changepoints_json, 'w') as binary_info_output_file:
                     json.dump(binary_files_info, binary_info_output_file, indent=4)
             else:
                 with open(changepoints_json, 'r') as existing_json_file:
@@ -1340,7 +1361,7 @@ class Operator:
                                 changepoint_info_data[file_key][component_key][0] = changepoint_info_data[file_key][component_key][0] - previous_offset + new_session_start
                                 changepoint_info_data[file_key][component_key][1] = changepoint_info_data[file_key][component_key][1] - previous_offset + new_session_start
 
-                with open(changepoints_json, 'w') as binary_info_output_file:
+                with atomic_output_path(changepoints_json) as tmp_changepoints_json, open(tmp_changepoints_json, 'w') as binary_info_output_file:
                     json.dump(changepoint_info_data, binary_info_output_file, indent=4)
 
             smart_wait(app_context_bool=self.app_context_bool, seconds=2)
@@ -1413,8 +1434,8 @@ class Operator:
                 label="multichannel channel-separation",
                 poll_interval_s=5,
                 message_output=self.message_output,
-                raise_on_nonzero=False,
-                raise_on_timeout=False,
+                raise_on_nonzero=True,
+                raise_on_timeout=True,
             )
 
         smart_wait(app_context_bool=self.app_context_bool, seconds=2)
@@ -1435,6 +1456,9 @@ class Operator:
                 f"master multichannel .wav for naming: no 'm_*.wav' files found under "
                 f"'{pathlib.Path(self.root_directory) / 'audio' / 'original_mc'}'."
             )
+        # A session holds several master multichannel chunks (usually four
+        # five-minute WAVs); the single-channel files are named after the EARLIEST
+        # one (first in sorted, i.e. timestamp, order), an explicit choice.
         name_origin = master_mc_files[0].stem[2:]
 
         # concatenate single channel files for master/slave
@@ -1458,8 +1482,8 @@ class Operator:
             label="master/slave single-channel concatenation",
             poll_interval_s=5,
             message_output=self.message_output,
-            raise_on_nonzero=False,
-            raise_on_timeout=False,
+            raise_on_nonzero=True,
+            raise_on_timeout=True,
         )
 
         # delete temp directory (w/ all files in it)
@@ -1586,8 +1610,8 @@ class Operator:
                 label="audio band-pass filtering",
                 poll_interval_s=5,
                 message_output=self.message_output,
-                raise_on_nonzero=False,
-                raise_on_timeout=False,
+                raise_on_nonzero=True,
+                raise_on_timeout=True,
             )
 
     def concatenate_audio_files(self) -> None:
@@ -1891,8 +1915,8 @@ class Operator:
             label="video concatenation",
             poll_interval_s=5,
             message_output=self.message_output,
-            raise_on_nonzero=False,
-            raise_on_timeout=False,
+            raise_on_nonzero=True,
+            raise_on_timeout=True,
         )
 
         #  copy files over to video directory
@@ -2029,8 +2053,8 @@ class Operator:
             label="video re-encoding (fps/crf)",
             poll_interval_s=5,
             message_output=self.message_output,
-            raise_on_nonzero=False,
-            raise_on_timeout=False,
+            raise_on_nonzero=True,
+            raise_on_timeout=True,
         )
 
         # move files to special directory
@@ -2100,7 +2124,7 @@ class Operator:
             camera_frame_count_dict['median_empirical_camera_sr'] = float('nan')
         else:
             camera_frame_count_dict['median_empirical_camera_sr'] = round(number=np.nanmedian(empirical_camera_sr), ndigits=4)
-        with open(video_dir / f'{date_joint}_camera_frame_count_dict.json', 'w') as frame_count_outfile:
+        with atomic_output_path(video_dir / f'{date_joint}_camera_frame_count_dict.json') as tmp_frame_count_file, open(tmp_frame_count_file, 'w') as frame_count_outfile:
             json.dump(camera_frame_count_dict, frame_count_outfile, indent=4)
 
 

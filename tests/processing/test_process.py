@@ -3,6 +3,9 @@
 Test processing module.
 """
 
+from __future__ import annotations
+
+import ast
 import cv2
 import pytest
 import json
@@ -15,6 +18,7 @@ from pathlib import Path
 from click.testing import CliRunner
 from scipy.io import wavfile
 from numpy.testing import assert_array_equal, assert_allclose
+import usv_playpen
 from usv_playpen.processing.preprocess_data import Stylist
 from usv_playpen.processing.preprocess_data import (
     concatenate_video_files_cli,
@@ -38,6 +42,7 @@ from usv_playpen.processing.preprocess_data import (
     split_clusters_to_sessions_cli,
     prepare_vcl_assign_cli,
     vcl_assign_cli,
+    _stamp_processing_version,
 )
 import platform
 import sys
@@ -1009,11 +1014,14 @@ def test_configure_path_passes_through_unrecognized_prefix():
     assert configure_path("relative/path/file.txt") == "relative/path/file.txt"
 
 
-def test_first_match_or_raise_returns_alphabetically_first(tmp_path):
+def test_first_match_or_raise_refuses_several_matches(tmp_path):
+    """Several matches raise a ValueError listing them instead of returning the
+    alphabetically first one."""
     (tmp_path / "b.txt").write_text("b")
     (tmp_path / "a.txt").write_text("a")
     (tmp_path / "c.txt").write_text("c")
-    assert first_match_or_raise(root=tmp_path, pattern="*.txt").name == "a.txt"
+    with pytest.raises(ValueError, match="3 matches"):
+        first_match_or_raise(root=tmp_path, pattern="*.txt")
 
 
 def test_first_match_or_raise_recursive_descends(tmp_path):
@@ -1120,6 +1128,28 @@ def test_wait_for_subprocesses_raises_on_nonzero_when_requested():
             raise_on_nonzero=True,
             message_output=lambda *_: None,
         )
+
+
+def test_processing_subprocess_waits_fail_loudly():
+    """Every wait_for_subprocesses call in processing/ raises on a non-zero return
+    code and on a timeout: each step reads its subprocesses' outputs next (cut or
+    split WAVs, concatenated videos, DAS annotations, SLEAP analysis files), so a
+    failed or killed child must stop the step instead of leaving a missing or
+    truncated file for it to read."""
+    processing_dir = Path(usv_playpen.__file__).parent / "processing"
+    offenders = []
+    n_calls = 0
+    for module_path in sorted(processing_dir.glob("*.py")):
+        for node in ast.walk(ast.parse(module_path.read_text())):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "wait_for_subprocesses":
+                n_calls += 1
+                keywords = {keyword.arg: keyword.value for keyword in node.keywords}
+                nonzero = keywords["raise_on_nonzero"].value if "raise_on_nonzero" in keywords else False
+                timeout = keywords["raise_on_timeout"].value if "raise_on_timeout" in keywords else True
+                if not (nonzero and timeout):
+                    offenders.append(f"{module_path.name}:{node.lineno}")
+    assert n_calls >= 9
+    assert offenders == []
 
 
 def test_wait_for_subprocesses_terminates_on_timeout():
@@ -3158,6 +3188,54 @@ def test_preprocess_cli_commands_dispatch(mock_dependencies, tmp_path):
     mock_dependencies['Operator'].return_value.split_clusters_to_sessions.assert_called()
 
 
+def test_cli_options_land_in_their_own_settings_blocks(mock_dependencies, tmp_path):
+    """
+    Description
+    -----------
+    ``anipose-triangulate --frame-restriction FIRST LAST`` takes the documented
+    two integers and hands the triangulation a ``[first, last]`` list (one
+    integer used to be declared, which the triangulation's ``tuple()`` could not
+    take); ``vcl-assign --grid-resolution`` lands in the assign_vocalizations block
+    only (never on build_qlvm_categories.grid_resolution) while its model options
+    land in the vocalocator block; ``av-sync-check --extra-camera`` lands in the
+    Gatherer's block and its sync options in the Synchronizer's.
+
+    Parameters
+    ----------
+    mock_dependencies (dict)
+        Fixture of patched worker classes keyed by name.
+    tmp_path (pathlib.Path)
+        Per-test temp directory passed as the CLI ``--root-directory``.
+
+    Returns
+    -------
+    None
+    """
+
+    runner = CliRunner()
+    rd = ["--root-directory", str(tmp_path)]
+    result = runner.invoke(conduct_anipose_triangulation_cli, rd + ["--cal-directory", str(tmp_path), "--frame-restriction", "0", "500"])
+    assert result.exit_code == 0, result.output
+    settings = mock_dependencies['ConvertTo3D'].call_args.kwargs['input_parameter_dict']
+    assert settings['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['frame_restriction'] == [0, 500]
+    result = runner.invoke(conduct_anipose_triangulation_cli, rd + ["--cal-directory", str(tmp_path), "--frame-restriction", "7"])
+    assert result.exit_code != 0
+
+    result = runner.invoke(vcl_assign_cli, rd + ["--grid-resolution", "60", "70", "--vcl-version", "vcl-ssl", "--env-name", "some-env"])
+    assert result.exit_code == 0, result.output
+    settings = mock_dependencies['Vocalocator'].call_args.kwargs['input_parameter_dict']
+    assert settings['assign_vocalizations']['grid_resolution'] == [60, 70]
+    assert settings['build_qlvm_categories']['grid_resolution'] != [60, 70]
+    assert settings['vocalocator']['vcl_conda_env_name'] == "some-env"
+    assert "did not match" not in result.output
+
+    result = runner.invoke(av_sync_check_cli, rd + ["--extra-camera", "99999", "--nidq-sr", "1234.5"])
+    assert result.exit_code == 0, result.output
+    settings = mock_dependencies['Gatherer'].call_args.kwargs['input_parameter_dict']
+    assert settings['extract_phidget_data']['Gatherer']['prepare_data_for_analyses']['extra_data_camera'] == "99999"
+    assert settings['synchronize_files']['Synchronizer']['find_audio_sync_trains']['nidq_sr'] == 1234.5
+
+
 def test_broadband_filter_audio_batch_cli_dispatch(tmp_path, mocker):
     """
     Description
@@ -3341,3 +3419,13 @@ def test_find_lsb_changes_locates_largest_break(tmp_path):
     assert break_ends.size == len(edges)
     assert largest_break == max(np.diff(edges))
     assert start is not None and end is not None and end > start
+
+
+def test_stamp_processing_version_refuses_two_metadata_files(tmp_path):
+    """Two '*_metadata.yaml' files in a session root raise a ValueError naming both
+    instead of stamping (and rewriting) whichever sorts first."""
+    for name in ("a_metadata.yaml", "b_metadata.yaml"):
+        (tmp_path / name).write_text("Session:\n  usv_playpen_processing_version: v0\n")
+    with pytest.raises(ValueError, match="2 '\\*_metadata.yaml' files"):
+        _stamp_processing_version(tmp_path)
+    assert (tmp_path / "a_metadata.yaml").read_text() == "Session:\n  usv_playpen_processing_version: v0\n"

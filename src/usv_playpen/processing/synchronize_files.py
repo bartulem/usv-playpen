@@ -30,6 +30,7 @@ from spikeinterface.extractors.neuropixels_utils import get_neuropixels_sample_s
 from spikeinterface.preprocessing import phase_shift
 
 from ..os_utils import (
+    atomic_output_path,
     ephys_base_for_data_root,
     first_match_or_raise,
     wait_for_subprocesses,
@@ -251,9 +252,11 @@ class Synchronizer:
         Parameters
         ----------
         root_directory (str)
-            Root directory for data; defaults to None.
+            Session root directory; required (None raises a ValueError, since
+            the processing settings hold no session root).
         input_parameter_dict (dict)
-            Processing parameters; defaults to None.
+            Processing parameters; defaults to None, which reads
+            ``_parameter_settings/processing_settings.json``.
         message_output (function)
             Defines output messages; defaults to None.
 
@@ -262,7 +265,11 @@ class Synchronizer:
         None
         """
 
-        if input_parameter_dict is None or root_directory is None:
+        if root_directory is None:
+            msg = "Synchronizer needs a root_directory (the session root); the processing settings hold none."
+            raise ValueError(msg)
+
+        if input_parameter_dict is None:
             with open(pathlib.Path(__file__).parent.parent / '_parameter_settings/processing_settings.json') as json_file:
                 _settings = json.load(json_file)['synchronize_files']
 
@@ -271,7 +278,7 @@ class Synchronizer:
             if input_parameter_dict is not None
             else _settings['Synchronizer']
         )
-        self.root_directory = root_directory if root_directory is not None else _settings['root_directory']
+        self.root_directory = root_directory
         self.message_output = message_output if message_output is not None else print
 
         self.led_px_dict = self._build_led_px_dict()
@@ -480,7 +487,8 @@ class Synchronizer:
                 sync_data = one_recording.reshape((total_probe_ch, one_sample_num), order='F')[-1, :]
 
                 # save sync channel data
-                np.save(file=sync_ch_file, arr=sync_data)
+                with atomic_output_path(f'{sync_ch_file}.npy') as tmp_sync_ch_file, open(tmp_sync_ch_file, 'wb') as sync_ch_output_file:
+                    np.save(file=sync_ch_output_file, arr=sync_data)
 
             # optionally de-skew this session's AP binary in place (Neuropixels ADC
             # phase-shift); the sync channel extracted above is unchanged by the
@@ -511,9 +519,17 @@ class Synchronizer:
                     # save tracking start and end in changepoint information JSON file
                     root_ephys = str(ephys_base_for_data_root(self.root_directory) / f'{recording_date}_{imec_probe_id}')
                     pathlib.Path(root_ephys).mkdir(parents=True, exist_ok=True)
-                    existing_changepoint_files = sorted(pathlib.Path(root_ephys).glob('changepoints_info_*.json'))
-                    if len(existing_changepoint_files) > 0:
-                        with open(existing_changepoint_files[0], 'r') as binary_info_input_file:
+                    # The probe folder holds ONE changepoints file, named after it (the name
+                    # the concatenation step writes too); it is read and rewritten by that
+                    # exact name, and any other changepoints file there is refused.
+                    changepoints_path = pathlib.Path(root_ephys) / f'changepoints_info_{recording_date}_{imec_probe_id}.json'
+                    other_changepoint_files = [path for path in sorted(pathlib.Path(root_ephys).glob('changepoints_info_*.json')) if path != changepoints_path]
+                    if other_changepoint_files:
+                        msg = (f"{root_ephys} holds changepoints file(s) other than {changepoints_path.name}: "
+                               f"{', '.join(path.name for path in other_changepoint_files)}; remove or rename them.")
+                        raise ValueError(msg)
+                    if changepoints_path.is_file():
+                        with open(changepoints_path, 'r') as binary_info_input_file:
                             binary_files_info = json.load(binary_info_input_file)
 
                         if recording_file_name[:-7] not in binary_files_info:
@@ -542,10 +558,10 @@ class Synchronizer:
                         binary_files_info[recording_file_name[:-7]]['tracking_start_end'] = [int(tracking_start), int(tracking_end)]
                     binary_files_info[recording_file_name[:-7]]['largest_camera_break_duration'] = int(largest_break_duration)
 
-                    with open(pathlib.Path(root_ephys) / f'changepoints_info_{recording_date}_{imec_probe_id}.json', 'w') as binary_info_output_file:
+                    with atomic_output_path(changepoints_path) as tmp_changepoints_file, open(tmp_changepoints_file, 'w') as binary_info_output_file:
                         json.dump(binary_files_info, binary_info_output_file, indent=4)
 
-                    self.message_output(f"SUCCESS! Tracking start/end sample times saved in {sorted(pathlib.Path(root_ephys).glob('changepoints_info_*.json'))[0]}.")
+                    self.message_output(f"SUCCESS! Tracking start/end sample times saved in {changepoints_path}.")
 
                 else:
                     count_values_in_sync_data = sorted(dict(Counter(ch_sync_data)).items(), key=operator.itemgetter(1), reverse=True)
@@ -1040,9 +1056,11 @@ class Synchronizer:
 
         NB: This method also has consequential side effects. It caches the NIDQ IPI
         data to disk (sync/nidq_ipi_data.npy), and, when the audio/video sync passes
-        the divergence tolerance for EVERY audio device and camera, it irreversibly
-        deletes the original (uncropped) audio directory (audio/original) via
-        shutil.rmtree; if any comparison fails or is not made, the directory is kept.
+        the divergence tolerance for EVERY audio device (each compared against the
+        first sync camera, after the cameras are checked to carry identical pulse
+        sequences), it irreversibly deletes the original (uncropped) audio directory
+        (audio/original) via shutil.rmtree; if any comparison fails or is not made,
+        the directory is kept.
 
         Parameters
         ----------
@@ -1147,14 +1165,16 @@ class Synchronizer:
 
                 # save NIDQ IPI data
                 nidq_data_arr = np.vstack((nidq_ipi_durations_ms, nidq_ipi_start_samples))
-                np.save(file=nidq_ipi_data_file, arr=nidq_data_arr)
+                with atomic_output_path(nidq_ipi_data_file) as tmp_nidq_ipi_data_file, open(tmp_nidq_ipi_data_file, 'wb') as nidq_ipi_output_file:
+                    np.save(file=nidq_ipi_output_file, arr=nidq_data_arr)
 
         ipi_discrepancy_dict = {}
         audio_devices_start_sample_differences = 0
         audio_device_prefixes = ['m', 's']
-        # One verdict per (audio device, camera) comparison that reached the divergence check;
-        # audio/original is deleted only after the loop, when every comparison was made and
-        # passed, never as soon as the first device passes.
+        # One verdict per audio device that reached the divergence check (each device is compared
+        # against the first camera only, the cameras having been checked to carry identical pulse
+        # sequences); audio/original is deleted only after the loop, when every device was compared
+        # and passed, never as soon as the first device passes.
         sync_comparisons_passed: list[bool] = []
         for af_idx, audio_file in enumerate(sorted(wave_data_dict.keys())):
             ipi_discrepancy_dict[audio_file[:-4]] = {}
@@ -1298,16 +1318,16 @@ class Synchronizer:
             else:
                 self.message_output("The IPI sequences on different videos do not match.")
 
-        # every (audio device, camera) comparison was made and every one passed -> the original
-        # (uncropped) audio is no longer needed
-        n_comparisons = len(wave_data_dict) * len(video_sync_sequence_dict)
+        # every audio device was compared (against the first camera) and every one passed -> the
+        # original (uncropped) audio is no longer needed
+        n_comparisons = len(wave_data_dict)
         if sync_comparisons_passed and len(sync_comparisons_passed) == n_comparisons and all(sync_comparisons_passed):
             original_audio_dir = pathlib.Path(self.root_directory) / 'audio' / 'original'
             if original_audio_dir.exists():
                 shutil.rmtree(original_audio_dir)
         elif (pathlib.Path(self.root_directory) / 'audio' / 'original').exists():
             self.message_output(f"audio/original kept: {sum(sync_comparisons_passed)} of {n_comparisons} "
-                                f"audio-device x camera comparisons passed the divergence tolerance.")
+                                f"audio-device comparisons (each against the first sync camera) passed the divergence tolerance.")
 
         # check if the audio devices match on IPI start samples
         audio_devices_start_sample_differences = np.abs(audio_devices_start_sample_differences)
@@ -1402,7 +1422,7 @@ class Synchronizer:
                     break
 
         # save start/end video frame information
-        with (pathlib.Path(self.root_directory) / 'audio' / 'audio_triggerbox_sync_info.json').open('w') as audio_dict_outfile:
+        with atomic_output_path(pathlib.Path(self.root_directory) / 'audio' / 'audio_triggerbox_sync_info.json') as tmp_sync_info_file, open(tmp_sync_info_file, 'w') as audio_dict_outfile:
             json.dump(start_end_video, audio_dict_outfile, indent=4)
 
         # create new directory for cropped files and HPSS files
@@ -1521,8 +1541,8 @@ class Synchronizer:
             label="audio cut-to-video",
             poll_interval_s=5,
             message_output=self.message_output,
-            raise_on_nonzero=False,
-            raise_on_timeout=False,
+            raise_on_nonzero=True,
+            raise_on_timeout=True,
         )
 
         if len(device_ids) > 1:
@@ -1557,7 +1577,8 @@ class Synchronizer:
                             extended_lsb_array = np.concatenate((m_lsb_modified, lsb_padding))
                             m_data_modified = (padded_data & ~1) ^ extended_lsb_array
 
-                        wavfile.write(filename=outfile_loc, rate=m_sr_original, data=m_data_modified)
+                        with atomic_output_path(outfile_loc) as tmp_outfile_loc:
+                            wavfile.write(filename=tmp_outfile_loc, rate=m_sr_original, data=m_data_modified)
                 elif s_longer:
                         # adjust outfile name
                         default_base_name = audio_file.stem
@@ -1587,7 +1608,8 @@ class Synchronizer:
                             extended_lsb_array = np.concatenate((s_lsb_modified, lsb_padding))
                             s_data_modified = (padded_data & ~1) ^ extended_lsb_array
 
-                        wavfile.write(filename=outfile_loc, rate=s_sr_original, data=s_data_modified)
+                        with atomic_output_path(outfile_loc) as tmp_outfile_loc:
+                            wavfile.write(filename=tmp_outfile_loc, rate=s_sr_original, data=s_data_modified)
 
 
         # create HPSS directory

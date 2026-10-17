@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import pathlib
 
 import h5py
 import numpy as np
@@ -24,7 +25,9 @@ import polars as pls
 import pytest
 import yaml
 
+from usv_playpen.processing import build_qlvm_training_set
 from usv_playpen.processing.build_qlvm_training_set import (
+    REFERENCE_SQUEAK_INDEX_PATH,
     QLVMTrainingSetBuilder,
     allocate_even_quotas,
     apply_loudness_floor,
@@ -46,6 +49,7 @@ from usv_playpen.processing.build_qlvm_training_set import (
     split_sessions_by_type,
     stretch_specs,
     uniform_sampling_headroom,
+    usv_summary_condition_values,
     waterfill_level,
 )
 
@@ -58,7 +62,7 @@ _CFG = {
     "length_threshold": 128.0,
     "require_mask": True,
     "exclude_squeaks": True,
-    "strict_squeak_exclusion": False,
+    "squeak_exclusion_source": "summary",
     "reference_squeak_index_path": "",
     "exclude_noise": False,
     "row_exclusion_table": None,
@@ -191,14 +195,31 @@ def test_split_sessions_by_type_whole_sessions_per_type():
     requested share of its rows, and the result depends on the seed alone."""
     counts = {f"s{i}": 10 + i for i in range(10)}
     types = {key: ("MF" if i < 6 else "FF") for i, key in enumerate(counts)}
-    train, val = split_sessions_by_type(list(counts), types, counts, 0.2, 5)
+    train, val, single = split_sessions_by_type(list(counts), types, counts, 0.2, 5)
+    assert single == []
     assert set(train).isdisjoint(val)
     assert set(train) | set(val) == set(counts)
     for session_type in ("MF", "FF"):
         total = sum(c for k, c in counts.items() if types[k] == session_type)
         held = sum(counts[k] for k in val if types[k] == session_type)
         assert held >= 0.2 * total
-    assert (train, val) == split_sessions_by_type(list(reversed(counts)), types, counts, 0.2, 5)
+    assert (train, val, single) == split_sessions_by_type(list(reversed(counts)), types, counts, 0.2, 5)
+
+
+def test_split_sessions_by_type_single_session_type_goes_to_training():
+    """A type with one session goes to training whole and is reported, and the
+    split of the other types is the one the same seed gives without it (the
+    single-session type still draws its permutation)."""
+    counts = {"a": 100, "b": 100, "c": 100, "d": 500, "e": 40}
+    types = {"a": "MF", "b": "MF", "c": "MF", "d": "MM", "e": "lone_male"}
+    train, val, single = split_sessions_by_type(list(counts), types, counts, 0.2, 5)
+    assert single == ["MM", "lone_male"]
+    assert "d" in train and "e" in train
+    assert {"a", "b", "c"} & set(val)
+    assert {"a", "b", "c"} & set(train)
+    rng = np.random.default_rng(5)
+    mf_permutation = rng.permutation(3)
+    assert val == [["a", "b", "c"][mf_permutation[0]]]
 
 
 def test_apply_loudness_floor_range():
@@ -468,29 +489,79 @@ def test_read_reference_squeak_index_applies_the_strict_rule(tmp_path, cohort):
 
 def test_build_strict_squeak_exclusion_reads_the_reference_index(tmp_path, cohort):
     """
-    strict_squeak_exclusion takes the squeak rows from the reference squeak index's
+    squeak_exclusion_source "reference" takes the squeak rows from the reference squeak index's
     strict rule (is_bbv OR n_bouts_min3 >= 1) INSTEAD of the summary's squeak flag: the
     index's rows go, the squeak-bearing rows the index does not flag come back.
     """
     path = _write_reference_index(tmp_path, cohort, {"20230101_100000": {3: (True, 0), 4: (False, 1)}})
     default_dir = _build(tmp_path, cohort, {**_CFG, "full_dataset": True}, "default")
-    strict_cfg = {**_CFG, "full_dataset": True, "strict_squeak_exclusion": True, "reference_squeak_index_path": str(path)}
+    strict_cfg = {**_CFG, "full_dataset": True, "squeak_exclusion_source": "reference", "reference_squeak_index_path": str(path)}
     strict_dir = _build(tmp_path, cohort, strict_cfg, "strict")
     default_ids = set(np.load(default_dir / "full_data.npz")["spec_id"].tolist())
     strict_ids = set(np.load(strict_dir / "full_data.npz")["spec_id"].tolist())
     assert sorted(default_ids - strict_ids) == ["20230101_100000_3", "20230101_100000_4"]
     assert sorted(strict_ids - default_ids) == ["20230101_100000_1", "20230101_100000_2"]
     meta = np.load(strict_dir / "metadata.npz")
-    assert bool(meta["strict_squeak_exclusion"])
+    assert str(meta["squeak_exclusion_source"]) == "reference"
     assert str(meta["reference_squeak_index_path"]) == str(path)
-    assert not bool(np.load(default_dir / "metadata.npz")["strict_squeak_exclusion"])
+    assert str(np.load(default_dir / "metadata.npz")["squeak_exclusion_source"]) == "summary"
+    assert str(np.load(default_dir / "metadata.npz")["reference_squeak_index_path"]) == ""
 
 
 def test_build_strict_squeak_exclusion_needs_every_session_in_the_index(tmp_path, cohort):
-    """A session the reference index does not list has unknown strict exclusions and stops the build."""
+    """A session the reference index does not list has unknown strict exclusions and stops a
+    "reference" build, which takes its squeak rows from the index alone."""
     path = _write_reference_index(tmp_path, cohort, missing_session="20230101_120000")
     with pytest.raises(ValueError, match="20230101_120000 is not in the reference squeak index"):
-        _build(tmp_path, cohort, {**_CFG, "strict_squeak_exclusion": True, "reference_squeak_index_path": str(path)})
+        _build(tmp_path, cohort, {**_CFG, "squeak_exclusion_source": "reference", "reference_squeak_index_path": str(path)})
+
+
+def test_build_union_squeak_exclusion_leaves_out_flag_and_reference_rows(tmp_path, cohort):
+    """
+    squeak_exclusion_source "union" leaves out every row the summary's squeak flag marks AND
+    every row the reference squeak index's strict rule marks (with exclude_noise, every noise row
+    too), so a set holds no row any of the three marks. A session the index does not list (newer
+    than the index) is still built, with its summary flags alone, and the build names it.
+    """
+    summary = cohort[0] / "audio" / f"{cohort[0].name}_usv_summary.csv"
+    pls.read_csv(summary).with_columns(pls.Series("noise", [False, False, False, False, False, True, False, False])).write_csv(summary)
+    for root in cohort[1:]:
+        other = root / "audio" / f"{root.name}_usv_summary.csv"
+        pls.read_csv(other).with_columns(pls.lit(False).alias("noise")).write_csv(other)
+    path = _write_reference_index(tmp_path, cohort, {"20230101_100000": {3: (True, 0), 4: (False, 1)}},
+                                  missing_session="20230101_120000")
+    clean_cfg = {**_CFG, "full_dataset": True, "exclude_noise": True}
+    plain_dir = _build(tmp_path, cohort, {**clean_cfg, "exclude_squeaks": False, "exclude_noise": False}, "plain")
+    messages = []
+    union_dir = tmp_path / "union"
+    QLVMTrainingSetBuilder(
+        root_directories=[str(root) for root in cohort],
+        output_directory=str(union_dir),
+        input_parameter_dict={"build_qlvm_training_set": {**clean_cfg, "squeak_exclusion_source": "union",
+                                                          "reference_squeak_index_path": str(path)}},
+        message_output=messages.append,
+    ).build()
+    plain_ids = set(np.load(plain_dir / "full_data.npz")["spec_id"].tolist())
+    union_ids = set(np.load(union_dir / "full_data.npz")["spec_id"].tolist())
+    assert sorted(plain_ids - union_ids) == [f"20230101_100000_{row}" for row in (1, 2, 3, 4, 5)]
+    assert any("20230101_120000" in message and "not in the reference squeak index" in message for message in messages)
+    meta = np.load(union_dir / "metadata.npz")
+    assert str(meta["squeak_exclusion_source"]) == "union"
+    assert str(meta["reference_squeak_index_path"]) == str(path)
+
+
+def test_shipped_settings_exclude_noise_flag_and_reference_squeaks_together():
+    """The shipped build_qlvm_training_set settings leave out the union of the current noise
+    flag, the current squeak flag and the reference strict squeak rows, with the index path left
+    empty so the lab's reference index (a code constant the experimenter re-keying cannot move)
+    is read."""
+    package = pathlib.Path(build_qlvm_training_set.__file__).resolve().parents[1]
+    shipped = json.loads((package / "_parameter_settings" / "processing_settings.json").read_text())["build_qlvm_training_set"]
+    assert shipped["exclude_squeaks"] is True
+    assert shipped["exclude_noise"] is True
+    assert shipped["squeak_exclusion_source"] == "union"
+    assert shipped["reference_squeak_index_path"] == ""
+    assert REFERENCE_SQUEAK_INDEX_PATH.endswith("bbv_segment_index.csv")
 
 
 def test_load_row_exclusion_table_and_path_parser(tmp_path):
@@ -553,8 +624,9 @@ def test_build_full_dataset_writes_every_eligible_row(tmp_path, cohort):
     ({"masking_type": "none"}, "masking_type 'none'"),
     ({"apply_mask": True}, "loudness floor"),
     ({"mask_count_bin_edges": [2, 1]}, "mask_count_bin_edges"),
-    ({"exclude_squeaks": False, "strict_squeak_exclusion": True, "reference_squeak_index_path": "x.csv"}, "needs exclude_squeaks"),
-    ({"strict_squeak_exclusion": True}, "reference_squeak_index_path is empty"),
+    ({"exclude_squeaks": False, "squeak_exclusion_source": "reference", "reference_squeak_index_path": "x.csv"}, "needs exclude_squeaks"),
+    ({"exclude_squeaks": False, "squeak_exclusion_source": "union", "reference_squeak_index_path": "x.csv"}, "needs exclude_squeaks"),
+    ({"squeak_exclusion_source": "both"}, "squeak_exclusion_source must be"),
 ])
 def test_build_rejects_inconsistent_settings(tmp_path, cohort, override, message):
     """Inconsistent settings stop the build before anything is read."""
@@ -597,3 +669,44 @@ def test_build_fingerprints_every_session_h5(tmp_path, cohort):
     assert tsv[0].split("\t") == ["session", "h5_rows", "corpus_rows", "bytes", "sha256", "path"]
     assert tsv[1].split("\t")[:3] == ["20230101_100000", "8", "5"]
     assert tsv[2].split("\t")[3] == str(h5_b.stat().st_size)
+
+
+def test_row_exclusion_table_strips_session_ids_and_refuses_unmatched_ones(tmp_path, cohort):
+    """Blanks around a table's session_id are stripped like those around its row, so the entry
+    still names its session; a table session the build never meets (a typo, another date format,
+    a session outside the build) stops the build and is named, instead of excluding nothing."""
+    table = tmp_path / "rows.csv"
+    table.write_text("session_id,row\n 20230101_110000 ,4\n")
+    rows = load_row_exclusion_table(str(table))
+    assert list(rows) == ["20230101_110000"]
+    table_dir = _build(tmp_path, cohort, {**_CFG, "full_dataset": True, "row_exclusion_table": str(table)}, "table")
+    assert "20230101_110000_4" not in np.load(table_dir / "full_data.npz")["spec_id"].tolist()
+    table.write_text("session_id,row\n20230101_110000,4\n2023-01-01_120000,2\n20990101_000000,1\n")
+    with pytest.raises(ValueError, match=r"2023-01-01_120000.*20990101_000000"):
+        _build(tmp_path, cohort, {**_CFG, "row_exclusion_table": str(table)}, "unmatched")
+
+
+def test_rebuild_into_the_same_directory_leaves_no_stale_split(tmp_path, cohort):
+    """A build replaces the outputs of an earlier build in the same directory: a full_data.npz
+    left by a full_dataset build does not survive a later build without it, and no temporary file
+    is left behind."""
+    out_dir = _build(tmp_path, cohort, {**_CFG, "full_dataset": True}, "same")
+    assert (out_dir / "full_data.npz").is_file()
+    _build(tmp_path, cohort, _CFG, "same")
+    assert not (out_dir / "full_data.npz").exists()
+    meta = np.load(out_dir / "metadata.npz")
+    assert int(meta["n_full"]) == 0
+    assert np.load(out_dir / "train_data.npz")["spec_id"].size == int(meta["n_train"])
+    assert sorted(path.name for path in out_dir.iterdir()) == [
+        "SESSION_H5.sha256", "SESSION_H5.tsv", "metadata.npz", "train_data.npz", "val_data.npz",
+    ]
+
+
+def test_usv_summary_condition_values_refuses_two_summaries(tmp_path):
+    """A session whose audio folder holds two USV summaries (a stray copy in a
+    subfolder) raises a ValueError naming both instead of reading the first."""
+    (tmp_path / "audio" / "old").mkdir(parents=True)
+    for path in (tmp_path / "audio" / "s_usv_summary.csv", tmp_path / "audio" / "old" / "s_usv_summary.csv"):
+        path.write_text("usv_id,start,stop\n000000,0.1,0.2\n")
+    with pytest.raises(ValueError, match="2 USV summaries"):
+        usv_summary_condition_values(str(tmp_path), 1)

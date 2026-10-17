@@ -246,3 +246,26 @@ def test_build_rejects_degenerate_split(tmp_path, cohort):
     """A validation split outside (0, 1) stops the build."""
     with pytest.raises(ValueError, match="validation_split"):
         _build(tmp_path, cohort, {**_CFG, "validation_split": 1.0})
+
+
+@pytest.mark.parametrize("cfg_override", [{}, {"draw_mode": "uniform"}, {"full_dataset": True}])
+def test_build_with_no_candidate_past_the_gates_names_the_gates(tmp_path, cohort, cfg_override):
+    """When no squeak passes the crop gates (here: every crop is narrower than
+    min_trimmed_frames) the build stops with an error that says so and lists each gate's
+    count, for every draw, instead of failing inside the draw or the crop loop; nothing is
+    written."""
+    cfg = {**_CFG, "min_trimmed_frames": 100, **cfg_override}
+    with pytest.raises(ValueError, match=r"no squeak candidate passed the curation gates.*min_trimmed_frames"):
+        _build(tmp_path, cohort, cfg, "empty")
+    assert not (tmp_path / "empty" / "train_data.npz").exists()
+
+
+def test_squeak_rebuild_into_the_same_directory_leaves_no_stale_split(tmp_path, cohort):
+    """A build replaces the outputs of an earlier build in the same directory: a full_data.npz
+    left by a full_dataset build does not survive a later build without it, and no temporary file
+    is left behind."""
+    out_dir = _build(tmp_path, cohort, {**_CFG, "full_dataset": True}, "same")
+    assert (out_dir / "full_data.npz").is_file()
+    _build(tmp_path, cohort, _CFG, "same")
+    assert sorted(path.name for path in out_dir.iterdir()) == ["metadata.npz", "train_data.npz", "val_data.npz"]
+    assert int(np.load(out_dir / "metadata.npz")["n_full"]) == 0

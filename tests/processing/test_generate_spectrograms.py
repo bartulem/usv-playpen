@@ -26,7 +26,6 @@ _SPEC_PARAMS = {
     "num_freq_bins": 128,
     "num_time_bins": 128,
     "nperseg": 2048,
-    "noverlap": 1792,
     "min_freq": 30000.0,
     "max_freq": 120000.0,
     "hop_length": 512,
@@ -285,3 +284,64 @@ def test_generate_session_spectrograms_row_subset_rejects_bad_input(tmp_path, mo
     pls.concat([df, df[-1:]]).write_csv(summary_path)
     with pytest.raises(ValueError, match="do not match the USV summary"):
         generator.generate_session_spectrograms(row_subset={0})
+
+
+def test_generate_session_spectrograms_failed_full_pass_keeps_the_old_file(tmp_path, mocker):
+    """A full pass writes a temporary sibling and renames it into place, so a pass
+    that dies while writing leaves the previous file (spectrograms and mask group)
+    intact and no temporary file behind."""
+    root, session_id, _n_usv = _build_session(tmp_path)
+    mocker.patch("usv_playpen.processing.generate_spectrograms.smart_wait")
+    settings = {"generate_spectrograms": _SPEC_PARAMS}
+    SpectrogramGenerator(root_directory=str(root), input_parameter_dict=settings,
+                         message_output=lambda *_a, **_kw: None).generate_session_spectrograms()
+    h5_path = root / "audio" / "spectrograms" / f"{session_id}_spectrograms.h5"
+    with h5py.File(h5_path, "a") as f:
+        f.create_group(f"mask/{session_id}").create_dataset("spectrogram_index", data=np.array([0], dtype=np.int64))
+    before = h5_path.read_bytes()
+    original_create = h5py.Group.create_dataset
+
+    def _failing_create(self, name, *args, **kwargs):
+        if name == "durations":
+            raise OSError("disk full")
+        return original_create(self, name, *args, **kwargs)
+
+    mocker.patch.object(h5py.Group, "create_dataset", _failing_create)
+    with pytest.raises(OSError, match="disk full"):
+        SpectrogramGenerator(root_directory=str(root), input_parameter_dict=settings,
+                             message_output=lambda *_a, **_kw: None).generate_session_spectrograms()
+    assert h5_path.read_bytes() == before
+    assert [path.name for path in h5_path.parent.iterdir()] == [h5_path.name]
+
+
+def test_generate_session_spectrograms_failed_patch_keeps_the_old_file(tmp_path, mocker):
+    """Patch mode patches a copy and renames it onto the original, so a patch that
+    dies after writing some rows leaves the original file byte-identical."""
+    root, session_id, _n_usv = _build_session(tmp_path)
+    mocker.patch("usv_playpen.processing.generate_spectrograms.smart_wait")
+    settings = {"generate_spectrograms": _SPEC_PARAMS}
+    SpectrogramGenerator(root_directory=str(root), input_parameter_dict=settings,
+                         message_output=lambda *_a, **_kw: None).generate_session_spectrograms()
+    h5_path = root / "audio" / "spectrograms" / f"{session_id}_spectrograms.h5"
+    summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
+    df = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})
+    df.with_columns(pls.col("stop") + 0.01).write_csv(summary_path)
+    with h5py.File(h5_path, "r") as f:
+        before = f[f"spectrogram/{session_id}"]["spectrograms"][:]
+    original_setitem = h5py.Dataset.__setitem__
+    writes = []
+
+    def _failing_setitem(self, key, value):
+        writes.append(key)
+        if len(writes) == 2:
+            raise OSError("disk full")
+        return original_setitem(self, key, value)
+
+    mocker.patch.object(h5py.Dataset, "__setitem__", _failing_setitem)
+    with pytest.raises(OSError, match="disk full"):
+        SpectrogramGenerator(root_directory=str(root), input_parameter_dict=settings,
+                             message_output=lambda *_a, **_kw: None).generate_session_spectrograms(row_subset={0, 1})
+    mocker.stopall()
+    with h5py.File(h5_path, "r") as f:
+        np.testing.assert_array_equal(f[f"spectrogram/{session_id}"]["spectrograms"][:], before)
+    assert [path.name for path in h5_path.parent.iterdir()] == [h5_path.name]

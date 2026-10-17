@@ -87,7 +87,8 @@ def _remerge_from_consensus(merged: list, min_duration_s: float, span_factor: fl
     Condition 4 matters: where the long channel agrees with everyone else, the
     consensus re-merge reproduces one interval and nothing is changed. A channel
     set aside for the boundary is still credited in ``chs_detected`` for every
-    sub-interval its original segment covers, because it did hear the USV --
+    final sub-interval its original segment covers, including the pieces a deeper
+    recursion level cuts, because it did hear the USV --
     it merely failed to separate it -- and dropping it would understate
     ``chs_count`` for the downstream noise rejection.
 
@@ -98,33 +99,35 @@ def _remerge_from_consensus(merged: list, min_duration_s: float, span_factor: fl
 
     Parameters
     ----------
-    merged : list
+    merged (list)
         Merged interval dicts, each carrying ``start``, ``stop``, ``chs_detected``
         (a set) and ``segments`` (the contributing ``(start, stop, channel)`` tuples).
-    min_duration_s : float
+    min_duration_s (float)
         Only intervals longer than this are examined.
-    span_factor : float
+    span_factor (float)
         A channel dominates when its longest segment exceeds this multiple of the
         median longest-segment across contributing channels.
-    max_dissenting_channels : int
+    max_dissenting_channels (int)
         Fire only when at most this many channels dominate.
-    min_agreeing_channels : int
+    min_agreeing_channels (int)
         Fire only when at least this many channels remain once dissenters are set aside.
-    max_depth : int
+    max_depth (int)
         Maximum recursion depth: every split interval's sub-intervals are re-tested
         against their own median longest-segment while ``_depth < max_depth``; at the
         cap the sub-intervals are kept as they are.
-    min_gap_s : float, default 0.0
-        Smallest gap (s) a consensus cut may leave between adjacent sub-intervals;
+    min_gap_s (float)
+        Default 0.0. Smallest gap (s) a consensus cut may leave between adjacent sub-intervals;
         pieces separated by less are fused back together (stop extended,
         ``chs_detected`` and ``segments`` combined). 0 disables the fusion.
-    _depth : int, default 0
-        Current recursion depth; internal, callers leave it at 0.
+    _depth (int)
+        Default 0. Current recursion depth; internal, callers leave it at 0.
 
     Returns
     -------
-    (corrected, n_split) : tuple[list, int]
-        The corrected interval list and the number of intervals that were split.
+    corrected (list)
+        The corrected interval list.
+    n_split (int)
+        The number of intervals that were split.
     """
 
     corrected = []
@@ -190,11 +193,6 @@ def _remerge_from_consensus(merged: list, min_duration_s: float, span_factor: fl
         # 1102.237 s lost 27.1 ms off its end.
         sub_intervals[0]['start'] = interval['start']
         sub_intervals[-1]['stop'] = interval['stop']
-        for sub in sub_intervals:
-            # credit a set-aside channel wherever its own segment covers this sub-interval
-            for seg_start, seg_stop, seg_channel in segments:
-                if seg_channel in dissenting and seg_start < sub['stop'] and sub['start'] < seg_stop:
-                    sub['chs_detected'].add(seg_channel)
         # Recurse. A single pass tests dissent against the median longest-segment of
         # the WHOLE interval, so inside a long one a channel fusing just two adjacent
         # USVs is invisible: in 20240311_143803 at 300.816 s the interval spans 779 ms
@@ -208,6 +206,14 @@ def _remerge_from_consensus(merged: list, min_duration_s: float, span_factor: fl
             min_agreeing_channels, max_depth, min_gap_s=min_gap_s, _depth=_depth + 1
         ) if _depth < max_depth else (sub_intervals, 0)
         n_split += deeper_splits
+        # Credit a set-aside channel wherever its own segment covers a final piece. This runs
+        # on the recursion's OUTPUT: a deeper level rebuilds its pieces from the retained
+        # segments only, which never held this level's dissenters, so a credit given to the
+        # sub-intervals before recursing would be lost on every piece cut further down.
+        for sub in deeper:
+            for seg_start, seg_stop, seg_channel in segments:
+                if seg_channel in dissenting and seg_start < sub['stop'] and sub['start'] < seg_stop:
+                    sub['chs_detected'].add(seg_channel)
         corrected.extend(deeper)
 
     return corrected, n_split
@@ -227,7 +233,7 @@ def _greedy_merge_segments(sorted_segments: list) -> list:
 
     Parameters
     ----------
-    sorted_segments : list
+    sorted_segments (list)
         ``(start_seconds, stop_seconds, channel)`` tuples, sorted by start time.
 
     Returns
@@ -268,11 +274,13 @@ def _write_usv_summary_csv(merged: list, out_path: pathlib.Path) -> None:
 
     Parameters
     ----------
-    merged : list
+    merged (list)
         List of merged USV interval dicts, each carrying ``start``/``stop``/
         ``peak_amp_ch``/``mean_amp_ch``/``chs_count``/``chs_detected`` keys.
-    out_path : pathlib.Path
-        Destination path for the ``*_usv_summary.csv`` file.
+    out_path (pathlib.Path)
+        Destination path for the ``*_usv_summary.csv`` file; it is replaced
+        atomically (written to a temporary sibling, then renamed), so a crash
+        mid-write leaves any earlier summary whole.
 
     Returns
     -------
@@ -280,7 +288,7 @@ def _write_usv_summary_csv(merged: list, out_path: pathlib.Path) -> None:
     """
     # Written in the canonical column order (os_utils.USV_SUMMARY_COLUMN_ORDER), so
     # the emitter placeholder sits between the DAS event and its channel statistics.
-    order_usv_summary_columns(pls.DataFrame({
+    summary_df = order_usv_summary_columns(pls.DataFrame({
         # Zero-padded to six digits. The padding is what keeps the column a
         # STRING through every read/write cycle -- bare 0, 1, 2 round-trip as
         # Int64 and the atomic rewrites silently retype the column -- and a
@@ -298,7 +306,9 @@ def _write_usv_summary_csv(merged: list, out_path: pathlib.Path) -> None:
         "chs_count": [float(u['chs_count']) for u in merged],
         "chs_detected": [str(u['chs_detected']) for u in merged],
         "emitter": [None] * len(merged),
-    })).write_csv(file=out_path)
+    }))
+    with atomic_output_path(out_path) as tmp_summary_path:
+        summary_df.write_csv(file=tmp_summary_path)
 
 
 def _ladder_gap_leading_stops(
@@ -386,8 +396,10 @@ def _repaired_facing_edges(
     recorded ones, inside the recorded gap), inward suggestions -- which arise
     from single-channel-versus-multichannel-merge convention differences, not
     from the artifact -- are clamped to the recorded boundary. Pairs the
-    re-detection joins into one segment, fails to detect, or would move by more
-    than ``max_boundary_shift`` are rejected (returned as None) and left
+    re-detection joins into one segment, fails to detect, would move by more
+    than ``max_boundary_shift``, or whose corrected edges would meet or cross
+    (the second USV starting at or before the first one's new stop, which the
+    edge-by-edge clamping can produce) are rejected (returned as None) and left
     untouched by the caller.
 
     Parameters
@@ -431,6 +443,8 @@ def _repaired_facing_edges(
     if (new_stop_first - stop_first) > max_boundary_shift:
         return None
     if (start_second - new_start_second) > max_boundary_shift:
+        return None
+    if new_start_second <= new_stop_first:
         return None
     return new_stop_first, new_start_second
 
@@ -567,8 +581,8 @@ class FindMouseVocalizations:
                 label=f"DAS inference on {pathlib.Path(one_file).name}",
                 poll_interval_s=5,
                 message_output=self.message_output,
-                raise_on_nonzero=False,
-                raise_on_timeout=False,
+                raise_on_nonzero=True,
+                raise_on_timeout=True,
             )
 
         # create save directory if it doesn't exist
@@ -1171,11 +1185,14 @@ class FindMouseVocalizations:
                 pattern="*_usv_summary.csv",
                 label="USV summary CSV",
             )
-            probe_wav = first_match_or_raise(
-                root=hpss_dir,
-                pattern="*.wav",
-                label="HPSS-filtered WAV",
-            )
+            # A session holds one HPSS-filtered WAV per channel (24), all at the
+            # session's sampling rate, which is the only thing read from it, so the
+            # first channel's WAV in sorted order is the explicit choice.
+            hpss_wavs = sorted(hpss_dir.glob("*.wav"))
+            if not hpss_wavs:
+                msg = f"HPSS-filtered WAV: no match for glob pattern '*.wav' under '{hpss_dir}'."
+                raise FileNotFoundError(msg)
+            probe_wav = hpss_wavs[0]
         except FileNotFoundError as exc:
             self.message_output(
                 f"DAS seam check skipped for '{self.root_directory}': {exc}"
@@ -1338,6 +1355,8 @@ class FindMouseVocalizations:
             subps=[snippet_subp],
             max_seconds=4 * 60 * 60,
             label=f"DAS seam-repair snippet inference ({len(flagged)} snippets)",
+            raise_on_nonzero=True,
+            raise_on_timeout=True,
         )
 
         # Phase 4: harvest the re-detected facing edges and apply them.

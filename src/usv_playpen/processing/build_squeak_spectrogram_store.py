@@ -874,7 +874,7 @@ def build_squeak_spectrogram_store_cli(ctx, root_directories, session_lists, spe
         Comma-separated string of session-list .txt files (one session root per line). Give this and/or --root-directories.
     spectrograms_root (str)
         Output directory the store is written to (the spectrograms_root setting when not given).
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns

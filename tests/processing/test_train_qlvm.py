@@ -37,6 +37,7 @@ from usv_playpen.processing.qlvm_latents import (
     load_decoder_params,
     load_model_cell,
     minmax_per_spectrogram,
+    model_decode_condition,
     read_torch_checkpoint,
 )
 from usv_playpen.processing.qlvm_model import (
@@ -925,3 +926,52 @@ def test_spectral_entropy_condition_table_and_degenerate_range(tmp_path, mocker)
         _train(dataset_dir, tmp_path / "out_constant", _conditional_cfg("spectral_entropy", condition_table=str(table)), mocker)
     with pytest.raises(ValueError, match="no spectral_entropy column"):
         _train(dataset_dir, tmp_path / "out_no_column", _conditional_cfg("spectral_entropy"), mocker)
+
+
+def test_condition_bins_count_every_bin_an_empty_one_included(tmp_path, mocker):
+    """A capped quantile scheme keeps the equal-width pieces of a wide end bin however few rows
+    they hold, so a sparse tail leaves bins with no training rows. condition_bins.npz then holds
+    one size per bin (zeros included, ``group_ids`` 0..n_bins - 1, a NaN mean for an empty bin),
+    and the cell can be decoded at a corpus quantile of its conditioning value, which needs one
+    size per bin."""
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+    loudness = np.concatenate([np.random.default_rng(3).uniform(40.0, 45.0, 47), [95.0]])
+    _write_split(dataset_dir / "train_data.npz", 48, seed=0, apply_mask=False,
+                 condition_columns={**_summary_columns(48, 10), "loudness_db": loudness})
+    _write_split(dataset_dir / "val_data.npz", 16, seed=1, apply_mask=False, condition_columns=_summary_columns(16, 11))
+    _write_metadata(dataset_dir)
+    cell = tmp_path / "cell"
+    _train(dataset_dir, cell, _conditional_cfg("loudness", condition_n_bins=8, n_epochs=1), mocker)
+    model = load_model_cell(str(cell))
+    bins = model["condition_bins"]
+    n_bins = bins["edges"].size - 1
+    with np.load(dataset_dir / "train_data.npz") as split:
+        train_c = compute_condition_values(model["contract"]["condition"], split["durations"], None, split["loudness_db"])
+    groups = condition_group_ids(train_c, bins["edges"])
+    assert np.count_nonzero(np.bincount(groups, minlength=n_bins) == 0) > 0
+    np.testing.assert_array_equal(bins["group_sizes"], np.bincount(groups, minlength=n_bins))
+    np.testing.assert_array_equal(bins["group_ids"], np.arange(n_bins))
+    assert np.isnan(bins["group_means"][bins["group_sizes"] == 0]).all()
+    median = float(model_decode_condition(model, 0.5))
+    assert abs(median - float(np.median(train_c))) <= 0.0025
+
+
+def test_failed_conditional_rerun_leaves_the_earlier_cell_whole(tmp_path, mocker):
+    """condition_bins.npz is written only once training has succeeded, with the checkpoint and the
+    contract: a re-run into an existing cell that diverges leaves the earlier run's bins next to
+    that run's checkpoint and contract, not a cell mixing the two runs."""
+    first_set, second_set = tmp_path / "first", tmp_path / "second"
+    for directory, low, high in ((first_set, 20.0, 60.0), (second_set, 70.0, 95.0)):
+        directory.mkdir()
+        loudness = np.random.default_rng(5).uniform(low, high, 32)
+        _write_split(directory / "train_data.npz", 32, seed=0, apply_mask=False,
+                     condition_columns={**_summary_columns(32, 10), "loudness_db": loudness})
+        _write_metadata(directory)
+    cell = tmp_path / "cell"
+    _train(first_set, cell, _conditional_cfg("loudness", n_epochs=1), mocker)
+    bins_path = cell / "config" / "condition_bins.npz"
+    first_bins = bins_path.read_bytes()
+    with pytest.raises(FloatingPointError, match="diverged"):
+        _train(second_set, cell, _conditional_cfg("loudness", n_epochs=1, learning_rate=1e38), mocker)
+    assert bins_path.read_bytes() == first_bins

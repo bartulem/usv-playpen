@@ -14,6 +14,12 @@ import librosa
 import numpy as np
 from scipy.io import wavfile
 
+# The compute cluster mounts every lab share under this directory
+# (``/mnt/cup/labs/<lab share>``, the cluster form ``os_utils.to_cluster_path``
+# produces); the session folders this script reads and writes live below it. A
+# fixed property of the cluster, not an analysis setting.
+CLUSTER_LAB_SHARES_ROOT = "/mnt/cup/labs"
+
 
 def hpss_func(
     recording_identifier: str,
@@ -29,20 +35,22 @@ def hpss_func(
 
     Parameters
     ----------
-    cup_recording_directory : str
-        Personal file server subdirectory name, e.g. "Bartul".
-    recording_identifier : str
+    recording_identifier (str)
         Identifier for the recording session, e.g. "20230801_155857".
-    wav_file_idx : int
-         Index of the WAV file to be processed.
+    cup_recording_directory (str)
+        Lab-share subdirectory holding the session, relative to
+        ``CLUSTER_LAB_SHARES_ROOT`` (e.g. "falkner/<experimenter>/Data").
+    wav_file_idx (int)
+        Index of the WAV file to be processed.
 
     Returns
     -------
-    harmonic_data_clipped : WAV file
-        Output audio file w/ only the harmonics component.
+    None
+        The harmonic component is written to
+        ``<CLUSTER_LAB_SHARES_ROOT>/<cup_recording_directory>/<recording_identifier>/audio/hpss/<wav stem>_hpss.wav``.
     """
 
-    wav_dir = pathlib.Path('/mnt/cup/labs') / cup_recording_directory / recording_identifier / 'audio' / 'cropped_to_video'
+    wav_dir = pathlib.Path(CLUSTER_LAB_SHARES_ROOT) / cup_recording_directory / recording_identifier / 'audio' / 'cropped_to_video'
     wav_files = sorted(wav_dir.glob('*.wav'))
     if wav_file_idx < 0 or wav_file_idx >= len(wav_files):
         raise IndexError(
@@ -94,7 +102,7 @@ def hpss_func(
     ).astype(np.int16)
 
     # save the harmonic component as a new WAV file
-    hpss_dir = pathlib.Path('/mnt/cup/labs') / cup_recording_directory / recording_identifier / 'audio' / 'hpss'
+    hpss_dir = pathlib.Path(CLUSTER_LAB_SHARES_ROOT) / cup_recording_directory / recording_identifier / 'audio' / 'hpss'
     hpss_dir.mkdir(parents=True, exist_ok=True)
 
     wavfile.write(

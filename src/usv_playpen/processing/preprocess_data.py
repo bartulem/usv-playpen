@@ -69,6 +69,10 @@ def _stamp_processing_version(root_directory: str | pathlib.Path) -> None:
     matches = sorted(root.glob('*_metadata.yaml'))
     if not matches:
         return
+    if len(matches) > 1:
+        msg = (f"{len(matches)} '*_metadata.yaml' files in '{root}', expected at most one: "
+               f"{', '.join(match.name for match in matches)}; the processing version was not stamped.")
+        raise ValueError(msg)
     metadata_path = matches[0]
     with open(metadata_path, 'r') as yaml_in:
         session_metadata = yaml.safe_load(yaml_in)
@@ -166,7 +170,7 @@ class Stylist:
         (16) prepares data for vocal assignment (Vocalocator)
         (17) assigns vocalizations to mice (Vocalocator / Vocalocator-SSL)
         (17b) flags the USV segments that hold no vocalization (noise labels)
-        (17c) classifies the remaining segments as USV / squeak / both
+        (17c) classifies the remaining segments as USV / squeak / overlap
               (squeak labels)
         (18) generates USV spectrograms
         (19) generates USV masks
@@ -427,9 +431,9 @@ class Stylist:
                     self.message_output(traceback.format_exc())
                     failed_preprocessing.append((one_directory, f"{type(exc).__name__}: {exc}"))
 
-        # Report failures honestly: the completion e-mail previously always
-        # announced success even when steps/directories had errored and been
-        # swallowed by the excepts above.
+        # Report every failure in the completion e-mail: it used to announce
+        # success even when steps/directories had errored and been caught by the
+        # excepts above.
         if failed_preprocessing:
             failure_summary = "\n".join(f"  - {label}: {reason}"
                                         for label, reason in failed_preprocessing)
@@ -474,7 +478,7 @@ def concatenate_video_files_cli(ctx, root_directory, **kwargs) -> None:
         The click context; its parameter sources tell which options were given on the command line.
     root_directory (str)
         Session root directory path.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -490,7 +494,8 @@ def concatenate_video_files_cli(ctx, root_directory, **kwargs) -> None:
         ctx=ctx,
         parameters_lists=parameters_lists,
         provided_params=provided_params,
-        settings_dict='processing_settings'
+        settings_dict='processing_settings',
+        block='modify_files.Operator.concatenate_video_files'
     )
 
     _stamp_processing_version(root_directory)
@@ -524,7 +529,7 @@ def rectify_video_fps_cli(ctx, root_directory, conduct_concat, **kwargs) -> None
         Session root directory path.
     conduct_concat (bool)
         Indicate if prior concatenation was performed
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -540,7 +545,8 @@ def rectify_video_fps_cli(ctx, root_directory, conduct_concat, **kwargs) -> None
         ctx=ctx,
         parameters_lists=parameters_lists,
         provided_params=provided_params,
-        settings_dict='processing_settings'
+        settings_dict='processing_settings',
+        block='modify_files.Operator.rectify_video_fps'
     )
 
     _stamp_processing_version(root_directory)
@@ -589,7 +595,7 @@ def crop_wav_files_to_video_cli(ctx, root_directory, **kwargs) -> None:
         The click context; its parameter sources tell which options were given on the command line.
     root_directory (str)
         Session root directory path.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -602,7 +608,8 @@ def crop_wav_files_to_video_cli(ctx, root_directory, **kwargs) -> None:
     processing_settings_dict = modify_settings_json_for_cli(
         ctx=ctx,
         provided_params=provided_params,
-        settings_dict='processing_settings'
+        settings_dict='processing_settings',
+        block='synchronize_files.Synchronizer.crop_wav_files_to_video'
     )
 
     _stamp_processing_version(root_directory)
@@ -643,7 +650,7 @@ def av_sync_check_cli(ctx, root_directory, **kwargs) -> None:
         The click context; its parameter sources tell which options were given on the command line.
     root_directory (str)
         Session root directory path.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -655,12 +662,17 @@ def av_sync_check_cli(ctx, root_directory, **kwargs) -> None:
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
 
+    # Every option but --extra-camera belongs to the Synchronizer block; that one
+    # is the Gatherer's (extract_phidget_data) and is applied there explicitly.
     processing_settings_dict = modify_settings_json_for_cli(
         ctx=ctx,
         parameters_lists=parameters_lists,
-        provided_params=provided_params,
-        settings_dict='processing_settings'
+        provided_params=[key for key in provided_params if key != 'extra_data_camera'],
+        settings_dict='processing_settings',
+        block='synchronize_files.Synchronizer'
     )
+    if 'extra_data_camera' in provided_params:
+        processing_settings_dict['extract_phidget_data']['Gatherer']['prepare_data_for_analyses']['extra_data_camera'] = ctx.params['extra_data_camera']
 
     _stamp_processing_version(root_directory)
 
@@ -699,7 +711,7 @@ def ev_sync_check_cli(ctx, root_directory, **kwargs) -> None:
         The click context; its parameter sources tell which options were given on the command line.
     root_directory (str)
         Session root directory path.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -712,7 +724,8 @@ def ev_sync_check_cli(ctx, root_directory, **kwargs) -> None:
     processing_settings_dict = modify_settings_json_for_cli(
         ctx=ctx,
         provided_params=provided_params,
-        settings_dict='processing_settings'
+        settings_dict='processing_settings',
+        block='synchronize_files.Synchronizer.validate_ephys_video_sync'
     )
 
     _stamp_processing_version(root_directory)
@@ -741,7 +754,7 @@ def hpss_audio_cli(ctx, root_directory, **kwargs) -> None:
         The click context; its parameter sources tell which options were given on the command line.
     root_directory (str)
         Session root directory path.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -757,7 +770,8 @@ def hpss_audio_cli(ctx, root_directory, **kwargs) -> None:
         ctx=ctx,
         parameters_lists=parameters_lists,
         provided_params=provided_params,
-        settings_dict='processing_settings'
+        settings_dict='processing_settings',
+        block='modify_files.Operator.hpss_audio'
     )
 
     _stamp_processing_version(root_directory)
@@ -785,7 +799,7 @@ def bp_filter_audio_files_cli(ctx, root_directory, **kwargs) -> None:
         The click context; its parameter sources tell which options were given on the command line.
     root_directory (str)
         Session root directory path.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -830,7 +844,7 @@ def concatenate_audio_files_cli(ctx, root_directory, **kwargs) -> None:
         The click context; its parameter sources tell which options were given on the command line.
     root_directory (str)
         Session root directory path.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -846,7 +860,8 @@ def concatenate_audio_files_cli(ctx, root_directory, **kwargs) -> None:
         ctx=ctx,
         parameters_lists=parameters_lists,
         provided_params=provided_params,
-        settings_dict='processing_settings'
+        settings_dict='processing_settings',
+        block='modify_files.Operator.concatenate_audio_files'
     )
 
     _stamp_processing_version(root_directory)
@@ -881,7 +896,7 @@ def broadband_filter_audio_cli(ctx, root_directory, **kwargs) -> None:
         The click context; its parameter sources tell which options were given on the command line.
     root_directory (str)
         Session root directory path.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -941,7 +956,7 @@ def add_broadband_low_band_variance_cli(ctx, root_directories, sessions_file, us
         Sessions processed in parallel (threads).
     force (bool)
         Recompute a field that is already present.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -982,17 +997,22 @@ def add_broadband_low_band_variance_cli(ctx, root_directories, sessions_file, us
         -------
         line (str)
             ``"<root>: <status> (<reason>)"`` on success, or
-            ``"<root>: FAILED (<error>)"`` when the session raised.
+            ``"<root>: FAILED (<error type>: <error>)"`` when the session raised.
         """
         try:
             result = add_broadband_low_band_variance(root, settings, message_output=lambda *_args, **_kwargs: None, force=force)
             return f"{root}: {result['status']} ({result['reason']})"
-        except Exception as error:
-            return f"{root}: FAILED ({error})"
+        except Exception as error:  # batch robustness: one broken session must not stop the others; it is listed at the end
+            return f"{root}: FAILED ({type(error).__name__}: {error})"
 
+    failed_roots = []
     with ThreadPoolExecutor(max_workers=max(1, int(n_workers))) as pool:
-        for line in pool.map(one, session_roots):
+        for root, line in zip(session_roots, pool.map(one, session_roots), strict=True):
             click.echo(line)
+            if line.startswith(f"{root}: FAILED ("):
+                failed_roots.append(root)
+    if failed_roots:
+        click.echo(f"{len(failed_roots)} of {len(session_roots)} session(s) FAILED and were skipped: {', '.join(failed_roots)}")
 
 
 @click.command(name="broadband-filter-audio-batch")
@@ -1030,7 +1050,7 @@ def broadband_filter_audio_batch_cli(ctx, sessions_file, usv_counts_csv, tag, n_
         Batch log file (appended to).
     report_csv (str)
         Per-session report CSV (appended to).
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -1044,7 +1064,8 @@ def broadband_filter_audio_batch_cli(ctx, sessions_file, usv_counts_csv, tag, n_
         ctx=ctx,
         parameters_lists=[],
         provided_params=provided_params,
-        settings_dict='processing_settings'
+        settings_dict='processing_settings',
+        block='modify_files.Operator.broadband_filter_audio'
     )
 
     session_roots = read_broadband_session_list(sessions_file=sessions_file, usv_counts_csv=usv_counts_csv, tag=tag)
@@ -1069,7 +1090,7 @@ def sleap_file_conversion_cli(ctx, root_directory, **kwargs) -> None:
         The click context; its parameter sources tell which options were given on the command line.
     root_directory (str)
         Session root directory path.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -1082,7 +1103,8 @@ def sleap_file_conversion_cli(ctx, root_directory, **kwargs) -> None:
     processing_settings_dict = modify_settings_json_for_cli(
         ctx=ctx,
         provided_params=provided_params,
-        settings_dict='processing_settings'
+        settings_dict='processing_settings',
+        block='anipose_operations.ConvertTo3D'
     )
 
     _stamp_processing_version(root_directory)
@@ -1113,7 +1135,7 @@ def conduct_anipose_calibration_cli(ctx, root_directory, **kwargs) -> None:
         The click context; its parameter sources tell which options were given on the command line.
     root_directory (str)
         Session root directory path.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -1129,7 +1151,8 @@ def conduct_anipose_calibration_cli(ctx, root_directory, **kwargs) -> None:
         ctx=ctx,
         parameters_lists=parameters_lists,
         provided_params=provided_params,
-        settings_dict='processing_settings'
+        settings_dict='processing_settings',
+        block='anipose_operations.ConvertTo3D.conduct_anipose_calibration'
     )
 
     _stamp_processing_version(root_directory)
@@ -1143,7 +1166,7 @@ def conduct_anipose_calibration_cli(ctx, root_directory, **kwargs) -> None:
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
 @click.option('--cal-directory', 'calibration_file_loc', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=True, help='Path to the Anipose calibration session.')
 @click.option('--arena-points/--no-arena-points', 'triangulate_arena_points_bool', default=None, help='Triangulate arena points instead of animal points.')
-@click.option('--frame-restriction', type=int, default=None, required=False, help='Restrict triangulation to a specific number of frames.')
+@click.option('--frame-restriction', 'frame_restriction', type=int, nargs=2, default=None, required=False, help='First and last frame to triangulate, two integers (e.g. --frame-restriction 0 5000); by default every frame up to the least frame count across cameras is triangulated.')
 @click.option('--exclude-views', 'excluded_views', multiple=True, type=str, default=None, required=False, help='Camera views to exclude from triangulation.')
 @click.option('--display-progress/--no-display-progress', 'display_progress_bool', default=None, help='Display the progress bar during triangulation.')
 @click.option('--use-ransac/--no-use-ransac', 'ransac_bool', default=None, help='Use RANSAC for robust triangulation.')
@@ -1168,7 +1191,7 @@ def conduct_anipose_triangulation_cli(ctx, root_directory, **kwargs) -> None:
         The click context; its parameter sources tell which options were given on the command line.
     root_directory (str)
         Session root directory path.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -1176,7 +1199,7 @@ def conduct_anipose_triangulation_cli(ctx, root_directory, **kwargs) -> None:
     None
     """
 
-    parameters_lists = ['excluded_views', 'rigid_body_constraints', 'weak_body_constraints']
+    parameters_lists = ['frame_restriction', 'excluded_views', 'rigid_body_constraints', 'weak_body_constraints']
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
 
@@ -1184,7 +1207,8 @@ def conduct_anipose_triangulation_cli(ctx, root_directory, **kwargs) -> None:
         ctx=ctx,
         parameters_lists=parameters_lists,
         provided_params=provided_params,
-        settings_dict='processing_settings'
+        settings_dict='processing_settings',
+        block='anipose_operations.ConvertTo3D.conduct_anipose_triangulation'
     )
 
     _stamp_processing_version(root_directory)
@@ -1214,7 +1238,7 @@ def translate_rotate_metric_cli(ctx, root_directory, **kwargs) -> None:
         The click context; its parameter sources tell which options were given on the command line.
     root_directory (str)
         Session root directory path.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -1230,7 +1254,8 @@ def translate_rotate_metric_cli(ctx, root_directory, **kwargs) -> None:
         ctx=ctx,
         parameters_lists=parameters_lists,
         provided_params=provided_params,
-        settings_dict='processing_settings'
+        settings_dict='processing_settings',
+        block='anipose_operations.ConvertTo3D.translate_rotate_metric'
     )
 
     _stamp_processing_version(root_directory)
@@ -1262,7 +1287,7 @@ def das_command_line_inference_cli(ctx, root_directory, **kwargs):
         The click context; its parameter sources tell which options were given on the command line.
     root_directory (str)
         Session root directory path.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -1275,7 +1300,8 @@ def das_command_line_inference_cli(ctx, root_directory, **kwargs):
     processing_settings_dict = modify_settings_json_for_cli(
         ctx=ctx,
         provided_params=provided_params,
-        settings_dict='processing_settings'
+        settings_dict='processing_settings',
+        block='usv_inference.FindMouseVocalizations.das_command_line_inference'
     )
 
     _stamp_processing_version(root_directory)
@@ -1325,7 +1351,7 @@ def summarize_das_findings_cli(ctx, root_directory, **kwargs):
         The click context; its parameter sources tell which options were given on the command line.
     root_directory (str)
         Session root directory path.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -1338,7 +1364,8 @@ def summarize_das_findings_cli(ctx, root_directory, **kwargs):
     processing_settings_dict = modify_settings_json_for_cli(
         ctx=ctx,
         provided_params=provided_params,
-        settings_dict='processing_settings'
+        settings_dict='processing_settings',
+        block='usv_inference.FindMouseVocalizations.summarize_das_findings'
     )
 
     _stamp_processing_version(root_directory)
@@ -1397,7 +1424,7 @@ def split_clusters_to_sessions_cli(ctx, root_directories, **kwargs):
         The click context; its parameter sources tell which options were given on the command line.
     root_directories (str)
         A comma-separated string of session root directory paths.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -1413,7 +1440,8 @@ def split_clusters_to_sessions_cli(ctx, root_directories, **kwargs):
     processing_settings_dict = modify_settings_json_for_cli(
         ctx=ctx,
         provided_params=provided_params,
-        settings_dict='processing_settings'
+        settings_dict='processing_settings',
+        block='modify_files.Operator.get_spike_times'
     )
 
     if len(valid_dirs) > 0:
@@ -1484,7 +1512,7 @@ def vcl_assign_cli(ctx, root_directory, **kwargs) -> None:
         The click context; its parameter sources tell which options were given on the command line.
     root_directory (str)
         Session root directory path.
-    **kwargs
+    **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
@@ -1493,12 +1521,20 @@ def vcl_assign_cli(ctx, root_directory, **kwargs) -> None:
     """
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
 
+    # The confidence-set options belong to the assign_vocalizations block (scoped, so
+    # --grid-resolution never lands on build_qlvm_categories.grid_resolution); the
+    # three model options are the vocalocator block's and are applied there.
+    vocalocator_keys = ('vcl_version', 'vcl_conda_env_name', 'vcl_model_directory')
     processing_settings_dict = modify_settings_json_for_cli(
         ctx=ctx,
-        provided_params=provided_params,
+        provided_params=[key for key in provided_params if key not in vocalocator_keys],
         parameters_lists=['grid_resolution'],
-        settings_dict='processing_settings'
+        settings_dict='processing_settings',
+        block='assign_vocalizations'
     )
+    for key in vocalocator_keys:
+        if key in provided_params:
+            processing_settings_dict['vocalocator'][key] = ctx.params[key]
 
     vcl_version = processing_settings_dict['vocalocator']['vcl_version']
 

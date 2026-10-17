@@ -381,3 +381,20 @@ def test_build_numbers_categories_by_category_order(tmp_path):
     assert np.array_equal(reversed_grid, 3 - size_grid)
     with pytest.raises(ValueError, match="category_order must be empty or a permutation"):
         _build(tmp_path, {**_CFG, "category_order": [1, 1]}, "bad")
+
+
+def test_periodic_basins_keeps_a_seam_crossing_marker_whole():
+    """A flat valley that crosses the torus seam (x = 0) is one marker and so one basin: its two
+    halves on either side of the seam get the same label, as they would anywhere else on the
+    torus. A marker that does not touch the seam keeps its own label, and the labels stay 1..n."""
+
+    resolution = 32
+    yy, xx = np.mgrid[0:resolution, 0:resolution]
+    change = 1.0 + 0.5 * np.sin(2 * np.pi * yy / resolution) ** 2
+    change[(yy >= 10) & (yy <= 20) & ((xx >= 26) | (xx <= 5))] = 0.0
+    basins = qc.periodic_basins(change, marker_sigma=0.5, marker_distance=2)
+    core = (yy >= 13) & (yy <= 17) & ((xx >= 29) | (xx <= 2))
+    assert np.unique(basins[core]).size == 1
+    assert np.array_equal(np.unique(basins), np.arange(1, basins.max() + 1))
+    shifted = qc.periodic_basins(np.roll(change, 16, axis=1), marker_sigma=0.5, marker_distance=2)
+    assert np.unique(shifted).size == np.unique(basins).size

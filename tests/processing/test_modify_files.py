@@ -500,6 +500,78 @@ def test_concatenate_binary_files_merges_existing_changepoints(tmp_path, process
     assert rec["tracking_start_end"] == [10, 20]
 
 
+def test_concatenate_binary_files_failed_changepoints_rewrite_keeps_the_old_json(tmp_path, processing_settings, mocker):
+    """The changepoints JSON is rewritten through a temporary sibling, so a dump
+    that dies part-way leaves the existing JSON byte-identical (the session's
+    tracking alignment lives only there) and no temporary file behind."""
+    mocker.patch("usv_playpen.processing.modify_files.smart_wait")
+    headstage_sn = _headstage_sn()
+    root = tmp_path / "Data" / "20250101_120000"
+    imec_dir = root / "ephys" / "imec0"
+    imec_dir.mkdir(parents=True)
+    _write_synthetic_binary(imec_dir, "20250101_120000.imec0", headstage_sn, n_samples_per_channel=64)
+    ephys_base = tmp_path / "EPHYS" / "20250101_imec0"
+    ephys_base.mkdir(parents=True)
+    changepoints_json = ephys_base / "changepoints_info_20250101_imec0.json"
+    changepoints_json.write_text(json.dumps({
+        "20250101_120000.imec0": {
+            "session_start_end": [0, 999], "tracking_start_end": [10, 20], "largest_camera_break_duration": 1.0,
+            "file_duration_samples": 999, "root_directory": str(root), "total_num_channels": 999,
+            "headstage_sn": "OLD_STALE_SN", "imec_probe_sn": "OLD_PROBE",
+        }
+    }, indent=4))
+    before = changepoints_json.read_bytes()
+
+    def _failing_dump(obj, file_handle, **_kwargs):
+        file_handle.write('{"20250101_120000.imec0": {"session_')
+        raise OSError("disk full")
+
+    mocker.patch("usv_playpen.processing.modify_files.json.dump", side_effect=_failing_dump)
+    with pytest.raises(OSError, match="disk full"):
+        _make_operator([str(root)], processing_settings, []).concatenate_binary_files()
+    assert changepoints_json.read_bytes() == before
+    assert not [path.name for path in ephys_base.iterdir() if path.name.startswith(".")]
+
+
+def test_split_clusters_to_sessions_failed_save_keeps_the_old_spike_file(tmp_path, processing_settings, mocker):
+    """Each unit's cluster_data spike file is written through a temporary sibling,
+    so a save that dies part-way leaves the earlier file loadable and unchanged."""
+    mocker.patch("usv_playpen.processing.modify_files.smart_wait")
+    headstage_sn = _headstage_sn()
+    root = tmp_path / "Data" / "20250101_120000"
+    (root / "ephys" / "imec0").mkdir(parents=True)
+    (root / "video").mkdir(parents=True)
+    (root / "video" / "sess_camera_frame_count_dict.json").write_text(
+        json.dumps({"median_empirical_camera_sr": 150.0, "total_frame_number_least": 100000})
+    )
+    ks_dir = tmp_path / "EPHYS" / "20250101_imec0" / "kilosort4"
+    ks_dir.mkdir(parents=True)
+    np.save(ks_dir / "spike_times.npy", np.arange(1, 11, dtype=np.int64) * 1000)
+    np.save(ks_dir / "spike_clusters.npy", np.zeros(10, dtype=np.int64))
+    (ks_dir / "cluster_info.tsv").write_text("cluster_id\tch\tgroup\n0\t10\tgood\n")
+    (ks_dir.parent / "changepoints_info_20250101_imec0.json").write_text(json.dumps({
+        "20250101_120000.imec0": {
+            "session_start_end": [0, 20000], "tracking_start_end": [0, 20000], "largest_camera_break_duration": 0,
+            "file_duration_samples": 20000, "root_directory": str(root), "total_num_channels": 5,
+            "headstage_sn": headstage_sn, "imec_probe_sn": "22420014283",
+        }
+    }))
+    processing_settings['modify_files']['Operator']['get_spike_times']['min_spike_num'] = 0
+    _make_operator([str(root)], processing_settings, []).split_clusters_to_sessions()
+    saved_npy = root / "ephys" / "imec0" / "cluster_data" / "imec0_cl0000_ch010_good.npy"
+    before = saved_npy.read_bytes()
+
+    def _failing_save(file, arr, **_kwargs):
+        file.write(b"\x93NUMPY")
+        raise OSError("disk full")
+
+    mocker.patch("usv_playpen.processing.modify_files.np.save", side_effect=_failing_save)
+    with pytest.raises(OSError, match="disk full"):
+        _make_operator([str(root)], processing_settings, []).split_clusters_to_sessions()
+    assert saved_npy.read_bytes() == before
+    assert [path.name for path in saved_npy.parent.iterdir()] == [saved_npy.name]
+
+
 @pytest.mark.parametrize(("stored_start", "stored_tracking"), [(None, [10, 20]), (64, [74, 84])])
 def test_concatenate_binary_files_rerun_keeps_tracking_on_the_concatenated_clock(
         tmp_path, processing_settings, mocker, stored_start, stored_tracking):
@@ -1191,6 +1263,24 @@ def test_add_broadband_low_band_variance_cli_runs_every_listed_session(tmp_path,
     assert result.exit_code == 2
 
 
+def test_add_broadband_low_band_variance_cli_lists_the_failed_sessions(mocker):
+    """A session that raises is reported with its error type and the batch goes on;
+    the run ends with a line naming every failed (skipped) session."""
+
+    def _added(root, settings, message_output, force):
+        if root == "/data/b":
+            raise OSError("memmap missing")
+        return {'status': 'written', 'reason': 'added'}
+
+    mocker.patch("usv_playpen.processing.preprocess_data.add_broadband_low_band_variance", side_effect=_added)
+    result = CliRunner().invoke(preprocess_data.add_broadband_low_band_variance_cli,
+                                ["--root-directories", "/data/a,/data/b,/data/c", "--workers", "1"])
+    assert result.exit_code == 0, result.output
+    assert "/data/b: FAILED (OSError: memmap missing)" in result.output
+    assert result.output.count("written (added)") == 2
+    assert "1 of 3 session(s) FAILED and were skipped: /data/b" in result.output
+
+
 def test_broadband_filter_is_independent_of_chunk_length(tmp_path, processing_settings, mocker):
     """
     Description
@@ -1343,3 +1433,12 @@ def test_read_broadband_session_list_from_usv_counts_table(tmp_path):
     assert read_broadband_session_list(usv_counts_csv=str(table)) == [str(tmp_path / 'a'), str(tmp_path / 'c')]
     with pytest.raises(ValueError, match="exactly one"):
         read_broadband_session_list()
+
+
+def test_operator_requires_a_root_directory(processing_settings):
+    """root_directory is required: None raises a ValueError instead of a KeyError on
+    a settings key that does not exist."""
+    with pytest.raises(ValueError, match="needs a root_directory"):
+        Operator(root_directory=None, input_parameter_dict=processing_settings)
+    with pytest.raises(ValueError, match="needs a root_directory"):
+        Operator()
