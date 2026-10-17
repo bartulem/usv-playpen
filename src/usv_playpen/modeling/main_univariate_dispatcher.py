@@ -37,18 +37,26 @@ Computational & Structural Features:
   remain statistically comparable across the entire project.
 """
 
+from __future__ import annotations
+
 import argparse
+import gc
+import json
 import pickle
 import sys
-import json
-import gc
 import traceback
-from pathlib import Path
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import numpy as np
 from datetime import datetime
+from pathlib import Path
+
+import matplotlib
+import numpy as np
+
+# The headless 'Agg' backend must be selected before pyplot and before any
+# pipeline module (which may import pyplot) is imported; that is the only
+# reason the remaining imports sit below this call.
+matplotlib.use('Agg')
+
+import matplotlib.pyplot as plt
 
 from .modeling_vocal_onsets import VocalOnsetModelingPipeline
 from .modeling_vocal_categories_binomial import VocalCategoryModelingPipeline
@@ -57,11 +65,13 @@ from .modeling_vocal_categories_multinomial import MultinomialModelingPipeline, 
 from .modeling_usv_manifold_position import ContinuousModelingPipeline, ContinuousModelRunner
 from .modeling_bases_functions import (raised_cosine, bsplines, identity,
                                       laplacian_pyramid, _normalizecols)
-from .modeling_metadata import (build_run_metadata, inject_metadata, RESERVED_METADATA_KEYS)
+from .modeling_metadata import (build_run_metadata, inject_metadata, read_reserved_block,
+                                RESERVED_METADATA_KEYS)
 from ..os_utils import atomic_output_path
 from .modeling_utils import (format_run_header, format_run_summary,
                              extract_univariate_headline,
                              held_out_session_ids_from_metadata)
+
 
 def get_basis_matrix_standardized(
         settings: dict,
@@ -250,7 +260,7 @@ def dispatch_univariate_job(args: argparse.Namespace) -> int:
             # and stash the upstream `_input_metadata` block to copy
             # verbatim into the per-feature pickle.
             loaded = pickle.load(f)
-            input_metadata = loaded['_input_metadata'] if '_input_metadata' in loaded else None
+            input_metadata = read_reserved_block(loaded, '_input_metadata')
             all_features = sorted([k for k in loaded.keys() if k not in RESERVED_METADATA_KEYS])
 
             # Guard both bounds: a negative index would otherwise wrap via
@@ -289,6 +299,10 @@ def dispatch_univariate_job(args: argparse.Namespace) -> int:
     # Standardized run header: the CPU tasks (onset/category/params) run the
     # configured `model_engine` (pygam / sklearn); the JAX tasks (multinomial /
     # continuous) always run the JAX estimators, so their engine label is 'jax'.
+    # The manifold position task runs its own outer fold count
+    # (`model_validation.manifold_n_cv_folds`: its screen's exact sign-flip p-value floors at
+    # 1 / 2**n_folds); every other task uses `model_validation.n_cv_folds`.
+    outer_fold_key = 'manifold_n_cv_folds' if args.analysis_type == 'continuous' else 'n_cv_folds'
     run_engine = (settings['model_params']['model_engine']
                   if args.analysis_type in ['onset', 'category', 'params'] else 'jax')
     print(format_run_header(
@@ -298,7 +312,7 @@ def dispatch_univariate_job(args: argparse.Namespace) -> int:
         input_files={'input data': args.input_data, 'settings': settings_path},
         output_directory=args.output_dir,
         split_strategy=settings['model_validation']['split_strategy'],
-        n_splits=int(settings['model_validation']['n_cv_folds']),
+        n_splits=int(settings['model_validation'][outer_fold_key]),
     ))
 
     # 3. Execution Routing
@@ -388,7 +402,7 @@ def dispatch_univariate_job(args: argparse.Namespace) -> int:
         modeling_settings=settings,
         analysis_type=args.analysis_type,
         null_strategy='y_permutation',
-        n_outer_folds=int(settings['model_validation']['n_cv_folds']),
+        n_outer_folds=int(settings['model_validation'][outer_fold_key]),
         split_strategy=settings['model_validation']['split_strategy'],
         settings_path=settings_path,
     )

@@ -480,6 +480,38 @@ class TestContinuousInputExtraction:
 class TestContinuousModelRunner:
     """The continuous univariate JAX runner on the freshly-extracted pickle."""
 
+    @pytest.mark.parametrize('error_cls, propagates', [
+        (np.linalg.LinAlgError, False),
+        (ValueError, False),
+        (TypeError, True),
+    ])
+    def test_geodesic_context_failure_scope(self, tmp_path, monkeypatch, error_cls, propagates):
+        """
+        A degenerate reference geometry (``LinAlgError`` / ``ValueError`` from
+        the KDE / grid build) disables the analysis-only geodesic columns
+        (context ``None``), while any other exception -- here a ``TypeError``,
+        i.e. a bug -- propagates instead of being swallowed by a bare
+        ``except Exception``.
+        """
+
+        import usv_playpen.modeling.modeling_usv_manifold_position as manifold_module
+
+        settings, _ = _build_manifold_settings(tmp_path)
+        settings['vocal_features']['usv_manifold_geodesic_metrics']['compute'] = True
+        runner = ContinuousModelRunner(ContinuousModelingPipeline(modeling_settings_dict=settings))
+
+        def _boom(*_a, **_k):
+            raise error_cls("forced geometry failure")
+
+        monkeypatch.setattr(manifold_module, 'resolve_geodesic_decoder_source', lambda *_a, **_k: None)
+        monkeypatch.setattr(manifold_module, 'build_torus_geodesic_context', _boom)
+        Y = np.random.default_rng(0).random((50, 2))
+        if propagates:
+            with pytest.raises(error_cls, match="forced geometry failure"):
+                runner._resolve_geodesic_context('x.pkl', Y, 'torus', 1.0, None)
+        else:
+            assert runner._resolve_geodesic_context('x.pkl', Y, 'torus', 1.0, None) is None
+
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_run_univariate_training_emits_three_strategies(self, tmp_path):
         """
@@ -503,7 +535,7 @@ class TestContinuousModelRunner:
 
         assert set(results.keys()) == {'actual', 'null', 'null_model_free'}
 
-        n_splits = settings['model_validation']['n_cv_folds']
+        n_splits = settings['model_validation']['manifold_n_cv_folds']
         for strategy in ('actual', 'null', 'null_model_free'):
             folds = results[strategy]['folds']
             metrics = folds['metrics']
@@ -585,7 +617,7 @@ class TestContinuousModelRunner:
         runner = ContinuousModelRunner(pipeline)
         results = runner.run_univariate_training(input_pkl, 'self.speed')
 
-        n_splits = settings['model_validation']['n_cv_folds']
+        n_splits = settings['model_validation']['manifold_n_cv_folds']
         actual_folds = results['actual']['folds']
         assert actual_folds['hyperparams_tuned'] == [True] * n_splits
         assert len(actual_folds['selected_lambda_smooth']) == n_splits
@@ -625,7 +657,7 @@ class TestContinuousModelRunner:
         results = runner.run_univariate_training(input_pkl, 'self.speed')
 
         assert set(results.keys()) == {'actual', 'null', 'null_model_free'}
-        n_splits = settings['model_validation']['n_cv_folds']
+        n_splits = settings['model_validation']['manifold_n_cv_folds']
         for strategy in ('actual', 'null'):
             folds = results[strategy]['folds']
             assert len(folds['weights']) == n_splits
@@ -735,7 +767,7 @@ class TestContinuousModelRunner:
         runner = ContinuousModelRunner(pipeline)
         results = runner.run_univariate_training(input_pkl, 'self.speed')
 
-        n_splits = settings['model_validation']['n_cv_folds']
+        n_splits = settings['model_validation']['manifold_n_cv_folds']
         for strategy in ('actual', 'null', 'null_model_free'):
             metrics = results[strategy]['folds']['metrics']
             assert 'density_geodesic_mae' in metrics
@@ -1168,7 +1200,8 @@ class TestManifoldModelSelection:
                 step = pickle.load(fh)
             assert 'temporal_basis' in json.dumps(step['_run_metadata'], default=str)
             for name, candidate in step['candidates_summary'].items():
-                if name == 'null_model_free':
+                # the Step-0 blocks (intercept-only gate baseline, density-draw chance floor) carry no weights
+                if name in ('null_model_free', 'null_model_intercept'):
                     continue
                 for weights, coefficients in zip(candidate['folds']['weights'],
                                                  candidate['folds']['basis_coefficients']):

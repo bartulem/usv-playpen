@@ -28,9 +28,16 @@ Computational Strategy:
   the project's 'model_selection.py' module.
 - Traceback Verbosity: Explicitly captures and prints the full stack trace upon
   failure, which is critical for debugging pre-emption or I/O issues on cluster nodes.
+- Settings-Driven Knobs: the screening significance level
+  (``model_params.selection_p_val``) and the bout-parameter regression target
+  (``model_params.model_target_variable``) are read from ``modeling_settings.json``,
+  the same file the selectors read, so the CLI cannot silently override them.
 """
 
+from __future__ import annotations
+
 import argparse
+import json
 import sys
 import traceback
 from datetime import datetime
@@ -43,6 +50,10 @@ from .model_selection import (
     multinomial_vocal_category_model_selection,
     continuous_vocal_manifold_model_selection
 )
+
+# The settings JSON ships with the package at
+# `<pkg>/_parameter_settings/modeling_settings.json`; module-level so tests can repoint it.
+_SETTINGS_PATH = Path(__file__).resolve().parent.parent / '_parameter_settings' / 'modeling_settings.json'
 
 
 def validate_paths(
@@ -88,27 +99,31 @@ def dispatch_model_selection(args: argparse.Namespace) -> int:
     Routes the model selection task to the specific algorithm implementation.
 
     This function implements the multi-line architecture for logical branching,
-    ensuring that specific hyperparameters (like target_variable for params
-    or pval for continuous) are injected only where appropriate.
+    ensuring that specific hyperparameters (like target_variable for params)
+    are injected only where appropriate. The screening significance level
+    ``p_val`` and the params ``target_variable`` are read from the settings
+    file (``model_params.selection_p_val`` / ``model_params.model_target_variable``),
+    never from the command line, so the selection always runs with the
+    configured values.
 
     Parameters
     ----------
     args : argparse.Namespace
-        The parsed command-line arguments containing analysis_type and
-        all necessary filesystem paths and logic flags.
+        The parsed command-line arguments containing analysis_type, all
+        necessary filesystem paths and the ``anchor`` flag.
 
     Returns
     -------
-    None
-        Execution state and results are saved to disk by the underlying
-        orchestrator functions.
+    exit_code : int
+        0 on success, 1 on an unknown analysis type or a failed selection;
+        results are saved to disk by the underlying orchestrator functions.
     """
     print(f"--- USV Model Selection Dispatcher | Task: {args.analysis_type.upper()} ---")
     print(f"[{datetime.now()}] Univariate Source: {Path(args.univariate_path).name}")
 
     # Auto-resolve the settings JSON relative to this module — it ships
     # with the package at `<pkg>/_parameter_settings/modeling_settings.json`.
-    settings_path = str(Path(__file__).resolve().parent.parent / '_parameter_settings' / 'modeling_settings.json')
+    settings_path = str(_SETTINGS_PATH)
 
     # 1. Mount Point Verification
     validate_paths(
@@ -116,6 +131,13 @@ def dispatch_model_selection(args: argparse.Namespace) -> int:
         input_path=args.input_path,
         settings_path=settings_path
     )
+
+    # The selection knobs come from the same settings file the selectors read.
+    with open(settings_path) as settings_file:
+        model_params = json.load(settings_file)['model_params']
+    p_val = model_params['selection_p_val']
+    target_variable = model_params['model_target_variable']
+    print(f"Screening significance level (model_params.selection_p_val): {p_val}")
 
     # 2. Execution Routing with Multi-line Architecture
     try:
@@ -128,7 +150,7 @@ def dispatch_model_selection(args: argparse.Namespace) -> int:
                 settings_path=settings_path,
                 output_directory=args.output_dir,
                 use_top_rank_as_anchor=args.anchor,
-                p_val=args.pval
+                p_val=p_val
             )
 
         elif args.analysis_type == 'category':
@@ -139,21 +161,21 @@ def dispatch_model_selection(args: argparse.Namespace) -> int:
                 settings_path=settings_path,
                 output_directory=args.output_dir,
                 use_top_rank_as_anchor=args.anchor,
-                p_val=args.pval
+                p_val=p_val
             )
 
         elif args.analysis_type == 'params':
 
-            print(f"Target Variable for Regression: {args.target_variable}")
+            print(f"Target Variable for Regression: {target_variable}")
 
             bout_parameter_model_selection(
                 univariate_results_path=args.univariate_path,
                 input_data_path=args.input_path,
                 settings_path=settings_path,
                 output_directory=args.output_dir,
-                target_variable=args.target_variable,
+                target_variable=target_variable,
                 use_top_rank_as_anchor=args.anchor,
-                p_val=args.pval
+                p_val=p_val
             )
 
         elif args.analysis_type == 'multinomial':
@@ -164,7 +186,7 @@ def dispatch_model_selection(args: argparse.Namespace) -> int:
                 settings_path=settings_path,
                 output_directory=args.output_dir,
                 use_top_rank_as_anchor=args.anchor,
-                p_val=args.pval
+                p_val=p_val
             )
 
         elif args.analysis_type == 'continuous':
@@ -175,7 +197,7 @@ def dispatch_model_selection(args: argparse.Namespace) -> int:
                 settings_path=settings_path,
                 output_directory=args.output_dir,
                 use_top_rank_as_anchor=args.anchor,
-                p_val=args.pval
+                p_val=p_val
             )
 
         else:
@@ -216,14 +238,6 @@ if __name__ == "__main__":
     # Logic Flags
     parser.add_argument('--anchor', action='store_true',
                         help='If set, initializes Step 0 with the top-ranked univariate feature.')
-
-    parser.add_argument('--pval', type=float, default=0.01,
-                        help='Significance threshold for initial candidate screening.')
-
-    # Framework Specific
-    parser.add_argument('--target_variable', type=str, default='bout_durations',
-                        choices=['bout_durations', 'mean_mask_complexity', 'total_mask_complexity'],
-                        help='[Params Only] The continuous target variable to model.')
 
     args = parser.parse_args()
     sys.exit(dispatch_model_selection(args))

@@ -14,7 +14,7 @@ It sets up two questions, both answered from one extraction:
     *between* bouts.
 2.  **Does bout duration matter?** Among the bout rows, longer versus shorter.
 
-Key design decisions, each ruled rather than defaulted:
+Key design decisions, each made deliberately rather than defaulted:
 
 1.  Anchors are **events, not tiles**. Every row sits either at a bout offset or
     inside an inter-bout gap. An earlier tiled design spent ~70% of its rows on
@@ -25,6 +25,10 @@ Key design decisions, each ruled rather than defaulted:
     with both animals demonstrably still interacting. Globally quiet periods are a
     different behavioral regime, and covariate adjustment would then be
     extrapolating between two separated groups rather than comparing within one.
+    No control window (history or forward), and no bout-offset forward window,
+    may touch any vocalization of the predictor mouse: every vocal class counts,
+    a singleton below ``usv_per_bout_floor`` counts, and the noise rows are
+    dropped first when ``vocal_features.exclude_noise_usvs`` is on.
 3.  Covariates are **summaries, not lag histories**. Each feature's pre-anchor
     window collapses to a mean over the last ``0.5 s`` and a mean over the full
     ``4 s``. Their job is to hold pre-anchor state fixed, not to model a temporal
@@ -75,7 +79,12 @@ import statsmodels.api as sm
 from scipy import stats
 from tqdm import tqdm
 
-from ..os_utils import atomic_output_path, configure_path, vocal_occupancy_times
+from ..os_utils import (
+    atomic_output_path,
+    configure_path,
+    drop_noise_usvs,
+    vocal_occupancy_times,
+)
 from .load_input_files import (
     _calculate_ibi_threshold,
     find_variable_length_bouts,
@@ -104,20 +113,125 @@ from .modeling_utils import (
 from .modeling_vocal_bout_parameters import BoutParameterPipeline
 
 
+def windows_touch_vocalization(anchor_times: np.ndarray,
+                               back_seconds: float,
+                               forward_seconds: float,
+                               vocal_starts: np.ndarray,
+                               vocal_stops: np.ndarray) -> np.ndarray:
+    """
+    Flags anchor windows that overlap any vocalization interval.
+
+    The window of an anchor at ``t`` is the open interval
+    ``(t - back_seconds, t + forward_seconds)``; a vocalization ``[s, e]``
+    touches it when ``s < t + forward_seconds`` and ``e > t - back_seconds``. A
+    vocalization ending exactly where the window begins, or starting exactly
+    where it ends, does not touch it.
+
+    The test is vectorised: with the starts sorted ascending, every interval
+    that starts before the window's end is a prefix of the table, and the window
+    is touched exactly when the largest stop inside that prefix (a running
+    maximum, so a long interval that began early is never missed) reaches past
+    the window's start.
+
+    Parameters
+    ----------
+    anchor_times : np.ndarray
+        Anchor times, in seconds.
+    back_seconds : float
+        Window extent before each anchor (the pre-anchor history), in seconds.
+    forward_seconds : float
+        Window extent after each anchor (the forward window), in seconds.
+    vocal_starts : np.ndarray
+        Vocalization start times in seconds, sorted ascending.
+    vocal_stops : np.ndarray
+        Vocalization stop times in seconds, aligned with ``vocal_starts``.
+
+    Returns
+    -------
+    touched : np.ndarray
+        Boolean mask over ``anchor_times``; True where the window overlaps at
+        least one vocalization.
+    """
+
+    anchor_times = np.asarray(anchor_times, dtype=float)
+    if anchor_times.size == 0 or vocal_starts.size == 0:
+        return np.zeros(anchor_times.size, dtype=bool)
+    preceding = np.searchsorted(vocal_starts, anchor_times + forward_seconds, side='left')
+    running_stop = np.maximum.accumulate(vocal_stops)
+    latest_stop = np.where(preceding > 0, running_stop[np.maximum(preceding - 1, 0)], -np.inf)
+    return latest_stop > (anchor_times - back_seconds)
+
+
+def _subtract_intervals(low: float,
+                        high: float,
+                        forbidden_lows: np.ndarray,
+                        forbidden_highs: np.ndarray) -> list[tuple[float, float]]:
+    """
+    Removes a set of open intervals from one closed interval.
+
+    Parameters
+    ----------
+    low : float
+        Start of the interval to cut, in seconds.
+    high : float
+        End of the interval to cut, in seconds.
+    forbidden_lows : np.ndarray
+        Starts of the open intervals to remove, sorted ascending.
+    forbidden_highs : np.ndarray
+        Ends of the open intervals to remove, aligned with ``forbidden_lows``.
+
+    Returns
+    -------
+    pieces : list of tuple of float
+        The ``(start, end)`` pieces of ``[low, high]`` left after the removal,
+        ascending; pieces of zero length are dropped.
+    """
+
+    pieces: list[tuple[float, float]] = []
+    cursor = low
+    for f_low, f_high in zip(forbidden_lows, forbidden_highs, strict=True):
+        if f_high <= cursor:
+            continue
+        if f_low >= high:
+            break
+        if f_low > cursor:
+            pieces.append((cursor, min(f_low, high)))
+        cursor = max(cursor, f_high)
+        if cursor >= high:
+            break
+    if cursor < high:
+        pieces.append((cursor, high))
+    return [(a, b) for a, b in pieces if b > a]
+
+
 def bout_offset_anchors(bout_onsets: np.ndarray,
                         bout_durations: np.ndarray,
+                        bout_offsets: np.ndarray,
                         camera_fps: float,
                         n_frames: int,
                         history_frames: int,
                         lookahead_frames: int,
-                        silence_seconds: float) -> tuple[np.ndarray, np.ndarray]:
+                        silence_seconds: float,
+                        vocal_starts: np.ndarray,
+                        vocal_stops: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
     Places one anchor at the offset of every qualifying male vocal bout.
 
-    A bout offset qualifies when the next bout starts at least
-    ``silence_seconds`` later, so the forward window genuinely follows the bout
-    rather than straddling the next one, and when the anchor leaves room for both
-    the pre-anchor history and the forward window inside the recording.
+    A bout offset qualifies when three conditions hold:
+
+    1.  The next bout starts at least ``silence_seconds`` later, so the forward
+        window genuinely follows the bout rather than straddling the next one.
+    2.  No vocalization of the predictor mouse touches the forward window
+        (:func:`forward_clean_times` over ``vocal_starts`` / ``vocal_stops``):
+        nothing starts within the window, and nothing that began earlier -- a
+        squeak overlapping the bout's last USV, say -- is still ongoing at the
+        offset. Those intervals hold every vocal class, unfloored (a singleton
+        too short to form a bout counts), with the noise rows already dropped
+        when ``vocal_features.exclude_noise_usvs`` is on, so the bout list alone
+        (which sees only the target classes and the bouts at or above
+        ``usv_per_bout_floor``) cannot let a vocalization slip into the window.
+    3.  The anchor leaves room for both the pre-anchor history and the forward
+        window inside the recording.
 
     The silence requirement is deliberately tied to the forward window rather than
     set independently: anything beyond the window is discarded data bought for
@@ -133,6 +247,10 @@ def bout_offset_anchors(bout_onsets: np.ndarray,
         Bout start times in seconds, ascending.
     bout_durations : np.ndarray
         Bout durations in seconds, aligned with ``bout_onsets``.
+    bout_offsets : np.ndarray
+        Bout stop times in seconds, aligned with ``bout_onsets``: the stored stop of
+        each bout's last USV, not ``onset + duration``, which can fall one ulp
+        before it and would leave the bout's own last USV ongoing at the anchor.
     camera_fps : float
         Tracking frame rate.
     n_frames : int
@@ -142,7 +260,12 @@ def bout_offset_anchors(bout_onsets: np.ndarray,
     lookahead_frames : int
         Forward window width, in frames.
     silence_seconds : float
-        Required quiet interval after the bout offset.
+        Required quiet interval after the bout offset before the next bout.
+    vocal_starts : np.ndarray
+        Start times in seconds of every vocalization of the predictor mouse (all
+        vocal classes, unfloored, noise dropped when excluded), sorted ascending.
+    vocal_stops : np.ndarray
+        Stop times in seconds, aligned with ``vocal_starts``.
 
     Returns
     -------
@@ -156,16 +279,18 @@ def bout_offset_anchors(bout_onsets: np.ndarray,
 
     order = np.argsort(bout_onsets)
     onsets, durations = bout_onsets[order], bout_durations[order]
-    offsets = onsets + durations
+    offsets = np.asarray(bout_offsets, dtype=float)[order]
 
     # A bout with no successor is limited only by the end of the recording.
     next_onset = np.concatenate([onsets[1:], [np.inf]])
     has_silence = (next_onset - offsets) >= silence_seconds
+    forward_clean = forward_clean_times(offsets, vocal_starts, vocal_stops,
+                                        lookahead_frames / camera_fps)
 
     anchor_frames = np.round(offsets * camera_fps).astype(int)
     fits = (anchor_frames - history_frames >= 0) & (anchor_frames + lookahead_frames <= n_frames)
 
-    keep = has_silence & fits
+    keep = has_silence & forward_clean & fits
     return anchor_frames[keep], durations[keep]
 
 
@@ -175,14 +300,25 @@ def inter_bout_quiet_anchors(bout_onsets: np.ndarray,
                              n_frames: int,
                              history_frames: int,
                              lookahead_frames: int,
-                             rng: np.random.Generator) -> np.ndarray:
+                             rng: np.random.Generator,
+                             vocal_starts: np.ndarray,
+                             vocal_stops: np.ndarray) -> np.ndarray:
     """
     Draws one silent anchor from each sufficiently long gap between bouts.
 
-    The anchor is placed uniformly at random inside the sub-interval where its
-    whole pre-anchor history and forward window fall within the gap, so no male
-    vocalization touches either. Random placement rather than the midpoint avoids
-    systematically sampling the quietest instant of every gap.
+    The anchor is placed uniformly at random inside the part of the gap where
+    its whole pre-anchor history and forward window touch no vocalization of the
+    predictor mouse. That excludes the two bracketing bouts and also every
+    vocalization the bout list does not show: singletons below
+    ``usv_per_bout_floor``, vocal classes outside the bout target classes
+    (squeaks), and bouts dropped for starting inside the first
+    ``filter_history`` seconds. ``vocal_starts`` / ``vocal_stops`` carry all of
+    them (every vocal class, unfloored, with the noise rows already dropped when
+    ``vocal_features.exclude_noise_usvs`` is on), as :func:`forward_clean_times`
+    does for the matched divergence. A gap whose silent stretches are all too
+    short for a full history plus forward window yields no anchor. Random
+    placement rather than the midpoint avoids systematically sampling the
+    quietest instant of every gap.
 
     One anchor per gap, not several: tiling long gaps would buy rows that are
     strongly correlated with each other and would let a handful of long silences
@@ -204,12 +340,18 @@ def inter_bout_quiet_anchors(bout_onsets: np.ndarray,
         Forward window width, in frames.
     rng : np.random.Generator
         Seeded generator for the within-gap placement.
+    vocal_starts : np.ndarray
+        Start times in seconds of every vocalization of the predictor mouse (all
+        vocal classes, unfloored, noise dropped when excluded), sorted ascending.
+    vocal_stops : np.ndarray
+        Stop times in seconds, aligned with ``vocal_starts``.
 
     Returns
     -------
     anchor_frames : np.ndarray
-        Frame index of one silent anchor per qualifying gap; empty when no gap is
-        long enough to hold a full history plus forward window.
+        Frame index of one silent anchor per qualifying gap; empty when no gap
+        holds a silent stretch long enough for a full history plus forward
+        window.
     """
 
     if bout_onsets.size < 2:
@@ -222,16 +364,43 @@ def inter_bout_quiet_anchors(bout_onsets: np.ndarray,
     history_seconds = history_frames / camera_fps
     lookahead_seconds = lookahead_frames / camera_fps
 
+    # An anchor at t is forbidden by a vocalization [s, e] while
+    # s - lookahead < t < e + history; the bouts themselves are vocalizations
+    # too, so they join the table (the bout list and the vocal table normally
+    # agree, but the bout list is what defines the gaps).
+    all_starts = np.concatenate([np.asarray(vocal_starts, dtype=float), onsets])
+    all_stops = np.concatenate([np.asarray(vocal_stops, dtype=float), offsets])
+    by_start = np.argsort(all_starts, kind='stable')
+    all_starts, all_stops = all_starts[by_start], all_stops[by_start]
+    forbidden_lows = all_starts - lookahead_seconds
+    forbidden_highs = all_stops + history_seconds
+
     earliest = offsets[:-1] + history_seconds
     latest = onsets[1:] - lookahead_seconds
-    usable = latest > earliest
-    if not np.any(usable):
+
+    drawn: list[float] = []
+    for gap_low, gap_high in zip(earliest, latest, strict=True):
+        if gap_high <= gap_low:
+            continue
+        pieces = _subtract_intervals(gap_low, gap_high, forbidden_lows, forbidden_highs)
+        if not pieces:
+            continue
+        # Uniform over the union of the silent pieces: a point along their summed
+        # length, mapped back to the piece it falls in.
+        cumulative = np.cumsum([b - a for a, b in pieces])
+        position = rng.uniform(0.0, cumulative[-1])
+        piece_index = min(int(np.searchsorted(cumulative, position, side='right')), len(pieces) - 1)
+        drawn.append(pieces[piece_index][1] - (cumulative[piece_index] - position))
+    if not drawn:
         return np.empty(0, dtype=int)
 
-    drawn = rng.uniform(earliest[usable], latest[usable])
-    anchor_frames = np.round(drawn * camera_fps).astype(int)
+    anchor_frames = np.round(np.asarray(drawn) * camera_fps).astype(int)
     fits = (anchor_frames - history_frames >= 0) & (anchor_frames + lookahead_frames <= n_frames)
-    return anchor_frames[fits]
+    # Rounding to the frame grid moves an anchor by up to half a frame, which
+    # can carry its window onto a vocalization at the edge of a silent stretch.
+    touched = windows_touch_vocalization(anchor_frames / camera_fps, history_seconds,
+                                         lookahead_seconds, all_starts, all_stops)
+    return anchor_frames[fits & ~touched]
 
 
 def deep_silence_anchors(bout_onsets: np.ndarray,
@@ -241,7 +410,9 @@ def deep_silence_anchors(bout_onsets: np.ndarray,
                          history_frames: int,
                          lookahead_frames: int,
                          margin_seconds: float,
-                         stride_frames: int) -> np.ndarray:
+                         stride_frames: int,
+                         vocal_starts: np.ndarray,
+                         vocal_stops: np.ndarray) -> np.ndarray:
     """
     Tiles anchors through stretches with no male bout within a wide margin.
 
@@ -258,6 +429,12 @@ def deep_silence_anchors(bout_onsets: np.ndarray,
         post-bout condition in ``nose-nose`` distance, against 0.74 SD for
         inter-bout silence. Every other covariate stays under 0.32 SD, and common
         support is 99.7%, so the adjustment interpolates rather than extrapolates.
+
+    The margin is measured from the bouts. On top of it, no anchor's pre-anchor
+    history or forward window may touch any vocalization of the predictor mouse
+    (``vocal_starts`` / ``vocal_stops``: every vocal class, unfloored so a
+    singleton counts, noise rows already dropped when
+    ``vocal_features.exclude_noise_usvs`` is on); a tile that does is dropped.
 
     Both are produced by one extraction so the choice can be made -- and reported
     both ways -- without re-reading the cohort.
@@ -281,6 +458,11 @@ def deep_silence_anchors(bout_onsets: np.ndarray,
     stride_frames : int
         Spacing between successive anchors inside a qualifying stretch, so the
         rows do not overlap.
+    vocal_starts : np.ndarray
+        Start times in seconds of every vocalization of the predictor mouse (all
+        vocal classes, unfloored, noise dropped when excluded), sorted ascending.
+    vocal_stops : np.ndarray
+        Stop times in seconds, aligned with ``vocal_starts``.
 
     Returns
     -------
@@ -325,7 +507,10 @@ def deep_silence_anchors(bout_onsets: np.ndarray,
 
     anchor_frames = np.round(np.concatenate(anchors) * camera_fps).astype(int)
     fits = (anchor_frames - history_frames >= 0) & (anchor_frames + lookahead_frames <= n_frames)
-    return anchor_frames[fits]
+    touched = windows_touch_vocalization(anchor_frames / camera_fps, history_seconds,
+                                         lookahead_seconds, np.asarray(vocal_starts, dtype=float),
+                                         np.asarray(vocal_stops, dtype=float))
+    return anchor_frames[fits & ~touched]
 
 
 def summarise_history(values: np.ndarray,
@@ -452,7 +637,6 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
         self.response_history_frames = int(np.floor(camera_rate * response_settings['history_seconds']))
         self.response_window_frames = int(np.floor(camera_rate * response_settings['target_window_seconds']))
         self.response_bin_frames = int(np.floor(camera_rate * response_settings['target_bin_seconds']))
-        self.response_silence_frames = int(np.floor(camera_rate * response_settings['post_bout_silence_seconds']))
         self.deep_silence_margin_seconds = float(response_settings['deep_silence_margin_seconds'])
         self.covariate_summary_frames = [
             int(np.floor(camera_rate * seconds))
@@ -574,6 +758,10 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
         opposing excursions cancel, and a signed target additionally breaks the
         Gamma likelihood, which needs strictly positive values.
 
+        The feature's bounds are checked on the raw value, before the fold, so a
+        sample inside the bounds is never discarded because its fold lands just
+        past the bound.
+
         Parameters
         ----------
         raw_values : np.ndarray
@@ -592,14 +780,22 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
 
         kinematic_settings = self.modeling_settings['kinematic_features']
 
+        # The bounds describe the RAW feature, so they are checked before the
+        # fold: an in-range sample at the bound (``ego_yaw`` = 180) folds to
+        # ``sqrt(180**2 + eps**2)`` just above it and would otherwise be dropped.
+        # Out-of-range raw samples become NaN, which ``forward_window_mean``
+        # drops through its finiteness test, and the folded trace is then
+        # averaged with open bounds.
         values = np.asarray(raw_values, dtype=float)
+        raw_lower_bound, raw_upper_bound = self.feature_boundaries[response_feature]
+        values = np.where((values >= raw_lower_bound) & (values <= raw_upper_bound), values, np.nan)
         if response_feature in kinematic_settings['smooth_abs_features']:
             epsilon = float(kinematic_settings['smooth_abs_features'][response_feature])
             values = np.sqrt(np.square(values) + epsilon ** 2)
         elif response_feature in kinematic_settings['abs_features']:
             values = np.abs(values)
 
-        lower_bound, upper_bound = self.feature_boundaries[response_feature]
+        lower_bound, upper_bound = -np.inf, np.inf
 
         window_means = forward_window_mean(
             values=values,
@@ -783,6 +979,9 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
         raw_response_traces: dict[str, dict[str, np.ndarray]] = {}
         predictor_bout_onsets: dict[str, np.ndarray] = {}
         predictor_bout_durations: dict[str, np.ndarray] = {}
+        predictor_bout_offsets: dict[str, np.ndarray] = {}
+        predictor_vocal_times: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        session_roots = {Path(p).name: Path(p) for p in txt_modeling_sessions}
         processed_beh_feature_data_dict = {}
         session_roles: dict[str, tuple[str, str]] = {}
         target_mouse_idx = 1 - predictor_mouse_idx
@@ -816,6 +1015,17 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
                     bout_data_dict[sess_id][p_name]['bout_onsets'], dtype=float)
                 predictor_bout_durations[sess_id] = np.asarray(
                     bout_data_dict[sess_id][p_name]['bout_durations'], dtype=float)
+                predictor_bout_offsets[sess_id] = np.asarray(
+                    bout_data_dict[sess_id][p_name]['bout_offsets'], dtype=float)
+                # Every vocalization of the predictor mouse (all classes, no bout
+                # floor, noise dropped when excluded): no control window may touch
+                # one, and the bout list alone does not show them all.
+                predictor_vocal_times[sess_id] = _all_usv_times(
+                    session_root=session_roots[sess_id],
+                    csv_sep=self.modeling_settings['io']['csv_separator'],
+                    exclude_noise_usvs=self.modeling_settings['vocal_features']['exclude_noise_usvs'],
+                    emitter=p_name,
+                )
 
             columns_to_keep_session = select_kinematic_columns(
                 session_df_columns=session_df_cols,
@@ -836,10 +1046,9 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
             predictor_idx=predictor_mouse_idx,
         )
 
-        if hasattr(self, 'feature_boundaries'):
-            feature_bounds = self.feature_boundaries
-        else:
-            feature_bounds = {}
+        # A class attribute of `FeatureZoo` (optionally replaced from the settings),
+        # so it always exists.
+        feature_bounds = self.feature_boundaries
 
         # Z-scoring overwrites the frames, so the native scale is unrecoverable
         # afterwards. Capture the pooled statistics here and store them with the
@@ -958,7 +1167,7 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
 
         anchor_rng = np.random.default_rng(self.modeling_settings['model_validation']['random_seed'])
         # Columns still carry raw mouse names, so each is mapped to a session-neutral
-        # key -- `self.` for the responder, `other.` for the caller, bare for dyadic
+        # key -- `self.` for the responder, `other.` for the vocalizing partner, bare for dyadic
         # features -- exactly as the inherited extractors do. Without this the
         # sessions share no column names at all.
         rows_covariates: list[dict[str, np.ndarray]] = []
@@ -976,14 +1185,18 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
             camera_fps = float(camera_fr_dict[sess_id])
             n_frames = df.height
 
+            vocal_starts, vocal_stops = predictor_vocal_times[sess_id]
             vocal_frames, vocal_durations = bout_offset_anchors(
                 bout_onsets=predictor_bout_onsets[sess_id],
                 bout_durations=predictor_bout_durations[sess_id],
+                bout_offsets=predictor_bout_offsets[sess_id],
                 camera_fps=camera_fps,
                 n_frames=n_frames,
                 history_frames=self.response_history_frames,
                 lookahead_frames=self.response_window_frames,
                 silence_seconds=response_settings['post_bout_silence_seconds'],
+                vocal_starts=vocal_starts,
+                vocal_stops=vocal_stops,
             )
             quiet_frames = inter_bout_quiet_anchors(
                 bout_onsets=predictor_bout_onsets[sess_id],
@@ -993,6 +1206,8 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
                 history_frames=self.response_history_frames,
                 lookahead_frames=self.response_window_frames,
                 rng=anchor_rng,
+                vocal_starts=vocal_starts,
+                vocal_stops=vocal_stops,
             )
             # Both controls are built in the same pass: the anchors are cheap once
             # the session is loaded, and producing them together means the choice
@@ -1007,6 +1222,8 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
                 lookahead_frames=self.response_window_frames,
                 margin_seconds=self.deep_silence_margin_seconds,
                 stride_frames=self.response_history_frames,
+                vocal_starts=vocal_starts,
+                vocal_stops=vocal_stops,
             )
             anchor_frames = np.concatenate([vocal_frames, quiet_frames, deep_frames])
             if anchor_frames.size == 0:
@@ -1432,7 +1649,7 @@ class MatchedDivergencePipeline(BehavioralResponsePipeline):
         beh_feature_data_dict = zscore_features_across_sessions(
             processed_beh_dict=beh_feature_data_dict,
             suffixes=response_features,
-            feature_bounds=self.feature_boundaries if hasattr(self, 'feature_boundaries') else {},
+            feature_bounds=self.feature_boundaries,
             abs_features=kin_settings['abs_features'],
             smooth_abs_features=kin_settings['smooth_abs_features'],
             stats_out=pooled_scaling,
@@ -1460,11 +1677,14 @@ class MatchedDivergencePipeline(BehavioralResponsePipeline):
             n_frames = session_df.height
 
             onsets = np.asarray(bout_data_dict[sess_id][p_name]['bout_onsets'], dtype=float)
-            offsets = onsets + np.asarray(
-                bout_data_dict[sess_id][p_name]['bout_durations'], dtype=float)
+            # The stored stop, not ``onset + duration``: the rebuilt sum can fall one
+            # ulp before the last USV's stop, and ``forward_clean_times`` would then
+            # see the bout's own last USV still ongoing and drop the anchor.
+            offsets = np.asarray(bout_data_dict[sess_id][p_name]['bout_offsets'], dtype=float)
             all_starts, all_stops = _all_usv_times(
                 session_root=session_roots[sess_id],
                 csv_sep=self.modeling_settings['io']['csv_separator'],
+                exclude_noise_usvs=self.modeling_settings['vocal_features']['exclude_noise_usvs'],
             )
             if onsets.size == 0 or all_starts.size == 0:
                 continue
@@ -1697,7 +1917,10 @@ def forward_clean_times(times: np.ndarray,
     return (gap_forward >= forward_seconds) & (latest_stop <= times)
 
 
-def _all_usv_times(session_root: Path, csv_sep: str) -> tuple[np.ndarray, np.ndarray]:
+def _all_usv_times(session_root: Path,
+                   csv_sep: str,
+                   exclude_noise_usvs: bool,
+                   emitter: str | None = None) -> tuple[np.ndarray, np.ndarray]:
     """
     Reads every USV's start and stop from a session's summary table, a
     squeak-bearing row spanning the union of its segment and its squeak extent
@@ -1705,11 +1928,23 @@ def _all_usv_times(session_root: Path, csv_sep: str) -> tuple[np.ndarray, np.nda
     so the table must carry ``usv`` / ``squeak`` and ``squeak_start`` /
     ``squeak_end``.
 
-    Deliberately unfiltered by emitter: a window is silent only if nobody
+    With ``emitter`` left as ``None`` (the matched divergence) the table is
+    deliberately unfiltered by emitter: a window is silent only if nobody
     vocalized in it, so unassigned vocalizations and the partner's count too. Filtering
     to the predictor's bouts instead more than doubles the surviving anchors and
     changes what they are -- measured on this cohort, 3,441 against 1,593, with
     the extra anchors starting 0.055 z lower in speed.
+
+    With ``emitter`` set to a mouse name (the silence controls of
+    :class:`BehavioralResponsePipeline`) only that mouse's rows are kept, plus the
+    rows with no assigned emitter, which may be his: the same "this mouse or
+    unassigned" rule the onset negatives use. Every vocal class is kept and no
+    bout floor applies, so a singleton USV or a squeak counts against silence.
+
+    Rows the noise classifier flagged (``noise`` true) are dropped first when
+    ``exclude_noise_usvs`` is on (``os_utils.drop_noise_usvs``), exactly as every
+    other reader of the summary does: a noise segment holds no vocalization, so
+    it must not make a window 'not silent'.
 
     Parameters
     ----------
@@ -1717,27 +1952,38 @@ def _all_usv_times(session_root: Path, csv_sep: str) -> tuple[np.ndarray, np.nda
         Session directory holding ``audio/*_usv_summary.csv``.
     csv_sep : str
         Column separator for the summary table.
+    exclude_noise_usvs : bool
+        Drop the rows flagged as noise before timing them
+        (``vocal_features.exclude_noise_usvs``).
+    emitter : str or None, default None
+        Keep only this mouse's rows and the unassigned ones; ``None`` keeps
+        every row.
 
     Returns
     -------
     starts, stops : tuple of np.ndarray
-        Every USV's start and stop time in seconds, sorted by start. Empty when
-        the session has no summary table.
+        Every kept vocalization's start and stop time in seconds, sorted by
+        start. Empty when the session has no summary table.
 
     Raises
     ------
     KeyError
         The summary lacks ``usv`` / ``squeak`` or ``squeak_start`` /
-        ``squeak_end`` (run ``detect-usv-squeaks`` on the session).
+        ``squeak_end`` (run ``detect-usv-squeaks`` on the session), or lacks
+        ``noise`` while ``exclude_noise_usvs`` is on (run ``detect-usv-noise``).
     """
 
     summary_path = next((session_root / 'audio').glob('**/*_usv_summary.csv'), None)
     if summary_path is None:
         return np.empty(0), np.empty(0)
-    table = vocal_occupancy_times(
-        pls.read_csv(source=summary_path, separator=csv_sep, infer_schema_length=None), summary_path.name
-    )
+    summary = pls.read_csv(source=summary_path, separator=csv_sep, infer_schema_length=None)
+    if emitter is not None:
+        summary = summary.filter(pls.col('emitter').is_null() | (pls.col('emitter') == emitter))
+    if exclude_noise_usvs:
+        summary = drop_noise_usvs(summary, summary_path.name)[0]
+    table = vocal_occupancy_times(summary, summary_path.name)
     return table['start'].to_numpy().astype(float), table['stop'].to_numpy().astype(float)
+
 
 def duration_tercile_labels(bout_duration: np.ndarray,
                             is_vocal: np.ndarray,
@@ -1924,7 +2170,7 @@ def select_covariate_columns(covariates: np.ndarray,
     Keeps the covariate columns belonging to the chosen animal set.
 
     Every extraction carries three groups of pre-anchor covariates: the
-    responder's own kinematics (``self.`` labels), the caller's kinematics
+    responder's own kinematics (``self.`` labels), the vocalizing partner's kinematics
     (``other.`` labels) and the dyadic geometry (bare labels such as
     ``nose-nose__mean_4s``). Which of the two animal groups enters the fit is a
     modelling choice -- adjusting for her own recent behaviour asks a different
@@ -1941,7 +2187,7 @@ def select_covariate_columns(covariates: np.ndarray,
         Column names, shaped ``'<prefix>.<feature>__mean_<width>'`` for the two
         animals and ``'<feature>__mean_<width>'`` for dyadic features.
     covariate_features : str
-        ``'self'`` (responder's kinematics and dyadic), ``'partner'`` (caller's
+        ``'self'`` (responder's kinematics and dyadic), ``'partner'`` (vocalizing partner's
         kinematics and dyadic) or ``'both'`` (everything).
 
     Returns
@@ -2391,9 +2637,11 @@ def behavioral_response_contrast(input_pickle_path: str | Path,
     Returns
     -------
     results : dict
-        ``per_feature`` (each with its ``window`` fit, ``time_course`` and derived
-        ``likelihood``), ``duration_edges``, ``term_labels`` and the provenance
-        block.
+        ``per_feature`` (each with its ``window`` fit, ``time_course``, derived
+        ``likelihood`` and ``per_session_log_ratio`` -- the unadjusted
+        per-session vocal-minus-control difference of mean logs for a lognormal
+        feature, and of plain means, in native units, for a gaussian one),
+        ``duration_edges``, ``term_labels`` and the provenance block.
     """
 
     input_path = Path(input_pickle_path)
@@ -2575,15 +2823,24 @@ def behavioral_response_contrast(input_pickle_path: str | Path,
             time_course.append(bin_fit)
 
         # Per-session effect, unadjusted, so the between-session spread that
-        # dominates the standard errors is visible rather than assumed away.
+        # dominates the standard errors is visible rather than assumed away. A
+        # positive (lognormal) feature reports the difference of mean logs; a
+        # signed (gaussian) feature cannot be logged, so it reports the plain
+        # mean difference over every finite row -- logging it would silently
+        # keep only the positive tail. The key keeps its name for both.
+        signed_response = likelihood == 'gaussian'
         per_session = []
         for session in np.unique(session_ids):
             in_session = session_ids == session
-            treated = in_session & (is_vocal > 0.0) & np.isfinite(column) & (column > 0.0)
-            control_rows = in_session & (is_vocal == 0.0) & np.isfinite(column) & (column > 0.0)
+            usable_rows = np.isfinite(column) if signed_response else np.isfinite(column) & (column > 0.0)
+            treated = in_session & (is_vocal > 0.0) & usable_rows
+            control_rows = in_session & (is_vocal == 0.0) & usable_rows
             if treated.sum() >= 3 and control_rows.sum() >= 3:
-                per_session.append(float(np.mean(np.log(column[treated]))
-                                         - np.mean(np.log(column[control_rows]))))
+                if signed_response:
+                    per_session.append(float(np.mean(column[treated]) - np.mean(column[control_rows])))
+                else:
+                    per_session.append(float(np.mean(np.log(column[treated]))
+                                             - np.mean(np.log(column[control_rows]))))
         per_session = np.asarray(per_session, dtype=float)
 
         per_feature[feature] = {

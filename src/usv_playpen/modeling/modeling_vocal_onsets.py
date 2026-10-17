@@ -14,6 +14,8 @@ data preparation, feature engineering (egocentric/dyadic), and statistical
 classification using both Linear (sklearn) and Non-linear (PyGAM) engines.
 """
 
+from __future__ import annotations
+
 from datetime import datetime
 import json
 import numpy as np
@@ -58,7 +60,7 @@ from .modeling_utils import (
     within_group_permutation,
 )
 from ..analyses.compute_behavioral_features import FeatureZoo
-from ..os_utils import resolve_modeling_setting
+from ..os_utils import atomic_output_path, resolve_modeling_setting
 
 # Expected-Calibration-Error histogram bin count, read from the settings block
 # rather than a bare 10 literal.
@@ -142,7 +144,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             # the shared value is coupled to the silent-tile width, the clean-history
             # criterion and the 'state' grid, none of which the offset target uses.
             model_params = self.modeling_settings['model_params']
-            target_mode = model_params['model_target_vocal_type'] if 'model_target_vocal_type' in model_params else None
+            target_mode = model_params['model_target_vocal_type']
             if target_mode == 'bout_offset':
                 filter_history_sec = self.modeling_settings['bout_offset']['filter_history']
             else:
@@ -703,13 +705,12 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         # feature data without colliding with any feature key.
         artifact = inject_metadata(modeling_final_data_dict, _input_metadata=input_metadata)
 
-        try:
-            save_dir.mkdir(parents=True, exist_ok=True)
-            with save_path.open('wb') as f:
-                pickle.dump(artifact, f)
-            print(f"\n[+] Successfully saved PER-SESSION renamed modeling input data to:\n    {save_path}")
-        except Exception as e:
-            print(f"\n[!] Error saving final pickle file: {e}")
+        # A failed save propagates: the run must not finish with no (or a stale)
+        # input artifact on disk while reporting success.
+        save_dir.mkdir(parents=True, exist_ok=True)
+        with atomic_output_path(save_path) as temporary_path, temporary_path.open('wb') as f:
+            pickle.dump(artifact, f)
+        print(f"\n[+] Successfully saved PER-SESSION renamed modeling input data to:\n    {save_path}")
 
     def create_data_splits(self, feature_data: dict, strategy_override: str = None):
         """
@@ -951,7 +952,10 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             degenerate) the dictionary also carries a top-level ``'heldout'`` key
             with ``'actual'`` and ``'null'`` records: the same metrics as scalars
             for the development-refit model scored once on the held-out sessions,
-            plus ``n_held_out_sessions`` and ``n_held_out_events``.
+            plus ``n_held_out_sessions``, ``n_held_out_events``,
+            ``heldout_fit_failed`` (True when the held-out refit raised, leaving
+            the metrics NaN) and ``heldout_fit_error`` (the exception type and
+            message, or None).
         """
 
         # Initialize results structure with 'actual' and 'null' keys
@@ -1234,8 +1238,10 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 dict
                     The per-split metric keys as scalars (`filter_shapes` a
                     length-history_frames NaN array, `confusion_matrix` a (2, 2)
-                    NaN array, the rest NaN) plus `n_held_out_sessions` and
-                    `n_held_out_events`.
+                    NaN array, the rest NaN) plus `n_held_out_sessions`,
+                    `n_held_out_events`, `heldout_fit_failed` (False until the
+                    held-out refit raises) and `heldout_fit_error` (None, or the
+                    exception type and message of the failed refit).
                 """
                 return {
                     'filter_shapes': np.full(history_frames, np.nan),
@@ -1248,6 +1254,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     'n_iter': np.nan, 'converged': np.nan, 'fit_time': np.nan,
                     'n_held_out_sessions': len(held_sessions),
                     'n_held_out_events': n_held_events,
+                    'heldout_fit_failed': False,
+                    'heldout_fit_error': None,
                 }
 
             heldout = {'actual': _empty_heldout_rec(), 'null': _empty_heldout_rec()}
@@ -1315,6 +1323,10 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                                 print(f"[warn] held-out diagnostic metric could not be recorded: {e}")
                     except Exception as e:
                         print(f"  ERROR during held-out {branch} fit/predict for {feature_name}: {e}")
+                        # Record the failure explicitly so a NaN held-out score is never
+                        # mistaken for a fitted one.
+                        rec['heldout_fit_failed'] = True
+                        rec['heldout_fit_error'] = f"{type(e).__name__}: {e}"
             results['heldout'] = heldout
 
         if not split_has_data:
@@ -1406,7 +1418,10 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             degenerate) the dictionary also carries a top-level ``'heldout'`` key
             with ``'actual'`` and ``'null'`` records: the same metrics as scalars
             for the development-refit model scored once on the held-out sessions,
-            plus ``n_held_out_sessions`` and ``n_held_out_events``.
+            plus ``n_held_out_sessions``, ``n_held_out_events``,
+            ``heldout_fit_failed`` (True when the held-out refit raised, leaving
+            the metrics NaN) and ``heldout_fit_error`` (the exception type and
+            message, or None).
         """
 
         print(f"--- Running [pygam] analysis for feature: {feature_name} ---")
@@ -1728,7 +1743,10 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     length-history_frames NaN array, `confusion_matrix` a (2, 2)
                     NaN array, `coefs_projected` / `optimal_C` empty arrays
                     because the GAM has neither, the rest NaN) plus
-                    `n_held_out_sessions` and `n_held_out_events`.
+                    `n_held_out_sessions`, `n_held_out_events`,
+                    `heldout_fit_failed` (False until the held-out refit raises)
+                    and `heldout_fit_error` (None, or the exception type and
+                    message of the failed refit).
                 """
                 return {
                     'filter_shapes': np.full(history_frames, np.nan),
@@ -1741,6 +1759,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     'n_iter': np.nan, 'converged': np.nan, 'fit_time': np.nan,
                     'n_held_out_sessions': len(held_sessions),
                     'n_held_out_events': n_held_events,
+                    'heldout_fit_failed': False,
+                    'heldout_fit_error': None,
                 }
 
             heldout = {'actual': _empty_heldout_rec(), 'null': _empty_heldout_rec()}
@@ -1801,6 +1821,10 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                                 print(f"[warn] held-out diagnostic metric could not be recorded: {e}")
                     except Exception as e:
                         print(f"  ERROR during held-out {branch} [pygam] fit/predict for {feature_name}: {e}")
+                        # Record the failure explicitly so a NaN held-out score is never
+                        # mistaken for a fitted one.
+                        rec['heldout_fit_failed'] = True
+                        rec['heldout_fit_error'] = f"{type(e).__name__}: {e}"
             results['heldout'] = heldout
 
         if not split_has_data_actual:

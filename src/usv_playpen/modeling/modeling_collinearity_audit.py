@@ -38,6 +38,8 @@ the extraction pipeline; the wrapper `run_predictor_audits` in
 `modeling_utils` enforces that policy.
 """
 
+from __future__ import annotations
+
 import pickle
 import time
 import warnings
@@ -46,6 +48,9 @@ from numpy.lib.stride_tricks import sliding_window_view
 from datetime import datetime
 from pathlib import Path
 from scipy.stats import spearmanr, rankdata
+
+from ..os_utils import atomic_output_path
+
 
 def _build_event_summary_matrix(processed_beh_dict: dict,
                                 event_times_per_session: dict,
@@ -229,8 +234,9 @@ def _vif_from_design(X: np.ndarray) -> np.ndarray:
     ----------
     X : np.ndarray
         Design matrix of shape `(n_samples, n_features)`. Rows with any
-        NaN are dropped before fitting; constant columns are reported as
-        `inf` rather than fitted.
+        NaN are dropped before fitting; constant columns (zero spread, or a
+        spread at float-rounding level) are reported as `inf` rather than
+        fitted.
 
     Returns
     -------
@@ -269,10 +275,14 @@ def _vif_from_design(X: np.ndarray) -> np.ndarray:
             y_pred = Xj_aug @ beta
             ss_res = float(np.sum((y - y_pred) ** 2))
             ss_tot = float(np.sum((y - y.mean()) ** 2))
-            # A constant feature's ss_tot is a rounding residue rather than exactly 0; judge
-            # zero spread against float precision so it reads as "no variance" (r2 = 0).
-            r2 = 0.0 if ss_tot <= np.finfo(np.float64).eps * float(np.sum(y ** 2)) else 1.0 - ss_res / ss_tot
-            r2 = min(r2, 1.0 - 1e-12)
+            # A constant feature's ss_tot is a rounding residue rather than exactly 0 (a
+            # constant 0.1 column has std ~1e-17, so the exact-zero test above misses it);
+            # judge zero spread against float precision and report it as a constant
+            # column, `inf`, like the exact-zero case.
+            if ss_tot <= np.finfo(np.float64).eps * float(np.sum(y ** 2)):
+                vif[j] = float('inf')
+                continue
+            r2 = min(1.0 - ss_res / ss_tot, 1.0 - 1e-12)
             vif[j] = 1.0 / (1.0 - r2)
         except np.linalg.LinAlgError:
             vif[j] = float('inf')
@@ -539,7 +549,7 @@ def audit_predictor_collinearity(processed_beh_dict: dict,
         print("=" * 72 + "\n")
 
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-    with Path(save_path).open('wb') as fh:
+    with atomic_output_path(Path(save_path)) as temporary_path, temporary_path.open('wb') as fh:
         pickle.dump(payload, fh)
     print(f"[audit] collinearity artifact written: {save_path}")
 
@@ -925,7 +935,7 @@ def audit_predictor_timescales(processed_beh_dict: dict,
         if input_metadata is not None:
             payload['_input_metadata'] = dict(input_metadata)
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-        with Path(save_path).open('wb') as fh:
+        with atomic_output_path(Path(save_path)) as temporary_path, temporary_path.open('wb') as fh:
             pickle.dump(payload, fh)
         return payload
 
@@ -1499,7 +1509,7 @@ def audit_predictor_timescales(processed_beh_dict: dict,
     print("=" * 72 + "\n")
 
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-    with Path(save_path).open('wb') as fh:
+    with atomic_output_path(Path(save_path)) as temporary_path, temporary_path.open('wb') as fh:
         pickle.dump(payload, fh)
     print(f"[audit] timescale artifact written: {save_path}")
 

@@ -17,6 +17,8 @@ Feature selection is handled at a higher level by the forward-selection
 routine in `model_selection.py`, not by the loss function.
 """
 
+from __future__ import annotations
+
 import jax
 import jax.numpy as jnp
 import numpy as np

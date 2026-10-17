@@ -75,6 +75,19 @@ class TestVifFromDesign:
         vif = _vif_from_design(X)
         assert np.isinf(vif[1])
 
+    def test_constant_column_with_rounding_spread_is_infinite(self):
+        """A constant 0.1 column has a float std of ~1e-17, not exactly 0, so the
+        exact-zero test misses it; its zero spread must still read as a constant
+        column (``inf``), never as an uncorrelated one (VIF 1)."""
+
+        rng = np.random.default_rng(0)
+        a = rng.normal(size=1000)
+        X = np.column_stack([a, a + 0.1 * rng.normal(size=1000), np.full(1000, 0.1)])
+        assert X[:, 2].std() > 0.0
+        vif = _vif_from_design(X)
+        assert np.isinf(vif[2])
+        assert np.all(np.isfinite(vif[:2]))
+
     def test_underdetermined_returns_nan(self):
         """When samples do not exceed features + 1 the system is
         under-determined and every VIF is NaN."""

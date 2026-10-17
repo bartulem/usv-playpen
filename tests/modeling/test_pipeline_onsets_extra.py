@@ -28,7 +28,7 @@ targets the *alternate* branches of ``modeling_vocal_onsets.py`` directly:
 * ``TestExtractionGuards`` — the data-prep guard / error paths in
   ``extract_and_save_modeling_input_data``: the empty-target-bout session
   removal, the dyad-renamed bare-suffix generic-key branch, the
-  "no features selected" ``ValueError``, and the save-failure ``except``.
+  "no features selected" ``ValueError``, and the propagating, atomic terminal save.
 
 All artifacts live strictly under the pytest ``tmp_path`` scratch directory;
 nothing is ever written into the package ``src/`` tree (the session-end
@@ -64,6 +64,7 @@ matplotlib.use('Agg')
 
 from tests.modeling._synth import (
     build_behavioral_features_csv,
+    fit_counting_subclass,
     build_modeling_settings,
     build_session_tree,
     build_track_h5,
@@ -76,6 +77,7 @@ from tests.modeling._synth import (
 # ["error"]`` before any per-test marker can take effect.
 with warnings.catch_warnings():
     warnings.simplefilter('ignore', DeprecationWarning)
+    import usv_playpen.modeling.modeling_vocal_onsets as onsets_mod
     from usv_playpen.modeling.modeling_vocal_onsets import VocalOnsetModelingPipeline
 
 
@@ -274,6 +276,19 @@ class TestInitBranches:
         with pytest.raises(KeyError):
             VocalOnsetModelingPipeline(modeling_settings_dict=broken)
 
+    def test_init_missing_target_vocal_type_raises_keyerror(self, tmp_path):
+        """
+        ``model_params.model_target_vocal_type`` is a shipped key and is read
+        directly: a settings dict without it raises instead of silently taking
+        the non-offset history window (it used to fall back to ``None``).
+        """
+
+        pipeline = _pipeline(tmp_path)
+        broken = pipeline.modeling_settings
+        del broken['model_params']['model_target_vocal_type']
+        with pytest.raises(KeyError, match='model_target_vocal_type'):
+            VocalOnsetModelingPipeline(modeling_settings_dict=broken)
+
 
 class TestDataSplitStrategies:
     """Every branch of the two-way ``create_data_splits`` generator."""
@@ -459,6 +474,45 @@ class TestSklearnRunner:
         assert np.isfinite(held['actual']['ll'])
         assert np.isfinite(held['actual']['auc'])
 
+    def test_sklearn_runner_failed_heldout_refit_is_flagged(self, tmp_path, monkeypatch):
+        """
+        A held-out refit that raises must be recorded, not left as a silent
+        NaN: every fit is counted on a first run (whose held-out records carry
+        ``heldout_fit_failed=False`` and ``heldout_fit_error=None``), then the
+        final two fits -- the 'actual' and 'null' held-out refits, which run
+        after every CV fold -- are forced to raise. Both held-out records must
+        carry ``heldout_fit_failed=True`` and the exception text in
+        ``heldout_fit_error`` while the CV folds stay fitted.
+        """
+
+        pipeline = _pipeline(tmp_path, model_engine='sklearn', split_strategy='mixed', split_num=2)
+        session_ids = [f'session_{i}' for i in range(4)]
+        feature_data = _make_feature_data(session_ids, n_usv=30, n_no_usv=60)
+        basis = np.eye(HISTORY_FRAMES, dtype=float)
+        original_cls = onsets_mod.LogisticRegressionCV
+        counting_cls, counter = fit_counting_subclass(original_cls)
+        monkeypatch.setattr(onsets_mod, 'LogisticRegressionCV', counting_cls)
+        _fn, clean = pipeline._run_model_for_feature_sklearn(
+            feature_name='self.speed', feature_data=feature_data, basis_matrix=basis,
+            held_out_session_ids=session_ids[3:],
+        )
+        for branch in ('actual', 'null'):
+            assert clean['heldout'][branch]['heldout_fit_failed'] is False
+            assert clean['heldout'][branch]['heldout_fit_error'] is None
+        n_fits = counter['n']
+
+        failing_cls, _ = fit_counting_subclass(original_cls, fail_after=n_fits - 2)
+        monkeypatch.setattr(onsets_mod, 'LogisticRegressionCV', failing_cls)
+        _fn, res = pipeline._run_model_for_feature_sklearn(
+            feature_name='self.speed', feature_data=feature_data, basis_matrix=basis,
+            held_out_session_ids=session_ids[3:],
+        )
+        for branch in ('actual', 'null'):
+            assert res['heldout'][branch]['heldout_fit_failed'] is True
+            assert 'forced held-out refit failure' in res['heldout'][branch]['heldout_fit_error']
+            assert np.isnan(res['heldout'][branch]['auc'])
+        assert np.isfinite(res['actual']['auc']).any()
+
 
 class TestPygamEngine:
     """The full ``_run_model_for_feature_pygam`` path (never run by the sklearn smoke suite)."""
@@ -517,6 +571,45 @@ class TestPygamEngine:
             assert held[branch]['n_held_out_events'] > 0
         assert np.isfinite(held['actual']['ll'])
         assert np.isfinite(held['actual']['auc'])
+
+    @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
+    def test_pygam_runner_failed_heldout_refit_is_flagged(self, tmp_path, monkeypatch):
+        """
+        A held-out refit that raises must be recorded, not left as a silent
+        NaN: every fit is counted on a first run (whose held-out records carry
+        ``heldout_fit_failed=False`` and ``heldout_fit_error=None``), then the
+        final two fits -- the 'actual' and 'null' held-out refits, which run
+        after every CV fold -- are forced to raise. Both held-out records must
+        carry ``heldout_fit_failed=True`` and the exception text in
+        ``heldout_fit_error`` while the CV folds stay fitted.
+        """
+
+        pipeline = _pipeline(tmp_path, model_engine='pygam', split_strategy='mixed', split_num=2)
+        session_ids = [f'session_{i}' for i in range(4)]
+        feature_data = _make_feature_data(session_ids, n_usv=24, n_no_usv=60)
+        original_cls = onsets_mod.LogisticGAM
+        counting_cls, counter = fit_counting_subclass(original_cls)
+        monkeypatch.setattr(onsets_mod, 'LogisticGAM', counting_cls)
+        _fn, clean = pipeline._run_model_for_feature_pygam(
+            feature_name='self.speed', feature_data=feature_data, basis_matrix=None,
+            held_out_session_ids=session_ids[3:],
+        )
+        for branch in ('actual', 'null'):
+            assert clean['heldout'][branch]['heldout_fit_failed'] is False
+            assert clean['heldout'][branch]['heldout_fit_error'] is None
+        n_fits = counter['n']
+
+        failing_cls, _ = fit_counting_subclass(original_cls, fail_after=n_fits - 2)
+        monkeypatch.setattr(onsets_mod, 'LogisticGAM', failing_cls)
+        _fn, res = pipeline._run_model_for_feature_pygam(
+            feature_name='self.speed', feature_data=feature_data, basis_matrix=None,
+            held_out_session_ids=session_ids[3:],
+        )
+        for branch in ('actual', 'null'):
+            assert res['heldout'][branch]['heldout_fit_failed'] is True
+            assert 'forced held-out refit failure' in res['heldout'][branch]['heldout_fit_error']
+            assert np.isnan(res['heldout'][branch]['auc'])
+        assert np.isfinite(res['actual']['auc']).any()
 
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     def test_pygam_session_strategy_produces_branch_metrics(self, tmp_path):
@@ -687,12 +780,15 @@ class TestExtractionGuards:
 
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
-    def test_extraction_save_failure_is_caught(self, tmp_path, monkeypatch):
+    def test_extraction_save_failure_raises_and_keeps_previous_artifact(self, tmp_path, monkeypatch):
         """
-        When the terminal ``pickle.dump`` raises, the extraction's save ``try``
-        swallows it and prints an error rather than propagating — the
-        save-failure ``except`` branch. The module-level ``pickle.dump`` is
-        monkeypatched to raise; everything upstream still runs to completion.
+        A failed terminal save must propagate and must not destroy the input
+        artifact already on disk. The extraction is run once to publish a
+        complete pickle; on the re-run the module-level ``pickle.dump`` writes a
+        few bytes and then raises. The re-run must raise that ``OSError`` (the
+        save used to be swallowed by an ``except Exception: print(...)``) and the
+        previous artifact must be byte-identical afterwards, with no temporary
+        sibling left behind (the save used to truncate the final path first).
         """
 
         session_roots = build_session_tree(
@@ -719,18 +815,24 @@ class TestExtractionGuards:
 
         import usv_playpen.modeling.modeling_vocal_onsets as onsets_mod
 
-        def _boom(*_args, **_kwargs):
+        VocalOnsetModelingPipeline(modeling_settings_dict=settings).extract_and_save_modeling_input_data()
+        published = sorted(save_dir.glob('modeling_*.pkl'))
+        assert len(published) == 1
+        original_bytes = published[0].read_bytes()
+        assert len(original_bytes) > 0
+
+        def _partial_then_boom(_obj, handle, *_args, **_kwargs):
+            handle.write(b'partial')
             raise OSError("simulated pickle write failure")
 
-        monkeypatch.setattr(onsets_mod.pickle, 'dump', _boom)
+        monkeypatch.setattr(onsets_mod.pickle, 'dump', _partial_then_boom)
 
         pipeline = VocalOnsetModelingPipeline(modeling_settings_dict=settings)
-        # Must NOT raise: the save failure is caught and logged. The
-        # ``save_path.open('wb')`` may leave a zero-byte file behind (the failure
-        # happens during ``pickle.dump``), so any artifact present is empty.
-        pipeline.extract_and_save_modeling_input_data()
-        for pkl in save_dir.glob('modeling_*.pkl'):
-            assert pkl.stat().st_size == 0
+        with pytest.raises(OSError, match="simulated pickle write failure"):
+            pipeline.extract_and_save_modeling_input_data()
+        assert sorted(save_dir.glob('modeling_*.pkl')) == published
+        assert published[0].read_bytes() == original_bytes
+        assert not list(save_dir.rglob('*.tmp-*'))
 
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")

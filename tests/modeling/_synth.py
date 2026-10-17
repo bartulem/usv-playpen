@@ -603,6 +603,7 @@ def build_modeling_settings(
     mv = settings['model_validation']
     mv['split_strategy'] = split_strategy
     mv['n_cv_folds'] = split_num
+    mv['manifold_n_cv_folds'] = split_num
     mv['cv_validation_proportion'] = test_proportion
     mv['random_seed'] = random_seed
     mv['held_out_test_proportion'] = 0.0
@@ -723,3 +724,72 @@ def build_modeling_input_pickle(
     with save_path.open('wb') as fh:
         pickle.dump(artifact, fh)
     return save_path
+
+
+def fit_counting_subclass(base_cls: type, fail_after: int | None = None) -> tuple[type, dict]:
+    """
+    Description
+    -----------
+    Builds a drop-in subclass of an estimator class whose ``fit`` counts its
+    calls and, once more than ``fail_after`` calls have been made, raises a
+    ``RuntimeError`` instead of fitting. Used to inject a failure into the LAST
+    fits of a univariate runner (its held-out refits, which run after every CV
+    fold) without touching the fold fits: a first pass with
+    ``fail_after=None`` measures the total number of fits ``n``, a second pass
+    with ``fail_after=n - k`` makes exactly the final ``k`` fits fail.
+
+    Parameters
+    ----------
+    base_cls (type)
+        The estimator class to wrap (e.g. ``LogisticRegressionCV``,
+        ``GridSearchCV``, ``pygam.GAM``); the subclass inherits its constructor
+        signature, so scikit-learn parameter introspection keeps working.
+    fail_after (int | None)
+        Number of ``fit`` calls allowed to succeed; ``None`` (default) never
+        fails and only counts.
+
+    Returns
+    -------
+    counting_cls (type)
+        The counting subclass, carrying ``base_cls.__name__``.
+    counter (dict)
+        ``{'n': <number of fit calls so far>}``, updated in place.
+    """
+
+    counter = {'n': 0}
+
+    class _CountingEstimator(base_cls):
+        """
+        Description
+        -----------
+        ``base_cls`` with a counting (and optionally failing) ``fit``.
+        """
+
+        def fit(self, *args, **kwargs):
+            """
+            Description
+            -----------
+            Counts the call, raises once the allowance is spent, else fits.
+
+            Parameters
+            ----------
+            args (tuple)
+                Positional arguments forwarded to ``base_cls.fit``.
+            kwargs (dict)
+                Keyword arguments forwarded to ``base_cls.fit``.
+
+            Returns
+            -------
+            fitted (object)
+                Whatever ``base_cls.fit`` returns (the fitted estimator).
+            """
+
+            counter['n'] += 1
+            if fail_after is not None and counter['n'] > fail_after:
+                message = "forced held-out refit failure"
+                raise RuntimeError(message)
+            return super().fit(*args, **kwargs)
+
+    _CountingEstimator.__name__ = base_cls.__name__
+    _CountingEstimator.__qualname__ = base_cls.__qualname__
+    return _CountingEstimator, counter

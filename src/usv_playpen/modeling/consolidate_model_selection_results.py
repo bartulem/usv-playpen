@@ -66,6 +66,8 @@ written under `legacy_selection_<utc-ts>.pkl`. Default is to abort on
 the first legacy file.
 """
 
+from __future__ import annotations
+
 import argparse
 import pickle
 import re
@@ -74,10 +76,12 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ..os_utils import atomic_output_path
 from .modeling_metadata import (
     build_consolidation_metadata,
     extract_metadata_blocks,
     metadata_blocks_equal,
+    read_reserved_block,
 )
 
 CONSOLIDATOR_NAME = 'consolidate_model_selection_results'
@@ -267,7 +271,8 @@ def _build_default_output_filename(input_metadata: dict,
     ----------
     input_metadata : dict
         The upstream `_input_metadata` block (`target_mouse_sex`,
-        `experimental_condition`, `analysis_tag`), or None on legacy
+        `experimental_condition`, `analysis_tag`, and the `analysis_specific`
+        dict every `build_input_metadata` call writes), or None on legacy
         artifacts.
     run_metadata : dict
         The upstream `_run_metadata` block (`split_strategy`), or None on
@@ -319,7 +324,10 @@ def _build_default_output_filename(input_metadata: dict,
     # column (the regular map's `qlvm_category` for every map) must not be
     # appended to it; only the bare legacy `manifold` gets the graft.
     if input_metadata is not None and not analysis_tag.startswith('manifold_'):
-        analysis_specific = (input_metadata['analysis_specific'] if 'analysis_specific' in input_metadata else None) or {}
+        # `analysis_specific` is written by every `build_input_metadata` call;
+        # `usv_category_column_name` is recorded only by the category-targeting
+        # extractions, so its absence is the schema, not a fallback.
+        analysis_specific = input_metadata['analysis_specific']
         cat_col = analysis_specific['usv_category_column_name'] if 'usv_category_column_name' in analysis_specific else None
         if cat_col and cat_col not in analysis_tag:
             if analysis_tag.startswith('category_'):
@@ -519,7 +527,7 @@ def consolidate(input_dir: str,
         else:
             cur_in = md_blocks['_input_metadata']
             cur_run = md_blocks['_run_metadata']
-            cur_univ = md_blocks['_univariate_metadata'] if '_univariate_metadata' in md_blocks else None
+            cur_univ = read_reserved_block(md_blocks, '_univariate_metadata')
 
             if canonical_input_md is None:
                 canonical_input_md = cur_in
@@ -612,7 +620,7 @@ def consolidate(input_dir: str,
     output_root.mkdir(parents=True, exist_ok=True)
     out_path = output_root / output_filename
 
-    with out_path.open('wb') as fh:
+    with atomic_output_path(out_path) as temporary_path, temporary_path.open('wb') as fh:
         pickle.dump(consolidated, fh)
 
     print(f"[consolidate] Wrote consolidated artifact: {out_path}")

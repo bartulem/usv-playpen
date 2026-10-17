@@ -670,6 +670,31 @@ class TestFitVonMisesKappa:
         """An empty residual array returns 0 (no data -> no concentration)."""
         assert _fit_von_mises_kappa(np.empty(0)) == 0.0
 
+    def test_root_finder_failure_returns_zero(self, monkeypatch):
+        """A root-finder failure (``ValueError``: no sign change in the bracket;
+        ``RuntimeError``: no convergence) means no usable concentration and
+        returns 0."""
+        import usv_playpen.modeling.manifold_metric as mm
+        residuals = np.random.default_rng(4).vonmises(0.0, 2.0, size=500)
+        for exc in (ValueError('no sign change'), RuntimeError('no convergence')):
+            def _fail(*_a, _exc=exc, **_k):
+                raise _exc
+            monkeypatch.setattr(mm, 'brentq', _fail)
+            assert _fit_von_mises_kappa(residuals) == 0.0
+
+    def test_unexpected_root_finder_error_propagates(self, monkeypatch):
+        """Any other exception from the root finder is a bug and propagates
+        (the guard used to be a bare ``except Exception: return 0.0``)."""
+        import usv_playpen.modeling.manifold_metric as mm
+
+        def _fail(*_a, **_k):
+            raise ZeroDivisionError('forced failure')
+
+        monkeypatch.setattr(mm, 'brentq', _fail)
+        residuals = np.random.default_rng(5).vonmises(0.0, 2.0, size=500)
+        with pytest.raises(ZeroDivisionError, match='forced failure'):
+            _fit_von_mises_kappa(residuals)
+
 
 class TestMacroVonMisesLogscore:
     """The macro (per-region) von Mises log-score (`macro_von_mises_logscore`)."""
@@ -943,6 +968,23 @@ class TestKnownAnswers:
         bundle = manifold_prediction_metrics(truth, pred, None, metric='euclidean', period=1.0, train_cov_inv=cov_inv)
         assert bundle['mahalanobis_mae'] == pytest.approx(expected, rel=1e-10)
         flat = manifold_prediction_metrics(np.ones((10, 2)), np.ones((10, 2)) + 0.1, None,
+                                           metric='euclidean', period=1.0)
+        assert flat['r2_spatial'] == 0.0
+
+    @pytest.mark.filterwarnings("ignore:An input array is constant:scipy.stats.ConstantInputWarning")
+    def test_r2_spread_floor_ignores_a_constant_offset(self):
+        """The no-spread floor must scale with the rounding residue a centred
+        dispersion can carry, not with the raw magnitude of the coordinates: a
+        cloud of unit spread shifted by 1e8 keeps its r2, while a constant 0.1
+        target (dispersion ~1e-32, not exactly 0) still reads as no spread."""
+        rng = np.random.default_rng(0)
+        base = rng.normal(size=(500, 2))
+        noise = 0.3 * rng.normal(size=(500, 2))
+        expected = 1.0 - np.sum(noise ** 2) / np.sum((base - base.mean(0)) ** 2)
+        shifted = manifold_prediction_metrics(base + 1e8, base + 1e8 + noise, None,
+                                              metric='euclidean', period=1.0)
+        assert shifted['r2_spatial'] == pytest.approx(expected, abs=1e-4)
+        flat = manifold_prediction_metrics(np.full((10, 2), 0.1), np.full((10, 2), 0.2), None,
                                            metric='euclidean', period=1.0)
         assert flat['r2_spatial'] == 0.0
 

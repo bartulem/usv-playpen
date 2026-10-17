@@ -49,7 +49,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import gaussian_kde
 
-from .manifold_metric import _validate_metric_period, signed_diff
+from .manifold_metric import _validate_metric_period, circular_mean, signed_diff
 
 
 def derive_cluster_centers_empirically(Y: np.ndarray,
@@ -111,7 +111,12 @@ def derive_cluster_centers_empirically(Y: np.ndarray,
     metric : str, default 'euclidean'
         `'euclidean'` for flat-plane manifolds or `'torus'` for
         periodic ones (e.g. the QLVM torus). Controls the
-        wrap-aware KDE on torus.
+        wrap-aware KDE on torus: each label's cloud is rotated so its
+        per-axis circular mean sits at `period / 2`, the KDE is fitted
+        and its mode found there (with a periodic sum over the lattice
+        shifts), and the mode is rotated back into `[0, period)`, so a
+        cluster straddling the seam gets the same centre it would get
+        mid-cell.
     period : float, default 1.0
         Per-axis wrap period; ignored when `metric == 'euclidean'`.
     rng_seed : int, default 0
@@ -140,6 +145,17 @@ def derive_cluster_centers_empirically(Y: np.ndarray,
             continue
 
         pts_full = Y[mask]
+        # On a torus the cluster is first rotated so its per-axis circular mean
+        # sits at the middle of the period, the KDE is fitted and searched there,
+        # and the mode is rotated back. Fitted on raw coordinates, a cluster
+        # straddling the 0/period seam is split into two pieces a period apart,
+        # so its (unwrapped) KDE is pulled toward the cluster mean; after the
+        # rotation a compact cluster sits away from every seam and its mode is
+        # the same as it would be mid-cell.
+        rotation = np.zeros(Y.shape[1])
+        if metric == 'torus':
+            rotation = period / 2.0 - circular_mean(pts_full, metric=metric, period=period)
+            pts_full = np.mod(pts_full + rotation, period)
         # Grid bounds are derived from the FULL per-label point cloud, before any
         # sub-sampling, so the evaluation grid always spans the cluster's true
         # extent. Deriving them from the (possibly sub-sampled) `pts` would let a
@@ -192,7 +208,10 @@ def derive_cluster_centers_empirically(Y: np.ndarray,
         else:
             zz = kde(grid).reshape(xx.shape)
         idx = np.unravel_index(int(np.argmax(zz)), zz.shape)
-        out[lbl] = np.array([float(xx[idx]), float(yy[idx])])
+        centre = np.array([float(xx[idx]), float(yy[idx])])
+        if metric == 'torus':
+            centre = np.mod(centre - rotation, period)
+        out[lbl] = centre
 
     return out
 

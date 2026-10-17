@@ -469,7 +469,7 @@ class TestManifoldFoldFailure:
         with anchor_pkl.open('rb') as fh:
             anchor_step = pickle.load(fh)
         folds = anchor_step['candidates_summary'][anchor_step['selected_feature']]['folds']
-        n_folds = settings['model_validation']['n_cv_folds']
+        n_folds = settings['model_validation']['manifold_n_cv_folds']
         per_fold = {key: value for key, value in folds.items() if isinstance(value, list)}
         assert {key: len(value) for key, value in per_fold.items()} == dict.fromkeys(per_fold, n_folds)
         assert folds['weights'][0] is None

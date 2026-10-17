@@ -33,6 +33,8 @@ Both rely on the same wrap rule, so they agree numerically up to
 floating-point noise.
 """
 
+from __future__ import annotations
+
 import numpy as np
 import jax.numpy as jnp
 from scipy.stats import spearmanr
@@ -168,7 +170,7 @@ def pairwise_distance(a: np.ndarray, b: np.ndarray, *,
     On euclidean this is just `||a - b||_2` along the last axis. On
     torus each component is wrapped into `[-period/2, period/2]` first,
     then squared and summed; the result is the **shortest** path on
-    the torus between `a` and `b`, identical to the user's reference
+    the torus between `a` and `b`, identical to the reference
     `torus_dist` helper.
 
     Parameters
@@ -437,7 +439,10 @@ def _fit_von_mises_kappa(r: np.ndarray, weights: np.ndarray = None) -> float:
     a_func = lambda k: i1e(k) / i0e(k) - r_bar
     try:
         return float(brentq(a_func, 1e-6, 1e6, maxiter=200))
-    except Exception:
+    except (ValueError, RuntimeError):
+        # brentq raises ValueError when the bracket has no sign change and
+        # RuntimeError when it does not converge; both mean no usable
+        # concentration, reported as kappa = 0 (uniform).
         return 0.0
 
 
@@ -965,8 +970,13 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
     denom = total_dispersion(Y_true, metric=metric, period=period)
     # Zero spread is judged against float precision, not exact zero: the dispersion of a
     # constant target is a rounding residue (~1e-31), and dividing by it gave r2 ~ -1e29.
-    # Below `eps * sum(Y_true**2)` the target carries no spread and r2 is reported as 0.
-    no_spread_floor = np.finfo(np.float64).eps * float(np.sum(Y_true ** 2))
+    # The floor is the largest residue a CENTRED sum of squares can carry: each centred
+    # difference is off by at most ~n ulps of |Y|, so the residue stays below
+    # `(n * eps)**2 * sum(Y_true**2)` (measured margin ~100x on constant targets from
+    # 0.1 to 1e8 at n = 10..1e5). The previous `eps * sum(Y_true**2)` grew with the
+    # square of a constant offset and swallowed genuine spread (r2 = 0 for a unit-spread
+    # cloud shifted by 1e8). Below the floor the target carries no spread and r2 is 0.
+    no_spread_floor = (Y_true.shape[0] * np.finfo(np.float64).eps) ** 2 * float(np.sum(Y_true ** 2))
     r2_spatial = float(1.0 - (ss_res / denom)) if denom > no_spread_floor else 0.0
 
     return {

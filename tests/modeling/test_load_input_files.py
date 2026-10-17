@@ -273,47 +273,49 @@ class TestGenerateVocalTrace:
 class TestGetCleanTiledEpochs:
 
     def test_no_usv_tiles_whole_session(self):
-        """With no USVs the entire session (after the initial
-        ``filter_history`` warm-up) is tiled into window end-times."""
+        """With no USVs the entire session is tiled into window end-times,
+        the first window starting at the session start."""
 
         ts = _get_clean_tiled_epochs(np.array([]), np.array([]),
                                      filter_history=1.0, session_duration_sec=10.0)
-        # First end-time is at session_start + filter_history == 2.0.
-        assert ts.min() == pytest.approx(2.0)
+        # First end-time is filter_history == 1.0: the window [0, 1] fits.
+        assert ts.min() == pytest.approx(1.0)
         assert ts.max() <= 10.0 + 1e-9
         # Regular 1.0-spaced tiling.
         assert np.allclose(np.diff(ts), 1.0)
 
     def test_windows_avoid_forbidden_zone(self):
         """Every returned end-time ``t`` defines a history window
-        ``[t - filter_history, t]`` that must not overlap the forbidden
-        zone ``[start, stop + filter_history]`` around a USV."""
+        ``[t - filter_history, t]`` that must not overlap the USV
+        ``[start, stop]`` (abutting it at either edge is allowed, exactly as
+        for a positive onset under ``_history_is_dirty``)."""
 
         fh = 1.0
         usv_start, usv_stop = 50.0, 50.5
         ts = _get_clean_tiled_epochs(np.array([usv_start]), np.array([usv_stop]),
                                      filter_history=fh, session_duration_sec=100.0)
-        forbidden_lo = usv_start
-        forbidden_hi = usv_stop + fh
         for t in ts:
             win_lo, win_hi = t - fh, t
-            # Window is entirely before or entirely after the forbidden zone.
-            assert win_hi <= forbidden_lo + 1e-9 or win_lo >= forbidden_hi - 1e-9, (
-                f"window [{win_lo}, {win_hi}] overlaps forbidden "
-                f"[{forbidden_lo}, {forbidden_hi}]"
+            # Window is entirely before or entirely after the USV.
+            assert win_hi <= usv_start + 1e-9 or win_lo >= usv_stop - 1e-9, (
+                f"window [{win_lo}, {win_hi}] overlaps the USV "
+                f"[{usv_start}, {usv_stop}]"
             )
+        # The first window after the USV starts right where it stopped.
+        assert usv_stop + fh in ts.tolist()
 
-    def test_short_clean_gap_is_dropped(self):
-        """A clean gap shorter than ``filter_history`` cannot host a
-        window and yields no end-times for that gap."""
+    def test_short_clean_zone_still_hosts_its_first_window_end(self):
+        """A clean zone of window ENDS shorter than ``filter_history`` still
+        holds the end at its start: the window ending there has a full
+        ``filter_history`` of silence behind it."""
 
-        # Two USVs leaving only a tiny clean gap between them; the whole
-        # session is otherwise forbidden.
+        # Two USVs at 1.0-1.1 and 1.4-1.5 s (fh 1 s, 2.6 s session): the zone
+        # [1.0, 1.0] gives the window [0, 1] that ends where the first USV
+        # starts, and the trailing zone [2.5, 2.6] gives the window [1.5, 2.5]
+        # that starts where the last USV stops.
         ts = _get_clean_tiled_epochs(np.array([1.0, 1.4]), np.array([1.1, 1.5]),
                                      filter_history=1.0, session_duration_sec=2.6)
-        # session_duration 2.6, last forbidden end = 1.5 + 1.0 = 2.5; the
-        # trailing clean gap [2.5, 2.6] is shorter than filter_history -> empty.
-        assert ts.size == 0
+        np.testing.assert_allclose(ts, [1.0, 2.5])
 
 
 # load_pickle_modeling_data
@@ -403,9 +405,10 @@ class TestFindBoutEpochs:
         male = out['sess_B']['male']
         # The single clean bout starts at 2.0 (> filter_history, no prior USV).
         np.testing.assert_allclose(male['positive_events'], [2.0])
-        # Negative events exist and are all silent onsets after the bout zone.
+        # Negative events exist and none of their 1 s windows overlaps the bout.
         assert male['negative_events'].size > 0
-        assert np.all(male['negative_events'] > rows['stop'][-1])
+        negatives = male['negative_events']
+        assert np.all((negatives <= rows['start'][0]) | (negatives - 1.0 >= rows['stop'][-1]))
         # Female (no USVs) has empty positive events but tiled negatives.
         assert out['sess_B']['female']['positive_events'].size == 0
         assert out['sess_B']['female']['negative_events'].size > 0
@@ -446,6 +449,29 @@ class TestFindBoutEpochs:
         # 0.5 is dropped (<= filter_history); 2.0 and 3.0 survive.
         np.testing.assert_allclose(male['positive_events'], [2.0, 3.0])
         assert male['negative_events'].size > 0
+
+    def test_individual_mode_negatives_keep_the_future_window_silent(self, tmp_path):
+        """In 'individual' mode a negative (no-USV) onset must be followed by
+        ``usv_bout_time`` of silence, as in 'bout_onset' mode: the tile at 4.6 s
+        has a clean history but a USV starts 20 ms later, so it is dropped while
+        the tile at 3.6 s (next USV a full second away) survives."""
+
+        rows = {
+            'emitter': ['male', 'male'],
+            'start': [1.5, 4.62],
+            'stop': [1.6, 4.7],
+            'usv_category': [1, 1],
+        }
+        kwargs = self._build(tmp_path, rows)
+        out = find_onset_epochs(prediction_mode='individual', filter_history=1.0,
+                               usv_bout_time=0.5, min_usv_per_bout=2,
+                               proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
+                               **kwargs)
+        male = out['sess_B']['male']
+        np.testing.assert_allclose(male['positive_events'], [1.5, 4.62])
+        # Window ends tile each clean zone from its start: [1.0, 1.5] -> 1.0,
+        # [2.6, 4.62] -> 2.6, 3.6, 4.6 (dropped) and [5.7, 6.0] -> 5.7.
+        np.testing.assert_allclose(male['negative_events'], [1.0, 2.6, 3.6, 5.7])
 
     def test_state_mode_partitions_grid_by_occupancy(self, tmp_path):
         """In 'state' mode the regular time grid is split into vocalizing
@@ -2122,22 +2148,23 @@ class TestCleanTiledEpochsExact:
 
     def test_unsorted_overlapping_zones_merge_and_every_gap_is_tiled(self):
         """Unsorted USVs at 5.0, 1.5, 2.0 and 8.0 s (fh 1 s, 12 s session) give the
-        forbidden zones [1.5, 3.2], [5.0, 6.5] and [8.0, 9.1] after sorting and merging
-        the two overlapping early ones; the clean gaps are [1.0, 1.5] (too short),
-        [3.2, 5.0] -> 4.2, [6.5, 8.0] -> 7.5 and [9.1, 12] -> 10.1, 11.1."""
+        forbidden window-end zones (1.5, 3.2), (5.0, 6.5) and (8.0, 9.1) after sorting
+        and merging the two overlapping early ones; the clean zones are tiled from
+        their starts: [1.0, 1.5] -> 1.0, [3.2, 5.0] -> 3.2, 4.2, [6.5, 8.0] -> 6.5, 7.5
+        and [9.1, 12] -> 9.1, 10.1, 11.1."""
 
         ts = _get_clean_tiled_epochs(np.array([5.0, 1.5, 2.0, 8.0]), np.array([5.5, 1.6, 2.2, 8.1]),
                                      filter_history=1.0, session_duration_sec=12.0)
-        np.testing.assert_allclose(ts, [4.2, 7.5, 10.1, 11.1])
+        np.testing.assert_allclose(ts, [1.0, 3.2, 4.2, 6.5, 7.5, 9.1, 10.1, 11.1])
 
     @pytest.mark.parametrize(('filter_history', 'duration', 'expected'), [
-        (1.0, 2.0, [2.0]),             # a gap exactly one window long holds one window
-        (1.0, 3.0, [2.0, 3.0]),        # the session end is a valid window end
-        (0.5, 2.0, [1.0, 1.5, 2.0]),   # windows step by filter_history, not by 1 s
+        (1.0, 2.0, [1.0, 2.0]),             # the first window starts at the session start
+        (1.0, 3.0, [1.0, 2.0, 3.0]),        # the session end is a valid window end
+        (0.5, 2.0, [0.5, 1.0, 1.5, 2.0]),   # windows step by filter_history, not by 1 s
     ])
     def test_tiling_boundaries_without_usvs(self, filter_history, duration, expected):
         """Without USVs the clean zone is [filter_history, duration] and its windows
-        end at every multiple of ``filter_history`` from ``2 * filter_history`` up to
+        end at every multiple of ``filter_history`` from ``filter_history`` up to
         and including the session end."""
 
         ts = _get_clean_tiled_epochs(np.array([]), np.array([]),
@@ -2147,14 +2174,33 @@ class TestCleanTiledEpochsExact:
 
 class TestHistoryIsDirty:
 
-    def test_window_edge_is_inclusive_and_the_onset_itself_is_excluded(self):
-        """A reference vocalization ending exactly at ``onset - filter_history`` is in
-        the window (the negatives' forbidden zone is closed at stop + filter_history);
-        one ending just before is not; one starting AT the onset is the onset's own."""
+    def test_window_edge_is_exclusive_and_the_onset_itself_is_excluded(self):
+        """A reference vocalization ending exactly at ``onset - filter_history`` abuts
+        the window without touching it (the negatives' forbidden zone of window ends is
+        open at stop + filter_history, so both classes share the boundary); one ending
+        just after it is in the window; one starting AT the onset is the onset's own."""
 
-        assert _history_is_dirty(3.0, np.array([1.5]), np.array([2.0]), 1.0) is True
+        assert _history_is_dirty(3.0, np.array([1.5]), np.array([2.0]), 1.0) is False
+        assert _history_is_dirty(3.0, np.array([1.5]), np.array([2.01]), 1.0) is True
         assert _history_is_dirty(3.0, np.array([1.5]), np.array([1.99]), 1.0) is False
         assert _history_is_dirty(3.0, np.array([3.0]), np.array([3.5]), 1.0) is False
+
+    def test_negatives_start_where_a_clean_positive_may(self):
+        """
+        Regression: one USV at 10.0-10.1 s, fh 1 s. A positive onset is clean
+        from 11.1 s on (``_history_is_dirty``), and the first negative window after the
+        USV must end there too, not one more ``filter_history`` later (12.1 s).
+        """
+
+        starts, stops = np.array([10.0]), np.array([10.1])
+        negatives = _get_clean_tiled_epochs(starts, stops, 1.0, 20.0)
+        after = negatives[negatives > 10.1]
+
+        assert after[0] == pytest.approx(11.1)
+        assert _history_is_dirty(11.1, starts, stops, 1.0) is False
+        assert _history_is_dirty(11.09, starts, stops, 1.0) is True
+        for t in negatives:
+            assert _history_is_dirty(t, starts, stops, 1.0) is False
 
 
 class TestOccupancyAndSmoothing:
@@ -2391,16 +2437,16 @@ class TestOnsetEpochsExact:
 
     def test_bout_onset_negatives_are_exact(self, tmp_path):
         """Three male USVs from 2.0 to 2.25 s (6 s session, fh 1 s): the forbidden zone
-        is [2.0, 3.25], so the tiled windows end at 2.0, 4.25 and 5.25 s, and the one at
-        2.0 s is dropped because a USV starts within its 0.5 s future. The silent female
-        tiles the whole session: 2, 3, 4, 5, 6 s."""
+        of window ends is (2.0, 3.25), so the tiled windows end at 1.0, 2.0, 3.25, 4.25
+        and 5.25 s, and the one at 2.0 s is dropped because a USV starts within its
+        0.5 s future. The silent female tiles the whole session: 1, 2, 3, 4, 5, 6 s."""
 
         rows = {'emitter': ['male'] * 3, 'start': [2.0, 2.1, 2.2], 'stop': [2.05, 2.15, 2.25]}
         out = find_onset_epochs(prediction_mode='bout_onset', mixture_model_params=_mixture_model_params(),
                                 **_ONSET_COMMON, **_onset_kwargs(tmp_path, rows))['sess_B']
         np.testing.assert_allclose(out['male']['positive_events'], [2.0])
-        np.testing.assert_allclose(out['male']['negative_events'], [4.25, 5.25])
-        np.testing.assert_allclose(out['female']['negative_events'], [2.0, 3.0, 4.0, 5.0, 6.0])
+        np.testing.assert_allclose(out['male']['negative_events'], [1.0, 3.25, 4.25, 5.25])
+        np.testing.assert_allclose(out['female']['negative_events'], [1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
 
     def test_bout_onset_rejections_do_not_stop_the_bout_loop(self, tmp_path):
         """Four male bouts in time order (1 s threshold): one starting exactly at
@@ -2419,8 +2465,9 @@ class TestOnsetEpochsExact:
 
     def test_individual_mode_bound_and_negatives(self, tmp_path):
         """'individual' mode excludes an onset exactly at ``filter_history`` (1.0 s) and
-        keeps 2.0 s; the forbidden zone [1.0, 3.05] leaves windows ending at 4.05 and
-        5.05 s. Without a target category it needs no label column."""
+        keeps 2.0 s; the forbidden zone of window ends (1.0, 3.05) leaves windows ending
+        at 1.0 s (dropped: the 1.0 s USV starts in its future), 3.05, 4.05 and 5.05 s.
+        Without a target category it needs no label column."""
 
         rows = {'emitter': ['male', 'male'], 'start': [1.0, 2.0], 'stop': [1.05, 2.05]}
         out = find_onset_epochs(prediction_mode='individual', mixture_model_params=_mixture_model_params(),
@@ -2428,7 +2475,7 @@ class TestOnsetEpochsExact:
                                 **_ONSET_COMMON, **_onset_kwargs(tmp_path, rows))
         male = out['sess_B']['male']
         np.testing.assert_allclose(male['positive_events'], [2.0])
-        np.testing.assert_allclose(male['negative_events'], [4.05, 5.05])
+        np.testing.assert_allclose(male['negative_events'], [3.05, 4.05, 5.05])
 
     @pytest.mark.parametrize(('n_frames', 'fps', 'filter_history', 'start', 'stop', 'positives', 'negatives'), [
         (600, 100.0, 1.0, 2.0, 2.9, [2.0], [1.0, 3.0, 4.0, 5.0]),
@@ -2753,6 +2800,23 @@ class TestVariableLengthBoutsExact:
         np.testing.assert_allclose(male['mean_mask_complexity'], [2.0, 4.5])
         assert isinstance(male['ibi_threshold_used'], float)
         assert not isinstance(male['ibi_threshold_used'], np.ndarray)
+
+    def test_bout_offsets_are_the_stored_stop_bit_for_bit(self, tmp_path):
+        """The offset is the last USV's stored stop, not ``onset + duration``: for this
+        bout (1.069411 -> 3.23396 s) the rebuilt sum falls one ulp before the stop, which
+        made the bout's own last USV mark it 'not silent' in the matched divergence."""
+
+        rows = {
+            'emitter': ['male'] * 4,
+            'start': [1.069411, 1.8, 2.5, 3.1],
+            'stop': [1.15, 1.9, 2.6, 3.23396],
+            'mask_number': [1, 1, 1, 1],
+        }
+        male = find_variable_length_bouts(min_vocalizations=2, filter_history=1.0,
+                                          mixture_model_params=_mixture_model_params(),
+                                          **_onset_kwargs(tmp_path, rows, session='sess_E'))['sess_E']['male']
+        assert male['bout_onsets'][0] + male['bout_durations'][0] < 3.23396
+        assert male['bout_offsets'].tolist() == [3.23396]
 
     def test_single_usv_bout(self, tmp_path):
         """A single USV with a one-vocalization floor is one bout of count 1."""

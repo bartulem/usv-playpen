@@ -21,9 +21,9 @@ OUTPUT_DIR="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/modeling/cluster/model_select
 
 mkdir -p logs
 
-# Set analysis-specific defaults
-TARGET_VAR="bout_durations" # Only used for 'params'
-PVAL=0.01
+# The screening significance level and the bout-parameter regression target are
+# read by the dispatcher from modeling_settings.json (model_params.selection_p_val,
+# model_params.model_target_variable); set them there, not here.
 
 case $ANALYSIS_TYPE in
   onset|category|multinomial|continuous)
@@ -31,9 +31,7 @@ case $ANALYSIS_TYPE in
     ;;
 
   params)
-    echo "Configuring BOUT PARAMETER stepwise selection..."
-    # You can override the target variable here if needed via a 2nd argument
-    TARGET_VAR=${2:-"bout_durations"}
+    echo "Configuring BOUT PARAMETER stepwise selection (target: model_params.model_target_variable)..."
     ;;
 
   *)
@@ -66,6 +64,4 @@ python -m usv_playpen.modeling.main_model_selection_dispatcher \
     --univariate_path "$UNIVARIATE_PATH" \
     --input_path "$INPUT_DATA" \
     --output_dir "$OUTPUT_DIR" \
-    --target_variable "$TARGET_VAR" \
-    --pval "$PVAL" \
     --anchor

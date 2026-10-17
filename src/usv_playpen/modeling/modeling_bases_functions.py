@@ -5,6 +5,8 @@ Code adapted from Jan Clemens' lab:
 https://github.com/janclemenslab/glm_utils/blob/master/src/glm_utils/bases.py
 """
 
+from __future__ import annotations
+
 import copy
 
 import numpy as np

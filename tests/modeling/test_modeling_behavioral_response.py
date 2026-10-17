@@ -16,6 +16,9 @@ contrast rather than crash it. Coverage:
 * ``inter_bout_quiet_anchors`` — one anchor per usable gap, every anchor has a
   clean history AND a clean forward window, placement is reproducible from the
   seed, and a gap too short yields nothing rather than a bad anchor.
+* The silence controls and the bout-offset forward window touch no
+  vocalization of the predictor mouse, including the singletons and squeaks
+  the bout list never shows (``windows_touch_vocalization``).
 * ``summarise_history`` — window means are exact and NaN-aware, and a window
   with no finite sample yields NaN rather than zero.
 * ``forward_window_mean`` — the window is strictly forward of the anchor, and
@@ -100,8 +103,10 @@ with warnings.catch_warnings():
         select_covariate_columns,
         summarise_history,
         variance_explained_by_vocal_terms,
+        windows_touch_vocalization,
         yeo_johnson_covariates,
     )
+    from usv_playpen.modeling.load_input_files import find_variable_length_bouts
 
 CAMERA_FPS = 150.0
 HISTORY_FRAMES = 600      # 4 s
@@ -135,8 +140,9 @@ class TestBoutOffsetAnchors:
         """Anchoring on the onset would put the bout inside the target window."""
 
         frames, _ = bout_offset_anchors(
-            np.array([10.0]), np.array([0.5]), CAMERA_FPS, SESSION_FRAMES,
-            HISTORY_FRAMES, LOOKAHEAD_FRAMES, silence_seconds=0.5)
+            np.array([10.0]), np.array([0.5]), np.array([10.5]), CAMERA_FPS, SESSION_FRAMES,
+            HISTORY_FRAMES, LOOKAHEAD_FRAMES, silence_seconds=0.5,
+            vocal_starts=np.empty(0), vocal_stops=np.empty(0))
 
         assert frames.tolist() == [int(round(10.5 * CAMERA_FPS))]
 
@@ -146,8 +152,9 @@ class TestBoutOffsetAnchors:
         onsets = np.array([10.0, 10.7])
         durations = np.array([0.5, 0.3])
         frames, _ = bout_offset_anchors(
-            onsets, durations, CAMERA_FPS, SESSION_FRAMES,
-            HISTORY_FRAMES, LOOKAHEAD_FRAMES, silence_seconds=0.5)
+            onsets, durations, onsets + durations, CAMERA_FPS, SESSION_FRAMES,
+            HISTORY_FRAMES, LOOKAHEAD_FRAMES, silence_seconds=0.5,
+            vocal_starts=np.empty(0), vocal_stops=np.empty(0))
 
         # 10.5 has only 0.2 s before the next onset; 11.0 has no successor.
         assert frames.tolist() == [int(round(11.0 * CAMERA_FPS))]
@@ -158,8 +165,9 @@ class TestBoutOffsetAnchors:
         onsets = np.array([10.0, 10.7, 30.0])
         durations = np.array([0.5, 0.3, 1.25])
         frames, kept = bout_offset_anchors(
-            onsets, durations, CAMERA_FPS, SESSION_FRAMES,
-            HISTORY_FRAMES, LOOKAHEAD_FRAMES, silence_seconds=0.5)
+            onsets, durations, onsets + durations, CAMERA_FPS, SESSION_FRAMES,
+            HISTORY_FRAMES, LOOKAHEAD_FRAMES, silence_seconds=0.5,
+            vocal_starts=np.empty(0), vocal_stops=np.empty(0))
 
         assert frames.size == kept.size == 2
         assert kept.tolist() == [0.3, 1.25]
@@ -168,8 +176,9 @@ class TestBoutOffsetAnchors:
         """A truncated history would silently compare unequal windows."""
 
         frames, _ = bout_offset_anchors(
-            np.array([1.0]), np.array([0.1]), CAMERA_FPS, SESSION_FRAMES,
-            HISTORY_FRAMES, LOOKAHEAD_FRAMES, silence_seconds=0.5)
+            np.array([1.0]), np.array([0.1]), np.array([1.1]), CAMERA_FPS, SESSION_FRAMES,
+            HISTORY_FRAMES, LOOKAHEAD_FRAMES, silence_seconds=0.5,
+            vocal_starts=np.empty(0), vocal_stops=np.empty(0))
 
         assert frames.size == 0
 
@@ -177,8 +186,9 @@ class TestBoutOffsetAnchors:
         """A silent session is ordinary, not exceptional."""
 
         frames, kept = bout_offset_anchors(
-            np.empty(0), np.empty(0), CAMERA_FPS, SESSION_FRAMES,
-            HISTORY_FRAMES, LOOKAHEAD_FRAMES, silence_seconds=0.5)
+            np.empty(0), np.empty(0), np.empty(0), CAMERA_FPS, SESSION_FRAMES,
+            HISTORY_FRAMES, LOOKAHEAD_FRAMES, silence_seconds=0.5,
+            vocal_starts=np.empty(0), vocal_stops=np.empty(0))
 
         assert frames.size == 0 and kept.size == 0
 
@@ -209,7 +219,8 @@ class TestInterBoutQuietAnchors:
         onsets, durations = self._bouts()
         anchors = inter_bout_quiet_anchors(
             onsets, durations, CAMERA_FPS, SESSION_FRAMES, HISTORY_FRAMES,
-            LOOKAHEAD_FRAMES, np.random.default_rng(0))
+            LOOKAHEAD_FRAMES, np.random.default_rng(0),
+            vocal_starts=np.empty(0), vocal_stops=np.empty(0))
 
         # 10.5->20 and 21.3->40 are usable; 20.5->21 is far too short.
         assert anchors.size == 2
@@ -221,7 +232,8 @@ class TestInterBoutQuietAnchors:
         offsets = onsets + durations
         anchors = inter_bout_quiet_anchors(
             onsets, durations, CAMERA_FPS, SESSION_FRAMES, HISTORY_FRAMES,
-            LOOKAHEAD_FRAMES, np.random.default_rng(3))
+            LOOKAHEAD_FRAMES, np.random.default_rng(3),
+            vocal_starts=np.empty(0), vocal_stops=np.empty(0))
 
         history_seconds = HISTORY_FRAMES / CAMERA_FPS
         forward_seconds = LOOKAHEAD_FRAMES / CAMERA_FPS
@@ -238,10 +250,12 @@ class TestInterBoutQuietAnchors:
         onsets, durations = self._bouts()
         first = inter_bout_quiet_anchors(
             onsets, durations, CAMERA_FPS, SESSION_FRAMES, HISTORY_FRAMES,
-            LOOKAHEAD_FRAMES, np.random.default_rng(7))
+            LOOKAHEAD_FRAMES, np.random.default_rng(7),
+            vocal_starts=np.empty(0), vocal_stops=np.empty(0))
         second = inter_bout_quiet_anchors(
             onsets, durations, CAMERA_FPS, SESSION_FRAMES, HISTORY_FRAMES,
-            LOOKAHEAD_FRAMES, np.random.default_rng(7))
+            LOOKAHEAD_FRAMES, np.random.default_rng(7),
+            vocal_starts=np.empty(0), vocal_stops=np.empty(0))
 
         assert first.tolist() == second.tolist()
 
@@ -250,7 +264,8 @@ class TestInterBoutQuietAnchors:
 
         anchors = inter_bout_quiet_anchors(
             np.array([10.0, 12.0]), np.array([0.2, 0.2]), CAMERA_FPS, SESSION_FRAMES,
-            HISTORY_FRAMES, LOOKAHEAD_FRAMES, np.random.default_rng(0))
+            HISTORY_FRAMES, LOOKAHEAD_FRAMES, np.random.default_rng(0),
+            vocal_starts=np.empty(0), vocal_stops=np.empty(0))
 
         assert anchors.size == 0
 
@@ -259,9 +274,185 @@ class TestInterBoutQuietAnchors:
 
         anchors = inter_bout_quiet_anchors(
             np.array([10.0]), np.array([0.2]), CAMERA_FPS, SESSION_FRAMES,
-            HISTORY_FRAMES, LOOKAHEAD_FRAMES, np.random.default_rng(0))
+            HISTORY_FRAMES, LOOKAHEAD_FRAMES, np.random.default_rng(0),
+            vocal_starts=np.empty(0), vocal_stops=np.empty(0))
 
         assert anchors.size == 0
+
+
+def _write_singleton_session(root: Path) -> None:
+    """
+    Writes a one-session summary with two bouts bracketing a male singleton.
+
+    Bout A is two USVs at 10.0-10.3 s, bout B two USVs at 25.0-25.3 s, and a
+    lone male USV sits at 16.0-16.1 s, inside the inter-bout gap; with
+    ``usv_per_bout_floor`` 2 the singleton forms no bout.
+
+    Parameters
+    ----------
+    root : pathlib.Path
+        Session directory to create (``audio/<name>_usv_summary.csv`` inside).
+
+    Returns
+    -------
+    None
+    """
+
+    (root / 'audio').mkdir(parents=True)
+    rows = [(10.0, 10.1), (10.2, 10.3), (16.0, 16.1), (25.0, 25.1), (25.2, 25.3)]
+    text = "usv_id,start,stop,duration,emitter,noise,usv,squeak,squeak_start,squeak_end,mask_number\n"
+    for index, (start, stop) in enumerate(rows):
+        text += f"{index},{start},{stop},{stop - start:.3f},M,False,True,False,,,1\n"
+    (root / 'audio' / f'{root.name}_usv_summary.csv').write_text(text)
+
+
+class TestControlWindowsTouchNoVocalization:
+    """
+    No control window may touch any vocalization of the predictor mouse.
+
+    The bout list only shows bouts of the target classes at or above
+    ``usv_per_bout_floor``, so a singleton, a squeak, or a bout dropped for
+    starting inside the history window is invisible to it; the anchors must
+    read the full vocal table instead.
+    """
+
+    def test_inter_bout_quiet_windows_never_contain_a_singleton(self, tmp_path):
+        """
+        The repro: bouts from the real ``find_variable_length_bouts`` with a
+        floor of 2 leave the 16.0 s singleton out of the bout list, and before
+        the fix ~45% of quiet anchors had it inside their window.
+        """
+
+        root = tmp_path / 'S1'
+        _write_singleton_session(root)
+        n_frames = int(40 * CAMERA_FPS)
+        mixture = {'male': {'means': [np.log(1.0)], 'sds': [1.0]},
+                   'female': {'means': [np.log(1.0)], 'sds': [1.0]}}
+        bouts = find_variable_length_bouts(
+            root_directories=[str(root)], mouse_ids_dict={'S1': ['M', 'F']},
+            camera_fps_dict={'S1': CAMERA_FPS},
+            features_dict={'S1': pls.DataFrame({'x': np.zeros(n_frames)})}, csv_sep=',',
+            mixture_model_component_index=0, mixture_model_z_score=0.0,
+            mixture_model_params=mixture, min_vocalizations=2, filter_history=4.0,
+            proportion_smoothing_sd=None, vocal_output_type='pooled_binary',
+            predictor_classes=[['usv']], target_classes=['usv'],
+            exclude_noise_usvs=False, category_column='usv_category')
+        onsets = bouts['S1']['M']['bout_onsets']
+        durations = bouts['S1']['M']['bout_durations']
+        assert onsets.tolist() == [10.0, 25.0]
+        vocal_starts, vocal_stops = _all_usv_times(root, ',', False, emitter='M')
+        assert 16.0 in vocal_starts.tolist()
+
+        rng = np.random.default_rng(0)
+        n_anchors = 0
+        for _ in range(500):
+            anchors = inter_bout_quiet_anchors(
+                onsets, durations, CAMERA_FPS, n_frames, HISTORY_FRAMES, LOOKAHEAD_FRAMES,
+                rng, vocal_starts=vocal_starts, vocal_stops=vocal_stops)
+            for anchor in anchors:
+                low = (anchor - HISTORY_FRAMES) / CAMERA_FPS
+                high = (anchor + LOOKAHEAD_FRAMES) / CAMERA_FPS
+                assert not (16.0 < high and 16.1 > low)
+            n_anchors += anchors.size
+        # The gap still holds silent room on both sides of the singleton.
+        assert n_anchors == 500
+
+    def test_a_gap_whose_silent_stretches_are_all_too_short_yields_nothing(self):
+        """
+        Singletons every 3 s leave no 4.5 s silent stretch, so the gap must give
+        no anchor rather than one touching a vocalization.
+        """
+
+        singles = np.arange(14.0, 45.0, 3.0)
+        anchors = inter_bout_quiet_anchors(
+            np.array([10.0, 45.0]), np.array([0.3, 0.3]), CAMERA_FPS, SESSION_FRAMES,
+            HISTORY_FRAMES, LOOKAHEAD_FRAMES, np.random.default_rng(0),
+            vocal_starts=singles, vocal_stops=singles + 0.1)
+
+        assert anchors.size == 0
+
+    def test_deep_silence_tiles_touching_a_singleton_are_dropped(self):
+        """
+        The margin is measured from the bouts; a singleton far from every bout
+        must still keep every tile's window off it.
+        """
+
+        onsets, durations = np.array([10.0, 120.0]), np.array([0.5, 0.5])
+        unguarded = deep_silence_anchors(
+            onsets, durations, CAMERA_FPS, 150 * 200, HISTORY_FRAMES, LOOKAHEAD_FRAMES,
+            margin_seconds=10.0, stride_frames=HISTORY_FRAMES,
+            vocal_starts=np.empty(0), vocal_stops=np.empty(0))
+        guarded = deep_silence_anchors(
+            onsets, durations, CAMERA_FPS, 150 * 200, HISTORY_FRAMES, LOOKAHEAD_FRAMES,
+            margin_seconds=10.0, stride_frames=HISTORY_FRAMES,
+            vocal_starts=np.array([60.0]), vocal_stops=np.array([60.1]))
+
+        assert 0 < guarded.size < unguarded.size
+        times = guarded / CAMERA_FPS
+        lows = times - HISTORY_FRAMES / CAMERA_FPS
+        highs = times + LOOKAHEAD_FRAMES / CAMERA_FPS
+        assert not np.any((60.0 < highs) & (60.1 > lows))
+
+    def test_a_singleton_inside_the_forward_window_drops_the_bout_offset(self):
+        """
+        The next BOUT is far away, but a singleton 0.2 s after the offset sits
+        inside the 0.5 s forward window, so the anchor is not a post-bout
+        silence observation.
+        """
+
+        frames, _ = bout_offset_anchors(
+            np.array([10.0]), np.array([0.5]), np.array([10.5]), CAMERA_FPS, SESSION_FRAMES,
+            HISTORY_FRAMES, LOOKAHEAD_FRAMES, silence_seconds=0.5,
+            vocal_starts=np.array([10.0, 10.7]), vocal_stops=np.array([10.5, 10.8]))
+
+        assert frames.size == 0
+
+    def test_a_squeak_outlasting_the_bout_drops_the_bout_offset(self):
+        """A vocalization still ongoing at the offset touches the forward window."""
+
+        frames, _ = bout_offset_anchors(
+            np.array([10.0]), np.array([0.5]), np.array([10.5]), CAMERA_FPS, SESSION_FRAMES,
+            HISTORY_FRAMES, LOOKAHEAD_FRAMES, silence_seconds=0.5,
+            vocal_starts=np.array([10.0, 10.4]), vocal_stops=np.array([10.5, 10.6]))
+
+        assert frames.size == 0
+
+    def test_the_bouts_own_last_usv_does_not_drop_the_offset(self):
+        """The stored stop is the anchor time, so the bout never disqualifies itself."""
+
+        frames, _ = bout_offset_anchors(
+            np.array([10.0]), np.array([0.5]), np.array([10.5]), CAMERA_FPS, SESSION_FRAMES,
+            HISTORY_FRAMES, LOOKAHEAD_FRAMES, silence_seconds=0.5,
+            vocal_starts=np.array([10.0, 10.3]), vocal_stops=np.array([10.2, 10.5]))
+
+        assert frames.tolist() == [int(round(10.5 * CAMERA_FPS))]
+
+    def test_windows_touch_vocalization_edges(self):
+        """
+        Touching is overlap of open intervals: abutting does not count, a long
+        interval that began early does.
+        """
+
+        starts, stops = np.array([1.0, 5.0]), np.array([9.0, 5.5])
+        mask = windows_touch_vocalization(np.array([9.5, 10.0, 12.0, 4.5]), 1.0, 0.5, starts, stops)
+        assert mask.tolist() == [True, False, False, True]
+        assert windows_touch_vocalization(np.array([10.0]), 1.0, 0.5,
+                                          np.empty(0), np.empty(0)).tolist() == [False]
+
+    def test_the_emitter_filter_keeps_that_mouse_and_unassigned_rows(self, tmp_path):
+        """The partner's vocalizations do not count against his silence."""
+
+        audio = tmp_path / 'session' / 'audio'
+        audio.mkdir(parents=True)
+        pls.DataFrame({'emitter': ['m', 'f', None], 'start': [1.0, 2.0, 3.0],
+                       'stop': [1.5, 2.5, 3.5], 'usv': [True, True, True],
+                       'squeak': [False, False, False],
+                       'squeak_start': [None, None, None], 'squeak_end': [None, None, None],
+                       }).write_csv(file=audio / 'x_usv_summary.csv')
+
+        starts, _ = _all_usv_times(tmp_path / 'session', ',', False, emitter='m')
+
+        np.testing.assert_array_equal(starts, [1.0, 3.0])
 
 
 class TestSummariseHistory:
@@ -778,7 +969,8 @@ class TestDeepSilenceAnchors:
         onsets, durations = self._bouts()
         anchors = deep_silence_anchors(
             onsets, durations, CAMERA_FPS, 150 * 200, HISTORY_FRAMES, LOOKAHEAD_FRAMES,
-            margin_seconds=10.0, stride_frames=HISTORY_FRAMES)
+            margin_seconds=10.0, stride_frames=HISTORY_FRAMES,
+            vocal_starts=np.empty(0), vocal_stops=np.empty(0))
 
         assert anchors.size > 0
         for anchor in anchors / CAMERA_FPS:
@@ -791,7 +983,8 @@ class TestDeepSilenceAnchors:
         onsets, durations = self._bouts()
         anchors = deep_silence_anchors(
             onsets, durations, CAMERA_FPS, 150 * 200, HISTORY_FRAMES, LOOKAHEAD_FRAMES,
-            margin_seconds=10.0, stride_frames=HISTORY_FRAMES)
+            margin_seconds=10.0, stride_frames=HISTORY_FRAMES,
+            vocal_starts=np.empty(0), vocal_stops=np.empty(0))
 
         assert np.all(np.diff(anchors) >= HISTORY_FRAMES - 1)
 
@@ -801,7 +994,8 @@ class TestDeepSilenceAnchors:
         onsets, durations = self._bouts()
         anchors = deep_silence_anchors(
             onsets, durations, CAMERA_FPS, 150 * 200, HISTORY_FRAMES, LOOKAHEAD_FRAMES,
-            margin_seconds=500.0, stride_frames=HISTORY_FRAMES)
+            margin_seconds=500.0, stride_frames=HISTORY_FRAMES,
+            vocal_starts=np.empty(0), vocal_stops=np.empty(0))
 
         assert anchors.size == 0
 
@@ -810,7 +1004,8 @@ class TestDeepSilenceAnchors:
 
         anchors = deep_silence_anchors(
             np.empty(0), np.empty(0), CAMERA_FPS, 150 * 200, HISTORY_FRAMES,
-            LOOKAHEAD_FRAMES, margin_seconds=10.0, stride_frames=HISTORY_FRAMES)
+            LOOKAHEAD_FRAMES, margin_seconds=10.0, stride_frames=HISTORY_FRAMES,
+            vocal_starts=np.empty(0), vocal_stops=np.empty(0))
 
         assert anchors.size == 0
 
@@ -820,10 +1015,12 @@ class TestDeepSilenceAnchors:
         onsets, durations = self._bouts()
         deep = deep_silence_anchors(
             onsets, durations, CAMERA_FPS, 150 * 200, HISTORY_FRAMES, LOOKAHEAD_FRAMES,
-            margin_seconds=10.0, stride_frames=HISTORY_FRAMES)
+            margin_seconds=10.0, stride_frames=HISTORY_FRAMES,
+            vocal_starts=np.empty(0), vocal_stops=np.empty(0))
         inter = inter_bout_quiet_anchors(
             onsets, durations, CAMERA_FPS, 150 * 200, HISTORY_FRAMES, LOOKAHEAD_FRAMES,
-            np.random.default_rng(0))
+            np.random.default_rng(0),
+            vocal_starts=np.empty(0), vocal_stops=np.empty(0))
 
         assert deep.size > inter.size
 
@@ -1837,6 +2034,26 @@ class TestResponseColumnAndTargets:
         assert bins.shape == (2, pipeline.n_response_bins)
         np.testing.assert_allclose(bins, np.sqrt(10.0))
 
+    def test_bounds_are_checked_on_the_raw_value_not_the_folded_one(self):
+        """
+        The bounds describe the raw feature, so an in-range sample at the bound
+        (``ego_yaw`` = 180 deg) must survive even though its smooth-abs fold
+        ``sqrt(180**2 + 1)`` lands just above 180; a raw sample beyond the bound
+        is still dropped.
+        """
+
+        pipeline = self._pipeline()
+        lower_bound, upper_bound = pipeline.feature_boundaries['ego_yaw']
+        epsilon = float(pipeline.modeling_settings['kinematic_features']['smooth_abs_features']['ego_yaw'])
+        values = np.full(400, upper_bound)
+        values[1::2] = upper_bound + 100.0
+        window, bins = pipeline._response_target_values(
+            raw_values=values, anchor_frames=np.array([100]), response_feature='ego_yaw')
+
+        np.testing.assert_allclose(window, np.sqrt(upper_bound ** 2 + epsilon ** 2))
+        np.testing.assert_allclose(bins, np.sqrt(upper_bound ** 2 + epsilon ** 2))
+        assert lower_bound < upper_bound
+
     def test_an_abs_response_is_folded_before_averaging(self):
         """
         ``allo_roll`` is an ``abs_features`` entry, so a trace alternating
@@ -1965,6 +2182,38 @@ class TestBehavioralResponseContrast:
         assert block['mean_scale'] is None
         assert block['window']['likelihood'] == 'gaussian'
         assert 0.0 <= block['variance_explained']['r_squared_full'] <= 1.0
+
+    def test_a_gaussian_feature_reports_the_per_session_mean_difference(self, extracted_cohort, tmp_path):
+        """
+        A signed (Gaussian) response cannot be logged, so its per-session effect is
+        the vocal-minus-control mean difference over every finite row, not a log
+        ratio over the positive rows only. ``neck_elevation`` is switched to
+        Gaussian and centred on zero so roughly half its rows are negative.
+        """
+
+        artifact = copy.deepcopy(extracted_cohort['artifact'])
+        feature_index = list(artifact['response_features']).index('neck_elevation')
+        artifact['response_likelihoods']['neck_elevation'] = 'gaussian'
+        target = np.asarray(artifact['target'], dtype=float).copy()
+        target[:, feature_index] -= np.nanmedian(target[:, feature_index])
+        artifact['target'] = target
+        pickle_path = _rewrite_artifact(artifact, tmp_path / 'gaussian.pkl')
+        settings_path = _write_contrast_settings(
+            extracted_cohort['settings'], tmp_path / 'settings.json', covariate_transform='linear')
+        results = behavioral_response_contrast(
+            input_pickle_path=pickle_path, output_directory=tmp_path / 'contrast',
+            settings_path=settings_path)
+
+        column = target[:, feature_index]
+        condition = np.asarray(artifact['condition'], dtype=float)
+        session_ids = np.asarray(artifact['session_ids'])
+        expected = []
+        for session in np.unique(session_ids):
+            treated = (session_ids == session) & (condition == 1.0) & np.isfinite(column)
+            control_rows = (session_ids == session) & (condition == 0.0) & np.isfinite(column)
+            expected.append(column[treated].mean() - column[control_rows].mean())
+        np.testing.assert_allclose(results['per_feature']['neck_elevation']['per_session_log_ratio'],
+                                   expected)
 
     def test_a_legacy_two_condition_artifact_is_still_read(self, extracted_cohort, tmp_path):
         """
@@ -2151,7 +2400,7 @@ class TestAllUsvTimes:
                        'squeak_start': [None, None, None], 'squeak_end': [None, None, None],
                        }).write_csv(file=audio / 'x_usv_summary.csv')
 
-        starts, stops = _all_usv_times(tmp_path / 'session', ',')
+        starts, stops = _all_usv_times(tmp_path / 'session', ',', False)
 
         np.testing.assert_array_equal(starts, [1.0, 2.0, 3.0])
         np.testing.assert_array_equal(stops, [1.5, 2.5, 3.5])
@@ -2171,13 +2420,36 @@ class TestAllUsvTimes:
                                'squeak_start': [None, 1.9], 'squeak_end': [None, 2.7]})
         table.write_csv(file=audio / 'x_usv_summary.csv')
 
-        starts, stops = _all_usv_times(tmp_path / 'session', ',')
+        starts, stops = _all_usv_times(tmp_path / 'session', ',', False)
 
         np.testing.assert_array_equal(starts, [1.0, 1.9])
         np.testing.assert_array_equal(stops, [1.5, 2.7])
         table.drop('squeak_start', 'squeak_end').write_csv(file=audio / 'x_usv_summary.csv')
         with pytest.raises(KeyError, match="squeak_start"):
-            _all_usv_times(tmp_path / 'session', ',')
+            _all_usv_times(tmp_path / 'session', ',', False)
+
+    def test_noise_rows_are_dropped_when_noise_is_excluded(self, tmp_path):
+        """
+        A segment the noise classifier flagged holds no vocalization, so with
+        ``exclude_noise_usvs`` on it must not make a window 'not silent': a bout
+        offset followed only by a noise row is forward-clean. With the filter off
+        every detection counts, as everywhere else in the pipeline.
+        """
+
+        audio = tmp_path / 'session' / 'audio'
+        audio.mkdir(parents=True)
+        pls.DataFrame({'emitter': ['m', None], 'start': [10.0, 12.0], 'stop': [10.1, 12.2],
+                       'noise': [False, True], 'usv': [True, None], 'squeak': [False, None],
+                       'squeak_start': [None, None], 'squeak_end': [None, None],
+                       }).write_csv(file=audio / 'x_usv_summary.csv')
+
+        starts, stops = _all_usv_times(tmp_path / 'session', ',', True)
+
+        np.testing.assert_array_equal(starts, [10.0])
+        np.testing.assert_array_equal(stops, [10.1])
+        assert forward_clean_times(np.array([10.1]), starts, stops, 4.0).tolist() == [True]
+        kept_starts, _ = _all_usv_times(tmp_path / 'session', ',', False)
+        np.testing.assert_array_equal(kept_starts, [10.0, 12.0])
 
     def test_a_session_without_a_summary_yields_empty_arrays(self, tmp_path):
         """
@@ -2186,7 +2458,7 @@ class TestAllUsvTimes:
         """
 
         (tmp_path / 'session' / 'audio').mkdir(parents=True)
-        starts, stops = _all_usv_times(tmp_path / 'session', ',')
+        starts, stops = _all_usv_times(tmp_path / 'session', ',', False)
 
         assert starts.size == 0
         assert stops.size == 0

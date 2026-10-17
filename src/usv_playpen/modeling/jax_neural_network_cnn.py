@@ -22,7 +22,23 @@ Key Architectural Choices:
     states without relying on high-level OOP wrappers like Flax or Haiku.
 """
 
+from __future__ import annotations
+
+import json
 import os
+import pathlib
+import pickle
+from datetime import datetime
+from functools import partial
+from typing import Dict, Any, List, Tuple
+
+import numpy as np
+
+# The XLA / allocator environment below is read when JAX initialises its
+# backend, so it must be set before the first `import jax` -- of this module
+# AND of every package module imported after it that pulls in JAX
+# (manifold_metric, modeling_usv_manifold_position, ...). That is the only
+# reason the remaining imports sit below these assignments.
 
 # Force efficient memory allocation to prevent OOMs
 os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
@@ -39,14 +55,7 @@ os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 
 import jax
 import jax.numpy as jnp
-import json
 import optax
-import numpy as np
-import pathlib
-import pickle
-from datetime import datetime
-from functools import partial
-from typing import Dict, Any, List, Tuple
 
 from .acoustic_manifold_geometry import (
     derive_cluster_centers_empirically,
@@ -60,6 +69,7 @@ from .manifold_metric import (
     sin_cos_encode_jax,
     angle_decode_jax,
 )
+from .modeling_metadata import read_reserved_block
 from .modeling_usv_manifold_position import (
     get_stratified_spatial_splits_stable as _manifold_spatial_splits,
 )
@@ -67,7 +77,7 @@ from .modeling_utils import (
     held_out_session_ids_from_metadata,
     development_heldout_masks,
 )
-from ..os_utils import resolve_modeling_setting
+from ..os_utils import atomic_output_path, resolve_modeling_setting
 
 # Initial spatial-CV session-split matching tolerance, read from the settings
 # block (it auto-widens at runtime; this is the starting value) rather than a
@@ -1096,7 +1106,7 @@ class NeuralContinuousCNNRunner:
             # can exclude those sessions from every CV fold and score them once at
             # the end. Empty list -- holdout disabled or a legacy pickle.
             'held_out_session_ids': held_out_session_ids_from_metadata(
-                raw_data['_input_metadata'] if '_input_metadata' in raw_data else {}
+                read_reserved_block(raw_data, '_input_metadata')
             ),
         }
         # Surface labels only when every session provided them — partial
@@ -1530,6 +1540,9 @@ class NeuralContinuousCNNRunner:
         # by them when
         # `settings['hyperparameters']['deep_learning']['cnn_continuous']['saliency']['segmentation']`
         # is 'category', the only segmentation (there is no coarse level).
+        # `load_multivariate_data_blocks` writes the 'category' key only when every
+        # session carries labels, so its absence is the block's schema (no
+        # labels), checked explicitly by the saliency pre-flight below.
         cluster_labels_cat = data_blocks['category'] if 'category' in data_blocks else None
 
         # Pre-flight: if Phase 3 (saliency) is enabled, validate the
@@ -1700,7 +1713,7 @@ class NeuralContinuousCNNRunner:
             """
 
             host_snapshot = jax.device_get(deep_storage)
-            with save_path.open('wb') as fh:
+            with atomic_output_path(save_path) as temporary_path, temporary_path.open('wb') as fh:
                 pickle.dump(host_snapshot, fh)
             print(f"[CHECKPOINT::{stage_label}] saved deep_storage to {save_path}")
 
@@ -2485,7 +2498,7 @@ class NeuralContinuousCNNRunner:
         print("\nConverting JAX device arrays to NumPy and saving Deep Storage...")
         numpy_storage = jax.device_get(deep_storage)
 
-        with save_path.open('wb') as f:
+        with atomic_output_path(save_path) as temporary_path, temporary_path.open('wb') as f:
             pickle.dump(numpy_storage, f)
 
         print(f"Success. Deep Storage saved to: {save_path}")

@@ -33,6 +33,7 @@ Sequences are per recording session: the USV events of a session, IN TEMPORAL
 ONSET ORDER (the modeling input pickle already stores them onset-sorted), are one
 observation sequence; transitions are between consecutive vocalizations.
 """
+
 from __future__ import annotations
 
 from functools import partial
@@ -157,6 +158,31 @@ def _kmeans_init_responsibilities(y_all: np.ndarray, n_states: int, seed: int) -
     return responsibilities
 
 
+def _softmax_free_params(classifier) -> int:
+    """
+    Description
+    -----------
+    Number of FREE parameters of a fitted full-softmax multinomial-logistic
+    classifier (:class:`SmoothMultinomialLogisticRegression`): ``coef_`` is
+    ``(C, d)`` and ``intercept_`` ``(C,)``, but adding one vector to every class
+    leaves the softmax unchanged, so one class's ``d + 1`` parameters are
+    redundant and ``(C - 1) * (d + 1)`` are free.
+
+    Parameters
+    ----------
+    classifier (object)
+        A fitted classifier exposing ``coef_`` ``(C, d)`` and ``intercept_`` ``(C,)``.
+
+    Returns
+    -------
+    n_free (int)
+        ``coef_.size + intercept_.size - (d + 1)``.
+    """
+    coef = np.asarray(classifier.coef_)
+    intercept = np.asarray(classifier.intercept_)
+    return int(coef.size + intercept.size - (coef.shape[1] + 1))
+
+
 class _BaseEmission:
     """
     Description
@@ -166,7 +192,7 @@ class _BaseEmission:
     per-sample log-density, and refits itself under per-sample responsibilities.
 
     Subclasses must implement :meth:`fit`, :meth:`log_density` and the
-    :attr:`n_params` property, and may override :meth:`random_init`.
+    :attr:`n_params` property.
 
     Parameters
     ----------
@@ -238,31 +264,6 @@ class _BaseEmission:
             Free-parameter count. The base class raises ``NotImplementedError``.
         """
         raise NotImplementedError
-
-    def random_init(self, X: np.ndarray, y: np.ndarray, rng: np.random.Generator) -> "_BaseEmission":
-        """
-        Description
-        -----------
-        Seed the emission from a random-weight M-step so each EM restart begins
-        from a different point. The default draws Dirichlet-like positive random
-        weights over the pooled data and runs one weighted :meth:`fit`.
-
-        Parameters
-        ----------
-        X (np.ndarray)
-            Pooled ``(n, d)`` design matrix across all sequences.
-        y (np.ndarray)
-            Pooled observed targets.
-        rng (np.random.Generator)
-            Seeded random generator for the restart.
-
-        Returns
-        -------
-        self (_BaseEmission)
-            The initialised emission.
-        """
-        weights = rng.random(X.shape[0]) + 1e-3
-        return self.fit(X, y, weights)
 
 
 class GaussianEmission(_BaseEmission):
@@ -539,31 +540,45 @@ class MultinomialEmission(_BaseEmission):
     so its ``classes_`` and the ``predict_proba`` column order are consistent
     across states -- which the forward-backward E-step relies on.
 
+    A cross-validation training fold can, however, lack a category that its test
+    fold carries. ``class_labels`` fixes the full label set before CV: a label in
+    that set the classifier never trained on has zero predicted probability (scored
+    at the ``log(1e-12)`` floor), and a label outside it raises.
+
     Parameters
     ----------
     classifier_kwargs (dict)
         Keyword arguments for the classifier constructor (``n_features``,
         ``n_time_bins``, ``lambda_smooth``, ``l2_reg``, ``focal_gamma``,
         ``max_iter``, ...). ``uniform_class_weights=True`` is forced internally.
+    class_labels (np.ndarray or None)
+        The full label set, fixed before cross-validation; ``None`` accepts only
+        the labels the classifier trained on.
 
     Returns
     -------
     None
     """
 
-    def __init__(self, classifier_kwargs: dict) -> None:
+    def __init__(self, classifier_kwargs: dict, class_labels: np.ndarray | None = None) -> None:
         """
         Description
         -----------
         Copy the classifier keyword arguments and force
-        ``uniform_class_weights=True`` on the copy; the fitted classifier
-        (``classifier_``) starts as ``None`` until :meth:`fit` runs.
+        ``uniform_class_weights=True`` on the copy, and store the fixed label set;
+        the fitted classifier (``classifier_``) starts as ``None`` until :meth:`fit`
+        runs.
 
         Parameters
         ----------
         classifier_kwargs (dict)
             Keyword arguments for the :class:`SmoothMultinomialLogisticRegression`
             constructor (any ``uniform_class_weights`` entry is overwritten).
+        class_labels (np.ndarray or None)
+            Every label the emission may be asked to score (e.g. the labels of all
+            development and reserved sessions); a label in it but absent from a
+            training fold scores ``log(1e-12)``. ``None`` (default) restricts scoring
+            to the classifier's ``classes_``.
 
         Returns
         -------
@@ -571,6 +586,7 @@ class MultinomialEmission(_BaseEmission):
         """
         self.classifier_kwargs = dict(classifier_kwargs)
         self.classifier_kwargs['uniform_class_weights'] = True
+        self.class_labels = None if class_labels is None else np.unique(np.asarray(class_labels))
         self.classifier_ = None
 
     def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray) -> "MultinomialEmission":
@@ -609,8 +625,10 @@ class MultinomialEmission(_BaseEmission):
         X (np.ndarray)
             ``(n, d)`` behavioural design matrix.
         y (np.ndarray)
-            ``(n,)`` observed labels; each must be one of the classifier's ``classes_``
-            (a ``KeyError`` is raised otherwise).
+            ``(n,)`` observed labels. Without ``class_labels`` each must be one of the
+            classifier's ``classes_`` (a ``KeyError`` is raised otherwise); with it,
+            each must be in ``class_labels`` (a ``ValueError`` is raised otherwise),
+            and one the classifier never trained on has probability 0.
 
         Returns
         -------
@@ -621,15 +639,30 @@ class MultinomialEmission(_BaseEmission):
         proba = self.classifier_.predict_proba(np.asarray(X))
         column_of = {label: idx for idx, label in enumerate(self.classifier_.classes_)}
         y = np.asarray(y)
-        columns = np.array([column_of[value] for value in y])
-        return np.log(proba[np.arange(y.shape[0]), columns] + 1e-12)
+        if self.class_labels is None:
+            columns = np.array([column_of[value] for value in y])
+            return np.log(proba[np.arange(y.shape[0]), columns] + 1e-12)
+        outside = np.setdiff1d(np.unique(y), self.class_labels)
+        if outside.size:
+            message = (f"Labels {outside.tolist()} are outside the fixed label set "
+                       f"{self.class_labels.tolist()} of this multinomial emission.")
+            raise ValueError(message)
+        # A label of the fixed set that the training fold lacked has no column, i.e.
+        # zero predicted probability.
+        probability = np.zeros(y.shape[0])
+        for row, value in enumerate(y):
+            if value in column_of:
+                probability[row] = proba[row, column_of[value]]
+        return np.log(probability + 1e-12)
 
     @property
     def n_params(self) -> int:
         """
         Description
         -----------
-        Classifier coefficients + intercepts.
+        Free classifier coefficients + intercepts: one class of the softmax is
+        redundant, so ``(C - 1) * (d + 1)`` of the ``C * (d + 1)`` entries are free
+        (:func:`_softmax_free_params`).
 
         Parameters
         ----------
@@ -638,11 +671,9 @@ class MultinomialEmission(_BaseEmission):
         Returns
         -------
         n_params (int)
-            ``coef_.size + intercept_.size`` of the fitted classifier.
+            ``(C - 1) * (d + 1)`` for the fitted classifier's ``C`` classes.
         """
-        coef = np.asarray(self.classifier_.coef_)
-        intercept = np.asarray(self.classifier_.intercept_)
-        return int(coef.size + intercept.size)
+        return _softmax_free_params(self.classifier_)
 
 
 def resolve_emission_cls(emission_type: str) -> type:
@@ -1035,7 +1066,9 @@ class GLMHMM:
         -------
         result (dict)
             ``log_pi``, ``log_A``, ``emissions``, ``log_likelihood``, ``n_iter``,
-            ``converged``.
+            ``converged``. ``log_likelihood`` is always that of the returned
+            parameters (recomputed after the final M-step when EM stops at
+            ``n_em_iters`` without converging).
         """
         n_total = X_all.shape[0]
         # Structured k-means-on-targets init so the states start differentiated
@@ -1143,6 +1176,14 @@ class GLMHMM:
                 # emission rather than refit on ~zero weights (which would NaN).
                 if gamma_all[:, k].sum() > _MIN_STATE_RESPONSIBILITY:
                     self.emissions_[k].fit(X_all, y_all, gamma_all[:, k])
+
+        # On convergence the loop breaks BEFORE the M-step, so ``prev_loglik`` is the
+        # log-likelihood of the parameters returned. When it instead runs out of
+        # iterations, its last value predates the final M-step; recompute it under
+        # the returned parameters so restarts are compared, and the fit recorded, on
+        # the model actually kept.
+        if not converged:
+            prev_loglik = self.log_likelihood(sequences)
 
         return {
             'log_pi': self.log_pi_.copy(),
@@ -1265,15 +1306,42 @@ class GLMHMM:
             states[t] = psi[t + 1, states[t + 1]]
         return states
 
+    @property
+    def n_params(self) -> int:
+        """
+        Description
+        -----------
+        Number of FREE parameters of the fitted model: the initial-state vector
+        (``K - 1``, it sums to 1), the transitions (``K * (K - 1)`` for the static
+        matrix, whose rows sum to 1; for input-driven transitions each fitted
+        "from"-state softmax GLM's ``(C - 1) * (d + 1)``, one class being redundant),
+        plus every emission's own free-parameter count.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        n_params (int)
+            The free-parameter count used by :meth:`bic`.
+        """
+        n_params = self.n_states - 1
+        if self.transition_mode == 'input_driven' and self.transition_glms_ is not None:
+            n_params += sum(_softmax_free_params(g) for g in self.transition_glms_ if g is not None)
+        else:
+            n_params += self.n_states * (self.n_states - 1)
+        n_params += sum(em.n_params for em in self.emissions_)
+        return int(n_params)
+
     def bic(self, sequences: list) -> float:
         """
         Description
         -----------
         Bayesian information criterion (lower is better) on ``sequences``:
-        ``-2 * loglik + n_params * log(n_obs)``, where ``n_params`` counts the
-        free initial-state (``K - 1``) and transition (``K * (K - 1)``) parameters
-        plus every emission's own parameter count, and ``n_obs`` is the total
-        number of observed timesteps. Reported as a cross-check on the held-out
+        ``-2 * loglik + n_params * log(n_obs)``, where ``n_params`` is the
+        free-parameter count :attr:`n_params` and ``n_obs`` is the total number of
+        observed timesteps. Reported as a cross-check on the held-out
         log-likelihood for state-count selection.
 
         Parameters
@@ -1287,16 +1355,7 @@ class GLMHMM:
             The BIC.
         """
         n_obs = int(sum(np.asarray(X).shape[0] for X, _ in sequences))
-        n_params = self.n_states - 1
-        if self.transition_mode == 'input_driven' and self.transition_glms_ is not None:
-            # Input-driven transitions carry the fitted transition-GLM coefficients +
-            # intercepts, not a static K x (K - 1) count.
-            n_params += sum(int(np.asarray(g.coef_).size + np.asarray(g.intercept_).size)
-                            for g in self.transition_glms_ if g is not None)
-        else:
-            n_params += self.n_states * (self.n_states - 1)
-        n_params += sum(em.n_params for em in self.emissions_)
-        return float(-2.0 * self.log_likelihood(sequences) + n_params * np.log(max(n_obs, 1)))
+        return float(-2.0 * self.log_likelihood(sequences) + self.n_params * np.log(max(n_obs, 1)))
 
 
 # A log(0) surrogate for the pinned self-transition / padded steps in the JAX engine.
@@ -1928,7 +1987,7 @@ class InputDrivenGLMHMM:
         """
         Description
         -----------
-        BIC on ``sequences``: ``-2 * loglik + n_params * log(n_obs)`` over all filters.
+        BIC on ``sequences``: ``-2 * loglik + n_params * log(n_obs)`` with the free-parameter count.
 
         Parameters
         ----------
@@ -1939,13 +1998,40 @@ class InputDrivenGLMHMM:
         Returns
         -------
         bic (float)
-            The Bayesian information criterion (lower is better); ``n_params`` counts
-            every entry of every array in ``params_``.
+            The Bayesian information criterion (lower is better); ``n_params`` is the
+            free-parameter count :attr:`n_params`.
         """
         n_obs = int(sum(len(y) for _, y in sequences))
-        n_params = int(sum(np.asarray(value).size for value in self.params_.values()))
         return float(-2.0 * self.log_likelihood(sequences)
-                     + n_params * np.log(max(n_obs, 1)))
+                     + self.n_params * np.log(max(n_obs, 1)))
+
+    @property
+    def n_params(self) -> int:
+        """
+        Description
+        -----------
+        Number of FREE parameters (for BIC), not the number of entries in
+        ``params_``: ``log_pi`` is normalised (``K - 1`` free of ``K``); the
+        emissions are already reference-coded (class 0 fixed at zero), so
+        ``W_emit`` / ``b_emit`` give ``K * (C - 1) * (D + 1)``; the self-transition
+        logit is pinned to 0, so the diagonals of ``W_trans`` / ``b_trans`` carry no
+        information and ``K * (K - 1) * (D + 1)`` transition parameters are free.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        n_params (int)
+            ``(K - 1) + K * (C - 1) * (D + 1) + K * (K - 1) * (D + 1)``, with
+            ``D = n_features * n_time_bins``.
+        """
+        n_states = self.n_states
+        design_width = self.n_features * self.n_time_bins
+        return int((n_states - 1)
+                   + n_states * (self.n_classes - 1) * (design_width + 1)
+                   + n_states * (n_states - 1) * (design_width + 1))
 
     def initial_state_distribution(self) -> np.ndarray:
         """
@@ -2936,7 +3022,7 @@ class InputDrivenManifoldGLMHMM:
         """
         Description
         -----------
-        BIC on ``sequences``: ``-2 * loglik + n_params * log(n_obs)`` over all filters.
+        BIC on ``sequences``: ``-2 * loglik + n_params * log(n_obs)`` with the free-parameter count.
 
         Parameters
         ----------
@@ -2947,13 +3033,43 @@ class InputDrivenManifoldGLMHMM:
         Returns
         -------
         bic (float)
-            The Bayesian information criterion (lower is better); ``n_params`` counts
-            every entry of every array in ``params_``.
+            The Bayesian information criterion (lower is better); ``n_params`` is the
+            free-parameter count :attr:`n_params`.
         """
         n_obs = int(sum(len(seq[1]) for seq in sequences))
-        n_params = int(sum(np.asarray(value).size for value in self.params_.values()))
         return float(-2.0 * self.log_likelihood(sequences)
-                     + n_params * np.log(max(n_obs, 1)))
+                     + self.n_params * np.log(max(n_obs, 1)))
+
+    @property
+    def n_params(self) -> int:
+        """
+        Description
+        -----------
+        Number of FREE parameters (for BIC), not the number of entries in
+        ``params_``: ``log_pi`` is normalised (``K - 1`` free of ``K``); the angular
+        regressors ``W_emit`` / ``b_emit`` give ``K * 2 * (D + 1)``; the
+        concentration is ONE shared value under ``kappa_mode='global_mle'`` (stored
+        broadcast over the ``K`` states) and ``K`` values under ``'free'``; the
+        self-transition logit is pinned to 0, so ``K * (K - 1) * (D + 1)``
+        transition parameters are free.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        n_params (int)
+            ``(K - 1) + K * 2 * (D + 1) + n_kappa + K * (K - 1) * (D + 1)``, with
+            ``D = n_features * n_time_bins`` and ``n_kappa`` 1 or ``K``.
+        """
+        n_states = self.n_states
+        design_width = self.n_features * self.n_time_bins
+        n_kappa = 1 if self.kappa_mode == 'global_mle' else n_states
+        return int((n_states - 1)
+                   + n_states * _IDM_TARGETS * (design_width + 1)
+                   + n_kappa
+                   + n_states * (n_states - 1) * (design_width + 1))
 
     def initial_state_distribution(self) -> np.ndarray:
         """

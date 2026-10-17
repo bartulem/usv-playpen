@@ -42,10 +42,12 @@ block here.
 from __future__ import annotations
 
 import argparse
+import json
 import pickle
 import runpy
 import sys
 import warnings
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -62,6 +64,9 @@ with warnings.catch_warnings():
     from usv_playpen.modeling import main_univariate_dispatcher as uni
     from usv_playpen.modeling import main_model_selection_dispatcher as sel
     from usv_playpen.modeling import model_selection as msrc
+    from usv_playpen.os_utils import resolve_modeling_setting
+
+REPO_SETTINGS = Path(__file__).resolve().parents[2] / 'src' / 'usv_playpen' / '_parameter_settings' / 'modeling_settings.json'
 
 
 # Helpers
@@ -124,8 +129,6 @@ def _sel_args(analysis_type, tmp_path, **overrides):
         input_path=str(inp),
         output_dir=str(tmp_path / 'out'),
         anchor=True,
-        pval=0.01,
-        target_variable='bout_durations',
     )
     for k, v in overrides.items():
         setattr(ns, k, v)
@@ -507,16 +510,42 @@ class TestDispatchModelSelection:
 
     def test_onset_route(self, tmp_path, mocker):
         """The ``onset`` route calls ``vocal_onset_model_selection`` with
-        the anchor flag and p-value threaded through."""
+        the anchor flag and the settings' ``selection_p_val`` threaded through."""
 
         spy = mocker.patch.object(sel, 'vocal_onset_model_selection')
-        args = _sel_args('onset', tmp_path, pval=0.02)
+        args = _sel_args('onset', tmp_path)
         sel.dispatch_model_selection(args)
         spy.assert_called_once()
         kwargs = spy.call_args.kwargs
         assert kwargs['use_top_rank_as_anchor'] is True
-        assert kwargs['p_val'] == 0.02
+        assert kwargs['p_val'] == resolve_modeling_setting('model_params', 'selection_p_val')
         assert kwargs['univariate_results_path'] == args.univariate_path
+
+    @pytest.mark.parametrize(('analysis_type', 'selector'), [
+        ('onset', 'vocal_onset_model_selection'),
+        ('category', 'vocal_category_model_selection'),
+        ('params', 'bout_parameter_model_selection'),
+        ('multinomial', 'multinomial_vocal_category_model_selection'),
+        ('continuous', 'continuous_vocal_manifold_model_selection'),
+    ])
+    def test_significance_and_target_come_from_the_settings_file(self, tmp_path, mocker, analysis_type, selector):
+        """``selection_p_val`` and ``model_target_variable`` are read from the
+        settings file the dispatcher resolves, never from hard-coded CLI defaults:
+        a settings file carrying 0.05 and 'mean_mask_complexity' reaches the selector."""
+
+        settings = json.loads(REPO_SETTINGS.read_text())
+        settings['model_params']['selection_p_val'] = 0.05
+        settings['model_params']['model_target_variable'] = 'mean_mask_complexity'
+        settings_file = tmp_path / 'modeling_settings.json'
+        settings_file.write_text(json.dumps(settings))
+        mocker.patch.object(sel, '_SETTINGS_PATH', settings_file)
+        spy = mocker.patch.object(sel, selector)
+        assert sel.dispatch_model_selection(_sel_args(analysis_type, tmp_path)) == 0
+        kwargs = spy.call_args.kwargs
+        assert kwargs['p_val'] == 0.05
+        assert kwargs['settings_path'] == str(settings_file)
+        if analysis_type == 'params':
+            assert kwargs['target_variable'] == 'mean_mask_complexity'
 
     def test_category_route(self, tmp_path, mocker):
         """The ``category`` route calls ``vocal_category_model_selection``."""
@@ -526,15 +555,16 @@ class TestDispatchModelSelection:
         spy.assert_called_once()
 
     def test_params_route_threads_target_variable(self, tmp_path, mocker, capsys):
-        """The ``params`` route forwards the chosen ``target_variable`` to
+        """The ``params`` route forwards the settings' ``model_target_variable`` to
         ``bout_parameter_model_selection`` and echoes it."""
 
         spy = mocker.patch.object(sel, 'bout_parameter_model_selection')
-        args = _sel_args('params', tmp_path, target_variable='mean_mask_complexity')
+        args = _sel_args('params', tmp_path)
         sel.dispatch_model_selection(args)
         spy.assert_called_once()
-        assert spy.call_args.kwargs['target_variable'] == 'mean_mask_complexity'
-        assert 'mean_mask_complexity' in capsys.readouterr().out
+        target_variable = resolve_modeling_setting('model_params', 'model_target_variable')
+        assert spy.call_args.kwargs['target_variable'] == target_variable
+        assert target_variable in capsys.readouterr().out
 
     def test_multinomial_route(self, tmp_path, mocker):
         """The ``multinomial`` route calls the multinomial selector."""
@@ -625,9 +655,9 @@ class TestDispatcherCLI:
 
     def test_selection_main_parses_and_dispatches(self, tmp_path, monkeypatch):
         """The selection ``__main__`` block parses its flags (including
-        the ``--anchor`` store-true and the params-only
-        ``--target_variable``) and routes to the selector, patched here at
-        its source module so the fresh import resolves to the spy."""
+        the ``--anchor`` store-true) and routes to the selector with the
+        settings' ``model_target_variable`` and ``selection_p_val``, patched
+        here at its source module so the fresh import resolves to the spy."""
 
         calls = {}
 
@@ -646,7 +676,6 @@ class TestDispatcherCLI:
             '--input_path', str(inp),
             '--output_dir', str(tmp_path / 'out'),
             '--anchor',
-            '--target_variable', 'total_mask_complexity',
         ])
         # __main__ now propagates the dispatcher's exit code via sys.exit, so a
         # successful run raises SystemExit(0) (this is what lets SLURM/`set -e`
@@ -655,5 +684,6 @@ class TestDispatcherCLI:
             runpy.run_module('usv_playpen.modeling.main_model_selection_dispatcher',
                              run_name='__main__')
         assert exc.value.code == 0
-        assert calls['target_variable'] == 'total_mask_complexity'
+        assert calls['target_variable'] == resolve_modeling_setting('model_params', 'model_target_variable')
+        assert calls['p_val'] == resolve_modeling_setting('model_params', 'selection_p_val')
         assert calls['use_top_rank_as_anchor'] is True

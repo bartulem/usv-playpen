@@ -1613,3 +1613,130 @@ class TestResumeEqualsFresh:
             univariate_results_path=ranking_pkl, input_data_path=input_pkl, settings_path=settings_path,
             output_directory=str(ms_dir), target_variable='bout_durations', use_top_rank_as_anchor=True,
             p_val=0.5), ms_dir, capsys)
+
+
+class TestFreshStartQuarantinesStaleSteps:
+    """A fresh start moves an earlier run's step files aside instead of leaving them
+    next to the new run's, where the highest step index would be read as final."""
+
+    def test_helper_moves_only_this_prefix_step_files(self, tmp_path, capsys):
+        """Only ``<prefix><int>.pkl`` files move, into ``stale_<timestamp>/``; other
+        prefixes and non-step files stay, and nothing is deleted."""
+        prefix = 'model_selection_x_step_'
+        for name in (f'{prefix}0.pkl', f'{prefix}7.pkl', 'model_selection_y_step_0.pkl', f'{prefix}notes.pkl'):
+            (tmp_path / name).write_bytes(b'x')
+        stale_dir = ms._quarantine_stale_step_files(tmp_path, prefix)
+
+        assert stale_dir is not None
+        assert stale_dir.name.startswith('stale_')
+        assert sorted(p.name for p in stale_dir.iterdir()) == [f'{prefix}0.pkl', f'{prefix}7.pkl']
+        assert sorted(p.name for p in tmp_path.glob('*.pkl')) == [f'{prefix}notes.pkl', 'model_selection_y_step_0.pkl']
+        assert 'Moved 2 stale step file(s)' in capsys.readouterr().out
+        assert ms._quarantine_stale_step_files(tmp_path, prefix) is None
+
+    @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
+    def test_broken_checkpoint_fresh_start_leaves_no_stale_higher_step(self, tmp_path):
+        """Stale steps 0-5 of an earlier run (the highest a broken checkpoint, so the
+        resume starts fresh) must not survive beside the new run: afterwards no step
+        file in the directory records the earlier run's ``final_model_features``, and
+        the six old files sit in the ``stale_*`` folder."""
+        settings = _params_settings(tmp_path, model_engine='sklearn', split_strategy='mixed', split_num=2)
+        feature_names = ['self.speed', 'other.speed']
+        session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
+        input_pkl = str(_build_params_input_pickle(tmp_path / 'modeling_input.pkl', feature_names, session_ids))
+        ranking_pkl = str(_write_params_ranking(tmp_path / 'univariate_combined.pkl', feature_names))
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+        prefix = 'model_selection_bout_durations_unknown_mixed_step_'
+        for step_idx in range(6):
+            stale = {
+                'step_idx': step_idx, 'current_features': [], 'baseline_score': 0.0,
+                'selected_feature': 'self.speed', 'final_model_features': ['STALE'],
+                'candidates_summary': {'self.speed': {
+                    'mean_explained_deviance': float('nan') if step_idx == 5 else 0.9,
+                    'se_explained_deviance': 0.0, 'explained_deviance': [0.9, 0.9]}},
+            }
+            with (ms_dir / f'{prefix}{step_idx}.pkl').open('wb') as fh:
+                pickle.dump(stale, fh)
+
+        bout_parameter_model_selection(
+            univariate_results_path=ranking_pkl, input_data_path=input_pkl,
+            settings_path=_settings_json(tmp_path, settings), output_directory=str(ms_dir),
+            target_variable='bout_durations', use_top_rank_as_anchor=True, p_val=0.5)
+
+        for path in ms_dir.glob(f'{prefix}*.pkl'):
+            with path.open('rb') as fh:
+                step = pickle.load(fh)
+            assert 'final_model_features' not in step or step['final_model_features'] != ['STALE'], path.name
+        stale_dirs = list(ms_dir.glob('stale_*'))
+        assert len(stale_dirs) == 1
+        assert len(list(stale_dirs[0].glob(f'{prefix}*.pkl'))) == 6
+
+
+class TestEmptySelectionFinalizes:
+    """A selection that accepts no feature records an empty result instead of
+    crashing in the final refit, and a rerun (which resumes the converged
+    checkpoint) does the same."""
+
+    @staticmethod
+    def _final_step(ms_dir: Path) -> dict:
+        """Loads the highest-index step file of the run."""
+        steps = sorted(ms_dir.glob('*_step_*.pkl'), key=lambda path: int(path.stem.rsplit('_', 1)[-1]))
+        with steps[-1].open('rb') as fh:
+            return pickle.load(fh)
+
+    @pytest.mark.parametrize('selector', ['onset', 'category', 'params'])
+    @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
+    @pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
+    @pytest.mark.filterwarnings("ignore::sklearn.exceptions.UndefinedMetricWarning")
+    def test_no_accepted_feature_writes_an_empty_final_model(self, tmp_path, monkeypatch, capsys, selector):
+        """With no anchor forced and the 1-SE gate rejecting every candidate, the run
+        ends with ``final_model_features == []``, ``filter_shapes == []`` and
+        ``heldout is None`` in its last step file; running it again resumes and ends
+        the same way."""
+        monkeypatch.setattr(ms, 'paired_one_se_improvement', lambda *_args, **_kwargs: (float('nan'), 0.0))
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+        feature_names = ['self.speed', 'other.speed']
+        session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
+        if selector == 'onset':
+            settings, _ = _build_settings(tmp_path, model_engine='sklearn', split_strategy='mixed', split_num=2)
+            input_pkl, ranking_pkl, _ = _make_onset_inputs(tmp_path, feature_names)
+            settings_path = _settings_json(tmp_path, settings)
+
+            def run():
+                vocal_onset_model_selection(
+                    univariate_results_path=ranking_pkl, input_data_path=input_pkl, settings_path=settings_path,
+                    output_directory=str(ms_dir), use_top_rank_as_anchor=False, p_val=0.5)
+        elif selector == 'category':
+            settings, _ = _build_settings(tmp_path, model_engine='sklearn', split_strategy='mixed', split_num=2)
+            settings['model_params']['model_type'] = 'sklearn'
+            input_pkl = str(_write_category_input_pickle(tmp_path / 'modeling_input.pkl', feature_names, session_ids))
+            ranking_pkl = str(_write_category_ranking(tmp_path / 'univariate_combined.pkl', feature_names))
+            settings_path = _settings_json(tmp_path, settings)
+
+            def run():
+                vocal_category_model_selection(
+                    univariate_results_path=ranking_pkl, input_data_path=input_pkl, settings_path=settings_path,
+                    output_directory=str(ms_dir), use_top_rank_as_anchor=False, p_val=0.5)
+        else:
+            settings = _params_settings(tmp_path, model_engine='sklearn', split_strategy='mixed', split_num=2)
+            input_pkl = str(_build_params_input_pickle(tmp_path / 'modeling_input.pkl', feature_names, session_ids))
+            ranking_pkl = str(_write_params_ranking(tmp_path / 'univariate_combined.pkl', feature_names))
+            settings_path = _settings_json(tmp_path, settings)
+
+            def run():
+                bout_parameter_model_selection(
+                    univariate_results_path=ranking_pkl, input_data_path=input_pkl, settings_path=settings_path,
+                    output_directory=str(ms_dir), target_variable='bout_durations',
+                    use_top_rank_as_anchor=False, p_val=0.5)
+
+        run()
+        final = self._final_step(ms_dir)
+        assert final['final_model_features'] == []
+        assert final['filter_shapes'] == []
+        assert final['heldout'] is None
+        assert '[EMPTY SELECTION]' in capsys.readouterr().out
+        run()
+        assert 'already converged' in capsys.readouterr().out
+        assert self._final_step(ms_dir)['final_model_features'] == []

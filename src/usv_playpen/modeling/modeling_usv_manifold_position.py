@@ -47,6 +47,8 @@ Key scientific capabilities:
     permutation null used by the onset / category / bout selectors.)
 """
 
+from __future__ import annotations
+
 import json
 import math
 
@@ -65,7 +67,7 @@ from .load_input_files import is_vocal_signal, require_labels_for_vocal_predicto
 from .modeling_metadata import (
     build_input_metadata, derive_experimental_condition,
     derive_feature_zoo_full, derive_camera_fps_field, inject_metadata,
-    RESERVED_METADATA_KEYS,
+    read_reserved_block, RESERVED_METADATA_KEYS,
 )
 from .load_input_files import _calculate_ibi_threshold
 from .modeling_utils import (
@@ -101,7 +103,7 @@ from .modeling_torus_geodesics import (
     resolve_manifold_column_names,
 )
 from ..analyses.compute_behavioral_features import FeatureZoo
-from ..os_utils import resolve_modeling_setting
+from ..os_utils import atomic_output_path, resolve_modeling_setting
 
 # Initial spatial-CV session-split matching tolerance (auto-widens at runtime),
 # read from the settings block rather than a bare 0.05 default.
@@ -339,7 +341,7 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
         }
 
         cv_folds = []
-        rng = np.random.RandomState(random_seed)
+        rng = np.random.default_rng(random_seed)
 
         attempts = 0
         current_tolerance = tolerance
@@ -1402,7 +1404,7 @@ class ContinuousModelingPipeline(FeatureZoo):
         artifact = inject_metadata(final_data, _input_metadata=input_metadata)
 
         print(f"Saving continuous extraction results to:\n{save_path}")
-        with save_path.open('wb') as f:
+        with atomic_output_path(save_path) as temporary_path, temporary_path.open('wb') as f:
             pickle.dump(artifact, f)
         print("[+] Save Complete.")
 
@@ -1598,11 +1600,11 @@ class ContinuousModelRunner:
         # sessions from all folds / tuning and score them exactly once at the
         # end. Empty for schema-v1 pickles (backward-compatible no-op).
         _held_out_session_ids = held_out_session_ids_from_metadata(
-            raw_data['_input_metadata'] if '_input_metadata' in raw_data else {}
+            read_reserved_block(raw_data, '_input_metadata')
         )
         # The pickle's metadata travels with the blocks: the columns `Y` was read
         # from name the map (and so the decoder) of the torus pullback geodesic.
-        _input_metadata = raw_data['_input_metadata'] if '_input_metadata' in raw_data else None
+        _input_metadata = read_reserved_block(raw_data, '_input_metadata')
 
         # Strip metadata blocks before iterating features. Without this
         # filter, the underscore-prefixed reserved keys
@@ -1703,11 +1705,15 @@ class ContinuousModelRunner:
         features. Per fold, each event's (prediction, truth) pair snaps to the
         grid and looks up its geodesic distance via `geodesic_mae_columns`.
 
-        Torus-only. Any failure mode -- the metric is not `'torus'`, the
-        `usv_manifold_geodesic_metrics` block is absent or its `compute` flag is
-        False, or the map's decoder is unreadable -- degrades the
-        affected column(s) to `NaN` and never aborts the run (the pullback column
-        alone degrades when only the decoder is unavailable).
+        Torus-only. The expected failure modes -- the metric is not `'torus'`,
+        the `usv_manifold_geodesic_metrics` block is absent or its `compute`
+        flag is False, the map's decoder is missing / unreadable / incompatible
+        (`OSError`, `KeyError`, `ValueError`, `RuntimeError`, `ImportError`), or
+        the reference geometry is degenerate (`ValueError`, `LinAlgError`,
+        `MemoryError`, `FloatingPointError`, `RuntimeError`) -- degrade the
+        affected column(s) to `NaN` without aborting the run (the pullback
+        column alone degrades when only the decoder is unavailable). Any other
+        exception is a bug and propagates.
 
         Parameters
         ----------
@@ -1760,7 +1766,10 @@ class ContinuousModelRunner:
                     if _geo_decoder_source is not None:
                         try:
                             _geo_decode_fn = make_qlvm_decode_fn_from_source(_geo_decoder_source)
-                        except Exception as _decode_err:
+                        except (OSError, KeyError, ValueError, RuntimeError, ImportError) as _decode_err:
+                            # A missing / unreadable / incompatible decoder cell only
+                            # disables the pullback column; any other error is a bug
+                            # and propagates.
                             print(f"    [geodesic] decoder unavailable ({_decode_err}); "
                                   f"pullback_geodesic_mae -> NaN")
                     geodesic_ctx = build_torus_geodesic_context(
@@ -1772,7 +1781,10 @@ class ContinuousModelRunner:
                     print(f"    [geodesic] reference map built: "
                           f"{int(_geo_cfg['grid_n_per_dim'])}^2 grid, "
                           f"pullback={'on' if _geo_decode_fn is not None else 'off'}")
-                except Exception as _geo_err:
+                except (ValueError, np.linalg.LinAlgError, MemoryError, FloatingPointError, RuntimeError) as _geo_err:
+                    # A degenerate density / grid (singular KDE covariance, too few
+                    # points, out of memory) disables the geodesic columns; any other
+                    # error is a bug and propagates.
                     print(f"    [geodesic] geometry build failed ({_geo_err}); "
                           f"geodesic MAE columns -> NaN")
                     geodesic_ctx = None
@@ -1972,7 +1984,9 @@ class ContinuousModelRunner:
 
         n_clusters = self.modeling_settings['model_validation']['spatial_cluster_num']
         test_prop = self.modeling_settings['model_validation']['cv_validation_proportion']
-        n_splits = self.modeling_settings['model_validation']['n_cv_folds']
+        # The manifold pipeline's own outer fold count (the selection screen re-tests these
+        # folds with an exact sign-flip permutation whose p-value floors at 1 / 2**n_splits).
+        n_splits = self.modeling_settings['model_validation']['manifold_n_cv_folds']
         split_strategy = self.modeling_settings['model_validation']['split_strategy']
 
         # Manifold-metric configuration. Threaded through every site that

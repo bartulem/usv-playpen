@@ -373,15 +373,15 @@ class TestDegenerateMetrics:
         assert metrics['euclidean_mae'] < 0.1
 
     def test_kdtree_build_failure_sets_none(self, monkeypatch):
-        """If the kd-tree construction raises during ``fit`` the estimator
-        swallows the exception and sets ``_train_kdtree=None`` (the
-        ``except Exception`` guard), and ``predict(snap=True)`` then returns
-        the raw prediction unchanged."""
+        """If the kd-tree construction raises ``ValueError`` (cKDTree's
+        rejection of non-finite / empty targets) during ``fit`` the estimator
+        sets ``_train_kdtree=None`` (the ``except ValueError`` guard), and
+        ``predict(snap=True)`` then returns the raw prediction unchanged."""
 
         import usv_playpen.modeling.jax_bivariate_regression as biv
 
         def _boom(*args, **kwargs):
-            raise RuntimeError("forced kd-tree failure")
+            raise ValueError("forced kd-tree failure")
 
         monkeypatch.setattr(biv, "cKDTree", _boom)
         X, y = _make_linear_2d()
@@ -390,6 +390,21 @@ class TestDegenerateMetrics:
         raw = model.predict(X, snap=False)
         snapped = model.predict(X, snap=True)
         np.testing.assert_array_equal(raw, snapped)
+
+    def test_kdtree_unexpected_error_propagates(self, monkeypatch):
+        """Any kd-tree construction error other than ``ValueError`` is a bug,
+        not a degenerate target: ``fit`` must raise it instead of silently
+        disabling the snap (the guard used to be a bare ``except Exception``)."""
+
+        import usv_playpen.modeling.jax_bivariate_regression as biv
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("forced kd-tree failure")
+
+        monkeypatch.setattr(biv, "cKDTree", _boom)
+        X, y = _make_linear_2d()
+        with pytest.raises(RuntimeError, match="forced kd-tree failure"):
+            SmoothBivariateRegression(**_fit_kwargs(X.shape[1])).fit(X, y)
 
     def test_spearman_valueerror_falls_back_to_nan(self, monkeypatch):
         """If ``spearmanr`` raises ``ValueError`` (its documented failure on

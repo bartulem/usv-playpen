@@ -17,6 +17,7 @@ Key Capabilities:
 6.  Data cleaning: Applying category-based noise filtering and clean-history
     constraints to ensure biological accuracy.
 """
+
 from __future__ import annotations
 
 import pickle
@@ -541,11 +542,26 @@ def _get_clean_tiled_epochs(usv_starts_all: np.ndarray,
     """
     Finds all valid 'clean' (no-USV) epochs using the "forbidden zone" tiling method.
 
+    A negative epoch is identified by its window END ``t`` (the pre-event window
+    is ``[t - filter_history, t]``), and it needs exactly the clean history a
+    positive onset needs under :func:`_history_is_dirty`: no vocalization of the
+    silence reference may start before ``t`` and end after
+    ``t - filter_history``. Nothing more is required, so a negative may end as
+    early after a vocalization as a clean positive may begin.
+
     This method works by:
-    1. Defining a "forbidden zone" around every USV as [start_time, stop_time + filter_history].
+    1. Defining a "forbidden zone" of window ends around every vocalization as the
+       open interval (start_time, stop_time + filter_history): exactly the ends
+       whose window a vocalization would touch.
     2. Merging all overlapping forbidden zones.
-    3. Finding the "clean" gaps *between* these merged zones.
-    4. Tiling these clean gaps with non-overlapping windows of length 'filter_history'.
+    3. Finding the "clean" zones *between* these merged zones (their boundary
+       points are clean: a window ending at ``stop + filter_history`` starts
+       exactly where the vocalization stopped, and one ending at a vocalization's
+       start ends exactly where it begins). The first zone begins at
+       ``filter_history``, the earliest end whose window fits in the session.
+    4. Tiling the window ENDS of each clean zone from its start, every
+       ``filter_history`` seconds, so successive windows abut without
+       overlapping and the first window of a zone ends at the zone's start.
 
     Parameters
     ----------
@@ -555,7 +571,8 @@ def _get_clean_tiled_epochs(usv_starts_all: np.ndarray,
         Array of all USV stop times (in seconds), including uncategorized.
     filter_history : float
         The duration (in seconds) of the pre-event window. This defines the
-        minimum size of a "clean" gap and the size of the non-overlapping tiles.
+        length of the history that must be silent and the spacing of the
+        non-overlapping tiles.
     session_duration_sec : float
         The total duration of the session in seconds.
 
@@ -563,14 +580,15 @@ def _get_clean_tiled_epochs(usv_starts_all: np.ndarray,
     -------
     np.ndarray
         An array of valid, non-overlapping "no-USV" event times (window end times)
-        in seconds.
+        in seconds, ascending.
     """
 
-    # Define forbidden intervals: (start, stop + filter_history)
-    forbidden_starts = usv_starts_all
-    forbidden_ends = usv_stops_all + filter_history
+    # Forbidden window ends: the open interval (start, stop + filter_history)
+    forbidden_starts = np.asarray(usv_starts_all, dtype=float)
+    forbidden_ends = np.asarray(usv_stops_all, dtype=float) + filter_history
 
-    # Merge overlapping forbidden intervals
+    # Merge overlapping forbidden intervals; open intervals that only touch leave
+    # their shared boundary point clean, so they are not merged.
     if forbidden_starts.size > 0:
         indices = np.argsort(forbidden_starts)
         sorted_starts = forbidden_starts[indices]
@@ -580,7 +598,7 @@ def _get_clean_tiled_epochs(usv_starts_all: np.ndarray,
         merged_ends = [sorted_ends[0]]
 
         for i in range(1, sorted_starts.size):
-            if sorted_starts[i] <= merged_ends[-1]:
+            if sorted_starts[i] < merged_ends[-1]:
                 # Overlap: extend the end of the last merged interval
                 merged_ends[-1] = max(merged_ends[-1], sorted_ends[i])
             else:
@@ -594,7 +612,8 @@ def _get_clean_tiled_epochs(usv_starts_all: np.ndarray,
         merged_starts = np.array([])
         merged_ends = np.array([])
 
-    # Invert to get "clean" zones (cannot sample before filter_history)
+    # Invert to get "clean" zones of window ends (no window may begin before the
+    # session does, so no end before filter_history)
     session_start = filter_history
     clean_starts = []
     clean_ends = []
@@ -605,30 +624,66 @@ def _get_clean_tiled_epochs(usv_starts_all: np.ndarray,
         clean_ends.append(session_duration_sec)
     else:
         # First clean zone: from session_start to the first forbidden start
-        if merged_starts[0] > session_start:
+        if merged_starts[0] >= session_start:
             clean_starts.append(session_start)
             clean_ends.append(merged_starts[0])
 
         # Middle clean zones: gaps between forbidden zones
         for i in range(merged_ends.size - 1):
-            clean_starts.append(merged_ends[i])
+            clean_starts.append(max(merged_ends[i], session_start))
             clean_ends.append(merged_starts[i + 1])
 
         # Last clean zone: from last forbidden end to session_end
-        if merged_ends[-1] < session_duration_sec:
-            clean_starts.append(merged_ends[-1])
+        if merged_ends[-1] <= session_duration_sec:
+            clean_starts.append(max(merged_ends[-1], session_start))
             clean_ends.append(session_duration_sec)
 
-    # "Tile" the clean zones and get all valid t's (in seconds)
+    # "Tile" the window ends of each clean zone from its start (in seconds)
     all_valid_t = []
-    for start, end in zip(clean_starts, clean_ends):
-        duration = end - start
-        if duration >= filter_history:
-            # Use np.arange to find all possible end points (in seconds)
-            possible_ts = np.arange(start + filter_history, end + 1e-9, filter_history)
+    for start, end in zip(clean_starts, clean_ends, strict=True):
+        if end >= start:
+            possible_ts = np.arange(start, end + 1e-9, filter_history)
             all_valid_t.extend(possible_ts)
 
     return np.array(all_valid_t)
+
+
+def _future_window_is_silent(candidate_onsets: np.ndarray,
+                             reference_starts: np.ndarray,
+                             future_seconds: float) -> np.ndarray:
+    """
+    Description
+    -----------
+    Flags the candidate negative (no-USV) onsets whose future window
+    ``[t, t + future_seconds)`` holds no start of the silence reference (the
+    target mouse's vocalizations of every class plus those assigned to no
+    animal). ``reference_starts`` is sorted, so two ``side='left'``
+    ``searchsorted`` calls give every window's count at once -- ``lo`` counts
+    starts strictly before the onset (those ``>= t`` are kept) and ``hi`` counts
+    starts strictly before the window end, so ``hi - lo`` is the number of
+    vocalizations starting inside the window. Without this check a tiled
+    negative with a clean history could end milliseconds before an onset.
+
+    Parameters
+    ----------
+    candidate_onsets (np.ndarray)
+        Candidate negative onsets (s), e.g. from ``_get_clean_tiled_epochs``.
+    reference_starts (np.ndarray)
+        Sorted start times (s) of the silence reference.
+    future_seconds (float)
+        Length (s) of the window that must stay silent after each onset
+        (``model_params.usv_bout_time``).
+
+    Returns
+    -------
+    silent (np.ndarray)
+        Boolean mask over ``candidate_onsets``, True where the window is silent.
+    """
+
+    lo = np.searchsorted(reference_starts, candidate_onsets, side='left')
+    hi = np.searchsorted(reference_starts, candidate_onsets + future_seconds, side='left')
+    return (hi - lo) == 0
+
 
 def _history_is_dirty(onset_time: float,
                       reference_starts: np.ndarray,
@@ -639,12 +694,14 @@ def _history_is_dirty(onset_time: float,
     -----------
     Whether a positive onset's pre-onset window holds a vocalization of the
     silence reference (the target mouse's vocalizations of every class plus those
-    assigned to no animal): one that starts before the onset and ends at or after
-    ``onset_time - filter_history``. That is the rule the negative epochs obey
-    (``_get_clean_tiled_epochs`` forbids ``[start, stop + filter_history]`` around
-    every reference vocalization), so a clean positive and a negative have
-    equally silent histories. The onset's own vocalization starts AT
-    ``onset_time`` and is therefore not counted.
+    assigned to no animal): one that starts before the onset and ends after
+    ``onset_time - filter_history``. That is exactly the rule the negative epochs
+    obey (``_get_clean_tiled_epochs`` forbids the window ends in the open interval
+    ``(start, stop + filter_history)`` around every reference vocalization and
+    tiles each clean zone from its start), so a clean positive and a negative need
+    equally silent histories, and nothing more: a vocalization that ends exactly
+    where the window begins does not touch it, for either class. The onset's own
+    vocalization starts AT ``onset_time`` and is therefore not counted.
 
     Parameters
     ----------
@@ -663,7 +720,7 @@ def _history_is_dirty(onset_time: float,
         True when the window holds a reference vocalization.
     """
 
-    return bool(np.any((reference_starts < onset_time) & (reference_stops >= onset_time - filter_history)))
+    return bool(np.any((reference_starts < onset_time) & (reference_stops > onset_time - filter_history)))
 
 
 def _build_binary_occupancy(event_starts: np.ndarray,
@@ -976,10 +1033,13 @@ def find_onset_epochs(root_directories: list = None,
         - 'bout_onset': Clean USV bout onsets (clean history + future bout)
                   vs.
                   Clean silent epochs (clean history + future silence).
-        - 'individual': All valid USV onsets vs. Clean silent epochs.
+        - 'individual': All valid USV onsets vs. Clean silent epochs (clean history
+                  + future silence, the same negatives rule as 'bout_onset').
         - 'state': Vocalizing state vs. Non-vocalizing state.
     usv_bout_time : int / float
-        Duration of the "post-onset" window (in s). Used in 'bout_onset' mode logic for NEGATIVE events.
+        Duration of the "post-onset" window (in s). Used in 'bout_onset' and 'individual'
+        mode logic for NEGATIVE events: a negative onset is kept only if no vocalization
+        of the silence reference starts within this window after it.
     min_usv_per_bout : int
         Min USVs for a positive 'bout_onset' event. Used in 'bout_onset' mode.
     mixture_model_component_index : int
@@ -1308,27 +1368,26 @@ def find_onset_epochs(root_directories: list = None,
                 # vocalisations leak into the No-Bout class.
                 all_usv_starts = usv_start_mouse_and_uncategorized
 
-                # Vectorized equivalent of the per-onset future-window count: keep each
-                # clean onset only if zero USVs (any source) fall in
-                # [t_onset, t_onset + usv_bout_time). all_usv_starts is sorted, so two
-                # side='left' searchsorted calls give every window's count at once --
-                # `lo` counts USVs strictly before the onset (those >= t_onset are
-                # kept) and `hi` counts USVs strictly before the window end (< the
-                # future end), so `hi - lo` is exactly the old boolean-AND reduction.
-                # Byte-identical, including the all_clean_onsets ordering of kept events.
-                lo = np.searchsorted(all_usv_starts, all_clean_onsets, side='left')
-                hi = np.searchsorted(all_usv_starts, all_clean_onsets + usv_bout_time, side='left')
-                usv_events_negative = all_clean_onsets[(hi - lo) == 0]
+                # Keep each clean onset only if zero USVs (any source) fall in
+                # [t_onset, t_onset + usv_bout_time) (`_future_window_is_silent`).
+                usv_events_negative = all_clean_onsets[
+                    _future_window_is_silent(all_clean_onsets, all_usv_starts, usv_bout_time)]
 
             ### Mode 2: 'individual' (USV pre-vocalization periods can be "dirty" and no-USV must be clean)
             elif prediction_mode == 'individual':
                 usv_starts_filter_bool = (usv_data_dict[session_id][mouse_name]['start'] > filter_history)
                 usv_events_positive = usv_data_dict[session_id][mouse_name]['start'][usv_starts_filter_bool]
 
-                usv_events_negative = _get_clean_tiled_epochs(usv_start_mouse_and_uncategorized,
-                                                              usv_stop_mouse_and_uncategorized,
-                                                              filter_history,
-                                                              session_duration_sec)
+                all_clean_onsets = _get_clean_tiled_epochs(usv_start_mouse_and_uncategorized,
+                                                           usv_stop_mouse_and_uncategorized,
+                                                           filter_history,
+                                                           session_duration_sec)
+
+                # The same future-window rule as 'bout_onset': a negative must be
+                # followed by `usv_bout_time` of silence (any source), or a tile with
+                # a clean history could end milliseconds before a positive onset.
+                usv_events_negative = all_clean_onsets[
+                    _future_window_is_silent(all_clean_onsets, usv_start_mouse_and_uncategorized, usv_bout_time)]
 
             ### Mode 3: 'state' (both USV and no-USV pre-vocalization periods can be "dirty")
             elif prediction_mode == 'state':
@@ -1827,6 +1886,8 @@ def find_variable_length_bouts(root_directories: list = None,
         Keys include:
             'bout_onsets': np.array of start times (seconds).
             'bout_durations': np.array of bout durations (seconds).
+            'bout_offsets': np.array of stop times (seconds), the last USV's stored stop
+                bit for bit; ``onset + duration`` can fall one ulp before it.
             'continuous_vocal_signals': dict containing generated arrays (e.g., 'usv_rate').
     """
 
@@ -1911,6 +1972,7 @@ def find_variable_length_bouts(root_directories: list = None,
             usv_data_dict[session_id][mouse_name] = {
                 'bout_onsets': [],
                 'bout_durations': [],
+                'bout_offsets': [],
                 'bout_syllable_counts': [],
                 'mean_mask_complexity': [],
                 'total_mask_complexity': [],
@@ -1977,6 +2039,7 @@ def find_variable_length_bouts(root_directories: list = None,
 
                 usv_data_dict[session_id][mouse_name]['bout_onsets'].append(bout_start_time)
                 usv_data_dict[session_id][mouse_name]['bout_durations'].append(duration)
+                usv_data_dict[session_id][mouse_name]['bout_offsets'].append(bout_end_time)
                 usv_data_dict[session_id][mouse_name]['bout_syllable_counts'].append(count)
                 usv_data_dict[session_id][mouse_name]['mean_mask_complexity'].append(mean_complexity)
                 usv_data_dict[session_id][mouse_name]['total_mask_complexity'].append(total_complexity)

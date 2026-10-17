@@ -42,6 +42,7 @@ from usv_playpen.modeling.modeling_metadata import (
     inject_metadata,
     load_selection_results,
     metadata_blocks_equal,
+    read_reserved_block,
 )
 
 
@@ -73,6 +74,19 @@ class TestComputeSettingsSha256:
         """An unreadable source never raises — it returns ``'unknown'``."""
 
         assert compute_settings_sha256('/no/such/settings.json') == 'unknown'
+
+    def test_unexpected_error_propagates(self):
+        """Only an unreadable file or an unserialisable source maps to
+        ``'unknown'``; any other exception raised while hashing (here from a
+        value's ``__str__``, which the canonical JSON dump calls) propagates
+        instead of being swallowed by a bare ``except Exception``."""
+
+        class _Exploding:
+            def __str__(self):
+                raise RuntimeError("forced str failure")
+
+        with pytest.raises(RuntimeError, match="forced str failure"):
+            compute_settings_sha256({'k': _Exploding()})
 
 
 # assert_no_reserved_keys
@@ -625,6 +639,30 @@ def _input_builder_kwargs(modeling_settings, analysis_specific=None,
     }
 
 
+# read_reserved_block
+
+
+class TestReadReservedBlock:
+
+    def test_present_block_is_returned(self):
+        """A reserved block present in the artifact is returned as stored."""
+
+        md = {'held_out_session_ids': ['s1']}
+        assert read_reserved_block({'f': 1, '_input_metadata': md}, '_input_metadata') is md
+
+    def test_legacy_artifact_reads_as_none(self):
+        """An artifact that predates the block (legacy pickle) reads as None."""
+
+        assert read_reserved_block({'f': 1}, '_input_metadata') is None
+
+    def test_non_reserved_key_raises(self):
+        """A key that is not a reserved metadata block is a programming error
+        (a typo would otherwise read as a legacy artifact)."""
+
+        with pytest.raises(ValueError, match='not one of'):
+            read_reserved_block({'_input_metadata': {}}, '_input_metdata')
+
+
 # get_git_commit_info
 
 
@@ -678,6 +716,28 @@ class TestGetGitCommitInfo:
             side_effect=OSError('git not found'),
         )
         assert get_git_commit_info() == {'commit': 'unknown', 'dirty': False}
+
+    def test_timeout_returns_placeholder(self, mocker):
+        """A git timeout (``subprocess.TimeoutExpired``) also yields the
+        placeholder: it is one of the expected 'no git information' errors."""
+
+        import subprocess
+        mocker.patch(
+            'usv_playpen.modeling.modeling_metadata.subprocess.run',
+            side_effect=subprocess.TimeoutExpired(cmd='git', timeout=5),
+        )
+        assert get_git_commit_info() == {'commit': 'unknown', 'dirty': False}
+
+    def test_unexpected_error_propagates(self, mocker):
+        """An exception that is not an OS / subprocess error is a bug and must
+        propagate (the guard used to be a bare ``except Exception: pass``)."""
+
+        mocker.patch(
+            'usv_playpen.modeling.modeling_metadata.subprocess.run',
+            side_effect=RuntimeError('forced failure'),
+        )
+        with pytest.raises(RuntimeError, match='forced failure'):
+            get_git_commit_info()
 
     def test_nonzero_returncode_keeps_placeholder(self, mocker):
         """A non-zero ``rev-parse`` return code (non-git dir) leaves the

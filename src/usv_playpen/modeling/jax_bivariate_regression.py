@@ -77,6 +77,8 @@ Outputs
   / `mae_y`, `spearman_x` / `spearman_y`, and `pearson_x` / `pearson_y`.
 """
 
+from __future__ import annotations
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -1012,7 +1014,9 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
                 self._train_kdtree = cKDTree(torus_embed(Y_train_np, self.period))
             else:
                 self._train_kdtree = cKDTree(Y_train_np)
-        except Exception:
+        except ValueError:
+            # cKDTree rejects non-finite or empty training targets; the snap
+            # then falls back to no kdtree. Any other error propagates.
             self._train_kdtree = None
 
         # Re-normalise the already-unit-mean sample weights to unit sum so

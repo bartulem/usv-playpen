@@ -14,6 +14,8 @@ acoustic-manifold integration (regressor refit + von Mises density + weighted
 concentration) is exercised with the torus ManifoldEmission.
 """
 
+from __future__ import annotations
+
 import json
 import pathlib
 import pickle
@@ -879,3 +881,112 @@ def test_session_sequences_missing_label_target_raises():
     raw = {'self.speed': {'s0': {'X': rng.random((4, 5)), 'Y': rng.random((4, 2))}}}
     with pytest.raises(ValueError, match="QLVM category labels"):
         _build_session_sequences(raw, ['self.speed'], ['s0'], 'category', True, 3)
+
+
+def test_stored_em_loglik_is_that_of_the_final_parameters_when_em_does_not_converge():
+    """When EM stops at ``n_em_iters`` the loop's last log-likelihood was computed
+    BEFORE the final M-step; the stored value (which restarts are compared on and the
+    pipeline records as the development log-likelihood) must be recomputed under the
+    returned parameters."""
+    rng = np.random.default_rng(1)
+    sequences = []
+    for _ in range(3):
+        states = np.cumsum(rng.random(200) < 0.05) % 2
+        y = rng.standard_normal((200, 2)) + 3.0 * states[:, None]
+        sequences.append((np.zeros((200, 1)), y))
+    for n_em_iters in (1, 2):
+        model = GLMHMM(2, lambda: GaussianEmission(n_targets=2), n_em_iters=n_em_iters,
+                       n_restarts=1, tol=1e-12).fit(sequences)
+        assert not model.converged_
+        assert model.log_likelihood_ == pytest.approx(model.log_likelihood(sequences), rel=1e-12)
+
+
+def test_static_multinomial_cv_scores_a_category_absent_from_the_training_folds(tmp_path):
+    """A development session carrying a category no other session has lands in a CV
+    test fold whose training folds never saw it. The label set is fixed from every
+    session before CV, so the static engine scores that event at zero predicted
+    probability (the emission's finite ``log(1e-12)`` floor) instead of raising a
+    ``KeyError`` from the classifier's ``classes_``."""
+    rng = np.random.default_rng(8)
+    feature_names = ['featA', 'featB']
+    input_pkl = tmp_path / 'manifold_input.pkl'
+    _write_synthetic_manifold_pickle(input_pkl, feature_names, 3, rng)
+    with open(input_pkl, 'rb') as handle:
+        raw = pickle.load(handle)
+    for feat in feature_names:
+        raw[feat]['s0']['category'][:3] = 2.0
+    with open(input_pkl, 'wb') as handle:
+        pickle.dump(raw, handle)
+    settings_json = tmp_path / 'settings.json'
+    _write_glm_hmm_settings(settings_json)
+    settings = json.loads(settings_json.read_text())
+    settings['glm_hmm']['emission_type'] = 'multinomial'
+    settings['glm_hmm']['transition_mode'] = 'static'
+    settings['glm_hmm']['n_states_max'] = 2
+    settings_json.write_text(json.dumps(settings))
+    selection_pkl = tmp_path / 'model_selection_final.pkl'
+    _write_model_selection_file(selection_pkl, feature_names)
+
+    results = run_glm_hmm_state_selection(
+        input_data_path=str(input_pkl), settings_path=str(settings_json),
+        output_directory=str(tmp_path / 'glm_hmm_out'), model_selection_path=str(selection_pkl))
+
+    assert all(np.isfinite(row['cv_log_likelihood']) for row in results['selection_table'])
+
+
+def test_multinomial_emission_unseen_known_label_gets_the_floor_and_unknown_raises():
+    """With the full label set fixed, a label the classifier never trained on scores
+    ``log(1e-12)``; a label outside the fixed set is a data error and raises."""
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((60, 2))
+    y = rng.integers(1, 3, 60)
+    emission = MultinomialEmission(dict(n_features=1, n_time_bins=2, max_iter=50),
+                                   class_labels=np.array([1, 2, 3])).fit(X, y, np.ones(60))
+    log_density = emission.log_density(X[:3], np.array([1, 2, 3]))
+    assert np.all(np.isfinite(log_density))
+    assert log_density[2] == pytest.approx(np.log(1e-12))
+    with pytest.raises(ValueError, match="outside the fixed label set"):
+        emission.log_density(X[:1], np.array([4]))
+
+
+def test_bic_counts_exactly_the_free_parameters_by_hand():
+    """BIC's ``n_params`` is the number of FREE parameters, counted by hand:
+
+    - input-driven categorical (K=3, D=F*Tb=8, C=3): initial state K-1 = 2 (log_pi
+      is normalised); emissions K*(C-1)*(D+1) = 54 (class 0 is the zero reference);
+      transitions K*(K-1)*(D+1) = 54 (the self-transition logit is pinned) -> 110,
+      not the 138 entries of ``params_``.
+    - input-driven manifold, same K and D: 2 + K*2*(D+1) = 54 + transitions 54 +
+      one shared concentration under 'global_mle' -> 111 (K = 3 under 'free' -> 113).
+    - static multinomial emission (C=2, D=4): (C-1)*(D+1) = 5 per state (one class
+      is redundant under the softmax), so K=2 gives 1 + 2 + 10 = 13.
+    """
+    rng = np.random.default_rng(0)
+    n_states, n_features, n_time_bins, n_classes = 3, 2, 4, 3
+    design_width = n_features * n_time_bins
+    sequences = [(rng.normal(size=(n, design_width)).astype(np.float32), rng.integers(0, n_classes, n))
+                 for n in (40, 25, 60)]
+    categorical = InputDrivenGLMHMM(n_states, n_features, n_time_bins, n_classes,
+                                    n_restarts=1, n_lbfgs=30).fit(sequences)
+    assert int(sum(np.asarray(v).size for v in categorical.params_.values())) == 138
+    assert categorical.n_params == 110
+    n_obs = sum(len(y) for _, y in sequences)
+    assert categorical.bic(sequences) == pytest.approx(
+        -2.0 * categorical.log_likelihood(sequences) + 110 * np.log(n_obs))
+
+    torus_sequences = [(rng.normal(size=(n, design_width)).astype(np.float32),
+                        rng.random((n, 2)).astype(np.float32)) for n in (40, 25)]
+    shared_kappa = InputDrivenManifoldGLMHMM(n_states, n_features, n_time_bins, n_restarts=1,
+                                             n_lbfgs=20, n_kappa_rounds=1).fit(torus_sequences)
+    assert shared_kappa.n_params == 111
+    free_kappa = InputDrivenManifoldGLMHMM(n_states, n_features, n_time_bins, n_restarts=1,
+                                           n_lbfgs=20, kappa_mode='free').fit(torus_sequences)
+    assert free_kappa.n_params == 113
+
+    X = rng.standard_normal((80, 4))
+    y = (X[:, 0] > 0).astype(int)
+    clf_kwargs = dict(n_features=2, n_time_bins=2, lambda_smooth=1.0, l2_reg=0.1, max_iter=30)
+    static = GLMHMM(2, lambda: MultinomialEmission(clf_kwargs), n_em_iters=2, n_restarts=1).fit(
+        [(X[:40], y[:40]), (X[40:], y[40:])])
+    assert all(emission.n_params == 5 for emission in static.emissions_)
+    assert static.n_params == 13

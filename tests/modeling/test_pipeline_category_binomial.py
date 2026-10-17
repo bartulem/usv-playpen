@@ -73,6 +73,7 @@ matplotlib.use('Agg')
 from tests.modeling._synth import (
     build_behavioral_features_csv,
     build_modeling_settings,
+    fit_counting_subclass,
     build_track_h5,
     write_session_list_file,
 )
@@ -1433,6 +1434,45 @@ class TestRunModelingCategoryHandlers:
             assert res['heldout'][branch]['n_held_out_sessions'] == 1
             assert res['heldout'][branch]['n_held_out_events'] > 0
         assert np.isfinite(res['heldout']['actual']['fit_time'])
+
+    @pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
+    @pytest.mark.filterwarnings("ignore::sklearn.exceptions.UndefinedMetricWarning")
+    def test_sklearn_failed_heldout_refit_is_flagged(self, monkeypatch):
+        """
+        A held-out refit that raises must be recorded, not left as a silent
+        NaN: every fit is counted on a first run (whose held-out records carry
+        ``heldout_fit_failed=False`` and ``heldout_fit_error=None``), then the
+        final two fits -- the 'actual' and 'null' held-out refits, which run
+        after every CV fold -- are forced to raise. Both held-out records must
+        carry ``heldout_fit_failed=True`` and the exception text in
+        ``heldout_fit_error`` while the CV folds stay fitted.
+        """
+
+        settings = _minimal_category_settings(split_strategy='mixed', split_num=2)
+        pipeline = VocalCategoryModelingPipeline(modeling_settings_dict=settings)
+        feature_data = _category_feature_data(HISTORY_FRAMES)
+        basis = np.eye(HISTORY_FRAMES, 3, dtype=float)
+        original_cls = category_module.LogisticRegressionCV
+        counting_cls, counter = fit_counting_subclass(original_cls)
+        monkeypatch.setattr(category_module, 'LogisticRegressionCV', counting_cls)
+        _fn, clean = pipeline._run_modeling_category(
+            'self.speed', feature_data, basis, held_out_session_ids=['session_3'],
+        )
+        for branch in ('actual', 'null'):
+            assert clean['heldout'][branch]['heldout_fit_failed'] is False
+            assert clean['heldout'][branch]['heldout_fit_error'] is None
+        n_fits = counter['n']
+
+        failing_cls, _ = fit_counting_subclass(original_cls, fail_after=n_fits - 2)
+        monkeypatch.setattr(category_module, 'LogisticRegressionCV', failing_cls)
+        _fn, res = pipeline._run_modeling_category(
+            'self.speed', feature_data, basis, held_out_session_ids=['session_3'],
+        )
+        for branch in ('actual', 'null'):
+            assert res['heldout'][branch]['heldout_fit_failed'] is True
+            assert 'forced held-out refit failure' in res['heldout'][branch]['heldout_fit_error']
+            assert np.isnan(res['heldout'][branch]['auc'])
+        assert np.isfinite(res['actual']['auc']).any()
 
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     @pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")

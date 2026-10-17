@@ -24,6 +24,8 @@ Key scientific capabilities:
     eliminate sample-size bias in significance testing.
 """
 
+from __future__ import annotations
+
 from datetime import datetime
 import json
 import numpy as np
@@ -66,7 +68,7 @@ from .modeling_utils import (
     within_group_permutation,
 )
 from ..analyses.compute_behavioral_features import FeatureZoo
-from ..os_utils import resolve_modeling_setting
+from ..os_utils import atomic_output_path, resolve_modeling_setting
 
 # Expected-Calibration-Error histogram bin count, read from the settings block
 # rather than a bare 10 literal.
@@ -582,7 +584,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         input_metadata['feature_zoo_kept'] = sorted(final_data.keys())
 
         artifact = inject_metadata(final_data, _input_metadata=input_metadata)
-        with save_path.open('wb') as f:
+        with atomic_output_path(save_path) as temporary_path, temporary_path.open('wb') as f:
             pickle.dump(artifact, f)
         print(f"\n[+] Successfully saved category input data to:\n    {save_path}")
 
@@ -824,7 +826,10 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             and 'null' sub-keys. Sub-keys contain NumPy arrays for computed metrics,
             reconstructed filter shapes, and (if sklearn) optimized hyperparameters across
             all validation folds. A top-level 'heldout' key (with its own 'actual' and
-            'null' records) is present only when held-out sessions were scored.
+            'null' records) is present only when held-out sessions were scored; each
+            record carries 'heldout_fit_failed' (True when the held-out refit raised,
+            leaving its metrics NaN) and 'heldout_fit_error' (exception type and
+            message, or None).
         """
 
         # Strict lookup, no .get()
@@ -1080,7 +1085,9 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                 matrix, optimizer diagnostics, filter shapes and, for the sklearn
                 engine, the projected coefficients and optimal C), carrying the
                 held-out session and event counts; it is filled in place when the
-                held-out fit succeeds and stays NaN otherwise.
+                held-out fit succeeds and stays NaN otherwise, in which case
+                `heldout_fit_failed` is set True and `heldout_fit_error` carries
+                the exception type and message (False / None on success).
 
                 Parameters
                 ----------
@@ -1101,6 +1108,8 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                     rec['optimal_C'] = np.nan
                 rec['n_held_out_sessions'] = len(held_sessions)
                 rec['n_held_out_events'] = n_held_events
+                rec['heldout_fit_failed'] = False
+                rec['heldout_fit_error'] = None
                 return rec
 
             heldout = {'actual': _empty_cat_heldout(), 'null': _empty_cat_heldout()}
@@ -1202,6 +1211,10 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                             )
                     except Exception as e:
                         print(f"Held-out refit failed (category {branch}): {e}")
+                        # Record the failure explicitly so a NaN held-out score is never
+                        # mistaken for a fitted one.
+                        rec['heldout_fit_failed'] = True
+                        rec['heldout_fit_error'] = f"{type(e).__name__}: {e}"
             results['heldout'] = heldout
 
         return feature_name, results

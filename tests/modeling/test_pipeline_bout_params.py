@@ -82,6 +82,7 @@ matplotlib.use('Agg')
 
 from tests.modeling._synth import (
     build_modeling_settings,
+    fit_counting_subclass,
     build_session_tree,
     write_session_list_file,
 )
@@ -419,6 +420,26 @@ class TestBoutParameterExtraction:
         with pytest.raises(RuntimeError, match="alignment FAILED"):
             pipeline.extract_and_save_modeling_input_data()
         assert list(save_dir.glob('modeling_bout_durations_*.pkl')) == []
+
+
+class TestBoutParameterHistoryWindow:
+    """The bout-parameter history window always follows ``model_params.filter_history``."""
+
+    def test_bout_offset_target_mode_does_not_shrink_the_window(self, tmp_path):
+        """
+        ``model_target_vocal_type = 'bout_offset'`` gives the ONSET pipeline the
+        ``bout_offset`` block's own (shorter) history, but bouts here are found
+        with ``model_params.filter_history`` and the metadata records that value,
+        so the windows must be that wide too, whatever the onset target mode.
+        """
+
+        settings, _ = _build_settings(tmp_path, model_engine='sklearn', vocal_predictor_type='categories_rate')
+        settings['model_params']['model_target_vocal_type'] = 'bout_offset'
+        settings['bout_offset'] = {'filter_history': FILTER_HISTORY / 4.0}
+        pipeline = BoutParameterPipeline(modeling_settings_dict=settings)
+
+        assert pipeline.history_seconds == float(FILTER_HISTORY)
+        assert pipeline.history_frames == HISTORY_FRAMES
 
 
 class TestUnivariateParamsDispatcher:
@@ -818,6 +839,7 @@ def _minimal_bout_pipeline(
         'model_params': {
             'filter_history': FILTER_HISTORY,
             'model_engine': 'sklearn',
+            'model_target_vocal_type': 'bout_onset',
         },
         # The data-splitting dials moved into `model_validation` (the pipeline
         # reads them exclusively from there); `split_num` -> `n_cv_folds` and
@@ -991,10 +1013,30 @@ class TestCreateDataSplitsBranches:
         # the training rows' sessions travel with the split, for the session-grouped inner CV
         assert groups_tr.shape == y_tr.shape
 
+    def test_unexpected_binning_error_propagates(self, monkeypatch):
+        """
+        Only an empty / degenerate target (``ValueError`` / ``IndexError`` from
+        the percentile binning) falls back to a single stratum; any other
+        binning error propagates instead of silently disabling stratification
+        (the guard used to be a bare ``except Exception``).
+        """
+
+        pipeline = _minimal_bout_pipeline(split_strategy='mixed', split_num=2)
+        feature_data = _bout_feature_data(pipeline.history_frames, n_sessions=4)
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("forced binning failure")
+
+        monkeypatch.setattr(bout_params_module.np, 'digitize', _boom)
+        with pytest.raises(RuntimeError, match="forced binning failure"):
+            list(pipeline.create_data_splits(feature_data))
+
     def test_binning_except_zeroes_y_binned(self, monkeypatch):
         """
-        Forcing ``np.percentile`` to raise drives the quantile-binning ``try`` /
-        broad ``except`` that collapses ``y_binned`` to an all-zeros vector; with
+        Forcing ``np.percentile`` to raise ``ValueError`` (its failure on an
+        empty / degenerate target) drives the quantile-binning ``try`` /
+        ``except (ValueError, IndexError)`` that collapses ``y_binned`` to an
+        all-zeros vector; with
         a single stratification bin the 'mixed' ``StratifiedShuffleSplit`` still
         produces valid folds, proving the fallback keeps the generator alive.
         """
@@ -1005,7 +1047,7 @@ class TestCreateDataSplitsBranches:
         real_percentile = bout_params_module.np.percentile
 
         def _boom(*a, **k):
-            raise RuntimeError("forced percentile failure")
+            raise ValueError("forced percentile failure")
 
         monkeypatch.setattr(bout_params_module.np, 'percentile', _boom)
         try:
@@ -1241,3 +1283,81 @@ class TestPerFeatureHeldOut:
             assert res['heldout'][branch]['n_held_out_sessions'] == 1
             assert res['heldout'][branch]['n_held_out_events'] > 0
         assert np.isfinite(res['heldout']['actual']['fit_time'])
+
+    @pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
+    @pytest.mark.filterwarnings("ignore:invalid value encountered:RuntimeWarning")
+    @pytest.mark.filterwarnings("ignore:An input array is constant:scipy.stats.ConstantInputWarning")
+    def test_sklearn_runner_failed_heldout_refit_is_flagged(self, monkeypatch):
+        """
+        A held-out refit that raises must be recorded, not left as a silent
+        NaN: every fit is counted on a first run (whose held-out records carry
+        ``heldout_fit_failed=False`` and ``heldout_fit_error=None``), then the
+        final two fits -- the 'actual' and 'null' held-out refits, which run
+        after every CV fold -- are forced to raise. Both held-out records must
+        carry ``heldout_fit_failed=True`` and the exception text in
+        ``heldout_fit_error`` while the CV folds stay fitted.
+        """
+
+        pipeline = _minimal_bout_pipeline(split_strategy='mixed', split_num=2)
+        feature_data = _bout_feature_data(pipeline.history_frames, n_sessions=4)
+        basis = np.eye(pipeline.history_frames, 3, dtype=float)
+        original_cls = bout_params_module.GridSearchCV
+        counting_cls, counter = fit_counting_subclass(original_cls)
+        monkeypatch.setattr(bout_params_module, 'GridSearchCV', counting_cls)
+        _fn, clean = pipeline._run_model_for_feature_sklearn(
+            'self.speed', feature_data, basis, held_out_session_ids=['session_3'],
+        )
+        for branch in ('actual', 'null'):
+            assert clean['heldout'][branch]['heldout_fit_failed'] is False
+            assert clean['heldout'][branch]['heldout_fit_error'] is None
+        n_fits = counter['n']
+
+        failing_cls, _ = fit_counting_subclass(original_cls, fail_after=n_fits - 2)
+        monkeypatch.setattr(bout_params_module, 'GridSearchCV', failing_cls)
+        _fn, res = pipeline._run_model_for_feature_sklearn(
+            'self.speed', feature_data, basis, held_out_session_ids=['session_3'],
+        )
+        for branch in ('actual', 'null'):
+            assert res['heldout'][branch]['heldout_fit_failed'] is True
+            assert 'forced held-out refit failure' in res['heldout'][branch]['heldout_fit_error']
+            assert np.isnan(res['heldout'][branch]['explained_deviance'])
+        assert np.isfinite(res['actual']['explained_deviance']).any()
+
+    @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
+    @pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
+    @pytest.mark.filterwarnings("ignore:invalid value encountered:RuntimeWarning")
+    @pytest.mark.filterwarnings("ignore:An input array is constant:scipy.stats.ConstantInputWarning")
+    def test_pygam_runner_failed_heldout_refit_is_flagged(self, monkeypatch):
+        """
+        A held-out refit that raises must be recorded, not left as a silent
+        NaN: every fit is counted on a first run (whose held-out records carry
+        ``heldout_fit_failed=False`` and ``heldout_fit_error=None``), then the
+        final two fits -- the 'actual' and 'null' held-out refits, which run
+        after every CV fold -- are forced to raise. Both held-out records must
+        carry ``heldout_fit_failed=True`` and the exception text in
+        ``heldout_fit_error`` while the CV folds stay fitted.
+        """
+
+        pipeline = _minimal_bout_pipeline(split_strategy='mixed', split_num=2)
+        feature_data = _bout_feature_data(pipeline.history_frames, n_sessions=4)
+        original_cls = bout_params_module.GAM
+        counting_cls, counter = fit_counting_subclass(original_cls)
+        monkeypatch.setattr(bout_params_module, 'GAM', counting_cls)
+        _fn, clean = pipeline._run_model_for_feature_pygam(
+            'self.speed', feature_data, None, held_out_session_ids=['session_3'],
+        )
+        for branch in ('actual', 'null'):
+            assert clean['heldout'][branch]['heldout_fit_failed'] is False
+            assert clean['heldout'][branch]['heldout_fit_error'] is None
+        n_fits = counter['n']
+
+        failing_cls, _ = fit_counting_subclass(original_cls, fail_after=n_fits - 2)
+        monkeypatch.setattr(bout_params_module, 'GAM', failing_cls)
+        _fn, res = pipeline._run_model_for_feature_pygam(
+            'self.speed', feature_data, None, held_out_session_ids=['session_3'],
+        )
+        for branch in ('actual', 'null'):
+            assert res['heldout'][branch]['heldout_fit_failed'] is True
+            assert 'forced held-out refit failure' in res['heldout'][branch]['heldout_fit_error']
+            assert np.isnan(res['heldout'][branch]['explained_deviance'])
+        assert np.isfinite(res['actual']['explained_deviance']).any()

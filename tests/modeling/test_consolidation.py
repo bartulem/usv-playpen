@@ -308,7 +308,8 @@ class TestSelectionHelpers:
 
         md_in = {'target_mouse_sex': 'male',
                  'experimental_condition': 'intact_partners_male',
-                 'analysis_tag': 'bout'}
+                 'analysis_tag': 'bout',
+                 'analysis_specific': {}}
         md_run = {'split_strategy': 'mixed'}
         prefix = 'model_selection_male_20260511_203829Z_bout_step_'
         out = cms._build_default_output_filename(md_in, md_run, step_prefix=prefix)
@@ -382,7 +383,8 @@ class TestSelectionConsolidate:
     def _md(self):
         return ({'target_mouse_sex': 'male',
                  'experimental_condition': 'intact_partners_male',
-                 'analysis_tag': 'bout'},
+                 'analysis_tag': 'bout',
+                 'analysis_specific': {}},
                 {'split_strategy': 'mixed'})
 
     def test_round_trip_merges_steps(self, tmp_path):
@@ -630,7 +632,8 @@ class TestConsolidatorCLI:
 
         md_in = {'target_mouse_sex': 'male',
                  'experimental_condition': 'intact_partners_male',
-                 'analysis_tag': 'bout'}
+                 'analysis_tag': 'bout',
+                 'analysis_specific': {}}
         md_run = {'split_strategy': 'mixed'}
         _write_pkl(tmp_path / 'model_selection_test_step_0.pkl',
                    _step_pkl({'selected_feature': 'a'}, md_in, md_run))

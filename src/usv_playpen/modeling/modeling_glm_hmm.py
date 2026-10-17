@@ -26,12 +26,15 @@ engine validated on the Coen-2014 fly to reproduce its state-selection without t
 state collapse the EM engine suffers on weakly-identified categorical data.
 """
 
+from __future__ import annotations
+
 import json
 import pickle
 from pathlib import Path
 
 import numpy as np
 
+from ..os_utils import atomic_output_path
 from .glm_hmm import (
     GLMHMM,
     InputDrivenGLMHMM,
@@ -45,6 +48,7 @@ from .modeling_metadata import (
     get_package_version,
     inject_metadata,
     load_selection_results,
+    read_reserved_block,
 )
 from .modeling_utils import held_out_session_ids_from_metadata
 
@@ -256,7 +260,8 @@ def _manifold_emission_factory(n_features: int, n_time_bins: int, *,
 
 def _multinomial_emission_factory(n_features: int, n_time_bins: int, *,
                                   lambda_smooth: float, l2_reg: float,
-                                  focal_gamma: float, max_iter: int):
+                                  focal_gamma: float, max_iter: int,
+                                  class_labels: np.ndarray):
     """
     Description
     -----------
@@ -277,6 +282,10 @@ def _multinomial_emission_factory(n_features: int, n_time_bins: int, *,
         Focal-loss focusing parameter (``0.0`` = plain cross-entropy).
     max_iter (int)
         Optimiser iterations for each state's classifier.
+    class_labels (np.ndarray)
+        The full label set (every development and reserved session), fixed before
+        cross-validation so a test fold carrying a category its training folds lack
+        is scored (at zero predicted probability) rather than raising.
 
     Returns
     -------
@@ -287,7 +296,7 @@ def _multinomial_emission_factory(n_features: int, n_time_bins: int, *,
     classifier_kwargs = dict(n_features=n_features, n_time_bins=n_time_bins,
                              lambda_smooth=lambda_smooth, l2_reg=l2_reg,
                              focal_gamma=focal_gamma, max_iter=max_iter)
-    return lambda: emission_cls(classifier_kwargs)
+    return lambda: emission_cls(classifier_kwargs, class_labels=class_labels)
 
 
 def run_glm_hmm_state_selection(input_data_path: str, settings_path: str,
@@ -378,10 +387,18 @@ def run_glm_hmm_state_selection(input_data_path: str, settings_path: str,
 
     with open(input_data_path, 'rb') as input_file:
         raw_data = pickle.load(input_file)
-    input_metadata = raw_data.pop('_input_metadata', {})
+    # A legacy input pickle without `_input_metadata` reads as an empty block:
+    # no held-out reserve, settings-side geometry, no provenance re-injection.
+    input_metadata = read_reserved_block(raw_data, '_input_metadata')
+    if input_metadata is None:
+        input_metadata = {}
+    else:
+        del raw_data['_input_metadata']
 
     # Manifold geometry from the pickle's own record (the extraction stage writes
-    # it under analysis_specific), falling back to the settings' vocal_features.
+    # it under analysis_specific; only the manifold extraction records the metric
+    # and period), falling back to the settings' vocal_features for a legacy
+    # pickle or a non-manifold extraction.
     analysis_specific = input_metadata['analysis_specific'] if 'analysis_specific' in input_metadata else {}
     metric = (analysis_specific['manifold_metric'] if 'manifold_metric' in analysis_specific
               else settings['vocal_features']['usv_manifold_metric'])
@@ -465,11 +482,15 @@ def run_glm_hmm_state_selection(input_data_path: str, settings_path: str,
             metric=metric, period=period, lambda_smooth=lambda_smooth, l2_reg=l2_reg,
         )
     else:
+        # The label set is fixed from every session BEFORE cross-validation: a CV test
+        # fold can carry a category its training folds lack, which the per-state
+        # classifiers (trained on the folds' labels only) would otherwise not know.
         factory = _multinomial_emission_factory(
             len(emission_features), n_time_bins,
             lambda_smooth=lambda_smooth, l2_reg=l2_reg,
             focal_gamma=float(glm_hmm_settings['focal_gamma']),
             max_iter=int(glm_hmm_settings['multinomial_max_iter']),
+            class_labels=np.unique(np.concatenate([np.asarray(target) for _, target in dev_xy + held_xy])),
         )
 
     def fit_model(n_states: int, train_sequences: list) -> object:
@@ -640,7 +661,7 @@ def run_glm_hmm_state_selection(input_data_path: str, settings_path: str,
     output_dir.mkdir(parents=True, exist_ok=True)
     filename_tag = metric if emission_type == 'manifold' else target_key
     out_path = output_dir / f"glm_hmm_states_{emission_type}_{filename_tag}_K{selected_n_states}.pkl"
-    with open(out_path, 'wb') as out_file:
+    with atomic_output_path(out_path) as temporary_path, temporary_path.open('wb') as out_file:
         pickle.dump(results, out_file)
     print(f"Saved GLM-HMM state-selection results to {out_path}", flush=True)
     return results

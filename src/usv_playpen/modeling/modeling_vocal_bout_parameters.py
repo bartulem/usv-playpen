@@ -31,6 +31,8 @@ Key Scientific and Computational Components:
     standard R^2 for skewed biological data.
 """
 
+from __future__ import annotations
+
 from datetime import datetime
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
@@ -45,6 +47,7 @@ from sklearn.linear_model import GammaRegressor
 from sklearn.metrics import mean_gamma_deviance, mean_squared_log_error
 from tqdm import tqdm
 
+from ..os_utils import atomic_output_path
 from .modeling_vocal_onsets import VocalOnsetModelingPipeline
 from .load_input_files import load_behavioral_feature_data, find_variable_length_bouts
 from .load_input_files import is_pooled_vocal_signal, is_vocal_signal, require_labels_for_vocal_predictors
@@ -105,6 +108,13 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         which handles loading defaults (if None), flattening the dictionary structure,
         and initializing the FeatureZoo attributes (like feature_boundaries).
 
+        The history window is then recomputed from ``model_params.filter_history``:
+        the parent takes the ``bout_offset`` block's own window when
+        ``model_target_vocal_type == 'bout_offset'`` (an ONSET-pipeline target),
+        but this pipeline finds its bouts with ``model_params.filter_history`` and
+        records that value in the metadata, so its windows must be that wide
+        whatever the onset target mode.
+
         Parameters
         ----------
         modeling_settings_dict : dict, optional
@@ -117,6 +127,18 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         """
 
         super().__init__(modeling_settings_dict=modeling_settings_dict)
+
+        camera_rate = self.modeling_settings['io']['camera_sampling_rate']
+        filter_history_sec = self.modeling_settings['model_params']['filter_history']
+        self.history_seconds = float(filter_history_sec)
+        self.history_frames = int(np.floor(camera_rate * filter_history_sec))
+        if self.history_frames < 1:
+            message = (
+                f"history_frames computed as {self.history_frames} (< 1) from "
+                f"filter_history={filter_history_sec}s at camera_rate={camera_rate}fps; "
+                f"the history window must span at least one frame."
+            )
+            raise ValueError(message)
 
     def extract_and_save_modeling_input_data(self) -> None:
         """
@@ -561,7 +583,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         input_metadata['feature_zoo_kept'] = sorted(final_data_dict.keys())
 
         artifact = inject_metadata(final_data_dict, _input_metadata=input_metadata)
-        with save_path.open('wb') as f:
+        with atomic_output_path(save_path) as temporary_path, temporary_path.open('wb') as f:
             pickle.dump(artifact, f)
         print(f"[+] Saved: {save_path}")
 
@@ -625,7 +647,9 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             n_bins = max(2, min(10, n_samples // 20))
             bins = np.percentile(y, np.linspace(0, 100, n_bins + 1))
             y_binned = np.digitize(y, bins[1:-1])
-        except Exception:
+        except (ValueError, IndexError):
+            # An empty or degenerate target cannot be binned; fall back to a
+            # single stratum. Any other error propagates.
             y_binned = np.zeros(len(y))
 
         # 4. Splitting Execution
@@ -769,6 +793,12 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             and 'null' metrics across all cross-validation splits (the 'null'
             branch holds the permutation control — same estimator re-fit on a
             shuffled target).
+            When held-out sessions are reserved, a top-level 'heldout' key holds
+            'actual' and 'null' records (scalar metrics of the development refit
+            scored once on the held-out sessions), each with 'heldout_fit_failed'
+            (True when the refit or its deviance metric raised, leaving those
+            values NaN) and 'heldout_fit_error' (exception type and message, or
+            None).
         """
 
         print(f"--- Running [GammaGAM] for: {feature_name} ---")
@@ -1063,6 +1093,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                     'filter_shapes': np.full(hist_frames, np.nan),
                     'n_iter': np.nan, 'converged': False, 'fit_time': np.nan,
                     'n_held_out_sessions': n_held_sessions, 'n_held_out_events': n_held_events,
+                    'heldout_fit_failed': False, 'heldout_fit_error': None,
                 }
                 try:
                     y_dev_tiled = np.repeat(y_dev_use + 1e-6, hist_frames).astype(np.float32)
@@ -1093,6 +1124,10 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                         rec['explained_deviance'] = 0.0 if null_dev == 0 else 1 - (res_dev / null_dev)
                     except Exception as e:
                         print(f"      [!] Held-out Metric Failed ({branch}): {e}")
+                        # Record the failure explicitly so a NaN held-out score is never
+                        # mistaken for a fitted one.
+                        rec['heldout_fit_failed'] = True
+                        rec['heldout_fit_error'] = f"deviance metric: {type(e).__name__}: {e}"
                     rec['spearman_r'] = spearman_r_safe(y_held, y_pred)
                     rec['pearson_r'] = pearson_r_safe(y_held, y_pred)
                     rec['msle'] = mean_squared_log_error(y_held, y_pred)
@@ -1108,6 +1143,10 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                     gc.collect()
                 except Exception as e:
                     print(f"Held-out refit failed (pyGAM {branch}): {e}")
+                    # Record the failure explicitly so a NaN held-out score is never
+                    # mistaken for a fitted one.
+                    rec['heldout_fit_failed'] = True
+                    rec['heldout_fit_error'] = f"{type(e).__name__}: {e}"
                 heldout[branch] = rec
             results['heldout'] = heldout
 
@@ -1181,6 +1220,12 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             A tuple of (feature_name, results_dict) containing cross-validated performance
             metrics, optimized hyperparameters, and reconstructed filter shapes for both
             the 'actual' model and the 'null' (label-permuted) control.
+            When held-out sessions are reserved, a top-level 'heldout' key holds
+            'actual' and 'null' records (scalar metrics of the development refit
+            scored once on the held-out sessions), each with 'heldout_fit_failed'
+            (True when the refit or its deviance metric raised, leaving those
+            values NaN) and 'heldout_fit_error' (exception type and message, or
+            None).
         """
 
         print(f"--- Running [GammaGLM] for: {feature_name} ---")
@@ -1443,6 +1488,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                     'filter_shapes': np.full(self.history_frames, np.nan),
                     'n_iter': np.nan, 'converged': False, 'fit_time': np.nan,
                     'n_held_out_sessions': n_held_sessions, 'n_held_out_events': n_held_events,
+                    'heldout_fit_failed': False, 'heldout_fit_error': None,
                 }
                 try:
                     y_dev_pos = np.maximum(y_dev_use, 1e-6)
@@ -1466,6 +1512,10 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                         rec['explained_deviance'] = 0.0 if null_dev == 0 else 1 - (res_dev / null_dev)
                     except Exception as e:
                         print(f"      [!] Held-out Metric Failed ({branch}): {e}")
+                        # Record the failure explicitly so a NaN held-out score is never
+                        # mistaken for a fitted one.
+                        rec['heldout_fit_failed'] = True
+                        rec['heldout_fit_error'] = f"deviance metric: {type(e).__name__}: {e}"
                     rec['spearman_r'] = spearman_r_safe(y_held, y_pred)
                     rec['pearson_r'] = pearson_r_safe(y_held, y_pred)
                     rec['msle'] = mean_squared_log_error(y_held, y_pred)
@@ -1480,6 +1530,10 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                         rec['filter_shapes'] = np.dot(best.coef_, basis_matrix.T)
                 except Exception as e:
                     print(f"Held-out refit failed (Gamma GLM {branch}): {e}")
+                    # Record the failure explicitly so a NaN held-out score is never
+                    # mistaken for a fitted one.
+                    rec['heldout_fit_failed'] = True
+                    rec['heldout_fit_error'] = f"{type(e).__name__}: {e}"
                 heldout[branch] = rec
             results['heldout'] = heldout
 

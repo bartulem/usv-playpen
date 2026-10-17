@@ -19,6 +19,8 @@ Key scientific capabilities:
     in individual recordings.
 """
 
+from __future__ import annotations
+
 import json
 import math
 
@@ -63,7 +65,7 @@ from .modeling_utils import (
 from .jax_multinomial_logistic_regression import SmoothMultinomialLogisticRegression
 from .modeling_bases_functions import basis_coefficients_to_frames, project_history_onto_basis, resolve_temporal_basis
 from ..analyses.compute_behavioral_features import FeatureZoo
-from ..os_utils import QLVM_CATEGORY_COLUMN, load_qlvm_category_bundle, resolve_modeling_setting
+from ..os_utils import QLVM_CATEGORY_COLUMN, atomic_output_path, load_qlvm_category_bundle, resolve_modeling_setting
 
 # Initial spatial-CV session-split matching tolerance (auto-widens at runtime)
 # and the Expected-Calibration-Error histogram bin count, read from the settings
@@ -209,7 +211,7 @@ def get_stratified_group_splits_stable(
 
         cv_folds = []
         fold_tolerances = []
-        rng = np.random.RandomState(random_seed)
+        rng = np.random.default_rng(random_seed)
 
         attempts = 0
         current_tolerance = tolerance
@@ -1266,7 +1268,7 @@ class MultinomialModelingPipeline(FeatureZoo):
         artifact = inject_metadata(final_data, _input_metadata=input_metadata)
 
         print(f"Saving extraction results to:\n{save_path} ...")
-        with save_path.open('wb') as f:
+        with atomic_output_path(save_path) as temporary_path, temporary_path.open('wb') as f:
             pickle.dump(artifact, f)
         print("[+] Save Complete.")
 

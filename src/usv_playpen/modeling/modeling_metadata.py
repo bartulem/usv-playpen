@@ -68,6 +68,8 @@ Design choices baked in here:
   values instead — provenance metadata must never break a fit run.
 """
 
+from __future__ import annotations
+
 import hashlib
 import json
 import pickle
@@ -164,7 +166,9 @@ def get_git_commit_info(repo_root: str = None) -> dict:
         )
         if status.returncode == 0:
             info['dirty'] = bool(status.stdout.strip())
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
+        # No git binary, not a repository, or a timeout: the commit stays
+        # 'unknown'. Any other error propagates.
         pass
     return info
 
@@ -212,7 +216,9 @@ def compute_settings_sha256(settings_source) -> str:
                 for chunk in iter(lambda: fh.read(65536), b''):
                     h.update(chunk)
         return h.hexdigest()
-    except Exception:
+    except (OSError, TypeError, ValueError):
+        # An unreadable settings file or an unserialisable source yields
+        # 'unknown'; any other error propagates.
         return 'unknown'
 
 
@@ -984,6 +990,46 @@ def extract_metadata_blocks(modeling_data: dict) -> tuple:
         else:
             clean_data[k] = v
     return clean_data, metadata_blocks
+
+
+def read_reserved_block(modeling_data: dict, block_key: str) -> dict | None:
+    """
+    Legacy-aware reader of one reserved metadata block of a loaded artifact.
+
+    Every current writer injects its reserved blocks (`_input_metadata` and,
+    downstream, `_run_metadata` / `_univariate_metadata` /
+    `_consolidation_metadata`), but artifacts written before the metadata
+    schema (schema-v1 input pickles, legacy step pickles) carry none. This is
+    the single, explicit place where an absent block is tolerated: it returns
+    `None` for such a legacy artifact so the caller decides, visibly, how to
+    proceed (an empty held-out reserve, no provenance re-injection, ...).
+    Readers of a block that must exist index the artifact directly instead.
+
+    Parameters
+    ----------
+    modeling_data : dict
+        The full dict returned by `pickle.load` on a modeling artifact.
+    block_key : str
+        One of `RESERVED_METADATA_KEYS`.
+
+    Returns
+    -------
+    dict | None
+        The reserved block when present, `None` when the artifact predates it.
+
+    Raises
+    ------
+    ValueError
+        If `block_key` is not a reserved metadata key (a typo would otherwise
+        read as a legacy artifact).
+    """
+
+    if block_key not in RESERVED_METADATA_KEYS:
+        message = f"read_reserved_block: {block_key!r} is not one of {RESERVED_METADATA_KEYS}."
+        raise ValueError(message)
+    if block_key in modeling_data:
+        return modeling_data[block_key]
+    return None
 
 
 def inject_metadata(payload: dict, **metadata_blocks) -> dict:

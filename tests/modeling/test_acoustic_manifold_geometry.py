@@ -206,6 +206,25 @@ class TestDeriveClusterCenters:
             f"wrap-aware error={wrap_aware_err:.4f}"
         )
 
+    def test_torus_seam_centre_matches_the_mid_cell_centre(self):
+        """A skewed (gamma-shaped) cluster must get the same centre relative to its
+        own position whether it sits mid-cell or straddles the 0/1 seam: the
+        estimator is wrap-aware only if moving the cluster across the seam does not
+        pull its mode toward the cluster mean."""
+
+        rng = np.random.default_rng(0)
+        n = 3000
+        dx = rng.gamma(2.0, 0.02, n)
+        dy = rng.normal(0.0, 0.02, n)
+        offsets = []
+        for base in (0.5, 0.97):
+            Y = np.column_stack([(base + dx) % 1.0, (0.5 + dy) % 1.0])
+            centre = derive_cluster_centers_empirically(Y, np.ones(n), metric='torus', period=1.0,
+                                                        grid_resolution=400, max_points_per_label=n)[1.0]
+            assert 0.0 <= centre[0] < 1.0
+            offsets.append(((centre[0] - base + 0.5) % 1.0) - 0.5)
+        assert abs(offsets[0] - offsets[1]) < 0.005
+
     def test_validates_metric_and_period(self):
         """`metric` must be one of `'euclidean'` / `'torus'` and `period`
         must be positive when torus — the shared validator raises."""

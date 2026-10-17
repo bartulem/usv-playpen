@@ -3,6 +3,8 @@
 Forward stepwise model selection for predicting bout and USV dynamics.
 """
 
+from __future__ import annotations
+
 import numpy as np
 import pickle
 import json
@@ -88,7 +90,7 @@ from .modeling_torus_geodesics import (
 from .modeling_metadata import (
     build_selection_metadata, inject_metadata, RESERVED_METADATA_KEYS,
 )
-from ..os_utils import resolve_modeling_setting
+from ..os_utils import atomic_output_path, resolve_modeling_setting
 
 # Forward-selection significance level and the Expected-Calibration-Error
 # histogram bin count, read from the settings blocks rather than bare 0.01 / 10
@@ -97,13 +99,26 @@ _SELECTION_P_VAL = resolve_modeling_setting('model_params', 'selection_p_val')
 _ECE_N_BINS = resolve_modeling_setting('diagnostics', 'ece_n_bins')
 # Fold-grain manifold selection gate (behaviour -> acoustic-manifold position).
 # The screen recomputes a per-FOLD paired score margin (actual - shuffle-null; macro von
-# Mises log-lik on the torus, distance correlation on euclidean) and bootstraps the folds;
-# a feature is kept only if the margin is consistently > 0 across folds AND is at least
+# Mises log-lik on the torus, distance correlation on euclidean) and tests it with an exact
+# sign-flip permutation over the folds (BH-FDR across features); a feature is kept only if
+# the margin is consistently > 0 across folds AND is at least
 # `_SELECTION_EFFECT_FLOOR` of the top surviving driver's margin (a relative floor that
 # ports across manifolds and kills trivial-but-consistent passes).
 _SELECTION_EFFECT_FLOOR = resolve_modeling_setting('model_params', 'selection_effect_floor')
 _SELECTION_N_BOOTSTRAP = resolve_modeling_setting('model_params', 'selection_n_bootstrap')
 _SELECTION_CI_LEVEL = resolve_modeling_setting('model_params', 'selection_ci_level')
+# The fold-margin p-value is an exact one-sided sign-flip permutation test over the folds.
+# Up to this many folds every one of the 2**n sign patterns is enumerated (2**22 sums are
+# ~32 MB of float64, a fraction of a second); above it a seeded Monte-Carlo subset of
+# `_SIGN_FLIP_MONTE_CARLO_DRAWS` patterns is drawn instead. These bound the computation
+# only; they are not analysis settings (the shipped `manifold_n_cv_folds` is enumerated exactly).
+_SIGN_FLIP_EXACT_MAX_FOLDS = 22
+_SIGN_FLIP_MONTE_CARLO_DRAWS = 2 ** 20
+# Human-readable names of the manifold Step-0 strategies (console lines and the run log).
+_STEP0_GATE_LABELS = {
+    'null_model_intercept': 'intercept-only (training-fold circular mean)',
+    'null_model_free': 'empirical-density draw',
+}
 
 
 def _harvest_upstream_metadata(univariate_data: dict,
@@ -158,6 +173,32 @@ def _harvest_upstream_metadata(univariate_data: dict,
         input_data.pop(k, None)
 
     return in_md, univ_md
+
+
+def _dump_step_pickle(path: str | Path, payload: Any) -> None:
+    """
+    Description
+    -----------
+    Pickles one selection artifact (a step file or the finalized last step) to ``path``
+    atomically: the bytes go to a temporary sibling that ``os_utils.atomic_output_path``
+    renames onto ``path`` only after the dump finished, so a crash, kill or full disk
+    mid-write leaves the previous file intact instead of a truncated pickle that a
+    resume or the consolidator would then fail to read (or, for the finalization
+    rewrite of the last step, the loss of the very checkpoint a resume needs).
+
+    Parameters
+    ----------
+    path (str | Path)
+        Destination pickle path; its parent directory must exist.
+    payload (Any)
+        The object to pickle (normally a ``_wrap_step`` dict).
+
+    Returns
+    -------
+    None
+    """
+    with atomic_output_path(path) as tmp_path, open(tmp_path, 'wb') as handle:
+        pickle.dump(payload, handle)
 
 
 def _make_step_wrapper(input_md: dict, univariate_md: dict, run_md: dict):
@@ -274,14 +315,17 @@ def _restore_selection_checkpoint(
     every candidate's folds failed: the live run stopped there too). The anchor file stores
     the features after acceptance and a forward-step file the features before it, so the
     selected feature is appended only when missing. The incumbent's per-fold scores become
-    the reference the next gate compares against.
+    the reference the next gate compares against. A manifold Step-0 record keeps the
+    ``'null_model_free'`` marker but gates against the strategy it names in
+    ``baseline_strategy`` (the intercept-only predictor on the torus), so that strategy's
+    block is the restored incumbent.
 
     Parameters
     ----------
     last_res (dict)
         The loaded step pickle (``step_idx``, ``current_features``, ``baseline_score``,
-        ``selected_feature``, ``candidates_summary`` and, on forward steps,
-        ``baseline_folds``).
+        ``selected_feature``, ``candidates_summary``; ``baseline_folds`` on a converged
+        step; ``baseline_strategy`` on a manifold Step-0 record).
     score_key (str)
         The candidate entry's fold-mean score key (e.g. ``'mean_auc'``).
     se_key (str)
@@ -301,7 +345,7 @@ def _restore_selection_checkpoint(
         and ``converged`` (bool).
     """
 
-    candidates = (last_res['candidates_summary'] if 'candidates_summary' in last_res else None) or {}
+    candidates = last_res['candidates_summary']
     selected = last_res['selected_feature']
     features = list(last_res['current_features'])
     step_idx = int(last_res['step_idx'])
@@ -310,7 +354,7 @@ def _restore_selection_checkpoint(
             'features': features,
             'score': last_res['baseline_score'],
             'se': 0.0,
-            'folds': last_res['baseline_folds'] if 'baseline_folds' in last_res else None,
+            'folds': last_res['baseline_folds'],
             'next_step': step_idx,
             'converged': True,
         }
@@ -318,6 +362,10 @@ def _restore_selection_checkpoint(
             or score_key not in candidates[selected] or not np.isfinite(candidates[selected][score_key]):
         return None
     entry = candidates[selected]
+    if selected == 'null_model_free' and 'baseline_strategy' in last_res:
+        # Manifold Step-0 record: the marker stays 'null_model_free', the incumbent is
+        # the gate baseline it names.
+        entry = candidates[last_res['baseline_strategy']]
     if selected != 'null_model_free' and selected not in features:
         features.append(selected)
     return {
@@ -328,6 +376,161 @@ def _restore_selection_checkpoint(
         'next_step': step_idx + 1,
         'converged': False,
     }
+
+
+def _quarantine_stale_step_files(model_selection_dir: Path, prefix: str) -> Path | None:
+    """
+    Description
+    -----------
+    Moves every step file a FRESH selection run would collide with out of the way
+    before it writes its Step 0. A fresh start happens with step files on disk when
+    the resume logic rejects the last checkpoint (broken, unreadable or on another
+    score scale); the old files would otherwise survive next to the new run's, and
+    the consolidator and the GLM-HMM stage, which read the highest step index as
+    the final one, would pick up a stale step from the earlier run. The files are
+    moved, never deleted, into ``stale_<timestamp>/`` inside the selection
+    directory, and the move is logged.
+
+    Parameters
+    ----------
+    model_selection_dir (pathlib.Path)
+        The selection output directory.
+    prefix (str)
+        The run's step-file prefix; a step file is ``<prefix><int>.pkl``.
+
+    Returns
+    -------
+    stale_dir (pathlib.Path | None)
+        The folder the files were moved into, or None when there was nothing to move.
+    """
+
+    if not model_selection_dir.is_dir():
+        return None
+    stale_files = []
+    for path in model_selection_dir.iterdir():
+        name = path.name
+        if path.is_file() and name.startswith(prefix) and name.endswith('.pkl') \
+                and name[len(prefix):-len('.pkl')].isdigit():
+            stale_files.append(path)
+    if not stale_files:
+        return None
+    stale_dir = model_selection_dir / f"stale_{time.strftime('%Y%m%d_%H%M%S')}"
+    stale_dir.mkdir(exist_ok=True)
+    for path in stale_files:
+        path.replace(stale_dir / path.name)
+    print(f"[FRESH START] Moved {len(stale_files)} stale step file(s) '{prefix}*.pkl' from an earlier "
+          f"run into {stale_dir} so they cannot be read as this run's steps.")
+    return stale_dir
+
+
+def _write_empty_selection(last_file: Path,
+                           wrap_step: Callable[[dict], dict],
+                           univariate_results_path: str,
+                           input_data_path: str,
+                           label: str) -> None:
+    """
+    Description
+    -----------
+    Finalizes a selection that accepted no feature (no anchor forced and the first
+    forward step rejected every candidate). There is no model to refit, so the
+    per-fold filter-shape refit and the held-out refit are skipped, and the last
+    step file records the empty result explicitly: ``final_model_features = []``,
+    ``filter_shapes = []`` and ``heldout = None``. A rerun resumes that converged
+    checkpoint and lands here again, writing the same result instead of crashing.
+
+    Parameters
+    ----------
+    last_file (pathlib.Path)
+        The step file the run wrote last (the rejecting step).
+    wrap_step (Callable[[dict], dict])
+        The selector's metadata wrapper (re-injects the reserved metadata blocks).
+    univariate_results_path (str)
+        The univariate ranking the run screened, recorded for provenance.
+    input_data_path (str)
+        The modeling-input pickle, recorded for provenance.
+    label (str)
+        The selector's name in the log line (e.g. ``'onset'``).
+
+    Returns
+    -------
+    None
+    """
+
+    with open(last_file, 'rb') as f:
+        data = pickle.load(f)
+    for _k in RESERVED_METADATA_KEYS:
+        data.pop(_k, None)
+    data.update({
+        'final_model_features': [],
+        'filter_shapes': [],
+        'heldout': None,
+        'univariate_results_path': univariate_results_path,
+        'input_data_path': input_data_path,
+    })
+    _dump_step_pickle(last_file, wrap_step(data))
+    print(f"\n[EMPTY SELECTION] {label} model selection accepted no feature: no candidate beat the "
+          f"baseline by the 1-SE margin. Recorded final_model_features=[], filter_shapes=[], "
+          f"heldout=None in {last_file}; no final or held-out refit was run.")
+
+
+def _sign_flip_p_value(margins: np.ndarray, *, random_state: int) -> float:
+    """
+    Description
+    -----------
+    One-sided sign-flip permutation p-value that the mean of paired per-fold margins
+    exceeds zero.
+
+    Under the null that each fold's ``actual - baseline`` margin is symmetric about
+    zero, every assignment of signs to the observed margins is equally likely. The
+    statistic is the margin sum (equivalently the mean); the p-value is the fraction of
+    sign patterns whose sum is at least the observed sum. With ``n`` folds there are
+    ``2**n`` patterns, the identity among them, so writing ``k`` for the number of the
+    ``B = 2**n - 1`` non-identity patterns with a sum at least the observed one gives
+    the usual ``p = (1 + k) / (1 + B)``; its floor is ``1 / 2**n`` (``9.54e-07`` at 20
+    folds), reached when no other pattern ties or beats the observed sum. Up to
+    ``_SIGN_FLIP_EXACT_MAX_FOLDS`` folds all patterns are enumerated (the test is
+    exact); above it ``B = _SIGN_FLIP_MONTE_CARLO_DRAWS`` random patterns are drawn
+    with ``random_state`` and the same ``(1 + k) / (1 + B)`` form is returned.
+
+    The pattern sums are built by doubling: starting from ``[0]``, each margin ``m``
+    turns the current sums ``S`` into ``[S + m, S - m]``, so index 0 is the identity
+    (all signs positive) and the whole set costs ``2**n`` additions. Sums that differ
+    from the observed one only by floating-point reassociation (a margin of exactly
+    zero, or a tie) count as ties, through a tolerance of ``1e-12`` times the sum of
+    absolute margins.
+
+    Parameters
+    ----------
+    margins (np.ndarray)
+        ``(n,)`` finite per-fold paired margins (``n >= 1``).
+    random_state (int)
+        Seed for the Monte-Carlo branch (unused when the patterns are enumerated).
+
+    Returns
+    -------
+    p_value (float)
+        The one-sided sign-flip p-value, in ``[1 / 2**n, 1]`` when exact.
+    """
+    margins = np.asarray(margins, dtype=np.float64).ravel()
+    n_folds = margins.size
+    tolerance = 1e-12 * max(1.0, float(np.sum(np.abs(margins))))
+    if n_folds <= _SIGN_FLIP_EXACT_MAX_FOLDS:
+        pattern_sums = np.zeros(1, dtype=np.float64)
+        for margin in margins:
+            pattern_sums = np.concatenate((pattern_sums + margin, pattern_sums - margin))
+        observed = pattern_sums[0]
+        return float(np.count_nonzero(pattern_sums >= observed - tolerance)) / float(pattern_sums.size)
+    observed = float(np.sum(margins))
+    rng = np.random.default_rng(random_state)
+    n_at_least = 0
+    remaining = _SIGN_FLIP_MONTE_CARLO_DRAWS
+    chunk_size = 2 ** 14
+    while remaining > 0:
+        n_draw = min(chunk_size, remaining)
+        signs = rng.integers(0, 2, size=(n_draw, n_folds)) * 2.0 - 1.0
+        n_at_least += int(np.count_nonzero(signs @ margins >= observed - tolerance))
+        remaining -= n_draw
+    return (1.0 + n_at_least) / (1.0 + _SIGN_FLIP_MONTE_CARLO_DRAWS)
 
 
 def _fold_paired_margin_bootstrap(
@@ -354,9 +557,10 @@ def _fold_paired_margin_bootstrap(
     out-of-sample test predictions; the per-fold ``actual - null`` difference is
     the *within-fold* behaviour->position signal, with the structure both share
     cancelled by the pairing. **Folds -- not sessions, not individual
-    vocalizations -- are the unit**, and significance is assessed by
-    bootstrapping the per-fold margins (percentile CI at ``ci_level`` plus a
-    one-sided bootstrap probability that the mean margin is <= 0).
+    vocalizations -- are the unit**. Significance is an exact one-sided
+    sign-flip permutation test over the per-fold margins
+    (:func:`_sign_flip_p_value`; floor ``1 / 2**n_folds``), and the reported
+    interval is a percentile CI at ``ci_level`` from bootstrapping the folds.
 
     Why fold-grain. On the torus the per-fold score is the macro (per-region)
     von Mises log-likelihood (:func:`manifold_metric.macro_von_mises_logscore`),
@@ -367,7 +571,7 @@ def _fold_paired_margin_bootstrap(
     time starves most regions below any sensible per-region floor and collapses
     the macro signal. The concentration ``kappa`` is fit per fold on that fold's
     pooled angular residuals (each fold carries thousands of events, so the
-    estimate is stable), matching the validated Arc-1 methodology.
+    estimate is stable).
 
     On euclidean the per-fold score is the wrap-aware distance correlation
     (:func:`manifold_metric.dcor_prediction_truth`), unchanged. Distance
@@ -388,12 +592,15 @@ def _fold_paired_margin_bootstrap(
     period (float)
         Per-axis wrap period (used on the torus; ignored on euclidean).
     n_bootstrap (int)
-        Number of fold bootstrap resamples.
+        Number of fold bootstrap resamples (for the reported CI only; the
+        p-value is the sign-flip test).
     ci_level (float)
         Central confidence level for the reported percentile interval (e.g.
         ``0.99``).
     random_state (int)
-        Seed for the deterministic fold bootstrap.
+        Seed for the deterministic fold bootstrap (and for the sign-flip
+        test's Monte-Carlo branch, used only above
+        ``_SIGN_FLIP_EXACT_MAX_FOLDS`` usable folds).
     event_to_region (np.ndarray)
         Per-event acoustic-region (QLVM category) label, aligned to the same
         full-event index space as each fold's ``test_indices``. Required for the
@@ -420,7 +627,9 @@ def _fold_paired_margin_bootstrap(
     result (dict)
         Keys: ``mean_margin`` (mean per-fold margin), ``ci_low`` / ``ci_high``
         (bootstrap percentile interval at ``ci_level``), ``p_value`` (one-sided
-        bootstrap probability that the mean margin is <= 0), and ``n_folds``
+        exact sign-flip permutation p-value that the mean margin exceeds 0,
+        ``(1 + k) / (1 + B)`` over the ``B = 2**n_folds - 1`` non-identity sign
+        patterns, so never 0), and ``n_folds``
         (number of folds with a usable margin). If fewer than two folds are
         usable, ``mean_margin`` is ``nan`` and ``p_value`` is ``1.0`` so the
         feature cannot pass.
@@ -429,8 +638,8 @@ def _fold_paired_margin_bootstrap(
     # log-likelihood with a per-fold concentration `kappa` (each fold pools all
     # sessions, so every region is well populated and the estimate is stable); on
     # EUCLIDEAN it is the wrap-aware distance correlation. Both are reduced to one
-    # number per fold and the paired actual-minus-null margin is bootstrapped over
-    # folds.
+    # number per fold; the paired actual-minus-null margin is tested by an exact
+    # sign-flip permutation over folds and its CI is bootstrapped over folds.
     def _fold_scores(folds: dict) -> np.ndarray:
         """
         Description
@@ -518,8 +727,8 @@ def _fold_paired_margin_bootstrap(
         'mean_margin': float(margins.mean()),
         'ci_low': float(ci_low),
         'ci_high': float(ci_high),
-        # One-sided bootstrap p: fraction of resampled means at or below zero.
-        'p_value': float(np.mean(boot_means <= 0.0)),
+        # One-sided exact sign-flip permutation p over the folds (floor 1 / 2**n).
+        'p_value': _sign_flip_p_value(margins, random_state=random_state),
         'n_folds': int(margins.size),
     }
 
@@ -1139,6 +1348,11 @@ def vocal_onset_model_selection(univariate_results_path: str,
             print(f"Resume failed: {e}. Starting fresh.")
             existing_steps = []
 
+    # A fresh start (no checkpoint, or one the resume logic rejected) moves any step
+    # files of an earlier run aside before Step 0 is written.
+    if not existing_steps:
+        _quarantine_stale_step_files(model_selection_dir, prefix)
+
     if use_top_rank_as_anchor and step_counter == 0 and not resume_converged:
         anchor_to_force = ranked_features[0]
         print(format_selection_step('Anchor', feature=anchor_to_force,
@@ -1273,8 +1487,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
             # `target_condition` and could orphan the Step 0 file from the rest
             # of the run on selection resume.
             s0_name = f"{prefix}0.pkl"
-            with open(model_selection_dir / s0_name, 'wb') as f:
-                pickle.dump(_wrap_step(step_0_metadata), f)
+            _dump_step_pickle(model_selection_dir / s0_name, _wrap_step(step_0_metadata))
             step_counter = 1
 
     # A resume that restored a converged search skips the loop and finalizes directly.
@@ -1465,8 +1678,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
             current_model_features.append(best_candidate)
 
             fname = f"{prefix}{step_counter}.pkl"
-            with open(model_selection_dir / fname, 'wb') as f:
-                pickle.dump(_wrap_step(step_results_metadata), f)
+            _dump_step_pickle(model_selection_dir / fname, _wrap_step(step_results_metadata))
 
             best_current_score, best_current_se, step_counter = best_candidate_score, best_candidate_se, step_counter + 1
             best_current_folds = best_candidate_folds
@@ -1475,8 +1687,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
                                         detail='no candidate beat the 1-SE margin; selection finished'))
             step_results_metadata['selected_feature'] = None
             fname = f"{prefix}{step_counter}.pkl"
-            with open(model_selection_dir / fname, 'wb') as f:
-                pickle.dump(_wrap_step(step_results_metadata), f)
+            _dump_step_pickle(model_selection_dir / fname, _wrap_step(step_results_metadata))
             break
 
         if len(current_model_features) == len(ranked_features):
@@ -1484,6 +1695,10 @@ def vocal_onset_model_selection(univariate_results_path: str,
 
     print("\n--- Final Model Fit for Visualization (per-fold) ---")
     last_file = model_selection_dir / fname
+
+    if not current_model_features:
+        _write_empty_selection(last_file, _wrap_step, univariate_results_path, input_data_path, 'onset')
+        return
 
     # Per-fold refit of the final multivariate GAM so the consumer
     # gets one filter-shape dict per CV fold. The downstream plotter
@@ -1596,7 +1811,8 @@ def vocal_onset_model_selection(univariate_results_path: str,
                 y_tr_use = (y_tr_bal if branch == 'actual'
                             else y_tr_bal[within_group_permutation(groups_dev, held_rng)])
                 rec = {'ll': np.nan, 'auc': np.nan, 'score': np.nan,
-                       'deviance_explained': np.nan, 'brier': np.nan}
+                       'deviance_explained': np.nan, 'brier': np.nan,
+                       'heldout_fit_failed': False, 'heldout_fit_error': None}
                 try:
                     gam = LogisticGAM(gam_terms_final, **gam_kwargs).fit(
                         X_tr_gam, np.repeat(y_tr_use.astype(float), history_frames)
@@ -1611,7 +1827,13 @@ def vocal_onset_model_selection(univariate_results_path: str,
                     if len(np.unique(y_te_int)) > 1:
                         rec['auc'] = roc_auc_score(y_te_int, y_proba_mean)
                 except Exception as e:
-                    print(f"Held-out refit failed (onset {branch}): {e}")
+                    # The held-out number is touched once; a failed refit is recorded as such
+                    # (flag + error text beside the NaN metrics) and warned about, never left
+                    # as a silent NaN.
+                    rec['heldout_fit_failed'] = True
+                    rec['heldout_fit_error'] = f"{type(e).__name__}: {e}"
+                    warnings.warn(f"Held-out refit failed (onset {branch}): {rec['heldout_fit_error']}",
+                                  RuntimeWarning, stacklevel=2)
                 heldout_result[branch] = rec
 
     with open(last_file, 'rb') as f:
@@ -1630,8 +1852,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
         'input_data_path': input_data_path,
     })
 
-    with open(last_file, 'wb') as f:
-        pickle.dump(_wrap_step(data), f)
+    _dump_step_pickle(last_file, _wrap_step(data))
     metrics_by_strategy = {'Final': {'LL': best_current_score},
                            'Chance': {'LL': chance_ll}}
     # Held-out LL (development-refit, scored once) -- the honest number alongside
@@ -2206,6 +2427,11 @@ def vocal_category_model_selection(
             print(f"Resume failed: {e}. Starting fresh.")
             existing_steps = []
 
+    # A fresh start (no checkpoint, or one the resume logic rejected) moves any step
+    # files of an earlier run aside before Step 0 is written.
+    if not existing_steps:
+        _quarantine_stale_step_files(model_selection_dir, prefix)
+
     if use_top_rank_as_anchor and step_counter == 0 and not resume_converged:
         anchor = ranked_features[0]
         print(format_selection_step('Anchor', feature=anchor, detail='forcing as start'))
@@ -2350,8 +2576,7 @@ def vocal_category_model_selection(
                     }
                 }
             }
-            with open(model_selection_dir / f"{prefix}0.pkl", 'wb') as f:
-                pickle.dump(_wrap_step(step_results), f)
+            _dump_step_pickle(model_selection_dir / f"{prefix}0.pkl", _wrap_step(step_results))
             step_counter = 1
 
     print("\n--- Starting Forward Selection ---")
@@ -2555,8 +2780,7 @@ def vocal_category_model_selection(
                                         decision='ACCEPT', metrics={'LL': best_cand_score}))
             current_model_features.append(best_cand_name)
             step_results_metadata['selected_feature'] = best_cand_name
-            with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
-                pickle.dump(_wrap_step(step_results_metadata), f)
+            _dump_step_pickle(model_selection_dir / f"{prefix}{step_counter}.pkl", _wrap_step(step_results_metadata))
             # Track `best_current_se` alongside the score so the 1SE acceptance
             # test always compares against the *current* accepted model's
             # sampling variability rather than a stale Step-0 value.
@@ -2567,8 +2791,7 @@ def vocal_category_model_selection(
             print(format_selection_step(f"Step {step_counter}", decision='REJECT',
                                         detail='no candidate beat the 1-SE margin; selection finished'))
             step_results_metadata['selected_feature'] = None
-            with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
-                pickle.dump(_wrap_step(step_results_metadata), f)
+            _dump_step_pickle(model_selection_dir / f"{prefix}{step_counter}.pkl", _wrap_step(step_results_metadata))
             break
 
     print("\n--- Final Refit for Visualization (CV-based) ---")
@@ -2577,6 +2800,10 @@ def vocal_category_model_selection(
     last_file = model_selection_dir / f"{prefix}{step_counter}.pkl"
     if not last_file.exists():
         last_file = model_selection_dir / f"{prefix}{step_counter - 1}.pkl"
+
+    if not current_model_features:
+        _write_empty_selection(last_file, _wrap_step, univariate_results_path, input_data_path, 'category')
+        return
 
     final_fold_shapes = []
     print(f"  Calculating filter shapes across {len(cv_folds)} folds...")
@@ -2706,7 +2933,8 @@ def vocal_category_model_selection(
                 y_tr = (y_tr_bal if branch == 'actual'
                         else y_tr_bal[within_group_permutation(groups_dev, held_rng)])
                 rec = {'ll': np.nan, 'auc': np.nan, 'score': np.nan,
-                       'deviance_explained': np.nan, 'brier': np.nan}
+                       'deviance_explained': np.nan, 'brier': np.nan,
+                       'heldout_fit_failed': False, 'heldout_fit_error': None}
                 try:
                     if model_type == 'sklearn':
                         X_tr_stacked = np.hstack([np.dot(x, basis_matrix) for x in X_tr_list])
@@ -2741,7 +2969,13 @@ def vocal_category_model_selection(
                     if len(np.unique(y_te_int)) > 1:
                         rec['auc'] = roc_auc_score(y_te_int, y_prob)
                 except Exception as e:
-                    print(f"Held-out refit failed (category {branch}): {e}")
+                    # The held-out number is touched once; a failed refit is recorded as such
+                    # (flag + error text beside the NaN metrics) and warned about, never left
+                    # as a silent NaN.
+                    rec['heldout_fit_failed'] = True
+                    rec['heldout_fit_error'] = f"{type(e).__name__}: {e}"
+                    warnings.warn(f"Held-out refit failed (category {branch}): {rec['heldout_fit_error']}",
+                                  RuntimeWarning, stacklevel=2)
                 heldout_result[branch] = rec
 
     final_res = {
@@ -2759,8 +2993,7 @@ def vocal_category_model_selection(
         data.pop(_k, None)
     data.update(final_res)
 
-    with open(last_file, 'wb') as f:
-        pickle.dump(_wrap_step(data), f)
+    _dump_step_pickle(last_file, _wrap_step(data))
 
     metrics_by_strategy = {'Final': {'LL': best_current_score},
                            'Chance': {'LL': chance_ll}}
@@ -3197,6 +3430,11 @@ def bout_parameter_model_selection(
             print(f"Resume failed: {e}. Starting fresh.")
             existing_steps = []
 
+    # A fresh start (no checkpoint, or one the resume logic rejected) moves any step
+    # files of an earlier run aside before Step 0 is written.
+    if not existing_steps:
+        _quarantine_stale_step_files(model_selection_dir, prefix)
+
     # 5. Auto-Anchor Logic
     if use_top_rank_as_anchor and step_counter == 0 and not resume_converged:
         anchor = ranked_features[0]
@@ -3330,8 +3568,7 @@ def bout_parameter_model_selection(
                         }
                     }
                 }
-                with open(model_selection_dir / f"{prefix}0.pkl", 'wb') as f:
-                    pickle.dump(_wrap_step(step_0_res), f)
+                _dump_step_pickle(model_selection_dir / f"{prefix}0.pkl", _wrap_step(step_0_res))
                 step_counter = 1
             else:
                 print(format_selection_step('Anchor', feature=anchor, decision='FAILED',
@@ -3512,8 +3749,7 @@ def bout_parameter_model_selection(
             step_results['selected_feature'] = best_cand
             current_model_features.append(best_cand)
 
-            with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
-                pickle.dump(_wrap_step(step_results), f)
+            _dump_step_pickle(model_selection_dir / f"{prefix}{step_counter}.pkl", _wrap_step(step_results))
 
             best_current_score = best_cand_score
             best_current_se = best_cand_se
@@ -3523,8 +3759,7 @@ def bout_parameter_model_selection(
             print(format_selection_step(f"Step {step_counter}", decision='REJECT',
                                         detail='no candidate beat the 1-SE margin; selection finished'))
             step_results['selected_feature'] = None
-            with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
-                pickle.dump(_wrap_step(step_results), f)
+            _dump_step_pickle(model_selection_dir / f"{prefix}{step_counter}.pkl", _wrap_step(step_results))
             break
 
         if len(current_model_features) == len(ranked_features): break
@@ -3536,6 +3771,10 @@ def bout_parameter_model_selection(
     last_file = model_selection_dir / f"{prefix}{step_counter}.pkl"
     if not last_file.exists():
         last_file = model_selection_dir / f"{prefix}{step_counter - 1}.pkl"
+
+    if not current_model_features:
+        _write_empty_selection(last_file, _wrap_step, univariate_results_path, input_data_path, 'params')
+        return
 
     final_fold_shapes = []
     print(f"  Calculating filter shapes across {len(cv_folds)} folds...")
@@ -3615,7 +3854,8 @@ def bout_parameter_model_selection(
             # The held-out null shuffles targets within the development sessions.
             y_dev_use = (y_dev if branch == 'actual'
                          else y_dev[within_group_permutation(groups_global[_dev_positions], held_rng)])
-            rec = {'explained_deviance': np.nan, 'residual_deviance': np.nan}
+            rec = {'explained_deviance': np.nan, 'residual_deviance': np.nan,
+                   'heldout_fit_failed': False, 'heldout_fit_error': None}
             try:
                 if model_type == 'sklearn':
                     X_dev_stacked = np.hstack(
@@ -3663,7 +3903,13 @@ def bout_parameter_model_selection(
                 rec['residual_deviance'] = res_dev
                 rec['explained_deviance'] = 0.0 if null_dev == 0 else 1 - (res_dev / null_dev)
             except Exception as e:
-                print(f"Held-out refit failed (params {branch}): {e}")
+                # The held-out number is touched once; a failed refit is recorded as such
+                # (flag + error text beside the NaN metrics) and warned about, never left
+                # as a silent NaN.
+                rec['heldout_fit_failed'] = True
+                rec['heldout_fit_error'] = f"{type(e).__name__}: {e}"
+                warnings.warn(f"Held-out refit failed (params {branch}): {rec['heldout_fit_error']}",
+                              RuntimeWarning, stacklevel=2)
             heldout_result[branch] = rec
 
     final_res = {
@@ -3681,8 +3927,7 @@ def bout_parameter_model_selection(
         data.pop(_k, None)
     data.update(final_res)
 
-    with open(last_file, 'wb') as save_pkl_file:
-        pickle.dump(_wrap_step(data), save_pkl_file)
+    _dump_step_pickle(last_file, _wrap_step(data))
 
     metrics_by_strategy = {'Final': {'D^2': best_current_score},
                            'Baseline': {'D^2': 0.0}}
@@ -4300,6 +4545,11 @@ def multinomial_vocal_category_model_selection(
             print(f"Resume failed: {e}. Starting fresh.")
             existing_steps = []
 
+    # A fresh start (no checkpoint, or one the resume logic rejected) moves any step
+    # files of an earlier run aside before Step 0 is written.
+    if not existing_steps:
+        _quarantine_stale_step_files(model_selection_dir, prefix)
+
     # Calculate Model-Free Baseline (Step 0) if starting fresh
     if not existing_steps:
         print("\n--- Establishing Absolute Baseline (Model-Free Marginal Prior) ---")
@@ -4414,8 +4664,7 @@ def multinomial_vocal_category_model_selection(
             'candidates_summary': {'null_model_free': baseline_data}
         }
 
-        with open(model_selection_dir / f"{prefix}0.pkl", 'wb') as f:
-            pickle.dump(_wrap_step(step_0_res), f)
+        _dump_step_pickle(model_selection_dir / f"{prefix}0.pkl", _wrap_step(step_0_res))
 
         step_counter = 1
 
@@ -4601,8 +4850,7 @@ def multinomial_vocal_category_model_selection(
                     'selected_feature': anchor,
                     'candidates_summary': {anchor: cand_data}
                 }
-                with open(model_selection_dir / f"{prefix}1.pkl", 'wb') as f:
-                    pickle.dump(_wrap_step(step_1_res), f)
+                _dump_step_pickle(model_selection_dir / f"{prefix}1.pkl", _wrap_step(step_1_res))
                 step_counter = 2
             else:
                 print(format_selection_step(
@@ -4855,16 +5103,14 @@ def multinomial_vocal_category_model_selection(
                                         decision='ACCEPT', metrics={'AUC': best_cand_score}))
             step_results['selected_feature'] = best_cand
             current_model_features.append(best_cand)
-            with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
-                pickle.dump(_wrap_step(step_results), f)
+            _dump_step_pickle(model_selection_dir / f"{prefix}{step_counter}.pkl", _wrap_step(step_results))
             best_current_score, best_current_se, step_counter = best_cand_score, best_cand_se, step_counter + 1
             best_current_folds = best_cand_folds
         else:
             print(format_selection_step(f"Step {step_counter}", decision='REJECT',
                                         detail='no candidate beat the 1-SE margin; selection finished'))
             step_results['selected_feature'] = None
-            with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
-                pickle.dump(_wrap_step(step_results), f)
+            _dump_step_pickle(model_selection_dir / f"{prefix}{step_counter}.pkl", _wrap_step(step_results))
             break
 
         if len(current_model_features) == len(ranked_features):
@@ -5095,8 +5341,7 @@ def multinomial_vocal_category_model_selection(
     })
     for _k in RESERVED_METADATA_KEYS:
         step_data.pop(_k, None)
-    with open(last_file_path, 'wb') as f:
-        pickle.dump(_wrap_step(step_data), f)
+    _dump_step_pickle(last_file_path, _wrap_step(step_data))
 
     baseline_score = float('nan')
     step0_path = model_selection_dir / f"{prefix}0.pkl"
@@ -5154,9 +5399,11 @@ def continuous_vocal_manifold_model_selection(
     2. Fold-grain paired-margin screening (higher-is-better). For every
        feature the per-fold margin of `actual` over the within-session
        Y-permutation `null` (`SCREEN_BASELINE_STRATEGY`) on the selection
-       score is bootstrapped over folds (`_fold_paired_margin_bootstrap`);
-       the one-sided bootstrap p-values are Benjamini-Hochberg controlled
-       at `q = p_val`, and a surviving feature must also clear a relative
+       score is tested over folds (`_fold_paired_margin_bootstrap`): the
+       one-sided exact sign-flip permutation p-values (`_sign_flip_p_value`,
+       floor `1 / 2**manifold_n_cv_folds`, so 20 folds let a single feature clear the
+       BH rank-1 threshold `q / m`) are Benjamini-Hochberg controlled at
+       `q = p_val`, and a surviving feature must also clear a relative
        effect floor (`selection_effect_floor` x the top surviving margin).
        The permutation removes the session-level confound while leaving
        the trial-level dependence to test. On the torus the screen scores
@@ -5174,10 +5421,22 @@ def continuous_vocal_manifold_model_selection(
     4. Inverse-density weighting. The pre-computed KDE spatial weights
        `w` are forwarded to the JAX optimiser so gradient updates give
        satellite vocalisations the same pull as dense-core bouts.
-    5. Empirical-density baseline (Step 0). `null_model_free` predicts a
-       uniform random draw from the training `Y` for every test trial —
-       the chance floor (a sample from the observed repertoire, ignoring
-       kinematics) reported alongside the screen.
+    5. Step-0 gate baseline and chance floor. On the TORUS the anchor / first
+       forward feature must beat `null_model_intercept`, a training-fold
+       INTERCEPT-ONLY predictor (every test event predicted at the circular
+       mean of the fold's training `Y`, weighted like the candidates' fit),
+       scored on the test folds with the same bundle and gated with the same
+       per-fold margin as every candidate, so a model without behavioural
+       information ties it and is rejected. `null_model_free` predicts a
+       uniform random draw from the training `Y` for every test trial — the
+       chance floor (a sample from the observed repertoire, ignoring
+       kinematics), stored in the Step-0 file (`chance_floor_score`) and
+       reported, never gating on the torus. On EUCLIDEAN the selection score
+       is distance correlation, which is 0 for any constant prediction while
+       non-constant predictions carry its positive bias, so the bias-matched
+       draw stays the gate baseline there. The Step-0 record keeps
+       `selected_feature = 'null_model_free'` as its marker and names the gate
+       baseline in `baseline_strategy`.
     6. Fold-grain acceptance. Candidates are RANKED by their mean selection
        score (higher-is-better on both geometries), but the step winner is
        ACCEPTED only when its per-fold paired margin over the incumbent has a
@@ -5236,7 +5495,7 @@ def continuous_vocal_manifold_model_selection(
         screened feature (largest fold-mean paired margin) as Step 1.
     p_val : float, default 0.01
         The Benjamini-Hochberg false-discovery rate `q` of the screen's
-        one-sided bootstrap p-values.
+        one-sided sign-flip permutation p-values.
 
     Returns
     -------
@@ -5269,7 +5528,7 @@ def continuous_vocal_manifold_model_selection(
                      'settings': settings_path},
         output_directory=str(model_selection_dir),
         split_strategy=settings['model_validation']['split_strategy'],
-        n_splits=int(settings['model_validation']['n_cv_folds']),
+        n_splits=int(settings['model_validation']['manifold_n_cv_folds']),
     ))
 
     with open(univariate_results_path, 'rb') as f:
@@ -5305,7 +5564,7 @@ def continuous_vocal_manifold_model_selection(
     # per-fold paired margin) the accept gate; on both geometries it is
     # screened against the within-session `null` (see SCREEN_BASELINE_STRATEGY).
     _selection_manifold_metric, _selection_manifold_period = resolve_manifold_metric(settings)
-    # Honestly-named, geometry-specific selection key: the torus selects on a
+    # Explicitly named, geometry-specific selection key: the torus selects on a
     # von Mises log-score, euclidean on distance correlation (`dcor_xy`). On the
     # torus the `vocal_features.usv_manifold_selection_score` knob chooses the
     # region-balanced `vm_logscore` (macro, default) or the event-weighted
@@ -5333,7 +5592,8 @@ def continuous_vocal_manifold_model_selection(
     # Fold-grain paired-margin screen
     # The gate recomputes the paired `actual` vs `null` score margin PER CV FOLD
     # (the macro von Mises log-likelihood on the torus; the wrap-aware distance
-    # correlation on euclidean) and bootstraps the folds: a feature is kept only
+    # correlation on euclidean) and tests it over the folds with an exact sign-flip
+    # permutation (the CI is a fold bootstrap): a feature is kept only
     # if its per-fold margin is consistently > 0 across folds (BH-FDR corrected)
     # AND is at least `_SELECTION_EFFECT_FLOOR` of the top surviving driver's
     # margin (a relative effect floor that kills trivial-but-consistent passes
@@ -5407,8 +5667,7 @@ def continuous_vocal_manifold_model_selection(
     screen_event_to_region = None
     kappa_frozen = None
     _vf = settings['vocal_features']
-    freeze_selection_kappa = (bool(_vf['freeze_selection_kappa'])
-                              if 'freeze_selection_kappa' in _vf else False)
+    freeze_selection_kappa = bool(_vf['freeze_selection_kappa'])
     if _selection_manifold_metric == 'torus':
         print("Loading raw continuous input data (the torus screen needs per-event regions)...")
         with open(input_data_path, 'rb') as f:
@@ -5462,7 +5721,7 @@ def continuous_vocal_manifold_model_selection(
             continue
         screen_rows.append({'feature': feat_name, **stat})
 
-    # BH-FDR on the one-sided bootstrap p-values -- the multiplicity-correct form
+    # BH-FDR on the one-sided sign-flip p-values -- the multiplicity-correct form
     # of "the per-fold margin is consistently > 0". `ci_low` / `ci_high` are
     # reported for transparency; the significance decision uses this FDR test.
     bh_significant = set()
@@ -5615,7 +5874,7 @@ def continuous_vocal_manifold_model_selection(
     warn_if_no_region_labels(region_global, metric=_selection_manifold_metric,
                              context="continuous manifold model selection")
 
-    n_splits = settings['model_validation']['n_cv_folds']
+    n_splits = settings['model_validation']['manifold_n_cv_folds']
     test_prop = settings['model_validation']['cv_validation_proportion']
     n_clusters = settings['model_validation']['spatial_cluster_num']
     split_strategy = settings['model_validation']['split_strategy']
@@ -5781,12 +6040,16 @@ def continuous_vocal_manifold_model_selection(
                     "the development/held-out split is inconsistent."
                 )
 
+    # The Step-0 strategy the anchor / first forward feature is gated against: the
+    # training-fold intercept-only predictor on the torus, the empirical-density draw on
+    # euclidean (where dcor of a constant prediction is degenerate; see Step 0 below).
+    step1_gate_baseline = 'null_model_intercept' if manifold_metric == 'torus' else 'null_model_free'
+
     current_model_features = []
     # R^2 is higher-is-better, so the pre-Step-0 "best" is `-inf` (any finite
     # baseline beats it). `best_current_score` only RANKS candidates here; the
     # ACCEPT decision is the per-fold paired-margin bootstrap below.
     best_current_score = float('-inf')
-    best_current_se = 0.0
     step_counter = 0
     # True when the checkpoint a resume restores is a step that rejected its winner: the
     # search had already finished, so the forward loop is skipped and finalization runs.
@@ -5824,6 +6087,11 @@ def continuous_vocal_manifold_model_selection(
         extra_knobs={
             'use_top_rank_as_anchor': bool(use_top_rank_as_anchor),
             'p_val': float(p_val),
+            # The screen's p-value test and the Step-0 strategy the first feature is
+            # gated against; a resume refuses a checkpoint written under other rules.
+            'screen_p_value_test': 'exact_sign_flip',
+            'step1_gate_baseline': step1_gate_baseline,
+            'manifold_n_cv_folds': int(n_splits),
             'bin_resizing_factor': int(bin_size),
             'temporal_basis': dict(hp['temporal_basis']),
             'screening_metric': SCREENING_METRIC,
@@ -5878,16 +6146,36 @@ def continuous_vocal_manifold_model_selection(
             # its scores live on a different scale and must not be compared
             # against this run's `best_current_score`
             # / accept rule. Discard and fall through to the fresh-start path.
-            _run_meta = (last_res['_run_metadata'] if '_run_metadata' in last_res else None) or {}
-            _saved_metric = _run_meta['selection_metric'] if 'selection_metric' in _run_meta else None
-            if _saved_metric is not None and _saved_metric != SELECTION_SCORE_KEY:
+            _run_meta = last_res['_run_metadata']
+            _saved_metric = _run_meta['selection_metric']
+            _saved_knobs = _run_meta['extra_knobs']
+            # Gate-rule guard: a checkpoint written before the Step-0 gate baseline, the
+            # screen's sign-flip p-value and the manifold fold count were recorded (or
+            # under different ones) accepted its features under another rule or on other
+            # folds, so it cannot be continued.
+            _saved_gate = (_saved_knobs['step1_gate_baseline']
+                           if 'step1_gate_baseline' in _saved_knobs else None)
+            _saved_p_test = (_saved_knobs['screen_p_value_test']
+                             if 'screen_p_value_test' in _saved_knobs else None)
+            _saved_n_folds = (_saved_knobs['manifold_n_cv_folds']
+                              if 'manifold_n_cv_folds' in _saved_knobs else None)
+            if _saved_metric != SELECTION_SCORE_KEY:
                 print(
                     f"[RESUME] Step {last_step} was scored on '{_saved_metric}' but this "
                     f"run uses '{SELECTION_SCORE_KEY}' (usv_manifold_metric changed); the "
                     "scores are on different scales. Ignoring checkpoint and starting fresh."
                 )
                 existing_steps = []
-                selected_scored = False
+            elif (_saved_gate != step1_gate_baseline or _saved_p_test != 'exact_sign_flip'
+                  or _saved_n_folds != int(n_splits)):
+                print(
+                    f"[RESUME] Step {last_step} was selected with Step-0 gate baseline "
+                    f"'{_saved_gate}', screen p-value test '{_saved_p_test}' and "
+                    f"{_saved_n_folds} folds, but this run uses '{step1_gate_baseline}', "
+                    f"'exact_sign_flip' and {int(n_splits)} folds. Ignoring checkpoint "
+                    "and starting fresh."
+                )
+                existing_steps = []
             else:
                 # Rebuild the state right after `last_step` from its recorded decision
                 # (`_restore_selection_checkpoint`); the incumbent's folds are the
@@ -5904,7 +6192,6 @@ def continuous_vocal_manifold_model_selection(
                 else:
                     current_model_features = state['features']
                     best_current_score = state['score']
-                    best_current_se = state['se']
                     current_model_folds = state['folds']
                     step_counter = state['next_step']
                     # A search that had accepted every ranked feature stopped on that, with no
@@ -5918,6 +6205,11 @@ def continuous_vocal_manifold_model_selection(
         except (OSError, pickle.UnpicklingError, KeyError, EOFError) as e:
             print(f"Resume failed: {e}. Starting fresh.")
             existing_steps = []
+
+    # A fresh start (no checkpoint, or one the resume logic rejected) moves any step
+    # files of an earlier run aside before Step 0 is written.
+    if not existing_steps:
+        _quarantine_stale_step_files(model_selection_dir, prefix)
 
     # Canonical ordering of the metric keys so the dict initialiser and the
     # downstream aggregation stay in lockstep with the estimator output.
@@ -5954,9 +6246,11 @@ def continuous_vocal_manifold_model_selection(
     # geometries over a regular grid, from all embedded `Y` plus the frozen
     # decoder of the map `Y` comes from. Per fold, each event's (prediction, truth) pair snaps to the grid
     # and looks up its geodesic distance, giving the `density_geodesic_mae` /
-    # `pullback_geodesic_mae` columns. Torus-only; any failure (disabled, missing
-    # settings block, or unavailable decoder) degrades to NaN columns and never
-    # aborts the run.
+    # `pullback_geodesic_mae` columns. Torus-only; a disabled metric, an unavailable
+    # decoder (OSError / KeyError / ValueError / RuntimeError / ImportError) or a
+    # degenerate reference geometry (ValueError / LinAlgError / MemoryError /
+    # FloatingPointError / RuntimeError) degrades to NaN columns; any other error is a
+    # bug and propagates (the same scopes as the univariate runner).
     geodesic_ctx = None
     _vf_settings = settings['vocal_features']
     if ('usv_manifold_geodesic_metrics' in _vf_settings
@@ -5974,7 +6268,7 @@ def continuous_vocal_manifold_model_selection(
                 if _geo_decoder_source is not None:
                     try:
                         _geo_decode_fn = make_qlvm_decode_fn_from_source(_geo_decoder_source)
-                    except Exception as _decode_err:
+                    except (OSError, KeyError, ValueError, RuntimeError, ImportError) as _decode_err:
                         print(f"    [geodesic] decoder unavailable ({_decode_err}); "
                               f"pullback_geodesic_mae -> NaN")
                 # Built from the DEVELOPMENT targets only: the reserved held-out
@@ -5988,49 +6282,88 @@ def continuous_vocal_manifold_model_selection(
                 print(f"    [geodesic] reference map built: "
                       f"{int(_geo_cfg['grid_n_per_dim'])}^2 grid, "
                       f"pullback={'on' if _geo_decode_fn is not None else 'off'}")
-            except Exception as _geo_err:
+            except (ValueError, np.linalg.LinAlgError, MemoryError, FloatingPointError, RuntimeError) as _geo_err:
                 print(f"    [geodesic] geometry build failed ({_geo_err}); "
                       f"geodesic MAE columns -> NaN")
                 geodesic_ctx = None
 
-    # Calculate Model-Free Baseline (Step 0) if starting fresh.
+    # Step 0 (fresh start only): the incumbent the anchor / first forward feature must beat,
+    # plus the reported chance floor.
+    #   - Gate baseline. On the TORUS it is a training-fold INTERCEPT-ONLY predictor: every
+    #     test event of a fold is predicted at the circular mean of that fold's TRAINING
+    #     targets (weighted by the same KDE spatial weights the candidates are fitted with,
+    #     i.e. what the candidates' own estimator returns with no feature), scored on the
+    #     fold's test events by the same `manifold_prediction_metrics` bundle, and gated by
+    #     the same per-fold macro von Mises margin (frozen kappa) as every candidate. A model
+    #     carrying no behavioural information therefore ties it (margin 0, CI not above 0)
+    #     and is rejected; beating it requires the predictions to move with behaviour, not
+    #     merely to sit where the repertoire is dense.
+    #     On EUCLIDEAN the selection score is distance correlation, which is exactly 0 for
+    #     any constant prediction while every non-constant prediction carries dcor's
+    #     positive finite-sample bias, so an intercept-only baseline would let any fit pass
+    #     on bias alone; there the bias-matched empirical-density draw stays the gate
+    #     baseline (no intercept-only block is computed).
+    #   - Chance floor. `null_model_free` predicts a uniform random draw from the training
+    #     `Y` for every test event ("vocalise from the observed repertoire, ignoring
+    #     kinematics"), the chance floor shared with the univariate runner and the CNN. On
+    #     the torus it is stored and reported only (`chance_floor_score`); it never gates.
+    # The step record keeps `selected_feature = 'null_model_free'` as the Step-0 marker every
+    # reader of the step files keys on, names the gate baseline in `baseline_strategy`, and
+    # lists the gate baseline FIRST in `candidates_summary`, so a figure that anchors on the
+    # first Step-0 block anchors on the gate baseline.
     if not existing_steps:
-        print("\n--- Establishing Absolute Baseline (Empirical-Density Draw) ---")
+        print(f"\n--- Establishing Step-0 Baseline (gate: {_STEP0_GATE_LABELS[step1_gate_baseline]}; "
+              f"chance floor: {_STEP0_GATE_LABELS['null_model_free']}) ---")
 
-        baseline_data = {
-            'folds': {
-                'metrics': {m: [] for m in MANIFOLD_METRIC_KEYS},
-                'test_indices': [],
-                'y_true': [],
-                'w_test': [],
-                # `(x, y)` predictions per fold: a uniform random draw from
-                # the training set, one per test trial.
-                'y_pred_xy': [],
-                # Hyperparameter audit fields — the density-draw baseline has
-                # no model, so these are all NaN / empty / False. Kept so
-                # the saved schema is uniform across strategies.
-                'selected_lambda_smooth': [],
-                'selected_l2_reg': [],
-                'hyperparam_grid_audit': [],
-                'hyperparams_tuned': [],
+        def _empty_step0_block():
+            """
+            Description
+            -----------
+            A fresh, empty Step-0 strategy entry (the intercept-only gate baseline or the
+            empirical-density chance floor): a ``folds`` block of empty per-fold lists for
+            every metric of ``MANIFOLD_METRIC_KEYS``, the test indices, targets, weights and
+            predictions, and the hyperparameter audit fields (a Step-0 strategy has no model,
+            so these are filled with NaN / empty / False to keep the saved schema uniform
+            across strategies).
+
+            Parameters
+            ----------
+
+            Returns
+            -------
+            block (dict)
+                ``{'folds': {...}}`` with every per-fold list empty.
+            """
+            return {
+                'folds': {
+                    'metrics': {m: [] for m in MANIFOLD_METRIC_KEYS},
+                    'test_indices': [],
+                    'y_true': [],
+                    'w_test': [],
+                    # `(x, y)` predictions per fold, one per test event.
+                    'y_pred_xy': [],
+                    'selected_lambda_smooth': [],
+                    'selected_l2_reg': [],
+                    'hyperparam_grid_audit': [],
+                    'hyperparams_tuned': [],
+                }
             }
-        }
+
+        step0_blocks = {'null_model_free': _empty_step0_block()}
+        if step1_gate_baseline == 'null_model_intercept':
+            step0_blocks = {'null_model_intercept': _empty_step0_block(), **step0_blocks}
 
         for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
             Y_tr, Y_te = y_global[tr_idx], y_global[te_idx]
             w_tr, w_te = w_global[tr_idx], w_global[te_idx]
 
-            # Empirical-density Step-0 baseline: predict a uniform random draw
-            # from the training `Y` for every test trial ("vocalise from the
-            # observed repertoire, ignoring kinematics") — the chance floor
-            # shared with the univariate runner and the CNN. The metric-aware
-            # training centroid / covariance are still computed, purely to
-            # supply the `mahalanobis_mae` inverse-covariance (matching the
-            # regressor's convention so baseline and active models compete on
-            # the same distance metric). `manifold_prediction_metrics` produces
-            # exactly the same metric bundle as the fitted strategies; on
-            # `metric='euclidean'` every wrap-aware term reduces to the ordinary
-            # plane distance, on `metric='torus'` to the shortest-wrap geodesic.
+            # The metric-aware training centroid (the intercept-only prediction) and
+            # covariance; the covariance supplies the `mahalanobis_mae` inverse-covariance
+            # (matching the regressor's convention so baselines and fitted models compete
+            # on the same distance metric). `manifold_prediction_metrics` produces exactly
+            # the same metric bundle as the fitted strategies; on `metric='euclidean'`
+            # every wrap-aware term reduces to the ordinary plane distance, on
+            # `metric='torus'` to the shortest-wrap geodesic.
             w_cov = w_tr / (np.sum(w_tr) + 1e-12)
             mu = circular_mean(
                 Y_tr, metric=manifold_metric, period=manifold_period, weights=w_cov
@@ -6043,76 +6376,85 @@ def continuous_vocal_manifold_model_selection(
 
             draw_rng = np.random.default_rng(random_seed + fold_idx + 2)
             draw_idx = draw_rng.choice(len(Y_tr), size=len(Y_te), replace=True)
-            y_pred_xy = Y_tr[draw_idx].astype(np.float32)
+            fold_predictions = {
+                'null_model_free': Y_tr[draw_idx].astype(np.float32),
+                'null_model_intercept': np.tile(np.asarray(mu, dtype=np.float32)[None, :], (len(Y_te), 1)),
+            }
 
-            bundle = manifold_prediction_metrics(
-                Y_te, y_pred_xy, w_te,
-                metric=manifold_metric, period=manifold_period,
-                train_cov_inv=cov_inv, random_state=random_seed + fold_idx,
-                region_labels=region_global[te_idx], min_region_events=_min_region_events,
-                kappa=kappa_frozen,
+            for strategy_name, block in step0_blocks.items():
+                y_pred_xy = fold_predictions[strategy_name]
+                bundle = manifold_prediction_metrics(
+                    Y_te, y_pred_xy, w_te,
+                    metric=manifold_metric, period=manifold_period,
+                    train_cov_inv=cov_inv, random_state=random_seed + fold_idx,
+                    region_labels=region_global[te_idx], min_region_events=_min_region_events,
+                    kappa=kappa_frozen,
+                )
+                bundle.update(geodesic_mae_columns(
+                    y_pred_xy, Y_te, geodesic_ctx,
+                    region_labels=region_global[te_idx], min_region_events=_min_region_events))
+                f_met = block['folds']['metrics']
+                for _k, _v in bundle.items():
+                    f_met[_k].append(_v)
+
+                block['folds']['test_indices'].append(te_idx)
+                block['folds']['y_true'].append(Y_te)
+                block['folds']['w_test'].append(w_te)
+                block['folds']['y_pred_xy'].append(y_pred_xy)
+                block['folds']['selected_lambda_smooth'].append(float('nan'))
+                block['folds']['selected_l2_reg'].append(float('nan'))
+                # Shape-matched empty audit so the persisted schema is uniform
+                # with the `actual` and `null` strategies.
+                block['folds']['hyperparam_grid_audit'].append({
+                    'grid_scores': {},
+                    'grid_ses': {},
+                    'argmax_pair': None,
+                    'one_se_applied': False,
+                    'one_se_threshold': None,
+                })
+                block['folds']['hyperparams_tuned'].append(False)
+
+        for block in step0_blocks.values():
+            block_scores = np.asarray(block['folds']['metrics'][SELECTION_SCORE_KEY], dtype=float)
+            valid_scores = block_scores[~np.isnan(block_scores)]
+            block['mean_r2'] = float(np.mean(valid_scores)) if valid_scores.size else float('-inf')
+            block['se_r2'] = (
+                float(np.std(valid_scores, ddof=1) / np.sqrt(valid_scores.size))
+                if valid_scores.size > 1 else 0.0
             )
-            bundle.update(geodesic_mae_columns(
-                y_pred_xy, Y_te, geodesic_ctx,
-                region_labels=region_global[te_idx], min_region_events=_min_region_events))
-            f_met = baseline_data['folds']['metrics']
-            for _k, _v in bundle.items():
-                f_met[_k].append(_v)
 
-            baseline_data['folds']['test_indices'].append(te_idx)
-            baseline_data['folds']['y_true'].append(Y_te)
-            baseline_data['folds']['w_test'].append(w_te)
-            baseline_data['folds']['y_pred_xy'].append(y_pred_xy)
-            baseline_data['folds']['selected_lambda_smooth'].append(float('nan'))
-            baseline_data['folds']['selected_l2_reg'].append(float('nan'))
-            # Shape-matched empty audit so the persisted schema is uniform
-            # with the `actual` and `null` strategies.
-            baseline_data['folds']['hyperparam_grid_audit'].append({
-                'grid_scores': {},
-                'grid_ses': {},
-                'argmax_pair': None,
-                'one_se_applied': False,
-                'one_se_threshold': None,
-            })
-            baseline_data['folds']['hyperparams_tuned'].append(False)
+        gate_block = step0_blocks[step1_gate_baseline]
+        best_current_score = gate_block['mean_r2']
+        chance_floor_score = step0_blocks['null_model_free']['mean_r2']
 
-        baseline_scores = np.asarray(
-            baseline_data['folds']['metrics'][SELECTION_SCORE_KEY], dtype=float
-        )
-        valid_scores = baseline_scores[~np.isnan(baseline_scores)]
-        best_current_score = (
-            float(np.mean(valid_scores)) if valid_scores.size else float('-inf')
-        )
-        best_current_se = (
-            float(np.std(valid_scores, ddof=1) / np.sqrt(valid_scores.size))
-            if valid_scores.size > 1 else 0.0
-        )
-
-        print(format_selection_step('Baseline', detail='empirical-density draw',
+        print(format_selection_step('Baseline', detail=f"gate: {_STEP0_GATE_LABELS[step1_gate_baseline]}",
                                     metrics={SELECTION_SCORE_KEY: best_current_score}))
+        print(format_selection_step('Chance floor', detail=f"reported only: {_STEP0_GATE_LABELS['null_model_free']}",
+                                    metrics={SELECTION_SCORE_KEY: chance_floor_score}))
 
-        baseline_data['mean_r2'] = best_current_score
-        baseline_data['se_r2'] = best_current_se
-
-        # Fold-grain acceptance reference. The "current model" begins as the
-        # model-free density draw; a feature (anchor or later candidate) is
-        # accepted only when it improves the PER-FOLD score margin over the
-        # current model with a bootstrap CI that excludes 0 -- a consistent-
-        # across-folds improvement -- rather than a bare 1-SE bump in the
-        # absolute score. `best_current_score` is kept purely for the logged
-        # running-best figure; the accept decision is the fold bootstrap.
-        current_model_folds = baseline_data['folds']
+        # Fold-grain acceptance reference. The "current model" begins as the Step-0 gate
+        # baseline; a feature (anchor or later candidate) is accepted only when it
+        # improves the PER-FOLD score margin over the current model with a bootstrap CI
+        # that excludes 0 -- a consistent-across-folds improvement -- rather than a bare
+        # 1-SE bump in the absolute score. `best_current_score` is kept purely for the
+        # logged running-best figure; the accept decision is the fold bootstrap.
+        current_model_folds = gate_block['folds']
 
         step_0_res = {
             'step_idx': 0,
             'current_features': [],
             'baseline_score': best_current_score,
+            # Step-0 marker every step-file reader keys on (not the gate baseline's name).
             'selected_feature': 'null_model_free',
-            'candidates_summary': {'null_model_free': baseline_data}
+            # The strategy the anchor / first forward feature is gated against.
+            'baseline_strategy': step1_gate_baseline,
+            # The empirical-density draw's fold-mean score: the reported chance floor.
+            'chance_floor_strategy': 'null_model_free',
+            'chance_floor_score': chance_floor_score,
+            'candidates_summary': step0_blocks,
         }
 
-        with open(model_selection_dir / f"{prefix}0.pkl", 'wb') as f:
-            pickle.dump(_wrap_step(step_0_res), f)
+        _dump_step_pickle(model_selection_dir / f"{prefix}0.pkl", _wrap_step(step_0_res))
 
         step_counter = 1
 
@@ -6440,7 +6782,6 @@ def continuous_vocal_manifold_model_selection(
                     detail=(f"fold improvement +{anchor_improvement['mean_margin']:.4f} "
                             f"CI [{anchor_improvement['ci_low']:+.4f}, {anchor_improvement['ci_high']:+.4f}]")))
                 best_current_score = mean_anc
-                best_current_se = se_anc
                 current_model_folds = cand_data['folds']
                 current_model_features = [anchor]
 
@@ -6449,8 +6790,7 @@ def continuous_vocal_manifold_model_selection(
                     'baseline_score': best_current_score, 'selected_feature': anchor,
                     'candidates_summary': {anchor: cand_data}
                 }
-                with open(model_selection_dir / f"{prefix}1.pkl", 'wb') as f:
-                    pickle.dump(_wrap_step(step_1_res), f)
+                _dump_step_pickle(model_selection_dir / f"{prefix}1.pkl", _wrap_step(step_1_res))
                 step_counter = 2
             else:
                 print(format_selection_step(
@@ -6471,13 +6811,14 @@ def continuous_vocal_manifold_model_selection(
         print(f"\n=== Step {step_counter} === Best {SELECTION_SCORE_KEY}: {best_current_score:.5f}")
         step_results = {
             'step_idx': step_counter, 'current_features': list(current_model_features),
-            'baseline_score': best_current_score, 'candidates_summary': {},
+            'baseline_score': best_current_score, 'baseline_folds': current_model_folds,
+            'candidates_summary': {},
             'selected_feature': None
         }
 
         # R^2 is higher-is-better; initialise the per-step best score at
         # `-inf` so any finite candidate score is an improvement.
-        best_cand, best_cand_score, best_cand_se = None, float('-inf'), 0.0
+        best_cand, best_cand_score = None, float('-inf')
 
         # The already-selected base block is identical across every candidate in
         # this step, so build it once per fold here instead of re-hstacking it
@@ -6628,7 +6969,7 @@ def continuous_vocal_manifold_model_selection(
             step_results['candidates_summary'][feat] = cand_data
 
             if mean_score > best_cand_score:
-                best_cand_score, best_cand_se, best_cand = mean_score, se_score, feat
+                best_cand_score, best_cand = mean_score, feat
 
         # Fold-grain acceptance for the step winner. Candidates were ranked above
         # by the (cheap) fold-mean score, which is a monotone proxy for the
@@ -6661,11 +7002,9 @@ def continuous_vocal_manifold_model_selection(
             current_model_features.append(best_cand)
             current_model_folds = best_cand_folds
 
-            with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
-                pickle.dump(_wrap_step(step_results), f)
+            _dump_step_pickle(model_selection_dir / f"{prefix}{step_counter}.pkl", _wrap_step(step_results))
 
             best_current_score = best_cand_score
-            best_current_se = best_cand_se
             step_counter += 1
         else:
             if step_improvement is not None:
@@ -6679,8 +7018,7 @@ def continuous_vocal_manifold_model_selection(
                 print(format_selection_step(f"Step {step_counter}", decision='REJECT',
                                             detail='no candidate improved; selection finished'))
             step_results['selected_feature'] = None
-            with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
-                pickle.dump(_wrap_step(step_results), f)
+            _dump_step_pickle(model_selection_dir / f"{prefix}{step_counter}.pkl", _wrap_step(step_results))
             break
 
         if len(current_model_features) == len(ranked_features):
@@ -6711,8 +7049,9 @@ def continuous_vocal_manifold_model_selection(
     # now re-enabled, this runs the inner-CV pooled-vM search on development).
     # Equal-region reweighting is applied to the development fit on the torus,
     # and the held-out score is the per-region macro von Mises log-lik. When no
-    # feature was accepted the honest model is the same empirical-density draw
-    # that defines the Step-0 baseline, drawn from development Y. When holdout
+    # feature was accepted the honest model is the Step-0 gate baseline refit on
+    # development Y (the intercept-only circular mean on the torus, the
+    # empirical-density draw on euclidean). When holdout
     # is disabled (`_held_positions` empty, i.e. `held_out_test_proportion=0`
     # or a pre-v2 pickle) the block is skipped and `heldout` stays None, so
     # legacy / no-holdout runs are byte-identical to before.
@@ -6816,8 +7155,9 @@ def continuous_vocal_manifold_model_selection(
             heldout_result['null_weights'] = (np.stack(null_weights).astype(np.float32) if null_weights else None)
         else:
             # No feature survived selection: the honest held-out model is the
-            # empirical-density draw (the Step-0 baseline) from development Y,
-            # scored on the held-out block -- the same chance floor used above.
+            # Step-0 gate baseline built from development Y and scored on the
+            # held-out block -- the intercept-only circular mean on the torus, the
+            # empirical-density draw on euclidean (see Step 0).
             w_cov = w_dev / (np.sum(w_dev) + 1e-12)
             mu = circular_mean(
                 Y_dev, metric=manifold_metric, period=manifold_period, weights=w_cov
@@ -6827,9 +7167,12 @@ def continuous_vocal_manifold_model_selection(
             )
             cov_dev = (w_cov[:, None] * diff_dev).T @ diff_dev
             cov_inv = np.linalg.pinv(cov_dev)
-            draw_rng = np.random.default_rng(held_seed)
-            draw_idx = draw_rng.choice(len(Y_dev), size=len(Y_held), replace=True)
-            held_pred_xy = Y_dev[draw_idx].astype(np.float32)
+            if step1_gate_baseline == 'null_model_intercept':
+                held_pred_xy = np.tile(np.asarray(mu, dtype=np.float32)[None, :], (len(Y_held), 1))
+            else:
+                draw_rng = np.random.default_rng(held_seed)
+                draw_idx = draw_rng.choice(len(Y_dev), size=len(Y_held), replace=True)
+                held_pred_xy = Y_dev[draw_idx].astype(np.float32)
             held_bundle = manifold_prediction_metrics(
                 Y_held, held_pred_xy, w_held,
                 metric=manifold_metric, period=manifold_period,
@@ -6841,7 +7184,7 @@ def continuous_vocal_manifold_model_selection(
                 held_pred_xy, Y_held, geodesic_ctx,
                 region_labels=region_held, min_region_events=_min_region_events))
             heldout_result = {
-                'model_type': 'null_model_free',
+                'model_type': step1_gate_baseline,
                 'features': [],
                 'metrics': {_mk: float(held_bundle[_mk]) for _mk in MANIFOLD_METRIC_KEYS},
                 'y_pred_xy': held_pred_xy,
@@ -6856,23 +7199,22 @@ def continuous_vocal_manifold_model_selection(
     for _k in RESERVED_METADATA_KEYS:
         step_data.pop(_k, None)
     step_data.update(final_res)
-    with open(last_file_path, 'wb') as f:
-        pickle.dump(_wrap_step(step_data), f)
+    _dump_step_pickle(last_file_path, _wrap_step(step_data))
 
-    # Standardized end summary: selected-feature count + final vs Step-0
-    # baseline score + the full save path. The Step-0 baseline is read back
-    # from its pickle so the comparison is correct on both fresh and resume
-    # runs (where `best_current_score` no longer holds the baseline).
-    baseline_score = float('nan')
+    # Standardized end summary: selected-feature count + final vs the Step-0 gate
+    # baseline (intercept-only on the torus) + the empirical-density chance floor
+    # (reported only) + the full save path. Both are read back from the Step-0
+    # pickle so the comparison is correct on both fresh and resume runs (where
+    # `best_current_score` no longer holds the baseline). A resume always runs on
+    # a checkpoint of this rule set (see the gate-rule guard), whose Step-0 file
+    # carries both fields.
     step0_path = model_selection_dir / f"{prefix}0.pkl"
-    if step0_path.exists():
-        with open(step0_path, 'rb') as f:
-            _step0 = pickle.load(f)
-        if 'baseline_score' in _step0:
-            baseline_score = _step0['baseline_score']
+    with open(step0_path, 'rb') as f:
+        _step0 = pickle.load(f)
     metrics_by_strategy = {
         'Final': {SELECTION_SCORE_KEY: best_current_score},
-        'Baseline': {SELECTION_SCORE_KEY: baseline_score},
+        f"Baseline ({_step0['baseline_strategy']})": {SELECTION_SCORE_KEY: _step0['baseline_score']},
+        'Chance floor (null_model_free)': {SELECTION_SCORE_KEY: _step0['chance_floor_score']},
     }
     # The held-out row (development-refit, scored once on the reserved block)
     # is the honest, selection-leakage-free number; it sits alongside the

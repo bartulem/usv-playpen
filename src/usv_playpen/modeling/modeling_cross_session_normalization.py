@@ -3,6 +3,8 @@
 Pools data from different sessions and normalizes them together.
 """
 
+from __future__ import annotations
+
 import polars as pls
 
 from .load_input_files import is_vocal_signal

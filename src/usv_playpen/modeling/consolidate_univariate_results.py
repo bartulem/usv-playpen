@@ -72,6 +72,8 @@ filename without the cohort tag. Without `--allow_legacy`, the
 consolidator aborts on the first legacy file.
 """
 
+from __future__ import annotations
+
 import argparse
 import pickle
 import re
@@ -79,6 +81,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ..os_utils import atomic_output_path
 from .modeling_metadata import (
     build_consolidation_metadata,
     extract_metadata_blocks,
@@ -444,7 +447,7 @@ def consolidate(input_dir: str,
     output_root.mkdir(parents=True, exist_ok=True)
     out_path = output_root / output_filename
 
-    with out_path.open('wb') as fh:
+    with atomic_output_path(out_path) as temporary_path, temporary_path.open('wb') as fh:
         pickle.dump(consolidated, fh)
 
     print(f"[consolidate] Wrote consolidated artifact: {out_path}")
