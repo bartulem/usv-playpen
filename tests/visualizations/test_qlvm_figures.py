@@ -15,6 +15,7 @@ geometry).
 
 from __future__ import annotations
 
+import json
 import pathlib
 import warnings
 
@@ -31,7 +32,8 @@ def _cfg(n_usvs: int = 5000) -> dict:
     """
     Description
     -----------
-    A small ``qlvm_figures`` settings block for synthetic data.
+    A small ``qlvm_figures`` settings block for synthetic data; its ``style``
+    sub-block is the shipped one, so the figures draw with the production look.
 
     Parameters
     ----------
@@ -44,7 +46,11 @@ def _cfg(n_usvs: int = 5000) -> dict:
         The block.
     """
 
-    return {"n_usvs": n_usvs, "usvs_per_session": 40, "sample_cache_file": "", "seed_cell_directories": [], "watershed_levels_file": "",
+    settings_path = (pathlib.Path(qf.__file__).parent.parent / "_parameter_settings"
+                     / "visualizations_settings.json")
+    with settings_path.open() as settings_file:
+        shipped_style = json.load(settings_file)["qlvm_figures"]["style"]
+    return {"style": shipped_style, "n_usvs": n_usvs, "usvs_per_session": 40, "sample_cache_file": "", "seed_cell_directories": [], "watershed_levels_file": "",
             "category_colors": ["#4E79A7", "#F28E2B"],
             "overview": {"n_examples": 3, "spiral_radius": 0.1, "spiral_turns": 2, "density_bandwidth": 0.02},
             "quality": {"n_pcs": 5, "umap_n_neighbors": 10, "umap_min_dist": 0.1, "readout_neighbors": 5, "readout_folds": 2,
@@ -456,7 +462,7 @@ def _quality_inputs(n_seeds: int, fidelity_high: float) -> tuple[dict, dict]:
                "per_seed": {f"seed{k}": {column: [0.4, 0.5] for column in columns} for k in range(n_seeds)},
                "neighborhoods": {name: {"overlap": [0.3, 0.4], "false_neighbors": [0.1, 0.2], "torn_neighbors": [0.1, 0.2]}
                                  for name in maps},
-               "distance_fidelity": {label: [0.5 * fidelity_high, fidelity_high] for label in qf.DISTANCE_COLORS}}
+               "distance_fidelity": {label: [0.5 * fidelity_high, fidelity_high] for label in qf.DISTANCE_LABELS}}
     return {"properties": rng.random((n, len(columns)))}, metrics
 
 
@@ -468,10 +474,11 @@ def test_plot_qlvm_quality_refuses_more_trainings_than_seed_colours():
     silently left out of the panel. The plotter now raises, naming the limit.
     """
 
-    sample, metrics = _quality_inputs(n_seeds=len(qf.SEED_COLORS) + 1, fidelity_high=0.5)
+    n_seed_colors = len(_cfg()["style"]["seed_colors"])
+    sample, metrics = _quality_inputs(n_seeds=n_seed_colors + 1, fidelity_high=0.5)
     with pytest.raises(ValueError, match="at most 4 trainings"):
         qf.plot_qlvm_quality(sample, metrics, _cfg(), "inferno", 0)
-    sample, metrics = _quality_inputs(n_seeds=len(qf.SEED_COLORS), fidelity_high=0.5)
+    sample, metrics = _quality_inputs(n_seeds=n_seed_colors, fidelity_high=0.5)
     assert isinstance(qf.plot_qlvm_quality(sample, metrics, _cfg(), "inferno", 0), Figure)
 
 

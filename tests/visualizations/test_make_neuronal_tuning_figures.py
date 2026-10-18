@@ -217,6 +217,9 @@ def _make_tuning_parameters() -> dict:
         "peth_window_seconds":                      [-2.0, 0.5],
         "peth_bin_seconds":                         0.05,
         "bout_quiet_seconds":                       2.0,
+        "ramp_anchor_near_seconds":                 -0.1,
+        "ramp_anchor_far_seconds":                  -1.5,
+        "vmi_wilcoxon_exact_max_n":                 25,
         "ibi_bout_onset": {
             "ibi_z_score":              2.58,
             "ibi_component_index":      0,
@@ -1800,9 +1803,16 @@ def test_vmi_cross_condition_stability_figure_writes_png(triage_fixture):
     """
 
     maker, triage_path, _catalog_path, out_dir = triage_fixture
+    # The knob is read from settings; a copied block keeps the shipped one untouched.
+    maker.visualizations_parameter_dict = {
+        **maker.visualizations_parameter_dict,
+        "neuronal_tuning_figures": {
+            **maker.visualizations_parameter_dict["neuronal_tuning_figures"],
+            "vmi_bootstrap_n": 50,
+        },
+    }
     out_path = maker.make_vmi_cross_condition_stability_figure(
         triage_pkl_path=triage_path,
-        n_bootstrap=50,
         out_dir=out_dir,
         fig_format="png",
     )
@@ -1891,9 +1901,16 @@ def test_pag_anatomical_gradient_figure_writes_png(triage_fixture):
     """
 
     maker, triage_path, _catalog_path, out_dir = triage_fixture
+    # The knob is read from settings; a copied block keeps the shipped one untouched.
+    maker.visualizations_parameter_dict = {
+        **maker.visualizations_parameter_dict,
+        "neuronal_tuning_figures": {
+            **maker.visualizations_parameter_dict["neuronal_tuning_figures"],
+            "pag_kde_grid_resolution": 40,
+        },
+    }
     out_path = maker.make_pag_anatomical_gradient_figure(
         triage_pkl_path=triage_path,
-        kde_grid_resolution=40,
         out_dir=out_dir,
         fig_format="png",
     )
@@ -3159,7 +3176,8 @@ def test_first_vs_later_contour_styles_match_their_legend_entries(density_levels
     NeuronalTuningFigureMaker._draw_first_vs_later(
         ax, spike_times, usv_starts, runs,
         {"response_window_seconds": 0.2, "response_kernel_seconds": 0.05}, "#9AC0CD",
-        {"bout_density_grid": 60, "bout_density_levels": density_levels})
+        {"bout_density_grid": 60, "bout_density_levels": density_levels,
+         "ink_color": "#1F1F1F", "dash_color": "#888888"})
     plt.close(fig)
     assert len(contour_calls) == len(density_levels)
     # a larger share of bouts is enclosed by a LOWER density level

@@ -109,6 +109,10 @@ def _tiny_cfg(spectrograms_dir, peaks_only=False, qlvm_map="qlvm"):
             "boundary_neighbors": 3, "seed": 0,
             "peaks_only": peaks_only, "spec_cache_size": 64, "apply_mask": True,
             "accent_color": "#00FFFF",
+            "palette": {"white": "#FFFFFF", "black": "#000000", "gray": "#808080",
+                        "light_gray": "#D3D3D3", "subtitle": "#444444"},
+            "heatmap_vmax_percentile": 95,
+            "bitrate": 4000,
         },
     }
 

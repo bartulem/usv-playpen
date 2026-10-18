@@ -45,6 +45,12 @@ from usv_playpen.visualizations.make_anatomy_figures import (
     _load_obj_mesh,
 )
 
+# The shipped visualizations settings, whose `anatomy_figures` block the
+# fixture below reuses verbatim.
+_SHIPPED_SETTINGS_PATH = (
+    pathlib.Path(maf.__file__).parent.parent / "_parameter_settings" / "visualizations_settings.json"
+)
+
 # A minimal axis-aligned cube in CCF µm (8 vertices, 12 triangle faces).
 # OBJ indices are one-based; `_load_obj_mesh` is expected to drop them to
 # zero-based. Used to stand in for every Allen structure mesh so the 3D
@@ -92,10 +98,12 @@ def viz_settings() -> dict:
     """
     Description
     -----------
-    Minimal visualizations-settings dict carrying the two blocks the
+    Minimal visualizations-settings dict carrying the blocks the
     anatomy renderer reads: the seven-bucket `brain_area_colors` palette,
-    a `figures` block and the `anatomy_figures` block (the excluded mice).
-    Save paths are always overridden per-call in these tests, so
+    a `figures` block and the shipped `anatomy_figures` block (the excluded
+    mice plus the per-figure rendering knobs, read from
+    `visualizations_settings.json` so the tests exercise the shipped
+    values). Save paths are always overridden per-call in these tests, so
     `figures.save_directory` is intentionally absent.
 
     Parameters
@@ -111,7 +119,7 @@ def viz_settings() -> dict:
         "brain_area_colors": dict(_BRAIN_AREA_COLORS),
         "cell_type_colors": ["#1A1A1A", "#7A7A7A", "#CFCFCF"],
         "figures": {"fig_format": "png", "dpi": 100, "timestamp_in_name": False},
-        "anatomy_figures": {"excluded_mouse_ids": ["147366"]},
+        "anatomy_figures": json.loads(_SHIPPED_SETTINGS_PATH.read_text())["anatomy_figures"],
     }
 
 

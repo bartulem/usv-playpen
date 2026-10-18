@@ -42,15 +42,25 @@ from ..analyses.usv_interval_archive import (
 )
 from ..os_utils import configure_path
 
+# `visualizations_settings.json`, loaded once at import: the mixture-component
+# colours come from its shared `component_colors` block and every figure knob of
+# this module (figure sizes, bin counts, opacities, inks, the broken-axis rule)
+# from its `usv_interval_figures` block; the function defaults below read it, so
+# they are evaluated after this load.
+_VIZ_SETTINGS_PATH = (
+    Path(__file__).parent.parent / "_parameter_settings" / "visualizations_settings.json"
+)
+with _VIZ_SETTINGS_PATH.open() as _vf:
+    _VIZ_SETTINGS = json.load(_vf)
+_INTERVAL_FIGURES = _VIZ_SETTINGS["usv_interval_figures"]
+
 
 def plot_log_usv_interval_histograms(
     usv_interval_df: pls.DataFrame,
     bins: int,
     male_color: str,
     female_color: str,
-    figsize: tuple = (5, 5),
-    xlims: tuple = (-5.0, 5.0),
-    edge_color: str = "#202020",
+    xlims: tuple,
     male_label: str = "male",
     female_label: str = "female",
 ) -> tuple[plt.Figure, plt.Axes, dict]:
@@ -85,14 +95,25 @@ def plot_log_usv_interval_histograms(
     female_label (str)
         Legend label for the female histogram, before its count; defaults to
         ``'female'``.
-    figsize (tuple)
-        Figure size; defaults to (5, 5) (square).
     xlims (tuple)
-        (low, high) bounds on the x-axis (in log-seconds); defaults to
-        (-5.0, 5.0).
+        (low, high) bounds on the x-axis (in log-seconds). Required: the
+        interval notebook passes ``analyses_settings.json ->
+        compute_inter_usv_interval_distributions.plot_log_xlims`` (shipped
+        [-5.0, 5.0]).
+
+    Settings read
+    -------------
+    Knobs read at call time from the module's ``visualizations_settings.json``
+    (loaded at import) rather than taken as keyword arguments:
+
+    figsize (tuple)
+        ``usv_interval_figures.log_histogram.figsize`` (shipped [5, 5]).
+        Figure size.
     edge_color (str)
-        Colour for the step-filled histogram edges; defaults to
-        '#202020'.
+        ``usv_interval_figures.edge_color`` (shipped "#202020").
+        Colour for the step-filled histogram edges. The two
+        histograms' opacity is ``usv_interval_figures.log_histogram.alpha``
+        (0.5) so the overlap of the pools stays readable.
 
     Returns
     -------
@@ -104,16 +125,19 @@ def plot_log_usv_interval_histograms(
         Keys ``'n_M'``, ``'n_F'``, ``'median_M_sec'``, ``'median_F_sec'``.
     """
 
+    figsize = tuple(_INTERVAL_FIGURES["log_histogram"]["figsize"])
+    edge_color = _INTERVAL_FIGURES["edge_color"]
+
     male_log = usv_interval_df.filter(pls.col("sex") == "male")["log_interval"].to_numpy()
     female_log = usv_interval_df.filter(pls.col("sex") == "female")["log_interval"].to_numpy()
 
     f, ax = plt.subplots(figsize=figsize)
     if male_log.size:
-        ax.hist(male_log, bins=bins, density=True, alpha=0.5,
+        ax.hist(male_log, bins=bins, density=True, alpha=_INTERVAL_FIGURES["log_histogram"]["alpha"],
                 histtype="stepfilled", color=male_color, edgecolor=edge_color,
                 label=f"{male_label} (n={male_log.size})")
     if female_log.size:
-        ax.hist(female_log, bins=bins, density=True, alpha=0.5,
+        ax.hist(female_log, bins=bins, density=True, alpha=_INTERVAL_FIGURES["log_histogram"]["alpha"],
                 histtype="stepfilled", color=female_color, edgecolor=edge_color,
                 label=f"{female_label} (n={female_log.size})")
     ax.set_xlabel(r"$\mathrm{log}_{\mathrm{interval}}$ (s)")
@@ -133,7 +157,6 @@ def plot_ic_curves(
     df_results: pls.DataFrame,
     male_color: str,
     female_color: str,
-    figsize: tuple = (6, 4),
     ic_col: str = "bic",
     selected_n_components: dict | None = None,
 ) -> tuple[plt.Figure, tuple, dict]:
@@ -171,8 +194,6 @@ def plot_ic_curves(
         Colour for the male curve (left y-axis).
     female_color (str)
         Colour for the female curve (right y-axis).
-    figsize (tuple)
-        Figure size; defaults to (6, 4).
     ic_col (str)
         IC column to plot. Defaults to ``'bic'``.
     selected_n_components (dict | None)
@@ -180,6 +201,16 @@ def plot_ic_curves(
         step-up rule. The matching K on each curve is highlighted
         with a larger filled circle. Defaults to ``None`` (no
         highlight).
+
+    Settings read
+    -------------
+    Knobs read at call time from the module's ``visualizations_settings.json``
+    (loaded at import) rather than taken as keyword arguments:
+
+    figsize (tuple)
+        ``usv_interval_figures.ic_curves.figsize`` (shipped [6, 4]).
+        Figure size. The selected-K marker's outline is
+        ``usv_interval_figures.edge_color``.
 
     Returns
     -------
@@ -196,13 +227,15 @@ def plot_ic_curves(
         supplied for that sex).
     """
 
+    figsize = tuple(_INTERVAL_FIGURES["ic_curves"]["figsize"])
+
     f, ax_left = plt.subplots(figsize=figsize)
     ax_right = ax_left.twinx()
 
     axis_for = {"male": ax_left, "female": ax_right}
     color_for = {"male": male_color, "female": female_color}
     stats: dict = {}
-    edge_color = "#202020"
+    edge_color = _INTERVAL_FIGURES["edge_color"]
 
     present_sexes = set(df_results['sex'].unique().to_list())
     for sex in ("male", "female"):
@@ -286,13 +319,10 @@ def plot_best_fit_with_annotations(
     mixture_model,
     mixture_model_order: np.ndarray,
     color: str,
-    figsize: tuple = (5, 5),
-    bins: int = 80,
-    xlims: tuple = (-5.0, 5.0),
-    tau: float = 0.5,
-    edge_color: str = "#202020",
+    bins: int,
+    xlims: tuple,
+    tau: float,
     qq_inset_bbox: tuple | None = (0.62, 0.40, 0.34, 0.34),
-    qq_n_q: int = 200,
     legend_corner: str = "upper right",
     auto_inset_below_legend: bool = False,
     auto_inset_size: tuple = (0.34, 0.30),
@@ -329,27 +359,25 @@ def plot_best_fit_with_annotations(
         Sort indices for the components (ascending by log-mean).
     color (str)
         Histogram fill colour and Q-Q-inset dot colour.
-    figsize (tuple)
-        Figure size; defaults to (5, 5) (square).
     bins (int)
-        Number of histogram bins; defaults to 80.
+        Number of histogram bins. Required: the interval notebook passes the
+        per-sex ``bins_per_sex`` of ``analyses_settings.json ->
+        compute_inter_usv_interval_distributions``.
     xlims (tuple)
-        (low, high) bounds in log-space; defaults to (-5.0, 5.0).
+        (low, high) bounds in log-space. Required: the interval notebook passes
+        ``compute_inter_usv_interval_distributions.plot_log_xlims`` (shipped
+        [-5.0, 5.0]).
     tau (float)
         Posterior threshold passed to
         :func:`mixture_model_utils.summarize_best_gmm` (used by the returned
-        summary dict; no longer drawn on the plot). Defaults to 0.5.
-    edge_color (str)
-        Histogram edge colour and triangle outline; defaults to
-        '#202020'.
+        summary dict; no longer drawn on the plot). Required: the interval
+        notebook passes ``compute_inter_usv_interval_distributions.tau``
+        (shipped 0.5).
     qq_inset_bbox (tuple | None)
         Four-tuple ``(x, y, w, h)`` in axes fractions of the host
         axes specifying the Q-Q inset position. ``None`` disables
         the inset entirely. Defaults to ``(0.62, 0.40, 0.34, 0.34)``
         -- the upper-right area below a top-right text legend.
-    qq_n_q (int)
-        Number of quantile probabilities used by the Q-Q inset;
-        defaults to 200.
     legend_corner (str)
         Where to place the lettered text legend block. One of
         ``'upper right'``, ``'upper left'``, ``'lower right'``,
@@ -377,6 +405,21 @@ def plot_best_fit_with_annotations(
         distinguishable; the original sex-coloured mixture-sum curve
         is preserved underneath. Defaults to False.
 
+    Settings read
+    -------------
+    Knobs read at call time from the module's ``visualizations_settings.json``
+    (loaded at import) rather than taken as keyword arguments:
+
+    figsize (tuple)
+        ``usv_interval_figures.best_fit.figsize`` (shipped [5, 5]).
+        Figure size.
+    edge_color (str)
+        ``usv_interval_figures.edge_color`` (shipped "#202020").
+        Histogram edge colour and triangle outline.
+    qq_n_q (int)
+        ``usv_interval_figures.best_fit.qq_quantiles`` (shipped 200).
+        Number of quantile probabilities used by the Q-Q inset.
+
     Returns
     -------
     f (plt.Figure)
@@ -391,12 +434,18 @@ def plot_best_fit_with_annotations(
         empirical and model quantiles.
     """
 
+    figsize = tuple(_INTERVAL_FIGURES["best_fit"]["figsize"])
+    edge_color = _INTERVAL_FIGURES["edge_color"]
+    qq_n_q = _INTERVAL_FIGURES["best_fit"]["qq_quantiles"]
+
     log_x = np.log(intervals_sec)
     f, ax = plot_gmm_fit(
         model=mixture_model,
         x=log_x,
         figsize=figsize,
         bins=bins,
+        density_grid_points=_INTERVAL_FIGURES["best_fit"]["density_grid_points"],
+        bin_mean_grid_points=_INTERVAL_FIGURES["best_fit"]["bin_mean_grid_points"],
         xlims=xlims,
         color=color,
         edge_color=edge_color,
@@ -425,6 +474,8 @@ def plot_best_fit_with_annotations(
     if show_components:
         _draw_mixture_components(
             ax, mixture_model, mixture_model_order, xlims=xlims,
+            n_grid=_INTERVAL_FIGURES["best_fit"]["component_grid_points"],
+            lw=_INTERVAL_FIGURES["best_fit"]["component_linewidth"],
         )
 
     logmeans = summary["logmeans"]
@@ -629,17 +680,7 @@ _COMPONENT_LINESTYLES: tuple[object, ...] = (
     (0, (3, 1, 1, 1, 1, 1)),
     (0, (5, 2, 1, 2)),
 )
-_VIZ_SETTINGS_PATH = (
-    Path(__file__).parent.parent / "_parameter_settings" / "visualizations_settings.json"
-)
-try:
-    with _VIZ_SETTINGS_PATH.open() as _vf:
-        _COMPONENT_COLORS = json.load(_vf)["component_colors"]
-except FileNotFoundError:
-    _COMPONENT_COLORS = [
-        "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
-        "#9467bd", "#8c564b", "#e377c2", "#7f7f7f",
-    ]
+_COMPONENT_COLORS = _VIZ_SETTINGS["component_colors"]
 _COMPONENT_PALETTE: tuple[tuple[str, object], ...] = tuple(
     zip(_COMPONENT_COLORS, _COMPONENT_LINESTYLES, strict=False)
 )
@@ -651,8 +692,8 @@ def _draw_mixture_components(
     mixture_model_order: np.ndarray,
     *,
     xlims: tuple,
-    n_grid: int = 500,
-    lw: float = 1.5,
+    n_grid: int,
+    lw: float,
 ) -> None:
     """
     Description
@@ -692,10 +733,12 @@ def _draw_mixture_components(
         ``(low, high)`` bounds in log-seconds within which to
         evaluate the per-component pdfs.
     n_grid (int)
-        Number of evaluation points along the x-axis. Defaults to
-        500, matching :func:`mixture_model_utils.plot_gmm_fit`.
+        Number of evaluation points along the x-axis; the caller passes
+        ``usv_interval_figures.best_fit.component_grid_points`` (500,
+        matching :func:`mixture_model_utils.plot_gmm_fit`).
     lw (float)
-        Line width for the component curves. Defaults to 1.5.
+        Line width for the component curves; the caller passes
+        ``usv_interval_figures.best_fit.component_linewidth`` (1.5).
 
     Returns
     -------
@@ -729,8 +772,8 @@ def _draw_qq_into_axes(
     intervals_sec: np.ndarray,
     mixture_model,
     dot_color: str,
-    line_color: str = "#202020",
-    n_q: int = 200,
+    line_color: str,
+    n_q: int,
     inset: bool = False,
 ) -> float:
     """
@@ -755,9 +798,13 @@ def _draw_qq_into_axes(
     dot_color (str)
         Colour for the empirical-vs-model quantile dots.
     line_color (str)
-        Colour for the reference y=x diagonal.
+        Colour for the reference y=x diagonal (callers pass a settings value:
+        ``usv_interval_figures.edge_color`` for the inset,
+        ``usv_interval_figures.qq_plot.line_color`` for :func:`plot_qq`).
     n_q (int)
-        Number of quantile probabilities; defaults to 200.
+        Number of quantile probabilities (callers pass
+        ``usv_interval_figures.best_fit.qq_quantiles`` for the inset,
+        ``usv_interval_figures.qq_plot.n_quantiles`` for :func:`plot_qq`).
     inset (bool)
         If True, render in compact mode (smaller dots, smaller tick
         font, compact axis labels (Observed (s) / Model (s)) and no
@@ -816,9 +863,6 @@ def plot_qq(
     intervals_sec: np.ndarray,
     mixture_model,
     dot_color: str,
-    figsize: tuple = (5, 5),
-    n_q: int = 200,
-    line_color: str = "#202020",
     ax: plt.Axes | None = None,
 ) -> tuple[plt.Figure, plt.Axes, dict]:
     """
@@ -827,7 +871,7 @@ def plot_qq(
     Q-Q plot of empirical quantiles (in seconds) against model
     quantiles obtained by inverting the analytic mixture model CDF (no
     Monte-Carlo noise). The reference y=x line is drawn in
-    ``line_color`` (black by default); the dots are drawn in
+    ``line_color`` (``usv_interval_figures.qq_plot.line_color``); the dots are drawn in
     ``dot_color`` (typically the male / female palette colour
     depending on the panel).
 
@@ -844,15 +888,24 @@ def plot_qq(
         The fitted mixture in log-space.
     dot_color (str)
         Colour for the empirical-vs-model quantile dots.
-    figsize (tuple)
-        Figure size when ``ax`` is None; defaults to (5, 5).
-    n_q (int)
-        Number of quantile probabilities; defaults to 200.
-    line_color (str)
-        Colour for the reference y=x diagonal; defaults to '#202020'.
     ax (plt.Axes | None)
         Pre-existing axes to draw into; defaults to None (new
         figure).
+
+    Settings read
+    -------------
+    Knobs read at call time from the module's ``visualizations_settings.json``
+    (loaded at import) rather than taken as keyword arguments:
+
+    figsize (tuple)
+        ``usv_interval_figures.qq_plot.figsize`` (shipped [5, 5]).
+        Figure size when ``ax`` is None.
+    n_q (int)
+        ``usv_interval_figures.qq_plot.n_quantiles`` (shipped 200).
+        Number of quantile probabilities.
+    line_color (str)
+        ``usv_interval_figures.qq_plot.line_color`` (shipped "#202020").
+        Colour for the reference y=x diagonal.
 
     Returns
     -------
@@ -864,6 +917,10 @@ def plot_qq(
         Keys ``'pearson_r'`` (in log-space) for goodness-of-fit at a
         glance.
     """
+
+    figsize = tuple(_INTERVAL_FIGURES["qq_plot"]["figsize"])
+    n_q = _INTERVAL_FIGURES["qq_plot"]["n_quantiles"]
+    line_color = _INTERVAL_FIGURES["qq_plot"]["line_color"]
 
     if ax is None:
         f, ax = plt.subplots(figsize=figsize)
@@ -883,8 +940,6 @@ def plot_qq(
 
 def plot_bootstrap_lrt_panel(
     sweep: dict,
-    figsize_per_panel: tuple = (4, 3),
-    break_gap_factor: float = 1.5,
     alpha: float = 0.01,
     pair_title: str = "{key}: K={K_n} vs K={K_a}",
     obs_label: str = "LR_obs",
@@ -916,14 +971,6 @@ def plot_bootstrap_lrt_panel(
     sweep (dict)
         ``{key: {(K_null, K_alt): result}}`` as returned by
         :func:`load_lrt_sweep_from_h5` or :func:`load_peak_lrt_sweep_from_h5`.
-    figsize_per_panel (tuple)
-        Width and height of each individual subplot in inches;
-        defaults to (4, 3).
-    break_gap_factor (float)
-        Threshold for triggering the broken-axis split. The break is
-        applied when ``LR_obs - null_max > break_gap_factor *
-        null_max``. Defaults to 1.5 (i.e. the gap must be at least
-        150% of the null's full width).
     alpha (float)
         Level of the reference line, drawn at the ``1 - alpha`` null quantile;
         defaults to 0.01.
@@ -939,6 +986,23 @@ def plot_bootstrap_lrt_panel(
         Legend label for the reference line; defaults to None, which gives
         ``'null <100(1-alpha)>%'``.
 
+    Settings read
+    -------------
+    Knobs read at call time from the module's ``visualizations_settings.json``
+    (loaded at import) rather than taken as keyword arguments:
+
+    figsize_per_panel (tuple)
+        ``usv_interval_figures.bootstrap_lrt.figsize_per_panel`` (shipped [4, 3]).
+        Width and height of each individual subplot in inches.
+    break_gap_factor (float)
+        ``usv_interval_figures.bootstrap_lrt.break_gap_factor`` (shipped 1.5).
+        Threshold for triggering the broken-axis split. The break is
+        applied when ``LR_obs - null_max > break_gap_factor *
+        null_max`` (at the shipped 1.5 the gap must be at least 150% of the
+        null's full width). The null
+        histogram's bin count, fill and the observed-statistic line colour
+        are ``bootstrap_lrt.bins`` / ``null_color`` / ``observed_color``.
+
     Returns
     -------
     f (plt.Figure)
@@ -949,6 +1013,9 @@ def plot_bootstrap_lrt_panel(
         instead of a single Axes; cells without a break hold a single
         Axes as before.
     """
+
+    figsize_per_panel = tuple(_INTERVAL_FIGURES["bootstrap_lrt"]["figsize_per_panel"])
+    break_gap_factor = _INTERVAL_FIGURES["bootstrap_lrt"]["break_gap_factor"]
 
     keys = list(sweep.keys())
     if not keys:
@@ -1030,15 +1097,15 @@ def plot_bootstrap_lrt_panel(
                 ax = f.add_subplot(outer[row, col])
                 ax.hist(
                     lr_null,
-                    bins=50,
-                    color="#a0a0a0", edgecolor="#202020",
+                    bins=_INTERVAL_FIGURES["bootstrap_lrt"]["bins"],
+                    color=_INTERVAL_FIGURES["bootstrap_lrt"]["null_color"], edgecolor=_INTERVAL_FIGURES["edge_color"],
                     histtype="stepfilled",
                 )
-                ax.axvline(lr_obs, color="#cc0000", lw=2,
+                ax.axvline(lr_obs, color=_INTERVAL_FIGURES["bootstrap_lrt"]["observed_color"], lw=2,
                            label=f"{obs_label} = {lr_obs:.1f}")
                 threshold_text = (threshold_label if threshold_label is not None
                                   else f"null {100 * (1 - alpha):.4g}%")
-                ax.axvline(null_p99, color="#202020", linestyle=":", lw=1,
+                ax.axvline(null_p99, color=_INTERVAL_FIGURES["edge_color"], linestyle=":", lw=1,
                            label=f"{threshold_text} = {null_p99:.1f}")
                 ax.set_title(f"{pair_title.format(key=key, K_n=K_n, K_a=K_a)}\n"
                              f"p = {res['p_value']:.3f}")
@@ -1119,19 +1186,19 @@ def _draw_lrt_cell_pair(
     # null histogram on the left axes
     ax_l.hist(
         lr_null,
-        bins=50,
-        color="#a0a0a0", edgecolor="#202020",
+        bins=_INTERVAL_FIGURES["bootstrap_lrt"]["bins"],
+        color=_INTERVAL_FIGURES["bootstrap_lrt"]["null_color"], edgecolor=_INTERVAL_FIGURES["edge_color"],
         histtype="stepfilled",
     )
     # 99% reference line: drawn on whichever side it falls on
     if null_p99 <= left_hi:
-        ax_l.axvline(null_p99, color="#202020", linestyle=":", lw=1,
+        ax_l.axvline(null_p99, color=_INTERVAL_FIGURES["edge_color"], linestyle=":", lw=1,
                      label=f"{threshold_text} = {null_p99:.1f}")
     elif right_lo <= null_p99 <= right_hi:
-        ax_r.axvline(null_p99, color="#202020", linestyle=":", lw=1,
+        ax_r.axvline(null_p99, color=_INTERVAL_FIGURES["edge_color"], linestyle=":", lw=1,
                      label=f"{threshold_text} = {null_p99:.1f}")
     # observed LR on the right axes
-    ax_r.axvline(lr_obs, color="#cc0000", lw=2,
+    ax_r.axvline(lr_obs, color=_INTERVAL_FIGURES["bootstrap_lrt"]["observed_color"], lw=2,
                  label=f"{obs_label} = {lr_obs:.1f}")
 
     ax_l.set_xlim(left_lo, left_hi)
@@ -1636,6 +1703,8 @@ def _draw_serial_dependence_panel(
     line and its band drawn over it.
 
     Everything is drawn in log10(ms) coordinates with millisecond tick labels, on square axes.
+    The ink colours (density ramp end, diagonal, bout boundary, band, fitted line) come from
+    ``usv_interval_figures.serial_dependence``.
 
     Parameters
     ----------
@@ -1675,28 +1744,30 @@ def _draw_serial_dependence_panel(
     counts, x_edges, y_edges = np.histogram2d(log_current, log_following, bins=grid_bins,
                                               range=[lim, lim])
     shade = np.log10(counts.T + 1.0)
-    cmap = LinearSegmentedColormap.from_list("serial_dependence", ["#FFFFFF", color, "#1F3A45"])
+    panel_settings = _INTERVAL_FIGURES["serial_dependence"]
+    cmap = LinearSegmentedColormap.from_list("serial_dependence",
+                                             ["#FFFFFF", color, panel_settings["density_dark_color"]])
     cmap.set_under("#FFFFFF")
     mesh = ax.pcolormesh(0.5 * (x_edges[:-1] + x_edges[1:]), 0.5 * (y_edges[:-1] + y_edges[1:]),
                          shade, shading="gouraud", cmap=cmap,
                          norm=Normalize(np.log10(2.0), max(float(shade.max()), np.log10(3.0))),
                          rasterized=True)
-    ax.plot(lim, lim, color="#8A8F98", lw=0.8, ls=(0, (4, 3)))
+    ax.plot(lim, lim, color=panel_settings["diagonal_color"], lw=0.8, ls=(0, (4, 3)))
     if boundary_ms is not None:
         # Round dots: a zero-length dash with round caps; the gap is in units of line width.
-        ax.axvline(np.log10(boundary_ms), color="#B4404A", lw=1.0, ls=(0, (0.01, 4.4)),
+        ax.axvline(np.log10(boundary_ms), color=panel_settings["boundary_color"], lw=1.0, ls=(0, (0.01, 4.4)),
                    dash_capstyle="round", label=f"bout boundary ({boundary_ms:.0f} ms)")
 
     x = np.log10(current_ms)
-    ax.fill_between(x, np.log10(low_ms), np.log10(high_ms), color="#1F1F1F", alpha=0.25, lw=0,
+    ax.fill_between(x, np.log10(low_ms), np.log10(high_ms), color=panel_settings["band_color"], alpha=0.25, lw=0,
                     zorder=3)
-    ax.plot(x, np.log10(line_ms), color="#000000", lw=1.0, zorder=4, label=line_label)
+    ax.plot(x, np.log10(line_ms), color=panel_settings["line_color"], lw=1.0, zorder=4, label=line_label)
     if bend is not None:
         bend_ms, bend_low, bend_high, level, y_ms = bend
         ax.errorbar([np.log10(bend_ms)], [np.log10(y_ms)],
                     xerr=[[np.log10(bend_ms) - np.log10(bend_low)],
                           [np.log10(bend_high) - np.log10(bend_ms)]],
-                    fmt="o", color="#000000", ms=2.0, lw=0.8, capsize=1.5, zorder=5,
+                    fmt="o", color=panel_settings["line_color"], ms=2.0, lw=0.8, capsize=1.5, zorder=5,
                     label=f"bend {bend_ms:.0f} ms ({bend_low:.0f}-{bend_high:.0f}, {level:.0f}%)")
 
     ticks = [t for t in (10, 30, 100, 300, 1000, 3000, 10000, 30000) if lims_ms[0] <= t <= lims_ms[1]]
@@ -1737,9 +1808,6 @@ def plot_serial_dependence(
     curves: pls.DataFrame,
     fit: dict,
     boundary_ms: float | None = None,
-    lims_ms: tuple = (15.0, 20000.0),
-    grid_bins: int = 70,
-    figsize: tuple = (6.2, 2.6),
     vocal_label: str = "USV",
 ) -> tuple[plt.Figure, np.ndarray, dict]:
     """
@@ -1777,15 +1845,24 @@ def plot_serial_dependence(
         The archived ``serial_dependence_fit`` row of this pool.
     boundary_ms (float or None)
         Bout boundary drawn on both panels; None draws none. Defaults to None.
-    lims_ms (tuple)
-        Axis limits in ms, identical on both axes; defaults to (15, 20000).
-    grid_bins (int)
-        Bins per axis of the 2-D histogram; defaults to 70.
-    figsize (tuple)
-        Figure size in inches; defaults to (6.2, 2.6).
     vocal_label (str)
         Vocal type of the pool (e.g. ``'USV'`` or ``'squeak'``), written into both axis labels
         as ``'current / next inter-<vocal_label> interval (ms)'``; defaults to ``'USV'``.
+
+    Settings read
+    -------------
+    Knobs read at call time from the module's ``visualizations_settings.json``
+    (loaded at import) rather than taken as keyword arguments:
+
+    lims_ms (tuple)
+        ``usv_interval_figures.serial_dependence.lims_ms`` (shipped [15.0, 20000.0]).
+        Axis limits in ms, identical on both axes.
+    grid_bins (int)
+        ``usv_interval_figures.serial_dependence.grid_bins`` (shipped 70).
+        Bins per axis of the 2-D histogram.
+    figsize (tuple)
+        ``usv_interval_figures.serial_dependence.figsize`` (shipped [6.2, 2.6]).
+        Figure size in inches.
 
     Returns
     -------
@@ -1797,6 +1874,10 @@ def plot_serial_dependence(
         ``'n_pairs'`` (pairs drawn), ``'bend_ms'``, ``'bend_low_ms'``, ``'bend_high_ms'``,
         ``'level'``, ``'slope'`` and ``'flat_level_ms'`` from the fit.
     """
+
+    lims_ms = tuple(_INTERVAL_FIGURES["serial_dependence"]["lims_ms"])
+    grid_bins = _INTERVAL_FIGURES["serial_dependence"]["grid_bins"]
+    figsize = tuple(_INTERVAL_FIGURES["serial_dependence"]["figsize"])
 
     current_ms = np.asarray(pairs[0], dtype=float) * 1000.0
     following_ms = np.asarray(pairs[1], dtype=float) * 1000.0

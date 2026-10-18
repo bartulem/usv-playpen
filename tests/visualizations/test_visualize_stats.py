@@ -35,6 +35,7 @@ import matplotlib.pyplot as plt
 
 from usv_playpen import os_utils
 from usv_playpen.analyses.compute_inter_usv_interval_distributions import (
+    build_em_initialisation,
     fit_mixture_model_sweep,
 )
 from usv_playpen.analyses.usv_interval_archive import write_ivi_h5
@@ -1334,7 +1335,7 @@ def test_plot_log_usv_interval_histograms():
         ]).tolist(),
     })
     fig, _ax, stats = plot_log_usv_interval_histograms(
-        df, bins=30, male_color=_HEX_MALE, female_color=_HEX_FEMALE,
+        df, bins=30, male_color=_HEX_MALE, female_color=_HEX_FEMALE, xlims=(-5.0, 5.0),
     )
     assert stats["n_M"] == 100
     assert stats["n_F"] == 80
@@ -1646,7 +1647,7 @@ def test_plot_best_fit_with_annotations():
     )
     mixture_model_order = np.argsort(mixture_model.means_.ravel())
     fig, _ax, summary = plot_best_fit_with_annotations(
-        intervals_sec, mixture_model, mixture_model_order, color=_HEX_MALE,
+        intervals_sec, mixture_model, mixture_model_order, color=_HEX_MALE, bins=80, xlims=(-5.0, 5.0), tau=0.5,
     )
     assert "qq_pearson_r" in summary
     plt.close(fig)
@@ -1669,6 +1670,8 @@ def test_fit_mixture_model_sweep_feeds_plot_ic_curves():
     """
 
     rng = np.random.default_rng(16)
+    settings_path = Path(uiss.__file__).parent.parent / "_parameter_settings" / "analyses_settings.json"
+    interval_settings = json.loads(settings_path.read_text())["compute_inter_usv_interval_distributions"]
     df_results = fit_mixture_model_sweep(
         intervals_by_key={
             "male": np.exp(rng.normal(-0.5, 0.6, 200)),
@@ -1676,6 +1679,12 @@ def test_fit_mixture_model_sweep_feeds_plot_ic_curves():
         },
         n_components_min=1, n_components_max=3, n_repeats=2,
         max_modes_reported=3, random_seed_base=0, model_class="gauss",
+        **{key: interval_settings[key] for key in (
+            "tau", "cv_n_folds", "cv_n_init", "mixture_model_n_init", "mixture_model_reg_covar",
+            "em_max_iter", "em_tol", "split_delta", "mode_grid_size_gauss", "mode_span_scales_gauss",
+            "mode_grid_size_t", "mode_span_scales_t", "cv_t_n_init_offset",
+        )},
+        em_init=build_em_initialisation(interval_settings),
     )
     assert df_results.height > 0
     assert {"sex", "n_comp", "bic"}.issubset(df_results.columns)
@@ -2402,7 +2411,7 @@ def test_plot_best_fit_with_annotations_corners_auto_inset_and_components(corner
 
     intervals_sec, mixture_model, mixture_model_order = _fit_two_comp_gmm(seed=21)
     fig, _ax, summary = plot_best_fit_with_annotations(
-        intervals_sec, mixture_model, mixture_model_order, color=_HEX_MALE,
+        intervals_sec, mixture_model, mixture_model_order, color=_HEX_MALE, bins=80, xlims=(-5.0, 5.0), tau=0.5,
         legend_corner=corner,
         auto_inset_below_legend=True,
         show_components=True,
@@ -2429,7 +2438,7 @@ def test_plot_best_fit_with_annotations_invalid_corner_raises():
     intervals_sec, mixture_model, mixture_model_order = _fit_two_comp_gmm(seed=22)
     with pytest.raises(ValueError, match="unknown corner"):
         plot_best_fit_with_annotations(
-            intervals_sec, mixture_model, mixture_model_order, color=_HEX_MALE,
+            intervals_sec, mixture_model, mixture_model_order, color=_HEX_MALE, bins=80, xlims=(-5.0, 5.0), tau=0.5,
             legend_corner="middle",
         )
 

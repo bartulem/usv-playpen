@@ -105,10 +105,97 @@
     "bout_trigger_bin_seconds": 0.02,
     "bout_trigger_smooth_bins": 2.5,
     "bout_density_grid": 160,
-    "bout_density_levels": [0.5, 0.75, 0.9]
+    "bout_density_levels": [0.5, 0.75, 0.9],
+    "ink_color": "#1F1F1F",
+    "band_color": "#D3D3D3",
+    "dash_color": "#888888",
+    "light_color": "#CCCCCC",
+    "hatch_color": "#BBBBBB",
+    "vocal_page_figsize_inches": [16.0, 27.0],
+    "behavioral_page_width_inches": 16.0,
+    "behavioral_row_height_inches": 2.6,
+    "region_grid_figsize_inches": [14.0, 6.4],
+    "sign_flip_figsize_inches": [10.0, 5.4],
+    "pag_gradient_figsize_inches": [18.0, 4.8],
+    "peth_timing_figsize_inches": [18.0, 6.6],
+    "behavioral_tier_figsize_inches": [7.5, 3.5],
+    "overlap_venn_figsize_inches": [6.5, 5.5],
+    "per_region_venn_figsize_inches": [18.0, 9.0],
+    "bout_legend_fontsize": 9,
+    "bout_legend_line_step": 0.075,
+    "peth_tick_seconds": 0.5,
+    "qlvm_category_label_fontsize": 14,
+    "qlvm_label_inset": 0.06,
+    "strip_log_ratio_threshold": 10.0,
+    "strip_symlog_linthresh": 0.5,
+    "stability_marker_size_range": [4.0, 70.0],
+    "stability_fr_log10_range": [-1.0, 1.5],
+    "consistency_marker_size_range": [6.0, 60.0],
+    "consistency_n_tested_range": [2, 6],
+    "breadth_marker_size_range": [8.0, 60.0],
+    "breadth_z_range": [3.0, 20.0],
+    "stability_min_units": 5,
+    "vmi_bootstrap_n": 2000,
+    "vmi_bootstrap_quantiles": [0.025, 0.975],
+    "vmi_n_tested_min": 2,
+    "pag_kde_grid_resolution": 220,
+    "vmi_histogram_bins": 20,
+    "peth_consistency_tolerance_seconds": 0.1,
+    "peth_timing_bin_seconds": 0.05,
+    "consistency_k_min": 2,
+    "consistency_require_majority": true
+  },
+  "neuronal_decoding_figures": {
+    "trace_color": "#1F1F1F",
+    "page_color": "#FFFFFF",
+    "opacity_range": [0.45, 1.0],
+    "main_panel_inches": [5.6, 4.0],
+    "side_gap_inches": 0.44,
+    "panel_gap_inches": 0.2,
+    "page_margin_inches": {
+      "left": 0.78,
+      "right": 0.14,
+      "bottom": 0.6,
+      "top": 0.74
+    },
+    "ci_quantile": 0.995,
+    "null_percentile": 99.5
   },
   "anatomy_figures": {
-    "excluded_mouse_ids": ["147366"]
+    "excluded_mouse_ids": ["147366"],
+    "recording_yield": {
+      "fig_size_inches": [7.0, 2.6]
+    },
+    "unit_positions": {
+      "fig_size_inches": [6.0, 5.0],
+      "view_elev": 18.0,
+      "view_azim": -60.0,
+      "shell_vertex_stride": 6,
+      "shell_point_size": 0.7,
+      "shell_point_alpha": 0.5,
+      "region_alpha": 0.1,
+      "mb_alpha": 0.04,
+      "dot_size": 9.0,
+      "dot_alpha": 1.0,
+      "legend_marker_scale": 3.0
+    },
+    "unit_positions_video": {
+      "n_frames": 240,
+      "fps": 30,
+      "dpi": 600,
+      "bitrate": 4000
+    },
+    "unit_waveforms": {
+      "lateral_jitter_um": 12.0,
+      "waveform_width_um": 12.0,
+      "peak_amplitude_target_um": 25.0,
+      "inter_shank_wspace": 0.05,
+      "opacity_sigma_um": 20.0,
+      "n_neighbors_each_side": 5,
+      "ap_padding_um": 20.0,
+      "dv_padding_um": 30.0,
+      "fig_size_inches": [4.5, 7.0]
+    }
   },
   "make_usv_spectrograms": {
     "save_dir": "",
@@ -128,11 +215,16 @@
     "cbar_limits": [-70, 0],
     "apply_mask": true,
     "auto_open_figure": true,
+    "stitched_edge_taper_alpha": 0.3,
     "sequence": {
       "draw_boundaries": true,
       "annotate_right": false,
       "mark_usv_segments": true,
-      "exclude_squeaks": true
+      "exclude_squeaks": true,
+      "marker_size_range": [35.0, 70.0],
+      "line_width_range": [0.5, 3.0],
+      "embedding_cmap": "gray_r",
+      "embedding_vmax_percentile": 95
     }
   },
   "make_behavioral_videos": {
@@ -148,7 +240,8 @@
       "fs_volume_adjustment": true,
       "fs_compand_transfer": "0.3,1 6:-70,-60,-20 -5 -90 0.2",
       "fs_noise_reduction_std_threshold": 3,
-      "fs_sinc_upper_cutoff_hz": 25000
+      "fs_sinc_upper_cutoff_hz": 25000,
+      "fs_sox_timeout_s": 600
     },
     "animate_bool": false,
     "video_start_time": 37.0,
@@ -180,6 +273,34 @@
       "animation_codec_tune_flag": "hq",
       "animation_writer": "ffmpeg",
       "animation_format": "mp4"
+    },
+    "color_modes": {
+      "light_mode": {
+        "background_color": "#FFFFFF",
+        "node_edge_color": "#8B8B8B",
+        "body_edge_color": "#8B8B8B",
+        "text_color": "#202020",
+        "tick_color": "#202020",
+        "arena_line_color": "#202020",
+        "arena_mic_color": "#202020",
+        "arena_mesh_color": "#202020",
+        "spectrogram_text_color": "#202020",
+        "faded_feature_color": "#00000033",
+        "speaker_color": "#202020"
+      },
+      "dark_mode": {
+        "background_color": "#202020",
+        "node_edge_color": "#8B8B8B",
+        "body_edge_color": "#8B8B8B",
+        "text_color": "#FFFFFF",
+        "tick_color": "#FFFFFF",
+        "arena_line_color": "#FFFFFF",
+        "arena_mic_color": "#FFFFFF",
+        "arena_mesh_color": "#FFFFFF",
+        "spectrogram_text_color": "#FFFFFF",
+        "faded_feature_color": "#FFFFFF33",
+        "speaker_color": "#FFFFFF"
+      }
     },
     "arena_figure_specs": {
       "arena_node_connections_bool": false,
@@ -242,7 +363,37 @@
     "peaks_only": false,
     "spec_cache_size": 2048,
     "apply_mask": true,
-    "accent_color": "#00FFFF"
+    "accent_color": "#00FFFF",
+    "palette": {
+      "white": "#FFFFFF",
+      "black": "#000000",
+      "gray": "#808080",
+      "light_gray": "#D3D3D3",
+      "subtitle": "#444444"
+    },
+    "heatmap_vmax_percentile": 95,
+    "bitrate": 4000
+  },
+  "qlvm_property_sweep_video": {
+    "window": 0.1,
+    "step": 0.01,
+    "hold": 8,
+    "fps": 15,
+    "dpi": 100,
+    "density_bandwidth": 0.01,
+    "colormap_floor": 0.2,
+    "color_percentiles": [1, 99],
+    "brightness_percentile": 99,
+    "figure_size": [19.0, 11.4],
+    "figure_face": "#FFFFFF",
+    "boundary_color": "#FFFFFF",
+    "median_mark_color": "#000000",
+    "window_shade_color": "#FFFFFF",
+    "colorbar_label_size": 17,
+    "colorbar_tick_size": 14,
+    "codec": "libx264",
+    "pixel_format": "yuv420p",
+    "crf": 18
   },
   "qlvm_figures": {
     "n_usvs": 100000,
@@ -290,6 +441,43 @@
       "align_max_shift": 8,
       "align_iterations": 5,
       "average_time_ms": 150.0
+    },
+    "style": {
+      "text_color": "#000000",
+      "figure_face": "#FFFFFF",
+      "boundary_color": "#FFFFFF",
+      "property_boundary_color": "#000000",
+      "map_colors": {
+        "QLVM": "#000000",
+        "PCA": "#9A9A9A",
+        "UMAP": "#E69F00"
+      },
+      "distance_colors": {
+        "QLVM pullback geodesic": "#000000",
+        "QLVM density geodesic": "#555555",
+        "QLVM flat torus": "#8C8C8C",
+        "PCA Euclidean": "#BDBDBD",
+        "UMAP Euclidean": "#E69F00"
+      },
+      "seed_colors": ["#000000", "#666666", "#A6A6A6", "#CCCCCC"],
+      "null_color": "#D62728",
+      "density_color": "#4E79A7",
+      "change_color": "#E15759",
+      "bar_color": "#59595B",
+      "watershed_color": "#BDBDBD",
+      "group_dot_color": "#FFFFFF",
+      "title_size": 14,
+      "label_size": 14,
+      "tick_size": 12,
+      "colorbar_tick_size": 13,
+      "colorbar_label_size": 15,
+      "quality_label_size": 16,
+      "quality_tick_size": 14,
+      "quality_title_size": 16,
+      "color_percentiles": [1, 99],
+      "overview_figsize": [30, 12.5],
+      "quality_figsize": [20, 22.5],
+      "categories_figsize": [32.5, 16.6]
     }
   },
   "vocal_pose_figures": {
@@ -525,6 +713,222 @@
       "floor": 0.12
     }
   },
+  "behavioral_feature_distributions": {
+    "figure_dpi": 600,
+    "panels_per_row": 6,
+    "figure_width_inches": 6.4,
+    "row_height_inches": 1.0
+  },
+  "usv_summary_figures": {
+    "density_clip_percentile": 98,
+    "colorbar_nbins": 5,
+    "distance_kde_bw_adjust": 1.5,
+    "anova_alpha": 0.05,
+    "polar_kde": {
+      "grid_points": 200,
+      "contour_levels": 100
+    },
+    "category_polar_kde_grid": {
+      "grid_points": 100,
+      "contour_levels": 50,
+      "panel_inches": [4, 4]
+    },
+    "estrous_category_kde_grid": {
+      "grid_points": 100,
+      "contour_levels": 50,
+      "panel_inches": [4, 4]
+    },
+    "panel_inches": {
+      "category_estrous_rates_grid": [6, 4.5],
+      "category_estrous_ratio_grid": [5, 5]
+    },
+    "figsizes": {
+      "assignment_stacked_bars": [6, 10],
+      "assignment_summary_panel": [6, 9],
+      "animal_participation_stats": [12, 5],
+      "polar_kde_distance_angle": [10, 4],
+      "behavior_duration_regressions": [10, 10],
+      "distance_by_assignment_kde_anova": [10, 6],
+      "duration_histograms_by_sex": [8, 8],
+      "hourly_regressions": [4, 5],
+      "local_fatigue_binned_trends": [5, 5],
+      "estrous_ratio_scatter": [4, 3],
+      "estrous_usv_rates": [12, 5],
+      "estrous_stage_pie_chart": [7, 7],
+      "category_prevalence_and_embedding": [12, 18],
+      "category_global_fatigue_heatmap": [14, 10],
+      "category_estrous_ratio_grid_stages": [12, 12],
+      "session_squeak_time_heatmap": [9.2, 8.2]
+    }
+  },
+  "usv_interval_figures": {
+    "edge_color": "#202020",
+    "log_histogram": {
+      "figsize": [5, 5],
+      "alpha": 0.5
+    },
+    "ic_curves": {
+      "figsize": [6, 4]
+    },
+    "best_fit": {
+      "figsize": [5, 5],
+      "qq_quantiles": 200,
+      "density_grid_points": 500,
+      "bin_mean_grid_points": 4000,
+      "component_grid_points": 500,
+      "component_linewidth": 1.5
+    },
+    "qq_plot": {
+      "figsize": [5, 5],
+      "n_quantiles": 200,
+      "line_color": "#202020"
+    },
+    "bootstrap_lrt": {
+      "figsize_per_panel": [4, 3],
+      "break_gap_factor": 1.5,
+      "bins": 50,
+      "null_color": "#a0a0a0",
+      "observed_color": "#cc0000"
+    },
+    "serial_dependence": {
+      "figsize": [6.2, 2.6],
+      "grid_bins": 70,
+      "lims_ms": [15.0, 20000.0],
+      "density_dark_color": "#1F3A45",
+      "diagonal_color": "#8A8F98",
+      "boundary_color": "#B4404A",
+      "band_color": "#1F1F1F",
+      "line_color": "#000000"
+    }
+  },
+  "coactivity_figures": {
+    "significance_alpha": 0.05,
+    "acoustic_confound": {
+      "bins": 40,
+      "alpha": 0.5
+    },
+    "null_distributions": {
+      "percentile": 99,
+      "bins": 40,
+      "null_alpha": 0.5,
+      "obs_linewidth": 3.0,
+      "threshold_linewidth": 1.0,
+      "legend_fontsize": 8
+    },
+    "per_session_pop_corr": {
+      "percentile": 99,
+      "bins": 30,
+      "null_alpha": 0.55,
+      "obs_linewidth": 2.2,
+      "threshold_linewidth": 0.8,
+      "legend_fontsize": 7
+    }
+  },
+  "modeling_plots": {
+    "colors": {
+      "neutral": "#D3D3D3",
+      "mean_line": "#DCB400",
+      "text": "#202020",
+      "reference_line": "#808080",
+      "timescale_axis": "#000000",
+      "timescale_null": "#808080"
+    },
+    "ci_percentiles": [0.5, 99.5],
+    "raw_feature_difference": {
+      "value_sanity_cap": 90.0,
+      "n_bootstraps": 100,
+      "heatmap_cmap": "binary",
+      "heatmap_clip_percentiles": [1, 99]
+    },
+    "univariate_multinomial_performance": {
+      "base_cmap": "mako"
+    },
+    "multinomial_filters": {
+      "null_band_percentile": 95
+    },
+    "manifold_filter_atlas": {
+      "n_time_slices": 16,
+      "display_bins": 25,
+      "smooth_sigma": 3.0,
+      "atlas_grid_n": 12,
+      "null_percentile": 95
+    },
+    "collinearity_audit": {
+      "outline_threshold": 0.7,
+      "outline_color": "#000000"
+    },
+    "timescale_audit": {
+      "signal_smooth_window": 0,
+      "acf_run_length": 15
+    },
+    "behavioral_response_forest": {
+      "alpha": 0.01,
+      "false_discovery_rate": 0.05,
+      "axis_limits": [
+        [-15.0, 15.0],
+        [-5.0, 5.0],
+        [-6.0, 6.0],
+        [-2.0, 2.0]
+      ],
+      "duration_sd_factor": 2.25
+    },
+    "matched_divergence": {
+      "alpha": 0.01,
+      "display_seconds": [-2.0, 2.0],
+      "panel_columns": 4,
+      "between_block_gap": 0.3,
+      "onset_run_seconds": 1.0
+    },
+    "cnn_permutation_test": {
+      "null_color": "#D3D3D3",
+      "threshold_color": "#000000",
+      "title_fontsize": 10,
+      "label_fontsize": 8,
+      "figsize": [3, 4],
+      "n_bootstraps": 1000,
+      "threshold_percentiles": [0.5, 99.5],
+      "histogram_bins": 30,
+      "skill_null_bins": 50,
+      "skill_null_range": [-0.02, 0.02]
+    },
+    "cnn_feature_importance": {
+      "title_fontsize": 10,
+      "label_fontsize": 8,
+      "figsize": [4, 6]
+    },
+    "cnn_spatial_precision_grid": {
+      "n_patches": 20
+    },
+    "cnn_error_landscape": {
+      "title_fontsize": 10,
+      "label_fontsize": 8,
+      "figsize": [12, 5]
+    },
+    "cnn_regional_saliency": {
+      "null_color": "#D3D3D3",
+      "figsize": [18, 9],
+      "inset_histogram_bins": 15
+    }
+  },
+  "usv_property_figures": {
+    "histograms": {
+      "fig_size": [15.0, 3.0],
+      "n_bins": 36,
+      "face_color": "#808080",
+      "edge_color": "#000000",
+      "bandwidth_bimodal_split_khz": 30.0,
+      "bandwidth_peak_smooth_sigma_bins": 3.0
+    },
+    "session_type_counts": {
+      "fig_size": [6.0, 3.0],
+      "male_female_color": "#DFB8B3"
+    },
+    "timeline": {
+      "fig_size": [7.5, 1.6],
+      "rectangle_height": 2.5,
+      "rectangle_linewidth": 1.0
+    }
+  },
   "embedding_thumbnails": {
     "exclude_squeaks": true,
     "n_samples_per_category": 8,
@@ -550,6 +954,9 @@
     "thumbnail_wspace": 0.04,
     "unstretched_specs": true,
     "scatter_max_points": 200000,
+    "scatter_point_size": 4.0,
+    "scatter_point_alpha": 0.5,
+    "continuous_color_percentiles": [2, 98],
     "fig_size": [16, 12]
   }
 }

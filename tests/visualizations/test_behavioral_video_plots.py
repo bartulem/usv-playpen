@@ -42,6 +42,7 @@ from usv_playpen.visualizations.make_behavioral_videos import (
 _COLOR_MODE = {
     "tick_color": "#888888",
     "text_color": "#202020",
+    "faded_feature_color": "#00000033",
     "spectrogram_text_color": "#FFFFFF",
     "background_color": "#000000",
     "arena_line_color": "#444444",
@@ -177,6 +178,7 @@ def test_plot_spectrogram_renders_with_usv_segments_and_cbar():
             freq_limit=[0, 125000], freq_yticks=[],
             usv_segments_list=[(-0.2, 0.2)], usv_segment_lw=2.0,
             usv_segment_colors_list=["#FF0000"], usv_segments_ypos=60000,
+            spectrogram_cmap="inferno",
             cbar_bool=True, plot_usv_segments_bool=True,
         )
         # librosa specshow renders via pcolormesh (a QuadMesh collection),
@@ -230,6 +232,7 @@ def test_plot_spectrogram_applies_freq_yticks():
             freq_limit=[0, 125000], freq_yticks=[50000, 100000],
             usv_segments_list=[], usv_segment_lw=2.0,
             usv_segment_colors_list=[], usv_segments_ypos=60000,
+            spectrogram_cmap="inferno",
             cbar_bool=False, plot_usv_segments_bool=False,
         )
         assert list(ax.get_yticks()) == [50000, 100000]
@@ -247,6 +250,7 @@ def test_plot_spectrogram_applies_freq_yticks():
             freq_limit=[0, 125000], freq_yticks=[],
             usv_segments_list=[], usv_segment_lw=2.0,
             usv_segment_colors_list=[], usv_segments_ypos=60000,
+            spectrogram_cmap="inferno",
             cbar_bool=False, plot_usv_segments_bool=False,
         )
         assert list(ax.get_yticks()) == []
@@ -346,7 +350,7 @@ def test_plot_behavioral_features_traces(special_features):
             feature_ts_fr_start=0, feature_ts_fr_end=n, feature_ts_fr_middle=15,
             x_axis_start=0, x_axis_middle=15, x_axis_end=29,
             ylim_dict={"speed": [0, 30], "nose-nose": [0, 90]},
-            plot_theme="dark", color_mode_preferences=_COLOR_MODE,
+            color_mode_preferences=_COLOR_MODE,
             animal_colors=["#FF0000", "#00FF00"], remove_axes_bool=False,
         )
         # One trace axes created per feature (keyed 3, 4, 5).
@@ -396,6 +400,7 @@ def test_plot_arena_corners_mics_full_render():
             mesh_opacity=0.2, active_mic_position=0, active_mic_color="#FF0000",
             inactive_mic_color="#777777", text_start_coords=[0.02, 0.95],
             main_text_offset=0.03, mouse_id_text_offset=0.06, text_fontsize=8,
+            corner_colors={"North": "#FF0000", "West": "#FFFF00", "South": "#008000", "East": "#0000FF"},
             arena_node_connections_bool=True, plot_corners_bool=True,
             plot_mesh_walls_bool=True, active_mic_bool=True, inactive_mic_bool=True,
         )
@@ -468,8 +473,8 @@ def test_plot_behavioral_features_sei_and_light_theme_colour_branches():
     -----------
     Exercise the colour-selection sub-branches `plot_behavioral_features` takes
     that the main test does not: the no-accent path's directional `-sei` dyadic
-    colouring (`<self>-<partner>` -> self colour) and the light-theme defaults
-    for plain dyadic features.
+    colouring (`<self>-<partner>` -> self colour) and the theme ink
+    (`color_mode_preferences['text_color']`) for plain dyadic features.
 
     Parameters
     ----------
@@ -503,7 +508,7 @@ def test_plot_behavioral_features_sei_and_light_theme_colour_branches():
             feature_ts_fr_start=0, feature_ts_fr_end=n, feature_ts_fr_middle=10,
             x_axis_start=0, x_axis_middle=10, x_axis_end=19,
             ylim_dict={"nose-nose": [0, 90], "orofacial-sei": [-1, 1]},
-            plot_theme="light", color_mode_preferences=_COLOR_MODE,
+            color_mode_preferences=_COLOR_MODE,
             animal_colors=["#FF0000", "#00FF00"], remove_axes_bool=False,
         )
         assert set(plot_axes.keys()) == {3, 4, 5}
@@ -518,7 +523,8 @@ def test_plot_behavioral_features_accent_transparent_and_remove_axes():
     Description
     -----------
     With `special_features` set, non-accentuated self / dyadic features must be
-    drawn with the transparent (``...33``) colour variants, and
+    drawn with the transparent (``...33``) colour variants (the dyadic one is the
+    theme's `faded_feature_color`), and
     `remove_axes_bool=True` must first remove the placeholder axes that already
     occupy the target slots.
 
@@ -557,7 +563,7 @@ def test_plot_behavioral_features_accent_transparent_and_remove_axes():
             x_axis_start=0, x_axis_middle=10, x_axis_end=19,
             ylim_dict={"speed": [0, 30], "acceleration": [-100, 100],
                        "nose-nose": [0, 90]},
-            plot_theme="light", color_mode_preferences=_COLOR_MODE,
+            color_mode_preferences=_COLOR_MODE,
             animal_colors=["#FF0000", "#00FF00"], remove_axes_bool=True,
         )
         assert set(plot_axes.keys()) == {3, 4, 5}

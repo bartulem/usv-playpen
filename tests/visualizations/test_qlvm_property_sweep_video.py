@@ -12,6 +12,7 @@ with its module, in test_auxiliary_plot_functions.
 
 from __future__ import annotations
 
+import json
 import pathlib
 import shutil
 
@@ -140,11 +141,41 @@ def test_ties_are_put_in_random_order():
     assert not np.array_equal(order[:50], np.arange(50))
 
 
+def _sweep_cfg(window: float, step: float) -> dict:
+    """
+    Description
+    -----------
+    The shipped ``qlvm_property_sweep_video`` settings block with a short, coarse,
+    low-resolution sweep (the look -- colours, sizes, percentiles, encoder -- is
+    the production one).
+
+    Parameters
+    ----------
+    window (float)
+        Share of the USVs in each window.
+    step (float)
+        Window-centre step between frames, as a share of the USVs.
+
+    Returns
+    -------
+    cfg (dict)
+        The settings block.
+    """
+
+    settings_path = (pathlib.Path(sweep.__file__).parent.parent / "_parameter_settings"
+                     / "visualizations_settings.json")
+    with settings_path.open() as settings_file:
+        cfg = json.load(settings_file)["qlvm_property_sweep_video"]
+    cfg.update({"window": window, "step": step, "hold": 1, "fps": 5, "dpi": 30, "density_bandwidth": 0.02,
+                "colormap_floor": 0.2})
+    return cfg
+
+
 def test_preview_frame_is_written(tmp_path):
     """A preview renders one still of the window at the given quantile, next to the output path."""
     fig = sweep.render_qlvm_property_sweep_video(
-        _usvs(2000), _label_grid(), str(tmp_path / "sweep.mp4"), cmap_name="inferno", colormap_floor=0.2, window=0.1,
-        step=0.1, hold=1, fps=5, dpi=30, density_bandwidth=0.02, seed=0, preview_quantile=0.5,
+        _usvs(2000), _label_grid(), str(tmp_path / "sweep.mp4"), cmap_name="inferno",
+        cfg=_sweep_cfg(window=0.1, step=0.1), seed=0, preview_quantile=0.5,
         message_output=lambda *_a, **_k: None)
     assert (tmp_path / "sweep.png").exists()
     assert not (tmp_path / "sweep.mp4").exists()
@@ -155,6 +186,6 @@ def test_preview_frame_is_written(tmp_path):
 def test_video_is_written(tmp_path):
     """A short sweep (coarse step) writes a non-empty .mp4."""
     sweep.render_qlvm_property_sweep_video(
-        _usvs(2000), _label_grid(), str(tmp_path / "sweep.mp4"), cmap_name="inferno", colormap_floor=0.2, window=0.2,
-        step=0.3, hold=1, fps=5, dpi=30, density_bandwidth=0.02, seed=0, message_output=lambda *_a, **_k: None)
+        _usvs(2000), _label_grid(), str(tmp_path / "sweep.mp4"), cmap_name="inferno",
+        cfg=_sweep_cfg(window=0.2, step=0.3), seed=0, message_output=lambda *_a, **_k: None)
     assert (tmp_path / "sweep.mp4").stat().st_size > 0

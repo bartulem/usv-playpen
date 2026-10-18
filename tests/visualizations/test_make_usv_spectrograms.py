@@ -60,13 +60,7 @@ from usv_playpen import os_utils
 from usv_playpen.notebooks import usv_embedding_explorer
 from usv_playpen.os_utils import SQUEAK_CLASS_SELECTIONS, vocal_class_mask
 from usv_playpen.visualizations.make_usv_spectrograms import (
-    BANDWIDTH_BIMODAL_SPLIT_KHZ,
     EMBEDDING_COORD_COLS,
-    SESSION_TYPE_FEMALE_COLOR,
-    SESSION_TYPE_MALE_COLOR,
-    USV_TIMELINE_FEMALE_COLOR,
-    USV_TIMELINE_MALE_COLOR,
-    USV_TIMELINE_UNASSIGNED_COLOR,
     USVSpectrogramPlotter,
     _count_usvs_per_session,
     _medoid_xy,
@@ -83,26 +77,83 @@ from usv_playpen.visualizations.make_usv_spectrograms import (
     render_embedding_thumbnails_for_cohort,
 )
 
+_SETTINGS_PATH = (
+    pathlib.Path(__import__("usv_playpen").__file__).parent
+    / "_parameter_settings" / "visualizations_settings.json"
+)
+with _SETTINGS_PATH.open() as _settings_file:
+    _SHIPPED_VIZ_SETTINGS = json.load(_settings_file)
+
+# The figure knobs `plot_embedding_with_category_thumbnails` takes keyword-only with no
+# default, at the values these tests were written against (the cohort driver passes the
+# `embedding_thumbnails` block instead).
+_THUMBNAIL_KNOBS = {
+    "n_samples_per_category": 8,
+    "apply_mask": True,
+    "mask_excluded_categories": (),
+    "category_colors": None,
+    "sampling_method": "random",
+    "draw_spiral_overlay": False,
+    "spiral_show_only_for": None,
+    "spiral_color": "#000000",
+    "spiral_linewidth": 2.0,
+    "spiral_radius_scale": 0.35,
+    "spiral_radius_abs": None,
+    "spiral_n_turns": 4,
+    "spiral_random_phase": True,
+    "draw_cluster_boundaries": True,
+    "annotate_picks_on_scatter": True,
+    "pick_number_fontsize": 11.0,
+    "annotate_cluster_ids": False,
+    "cluster_id_fontsize": 12.0,
+    "thumbnail_hspace": 0.02,
+    "thumbnail_wspace": 0.05,
+    "tile_orientation": "horizontal",
+    "unstretched_specs": False,
+    "fig_size": (16.0, 12.0),
+    "fig_dpi": 300,
+    "exclude_squeaks": True,
+    "scatter_max_points": 50_000,
+    "scatter_point_size": 4.0,
+    "scatter_point_alpha": 0.5,
+    "continuous_color_percentiles": (2, 98),
+    "seed": 42,
+}
+
+
+def _thumbnails(**overrides):
+    """
+    Description
+    -----------
+    Call `plot_embedding_with_category_thumbnails` with `_THUMBNAIL_KNOBS`, any
+    entry of which (and any other argument) a test overrides by keyword.
+
+    Parameters
+    ----------
+    **overrides (dict)
+        Keyword arguments passed on, replacing the matching `_THUMBNAIL_KNOBS` entries.
+
+    Returns
+    -------
+    fig (plt.Figure)
+        The figure the function returns.
+    """
+
+    return plot_embedding_with_category_thumbnails(**{**_THUMBNAIL_KNOBS, **overrides})
+
 
 def test_session_type_and_timeline_colors_derive_from_settings():
-    """The session-type and USV-timeline sex / unassigned colors are read from
-    the `male_colors` / `female_colors` / `unassigned_colors` palette blocks of
-    `visualizations_settings.json` rather than hard-coded, so the module-level
-    constants must equal the shipped palette entries (guards against the plot
-    colors drifting out of sync with the project palette)."""
+    """The session-type and USV-timeline helpers take their figure knobs from the
+    `usv_property_figures` block, their DPI from `figures.dpi` and their sex /
+    unassigned colours from the `male_colors` / `female_colors` /
+    `unassigned_colors` palette blocks of the shipped settings."""
 
-    settings_path = (
-        pathlib.Path(__import__("usv_playpen").__file__).parent
-        / "_parameter_settings" / "visualizations_settings.json"
-    )
-    with settings_path.open() as settings_file:
-        viz_settings = json.load(settings_file)
-
-    assert viz_settings["male_colors"][0] == SESSION_TYPE_MALE_COLOR
-    assert viz_settings["female_colors"][0] == SESSION_TYPE_FEMALE_COLOR
-    assert viz_settings["male_colors"][0] == USV_TIMELINE_MALE_COLOR
-    assert viz_settings["female_colors"][0] == USV_TIMELINE_FEMALE_COLOR
-    assert viz_settings["unassigned_colors"][0] == USV_TIMELINE_UNASSIGNED_COLOR
+    block = _SHIPPED_VIZ_SETTINGS["usv_property_figures"]
+    assert block["session_type_counts"]["male_female_color"] == "#DFB8B3"
+    assert tuple(block["session_type_counts"]["fig_size"]) == (6.0, 3.0)
+    assert tuple(block["timeline"]["fig_size"]) == (7.5, 1.6)
+    assert tuple(block["histograms"]["fig_size"]) == (15.0, 3.0)
+    assert block["histograms"]["n_bins"] == 36
 
 
 # synthetic-artifact builders
@@ -184,6 +235,7 @@ def _base_settings(
             "cbar_limits": [-70, 0],
             "apply_mask": apply_mask,
             "auto_open_figure": auto_open_figure,
+            "stitched_edge_taper_alpha": 0.3,
         },
     }
 
@@ -1046,6 +1098,7 @@ def test_plot_usv_property_histograms(tmp_path):
     txt = _write_sessions_txt(tmp_path, [sess])
     out = tmp_path / "hist.svg"
     fig = plot_usv_property_histograms(
+        visualizations_parameter_dict=_SHIPPED_VIZ_SETTINGS,
         sessions_txt_path=str(txt),
         output_path=str(out),
         fig_format="svg",
@@ -1062,6 +1115,7 @@ def test_plot_usv_property_histograms_skips_missing_session(tmp_path):
     txt = _write_sessions_txt(tmp_path, [missing])
     logs: list[str] = []
     fig = plot_usv_property_histograms(
+        visualizations_parameter_dict=_SHIPPED_VIZ_SETTINGS,
         sessions_txt_path=str(txt),
         message_output=logs.append,
     )
@@ -1095,6 +1149,7 @@ def test_plot_session_type_usv_counts(tmp_path):
         txts[kind] = _write_sessions_txt(tmp_path / f"list_{kind}", [s1, s2])
     out = tmp_path / "counts.pdf"
     fig = plot_session_type_usv_counts(
+        visualizations_parameter_dict=_SHIPPED_VIZ_SETTINGS,
         male_female_txt_path=str(txts["mf"]),
         female_female_txt_path=str(txts["ff"]),
         lone_male_txt_path=str(txts["lm"]),
@@ -1157,6 +1212,7 @@ def test_plot_session_usv_timeline(tmp_path):
     )
     out = tmp_path / "timeline.svg"
     fig = plot_session_usv_timeline(
+        visualizations_parameter_dict=_SHIPPED_VIZ_SETTINGS,
         session_root=str(tmp_path),
         time_window=(0.0, 1.5),
         output_path=str(out),
@@ -1181,6 +1237,7 @@ def test_plot_session_usv_timeline_full_session(tmp_path):
         },
     )
     fig = plot_session_usv_timeline(
+        visualizations_parameter_dict=_SHIPPED_VIZ_SETTINGS,
         session_root=str(tmp_path),
         message_output=lambda *_: None,
     )
@@ -1796,7 +1853,7 @@ def test_plot_umap_thumbnails_random(tmp_path):
     h5_path = tmp_path / "store.h5"
     _write_consolidated_h5(h5_path, "sessA", n_usvs=12, n_freq=16, n_time=24)
     out = tmp_path / "umap.png"
-    fig = plot_embedding_with_category_thumbnails(
+    fig = _thumbnails(
         sessions_txt_path="unused",
         consolidated_h5_path=str(h5_path),
         n_samples_per_category=4,
@@ -1820,7 +1877,7 @@ def test_plot_umap_thumbnails_conditional_map_colours_by_qlvm_category(tmp_path)
     h5_path = tmp_path / "store.h5"
     _write_consolidated_h5(h5_path, "sessQ", n_usvs=12, n_freq=16, n_time=24)
     messages = []
-    fig = plot_embedding_with_category_thumbnails(
+    fig = _thumbnails(
         sessions_txt_path="unused",
         consolidated_h5_path=str(h5_path),
         qlvm_map="qlvm_duration",
@@ -1859,7 +1916,7 @@ def test_plot_umap_thumbnails_conditional_map_centres_wrap_around_the_torus(tmp_
     pooled = pooled.with_columns(pls.Series("qlvm_duration1", seam_x), pls.lit(0.5).alias("qlvm_duration2"))
     h5_path = tmp_path / "store.h5"
     _write_consolidated_h5(h5_path, "sessW", n_usvs=12, n_freq=16, n_time=24)
-    fig = plot_embedding_with_category_thumbnails(
+    fig = _thumbnails(
         sessions_txt_path="unused",
         consolidated_h5_path=str(h5_path),
         qlvm_map="qlvm_duration",
@@ -1885,7 +1942,7 @@ def test_plot_umap_thumbnails_spiral_unstretched(tmp_path):
     pooled = _make_pooled_df("sessB", n_per_cat=8)
     h5_path = tmp_path / "store.h5"
     _write_consolidated_h5(h5_path, "sessB", n_usvs=16, n_freq=16, n_time=20)
-    fig = plot_embedding_with_category_thumbnails(
+    fig = _thumbnails(
         sessions_txt_path="unused",
         consolidated_h5_path=str(h5_path),
         n_samples_per_category=4,
@@ -1910,7 +1967,7 @@ def test_plot_umap_thumbnails_explicit_centers(tmp_path):
     pooled = _make_pooled_df("sessC", n_per_cat=5)
     h5_path = tmp_path / "store.h5"
     _write_consolidated_h5(h5_path, "sessC", n_usvs=10, n_freq=16, n_time=18)
-    fig = plot_embedding_with_category_thumbnails(
+    fig = _thumbnails(
         sessions_txt_path="unused",
         consolidated_h5_path=str(h5_path),
         n_samples_per_category=3,
@@ -1934,7 +1991,7 @@ def test_plot_umap_thumbnails_json_provenance_centers(tmp_path):
     _write_consolidated_h5(h5_path, "sessD", n_usvs=10, n_freq=16, n_time=18)
     prov = tmp_path / "qlvm_provenance.json"
     prov.write_text(json.dumps({"cluster_centers": [[0.2, 0.2], [0.7, 0.7]]}))
-    fig = plot_embedding_with_category_thumbnails(
+    fig = _thumbnails(
         sessions_txt_path="unused",
         consolidated_h5_path=str(h5_path),
         n_samples_per_category=3,
@@ -1955,7 +2012,7 @@ def test_plot_umap_thumbnails_bundle_centers_and_boundaries(tmp_path):
     pooled = _make_pooled_df("sessE", n_per_cat=5)
     h5_path = tmp_path / "store.h5"
     _write_consolidated_h5(h5_path, "sessE", n_usvs=10, n_freq=16, n_time=18)
-    fig = plot_embedding_with_category_thumbnails(
+    fig = _thumbnails(
         sessions_txt_path="unused",
         consolidated_h5_path=str(h5_path),
         qlvm_map="qlvm",
@@ -1979,7 +2036,7 @@ def test_plot_umap_thumbnails_bundle_label_mismatch_raises():
     with another partition than the bundle drawn: raise."""
     pooled = _make_pooled_df().with_columns(pls.lit(7).alias("qlvm_category"))
     with pytest.raises(ValueError, match="different partitions"):
-        plot_embedding_with_category_thumbnails(
+        _thumbnails(
             sessions_txt_path="unused",
             consolidated_h5_path="unused",
             qlvm_map="qlvm",
@@ -1992,7 +2049,7 @@ def test_plot_umap_thumbnails_bad_qlvm_map():
     """A qlvm_map outside os_utils.QLVM_MAPS (e.g. the retired 'vae') raises
     ValueError before any rendering."""
     with pytest.raises(ValueError, match="qlvm_map must be"):
-        plot_embedding_with_category_thumbnails(
+        _thumbnails(
             sessions_txt_path="unused",
             consolidated_h5_path="unused",
             qlvm_map="vae",
@@ -2024,14 +2081,14 @@ def test_plot_umap_thumbnails_excludes_squeaks_by_default(tmp_path):
     h5_path = tmp_path / "store.h5"
     _write_consolidated_h5(h5_path, "sessS", n_usvs=12, n_freq=16, n_time=24)
     logs: list[str] = []
-    fig = plot_embedding_with_category_thumbnails(
+    fig = _thumbnails(
         sessions_txt_path="unused", consolidated_h5_path=str(h5_path),
         n_samples_per_category=3, pooled_df=pooled, message_output=logs.append, seed=1,
     )
     assert isinstance(fig, plt.Figure)
     assert any("Kept the 6 pure USV(s) of 12 placed segments (6 squeak, overlap or unclassed left out)" in message
                for message in logs)
-    fig_all = plot_embedding_with_category_thumbnails(
+    fig_all = _thumbnails(
         sessions_txt_path="unused", consolidated_h5_path=str(h5_path), exclude_squeaks=False,
         n_samples_per_category=3, pooled_df=pooled, message_output=lambda *_: None, seed=1,
     )
@@ -2041,7 +2098,7 @@ def test_plot_umap_thumbnails_excludes_squeaks_by_default(tmp_path):
 def test_plot_umap_thumbnails_squeak_filter_needs_the_column():
     """Excluding squeaks from a pooled table without the usv / squeak booleans raises."""
     with pytest.raises(KeyError, match=r"no \['usv', 'squeak'\] columns"):
-        plot_embedding_with_category_thumbnails(
+        _thumbnails(
             sessions_txt_path="unused", consolidated_h5_path="unused",
             pooled_df=_make_pooled_df().drop("usv"), message_output=lambda *_: None,
         )
@@ -2062,7 +2119,7 @@ def test_plot_umap_thumbnails_no_categories():
         schema_overrides={"qlvm_category": pls.Int64},
     )
     with pytest.raises(RuntimeError, match="No categories found"):
-        plot_embedding_with_category_thumbnails(
+        _thumbnails(
             sessions_txt_path="unused",
             consolidated_h5_path="unused",
             pooled_df=pooled,
@@ -2077,7 +2134,7 @@ def test_plot_umap_thumbnails_bad_tile_orientation(tmp_path):
     h5_path = tmp_path / "store.h5"
     _write_consolidated_h5(h5_path, "sessA", n_usvs=12)
     with pytest.raises(ValueError, match="tile_orientation must be"):
-        plot_embedding_with_category_thumbnails(
+        _thumbnails(
             sessions_txt_path="unused",
             consolidated_h5_path=str(h5_path),
             tile_orientation="diagonal",
@@ -2089,7 +2146,7 @@ def test_plot_umap_thumbnails_bad_tile_orientation(tmp_path):
 def test_bandwidth_split_constant_is_khz():
     """Guard against an accidental unit regression on the bimodal split
     constant (it is in display kHz, not Hz)."""
-    assert 0.0 < BANDWIDTH_BIMODAL_SPLIT_KHZ < 200.0
+    assert 0.0 < _SHIPPED_VIZ_SETTINGS["usv_property_figures"]["histograms"]["bandwidth_bimodal_split_khz"] < 200.0
 
 
 # plot_sequence (per-session embedding + continuous spectrogram)
@@ -2248,6 +2305,10 @@ def _seq_settings(
         "annotate_right": True,
         "mark_usv_segments": True,
         "exclude_squeaks": exclude_squeaks,
+        "marker_size_range": [35.0, 70.0],
+        "line_width_range": [0.5, 3.0],
+        "embedding_cmap": "gray_r",
+        "embedding_vmax_percentile": 95,
     }
     settings["male_colors"] = ["#9AC0CD", "#8CA252"]
     settings["female_colors"] = ["#FF6347", "#B851B4"]
@@ -2580,6 +2641,8 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
             "thumbnail_hspace": 0.03,
             "thumbnail_wspace": 0.04, "unstretched_specs": True,
             "scatter_max_points": 1000,
+            "scatter_point_size": 4.0, "scatter_point_alpha": 0.5,
+            "continuous_color_percentiles": [2, 98],
             "fig_size": [10, 8],
         },
     }
@@ -2607,6 +2670,8 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     assert captured["draw_spiral_overlay"] is False
     assert captured["unstretched_specs"] is True
     assert captured["annotate_cluster_ids"] is True
+    assert captured["scatter_point_size"] == 4.0
+    assert captured["scatter_point_alpha"] == 0.5
     # boundaries and centres come from the category bundle inside the figure, so
     # neither a k-NN knob nor a centres path is forwarded
     assert not any(key.startswith("knn_") for key in captured)

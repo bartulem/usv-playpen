@@ -107,17 +107,20 @@ DYADIC_KEYWORDS = ("nose-nose", "nose-TTI", "TTI-nose", "allo_yaw-nose",
                    "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw", "allo_yaw-head", "head-allo_yaw", "head-head", "TTI-TTI",
                    "allo_pitch-head", "head-allo_pitch", "allo_pitch-nose", "nose-allo_pitch",
                    "allo_pitch-TTI", "TTI-allo_pitch")
-NEUTRAL_COLOR = "#D3D3D3"
-MEAN_LINE_COLOR = '#DCB400'
-TEXT_COLOR = '#202020'
-REFERENCE_LINE_COLOR = "#808080"    # dashed zero / chance reference lines (was 'gray')
+# Module palette, read from `visualizations_settings.json` -> `modeling_plots.colors`:
+# neutral fills / separators, the mean-line accent, text ink and the dashed zero /
+# chance reference lines.
+NEUTRAL_COLOR = _VIZ_SETTINGS["modeling_plots"]["colors"]["neutral"]
+MEAN_LINE_COLOR = _VIZ_SETTINGS["modeling_plots"]["colors"]["mean_line"]
+TEXT_COLOR = _VIZ_SETTINGS["modeling_plots"]["colors"]["text"]
+REFERENCE_LINE_COLOR = _VIZ_SETTINGS["modeling_plots"]["colors"]["reference_line"]
 
 # Timescale-audit palette overrides: zero / axis lines stay black, so
 # social/dyadic gets the canonical social colour (distinct from the
 # axis lines and from the male/female sex colors).
 TIMESCALE_SOCIAL_COLOR = DYADIC_COLOR
-TIMESCALE_AXIS_COLOR = "#000000"   # zero / spine reference lines (was 'black')
-TIMESCALE_NULL_COLOR = "#808080"   # circular-shift null fill / envelope (was 'gray')
+TIMESCALE_AXIS_COLOR = _VIZ_SETTINGS["modeling_plots"]["colors"]["timescale_axis"]   # zero / spine reference lines
+TIMESCALE_NULL_COLOR = _VIZ_SETTINGS["modeling_plots"]["colors"]["timescale_null"]   # circular-shift null fill / envelope
 
 # Global default colormap — shared with `figures.sequential_cmap` so the
 # multinomial / continuous heatmap defaults match the rest of the repo.
@@ -468,9 +471,10 @@ def plot_significant_filters(
     -------
     filter_figures : list[matplotlib.figure.Figure]
         One filter figure per significant feature (empty when none is significant).
-        The figure is not shown or closed here: the caller displays it (e.g. as a
-        notebook cell's output) and closes it with ``plt.close``; with ``save_plot`` it
-        is also written to disk first.
+        The figure is not shown here: the caller displays it (e.g. as a notebook
+        cell's output). Without ``save_plot`` the caller also closes it with
+        ``plt.close``; with ``save_plot`` it is written to disk and closed here (the
+        returned object still renders and can be saved again).
     """
 
     results_file_loc = configure_path(str(results_file_loc))
@@ -543,8 +547,8 @@ def plot_significant_filters(
 
             mean_filter = np.nanmean(filter_data, axis=0)
 
-            p_low = np.nanpercentile(filter_data, q=0.5, axis=0)
-            p_high = np.nanpercentile(filter_data, q=99.5, axis=0)
+            p_low = np.nanpercentile(filter_data, q=_VIZ_SETTINGS["modeling_plots"]["ci_percentiles"][0], axis=0)
+            p_high = np.nanpercentile(filter_data, q=_VIZ_SETTINGS["modeling_plots"]["ci_percentiles"][1], axis=0)
 
         except KeyError:
             message_output(f"Filter shapes missing for {feature}")
@@ -594,6 +598,9 @@ def plot_significant_filters(
             out_name = pathlib.Path(output_dir) / _figure_filename(f"{results_path.stem}_filter_{safe_name}")
             fig.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI, facecolor='#FFFFFF', transparent=False)
             message_output(f"Saved: {out_name.name}")
+            # Saved figures leave pyplot's registry (one per feature would pass matplotlib's
+            # 20-open-figures limit); the returned objects still render inline and re-save.
+            plt.close(fig)
 
         filter_figures.append(fig)
 
@@ -775,8 +782,8 @@ def plot_significant_filters_grid(
         filter_data = all_filter_shapes[beh_feature]
 
         regression_filter_mean = np.nanmean(filter_data, axis=0)
-        filter_ci_lower = np.nanpercentile(filter_data, q=0.5, axis=0)  # 99% CI
-        filter_ci_upper = np.nanpercentile(filter_data, q=99.5, axis=0)
+        filter_ci_lower = np.nanpercentile(filter_data, q=_VIZ_SETTINGS["modeling_plots"]["ci_percentiles"][0], axis=0)  # 99% CI
+        filter_ci_upper = np.nanpercentile(filter_data, q=_VIZ_SETTINGS["modeling_plots"]["ci_percentiles"][1], axis=0)
 
         baseline_offset = regression_filter_mean[0]
 
@@ -887,10 +894,8 @@ def plot_raw_feature_difference(
         history_seconds: float,
         feature_color: str = '#202020',
         subset_fraction: float = 0.05,
-        n_bootstraps: int = 1000,
         save_plots: bool = False,
         output_dir: str | None = None,
-        value_sanity_cap: float | None = 90.0,
         message_output: Callable = print
 ) -> tuple[plt.Figure, plt.Figure] | None:
     """
@@ -924,22 +929,31 @@ def plot_raw_feature_difference(
     subset_fraction : float, default 0.05
         The fraction of total epochs to randomly sample for the bootstrap
         calculation. Using a subset speeds up processing for large datasets.
-    n_bootstraps : int, default 1000
-        The number of bootstrap iterations to perform for confidence interval estimation.
     save_plots : bool, default False
         If True, saves the resulting average plot and heatmap to disk (both in the configured figures.fig_format).
     output_dir : str, optional
         The directory where plots will be saved. If None, defaults to the
         parent directory of the input pickle file.
-    value_sanity_cap : float or None, default 90.0
-        Per-frame values that exceed this cap are replaced with NaN before
-        the mean/CI so extreme outliers don't bias the estimate. The default
-        of 90 suits angular features measured in
-        degrees; pass a feature-appropriate cap for non-angular features, or
-        ``None`` to disable the filter entirely.
     message_output : Callable
         Sink for user-facing messages (progress, skips, saved-file paths);
         defaults to ``print``.
+
+    Settings read
+    -------------
+    Knobs read at call time from the module's ``visualizations_settings.json`` (loaded at import) -> ``modeling_plots``
+    rather than taken as keyword arguments:
+
+    value_sanity_cap : float | None
+        ``modeling_plots.raw_feature_difference.value_sanity_cap`` (shipped 90.0).
+        Per-frame values that exceed this cap are replaced with NaN before
+        the mean/CI so extreme outliers don't bias the estimate. The default
+        of 90 suits angular features measured in
+        degrees; set a feature-appropriate cap for non-angular features, or
+        ``null`` to disable the filter entirely.
+    n_bootstraps : int
+        ``modeling_plots.raw_feature_difference.n_bootstraps`` (shipped 100, the
+        value the modeling notebook draws with).
+        The number of bootstrap iterations to perform for confidence interval estimation.
 
     Returns
     -------
@@ -950,6 +964,9 @@ def plot_raw_feature_difference(
         notebook cell's output) and closes it with ``plt.close``; with ``save_plots`` it
         is also written to disk first.
     """
+
+    value_sanity_cap = _VIZ_SETTINGS["modeling_plots"]["raw_feature_difference"]["value_sanity_cap"]
+    n_bootstraps = _VIZ_SETTINGS["modeling_plots"]["raw_feature_difference"]["n_bootstraps"]
 
     pickle_file_path = configure_path(str(pickle_file_path))
     if output_dir is not None:
@@ -1047,10 +1064,11 @@ def plot_raw_feature_difference(
     target_mean = np.nanmean(target_subset, axis=0)
     other_mean = np.nanmean(other_subset, axis=0)
 
-    target_ci_lower = np.nanpercentile(boot_target_means, 0.5, axis=0)
-    target_ci_upper = np.nanpercentile(boot_target_means, 99.5, axis=0)
-    other_ci_lower = np.nanpercentile(boot_other_means, 0.5, axis=0)
-    other_ci_upper = np.nanpercentile(boot_other_means, 99.5, axis=0)
+    ci_low_pct, ci_high_pct = _VIZ_SETTINGS["modeling_plots"]["ci_percentiles"]
+    target_ci_lower = np.nanpercentile(boot_target_means, ci_low_pct, axis=0)
+    target_ci_upper = np.nanpercentile(boot_target_means, ci_high_pct, axis=0)
+    other_ci_lower = np.nanpercentile(boot_other_means, ci_low_pct, axis=0)
+    other_ci_upper = np.nanpercentile(boot_other_means, ci_high_pct, axis=0)
 
     fig_avg, ax_avg = plt.subplots(figsize=(3, 2), dpi=_FIGURE_DPI, tight_layout=True)
 
@@ -1083,11 +1101,12 @@ def plot_raw_feature_difference(
 
     fig_heat.patch.set_facecolor('#FFFFFF')
 
-    data_min = np.nanpercentile(np.concatenate([sorted_target, sorted_other]), 1)
-    data_max = np.nanpercentile(np.concatenate([sorted_target, sorted_other]), 99)
+    clip_low_pct, clip_high_pct = _VIZ_SETTINGS["modeling_plots"]["raw_feature_difference"]["heatmap_clip_percentiles"]
+    data_min = np.nanpercentile(np.concatenate([sorted_target, sorted_other]), clip_low_pct)
+    data_max = np.nanpercentile(np.concatenate([sorted_target, sorted_other]), clip_high_pct)
 
     axes_heat[0].imshow(
-        sorted_target, aspect='auto', cmap='binary',
+        sorted_target, aspect='auto', cmap=_VIZ_SETTINGS["modeling_plots"]["raw_feature_difference"]["heatmap_cmap"],
         vmin=data_min, vmax=data_max,
         interpolation="gaussian",
         extent=[-float(history_seconds), 0, sorted_target.shape[0], 0]
@@ -1095,7 +1114,7 @@ def plot_raw_feature_difference(
     axes_heat[0].set_ylabel(label_target, fontsize=8)
 
     im2 = axes_heat[1].imshow(
-        sorted_other, aspect='auto', cmap='binary',
+        sorted_other, aspect='auto', cmap=_VIZ_SETTINGS["modeling_plots"]["raw_feature_difference"]["heatmap_cmap"],
         vmin=data_min, vmax=data_max,
         interpolation="gaussian",
         extent=[-float(history_seconds), 0, sorted_other.shape[0], 0]
@@ -1960,7 +1979,6 @@ def plot_univariate_multinomial_performance(
         secondary_metric: str = 'score',
         secondary_metric_name: str = 'Balanced Accuracy',
         p_val_threshold: float = 0.01,
-        base_cmap: str = 'mako',
         diff_cmap: str = _DIVERGING_CMAP,
         save_plot: bool = False,
         output_dir: str | None = None,
@@ -2008,8 +2026,6 @@ def plot_univariate_multinomial_performance(
     p_val_threshold : float, default 0.01
         The family-wise error rate. Internally Bonferroni-corrected by the total
         number of tested features.
-    base_cmap : str, default 'mako'
-        The sequential colormap used for the Actual and Null proportion matrices.
     diff_cmap : str, default the ``figures.diverging_cmap`` setting
         The diverging colormap used for the Subtracted (Information Gain) matrix.
     save_plot : bool, default False
@@ -2021,6 +2037,15 @@ def plot_univariate_multinomial_performance(
         Sink for user-facing messages (progress, skips, saved-file paths);
         defaults to ``print``.
 
+    Settings read
+    -------------
+    Knobs read at call time from the module's ``visualizations_settings.json`` (loaded at import) -> ``modeling_plots``
+    rather than taken as keyword arguments:
+
+    base_cmap : str
+        ``modeling_plots.univariate_multinomial_performance.base_cmap`` (shipped "mako").
+        The sequential colormap used for the Actual and Null proportion matrices.
+
     Returns
     -------
     figures : tuple[matplotlib.figure.Figure, matplotlib.figure.Figure | None] | None
@@ -2031,6 +2056,8 @@ def plot_univariate_multinomial_performance(
         notebook cell's output) and closes it with ``plt.close``; with ``save_plot`` it
         is also written to disk first.
     """
+
+    base_cmap = _VIZ_SETTINGS["modeling_plots"]["univariate_multinomial_performance"]["base_cmap"]
 
     results_file_loc = configure_path(str(results_file_loc))
     if output_dir is not None:
@@ -3253,7 +3280,7 @@ def plot_multinomial_multivariate_filters(
         # permuted-target refits; cells inside it are faded (weight a fit with no
         # signal reaches too, e.g. the residual end weight of the lag basis).
         null_weights = _final_null_filter_weights(selection_steps, list(features), 'multinomial')
-        null_band = (np.percentile(np.abs(null_weights), 95, axis=0) if null_weights is not None else None)
+        null_band = (np.percentile(np.abs(null_weights), _VIZ_SETTINGS["modeling_plots"]["multinomial_filters"]["null_band_percentile"], axis=0) if null_weights is not None else None)
         ncols = 3
         nrows = math.ceil(n_feats / ncols)
 
@@ -4612,10 +4639,6 @@ def _resolve_atlas_tiles_and_categories(qlvm_map: str = QLVM_REGULAR_MAP,
 def plot_manifold_filter_atlas(
         selection_results_path: str,
         history_window_sec: float | None = None,
-        n_time_slices: int = 16,
-        display_bins: int = 25,
-        smooth_sigma: float = 3.0,
-        atlas_grid_n: int = 12,
         save_plot: bool = False,
         output_dir: str | None = None,
         feature_label_overrides: dict | None = None,
@@ -4679,18 +4702,6 @@ def plot_manifold_filter_atlas(
         Duration of the behavioural-history window (labels the time axes). ``None``
         (default) reads ``filter_history_seconds`` from the artifact metadata,
         falling back to 4.0 s only for a legacy artifact.
-    n_time_slices : int, default 16
-        Number of instants the filter is sampled at for each filmstrip deck
-        (16 over a 4 s window is one every ~250 ms).
-    display_bins : int, default 25
-        Number of equal-width display bins the magnitude line is averaged into
-        (``0`` / ``None`` -> every model bin).
-    smooth_sigma : float, default 3.0
-        Standard deviation (in display bins) of the Gaussian applied to each
-        magnitude line before plotting (``0`` disables it).
-    atlas_grid_n : int, default 12
-        Tiling density of the vocal-space atlas (``atlas_grid_n ** 2`` real
-        vocalizations across the torus, one per node).
     save_plot : bool, default False
         If True, writes the figure (format / timestamp per the shared figure
         settings).
@@ -4716,6 +4727,28 @@ def plot_manifold_filter_atlas(
         Sink for user-facing messages (progress, skips, saved-file paths);
         defaults to ``print``.
 
+    Settings read
+    -------------
+    Knobs read at call time from the module's ``visualizations_settings.json`` (loaded at import) -> ``modeling_plots``
+    rather than taken as keyword arguments:
+
+    n_time_slices : int
+        ``modeling_plots.manifold_filter_atlas.n_time_slices`` (shipped 16).
+        Number of instants the filter is sampled at for each filmstrip deck
+        (16 over a 4 s window is one every ~250 ms).
+    display_bins : int
+        ``modeling_plots.manifold_filter_atlas.display_bins`` (shipped 25).
+        Number of equal-width display bins the magnitude line is averaged into
+        (``0`` / ``None`` -> every model bin).
+    smooth_sigma : float
+        ``modeling_plots.manifold_filter_atlas.smooth_sigma`` (shipped 3.0).
+        Standard deviation (in display bins) of the Gaussian applied to each
+        magnitude line before plotting (``0`` disables it).
+    atlas_grid_n : int
+        ``modeling_plots.manifold_filter_atlas.atlas_grid_n`` (shipped 12).
+        Tiling density of the vocal-space atlas (``atlas_grid_n ** 2`` real
+        vocalizations across the torus, one per node).
+
     Returns
     -------
     fig : matplotlib.figure.Figure | None
@@ -4724,6 +4757,11 @@ def plot_manifold_filter_atlas(
         notebook cell's output) and closes it with ``plt.close``; with ``save_plot`` it
         is also written to disk first.
     """
+
+    n_time_slices = _VIZ_SETTINGS["modeling_plots"]["manifold_filter_atlas"]["n_time_slices"]
+    display_bins = _VIZ_SETTINGS["modeling_plots"]["manifold_filter_atlas"]["display_bins"]
+    smooth_sigma = _VIZ_SETTINGS["modeling_plots"]["manifold_filter_atlas"]["smooth_sigma"]
+    atlas_grid_n = _VIZ_SETTINGS["modeling_plots"]["manifold_filter_atlas"]["atlas_grid_n"]
 
     selection_results_path = configure_path(str(selection_results_path))
     if output_dir is not None:
@@ -4944,7 +4982,7 @@ def plot_manifold_filter_atlas(
             null_coarse = np.array([[perm[edges[k]:edges[k + 1]].mean() for k in range(n_disp)] for perm in null_magnitude])
             if smooth_sigma and float(smooth_sigma) > 0.0:
                 null_coarse = gaussian_filter1d(null_coarse, sigma=float(smooth_sigma), mode='nearest', axis=1)
-            ax_mag.plot(t_ctr, np.percentile(null_coarse, 95, axis=0), lw=1.0, ls='--',
+            ax_mag.plot(t_ctr, np.percentile(null_coarse, _VIZ_SETTINGS["modeling_plots"]["manifold_filter_atlas"]["null_percentile"], axis=0), lw=1.0, ls='--',
                         color=base_colors[i], alpha=alphas[i], zorder=2)
     if null_weights is not None:
         ax_mag.plot([], [], lw=1.0, ls='--', color='#7F7F7F', label='permuted target, 95th pct')
@@ -5223,12 +5261,6 @@ class DeepResultsVisualizer:
 
     def plot_permutation_test(self,
                               actual_color: str | None = None,
-                              null_color: str = '#D3D3D3',
-                              threshold_color: str = '#000000',
-                              title_fontsize: int = 10,
-                              label_fontsize: int = 8,
-                              figsize: tuple = (3, 4),
-                              n_bootstraps: int = 1000,
                               save_plot: bool = False,
                               output_dir: str | None = None,
                               file_format: str = _FIGURE_FORMAT) -> plt.Figure:
@@ -5246,30 +5278,47 @@ class DeepResultsVisualizer:
         where 0.00 represents performance equal to the null baseline and 1.00
         represents perfect prediction.
 
-        Grids are explicitly disabled for a clean aesthetic.
+        Grids are explicitly disabled for a clean aesthetic. The histogram bin
+        counts (``modeling_plots.cnn_permutation_test.histogram_bins`` = 30,
+        ``skill_null_bins`` = 50 over ``skill_null_range`` = (-0.02, 0.02)) and
+        the threshold lines (``threshold_percentiles`` = [0.5, 99.5]: the 0.5th
+        percentile of the bootstrapped null error, the 99.5th of the null skill)
+        are read from the same settings block.
 
         Parameters
         ----------
         actual_color : str, optional
             Color of the vertical line for actual model. Defaults to self.default_color.
-        null_color : str, default '#D3D3D3'
-            Color of the bootstrapped null distribution histogram.
-        threshold_color : str, default '#000000'
-            Color of the 0.5% significance threshold line.
-        title_fontsize : int, default 10
-            Font size for the plot title.
-        label_fontsize : int, default 8
-            Font size for the axis labels.
-        figsize : tuple, default (3, 4)
-            Figure dimensions in inches.
-        n_bootstraps: int, default 1000
-            The number of resampling iterations to generate the null distribution.
         save_plot : bool, default False
             If True, exports the figure to disk.
         output_dir : str, optional
             Path to save the figure.
         file_format : str, default: the figures.fig_format setting
             Format for the saved file.
+
+        Settings read
+        -------------
+        Knobs read at call time from ``self.visualization_settings`` -> ``modeling_plots``
+        rather than taken as keyword arguments:
+
+        null_color : str
+            ``modeling_plots.cnn_permutation_test.null_color`` (shipped "#D3D3D3").
+            Color of the bootstrapped null distribution histogram.
+        threshold_color : str
+            ``modeling_plots.cnn_permutation_test.threshold_color`` (shipped "#000000").
+            Color of the 0.5% significance threshold line.
+        title_fontsize : int
+            ``modeling_plots.cnn_permutation_test.title_fontsize`` (shipped 10).
+            Font size for the plot title.
+        label_fontsize : int
+            ``modeling_plots.cnn_permutation_test.label_fontsize`` (shipped 8).
+            Font size for the axis labels.
+        figsize : tuple
+            ``modeling_plots.cnn_permutation_test.figsize`` (shipped [3, 4]).
+            Figure dimensions in inches.
+        n_bootstraps : int
+            ``modeling_plots.cnn_permutation_test.n_bootstraps`` (shipped 1000).
+            The number of resampling iterations to generate the null distribution.
 
         Returns
         -------
@@ -5279,6 +5328,13 @@ class DeepResultsVisualizer:
             notebook cell's output) and closes it with ``plt.close``; with ``save_plot``
             it is also written to disk first.
         """
+
+        null_color = self.visualization_settings["modeling_plots"]["cnn_permutation_test"]["null_color"]
+        threshold_color = self.visualization_settings["modeling_plots"]["cnn_permutation_test"]["threshold_color"]
+        title_fontsize = self.visualization_settings["modeling_plots"]["cnn_permutation_test"]["title_fontsize"]
+        label_fontsize = self.visualization_settings["modeling_plots"]["cnn_permutation_test"]["label_fontsize"]
+        figsize = tuple(self.visualization_settings["modeling_plots"]["cnn_permutation_test"]["figsize"])
+        n_bootstraps = self.visualization_settings["modeling_plots"]["cnn_permutation_test"]["n_bootstraps"]
 
         c_act = actual_color if actual_color is not None else getattr(self, 'default_color', '#1f77b4')
         text_color = '#000000'
@@ -5315,7 +5371,8 @@ class DeepResultsVisualizer:
                      for _ in range(n_bootstraps)]
         actual_dist = [np.mean(rng.choice(actual_errors, size=len(actual_errors), replace=True))
                        for _ in range(n_bootstraps)]
-        threshold = np.percentile(null_dist, 0.5)
+        permutation_settings = self.visualization_settings["modeling_plots"]["cnn_permutation_test"]
+        threshold = np.percentile(null_dist, permutation_settings["threshold_percentiles"][0])
 
         # Skill Score Bootstrapping (Panel B)
         actual_dist_skill = [np.mean(rng.choice(actual_skill, size=len(actual_skill), replace=True))
@@ -5357,14 +5414,14 @@ class DeepResultsVisualizer:
 
         # PANEL A: EUCLIDEAN ERROR (TOP ROW)
         # Actual Model (ax1)
-        ax1.hist(actual_dist, bins=30, histtype='step', fill=True, color=c_act, alpha=0.5, edgecolor=c_act, linewidth=1.5)
+        ax1.hist(actual_dist, bins=permutation_settings["histogram_bins"], histtype='step', fill=True, color=c_act, alpha=0.5, edgecolor=c_act, linewidth=1.5)
         ax1.axvline(actual_mean, color=c_act, linewidth=1.0, linestyle='-')
         ax1.text(actual_mean, 1.02, f'{actual_mean:.2f}', color=c_act,
                  transform=ax1.get_xaxis_transform(), ha='center', va='bottom',
                  fontsize=label_fontsize, fontweight='bold', clip_on=False)
 
         # Null Model (ax2)
-        ax2.hist(null_dist, bins=30, histtype='step', fill=True, color=null_color, alpha=0.5, edgecolor=null_color, linewidth=1.5)
+        ax2.hist(null_dist, bins=permutation_settings["histogram_bins"], histtype='step', fill=True, color=null_color, alpha=0.5, edgecolor=null_color, linewidth=1.5)
         ax2.axvline(threshold, color=threshold_color, linewidth=1.0, linestyle='--')
         ax2.text(threshold, 1.02, f'{threshold:.2f}', color=null_color,
                  transform=ax2.get_xaxis_transform(), ha='center', va='bottom',
@@ -5384,14 +5441,15 @@ class DeepResultsVisualizer:
         ax2.set_xlim(min(null_dist) - pad_null, max(null_dist) + pad_null)
 
         # PANEL B: SKILL SCORE (BOTTOM ROW)
-        ax3.hist(null_dist_skill, bins=50, histtype='step', fill=True, color=null_color, alpha=0.5, edgecolor=null_color, linewidth=1.5, range=(-0.02, 0.02))
-        ax3.axvline(np.percentile(null_dist_skill, q=99.5), color=threshold_color, linewidth=1.0, linestyle='--')
+        ax3.hist(null_dist_skill, bins=permutation_settings["skill_null_bins"], histtype='step', fill=True, color=null_color, alpha=0.5, edgecolor=null_color, linewidth=1.5,
+                 range=tuple(permutation_settings["skill_null_range"]))
+        ax3.axvline(np.percentile(null_dist_skill, q=permutation_settings["threshold_percentiles"][1]), color=threshold_color, linewidth=1.0, linestyle='--')
         ax3.text(0.0, 1.02, '0.00', color=null_color,
                  transform=ax3.get_xaxis_transform(), ha='center', va='bottom',
                  fontsize=label_fontsize, fontweight='bold', clip_on=False)
 
         # Actual Model Skill Score (ax4)
-        ax4.hist(actual_dist_skill, bins=30, histtype='step', fill=True, color=c_act, alpha=0.5, edgecolor=c_act, linewidth=1.5)
+        ax4.hist(actual_dist_skill, bins=permutation_settings["histogram_bins"], histtype='step', fill=True, color=c_act, alpha=0.5, edgecolor=c_act, linewidth=1.5)
         ax4.axvline(actual_mean_skill, color=c_act, linewidth=1.0, linestyle='-')
         ax4.text(actual_mean_skill, 1.02, f'{actual_mean_skill:.2f}', color=c_act,
                  transform=ax4.get_xaxis_transform(), ha='center', va='bottom',
@@ -5455,9 +5513,6 @@ class DeepResultsVisualizer:
                                 snr_threshold: float = 3.0,
                                 cmap: str = _GLOBAL_CMAP,
                                 error_bar_color: str = '#000000',
-                                title_fontsize: int = 10,
-                                label_fontsize: int = 8,
-                                figsize: tuple = (4, 6),
                                 save_plot: bool = False,
                                 output_dir: str | None = None,
                                 file_format: str = _FIGURE_FORMAT) -> plt.Figure:
@@ -5481,18 +5536,27 @@ class DeepResultsVisualizer:
             Colormap applied to the bars of statistically significant features.
         error_bar_color : str, default '#000000'
             Color for the standard deviation error bars representing variance across folds.
-        title_fontsize : int, default 10
-            Font size for the plot title.
-        label_fontsize : int, default 8
-            Font size for the kinematic feature names on the Y-axis.
-        figsize : tuple, default (4, 6)
-            Figure dimensions in inches.
         save_plot : bool, default False
             If True, exports the figure to disk.
         output_dir : str, optional
             Path to save the figure.
         file_format : str, default: the figures.fig_format setting
             Format for the saved file.
+
+        Settings read
+        -------------
+        Knobs read at call time from ``self.visualization_settings`` -> ``modeling_plots``
+        rather than taken as keyword arguments:
+
+        title_fontsize : int
+            ``modeling_plots.cnn_feature_importance.title_fontsize`` (shipped 10).
+            Font size for the plot title.
+        label_fontsize : int
+            ``modeling_plots.cnn_feature_importance.label_fontsize`` (shipped 8).
+            Font size for the kinematic feature names on the Y-axis.
+        figsize : tuple
+            ``modeling_plots.cnn_feature_importance.figsize`` (shipped [4, 6]).
+            Figure dimensions in inches.
 
         Returns
         -------
@@ -5502,6 +5566,10 @@ class DeepResultsVisualizer:
             notebook cell's output) and closes it with ``plt.close``; with ``save_plot``
             it is also written to disk first.
         """
+
+        title_fontsize = self.visualization_settings["modeling_plots"]["cnn_feature_importance"]["title_fontsize"]
+        label_fontsize = self.visualization_settings["modeling_plots"]["cnn_feature_importance"]["label_fontsize"]
+        figsize = tuple(self.visualization_settings["modeling_plots"]["cnn_feature_importance"]["figsize"])
 
         # Access the nested CNN importance structure
         imp_data = self.data['feature_importance']
@@ -5582,7 +5650,6 @@ class DeepResultsVisualizer:
 
     def plot_spatial_precision_grid(self,
                                     plot_type: str = 'density',
-                                    n_patches: int = 20,
                                     patch_size: float | None = None,
                                     min_samples: int = 50,
                                     bg_pt_color: str = '#E0E0E0',
@@ -5610,10 +5677,6 @@ class DeepResultsVisualizer:
         ----------
         plot_type : str, default 'density'
             The visualization style for the prediction distribution ('density' or 'contour').
-        n_patches : int, default 20
-            Euclidean-manifold only: total number of K-means-derived
-            patch panels. Ignored on the torus branch, which uses a
-            uniform ``grid_shape`` instead.
         patch_size : float, optional
             Side length of the square sampling window in manifold
             units. If ``None``, defaults to ``2.5`` on Euclidean
@@ -5644,6 +5707,17 @@ class DeepResultsVisualizer:
         file_format : str, default: the figures.fig_format setting
             Image format for saving (e.g., 'svg', 'png', 'pdf').
 
+        Settings read
+        -------------
+        Knobs read at call time from ``self.visualization_settings`` -> ``modeling_plots``
+        rather than taken as keyword arguments:
+
+        n_patches : int
+            ``modeling_plots.cnn_spatial_precision_grid.n_patches`` (shipped 20).
+            Euclidean-manifold only: total number of K-means-derived
+            patch panels. Ignored on the torus branch, which uses a
+            uniform ``grid_shape`` instead.
+
         Returns
         -------
         fig : matplotlib.figure.Figure
@@ -5652,6 +5726,8 @@ class DeepResultsVisualizer:
             notebook cell's output) and closes it with ``plt.close``; with ``save_plot``
             it is also written to disk first.
         """
+
+        n_patches = self.visualization_settings["modeling_plots"]["cnn_spatial_precision_grid"]["n_patches"]
 
         if self.manifold_metric == 'torus':
             return self._plot_spatial_precision_grid_torus(
@@ -6104,9 +6180,6 @@ class DeepResultsVisualizer:
                              cmap: str = _GLOBAL_CMAP,
                              diff_cmap: str = _DIVERGING_CMAP,
                              vmax_percentile: float = 95.0,
-                             title_fontsize: int = 10,
-                             label_fontsize: int = 8,
-                             figsize: tuple = (12, 5),
                              save_plot: bool = False,
                              output_dir: str | None = None,
                              file_format: str = _FIGURE_FORMAT) -> plt.Figure:
@@ -6131,18 +6204,27 @@ class DeepResultsVisualizer:
             Diverging colormap for the Error Reduction panel.
         vmax_percentile : float, default 95.0
             The percentile at which to cap the maximum color value for visual clarity.
-        title_fontsize : int, default 10
-            Font size for the plot titles.
-        label_fontsize : int, default 8
-            Font size for the axis labels.
-        figsize : tuple, default (12, 5)
-            Figure dimensions in inches.
         save_plot : bool, default False
             If True, exports the figure to disk.
         output_dir : str, optional
             Path to save the figure.
         file_format : str, default: the figures.fig_format setting
             Format for the saved file.
+
+        Settings read
+        -------------
+        Knobs read at call time from ``self.visualization_settings`` -> ``modeling_plots``
+        rather than taken as keyword arguments:
+
+        title_fontsize : int
+            ``modeling_plots.cnn_error_landscape.title_fontsize`` (shipped 10).
+            Font size for the plot titles.
+        label_fontsize : int
+            ``modeling_plots.cnn_error_landscape.label_fontsize`` (shipped 8).
+            Font size for the axis labels.
+        figsize : tuple
+            ``modeling_plots.cnn_error_landscape.figsize`` (shipped [12, 5]).
+            Figure dimensions in inches.
 
         Returns
         -------
@@ -6152,6 +6234,10 @@ class DeepResultsVisualizer:
             notebook cell's output) and closes it with ``plt.close``; with ``save_plot``
             it is also written to disk first.
         """
+
+        title_fontsize = self.visualization_settings["modeling_plots"]["cnn_error_landscape"]["title_fontsize"]
+        label_fontsize = self.visualization_settings["modeling_plots"]["cnn_error_landscape"]["label_fontsize"]
+        figsize = tuple(self.visualization_settings["modeling_plots"]["cnn_error_landscape"]["figsize"])
 
         # 1. Data Preparation (Aggregating Across CNN Folds)
         # Filter out placeholder folds emitted by the runner's
@@ -6250,9 +6336,7 @@ class DeepResultsVisualizer:
                                      category_name: str | None = None,
                                      prediction_plot_type: str = 'contour',
                                      highlight_color: str | None = None,
-                                     null_color: str = '#D3D3D3',
                                      cmap: str = _DIVERGING_CMAP,
-                                     figsize: tuple = (18, 9),
                                      radius: float | None = None,
                                      smoothing_sigma: float = 60.0,
                                      save_plot: bool = False,
@@ -6294,13 +6378,8 @@ class DeepResultsVisualizer:
             Color for the region border, the peak density marker,
             and the model's error distribution. If None, falls back
             to ``self.default_color`` (set in __init__).
-        null_color : str, default '#D3D3D3'
-            Color for the model-free null distribution in the error
-            inset.
         cmap : str, default the ``figures.diverging_cmap`` setting
             Diverging colormap for the contrastive saliency heatmap.
-        figsize : tuple, default (18, 9)
-            Figure dimensions in inches.
         radius : float, optional
             Override the region radius (in manifold units) used for
             both the wrap-aware sample selection AND the displayed
@@ -6329,6 +6408,19 @@ class DeepResultsVisualizer:
         file_format : str, default: the figures.fig_format setting
             File format for the export.
 
+        Settings read
+        -------------
+        Knobs read at call time from ``self.visualization_settings`` -> ``modeling_plots``
+        rather than taken as keyword arguments:
+
+        null_color : str
+            ``modeling_plots.cnn_regional_saliency.null_color`` (shipped "#D3D3D3").
+            Color for the model-free null distribution in the error
+            inset.
+        figsize : tuple
+            ``modeling_plots.cnn_regional_saliency.figsize`` (shipped [18, 9]).
+            Figure dimensions in inches.
+
         Returns
         -------
         fig : matplotlib.figure.Figure | None
@@ -6338,6 +6430,9 @@ class DeepResultsVisualizer:
             notebook cell's output) and closes it with ``plt.close``; with ``save_plot``
             it is also written to disk first.
         """
+
+        null_color = self.visualization_settings["modeling_plots"]["cnn_regional_saliency"]["null_color"]
+        figsize = tuple(self.visualization_settings["modeling_plots"]["cnn_regional_saliency"]["figsize"])
 
         # 0. COLOR MANAGEMENT
         # Reliably pull the color index 0 mapped in __init__
@@ -6552,10 +6647,10 @@ class DeepResultsVisualizer:
         # ``histtype='stepfilled'`` draws a single filled outline
         # rather than one rectangle per bin, so the edgecolor is just
         # the outer step contour -- no edges visible between bins.
-        ax_ins.hist(err_null, bins=15, density=True, color=null_color,
+        ax_ins.hist(err_null, bins=self.visualization_settings["modeling_plots"]["cnn_regional_saliency"]["inset_histogram_bins"], density=True, color=null_color,
                     alpha=0.6, edgecolor='#000000', linewidth=0.7,
                     histtype='stepfilled', label='Null', zorder=1)
-        ax_ins.hist(err_actual, bins=15, density=True, color=highlight_color,
+        ax_ins.hist(err_actual, bins=self.visualization_settings["modeling_plots"]["cnn_regional_saliency"]["inset_histogram_bins"], density=True, color=highlight_color,
                     alpha=0.6, edgecolor=darker_highlight, linewidth=0.7,
                     histtype='stepfilled', label='CNN', zorder=2)
         ax_ins.set_title("Prediction Error", fontsize=9, color=text_color)
@@ -7057,8 +7152,6 @@ def plot_collinearity_audit(audit_pkl_path: str,
                             save_plot_bool: bool = True,
                             plot_format: str = _FIGURE_FORMAT,
                             cmap: str = _DIVERGING_CMAP,
-                            outline_threshold: float = 0.7,
-                            outline_color: str = '#000000',
                             message_output: Callable = print) -> dict:
     """
     Renders the collinearity audit produced by
@@ -7136,21 +7229,29 @@ def plot_collinearity_audit(audit_pkl_path: str,
         be a *diverging* colormap because the colour scale is
         symmetric on `[-1, 1]` — sequential maps would conflate
         sign information.
-    outline_threshold : float, default 0.7
+    message_output : Callable
+        Sink for user-facing messages (progress, skips, saved-file paths);
+        defaults to ``print``.
+
+    Settings read
+    -------------
+    Knobs read at call time from the module's ``visualizations_settings.json`` (loaded at import) -> ``modeling_plots``
+    rather than taken as keyword arguments:
+
+    outline_threshold : float
+        ``modeling_plots.collinearity_audit.outline_threshold`` (shipped 0.7).
         Minimum `|ρ|` for an off-diagonal cell to receive a thick
         outline + numeric annotation. The artifact's own
         `concern_threshold` / `exclude_threshold` are not
         consulted here; this single, plot-level threshold keeps
         the heatmap readable when it is the diagnostic the
         figure is meant to flag.
-    outline_color : str, default '#000000'
+    outline_color : str
+        ``modeling_plots.collinearity_audit.outline_color`` (shipped "#000000").
         Hex colour used both for the cell outline and for the
         in-cell numeric ρ annotation. Pick a colour that contrasts
         with the chosen `cmap` so the outline reads against the
         cell fill.
-    message_output : Callable
-        Sink for user-facing messages (progress, skips, saved-file paths);
-        defaults to ``print``.
 
     Returns
     -------
@@ -7165,6 +7266,9 @@ def plot_collinearity_audit(audit_pkl_path: str,
         computed over the finite VIF values only and are NaN if
         no feature has a finite VIF.
     """
+
+    outline_threshold = _VIZ_SETTINGS["modeling_plots"]["collinearity_audit"]["outline_threshold"]
+    outline_color = _VIZ_SETTINGS["modeling_plots"]["collinearity_audit"]["outline_color"]
 
     audit_pkl_path = configure_path(str(audit_pkl_path))
     if save_dir is not None:
@@ -7419,8 +7523,8 @@ def plot_collinearity_audit(audit_pkl_path: str,
 
 
 def _compute_timescale_horizons(payload: dict,
-                                signal_smooth_window: int = 0,
-                                acf_run_length: int = 15) -> tuple:
+                                signal_smooth_window: int,
+                                acf_run_length: int) -> tuple:
     """
     Per-feature ACF and cross-correlation horizons (single-number
     summaries derived from the per-feature triangle markers).
@@ -7450,12 +7554,15 @@ def _compute_timescale_horizons(payload: dict,
         which also requires `rho_signal_null_p0_5`); read when present are
         `signal_floor_seconds` (default 0.5 s) and
         `signal_min_run_seconds` (default 0.2 s).
-    signal_smooth_window : int, default 0
+    signal_smooth_window : int
         Rolling-mean window (bins) applied to each cross-correlation curve
         before the run search (`_rolling_mean_1d`); values <= 1 leave it
-        unsmoothed.
-    acf_run_length : int, default 15
-        Number of consecutive above-null bins that defines the ACF marker.
+        unsmoothed. The plotting callers pass
+        ``modeling_plots.timescale_audit.signal_smooth_window`` (shipped 0).
+    acf_run_length : int
+        Number of consecutive above-null bins that defines the ACF marker. The
+        plotting callers pass ``modeling_plots.timescale_audit.acf_run_length``
+        (shipped 15, about 100 ms at 150 fps).
 
     Returns
     -------
@@ -7547,7 +7654,6 @@ def plot_timescale_audit(timescale_pkl_path: str,
                          save_dir: str | None = None,
                          save_plot_bool: bool = True,
                          plot_format: str = _FIGURE_FORMAT,
-                         signal_smooth_window: int = 0,
                          message_output: Callable = print) -> dict:
     """
     Cohort-level summary companion to `plot_timescale_audit_per_feature`.
@@ -7621,14 +7727,21 @@ def plot_timescale_audit(timescale_pkl_path: str,
     plot_format : str, default: the figures.fig_format setting
         Matplotlib `savefig` format. Only consulted when
         `save_plot_bool` is True.
-    signal_smooth_window : int, default 0
+    message_output : Callable
+        Sink for user-facing messages (progress, skips, saved-file paths);
+        defaults to ``print``.
+
+    Settings read
+    -------------
+    Knobs read at call time from the module's ``visualizations_settings.json`` (loaded at import) -> ``modeling_plots``
+    rather than taken as keyword arguments:
+
+    signal_smooth_window : int
+        ``modeling_plots.timescale_audit.signal_smooth_window`` (shipped 0).
         Rolling-average window size (in lag bins) applied to the
         cross-correlation mean curve before computing the XC marker.
         Forwarded to `_compute_timescale_horizons`. Same default as
         the per-feature plot.
-    message_output : Callable
-        Sink for user-facing messages (progress, skips, saved-file paths);
-        defaults to ``print``.
 
     Returns
     -------
@@ -7645,6 +7758,8 @@ def plot_timescale_audit(timescale_pkl_path: str,
         closes. `figure` is also None when there is nothing to draw.
     """
 
+    signal_smooth_window = _VIZ_SETTINGS["modeling_plots"]["timescale_audit"]["signal_smooth_window"]
+
     with pathlib.Path(timescale_pkl_path).open('rb') as fh:
         payload = pickle.load(fh)
     _require_timescale_payload(payload, timescale_pkl_path)
@@ -7655,7 +7770,8 @@ def plot_timescale_audit(timescale_pkl_path: str,
     n_features_total = len(feature_names)
 
     acf_horizons, xc_horizons, _xc_exceeds = _compute_timescale_horizons(
-        payload, signal_smooth_window=signal_smooth_window
+        payload, signal_smooth_window=signal_smooth_window,
+        acf_run_length=_VIZ_SETTINGS["modeling_plots"]["timescale_audit"]["acf_run_length"]
     )
 
     # Per-feature group colour, matching the per-feature panel exactly.
@@ -7872,7 +7988,6 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
                                      save_dir: str | None = None,
                                      save_plot_bool: bool = True,
                                      plot_format: str = _FIGURE_FORMAT,
-                                     signal_smooth_window: int = 0,
                                      message_output: Callable = print) -> dict:
     """
     Renders the timescale audit as a small-multiples grid: one row per
@@ -7953,15 +8068,22 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
     plot_format : str, default: the figures.fig_format setting
         Matplotlib `savefig` format. Only consulted when
         `save_plot_bool` is True.
-    signal_smooth_window : int, default 0
+    message_output : Callable
+        Sink for user-facing messages (progress, skips, saved-file paths);
+        defaults to ``print``.
+
+    Settings read
+    -------------
+    Knobs read at call time from the module's ``visualizations_settings.json`` (loaded at import) -> ``modeling_plots``
+    rather than taken as keyword arguments:
+
+    signal_smooth_window : int
+        ``modeling_plots.timescale_audit.signal_smooth_window`` (shipped 0).
         Rolling-average window size (in lag bins) applied to the
         signal-correlation mean curve and SEM band at plot time only —
         the artifact remains raw. `0` or `1` disables smoothing.
         `10` ≈ 67 ms at 150 fps. Even windows are bumped odd-up so
         the smoothing stays centred.
-    message_output : Callable
-        Sink for user-facing messages (progress, skips, saved-file paths);
-        defaults to ``print``.
 
     Returns
     -------
@@ -7973,6 +8095,8 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
         figure, which the caller displays and closes. `figure` is also
         None when there is nothing to draw.
     """
+
+    signal_smooth_window = _VIZ_SETTINGS["modeling_plots"]["timescale_audit"]["signal_smooth_window"]
 
     with pathlib.Path(timescale_pkl_path).open('rb') as fh:
         payload = pickle.load(fh)
@@ -8026,9 +8150,9 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
         feature_names, source
     )
 
-    # Run-length used for the ACF "leaves the band" marker: 15 bins
-    # ≈ 100 ms at 150 fps.
-    acf_run_length = 15
+    # Run-length used for the ACF "leaves the band" marker (settings
+    # modeling_plots.timescale_audit.acf_run_length; 15 bins ≈ 100 ms at 150 fps).
+    acf_run_length = _VIZ_SETTINGS["modeling_plots"]["timescale_audit"]["acf_run_length"]
 
     # Compact layout: each subplot is near-square with the horizontal
     # dimension slightly larger than the vertical. Two columns ×
@@ -8407,10 +8531,6 @@ def _reportable_effect(term: dict, likelihood: str, alpha: float) -> tuple:
 
 def plot_behavioral_response_forest(
         contrast_results_path: str,
-        alpha: float = 0.01,
-        false_discovery_rate: float = 0.05,
-        axis_limits: tuple = ((-15.0, 15.0), (-5.0, 5.0), (-6.0, 6.0), (-2.0, 2.0)),
-        duration_sd_factor: float = 2.25,
         save_plot: bool = False,
         output_dir: str | None = None,
         message_output: Callable = print,
@@ -8459,19 +8579,6 @@ def plot_behavioral_response_forest(
     ----------
     contrast_results_path : str
         Pickle written by ``behavioral_response_contrast``.
-    alpha : float
-        Two-sided error rate for the plotted intervals; the column titles state
-        the level as ``100 (1 - alpha)`` to four significant digits (99.9% at
-        0.001).
-    false_discovery_rate : float
-        Level for the Benjamini-Hochberg correction deciding marker fill.
-    axis_limits : tuple
-        Four ``(low, high)`` pairs: contrast percent, contrast degrees, duration
-        percent, duration degrees. Fixed rather than per-panel so the two
-        questions are read on comparable scales.
-    duration_sd_factor : float
-        Bout-length factor corresponding to one SD of log duration, for the
-        axis heading.
     save_plot : bool
         Whether to write the figure to ``output_dir``.
     output_dir : str
@@ -8479,6 +8586,29 @@ def plot_behavioral_response_forest(
     message_output : Callable
         Sink for user-facing messages (progress, skips, saved-file paths);
         defaults to ``print``.
+
+    Settings read
+    -------------
+    Knobs read at call time from the module's ``visualizations_settings.json`` (loaded at import) -> ``modeling_plots``
+    rather than taken as keyword arguments:
+
+    alpha : float
+        ``modeling_plots.behavioral_response_forest.alpha`` (shipped 0.01).
+        Two-sided error rate for the plotted intervals; the column titles state
+        the level as ``100 (1 - alpha)`` to four significant digits (99.9% at
+        0.001).
+    false_discovery_rate : float
+        ``modeling_plots.behavioral_response_forest.false_discovery_rate`` (shipped 0.05).
+        Level for the Benjamini-Hochberg correction deciding marker fill.
+    axis_limits : tuple
+        ``modeling_plots.behavioral_response_forest.axis_limits`` (shipped [[-15.0, 15.0], [-5.0, 5.0], [-6.0, 6.0], [-2.0, 2.0]]).
+        Four ``(low, high)`` pairs: contrast percent, contrast degrees, duration
+        percent, duration degrees. Fixed rather than per-panel so the two
+        questions are read on comparable scales.
+    duration_sd_factor : float
+        ``modeling_plots.behavioral_response_forest.duration_sd_factor`` (shipped 2.25).
+        Bout-length factor corresponding to one SD of log duration, for the
+        axis heading.
 
     Returns
     -------
@@ -8488,6 +8618,11 @@ def plot_behavioral_response_forest(
         notebook cell's output) and closes it with ``plt.close``; with ``save_plot`` it
         is also written to disk first.
     """
+    alpha = _VIZ_SETTINGS["modeling_plots"]["behavioral_response_forest"]["alpha"]
+    false_discovery_rate = _VIZ_SETTINGS["modeling_plots"]["behavioral_response_forest"]["false_discovery_rate"]
+    axis_limits = tuple(tuple(limits) for limits in _VIZ_SETTINGS["modeling_plots"]["behavioral_response_forest"]["axis_limits"])
+    duration_sd_factor = _VIZ_SETTINGS["modeling_plots"]["behavioral_response_forest"]["duration_sd_factor"]
+
 
     with pathlib.Path(contrast_results_path).open('rb') as handle:
         payload = pickle.load(handle)
@@ -8678,11 +8813,6 @@ def _draw_behavioral_response_key(fig, grid, payload: dict, features: list,
 
 def plot_matched_divergence(
         divergence_results_path: str,
-        alpha: float = 0.01,
-        display_seconds: tuple = (-2.0, 2.0),
-        panel_columns: int = 4,
-        between_block_gap: float = 0.30,
-        onset_run_seconds: float = 1.0,
         save_plot: bool = False,
         output_dir: str | None = None,
         message_output: Callable = print,
@@ -8724,19 +8854,6 @@ def plot_matched_divergence(
     ----------
     divergence_results_path : str
         Pickle written by ``MatchedDivergencePipeline``.
-    alpha : float
-        Two-sided error rate for the intervals and the per-bin tests.
-    display_seconds : tuple
-        ``(from, to)`` window to draw; the stored curves usually run wider.
-    panel_columns : int
-        Features per block. Panel size is held fixed, so the figure grows
-        downward rather than the panels stretching.
-    between_block_gap : float
-        Height of the spacer row between blocks, as a fraction of a panel. A
-        feature's two panels belong together, so they are packed tight and the
-        blocks are separated instead.
-    onset_run_seconds : float
-        Consecutive significant time required before an onset is reported.
     save_plot : bool
         Whether to write the figure to ``output_dir``.
     output_dir : str
@@ -8744,6 +8861,30 @@ def plot_matched_divergence(
     message_output : Callable
         Sink for user-facing messages (progress, skips, saved-file paths);
         defaults to ``print``.
+
+    Settings read
+    -------------
+    Knobs read at call time from the module's ``visualizations_settings.json`` (loaded at import) -> ``modeling_plots``
+    rather than taken as keyword arguments:
+
+    alpha : float
+        ``modeling_plots.matched_divergence.alpha`` (shipped 0.01).
+        Two-sided error rate for the intervals and the per-bin tests.
+    display_seconds : tuple
+        ``modeling_plots.matched_divergence.display_seconds`` (shipped [-2.0, 2.0]).
+        ``(from, to)`` window to draw; the stored curves usually run wider.
+    panel_columns : int
+        ``modeling_plots.matched_divergence.panel_columns`` (shipped 4).
+        Features per block. Panel size is held fixed, so the figure grows
+        downward rather than the panels stretching.
+    between_block_gap : float
+        ``modeling_plots.matched_divergence.between_block_gap`` (shipped 0.3).
+        Height of the spacer row between blocks, as a fraction of a panel. A
+        feature's two panels belong together, so they are packed tight and the
+        blocks are separated instead.
+    onset_run_seconds : float
+        ``modeling_plots.matched_divergence.onset_run_seconds`` (shipped 1.0).
+        Consecutive significant time required before an onset is reported.
 
     Returns
     -------
@@ -8754,6 +8895,12 @@ def plot_matched_divergence(
         notebook cell's output) and closes it with ``plt.close``; with ``save_plot`` it
         is also written to disk first.
     """
+
+    alpha = _VIZ_SETTINGS["modeling_plots"]["matched_divergence"]["alpha"]
+    display_seconds = tuple(_VIZ_SETTINGS["modeling_plots"]["matched_divergence"]["display_seconds"])
+    panel_columns = _VIZ_SETTINGS["modeling_plots"]["matched_divergence"]["panel_columns"]
+    between_block_gap = _VIZ_SETTINGS["modeling_plots"]["matched_divergence"]["between_block_gap"]
+    onset_run_seconds = _VIZ_SETTINGS["modeling_plots"]["matched_divergence"]["onset_run_seconds"]
 
     with pathlib.Path(divergence_results_path).open('rb') as handle:
         payload = pickle.load(handle)

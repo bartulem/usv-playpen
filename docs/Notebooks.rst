@@ -624,7 +624,6 @@ consolidated univariate pickle and set the metric accordingly.
         history_seconds=uni_raw_diff_history_seconds,
         feature_color=uni_raw_diff_feature_color,
         subset_fraction=0.05,
-        n_bootstraps=100,
         save_plots=False,
         output_dir=figures_dir,
     )
@@ -1223,6 +1222,17 @@ condition-scoped behavioural summaries. Each call returns the written path.
 * **PROPERTY_DIRECTION** — ``"excit"`` or ``"suppress"``; selects excit- vs suppress-tuned units for the eight per-property distribution figures. Set at the top of the property cell.
 * **figure_condition** — one key of ``CONDITION_TO_SESSION_LIST``; selects which condition's per-session evidence feeds the behavioural heatmap and the overlap Venns. Reassigned at the top of each of the two behavioural cells.
 
+The figure-layer choices these calls no longer take as arguments are read from the
+``neuronal_tuning_figures`` block of ``visualizations_settings.json`` (``vis_settings``, loaded in
+the Setup cell; see :doc:`Visualize`): the cross-session consistency rule
+(``consistency_k_min`` 2 and ``consistency_require_majority`` on), the PETH timing tolerance and
+histogram bins (``peth_consistency_tolerance_seconds`` 0.1 s, ``peth_timing_bin_seconds`` 0.05 s),
+the VMI minimum tested sessions (``vmi_n_tested_min`` 2), the stability bootstrap
+(``vmi_bootstrap_n`` 2000, ``vmi_bootstrap_quantiles`` 0.025 / 0.975), the VMI histogram bins
+(``vmi_histogram_bins`` 20), the PAG density grid (``pag_kde_grid_resolution`` 220) and every
+figure size and ink colour. Edit an entry of ``vis_settings`` before a cell to sweep one without
+touching the file.
+
 **Vocal-bout occupancy decoding.** The last two cells read the per-session outputs of the
 vocal-bout occupancy decoder (``decode_usv_bout_occupancy``, see :doc:`Analyze`) through a
 ``NeuronalDecodingFigureMaker``. The first, ``summarize``, gathers the named sessions into one
@@ -1266,6 +1276,10 @@ be matched on USV density by hand — and the geometry holds exactly three compa
 * **DECODING_DIR** — the decoder's output root (``decode_usv_bout_occupancy.output_directory``) of the run to read.
 * **DECODED_SESSIONS** — the sessions gathered into the summary table; every one must already have been decoded.
 * **FOCAL_SESSIONS** / **COMPARISONS** — the focal area's sessions (with their clean focal USV counts) and the three comparison panels.
+
+The decoding figure's geometry, colours, opacity ramp and statistical levels (the 99% Student-t
+error bars and the null's 99.5th percentile a filled marker must clear) are read from the
+``neuronal_decoding_figures`` block of ``visualizations_settings.json`` (see :doc:`Visualize`).
 
 Source: `neuronal_tuning_summary.ipynb <https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/notebooks/neuronal_tuning_summary.ipynb>`_.
 
@@ -1390,6 +1404,7 @@ so they resolve on macOS (``/Volumes/falkner``) too.
     N_PERMUTATIONS = COACTIVITY_SETTINGS["n_permutations"]
     WINDOW_S = COACTIVITY_SETTINGS["window_s"]
     PER_SESSION_N_SHUFFLES = COACTIVITY_SETTINGS["per_session_n_shuffles"]
+    PER_SESSION_MIN_TRIALS = COACTIVITY_SETTINGS["per_session_min_trials"]
     MIN_SHIFT_S = COACTIVITY_SETTINGS["min_shift_s"]
     MAX_SHIFT_S = COACTIVITY_SETTINGS["max_shift_s"]
     N_AMPLITUDE_BINS = COACTIVITY_SETTINGS["n_amplitude_bins"]
@@ -1398,16 +1413,21 @@ so they resolve on macOS (``/Volumes/falkner``) too.
         "acoustics"
     ]  # STFT band / window forwarded to the engine
 
-    # Group plotting colours (hex)
-    GROUP_A_COLOR = "#DC143C"
-    GROUP_B_COLOR = "#1E90FF"
-    NULL_COLOR = "#808080"
-    THRESHOLD_COLOR = "#000000"
+    # Group plotting colours (hex), read from visualizations_settings.json ->
+    # coactivity_colors; retune them there.
+    with (
+        pathlib.Path.cwd().parent / "_parameter_settings" / "visualizations_settings.json"
+    ).open() as visualizations_settings_file:
+        visualizations_settings = json.load(visualizations_settings_file)
+    GROUP_A_COLOR = visualizations_settings["coactivity_colors"]["group_a"]
+    GROUP_B_COLOR = visualizations_settings["coactivity_colors"]["group_b"]
+    NULL_COLOR = visualizations_settings["coactivity_colors"]["null"]
+    THRESHOLD_COLOR = visualizations_settings["coactivity_colors"]["threshold"]
 
 * **CATEGORY_COLUMN** / **GROUP_A_IDS** / **GROUP_B_IDS** — the ``usv_summary`` column that labels each USV and the two sets of ``qlvm_category`` ids (1..4, meaning R-1..R-4) contrasted (default ``complex`` [4] vs ``simple`` [1], i.e. R-4 vs R-1; the names and descriptions come from the category bundle's ``category_nomenclature.json``, ``os_utils.load_qlvm_category_bundle``); ``*_LABEL`` names them in tables and plots.
 * **CATALOG_PATH** / **UNIT_BRAIN_AREAS** / **UNIT_REQUIRE_SOMATIC** / **UNIT_CLUSTER_GROUP** — the unit-catalog file and the three-criteria filter (region, somatic waveform, Kilosort ``cluster_group``) applied to select the population.
 * **ANIMALS_TO_SESSIONS** / **CHOSEN_ANIMAL** / **DATA_ROOT** — the per-animal session lists (Kilosort is per-day, so the loader keeps the single best-populated day), the focal animal for single-animal cells, and the data root.
-* The coactivity hyperparameters below are read from the ``neuronal_coactivity`` block of ``analyses_settings.json`` (loaded once at the top of this cell), so they are tuned in one place — edit the JSON to retune. The segmentation / unit-filter / animal-map values above stay inline as per-run edits. The block's keys map onto the cell's names as ``seed`` → ``SEED``, ``window_s`` → ``WINDOW_S``, ``bootstrap_n`` → ``USV_BOOTSTRAP_NUM``, ``n_boot`` → ``N_BOOT_ITERATIONS``, ``bootstrap_subsample_fraction`` → ``BOOTSTRAP_SUBSAMPLE_FRACTION``, ``n_shuffles`` → ``N_SHUFFLES``, ``n_permutations`` → ``N_PERMUTATIONS``, ``per_session_n_shuffles`` → ``PER_SESSION_N_SHUFFLES``, ``n_amplitude_bins`` → ``N_AMPLITUDE_BINS``, ``min_bin_trials`` → ``MIN_BIN_TRIALS``, ``min_shift_s`` / ``max_shift_s`` → ``MIN_SHIFT_S`` / ``MAX_SHIFT_S`` and ``acoustics`` → ``ACOUSTICS_PARAMS``:
+* The coactivity hyperparameters below are read from the ``neuronal_coactivity`` block of ``analyses_settings.json`` (loaded once at the top of this cell), so they are tuned in one place — edit the JSON to retune. The segmentation / unit-filter / animal-map values above stay inline as per-run edits. The block's keys map onto the cell's names as ``seed`` → ``SEED``, ``window_s`` → ``WINDOW_S``, ``bootstrap_n`` → ``USV_BOOTSTRAP_NUM``, ``n_boot`` → ``N_BOOT_ITERATIONS``, ``bootstrap_subsample_fraction`` → ``BOOTSTRAP_SUBSAMPLE_FRACTION``, ``n_shuffles`` → ``N_SHUFFLES``, ``n_permutations`` → ``N_PERMUTATIONS``, ``per_session_n_shuffles`` → ``PER_SESSION_N_SHUFFLES``, ``per_session_min_trials`` → ``PER_SESSION_MIN_TRIALS``, ``n_amplitude_bins`` → ``N_AMPLITUDE_BINS``, ``min_bin_trials`` → ``MIN_BIN_TRIALS``, ``min_shift_s`` / ``max_shift_s`` → ``MIN_SHIFT_S`` / ``MAX_SHIFT_S`` and ``acoustics`` → ``ACOUSTICS_PARAMS``:
 
   .. code-block:: json
 
@@ -1420,6 +1440,7 @@ so they resolve on macOS (``/Volumes/falkner``) too.
         "n_shuffles": 1000,
         "n_permutations": 1000,
         "per_session_n_shuffles": 500,
+        "per_session_min_trials": 2,
         "n_amplitude_bins": 5,
         "min_bin_trials": 15,
         "min_shift_s": 20.0,
@@ -1437,12 +1458,13 @@ so they resolve on macOS (``/Volumes/falkner``) too.
 
 * **SEED** — base RNG seed; each stochastic routine offsets it (``SEED + k``) for an independent, reproducible stream.
 * **USV_BOOTSTRAP_NUM** / **N_BOOT_ITERATIONS** / **N_SHUFFLES** / **N_PERMUTATIONS** / **PER_SESSION_N_SHUFFLES** — requested matched trial count and iteration counts for the pooled subsampling, chained/per-session shuffle nulls, and label permutation.
+* **PER_SESSION_MIN_TRIALS** — trials a session needs in EACH group to get a per-session row (the breakdown inside ``run_group_comparison`` and the per-session ``pop_corr`` cell); shipped as ``2``, the floor below which a coactivity metric is undefined.
 * **BOOTSTRAP_SUBSAMPLE_FRACTION** — the pooled subsampling draws trials **without replacement**: a trial drawn twice would pair with itself, and that self-pair has similarity and correlation exactly 1, which lifted ``similarity`` and ``pop_corr`` above the chained null even with no real effect (in a simulation of sparse independent trials, 38% / 75% of runs rejected at α = 0.1; without replacement, 5% / 8%). Each subsample therefore holds ``USV_BOOTSTRAP_NUM`` trials when that is below the smaller group's trial count, and ``floor(BOOTSTRAP_SUBSAMPLE_FRACTION × smaller group)`` otherwise (``engine.resolve_subsample_size``); the chained null is drawn at the same size, and the result's ``bootstrap_n`` reports the size used. Shipped as ``0.8``.
 * **WINDOW_S** — the post-onset window (30 ms) over which spikes are counted per USV.
 * **MIN_SHIFT_S** / **MAX_SHIFT_S** — the circular-shift range (seconds) for the shuffle nulls, forwarded to ``run_group_comparison`` / ``per_session_group_metrics``.
 * **N_AMPLITUDE_BINS** / **MIN_BIN_TRIALS** — the amplitude-stratification quantile-bin count and the per-group-per-bin trial floor for the amplitude-stratified section.
 * **ACOUSTICS_PARAMS** — the ``neuronal_coactivity.acoustics`` sub-block (STFT ``nperseg`` / ``hop_length`` / ``window``, the ``min_freq`` / ``max_freq`` band, and the ``low_energy_frac`` / ``high_energy_frac`` bandwidth-crossing fractions), forwarded to ``engine.compute_group_acoustics`` → ``extract_snippet_acoustics``.
-* **GROUP_A_COLOR** / **GROUP_B_COLOR** / **NULL_COLOR** / **THRESHOLD_COLOR** — hex colours for the two groups, the null histograms, and the 99th-percentile / threshold lines. The plotting module's defaults for these are read from the ``coactivity_colors`` block of ``visualizations_settings.json``; the notebook keeps explicit values here so a run can override them inline.
+* **GROUP_A_COLOR** / **GROUP_B_COLOR** / **NULL_COLOR** / **THRESHOLD_COLOR** — hex colours for the two groups, the null histograms, and the 99th-percentile / threshold lines, read from the ``coactivity_colors`` block of ``visualizations_settings.json`` (``group_a`` ``#DC143C``, ``group_b`` ``#1E90FF``, ``null`` ``#808080``, ``threshold`` ``#000000``) — the same block the plotting module's defaults come from, so the notebook and a direct API call draw the same colours. The rest of the figures' knobs (null-panel bins / percentile / line widths, the acoustic-confound histogram, the significance level of the stars and slope colouring) live in the ``coactivity_figures`` block, documented on the *Visualize* page.
 
 **Setup & load data.** Read the unit catalog once with ``engine.load_unit_catalog``, then load the
 chosen animal's data through ``engine.load_animal_sessions``: the three-criteria
@@ -1572,6 +1594,7 @@ group-A-vs-group-B permutation test.
         n_permutations=N_PERMUTATIONS,
         seed=SEED,
         subsample_fraction=BOOTSTRAP_SUBSAMPLE_FRACTION,
+        per_session_min_trials=PER_SESSION_MIN_TRIALS,
     )
 
     # Per-session deltas, each group vs its chained null, and the direct A-vs-B permutation test.
@@ -1581,6 +1604,7 @@ group-A-vs-group-B permutation test.
 * **USV_BOOTSTRAP_NUM** / **BOOTSTRAP_SUBSAMPLE_FRACTION** — the requested matched trial count both groups are subsampled (without replacement) and onset-sampled to; when it is not below the smaller group's trial count, ``floor(BOOTSTRAP_SUBSAMPLE_FRACTION × smaller group)`` is used instead, and ``results["bootstrap_n"]`` reports the size used.
 * **N_BOOT_ITERATIONS** / **N_SHUFFLES** / **N_PERMUTATIONS** — iteration counts for the pooled bootstrap, the chained null, and the label permutation.
 * **SEED** — the base seed the engine offsets per internal routine for independent, reproducible streams.
+* **PER_SESSION_MIN_TRIALS** — trial floor per group of the per-session breakdown in ``results["per_session"]``.
 
 **Null distributions.** ``plot_null_distributions`` draws a 3-metric × 2-group grid from the ``results``
 object: each group's chained-null histogram overlaid with its observed
@@ -1605,16 +1629,17 @@ pooled-bootstrap mean and the null's 99th percentile.
 ``pop_corr`` plus a within-session circular-shuffle null (both groups' onsets
 pooled, so the null reflects neural-timing shifts) using
 ``PER_SESSION_N_SHUFFLES`` shuffles; ``plot_per_session_pop_corr`` draws one panel
-per session. Sessions with fewer than two trials in either group are dropped.
+per session. Sessions with fewer than ``PER_SESSION_MIN_TRIALS`` (shipped 2) trials in either group are dropped.
 
 .. code-block:: python
 
     # Per-session observed pop_corr for both groups against a within-session circular-shuffle
     # null (both groups' onsets pooled, so the null reflects neural-timing shifts). Sessions
-    # with < 2 trials in either group are dropped.
+    # with fewer than PER_SESSION_MIN_TRIALS trials in either group are dropped.
     per_session_rows = engine.per_session_group_metrics(
         sessions_data,
         WINDOW_S,
+        min_trials=PER_SESSION_MIN_TRIALS,
         n_shuffles=PER_SESSION_N_SHUFFLES,
         seed=SEED + 100,
     )
@@ -1631,6 +1656,7 @@ per session. Sessions with fewer than two trials in either group are dropped.
     )
 
 * **PER_SESSION_N_SHUFFLES** — shuffle count for each session's null (smaller than the chained null since it runs per session).
+* **PER_SESSION_MIN_TRIALS** — trials a session needs in each group to be kept.
 * **SEED** — offset (``SEED + 100``) for the per-session nulls' stream.
 
 **Cross-animal summary.** Loops over every focal animal in ``ANIMALS_TO_SESSIONS``, loading its single best
@@ -1945,6 +1971,9 @@ plot-only knobs straight from the settings block.
     bins_per_sex = usv_interval_cfg["bins_per_sex"]
     tau = usv_interval_cfg["tau"]
     model_class = usv_interval_cfg["model_class"]
+    # Inter-bout z: the first peak's exp(mu + z * sd) is the modeling pipeline's inter-bout
+    # threshold (mirrors modeling_settings.json -> mixture_model_z_score); notebook-only, not archived
+    inter_bout_z_score = usv_interval_cfg["inter_bout_z_score"]
 
     print(f"output_directory: {output_directory}")
     print(f"session_lists ({len(session_lists)}):")
@@ -1972,6 +2001,7 @@ plot-only knobs straight from the settings block.
 * **interval_label** / **vocal_class_label** -- titles and legend text; the legend names the vocal class because the pools are different vocalizations.
 * **density_as_bin_means** -- when ``true`` the best-fit overlay draws the mixture as the bar heights it *predicts* (its density averaged over each histogram bin) rather than as the point-wise curve. A histogram bar is a bin average while the curve is a point density, so a point-wise curve necessarily rides above the bars wherever a bin straddles the peak and reads as an overshoot the fit does not have. Set ``false`` to restore the point-wise curve.
 * **plot_log_xlims** / **bins_per_sex** -- plot-only knobs read straight from JSON (not archived in the HDF5); **tau** is likewise read from JSON but *is* archived in the HDF5.
+* **inter_bout_z_score** -- the z of the inter-bout threshold ``exp(mu_0 + z * sd_0)`` the fitted-parameters printout and the serial-dependence boundary line use (2.58, the value of ``modeling_settings.json -> mixture_model_z_score``, so the dotted line IS the modeling pipeline's threshold); read straight from JSON, not archived.
 
 **Settings block.** Every key of ``analyses_settings.json -> compute_inter_usv_interval_distributions``
 the analysis reads (all of them are archived in the root ``/attrs`` except the plot-only ones marked):
@@ -1983,12 +2013,22 @@ the analysis reads (all of them are archived in the root ``/attrs`` except the p
 * **min_intervals_for_fitting** -- a fitted pool smaller than this is archived for description only (5000).
 * **fit_tied_model**, **tied_peak_grid**, **tied_n_background**, **tied_n_init**, **tied_n_init_boot** -- the tied-scale peak model: whether it runs, the peak counts tested (``[1, 2, 3]``, each against one more), the fixed background count (2), and the EM restarts of the observed fits (4) and of the bootstrap refits (2). Each rung's observed null is laddered: rung ``n - 1``'s observed alternative (same subsample) seeds rung ``n``'s null, and the better of it and the scratch restarts is kept.
 * **design_bootstrap** -- session resamples for the design effect of every corrected test, tied and unconstrained (2000). The per-observation log-likelihood differences are centred on their mean before sessions are resampled, so unequal session sizes are not counted as clustering.
+* **design_bootstrap_iid_cap** -- upper bound on the interval-level (iid) resamples each design effect compares the session resamples against; the iid comparison uses ``min(design_bootstrap, design_bootstrap_iid_cap)`` resamples (400).
+* **tied_em_max_iter**, **tied_em_tol** -- EM iteration cap (500) and convergence tolerance (1e-6) of every tied-scale fit: the ladder, the observed test fits and every bootstrap refit.
+* **em_max_iter**, **em_tol** -- EM iteration cap (300) and convergence tolerance (1e-5) of every Student-t and inverse-Gaussian fit of the unconstrained sweep (in-sample, cross-validated and bootstrap refits); the Gaussian family uses scikit-learn's own stopping rule.
+* **split_delta** -- separation, in parent standard deviations (the shared peak scale for the tied model), of the two copies a split-initialised fit starts from (0.5); each split is also tried at zero offset, so an undisturbed duplicate cannot trap EM at a saddle.
+* **mode_grid_size_t**, **mode_span_scales_t** -- the density-mode search of every Student-t fit (tied ladder and sweep): grid points (16384) and how many component scales the grid extends past the extreme locations (6.0; the polynomial tails need a wider, denser grid than the Gaussian case for a shallow shoulder peak to be detected). Grid peaks are then polished by Newton steps.
+* **mode_grid_size_gauss**, **mode_span_scales_gauss** -- the same for Gaussian sweep fits (4096 points, 4.0 standard deviations).
+* **cv_t_n_init_offset** -- restarts trimmed from ``cv_n_init`` for each Student-t cross-validation fold, whose EM is heavier: those folds use ``max(1, cv_n_init - cv_t_n_init_offset)`` restarts (2, so 3 at the shipped ``cv_n_init``); the floor of one keeps at least one restart.
+* **em_init_kmeans_n_init**, **em_init_start_nu**, **em_init_background_start_nu**, **em_init_min_start_weight**, **em_init_restart_quantile_range** -- starting points of every Student-t and inverse-Gaussian EM fit (sweep, ladder, cross-validated folds, observed tests and bootstrap refits alike; the Gaussian family uses scikit-learn's own initialisation): the ``n_init`` of the KMeans clustering that seeds restart 0 (10), the starting degrees of freedom of every Student-t component and of every tied-scale peak (10.0) and of every tied-scale background component (5.0, heavier-tailed so the background starts out carrying the tail), the floor on the starting cluster proportions before they are renormalised into weights (0.001), and the probability range the random restarts draw their component-centre quantiles from (``[0.02, 0.98]``).
+* **em_init_peak_variance_fraction**, **em_init_seeded_peak_quantile_range**, **em_init_seeded_background_quantile_range**, **em_init_random_peak_quantile_range**, **em_init_random_background_quantile_range** -- starting points of every tied-scale fit: each peak starts at this fraction of the total log-space variance (0.05, floored at the variance floor; background components start at the total variance); the deterministic restart 0 places the peaks at evenly spaced quantiles over ``[0.15, 0.9]`` wherever the smoothed histogram below has fewer local maxima than peaks, and the background at evenly spaced quantiles over ``[0.4, 0.97]``; the random restarts draw peak quantiles from ``[0.05, 0.95]`` and background quantiles from ``[0.35, 0.98]``, so the two roles are distinguishable from the outset.
+* **em_init_seed_histogram_bins**, **em_init_seed_smoothing_sigma**, **em_init_seed_smoothing_half_width** -- the histogram whose smoothed local maxima seed the tied-scale peaks in restart 0, highest-density first: bins of the log-space histogram (512), and the standard deviation (3.0 bins) and half-width (8 bins, so the kernel spans -8..+8) of the Gaussian kernel that smooths it.
 * **bootstrap_lrt_B**, **bootstrap_lrt_n_subsample**, **bootstrap_lrt_alpha**, **bootstrap_lrt_bonferroni**, **bootstrap_lrt_n_jobs** -- shared by both tests: bootstrap replicates per rung (1000), the subsample the observed and null statistics are computed on (10000), the step-up level (0.01), Bonferroni across the rungs (``true``), and parallel workers (24, also used by the serial-dependence resamples).
 * **fit_mixture_model**, **model_class**, **n_components_min**, **n_components_max**, **n_repeats**, **mixture_model_n_init**, **mixture_model_reg_covar**, **bootstrap_lrt_n_init**, **cv_n_folds**, **cv_n_init**, **max_modes_reported** -- the unconstrained sweep: whether it runs, the family (``t``), the K range (2-6), fits per K (10) with their EM restarts (10), the variance floor (1e-4, also used by the tied model), the EM restarts of its bootstrap refits (10), the cross-validation folds and restarts of the diagnostic CV likelihood (5, 5), and the modes recorded per fit (6).
 * **random_seed_base** -- seeds every fit, subsample, bootstrap null and session resample (0).
 * **tau** -- posterior threshold of the inter-component boundaries recorded for Gaussian fits (0.5).
-* **fit_serial_dependence**, **serial_dependence_n_knots**, **serial_dependence_corner_widths**, **serial_dependence_bootstrap**, **serial_dependence_level**, **serial_dependence_bend_bounds_ms**, **serial_dependence_grid_percentiles**, **serial_dependence_max_iter** -- the serial-dependence fits: whether they run, the spline's knots (6, at quantiles of the current interval), the bent line's candidate corner widths (``[0.05, 0.15, 0.3]`` natural-log units, the best on the full data kept), session resamples (1000), band and bend-interval coverage (99%), the range searched for the bend (30-600 ms), the percentiles of the current interval between which the curves are evaluated (1-99), and the median-regression iteration cap (20000; refits that reach it are counted in the archive).
-* **plot_log_xlims**, **bins_per_sex**, **density_as_bin_means** -- plot only, not archived.
+* **fit_serial_dependence**, **serial_dependence_n_knots**, **serial_dependence_corner_widths**, **serial_dependence_bootstrap**, **serial_dependence_level**, **serial_dependence_bend_bounds_ms**, **serial_dependence_grid_percentiles**, **serial_dependence_max_iter**, **serial_dependence_n_grid** -- the serial-dependence fits: whether they run, the spline's knots (6, at quantiles of the current interval), the bent line's candidate corner widths (``[0.05, 0.15, 0.3]`` natural-log units, the best on the full data kept), session resamples (1000), band and bend-interval coverage (99%), the range searched for the bend (30-600 ms), the percentiles of the current interval between which the curves are evaluated (1-99), the median-regression iteration cap (20000; refits that reach it are counted in the archive), and the number of grid points the curves are evaluated on (``serial_dependence_n_grid``, 200).
+* **plot_log_xlims**, **bins_per_sex**, **density_as_bin_means**, **inter_bout_z_score** -- plot only, not archived (``inter_bout_z_score``, 2.58, is the z of the inter-bout threshold the notebook draws).
 
 **Archive layout.** ``usv_interval_analysis_<YYYYMMDD>_<HHMMSS>.h5``; every table carries ``sex``,
 ``vocal_class`` and ``adjacency``, because a mode group holds several pools.
@@ -2203,7 +2243,6 @@ or off.
                 mixture_model=mixture_model,
                 mixture_model_order=mixture_model_order,
                 color=color_for[sex],
-                figsize=(5, 5),
                 bins=bins_per_sex[sex],
                 xlims=plot_log_xlims,
                 tau=tau,
@@ -2221,9 +2260,15 @@ or off.
             plt.show()
             print(f"  [{sex}] log-log Pearson r (Q-Q) = {fit_summary['qq_pearson_r']:.4f}")
 
+The figure size comes from ``visualizations_settings.json`` → ``usv_interval_figures.best_fit.figsize``
+(``[5, 5]``, square so the Q-Q inset keeps its aspect); the remaining styling of this module's figures
+(histogram opacity and edge ink, Q-Q quantile count, the LRT panel's bins / colours / broken-axis rule,
+the serial-dependence grid / limits / inks) lives in the same ``usv_interval_figures`` block, documented
+on the *Visualize* page.
+
 **Fitted parameters.** The selected model's components, ascending, in the ``mixture_model_params``
 layout the modelling pipeline reads; component 0 is the first peak, from which the inter-bout threshold
-``exp(mu_0 + 2.58 * sd_0)`` is derived.
+``exp(mu_0 + z * sd_0)`` is derived, with ``z`` the settings ``inter_bout_z_score`` (2.58).
 
 .. code-block:: python
 
@@ -2244,10 +2289,10 @@ layout the modelling pipeline reads; component 0 is the first peak, from which t
                 f'      "sds": {json.dumps(sds)}\n'
                 f"    }}"
             )
-            threshold_ms = 1000.0 * float(np.exp(means[0] + 2.58 * sds[0]))
+            threshold_ms = 1000.0 * float(np.exp(means[0] + inter_bout_z_score * sds[0]))
             print(
                 f"[{it}] {row['sex']} {vocal_class_label[row['vocal_class']]}: roles {roles}; "
-                f"inter-bout threshold exp(mu_0 + 2.58 sd_0) = {threshold_ms:.1f} ms"
+                f"inter-bout threshold exp(mu_0 + {inter_bout_z_score} sd_0) = {threshold_ms:.1f} ms"
             )
         print("{")
         print('  "mixture_model_params": {')
@@ -2280,7 +2325,6 @@ refits stopped at the solver's iteration cap (``serial_dependence_max_iter``).
     # exp(mu + z * sd) with the same z the modeling pipeline uses for its inter-bout threshold,
     # so the dotted line IS that threshold.
     color_for = {"male": male_color, "female": female_color}
-    serial_dependence_z = 2.58
 
     for it in plot_interval_types:
         sub = ivs.load_intervals_from_h5(str(h5_path), it)
@@ -2299,7 +2343,7 @@ refits stopped at the solver's iteration cap (``serial_dependence_max_iter``).
                 rows.filter(pls.col("role") == "peak").sort("logmean").row(0, named=True)
             )
             boundary_ms = 1000.0 * float(
-                np.exp(first_peak["logmean"] + serial_dependence_z * first_peak["logscale"])
+                np.exp(first_peak["logmean"] + inter_bout_z_score * first_peak["logscale"])
             )
 
             fig_sd, axes_sd, sd_stats = ivs.plot_serial_dependence(
@@ -2476,9 +2520,9 @@ Fourth, the video, which ends on the still's frame and camera — the window pla
 * **vocal_pose_session_root** — a session directory holding the 3D tracks, the ``*_usv_summary.csv`` and the ``audio/cropped_to_video`` wavs.
 * **window.end_time / history_seconds** — the frame shown and the span before it; **camera.azimuth / elevation** — the view; everything else (trail fade, skeleton widths, scale mark, surfaces, colour key, spectrogram band and scaling, video speed and camera) stays in the settings block.
 
-**Cross-session summaries.** The second part pools many sessions. Its three ``make_usv_spectrograms`` helper figures each carry their own parameters (still the per-figure half of the hybrid layout); all three share the same noise filter, ``exclude_noise_usvs = True``.
+**Cross-session summaries.** The second part pools many sessions. Its three ``make_usv_spectrograms`` helper figures each carry their own parameters (still the per-figure half of the hybrid layout); all three share the same noise filter, ``exclude_noise_usvs = True``, and all three take ``visualizations_parameter_dict=vis_settings`` (the Settings cell): the DPI is ``figures.dpi``, the sex / unassigned colours are ``male_colors[0]`` / ``female_colors[0]`` / ``unassigned_colors[0]``, and each figure's size, bins and styling come from the ``usv_property_figures`` block of *visualizations_settings.json* (documented on the :doc:`Visualize` page) — override entries on ``vis_settings`` to try other values.
 
-**2. Property histograms.** ``plot_usv_property_histograms`` is a module-level helper (not a method on ``USVSpectrogramPlotter``) that pools per-USV properties across many sessions into a single five-panel figure: ``duration`` (ms), ``mean_amplitude`` (a.u.), ``mean_freq_hz`` (kHz), ``freq_bandwidth_hz`` (kHz), ``spectral_entropy`` (nats). Each panel uses 36 linearly-spaced bins over the FeatureZoo theoretical range; the title reports the number of sessions loaded and the total pooled vocalizations.
+**2. Property histograms.** ``plot_usv_property_histograms`` is a module-level helper (not a method on ``USVSpectrogramPlotter``) that pools per-USV properties across many sessions into a single five-panel figure: ``duration`` (ms), ``mean_amplitude`` (a.u.), ``mean_freq_hz`` (kHz), ``freq_bandwidth_hz`` (kHz), ``spectral_entropy`` (nats). Each panel uses ``usv_property_figures.histograms.n_bins`` (36) linearly-spaced bins over the FeatureZoo theoretical range; the title reports the number of sessions loaded and the total pooled vocalizations.
 
 .. code-block:: python
 
@@ -2495,6 +2539,7 @@ Fourth, the video, which ends on the still's frame and camera — the window pla
         output_path=histograms_output_path,
         fig_format=histograms_fig_format,
         exclude_noise_usvs=exclude_noise_usvs,
+        visualizations_parameter_dict=vis_settings,
     )
     plt.show()
 
@@ -2502,7 +2547,7 @@ Fourth, the video, which ends on the still's frame and camera — the window pla
 * **histograms_output_path** — where to save the figure; ``None`` shows it without saving.
 * **histograms_fig_format** — saved-figure format (e.g. ``'svg'``).
 
-**3. Session-type counts.** ``plot_session_type_usv_counts`` takes three session-list txt files (male-female, female-female, lone-male) and renders a horizontal bar chart comparing the mean number of non-noise USVs per session, with standard error of the mean (SEM) error bars (``std(counts, ddof=1) / sqrt(n_sessions)``). For each list it discovers ``*_usv_summary.csv``, drops noise rows, and counts the rest; sessions whose CSV is missing or unreadable are logged and excluded from that group's mean.
+**3. Session-type counts.** ``plot_session_type_usv_counts`` takes three session-list txt files (male-female, female-female, lone-male) and renders a horizontal bar chart (male-female bar in ``usv_property_figures.session_type_counts.male_female_color``, ``#DFB8B3``) comparing the mean number of non-noise USVs per session, with standard error of the mean (SEM) error bars (``std(counts, ddof=1) / sqrt(n_sessions)``). For each list it discovers ``*_usv_summary.csv``, drops noise rows, and counts the rest; sessions whose CSV is missing or unreadable are logged and excluded from that group's mean.
 
 .. code-block:: python
 
@@ -2527,6 +2572,7 @@ Fourth, the video, which ends on the still's frame and camera — the window pla
         output_path=session_counts_output_path,
         fig_format=session_counts_fig_format,
         exclude_noise_usvs=exclude_noise_usvs,
+        visualizations_parameter_dict=vis_settings,
     )
     plt.show()
 
@@ -2550,6 +2596,7 @@ Fourth, the video, which ends on the still's frame and camera — the window pla
         output_path=timeline_output_path,
         fig_format=timeline_fig_format,
         exclude_noise_usvs=exclude_noise_usvs,
+        visualizations_parameter_dict=vis_settings,
     )
     plt.show()
 
@@ -2863,7 +2910,7 @@ The §6 category-embedding panel reads its own knobs from the **Statistics param
 * **squeak_nodata_color** — the colour where no vocalization is nearby (white draws it as empty).
 * **squeak_class** — which vocal classes count as squeaks: ``'squeak'``, ``'overlap'`` or ``'squeak+overlap'`` (default).
 
-**§21 QLVM property-sweep video.** ``render_qlvm_property_sweep_video`` (module ``qlvm_property_sweep_video``) sweeps the regular QLVM map through every measured USV property at once. Six panels — SAM-mask count, duration, frequency bandwidth, spectral entropy, mean frequency and loudness — move together: at every frame each panel shows the USVs between the same two percentiles of its own property, an equal-count window holding **sweep_window** of the USVs that moves in steps of **sweep_step** from the lowest to the highest values and is held **sweep_hold** frames at both ends. A panel draws the window's USV density on the category grid (counts per pixel convolved with a periodic Gaussian, so the torus seams wrap, divided by the field's own 99th percentile) in the colour of the window's median value on the property's colour scale (the 1st–99th percentile of all USVs), brightness = density, on black; the QLVM category boundaries (``load_qlvm_category_bundle``) are dotted in white, and the colour bar, in the property's unit, shades the current window and marks its median. ``load_property_sweep_usvs`` pools the USVs from the cohort's ``*_usv_summary.csv`` files — every ``*sessions_list.txt`` in **sweep_input_dir**, playback lists dropped, read with ``build_pooled_embeddings_df`` and its parquet cache (``<spectrograms_dir>/embeddings``, rebuilt automatically when the summaries change) — and keeps the non-noise pure USVs (``usv & ~squeak``) with a regular-map position and all six properties. USVs with equal values are put in a random (seeded) order within each tie, so a window inside a tie — about half the USVs have exactly one mask — is a random subset rather than a block of sessions in file order. The colours come from the project's ``sequential_cmap``, used from **sweep_colormap_floor** upward, since a colormap whose low end is black would hide the lowest windows on the black background. The video is written with matplotlib's ``FFMpegWriter``.
+**§21 QLVM property-sweep video.** ``render_qlvm_property_sweep_video`` (module ``qlvm_property_sweep_video``) sweeps the regular QLVM map through every measured USV property at once. Six panels — SAM-mask count, duration, frequency bandwidth, spectral entropy, mean frequency and loudness — move together: at every frame each panel shows the USVs between the same two percentiles of its own property, an equal-count window holding **window** of the USVs that moves in steps of **step** from the lowest to the highest values and is held **hold** frames at both ends. A panel draws the window's USV density on the category grid (counts per pixel convolved with a periodic Gaussian, so the torus seams wrap, divided by the field's own **brightness_percentile**, 99th, percentile) in the colour of the window's median value on the property's colour scale (the **color_percentiles**, 1st–99th, percentile of all USVs), brightness = density, on black; the QLVM category boundaries (``load_qlvm_category_bundle``) are dotted in white, and the colour bar, in the property's unit, shades the current window and marks its median. ``load_property_sweep_usvs`` pools the USVs from the cohort's ``*_usv_summary.csv`` files — every ``*sessions_list.txt`` in **sweep_input_dir**, playback lists dropped, read with ``build_pooled_embeddings_df`` and its parquet cache (``<spectrograms_dir>/embeddings``, rebuilt automatically when the summaries change) — and keeps the non-noise pure USVs (``usv & ~squeak``) with a regular-map position and all six properties. USVs with equal values are put in a random (seeded) order within each tie, so a window inside a tie — about half the USVs have exactly one mask — is a random subset rather than a block of sessions in file order. The colours come from the project's ``sequential_cmap``, used from **colormap_floor** upward, since a colormap whose low end is black would hide the lowest windows on the black background. The video is written with matplotlib's ``FFMpegWriter``. The window, motion and look are the ``qlvm_property_sweep_video`` block of ``visualizations_settings.json`` (read into ``sweep_cfg`` in the cell, where keys can be overridden for one run); the seed of the tie order is ``figures.seed``.
 
 .. code-block:: python
 
@@ -2881,13 +2928,7 @@ The §6 category-embedding panel reads its own knobs from the **Statistics param
         label_grid=load_qlvm_category_bundle()["label_grid"],
         output_path=sweep_output_path,
         cmap_name=sweep_cmap_name,
-        colormap_floor=sweep_colormap_floor,
-        window=sweep_window,
-        step=sweep_step,
-        hold=sweep_hold,
-        fps=sweep_fps,
-        dpi=sweep_dpi,
-        density_bandwidth=sweep_density_bandwidth,
+        cfg=sweep_cfg,
         seed=sweep_seed,
         preview_quantile=sweep_preview_quantile,
     )
@@ -2897,13 +2938,8 @@ The §6 category-embedding panel reads its own knobs from the **Statistics param
 * **sweep_exclude_noise_usvs** — drop the segments ``detect-usv-noise`` flagged as holding no vocalization.
 * **sweep_output_path** — the ``.mp4``; a preview writes a ``.png`` of the same name.
 * **sweep_preview_quantile** — ``None`` renders the video; a quantile (e.g. ``0.5``) renders only the window centred there, as a still.
-* **sweep_window** — share of the USVs in each window (0.10 = 10 %).
-* **sweep_step** — window-centre step between frames, as a share of the USVs.
-* **sweep_hold** — frames held at the first and the last window.
-* **sweep_fps** / **sweep_dpi** — video frame rate and frame resolution (the frame is 19 × 11.4 inches).
-* **sweep_density_bandwidth** — Gaussian standard deviation of the density, in torus units (0.01 = 2 pixels of the 200 × 200 grid).
-* **sweep_colormap_floor** — lowest point of the colormap used, in [0, 1).
-* **sweep_seed** — seed of the random order within tied values.
+* **sweep_cfg** — the ``qlvm_property_sweep_video`` settings block (every key is listed on the :doc:`Visualize` page): ``window`` (share of the USVs in each window, 0.1 = 10 %), ``step`` (window-centre step between frames, as a share of the USVs, 0.01), ``hold`` (frames held at the first and the last window, 8), ``fps`` / ``dpi`` (15 frames/s and 100 dpi; the frame is ``figure_size``, 19 × 11.4 inches), ``density_bandwidth`` (Gaussian standard deviation of the density, 0.01 torus units = 2 pixels of the 200 × 200 grid), ``colormap_floor`` (lowest point of the colormap used, in [0, 1), 0.2), the colour-scale and brightness percentiles, the panel colours and font sizes, and the encoder (``codec`` / ``pixel_format`` / ``crf``).
+* **sweep_seed** — seed of the random order within tied values (``figures.seed``).
 
 **§22 QLVM figures: data.** One cell loads the inputs of the three QLVM figures (§23–§25), module ``qlvm_figures``. The USVs are the cohort's: every ``*sessions_list.txt`` in ``shared_resources.input_files_directory`` (playback lists dropped), read with ``make_usv_spectrograms.load_regular_map_cohort_usvs`` — the pooled-embeddings parquet cache under ``<spectrograms_dir>/embeddings`` when **qlvm_use_pooled_cache** is set, rebuilt automatically when the summaries change — and kept when they are pure USVs (no noise, no squeak, the USV maps being trained on USVs only) with a regular-map position (``qlvm1`` / ``qlvm2``) and all six properties (duration, spectral entropy, frequency bandwidth, mean frequency, loudness, SAM-mask count). The spectrogram-based panels use a per-session sample, ``build_qlvm_figure_sample``: up to ``usvs_per_session`` random USVs of every session, whose spectrograms are read from each session's ``audio/spectrograms/<session>_spectrograms.h5`` (row = summary row) and kept twice — as the regular QLVM's decoder input (spectrogram and SAM-mask union time-stretched to 128 × 128, the mask binarized, the masked spectrogram normalised by the production cell's training contract and masked again, exactly what ``infer-qlvm-latents`` embeds) and as the masked spectrogram at its native length (zeros after the USV). With ``sample_cache_file`` set the sample is written there and served again while the USVs drawn (session, row and position) are the same; a sample of other or older summaries is rebuilt. Every knob lives in the ``qlvm_figures`` block of ``visualizations_settings.json``:
 
@@ -2915,6 +2951,7 @@ The §6 category-embedding panel reads its own knobs from the **Statistics param
 * **category_colors** — one hex colour per category.
 * **overview** — ``n_examples`` spectrograms per category, ``spiral_radius`` / ``spiral_turns`` of the example spiral, ``density_bandwidth`` (torus units) of every density field.
 * **quality** — ``n_pcs`` PCA components (the UMAP input), ``umap_n_neighbors`` / ``umap_min_dist``, ``readout_neighbors`` / ``readout_folds`` of the readout, ``neighborhood_k`` / ``n_neighborhood_subsets`` / ``neighborhood_subset_size`` of (b1–b3), ``distance_sample_size`` / ``n_distance_samples`` of (b′), ``pullback_grid`` nodes per axis of the geodesic grids, and the ``embed_lattice_batch_size`` / ``embed_data_batch_size`` of the seed embedding.
+* **style** — the figures' look: text, page, boundary and per-map / per-distance / per-training colours (``seed_colors`` has four, so panel (c) takes at most three cells besides production), the panel colours of the category figure, the font sizes, ``color_percentiles`` (``[1, 99]``, the colour range of every map and field) and the three figure sizes in inches (every key on the :doc:`Visualize` page).
 * **categories** — ``n_shifts`` of the along-boundary test, ``histogram_bins``, ``similarity_downsample`` / ``similarity_max_shift`` of the aligned correlation, ``balanced_per_category`` / ``balanced_reference_per_category`` of (i)–(iii), ``closest_matches`` and ``closest_log2_limit`` of (iii), ``partition_sample_size`` / ``partition_reference_size`` of (iv), ``average_size`` / ``align_max_shift`` / ``align_iterations`` / ``average_time_ms`` of the aligned category means.
 
 The seed is ``figures.seed`` and the colormap ``figures.sequential_cmap``; **qlvm_save_figures** writes each figure with ``save_figure`` to ``figures.save_directory``.

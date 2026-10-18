@@ -71,13 +71,16 @@ _VIZ_SETTINGS_PATH = (
     pathlib.Path(__file__).parent.parent
     / "_parameter_settings" / "visualizations_settings.json"
 )
-try:
-    with _VIZ_SETTINGS_PATH.open() as _vf:
-        _VIZ_FIGURES = json.load(_vf)["figures"]
-    _GLOBAL_CMAP = _VIZ_FIGURES["sequential_cmap"]
-except FileNotFoundError:
-    _VIZ_FIGURES = {}
-    _GLOBAL_CMAP = "inferno"
+with _VIZ_SETTINGS_PATH.open() as _vf:
+    _VIZ_SETTINGS = json.load(_vf)
+_VIZ_FIGURES = _VIZ_SETTINGS["figures"]
+_GLOBAL_CMAP = _VIZ_FIGURES["sequential_cmap"]
+
+# Per-figure knobs of this module (figure sizes, per-panel inches of the grid
+# figures, polar-KDE grid / contour counts, the density colour-cap percentile,
+# colorbar tick count, distance-KDE bandwidth, ANOVA / Tukey level), read from
+# the `usv_summary_figures` block of `visualizations_settings.json`.
+_SUMMARY_FIGURES = _VIZ_SETTINGS["usv_summary_figures"]
 
 # Seed for the purely cosmetic figure randomness in this module -- the
 # strip/swarm x-jitter and the KDE point subsampling -- read from the shared
@@ -645,7 +648,7 @@ def plot_assignment_stacked_bars(
     female_vals = df_processed['female'].to_numpy()
     unassigned_vals = df_processed['unassigned'].to_numpy()
 
-    fig, ax = plt.subplots(figsize=(6, 10))
+    fig, ax = plt.subplots(figsize=tuple(_SUMMARY_FIGURES["figsizes"]["assignment_stacked_bars"]))
 
     ax.barh(sessions, male_vals, label='Male', color=male_color)
     ax.barh(sessions, female_vals, left=male_vals, label='Female', color=female_color)
@@ -718,7 +721,7 @@ def plot_assignment_summary_panel(
         value_name='count'
     )
 
-    fig, (ax_scatter, ax_violin, ax_bar) = plt.subplots(nrows=3, ncols=1, figsize=(6, 9))
+    fig, (ax_scatter, ax_violin, ax_bar) = plt.subplots(nrows=3, ncols=1, figsize=tuple(_SUMMARY_FIGURES["figsizes"]["assignment_summary_panel"]))
 
     # Panel 1: Scatter plot
     rng = _figure_rng()
@@ -876,7 +879,7 @@ def plot_animal_participation_stats(
         'max_vocal_rate': df['vocal_rate'].max() if not df.empty else 0
     }
 
-    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(12, 5), sharey=True)
+    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=tuple(_SUMMARY_FIGURES["figsizes"]["animal_participation_stats"]), sharey=True)
     fig.suptitle(f'{sex_label} Animal N={len(animal_stats.keys())} Statistics', y=1.02, fontsize=16)
 
     # Subplot 1: Session count
@@ -992,7 +995,7 @@ def plot_polar_kde_distance_angle(
         idx = rng.choice(len(filt_all_dist), max_kde_points, replace=False)
         filt_all_dist, abs_all_rad = filt_all_dist[idx], abs_all_rad[idx]
 
-    fig = plt.figure(figsize=(10, 4))
+    fig = plt.figure(figsize=tuple(_SUMMARY_FIGURES["figsizes"]["polar_kde_distance_angle"]))
     ax_raw = fig.add_subplot(121, projection='polar')
     ax_norm = fig.add_subplot(122, projection='polar')
 
@@ -1006,7 +1009,7 @@ def plot_polar_kde_distance_angle(
         kde_usv = gaussian_kde(np.vstack([abs_usv_rad, filt_usv_dist]))
         kde_all = gaussian_kde(np.vstack([abs_all_rad, filt_all_dist]))
 
-        n_grid = 200
+        n_grid = _SUMMARY_FIGURES["polar_kde"]["grid_points"]
         ag, rg = np.linspace(0, np.pi, n_grid), np.linspace(0, max_distance, n_grid)
         mesh = np.stack(np.meshgrid(ag, rg), axis=0)
 
@@ -1019,27 +1022,27 @@ def plot_polar_kde_distance_angle(
         norm_dens[valid_mask] = dens_usv[valid_mask] / dens_all[valid_mask]
 
         # 5. Raw plot (left) - Robust scaling with 98th percentile clipping
-        vmax_raw = np.percentile(dens_usv, 98)
+        vmax_raw = np.percentile(dens_usv, _SUMMARY_FIGURES["density_clip_percentile"])
         plot_raw = np.clip(dens_usv, 0, vmax_raw)
 
-        contour_raw = ax_raw.contourf(ag, rg, plot_raw, cmap=colormap, levels=100)
+        contour_raw = ax_raw.contourf(ag, rg, plot_raw, cmap=colormap, levels=_SUMMARY_FIGURES["polar_kde"]["contour_levels"])
         cb_raw = fig.colorbar(contour_raw, ax=ax_raw, shrink=0.7, pad=0.1)
         cb_raw.set_label('Raw Density Estimate', fontsize=12)
-        cb_raw.locator = plt.MaxNLocator(nbins=5)
+        cb_raw.locator = plt.MaxNLocator(nbins=_SUMMARY_FIGURES["colorbar_nbins"])
         cb_raw.update_ticks()
 
         # 6. Normalized plot (right) - Robust scaling with 98th percentile clipping
         if np.any(valid_mask):
-            vmax_norm = np.percentile(norm_dens[valid_mask], 98)
+            vmax_norm = np.percentile(norm_dens[valid_mask], _SUMMARY_FIGURES["density_clip_percentile"])
             plot_norm = np.clip(norm_dens, 0, vmax_norm)
         else:
             plot_norm = norm_dens
             vmax_norm = 1.0
 
-        contour_norm = ax_norm.contourf(ag, rg, plot_norm, cmap=colormap, levels=100)
+        contour_norm = ax_norm.contourf(ag, rg, plot_norm, cmap=colormap, levels=_SUMMARY_FIGURES["polar_kde"]["contour_levels"])
         cb_norm = fig.colorbar(contour_norm, ax=ax_norm, shrink=0.7, pad=0.1)
         cb_norm.set_label('Normalized Likelihood', fontsize=12)
-        cb_norm.locator = plt.MaxNLocator(nbins=5)
+        cb_norm.locator = plt.MaxNLocator(nbins=_SUMMARY_FIGURES["colorbar_nbins"])
         cb_norm.update_ticks()
 
         # 7. Common polar formatting
@@ -1103,7 +1106,7 @@ def plot_behavior_duration_regressions(
         Contains Pearson r and p-values for all four statistical comparisons.
     """
 
-    fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(10, 10))
+    fig, axes = plt.subplots(nrows=2, ncols=2, figsize=tuple(_SUMMARY_FIGURES["figsizes"]["behavior_duration_regressions"]))
     stats_dict = {}
 
     def plot_and_annotate(data: pd.DataFrame, x_col: str, y_col: str, ax: plt.Axes, color: str, prefix: str):
@@ -1255,8 +1258,8 @@ def plot_distance_by_assignment_kde_anova(
         stats_dict['omega_squared'] = float(omega_sq)
         omega_squared_text = f"Omega-Squared (ω²): {omega_sq:.3f} \n"
 
-        if p_value_anova < 0.05:
-            tukey = pairwise_tukeyhsd(endog=df_plot['distance'], groups=df_plot['category'], alpha=0.05)
+        if p_value_anova < _SUMMARY_FIGURES["anova_alpha"]:
+            tukey = pairwise_tukeyhsd(endog=df_plot['distance'], groups=df_plot['category'], alpha=_SUMMARY_FIGURES["anova_alpha"])
             tukey_df = pd.DataFrame(data=tukey._results_table.data[1:], columns=tukey._results_table.data[0])
             significant_pairs = tukey_df[tukey_df['reject']]
 
@@ -1290,8 +1293,8 @@ def plot_distance_by_assignment_kde_anova(
 
     full_stats_text = (f"{anova_result_text}\n{omega_squared_text}" + "\n".join(stats_lines) + f"\n{tukey_summary_for_plot}")
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    sns.kdeplot(data=df_plot, x='distance', hue='category', palette=colors, fill=True, alpha=0.5, common_norm=False, bw_adjust=1.5, ax=ax)
+    fig, ax = plt.subplots(figsize=tuple(_SUMMARY_FIGURES["figsizes"]["distance_by_assignment_kde_anova"]))
+    sns.kdeplot(data=df_plot, x='distance', hue='category', palette=colors, fill=True, alpha=0.5, common_norm=False, bw_adjust=_SUMMARY_FIGURES["distance_kde_bw_adjust"], ax=ax)
 
     bbox_props = {"boxstyle": 'round,pad=0.5', "facecolor": '#FFFFFF', "alpha": 0.7, "edgecolor": '#808080'}
     ax.text(0.95, 0.98, full_stats_text, transform=ax.transAxes, fontsize=12, verticalalignment='top', horizontalalignment='right', bbox=bbox_props, color='#202020')
@@ -1424,7 +1427,7 @@ def plot_duration_histograms_by_sex(
 
     stats_dict = {}
 
-    fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(8, 8), sharex=True)
+    fig, axes = plt.subplots(nrows=2, ncols=1, figsize=tuple(_SUMMARY_FIGURES["figsizes"]["duration_histograms_by_sex"]), sharex=True)
 
     # Male
     if not male_durations.empty:
@@ -1511,7 +1514,7 @@ def plot_hourly_regressions(
     male_df = df_raw[df_raw['sex'] == 'male']
     female_df = df_raw[df_raw['sex'] == 'female']
 
-    fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(4, 5), sharex=True)
+    fig, axes = plt.subplots(nrows=2, ncols=1, figsize=tuple(_SUMMARY_FIGURES["figsizes"]["hourly_regressions"]), sharex=True)
     stats_dict = {}
 
     def annotate_stats(ax: plt.Axes, x_data: np.ndarray, y_data: np.ndarray, prefix: str):
@@ -1647,7 +1650,7 @@ def plot_local_fatigue_binned_trends(
         'global_min': float(binned_df[y_mean_col].min() if not binned_df.empty else 0)
     }
 
-    fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(5, 5), sharex=True)
+    fig, axes = plt.subplots(nrows=2, ncols=1, figsize=tuple(_SUMMARY_FIGURES["figsizes"]["local_fatigue_binned_trends"]), sharex=True)
 
     # Male
     if not male_df.empty:
@@ -1877,7 +1880,7 @@ def plot_estrous_ratio_scatter(
         stages with no valid sessions.
     """
 
-    fig, ax = plt.subplots(figsize=(4, 3))
+    fig, ax = plt.subplots(figsize=tuple(_SUMMARY_FIGURES["figsizes"]["estrous_ratio_scatter"]))
     stats_dict: dict[str, dict[str, float]] = {}
 
     mean_line_width = 0.03
@@ -2085,7 +2088,7 @@ def plot_estrous_usv_rates(
         stats_dict[stage] = {'male_rate': float(m_rate), 'female_rate': float(f_rate)}
 
     x_pos = np.arange(len(category_labels))
-    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(12, 5), sharey=False)
+    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=tuple(_SUMMARY_FIGURES["figsizes"]["estrous_usv_rates"]), sharey=False)
 
     # Female
     bars_female = axes[0].bar(x_pos, female_rates, color=female_color, alpha=0.8)
@@ -2164,7 +2167,7 @@ def plot_estrous_stage_pie_chart(
         for k, v in session_counts.items()
     }
 
-    fig, ax = plt.subplots(figsize=(7, 7))
+    fig, ax = plt.subplots(figsize=tuple(_SUMMARY_FIGURES["figsizes"]["estrous_stage_pie_chart"]))
 
     # startangle=90 puts the first slice at the very top (12 o'clock)
     # counterclock=False ensures subsequent slices move to the right
@@ -2303,7 +2306,7 @@ def plot_category_prevalence_and_embedding(
     white_base_cmap = mcolors.ListedColormap(cmap_colors)
 
     # 3. Figure setup
-    fig, axes = plt.subplots(nrows=4, ncols=2, figsize=(12, 18), facecolor='#FFFFFF')
+    fig, axes = plt.subplots(nrows=4, ncols=2, figsize=tuple(_SUMMARY_FIGURES["figsizes"]["category_prevalence_and_embedding"]), facecolor='#FFFFFF')
 
     plot_configs = [
         ('male', 'Male', male_color, axes[0, :]),
@@ -2503,7 +2506,7 @@ def plot_category_global_fatigue_heatmap(
     first_active_bin = int((global_pivot.sum(axis=0) > 0).idxmax())
 
     # Prepare figure
-    fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(14, 10), sharex=True)
+    fig, axes = plt.subplots(nrows=2, ncols=1, figsize=tuple(_SUMMARY_FIGURES["figsizes"]["category_global_fatigue_heatmap"]), sharex=True)
     stats_dict = {}
     sexes = [('male', axes[0]), ('female', axes[1])]
 
@@ -2622,7 +2625,7 @@ def plot_category_estrous_rates_grid(
     x_indices = np.arange(len(full_stage_names))
     bar_width = 0.35
 
-    fig, axes = plt.subplots(rows, cols, figsize=(cols * 6, rows * 4.5))
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * _SUMMARY_FIGURES["panel_inches"]["category_estrous_rates_grid"][0], rows * _SUMMARY_FIGURES["panel_inches"]["category_estrous_rates_grid"][1]))
     axes_flat = axes.flatten()
     stats_dict = {}
 
@@ -2748,7 +2751,7 @@ def plot_category_estrous_ratio_grid(
     n_cats = len(categories)
     cols = 3
     rows = int(np.ceil(n_cats / cols))
-    fig_cats, axes_cats = plt.subplots(rows, cols, figsize=(cols * 5, rows * 5))
+    fig_cats, axes_cats = plt.subplots(rows, cols, figsize=(cols * _SUMMARY_FIGURES["panel_inches"]["category_estrous_ratio_grid"][0], rows * _SUMMARY_FIGURES["panel_inches"]["category_estrous_ratio_grid"][1]))
     axes_cats_flat = axes_cats.flatten()
 
     for i, cat in enumerate(categories):
@@ -2809,7 +2812,7 @@ def plot_category_estrous_ratio_grid(
     fig_cats.tight_layout()
 
     # Figure 2: Estrous stage facets
-    fig_stages, axes_stages = plt.subplots(2, 2, figsize=(12, 12), sharey=True)
+    fig_stages, axes_stages = plt.subplots(2, 2, figsize=tuple(_SUMMARY_FIGURES["figsizes"]["category_estrous_ratio_grid_stages"]), sharey=True)
     axes_stages_flat = axes_stages.flatten()
 
     for idx, stage_char in enumerate(valid_stages):
@@ -2935,7 +2938,7 @@ def plot_category_polar_kde_grid(
 
     kde_all = gaussian_kde(np.vstack([all_angle_rad[valid_all], all_dist[valid_all]]))
 
-    n_grid = 100
+    n_grid = _SUMMARY_FIGURES["category_polar_kde_grid"]["grid_points"]
     ag, rg = np.linspace(0, np.pi, n_grid), np.linspace(0, max_distance, n_grid)
     mesh = np.stack(np.meshgrid(ag, rg), axis=0)
     dens_all = kde_all(mesh.reshape(2, -1)).reshape(n_grid, n_grid)
@@ -2965,10 +2968,10 @@ def plot_category_polar_kde_grid(
                 continue
 
     # Unified heat scaling
-    global_vmax = np.percentile(all_norm_values, 98) if all_norm_values else 1.0
+    global_vmax = np.percentile(all_norm_values, _SUMMARY_FIGURES["density_clip_percentile"]) if all_norm_values else 1.0
 
     # Plotting
-    fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 4),
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * _SUMMARY_FIGURES["category_polar_kde_grid"]["panel_inches"][0], rows * _SUMMARY_FIGURES["category_polar_kde_grid"]["panel_inches"][1]),
                              subplot_kw={'projection': 'polar'})
 
     axes_flat = axes.flatten()
@@ -2988,7 +2991,7 @@ def plot_category_polar_kde_grid(
 
         if cat in category_densities:
             ax.contourf(ag, rg, np.clip(category_densities[cat], 0, global_vmax),
-                        cmap=colormap, levels=50)
+                        cmap=colormap, levels=_SUMMARY_FIGURES["category_polar_kde_grid"]["contour_levels"])
 
             try:
                 cat_label = int(float(cat))
@@ -3128,7 +3131,7 @@ def plot_estrous_category_kde_grid(
 
     kde_bg = gaussian_kde(np.vstack([bg_angle_f, bg_dist_f]))
 
-    n_grid = 100
+    n_grid = _SUMMARY_FIGURES["estrous_category_kde_grid"]["grid_points"]
     ag = np.linspace(0, np.pi, n_grid)
     rg = np.linspace(0, max_distance, n_grid)
     mesh = np.stack(np.meshgrid(ag, rg), axis=0)
@@ -3184,12 +3187,12 @@ def plot_estrous_category_kde_grid(
             except np.linalg.LinAlgError:
                 cell_densities[(cat, stage)] = None
 
-    global_vmax = np.percentile(all_norm_values, 98) if all_norm_values else 1.0
+    global_vmax = np.percentile(all_norm_values, _SUMMARY_FIGURES["density_clip_percentile"]) if all_norm_values else 1.0
 
     # Build figure grid
     fig, axes = plt.subplots(
         n_cats, n_stages,
-        figsize=(n_stages * 4, n_cats * 4),
+        figsize=(n_stages * _SUMMARY_FIGURES["estrous_category_kde_grid"]["panel_inches"][0], n_cats * _SUMMARY_FIGURES["estrous_category_kde_grid"]["panel_inches"][1]),
         subplot_kw={'projection': 'polar'}
     )
 
@@ -3215,7 +3218,7 @@ def plot_estrous_category_kde_grid(
 
             norm_dens = cell_densities[(cat, stage)]
             if norm_dens is not None:
-                ax.contourf(ag, rg, np.clip(norm_dens, 0, global_vmax), cmap=colormap, levels=50)
+                ax.contourf(ag, rg, np.clip(norm_dens, 0, global_vmax), cmap=colormap, levels=_SUMMARY_FIGURES["estrous_category_kde_grid"]["contour_levels"])
             else:
                 ax.text(np.pi / 2, max_distance / 2, "N/A", ha='center', va='center', fontsize=9)
 
@@ -3445,7 +3448,7 @@ def plot_session_squeak_time_heatmap(
     # Left to right: colour-bar column, heatmap, condition strip, session rate -- the strip sits
     # between the heatmap and the bars it colours, and the colour bar reads before the cells it keys.
     fig, (ax_colorbar_column, ax_heat, ax_strip, ax_rate) = plt.subplots(
-        1, 4, figsize=(9.2, 8.2), gridspec_kw={'width_ratios': [0.08, 1.7, 0.10, 1.0]},
+        1, 4, figsize=tuple(_SUMMARY_FIGURES["figsizes"]["session_squeak_time_heatmap"]), gridspec_kw={'width_ratios': [0.08, 1.7, 0.10, 1.0]},
         layout='constrained')
 
     strip_cmap = mcolors.ListedColormap([condition_styles[c]['color'] for c in condition_session_lists])

@@ -47,16 +47,12 @@ from .plot_style import apply_plot_style
 
 apply_plot_style()
 
-COLOR_TRACE = "#1F1F1F"
-COLOR_PAGE = "#FFFFFF"
+# Dash patterns that tell the focal curves apart; kept here because the on-off tuples
+# matplotlib takes are not JSON-native and the cycle is an encoding, not a tunable.
 CURVE_STYLES = ("-", "--", "-.", ":", (0, (5, 1, 1, 1, 1, 1)), (0, (7, 2)))
-OPACITY_RANGE = (0.45, 1.00)
-MAIN_PANEL_INCHES = (5.6, 4.0)
-SIDE_GAP_INCHES, PANEL_GAP_INCHES = 0.44, 0.20
-PAGE_MARGIN_INCHES = {"left": 0.78, "right": 0.14, "bottom": 0.60, "top": 0.74}
 
 
-def blend(colour: str, weight: float, background: str = COLOR_PAGE) -> str:
+def blend(colour: str, weight: float, background: str) -> str:
     """
     Description
     -----------
@@ -196,6 +192,11 @@ class NeuronalDecodingFigureMaker:
         -----------
         One area-session's rungs, means, 99% half-widths and whether each rung beat its own null.
 
+        The half-width uses the Student-t quantile
+        ``neuronal_decoding_figures.ci_quantile`` (0.995, a two-sided 99% interval) and a
+        rung clears its null when its mean exceeds the null's
+        ``neuronal_decoding_figures.null_percentile`` (99.5th percentile).
+
         Parameters
         ----------
         session (str)
@@ -211,6 +212,7 @@ class NeuronalDecodingFigureMaker:
             Keys `rungs`, `means`, `halves` and `clears`.
         """
 
+        figure_settings = self.visualizations_parameter_dict["neuronal_decoding_figures"]
         archive = self._archive(session, area)
         rungs, means, halves, clears = [], [], [], []
         for count in ladder:
@@ -219,17 +221,17 @@ class NeuronalDecodingFigureMaker:
             draws = archive[str(count)]
             rungs.append(count)
             means.append(float(draws.mean()))
-            halves.append(float(student_t.ppf(0.995, draws.size - 1)
+            halves.append(float(student_t.ppf(figure_settings["ci_quantile"], draws.size - 1)
                                 * draws.std(ddof=1) / np.sqrt(draws.size)))
             clears.append(bool(draws.mean()
-                               > np.percentile(archive[f"null_{count}"], 99.5)))
+                               > np.percentile(archive[f"null_{count}"],
+                                               figure_settings["null_percentile"])))
         if not rungs:
             msg = f"{area} in {session} carries no rung from the requested ladder {ladder}."
             raise ValueError(msg)
         return {"rungs": rungs, "means": means, "halves": halves, "clears": clears}
 
-    @staticmethod
-    def _draw_curve(axis, curve: dict, shade: str, style: str, width: float, size: float,
+    def _draw_curve(self, axis, curve: dict, shade: str, style: str, width: float, size: float,
                     label: str | None = None) -> None:
         """
         Description
@@ -237,7 +239,9 @@ class NeuronalDecodingFigureMaker:
         One curve: the line, capless bars beneath it, then opaque markers over the bars.
 
         The bars are drawn first and the markers over them, which leaves each bar extending from
-        the marker's edge outward rather than crossing it.
+        the marker's edge outward rather than crossing it. An unfilled marker takes
+        ``neuronal_decoding_figures.page_color`` and every marker edge
+        ``neuronal_decoding_figures.trace_color``.
 
         Parameters
         ----------
@@ -261,14 +265,15 @@ class NeuronalDecodingFigureMaker:
         None
         """
 
+        figure_settings = self.visualizations_parameter_dict["neuronal_decoding_figures"]
         axis.plot(curve["rungs"], curve["means"], linestyle=style, color=shade, linewidth=width,
                   zorder=2, label=label)
         axis.errorbar(curve["rungs"], curve["means"], yerr=curve["halves"], fmt="none",
                       ecolor=shade, elinewidth=width * 0.85, capsize=0, zorder=3)
         for rung, mean, cleared in zip(curve["rungs"], curve["means"], curve["clears"], strict=False):
             axis.plot(rung, mean, marker="o", markersize=size,
-                      markerfacecolor=shade if cleared else COLOR_PAGE,
-                      markeredgecolor=COLOR_TRACE, markeredgewidth=0.5, zorder=4)
+                      markerfacecolor=shade if cleared else figure_settings["page_color"],
+                      markeredgecolor=figure_settings["trace_color"], markeredgewidth=0.5, zorder=4)
 
     def make_bout_decoding_figure(
         self,
@@ -318,26 +323,35 @@ class NeuronalDecodingFigureMaker:
             msg = "No focal sessions given; there is nothing to draw."
             raise ValueError(msg)
 
+        figure_settings = self.visualizations_parameter_dict["neuronal_decoding_figures"]
+        trace_color = figure_settings["trace_color"]
+        page_color = figure_settings["page_color"]
+        opacity_range = figure_settings["opacity_range"]
+        main_panel_inches = figure_settings["main_panel_inches"]
+        page_margin_inches = figure_settings["page_margin_inches"]
+        side_gap_inches = figure_settings["side_gap_inches"]
+        panel_gap_inches = figure_settings["panel_gap_inches"]
+
         counts = [int(usvs) for _mouse, _session, usvs in focal_sessions]
         low, high = min(counts), max(counts)
         focal_colour = self._area_colour(focal_area)
 
-        side = (MAIN_PANEL_INCHES[1] - 2 * PANEL_GAP_INCHES) / 3
-        width = (PAGE_MARGIN_INCHES["left"] + MAIN_PANEL_INCHES[0] + SIDE_GAP_INCHES + side
-                 + PAGE_MARGIN_INCHES["right"])
-        height = PAGE_MARGIN_INCHES["bottom"] + MAIN_PANEL_INCHES[1] + PAGE_MARGIN_INCHES["top"]
+        side = (main_panel_inches[1] - 2 * panel_gap_inches) / 3
+        width = (page_margin_inches["left"] + main_panel_inches[0] + side_gap_inches + side
+                 + page_margin_inches["right"])
+        height = page_margin_inches["bottom"] + main_panel_inches[1] + page_margin_inches["top"]
         figure = plt.figure(figsize=(width, height))
-        axis = figure.add_axes((PAGE_MARGIN_INCHES["left"] / width,
-                                PAGE_MARGIN_INCHES["bottom"] / height,
-                                MAIN_PANEL_INCHES[0] / width, MAIN_PANEL_INCHES[1] / height))
+        axis = figure.add_axes((page_margin_inches["left"] / width,
+                                page_margin_inches["bottom"] / height,
+                                main_panel_inches[0] / width, main_panel_inches[1] / height))
 
         for (mouse, session, usvs), style in zip(focal_sessions, CURVE_STYLES, strict=False):
             curve = self._curve(session, focal_area, unit_counts)
             span = max(high - low, 1)
-            weight = (OPACITY_RANGE[0]
-                      + (OPACITY_RANGE[1] - OPACITY_RANGE[0]) * (int(usvs) - low) / span)
+            weight = (opacity_range[0]
+                      + (opacity_range[1] - opacity_range[0]) * (int(usvs) - low) / span)
             n_units = int(self._archive(session, focal_area)["ladder"][-1])
-            self._draw_curve(axis, curve, blend(focal_colour, weight), style, 1.4, 5.0,
+            self._draw_curve(axis, curve, blend(focal_colour, weight, page_color), style, 1.4, 5.0,
                              label=f"{mouse}  ({n_units} units, {int(usvs)} USVs)")
 
         axis.set_xscale("log")
@@ -348,26 +362,26 @@ class NeuronalDecodingFigureMaker:
         axis.set_title("Nearest neighbor decoding (bout vs no-bout)", fontsize=12, loc="left",
                        pad=18)
         axis.text(0.0, 1.015, "250 ms bins, spikes during any vocalization excluded", transform=axis.transAxes,
-                  fontsize=8, color=COLOR_TRACE)
+                  fontsize=8, color=trace_color)
         curves_legend = axis.legend(fontsize=7, frameon=False, loc="upper left",
                                     handlelength=3.0)
         axis.add_artist(curves_legend)
         marks = [Line2D([], [], marker="o", linestyle="none", markersize=5.0,
-                        markerfacecolor=face, markeredgecolor=COLOR_TRACE, markeredgewidth=0.5,
+                        markerfacecolor=face, markeredgecolor=trace_color, markeredgewidth=0.5,
                         label=text)
                  for face, text in ((focal_colour, "above its own shift null (99%)"),
-                                    (COLOR_PAGE, "within the null"))]
+                                    (page_color, "within the null"))]
         axis.legend(handles=marks, fontsize=6, frameon=False, loc="lower right",
                     handlelength=1.0, labelspacing=0.15, borderpad=0.2, handletextpad=0.4)
         axis.tick_params(labelsize=8)
         for spine in ("top", "right"):
             axis.spines[spine].set_visible(False)
 
-        left = (PAGE_MARGIN_INCHES["left"] + MAIN_PANEL_INCHES[0] + SIDE_GAP_INCHES) / width
+        left = (page_margin_inches["left"] + main_panel_inches[0] + side_gap_inches) / width
         for index, (area, area_session, focal_session, note) in enumerate(comparisons):
             area_colour = self._area_colour(area)
-            bottom = (PAGE_MARGIN_INCHES["bottom"]
-                      + (2 - index) * (side + PANEL_GAP_INCHES)) / height
+            bottom = (page_margin_inches["bottom"]
+                      + (2 - index) * (side + panel_gap_inches)) / height
             panel = figure.add_axes((left, bottom, side / width, side / height))
             shared = tuple(c for c in unit_counts
                            if str(c) in self._archive(area_session, area)
@@ -392,7 +406,7 @@ class NeuronalDecodingFigureMaker:
             panel.text(0.03, 0.855, focal_area, transform=panel.transAxes, fontsize=7, va="top",
                        color=focal_colour)
             panel.text(0.97, 0.04, note, transform=panel.transAxes, fontsize=5, ha="right",
-                       va="bottom", color=COLOR_TRACE)
+                       va="bottom", color=trace_color)
             if index == len(comparisons) - 1:
                 panel.set_xticklabels([str(c) for c in unit_counts])
                 panel.set_xlabel("units", fontsize=7, labelpad=2)

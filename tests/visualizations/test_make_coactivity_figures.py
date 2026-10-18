@@ -26,6 +26,10 @@ import pytest
 from usv_playpen.analyses import neuronal_coactivity_engine as engine
 from usv_playpen.visualizations import make_coactivity_figures as mcf
 
+# The shipped coactivity block, so the engine's required trial floor is the production value.
+with (pathlib.Path(engine.__file__).parent.parent / "_parameter_settings" / "analyses_settings.json").open() as _analyses_file:
+    _SHIPPED_COACTIVITY = json.load(_analyses_file)["neuronal_coactivity"]
+
 
 def test_coactivity_default_colors_derive_from_settings():
     """The default group / null / threshold colours are read from the
@@ -245,13 +249,15 @@ def test_engine_results_feed_figures():
     sessions = _sessions()
     results = engine.run_group_comparison(
         sessions, window_s=1.0, bootstrap_n=6, n_boot=16, n_shuffles=8, n_permutations=16, seed=0, subsample_fraction=0.8,
+        per_session_min_trials=_SHIPPED_COACTIVITY["per_session_min_trials"],
     )
     fig = mcf.plot_null_distributions(results, category_column="qlvm_category", group_a_ids=[1], group_b_ids=[7])
     assert len(fig.axes) == 6
     plt.close(fig)
     assert "DIRECT PERMUTATION" in mcf.summarize_group_comparison(results)
 
-    rows = engine.per_session_group_metrics(sessions, window_s=1.0, n_shuffles=8, seed=0)
+    rows = engine.per_session_group_metrics(sessions, window_s=1.0, min_trials=_SHIPPED_COACTIVITY["per_session_min_trials"],
+                                            n_shuffles=8, seed=0)
     fig2 = mcf.plot_per_session_pop_corr(rows, chosen_animal="s", category_column="qlvm_category")
     assert fig2 is not None
     plt.close(fig2)

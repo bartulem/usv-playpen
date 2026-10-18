@@ -20,7 +20,7 @@ Three entry points are provided:
 
   * ``resolve_save_path(stem, viz_settings, ...)`` — returns
     ``(absolute_path, fig_format, dpi)`` after applying the override →
-    settings → hard-coded fallback chain. The directory is run through
+    settings chain. The directory is run through
     ``configure_path`` so the helper works on both Linux mounts
     (``/mnt/...``) and macOS mounts (``/Volumes/...``).
 
@@ -121,7 +121,7 @@ def resolve_save_path(
     Description
     -----------
     Resolve the final save path, file format and dpi for a figure by
-    applying the override → settings → hard-coded fallback chain.
+    applying the override → settings chain (no hard-coded fallback).
 
     The directory is run through ``configure_path`` so a settings
     value of ``/mnt/falkner/...`` resolves to ``/Volumes/falkner/...``
@@ -142,16 +142,15 @@ def resolve_save_path(
         session path here. ``None`` falls back to
         ``viz_settings["figures"]["save_directory"]``.
     override_format (str | None)
-        Per-call format override. Defaults to
-        ``viz_settings["figures"]["fig_format"]`` and then to
-        ``"png"``.
+        Per-call format override. ``None`` falls back to
+        ``viz_settings["figures"]["fig_format"]`` (a missing key raises).
     override_dpi (int | None)
-        Per-call dpi override. Defaults to
-        ``viz_settings["figures"]["dpi"]`` and then to ``300``.
+        Per-call dpi override. ``None`` falls back to
+        ``viz_settings["figures"]["dpi"]`` (a missing key raises).
     timestamp_in_name (bool | None)
         Per-call timestamp toggle. ``None`` falls back to
-        ``viz_settings["figures"]["timestamp_in_name"]`` and then to
-        ``True``.
+        ``viz_settings["figures"]["timestamp_in_name"]`` (a missing key
+        raises).
 
     Returns
     -------

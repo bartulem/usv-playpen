@@ -107,13 +107,6 @@ PLOT_EXCLUDED_BEHAVIORAL_FEATURES: tuple[str, ...] = ("TTI-TTI",)
 # grid, the grid of section (b) above it, so its cells are section (b)'s size.
 SECTION_C_ROWS = tuple((category_column,) for category_column in QLVM_CATEGORY_COLUMNS)
 
-# Hex palette
-COLOR_BLACK = "#1F1F1F"
-COLOR_GRAY_BAND = "#D3D3D3"
-COLOR_GRAY_DASH = "#888888"
-COLOR_LIGHT = "#CCCCCC"
-COLOR_HATCH = "#BBBBBB"
-
 # Population-level region grouping for the VMI summary figures. Maps
 # canonical group labels (matched against
 # `visualizations_parameter_dict['brain_area_colors']`) onto the raw
@@ -306,23 +299,15 @@ VOCAL_SECTION_B_ROW_HEIGHT = 17.5 / (len(PROPERTY_ROW_ORDER) + 0.45 * (len(PROPE
 # width with the bout-triggered raster and the first-versus-later scatter stacked in the
 # remaining quarter, then the pooled PETH beside the QLVM category cells, then the continuous
 # property grid. Panels, markings and titles are ported from the standalone bout figure.
+# The column count is the page grid itself (every panel position is written against it), so
+# it is structural rather than a setting; the page size, legend fonts, PETH tick spacing and the
+# category-label inset live in ``neuronal_tuning_figures`` of visualizations_settings.json.
 VOCAL_PAGE_COLUMNS = 4
-VOCAL_ONE_PAGE_FIGSIZE_INCHES = (16, 27.0)
+# One line style per contour of the first-versus-later scatter; the tuple caps how many
+# ``bout_density_levels`` can be drawn, so it is an encoding rather than a tunable.
 BOUT_DENSITY_STYLES = ("-", "--", ":")
-BOUT_LEGEND_FONTSIZE = 9
-BOUT_LEGEND_LINE_STEP = 0.075
-PETH_TICK_SECONDS = 0.5
-QLVM_CATEGORY_LABEL_FONTSIZE = 14
-QLVM_LABEL_INSET = 0.06
 
 
-# Section-(c) per-category strip plot scaling: switch to symlog when
-# (max / min) firing-rate dynamic range exceeds the threshold; the
-# linthresh defines the linear region around 0 in symlog units. Both are
-# numerical knobs of the rendering algorithm rather than artist-tunable
-# preferences.
-VOCAL_STRIP_LOG_RATIO_THRESHOLD = 10.0
-VOCAL_STRIP_SYMLOG_LINTHRESH = 0.5
 
 
 def _category_class_count(
@@ -1139,7 +1124,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         min_bouts = int(triage["thresholds_used"]["vmi_min_bouts"])
 
         xlim_lo, xlim_hi = 1e-3, 1e2
-        fig = plt.figure(figsize=(14, 6.4), dpi=self._figure_dpi)
+        fig = plt.figure(figsize=tuple(self.visualizations_parameter_dict["neuronal_tuning_figures"]["region_grid_figsize_inches"]), dpi=self._figure_dpi)
         gs = gridspec.GridSpec(
             2, 4,
             figure=fig,
@@ -1176,13 +1161,13 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             ax.scatter(
                 fr_base[neg_sig], vmi[neg_sig],
                 s=14, c=region_color, alpha=0.5,
-                edgecolors=COLOR_BLACK, linewidths=0.4,
+                edgecolors=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidths=0.4,
                 rasterized=True,
             )
             ax.scatter(
                 fr_base[pos_sig], vmi[pos_sig],
                 s=14, c=region_color, alpha=0.95,
-                edgecolors=COLOR_BLACK, linewidths=0.4,
+                edgecolors=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidths=0.4,
                 rasterized=True,
             )
 
@@ -1193,7 +1178,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             ax.set_xscale("log")
             ax.set_xlim(xlim_lo, xlim_hi)
             ax.set_ylim(-1.05, 1.05)
-            ax.axhline(0.0, color=COLOR_BLACK, linewidth=0.5, linestyle=":")
+            ax.axhline(0.0, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidth=0.5, linestyle=":")
             ax.set_title(f"{region}  (N={len(units)})", fontsize=10)
             if idx[0] == 1:
                 ax.set_xlabel(r"FR$_\mathrm{baseline}$ (sp/s)", fontsize=9)
@@ -1208,7 +1193,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 0.03, 0.97,
                 f"N+={n_pos}\nN-={n_neg}\n" + r"$\rho$=" + f"{rho:+.2f}",
                 transform=ax.transAxes, fontsize=8, va="top", ha="left",
-                bbox={"boxstyle": "round,pad=0.2", "fc": "#FFFFFF", "ec": COLOR_HATCH, "alpha": 0.85},
+                bbox={"boxstyle": "round,pad=0.2", "fc": "#FFFFFF", "ec": self.visualizations_parameter_dict["neuronal_tuning_figures"]["hatch_color"], "alpha": 0.85},
             )
 
         # Aggregate |VMI| ECDF panel in the 8th cell.
@@ -1237,13 +1222,13 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         leg_handles = [
             plt.Line2D(
                 [0], [0], marker="o", linestyle="none",
-                markerfacecolor=COLOR_BLACK, markeredgecolor=COLOR_BLACK,
+                markerfacecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], markeredgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
                 markeredgewidth=0.4, markersize=8,
                 label=f"significant positive VMI (p<{alpha})",
             ),
             plt.Line2D(
                 [0], [0], marker="o", linestyle="none",
-                markerfacecolor=COLOR_BLACK, markeredgecolor=COLOR_BLACK,
+                markerfacecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], markeredgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
                 markeredgewidth=0.4, markersize=8, alpha=0.5,
                 label=f"significant negative VMI (p<{alpha})",
             ),
@@ -1263,7 +1248,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             0.5, 0.005,
             f"one dot per unit, best-session by |VMI|  ·  min n_bouts={min_bouts}"
             f"  ·  {self._unit_filter_label()} only",
-            ha="center", fontsize=9, color=COLOR_GRAY_DASH,
+            ha="center", fontsize=9, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["dash_color"],
         )
 
         out_path = save_figure(
@@ -1396,7 +1381,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             catalog_csv_path: str | pathlib.Path | None = None,
             cond_a: str = "intact_female",
             cond_b: str = "mute_female",
-            n_bootstrap: int = 2000,
             random_seed: int | None = None,
             out_dir: str | pathlib.Path | None = None,
             fig_format: str | None = None,
@@ -1427,6 +1411,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
           * tuned in ONLY ONE condition: region color at 30 % opacity
           * tuned in NEITHER: small unassigned-gray dot
 
+        The value ``vmi_bootstrap_n`` is read from the
+        ``neuronal_tuning_figures`` block of ``visualizations_parameter_dict``.
+
         Parameters
         ----------
         triage_pkl_path (str | pathlib.Path)
@@ -1437,9 +1424,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         cond_a, cond_b (str)
             Names of the two conditions to compare. Default to the
             intact-female vs mute-female contrast.
-        n_bootstrap (int)
-            Number of resampling iterations for the per-region
-            Pearson-r confidence intervals (8th panel).
         random_seed (int)
             Seed for the bootstrap RNG, so the CIs are reproducible
             across reruns.
@@ -1453,6 +1437,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         out_path (pathlib.Path)
             Absolute path to the written figure.
         """
+
+        n_bootstrap = self.visualizations_parameter_dict["neuronal_tuning_figures"]["vmi_bootstrap_n"]
 
         per_group = self._collect_vmi_per_condition_medians(
             triage_pkl_path=triage_pkl_path,
@@ -1469,8 +1455,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         # this is the band the bulk of good + somatic units fall in,
         # so concentrating the size range there gives a visible
         # gradient instead of compressing everything to similar dots.
-        FR_SIZE_MIN, FR_SIZE_MAX = 4.0, 70.0
-        FR_LOG_MIN, FR_LOG_MAX = -1.0, 1.5  # 0.1 Hz, ~31.6 Hz
+        FR_SIZE_MIN, FR_SIZE_MAX = self.visualizations_parameter_dict["neuronal_tuning_figures"]["stability_marker_size_range"]
+        FR_LOG_MIN, FR_LOG_MAX = self.visualizations_parameter_dict["neuronal_tuning_figures"]["stability_fr_log10_range"]  # 0.1 Hz, ~31.6 Hz
 
         def _fr_to_size(fr_values: np.ndarray) -> np.ndarray:
             """
@@ -1505,7 +1491,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         r_summary: dict[str, dict] = {}
         for region in VMI_REGION_ORDER:
             units = per_group[region]
-            if len(units) < 5:
+            if len(units) < self.visualizations_parameter_dict["neuronal_tuning_figures"]["stability_min_units"]:
                 r_summary[region] = {"r": float("nan"), "lo": float("nan"), "hi": float("nan"),
                                      "n": len(units)}
                 continue
@@ -1522,10 +1508,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                     boot_rs[b] = float("nan")
                 else:
                     boot_rs[b] = float(np.corrcoef(xs, ys)[0, 1])
-            r_lo, r_hi = np.nanquantile(boot_rs, [0.025, 0.975])
+            r_lo, r_hi = np.nanquantile(boot_rs, self.visualizations_parameter_dict["neuronal_tuning_figures"]["vmi_bootstrap_quantiles"])
             r_summary[region] = {"r": r_pt, "lo": float(r_lo), "hi": float(r_hi), "n": n}
 
-        fig = plt.figure(figsize=(14, 6.4), dpi=self._figure_dpi)
+        fig = plt.figure(figsize=tuple(self.visualizations_parameter_dict["neuronal_tuning_figures"]["region_grid_figsize_inches"]), dpi=self._figure_dpi)
         gs = gridspec.GridSpec(
             2, 4,
             figure=fig,
@@ -1582,20 +1568,20 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             ax.scatter(
                 vmi_a[both_flip], vmi_b[both_flip],
                 s=sizes[both_flip], c=region_color, alpha=0.55,
-                edgecolors=COLOR_BLACK, linewidths=0.4,
+                edgecolors=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidths=0.4,
                 rasterized=True,
             )
             ax.scatter(
                 vmi_a[both_same], vmi_b[both_same],
                 s=sizes[both_same], c=region_color, alpha=0.95,
-                edgecolors=COLOR_BLACK, linewidths=0.4,
+                edgecolors=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidths=0.4,
                 rasterized=True,
             )
 
             # Reference lines.
-            ax.axhline(0.0, color=COLOR_BLACK, linewidth=0.5, linestyle=":")
-            ax.axvline(0.0, color=COLOR_BLACK, linewidth=0.5, linestyle=":")
-            ax.plot([-1, 1], [-1, 1], color=COLOR_GRAY_DASH, linewidth=0.6, linestyle="--")
+            ax.axhline(0.0, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidth=0.5, linestyle=":")
+            ax.axvline(0.0, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidth=0.5, linestyle=":")
+            ax.plot([-1, 1], [-1, 1], color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["dash_color"], linewidth=0.6, linestyle="--")
 
             r_pt = r_summary[region]["r"]
             n_total = len(units)
@@ -1625,7 +1611,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 f"same={n_same}\n"
                 f"flip={n_flip}",
                 transform=ax.transAxes, fontsize=8, va="top", ha="left",
-                bbox={"boxstyle": "round,pad=0.2", "fc": "#FFFFFF", "ec": COLOR_HATCH, "alpha": 0.85},
+                bbox={"boxstyle": "round,pad=0.2", "fc": "#FFFFFF", "ec": self.visualizations_parameter_dict["neuronal_tuning_figures"]["hatch_color"], "alpha": 0.85},
             )
 
             # Size legend inside the PAG panel (largest sample,
@@ -1640,18 +1626,18 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 for i, (fr_val, sz) in enumerate(zip(fr_ref_values, fr_ref_sizes, strict=False)):
                     ax.scatter(
                         x_dot, y_top - dy * i,
-                        s=sz, c=COLOR_BLACK, edgecolors="none",
+                        s=sz, c=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], edgecolors="none",
                         transform=ax.transAxes, clip_on=False, zorder=5,
                     )
                     ax.text(
                         x_dot + 0.045, y_top - dy * i,
-                        f"{fr_val:g} sp/s", fontsize=7, color=COLOR_BLACK,
+                        f"{fr_val:g} sp/s", fontsize=7, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
                         ha="left", va="center", transform=ax.transAxes,
                     )
                 ax.text(
                     x_dot + 0.045, y_top + dy * 0.85,
                     "FRbase",
-                    fontsize=7, color=COLOR_BLACK,
+                    fontsize=7, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
                     ha="left", va="center", transform=ax.transAxes,
                 )
 
@@ -1670,16 +1656,16 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         ax_r.bar(
             bar_x, bar_vals,
             color=bar_colors,
-            edgecolor=COLOR_BLACK, linewidth=0.6,
+            edgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidth=0.6,
             width=0.78,
         )
         ax_r.errorbar(
             bar_x, bar_vals,
             yerr=np.vstack([err_lower, err_upper]),
-            fmt="none", ecolor=COLOR_BLACK,
+            fmt="none", ecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
             elinewidth=0.8, capsize=3, capthick=0.8,
         )
-        ax_r.axhline(0.0, color=COLOR_BLACK, linewidth=0.5)
+        ax_r.axhline(0.0, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidth=0.5)
         ax_r.set_xticks(bar_x)
         ax_r.set_xticklabels(
             [f"{g}\nN={n}" for g, n in zip(VMI_REGION_ORDER, bar_n, strict=False)],
@@ -1697,13 +1683,13 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         leg_handles = [
             plt.Line2D(
                 [0], [0], marker="o", linestyle="none",
-                markerfacecolor=COLOR_BLACK, markeredgecolor=COLOR_BLACK,
+                markerfacecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], markeredgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
                 markeredgewidth=0.4, markersize=8,
                 label="sig in both (same sign)",
             ),
             plt.Line2D(
                 [0], [0], marker="o", linestyle="none",
-                markerfacecolor=COLOR_BLACK, markeredgecolor=COLOR_BLACK,
+                markerfacecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], markeredgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
                 markeredgewidth=0.4, markersize=8, alpha=0.55,
                 label="sig in both (sign flip)",
             ),
@@ -1731,7 +1717,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             f"{self._unit_filter_label()}, present in both {cond_a.replace('_', ' ')} "
             f"and {cond_b.replace('_', ' ')}  ·  "
             r"dot area $\propto$ $\log_{10}$ FRbase",
-            ha="center", fontsize=9, color=COLOR_GRAY_DASH,
+            ha="center", fontsize=9, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["dash_color"],
         )
 
 
@@ -1749,7 +1735,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             self,
             triage_pkl_path: str | pathlib.Path,
             catalog_csv_path: str | pathlib.Path | None = None,
-            n_tested_min: int = 2,
+            *,
+            n_tested_min: int,
     ) -> dict[str, list[dict]]:
         """
         Description
@@ -1859,7 +1846,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             self,
             triage_pkl_path: str | pathlib.Path,
             catalog_csv_path: str | pathlib.Path | None = None,
-            n_tested_min: int = 2,
             out_dir: str | pathlib.Path | None = None,
             fig_format: str | None = None,
     ) -> pathlib.Path:
@@ -1887,6 +1873,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         `n_tested`, so units backed by more session-evidence are
         visually larger.
 
+        The value ``vmi_n_tested_min`` is read from the
+        ``neuronal_tuning_figures`` block of ``visualizations_parameter_dict``.
+
         Parameters
         ----------
         triage_pkl_path (str | pathlib.Path)
@@ -1894,10 +1883,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         catalog_csv_path (str | pathlib.Path | None)
             Absolute path to the unit catalog CSV. Defaults to the
             `catalog_path` embedded in the triage pickle.
-        n_tested_min (int)
-            Minimum number of valid sessions required to include the
-            unit (default 2; single-session units have degenerate
-            consistency).
         out_dir (str | pathlib.Path | None)
             Override the configured visualizations directory.
         fig_format (str | None)
@@ -1908,6 +1893,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         out_path (pathlib.Path)
             Absolute path to the written figure.
         """
+
+        n_tested_min = self.visualizations_parameter_dict["neuronal_tuning_figures"]["vmi_n_tested_min"]
 
         per_group = self._collect_vmi_consistency(
             triage_pkl_path=triage_pkl_path,
@@ -1920,8 +1907,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         # Dot size scaling — linear in n_tested. n_tested in this
         # dataset spans 2..6, so a linear map keeps every value
         # visually distinct.
-        NT_SIZE_MIN, NT_SIZE_MAX = 6.0, 60.0
-        NT_RANGE_MIN, NT_RANGE_MAX = 2, 6
+        NT_SIZE_MIN, NT_SIZE_MAX = self.visualizations_parameter_dict["neuronal_tuning_figures"]["consistency_marker_size_range"]
+        NT_RANGE_MIN, NT_RANGE_MAX = self.visualizations_parameter_dict["neuronal_tuning_figures"]["consistency_n_tested_range"]
 
         def _nt_to_size(nt: np.ndarray) -> np.ndarray:
             """
@@ -1946,7 +1933,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             frac = (clipped - NT_RANGE_MIN) / (NT_RANGE_MAX - NT_RANGE_MIN)
             return NT_SIZE_MIN + (NT_SIZE_MAX - NT_SIZE_MIN) * frac
 
-        fig = plt.figure(figsize=(14, 6.4), dpi=self._figure_dpi)
+        fig = plt.figure(figsize=tuple(self.visualizations_parameter_dict["neuronal_tuning_figures"]["region_grid_figsize_inches"]), dpi=self._figure_dpi)
         gs = gridspec.GridSpec(
             2, 4,
             figure=fig,
@@ -1992,18 +1979,18 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             ax.scatter(
                 x[flickery], y[flickery],
                 s=sizes[flickery], c=region_color, alpha=0.55,
-                edgecolors=COLOR_BLACK, linewidths=0.4,
+                edgecolors=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidths=0.4,
                 rasterized=True,
             )
             ax.scatter(
                 x[stable], y[stable],
                 s=sizes[stable], c=region_color, alpha=0.95,
-                edgecolors=COLOR_BLACK, linewidths=0.4,
+                edgecolors=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidths=0.4,
                 rasterized=True,
             )
 
-            ax.axhline(0.5, color=COLOR_GRAY_DASH, linewidth=0.6, linestyle="--")
-            ax.axvline(0.5, color=COLOR_GRAY_DASH, linewidth=0.6, linestyle="--")
+            ax.axhline(0.5, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["dash_color"], linewidth=0.6, linestyle="--")
+            ax.axvline(0.5, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["dash_color"], linewidth=0.6, linestyle="--")
 
             ax.set_xlim(-0.02, 1.02)
             ax.set_ylim(-0.04, 1.04)
@@ -2028,7 +2015,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 f"flicker={n_flicker}\n"
                 f"never={n_never}",
                 transform=ax.transAxes, fontsize=8, va="top", ha="left",
-                bbox={"boxstyle": "round,pad=0.2", "fc": "#FFFFFF", "ec": COLOR_HATCH, "alpha": 0.85},
+                bbox={"boxstyle": "round,pad=0.2", "fc": "#FFFFFF", "ec": self.visualizations_parameter_dict["neuronal_tuning_figures"]["hatch_color"], "alpha": 0.85},
             )
 
             # Size legend inside the CENT panel — three reference dots
@@ -2045,18 +2032,18 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 dy = 0.075
                 ax.text(
                     x_dot, y_top + dy * 0.95,
-                    r"$n_\mathrm{tested}$", fontsize=7, color=COLOR_BLACK,
+                    r"$n_\mathrm{tested}$", fontsize=7, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
                     ha="center", va="center", transform=ax.transAxes,
                 )
                 for i, (nt_val, sz) in enumerate(zip(nt_ref_values, nt_ref_sizes, strict=False)):
                     ax.scatter(
                         x_dot, y_top - dy * i,
-                        s=sz, c=COLOR_BLACK, edgecolors="none",
+                        s=sz, c=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], edgecolors="none",
                         transform=ax.transAxes, clip_on=False, zorder=5,
                     )
                     ax.text(
                         x_dot - 0.045, y_top - dy * i,
-                        f"{int(nt_val)}", fontsize=7, color=COLOR_BLACK,
+                        f"{int(nt_val)}", fontsize=7, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
                         ha="right", va="center", transform=ax.transAxes,
                     )
 
@@ -2090,19 +2077,19 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         ax_stack.bar(
             bar_x, frac_never,
             color=[never_face] * len(VMI_REGION_ORDER),
-            edgecolor=COLOR_BLACK, linewidth=0.4, width=0.78,
+            edgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidth=0.4, width=0.78,
         )
         ax_stack.bar(
             bar_x, frac_flicker,
             bottom=frac_never,
             color=flicker_face,
-            edgecolor=COLOR_BLACK, linewidth=0.4, width=0.78,
+            edgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidth=0.4, width=0.78,
         )
         ax_stack.bar(
             bar_x, frac_stable,
             bottom=frac_never + frac_flicker,
             color=stable_face,
-            edgecolor=COLOR_BLACK, linewidth=0.4, width=0.78,
+            edgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidth=0.4, width=0.78,
         )
         ax_stack.set_xticks(bar_x)
         ax_stack.set_xticklabels(
@@ -2119,13 +2106,13 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         leg_handles = [
             plt.Line2D(
                 [0], [0], marker="o", linestyle="none",
-                markerfacecolor=COLOR_BLACK, markeredgecolor=COLOR_BLACK,
+                markerfacecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], markeredgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
                 markeredgewidth=0.4, markersize=8,
                 label=r"sig + stable  (consistency $\geq$ 0.5)",
             ),
             plt.Line2D(
                 [0], [0], marker="o", linestyle="none",
-                markerfacecolor=COLOR_BLACK, markeredgecolor=COLOR_BLACK,
+                markerfacecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], markeredgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
                 markeredgewidth=0.4, markersize=8, alpha=0.55,
                 label="sig + flickery  (consistency < 0.5)",
             ),
@@ -2146,7 +2133,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             f"one dot per unit  ·  {self._unit_filter_label()}, "
             f"$n_{{\\mathrm{{tested}}}}\\geq{n_tested_min}$  ·  "
             r"dot area $\propto$ $n_\mathrm{tested}$",
-            ha="center", fontsize=9, color=COLOR_GRAY_DASH,
+            ha="center", fontsize=9, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["dash_color"],
         )
 
         out_path = save_figure(
@@ -2163,7 +2150,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             self,
             triage_pkl_path: str | pathlib.Path,
             catalog_csv_path: str | pathlib.Path | None = None,
-            n_tested_min: int = 2,
+            *,
+            n_tested_min: int,
     ) -> dict[str, dict[str, int]]:
         """
         Description
@@ -2281,7 +2269,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             self,
             triage_pkl_path: str | pathlib.Path,
             catalog_csv_path: str | pathlib.Path | None = None,
-            n_tested_min: int = 2,
             out_dir: str | pathlib.Path | None = None,
             fig_format: str | None = None,
     ) -> pathlib.Path:
@@ -2310,6 +2297,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         `_collect_vmi_sign_flip_tally` with `n_tested_min` (default
         2 — same as figures 3 and 4 elsewhere).
 
+        The value ``vmi_n_tested_min`` is read from the
+        ``neuronal_tuning_figures`` block of ``visualizations_parameter_dict``.
+
         Parameters
         ----------
         triage_pkl_path (str | pathlib.Path)
@@ -2317,8 +2307,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         catalog_csv_path (str | pathlib.Path | None)
             Absolute path to the unit catalog CSV. Defaults to the
             `catalog_path` embedded in the triage pickle.
-        n_tested_min (int)
-            Minimum valid sessions for inclusion.
         out_dir (str | pathlib.Path | None)
             Override the configured visualizations directory.
         fig_format (str | None)
@@ -2329,6 +2317,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         out_path (pathlib.Path)
             Absolute path to the written figure.
         """
+
+        n_tested_min = self.visualizations_parameter_dict["neuronal_tuning_figures"]["vmi_n_tested_min"]
 
         tally = self._collect_vmi_sign_flip_tally(
             triage_pkl_path=triage_pkl_path,
@@ -2369,8 +2359,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         # out against the solid-fill tiers below it.
         both_face_color = "#FFFFFF"
 
-        fig, ax = plt.subplots(figsize=(10.0, 5.4), dpi=self._figure_dpi)
-        bar_kwargs = {"width": 0.78, "edgecolor": COLOR_BLACK, "linewidth": 0.4}
+        fig, ax = plt.subplots(figsize=tuple(self.visualizations_parameter_dict["neuronal_tuning_figures"]["sign_flip_figsize_inches"]), dpi=self._figure_dpi)
+        bar_kwargs = {"width": 0.78, "edgecolor": self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], "linewidth": 0.4}
 
         # Stack order bottom to top: never-sig, sig+ only, sig− only, sig-both.
         ax.bar(
@@ -2398,7 +2388,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             bottom=frac_never + frac_pos + frac_neg,
             color=both_face_color,
             hatch="///",
-            width=0.78, edgecolor=COLOR_BLACK, linewidth=0.9,
+            width=0.78, edgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidth=0.9,
         )
 
         # Annotate sig-both fraction above each bar so it's directly readable.
@@ -2408,7 +2398,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             ax.text(
                 bar_x[i], 1.015,
                 f"{100 * frac_both[i]:.1f}%",
-                ha="center", va="bottom", fontsize=8, color=COLOR_BLACK,
+                ha="center", va="bottom", fontsize=8, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
             )
 
         ax.set_xticks(bar_x)
@@ -2429,24 +2419,24 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         leg_handles = [
             plt.Line2D(
                 [0], [0], marker="s", linestyle="none",
-                markerfacecolor=COLOR_BLACK, markeredgecolor=COLOR_BLACK,
+                markerfacecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], markeredgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
                 markeredgewidth=0.4, markersize=10,
                 label="sig +VMI only",
             ),
             plt.Line2D(
                 [0], [0], marker="s", linestyle="none",
-                markerfacecolor=COLOR_BLACK, markeredgecolor=COLOR_BLACK,
+                markerfacecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], markeredgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
                 markeredgewidth=0.4, markersize=10, alpha=0.50,
                 label="sig −VMI only",
             ),
             Patch(
-                facecolor="#FFFFFF", edgecolor=COLOR_BLACK,
+                facecolor="#FFFFFF", edgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
                 linewidth=0.9, hatch="///",
                 label="sig in both directions (cross-session sign flip)",
             ),
             plt.Line2D(
                 [0], [0], marker="s", linestyle="none",
-                markerfacecolor=non_sig_color, markeredgecolor=COLOR_BLACK,
+                markerfacecolor=non_sig_color, markeredgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
                 markeredgewidth=0.4, markersize=10, alpha=0.7,
                 label="never significant",
             ),
@@ -2462,7 +2452,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             f"{self._unit_filter_label()}, $n_{{\\mathrm{{tested}}}}\\geq{n_tested_min}$  ·  "
             f"per-session $\\alpha={alpha_disp:.2f}$  ·  "
             "annotations above bars = sig-both fraction",
-            ha="center", fontsize=9, color=COLOR_GRAY_DASH,
+            ha="center", fontsize=9, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["dash_color"],
         )
 
         out_path = save_figure(
@@ -2578,7 +2568,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             self,
             triage_pkl_path: str | pathlib.Path,
             catalog_csv_path: str | pathlib.Path | None = None,
-            kde_grid_resolution: int = 220,
             out_dir: str | pathlib.Path | None = None,
             fig_format: str | None = None,
     ) -> pathlib.Path:
@@ -2610,6 +2599,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Output goes through `figure_io.save_figure` so the directory,
         format, and dpi default to `visualizations_settings.json`.
 
+        The value ``pag_kde_grid_resolution`` is read from the
+        ``neuronal_tuning_figures`` block of ``visualizations_parameter_dict``.
+
         Parameters
         ----------
         triage_pkl_path (str | pathlib.Path)
@@ -2617,10 +2609,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         catalog_csv_path (str | pathlib.Path | None)
             Absolute path to the unit catalog CSV. Defaults to the
             `catalog_path` embedded in the triage pickle.
-        kde_grid_resolution (int)
-            Number of evaluation steps along each axis when
-            rasterising the 2-D KDE. Higher gives a smoother heatmap
-            at more compute cost. Defaults to 220.
         out_dir (str | pathlib.Path | None)
             Override the configured visualizations directory.
         fig_format (str | None)
@@ -2631,6 +2619,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         out_path (pathlib.Path)
             Absolute path to the written figure.
         """
+
+        kde_grid_resolution = self.visualizations_parameter_dict["neuronal_tuning_figures"]["pag_kde_grid_resolution"]
 
         per_unit = self._collect_pag_unit_positions(triage_pkl_path, catalog_csv_path)
         region_colors = self._resolve_region_colors()
@@ -2654,7 +2644,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             "cm_opacity":          1,
         })
         diff_cmap = plt.get_cmap(self.visualizations_parameter_dict["figures"]["diverging_cmap"]).copy()
-        diff_cmap.set_bad(color=COLOR_BLACK)
+        diff_cmap.set_bad(color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"])
 
         loc_ap = np.array([u["loc_ap"] for u in per_unit])
         loc_dv = np.array([u["loc_dv"] for u in per_unit])
@@ -2773,7 +2763,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         # Figure layout: four equal-aspect sagittal panels sharing
         # axis extent (scatter + sig+ occupancy-normalized density +
         # sig- occupancy-normalized density + sig+ minus sig- diff).
-        fig = plt.figure(figsize=(18.0, 4.8), dpi=self._figure_dpi)
+        fig = plt.figure(figsize=tuple(self.visualizations_parameter_dict["neuronal_tuning_figures"]["pag_gradient_figsize_inches"]), dpi=self._figure_dpi)
         gs = gridspec.GridSpec(
             1, 4,
             figure=fig,
@@ -2792,13 +2782,13 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         ax_sc.scatter(
             loc_ap[neg_sig], loc_dv[neg_sig],
             s=14, c=pag_color, alpha=0.50,
-            edgecolors=COLOR_BLACK, linewidths=0.4,
+            edgecolors=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidths=0.4,
             rasterized=True,
         )
         ax_sc.scatter(
             loc_ap[pos_sig], loc_dv[pos_sig],
             s=14, c=pag_color, alpha=0.95,
-            edgecolors=COLOR_BLACK, linewidths=0.4,
+            edgecolors=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidths=0.4,
             rasterized=True,
         )
         ax_sc.set_xlim(ap_lo, ap_hi)
@@ -2879,13 +2869,13 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         leg_handles = [
             plt.Line2D(
                 [0], [0], marker="o", linestyle="none",
-                markerfacecolor=pag_color, markeredgecolor=COLOR_BLACK,
+                markerfacecolor=pag_color, markeredgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
                 markeredgewidth=0.4, markersize=8,
                 label=f"sig +VMI  (N+={n_pos})",
             ),
             plt.Line2D(
                 [0], [0], marker="o", linestyle="none",
-                markerfacecolor=pag_color, markeredgecolor=COLOR_BLACK,
+                markerfacecolor=pag_color, markeredgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
                 markeredgewidth=0.4, markersize=8, alpha=0.50,
                 label=f"sig -VMI  (N-={n_neg})",
             ),
@@ -2905,7 +2895,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             0.5, 0.01,
             f"PAG {self._unit_filter_label()}  ·  N={n_total}  ·  "
             "best-session signed VMI per unit",
-            ha="center", fontsize=9, color=COLOR_GRAY_DASH,
+            ha="center", fontsize=9, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["dash_color"],
         )
 
         out_path = save_figure(
@@ -3062,7 +3052,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             self,
             triage_pkl_path: str | pathlib.Path,
             catalog_csv_path: str | pathlib.Path | None = None,
-            n_bins: int = 20,
             out_dir: str | pathlib.Path | None = None,
             fig_format: str | None = None,
     ) -> pathlib.Path:
@@ -3096,6 +3085,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         with the larger absolute effect. No `vmi_min_bouts` gating is
         applied here.
 
+        The value ``vmi_histogram_bins`` is read from the
+        ``neuronal_tuning_figures`` block of ``visualizations_parameter_dict``.
+
         Parameters
         ----------
         triage_pkl_path (str | pathlib.Path)
@@ -3103,10 +3095,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         catalog_csv_path (str | pathlib.Path | None)
             Absolute path to the unit catalog CSV. Defaults to the
             `catalog_path` field embedded in the triage pickle.
-        n_bins (int)
-            Number of histogram bins between VMI=-1 and VMI=+1. The
-            default (20) matches the bin count used in the project's
-            legacy single-panel sketch.
         out_dir (str | pathlib.Path | None)
             Override the configured visualizations directory.
         fig_format (str | None)
@@ -3118,13 +3106,15 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             Absolute path to the written figure.
         """
 
+        n_bins = self.visualizations_parameter_dict["neuronal_tuning_figures"]["vmi_histogram_bins"]
+
         per_group = self._collect_vmi_distribution_per_unit(
             triage_pkl_path, catalog_csv_path,
         )
         region_colors = self._resolve_region_colors()
-        bg_color = COLOR_LIGHT
+        bg_color = self.visualizations_parameter_dict["neuronal_tuning_figures"]["light_color"]
 
-        fig = plt.figure(figsize=(14.0, 6.4), dpi=self._figure_dpi)
+        fig = plt.figure(figsize=tuple(self.visualizations_parameter_dict["neuronal_tuning_figures"]["region_grid_figsize_inches"]), dpi=self._figure_dpi)
         gs = gridspec.GridSpec(
             2, 4,
             figure=fig,
@@ -3157,7 +3147,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             _, _, _ = ax.hist(
                 vmi_all, bins=bins,
                 color=bg_color, alpha=0.35,
-                histtype="stepfilled", edgecolor=COLOR_BLACK, linewidth=0.5,
+                histtype="stepfilled", edgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidth=0.5,
             )
             # Sig −VMI overlay (50 % opacity of region color).
             if vmi_neg.size:
@@ -3165,7 +3155,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                     vmi_neg, bins=bins,
                     color=region_color, alpha=0.50,
                     histtype="stepfilled",
-                    edgecolor=COLOR_BLACK, linewidth=0.4,
+                    edgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidth=0.4,
                 )
             # Sig +VMI overlay (full region color).
             if vmi_pos.size:
@@ -3173,10 +3163,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                     vmi_pos, bins=bins,
                     color=region_color, alpha=0.95,
                     histtype="stepfilled",
-                    edgecolor=COLOR_BLACK, linewidth=0.4,
+                    edgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidth=0.4,
                 )
 
-            ax.axvline(0.0, color=COLOR_BLACK, linewidth=0.5, linestyle=":")
+            ax.axvline(0.0, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidth=0.5, linestyle=":")
             ax.set_xlim(-1.05, 1.05)
             ax.set_xticks([-1.0, -0.5, 0.0, 0.5, 1.0])
             ax.set_title(f"{region}  (N={vmi_all.size})", fontsize=10)
@@ -3191,7 +3181,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 0.03, 0.97,
                 f"N+={int(vmi_pos.size)}\nN-={int(vmi_neg.size)}",
                 transform=ax.transAxes, fontsize=8, va="top", ha="left",
-                bbox={"boxstyle": "round,pad=0.2", "fc": "#FFFFFF", "ec": COLOR_HATCH, "alpha": 0.85},
+                bbox={"boxstyle": "round,pad=0.2", "fc": "#FFFFFF", "ec": self.visualizations_parameter_dict["neuronal_tuning_figures"]["hatch_color"], "alpha": 0.85},
             )
 
         # Aggregate ECDF panel (8th cell): one line per region.
@@ -3207,7 +3197,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 color=region_colors[region], linewidth=1.4,
                 label=f"{region} (n={vmi_sorted.size})",
             )
-        ax_agg.axvline(0.0, color=COLOR_BLACK, linewidth=0.5, linestyle=":")
+        ax_agg.axvline(0.0, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidth=0.5, linestyle=":")
         ax_agg.set_xlim(-1.05, 1.05)
         ax_agg.set_ylim(0.0, 1.02)
         ax_agg.set_xticks([-1.0, -0.5, 0.0, 0.5, 1.0])
@@ -3221,19 +3211,19 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         leg_handles = [
             plt.Line2D(
                 [0], [0], marker="s", linestyle="none",
-                markerfacecolor=COLOR_BLACK, markeredgecolor=COLOR_BLACK,
+                markerfacecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], markeredgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
                 markeredgewidth=0.4, markersize=10,
                 label="sig +VMI",
             ),
             plt.Line2D(
                 [0], [0], marker="s", linestyle="none",
-                markerfacecolor=COLOR_BLACK, markeredgecolor=COLOR_BLACK,
+                markerfacecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], markeredgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
                 markeredgewidth=0.4, markersize=10, alpha=0.50,
                 label="sig -VMI",
             ),
             plt.Line2D(
                 [0], [0], marker="s", linestyle="none",
-                markerfacecolor=bg_color, markeredgecolor=COLOR_BLACK,
+                markerfacecolor=bg_color, markeredgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
                 markeredgewidth=0.5, markersize=10, alpha=0.35,
                 label="all units (background)",
             ),
@@ -3248,7 +3238,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             f"{self._unit_filter_label()}  ·  one data point per unit  ·  "
             "non-sig: per-unit median; sig+: max sig+ session; sig-: min sig- session  "
             "(sig-both assigned to dominant direction)",
-            ha="center", fontsize=9, color=COLOR_GRAY_DASH,
+            ha="center", fontsize=9, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["dash_color"],
         )
 
         out_path = save_figure(
@@ -3266,9 +3256,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             triage_pkl_path: str | pathlib.Path,
             catalog_csv_path: str | pathlib.Path | None = None,
             direction: str = "excit",
-            tol_s: float = 0.100,
-            k_min: int = 2,
-            require_majority: bool = True,
+            *,
+            tol_s: float,
+            k_min: int,
+            require_majority: bool,
     ) -> dict[str, list[dict]]:
         """
         Description
@@ -3423,10 +3414,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             triage_pkl_path: str | pathlib.Path,
             catalog_csv_path: str | pathlib.Path | None = None,
             direction: str = "excit",
-            tol_s: float = 0.100,
-            k_min: int = 2,
-            require_majority: bool = True,
-            bin_seconds: float = 0.05,
             out_dir: str | pathlib.Path | None = None,
             fig_format: str | None = None,
     ) -> pathlib.Path:
@@ -3451,14 +3438,17 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         Consistency filter: per-unit `peak_t` values across significant excit
         sessions must contain a `k_min`-or-larger subset whose
-        max-min spread is no greater than `tol_s` (defaults to 100
-        ms full width, k_min=2), with an optional majority gate
-        (`require_majority=True` by default).
+        max-min spread is no greater than `tol_s` (100 ms full width,
+        k_min=2 as shipped), with an optional majority gate
+        (`require_majority`, on as shipped).
 
         Per-unit anchor times use the median of `peak_t` across all
         significant sessions (not just the in-tolerance cluster), so
         the figure mirrors the median-aggregation convention used
         elsewhere in the population-VMI suite.
+
+        The settings ``peth_consistency_tolerance_seconds``, ``consistency_k_min``, ``consistency_require_majority`` and ``peth_timing_bin_seconds`` are read from the
+        ``neuronal_tuning_figures`` block of ``visualizations_parameter_dict``.
 
         Parameters
         ----------
@@ -3470,18 +3460,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         direction (str)
             PETH response direction to aggregate — either 'excit' or
             'suppress' (validated). Defaults to 'excit'.
-        tol_s (float)
-            Full-width tolerance for the consistency check (default
-            0.100 s).
-        k_min (int)
-            Minimum in-tolerance subset size (default 2).
-        require_majority (bool)
-            Whether to also require the in-tolerance subset to
-            account for at least half of the unit's sig sessions
-            (default True).
-        bin_seconds (float)
-            Histogram bin width in s. Default 0.05 (the per-session PETH
-            bin width).
         out_dir (str | pathlib.Path | None)
             Override the configured visualizations directory.
         fig_format (str | None)
@@ -3492,6 +3470,11 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         out_path (pathlib.Path)
             Absolute path to the written figure.
         """
+
+        tol_s = self.visualizations_parameter_dict["neuronal_tuning_figures"]["peth_consistency_tolerance_seconds"]
+        k_min = self.visualizations_parameter_dict["neuronal_tuning_figures"]["consistency_k_min"]
+        require_majority = self.visualizations_parameter_dict["neuronal_tuning_figures"]["consistency_require_majority"]
+        bin_seconds = self.visualizations_parameter_dict["neuronal_tuning_figures"]["peth_timing_bin_seconds"]
 
         if direction not in ("excit", "suppress"):
             msg = f"direction must be 'excit' or 'suppress'; got {direction!r}"
@@ -3508,7 +3491,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         )
         region_colors = self._resolve_region_colors()
 
-        fig = plt.figure(figsize=(18.0, 6.6), dpi=self._figure_dpi)
+        fig = plt.figure(figsize=tuple(self.visualizations_parameter_dict["neuronal_tuning_figures"]["peth_timing_figsize_inches"]), dpi=self._figure_dpi)
         gs = gridspec.GridSpec(
             2, len(VMI_REGION_ORDER),
             figure=fig,
@@ -3558,9 +3541,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                     pks, bins=linear_bins,
                     color=region_color, alpha=0.95,
                     histtype="stepfilled",
-                    edgecolor=COLOR_BLACK, linewidth=0.4,
+                    edgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidth=0.4,
                 )
-            ax_hist.axvline(0.0, color=COLOR_BLACK, linewidth=0.5, linestyle=":")
+            ax_hist.axvline(0.0, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidth=0.5, linestyle=":")
             ax_hist.set_xlim(*LINEAR_XLIM)
             ax_hist.set_xticks(time_ticks)
             ax_hist.set_xlabel("peak_t (s, relative to USV onset)", fontsize=9)
@@ -3577,10 +3560,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 ax_sc.scatter(
                     pks_signed, pzs,
                     s=18, c=region_color, alpha=0.90,
-                    edgecolors=COLOR_BLACK, linewidths=0.4,
+                    edgecolors=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidths=0.4,
                     rasterized=True,
                 )
-            ax_sc.axvline(0.0, color=COLOR_BLACK, linewidth=0.5, linestyle=":")
+            ax_sc.axvline(0.0, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidth=0.5, linestyle=":")
             ax_sc.set_xlim(*LINEAR_XLIM)
             ax_sc.set_xticks(time_ticks)
             ax_sc.set_ylim(peak_z_lo, peak_z_hi)
@@ -3598,7 +3581,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             f"{' AND >50% majority' if require_majority else ''}  ·  "
             f"per-unit anchors = medians across all sig {direction} sessions  ·  "
             "x = signed median peak_t (0 = USV onset; negative before, positive after)",
-            ha="center", fontsize=9, color=COLOR_GRAY_DASH,
+            ha="center", fontsize=9, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["dash_color"],
         )
 
         out_path = save_figure(
@@ -3618,8 +3601,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             catalog_csv_path: str | pathlib.Path | None = None,
             direction: str = "excit",
             tol: float | None = None,
-            k_min: int = 2,
-            require_majority: bool = True,
+            *,
+            k_min: int,
+            require_majority: bool,
     ) -> dict[str, list[dict]]:
         """
         Description
@@ -3785,8 +3769,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             catalog_csv_path: str | pathlib.Path | None = None,
             direction: str = "excit",
             tol: float | None = None,
-            k_min: int = 2,
-            require_majority: bool = True,
             out_dir: str | pathlib.Path | None = None,
             fig_format: str | None = None,
     ) -> pathlib.Path:
@@ -3817,6 +3799,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         positions — every histogram bar covers exactly one of the
         property's tuning-curve bins.
 
+        The settings ``consistency_k_min`` and ``consistency_require_majority`` are read from the
+        ``neuronal_tuning_figures`` block of ``visualizations_parameter_dict``.
+
         Parameters
         ----------
         triage_pkl_path (str | pathlib.Path)
@@ -3834,12 +3819,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         tol (float | None)
             Full-width tolerance for the consistency check (defaults
             to the per-property entry in `USV_PROPERTY_META`).
-        k_min (int)
-            Minimum in-tolerance subset size (default 2).
-        require_majority (bool)
-            Whether to also require the in-tolerance subset to
-            account for at least half of the unit's sig sessions
-            (default True).
         out_dir (str | pathlib.Path | None)
             Override the configured visualizations directory.
         fig_format (str | None)
@@ -3850,6 +3829,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         out_path (pathlib.Path)
             Absolute path to the written figure.
         """
+
+        k_min = self.visualizations_parameter_dict["neuronal_tuning_figures"]["consistency_k_min"]
+        require_majority = self.visualizations_parameter_dict["neuronal_tuning_figures"]["consistency_require_majority"]
 
         meta = USV_PROPERTY_META[property_name]
         unit_scale = float(meta["unit_scale"])
@@ -3905,7 +3887,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         x_lo_disp = x_lo_snap * unit_scale
         x_hi_disp = x_hi_snap * unit_scale
 
-        fig = plt.figure(figsize=(14.0, 6.4), dpi=self._figure_dpi)
+        fig = plt.figure(figsize=tuple(self.visualizations_parameter_dict["neuronal_tuning_figures"]["region_grid_figsize_inches"]), dpi=self._figure_dpi)
         gs = gridspec.GridSpec(
             2, 4,
             figure=fig,
@@ -3937,7 +3919,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 pks, bins=bins_disp,
                 color=region_color, alpha=0.95,
                 histtype="stepfilled",
-                edgecolor=COLOR_BLACK, linewidth=0.4,
+                edgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidth=0.4,
             )
             ax.set_xlim(x_lo_disp, x_hi_disp)
             ax.set_title(f"{region}  (N={len(units)})", fontsize=10)
@@ -3980,7 +3962,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             f"±{tol_disp/2:g}{unit_tail}"
             f"{' AND >50% majority' if require_majority else ''}  ·  "
             f"per-unit anchor = median peak_bin_value across all sig {direction} sessions",
-            ha="center", fontsize=9, color=COLOR_GRAY_DASH,
+            ha="center", fontsize=9, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["dash_color"],
         )
 
         out_path = save_figure(
@@ -3998,8 +3980,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             triage_pkl_path: str | pathlib.Path,
             catalog_csv_path: str | pathlib.Path | None = None,
             direction: str = "excit",
-            k_min: int = 2,
-            require_majority: bool = True,
             out_dir: str | pathlib.Path | None = None,
             fig_format: str | None = None,
     ) -> list[pathlib.Path]:
@@ -4012,6 +3992,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         output paths in the same order so the caller can log /
         cross-reference them.
 
+        The settings ``consistency_k_min`` and ``consistency_require_majority`` are read from the
+        ``neuronal_tuning_figures`` block of ``visualizations_parameter_dict``.
+
         Parameters
         ----------
         triage_pkl_path (str | pathlib.Path)
@@ -4021,12 +4004,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         direction (str)
             Tuning response direction — either 'excit' or 'suppress';
             forwarded to each per-property figure. Defaults to 'excit'.
-        k_min (int)
-            Minimum in-tolerance subset size (default 2).
-        require_majority (bool)
-            Whether to also require the in-tolerance subset to
-            account for at least half of the unit's sig sessions
-            (default True).
         out_dir (str | pathlib.Path | None)
             Override the configured visualizations directory.
         fig_format (str | None)
@@ -4045,8 +4022,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 property_name=property_name,
                 catalog_csv_path=catalog_csv_path,
                 direction=direction,
-                k_min=k_min,
-                require_majority=require_majority,
                 out_dir=out_dir,
                 fig_format=fig_format,
             ))
@@ -4057,8 +4032,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             triage_pkl_path: str | pathlib.Path,
             segmentation: str,
             catalog_csv_path: str | pathlib.Path | None = None,
-            k_min: int = 2,
-            require_majority: bool = True,
+            *,
+            k_min: int,
+            require_majority: bool,
     ) -> dict[str, list[dict]]:
         """
         Description
@@ -4211,8 +4187,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             triage_pkl_path: str | pathlib.Path,
             segmentation: str,
             catalog_csv_path: str | pathlib.Path | None = None,
-            k_min: int = 2,
-            require_majority: bool = True,
             out_dir: str | pathlib.Path | None = None,
             fig_format: str | None = None,
     ) -> pathlib.Path:
@@ -4234,6 +4208,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         sig-up-only sessions agreeing on `best_cat` (mode), with the
         optional majority gate.
 
+        The settings ``consistency_k_min`` and ``consistency_require_majority`` are read from the
+        ``neuronal_tuning_figures`` block of ``visualizations_parameter_dict``.
+
         Parameters
         ----------
         triage_pkl_path (str | pathlib.Path)
@@ -4242,10 +4219,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             One of `USV_CATEGORY_SEGMENTATIONS`.
         catalog_csv_path (str | pathlib.Path | None)
             Absolute path to the unit catalog CSV.
-        k_min (int)
-            Minimum mode count for consistency.
-        require_majority (bool)
-            Whether to also require `mode_count / n_sig_up > 0.5`.
         out_dir (str | pathlib.Path | None)
             Override the configured visualizations directory.
         fig_format (str | None)
@@ -4256,6 +4229,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         out_path (pathlib.Path)
             Absolute path to the written figure.
         """
+
+        k_min = self.visualizations_parameter_dict["neuronal_tuning_figures"]["consistency_k_min"]
+        require_majority = self.visualizations_parameter_dict["neuronal_tuning_figures"]["consistency_require_majority"]
 
         per_group = self._collect_consistent_category_self(
             triage_pkl_path=triage_pkl_path,
@@ -4270,7 +4246,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         n_classes = _category_class_count(segmentation, per_group, self._load_segmentation())
         class_ids = np.arange(1, n_classes + 1)
 
-        fig = plt.figure(figsize=(14.0, 6.4), dpi=self._figure_dpi)
+        fig = plt.figure(figsize=tuple(self.visualizations_parameter_dict["neuronal_tuning_figures"]["region_grid_figsize_inches"]), dpi=self._figure_dpi)
         gs = gridspec.GridSpec(
             2, 4,
             figure=fig,
@@ -4301,7 +4277,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             ax.bar(
                 class_ids, counts,
                 color=region_color, alpha=0.95,
-                edgecolor=COLOR_BLACK, linewidth=0.4,
+                edgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidth=0.4,
                 width=1.0,
             )
             ax.set_xticks(class_ids)
@@ -4349,7 +4325,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             f"{segmentation}  ·  {self._unit_filter_label()}, consistent (sig + up) only  ·  "
             f"consistency = $\\geq${k_min} sig-up sessions agree on best_cat"
             f"{' AND >50% majority' if require_majority else ''}",
-            ha="center", fontsize=9, color=COLOR_GRAY_DASH,
+            ha="center", fontsize=9, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["dash_color"],
         )
 
         out_path = save_figure(
@@ -4367,8 +4343,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             triage_pkl_path: str | pathlib.Path,
             segmentation: str,
             catalog_csv_path: str | pathlib.Path | None = None,
-            k_min: int = 2,
-            require_majority: bool = True,
             out_dir: str | pathlib.Path | None = None,
             fig_format: str | None = None,
     ) -> pathlib.Path:
@@ -4395,6 +4369,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         See `make_category_peak_distribution_figure` for the shared
         consistency-rule parameters. Otherwise identical.
 
+        The settings ``consistency_k_min`` and ``consistency_require_majority`` are read from the
+        ``neuronal_tuning_figures`` block of ``visualizations_parameter_dict``.
+
         Parameters
         ----------
         triage_pkl_path (str | pathlib.Path)
@@ -4404,10 +4381,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         catalog_csv_path (str | pathlib.Path | None)
             Absolute path to the unit catalog CSV; None uses the path
             embedded in the triage pickle.
-        k_min (int)
-            Minimum mode count for consistency.
-        require_majority (bool)
-            Whether to also require `mode_count / n_sig_up > 0.5`.
         out_dir (str | pathlib.Path | None)
             Override the configured visualizations directory.
         fig_format (str | None)
@@ -4418,6 +4391,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         out_path (pathlib.Path)
             Absolute path to the written figure.
         """
+
+        k_min = self.visualizations_parameter_dict["neuronal_tuning_figures"]["consistency_k_min"]
+        require_majority = self.visualizations_parameter_dict["neuronal_tuning_figures"]["consistency_require_majority"]
 
         per_group = self._collect_consistent_category_self(
             triage_pkl_path=triage_pkl_path,
@@ -4432,8 +4408,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         # Marker-size mapping: linear in median peak_signed_z, clipped
         # to a plotting-friendly range so very strong outliers don't
         # dominate.
-        SIZE_MIN, SIZE_MAX = 8.0, 60.0
-        Z_LOW, Z_HIGH = 3.0, 20.0
+        SIZE_MIN, SIZE_MAX = self.visualizations_parameter_dict["neuronal_tuning_figures"]["breadth_marker_size_range"]
+        Z_LOW, Z_HIGH = self.visualizations_parameter_dict["neuronal_tuning_figures"]["breadth_z_range"]
 
         def _z_to_size(zs: np.ndarray) -> np.ndarray:
             """
@@ -4458,7 +4434,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             frac = (clipped - Z_LOW) / (Z_HIGH - Z_LOW)
             return SIZE_MIN + (SIZE_MAX - SIZE_MIN) * frac
 
-        fig = plt.figure(figsize=(14.0, 6.4), dpi=self._figure_dpi)
+        fig = plt.figure(figsize=tuple(self.visualizations_parameter_dict["neuronal_tuning_figures"]["region_grid_figsize_inches"]), dpi=self._figure_dpi)
         gs = gridspec.GridSpec(
             2, 4,
             figure=fig,
@@ -4495,7 +4471,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             sizes = _z_to_size(z)
             ax.scatter(
                 x, y, s=sizes, c=region_color, alpha=0.85,
-                edgecolors=COLOR_BLACK, linewidths=0.4, rasterized=True,
+                edgecolors=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidths=0.4, rasterized=True,
             )
 
             # Per-region regression overlay (seaborn linear fit + 95%
@@ -4534,18 +4510,18 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 dy = 0.075
                 ax.text(
                     x_dot, y_top + dy * 0.95,
-                    "med. $z$", fontsize=7, color=COLOR_BLACK,
+                    "med. $z$", fontsize=7, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
                     ha="center", va="center", transform=ax.transAxes,
                 )
                 for i_ref, (z_v, sz) in enumerate(zip(z_ref, s_ref, strict=False)):
                     ax.scatter(
                         x_dot, y_top - dy * i_ref,
-                        s=sz, c=COLOR_BLACK, edgecolors="none",
+                        s=sz, c=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], edgecolors="none",
                         transform=ax.transAxes, clip_on=False, zorder=5,
                     )
                     ax.text(
                         x_dot - 0.045, y_top - dy * i_ref,
-                        f"{z_v:g}", fontsize=7, color=COLOR_BLACK,
+                        f"{z_v:g}", fontsize=7, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
                         ha="right", va="center", transform=ax.transAxes,
                     )
 
@@ -4578,7 +4554,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             f"consistency = $\\geq${k_min} sig-up sessions agree on best_cat"
             f"{' AND >50% majority' if require_majority else ''}  ·  "
             r"dot area $\propto$ median peak_signed_z",
-            ha="center", fontsize=9, color=COLOR_GRAY_DASH,
+            ha="center", fontsize=9, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["dash_color"],
         )
 
         out_path = save_figure(
@@ -4595,8 +4571,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             self,
             triage_pkl_path: str | pathlib.Path,
             catalog_csv_path: str | pathlib.Path | None = None,
-            k_min: int = 2,
-            require_majority: bool = True,
             out_dir: str | pathlib.Path | None = None,
             fig_format: str | None = None,
     ) -> list[pathlib.Path]:
@@ -4612,6 +4586,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         See per-segmentation method docstrings; identical knobs.
 
+        The settings ``consistency_k_min`` and ``consistency_require_majority`` are read from the
+        ``neuronal_tuning_figures`` block of ``visualizations_parameter_dict``.
+
         Parameters
         ----------
         triage_pkl_path (str | pathlib.Path)
@@ -4619,10 +4596,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         catalog_csv_path (str | pathlib.Path | None)
             Absolute path to the unit catalog CSV; None uses the path
             embedded in the triage pickle.
-        k_min (int)
-            Minimum mode count for consistency.
-        require_majority (bool)
-            Whether to also require `mode_count / n_sig_up > 0.5`.
         out_dir (str | pathlib.Path | None)
             Override the configured visualizations directory.
         fig_format (str | None)
@@ -4642,8 +4615,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 triage_pkl_path=triage_pkl_path,
                 segmentation=segmentation,
                 catalog_csv_path=catalog_csv_path,
-                k_min=k_min,
-                require_majority=require_majority,
                 out_dir=out_dir,
                 fig_format=fig_format,
             ))
@@ -4651,8 +4622,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 triage_pkl_path=triage_pkl_path,
                 segmentation=segmentation,
                 catalog_csv_path=catalog_csv_path,
-                k_min=k_min,
-                require_majority=require_majority,
                 out_dir=out_dir,
                 fig_format=fig_format,
             ))
@@ -5033,8 +5002,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             triage_pkl_path: str | pathlib.Path,
             catalog_csv_path: str | pathlib.Path | None = None,
             condition: str = "intact_female",
-            k_min: int = 2,
-            require_majority: bool = True,
             out_dir: str | pathlib.Path | None = None,
             fig_format: str | None = None,
     ) -> pathlib.Path:
@@ -5064,6 +5031,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Per-feature consistency rule: see
         `_classify_unit_behavioral_tier`.
 
+        The settings ``consistency_k_min`` and ``consistency_require_majority`` are read from the
+        ``neuronal_tuning_figures`` block of ``visualizations_parameter_dict``.
+
         Parameters
         ----------
         triage_pkl_path (str | pathlib.Path)
@@ -5074,10 +5044,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         condition (str)
             Which `unit["conditions"][...]` block to walk. Defaults to
             `"intact_female"` (the headline condition).
-        k_min (int)
-            Minimum sig-session count per feature.
-        require_majority (bool)
-            Apply the strict-majority gate on top of `k_min`.
         out_dir (str | pathlib.Path | None)
             Directory override; `None` falls back to
             `figures.save_directory`.
@@ -5090,6 +5056,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         out_path (pathlib.Path)
             Path to the written figure file.
         """
+
+        k_min = self.visualizations_parameter_dict["neuronal_tuning_figures"]["consistency_k_min"]
+        require_majority = self.visualizations_parameter_dict["neuronal_tuning_figures"]["consistency_require_majority"]
 
         per_region, n_eligible = self._collect_behavioral_tiers_per_region(
             triage_pkl_path=triage_pkl_path,
@@ -5116,7 +5085,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 fractions[r, c] = k / total
 
         # render
-        fig, ax = plt.subplots(figsize=(7.5, 3.5))
+        fig, ax = plt.subplots(figsize=tuple(self.visualizations_parameter_dict["neuronal_tuning_figures"]["behavioral_tier_figsize_inches"]))
         cmap_name = self.visualizations_parameter_dict["figures"]["sequential_cmap"]
         im = ax.imshow(
             fractions, aspect="auto", cmap=cmap_name, vmin=0.0, vmax=1.0,
@@ -5146,7 +5115,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         for r in range(n_rows):
             for c in range(n_cols):
                 frac = float(fractions[r, c])
-                text_color = "#FFFFFF" if frac < 0.5 else COLOR_BLACK
+                text_color = "#FFFFFF" if frac < 0.5 else self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"]
                 ax.text(
                     c, r, f"{frac:.2f}",
                     ha="center", va="center",
@@ -5393,7 +5362,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 pos[0], pos[1], f"{n}\n({p:.1f}%)",
                 ha="center", va="center",
                 fontsize=9 * font_scale, fontweight="light",
-                color=COLOR_BLACK,
+                color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
             )
 
         _annotate((True,  False, False), (-1.05, -0.40))
@@ -5410,7 +5379,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             0.0, -1.85, f"None: n={n_none}  ({p_none:.1f}%)",
             ha="center", va="bottom",
             fontsize=8 * font_scale, fontweight="light",
-            color=COLOR_GRAY_DASH,
+            color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["dash_color"],
         )
 
         if panel_title is not None:
@@ -5421,8 +5390,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             triage_pkl_path: str | pathlib.Path,
             catalog_csv_path: str | pathlib.Path | None = None,
             condition: str = "intact_female",
-            k_min: int = 2,
-            require_majority: bool = True,
             out_dir: str | pathlib.Path | None = None,
             fig_format: str | None = None,
     ) -> pathlib.Path:
@@ -5459,6 +5426,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         The parameters have the same semantics as
         `make_behavioral_tuning_summary_figure`.
 
+        The settings ``consistency_k_min`` and ``consistency_require_majority`` are read from the
+        ``neuronal_tuning_figures`` block of ``visualizations_parameter_dict``.
+
         Parameters
         ----------
         triage_pkl_path (str | pathlib.Path)
@@ -5470,15 +5440,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         condition (str)
             Which `unit["conditions"][...]` block to walk. Defaults to
             `"intact_female"` (the headline condition).
-        k_min (int)
-            Minimum sig-session count per modality (the same
-            per-feature consistency rule as
-            `_compute_behavioral_bucket_flags` and `_compute_vocal_flag`);
-            defaults to 2.
-        require_majority (bool)
-            Apply the strict-majority gate on top of `k_min` (the
-            significant sessions must form a strict majority of the
-            tested sessions); defaults to True.
         out_dir (str | pathlib.Path | None)
             Directory override; `None` (the default) falls back to
             `figures.save_directory`.
@@ -5491,6 +5452,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         out_path (pathlib.Path)
             Path to the written figure file.
         """
+
+        k_min = self.visualizations_parameter_dict["neuronal_tuning_figures"]["consistency_k_min"]
+        require_majority = self.visualizations_parameter_dict["neuronal_tuning_figures"]["consistency_require_majority"]
 
         counts, n_eligible = self._collect_three_set_overlap_counts(
             triage_pkl_path=triage_pkl_path,
@@ -5505,7 +5469,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         # the all-pooled population.
         unassigned_grey = self.visualizations_parameter_dict["unassigned_colors"][0]
 
-        fig, ax = plt.subplots(figsize=(6.5, 5.5))
+        fig, ax = plt.subplots(figsize=tuple(self.visualizations_parameter_dict["neuronal_tuning_figures"]["overlap_venn_figsize_inches"]))
         self._draw_overlap_venn_on_ax(
             ax=ax,
             counts=counts,
@@ -5629,8 +5593,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             triage_pkl_path: str | pathlib.Path,
             catalog_csv_path: str | pathlib.Path | None = None,
             condition: str = "intact_female",
-            k_min: int = 2,
-            require_majority: bool = True,
             out_dir: str | pathlib.Path | None = None,
             fig_format: str | None = None,
     ) -> pathlib.Path:
@@ -5651,6 +5613,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         The parameters have identical semantics to
         `make_three_set_overlap_venn_figure`.
 
+        The settings ``consistency_k_min`` and ``consistency_require_majority`` are read from the
+        ``neuronal_tuning_figures`` block of ``visualizations_parameter_dict``.
+
         Parameters
         ----------
         triage_pkl_path (str | pathlib.Path)
@@ -5662,15 +5627,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         condition (str)
             Which `unit["conditions"][...]` block to walk. Defaults to
             `"intact_female"` (the headline condition).
-        k_min (int)
-            Minimum sig-session count per modality (the same
-            per-feature consistency rule as
-            `_compute_behavioral_bucket_flags` and `_compute_vocal_flag`);
-            defaults to 2.
-        require_majority (bool)
-            Apply the strict-majority gate on top of `k_min` (the
-            significant sessions must form a strict majority of the
-            tested sessions); defaults to True.
         out_dir (str | pathlib.Path | None)
             Directory override; `None` (the default) falls back to
             `figures.save_directory`.
@@ -5684,6 +5640,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             Path to the written figure file.
         """
 
+        k_min = self.visualizations_parameter_dict["neuronal_tuning_figures"]["consistency_k_min"]
+        require_majority = self.visualizations_parameter_dict["neuronal_tuning_figures"]["consistency_require_majority"]
+
         per_region, n_total = self._collect_three_set_overlap_counts_per_region(
             triage_pkl_path=triage_pkl_path,
             catalog_csv_path=catalog_csv_path,
@@ -5695,7 +5654,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         region_colors = self._resolve_region_colors()
         unassigned_grey = self.visualizations_parameter_dict["unassigned_colors"][0]
 
-        fig, axes = plt.subplots(2, 4, figsize=(18.0, 9.0))
+        fig, axes = plt.subplots(2, 4, figsize=tuple(self.visualizations_parameter_dict["neuronal_tuning_figures"]["per_region_venn_figsize_inches"]))
         axes_flat = axes.flat
 
         # Panels 1-7: one per region.
@@ -5969,7 +5928,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                     # and tighten wspace/hspace so cells stay roughly
                     # square.
                     fig = plt.figure(
-                        figsize=(16.0, max(2.6, 2.6 * row_num)), tight_layout=False
+                        figsize=(self.visualizations_parameter_dict["neuronal_tuning_figures"]["behavioral_page_width_inches"],
+                                 max(self.visualizations_parameter_dict["neuronal_tuning_figures"]["behavioral_row_height_inches"], self.visualizations_parameter_dict["neuronal_tuning_figures"]["behavioral_row_height_inches"] * row_num)),
+                        tight_layout=False
                     )
                     gs = gridspec.GridSpec(
                         nrows=row_num,
@@ -6115,7 +6076,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                                 low_end_sh[occ_mask],
                                 high_end_sh[occ_mask],
                                 where=high_end_sh[occ_mask] >= low_end_sh[occ_mask],
-                                facecolor=COLOR_GRAY_BAND,
+                                facecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["band_color"],
                                 interpolate=True,
                             )
                             ax1.plot(
@@ -6175,7 +6136,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                                 edges=bin_edges,
                                 fill=True,
                                 color=rm_color,
-                                edgecolor=COLOR_BLACK,
+                                edgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
                                 linewidth=0.3,
                             )
                             ax2.set_xticks(
@@ -6351,7 +6312,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
     @staticmethod
     def _draw_event_ribbon(ax, bout_lo: np.ndarray, bout_hi: np.ndarray,
                            unassigned_lo: np.ndarray, unassigned_hi: np.ndarray, colour: str,
-                           low: float, high: float, min_width: float = 0.01) -> None:
+                           low: float, high: float, *, unassigned_color: str,
+                           min_width: float = 0.01) -> None:
         """
         Description
         -----------
@@ -6375,6 +6337,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             Hex colour the bout gradient starts from.
         low, high (float)
             Vertical extent of the ribbon, in data coordinates.
+        unassigned_color (str)
+            Hex colour of the unassigned-USV bars (the vocal page passes
+            ``neuronal_tuning_figures.light_color``).
         min_width (float)
             Floor on a drawn bar's width so a very short USV stays visible.
 
@@ -6397,7 +6362,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         for start, stop in zip(unassigned_lo, unassigned_hi, strict=False):
             if stop >= window_lo and start <= window_hi:
                 ax.add_patch(Rectangle((start, low), max(stop - start, min_width), high - low,
-                                       facecolor=COLOR_LIGHT, edgecolor="none", zorder=4))
+                                       facecolor=unassigned_color, edgecolor="none", zorder=4))
 
     @staticmethod
     def _draw_first_vs_later(ax, spike_times: np.ndarray, usv_starts: np.ndarray, runs: list,
@@ -6433,7 +6398,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             grid (``bout_density_grid``) and the bout shares the contours enclose
             (``bout_density_levels``, at most three, in any order; sorted ascending,
             the smallest share takes the first line style, and each contour and its
-            legend entry share one style). More than three raises ``ValueError``.
+            legend entry share one style), plus the ink colour of the markers, identity line
+            and contours (``ink_color``) and the grey of the too-few-bouts note
+            (``dash_color``). More than three raises ``ValueError``.
 
         Returns
         -------
@@ -6454,7 +6421,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                                         for k in run[1:]])))
         if len(first) < 3:
             ax.text(0.5, 0.5, "too few multi-USV bouts", transform=ax.transAxes, ha="center",
-                    va="center", fontsize=11, color=COLOR_GRAY_DASH)
+                    va="center", fontsize=11, color=bout_cfg["dash_color"])
             return
         first, later = np.asarray(first), np.asarray(later)
         limit = max(first.max(), later.max()) * 1.08 + 0.5
@@ -6480,17 +6447,17 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                   cmap=LinearSegmentedColormap.from_list("density", ["#FFFFFF", colour]),
                   origin="lower", aspect="equal", extent=(0, limit, 0, limit),
                   interpolation="bilinear", zorder=1)
-        ax.scatter(later, first, s=16, facecolor=colour, edgecolor=COLOR_BLACK, linewidth=0.3,
+        ax.scatter(later, first, s=16, facecolor=colour, edgecolor=bout_cfg["ink_color"], linewidth=0.3,
                    zorder=2)
-        ax.plot([0, limit], [0, limit], color=COLOR_BLACK, linewidth=1.0, zorder=3)
+        ax.plot([0, limit], [0, limit], color=bout_cfg["ink_color"], linewidth=1.0, zorder=3)
         for _quantile, level, style in contour_styles:
-            ax.contour(grid_x, grid_y, density, levels=[level], colors=COLOR_BLACK,
+            ax.contour(grid_x, grid_y, density, levels=[level], colors=bout_cfg["ink_color"],
                        linestyles=style, linewidths=1.0, zorder=4)
         for quantile, _level, style in contour_styles:
-            ax.plot([], [], color=COLOR_BLACK, linestyle=style, linewidth=1.0,
+            ax.plot([], [], color=bout_cfg["ink_color"], linestyle=style, linewidth=1.0,
                     label=f"{100 * quantile:.0f}%")
         ax.scatter([later.mean()], [first.mean()], marker="D", s=46, facecolor="#FFFFFF",
-                   edgecolor=COLOR_BLACK, linewidth=0.8, zorder=5)
+                   edgecolor=bout_cfg["ink_color"], linewidth=0.8, zorder=5)
         ax.legend(fontsize=6, frameon=False, loc="lower right", title="bouts enclosed",
                   title_fontsize=6)
         ax.set_xlim(0, limit)
@@ -6552,13 +6519,14 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         trace = ndimage.gaussian_filter1d(
             (np.histogram(spikes, bins=edges)[0] / self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_session_bin_seconds"]).astype(float),
             self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_smooth_bins"], mode="nearest")
-        ax_session.plot(edges[:-1] + self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_session_bin_seconds"] / 2.0, trace, color=COLOR_BLACK,
+        ax_session.plot(edges[:-1] + self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_session_bin_seconds"] / 2.0, trace, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
                         linewidth=0.9)
         top = float(trace.max()) * 1.22 + 1.0
         ax_session.set_xlim(0.0, duration)
         ax_session.set_ylim(-0.20 * top, top)
         self._draw_event_ribbon(ax_session, bout_lo, bout_hi, unassigned_lo, unassigned_hi,
-                                colour, -0.16 * top, -0.02 * top)
+                                colour, -0.16 * top, -0.02 * top,
+                                unassigned_color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["light_color"])
         ax_session.set_yticks([t for t in ax_session.get_yticks() if t >= 0])
         ax_session.set_ylim(-0.20 * top, top)
         ax_session.set_ylabel("firing rate (sp/s)", fontsize=8)
@@ -6568,10 +6536,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             f"{len(runs)} bouts   |   {self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_session_bin_seconds"]:g} s bins, "
             f"{self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_smooth_bins"]:g} bin Gaussian", fontsize=9, loc="left")
         ax_session.text(0.995, 0.95, "bouts", transform=ax_session.transAxes, ha="right",
-                        va="top", fontsize=BOUT_LEGEND_FONTSIZE, color=colour)
-        ax_session.text(0.995, 0.95 - BOUT_LEGEND_LINE_STEP, "unassigned USVs",
+                        va="top", fontsize=self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_legend_fontsize"], color=colour)
+        ax_session.text(0.995, 0.95 - self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_legend_line_step"], "unassigned USVs",
                         transform=ax_session.transAxes, ha="right", va="top",
-                        fontsize=BOUT_LEGEND_FONTSIZE, color=COLOR_LIGHT)
+                        fontsize=self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_legend_fontsize"], color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["light_color"])
         for side in ("top", "right"):
             ax_session.spines[side].set_visible(False)
 
@@ -6590,15 +6558,16 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             (np.histogram(spikes, bins=zoom_edges)[0] / self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_zoom_bin_seconds"]).astype(float),
             self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_smooth_bins"], mode="nearest")
         ax_zoom.plot(zoom_edges[:-1] + self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_zoom_bin_seconds"] / 2.0, zoom_trace,
-                     color=COLOR_BLACK, linewidth=0.9)
+                     color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidth=0.9)
         zoom_top = float(zoom_trace.max()) * 1.22 + 1.0
         ax_zoom.set_xlim(*zoom)
         ax_zoom.set_ylim(-0.20 * zoom_top, zoom_top)
         self._draw_event_ribbon(ax_zoom, bout_lo, bout_hi, unassigned_lo, unassigned_hi, colour,
-                                -0.16 * zoom_top, -0.02 * zoom_top)
+                                -0.16 * zoom_top, -0.02 * zoom_top,
+                                unassigned_color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["light_color"])
         in_zoom = spikes[(spikes >= zoom[0]) & (spikes <= zoom[1])]
         ax_zoom.eventplot(in_zoom, lineoffsets=0.92 * zoom_top, linelengths=0.14 * zoom_top,
-                          colors=COLOR_BLACK, linewidths=0.35)
+                          colors=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidths=0.35)
         ax_zoom.set_yticks([t for t in ax_zoom.get_yticks() if t >= 0])
         ax_zoom.set_ylim(-0.20 * zoom_top, zoom_top)
         ax_zoom.set_ylabel("firing rate (sp/s)", fontsize=8)
@@ -6700,7 +6669,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         None
         """
 
-        fig = plt.figure(figsize=VOCAL_ONE_PAGE_FIGSIZE_INCHES, tight_layout=False)
+        fig = plt.figure(figsize=tuple(self.visualizations_parameter_dict["neuronal_tuning_figures"]["vocal_page_figsize_inches"]), tight_layout=False)
         try:
             height_ratios = [3.2, 3.2, 3.6] + [VOCAL_SECTION_B_ROW_HEIGHT] * len(PROPERTY_ROW_ORDER)
             outer = gridspec.GridSpec(
@@ -6784,7 +6753,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         if usv_summary_df is None:
             ax_raster.text(
                 0.5, 0.5, "USV summary CSV not available\n(raster omitted)",
-                transform=ax_raster.transAxes, ha="center", va="center", fontsize=13, color=COLOR_GRAY_DASH,
+                transform=ax_raster.transAxes, ha="center", va="center", fontsize=13, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["dash_color"],
             )
             ax_raster.set_xticks([])
             ax_raster.set_yticks([])
@@ -6818,7 +6787,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             p0_5,
             p99_5,
             where=np.isfinite(p0_5) & np.isfinite(p99_5),
-            facecolor=COLOR_GRAY_BAND,
+            facecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["band_color"],
             interpolate=True,
             zorder=1,
         )
@@ -6829,17 +6798,18 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             color=line_color,
             zorder=2,
         )
-        ax_peth.axvline(x=0.0, color=COLOR_BLACK, ls="--", lw=0.5)
+        ax_peth.axvline(x=0.0, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], ls="--", lw=0.5)
         # Span the full bin-edge range (centres +/- half a bin), not centre-to-centre, so the
         # t=0 onset marker and the window-edge xticks (e.g. -2.0 / 0.0) stay inside the axes.
         peth_half_bin = (bin_centers[1] - bin_centers[0]) / 2.0 if bin_centers.size > 1 else 0.0
         peth_lo, peth_hi = bin_centers.min() - peth_half_bin, bin_centers.max() + peth_half_bin
         ax_peth.set_xlim(peth_lo, peth_hi)
-        # explicit X ticks at PETH_TICK_SECONDS spacing, anchored on 0 s so onset is always a
+        # explicit X ticks at `peth_tick_seconds` spacing, anchored on 0 s so onset is always a
         # tick, spanning the whole window (pre-onset and, e.g. for the default
         # [-2, +0.5] s window, post-onset bins).
-        peth_xticks = np.arange(np.ceil(peth_lo / PETH_TICK_SECONDS) * PETH_TICK_SECONDS,
-                                peth_hi + 1e-4, PETH_TICK_SECONDS)
+        peth_tick_seconds = self.visualizations_parameter_dict["neuronal_tuning_figures"]["peth_tick_seconds"]
+        peth_xticks = np.arange(np.ceil(peth_lo / peth_tick_seconds) * peth_tick_seconds,
+                                peth_hi + 1e-4, peth_tick_seconds)
         ax_peth.set_xticks(peth_xticks)
         ax_peth.set_xticklabels([f"{v:g}" for v in peth_xticks])
         ax_peth.set_xlabel("time relative to USV onset (s)", fontsize=12)
@@ -6895,7 +6865,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         payload = bout_blocks[emitter] if emitter in bout_blocks else None
         if payload is None:
             ax.text(0.5, 0.5, "no bout-onset payload", transform=ax.transAxes, ha="center",
-                    va="center", fontsize=11, color=COLOR_GRAY_DASH)
+                    va="center", fontsize=11, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["dash_color"])
             return
         cfg = cluster_data["usv_metadata"]["ibi_bout_onset"]
         threshold = float(payload["ibi_threshold_seconds"])
@@ -6904,7 +6874,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                                             int(cfg["min_vocalizations"]))
         if bout_lo.size == 0:
             ax.text(0.5, 0.5, "no bouts", transform=ax.transAxes, ha="center", va="center",
-                    fontsize=11, color=COLOR_GRAY_DASH)
+                    fontsize=11, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["dash_color"])
             return
 
         spike_times = self._cluster_spike_times(cluster_data)
@@ -6930,10 +6900,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             in_window = spike_times[(spike_times >= anchor + window_lo)
                                     & (spike_times <= anchor + window_hi)] - anchor
             if in_window.size:
-                ax.eventplot(in_window, lineoffsets=row, linelengths=0.85, colors=COLOR_BLACK,
+                ax.eventplot(in_window, lineoffsets=row, linelengths=0.85, colors=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
                              linewidths=0.3, zorder=4)
 
-        ax.axvline(0.0, color=COLOR_BLACK, linewidth=0.9, zorder=5)
+        ax.axvline(0.0, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidth=0.9, zorder=5)
         ax.set_xlim(window_lo, window_hi)
         ax.set_ylim(-0.5, sorted_lo.size - 0.5)
         ax.set_xlabel("time from bout onset (s)", fontsize=8)
@@ -6952,8 +6922,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         sem_rate = smoothed.std(axis=0, ddof=1) / np.sqrt(smoothed.shape[0])
         ax_rate = ax.twinx()
         ax_rate.fill_between(centres, mean_rate - sem_rate, mean_rate + sem_rate,
-                             color=COLOR_GRAY_BAND, alpha=0.55, linewidth=0, zorder=6)
-        ax_rate.plot(centres, mean_rate, color=COLOR_BLACK, linewidth=1.2, zorder=7)
+                             color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["band_color"], alpha=0.55, linewidth=0, zorder=6)
+        ax_rate.plot(centres, mean_rate, color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidth=1.2, zorder=7)
         ax_rate.set_ylabel("mean firing rate (sp/s)", fontsize=8)
         ax_rate.set_xlim(window_lo, window_hi)
         ax.spines["top"].set_visible(False)
@@ -7111,7 +7081,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             p0_5[sl],
             p99_5[sl],
             where=np.isfinite(p0_5[sl]) & np.isfinite(p99_5[sl]),
-            facecolor=COLOR_GRAY_BAND,
+            facecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["band_color"],
             interpolate=True,
         )
         ax_line.plot(centers[sl], rate[sl], lw=4.0, color=line_color)
@@ -7156,7 +7126,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             edges=edges,
             fill=True,
             color=line_color,
-            edgecolor=COLOR_BLACK,
+            edgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
             linewidth=0.4,
         )
         ax_occ.set_xlim(x_lo_lim, x_hi_lim)
@@ -7220,8 +7190,11 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         sex = cluster_data["usv_category_tuning"][emitter][SECTION_C_ROWS[0][0]]["sex"]
         dot_color = self._sex_color(sex)
 
-        log_threshold = VOCAL_STRIP_LOG_RATIO_THRESHOLD
-        symlog_linthresh = VOCAL_STRIP_SYMLOG_LINTHRESH
+        # Section-(c) strip scaling: switch to symlog when the (max / min) firing-rate dynamic
+        # range exceeds ``strip_log_ratio_threshold``; ``strip_symlog_linthresh`` is the linear
+        # region around 0 in symlog units.
+        log_threshold = self.visualizations_parameter_dict["neuronal_tuning_figures"]["strip_log_ratio_threshold"]
+        symlog_linthresh = self.visualizations_parameter_dict["neuronal_tuning_figures"]["strip_symlog_linthresh"]
         figures_settings = self.visualizations_parameter_dict["figures"]
         ratemap_cmap = figures_settings["sequential_cmap"]
 
@@ -7323,7 +7296,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         feature's segmentation grid (the category bundle's label grid,
         :func:`load_qlvm_category_segmentation`). Pixels with no cluster-side
         category get a hatched fill; the category boundaries are
-        contour-drawn in `COLOR_BLACK`. When `annotate_categories=True`,
+        contour-drawn in `self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"]`. When `annotate_categories=True`,
         each region's category ID is overlaid at its centroid (or a
         circular-mean fallback for QLVM regions that wrap the embedding
         boundary).
@@ -7410,7 +7383,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         if invalid_mask.any():
             ax.contourf(
                 xx, yy, invalid_mask.astype(float),
-                levels=[0.5, 1.5], colors=[COLOR_HATCH], alpha=0.6, hatches=["//"],
+                levels=[0.5, 1.5], colors=[self.visualizations_parameter_dict["neuronal_tuning_figures"]["hatch_color"]], alpha=0.6, hatches=["//"],
             )
 
         # category boundary contours
@@ -7426,7 +7399,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         ax.contour(
             xx, yy, dense,
             levels=np.arange(unique_labels_in_grid.size + 1) - 0.5,
-            colors=COLOR_BLACK, linewidths=0.8,
+            colors=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"], linewidths=0.8,
         )
 
         # optionally annotate each category region with its category ID, placed at the
@@ -7461,15 +7434,15 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 # A region hugging a panel border puts its own deepest point on that border,
                 # where the label collides with the axis label or is clipped by the frame, so
                 # it is held a little inside. The label still sits within its region.
-                inset_x = QLVM_LABEL_INSET * (x_max - x_min)
-                inset_y = QLVM_LABEL_INSET * (y_max - y_min)
+                inset_x = self.visualizations_parameter_dict["neuronal_tuning_figures"]["qlvm_label_inset"] * (x_max - x_min)
+                inset_y = self.visualizations_parameter_dict["neuronal_tuning_figures"]["qlvm_label_inset"] * (y_max - y_min)
                 cx = min(max(cx, x_min + inset_x), x_max - inset_x)
                 cy = min(max(cy, y_min + inset_y), y_max - inset_y)
                 ax.text(
                     cx, cy, str(cat_id),
                     ha="center", va="center",
-                    fontsize=QLVM_CATEGORY_LABEL_FONTSIZE,
-                    fontweight="light", color=COLOR_BLACK,
+                    fontsize=self.visualizations_parameter_dict["neuronal_tuning_figures"]["qlvm_category_label_fontsize"],
+                    fontweight="light", color=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
                     path_effects=[
                         mpe.withStroke(linewidth=2.0, foreground="#FFFFFF"),
                     ],
@@ -7551,12 +7524,12 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                     (min(lo, hi), i - 0.3),
                     abs(hi - lo),
                     0.6,
-                    facecolor=COLOR_GRAY_BAND,
+                    facecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["band_color"],
                     edgecolor="none",
                 )
             )
         ax.scatter(
-            rate, ys, s=18, color=dot_color, edgecolor=COLOR_BLACK,
+            rate, ys, s=18, color=dot_color, edgecolor=self.visualizations_parameter_dict["neuronal_tuning_figures"]["ink_color"],
             linewidths=0.4, zorder=3,
         )
 

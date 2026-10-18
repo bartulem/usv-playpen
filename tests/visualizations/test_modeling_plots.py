@@ -20,6 +20,9 @@ open a window.
 from __future__ import annotations
 
 import ast
+import copy
+import inspect
+import json
 import pathlib
 import pickle
 import warnings
@@ -76,6 +79,33 @@ with warnings.catch_warnings():
     )
 
 
+def _settings_with(overrides: dict) -> dict:
+    """
+    Description
+    -----------
+    Return a deep copy of the shipped visualizations settings with some
+    ``modeling_plots`` knobs replaced, so a test can shrink a figure (fewer
+    atlas tiles, fewer bootstraps) through the settings the plotters read
+    rather than through keyword arguments they no longer take.
+
+    Parameters
+    ----------
+    overrides (dict)
+        Mapping ``block -> {key: value}`` of ``modeling_plots`` sub-blocks to
+        update.
+
+    Returns
+    -------
+    settings (dict)
+        The modified copy of the shipped settings.
+    """
+
+    settings = copy.deepcopy(_VIZ_SETTINGS)
+    for block, values in overrides.items():
+        settings["modeling_plots"][block].update(values)
+    return settings
+
+
 # figure resolution / seed / cmap derive from the shared `figures` block
 
 
@@ -88,6 +118,69 @@ def test_figure_dpi_seed_cmap_derive_from_settings():
     assert _VIZ_SETTINGS["figures"]["dpi"] == _FIGURE_DPI
     assert _VIZ_SETTINGS["figures"]["seed"] == _FIGURE_SEED
     assert _VIZ_SETTINGS["figures"]["sequential_cmap"] == _GLOBAL_CMAP
+
+
+def test_modeling_plots_knobs_derive_from_settings():
+    """Every tunable moved into the ``modeling_plots`` block of the shipped
+    ``visualizations_settings.json`` is what the module actually uses: the palette
+    constants equal ``modeling_plots.colors``, and every settings-backed knob is
+    read from the settings inside the plotter (the module's settings for the
+    module functions, ``self.visualization_settings`` for the CNN visualizer)
+    instead of being a keyword argument whose default could drift from the JSON."""
+
+    settings_path = (pathlib.Path(modeling_plots.__file__).parent.parent
+                     / "_parameter_settings" / "visualizations_settings.json")
+    with settings_path.open() as settings_file:
+        block = json.load(settings_file)["modeling_plots"]
+
+    colors = block["colors"]
+    assert colors["neutral"] == modeling_plots.NEUTRAL_COLOR
+    assert colors["mean_line"] == modeling_plots.MEAN_LINE_COLOR
+    assert colors["text"] == modeling_plots.TEXT_COLOR
+    assert colors["reference_line"] == modeling_plots.REFERENCE_LINE_COLOR
+    assert colors["timescale_axis"] == modeling_plots.TIMESCALE_AXIS_COLOR
+    assert colors["timescale_null"] == modeling_plots.TIMESCALE_NULL_COLOR
+
+    def parameters(function):
+        """Return the parameter names of ``function``."""
+        return set(inspect.signature(function).parameters)
+
+    # Settings-backed knobs are read from the settings at call time, never taken as
+    # keyword arguments whose literal defaults could drift from the shipped JSON.
+    settings_backed = {
+        plot_raw_feature_difference: ("raw_feature_difference", ("value_sanity_cap", "n_bootstraps")),
+        plot_univariate_multinomial_performance: ("univariate_multinomial_performance", ("base_cmap",)),
+        plot_manifold_filter_atlas: ("manifold_filter_atlas", ("n_time_slices", "display_bins", "smooth_sigma", "atlas_grid_n")),
+        plot_collinearity_audit: ("collinearity_audit", ("outline_threshold", "outline_color")),
+        plot_timescale_audit: ("timescale_audit", ("signal_smooth_window",)),
+        plot_timescale_audit_per_feature: ("timescale_audit", ("signal_smooth_window",)),
+        plot_behavioral_response_forest: ("behavioral_response_forest", ("alpha", "false_discovery_rate", "axis_limits", "duration_sd_factor")),
+        plot_matched_divergence: ("matched_divergence", ("alpha", "display_seconds", "panel_columns", "between_block_gap", "onset_run_seconds")),
+    }
+    for function, (family, keys) in settings_backed.items():
+        source = inspect.getsource(function)
+        for key in keys:
+            assert key in block[family]
+            assert key not in parameters(function)
+            assert f'_VIZ_SETTINGS["modeling_plots"]["{family}"]["{key}"]' in source
+    # The helper takes the window explicitly from its settings-reading callers.
+    for name in ("signal_smooth_window", "acf_run_length"):
+        assert inspect.signature(_compute_timescale_horizons).parameters[name].default is inspect.Parameter.empty
+
+    families = {
+        "plot_permutation_test": ("cnn_permutation_test", ("null_color", "threshold_color", "title_fontsize", "label_fontsize", "figsize", "n_bootstraps")),
+        "plot_feature_importance": ("cnn_feature_importance", ("title_fontsize", "label_fontsize", "figsize")),
+        "plot_spatial_precision_grid": ("cnn_spatial_precision_grid", ("n_patches",)),
+        "plot_error_landscape": ("cnn_error_landscape", ("title_fontsize", "label_fontsize", "figsize")),
+        "plot_regional_saliency_inset": ("cnn_regional_saliency", ("null_color", "figsize")),
+    }
+    for method_name, (family, keys) in families.items():
+        method = getattr(DeepResultsVisualizer, method_name)
+        source = inspect.getsource(method)
+        for key in keys:
+            assert key in block[family]
+            assert key not in parameters(method)
+            assert f'self.visualization_settings["modeling_plots"]["{family}"]["{key}"]' in source
 
 
 # _classify_predictor_feature
@@ -803,7 +896,7 @@ class TestPlotRawFeatureDifference:
     """Figure-emission tests for ``plot_raw_feature_difference``."""
 
     @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
-    def test_bout_onset_mode_writes_avg_and_heatmap(self, tmp_path):
+    def test_bout_onset_mode_writes_avg_and_heatmap(self, tmp_path, monkeypatch):
         """A Bout-Onset-shaped input pickle (``usv_feature_arr`` /
         ``no_usv_feature_arr`` per session) writes the bootstrap-average
         SVG and the heatmap SVG."""
@@ -828,19 +921,19 @@ class TestPlotRawFeatureDifference:
             pickle.dump(data, fh)
         out_dir = tmp_path / "raw_out"
         out_dir.mkdir()
+        monkeypatch.setattr(modeling_plots, "_VIZ_SETTINGS", _settings_with({"raw_feature_difference": {"n_bootstraps": 20}}))
         plot_raw_feature_difference(
             pickle_file_path=str(pkl),
             feature_key=feature_key,
             history_seconds=4.0,
             subset_fraction=0.5,
-            n_bootstraps=20,
             save_plots=True,
             output_dir=str(out_dir),
         )
         assert len(list(out_dir.glob(f"*avg_bootstrap_*.{_FIGURE_FORMAT}"))) == 1
         assert len(list(out_dir.glob(f"*heatmap_*.{_FIGURE_FORMAT}"))) == 1
 
-    def test_time_axis_spans_the_given_history(self, tmp_path, mocker):
+    def test_time_axis_spans_the_given_history(self, tmp_path, mocker, monkeypatch):
         """The time axis is the given history, not a fixed 4 s: a 2 s run's mean traces and
         heatmaps span [-2, 0] s over the epoch's frames."""
         n_time = 60
@@ -855,8 +948,9 @@ class TestPlotRawFeatureDifference:
             pickle.dump(data, fh)
         mocker.patch.object(plt, 'show')
         plt.close('all')
+        monkeypatch.setattr(modeling_plots, "_VIZ_SETTINGS", _settings_with({"raw_feature_difference": {"n_bootstraps": 5}}))
         plot_raw_feature_difference(pickle_file_path=str(pkl), feature_key=feature_key, history_seconds=2.0,
-                                    subset_fraction=0.5, n_bootstraps=5, save_plots=False)
+                                    subset_fraction=0.5, save_plots=False)
         lines = [line for num in plt.get_fignums() for ax in plt.figure(num).axes for line in ax.get_lines()
                  if len(line.get_xdata()) == n_time]
         images = [image for num in plt.get_fignums() for ax in plt.figure(num).axes for image in ax.get_images()]
@@ -869,7 +963,7 @@ class TestPlotRawFeatureDifference:
         for image in images:
             assert tuple(image.get_extent()[:2]) == (-2.0, 0)
 
-    def test_empty_condition_skips_without_crash(self, tmp_path):
+    def test_empty_condition_skips_without_crash(self, tmp_path, monkeypatch):
         """A feature where one condition contributes zero epochs must skip the plot
         (log a message and return) rather than crash in np.nanmin / np.random.choice
         ('cannot take a larger sample than population when replace=False')."""
@@ -890,19 +984,19 @@ class TestPlotRawFeatureDifference:
         out_dir = tmp_path / "raw_empty_out"
         out_dir.mkdir()
         # Must not raise; the degenerate feature is skipped so no SVGs are written.
+        monkeypatch.setattr(modeling_plots, "_VIZ_SETTINGS", _settings_with({"raw_feature_difference": {"n_bootstraps": 20}}))
         plot_raw_feature_difference(
             pickle_file_path=str(pkl),
             feature_key=feature_key,
             history_seconds=4.0,
             subset_fraction=0.5,
-            n_bootstraps=20,
             save_plots=True,
             output_dir=str(out_dir),
         )
         assert list(out_dir.glob(f"*.{_FIGURE_FORMAT}")) == []
 
     @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
-    def test_vocal_categories_mode_writes_avg_and_heatmap(self, tmp_path):
+    def test_vocal_categories_mode_writes_avg_and_heatmap(self, tmp_path, monkeypatch):
         """A Vocal-Categories-shaped input pickle (``target_feature_arr`` /
         ``other_feature_arr`` per session) selects the target-vs-other mode
         branch and still writes the bootstrap-average and heatmap SVGs."""
@@ -927,12 +1021,12 @@ class TestPlotRawFeatureDifference:
             pickle.dump(data, fh)
         out_dir = tmp_path / "raw_cat_out"
         out_dir.mkdir()
+        monkeypatch.setattr(modeling_plots, "_VIZ_SETTINGS", _settings_with({"raw_feature_difference": {"n_bootstraps": 20}}))
         plot_raw_feature_difference(
             pickle_file_path=str(pkl),
             feature_key=feature_key,
             history_seconds=4.0,
             subset_fraction=0.5,
-            n_bootstraps=20,
             save_plots=True,
             output_dir=str(out_dir),
         )
@@ -1239,7 +1333,9 @@ class TestPlotTimescaleAuditPerFeature:
         payload['rho_signal'] = rho
         with pathlib.Path(pkl).open('wb') as fh:
             pickle.dump(payload, fh)
-        _, xc_horizons, _ = _compute_timescale_horizons(payload)
+        _, xc_horizons, _ = _compute_timescale_horizons(
+            payload, _VIZ_SETTINGS["modeling_plots"]["timescale_audit"]["signal_smooth_window"],
+            _VIZ_SETTINGS["modeling_plots"]["timescale_audit"]["acf_run_length"])
 
         plt.close('all')
         plot_timescale_audit_per_feature(timescale_pkl_path=pkl, save_plot_bool=False)
@@ -1858,10 +1954,9 @@ class TestPlotManifoldFilterAtlas:
         pkl = _write_manifold_multivariate_pickle(tmp_path, rng, n_features=3, output_dim=4, session_ids=["sessA"])
         out_dir = tmp_path / "atlas_out"
         out_dir.mkdir()
+        monkeypatch.setattr(modeling_plots, "_VIZ_SETTINGS", _settings_with({"manifold_filter_atlas": {"n_time_slices": 4, "atlas_grid_n": 2}}))
         plot_manifold_filter_atlas(
             selection_results_path=pkl,
-            n_time_slices=4,
-            atlas_grid_n=2,
             save_plot=True,
             output_dir=str(out_dir),
         )
@@ -1879,7 +1974,8 @@ class TestPlotManifoldFilterAtlas:
         rng = np.random.default_rng(74)
         monkeypatch.setattr(modeling_plots, "SPECTROGRAMS_DIRECTORY", str(_write_fake_spectrogram_store(tmp_path, rng)))
         pkl = _write_manifold_multivariate_pickle(tmp_path, rng, n_features=3, output_dim=4)
-        plot_manifold_filter_atlas(selection_results_path=pkl, n_time_slices=3, atlas_grid_n=2, save_plot=False)
+        monkeypatch.setattr(modeling_plots, "_VIZ_SETTINGS", _settings_with({"manifold_filter_atlas": {"n_time_slices": 3, "atlas_grid_n": 2}}))
+        plot_manifold_filter_atlas(selection_results_path=pkl, save_plot=False)
         ax_film = next(ax for ax in plt.gcf().axes if ax.get_xlabel() == "time prior to USV onset (s)" and not ax.get_lines())
         titles = [t for t in ax_film.texts if t.get_fontsize() == 8]
         assert len(titles) == 3
@@ -1913,9 +2009,9 @@ class TestPlotManifoldFilterAtlas:
         pkl = _write_manifold_multivariate_pickle(
             tmp_path, rng, n_features=2, n_time=n_time, n_folds=n_folds, output_dim=4,
             weights=weights, heldout={'features': stored, 'null_weights': null})
-        plot_manifold_filter_atlas(
-            selection_results_path=pkl, n_time_slices=3, atlas_grid_n=2,
-            display_bins=n_time, smooth_sigma=0.0, save_plot=False)
+        monkeypatch.setattr(modeling_plots, "_VIZ_SETTINGS", _settings_with({"manifold_filter_atlas": {
+            "n_time_slices": 3, "atlas_grid_n": 2, "display_bins": n_time, "smooth_sigma": 0.0}}))
+        plot_manifold_filter_atlas(selection_results_path=pkl, save_plot=False)
         fig = plt.gcf()
 
         ax_mag = next(ax for ax in fig.axes if ax.get_ylabel() == "filter magnitude |W(t)|")
@@ -1939,9 +2035,9 @@ class TestPlotManifoldFilterAtlas:
         # With smoothing on, each permutation's magnitude trace is smoothed the
         # same way as the filter's own trace BEFORE the percentile is taken.
         plt.close('all')
-        plot_manifold_filter_atlas(
-            selection_results_path=pkl, n_time_slices=3, atlas_grid_n=2,
-            display_bins=n_time, smooth_sigma=1.5, save_plot=False)
+        monkeypatch.setattr(modeling_plots, "_VIZ_SETTINGS", _settings_with({"manifold_filter_atlas": {
+            "n_time_slices": 3, "atlas_grid_n": 2, "display_bins": n_time, "smooth_sigma": 1.5}}))
+        plot_manifold_filter_atlas(selection_results_path=pkl, save_plot=False)
         ax_mag = next(ax for ax in plt.gcf().axes if ax.get_ylabel() == "filter magnitude |W(t)|")
         dashed = [line for line in ax_mag.get_lines() if line.get_linestyle() == '--' and len(line.get_xdata()) > 0]
         for i, feature in enumerate(feats):
@@ -1966,8 +2062,8 @@ class TestPlotManifoldFilterAtlas:
         weights = np.repeat(block[None], n_folds, axis=0)
         pkl = _write_manifold_multivariate_pickle(
             tmp_path, rng, n_features=2, n_time=n_time, n_folds=n_folds, output_dim=4, weights=weights)
-        plot_manifold_filter_atlas(
-            selection_results_path=pkl, n_time_slices=3, atlas_grid_n=2, save_plot=False)
+        monkeypatch.setattr(modeling_plots, "_VIZ_SETTINGS", _settings_with({"manifold_filter_atlas": {"n_time_slices": 3, "atlas_grid_n": 2}}))
+        plot_manifold_filter_atlas(selection_results_path=pkl, save_plot=False)
         fig = plt.gcf()
 
         ax_mag = next(ax for ax in fig.axes if ax.get_ylabel() == "filter magnitude |W(t)|")
@@ -1992,9 +2088,8 @@ class TestPlotManifoldFilterAtlas:
             manifold_column_names=['qlvm_duration1', 'qlvm_duration2'])
         out_dir = tmp_path / "atlas_duration"
         out_dir.mkdir()
-        plot_manifold_filter_atlas(
-            selection_results_path=pkl, n_time_slices=3, atlas_grid_n=2,
-            save_plot=True, output_dir=str(out_dir))
+        monkeypatch.setattr(modeling_plots, "_VIZ_SETTINGS", _settings_with({"manifold_filter_atlas": {"n_time_slices": 3, "atlas_grid_n": 2}}))
+        plot_manifold_filter_atlas(selection_results_path=pkl, save_plot=True, output_dir=str(out_dir))
         printed = capsys.readouterr().out
         assert "map 'qlvm_duration', tiles = nearest of 78 vocalizations of 2 sessions" in printed
         assert "(positions of cell masked_clean/cell/duration); no category boundaries" in printed
@@ -2315,12 +2410,11 @@ class TestDeepResultsVisualizer:
         viz = DeepResultsVisualizer(
             results_pkl_path=pkl,
             modeling_settings={"model_validation": {"random_seed": 0}},
-            visualization_settings={},
+            visualization_settings=_settings_with({"cnn_permutation_test": {"n_bootstraps": 50}}),
         )
         out_dir = tmp_path / "cnn_perm_out"
         out_dir.mkdir()
         viz.plot_permutation_test(
-            n_bootstraps=50,
             save_plot=True,
             output_dir=str(out_dir),
         )
@@ -2336,7 +2430,7 @@ class TestDeepResultsVisualizer:
         viz = DeepResultsVisualizer(
             results_pkl_path=pkl,
             modeling_settings={},
-            visualization_settings={},
+            visualization_settings=None,
         )
         out_dir = tmp_path / "cnn_imp_out"
         out_dir.mkdir()
@@ -2357,7 +2451,7 @@ class TestDeepResultsVisualizer:
         viz = DeepResultsVisualizer(
             results_pkl_path=pkl,
             modeling_settings={},
-            visualization_settings={},
+            visualization_settings=None,
         )
         out_dir = tmp_path / "cnn_land_out"
         out_dir.mkdir()
@@ -2383,13 +2477,12 @@ class TestDeepResultsVisualizer:
         viz = DeepResultsVisualizer(
             results_pkl_path=pkl,
             modeling_settings={},
-            visualization_settings={},
+            visualization_settings=_settings_with({"cnn_spatial_precision_grid": {"n_patches": 4}}),
         )
         out_dir = tmp_path / "cnn_grid_out"
         out_dir.mkdir()
         viz.plot_spatial_precision_grid(
             plot_type='density',
-            n_patches=4,
             patch_size=8.0,
             min_samples=5,
             save_plot=True,
@@ -2413,7 +2506,7 @@ class TestDeepResultsVisualizer:
         viz = DeepResultsVisualizer(
             results_pkl_path=pkl,
             modeling_settings={},
-            visualization_settings={},
+            visualization_settings=None,
         )
         out_dir = tmp_path / "cnn_sal_out"
         out_dir.mkdir()
@@ -2447,7 +2540,7 @@ class TestDeepResultsVisualizer:
         viz = DeepResultsVisualizer(
             results_pkl_path=pkl,
             modeling_settings={},
-            visualization_settings={},
+            visualization_settings=None,
         )
         out_dir = tmp_path / f"cnn_sal_{prediction_plot_type}_out"
         out_dir.mkdir()
@@ -2477,13 +2570,12 @@ class TestDeepResultsVisualizer:
         viz = DeepResultsVisualizer(
             results_pkl_path=pkl,
             modeling_settings={},
-            visualization_settings={},
+            visualization_settings=_settings_with({"cnn_spatial_precision_grid": {"n_patches": 4}}),
         )
         out_dir = tmp_path / "cnn_grid_nn_out"
         out_dir.mkdir()
         viz.plot_spatial_precision_grid(
             plot_type='density',
-            n_patches=4,
             patch_size=4.0,
             # An 80-point cloud spread over ~[-5, 5]^2 has no 4.0-side
             # patch holding 500 samples, so every K-means centre falls
@@ -2625,7 +2717,7 @@ class TestDeepResultsVisualizerTorus:
         viz = DeepResultsVisualizer(
             results_pkl_path=pkl,
             modeling_settings={},
-            visualization_settings={},
+            visualization_settings=None,
         )
         out_dir = tmp_path / f"cnn_torus_grid_{plot_type}_out"
         out_dir.mkdir()
@@ -2654,7 +2746,7 @@ class TestDeepResultsVisualizerTorus:
         viz = DeepResultsVisualizer(
             results_pkl_path=pkl,
             modeling_settings={},
-            visualization_settings={},
+            visualization_settings=None,
         )
         out_dir = tmp_path / "cnn_torus_grid_sparse_out"
         out_dir.mkdir()
@@ -2679,7 +2771,7 @@ class TestDeepResultsVisualizerTorus:
         viz = DeepResultsVisualizer(
             results_pkl_path=pkl,
             modeling_settings={},
-            visualization_settings={},
+            visualization_settings=None,
         )
         out_dir = tmp_path / "cnn_torus_land_out"
         out_dir.mkdir()
@@ -2708,7 +2800,7 @@ class TestDeepResultsVisualizerTorus:
         viz = DeepResultsVisualizer(
             results_pkl_path=pkl,
             modeling_settings={},
-            visualization_settings={},
+            visualization_settings=None,
         )
         out_dir = tmp_path / f"cnn_torus_sal_{prediction_plot_type}_out"
         out_dir.mkdir()
@@ -2914,22 +3006,26 @@ class TestBehavioralResponseFigures:
         assert not [axis for axis in figure.axes if axis.get_xlabel() == 'degrees']
         plt.close("all")
 
-    def test_forest_plot_titles_state_the_interval_level_of_alpha(self, tmp_path):
+    def test_forest_plot_titles_state_the_interval_level_of_alpha(self, tmp_path, monkeypatch):
         """alpha = 0.001 is a 99.9% interval; truncating to an integer titled it 99%."""
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
+            monkeypatch.setattr(modeling_plots, "_VIZ_SETTINGS",
+                                _settings_with({"behavioral_response_forest": {"alpha": 0.001}}))
             plot_behavioral_response_forest(
-                contrast_results_path=_contrast_artifact(tmp_path), alpha=0.001, save_plot=False)
+                contrast_results_path=_contrast_artifact(tmp_path), save_plot=False)
         titles = [axis.get_title() for axis in plt.gcf().axes if axis.get_title()]
         assert titles
         assert all("99.9% CI" in title for title in titles)
         plt.close("all")
 
-    def test_matched_divergence_writes_a_file(self, tmp_path):
+    def test_matched_divergence_writes_a_file(self, tmp_path, monkeypatch):
         """With ``save_plot=True`` the matched-divergence figure is written into ``output_dir``."""
+        monkeypatch.setattr(modeling_plots, "_VIZ_SETTINGS",
+                            _settings_with({"matched_divergence": {"display_seconds": [-0.5, 0.5]}}))
         self._draw(plot_matched_divergence,
                    divergence_results_path=_divergence_artifact(tmp_path),
-                   display_seconds=(-0.5, 0.5), save_plot=True, output_dir=str(tmp_path))
+                   save_plot=True, output_dir=str(tmp_path))
         assert list(tmp_path.glob(f'matched_divergence*.{_FIGURE_FORMAT}'))
 
     def test_matched_divergence_reads_the_frame_rate_from_the_artifact(self, tmp_path):
@@ -2961,14 +3057,14 @@ class TestDeepResultsVisualizerRequiresManifoldMetadata:
         with pathlib.Path(pkl).open('wb') as handle:
             pickle.dump(artifact, handle)
         with pytest.raises(KeyError, match=missing):
-            DeepResultsVisualizer(results_pkl_path=pkl, modeling_settings={}, visualization_settings={})
+            DeepResultsVisualizer(results_pkl_path=pkl, modeling_settings={}, visualization_settings=None)
 
     def test_default_save_dir_is_the_pickle_directory(self, tmp_path):
         """The metadata holds no save directory, so the old './plots' fallback wrote into
         whatever the working directory happened to be; the default is now the pickle's directory."""
         rng = np.random.default_rng(3)
         pkl = _write_cnn_results_pickle(tmp_path, rng)
-        viz = DeepResultsVisualizer(results_pkl_path=pkl, modeling_settings={}, visualization_settings={})
+        viz = DeepResultsVisualizer(results_pkl_path=pkl, modeling_settings={}, visualization_settings=None)
         assert pathlib.Path(viz.save_dir) == pathlib.Path(pkl).parent
 
 

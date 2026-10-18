@@ -42,7 +42,7 @@ from .plot_style import apply_plot_style
 apply_plot_style()
 
 
-# Behavioral-video figure geometry + palette: the single source of truth for the
+# Behavioral-video figure geometry: the single source of truth for the
 # hand-tuned video composite. The arena/panel layout is optimised for this fixed
 # figure size, so the size is hard-coded rather than down-scaled at runtime.
 # _VIDEO_DPI is chosen so figsize * dpi stays within the 4096 px hardware-H.264 /
@@ -61,32 +61,6 @@ _FFMPEG_MUX_TIMEOUT_S = 1800
 # Upper bound (seconds) on the command that hands a saved frame to the desktop image
 # viewer (``open`` / ``xdg-open`` return as soon as the viewer is launched).
 _VIEWER_OPEN_TIMEOUT_S = 60
-_VIDEO_COLOR_MODES = {
-    "light_mode": {
-        "background_color": "#FFFFFF",
-        "node_edge_color": "#8B8B8B",
-        "body_edge_color": "#8B8B8B",
-        "text_color": "#202020",
-        "tick_color": "#202020",
-        "arena_line_color": "#202020",
-        "arena_mic_color": "#202020",
-        "arena_mesh_color": "#202020",
-        "spectrogram_text_color": "#202020",
-        "speaker_color": "#202020"
-    },
-    "dark_mode": {
-        "background_color": "#202020",
-        "node_edge_color": "#8B8B8B",
-        "body_edge_color": "#8B8B8B",
-        "text_color": "#FFFFFF",
-        "tick_color": "#FFFFFF",
-        "arena_line_color": "#FFFFFF",
-        "arena_mic_color": "#FFFFFF",
-        "arena_mesh_color": "#FFFFFF",
-        "spectrogram_text_color": "#FFFFFF",
-        "speaker_color": "#FFFFFF"
-    }
-}
 
 # Per-case behavioral-video panel layout, hand-tuned per
 # (view_angle, has-companion-panels) combination and kept here as one
@@ -676,7 +650,7 @@ def plot_spectrogram(plot_axes: plt.Axes,
                      usv_segment_lw: int|float,
                      usv_segment_colors_list: list[str],
                      usv_segments_ypos: int|float,
-                     spectrogram_cmap: str = 'inferno',
+                     spectrogram_cmap: str,
                      cbar_bool: bool = False,
                      plot_usv_segments_bool: bool = False) -> None:
     """
@@ -725,8 +699,7 @@ def plot_spectrogram(plot_axes: plt.Axes,
         Y-position of USV segments.
     spectrogram_cmap (str)
         Matplotlib colormap name for the spectrogram image; supplied from
-        the shared ``figures.sequential_cmap`` setting by the callers;
-        defaults to 'inferno'.
+        the shared ``figures.sequential_cmap`` setting by the callers.
 
     Returns
     -------
@@ -934,7 +907,6 @@ def plot_behavioral_features(plot_axes: plt.Axes,
                              x_axis_middle: int,
                              x_axis_end: int,
                              ylim_dict: dict,
-                             plot_theme: str,
                              color_mode_preferences: dict,
                              animal_colors: list[str],
                              remove_axes_bool: bool = False) -> None:
@@ -981,10 +953,11 @@ def plot_behavioral_features(plot_axes: plt.Axes,
         End index of x-axis.
     ylim_dict (dict)
         Dictionary containing y-axis limits for behavioral features.
-    plot_theme (str)
-        If 'dark', dark theme.
     color_mode_preferences (dict)
-        Dictionary containing color mode preferences.
+        Dictionary containing color mode preferences (one theme of
+        ``make_behavioral_videos.color_modes``); features of neither mouse take its
+        ``text_color``, or its ``faded_feature_color`` when they are not among the
+        highlighted ``special_features``.
     animal_colors (list)
         List of animal colors.
     remove_axes_bool (bool)
@@ -1009,12 +982,8 @@ def plot_behavioral_features(plot_axes: plt.Axes,
                 feature_color = animal_colors[1]
                 x_axis_feature_color = animal_colors[1]
             elif '-sei' not in feature_name.split('.')[1]:
-                if plot_theme == 'dark':
-                    feature_color = '#FFFFFF'
-                    x_axis_feature_color = '#FFFFFF'
-                else:
-                    feature_color = '#202020'
-                    x_axis_feature_color = '#202020'
+                feature_color = color_mode_preferences['text_color']
+                x_axis_feature_color = color_mode_preferences['text_color']
             elif feature_name.split('.')[0].split('-')[0] == mouse_track_names[0]:
                 feature_color = animal_colors[0]
                 x_axis_feature_color = animal_colors[0]
@@ -1035,19 +1004,12 @@ def plot_behavioral_features(plot_axes: plt.Axes,
             else:
                 feature_color = f"{animal_colors[1]}33"
                 x_axis_feature_color = animal_colors[1]
-        elif plot_theme == 'dark':
-            if feature_name.split('.')[1] in special_features:
-                feature_color = '#FFFFFF'
-                x_axis_feature_color = '#FFFFFF'
-            else:
-                feature_color = '#FFFFFF33'
-                x_axis_feature_color = '#FFFFFF'
         elif feature_name.split('.')[1] in special_features:
-            feature_color = '#202020'
-            x_axis_feature_color = '#202020'
+            feature_color = color_mode_preferences['text_color']
+            x_axis_feature_color = color_mode_preferences['text_color']
         else:
-            feature_color = '#00000033'
-            x_axis_feature_color = '#202020'
+            feature_color = color_mode_preferences['faded_feature_color']
+            x_axis_feature_color = color_mode_preferences['text_color']
 
         plot_axes[ax_num] = figure_object.add_axes([beh_features_fig_position[0],
                                                     beh_features_fig_position[1] - (feature_idx * 0.042),
@@ -1140,7 +1102,7 @@ def plot_arena_corners_mics(data: np.ndarray,
                             main_text_offset: int|float,
                             mouse_id_text_offset: int|float,
                             text_fontsize: int,
-                            corner_colors: dict | None = None,
+                            corner_colors: dict,
                             arena_node_connections_bool: bool = False,
                             plot_corners_bool: bool = False,
                             plot_mesh_walls_bool: bool = False,
@@ -1212,12 +1174,10 @@ def plot_arena_corners_mics(data: np.ndarray,
         Offset for mouse ID text.
     text_fontsize (int)
         Font size for text.
-    corner_colors (dict | None)
+    corner_colors (dict)
         Per-corner hex colours keyed ``'North'`` / ``'West'`` / ``'South'`` /
         ``'East'`` (the ``corner_colors`` settings block, supplied by the
-        callers); used only when ``plot_corners_bool`` is True. None falls back
-        to the shipped mapping (North ``#FF0000``, West ``#FFFF00``, South
-        ``#008000``, East ``#0000FF``).
+        callers); used only when ``plot_corners_bool`` is True.
 
     Returns
     -------
@@ -1248,11 +1208,8 @@ def plot_arena_corners_mics(data: np.ndarray,
 
     if plot_corners_bool:
         # Per-corner colours come from the shared `corner_colors` settings block
-        # (supplied by the callers); fall back to the shipped mapping so a direct
-        # call that omits them still renders.
-        resolved_corner_colors = corner_colors if corner_colors is not None else {
-            'North': '#FF0000', 'West': '#FFFF00', 'South': '#008000', 'East': '#0000FF',
-        }
+        # (supplied by the callers).
+        resolved_corner_colors = corner_colors
         plot_axes.scatter(data[0, 0, node_idx['North'], 0], data[0, 0, node_idx['North'], 1], data[0, 0, node_idx['North'], 2], c=resolved_corner_colors['North'], s=corner_size, alpha=corner_opacity)
         plot_axes.scatter(data[0, 0, node_idx['West'], 0], data[0, 0, node_idx['West'], 1], data[0, 0, node_idx['West'], 2], c=resolved_corner_colors['West'], s=corner_size, alpha=corner_opacity)
         plot_axes.scatter(data[0, 0, node_idx['South'], 0], data[0, 0, node_idx['South'], 1], data[0, 0, node_idx['South'], 2], c=resolved_corner_colors['South'], s=corner_size, alpha=corner_opacity)
@@ -1525,8 +1482,6 @@ class Create3DVideo:
                                      "head-allo_pitch": "H-Pitch(°)", "head-allo_pitch_1st_der": "H-Pitch'(°/s)", "head-allo_pitch_2nd_der": "H-Pitch''(°/s²)",
                                      "orofacial-sei": "SEI(a.u.)", "orofacial-sei_1st_der": "SEI'(a.u./s)", "orofacial-sei_2nd_der": "SEI''(a.u./s²)",
                                      "anogenital-sei": "SEI(a.u.)", "anogenital-sei_1st_der": "SEI'(a.u./s)", "anogenital-sei_2nd_der": "SEI''(a.u./s²)"}
-
-        self.color_mode_preferences = _VIDEO_COLOR_MODES
 
 
     def load_beh_features_file(self) -> pls.DataFrame:
@@ -1947,10 +1902,11 @@ class Create3DVideo:
                     usv_summary_df = usv_summary_df.filter((pls.col('stop') >= self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'] - half_window_size_sec) &
                                                            (pls.col('start') <= self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'] + self.visualizations_parameter_dict['make_behavioral_videos']['video_duration'] + half_window_size_sec))
 
+        # Light / dark ink palettes of the video composite (make_behavioral_videos.color_modes).
         if self.visualizations_parameter_dict['make_behavioral_videos']['plot_theme'] == 'dark':
-            color_mode_preferences = self.color_mode_preferences['dark_mode']
+            color_mode_preferences = self.visualizations_parameter_dict['make_behavioral_videos']['color_modes']['dark_mode']
         else:
-            color_mode_preferences = self.color_mode_preferences['light_mode']
+            color_mode_preferences = self.visualizations_parameter_dict['make_behavioral_videos']['color_modes']['light_mode']
 
         if self.visualizations_parameter_dict['make_behavioral_videos']['beh_features_bool']:
             n_plot_cols = np.sum([self.visualizations_parameter_dict['make_behavioral_videos']['spectrogram_bool'],
@@ -2221,7 +2177,6 @@ class Create3DVideo:
                                          x_axis_middle=beginning_feature_ts_fr_middle,
                                          x_axis_end=beginning_feature_ts_fr_end,
                                          ylim_dict=ylim_dict,
-                                         plot_theme=self.visualizations_parameter_dict['make_behavioral_videos']['plot_theme'],
                                          color_mode_preferences=color_mode_preferences,
                                          animal_colors=animal_colors)
 
@@ -2413,7 +2368,6 @@ class Create3DVideo:
                                              x_axis_middle=beginning_feature_ts_fr_middle,
                                              x_axis_end=beginning_feature_ts_fr_end,
                                              ylim_dict=ylim_dict,
-                                             plot_theme=self.visualizations_parameter_dict['make_behavioral_videos']['plot_theme'],
                                              color_mode_preferences=color_mode_preferences,
                                              animal_colors=animal_colors,
                                              remove_axes_bool=True)

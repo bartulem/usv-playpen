@@ -118,30 +118,13 @@ PROPERTY_SHORT_LABELS = {"duration": "duration", "spectral_entropy": "spectral\n
 # The category figure's property order (content change per property, share on the boundaries).
 BOUNDARY_PROPERTIES = (("mask_number", "mask count"), ("duration", "duration"), ("freq_bandwidth_hz", "bandwidth"),
                        ("spectral_entropy", "spectral entropy"), ("mean_freq_hz", "mean frequency"), ("loudness_db", "loudness"))
+# Side and frequency span of the regular QLVM's decoder input (128 x 128 bins over 30-120 kHz): fixed by the
+# trained model's input format, not a figure choice.
 SPECTROGRAM_SIZE = 128
 FREQUENCY_RANGE_KHZ = (30.0, 120.0)
-TEXT_COLOR = "#000000"
-FIGURE_FACE = "#FFFFFF"
-BOUNDARY_COLOR = "#FFFFFF"
-PROPERTY_BOUNDARY_COLOR = "#000000"
-MAP_COLORS = {"QLVM": "#000000", "PCA": "#9A9A9A", "UMAP": "#E69F00"}
-DISTANCE_COLORS = {"QLVM pullback geodesic": "#000000", "QLVM density geodesic": "#555555", "QLVM flat torus": "#8C8C8C",
-                   "PCA Euclidean": "#BDBDBD", "UMAP Euclidean": "#E69F00"}
-SEED_COLORS = ("#000000", "#666666", "#A6A6A6", "#CCCCCC")
-NULL_COLOR = "#D62728"
-DENSITY_COLOR = "#4E79A7"
-CHANGE_COLOR = "#E15759"
-BAR_COLOR = "#59595B"
-WATERSHED_COLOR = "#BDBDBD"
-GROUP_DOT_COLOR = "#FFFFFF"
-TITLE_SIZE = 14
-LABEL_SIZE = 14
-TICK_SIZE = 12
-COLORBAR_TICK_SIZE = 13
-COLORBAR_LABEL_SIZE = 15
-QUALITY_LABEL_SIZE = 16
-QUALITY_TICK_SIZE = 14
-QUALITY_TITLE_SIZE = 16
+# The distance-fidelity measures of panel (b'), in panel order: metric labels shared by the compute and plot
+# steps (a schema, not a tunable); their colours are ``qlvm_figures.style.distance_colors``.
+DISTANCE_LABELS = ("QLVM pullback geodesic", "QLVM density geodesic", "QLVM flat torus", "PCA Euclidean", "UMAP Euclidean")
 
 
 def session_roots_by_id(session_roots: list[str]) -> dict[str, pathlib.Path]:
@@ -633,7 +616,7 @@ def compute_qlvm_quality_metrics(
     nodes = neighbor_indices(context.grid, sample["xy"], 1, torus=True, exclude_self=False)[:, 0]
     order = rng.permutation(n)
     size = quality["distance_sample_size"]
-    labels = tuple(DISTANCE_COLORS)
+    labels = DISTANCE_LABELS
     metrics["distance_fidelity"] = {label: [] for label in labels}
     for sample_index in range(quality["n_distance_samples"]):
         pairs = np.sort(order[sample_index * size:(sample_index + 1) * size])
@@ -687,7 +670,7 @@ def bar_with_dots(axis, x: float, values, color: str, jitter: float, half_width:
     axis.scatter(x + np.linspace(-jitter, jitter, values.size), values, s=26, color=color, linewidths=0, zorder=3)
 
 
-def style_summary_axis(axis, title: str, ylabel: str) -> None:
+def style_summary_axis(axis, title: str, ylabel: str, style: dict) -> None:
     """
     Description
     -----------
@@ -701,15 +684,18 @@ def style_summary_axis(axis, title: str, ylabel: str) -> None:
         Panel title.
     ylabel (str)
         Y-axis label.
+    style (dict)
+        The ``qlvm_figures.style`` settings block (``quality_title_size``,
+        ``quality_label_size``, ``quality_tick_size``, ``text_color``).
 
     Returns
     -------
     None
     """
 
-    axis.set_title(title, fontsize=QUALITY_TITLE_SIZE, color=TEXT_COLOR)
-    axis.set_ylabel(ylabel, fontsize=QUALITY_LABEL_SIZE, color=TEXT_COLOR)
-    axis.tick_params(labelsize=QUALITY_TICK_SIZE)
+    axis.set_title(title, fontsize=style["quality_title_size"], color=style["text_color"])
+    axis.set_ylabel(ylabel, fontsize=style["quality_label_size"], color=style["text_color"])
+    axis.tick_params(labelsize=style["quality_tick_size"])
 
 
 def plot_qlvm_quality(sample: dict, metrics: dict, cfg: dict, cmap_name: str, seed: int) -> Figure:
@@ -719,7 +705,7 @@ def plot_qlvm_quality(sample: dict, metrics: dict, cfg: dict, cmap_name: str, se
     Draws the QLVM quality figure from ``compute_qlvm_quality_metrics``: the three
     maps (rows) coloured by the six properties (columns, 1st-99th percentile);
     (a) readout, bars = mean of the folds, dots = folds, red = shuffled positions;
-    (c) readout per training seed (when computed; at most ``len(SEED_COLORS)``
+    (c) readout per training seed (when computed; at most ``len(style["seed_colors"])``
     trainings, the production cell included, else ValueError rather than
     leaving the extra ones out); (b1-b3) neighborhood scores, dots = disjoint
     subsets; (b') distance fidelity, dots = disjoint samples, on an x axis from
@@ -733,7 +719,8 @@ def plot_qlvm_quality(sample: dict, metrics: dict, cfg: dict, cmap_name: str, se
     metrics (dict)
         ``compute_qlvm_quality_metrics`` output.
     cfg (dict)
-        The ``qlvm_figures`` settings block.
+        The ``qlvm_figures`` settings block (its ``style`` sub-block sets the colours,
+        font sizes, figure size and the 1st-99th percentile colour range).
     cmap_name (str)
         Sequential colormap of the maps (the project's ``sequential_cmap``).
     seed (int)
@@ -747,15 +734,16 @@ def plot_qlvm_quality(sample: dict, metrics: dict, cfg: dict, cmap_name: str, se
     Raises
     ------
     ValueError
-        ``metrics["per_seed"]`` holds more trainings than ``SEED_COLORS`` has colours.
+        ``metrics["per_seed"]`` holds more trainings than ``qlvm_figures.style.seed_colors`` has colours.
     """
 
     apply_plot_style()
     quality = cfg["quality"]
+    style = cfg["style"]
     properties = sample["properties"]
     maps = metrics["maps"]
     n = properties.shape[0]
-    fig = Figure(figsize=(20, 22.5), facecolor=FIGURE_FACE)
+    fig = Figure(figsize=tuple(style["quality_figsize"]), facecolor=style["figure_face"])
     rows = fig.add_gridspec(3, 1, height_ratios=[1.0, 0.8, 0.8], hspace=0.24)
     top = rows[0].subgridspec(3, len(FIGURE_PROPERTIES), wspace=0.2, hspace=0.05)
     middle = rows[1].subgridspec(1, 2, width_ratios=[1.45, 1.0], wspace=0.2)
@@ -765,7 +753,7 @@ def plot_qlvm_quality(sample: dict, metrics: dict, cfg: dict, cmap_name: str, se
         for column, (_, label, scale) in enumerate(FIGURE_PROPERTIES):
             axis = fig.add_subplot(top[row, column])
             values = properties[:, column] * scale
-            low, high = np.nanpercentile(values, [1, 99])
+            low, high = np.nanpercentile(values, style["color_percentiles"])
             image = axis.scatter(xy[draw_order, 0], xy[draw_order, 1], c=values[draw_order], s=0.3, cmap=cmap_name,
                                  vmin=low, vmax=high, linewidths=0, rasterized=True)
             axis.set_xticks([])
@@ -780,9 +768,9 @@ def plot_qlvm_quality(sample: dict, metrics: dict, cfg: dict, cmap_name: str, se
                 axis.set_ylim(center[1] - half, center[1] + half)
             axis.set_aspect("equal")
             if row == 0:
-                axis.set_title(label, fontsize=11, color=TEXT_COLOR)
+                axis.set_title(label, fontsize=11, color=style["text_color"])
             if column == 0:
-                axis.set_ylabel(map_name, fontsize=13, color=TEXT_COLOR)
+                axis.set_ylabel(map_name, fontsize=13, color=style["text_color"])
             colorbar = fig.colorbar(image, ax=axis, fraction=0.046, pad=0.015)
             colorbar.ax.tick_params(length=0, labelsize=9)
 
@@ -791,42 +779,43 @@ def plot_qlvm_quality(sample: dict, metrics: dict, cfg: dict, cmap_name: str, se
     axis = fig.add_subplot(middle[0])
     for offset, map_name in zip((-0.27, 0.0, 0.27), maps, strict=True):
         for index, column in enumerate(columns):
-            bar_with_dots(axis, positions[index] + offset, metrics["readout_folds"][map_name][column], MAP_COLORS[map_name],
+            bar_with_dots(axis, positions[index] + offset, metrics["readout_folds"][map_name][column], style["map_colors"][map_name],
                           jitter=0.07, half_width=0.135)
-            axis.scatter(positions[index] + offset, metrics["readout_null"][map_name][column], s=22, color=NULL_COLOR, zorder=3)
-        axis.bar([0], [0], color=MAP_COLORS[map_name], alpha=0.35, label=map_name)
-    axis.scatter([], [], s=22, color=NULL_COLOR, label="shuffled positions")
-    axis.axhline(0, color=TEXT_COLOR, linewidth=0.8)
+            axis.scatter(positions[index] + offset, metrics["readout_null"][map_name][column], s=22, color=style["null_color"], zorder=3)
+        axis.bar([0], [0], color=style["map_colors"][map_name], alpha=0.35, label=map_name)
+    axis.scatter([], [], s=22, color=style["null_color"], label="shuffled positions")
+    axis.axhline(0, color=style["text_color"], linewidth=0.8)
     axis.set_ylim(-0.1, 1.0)
     axis.set_xticks(positions)
     axis.set_xticklabels([PROPERTY_SHORT_LABELS[column] for column in columns])
     style_summary_axis(axis, f"(a) acoustic readout from 2-D position (dots: {quality['readout_folds']} session-held-out folds)",
-                       "kNN rank R²")
-    axis.legend(frameon=False, fontsize=QUALITY_TICK_SIZE, ncol=1, loc="upper right")
+                       "kNN rank R²", style)
+    axis.legend(frameon=False, fontsize=style["quality_tick_size"], ncol=1, loc="upper right")
 
     axis = fig.add_subplot(middle[1])
     if metrics["per_seed"]:
         seeds = list(metrics["per_seed"])
-        if len(seeds) > len(SEED_COLORS):
-            msg = (f"Panel (c) draws at most {len(SEED_COLORS)} trainings (one colour of SEED_COLORS each, the production "
-                   f"cell included), but {len(seeds)} were given ({seeds}); list at most {len(SEED_COLORS) - 1} cells in "
+        if len(seeds) > len(style["seed_colors"]):
+            msg = (f"Panel (c) draws at most {len(style['seed_colors'])} trainings (one colour of qlvm_figures.style.seed_colors each, "
+                   f"the production cell included), but {len(seeds)} were given ({seeds}); list at most "
+                   f"{len(style['seed_colors']) - 1} cells in "
                    f"qlvm_figures.seed_cell_directories.")
             raise ValueError(msg)
         offsets = np.linspace(-0.27, 0.27, len(seeds)) if len(seeds) > 1 else np.zeros(1)
         width = 0.135 if len(seeds) <= 3 else 0.54 / len(seeds) / 2
-        for offset, name, color in zip(offsets, seeds, SEED_COLORS, strict=False):
+        for offset, name, color in zip(offsets, seeds, style["seed_colors"], strict=False):
             for index, column in enumerate(columns):
                 bar_with_dots(axis, positions[index] + offset, metrics["per_seed"][name][column], color, jitter=0.07, half_width=width)
             axis.bar([0], [0], color=color, alpha=0.35, label=name)
         axis.set_ylim(0, 1.0)
         axis.set_xticks(positions)
         axis.set_xticklabels([PROPERTY_SHORT_LABELS[column] for column in columns])
-        axis.legend(frameon=False, fontsize=QUALITY_TICK_SIZE, ncol=1, loc="upper right")
+        axis.legend(frameon=False, fontsize=style["quality_tick_size"], ncol=1, loc="upper right")
     else:
         axis.set_axis_off()
         axis.text(0.5, 0.5, "no other trainings set\n(qlvm_figures.seed_cell_directories)", ha="center", va="center",
-                  fontsize=QUALITY_TICK_SIZE, color=TEXT_COLOR, transform=axis.transAxes)
-    style_summary_axis(axis, "(c) readout per QLVM training seed", "kNN rank R²")
+                  fontsize=style["quality_tick_size"], color=style["text_color"], transform=axis.transAxes)
+    style_summary_axis(axis, "(c) readout per QLVM training seed", "kNN rank R²", style)
 
     panels = (("overlap", "(b1) neighbor overlap", "share of true neighbors found\n(higher is better)"),
               ("false_neighbors", "(b2) false-neighbor severity", "1 - trustworthiness\n(lower is better)"),
@@ -834,29 +823,29 @@ def plot_qlvm_quality(sample: dict, metrics: dict, cfg: dict, cmap_name: str, se
     for column, (key, title, ylabel) in enumerate(panels):
         axis = fig.add_subplot(bottom[column])
         for index, map_name in enumerate(maps):
-            bar_with_dots(axis, index, metrics["neighborhoods"][map_name][key], MAP_COLORS[map_name], jitter=0.18, half_width=0.5)
+            bar_with_dots(axis, index, metrics["neighborhoods"][map_name][key], style["map_colors"][map_name], jitter=0.18, half_width=0.5)
         axis.set_xticks(range(len(maps)))
         axis.set_xticklabels(list(maps))
         axis.set_xlim(-0.9, len(maps) - 0.1)
-        style_summary_axis(axis, title, ylabel)
+        style_summary_axis(axis, title, ylabel, style)
     fig.text(0.5 * (bottom[0].get_position(fig).x0 + bottom[2].get_position(fig).x1), bottom[0].get_position(fig).y0 - 0.025,
              f"k = {quality['neighborhood_k']}; dots: {quality['n_neighborhood_subsets']} disjoint subsets of "
-             f"{quality['neighborhood_subset_size']:,} USVs", ha="center", fontsize=QUALITY_TICK_SIZE)
+             f"{quality['neighborhood_subset_size']:,} USVs", ha="center", fontsize=style["quality_tick_size"])
 
     axis = fig.add_subplot(bottom[3])
-    for index, label in enumerate(DISTANCE_COLORS):
+    for index, label in enumerate(DISTANCE_LABELS):
         values = np.asarray(metrics["distance_fidelity"][label])
-        axis.barh(index, values.mean(), height=1.0, color=DISTANCE_COLORS[label], alpha=0.35, zorder=2)
-        axis.scatter(values, index + np.linspace(-0.18, 0.18, values.size), s=26, color=DISTANCE_COLORS[label], linewidths=0, zorder=3)
-        axis.text(0.01, index, label, va="center", ha="left", fontsize=QUALITY_TICK_SIZE, color=TEXT_COLOR, zorder=4)
+        axis.barh(index, values.mean(), height=1.0, color=style["distance_colors"][label], alpha=0.35, zorder=2)
+        axis.scatter(values, index + np.linspace(-0.18, 0.18, values.size), s=26, color=style["distance_colors"][label], linewidths=0, zorder=3)
+        axis.text(0.01, index, label, va="center", ha="left", fontsize=style["quality_tick_size"], color=style["text_color"], zorder=4)
     axis.set_yticks([])
-    axis.set_ylim(len(DISTANCE_COLORS) - 0.5, -0.5)
-    all_fidelity = np.concatenate([np.asarray(metrics["distance_fidelity"][label], dtype=float) for label in DISTANCE_COLORS])
+    axis.set_ylim(len(DISTANCE_LABELS) - 0.5, -0.5)
+    all_fidelity = np.concatenate([np.asarray(metrics["distance_fidelity"][label], dtype=float) for label in DISTANCE_LABELS])
     axis.set_xlim(min(0.0, 1.05 * float(all_fidelity.min())), max(0.7, 1.05 * float(all_fidelity.max())))
-    axis.set_xlabel("distance correlation:\nmap distance vs acoustic difference", fontsize=QUALITY_LABEL_SIZE, color=TEXT_COLOR)
+    axis.set_xlabel("distance correlation:\nmap distance vs acoustic difference", fontsize=style["quality_label_size"], color=style["text_color"])
     axis.set_title(f"(b') distance fidelity, all pairs\n({quality['n_distance_samples']} samples of "
-                   f"{quality['distance_sample_size']:,} USVs)", fontsize=QUALITY_TITLE_SIZE, color=TEXT_COLOR)
-    axis.tick_params(labelsize=QUALITY_TICK_SIZE)
+                   f"{quality['distance_sample_size']:,} USVs)", fontsize=style["quality_title_size"], color=style["text_color"])
+    axis.tick_params(labelsize=style["quality_tick_size"])
     return fig
 
 
@@ -1264,7 +1253,7 @@ def compute_category_boundary_fields(usvs: pls.DataFrame, bundle: dict, cfg: dic
             "nulls": nulls, "observed": observed, "share": share}
 
 
-def style_torus(axis, title: str, title_size: float) -> None:
+def style_torus(axis, title: str, title_size: float, text_color: str) -> None:
     """
     Description
     -----------
@@ -1278,6 +1267,8 @@ def style_torus(axis, title: str, title_size: float) -> None:
         Panel title.
     title_size (float)
         Title font size.
+    text_color (str)
+        Hex colour of the title (``qlvm_figures.style.text_color``).
 
     Returns
     -------
@@ -1289,10 +1280,11 @@ def style_torus(axis, title: str, title_size: float) -> None:
     axis.set_aspect("equal")
     axis.set_xticks([])
     axis.set_yticks([])
-    axis.set_title(title, fontsize=title_size, color=TEXT_COLOR)
+    axis.set_title(title, fontsize=title_size, color=text_color)
 
 
-def draw_category_field(axis, field: np.ndarray, title: str, bundle: dict, colorbar_label: str, cmap_name: str) -> None:
+def draw_category_field(axis, field: np.ndarray, title: str, bundle: dict, colorbar_label: str, cmap_name: str,
+                        style: dict) -> None:
     """
     Description
     -----------
@@ -1313,6 +1305,9 @@ def draw_category_field(axis, field: np.ndarray, title: str, bundle: dict, color
         Colour-bar label with its unit in parentheses.
     cmap_name (str)
         Sequential colormap.
+    style (dict)
+        The ``qlvm_figures.style`` settings block (colour range ``color_percentiles``,
+        boundary colour, title and colour-bar font sizes, text colour).
 
     Returns
     -------
@@ -1320,15 +1315,16 @@ def draw_category_field(axis, field: np.ndarray, title: str, bundle: dict, color
     """
 
     image = axis.imshow(field, origin="lower", extent=(0, 1, 0, 1), cmap=cmap_name,
-                        vmin=np.percentile(field, 1), vmax=np.percentile(field, 99), interpolation="nearest")
+                        vmin=np.percentile(field, style["color_percentiles"][0]),
+                        vmax=np.percentile(field, style["color_percentiles"][1]), interpolation="nearest")
     colorbar = axis.figure.colorbar(image, ax=axis, fraction=0.046, pad=0.02)
-    colorbar.ax.tick_params(length=0, labelsize=COLORBAR_TICK_SIZE)
-    colorbar.set_label(colorbar_label, fontsize=COLORBAR_LABEL_SIZE)
-    draw_category_outlines(axis, bundle["axis"], bundle["axis"], bundle["label_grid"], colors=BOUNDARY_COLOR, linewidths=1.4, zorder=3)
+    colorbar.ax.tick_params(length=0, labelsize=style["colorbar_tick_size"])
+    colorbar.set_label(colorbar_label, fontsize=style["colorbar_label_size"])
+    draw_category_outlines(axis, bundle["axis"], bundle["axis"], bundle["label_grid"], colors=style["boundary_color"], linewidths=1.4, zorder=3)
     for index, (label_x, label_y) in enumerate(bundle["centers"]):
-        axis.text(min(max(label_x, 0.04), 0.96), min(max(label_y, 0.04), 0.96), str(index + 1), color=BOUNDARY_COLOR,
+        axis.text(min(max(label_x, 0.04), 0.96), min(max(label_y, 0.04), 0.96), str(index + 1), color=style["boundary_color"],
                   fontsize=13, ha="center", va="center", zorder=4)
-    style_torus(axis, title, TITLE_SIZE)
+    style_torus(axis, title, style["title_size"], style["text_color"])
 
 
 def plot_category_boundaries(fields: dict, similarity: dict, bundle: dict, cfg: dict, cmap_name: str,
@@ -1358,7 +1354,8 @@ def plot_category_boundaries(fields: dict, similarity: dict, bundle: dict, cfg: 
     bundle (dict)
         ``os_utils.load_qlvm_category_bundle()``.
     cfg (dict)
-        The ``qlvm_figures`` settings block.
+        The ``qlvm_figures`` settings block (its ``style`` sub-block sets the colours,
+        font sizes, figure size and colour range).
     cmap_name (str)
         Sequential colormap of the maps and spectrograms.
     diverging_cmap_name (str)
@@ -1373,10 +1370,11 @@ def plot_category_boundaries(fields: dict, similarity: dict, bundle: dict, cfg: 
 
     apply_plot_style()
     categories_cfg = cfg["categories"]
+    style = cfg["style"]
     colors = cfg["category_colors"]
     n_categories = similarity["matrix"].shape[0]
     chance_cmap = diverging_cmap_name
-    fig = Figure(figsize=(32.5, 16.6), facecolor=FIGURE_FACE)
+    fig = Figure(figsize=tuple(style["categories_figsize"]), facecolor=style["figure_face"])
     outer = fig.add_gridspec(3, 1, height_ratios=[0.9, 0.75, 0.95], hspace=0.24)
     top = outer[0].subgridspec(1, 5, width_ratios=[0.95, 1, 1, 0.8, 0.8], wspace=0.5)
     middle = outer[1].subgridspec(1, len(BOUNDARY_PROPERTIES), wspace=0.30)
@@ -1391,54 +1389,54 @@ def plot_category_boundaries(fields: dict, similarity: dict, bundle: dict, cfg: 
         axis.set_xlim(0, categories_cfg["average_time_ms"])
         axis.set_xticks(np.arange(0, categories_cfg["average_time_ms"] + 1, 50))
         axis.set_yticks([40, 80, 120])
-        axis.set_title(f"category {category + 1}", fontsize=TICK_SIZE, color=TEXT_COLOR)
+        axis.set_title(f"category {category + 1}", fontsize=style["tick_size"], color=style["text_color"])
         if row == 1:
-            axis.set_xlabel("time (ms)", fontsize=TICK_SIZE)
+            axis.set_xlabel("time (ms)", fontsize=style["tick_size"])
         else:
             axis.set_xticklabels([])
         if column == 0:
-            axis.set_ylabel("frequency (kHz)", fontsize=TICK_SIZE)
+            axis.set_ylabel("frequency (kHz)", fontsize=style["tick_size"])
         else:
             axis.set_yticklabels([])
-        axis.tick_params(labelsize=TICK_SIZE - 2)
+        axis.tick_params(labelsize=style["tick_size"] - 2)
 
     draw_category_field(fig.add_subplot(top[1]), fields["density"], f"USV density ({fields['n_usvs']:,} USVs)", bundle,
-                        "USV density (smoothed count)", cmap_name)
+                        "USV density (smoothed count)", cmap_name, style)
     draw_category_field(fig.add_subplot(top[2]), fields["change"], "content change (all six properties)", bundle,
-                        "content change (Δ rank)", cmap_name)
+                        "content change (Δ rank)", cmap_name, style)
 
     axis = fig.add_subplot(top[3])
     nulls, observed = fields["nulls"], fields["observed"]
     bins = np.linspace(min(nulls["density"].min(), nulls["content_change"].min(), 0.6),
                        max(observed["content_change"], nulls["content_change"].max()) * 1.05, categories_cfg["histogram_bins"] + 1)
-    measures = (("density", DENSITY_COLOR, "density"), ("content_change", CHANGE_COLOR, "content change"))
+    measures = (("density", style["density_color"], "density"), ("content_change", style["change_color"], "content change"))
     for name, color, label in measures:
         axis.hist(nulls[name], bins=bins, histtype="stepfilled", color=color, alpha=0.55,
                   label=f"{label}: shifted boundaries (mean {nulls[name].mean():.2f})")
     for name, color, label in measures:
         axis.axvline(observed[name], color=color, linewidth=2.4, label=f"{label}: real boundaries ({observed[name]:.2f})")
-    axis.axvline(1.0, color=TEXT_COLOR, linewidth=0.8, linestyle=":")
-    axis.set_xlabel("boundary pattern mean / map mean", fontsize=LABEL_SIZE)
-    axis.set_ylabel(f"shifted patterns (of {nulls['density'].size})", fontsize=LABEL_SIZE)
-    axis.set_title("along-boundary test (real vs shifted boundaries)", fontsize=TITLE_SIZE, color=TEXT_COLOR)
-    axis.tick_params(labelsize=TICK_SIZE)
+    axis.axvline(1.0, color=style["text_color"], linewidth=0.8, linestyle=":")
+    axis.set_xlabel("boundary pattern mean / map mean", fontsize=style["label_size"])
+    axis.set_ylabel(f"shifted patterns (of {nulls['density'].size})", fontsize=style["label_size"])
+    axis.set_title("along-boundary test (real vs shifted boundaries)", fontsize=style["title_size"], color=style["text_color"])
+    axis.tick_params(labelsize=style["tick_size"])
     axis.set_ylim(0, axis.get_ylim()[1] * 1.75)
-    axis.legend(frameon=False, fontsize=TICK_SIZE - 2, loc="upper left")
+    axis.legend(frameon=False, fontsize=style["tick_size"] - 2, loc="upper left")
 
     axis = fig.add_subplot(top[4])
     labels = [label for _, label in BOUNDARY_PROPERTIES]
     order = np.argsort(fields["share"])[::-1]
-    axis.barh(np.arange(len(labels)), fields["share"][order] * 100, color=BAR_COLOR)
+    axis.barh(np.arange(len(labels)), fields["share"][order] * 100, color=style["bar_color"])
     axis.set_yticks(np.arange(len(labels)))
-    axis.set_yticklabels([labels[i] for i in order], fontsize=LABEL_SIZE)
+    axis.set_yticklabels([labels[i] for i in order], fontsize=style["label_size"])
     axis.invert_yaxis()
-    axis.set_xlabel("share of the content change on the boundaries (%)", fontsize=LABEL_SIZE)
-    axis.set_title("what changes across the boundaries", fontsize=TITLE_SIZE, color=TEXT_COLOR)
-    axis.tick_params(labelsize=TICK_SIZE)
+    axis.set_xlabel("share of the content change on the boundaries (%)", fontsize=style["label_size"])
+    axis.set_title("what changes across the boundaries", fontsize=style["title_size"], color=style["text_color"])
+    axis.tick_params(labelsize=style["tick_size"])
 
     for column, (_, label) in enumerate(BOUNDARY_PROPERTIES):
         draw_category_field(fig.add_subplot(middle[column]), fields["per_property"][column], f"content change: {label}", bundle,
-                            f"{label} change (Δ rank)", cmap_name)
+                            f"{label} change (Δ rank)", cmap_name, style)
 
     category_ticks = range(n_categories)
     category_labels = [str(category) for category in range(1, n_categories + 1)]
@@ -1448,23 +1446,23 @@ def plot_category_boundaries(fields: dict, similarity: dict, bundle: dict, cfg: 
     image = axis.imshow(table, cmap=chance_cmap, origin="upper", vmin=0.5 - half, vmax=0.5 + half)
     for a in range(n_categories):
         for b in range(n_categories):
-            axis.text(b, a, f"{table[a, b]:.2f}", ha="center", va="center", fontsize=TICK_SIZE,
-                      color=BOUNDARY_COLOR if abs(table[a, b] - 0.5) > 0.7 * half else TEXT_COLOR)
+            axis.text(b, a, f"{table[a, b]:.2f}", ha="center", va="center", fontsize=style["tick_size"],
+                      color=style["boundary_color"] if abs(table[a, b] - 0.5) > 0.7 * half else style["text_color"])
     axis.set_xticks(category_ticks)
     axis.set_xticklabels(category_labels)
     axis.set_yticks(category_ticks)
     axis.set_yticklabels(category_labels)
-    axis.set_xlabel("category", fontsize=LABEL_SIZE)
-    axis.set_ylabel("category", fontsize=LABEL_SIZE)
-    axis.tick_params(labelsize=TICK_SIZE, length=0)
+    axis.set_xlabel("category", fontsize=style["label_size"])
+    axis.set_ylabel("category", fontsize=style["label_size"])
+    axis.tick_params(labelsize=style["tick_size"], length=0)
     axis.set_title(f"(i) mean similarity between categories\n({categories_cfg['balanced_per_category']:,} USVs per category)",
-                   fontsize=TITLE_SIZE, color=TEXT_COLOR)
+                   fontsize=style["title_size"], color=style["text_color"])
     colorbar = fig.colorbar(image, cax=make_axes_locatable(axis).append_axes("right", size="5%", pad=0.12))
     similarity_colorbar_axis = colorbar.ax
-    colorbar.ax.tick_params(length=0, labelsize=COLORBAR_TICK_SIZE)
+    colorbar.ax.tick_params(length=0, labelsize=style["colorbar_tick_size"])
     colorbar.set_ticks([0.5 - half, 0.5, 0.5 + half])
     colorbar.set_ticklabels([f"{value:.2f}" for value in (0.5 - half, 0.5, 0.5 + half)])
-    colorbar.set_label("mean normalized similarity (percentile)", fontsize=COLORBAR_LABEL_SIZE)
+    colorbar.set_label("mean normalized similarity (percentile)", fontsize=style["colorbar_label_size"])
 
     axis = fig.add_subplot(bottom[1])
     attachment_axis = axis
@@ -1474,19 +1472,19 @@ def plot_category_boundaries(fields: dict, similarity: dict, bundle: dict, cfg: 
         body.set_facecolor(color)
         body.set_edgecolor(color)
         body.set_alpha(0.75)
-    violins["cmedians"].set_color(TEXT_COLOR)
+    violins["cmedians"].set_color(style["text_color"])
     top_value = max(np.percentile(group, 99.5) for group in groups)
     for a, group in enumerate(groups):
-        axis.text(a + 1, top_value + 0.06, f"{100 * (group > 0).mean():.1f}% > 0", ha="center", va="bottom", fontsize=TICK_SIZE)
-    axis.axhline(0, color=TEXT_COLOR, linewidth=0.9, linestyle=":")
+        axis.text(a + 1, top_value + 0.06, f"{100 * (group > 0).mean():.1f}% > 0", ha="center", va="bottom", fontsize=style["tick_size"])
+    axis.axhline(0, color=style["text_color"], linewidth=0.9, linestyle=":")
     axis.set_ylim(min(group.min() for group in groups) - 0.03, max(top_value + 0.13, max(group.max() for group in groups) + 0.02))
     axis.set_xticks(np.arange(1, n_categories + 1))
     axis.set_xticklabels(category_labels)
-    axis.set_xlabel("category", fontsize=LABEL_SIZE)
-    axis.set_ylabel("Δ mean normalized similarity", fontsize=LABEL_SIZE)
+    axis.set_xlabel("category", fontsize=style["label_size"])
+    axis.set_ylabel("Δ mean normalized similarity", fontsize=style["label_size"])
     axis.set_title(f"(ii) per-USV attachment to its category\n({categories_cfg['balanced_per_category']:,} USVs per category)",
-                   fontsize=TITLE_SIZE, color=TEXT_COLOR)
-    axis.tick_params(labelsize=TICK_SIZE)
+                   fontsize=style["title_size"], color=style["text_color"])
+    axis.tick_params(labelsize=style["tick_size"])
 
     axis = fig.add_subplot(bottom[2])
     matches_axis = axis
@@ -1499,38 +1497,38 @@ def plot_category_boundaries(fields: dict, similarity: dict, bundle: dict, cfg: 
     for a in range(n_categories):
         for b in range(n_categories):
             strong = abs(log_ratio[a, b]) > 0.7 * limit
-            axis.text(b, a, f"{shares[a, b]:.2f}", ha="center", va="center", fontsize=TICK_SIZE, color=BOUNDARY_COLOR if strong else TEXT_COLOR)
+            axis.text(b, a, f"{shares[a, b]:.2f}", ha="center", va="center", fontsize=style["tick_size"], color=style["boundary_color"] if strong else style["text_color"])
     axis.set_xticks(category_ticks)
     axis.set_xticklabels(category_labels)
     axis.set_yticks(category_ticks)
     axis.set_yticklabels(category_labels)
-    axis.set_xlabel("category of the closest matches", fontsize=LABEL_SIZE)
-    axis.set_ylabel("category of the USV", fontsize=LABEL_SIZE)
-    axis.tick_params(labelsize=TICK_SIZE, length=0)
+    axis.set_xlabel("category of the closest matches", fontsize=style["label_size"])
+    axis.set_ylabel("category of the USV", fontsize=style["label_size"])
+    axis.tick_params(labelsize=style["tick_size"], length=0)
     axis.set_title(f"(iii) where the {categories_cfg['closest_matches']} closest matches fall\n"
-                   f"({categories_cfg['balanced_per_category']:,} USVs per category)", fontsize=TITLE_SIZE, color=TEXT_COLOR)
+                   f"({categories_cfg['balanced_per_category']:,} USVs per category)", fontsize=style["title_size"], color=style["text_color"])
     colorbar = fig.colorbar(image, cax=make_axes_locatable(axis).append_axes("right", size="5%", pad=0.12), extend="min")
     matches_colorbar_axis = colorbar.ax
     tick_shares = [chance * 2.0 ** power for power in np.arange(-limit, limit + 1)]
     colorbar.set_ticks(np.log2(np.array(tick_shares) / chance))
     colorbar.set_ticklabels([f"{value:g}" for value in tick_shares])
-    colorbar.ax.tick_params(length=0, labelsize=COLORBAR_TICK_SIZE)
-    colorbar.set_label("share of closest matches (log scale)", fontsize=COLORBAR_LABEL_SIZE)
+    colorbar.ax.tick_params(length=0, labelsize=style["colorbar_tick_size"])
+    colorbar.set_label("share of closest matches (log scale)", fontsize=style["colorbar_label_size"])
 
     axis = fig.add_subplot(bottom[3])
     for position, group_values in enumerate(similarity["partition_scores"].values()):
-        axis.bar(position, np.mean(group_values), width=0.65, color=BAR_COLOR if position == 0 else WATERSHED_COLOR, zorder=2)
+        axis.bar(position, np.mean(group_values), width=0.65, color=style["bar_color"] if position == 0 else style["watershed_color"], zorder=2)
         jitter = np.linspace(-0.15, 0.15, len(group_values)) if len(group_values) > 1 else np.zeros(1)
-        axis.scatter(position + jitter, group_values, s=34, color=GROUP_DOT_COLOR, edgecolors=TEXT_COLOR, linewidths=0.8, zorder=3)
-        axis.text(position, np.mean(group_values) + 0.004, f"{np.mean(group_values):.3f}", ha="center", va="bottom", fontsize=TICK_SIZE,
+        axis.scatter(position + jitter, group_values, s=34, color=style["group_dot_color"], edgecolors=style["text_color"], linewidths=0.8, zorder=3)
+        axis.text(position, np.mean(group_values) + 0.004, f"{np.mean(group_values):.3f}", ha="center", va="bottom", fontsize=style["tick_size"],
                   zorder=4)
-    axis.axhline(0, color=TEXT_COLOR, linewidth=0.8)
+    axis.axhline(0, color=style["text_color"], linewidth=0.8)
     axis.set_xticks(range(len(similarity["partition_scores"])))
-    axis.set_xticklabels(list(similarity["partition_scores"]), fontsize=TICK_SIZE)
-    axis.set_ylabel("partition score\n(Δ mean normalized similarity)", fontsize=LABEL_SIZE)
+    axis.set_xticklabels(list(similarity["partition_scores"]), fontsize=style["tick_size"])
+    axis.set_ylabel("partition score\n(Δ mean normalized similarity)", fontsize=style["label_size"])
     axis.set_title(f"(iv) content-ridge categories vs watershed clusters\n({categories_cfg['partition_sample_size']:,} random USVs; "
-                   "dots: groups)", fontsize=TITLE_SIZE, color=TEXT_COLOR)
-    axis.tick_params(labelsize=TICK_SIZE)
+                   "dots: groups)", fontsize=style["title_size"], color=style["text_color"])
+    axis.tick_params(labelsize=style["tick_size"])
 
     # Equal visible gaps in the similarity row: (iii) and its colour bar are shifted so the gap from (ii)
     # to (iii) equals the gap from (i)'s colour bar to (ii), labels included.
@@ -1656,7 +1654,8 @@ def plot_qlvm_overview(usvs: pls.DataFrame, bundle: dict, roots: dict[str, pathl
     roots (dict[str, pathlib.Path])
         Session id -> root directory (``session_roots_by_id``).
     cfg (dict)
-        The ``qlvm_figures`` settings block.
+        The ``qlvm_figures`` settings block (its ``style`` sub-block sets the colours,
+        figure size and the 1st-99th percentile colour range).
     cmap_name (str)
         Sequential colormap.
     seed (int)
@@ -1676,6 +1675,7 @@ def plot_qlvm_overview(usvs: pls.DataFrame, bundle: dict, roots: dict[str, pathl
     if usvs.height > cfg["n_usvs"]:
         usvs = usvs.sample(n=cfg["n_usvs"], seed=seed)
     overview = cfg["overview"]
+    style = cfg["style"]
     colors = cfg["category_colors"]
     label_grid = bundle["label_grid"]
     resolution = label_grid.shape[0]
@@ -1684,7 +1684,7 @@ def plot_qlvm_overview(usvs: pls.DataFrame, bundle: dict, roots: dict[str, pathl
     change = np.load(pathlib.Path(bundle["directory"]) / QLVM_CATEGORY_GRIDS_NAME)["content_change"]
     examples = category_examples(usvs, label_grid, cfg, seed)
 
-    fig = Figure(figsize=(30, 12.5), facecolor=FIGURE_FACE)
+    fig = Figure(figsize=tuple(style["overview_figsize"]), facecolor=style["figure_face"])
     outer = fig.add_gridspec(2, 1, height_ratios=[1.0, 1.0], hspace=0.14)
     top = outer[0].subgridspec(1, 4, width_ratios=[1, 1, 1, 2.35], wspace=0.06)
     bottom = outer[1].subgridspec(1, len(OVERVIEW_PROPERTIES), wspace=0.06)
@@ -1694,18 +1694,18 @@ def plot_qlvm_overview(usvs: pls.DataFrame, bundle: dict, roots: dict[str, pathl
     density = periodic_density(rows, cols, resolution, overview["density_bandwidth"])
     occupied = density[density >= 1.0]
     axis = fig.add_subplot(top[0])
-    axis.imshow(density, origin="lower", extent=(0, 1, 0, 1), cmap=cmap_name, vmin=np.percentile(occupied, 1),
-                vmax=np.percentile(occupied, 99), interpolation="nearest")
-    style_torus(axis, f"USV density ({usvs.height:,} USVs)", 11)
+    axis.imshow(density, origin="lower", extent=(0, 1, 0, 1), cmap=cmap_name, vmin=np.percentile(occupied, style["color_percentiles"][0]),
+                vmax=np.percentile(occupied, style["color_percentiles"][1]), interpolation="nearest")
+    style_torus(axis, f"USV density ({usvs.height:,} USVs)", 11, style["text_color"])
 
     axis = fig.add_subplot(top[1])
-    axis.imshow(change, origin="lower", extent=(0, 1, 0, 1), cmap=cmap_name, vmin=np.percentile(change, 1),
-                vmax=np.percentile(change, 99), interpolation="nearest")
-    draw_category_outlines(axis, bundle["axis"], bundle["axis"], label_grid, colors=BOUNDARY_COLOR, linewidths=1.6, zorder=3)
+    axis.imshow(change, origin="lower", extent=(0, 1, 0, 1), cmap=cmap_name, vmin=np.percentile(change, style["color_percentiles"][0]),
+                vmax=np.percentile(change, style["color_percentiles"][1]), interpolation="nearest")
+    draw_category_outlines(axis, bundle["axis"], bundle["axis"], label_grid, colors=style["boundary_color"], linewidths=1.6, zorder=3)
     for index, (label_x, label_y) in enumerate(bundle["centers"]):
-        axis.text(min(max(label_x, 0.04), 0.96), min(max(label_y, 0.04), 0.96), str(index + 1), color=BOUNDARY_COLOR, fontsize=13,
+        axis.text(min(max(label_x, 0.04), 0.96), min(max(label_y, 0.04), 0.96), str(index + 1), color=style["boundary_color"], fontsize=13,
                   fontweight="bold", ha="center", va="center", zorder=4)
-    style_torus(axis, "content ridges and category boundaries", 11)
+    style_torus(axis, "content ridges and category boundaries", 11, style["text_color"])
 
     axis = fig.add_subplot(top[2])
     order = np.random.default_rng(seed).permutation(usvs.height)
@@ -1714,13 +1714,13 @@ def plot_qlvm_overview(usvs: pls.DataFrame, bundle: dict, roots: dict[str, pathl
     for centre, _, path in examples:
         jumps = np.flatnonzero(np.abs(np.diff(path, axis=0)).max(axis=1) > 0.5) + 1
         for segment in np.split(path, jumps):
-            axis.plot(segment[:, 0], segment[:, 1], color=TEXT_COLOR, linewidth=0.8, zorder=4)
-        axis.scatter(*centre, s=40, color=FIGURE_FACE, edgecolor=TEXT_COLOR, linewidth=1.0, zorder=5)
+            axis.plot(segment[:, 0], segment[:, 1], color=style["text_color"], linewidth=0.8, zorder=4)
+        axis.scatter(*centre, s=40, color=style["figure_face"], edgecolor=style["text_color"], linewidth=1.0, zorder=5)
     handles = [Line2D([], [], marker="o", linestyle="", markersize=7, color=colors[index],
                       label=f"{index + 1} {descriptions[index]} ({100.0 * float((labels == index + 1).mean()):.1f}%)")
                for index in range(n_categories)]
     axis.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.01), ncol=2, frameon=False, fontsize=9)
-    style_torus(axis, "categories (spiral centres = densest point)", 11)
+    style_torus(axis, "categories (spiral centres = densest point)", 11, style["text_color"])
 
     thumbnails = top[3].subgridspec(n_categories, overview["n_examples"], wspace=0.04, hspace=0.12)
     records = []
@@ -1733,14 +1733,14 @@ def plot_qlvm_overview(usvs: pls.DataFrame, bundle: dict, roots: dict[str, pathl
                 spine.set_edgecolor(colors[row])
                 spine.set_linewidth(2.0)
             if column >= picks.height:
-                axis.set_facecolor(FIGURE_FACE)
+                axis.set_facecolor(style["figure_face"])
                 continue
             pick = picks.row(column, named=True)
             with h5py.File(session_spectrogram_file(roots[pick["session_id"]]), "r") as h5:
                 tile = read_thumbnail(h5, pick["session_id"], int(pick["row_index"]))
             axis.imshow(tile, origin="lower", aspect="auto", cmap=cmap_name, vmin=0.0, vmax=float(tile.max()) or 1.0)
             if column == 0:
-                axis.set_ylabel(f"{row + 1} {descriptions[row]}", fontsize=10, color=TEXT_COLOR)
+                axis.set_ylabel(f"{row + 1} {descriptions[row]}", fontsize=10, color=style["text_color"])
             records.append({"session_id": pick["session_id"], "row_index": int(pick["row_index"]), "category": row + 1,
                             "description": descriptions[row], "spiral_order": column + 1, "centre_x": float(centre[0]),
                             "centre_y": float(centre[1])})
@@ -1750,8 +1750,9 @@ def plot_qlvm_overview(usvs: pls.DataFrame, bundle: dict, roots: dict[str, pathl
         axis = fig.add_subplot(bottom[column])
         values = usvs[name].to_numpy() * scale
         image = axis.scatter(points[shuffle, 0], points[shuffle, 1], c=values[shuffle], s=1.2, cmap=cmap_name,
-                             vmin=np.percentile(values, 1), vmax=np.percentile(values, 99), linewidths=0, rasterized=True)
-        draw_category_outlines(axis, bundle["axis"], bundle["axis"], label_grid, colors=PROPERTY_BOUNDARY_COLOR, linewidths=0.8, zorder=3)
-        style_torus(axis, label, 11)
+                             vmin=np.percentile(values, style["color_percentiles"][0]),
+                             vmax=np.percentile(values, style["color_percentiles"][1]), linewidths=0, rasterized=True)
+        draw_category_outlines(axis, bundle["axis"], bundle["axis"], label_grid, colors=style["property_boundary_color"], linewidths=0.8, zorder=3)
+        style_torus(axis, label, 11, style["text_color"])
         fig.colorbar(image, ax=axis, fraction=0.046, pad=0.02)
     return fig, pls.DataFrame(records)

@@ -375,11 +375,43 @@ class AnatomyFigureMaker:
             return "Multi-unit"
         return "Somatic" if row["somatic"] else "Non-somatic"
 
+    def _anatomy_setting(self, group: str, key: str, override):
+        """
+        Description
+        -----------
+        Resolve one rendering knob: the caller's explicit value when given,
+        otherwise ``visualizations_parameter_dict['anatomy_figures'][group][key]``
+        (the same override-or-settings rule ``figure_io`` applies to the
+        ``figures`` block). List-valued settings (figure sizes) come back as
+        tuples.
+
+        Parameters
+        ----------
+        group (str)
+            Sub-block of ``anatomy_figures``: ``'recording_yield'``,
+            ``'unit_positions'``, ``'unit_positions_video'`` or
+            ``'unit_waveforms'``.
+        key (str)
+            Key inside that sub-block.
+        override (object)
+            The caller's value; ``None`` means "use the setting".
+
+        Returns
+        -------
+        value (object)
+            The resolved value.
+        """
+
+        if override is not None:
+            return override
+        value = self.visualizations_parameter_dict["anatomy_figures"][group][key]
+        return tuple(value) if isinstance(value, list) else value
+
     def make_recording_yield_figure(
             self,
             out_dir: str | pathlib.Path | None = None,
             *,
-            fig_size_inches: tuple[float, float] = (7.0, 2.6),
+            fig_size_inches: tuple[float, float] | None = None,
             fig_format: str | None = None,
     ) -> pathlib.Path:
         """
@@ -403,9 +435,10 @@ class AnatomyFigureMaker:
         out_dir (str | pathlib.Path | None)
             Directory override. `None` falls back to
             `figures.save_directory`.
-        fig_size_inches (tuple[float, float])
-            Figure width / height in inches. Default targets a Nature-
-            style single-column band (~89 mm wide, ~66 mm tall).
+        fig_size_inches (tuple[float, float] | None)
+            Figure width / height in inches; `None` falls back to
+            `anatomy_figures.recording_yield.fig_size_inches` ((7.0, 2.6),
+            a Nature-style single-column band, ~89 mm wide, ~66 mm tall).
         fig_format (str | None)
             Matplotlib output format override (e.g. `'svg'`, `'pdf'`,
             `'png'`). `None` falls back to `figures.fig_format`.
@@ -418,7 +451,7 @@ class AnatomyFigureMaker:
 
         fig, (ax_left, ax_right) = plt.subplots(
             nrows=1, ncols=2,
-            figsize=fig_size_inches,
+            figsize=self._anatomy_setting("recording_yield", "fig_size_inches", fig_size_inches),
             gridspec_kw={"width_ratios": [1.4, 1.0], "wspace": 0.35},
         )
 
@@ -589,18 +622,18 @@ class AnatomyFigureMaker:
             self,
             out_dir: str | pathlib.Path | None = None,
             *,
-            fig_size_inches: tuple[float, float] = (6.0, 5.0),
+            fig_size_inches: tuple[float, float] | None = None,
             fig_format: str | None = None,
-            view_elev: float = 18.0,
-            view_azim: float = -60.0,
-            shell_vertex_stride: int = 6,
-            shell_point_size: float = 0.7,
-            shell_point_alpha: float = 0.50,
-            region_alpha: float = 0.10,
-            mb_alpha: float = 0.04,
-            dot_size: float = 9.0,
-            dot_alpha: float = 1.0,
-            legend_marker_scale: float = 3.0,
+            view_elev: float | None = None,
+            view_azim: float | None = None,
+            shell_vertex_stride: int | None = None,
+            shell_point_size: float | None = None,
+            shell_point_alpha: float | None = None,
+            region_alpha: float | None = None,
+            mb_alpha: float | None = None,
+            dot_size: float | None = None,
+            dot_alpha: float | None = None,
+            legend_marker_scale: float | None = None,
             filter_outliers: bool = True,
             rasterize_dense: bool = True,
     ) -> pathlib.Path:
@@ -617,43 +650,43 @@ class AnatomyFigureMaker:
         out_dir (str | pathlib.Path | None)
             Directory override; `None` falls back to
             `figures.save_directory`.
-        fig_size_inches (tuple[float, float], default (6.0, 5.0))
+        fig_size_inches (tuple[float, float] | None, default None -> anatomy_figures.unit_positions, (6.0, 5.0))
             Figure size in inches; forwarded to
             `build_unit_positions_figure`.
         fig_format (str | None)
             Output format override; `None` falls back to
             `figures.fig_format`.
-        view_elev (float, default 18.0)
+        view_elev (float | None, default None -> anatomy_figures.unit_positions, 18.0)
             Elevation angle for `ax.view_init`; forwarded to
             `build_unit_positions_figure`.
-        view_azim (float, default -60.0)
+        view_azim (float | None, default None -> anatomy_figures.unit_positions, -60.0)
             Azimuth angle for `ax.view_init`; forwarded to
             `build_unit_positions_figure`.
-        shell_vertex_stride (int, default 6)
+        shell_vertex_stride (int | None, default None -> anatomy_figures.unit_positions, 6)
             Take every Nth vertex of the root mesh for the brain-shell
             scatter (lower -> denser shell); forwarded to
             `build_unit_positions_figure`.
-        shell_point_size (float, default 0.7)
+        shell_point_size (float | None, default None -> anatomy_figures.unit_positions, 0.7)
             Marker size for shell dots; forwarded to
             `build_unit_positions_figure`.
-        shell_point_alpha (float, default 0.50)
+        shell_point_alpha (float | None, default None -> anatomy_figures.unit_positions, 0.50)
             Alpha for shell dots; forwarded to
             `build_unit_positions_figure`.
-        region_alpha (float, default 0.10)
+        region_alpha (float | None, default None -> anatomy_figures.unit_positions, 0.10)
             Face alpha for the highlighted sub-region volumes (PAG,
             MRN, VTA, CENT, SC); forwarded to
             `build_unit_positions_figure`.
-        mb_alpha (float, default 0.04)
+        mb_alpha (float | None, default None -> anatomy_figures.unit_positions, 0.04)
             Face alpha for the MB parent volume, kept very low so it
             does not occlude PAG / MRN / VTA; forwarded to
             `build_unit_positions_figure`.
-        dot_size (float, default 9.0)
+        dot_size (float | None, default None -> anatomy_figures.unit_positions, 9.0)
             Scatter marker size for unit dots; forwarded to
             `build_unit_positions_figure`.
-        dot_alpha (float, default 1.0)
+        dot_alpha (float | None, default None -> anatomy_figures.unit_positions, 1.0)
             Alpha for unit dots; forwarded to
             `build_unit_positions_figure`.
-        legend_marker_scale (float, default 3.0)
+        legend_marker_scale (float | None, default None -> anatomy_figures.unit_positions, 3.0)
             Multiplier applied to the in-axes dot size for the legend
             swatches; forwarded to `build_unit_positions_figure`.
         filter_outliers (bool, default True)
@@ -710,17 +743,17 @@ class AnatomyFigureMaker:
     def build_unit_positions_figure(
             self,
             *,
-            fig_size_inches: tuple[float, float] = (6.0, 5.0),
-            view_elev: float = 18.0,
-            view_azim: float = -60.0,
-            shell_vertex_stride: int = 6,
-            shell_point_size: float = 0.7,
-            shell_point_alpha: float = 0.50,
-            region_alpha: float = 0.10,
-            mb_alpha: float = 0.04,
-            dot_size: float = 9.0,
-            dot_alpha: float = 1.0,
-            legend_marker_scale: float = 3.0,
+            fig_size_inches: tuple[float, float] | None = None,
+            view_elev: float | None = None,
+            view_azim: float | None = None,
+            shell_vertex_stride: int | None = None,
+            shell_point_size: float | None = None,
+            shell_point_alpha: float | None = None,
+            region_alpha: float | None = None,
+            mb_alpha: float | None = None,
+            dot_size: float | None = None,
+            dot_alpha: float | None = None,
+            legend_marker_scale: float | None = None,
             filter_outliers: bool = True,
             rasterize_dense: bool = True,
     ) -> plt.Figure:
@@ -758,13 +791,20 @@ class AnatomyFigureMaker:
         white space; box-aspect is locked to true mouse-brain
         proportions (~13.2 mm AP × ~10.4 mm ML × ~7.4 mm DV).
 
+        Every styling parameter below left at `None` falls back to the
+        same-named key of `anatomy_figures.unit_positions` in the
+        visualizations settings (figure size (6.0, 5.0), elevation 18.0,
+        azimuth -60.0, shell stride 6 / size 0.7 / alpha 0.50, region
+        alpha 0.10, MB alpha 0.04, dot size 9.0 / alpha 1.0, legend
+        marker scale 3.0).
+
         Parameters
         ----------
-        fig_size_inches (tuple[float, float])
+        fig_size_inches (tuple[float, float] | None)
             Figure size in inches.
-        view_elev (float)
+        view_elev (float | None)
             Elevation angle for `ax.view_init`.
-        view_azim (float)
+        view_azim (float | None)
             Azimuth angle for `ax.view_init`.
         shell_vertex_stride (int)
             Take every Nth vertex of the root mesh for the shell
@@ -804,6 +844,18 @@ class AnatomyFigureMaker:
             The built figure. The caller is responsible for either
             displaying it (in a notebook) or saving / closing it.
         """
+
+        fig_size_inches = self._anatomy_setting("unit_positions", "fig_size_inches", fig_size_inches)
+        view_elev = self._anatomy_setting("unit_positions", "view_elev", view_elev)
+        view_azim = self._anatomy_setting("unit_positions", "view_azim", view_azim)
+        shell_vertex_stride = self._anatomy_setting("unit_positions", "shell_vertex_stride", shell_vertex_stride)
+        shell_point_size = self._anatomy_setting("unit_positions", "shell_point_size", shell_point_size)
+        shell_point_alpha = self._anatomy_setting("unit_positions", "shell_point_alpha", shell_point_alpha)
+        region_alpha = self._anatomy_setting("unit_positions", "region_alpha", region_alpha)
+        mb_alpha = self._anatomy_setting("unit_positions", "mb_alpha", mb_alpha)
+        dot_size = self._anatomy_setting("unit_positions", "dot_size", dot_size)
+        dot_alpha = self._anatomy_setting("unit_positions", "dot_alpha", dot_alpha)
+        legend_marker_scale = self._anatomy_setting("unit_positions", "legend_marker_scale", legend_marker_scale)
 
         fig = plt.figure(figsize=fig_size_inches)
         ax = fig.add_subplot(111, projection="3d")
@@ -951,13 +1003,13 @@ class AnatomyFigureMaker:
             self,
             out_dir: str | pathlib.Path | None = None,
             *,
-            fig_size_inches: tuple[float, float] = (6.0, 5.0),
-            view_elev: float = 18.0,
-            view_azim_start: float = -60.0,
-            n_frames: int = 240,
-            fps: int = 30,
+            fig_size_inches: tuple[float, float] | None = None,
+            view_elev: float | None = None,
+            view_azim_start: float | None = None,
+            n_frames: int | None = None,
+            fps: int | None = None,
             video_format: str = "mp4",
-            dpi: int = 600,
+            dpi: int | None = None,
             **build_kwargs,
     ) -> pathlib.Path:
         """
@@ -975,23 +1027,31 @@ class AnatomyFigureMaker:
         ----------
         out_dir (str | pathlib.Path)
             Output directory; created if absent.
-        fig_size_inches (tuple[float, float])
-            Figure size in inches.
-        view_elev (float)
-            Constant elevation angle held over the whole sweep.
-        view_azim_start (float)
+        fig_size_inches (tuple[float, float] | None)
+            Figure size in inches; `None` falls back to
+            `anatomy_figures.unit_positions.fig_size_inches`.
+        view_elev (float | None)
+            Constant elevation angle held over the whole sweep; `None`
+            falls back to `anatomy_figures.unit_positions.view_elev`.
+        view_azim_start (float | None)
             Initial azimuth; the sweep covers
-            `[view_azim_start, view_azim_start + 360)`.
-        n_frames (int)
-            Number of frames in the sweep. With `fps=30` and
-            `n_frames=240` the video is 8 s long.
-        fps (int)
-            Output frame rate (frames per second).
+            `[view_azim_start, view_azim_start + 360)`. `None` falls back
+            to `anatomy_figures.unit_positions.view_azim`.
+        n_frames (int | None)
+            Number of frames in the sweep; `None` falls back to
+            `anatomy_figures.unit_positions_video.n_frames` (240). With
+            `fps=30` and `n_frames=240` the video is 8 s long.
+        fps (int | None)
+            Output frame rate (frames per second); `None` falls back to
+            `anatomy_figures.unit_positions_video.fps` (30).
         video_format (str)
             Container extension (`'mp4'`, `'gif'`, `'mov'`, ...).
             mp4 / mov use the ffmpeg writer; gif uses Pillow.
-        dpi (int)
-            Resolution for each rendered frame.
+        dpi (int | None)
+            Resolution for each rendered frame; `None` falls back to
+            `anatomy_figures.unit_positions_video.dpi` (600). The ffmpeg
+            writer encodes at `anatomy_figures.unit_positions_video.bitrate`
+            (4000 kbps).
         **build_kwargs (dict)
             Forwarded to `build_unit_positions_figure` so the caller
             can dial in shell density, region alpha, dot size, etc.
@@ -1006,6 +1066,12 @@ class AnatomyFigureMaker:
         # below; the legacy `out_dir = pathlib.Path(out_dir)` call here
         # used to break when `out_dir is None` (which is now the default
         # — the helper falls back to `figures.save_directory`).
+
+        view_elev = self._anatomy_setting("unit_positions", "view_elev", view_elev)
+        view_azim_start = self._anatomy_setting("unit_positions", "view_azim", view_azim_start)
+        n_frames = self._anatomy_setting("unit_positions_video", "n_frames", n_frames)
+        fps = self._anatomy_setting("unit_positions_video", "fps", fps)
+        dpi = self._anatomy_setting("unit_positions_video", "dpi", dpi)
 
         fig = self.build_unit_positions_figure(
             fig_size_inches=fig_size_inches,
@@ -1064,7 +1130,10 @@ class AnatomyFigureMaker:
         if video_format.lower() == "gif":
             writer = animation.PillowWriter(fps=fps)
         else:
-            writer = animation.FFMpegWriter(fps=fps, bitrate=4000)
+            writer = animation.FFMpegWriter(
+                fps=fps,
+                bitrate=self.visualizations_parameter_dict["anatomy_figures"]["unit_positions_video"]["bitrate"],
+            )
         anim.save(out_path, writer=writer, dpi=dpi)
         plt.close(fig)
 
@@ -1088,16 +1157,16 @@ class AnatomyFigureMaker:
             n_top_units: int | None = None,
             probe_filter: str | None = "imec0",
             shank_filter: int | None = None,
-            lateral_jitter_um: float = 12.0,
-            waveform_width_um: float = 12.0,
-            peak_amplitude_target_um: float = 25.0,
-            inter_shank_wspace: float = 0.05,
+            lateral_jitter_um: float | None = None,
+            waveform_width_um: float | None = None,
+            peak_amplitude_target_um: float | None = None,
+            inter_shank_wspace: float | None = None,
             schematic_side: str = "right",
-            opacity_sigma_um: float = 20.0,
-            n_neighbors_each_side: int = 5,
-            ap_padding_um: float = 20.0,
-            dv_padding_um: float = 30.0,
-            fig_size_inches: tuple[float, float] = (4.5, 7.0),
+            opacity_sigma_um: float | None = None,
+            n_neighbors_each_side: int | None = None,
+            ap_padding_um: float | None = None,
+            dv_padding_um: float | None = None,
+            fig_size_inches: tuple[float, float] | None = None,
             fig_format: str | None = None,
     ) -> pathlib.Path:
         """
@@ -1114,6 +1183,13 @@ class AnatomyFigureMaker:
         peak; voltage is rendered raw (no per-cluster normalisation),
         so high-amplitude units draw a bigger spike than low-amplitude
         ones.
+
+        The geometry / opacity parameters below left at `None` fall back
+        to the same-named keys of `anatomy_figures.unit_waveforms` in the
+        visualizations settings (lateral jitter 12.0 um, waveform width
+        12.0 um, peak amplitude target 25.0 um, inter-shank wspace 0.05,
+        opacity sigma 20.0 um, 5 neighbours each side, AP / DV padding
+        20.0 / 30.0 um, figure size (4.5, 7.0) in).
 
         Parameters
         ----------
@@ -1145,33 +1221,33 @@ class AnatomyFigureMaker:
         shank_filter (int | None)
             When set, keep only units whose peak channel sits on this
             shank; `None` keeps all shanks.
-        lateral_jitter_um (float)
+        lateral_jitter_um (float | None)
             Half-range of the deterministic per-unit lateral jitter so
             units sharing a peak channel don't fully overlap.
-        waveform_width_um (float)
+        waveform_width_um (float | None)
             Lateral-axis width allocated to each waveform.
-        peak_amplitude_target_um (float)
+        peak_amplitude_target_um (float | None)
             Axial-µm height that the largest rendered unit's peak
             amplitude maps to. One fixed scale across all units, so peak
             amplitudes vary visibly across the row.
-        inter_shank_wspace (float)
+        inter_shank_wspace (float | None)
             Width-space between the per-shank subplots; this gap is the
             visible inter-shank break.
         schematic_side (str)
             Side the probe schematic panel is drawn on (`'left'` or
             `'right'`).
-        opacity_sigma_um (float)
+        opacity_sigma_um (float | None)
             Gaussian σ for opacity vs probe-local distance from peak.
-        n_neighbors_each_side (int)
+        n_neighbors_each_side (int | None)
             Number of nearest same-shank channels above and below the
             peak (peak's row sibling is added separately).
-        ap_padding_um (float)
+        ap_padding_um (float | None)
             Extra lateral padding added on each side of every shank's
             x-axis bounds.
-        dv_padding_um (float)
+        dv_padding_um (float | None)
             Extra axial padding added above and below the shared y-axis
             bounds.
-        fig_size_inches (tuple[float, float])
+        fig_size_inches (tuple[float, float] | None)
             Figure size in inches.
         fig_format (str | None)
             Output format override (e.g. `'svg'`, `'pdf'`, `'png'`);
@@ -1182,6 +1258,18 @@ class AnatomyFigureMaker:
         out_path (pathlib.Path)
             Path to the written figure file.
         """
+
+        lateral_jitter_um = self._anatomy_setting("unit_waveforms", "lateral_jitter_um", lateral_jitter_um)
+        waveform_width_um = self._anatomy_setting("unit_waveforms", "waveform_width_um", waveform_width_um)
+        peak_amplitude_target_um = self._anatomy_setting("unit_waveforms", "peak_amplitude_target_um",
+                                                         peak_amplitude_target_um)
+        inter_shank_wspace = self._anatomy_setting("unit_waveforms", "inter_shank_wspace", inter_shank_wspace)
+        opacity_sigma_um = self._anatomy_setting("unit_waveforms", "opacity_sigma_um", opacity_sigma_um)
+        n_neighbors_each_side = self._anatomy_setting("unit_waveforms", "n_neighbors_each_side",
+                                                      n_neighbors_each_side)
+        ap_padding_um = self._anatomy_setting("unit_waveforms", "ap_padding_um", ap_padding_um)
+        dv_padding_um = self._anatomy_setting("unit_waveforms", "dv_padding_um", dv_padding_um)
+        fig_size_inches = self._anatomy_setting("unit_waveforms", "fig_size_inches", fig_size_inches)
 
         ephys_root = pathlib.Path(ephys_root)
         histology_root = pathlib.Path(histology_root)

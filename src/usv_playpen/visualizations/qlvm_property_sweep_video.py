@@ -9,13 +9,15 @@ bandwidth, spectral entropy, mean frequency and loudness -- sweep together. At
 every frame each panel shows the USVs between the same two percentiles of ITS
 property: an equal-count window holding ``window`` of the USVs, moved in steps
 of ``step`` from the lowest to the highest values and held ``hold`` frames at
-both ends. Each panel draws:
+both ends (every tunable named here lives in the ``qlvm_property_sweep_video``
+block of ``visualizations_settings.json``). Each panel draws:
 
 * the window's USV density on the category grid of the regular map (counts per
   pixel convolved with a periodic Gaussian of ``density_bandwidth`` torus
-  units, divided by the field's own 99th percentile), in the colour of the
-  window's median value on the property's colour scale (the 1st-99th
-  percentile of all USVs on the colormap), brightness = density, on black;
+  units, divided by the field's own ``brightness_percentile`` (99th)
+  percentile), in the colour of the window's median value on the property's
+  colour scale (the ``color_percentiles``, 1st-99th, percentile of all USVs on
+  the colormap), brightness = density, on black;
 * the QLVM category boundaries (``os_utils.load_qlvm_category_bundle``) as
   dotted white lines;
 * a colour bar in the property's unit, with the current window shaded and its
@@ -71,14 +73,8 @@ SWEEP_PROPERTIES = (
     ("loudness_db", "loudness", 1.0, "dB"),
 )
 SWEEP_POSITION_COLUMNS = ("qlvm1", "qlvm2")
+# One panel per SWEEP_PROPERTIES entry (six), so the panel grid is fixed by the property list, not a tunable.
 GRID_SHAPE = (2, 3)
-FIGURE_SIZE = (19.0, 11.4)
-FIGURE_FACE = "#FFFFFF"
-BOUNDARY_COLOR = "#FFFFFF"
-MEDIAN_MARK_COLOR = "#000000"
-WINDOW_SHADE_COLOR = "#FFFFFF"
-COLORBAR_LABEL_SIZE = 17
-COLORBAR_TICK_SIZE = 14
 
 
 def load_property_sweep_usvs(
@@ -129,7 +125,7 @@ class PropertySweepPanel:
 
     def __init__(self, subfigure, rows: np.ndarray, cols: np.ndarray, values: np.ndarray, order: np.ndarray,
                  label: str, scale: float, unit: str, label_grid: np.ndarray, colormap: ListedColormap,
-                 window: float, density_bandwidth: float) -> None:
+                 cfg: dict) -> None:
         """
         Description
         -----------
@@ -157,10 +153,12 @@ class PropertySweepPanel:
             Category grid of the regular map, ``[y, x]``.
         colormap (ListedColormap)
             The property colour scale (the project colormap from its floor up).
-        window (float)
-            Share of the USVs in each window.
-        density_bandwidth (float)
-            Gaussian standard deviation of the density, in torus units.
+        cfg (dict)
+            The ``qlvm_property_sweep_video`` settings block: ``window`` (share of
+            the USVs in each window), ``density_bandwidth`` (Gaussian standard
+            deviation of the density, torus units), ``color_percentiles`` and
+            ``brightness_percentile`` (colour-scale and brightness ranges), and the
+            panel colours and colour-bar font sizes.
 
         Returns
         -------
@@ -169,9 +167,10 @@ class PropertySweepPanel:
 
         self.rows, self.cols, self.values, self.order = rows, cols, values, order
         self.label, self.scale, self.unit = label, scale, unit
-        self.colormap, self.window, self.density_bandwidth = colormap, window, density_bandwidth
+        self.colormap, self.window, self.density_bandwidth = colormap, cfg["window"], cfg["density_bandwidth"]
+        self.cfg = cfg
         self.resolution = label_grid.shape[0]
-        self.vmin, self.vmax = (float(np.percentile(values, q)) * scale for q in (1, 99))
+        self.vmin, self.vmax = (float(np.percentile(values, q)) * scale for q in cfg["color_percentiles"])
         self.norm = Normalize(self.vmin, self.vmax)
 
         subfigure.subplots_adjust(left=0.02, right=0.88, bottom=0.03, top=0.86)
@@ -182,7 +181,7 @@ class PropertySweepPanel:
         centres = (np.arange(self.resolution) + 0.5) / self.resolution
         for category in np.unique(label_grid):
             self.axis.contour(centres, centres, (label_grid == category).astype(float), levels=[0.5], zorder=3,
-                              colors=BOUNDARY_COLOR, linewidths=1.6, linestyles="dotted", alpha=0.95)
+                              colors=cfg["boundary_color"], linewidths=1.6, linestyles="dotted", alpha=0.95)
         self.axis.set_xlim(0, 1)
         self.axis.set_ylim(0, 1)
         self.axis.set_aspect("equal")
@@ -190,8 +189,8 @@ class PropertySweepPanel:
         self.axis.set_yticks([])
         self.colorbar_axis = subfigure.add_subplot(grid[0, 1])
         colorbar = subfigure.colorbar(ScalarMappable(self.norm, colormap), cax=self.colorbar_axis)
-        colorbar.set_label(f"{label} ({unit})" if unit else label, fontsize=COLORBAR_LABEL_SIZE)
-        colorbar.ax.tick_params(labelsize=COLORBAR_TICK_SIZE)
+        colorbar.set_label(f"{label} ({unit})" if unit else label, fontsize=cfg["colorbar_label_size"])
+        colorbar.ax.tick_params(labelsize=cfg["colorbar_tick_size"])
         self.marks = []
 
     def update(self, position: float) -> None:
@@ -219,14 +218,14 @@ class PropertySweepPanel:
         low, high, median = (float(np.percentile(self.values[chosen], q)) * self.scale for q in (0, 100, 50))
         colour = np.array(self.colormap(self.norm(median))[:3])
         density = periodic_density(self.rows[chosen], self.cols[chosen], self.resolution, self.density_bandwidth)
-        brightness = np.clip(density / np.percentile(density, 99), 0, 1)
+        brightness = np.clip(density / np.percentile(density, self.cfg["brightness_percentile"]), 0, 1)
         self.image.set_data(brightness[..., None] * colour[None, None, :])
         self.axis.set_title(f"{self.label}: {low:.3g} to {high:.3g} {self.unit}".strip(), fontsize=15)
         for mark in self.marks:
             mark.remove()
-        self.marks = [self.colorbar_axis.axhspan(max(low, self.vmin), min(high, self.vmax), color=WINDOW_SHADE_COLOR,
+        self.marks = [self.colorbar_axis.axhspan(max(low, self.vmin), min(high, self.vmax), color=self.cfg["window_shade_color"],
                                                  alpha=0.35, zorder=3),
-                      self.colorbar_axis.axhline(min(max(median, self.vmin), self.vmax), color=MEDIAN_MARK_COLOR,
+                      self.colorbar_axis.axhline(min(max(median, self.vmin), self.vmax), color=self.cfg["median_mark_color"],
                                                  linewidth=2.5, zorder=4)]
 
 
@@ -235,13 +234,7 @@ def render_qlvm_property_sweep_video(
     label_grid: np.ndarray,
     output_path: str,
     cmap_name: str,
-    colormap_floor: float,
-    window: float,
-    step: float,
-    hold: int,
-    fps: int,
-    dpi: int,
-    density_bandwidth: float,
+    cfg: dict,
     seed: int,
     preview_quantile: float | None = None,
     message_output: Callable | None = None,
@@ -264,21 +257,17 @@ def render_qlvm_property_sweep_video(
         The ``.mp4`` to write (run through ``configure_path``; parent created).
     cmap_name (str)
         Matplotlib colormap of the property colour scales (the project's ``sequential_cmap``).
-    colormap_floor (float)
-        Lowest point of the colormap used, in [0, 1): the scale runs from this
-        point to the top so the lowest values stay visible on black.
-    window (float)
-        Share of the USVs in each window (e.g. 0.10).
-    step (float)
-        Window-centre step between frames, as a share of the USVs (e.g. 0.01).
-    hold (int)
-        Frames held at the first and at the last window.
-    fps (int)
-        Video frame rate.
-    dpi (int)
-        Frame resolution (the frame is ``FIGURE_SIZE`` inches).
-    density_bandwidth (float)
-        Gaussian standard deviation of the density, in torus units.
+    cfg (dict)
+        The ``qlvm_property_sweep_video`` settings block: ``colormap_floor``
+        (lowest point of the colormap used, in [0, 1), so the lowest values stay
+        visible on black), ``window`` (share of the USVs in each window),
+        ``step`` (window-centre step between frames, as a share of the USVs),
+        ``hold`` (frames held at the first and at the last window), ``fps``
+        (video frame rate), ``dpi`` (frame resolution; the frame is
+        ``figure_size`` inches), ``density_bandwidth`` (Gaussian standard
+        deviation of the density, torus units), the colour-scale and brightness
+        percentiles, the panel colours and font sizes, and the encoder's
+        ``codec`` / ``pixel_format`` / ``crf``.
     seed (int)
         Seed of the random order within tied values.
     preview_quantile (float | None)
@@ -300,17 +289,22 @@ def render_qlvm_property_sweep_video(
     y = usvs[SWEEP_POSITION_COLUMNS[1]].to_numpy()
     rows = np.clip((y * resolution).astype(int), 0, resolution - 1)
     cols = np.clip((x * resolution).astype(int), 0, resolution - 1)
+    colormap_floor = cfg["colormap_floor"]
+    window = cfg["window"]
+    dpi = cfg["dpi"]
+    fps = cfg["fps"]
+    figure_face = cfg["figure_face"]
     base = colormaps[cmap_name]
     colormap = ListedColormap(base(np.linspace(colormap_floor, 1.0, 256)), name=f"{cmap_name}_from_{colormap_floor:g}")
     tie_breaker = np.random.default_rng(seed).random(usvs.height)
 
-    fig = Figure(figsize=FIGURE_SIZE, facecolor=FIGURE_FACE)
+    fig = Figure(figsize=tuple(cfg["figure_size"]), facecolor=figure_face)
     subfigures = fig.subfigures(*GRID_SHAPE, wspace=0.02, hspace=0.04).ravel()
     panels = []
     for subfigure, (column, label, scale, unit) in zip(subfigures, SWEEP_PROPERTIES, strict=True):
         values = usvs[column].to_numpy().astype(float)
         panels.append(PropertySweepPanel(subfigure, rows, cols, values, np.lexsort((tie_breaker, values)), label, scale,
-                                         unit, label_grid, colormap, window, density_bandwidth))
+                                         unit, label_grid, colormap, cfg))
     header = fig.suptitle("", y=0.995, fontsize=16)
 
     def show(position: float) -> None:
@@ -339,16 +333,16 @@ def render_qlvm_property_sweep_video(
     if preview_quantile is not None:
         show(preview_quantile)
         still = out.with_suffix(".png")
-        fig.savefig(still, dpi=dpi, facecolor=FIGURE_FACE)
+        fig.savefig(still, dpi=dpi, facecolor=figure_face)
         log(f"[property-sweep] preview -> {still}")
         return fig
 
-    positions = np.arange(window / 2, 1 - window / 2 + 1e-9, step)
-    sequence = [positions[0]] * hold + list(positions) + [positions[-1]] * hold
-    writer = FFMpegWriter(fps=fps, codec="libx264", extra_args=["-pix_fmt", "yuv420p", "-crf", "18"])
+    positions = np.arange(window / 2, 1 - window / 2 + 1e-9, cfg["step"])
+    sequence = [positions[0]] * cfg["hold"] + list(positions) + [positions[-1]] * cfg["hold"]
+    writer = FFMpegWriter(fps=fps, codec=cfg["codec"], extra_args=["-pix_fmt", cfg["pixel_format"], "-crf", str(cfg["crf"])])
     with writer.saving(fig, str(out), dpi):
         for position in sequence:
             show(position)
-            writer.grab_frame(facecolor=FIGURE_FACE)
+            writer.grab_frame(facecolor=figure_face)
     log(f"[property-sweep] {len(sequence)} frames -> {out} ({len(sequence) / fps:.1f} s)")
     return fig

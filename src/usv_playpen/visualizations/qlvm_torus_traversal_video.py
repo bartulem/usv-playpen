@@ -97,15 +97,6 @@ mpl.use("Agg")
 # text in the video renders in Helvetica, instead of matplotlib's default font.
 apply_plot_style()
 
-# Hex palette (every matplotlib color= arg is a hex string). The accent
-# (highlight) color is NOT here -- it is read per-render from the settings
-# block so the user can tune it.
-_C_WHITE = "#FFFFFF"
-_C_BLACK = "#000000"
-_C_GRAY = "#808080"
-_C_LIGHTGRAY = "#D3D3D3"
-_C_SUBTITLE = "#444444"
-
 
 def torus_forward(coords: np.ndarray) -> np.ndarray:
     """
@@ -718,6 +709,15 @@ class QLVMTorusTraversalVideo:
         # outline/centre dot, current-tile borders, and the trail colormap.
         accent_color = cfg['accent_color']
         accent_rgb255 = tuple(round(channel * 255) for channel in to_rgb(accent_color))
+        # The neutral hex palette of the video (title card, contours, marker edges,
+        # tile borders, card subtitle) and the left panel's colour ceiling
+        # (percentile of the non-zero density), both from the settings block.
+        color_white = cfg['palette']['white']
+        color_black = cfg['palette']['black']
+        color_gray = cfg['palette']['gray']
+        color_light_gray = cfg['palette']['light_gray']
+        color_subtitle = cfg['palette']['subtitle']
+        heatmap_vmax_percentile = cfg['heatmap_vmax_percentile']
 
         # Accent recency colormap for the trajectory trail (newest = accent
         # color, fading to white going back), via the create_colormap helper.
@@ -939,7 +939,7 @@ class QLVMTorusTraversalVideo:
             ring_all_axes = [ax_center_ring, *ring_axes]  # idx 0 = peak
 
             ax_card = fig.add_axes([0, 0, 1, 1], zorder=50)
-            ax_card.set_facecolor(_C_WHITE)
+            ax_card.set_facecolor(color_white)
             ax_card.set_xticks([])
             ax_card.set_yticks([])
             for sp in ax_card.spines.values():
@@ -948,14 +948,14 @@ class QLVMTorusTraversalVideo:
             # project mplstyle's font.weight (light by default); this keeps a user's
             # _config/usv_playpen.mplstyle change from being silently overridden here.
             card_title = ax_card.text(0.5, 0.58, '', ha='center', va='center',
-                                      fontsize=36, color=_C_BLACK)
+                                      fontsize=36, color=color_black)
             card_sub = ax_card.text(0.5, 0.44, '', ha='center', va='center',
-                                    fontsize=20, color=_C_SUBTITLE, style='italic')
+                                    fontsize=20, color=color_subtitle, style='italic')
             ax_card.set_visible(False)
 
             # Static left panel
             nz = heatmap[heatmap > 0]
-            vmax = float(np.percentile(nz, 95)) if nz.size else None
+            vmax = float(np.percentile(nz, heatmap_vmax_percentile)) if nz.size else None
             ax_l.imshow(heatmap, origin='lower', extent=(0, 1, 0, 1),
                         cmap=spec_cmap, vmin=0, vmax=vmax, aspect='equal')
             # The bundle's pixel centres ((k + 0.5) / res), where the heatmap's
@@ -963,7 +963,7 @@ class QLVMTorusTraversalVideo:
             # every outline by up to half a pixel against the heatmap.
             xx = yy = bundle['axis']
             # one outline per category (draw_category_outlines), so every border has the same width
-            draw_category_outlines(ax_l, xx, yy, ws_labels, colors=_C_WHITE, linewidths=2.5, zorder=2)
+            draw_category_outlines(ax_l, xx, yy, ws_labels, colors=color_white, linewidths=2.5, zorder=2)
             ax_l.set_xlim(0, 1)
             ax_l.set_ylim(0, 1)
             ax_l.set_aspect('equal')
@@ -1027,11 +1027,11 @@ class QLVMTorusTraversalVideo:
             trail_lc.set_clim(0.0, 1.0)
             ax_l.add_collection(trail_lc)
             head_marker = ax_l.scatter([], [], c=accent_color, s=70, marker='o',
-                                        edgecolors=_C_BLACK, linewidths=1.0, zorder=11)
+                                        edgecolors=color_black, linewidths=1.0, zorder=11)
             # Accent-colored circle marking the active cluster's center (Part 1);
             # pulses with the cluster outline.
             cluster_center_marker = ax_l.scatter([], [], c=accent_color, s=120, marker='o',
-                                                 edgecolors=_C_BLACK, linewidths=1.2, zorder=12)
+                                                 edgecolors=color_black, linewidths=1.2, zorder=12)
             # As with the title card, the weight is inherited from the mplstyle
             # (axes.titleweight / figure.titleweight), not hard-coded here.
             title = ax_l.set_title('', fontsize=13, loc='left')
@@ -1062,7 +1062,7 @@ class QLVMTorusTraversalVideo:
                 """
                 ax.set_xticks([])
                 ax.set_yticks([])
-                _set_border(ax, _C_LIGHTGRAY, 0.5)
+                _set_border(ax, color_light_gray, 0.5)
                 im = ax.imshow(np.zeros((spec_H, spec_W)), cmap=spec_cmap,
                                origin='lower', aspect='auto', vmin=0, vmax=1)
                 t = ax.set_title('', fontsize=fontsize, pad=1)
@@ -1120,7 +1120,7 @@ class QLVMTorusTraversalVideo:
                 t.set_text(title_str)
                 _set_border(ax, border, border_w)
 
-            def render_grid_slot(slot, data_idx, title_str='', border=_C_LIGHTGRAY, border_w=0.5):
+            def render_grid_slot(slot, data_idx, title_str='', border=color_light_gray, border_w=0.5):
                 """
                 Description
                 -----------
@@ -1146,7 +1146,7 @@ class QLVMTorusTraversalVideo:
                 _draw(grid_imgs[slot], ax_grid[slot], grid_titles[slot],
                       data_idx, title_str, border, border_w)
 
-            def render_ring_slot(slot, data_idx, title_str='', border=_C_LIGHTGRAY, border_w=0.5):
+            def render_ring_slot(slot, data_idx, title_str='', border=color_light_gray, border_w=0.5):
                 """
                 Description
                 -----------
@@ -1186,7 +1186,7 @@ class QLVMTorusTraversalVideo:
                 None
                 """
                 for s in range(n_grid_slots):
-                    render_grid_slot(s, None, '', _C_LIGHTGRAY, 0.3)
+                    render_grid_slot(s, None, '', color_light_gray, 0.3)
 
             def set_grid_visible(vis):
                 """
@@ -1277,9 +1277,9 @@ class QLVMTorusTraversalVideo:
                     render_ring_slot(0, int(nn_idx[0]), title_str='', border=accent_color, border_w=2.8)
                     for s in range(1, len(ring_all_axes)):
                         if s <= m and s < len(nn_idx):
-                            render_ring_slot(s, int(nn_idx[s]), title_str='', border=_C_GRAY, border_w=0.5)
+                            render_ring_slot(s, int(nn_idx[s]), title_str='', border=color_gray, border_w=0.5)
                         else:
-                            render_ring_slot(s, None, '', _C_LIGHTGRAY, 0.3)
+                            render_ring_slot(s, None, '', color_light_gray, 0.3)
                     sup.set_text(f'{bundle["names"][ci]} ({ci + 1} / {K})  -  peak + {m} nearest samples')
                     title.set_text('')
 
@@ -1381,7 +1381,7 @@ class QLVMTorusTraversalVideo:
                         if last_count > 0:
                             prev_s = last_count - 1
                             if prev_s < grid_ncols:
-                                _set_border(ax_grid[boundary_mid_row * grid_ncols + prev_s], _C_GRAY, 0.5)
+                                _set_border(ax_grid[boundary_mid_row * grid_ncols + prev_s], color_gray, 0.5)
                         for s in range(last_count, count):
                             if s >= boundary_positions_per_walk:
                                 break
@@ -1399,11 +1399,11 @@ class QLVMTorusTraversalVideo:
                                     continue
                                 nn_k = boundary_row_nn[row]
                                 if nn_k >= len(nn):
-                                    render_grid_slot(slot, None, '', border=_C_LIGHTGRAY, border_w=0.3)
+                                    render_grid_slot(slot, None, '', border=color_light_gray, border_w=0.3)
                                     continue
                                 didx = int(nn[nn_k])
                                 is_mid = (row == boundary_mid_row)
-                                border = accent_color if (is_current and is_mid) else _C_GRAY
+                                border = accent_color if (is_current and is_mid) else color_gray
                                 border_w = 2.0 if (is_current and is_mid) else 0.5
                                 render_grid_slot(slot, didx, '', border=border, border_w=border_w)
                         state['last_reveal_count'] = count
@@ -1412,13 +1412,13 @@ class QLVMTorusTraversalVideo:
                 else:  # peak walk
                     if count > last_count:
                         if last_count > 0:
-                            _set_border(ax_grid[last_count - 1], _C_GRAY, 0.5)
+                            _set_border(ax_grid[last_count - 1], color_gray, 0.5)
                         for s in range(last_count, count):
                             if s >= n_grid_slots:
                                 break
                             didx = int(ph['reveal_idx'][s])
                             is_current = (s == count - 1)
-                            render_grid_slot(s, didx, '', border=accent_color if is_current else _C_GRAY,
+                            render_grid_slot(s, didx, '', border=accent_color if is_current else color_gray,
                                              border_w=2.2 if is_current else 0.5)
                         state['last_reveal_count'] = count
                     title.set_text(f"samples revealed: {count}/{samples_per_trace}")
@@ -1431,7 +1431,7 @@ class QLVMTorusTraversalVideo:
             if out_path.suffix.lower() == ".gif":
                 writer: PillowWriter | FFMpegWriter = PillowWriter(fps=fps)
             else:
-                writer = FFMpegWriter(fps=fps, bitrate=4000)
+                writer = FFMpegWriter(fps=fps, bitrate=cfg['bitrate'])
             ani.save(str(out_path), writer=writer, dpi=dpi)
             plt.close(fig)
 

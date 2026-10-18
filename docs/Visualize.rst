@@ -155,10 +155,16 @@ maps.
                          "#9467bd", "#8c564b", "#e377c2", "#7f7f7f"],
     "corner_colors": {"North": "#FF0000", "West": "#FFFF00", "South": "#008000", "East": "#0000FF"}
 
-Two blocks hold the analysis choices of particular figures (layout and styling stay in the code):
+These blocks hold the analysis choices, sizes, colours and statistical levels of particular figures (structural grid geometry and line-style cycles stay in the code):
 
 * **neuronal_tuning_figures** : the bout panels of the per-unit vocal page -- ``bout_session_bin_seconds`` (the whole-session rate trace's bins, 1 s), ``bout_zoom_seconds`` / ``bout_zoom_bin_seconds`` (the densest-window zoom's width and bins, 20 s and 50 ms), ``bout_smooth_bins`` (the Gaussian smoothing of both traces, in bins, 2), ``bout_trigger_window_seconds`` / ``bout_trigger_bin_seconds`` / ``bout_trigger_smooth_bins`` (the bout-onset-triggered raster's window, bins and smoothing: -1 to 2 s, 20 ms, 2.5 bins), ``bout_density_grid`` (the first-versus-later scatter's density grid, 160 per side) and ``bout_density_levels`` (the bout shares its contours enclose, at most three: 0.5, 0.75, 0.9).
-* **anatomy_figures** : ``excluded_mouse_ids``, mice left out of the anatomy figures (insufficient yield, used in no downstream analysis).
+* **neuronal_tuning_figures** (styling and population figures) : the neutral inks shared by every tuning page and population figure -- ``ink_color`` (``#1F1F1F``, near-black text / traces / identity lines), ``band_color`` (``#D3D3D3``, the shuffle-CI band), ``dash_color`` (``#888888``, dashed references and "no data" notes), ``light_color`` (``#CCCCCC``, unassigned-USV bars and their legend) and ``hatch_color`` (``#BBBBBB``, hatch edges); figure sizes in inches -- ``vocal_page_figsize_inches`` (16 x 27, the one-page vocal layout), ``behavioral_page_width_inches`` / ``behavioral_row_height_inches`` (16 wide, 2.6 per feature row, at least one row: sized so 8 / 9 pt fonts fit), ``region_grid_figsize_inches`` (14 x 6.4, every 2 x 4 per-region grid), ``sign_flip_figsize_inches`` (10 x 5.4), ``pag_gradient_figsize_inches`` (18 x 4.8, three projections side by side), ``peth_timing_figsize_inches`` (18 x 6.6, the 2 x 7 grid), ``behavioral_tier_figsize_inches`` (7.5 x 3.5), ``overlap_venn_figsize_inches`` (6.5 x 5.5) and ``per_region_venn_figsize_inches`` (18 x 9); the vocal page's ``bout_legend_fontsize`` (9 pt) and ``bout_legend_line_step`` (0.075 axes fraction between the "bouts" / "unassigned USVs" labels), ``peth_tick_seconds`` (0.5 s PETH tick spacing, anchored on onset), ``qlvm_category_label_fontsize`` (14 pt) and ``qlvm_label_inset`` (0.06 of the panel span a category label is held inside the border so it is not clipped); the category strip's ``strip_log_ratio_threshold`` (10: a max / min rate range above it switches the axis to symlog) and ``strip_symlog_linthresh`` (0.5 sp/s linear region); marker-size maps -- ``stability_marker_size_range`` (4-70 square points) over ``stability_fr_log10_range`` (-1 to 1.5, i.e. 0.1-31.6 sp/s, the band the bulk of units fall in), ``consistency_marker_size_range`` (6-60 square points) over ``consistency_n_tested_range`` (2-6 tested sessions, the span in this dataset) and ``breadth_marker_size_range`` (8-60 square points) over ``breadth_z_range`` (peak z 3-20, so strong outliers do not dominate); and the population-figure statistics -- ``stability_min_units`` (5: fewer units leave a region's cross-condition r undrawn), ``vmi_bootstrap_n`` (2000 resamples) with ``vmi_bootstrap_quantiles`` (0.025 / 0.975, a 95% CI), ``vmi_n_tested_min`` (2 tested sessions for the consistency and sign-flip figures), ``pag_kde_grid_resolution`` (220 points per axis of the PAG density), ``vmi_histogram_bins`` (20 bins over -1..1), ``peth_consistency_tolerance_seconds`` (0.1 s full width within which a unit's peak times must agree), ``peth_timing_bin_seconds`` (0.05 s histogram bins), ``consistency_k_min`` (2 agreeing significant sessions) and ``consistency_require_majority`` (true: those sessions must also be a strict majority of the significant ones). The ``make_*`` population methods read these instead of taking them as arguments.
+* **neuronal_decoding_figures** : the vocal-bout occupancy decoding figure -- ``trace_color`` (``#1F1F1F``, marker edges and text) and ``page_color`` (``#FFFFFF``, the page the opacity ramp blends toward and the face of an unfilled marker); ``opacity_range`` (0.45-1.0, the blend weight from the least to the most vocal session, so every curve stays legible); geometry in inches -- ``main_panel_inches`` (5.6 x 4.0), ``side_gap_inches`` (0.44, between the main panel and the comparison column), ``panel_gap_inches`` (0.2, between the three stacked comparison panels) and ``page_margin_inches`` (left 0.78, right 0.14, bottom 0.6, top 0.74); and the statistics drawn -- ``ci_quantile`` (0.995, the Student-t quantile of a two-sided 99% error bar) and ``null_percentile`` (99.5, the percentile of a rung's own shift null its mean must exceed for a filled marker).
+* **anatomy_figures** : ``excluded_mouse_ids``, mice left out of the anatomy figures (insufficient yield, used in no downstream analysis), and the rendering knobs of ``AnatomyFigureMaker`` (an argument the caller leaves at ``None`` falls back to the same-named key here) -- ``recording_yield.fig_size_inches`` (7.0 x 2.6 in, a Nature-style single-column band); ``unit_positions`` for the 3D unit-positions still / builder: ``fig_size_inches`` (6.0 x 5.0 in), ``view_elev`` / ``view_azim`` (18 / -60 degrees), ``shell_vertex_stride`` (every 6th root-mesh vertex in the brain-shell scatter), ``shell_point_size`` / ``shell_point_alpha`` (0.7 square points, 0.5), ``region_alpha`` (0.1 face alpha of the PAG / MRN / VTA / CENT / SC volumes), ``mb_alpha`` (0.04, kept low because MB is the parent volume and would otherwise hide PAG / MRN / VTA), ``dot_size`` / ``dot_alpha`` (9 square points, 1.0) and ``legend_marker_scale`` (3x the in-axes dot size for legible swatches); ``unit_positions_video`` for the rotating video: ``n_frames`` (240, a full 360 degree sweep), ``fps`` (30 frames/s, so 8 s), ``dpi`` (600 per frame) and ``bitrate`` (4000 kbps for the ffmpeg writer); ``unit_waveforms`` for the per-probe waveform figure: ``lateral_jitter_um`` (12 um half-range so units sharing a peak channel do not overlap), ``waveform_width_um`` (12 um per waveform), ``peak_amplitude_target_um`` (25 um, the axial height the largest unit's peak maps to), ``inter_shank_wspace`` (0.05, the visible inter-shank break), ``opacity_sigma_um`` (20 um Gaussian sigma of the opacity fall-off with distance from the peak channel), ``n_neighbors_each_side`` (5 same-shank channels above and below the peak), ``ap_padding_um`` / ``dv_padding_um`` (20 / 30 um axis padding) and ``fig_size_inches`` (4.5 x 7.0 in).
+* **behavioral_feature_distributions** : the per-session feature-histogram PDF that ``compute_behavioral_features`` writes next to each behavioral-features CSV (``*_behavioral_features_histograms.pdf``) -- ``figure_dpi`` (600, the resolution the figure is laid out and rasterised at; the PDF pages themselves are saved at ``figures.dpi``), ``panels_per_row`` (6 feature panels per row of the grid), ``figure_width_inches`` (6.4) and ``row_height_inches`` (1.0 per row of panels, so a page is ``6.4 x n_rows`` in).
+* **usv_summary_figures** : the figures of ``usv_summary_statistics`` -- ``density_clip_percentile`` (98: every polar KDE is colour-capped at this percentile so a few dense pixels do not wash out the map), ``colorbar_nbins`` (5 colorbar ticks on the polar KDE), ``distance_kde_bw_adjust`` (1.5, the seaborn bandwidth multiplier of the distance-by-assignment KDE, smoother than Scott's rule for the sparse unassigned group), ``anova_alpha`` (0.05, the ANOVA level that gates the Tukey HSD and the Tukey level itself); ``polar_kde`` (``grid_points`` 200 per axis and ``contour_levels`` 100 of the single-pair polar KDE), ``category_polar_kde_grid`` / ``estrous_category_kde_grid`` (``grid_points`` 100, ``contour_levels`` 50 and ``panel_inches`` 4 x 4 per panel of the two grid figures); ``panel_inches`` (per-panel inches of the category x estrous rate grid, 6 x 4.5, and ratio grid, 5 x 5) and ``figsizes`` (the figure size in inches of every fixed-layout figure, keyed by the plotting function's name without ``plot_``; ``category_estrous_ratio_grid_stages`` is the 2 x 2 per-stage companion of the ratio grid).
+* **usv_interval_figures** : the figures of ``usv_interval_summary_statistics`` (the inter-USV interval notebook) -- ``edge_color`` (``#202020``, histogram edges, the selected-K outline, component triangles and the LRT reference line); ``log_histogram`` (``figsize`` 5 x 5 in, ``alpha`` 0.5 so the two overlaid pools stay readable); ``ic_curves.figsize`` (6 x 4 in); ``best_fit`` (``figsize`` 5 x 5 in, square for the Q-Q inset, ``qq_quantiles`` 200 Q-Q points, ``density_grid_points`` 500 -- the grid the point-wise mixture curve of ``plot_gmm_fit`` is evaluated on -- ``bin_mean_grid_points`` 4000 -- the denser grid its bin-averaged curve is smoothed on when ``density_as_bin_means`` is on -- and ``component_grid_points`` 500 and ``component_linewidth`` 1.5 for the optional per-component curves; the histogram's bin count is the caller's, the notebook passing the per-sex ``bins_per_sex``); ``qq_plot`` (the standalone ``plot_qq`` figure: ``figsize`` 5 x 5 in, ``n_quantiles`` 200 Q-Q points and ``line_color`` ``#202020`` for the y = x reference line); ``bootstrap_lrt`` (``figsize_per_panel`` 4 x 3 in, ``break_gap_factor`` 1.5 -- the axis is broken when the observed statistic sits more than 1.5 null-widths past the null -- ``bins`` 50, ``null_color`` ``#a0a0a0`` and ``observed_color`` ``#cc0000``); ``serial_dependence`` (``figsize`` 6.2 x 2.6 in, ``grid_bins`` 70 per axis of the 2-D histogram, ``lims_ms`` 15-20000 ms on both axes, and the inks ``density_dark_color`` ``#1F3A45`` (dark end of the density ramp), ``diagonal_color`` ``#8A8F98`` (next = current), ``boundary_color`` ``#B4404A`` (bout boundary), ``band_color`` ``#1F1F1F`` (bootstrap band) and ``line_color`` ``#000000`` (fitted line and bend)).
+* **coactivity_figures** : the figures of ``make_coactivity_figures`` (the coactivity notebook; colours stay in ``coactivity_colors``) -- ``significance_alpha`` (0.05, the two-tailed level that colours an animal's slope line and puts a star over an amplitude bin); ``acoustic_confound`` (``bins`` 40 and ``alpha`` 0.5 of the overlaid feature histograms); ``null_distributions`` (the 3 x 2 chained-null grid: ``percentile`` 99 of the dashed threshold, ``bins`` 40, ``null_alpha`` 0.5, ``obs_linewidth`` 3.0, ``threshold_linewidth`` 1.0, ``legend_fontsize`` 8) and ``per_session_pop_corr`` (the smaller per-session panels: ``percentile`` 99, ``bins`` 30, ``null_alpha`` 0.55, ``obs_linewidth`` 2.2, ``threshold_linewidth`` 0.8, ``legend_fontsize`` 7).
 
 .. code-block:: json
 
@@ -171,10 +177,208 @@ Two blocks hold the analysis choices of particular figures (layout and styling s
       "bout_trigger_bin_seconds": 0.02,
       "bout_trigger_smooth_bins": 2.5,
       "bout_density_grid": 160,
-      "bout_density_levels": [0.5, 0.75, 0.9]
+      "bout_density_levels": [0.5, 0.75, 0.9],
+      "ink_color": "#1F1F1F",
+      "band_color": "#D3D3D3",
+      "dash_color": "#888888",
+      "light_color": "#CCCCCC",
+      "hatch_color": "#BBBBBB",
+      "vocal_page_figsize_inches": [16.0, 27.0],
+      "behavioral_page_width_inches": 16.0,
+      "behavioral_row_height_inches": 2.6,
+      "region_grid_figsize_inches": [14.0, 6.4],
+      "sign_flip_figsize_inches": [10.0, 5.4],
+      "pag_gradient_figsize_inches": [18.0, 4.8],
+      "peth_timing_figsize_inches": [18.0, 6.6],
+      "behavioral_tier_figsize_inches": [7.5, 3.5],
+      "overlap_venn_figsize_inches": [6.5, 5.5],
+      "per_region_venn_figsize_inches": [18.0, 9.0],
+      "bout_legend_fontsize": 9,
+      "bout_legend_line_step": 0.075,
+      "peth_tick_seconds": 0.5,
+      "qlvm_category_label_fontsize": 14,
+      "qlvm_label_inset": 0.06,
+      "strip_log_ratio_threshold": 10.0,
+      "strip_symlog_linthresh": 0.5,
+      "stability_marker_size_range": [4.0, 70.0],
+      "stability_fr_log10_range": [-1.0, 1.5],
+      "consistency_marker_size_range": [6.0, 60.0],
+      "consistency_n_tested_range": [2, 6],
+      "breadth_marker_size_range": [8.0, 60.0],
+      "breadth_z_range": [3.0, 20.0],
+      "stability_min_units": 5,
+      "vmi_bootstrap_n": 2000,
+      "vmi_bootstrap_quantiles": [0.025, 0.975],
+      "vmi_n_tested_min": 2,
+      "pag_kde_grid_resolution": 220,
+      "vmi_histogram_bins": 20,
+      "peth_consistency_tolerance_seconds": 0.1,
+      "peth_timing_bin_seconds": 0.05,
+      "consistency_k_min": 2,
+      "consistency_require_majority": true
+    },
+    "neuronal_decoding_figures": {
+      "trace_color": "#1F1F1F",
+      "page_color": "#FFFFFF",
+      "opacity_range": [0.45, 1.0],
+      "main_panel_inches": [5.6, 4.0],
+      "side_gap_inches": 0.44,
+      "panel_gap_inches": 0.2,
+      "page_margin_inches": {
+        "left": 0.78,
+        "right": 0.14,
+        "bottom": 0.6,
+        "top": 0.74
+      },
+      "ci_quantile": 0.995,
+      "null_percentile": 99.5
     },
     "anatomy_figures": {
-      "excluded_mouse_ids": ["147366"]
+      "excluded_mouse_ids": ["147366"],
+      "recording_yield": {
+        "fig_size_inches": [7.0, 2.6]
+      },
+      "unit_positions": {
+        "fig_size_inches": [6.0, 5.0],
+        "view_elev": 18.0,
+        "view_azim": -60.0,
+        "shell_vertex_stride": 6,
+        "shell_point_size": 0.7,
+        "shell_point_alpha": 0.5,
+        "region_alpha": 0.1,
+        "mb_alpha": 0.04,
+        "dot_size": 9.0,
+        "dot_alpha": 1.0,
+        "legend_marker_scale": 3.0
+      },
+      "unit_positions_video": {
+        "n_frames": 240,
+        "fps": 30,
+        "dpi": 600,
+        "bitrate": 4000
+      },
+      "unit_waveforms": {
+        "lateral_jitter_um": 12.0,
+        "waveform_width_um": 12.0,
+        "peak_amplitude_target_um": 25.0,
+        "inter_shank_wspace": 0.05,
+        "opacity_sigma_um": 20.0,
+        "n_neighbors_each_side": 5,
+        "ap_padding_um": 20.0,
+        "dv_padding_um": 30.0,
+        "fig_size_inches": [4.5, 7.0]
+      }
+    },
+    "behavioral_feature_distributions": {
+      "figure_dpi": 600,
+      "panels_per_row": 6,
+      "figure_width_inches": 6.4,
+      "row_height_inches": 1.0
+    },
+    "usv_summary_figures": {
+      "density_clip_percentile": 98,
+      "colorbar_nbins": 5,
+      "distance_kde_bw_adjust": 1.5,
+      "anova_alpha": 0.05,
+      "polar_kde": {
+        "grid_points": 200,
+        "contour_levels": 100
+      },
+      "category_polar_kde_grid": {
+        "grid_points": 100,
+        "contour_levels": 50,
+        "panel_inches": [4, 4]
+      },
+      "estrous_category_kde_grid": {
+        "grid_points": 100,
+        "contour_levels": 50,
+        "panel_inches": [4, 4]
+      },
+      "panel_inches": {
+        "category_estrous_rates_grid": [6, 4.5],
+        "category_estrous_ratio_grid": [5, 5]
+      },
+      "figsizes": {
+        "assignment_stacked_bars": [6, 10],
+        "assignment_summary_panel": [6, 9],
+        "animal_participation_stats": [12, 5],
+        "polar_kde_distance_angle": [10, 4],
+        "behavior_duration_regressions": [10, 10],
+        "distance_by_assignment_kde_anova": [10, 6],
+        "duration_histograms_by_sex": [8, 8],
+        "hourly_regressions": [4, 5],
+        "local_fatigue_binned_trends": [5, 5],
+        "estrous_ratio_scatter": [4, 3],
+        "estrous_usv_rates": [12, 5],
+        "estrous_stage_pie_chart": [7, 7],
+        "category_prevalence_and_embedding": [12, 18],
+        "category_global_fatigue_heatmap": [14, 10],
+        "category_estrous_ratio_grid_stages": [12, 12],
+        "session_squeak_time_heatmap": [9.2, 8.2]
+      }
+    },
+    "usv_interval_figures": {
+      "edge_color": "#202020",
+      "log_histogram": {
+        "figsize": [5, 5],
+        "alpha": 0.5
+      },
+      "ic_curves": {
+        "figsize": [6, 4]
+      },
+      "best_fit": {
+        "figsize": [5, 5],
+        "qq_quantiles": 200,
+        "density_grid_points": 500,
+        "bin_mean_grid_points": 4000,
+        "component_grid_points": 500,
+        "component_linewidth": 1.5
+      },
+      "qq_plot": {
+        "figsize": [5, 5],
+        "n_quantiles": 200,
+        "line_color": "#202020"
+      },
+      "bootstrap_lrt": {
+        "figsize_per_panel": [4, 3],
+        "break_gap_factor": 1.5,
+        "bins": 50,
+        "null_color": "#a0a0a0",
+        "observed_color": "#cc0000"
+      },
+      "serial_dependence": {
+        "figsize": [6.2, 2.6],
+        "grid_bins": 70,
+        "lims_ms": [15.0, 20000.0],
+        "density_dark_color": "#1F3A45",
+        "diagonal_color": "#8A8F98",
+        "boundary_color": "#B4404A",
+        "band_color": "#1F1F1F",
+        "line_color": "#000000"
+      }
+    },
+    "coactivity_figures": {
+      "significance_alpha": 0.05,
+      "acoustic_confound": {
+        "bins": 40,
+        "alpha": 0.5
+      },
+      "null_distributions": {
+        "percentile": 99,
+        "bins": 40,
+        "null_alpha": 0.5,
+        "obs_linewidth": 3.0,
+        "threshold_linewidth": 1.0,
+        "legend_fontsize": 8
+      },
+      "per_session_pop_corr": {
+        "percentile": 99,
+        "bins": 30,
+        "null_alpha": 0.55,
+        "obs_linewidth": 2.2,
+        "threshold_linewidth": 0.8,
+        "legend_fontsize": 7
+      }
     }
 
 Visualize 3D behavior (figure/video)
@@ -214,7 +418,7 @@ The */usv-playpen/_parameter_settings/visualizations_settings.json* file contain
 * **arena_directory** : path to the directory with the 3D tracked arena data
 * **speaker_audio_file** : path to the audio file containing the playback speaker sound
 * **pitch_shifted_audio_bool** : if "Yes", automatically frequency-shift the session USVs over the chosen ``[video_start_time, video_start_time + video_duration]`` window into the human-audible range and mux the result onto the video (under a time limit; a failed mux is reported as a warning) (replaces the former manual ``sequence_audio_file`` path)
-* **pitch_shifted_audio_specs** : pitch-shift recipe used when ``pitch_shifted_audio_bool`` is "Yes" (``fs_audio_dir``, ``fs_device_id``, ``fs_channel_id``, ``fs_wav_sampling_rate``, ``fs_octave_shift``, ``fs_volume_adjustment``, ``fs_compand_transfer``, ``fs_noise_reduction_std_threshold``, ``fs_sinc_upper_cutoff_hz``)
+* **pitch_shifted_audio_specs** : pitch-shift recipe used when ``pitch_shifted_audio_bool`` is "Yes" (``fs_audio_dir``, ``fs_device_id``, ``fs_channel_id``, ``fs_wav_sampling_rate``, ``fs_octave_shift``, ``fs_volume_adjustment``, ``fs_compand_transfer``, ``fs_noise_reduction_std_threshold``, ``fs_sinc_upper_cutoff_hz``, ``fs_sox_timeout_s``; the same keys as the *Analyze* page's ``frequency_shift_audio_segment`` block). ``fs_sox_timeout_s`` is the upper bound in seconds on each SoX subprocess of the pitch shift (``600``): a SoX run on a video-length window takes seconds, so one running this long has hung and is stopped rather than blocking the render
 * **animate_bool** : boolean value indicating whether to animate the figure or not ("No" creates figure)
 * **video_start_time** : start time of the figure/video in seconds
 * **video_duration** : duration of the video in seconds
@@ -246,6 +450,16 @@ Parameters controlling the figure output format and video encoding (``general_fi
 * **animation_codec_tune_flag** : codec tuning flag (e.g. "hq").
 * **animation_writer** : matplotlib animation writer (e.g. "ffmpeg").
 * **animation_format** : output video container format (e.g. "mp4").
+
+Parameters setting the ink palette of each ``plot_theme`` (``color_modes``; one map per theme, ``light_mode`` for "light" and ``dark_mode`` for "dark", every value a hex string):
+
+* **background_color** : figure and panel background ("#FFFFFF" light, "#202020" dark).
+* **node_edge_color** / **body_edge_color** : edge colour of the body-node spheres and of the body polygons ("#8B8B8B" in both themes, a mid grey that reads on either background).
+* **text_color** / **tick_color** : text, tick and spine colour (the opposite of the background: "#202020" light, "#FFFFFF" dark).
+* **arena_line_color** / **arena_mic_color** / **arena_mesh_color** : arena axes, microphone markers and mesh walls (same ink as the text).
+* **spectrogram_text_color** : spectrogram labels and colorbar text (same ink as the text).
+* **faded_feature_color** : trace colour of a partner-pair (dyadic) behavioral feature that is not among the highlighted ``special_features`` (8-digit hex with alpha ``33``, about 20% opacity, so the highlighted traces stand out: "#00000033" light, "#FFFFFF33" dark); dyadic features otherwise take ``text_color``.
+* **speaker_color** : the playback speaker marker (same ink as the text).
 
 Parameters specific to the arena figure include:
 
@@ -308,7 +522,8 @@ Parameters specific to subplots include:
             "fs_volume_adjustment": true,
             "fs_compand_transfer": "0.3,1 6:-70,-60,-20 -5 -90 0.2",
             "fs_noise_reduction_std_threshold": 3,
-            "fs_sinc_upper_cutoff_hz": 25000
+            "fs_sinc_upper_cutoff_hz": 25000,
+            "fs_sox_timeout_s": 600
         },
         "animate_bool": false,
         "video_start_time": 37.0,
@@ -344,6 +559,34 @@ Parameters specific to subplots include:
           "animation_codec_tune_flag": "hq",
           "animation_writer": "ffmpeg",
           "animation_format": "mp4"
+        },
+        "color_modes": {
+          "light_mode": {
+            "background_color": "#FFFFFF",
+            "node_edge_color": "#8B8B8B",
+            "body_edge_color": "#8B8B8B",
+            "text_color": "#202020",
+            "tick_color": "#202020",
+            "arena_line_color": "#202020",
+            "arena_mic_color": "#202020",
+            "arena_mesh_color": "#202020",
+            "spectrogram_text_color": "#202020",
+            "faded_feature_color": "#00000033",
+            "speaker_color": "#202020"
+          },
+          "dark_mode": {
+            "background_color": "#202020",
+            "node_edge_color": "#8B8B8B",
+            "body_edge_color": "#8B8B8B",
+            "text_color": "#FFFFFF",
+            "tick_color": "#FFFFFF",
+            "arena_line_color": "#FFFFFF",
+            "arena_mic_color": "#FFFFFF",
+            "arena_mesh_color": "#FFFFFF",
+            "spectrogram_text_color": "#FFFFFF",
+            "faded_feature_color": "#FFFFFF33",
+            "speaker_color": "#FFFFFF"
+          }
         },
         "arena_figure_specs": {
           "arena_node_connections_bool": false,
@@ -457,6 +700,9 @@ The render parameters live in the ``qlvm_torus_traversal_video`` block of */usv-
 * **spec_cache_size** : number of spectrograms held in the in-memory LRU cache during rendering.
 * **apply_mask** : apply the SAM2 mask to each spectrogram.
 * **accent_color** : hex highlight color for the trail / head marker / cluster outline + dot / current-tile borders.
+* **palette** : the video's neutral hex colours -- ``white`` (title-card face and the category contours on the density, ``#FFFFFF``), ``black`` (title-card title and the marker edges, ``#000000``), ``gray`` (borders of the shown tiles, ``#808080``), ``light_gray`` (borders of the empty tiles, ``#D3D3D3``) and ``subtitle`` (the title-card subtitle, ``#444444``); neutral so the accent colour stays the only highlight.
+* **heatmap_vmax_percentile** : percentile of the non-zero category-bundle density that tops the left panel's colour scale (95, so a few peak pixels do not wash the rest of the map out).
+* **bitrate** : ffmpeg bitrate of an ``.mp4`` output, in kbit/s (4000; a ``.gif`` is written with Pillow and ignores it).
 
 .. code-block:: json
 
@@ -477,7 +723,16 @@ The render parameters live in the ``qlvm_torus_traversal_video`` block of */usv-
         "peaks_only": false,
         "spec_cache_size": 2048,
         "apply_mask": true,
-        "accent_color": "#00FFFF"
+        "accent_color": "#00FFFF",
+        "palette": {
+            "white": "#FFFFFF",
+            "black": "#000000",
+            "gray": "#808080",
+            "light_gray": "#D3D3D3",
+            "subtitle": "#444444"
+        },
+        "heatmap_vmax_percentile": 95,
+        "bitrate": 4000
     }
 
 Render a USV sequence figure
@@ -537,6 +792,7 @@ Settings live in the ``make_usv_spectrograms`` block of */usv-playpen/_parameter
 * **cbar_limits** : ``[vmin, vmax]`` colorbar (power) limits in dB.
 * **apply_mask** : apply the SAM2 mask to each per-USV spectrogram before stitching.
 * **auto_open_figure** : open the saved figure in the OS viewer when running in a GUI context.
+* **stitched_edge_taper_alpha** : shape of the raised-cosine (Tukey) taper applied along each per-USV spectrogram's time axis before it is stitched onto the zero canvas (``stitched`` mode): the tapered fraction of the USV, start and end combined (``0.3`` fades the first and last 15%), so each USV fades into the black gaps instead of stepping from a bright edge column.
 
 plus the ``sequence`` sub-dict:
 
@@ -544,6 +800,10 @@ plus the ``sequence`` sub-dict:
 * **annotate_right** : annotate the stitched (right) spectrogram.
 * **mark_usv_segments** : draw an emitter-colored bar along the top of the spectrogram for each USV.
 * **exclude_squeaks** : keep only the pure USVs (``usv`` true and ``squeak`` false) in the sequence, leaving out pure squeaks, segments holding both and unclassed rows (default ``true``; same meaning as ``embedding_thumbnails.exclude_squeaks``). Noise segments are dropped regardless of this setting.
+* **marker_size_range** : ``[min, max]`` marker area (points²) of the left-panel USV points, scaled linearly with USV duration from the shortest to the longest USV of the window (``[35.0, 70.0]``: modest, so longer USVs read bigger without dominating; a window of equal durations takes the midpoint).
+* **line_width_range** : ``[min, max]`` width (points) of the connecting line's segments, scaled with the silent gap between consecutive USVs up to the Tukey upper fence of the gaps (``[0.5, 3.0]``; a longer silence draws a thicker segment).
+* **embedding_cmap** : matplotlib colormap of the regular map's density heatmap behind the points (``gray_r``, white to black, so the emitter colours stay legible on it).
+* **embedding_vmax_percentile** : percentile of the non-zero density pixels used as the heatmap's upper colour limit (``95``, so the few densest pixels saturate instead of washing out the rest of the map).
 
 .. code-block:: json
 
@@ -565,11 +825,16 @@ plus the ``sequence`` sub-dict:
         "cbar_limits": [-70, 0],
         "apply_mask": true,
         "auto_open_figure": true,
+        "stitched_edge_taper_alpha": 0.3,
         "sequence": {
             "draw_boundaries": true,
             "annotate_right": false,
             "mark_usv_segments": true,
-            "exclude_squeaks": true
+            "exclude_squeaks": true,
+            "marker_size_range": [35.0, 70.0],
+            "line_width_range": [0.5, 3.0],
+            "embedding_cmap": "gray_r",
+            "embedding_vmax_percentile": 95
         }
     }
 
@@ -606,6 +871,9 @@ The layout / sampling knobs live in the ``embedding_thumbnails`` block of */usv-
 * **mask_excluded_categories** : categories whose thumbnails are shown WITHOUT the SAM2 mask even when ``apply_mask`` is on (for vocal types SAM2 masks poorly); every category stays in the grid.
 * **category_colors** : optional explicit per-category color map, ``{"1": "#RRGGBB", ...}`` keyed by the ``qlvm_category`` number (``null`` = auto).
 * **scatter_max_points** : downsampling cap for the embedding scatter.
+* **scatter_point_size** : marker area of each scatter point (points², ``4.0``; the four small auxiliary maps use a quarter of it, at least ``0.5``), small because the cohort scatter holds up to ``scatter_max_points`` USVs.
+* **scatter_point_alpha** : opacity of the scatter points (``0.5``), so the dense cores of the map read darker than its fringes.
+* **continuous_color_percentiles** : lower / upper percentiles of the finite values that set the colour limits of the duration and bandwidth auxiliary maps (``[2, 98]``, so a few extreme USVs do not compress the colour range of the rest).
 
 Sampling / boundaries:
 
@@ -659,7 +927,45 @@ Annotations / layout:
         "thumbnail_wspace": 0.04,
         "unstretched_specs": true,
         "scatter_max_points": 200000,
+        "scatter_point_size": 4.0,
+        "scatter_point_alpha": 0.5,
+        "continuous_color_percentiles": [2, 98],
         "fig_size": [16, 12]
+    }
+
+The three notebook-driven pooled summary helpers (``plot_usv_property_histograms``, ``plot_session_type_usv_counts``, ``plot_session_usv_timeline``; see :doc:`Notebooks`) take the whole settings dict as ``visualizations_parameter_dict``: their DPI is ``figures.dpi``, their sex / unassigned colours are ``male_colors[0]`` / ``female_colors[0]`` / ``unassigned_colors[0]``, and the rest lives in the ``usv_property_figures`` block:
+
+* **histograms.fig_size** : figure size in inches of the five-panel property-histogram row (``[15.0, 3.0]``, 3 in per panel).
+* **histograms.n_bins** : linearly spaced bins per panel over the property's FeatureZoo range (``36``).
+* **histograms.face_color** / **histograms.edge_color** : histogram fill and outline (``#808080`` grey fill, ``#000000`` outline).
+* **histograms.bandwidth_bimodal_split_khz** : the frequency bandwidth (kHz) splitting the bimodal ``freq_bandwidth_hz`` distribution; that panel marks the histogram peak on each side of it instead of the mean (``30.0`` kHz, between the narrowband and broadband modes).
+* **histograms.bandwidth_peak_smooth_sigma_bins** : Gaussian smoothing (in bins, not kHz) applied before those two peaks are located (``3.0``, just enough to suppress sample-noise peaks near the split).
+* **session_type_counts.fig_size** : figure size in inches of the session-type bar chart (``[6.0, 3.0]``).
+* **session_type_counts.male_female_color** : colour of the male-female bar (``#DFB8B3``, the 50/50 blend of the male and female colours lightened 35% toward white); the lone-male and female-female bars take ``male_colors[0]`` / ``female_colors[0]``.
+* **timeline.fig_size** : figure size in inches of the per-session USV timeline (``[7.5, 1.6]``, a wide, short strip).
+* **timeline.rectangle_height** : vertical extent of each USV rectangle in data units (``2.5``; the y-axis is hidden, so it only sets the strip's visual thickness).
+* **timeline.rectangle_linewidth** : outline width of each USV rectangle in points (``1.0``).
+
+.. code-block:: json
+
+    "usv_property_figures": {
+        "histograms": {
+            "fig_size": [15.0, 3.0],
+            "n_bins": 36,
+            "face_color": "#808080",
+            "edge_color": "#000000",
+            "bandwidth_bimodal_split_khz": 30.0,
+            "bandwidth_peak_smooth_sigma_bins": 3.0
+        },
+        "session_type_counts": {
+            "fig_size": [6.0, 3.0],
+            "male_female_color": "#DFB8B3"
+        },
+        "timeline": {
+            "fig_size": [7.5, 1.6],
+            "rectangle_height": 2.5,
+            "rectangle_linewidth": 1.0
+        }
     }
 
 Render vocal-pose figures
@@ -962,7 +1268,7 @@ Every tunable lives in the ``vocal_pose_figures`` block of */usv-playpen/_parame
 
 Render QLVM figures
 -------------------
-The ``usv_playpen.visualizations.qlvm_figures`` module renders three **cohort-level** figures of the regular QLVM map and its content-ridge categories, and ``usv_playpen.visualizations.qlvm_property_sweep_video`` the matching property-sweep video. Like the vocal-pose figures they are **notebook-driven** (the ``usv_general_analyses.ipynb`` cells *QLVM property-sweep video* and *QLVM figures*, see :doc:`Notebooks`), not exposed in the GUI, so they have no ``visualize_booleans`` switch; every setting the figures read lives in the ``qlvm_figures`` block of */usv-playpen/_parameter_settings/visualizations_settings.json* (the sweep video's knobs are notebook-local and it reads only ``figures.sequential_cmap``).
+The ``usv_playpen.visualizations.qlvm_figures`` module renders three **cohort-level** figures of the regular QLVM map and its content-ridge categories, and ``usv_playpen.visualizations.qlvm_property_sweep_video`` the matching property-sweep video. Like the vocal-pose figures they are **notebook-driven** (the ``usv_general_analyses.ipynb`` cells *QLVM property-sweep video* and *QLVM figures*, see :doc:`Notebooks`), not exposed in the GUI, so they have no ``visualize_booleans`` switch; every setting the figures read lives in the ``qlvm_figures`` block of */usv-playpen/_parameter_settings/visualizations_settings.json*, and every setting of the sweep video in its ``qlvm_property_sweep_video`` block (plus ``figures.sequential_cmap`` and ``figures.seed``).
 
 **Data.** The USVs are the cohort's: ``make_usv_spectrograms.load_regular_map_cohort_usvs`` pools every non-playback ``*sessions_list.txt`` under ``shared_resources.input_files_directory`` (``read_cohort_session_roots`` — the same cohort definition as the embedding thumbnails and the embedding explorer) through ``build_pooled_embeddings_df`` and the pooled-embeddings cache ``<spectrograms_dir>/embeddings/pooled_embeddings_production.parquet`` (``os_utils.POOLED_EMBEDDINGS_CACHE_NAME``, rebuilt when the summaries change), and keeps the pure USVs (``usv`` true, ``squeak`` false; noise segments dropped) that have a regular-map position (``qlvm1`` / ``qlvm2``) and all six measured properties (``duration``, ``spectral_entropy``, ``freq_bandwidth_hz``, ``mean_freq_hz``, ``loudness_db``, ``mask_number``; ``make_usv_spectrograms.REGULAR_MAP_PROPERTY_COLUMNS``). The category geometry is the QLVM category bundle (``os_utils.load_qlvm_category_bundle``; see *Where the category geometry comes from* above), and ``check_categories_match_bundle`` first verifies that every pooled ``qlvm_category`` is the category the bundle's grid gives the USV's position (the pixel rule ``assign-qlvm-categories`` applies): summaries categorized with another bundle, or before their positions were last written, stop the figures with a message naming the sessions. The spectrogram-based panels use a per-session sample (``build_qlvm_figure_sample``: up to ``usvs_per_session`` random USVs of every session, read from the session's own ``audio/spectrograms/<session>_spectrograms.h5`` and masked by the union of the USV's SAM2 masks, kept both as the regular cell's decoder input — time-stretched to 128 × 128 and normalized by the production cell's training contract, exactly what ``infer-qlvm-latents`` embeds — and at native length), written to ``sample_cache_file`` and served again while the drawn USVs are the same.
 
@@ -992,6 +1298,7 @@ The ``qlvm_figures`` block (the seed is ``figures.seed`` and the colormap ``figu
 * **category_colors** : one hex colour per category (R-1 … R-k in order).
 * **overview** : ``n_examples`` spectrograms per category; ``spiral_radius`` (torus units) and ``spiral_turns`` of the example spiral; ``density_bandwidth`` (torus units) of every density field of the figures.
 * **quality** : ``n_pcs`` PCA components (the first two are the PCA map, all of them the UMAP input); ``umap_n_neighbors`` / ``umap_min_dist``; ``readout_neighbors`` / ``readout_folds`` of the acoustic readout; ``neighborhood_k`` / ``n_neighborhood_subsets`` / ``neighborhood_subset_size`` of the neighborhood scores; ``distance_sample_size`` / ``n_distance_samples`` of the distance fidelity; ``pullback_grid`` nodes per axis of the geodesic grids; ``embed_lattice_batch_size`` / ``embed_data_batch_size`` of the seed-cell embedding.
+* **style** : the look of the three figures. ``text_color`` (all text and reference lines, ``#000000``), ``figure_face`` (page, ``#FFFFFF``), ``boundary_color`` (category boundaries and numbers on the fields, and the strong cells' text of tables (i) and (iii), ``#FFFFFF``), ``property_boundary_color`` (boundaries over the property-coloured maps, ``#000000``); ``map_colors`` (one per compared map, keyed ``QLVM`` / ``PCA`` / ``UMAP``), ``distance_colors`` (one per distance measure of panel (b'), keyed by the measure's label), ``seed_colors`` (one per training in panel (c), the production cell included, so their count caps the trainings: four), ``null_color`` (shuffled-position readout, ``#D62728``), ``density_color`` / ``change_color`` (the two measures of the along-boundary test, ``#4E79A7`` / ``#E15759``), ``bar_color`` (property-share and category-partition bars, ``#59595B``), ``watershed_color`` (watershed-partition bars, ``#BDBDBD``) and ``group_dot_color`` (partition group dots, ``#FFFFFF``); font sizes in points -- ``title_size`` / ``label_size`` / ``tick_size`` (14 / 14 / 12) and ``colorbar_tick_size`` / ``colorbar_label_size`` (13 / 15) of the overview and category figures, ``quality_title_size`` / ``quality_label_size`` / ``quality_tick_size`` (16 / 16 / 14) of the quality figure's summary panels; ``color_percentiles`` (``[1, 99]``: the percentiles of every map's and field's colour range, so a few extreme USVs or pixels do not compress the scale); and the figure sizes in inches, ``overview_figsize`` (30 × 12.5), ``quality_figsize`` (20 × 22.5) and ``categories_figsize`` (32.5 × 16.6), sized so the panels of each figure keep their aspect.
 * **categories** : ``n_shifts`` of the along-boundary test and ``histogram_bins`` of its histogram; ``similarity_downsample`` / ``similarity_max_shift`` of the aligned correlation; ``balanced_per_category`` / ``balanced_reference_per_category`` of the between-category panels; ``closest_matches`` and ``closest_log2_limit`` of the closest-matches panel; ``partition_sample_size`` / ``partition_reference_size`` of the partition comparison; ``average_size`` / ``align_max_shift`` / ``align_iterations`` / ``average_time_ms`` of the aligned category means.
 
 .. code-block:: json
@@ -1042,7 +1349,191 @@ The ``qlvm_figures`` block (the seed is ``figures.seed`` and the colormap ``figu
             "align_max_shift": 8,
             "align_iterations": 5,
             "average_time_ms": 150.0
+        },
+        "style": {
+            "text_color": "#000000",
+            "figure_face": "#FFFFFF",
+            "boundary_color": "#FFFFFF",
+            "property_boundary_color": "#000000",
+            "map_colors": {
+                "QLVM": "#000000",
+                "PCA": "#9A9A9A",
+                "UMAP": "#E69F00"
+            },
+            "distance_colors": {
+                "QLVM pullback geodesic": "#000000",
+                "QLVM density geodesic": "#555555",
+                "QLVM flat torus": "#8C8C8C",
+                "PCA Euclidean": "#BDBDBD",
+                "UMAP Euclidean": "#E69F00"
+            },
+            "seed_colors": ["#000000", "#666666", "#A6A6A6", "#CCCCCC"],
+            "null_color": "#D62728",
+            "density_color": "#4E79A7",
+            "change_color": "#E15759",
+            "bar_color": "#59595B",
+            "watershed_color": "#BDBDBD",
+            "group_dot_color": "#FFFFFF",
+            "title_size": 14,
+            "label_size": 14,
+            "tick_size": 12,
+            "colorbar_tick_size": 13,
+            "colorbar_label_size": 15,
+            "quality_label_size": 16,
+            "quality_tick_size": 14,
+            "quality_title_size": 16,
+            "color_percentiles": [1, 99],
+            "overview_figsize": [30, 12.5],
+            "quality_figsize": [20, 22.5],
+            "categories_figsize": [32.5, 16.6]
         }
+    }
+
+The ``qlvm_property_sweep_video`` block (the seed of the tie order is ``figures.seed`` and the colormap ``figures.sequential_cmap``; the cohort directory, cache, output path and preview quantile are run choices set in the notebook cell):
+
+* **window** : share of the USVs in each equal-count window (0.1 = 10 %).
+* **step** : window-centre step between frames, as a share of the USVs (0.01, so the sweep moves one percentile per frame).
+* **hold** : frames held at the first and at the last window (8).
+* **fps** : video frame rate, frames per second (15).
+* **dpi** : frame resolution (100; the frame is ``figure_size`` inches).
+* **density_bandwidth** : Gaussian standard deviation of each window's density, in torus units (0.01 = 2 pixels of the 200 × 200 category grid).
+* **colormap_floor** : lowest point of ``figures.sequential_cmap`` used, in [0, 1) (0.2): the density is drawn as brightness on black, so the black low end of a colormap such as inferno would hide the lowest windows.
+* **color_percentiles** : percentiles of all USVs' values that span each property's colour scale (``[1, 99]``, so a few extreme USVs do not compress it).
+* **brightness_percentile** : percentile of a window's own density that maps to full brightness (99, so a single dense pixel does not dim the rest).
+* **figure_size** : frame size in inches (19 × 11.4, the 2 × 3 panel grid with square maps).
+* **figure_face** : hex page colour (``#FFFFFF``).
+* **boundary_color** : hex colour of the dotted category boundaries (``#FFFFFF``, visible on the black density background).
+* **median_mark_color** / **window_shade_color** : hex colours of the colour-bar mark at the window's median (``#000000``) and of the shading over the window's range (``#FFFFFF``, drawn at 35 % opacity).
+* **colorbar_label_size** / **colorbar_tick_size** : colour-bar label and tick font sizes, in points (17 / 14).
+* **codec** / **pixel_format** / **crf** : ffmpeg encoder settings (``libx264``, ``yuv420p`` for players that only decode 4:2:0, and constant rate factor 18, visually lossless for x264).
+
+.. code-block:: json
+
+    "qlvm_property_sweep_video": {
+        "window": 0.1,
+        "step": 0.01,
+        "hold": 8,
+        "fps": 15,
+        "dpi": 100,
+        "density_bandwidth": 0.01,
+        "colormap_floor": 0.2,
+        "color_percentiles": [1, 99],
+        "brightness_percentile": 99,
+        "figure_size": [19.0, 11.4],
+        "figure_face": "#FFFFFF",
+        "boundary_color": "#FFFFFF",
+        "median_mark_color": "#000000",
+        "window_shade_color": "#FFFFFF",
+        "colorbar_label_size": 17,
+        "colorbar_tick_size": 14,
+        "codec": "libx264",
+        "pixel_format": "yuv420p",
+        "crf": 18
+    }
+
+
+Modeling figures
+--------------------------------
+``visualizations/modeling_plots.py`` draws the modeling figures (univariate rankings and filters, multinomial performance and filters, the manifold filter atlas, the collinearity / timescale audits, the CNN results visualizer and the behavioural-response figures). It is not driven from the GUI; its plotters are called from the modeling notebook (see :doc:`Notebooks`). Besides the shared ``figures`` block (dpi, seed, format, colormaps) and the sex / social palettes, it reads its own tunables from the ``modeling_plots`` block of */usv-playpen/_parameter_settings/visualizations_settings.json*. The plotters read these knobs from the settings when they are called, not as keyword arguments: the module functions read the shipped file (loaded once at import), and ``DeepResultsVisualizer`` reads the ``visualization_settings`` dict it is constructed with (the shipped file when ``None``). To draw with a different value, change it in the settings (or, for the CNN visualizer, in the dict passed to it):
+
+* **colors** : the module palette -- ``neutral`` (``#D3D3D3``, non-significant fills, separators and italic "not significant" notes), ``mean_line`` (``#DCB400``, the mean-line accent), ``text`` (``#202020``, axis and annotation ink), ``reference_line`` (``#808080``, dashed zero / chance lines), ``timescale_axis`` (``#000000``, zero lines and spines of the timescale audit) and ``timescale_null`` (``#808080``, the circular-shift null fill / envelope of the timescale audit).
+* **ci_percentiles** : the lower / upper percentiles of every 99% confidence band drawn around a filter or a bootstrapped mean (the univariate filter figures and the raw feature-difference average), ``[0.5, 99.5]``.
+* **raw_feature_difference** : ``value_sanity_cap`` (per-frame values above it become NaN before the mean / CI so extreme outliers do not bias the estimate; 90.0, in the feature's own unit, which suits angular features in degrees -- set a feature-appropriate cap for non-angular features, or ``null`` to disable it), ``n_bootstraps`` (bootstrap resamples of the averaged profile's 99% band, 100 -- the value the modeling notebook draws with), ``heatmap_cmap`` (the colormap of the sorted per-event heatmaps, ``binary``) and ``heatmap_clip_percentiles`` (the percentiles of the pooled values that set the heatmap's colour limits, ``[1, 99]``, so a few extreme events do not wash out the rest).
+* **univariate_multinomial_performance** : ``base_cmap``, the sequential colormap of the Actual and Null proportion matrices (``mako``).
+* **multinomial_filters** : ``null_band_percentile``, the percentile of ``|w|`` over the permuted-target refits below which a class-by-lag cell is faded as no-signal (95).
+* **manifold_filter_atlas** : ``n_time_slices`` (instants sampled per affinity filmstrip, 16), ``display_bins`` (equal-width bins the magnitude line is averaged into, 25), ``smooth_sigma`` (Gaussian smoothing of the magnitude line, in display bins, 3.0; 0 disables it), ``atlas_grid_n`` (the vocal-space atlas holds ``atlas_grid_n ** 2`` real USV tiles, 12) and ``null_percentile`` (the dashed permuted-target magnitude line, 95th percentile).
+* **collinearity_audit** : ``outline_threshold`` (minimum ``|rho|`` for an off-diagonal cell to be outlined, 0.7) and ``outline_color`` (``#000000``).
+* **timescale_audit** : ``signal_smooth_window``, the rolling-mean window (lag bins) applied to each cross-correlation curve before the horizon is read, 0 (no smoothing); ``acf_run_length``, the number of consecutive lag bins above the ACF null envelope that marks where the autocorrelation leaves the band, 15 (about 100 ms at 150 fps), used by both timescale figures.
+* **behavioral_response_forest** : ``alpha`` (two-sided error rate of the plotted intervals, 0.01), ``false_discovery_rate`` (Benjamini-Hochberg level deciding marker fill, 0.05), ``axis_limits`` (four fixed ``[low, high]`` x-ranges -- contrast percent, contrast degrees, duration percent, duration degrees -- so the two questions read on comparable scales) and ``duration_sd_factor`` (bout-length factor for one SD of log duration, used in the axis heading, 2.25).
+* **matched_divergence** : ``alpha`` (two-sided error rate of the intervals and per-bin tests, 0.01), ``display_seconds`` (window drawn, ``[-2.0, 2.0]`` s), ``panel_columns`` (features per block, 4), ``between_block_gap`` (spacer between blocks, as a fraction of a panel, 0.3) and ``onset_run_seconds`` (consecutive significant time before an onset is reported, 1.0 s).
+* **cnn_permutation_test** : ``null_color`` (``#D3D3D3``), ``threshold_color`` (``#000000``), ``title_fontsize`` / ``label_fontsize`` (10 / 8 pt), ``figsize`` (``[3, 4]`` in), ``n_bootstraps`` (resamples per distribution, 1000), ``threshold_percentiles`` (``[0.5, 99.5]``: the 0.5th percentile of the null error and the 99.5th of the null skill, the one-sided 0.5% lines), ``histogram_bins`` (30), ``skill_null_bins`` (50) and ``skill_null_range`` (``[-0.02, 0.02]``, the null skill's histogram range, centred on zero skill).
+* **cnn_feature_importance** : ``title_fontsize`` / ``label_fontsize`` (10 / 8 pt) and ``figsize`` (``[4, 6]`` in).
+* **cnn_spatial_precision_grid** : ``n_patches``, the number of K-means neighbourhoods on a euclidean manifold (20; a torus run passes ``grid_shape`` instead).
+* **cnn_error_landscape** : ``title_fontsize`` / ``label_fontsize`` (10 / 8 pt) and ``figsize`` (``[12, 5]`` in).
+* **cnn_regional_saliency** : ``null_color`` (``#D3D3D3``), ``figsize`` (``[18, 9]`` in) and ``inset_histogram_bins`` (bins of the prediction-error inset, 15).
+
+.. code-block:: json
+
+    "modeling_plots": {
+      "colors": {
+        "neutral": "#D3D3D3",
+        "mean_line": "#DCB400",
+        "text": "#202020",
+        "reference_line": "#808080",
+        "timescale_axis": "#000000",
+        "timescale_null": "#808080"
+      },
+      "ci_percentiles": [0.5, 99.5],
+      "raw_feature_difference": {
+        "value_sanity_cap": 90.0,
+        "n_bootstraps": 100,
+        "heatmap_cmap": "binary",
+        "heatmap_clip_percentiles": [1, 99]
+      },
+      "univariate_multinomial_performance": {
+        "base_cmap": "mako"
+      },
+      "multinomial_filters": {
+        "null_band_percentile": 95
+      },
+      "manifold_filter_atlas": {
+        "n_time_slices": 16,
+        "display_bins": 25,
+        "smooth_sigma": 3.0,
+        "atlas_grid_n": 12,
+        "null_percentile": 95
+      },
+      "collinearity_audit": {
+        "outline_threshold": 0.7,
+        "outline_color": "#000000"
+      },
+      "timescale_audit": {
+        "signal_smooth_window": 0,
+        "acf_run_length": 15
+      },
+      "behavioral_response_forest": {
+        "alpha": 0.01,
+        "false_discovery_rate": 0.05,
+        "axis_limits": [[-15.0, 15.0], [-5.0, 5.0], [-6.0, 6.0], [-2.0, 2.0]],
+        "duration_sd_factor": 2.25
+      },
+      "matched_divergence": {
+        "alpha": 0.01,
+        "display_seconds": [-2.0, 2.0],
+        "panel_columns": 4,
+        "between_block_gap": 0.3,
+        "onset_run_seconds": 1.0
+      },
+      "cnn_permutation_test": {
+        "null_color": "#D3D3D3",
+        "threshold_color": "#000000",
+        "title_fontsize": 10,
+        "label_fontsize": 8,
+        "figsize": [3, 4],
+        "n_bootstraps": 1000,
+        "threshold_percentiles": [0.5, 99.5],
+        "histogram_bins": 30,
+        "skill_null_bins": 50,
+        "skill_null_range": [-0.02, 0.02]
+      },
+      "cnn_feature_importance": {
+        "title_fontsize": 10,
+        "label_fontsize": 8,
+        "figsize": [4, 6]
+      },
+      "cnn_spatial_precision_grid": {
+        "n_patches": 20
+      },
+      "cnn_error_landscape": {
+        "title_fontsize": 10,
+        "label_fontsize": 8,
+        "figsize": [12, 5]
+      },
+      "cnn_regional_saliency": {
+        "null_color": "#D3D3D3",
+        "figsize": [18, 9],
+        "inset_histogram_bins": 15
+      }
     }
 
 

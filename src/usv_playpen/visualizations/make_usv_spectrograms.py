@@ -78,32 +78,23 @@ from .plot_style import apply_plot_style
 apply_plot_style()
 
 
-# Load the project-wide default cmap and sex / unassigned palettes from
-# `visualizations_settings.json` at module import. The cmap is the default for
-# the module-level `plot_embedding_with_category_thumbnails` helper's `cmap=`
-# arguments (was two hard-coded `'inferno'` literals); the palettes feed the
-# module-level session-type / USV-timeline / manifold color constants below (was
-# hard-coded `#9AC0CD` / `#FF6347` / `#C0C0C0` literals). Class instances
-# continue to resolve their cmap via `_resolve_cmap` (also reads `figures.sequential_cmap`).
+# Load the project-wide default cmap and the sex palettes from
+# `visualizations_settings.json` at module import, for the module-level
+# `plot_embedding_with_category_thumbnails` helper (its auxiliary maps and
+# spectrogram thumbnails), which receives no settings dict. Class instances
+# resolve their cmap via `_resolve_cmap` (also reads `figures.sequential_cmap`)
+# and the pooled summary helpers read the settings dict they are passed.
 # These are required fields of the packaged settings file, so they are read by
-# direct key access; only the file-not-found case (e.g. a partial install) falls
-# back to literals so the module can still be imported.
+# direct key access.
 _VIZ_SETTINGS_PATH = (
     pathlib.Path(__file__).parent.parent
     / "_parameter_settings" / "visualizations_settings.json"
 )
-try:
-    with _VIZ_SETTINGS_PATH.open() as _vf:
-        _VIZ_SETTINGS = json.load(_vf)
-    _GLOBAL_CMAP = _VIZ_SETTINGS["figures"]["sequential_cmap"]
-    _MALE_COLORS = _VIZ_SETTINGS["male_colors"]
-    _FEMALE_COLORS = _VIZ_SETTINGS["female_colors"]
-    _UNASSIGNED_COLORS = _VIZ_SETTINGS["unassigned_colors"]
-except FileNotFoundError:
-    _GLOBAL_CMAP = "inferno"
-    _MALE_COLORS = ["#9AC0CD", "#8CA252"]
-    _FEMALE_COLORS = ["#FF6347", "#B851B4"]
-    _UNASSIGNED_COLORS = ["#C0C0C0"]
+with _VIZ_SETTINGS_PATH.open() as _vf:
+    _VIZ_SETTINGS = json.load(_vf)
+_GLOBAL_CMAP = _VIZ_SETTINGS["figures"]["sequential_cmap"]
+_MALE_COLORS = _VIZ_SETTINGS["male_colors"]
+_FEMALE_COLORS = _VIZ_SETTINGS["female_colors"]
 
 # Fraction of the figure width reserved on the right for the colorbar
 # column when ``plot_cbar`` is True; the colorbar itself is anchored to
@@ -113,24 +104,6 @@ CBAR_RIGHT_RESERVE = 0.92
 CBAR_INSET_WIDTH = "1.2%"
 CBAR_INSET_PAD_AXES_FRACTION = 0.02
 
-# Raised-cosine taper applied along each per-USV spec's time axis
-# before stitching, so each USV fades smoothly into the surrounding
-# zero canvas instead of abruptly stepping from a non-trivially bright
-# edge column. ``alpha`` is the Tukey shape parameter — the fraction
-# of the window tapered at the start and end combined. 0.3 means the
-# first 15% and last 15% of each spec are raised-cosine-faded.
-STITCHED_EDGE_TAPER_ALPHA = 0.3
-
-# Sequence-figure left-panel styling. Marker areas (pt^2) scale modestly with USV
-# duration (so longer USVs read bigger without dominating); the connecting path's
-# per-segment linewidth scales with the inter-USV interval (shorter gap -> thinner)
-# within this range; its per-segment color is a white -> emitter-color time
-# gradient (white = start of the bout, emitter color towards the end).
-_SEQ_MARKER_S_MIN = 35.0
-_SEQ_MARKER_S_MAX = 70.0
-_SEQ_LW_MIN = 0.5
-_SEQ_LW_MAX = 3.0
-_SEQ_EMBEDDING_CMAP = "gray_r"
 
 
 def _open_path_in_default_viewer(path, message_output: Callable | None = None) -> None:
@@ -924,7 +897,10 @@ class USVSpectrogramPlotter:
                         spec_valid = spec_valid * combined_mask.astype(np.float32)
 
                 if valid_cols >= 2:
-                    edge_taper = tukey(valid_cols, alpha=STITCHED_EDGE_TAPER_ALPHA).astype(np.float32)
+                    # Raised-cosine (Tukey) taper along each USV's time axis so it fades
+                    # into the zero canvas instead of stepping from a bright edge column;
+                    # ``stitched_edge_taper_alpha`` is the tapered fraction (start + end).
+                    edge_taper = tukey(valid_cols, alpha=cfg["stitched_edge_taper_alpha"]).astype(np.float32)
                     spec_valid = spec_valid * edge_taper[None, :]
                 zoom_factor_time = n_target / float(spec_valid.shape[1])
                 spec_resampled = zoom(spec_valid, (1.0, zoom_factor_time), order=1)
@@ -1179,15 +1155,16 @@ class USVSpectrogramPlotter:
         None
         """
 
+        seq_cfg = self.visualizations_parameter_dict["make_usv_spectrograms"]["sequence"]
         extent = (0.0, 1.0, 0.0, 1.0)
         if qlvm_map == QLVM_CATEGORY_MAP:
             bundle = load_qlvm_category_bundle()
             heatmap = bundle["density"]
             nonzero = heatmap[heatmap > 0]
-            vmax = float(np.percentile(nonzero, 95)) if nonzero.size else None
+            vmax = float(np.percentile(nonzero, seq_cfg["embedding_vmax_percentile"])) if nonzero.size else None
             ax.imshow(
                 heatmap, origin="lower", extent=extent,
-                cmap=_SEQ_EMBEDDING_CMAP, vmin=0, vmax=vmax, aspect="equal",
+                cmap=seq_cfg["embedding_cmap"], vmin=0, vmax=vmax, aspect="equal",
             )
             if draw_boundaries:
                 labels = bundle["label_grid"]
@@ -1347,6 +1324,10 @@ class USVSpectrogramPlotter:
         seq_rows = list(enumerate(seq_df.iter_rows(named=True), start=1))
         durations = [float(row["stop"]) - float(row["start"]) for _, row in seq_rows]
         dur_lo, dur_hi = (min(durations), max(durations)) if durations else (0.0, 0.0)
+        # Marker areas (pt^2) scale modestly with USV duration and the connecting
+        # path's per-segment line width with the inter-USV gap, within these ranges.
+        marker_s_min, marker_s_max = seq_cfg["marker_size_range"]
+        lw_min, lw_max = seq_cfg["line_width_range"]
 
         def _marker_size(duration: float) -> float:
             """
@@ -1357,7 +1338,8 @@ class USVSpectrogramPlotter:
 
             The duration is placed linearly between the shortest (``dur_lo``) and
             longest (``dur_hi``) USV of the sequence, read from the enclosing
-            scope, and mapped onto ``[_SEQ_MARKER_S_MIN, _SEQ_MARKER_S_MAX]``.
+            scope, and mapped onto ``sequence.marker_size_range``
+            (``[marker_s_min, marker_s_max]``).
 
             Parameters
             ----------
@@ -1371,9 +1353,9 @@ class USVSpectrogramPlotter:
                 every USV of the sequence has the same duration.
             """
             if dur_hi <= dur_lo:
-                return 0.5 * (_SEQ_MARKER_S_MIN + _SEQ_MARKER_S_MAX)
+                return 0.5 * (marker_s_min + marker_s_max)
             frac = (duration - dur_lo) / (dur_hi - dur_lo)
-            return _SEQ_MARKER_S_MIN + frac * (_SEQ_MARKER_S_MAX - _SEQ_MARKER_S_MIN)
+            return marker_s_min + frac * (marker_s_max - marker_s_min)
 
         path_pts: list[tuple[float, float]] = []
         path_starts: list[float] = []
@@ -1424,7 +1406,7 @@ class USVSpectrogramPlotter:
                 placed linearly between ``gap_lo`` and the Tukey-fence-capped
                 ``gap_hi`` (both from the enclosing scope), clipped to ``[0, 1]``
                 so gaps beyond the fence saturate, and mapped onto
-                ``[_SEQ_LW_MIN, _SEQ_LW_MAX]``.
+                ``sequence.line_width_range`` (``[lw_min, lw_max]``).
 
                 Parameters
                 ----------
@@ -1439,9 +1421,9 @@ class USVSpectrogramPlotter:
                     gaps are equal.
                 """
                 if gap_hi <= gap_lo:
-                    return 0.5 * (_SEQ_LW_MIN + _SEQ_LW_MAX)
+                    return 0.5 * (lw_min + lw_max)
                 frac = min(1.0, max(0.0, (gap - gap_lo) / (gap_hi - gap_lo)))
-                return _SEQ_LW_MIN + frac * (_SEQ_LW_MAX - _SEQ_LW_MIN)
+                return lw_min + frac * (lw_max - lw_min)
 
             # The QLVM map is a periodic unit torus ([0,1] in both dims), so the shortest
             # route between two points may wrap across an edge rather than run
@@ -1684,24 +1666,6 @@ USV_PROPERTY_DISPLAY = {
     },
 }
 
-# x-axis split point (in display units, kHz) used to find the two
-# bimodal peaks of the ``freq_bandwidth_hz`` distribution: argmax of
-# the (Gaussian-smoothed) histogram on each side of this split is
-# annotated. Smoothing sigma is in *bins*, not kHz, and is just large
-# enough to suppress sample-noise peaks near the split.
-BANDWIDTH_BIMODAL_SPLIT_KHZ = 30.0
-BANDWIDTH_PEAK_SMOOTH_SIGMA_BINS = 3.0
-
-HISTOGRAM_FACE_COLOR = "#808080"
-HISTOGRAM_EDGE_COLOR = "#000000"
-HISTOGRAM_N_BINS = 36
-
-# Session-type bar-chart colors. Lone-male uses the project's male
-# color, female-female the female color, and male-female a desaturated
-# midpoint between them (50/50 male+female RGB blended 35% toward white).
-SESSION_TYPE_MALE_COLOR = _MALE_COLORS[0]
-SESSION_TYPE_FEMALE_COLOR = _FEMALE_COLORS[0]
-SESSION_TYPE_MALE_FEMALE_COLOR = "#DFB8B3"
 
 
 def plot_usv_property_histograms(
@@ -1709,9 +1673,9 @@ def plot_usv_property_histograms(
     output_path: str | None = None,
     fig_format: str | None = None,
     exclude_noise_usvs: bool = True,
-    fig_size: tuple[float, float] = (15.0, 3.0),
-    fig_dpi: int = 300,
     message_output: Callable | None = None,
+    *,
+    visualizations_parameter_dict: dict,
 ) -> plt.Figure:
     """
     Description
@@ -1729,11 +1693,16 @@ def plot_usv_property_histograms(
     before pooling so the histograms reflect the non-noise
     distribution.
 
-    Each panel uses 36 linearly-spaced bins over the FeatureZoo
-    theoretical range for that property (converted to display units —
-    ms / kHz / a.u.) and is rendered with ``histtype='stepfilled'``,
-    ``color="#808080"`` (fill), ``edgecolor="#000000"`` (outline).
-    Top / right spines are removed for visual cleanliness.
+    Each panel uses ``usv_property_figures.histograms.n_bins`` (36)
+    linearly-spaced bins over the FeatureZoo theoretical range for that
+    property (converted to display units — ms / kHz / a.u.) and is
+    rendered with ``histtype='stepfilled'``, fill
+    ``usv_property_figures.histograms.face_color`` (``#808080``) and outline
+    ``usv_property_figures.histograms.edge_color`` (``#000000``). Top / right
+    spines are removed for visual cleanliness. The ``freq_bandwidth_hz`` panel
+    marks the peak of the histogram (Gaussian-smoothed by
+    ``bandwidth_peak_smooth_sigma_bins`` bins) on each side of
+    ``bandwidth_bimodal_split_khz``; every other panel marks its mean.
 
     Parameters
     ----------
@@ -1755,13 +1724,13 @@ def plot_usv_property_histograms(
     exclude_noise_usvs (bool)
         Whether to drop the segments ``detect_usv_noise`` flagged as
         holding no vocalization; default ``True``.
-    fig_size (tuple of float)
-        Figure size in inches; default ``(15, 3)`` for a 5-wide row.
-    fig_dpi (int)
-        Figure DPI; default ``300``.
     message_output (Callable | None)
         Optional logger callable; defaults to ``print``. Used to
         report per-session discovery / load issues without raising.
+    visualizations_parameter_dict (dict)
+        The visualizations settings (``visualizations_settings.json``). The
+        figure DPI is ``figures.dpi``; the figure size, bin count, colours and
+        bandwidth-peak rule come from ``usv_property_figures.histograms``.
 
     Returns
     -------
@@ -1820,8 +1789,11 @@ def plot_usv_property_histograms(
         for p, arrs in pooled.items()
     }
 
+    histogram_settings = visualizations_parameter_dict["usv_property_figures"]["histograms"]
     fig, axes = plt.subplots(
-        nrows=1, ncols=len(properties_in_csv), figsize=fig_size, dpi=fig_dpi
+        nrows=1, ncols=len(properties_in_csv),
+        figsize=tuple(histogram_settings["fig_size"]),
+        dpi=visualizations_parameter_dict["figures"]["dpi"],
     )
     for ax_idx, (ax, p) in enumerate(zip(axes, properties_in_csv, strict=False)):
         spec = USV_PROPERTY_DISPLAY[p]
@@ -1836,13 +1808,13 @@ def plot_usv_property_histograms(
         values_native[out_of_range] = np.nan
         values_disp = values_native[np.isfinite(values_native)] * factor
 
-        bins = np.linspace(lo_disp, hi_disp, HISTOGRAM_N_BINS + 1)
+        bins = np.linspace(lo_disp, hi_disp, histogram_settings["n_bins"] + 1)
         ax.hist(
             values_disp,
             bins=bins,
             histtype="stepfilled",
-            color=HISTOGRAM_FACE_COLOR,
-            edgecolor=HISTOGRAM_EDGE_COLOR,
+            color=histogram_settings["face_color"],
+            edgecolor=histogram_settings["edge_color"],
             linewidth=0.6,
         )
         ax.set_xlabel(spec["label"], fontsize=10)
@@ -1873,10 +1845,10 @@ def plot_usv_property_histograms(
                 hist_counts, hist_edges = np.histogram(values_disp, bins=bins)
                 bin_centers = (hist_edges[:-1] + hist_edges[1:]) / 2.0
                 smoothed_counts = gaussian_filter1d(
-                    hist_counts.astype(float), sigma=BANDWIDTH_PEAK_SMOOTH_SIGMA_BINS
+                    hist_counts.astype(float), sigma=histogram_settings["bandwidth_peak_smooth_sigma_bins"]
                 )
-                low_side = bin_centers < BANDWIDTH_BIMODAL_SPLIT_KHZ
-                high_side = bin_centers >= BANDWIDTH_BIMODAL_SPLIT_KHZ
+                low_side = bin_centers < histogram_settings["bandwidth_bimodal_split_khz"]
+                high_side = bin_centers >= histogram_settings["bandwidth_bimodal_split_khz"]
                 peak_xs = []
                 if low_side.any() and smoothed_counts[low_side].max() > 0:
                     peak_xs.append(
@@ -2002,12 +1974,9 @@ def plot_session_type_usv_counts(
     output_path: str | None = None,
     fig_format: str | None = None,
     exclude_noise_usvs: bool = True,
-    fig_size: tuple[float, float] = (6.0, 3.0),
-    fig_dpi: int = 300,
-    male_color: str = SESSION_TYPE_MALE_COLOR,
-    female_color: str = SESSION_TYPE_FEMALE_COLOR,
-    male_female_color: str = SESSION_TYPE_MALE_FEMALE_COLOR,
     message_output: Callable | None = None,
+    *,
+    visualizations_parameter_dict: dict,
 ) -> plt.Figure:
     """
     Description
@@ -2018,12 +1987,12 @@ def plot_session_type_usv_counts(
     (``std / sqrt(n_sessions)``) computed from the per-session counts in
     that type's session list. Bars are color-coded:
 
-    - Lone male       → ``male_color`` (default project male color,
+    - Lone male       → ``male_colors[0]`` (the project male color,
                          ``#9AC0CD``).
-    - Female-female   → ``female_color`` (default ``#FF6347``).
-    - Male-female     → ``male_female_color`` (default ``#DFB8B3``, a
-                         pastel midpoint between male and female RGB
-                         blended toward white).
+    - Female-female   → ``female_colors[0]`` (``#FF6347``).
+    - Male-female     → ``usv_property_figures.session_type_counts.male_female_color``
+                         (``#DFB8B3``, a pastel midpoint between male and
+                         female RGB blended toward white).
 
     Each session-list text file is parsed the same way as
     ``plot_usv_property_histograms``: one session root per line,
@@ -2051,18 +2020,14 @@ def plot_session_type_usv_counts(
     exclude_noise_usvs (bool)
         Whether to drop the segments ``detect_usv_noise`` flagged as
         holding no vocalization; default ``True``.
-    fig_size (tuple of float)
-        Figure size in inches; default ``(6, 3)``.
-    fig_dpi (int)
-        Figure DPI; default ``300``.
-    male_color (str)
-        Hex color for the lone-male bar.
-    female_color (str)
-        Hex color for the female-female bar.
-    male_female_color (str)
-        Hex color for the male-female bar.
     message_output (Callable | None)
         Logger callable; defaults to ``print``.
+    visualizations_parameter_dict (dict)
+        The visualizations settings (``visualizations_settings.json``). The
+        figure DPI is ``figures.dpi``; the figure size and the male-female bar
+        colour come from ``usv_property_figures.session_type_counts`` and the
+        lone-male / female-female bars take ``male_colors[0]`` /
+        ``female_colors[0]``.
 
     Returns
     -------
@@ -2123,10 +2088,17 @@ def plot_session_type_usv_counts(
     ]
     means = [mf_mean, ff_mean, lm_mean]
     sems = [mf_sem, ff_sem, lm_sem]
-    colors = [male_female_color, female_color, male_color]
+    colors = [
+        visualizations_parameter_dict["usv_property_figures"]["session_type_counts"]["male_female_color"],
+        visualizations_parameter_dict["female_colors"][0],
+        visualizations_parameter_dict["male_colors"][0],
+    ]
     y_positions = [2, 1, 0]
 
-    fig, ax = plt.subplots(figsize=fig_size, dpi=fig_dpi)
+    fig, ax = plt.subplots(
+        figsize=tuple(visualizations_parameter_dict["usv_property_figures"]["session_type_counts"]["fig_size"]),
+        dpi=visualizations_parameter_dict["figures"]["dpi"],
+    )
     ax.barh(
         y_positions,
         means,
@@ -2161,14 +2133,6 @@ def plot_session_type_usv_counts(
         message_output(f"Saved session-type USV counts figure: {out_path}")
 
     return fig
-
-
-# Default colors for the per-session USV timeline. Reuse the project
-# male/female palette; "unassigned" uses a neutral grey to read as
-# "no emitter identified".
-USV_TIMELINE_MALE_COLOR = _MALE_COLORS[0]
-USV_TIMELINE_FEMALE_COLOR = _FEMALE_COLORS[0]
-USV_TIMELINE_UNASSIGNED_COLOR = _UNASSIGNED_COLORS[0]
 
 
 def _read_session_track_names(session_root: str) -> list[str]:
@@ -2259,14 +2223,9 @@ def plot_session_usv_timeline(
     output_path: str | None = None,
     fig_format: str | None = None,
     exclude_noise_usvs: bool = True,
-    fig_size: tuple[float, float] = (7.5, 1.6),
-    fig_dpi: int = 300,
-    male_color: str = USV_TIMELINE_MALE_COLOR,
-    female_color: str = USV_TIMELINE_FEMALE_COLOR,
-    unassigned_color: str = USV_TIMELINE_UNASSIGNED_COLOR,
-    rectangle_height: float = 2.5,
-    rectangle_linewidth: float = 1.0,
     message_output: Callable | None = None,
+    *,
+    visualizations_parameter_dict: dict,
 ) -> plt.Figure:
     """
     Description
@@ -2274,9 +2233,9 @@ def plot_session_usv_timeline(
     Render a single horizontal timeline of every (non-noise) USV in
     ``session_root``, with each USV drawn as a rectangle that spans
     its ``[start, stop]`` interval and is colored by its assigned
-    emitter: ``male_color`` if the CSV's ``emitter`` is an animal the
-    session metadata records as male, ``female_color`` if it is a
-    female, otherwise ``unassigned_color``. Three calls to
+    emitter: ``male_colors[0]`` if the CSV's ``emitter`` is an animal the
+    session metadata records as male, ``female_colors[0]`` if it is a
+    female, otherwise ``unassigned_colors[0]``. Three calls to
     ``ax.broken_barh`` (one per group) handle the drawing efficiently
     even for thousands of events.
 
@@ -2303,33 +2262,18 @@ def plot_session_usv_timeline(
     exclude_noise_usvs (bool)
         Whether to drop the segments ``detect_usv_noise`` flagged as
         holding no vocalization; default ``True``.
-    fig_size (tuple of float)
-        Figure size in inches; default ``(7.5, 1.6)`` for a wide,
-        short timeline strip.
-    fig_dpi (int)
-        Figure DPI; default ``300``.
-    male_color (str)
-        Per-emitter rectangle color (hex string) for USVs whose emitter the
-        session metadata records as male; defaults to
-        ``USV_TIMELINE_MALE_COLOR`` (the first entry of the project male
-        palette).
-    female_color (str)
-        Per-emitter rectangle color (hex string) for USVs whose emitter the
-        session metadata records as female; defaults to
-        ``USV_TIMELINE_FEMALE_COLOR`` (the first entry of the project female
-        palette).
-    unassigned_color (str)
-        Per-emitter rectangle color (hex string) for USVs with no identified
-        emitter (or an emitter of unknown sex); defaults to
-        ``USV_TIMELINE_UNASSIGNED_COLOR`` (a neutral grey).
-    rectangle_height (float)
-        Vertical extent of each USV rectangle (axes-data units; the
-        y-axis is hidden so the absolute value mainly controls the
-        strip's visual thickness).
-    rectangle_linewidth (float)
-        Outline width of each USV rectangle in points.
     message_output (Callable | None)
         Logger; defaults to ``print``.
+    visualizations_parameter_dict (dict)
+        The visualizations settings (``visualizations_settings.json``). The
+        figure DPI is ``figures.dpi``; the figure size (``fig_size``, a wide,
+        short strip), ``rectangle_height`` (vertical extent of each USV
+        rectangle in axes-data units; the y-axis is hidden so it mainly sets
+        the strip's visual thickness) and ``rectangle_linewidth`` (outline
+        width in points) come from ``usv_property_figures.timeline``. The
+        rectangle colours are ``male_colors[0]`` / ``female_colors[0]`` for an
+        emitter the session metadata records as male / female and
+        ``unassigned_colors[0]`` (a neutral grey) otherwise.
 
     Returns
     -------
@@ -2369,14 +2313,20 @@ def plot_session_usv_timeline(
     else:
         x_lo, x_hi = 0.0, 1.0
 
-    fig, ax = plt.subplots(figsize=fig_size, dpi=fig_dpi)
+    timeline_settings = visualizations_parameter_dict["usv_property_figures"]["timeline"]
+    rectangle_height = timeline_settings["rectangle_height"]
+    rectangle_linewidth = timeline_settings["rectangle_linewidth"]
+    fig, ax = plt.subplots(
+        figsize=tuple(timeline_settings["fig_size"]),
+        dpi=visualizations_parameter_dict["figures"]["dpi"],
+    )
     y_center = 0.0
     y_bottom = y_center - rectangle_height / 2.0
 
     group_colors = {
-        "male": male_color,
-        "female": female_color,
-        "unassigned": unassigned_color,
+        "male": visualizations_parameter_dict["male_colors"][0],
+        "female": visualizations_parameter_dict["female_colors"][0],
+        "unassigned": visualizations_parameter_dict["unassigned_colors"][0],
     }
     group_counts: dict[str, int] = {
         sex_label: int(df.filter(pls.col("sex") == sex_label).height)
@@ -3429,50 +3379,57 @@ def plot_embedding_with_category_thumbnails(
     sessions_txt_path: str,
     consolidated_h5_path: str,
     qlvm_map: str = "qlvm",
-    n_samples_per_category: int = 8,
-    apply_mask: bool = True,
-    mask_excluded_categories: tuple[int, ...] | int | None = (),
-    category_colors: dict | None = None,
-    sampling_method: str = "random",
     cluster_centers_xy: dict | None = None,
     cluster_centers_json_path: str | None = None,
-    draw_spiral_overlay: bool = False,
-    spiral_show_only_for: int | None = None,
-    spiral_color: str = "#000000",
-    spiral_linewidth: float = 2.0,
-    spiral_radius_scale: float = 0.35,
-    spiral_radius_abs: float | None = None,
-    spiral_n_turns: int = 4,
-    spiral_random_phase: bool = True,
-    draw_cluster_boundaries: bool = True,
-    annotate_picks_on_scatter: bool = True,
-    pick_number_fontsize: float = 11.0,
-    annotate_cluster_ids: bool = False,
-    cluster_id_fontsize: float = 12.0,
-    thumbnail_hspace: float = 0.02,
-    thumbnail_wspace: float = 0.05,
-    tile_orientation: str = "horizontal",
-    unstretched_specs: bool = False,
-    fig_size: tuple[float, float] = (16.0, 12.0),
-    fig_dpi: int = 300,
     output_path: str | None = None,
     fig_format: str | None = None,
     exclude_noise_usvs: bool = True,
-    exclude_squeaks: bool = True,
-    scatter_max_points: int = 50_000,
-    scatter_point_size: float = 4.0,
-    scatter_point_alpha: float = 0.5,
     pooled_df: pls.DataFrame | None = None,
     embeddings_cache_path: str | None = None,
     rebuild_embeddings_cache: bool = False,
     message_output: Callable | None = None,
-    seed: int | None = 42,
+    *,
+    n_samples_per_category: int,
+    apply_mask: bool,
+    mask_excluded_categories: tuple[int, ...] | int | None,
+    category_colors: dict | None,
+    sampling_method: str,
+    draw_spiral_overlay: bool,
+    spiral_show_only_for: int | None,
+    spiral_color: str,
+    spiral_linewidth: float,
+    spiral_radius_scale: float,
+    spiral_radius_abs: float | None,
+    spiral_n_turns: int,
+    spiral_random_phase: bool,
+    draw_cluster_boundaries: bool,
+    annotate_picks_on_scatter: bool,
+    pick_number_fontsize: float,
+    annotate_cluster_ids: bool,
+    cluster_id_fontsize: float,
+    thumbnail_hspace: float,
+    thumbnail_wspace: float,
+    tile_orientation: str,
+    unstretched_specs: bool,
+    fig_size: tuple[float, float],
+    fig_dpi: int,
+    exclude_squeaks: bool,
+    scatter_max_points: int,
+    scatter_point_size: float,
+    scatter_point_alpha: float,
+    continuous_color_percentiles: tuple[float, float],
+    seed: int | None,
 ) -> plt.Figure:
     """
     Description
     -----------
     Render a static two-panel figure summarising one of the per-USV
     embedding maps:
+
+    Every figure knob is keyword-only and has no default: the cohort driver
+    ``render_embedding_thumbnails_for_cohort`` passes them from the
+    ``embedding_thumbnails`` settings block (the DPI and seed from the shared
+    ``figures`` block), and a direct caller passes them explicitly.
 
     - **Left panel**: embedding scatter of every (non-noise) USV across the
       sessions listed in ``sessions_txt_path``, colored by the chosen
@@ -3595,13 +3552,13 @@ def plot_embedding_with_category_thumbnails(
         ``annotate_cluster_ids`` is ``True``.
     thumbnail_hspace (float)
         ``hspace`` for the right-side per-category x per-sample
-        gridspec (fraction of average cell height). Default is
-        ``0.02`` so adjacent cells touch; raise it if you want gaps.
+        gridspec (fraction of average cell height); a value near 0 makes
+        adjacent cells touch, raise it for gaps.
     thumbnail_wspace (float)
         ``wspace`` for the right-side gridspec (fraction of average
-        cell width). Default ``0.05``.
+        cell width).
     tile_orientation (str)
-        ``"horizontal"`` (default) tiles each category as a ROW of
+        ``"horizontal"`` tiles each category as a ROW of
         ``n_samples_per_category`` thumbnails (n_categories rows
         stacked vertically). ``"vertical"`` tiles each category as a
         COLUMN of ``n_samples_per_category`` thumbnails
@@ -3618,7 +3575,7 @@ def plot_embedding_with_category_thumbnails(
         shape and the same time scale, the longest USV fills its
         slot, and shorter USVs sit centered with symmetric
         zero borders proportional to ``1 - dur / max_dur``.
-        Default ``False`` keeps the existing ``aspect="auto"``
+        ``False`` keeps the ``aspect="auto"``
         behaviour, which stretches every spectrogram horizontally
         to fill its slot. Underlying spec data is identical in
         both cases -- the array is already cropped to the per-USV
@@ -3637,8 +3594,8 @@ def plot_embedding_with_category_thumbnails(
         Keep only the segments ``detect_usv_squeaks`` classed as pure USVs
         (``usv & ~squeak``) in the scatter, the auxiliary maps and the
         thumbnail picks, leaving out pure squeaks, segments holding both a
-        squeak and a USV, and rows with null booleans (unscorable segments);
-        default ``True``. The USV QLVM models were trained on USVs only, so
+        squeak and a USV, and rows with null booleans (unscorable segments).
+        The USV QLVM models were trained on USVs only, so
         squeak-bearing vocalizations sit wherever the decoder places them. A pooled
         table without ``usv`` / ``squeak`` raises.
     scatter_max_points (int)
@@ -3646,7 +3603,13 @@ def plot_embedding_with_category_thumbnails(
         using the ``seed`` argument); the per-category sampling still draws from
         the full pool so all categories are represented in the grid.
     scatter_point_size, scatter_point_alpha (float, float)
-        Marker size and alpha for the scatter.
+        Marker size (points^2) and alpha for the scatter
+        (``embedding_thumbnails.scatter_point_size`` /
+        ``scatter_point_alpha``).
+    continuous_color_percentiles (tuple[float, float])
+        Lower / upper percentiles of the finite values used as the colour
+        limits of the duration and bandwidth auxiliary maps
+        (``embedding_thumbnails.continuous_color_percentiles``).
     pooled_df (pls.DataFrame | None)
         Optionally pass a pre-built pooled-embeddings DataFrame to
         skip the loader. Must contain ``session_id``, ``row_index``,
@@ -4079,8 +4042,9 @@ def plot_embedding_with_category_thumbnails(
         Description
         -----------
         Scatter the displayed points on ``ax`` coloured by a continuous value
-        with the project sequential colormap. The colour limits are the 2nd
-        and 98th percentiles of the finite values (widened by 1.0 when they
+        with the project sequential colormap. The colour limits are the
+        ``continuous_color_percentiles`` (2nd and 98th as shipped) of the
+        finite values (widened by 1.0 when they
         coincide); points are drawn in ascending value order so the high
         values sit on top. Non-finite values are skipped, and the panel is
         left empty (no x-label) when no value is finite.
@@ -4104,7 +4068,7 @@ def plot_embedding_with_category_thumbnails(
         finite = np.isfinite(values)
         if finite.sum() == 0:
             return
-        lo, hi = np.percentile(values[finite], [2, 98])
+        lo, hi = np.percentile(values[finite], list(continuous_color_percentiles))
         if lo == hi:
             hi = lo + 1.0
         v_finite = values[finite]
@@ -4495,6 +4459,9 @@ def render_embedding_thumbnails_for_cohort(
             thumbnail_wspace=cfg["thumbnail_wspace"],
             unstretched_specs=cfg["unstretched_specs"],
             scatter_max_points=cfg["scatter_max_points"],
+            scatter_point_size=cfg["scatter_point_size"],
+            scatter_point_alpha=cfg["scatter_point_alpha"],
+            continuous_color_percentiles=tuple(cfg["continuous_color_percentiles"]),
             fig_size=tuple(cfg["fig_size"]),
             fig_dpi=figures["dpi"],
             output_path=output_path,

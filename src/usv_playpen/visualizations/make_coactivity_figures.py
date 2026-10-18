@@ -38,20 +38,18 @@ from usv_playpen.analyses.neuronal_coactivity_engine import (
 
 # Default group / null / threshold colours (hex), read from the shared
 # `coactivity_colors` block of `visualizations_settings.json` (matching the
-# notebook) rather than hard-coded here. A missing file (partial install) falls
-# back to the shipped literals so the module can still be imported.
+# notebook) rather than hard-coded here, and the figure knobs (null-panel
+# histogram bins / percentile / line widths, the acoustic-confound histogram,
+# the significance level) from its `coactivity_figures` block.
 _VIZ_SETTINGS_PATH = (
     pathlib.Path(__file__).parent.parent
     / "_parameter_settings" / "visualizations_settings.json"
 )
-try:
-    with _VIZ_SETTINGS_PATH.open() as _vf:
-        _COACTIVITY_COLORS = json.load(_vf)["coactivity_colors"]
-except FileNotFoundError:
-    _COACTIVITY_COLORS = {
-        "group_a": "#DC143C", "group_b": "#1E90FF",
-        "null": "#808080", "threshold": "#000000",
-    }
+with _VIZ_SETTINGS_PATH.open() as _vf:
+    _VIZ_SETTINGS = json.load(_vf)
+_COACTIVITY_COLORS = _VIZ_SETTINGS["coactivity_colors"]
+_COACTIVITY_FIGURES = _VIZ_SETTINGS["coactivity_figures"]
+COACTIVITY_SIGNIFICANCE_ALPHA = _COACTIVITY_FIGURES["significance_alpha"]
 COACTIVITY_GROUP_A_COLOR = _COACTIVITY_COLORS["group_a"]      # crimson
 COACTIVITY_GROUP_B_COLOR = _COACTIVITY_COLORS["group_b"]      # dodgerblue
 COACTIVITY_NULL_COLOR = _COACTIVITY_COLORS["null"]            # gray
@@ -75,12 +73,12 @@ def _null_panel(
     threshold_color=COACTIVITY_THRESHOLD_COLOR,
     null_label="Chained Null",
     label_threshold=True,
-    percentile=99,
-    bins=40,
-    null_alpha=0.5,
-    obs_linewidth=3.0,
-    threshold_linewidth=1.0,
-    legend_fontsize=8,
+    percentile,
+    bins,
+    null_alpha,
+    obs_linewidth,
+    threshold_linewidth,
+    legend_fontsize,
     legend_loc="best",
 ):
     """
@@ -113,21 +111,24 @@ def _null_panel(
     label_threshold (bool)
         Whether the percentile line carries a legend label (default True).
     percentile (float)
-        Percentile for the dashed threshold line (default 99).
+        Percentile for the dashed threshold line (``coactivity_figures.
+        null_distributions.percentile`` / ``per_session_pop_corr.percentile``,
+        99 in both).
     bins (int)
         Style knob for the histogram: number of histogram bins passed to
-        ``ax.hist`` (default 40).
+        ``ax.hist`` (``coactivity_figures.<panel>.bins``: 40 / 30).
     null_alpha (float)
         Style knob for the histogram: opacity of the null histogram bars
-        (default 0.5).
+        (``coactivity_figures.<panel>.null_alpha``: 0.5 / 0.55).
     obs_linewidth (float)
         Style knob for the lines: line width of each solid observed-value line
-        (default 3.0).
+        (``coactivity_figures.<panel>.obs_linewidth``: 3.0 / 2.2).
     threshold_linewidth (float)
         Style knob for the lines: line width of the dashed percentile line
-        (default 1.0).
+        (``coactivity_figures.<panel>.threshold_linewidth``: 1.0 / 0.8).
     legend_fontsize (int | float)
-        Style knob for the legend: legend font size (default 8).
+        Style knob for the legend: legend font size
+        (``coactivity_figures.<panel>.legend_fontsize``: 8 / 7).
     legend_loc (str)
         Style knob for the legend: matplotlib legend location string
         (default ``"best"``).
@@ -168,7 +169,9 @@ def plot_acoustic_confound(
     -----------
     Overlaid density histograms of each acoustic feature for the two groups, one
     subplot per feature, to eyeball whether the groups are matched in amplitude /
-    frequency (the statistics live in :func:`summarize_acoustic_confound`).
+    frequency (the statistics live in :func:`summarize_acoustic_confound`). The
+    histogram bin count and bar opacity come from
+    ``coactivity_figures.acoustic_confound`` (``bins`` 40, ``alpha`` 0.5).
 
     Parameters
     ----------
@@ -201,15 +204,17 @@ def plot_acoustic_confound(
         The assembled figure.
     """
 
+    confound_settings = _COACTIVITY_FIGURES["acoustic_confound"]
     fig, axes = plt.subplots(1, len(features), figsize=(4.0 * len(features), 3.2))
     for ax, feature in zip(axes, features, strict=True):
         a = group_a_acoustics[feature][np.isfinite(group_a_acoustics[feature])]
         b = group_b_acoustics[feature][np.isfinite(group_b_acoustics[feature])]
         pooled = np.concatenate([a, b]) if (a.size or b.size) else np.array([0.0, 1.0])
         lo, hi = float(pooled.min()), float(pooled.max())
-        bins = np.linspace(lo, hi, 40) if hi > lo else 40
-        ax.hist(a, bins=bins, density=True, alpha=0.5, color=group_a_color, label=label_a)
-        ax.hist(b, bins=bins, density=True, alpha=0.5, color=group_b_color, label=label_b)
+        n_bins = confound_settings["bins"]
+        bins = np.linspace(lo, hi, n_bins) if hi > lo else n_bins
+        ax.hist(a, bins=bins, density=True, alpha=confound_settings["alpha"], color=group_a_color, label=label_a)
+        ax.hist(b, bins=bins, density=True, alpha=confound_settings["alpha"], color=group_b_color, label=label_b)
         ax.set_xlabel(feature_labels[feature], fontsize=9)
         ax.set_ylabel("density", fontsize=9)
         ax.spines["top"].set_visible(False)
@@ -238,6 +243,8 @@ def plot_null_distributions(
     -----------
     A 3 (metric) x 2 (group) grid of chained-null histograms, each overlaid with
     the group's observed pooled-bootstrap mean and the null's 99th percentile.
+    The panel styling (percentile, bins, opacities, line widths, legend size)
+    comes from ``coactivity_figures.null_distributions``.
 
     Parameters
     ----------
@@ -275,6 +282,7 @@ def plot_null_distributions(
 
     boot_a, boot_b = results["boot_a"], results["boot_b"]
     null_a, null_b = results["chained_null_a"], results["chained_null_b"]
+    panel_settings = _COACTIVITY_FIGURES["null_distributions"]
     fig, axes = plt.subplots(3, 2, figsize=(14, 15), sharey="row")
     for row, metric in enumerate(_METRICS):
         title = _METRIC_TITLES[metric]
@@ -284,12 +292,20 @@ def plot_null_distributions(
             axes[row, 0], null_a[metric],
             [(a_val, group_a_color, f"Pooled Boot ({a_val:.4f})")],
             null_color=null_color, threshold_color=threshold_color,
+            percentile=panel_settings["percentile"], bins=panel_settings["bins"],
+            null_alpha=panel_settings["null_alpha"], obs_linewidth=panel_settings["obs_linewidth"],
+            threshold_linewidth=panel_settings["threshold_linewidth"],
+            legend_fontsize=panel_settings["legend_fontsize"],
         )
         axes[row, 0].set_title(f"{label_a.upper()}: {title}", fontsize=14)
         _null_panel(
             axes[row, 1], null_b[metric],
             [(b_val, group_b_color, f"Pooled Boot ({b_val:.4f})")],
             null_color=null_color, threshold_color=threshold_color,
+            percentile=panel_settings["percentile"], bins=panel_settings["bins"],
+            null_alpha=panel_settings["null_alpha"], obs_linewidth=panel_settings["obs_linewidth"],
+            threshold_linewidth=panel_settings["threshold_linewidth"],
+            legend_fontsize=panel_settings["legend_fontsize"],
         )
         axes[row, 1].set_title(f"{label_b.upper()}: {title}", fontsize=14)
         if row == 2:
@@ -323,6 +339,8 @@ def plot_per_session_pop_corr(
     ``pop_corr`` (both groups' onsets pooled) with the observed group-A and group-B
     ``pop_corr`` overlaid as coloured lines and the null's 99th percentile dashed.
     Rows must carry a ``null`` block (i.e. produced with ``n_shuffles`` set).
+    The panel styling (percentile, bins, opacities, line widths, legend size)
+    comes from ``coactivity_figures.per_session_pop_corr``.
 
     Parameters
     ----------
@@ -356,6 +374,7 @@ def plot_per_session_pop_corr(
         The assembled figure; ``None`` when no session carries a null block (nothing to draw).
     """
 
+    panel_settings = _COACTIVITY_FIGURES["per_session_pop_corr"]
     rows = [row for row in per_session_rows if "null" in row]
     if not rows:
         return None
@@ -377,8 +396,11 @@ def plot_per_session_pop_corr(
                 (pop_b, group_b_color, f"{label_b} (n={row['n_b']})  {pop_b:.3f}"),
             ],
             null_color=null_color, threshold_color=threshold_color,
-            null_label=None, label_threshold=False, bins=30, null_alpha=0.55,
-            obs_linewidth=2.2, threshold_linewidth=0.8, legend_fontsize=7, legend_loc="upper right",
+            null_label=None, label_threshold=False,
+            percentile=panel_settings["percentile"], bins=panel_settings["bins"],
+            null_alpha=panel_settings["null_alpha"], obs_linewidth=panel_settings["obs_linewidth"],
+            threshold_linewidth=panel_settings["threshold_linewidth"],
+            legend_fontsize=panel_settings["legend_fontsize"], legend_loc="upper right",
         )
         ax.set_title(row["session_id"], fontsize=9)
         ax.set_xlabel("pop_corr", fontsize=8)
@@ -405,7 +427,7 @@ def plot_cross_animal_slope(
     group_b_color=COACTIVITY_GROUP_B_COLOR,
     null_color=COACTIVITY_NULL_COLOR,
     threshold_color=COACTIVITY_THRESHOLD_COLOR,
-    sig_alpha=0.05,
+    sig_alpha=COACTIVITY_SIGNIFICANCE_ALPHA,
 ) -> plt.Figure:
     """
     Description
@@ -442,7 +464,9 @@ def plot_cross_animal_slope(
         Hex colour for the threshold / reference line (hex colours); defaults
         to ``COACTIVITY_THRESHOLD_COLOR``.
     sig_alpha (float)
-        Two-tailed significance threshold (default 0.05).
+        Two-tailed significance threshold; defaults to
+        ``COACTIVITY_SIGNIFICANCE_ALPHA`` (``coactivity_figures.significance_alpha``,
+        0.05).
 
     Returns
     -------
@@ -497,7 +521,8 @@ def plot_amplitude_stratified(
     -----------
     ``pop_corr`` per RMS-amplitude bin for both groups (log x, bin geometric
     centres), with the unstratified means drawn as dashed reference lines and a
-    ``*`` over bins where the within-bin A-vs-B two-tailed p < 0.05.
+    ``*`` over bins where the within-bin A-vs-B two-tailed p is below
+    ``coactivity_figures.significance_alpha`` (0.05).
 
     Parameters
     ----------
@@ -537,7 +562,7 @@ def plot_amplitude_stratified(
         ax.plot(centers, [row["pop_a"] for row in valid], "-o", color=group_a_color, label=label_a)
         ax.plot(centers, [row["pop_b"] for row in valid], "-o", color=group_b_color, label=label_b)
         for row, center in zip(valid, centers, strict=True):
-            if row["p_two"] < 0.05:
+            if row["p_two"] < COACTIVITY_SIGNIFICANCE_ALPHA:
                 ax.annotate("*", (center, max(row["pop_a"], row["pop_b"])), ha="center", va="bottom", fontsize=14, color=threshold_color)
         ax.set_xscale("log")
         ax.axhline(pop_a_overall, color=group_a_color, linestyle="--", linewidth=1, alpha=0.6)
@@ -549,7 +574,7 @@ def plot_amplitude_stratified(
     ax.set_ylabel("pop_corr (bootstrap mean, matched N per bin)", fontsize=10)
     ax.set_title(
         f"Amplitude-stratified pop_corr — {chosen_animal}\n"
-        f"dashed = unstratified means; * = within-bin {label_a}-vs-{label_b} p<0.05",
+        f"dashed = unstratified means; * = within-bin {label_a}-vs-{label_b} p<{COACTIVITY_SIGNIFICANCE_ALPHA}",
         fontsize=10,
     )
     ax.spines["top"].set_visible(False)
