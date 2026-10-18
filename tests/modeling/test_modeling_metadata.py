@@ -6,7 +6,7 @@ derivation, and the consolidated ``selection_*.pkl`` loader.
 
 These functions are the project's audit trail: they hash settings, stamp
 schema versions, and split reserved metadata blocks from feature data.
-The tests pin the contracts downstream consumers rely on — a stable
+Coverage: the tests pin the contracts downstream consumers rely on — a stable
 settings hash, reserved-key collision detection, the documented
 target-centric cohort labels, and a pickle round-trip for
 ``load_selection_results`` (exercised with ``tmp_path`` so no fixture
@@ -15,14 +15,15 @@ files are committed).
 
 from __future__ import annotations
 
+import hashlib
 import os
 import pickle
 import re
+import subprocess
 
 import pytest
 
 import usv_playpen
-
 from usv_playpen.modeling.modeling_metadata import (
     RESERVED_METADATA_KEYS,
     SCHEMA_VERSIONS,
@@ -45,11 +46,15 @@ from usv_playpen.modeling.modeling_metadata import (
     read_reserved_block,
 )
 
-
 # compute_settings_sha256
 
 
 class TestComputeSettingsSha256:
+    """
+    The settings hash is the provenance fingerprint, so it must be canonical and never crash a
+    run.
+    """
+
 
     def test_dict_hash_is_stable_and_order_independent(self):
         """Two dicts with identical content but different key insertion
@@ -64,7 +69,6 @@ class TestComputeSettingsSha256:
     def test_file_hash_matches_bytes(self, tmp_path):
         """A path argument hashes the file bytes verbatim."""
 
-        import hashlib
         p = tmp_path / 'settings.json'
         p.write_bytes(b'{"k": 1}\n')
         expected = hashlib.sha256(b'{"k": 1}\n').hexdigest()
@@ -82,8 +86,28 @@ class TestComputeSettingsSha256:
         instead of being swallowed by a bare ``except Exception``."""
 
         class _Exploding:
+            """
+            A settings value whose ``__str__`` raises, standing in for an unforeseen hashing
+            bug.
+            """
+
             def __str__(self):
-                raise RuntimeError("forced str failure")
+                """
+                Raises instead of rendering, at the moment the canonical JSON dump
+                stringifies the value.
+
+                Parameters
+                ----------
+                None
+
+                Returns
+                -------
+                None
+                    Never returns; always raises ``RuntimeError('forced str failure')``.
+                """
+
+                msg = "forced str failure"
+                raise RuntimeError(msg)
 
         with pytest.raises(RuntimeError, match="forced str failure"):
             compute_settings_sha256({'k': _Exploding()})
@@ -93,6 +117,8 @@ class TestComputeSettingsSha256:
 
 
 class TestAssertNoReservedKeys:
+    """A feature payload must never already carry a reserved metadata block it would shadow."""
+
 
     def test_clean_payload_passes(self):
         """A payload with only feature keys passes silently."""
@@ -102,7 +128,7 @@ class TestAssertNoReservedKeys:
     def test_collision_raises(self):
         """A payload already carrying a reserved key is rejected."""
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='payload already contains reserved keys'):
             assert_no_reserved_keys({'_input_metadata': {}})
 
     def test_custom_reserved_tuple(self):
@@ -117,6 +143,11 @@ class TestAssertNoReservedKeys:
 
 
 class TestExtractInjectMetadata:
+    """
+    Metadata blocks must split cleanly from feature data and inject without mutation or
+    collision.
+    """
+
 
     def test_split_separates_reserved_from_data(self):
         """Reserved blocks land in the metadata dict; everything else
@@ -152,13 +183,13 @@ class TestExtractInjectMetadata:
     def test_inject_non_reserved_name_raises(self):
         """Injecting under a non-reserved key name is rejected."""
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='under non-reserved key'):
             inject_metadata({'feat': 1}, _bogus_metadata={})
 
     def test_inject_collision_raises(self):
         """Injecting a block the payload already carries is rejected."""
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='payload already contains reserved keys'):
             inject_metadata({'_input_metadata': {}}, _input_metadata={'x': 1})
 
 
@@ -166,6 +197,10 @@ class TestExtractInjectMetadata:
 
 
 class TestMetadataBlocksEqual:
+    """
+    Block comparison decides whether shards are mergeable, so it must be structural and nested.
+    """
+
 
     def test_identical_blocks_equal(self):
         """Structurally identical blocks compare equal, including nested
@@ -202,8 +237,29 @@ class TestMetadataBlocksEqual:
 
 
 class TestDeriveExperimentalCondition:
+    """
+    The cohort label is derived from the session-list filename and predictor slot, target-
+    centric.
+    """
+
 
     def _settings(self, fname, pred_idx=0):
+        """
+        Builds the minimal settings dict the condition derivation reads.
+
+        Parameters
+        ----------
+        fname : str
+            Session-list filename, the token the cohort label is parsed from.
+        pred_idx : int
+            ``model_predictor_mouse_index`` (0 or 1).
+
+        Returns
+        -------
+        settings : dict
+            ``io.session_list_file`` and ``model_params.model_predictor_mouse_index`` only.
+        """
+
         return {'io': {'session_list_file': f'/data/{fname}'},
                 'model_params': {'model_predictor_mouse_index': pred_idx}}
 
@@ -240,8 +296,25 @@ class TestDeriveExperimentalCondition:
 
 
 class TestDeriveFeatureZooFull:
+    """
+    The full feature zoo is the column universe a run could have used, recorded for provenance.
+    """
+
 
     def _settings(self):
+        """
+        Builds a small ``kinematic_features`` block with one entry per family.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        settings : dict
+            Two egocentric features plus one dyadic-pose and one dyadic-engagement feature.
+        """
+
         return {'kinematic_features': {
             'egocentric': ['speed', 'neck_elevation'],
             'dyadic_pose': ['allo_yaw-tti'],
@@ -272,6 +345,8 @@ class TestDeriveFeatureZooFull:
 
 
 class TestDeriveCameraFpsField:
+    """The camera-rate field collapses to one float only when every session agrees."""
+
 
     def test_homogeneous_returns_single_float(self):
         """When every session shares an fps the field collapses to one
@@ -297,6 +372,8 @@ class TestDeriveCameraFpsField:
 
 
 class TestBuildConsolidationMetadata:
+    """The consolidation block carries the schema version consumers branch on."""
+
 
     def test_structure_and_schema_version(self):
         """The block carries the consolidation schema version, coerced
@@ -332,6 +409,8 @@ def _write_consolidated(path, steps, extra_meta=None):
 
 
 class TestLoadSelectionResults:
+    """The selection loader must find the consolidated pickle and refuse anything else loudly."""
+
 
     def test_file_path_round_trip(self, tmp_path):
         """Loading an explicit consolidated file returns its steps, its
@@ -388,7 +467,7 @@ class TestLoadSelectionResults:
         pkl = tmp_path / 'selection_bad.pkl'
         with pkl.open('wb') as fh:
             pickle.dump({'not_steps': 1}, fh)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='is not a consolidated selection artifact'):
             load_selection_results(str(pkl))
 
     def test_missing_path_raises_file_not_found(self, tmp_path):
@@ -409,6 +488,8 @@ class TestLoadSelectionResults:
 
 
 class TestMiscHelpers:
+    """Small helpers whose output format is stamped into every artifact."""
+
 
     def test_get_package_version_returns_str(self):
         """The version helper returns the package's version string."""
@@ -643,6 +724,8 @@ def _input_builder_kwargs(modeling_settings, analysis_specific=None,
 
 
 class TestReadReservedBlock:
+    """Reading a reserved block must tolerate legacy artifacts but reject a misspelt key."""
+
 
     def test_present_block_is_returned(self):
         """A reserved block present in the artifact is returned as stored."""
@@ -667,12 +750,30 @@ class TestReadReservedBlock:
 
 
 class TestGetGitCommitInfo:
+    """Git provenance must be recorded when available and degrade to a placeholder, not crash."""
+
 
     def test_clean_repo_reports_commit_and_clean(self, mocker):
         """A repo whose ``rev-parse`` succeeds with empty
         ``status --porcelain`` reports the commit SHA and ``dirty`` False."""
 
-        def fake_run(cmd, *args, **kwargs):
+        def fake_run(cmd, *_args, **_kwargs):
+            """
+            Stands in for ``subprocess.run``: a successful git with a SHA and an empty status.
+
+            Parameters
+            ----------
+            cmd : list of str
+                The git command line; ``rev-parse`` selects the SHA reply.
+            *_args, **_kwargs
+                Ignored ``subprocess.run`` options.
+
+            Returns
+            -------
+            result : unittest.mock.Mock
+                ``returncode`` 0 and ``stdout`` holding the SHA or an empty porcelain status.
+            """
+
             result = mocker.Mock()
             result.returncode = 0
             if 'rev-parse' in cmd:
@@ -691,7 +792,23 @@ class TestGetGitCommitInfo:
     def test_dirty_repo_flags_dirty(self, mocker):
         """Non-empty ``status --porcelain`` output flips ``dirty`` True."""
 
-        def fake_run(cmd, *args, **kwargs):
+        def fake_run(cmd, *_args, **_kwargs):
+            """
+            Stands in for ``subprocess.run``: a successful git whose status lists a modified file.
+
+            Parameters
+            ----------
+            cmd : list of str
+                The git command line; ``rev-parse`` selects the SHA reply.
+            *_args, **_kwargs
+                Ignored ``subprocess.run`` options.
+
+            Returns
+            -------
+            result : unittest.mock.Mock
+                ``returncode`` 0 and ``stdout`` holding the SHA or a non-empty porcelain status.
+            """
+
             result = mocker.Mock()
             result.returncode = 0
             if 'rev-parse' in cmd:
@@ -721,7 +838,6 @@ class TestGetGitCommitInfo:
         """A git timeout (``subprocess.TimeoutExpired``) also yields the
         placeholder: it is one of the expected 'no git information' errors."""
 
-        import subprocess
         mocker.patch(
             'usv_playpen.modeling.modeling_metadata.subprocess.run',
             side_effect=subprocess.TimeoutExpired(cmd='git', timeout=5),
@@ -743,7 +859,21 @@ class TestGetGitCommitInfo:
         """A non-zero ``rev-parse`` return code (non-git dir) leaves the
         placeholder commit/dirty in place without raising."""
 
-        def fake_run(cmd, *args, **kwargs):
+        def fake_run(*_args, **_kwargs):
+            """
+            Stands in for ``subprocess.run`` outside a git work tree: every command fails.
+
+            Parameters
+            ----------
+            *_args, **_kwargs
+                Ignored ``subprocess.run`` arguments.
+
+            Returns
+            -------
+            result : unittest.mock.Mock
+                ``returncode`` 128 and empty ``stdout``.
+            """
+
             result = mocker.Mock()
             result.returncode = 128
             result.stdout = ''
@@ -760,6 +890,10 @@ class TestGetGitCommitInfo:
 
 
 class TestBuildInputMetadata:
+    """
+    The input block records what the extraction saw: cohort, sexes, rates and the settings hash.
+    """
+
 
     def test_full_block_structure_and_values(self, mocker):
         """The Level-1 block carries the schema version, target-centric
@@ -840,7 +974,6 @@ class TestBuildInputMetadata:
         """When ``settings_path`` is supplied the SHA-256 is computed on
         the file bytes rather than the in-memory dict."""
 
-        import hashlib
         mocker.patch(
             'usv_playpen.modeling.modeling_metadata.get_git_commit_info',
             return_value={'commit': 'x', 'dirty': False},
@@ -870,6 +1003,8 @@ class TestBuildInputMetadata:
 
 
 class TestBuildRunMetadata:
+    """The run block must describe the engine and hyperparameters that were actually used."""
+
 
     def _common_assertions(self, md, analysis_type, engine, basis):
         """Assert the engine / outer-loop / provenance fields shared by
@@ -1054,6 +1189,8 @@ class TestBuildRunMetadata:
 
 
 class TestBuildSelectionMetadata:
+    """The selection block records the forward-selection knobs and settings hash."""
+
 
     def _build(self, mocker, extra_knobs=None, settings_path=None):
         """Patch git info and call ``build_selection_metadata`` with a
@@ -1113,7 +1250,6 @@ class TestBuildSelectionMetadata:
     def test_settings_path_hashes_file(self, tmp_path, mocker):
         """A ``settings_path`` argument hashes the file bytes."""
 
-        import hashlib
         p = tmp_path / 'modeling_settings.json'
         p.write_bytes(b'{"a": 2}\n')
         md = self._build(mocker, settings_path=str(p))

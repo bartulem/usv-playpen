@@ -5,7 +5,7 @@ its JAX-accelerated model-selection path, driven entirely on tiny synthetic
 data built by the shared ``_synth`` builders plus a handful of multinomial-
 specific local builders defined in this module.
 
-These tests deliberately walk the *production* code paths rather than testing
+Coverage: these tests deliberately walk the *production* code paths rather than testing
 isolated helpers:
 
 * ``TestMultinomialInputExtraction`` runs the real
@@ -57,20 +57,21 @@ import pickle
 import warnings
 from pathlib import Path
 
-import matplotlib
+import matplotlib as mpl
 import numpy as np
 import polars as pls
 import pytest
 
-matplotlib.use('Agg')
+# Headless backend forced before any module below can pull pyplot.
+mpl.use('Agg')
 
-from usv_playpen.modeling.modeling_bases_functions import gam_bspline_basis
 from tests.modeling._synth import (
     build_behavioral_features_csv,
     build_modeling_settings,
     build_track_h5,
     write_session_list_file,
 )
+from usv_playpen.modeling.modeling_bases_functions import gam_bspline_basis
 
 # The modeling import chain pulls optax -> a one-time JAX DeprecationWarning.
 # Guard the top-level imports so collection does not trip ``filterwarnings =
@@ -78,11 +79,11 @@ from tests.modeling._synth import (
 with warnings.catch_warnings():
     warnings.simplefilter('ignore', DeprecationWarning)
     import usv_playpen.modeling.main_model_selection_dispatcher as ms_dispatcher
-    from usv_playpen.modeling.model_selection import (
-        multinomial_vocal_category_model_selection,
-    )
     from usv_playpen.modeling.jax_multinomial_logistic_regression import (
         SmoothMultinomialLogisticRegression,
+    )
+    from usv_playpen.modeling.model_selection import (
+        multinomial_vocal_category_model_selection,
     )
     from usv_playpen.modeling.modeling_vocal_categories_multinomial import (
         MultinomialModelingPipeline,
@@ -221,7 +222,8 @@ def build_multinomial_usv_summary_csv(
     warmup = filter_history * 2.0 + 1.0
     usable = session_duration_sec - warmup - filter_history * 2.0
     if usable <= 0:
-        raise ValueError("Session too short to host the requested events.")
+        msg = "Session too short to host the requested events."
+        raise ValueError(msg)
 
     total_target_events = n_categories * events_per_category
     spacing = usable / total_target_events
@@ -235,7 +237,7 @@ def build_multinomial_usv_summary_csv(
     # Interleave categories across the timeline so per-class onset frames are
     # distinct and no single class clusters into one corner of the session.
     event_counter = 0
-    for ev in range(events_per_category):
+    for _ in range(events_per_category):
         for cat in range(1, n_categories + 1):
             start = warmup + event_counter * spacing
             emitters.append(target_mouse)
@@ -625,7 +627,8 @@ class TestMultinomialInputExtraction:
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
-    def test_extraction_produces_multiclass_input_pickle(self, tmp_path, qlvm_category_bundle, capsys):
+    @pytest.mark.usefixtures('qlvm_category_bundle')
+    def test_extraction_produces_multiclass_input_pickle(self, tmp_path, capsys):
         """
         The real ``extract_and_save_multinomial_input_data`` writes a single
         ``modeling_multinomial_*.pkl`` whose structure matches the documented
@@ -694,7 +697,8 @@ class TestMultinomialInputExtraction:
         assert spec['bundle_category_number'] == 4
         assert spec['bundle_categories_missing'] == [4]
         printed = capsys.readouterr().out
-        assert "missing: R-4" in printed and "3 observed classes" in printed
+        assert "missing: R-4" in printed
+        assert "3 observed classes" in printed
 
 
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
@@ -946,7 +950,7 @@ class TestMultinomialUnivariateRunner:
 
         basis = gam_bspline_basis(HISTORY_FRAMES, 8, 3) / HISTORY_FRAMES
         folds = results['actual']['folds']
-        pairs = [(np.asarray(w), np.asarray(c)) for w, c in zip(folds['weights'], folds['basis_coefficients'])
+        pairs = [(np.asarray(w), np.asarray(c)) for w, c in zip(folds['weights'], folds['basis_coefficients'], strict=True)
                  if w is not None]
         assert pairs
         for weights, coefficients in pairs:
@@ -1165,6 +1169,20 @@ class TestMultinomialModelSelection:
         ms_dir.mkdir()
 
         def _run():
+            """
+            Runs the real multinomial forward selection into the shared output directory.
+
+            Parameters
+            ----------
+            None
+                Closes over the synthetic input, ranking and settings paths.
+
+            Returns
+            -------
+            None
+                Step pickles are written to ``ms_dir``.
+            """
+
             multinomial_vocal_category_model_selection(
                 univariate_results_path=univ_pkl, input_data_path=input_pkl,
                 settings_path=str(settings_json), output_directory=str(ms_dir),
@@ -1172,10 +1190,37 @@ class TestMultinomialModelSelection:
             )
 
         def _steps():
+            """
+            Lists the selection step checkpoints in step order.
+
+            Parameters
+            ----------
+            None
+
+            Returns
+            -------
+            steps : list of pathlib.Path
+                ``model_selection_multinomial_*_step_*.pkl`` sorted by their integer step suffix.
+            """
+
             return sorted(ms_dir.glob('model_selection_multinomial_*_step_*.pkl'),
                           key=lambda path: int(path.stem.rsplit('_', 1)[-1]))
 
         def _final_features():
+            """
+            Reads the converged feature set from the first step pickle that records one.
+
+            Parameters
+            ----------
+            None
+
+            Returns
+            -------
+            final_features, n_steps : tuple
+                ``final_model_features`` (or None when no step has converged) and the number
+                of step pickles on disk, so a resumed run can be compared to a fresh one.
+            """
+
             for path in _steps():
                 with path.open('rb') as fh:
                     step = pickle.load(fh)
@@ -1254,12 +1299,14 @@ class TestMultinomialModelSelection:
                 if name == 'null_model_free':
                     continue
                 for weights, coefficients in zip(candidate['folds']['weights'],
-                                                 candidate['folds']['basis_coefficients']):
+                                                 candidate['folds']['basis_coefficients'],
+                                                 strict=True):
                     if weights is not None:
                         # Whole frame-axis filters per feature (never 8-coefficient blocks).
                         n_classes, n_inputs = np.asarray(weights).shape
                         assert n_classes == N_CATEGORIES
-                        assert n_inputs % HISTORY_FRAMES == 0 and n_inputs >= HISTORY_FRAMES
+                        assert n_inputs % HISTORY_FRAMES == 0
+                        assert n_inputs >= HISTORY_FRAMES
                         # ...and the raw 8 coefficients per feature beside them.
                         assert np.asarray(coefficients).shape == (N_CATEGORIES, 8 * (n_inputs // HISTORY_FRAMES))
                         checked += 1
@@ -1334,7 +1381,7 @@ class TestMultinomialModelSelection:
         # model_params.filter_null_permutations, laid out like `weights`
         if final['heldout']['model_type'] == 'multinomial_logistic':
             n_perm = settings['model_params']['filter_null_permutations']
-            assert final['heldout']['null_weights'].shape == (n_perm,) + np.asarray(final['heldout']['weights']).shape
+            assert final['heldout']['null_weights'].shape == (n_perm, *np.asarray(final['heldout']['weights']).shape)
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     @pytest.mark.filterwarnings("ignore::UserWarning")
@@ -1460,6 +1507,20 @@ class TestMultinomialModelSelection:
         real_selection = multinomial_vocal_category_model_selection
 
         def _wrapped(**kwargs):
+            """
+            Forwards the dispatcher's selection invocation with the synthetic settings path swapped in.
+
+            Parameters
+            ----------
+            **kwargs
+                The keyword arguments the dispatcher passes to the selection entry point.
+
+            Returns
+            -------
+            result
+                Whatever the real ``multinomial_vocal_category_model_selection`` returns.
+            """
+
             kwargs['settings_path'] = str(settings_json)
             return real_selection(**kwargs)
 
@@ -1625,7 +1686,7 @@ class TestMultinomialTunerBranches:
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     @pytest.mark.filterwarnings("ignore::UserWarning")
     @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-    def test_all_nan_grid_falls_back_to_grid_centre(self, monkeypatch):
+    def test_all_nan_grid_falls_back_to_grid_centre(self):
         """
         When every inner fit raises (monkeypatched estimator), every
         ``(lambda_smooth, l2_reg)`` pair scores NaN, the per-fold exception
@@ -1637,10 +1698,38 @@ class TestMultinomialTunerBranches:
             """Stub regressor whose ``fit`` always raises to force the NaN path."""
 
             def __init__(self, **kwargs):
-                pass
+                """
+                Accepts and discards every constructor keyword the tuner passes.
 
-            def fit(self, X, y):
-                raise RuntimeError("forced inner-fit failure")
+                Parameters
+                ----------
+                **kwargs
+                    Ignored estimator hyperparameters.
+
+                Returns
+                -------
+                None
+                """
+
+            def fit(self, _X, _y):
+                """
+                Fails every inner fit so every grid pair scores NaN.
+
+                Parameters
+                ----------
+                _X : np.ndarray
+                    Ignored design matrix.
+                _y : np.ndarray
+                    Ignored labels.
+
+                Returns
+                -------
+                None
+                    Never returns; always raises ``RuntimeError``.
+                """
+
+                msg = "forced inner-fit failure"
+                raise RuntimeError(msg)
 
         rng = np.random.default_rng(2)
         y = np.repeat([0, 1, 2], 18).astype(np.int32)
@@ -1873,7 +1962,8 @@ class TestMultinomialExtractionEdgeCases:
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
-    def test_extraction_out_of_range_mixture_model_index_writes_nan_ibi(self, tmp_path, qlvm_category_bundle):
+    @pytest.mark.usefixtures('qlvm_category_bundle')
+    def test_extraction_out_of_range_mixture_model_index_writes_nan_ibi(self, tmp_path):
         """
         When ``mixture_model_component_index`` exceeds the per-sex mixture-model means length, the
         metadata IBI-threshold computation takes its NaN fallback arm for both
@@ -1893,12 +1983,14 @@ class TestMultinomialExtractionEdgeCases:
         with pkls[0].open('rb') as fh:
             artifact = pickle.load(fh)
         ibi = artifact['_input_metadata']['ibi_thresholds']
-        assert np.isnan(ibi['male']) and np.isnan(ibi['female'])
+        assert np.isnan(ibi['male'])
+        assert np.isnan(ibi['female'])
 
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
-    def test_extraction_all_noise_aborts_without_pickle(self, tmp_path, qlvm_category_bundle):
+    @pytest.mark.usefixtures('qlvm_category_bundle')
+    def test_extraction_all_noise_aborts_without_pickle(self, tmp_path):
         """
         A session tree whose target USVs are *all* the noise category yields
         no non-noise multinomial targets after the noise filter, so the
@@ -1937,7 +2029,8 @@ class TestMultinomialExtractionEdgeCases:
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
-    def test_extraction_with_vocal_predictors_adds_usv_columns(self, tmp_path, qlvm_category_bundle):
+    @pytest.mark.usefixtures('qlvm_category_bundle')
+    def test_extraction_with_vocal_predictors_adds_usv_columns(self, tmp_path):
         """
         With ``vocal_predictor_type='categories_rate'`` the extractor builds
         partner-side vocal-signal predictor columns

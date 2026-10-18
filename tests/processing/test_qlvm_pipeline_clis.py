@@ -7,6 +7,13 @@ Each click command should resolve settings via modify_settings_json_for_cli and
 dispatch to its backend class' single public method exactly once. The backend
 classes and the settings resolver are mocked, so these exercise only the CLI
 wiring (no file I/O / no real compute).
+
+Coverage: the click commands generate_spectrograms, compute_usv_acoustic_features,
+build_qlvm_training_set (path splitting and structured-option decoding),
+build_qlvm_categories, infer_qlvm_latents (model-cell pairs, no label-level
+option), train_qlvm (incl. the ``none`` null setting), export_yolo_dataset and
+train_masks; for every pipeline command, that each settings key has a CLI flag
+and that overrides are scoped to the command's own settings block.
 """
 
 from __future__ import annotations
@@ -19,17 +26,24 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from usv_playpen.processing.qlvm_latents import infer_qlvm_latents_cli
-from usv_playpen.processing.qlvm_categories import assign_qlvm_categories_cli, build_qlvm_categories_cli
-from usv_playpen.processing.build_qlvm_squeak_training_set import build_qlvm_squeak_training_set_cli
-from usv_playpen.processing.build_squeak_spectrogram_store import build_squeak_spectrogram_store_cli
+from usv_playpen.processing.build_qlvm_squeak_training_set import (
+    build_qlvm_squeak_training_set_cli,
+)
 from usv_playpen.processing.build_qlvm_training_set import build_qlvm_training_set_cli
+from usv_playpen.processing.build_squeak_spectrogram_store import (
+    build_squeak_spectrogram_store_cli,
+)
 from usv_playpen.processing.compute_usv_acoustic_features import (
     compute_usv_acoustic_features_cli,
 )
+from usv_playpen.processing.export_yolo_dataset import export_yolo_dataset_cli
 from usv_playpen.processing.generate_masks import generate_masks_cli
 from usv_playpen.processing.generate_spectrograms import generate_spectrograms_cli
-from usv_playpen.processing.export_yolo_dataset import export_yolo_dataset_cli
+from usv_playpen.processing.qlvm_categories import (
+    assign_qlvm_categories_cli,
+    build_qlvm_categories_cli,
+)
+from usv_playpen.processing.qlvm_latents import infer_qlvm_latents_cli
 from usv_playpen.processing.train_masks import train_masks_cli
 
 # train_qlvm pulls optax -> a one-time JAX DeprecationWarning at import.
@@ -95,6 +109,7 @@ def test_build_qlvm_training_set_cli_decodes_structured_options(runner, mocker, 
     seen = {}
 
     def _capture(ctx, provided_params, **_kwargs):
+        """Record the decoded value of every explicitly provided option and return an empty block."""
         seen.update({key: ctx.params[key] for key in provided_params})
         return {"build_qlvm_training_set": {}}
 
@@ -277,7 +292,7 @@ _PROCESSING_SETTINGS = json.loads(
 
 
 @pytest.mark.parametrize(
-    "cli,block",
+    ("cli", "block"),
     [(entry[0], entry[3]) for entry in _PIPELINE_CLIS],
     ids=[entry[3] for entry in _PIPELINE_CLIS],
 )
@@ -292,7 +307,7 @@ def test_pipeline_cli_exposes_every_settings_key(cli, block):
 
 
 @pytest.mark.parametrize(
-    "cli,module_path,backend,block,args",
+    ("cli", "module_path", "backend", "block", "args"),
     _PIPELINE_CLIS,
     ids=[entry[3] for entry in _PIPELINE_CLIS],
 )
@@ -310,4 +325,5 @@ def test_pipeline_cli_scopes_overrides_to_its_own_block(
     result = runner.invoke(cli, concrete_args)
     assert result.exit_code == 0, result.output
     call_kwargs = spy.call_args.kwargs
-    assert "block" in call_kwargs and call_kwargs["block"] == block
+    assert "block" in call_kwargs
+    assert call_kwargs["block"] == block

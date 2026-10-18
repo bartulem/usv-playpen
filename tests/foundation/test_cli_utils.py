@@ -1,9 +1,18 @@
 """
+@author: bartulem
 Unit tests for usv_playpen.cli_utils' pure helpers, which test_cli.py exercises
 only through mocks: the nested-dict setters, the CLI value coercion, the TOML
 override parser, the StringTuple click type, and the new "unmatched CLI option"
 warning emitted by modify_settings_json_for_cli.
+
+Coverage: find_nested_key_paths (match order, absent keys), set_nested_value_by_path
+(happy path and every ValueError/KeyError branch), _convert_value (bool/int/float/
+quoted/whitespace coercion), override_toml_values (scalar, list, malformed entry),
+StringTuple.convert (arity), and modify_settings_json_for_cli (unmatched and
+ambiguous warnings, block= and dotted-block scoping, the block=None fallback).
 """
+
+from __future__ import annotations
 
 from types import SimpleNamespace
 
@@ -19,15 +28,16 @@ from usv_playpen.cli_utils import (
     set_nested_value_by_path,
 )
 
-
 # find_nested_key_paths
 
 def test_find_nested_key_paths_single_match():
+    """A key nested three levels deep must be reported as its full dotted path, the form the setter consumes."""
     d = {"outer": {"inner": {"target": 0}}}
     assert find_nested_key_paths(d, "target") == ["outer.inner.target"]
 
 
 def test_find_nested_key_paths_absent():
+    """An absent key yields an empty list, which is how the CLI detects an unmatched option."""
     assert find_nested_key_paths({"a": {"b": 1}}, "missing") == []
 
 
@@ -39,7 +49,8 @@ def test_find_nested_key_paths_lists_all_in_write_order():
     paths = find_nested_key_paths(d, "target")
     assert paths == ["a.target", "b.target"]
     set_nested_value_by_path(d, paths[0], 99)
-    assert d["a"]["target"] == 99 and d["b"]["target"] == 2  # first match won
+    assert d["a"]["target"] == 99  # first match won
+    assert d["b"]["target"] == 2
 
 
 def test_find_nested_key_paths_top_level_wins_over_deeper():
@@ -49,12 +60,14 @@ def test_find_nested_key_paths_top_level_wins_over_deeper():
     paths = find_nested_key_paths(d, "k")
     assert paths == ["k", "x.k"]
     set_nested_value_by_path(d, paths[0], 7)
-    assert d["k"] == 7 and d["x"]["k"] == 1
+    assert d["k"] == 7
+    assert d["x"]["k"] == 1
 
 
 # set_nested_value_by_path
 
 def test_set_nested_value_by_path_happy():
+    """A valid dotted path must overwrite exactly the addressed leaf."""
     d = {"a": {"b": {"c": 1}}}
     set_nested_value_by_path(d, "a.b.c", 99)
     assert d["a"]["b"]["c"] == 99
@@ -62,28 +75,32 @@ def test_set_nested_value_by_path_happy():
 
 @pytest.mark.parametrize("path", ["", "a..b"])
 def test_set_nested_value_by_path_bad_path_raises_valueerror(path):
-    with pytest.raises(ValueError):
+    """Empty paths or empty components must be rejected rather than silently writing to a '' key."""
+    with pytest.raises(ValueError, match=r"'path' (must be a non-empty string|has empty component)"):
         set_nested_value_by_path({"a": {}}, path, 1)
 
 
 def test_set_nested_value_by_path_non_string_path_raises():
-    with pytest.raises(ValueError):
+    """A non-string path is a programming error and must raise ValueError, not an AttributeError on .split."""
+    with pytest.raises(ValueError, match="'path' must be a non-empty string"):
         set_nested_value_by_path({}, 123, 1)
 
 
 def test_set_nested_value_by_path_unknown_key_raises_keyerror():
+    """An unknown leaf key must raise KeyError, so a typo cannot add a new settings key."""
     with pytest.raises(KeyError):
         set_nested_value_by_path({"a": {}}, "a.b", 1)
 
 
 def test_set_nested_value_by_path_non_dict_intermediate_raises_keyerror():
+    """Descending through a non-dict value must raise KeyError instead of a TypeError deep in the traversal."""
     with pytest.raises(KeyError):
         set_nested_value_by_path({"a": 5}, "a.b", 1)
 
 
 # _convert_value
 
-@pytest.mark.parametrize("s,expected", [
+@pytest.mark.parametrize(("s", "expected"), [
     ("true", True), ("True", True), ("FALSE", False),
     ("1", 1), ("42", 42), ("-3", -3),
     ("1.5", 1.5), ("1.0", 1),          # int-valued float collapses to int
@@ -92,6 +109,7 @@ def test_set_nested_value_by_path_non_dict_intermediate_raises_keyerror():
     ("abc", "abc"),
 ])
 def test_convert_value(s, expected):
+    """CLI strings must coerce to the right value AND type (1.0 -> int 1), since settings consumers type-check."""
     result = _convert_value(s)
     assert result == expected
     assert type(result) is type(expected)
@@ -100,18 +118,21 @@ def test_convert_value(s, expected):
 # override_toml_values
 
 def test_override_toml_scalar():
+    """A dotted key=value override must set the nested TOML value with the coerced scalar."""
     d = {"video": {"general": {"fps": 1}}}
     override_toml_values(["video.general.fps=150"], d)
     assert d["video"]["general"]["fps"] == 150
 
 
 def test_override_toml_comma_makes_list():
+    """A comma-separated value must become a list of coerced elements."""
     d = {"a": {"b": None}}
     override_toml_values(["a.b=1,2,3"], d)
     assert d["a"]["b"] == [1, 2, 3]
 
 
 def test_override_toml_malformed_without_equals_is_skipped():
+    """An entry without '=' must be skipped without raising and without touching the dict."""
     d = {"a": 1}
     override_toml_values(["no_equals_here"], d)  # must not raise
     assert d == {"a": 1}
@@ -120,11 +141,13 @@ def test_override_toml_malformed_without_equals_is_skipped():
 # StringTuple
 
 def test_string_tuple_valid_pair_trims_whitespace():
+    """A two-element comma pair must convert to a whitespace-trimmed tuple."""
     assert StringTuple().convert("Head, Nose", None, None) == ("Head", "Nose")
 
 
 @pytest.mark.parametrize("value", ["OnlyOne", "a,b,c"])
 def test_string_tuple_wrong_arity_raises(value):
+    """Any arity other than two must raise click's BadParameter so the user sees a usage error."""
     with pytest.raises(click.exceptions.BadParameter):
         StringTuple().convert(value, None, None)
 
@@ -132,6 +155,7 @@ def test_string_tuple_wrong_arity_raises(value):
 # modify_settings_json_for_cli — unmatched option now warns (was silent)
 
 def test_modify_settings_warns_on_unmatched_param(capsys):
+    """An option matching no settings key must warn on stderr instead of being silently dropped."""
     bogus = "definitely_not_a_real_settings_key_xyz"
     ctx = SimpleNamespace(params={bogus: 5})
     result = modify_settings_json_for_cli(

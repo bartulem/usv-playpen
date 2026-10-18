@@ -1,17 +1,42 @@
 """
 @author: bartulem
-Test visualizations module.
+Tests for ``usv_playpen.visualizations.visualize_data`` and the GUI tabs that feed it.
+
+Coverage: the ``Visualizer`` dispatcher (each ``visualize_booleans`` flag routes to exactly one
+mocked figure/video maker, all flags off routes to none), and construct-and-tear-down smoke tests of
+the GUI main window and its Record / Process / Analyze / Visualize tabs, which catch settings-key and
+dict-path regressions that would otherwise surface only as a ``KeyError`` when a tab is opened.
 """
 
+from __future__ import annotations
+
 import pytest
+
 from usv_playpen import os_utils
+from usv_playpen.usv_playpen_gui import initialize_main_window
 from usv_playpen.visualizations.visualize_data import Visualizer
+
 
 @pytest.fixture
 def mock_settings():
-    """Provides a mocked visualizations_settings dictionary for tests."""
+    """
+    Description
+    -----------
+    Minimal ``visualizations_settings`` dictionary with every
+    ``visualize_booleans`` flag off, plus the credentials / e-mail /
+    behavioral-video keys the ``Visualizer`` reads on every run. Tests flip
+    individual flags to check that each one dispatches exactly one maker.
 
-    settings = {
+    Parameters
+    ----------
+
+    Returns
+    -------
+    settings (dict)
+        The mocked settings dictionary.
+    """
+
+    return {
         "visualize_booleans": {
             "make_neuronal_tuning_figures_bool": False,
             "make_behavioral_videos_bool": False,
@@ -30,14 +55,29 @@ def mock_settings():
             "speaker_audio_file": "/fake/speaker.wav",
         }
     }
-    return settings
 
 
 @pytest.fixture
 def mock_dependencies(mocker):
-    """Mocks all external class dependencies for the Visualizer class."""
+    """
+    Description
+    -----------
+    Patch every figure/video maker and the ``Messenger`` at their
+    ``visualize_data`` module-local references, so the dispatcher can be run
+    without touching data, rendering, or e-mail.
 
-    mocked_classes = {
+    Parameters
+    ----------
+    mocker (pytest_mock.MockerFixture)
+        The pytest-mock fixture used to install the patches.
+
+    Returns
+    -------
+    mocked_classes (dict)
+        Maps each patched name to its ``MagicMock``.
+    """
+
+    return {
         'NeuronalTuningFigureMaker': mocker.patch('usv_playpen.visualizations.visualize_data.NeuronalTuningFigureMaker'),
         'Create3DVideo': mocker.patch('usv_playpen.visualizations.visualize_data.Create3DVideo'),
         'USVSpectrogramPlotter': mocker.patch('usv_playpen.visualizations.visualize_data.USVSpectrogramPlotter'),
@@ -45,7 +85,6 @@ def mock_dependencies(mocker):
         'render_embedding_thumbnails_for_cohort': mocker.patch('usv_playpen.visualizations.visualize_data.render_embedding_thumbnails_for_cohort'),
         'Messenger': mocker.patch('usv_playpen.visualizations.visualize_data.Messenger'),
     }
-    return mocked_classes
 
 def test_visualize_data_no_booleans_true(mock_settings, mock_dependencies):
     """
@@ -202,7 +241,6 @@ def test_gui_main_window_constructs_without_error(qtbot, monkeypatch, tmp_path):
     AttributeError on construction (e.g. wrong settings dict path)."""
     # Avoid blocking dialogs / file system writes during import-time hooks.
     monkeypatch.chdir(tmp_path)
-    from usv_playpen.usv_playpen_gui import initialize_main_window
     _app, win = initialize_main_window(no_splash=True)
     qtbot.addWidget(win)
     assert win is not None
@@ -213,7 +251,6 @@ def test_gui_settings_dicts_have_expected_top_level_keys(qtbot, monkeypatch, tmp
     """The GUI loads settings JSONs on construction. Verify that the
     block names the GUI reads from are still present after schema renames."""
     monkeypatch.chdir(tmp_path)
-    from usv_playpen.usv_playpen_gui import initialize_main_window
     _app, win = initialize_main_window(no_splash=True)
     qtbot.addWidget(win)
     # The triage-related settings live under analyses_input_dict:
@@ -223,13 +260,29 @@ def test_gui_settings_dicts_have_expected_top_level_keys(qtbot, monkeypatch, tmp
     # visualizations_input_dict:
     assert "figures" in win.visualizations_input_dict
     fig_block = win.visualizations_input_dict["figures"]
-    assert "fig_format" in fig_block and "sequential_cmap" in fig_block
+    assert "fig_format" in fig_block
+    assert "sequential_cmap" in fig_block
     win.close()
 
 
 def _make_main_window(qtbot):
-    """Construct the main GUI window and register it with qtbot."""
-    from usv_playpen.usv_playpen_gui import initialize_main_window
+    """
+    Description
+    -----------
+    Construct the main GUI window without the splash screen and register it
+    with ``qtbot`` so pytest-qt closes and deletes it at teardown. Shared by
+    the tab smoke tests, which only differ in the tab constructor they invoke.
+
+    Parameters
+    ----------
+    qtbot (pytestqt.qtbot.QtBot)
+        The pytest-qt fixture that owns the ``QApplication`` and tracks widgets.
+
+    Returns
+    -------
+    win (QMainWindow)
+        The constructed main window.
+    """
     _app, win = initialize_main_window(no_splash=True)
     qtbot.addWidget(win)
     return win
@@ -283,7 +336,8 @@ def test_gui_visualize_tab_constructs(qtbot, monkeypatch, tmp_path):
     assert [win.qlvm_map_cb.itemText(i) for i in range(win.qlvm_map_cb.count())] == [
         os_utils.QLVM_MAP_DISPLAY_NAMES[qlvm_map] for qlvm_map in os_utils.QLVM_MAPS
     ]
-    assert not hasattr(win, "usv_seq_embedding_cb") and not hasattr(win, "embedding_thumbnails_map_cb")
+    assert not hasattr(win, "usv_seq_embedding_cb")
+    assert not hasattr(win, "embedding_thumbnails_map_cb")
     # the embedding thumbnails offer an Exclude squeaks toggle seeded from the settings,
     # and no longer a one-choice 'Clustering type borders' selector
     assert win.embedding_thumbnails_exclude_squeaks_cb.currentText() == (
@@ -295,7 +349,8 @@ def test_gui_visualize_tab_constructs(qtbot, monkeypatch, tmp_path):
         "Yes" if win.visualizations_input_dict["make_usv_spectrograms"]["sequence"]["exclude_squeaks"] else "No"
     )
     # the QLVM map selector tells the user the torus video ignores it
-    assert "regular" in win.qlvm_map_cb.toolTip() and "video" in win.qlvm_map_cb.toolTip()
+    assert "regular" in win.qlvm_map_cb.toolTip()
+    assert "video" in win.qlvm_map_cb.toolTip()
     win.close()
 
 

@@ -4,8 +4,8 @@ End-to-end smoke tests for the continuous USV-MANIFOLD-POSITION (2-D acoustic ma
 modeling pipeline and its JAX `SmoothBivariateRegression` model-selection path,
 driven entirely on tiny synthetic data.
 
-These tests deliberately walk the *production* code paths rather than testing
-isolated helpers:
+Coverage: these tests deliberately walk the *production* code paths rather
+than testing isolated helpers:
 
 * ``TestContinuousInputExtraction`` runs the real
   ``ContinuousModelingPipeline.extract_and_save_continuous_data`` against a
@@ -51,46 +51,48 @@ import json
 import pickle
 import warnings
 from pathlib import Path
+from typing import ClassVar
 
-import matplotlib
+import matplotlib as mpl
 import numpy as np
 import polars as pls
 import pytest
 
-matplotlib.use('Agg')
+mpl.use('Agg')
 
-from usv_playpen.modeling.modeling_bases_functions import gam_bspline_basis
 from tests.modeling._synth import (
     build_modeling_settings,
     build_session_tree,
     write_session_list_file,
 )
+from usv_playpen.modeling.modeling_bases_functions import gam_bspline_basis
 
 # The modeling import chain pulls optax -> a one-time JAX DeprecationWarning.
 # Guard the top-level imports so collection does not trip ``filterwarnings =
 # ["error"]`` before any per-test marker can take effect.
 with warnings.catch_warnings():
     warnings.simplefilter('ignore', DeprecationWarning)
-    from usv_playpen.modeling.modeling_usv_manifold_position import (
-        ContinuousModelingPipeline,
-        ContinuousModelRunner,
-        compute_inverse_density_weights,
-        get_stratified_spatial_splits_stable,
-        _log_spaced_grid,
-        _tune_manifold_regularization,
-    )
+    import usv_playpen.modeling.model_selection as model_selection_module
+    import usv_playpen.modeling.modeling_usv_manifold_position as manifold_module
     from usv_playpen.modeling.jax_bivariate_regression import (
         SmoothBivariateRegression,
-    )
-    import usv_playpen.modeling.model_selection as model_selection_module
-    from usv_playpen.modeling.model_selection import (
-        _frozen_selection_kappa,
-        continuous_vocal_manifold_model_selection,
     )
     from usv_playpen.modeling.manifold_metric import (
         circular_mean,
         signed_diff,
         total_dispersion,
+    )
+    from usv_playpen.modeling.model_selection import (
+        _frozen_selection_kappa,
+        continuous_vocal_manifold_model_selection,
+    )
+    from usv_playpen.modeling.modeling_usv_manifold_position import (
+        ContinuousModelingPipeline,
+        ContinuousModelRunner,
+        _log_spaced_grid,
+        _tune_manifold_regularization,
+        compute_inverse_density_weights,
+        get_stratified_spatial_splits_stable,
     )
 
 
@@ -351,7 +353,9 @@ class TestContinuousInputExtraction:
             assert X.shape[1] == HISTORY_FRAMES
             assert Y.shape[1] == 2
             assert X.shape[0] == Y.shape[0] == w.shape[0]
-            assert np.isfinite(X).all() and np.isfinite(Y).all() and np.isfinite(w).all()
+            assert np.isfinite(X).all()
+            assert np.isfinite(Y).all()
+            assert np.isfinite(w).all()
             total_usv += X.shape[0]
             all_w.append(w)
 
@@ -419,8 +423,10 @@ class TestContinuousInputExtraction:
         feature_keys = [k for k in artifact if not k.startswith('_')]
         for feat in feature_keys:
             for entry in artifact[feat].values():
-                assert np.isfinite(entry['Y']).all() and np.isfinite(entry['w']).all()
-                assert 'supercategory' not in entry and 'category' not in entry
+                assert np.isfinite(entry['Y']).all()
+                assert np.isfinite(entry['w']).all()
+                assert 'supercategory' not in entry
+                assert 'category' not in entry
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_extraction_torus_metric(self, tmp_path):
@@ -480,7 +486,7 @@ class TestContinuousInputExtraction:
 class TestContinuousModelRunner:
     """The continuous univariate JAX runner on the freshly-extracted pickle."""
 
-    @pytest.mark.parametrize('error_cls, propagates', [
+    @pytest.mark.parametrize(('error_cls', 'propagates'), [
         (np.linalg.LinAlgError, False),
         (ValueError, False),
         (TypeError, True),
@@ -494,14 +500,33 @@ class TestContinuousModelRunner:
         ``except Exception``.
         """
 
-        import usv_playpen.modeling.modeling_usv_manifold_position as manifold_module
-
         settings, _ = _build_manifold_settings(tmp_path)
         settings['vocal_features']['usv_manifold_geodesic_metrics']['compute'] = True
         runner = ContinuousModelRunner(ContinuousModelingPipeline(modeling_settings_dict=settings))
 
         def _boom(*_a, **_k):
-            raise error_cls("forced geometry failure")
+            """
+            Description
+            -----------
+            Stands in for ``build_torus_geodesic_context`` and raises the
+            parametrized exception class, so the test sees which failures the
+            runner swallows and which it propagates.
+
+            Parameters
+            ----------
+            _a (tuple)
+                Ignored positional arguments.
+            _k (dict)
+                Ignored keyword arguments.
+
+            Returns
+            -------
+            None
+                Always raises ``error_cls``.
+            """
+
+            msg = "forced geometry failure"
+            raise error_cls(msg)
 
         monkeypatch.setattr(manifold_module, 'resolve_geodesic_decoder_source', lambda *_a, **_k: None)
         monkeypatch.setattr(manifold_module, 'build_torus_geodesic_context', _boom)
@@ -546,7 +571,8 @@ class TestContinuousModelRunner:
             assert len(folds['test_indices']) == n_splits
             # Every fold's prediction is the (n_test, 2) manifold coordinate pair.
             for pred in folds['y_pred_xy']:
-                assert pred.ndim == 2 and pred.shape[1] == 2
+                assert pred.ndim == 2
+                assert pred.shape[1] == 2
 
         # The modelled strategies expose per-fold optimiser diagnostics; the
         # empirical-density-draw baseline records a zero-iteration "fit".
@@ -576,7 +602,7 @@ class TestContinuousModelRunner:
 
         basis = gam_bspline_basis(HISTORY_FRAMES, 8, 3) / HISTORY_FRAMES
         folds = results['actual']['folds']
-        pairs = [(np.asarray(w), np.asarray(c)) for w, c in zip(folds['weights'], folds['basis_coefficients'])
+        pairs = [(np.asarray(w), np.asarray(c)) for w, c in zip(folds['weights'], folds['basis_coefficients'], strict=True)
                  if w is not None]
         assert pairs
         for weights, coefficients in pairs:
@@ -664,12 +690,14 @@ class TestContinuousModelRunner:
             for w in folds['weights']:
                 # Torus path: the filter targets the 4-D sin-cos embedding,
                 # unlike the coordinate model's 2-wide (x, y) filter.
-                assert w.ndim == 2 and w.shape[1] == 4
+                assert w.ndim == 2
+                assert w.shape[1] == 4
             # Closed-form solve -> exactly one "iteration", always converged.
             assert all(it == 1 for it in folds['n_iter'])
             assert all(folds['converged'])
             for pred in folds['y_pred_xy']:
-                assert pred.ndim == 2 and pred.shape[1] == 2
+                assert pred.ndim == 2
+                assert pred.shape[1] == 2
         # The model-free density-draw baseline is unaffected (still a 0-iter "fit").
         assert all(it == 0 for it in results['null_model_free']['folds']['n_iter'])
 
@@ -697,7 +725,7 @@ class TestContinuousModelRunner:
         input_md = {
             'analysis_type': 'continuous', 'analysis_tag': 'manifold_qlvm_category',
             'session_ids': session_ids, 'held_out_session_ids': held_out,
-            'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
+            'n_events_per_session': dict.fromkeys(session_ids, 60),
             'analysis_specific': {'usv_category_column_name': 'qlvm_category',
                                   'manifold_metric': metric, 'manifold_period': 1.0},
         }
@@ -821,7 +849,7 @@ class TestManifoldModelSelection:
             'analysis_type': 'continuous',
             'analysis_tag': 'manifold_qlvm_category',
             'session_ids': session_ids,
-            'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
+            'n_events_per_session': dict.fromkeys(session_ids, 60),
             'analysis_specific': {
                 'usv_category_column_name': 'qlvm_category',
                 'manifold_metric': 'euclidean',
@@ -919,7 +947,7 @@ class TestManifoldModelSelection:
             'analysis_tag': 'manifold_qlvm_duration',
             'session_ids': session_ids,
             'held_out_session_ids': held_out_ids,
-            'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
+            'n_events_per_session': dict.fromkeys(session_ids, 60),
             'analysis_specific': {
                 'usv_category_column_name': 'qlvm_category',
                 'manifold_metric': 'euclidean',
@@ -967,7 +995,7 @@ class TestManifoldModelSelection:
         heldout = final_step['heldout']
         if heldout is not None and heldout['model_type'] == 'manifold_regressor':
             n_perm = settings['model_params']['filter_null_permutations']
-            assert heldout['null_weights'].shape == (n_perm,) + np.asarray(heldout['weights']).shape
+            assert heldout['null_weights'].shape == (n_perm, *np.asarray(heldout['weights']).shape)
             assert np.isfinite(heldout['null_weights']).all()
         # the step-file prefix carries the input pickle's map-prefix tag verbatim
         assert all(path.name.startswith('model_selection_continuous_manifold_qlvm_duration_') for path in step_pkls)
@@ -1007,7 +1035,7 @@ class TestManifoldModelSelection:
             'analysis_type': 'continuous',
             'analysis_tag': 'manifold_qlvm_category',
             'session_ids': session_ids,
-            'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
+            'n_events_per_session': dict.fromkeys(session_ids, 60),
             'analysis_specific': {
                 'usv_category_column_name': 'qlvm_category',
                 'manifold_metric': 'torus',
@@ -1087,7 +1115,7 @@ class TestManifoldModelSelection:
             'analysis_type': 'continuous',
             'analysis_tag': 'manifold_qlvm_category',
             'session_ids': session_ids,
-            'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
+            'n_events_per_session': dict.fromkeys(session_ids, 60),
             'analysis_specific': {
                 'usv_category_column_name': 'qlvm_category',
                 'manifold_metric': 'torus',
@@ -1117,6 +1145,25 @@ class TestManifoldModelSelection:
         original_bootstrap = model_selection_module._fold_paired_margin_bootstrap
 
         def recording_bootstrap(*args, **kwargs):
+            """
+            Description
+            -----------
+            Records the ``event_to_region`` map of every gate evaluation, then
+            delegates to the real bootstrap so selection runs unchanged.
+
+            Parameters
+            ----------
+            args (tuple)
+                Positional arguments forwarded to the real bootstrap.
+            kwargs (dict)
+                Keyword arguments forwarded to the real bootstrap; must carry ``event_to_region``.
+
+            Returns
+            -------
+            result (object)
+                Whatever the real ``_fold_paired_margin_bootstrap`` returns.
+            """
+
             region_maps.append(kwargs['event_to_region'])
             return original_bootstrap(*args, **kwargs)
 
@@ -1162,7 +1209,7 @@ class TestManifoldModelSelection:
             'analysis_type': 'continuous',
             'analysis_tag': 'manifold_qlvm_category',
             'session_ids': session_ids,
-            'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
+            'n_events_per_session': dict.fromkeys(session_ids, 60),
             'analysis_specific': {
                 'usv_category_column_name': 'qlvm_category',
                 'manifold_metric': 'torus',
@@ -1204,11 +1251,12 @@ class TestManifoldModelSelection:
                 if name in ('null_model_free', 'null_model_intercept'):
                     continue
                 for weights, coefficients in zip(candidate['folds']['weights'],
-                                                 candidate['folds']['basis_coefficients']):
+                                                 candidate['folds']['basis_coefficients'], strict=False):
                     if weights is not None:
                         n_inputs, n_outputs = np.asarray(weights).shape
                         assert n_outputs == 4
-                        assert n_inputs % HISTORY_FRAMES == 0 and n_inputs >= HISTORY_FRAMES
+                        assert n_inputs % HISTORY_FRAMES == 0
+                        assert n_inputs >= HISTORY_FRAMES
                         assert np.asarray(coefficients).shape == (8 * (n_inputs // HISTORY_FRAMES), 4)
                         checked += 1
         assert checked > 0
@@ -1241,7 +1289,7 @@ class TestManifoldModelSelection:
             'analysis_type': 'continuous',
             'analysis_tag': 'manifold_qlvm_category',
             'session_ids': session_ids,
-            'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
+            'n_events_per_session': dict.fromkeys(session_ids, 60),
             'analysis_specific': {
                 'usv_category_column_name': 'qlvm_category',
                 'manifold_metric': 'torus',
@@ -1365,6 +1413,26 @@ class TestManifoldModelSelection:
         assert f"{kappa_dev:.4f}" != f"{kappa_all:.4f}"
 
         def _run(out_name: str, ranking_path: Path) -> str:
+            """
+            Description
+            -----------
+            Runs the real manifold selection into a fresh output directory and
+            returns everything it printed, so the frozen-kappa line can be read
+            off the log for each metadata placement.
+
+            Parameters
+            ----------
+            out_name (str)
+                Name of the output subdirectory created under ``tmp_path``.
+            ranking_path (pathlib.Path)
+                Univariate ranking pickle handed to the selector.
+
+            Returns
+            -------
+            out (str)
+                Captured stdout of the selection run.
+            """
+
             ms_dir = tmp_path / out_name
             ms_dir.mkdir()
             capsys.readouterr()
@@ -1532,7 +1600,7 @@ class TestManifoldModelSelection:
             'analysis_type': 'continuous',
             'analysis_tag': 'manifold_qlvm_category',
             'session_ids': session_ids,
-            'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
+            'n_events_per_session': dict.fromkeys(session_ids, 60),
             'analysis_specific': {
                 'usv_category_column_name': 'qlvm_category',
                 'manifold_metric': 'torus', 'manifold_period': 1.0,
@@ -1558,6 +1626,23 @@ class TestManifoldModelSelection:
         ms_dir.mkdir()
 
         def _run():
+            """
+            Description
+            -----------
+            Runs the real manifold selection on the fixed ranking, input pickle and
+            settings into the shared output directory (resuming from any checkpoint
+            already there).
+
+            Parameters
+            ----------
+            None.
+
+            Returns
+            -------
+            None
+                The selector writes its step pickles to ``ms_dir``.
+            """
+
             continuous_vocal_manifold_model_selection(
                 univariate_results_path=str(combined_path), input_data_path=input_pkl,
                 output_directory=str(ms_dir), settings_path=str(settings_json),
@@ -1577,7 +1662,8 @@ class TestManifoldModelSelection:
         capsys.readouterr()  # clear captured output
         _run()
         out = capsys.readouterr().out
-        assert "different scales" in out and "starting fresh" in out
+        assert "different scales" in out
+        assert "starting fresh" in out
         final = sorted(ms_dir.glob('*_step_*.pkl'))[-1]
         with final.open('rb') as fh:
             assert pickle.load(fh)['_run_metadata']['selection_metric'] == 'vm_logscore'
@@ -1601,7 +1687,7 @@ class TestManifoldModelSelection:
             'analysis_type': 'continuous',
             'analysis_tag': 'manifold_qlvm_category',
             'session_ids': session_ids,
-            'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
+            'n_events_per_session': dict.fromkeys(session_ids, 60),
             'analysis_specific': {
                 'usv_category_column_name': 'qlvm_category',
                 'manifold_metric': 'torus', 'manifold_period': 1.0,
@@ -1625,6 +1711,23 @@ class TestManifoldModelSelection:
         ms_dir.mkdir()
 
         def _run():
+            """
+            Description
+            -----------
+            Runs the real manifold selection on the fixed ranking, input pickle and
+            settings into the shared output directory (resuming from any checkpoint
+            already there).
+
+            Parameters
+            ----------
+            None.
+
+            Returns
+            -------
+            None
+                The selector writes its step pickles to ``ms_dir``.
+            """
+
             continuous_vocal_manifold_model_selection(
                 univariate_results_path=str(combined_path), input_data_path=input_pkl,
                 output_directory=str(ms_dir), settings_path=str(settings_json),
@@ -1632,6 +1735,23 @@ class TestManifoldModelSelection:
             )
 
         def _final_features():
+            """
+            Description
+            -----------
+            Loads the highest-numbered step checkpoint (sorted by its numeric
+            step suffix, not lexically) and reports its final feature set plus
+            the checkpoint count, so a resumed run can be compared to the fresh one.
+
+            Parameters
+            ----------
+            None.
+
+            Returns
+            -------
+            final (tuple)
+                ``(final_model_features, number_of_step_checkpoints)``.
+            """
+
             steps = sorted(ms_dir.glob('*_step_*.pkl'), key=lambda path: int(path.stem.rsplit('_', 1)[-1]))
             with steps[-1].open('rb') as fh:
                 return pickle.load(fh)['final_model_features'], len(steps)
@@ -1693,6 +1813,26 @@ class TestManifoldModelSelection:
         w_tr = np.ones(len(Y_tr), dtype=np.float64)
 
         def _baseline(metric):
+            """
+            Description
+            -----------
+            Reproduces the metric-aware centroid ``r2`` baseline: centroid of the
+            training cluster, residuals of the test points against it, and the
+            dispersion denominator, all under the requested metric.
+
+            Parameters
+            ----------
+            metric (str)
+                ``'euclidean'`` or ``'torus'``.
+
+            Returns
+            -------
+            r2 (float)
+                Centroid-referenced r2 (0.0 when the dispersion is zero).
+            mu (np.ndarray)
+                Centroid of the training cluster, shape ``(2,)``.
+            """
+
             mu = circular_mean(Y_tr, metric=metric, period=period, weights=w_tr)
             resid = signed_diff(Y_te, mu[None, :], metric=metric, period=period)
             sse = float(np.sum(resid ** 2))
@@ -1975,12 +2115,17 @@ class TestManifoldTuner:
             """Stub regressor whose ``fit`` always raises to force the NaN path."""
 
             def __init__(self, **kwargs):
-                pass
+                """Accept and ignore the tuner's constructor hyperparameters."""
 
-            def fit(self, X, Y, sample_weight=None):
-                raise RuntimeError("forced inner-fit failure")
+            def fit(self, _X, _Y, sample_weight=None):
+                """Raise unconditionally so every grid pair scores NaN; ``sample_weight`` is accepted because the tuner passes it by keyword."""
+                del sample_weight
+                msg = "forced inner-fit failure"
+                raise RuntimeError(msg)
 
-            def evaluate_metrics(self, X, Y, weights=None, **kwargs):
+            def evaluate_metrics(self, _X, _Y, weights=None, **_kwargs):
+                """Never reached (``fit`` raises first); returns an empty metric dict to satisfy the regressor interface."""
+                del weights
                 return {}
 
         # Two sessions, each covering both inner clusters, so the inner
@@ -2049,16 +2194,21 @@ class TestManifoldTuner:
         class _FixedScore:
             """Stub returning per-fold ``r2_spatial`` keyed by ``lambda_smooth``."""
 
-            _call_counts: dict = {}
+            _call_counts: ClassVar[dict] = {}
 
             def __init__(self, **kwargs):
+                """Record the rounded ``lambda_smooth`` this instance was built with, the key into the score table."""
                 self._lam = round(kwargs['lambda_smooth'], 6)
 
-            def fit(self, X, Y, sample_weight=None):
+            def fit(self, _X, _Y, sample_weight=None):
+                """No-op fit; ``sample_weight`` is accepted because the tuner passes it by keyword."""
+                del sample_weight
                 return self
 
-            def evaluate_metrics(self, X, Y, weights=None, **kwargs):
-                idx = _FixedScore._call_counts.get(self._lam, 0)
+            def evaluate_metrics(self, _X, _Y, weights=None, **_kwargs):
+                """Return the next scripted per-fold score for this ``lambda_smooth``, cycling over the two inner folds via a class-level counter."""
+                del weights
+                idx = _FixedScore._call_counts[self._lam] if self._lam in _FixedScore._call_counts else 0
                 _FixedScore._call_counts[self._lam] = idx + 1
                 return {'r2_spatial': score_table[self._lam][idx % 2]}
 
@@ -2117,12 +2267,17 @@ class TestManifoldTuner:
             """Stub whose ``r2_spatial`` depends only on ``l2_reg``."""
 
             def __init__(self, **kwargs):
+                """Record the rounded ``l2_reg`` this instance was built with, the key into the score table."""
                 self._l2 = round(kwargs['l2_reg'], 6)
 
-            def fit(self, X, Y, sample_weight=None):
+            def fit(self, _X, _Y, sample_weight=None):
+                """No-op fit; ``sample_weight`` is accepted because the tuner passes it by keyword."""
+                del sample_weight
                 return self
 
-            def evaluate_metrics(self, X, Y, weights=None, **kwargs):
+            def evaluate_metrics(self, _X, _Y, weights=None, **_kwargs):
+                """Return the scripted ``r2_spatial`` for this stub's ``l2_reg``."""
+                del weights
                 return {'r2_spatial': l2_score[self._l2]}
 
         Y_list, groups_list = [], []
@@ -2135,14 +2290,14 @@ class TestManifoldTuner:
         X = np.zeros((len(Y), 1), dtype=np.float32)
         w = np.ones(len(Y), dtype=np.float32)
 
-        common = dict(
-            inner_cv_folds=2, inner_cv_scoring_metric='r2_spatial',
-            inner_cv_use_one_se_rule=False, n_features=1, n_time_bins=1,
-            spatial_cluster_num=2, smoothness_derivative_order=1, huber_delta=1.0,
-            learning_rate=0.05, inner_max_iter=5, tol=0.01, random_state=0,
-            verbose=False, use_lax_loop=False, regressor_cls=_L2Score,
-            metric='euclidean', period=1.0,
-        )
+        common = {
+            'inner_cv_folds': 2, 'inner_cv_scoring_metric': 'r2_spatial',
+            'inner_cv_use_one_se_rule': False, 'n_features': 1, 'n_time_bins': 1,
+            'spatial_cluster_num': 2, 'smoothness_derivative_order': 1, 'huber_delta': 1.0,
+            'learning_rate': 0.05, 'inner_max_iter': 5, 'tol': 0.01, 'random_state': 0,
+            'verbose': False, 'use_lax_loop': False, 'regressor_cls': _L2Score,
+            'metric': 'euclidean', 'period': 1.0,
+        }
         # Multi-point l2 grid whose argmax rails to the upper edge -> warning fires.
         _lam, best_l2, _audit = _tune_manifold_regularization(
             X, Y, w, groups,
@@ -2152,7 +2307,8 @@ class TestManifoldTuner:
         )
         assert best_l2 == 1.0
         out_edge = capsys.readouterr().out
-        assert 'l2 grid' in out_edge and 'EDGE' in out_edge
+        assert 'l2 grid' in out_edge
+        assert 'EDGE' in out_edge
 
         # A single-point l2 grid must NOT warn (no false positive on fixed l2).
         _tune_manifold_regularization(
@@ -2178,16 +2334,21 @@ class TestManifoldTuner:
         class _FixedScore:
             """Deterministic per-fold stub keyed by ``lambda_smooth``."""
 
-            _calls: dict = {}
+            _calls: ClassVar[dict] = {}
 
             def __init__(self, **kwargs):
+                """Record the rounded ``lambda_smooth`` this instance was built with, the key into the score table."""
                 self._lam = round(kwargs['lambda_smooth'], 6)
 
-            def fit(self, X, Y, sample_weight=None):
+            def fit(self, _X, _Y, sample_weight=None):
+                """No-op fit; ``sample_weight`` is accepted because the tuner passes it by keyword."""
+                del sample_weight
                 return self
 
-            def evaluate_metrics(self, X, Y, weights=None, **kwargs):
-                idx = _FixedScore._calls.get(self._lam, 0)
+            def evaluate_metrics(self, _X, _Y, weights=None, **_kwargs):
+                """Return the next scripted per-fold score for this ``lambda_smooth``, cycling over the two inner folds via a class-level counter."""
+                del weights
+                idx = _FixedScore._calls[self._lam] if self._lam in _FixedScore._calls else 0
                 _FixedScore._calls[self._lam] = idx + 1
                 return {'r2_spatial': score_table[self._lam][idx % 2]}
 
@@ -2237,16 +2398,23 @@ class TestManifoldTuner:
         }
 
         class _FixedScore:
-            _calls: dict = {}
+            """Deterministic per-fold stub keyed by ``lambda_smooth`` scoring ``euclidean_mae`` (lower is better)."""
+
+            _calls: ClassVar[dict] = {}
 
             def __init__(self, **kwargs):
+                """Record the rounded ``lambda_smooth`` this instance was built with, the key into the score table."""
                 self._lam = round(kwargs['lambda_smooth'], 6)
 
-            def fit(self, X, Y, sample_weight=None):
+            def fit(self, _X, _Y, sample_weight=None):
+                """No-op fit; ``sample_weight`` is accepted because the tuner passes it by keyword."""
+                del sample_weight
                 return self
 
-            def evaluate_metrics(self, X, Y, weights=None, **kwargs):
-                idx = _FixedScore._calls.get(self._lam, 0)
+            def evaluate_metrics(self, _X, _Y, weights=None, **_kwargs):
+                """Return the next scripted per-fold score for this ``lambda_smooth``, cycling over the two inner folds via a class-level counter."""
+                del weights
+                idx = _FixedScore._calls[self._lam] if self._lam in _FixedScore._calls else 0
                 _FixedScore._calls[self._lam] = idx + 1
                 return {'euclidean_mae': score_table[self._lam][idx % 2]}
 

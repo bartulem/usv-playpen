@@ -11,7 +11,9 @@ an ``analysis_type`` onto a concrete pipeline / selector, and persist (or
 delegate the persistence of) the result. The heavy numerical work lives
 in the pipeline / selector callables, so these tests stub those callables
 out (via ``mocker.patch.object`` on the dispatcher module) and assert the
-*routing and validation contract* only:
+*routing and validation contract* only.
+
+Coverage:
 
   * ``get_basis_matrix_standardized`` — the basis branch matrix and the
     once-per-run atomic plotting lock.
@@ -24,6 +26,7 @@ out (via ``mocker.patch.object`` on the dispatcher module) and assert the
   * ``dispatch_model_selection`` — the five selector routes (asserting the
     exact kwargs each receives), the unknown-type branch, and the
     catch-all exception handler.
+  * both ``__main__`` CLI blocks, driven in-process with ``runpy``.
 
 Every test is self-contained under ``tmp_path``; nothing is written into
 ``src/``. Synthetic ``modeling_settings`` dictionaries come from the
@@ -61,8 +64,8 @@ from . import _synth
 # and orthogonal to anything these tests exercise).
 with warnings.catch_warnings():
     warnings.simplefilter('ignore')
-    from usv_playpen.modeling import main_univariate_dispatcher as uni
     from usv_playpen.modeling import main_model_selection_dispatcher as sel
+    from usv_playpen.modeling import main_univariate_dispatcher as uni
     from usv_playpen.modeling import model_selection as msrc
     from usv_playpen.os_utils import resolve_modeling_setting
 
@@ -73,8 +76,24 @@ REPO_SETTINGS = Path(__file__).resolve().parents[2] / 'src' / 'usv_playpen' / '_
 
 
 def _settings(tmp_path, model_engine='sklearn'):
-    """Build a synthetic ``modeling_settings`` dict (deep copy of the
-    shipped JSON) repointed at scratch paths under ``tmp_path``."""
+    """
+    Description
+    -----------
+    Build a synthetic ``modeling_settings`` dict (deep copy of the
+    shipped JSON) repointed at scratch paths under ``tmp_path``.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test scratch directory; the session list and save directory go here.
+    model_engine (str)
+        Value for the settings' model engine ('sklearn', 'pygam', ...).
+
+    Returns
+    -------
+    settings (dict)
+        The modeling-settings dictionary from ``_synth.build_modeling_settings``.
+    """
 
     session_list = _synth.write_session_list_file(
         [tmp_path / 'session_0'],
@@ -88,8 +107,27 @@ def _settings(tmp_path, model_engine='sklearn'):
 
 
 def _input_pickle(tmp_path, features, with_metadata=True):
-    """Write a tiny modeling-input pickle (feature keys plus an optional
-    ``_input_metadata`` block) and return its path."""
+    """
+    Description
+    -----------
+    Write a tiny modeling-input pickle (feature keys plus an optional
+    ``_input_metadata`` block) and return its path.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test scratch directory; the pickle is written as ``input.pkl``.
+    features (list of str)
+        Feature keys, each holding one session of zero USV / no-USV arrays.
+    with_metadata (bool)
+        Whether to add the ``_input_metadata`` block (False exercises the
+        legacy-input path).
+
+    Returns
+    -------
+    path (pathlib.Path)
+        Path of the written pickle.
+    """
 
     artifact = {feat: {'session_0': {'usv_feature_arr': np.zeros((2, 3)),
                                      'no_usv_feature_arr': np.zeros((2, 3))}}
@@ -104,7 +142,27 @@ def _input_pickle(tmp_path, features, with_metadata=True):
 
 
 def _uni_args(analysis_type, feature_idx, input_path, output_dir):
-    """Build the argparse Namespace the univariate dispatcher consumes."""
+    """
+    Description
+    -----------
+    Build the argparse Namespace the univariate dispatcher consumes.
+
+    Parameters
+    ----------
+    analysis_type (str)
+        Route name ('onset', 'category', 'params', 'multinomial', 'continuous', ...).
+    feature_idx (int)
+        SLURM array index selecting the feature.
+    input_path (pathlib.Path)
+        Modeling-input pickle path.
+    output_dir (pathlib.Path)
+        Output directory for the per-feature result.
+
+    Returns
+    -------
+    args (argparse.Namespace)
+        Namespace with ``analysis_type``, ``feature_idx``, ``input_data`` and ``output_dir``.
+    """
 
     return argparse.Namespace(
         analysis_type=analysis_type,
@@ -115,9 +173,27 @@ def _uni_args(analysis_type, feature_idx, input_path, output_dir):
 
 
 def _sel_args(analysis_type, tmp_path, **overrides):
-    """Build the argparse Namespace the selection dispatcher consumes,
+    """
+    Description
+    -----------
+    Build the argparse Namespace the selection dispatcher consumes,
     with all required path slots pointing at real files under
-    ``tmp_path`` so ``validate_paths`` passes."""
+    ``tmp_path`` so ``validate_paths`` passes.
+
+    Parameters
+    ----------
+    analysis_type (str)
+        Route name passed through to the dispatcher.
+    tmp_path (pathlib.Path)
+        Per-test scratch directory; placeholder univariate / input files are written here.
+    **overrides
+        Attribute overrides applied to the Namespace after construction.
+
+    Returns
+    -------
+    args (argparse.Namespace)
+        Namespace with the path slots, ``output_dir`` and ``anchor=True``.
+    """
 
     univ = tmp_path / 'univariate.pkl'
     inp = tmp_path / 'input.pkl'
@@ -139,6 +215,7 @@ def _sel_args(analysis_type, tmp_path, **overrides):
 
 
 class TestBasisMatrix:
+    """``get_basis_matrix_standardized``: basis branches and the once-per-array plotting lock."""
 
     def test_pygam_engine_returns_none(self, tmp_path):
         """When the engine is ``pygam`` the function short-circuits to
@@ -231,6 +308,7 @@ class TestBasisMatrix:
 
 
 class TestDispatchUnivariate:
+    """``dispatch_univariate_job``: settings, feature mapping, routing, output and failure modes."""
 
     def test_settings_load_failure_returns_early(self, tmp_path, mocker, capsys):
         """A settings-JSON load failure is caught, printed as ``FATAL``,
@@ -484,6 +562,7 @@ class TestDispatchUnivariate:
 
 
 class TestValidatePaths:
+    """``validate_paths``: the missing-mount-point guard of the selection dispatcher."""
 
     def test_all_present_passes(self, tmp_path):
         """When every path exists the guard returns ``None`` quietly."""
@@ -507,6 +586,7 @@ class TestValidatePaths:
 
 
 class TestDispatchModelSelection:
+    """``dispatch_model_selection``: selector routing, settings-sourced kwargs and failure handling."""
 
     def test_onset_route(self, tmp_path, mocker):
         """The ``onset`` route calls ``vocal_onset_model_selection`` with
@@ -598,7 +678,7 @@ class TestDispatchModelSelection:
         sel.dispatch_model_selection(_sel_args('onset', tmp_path))
         assert 'CRITICAL FAILURE' in capsys.readouterr().out
 
-    def test_missing_input_path_raises_through_validate(self, tmp_path, mocker):
+    def test_missing_input_path_raises_through_validate(self, tmp_path):
         """A non-existent univariate path trips ``validate_paths`` and
         the ``FileNotFoundError`` propagates (it is raised before the
         routing try/except)."""
@@ -638,7 +718,7 @@ class TestDispatcherCLI:
         mapping and exits with status 1, so SLURM records the failed task."""
 
         settings = _settings(tmp_path)
-        monkeypatch.setattr(uni.json, 'load', lambda *a, **k: settings)
+        monkeypatch.setattr(uni.json, 'load', lambda *_a, **_k: settings)
         inp = _input_pickle(tmp_path, ['self.speed'])
         monkeypatch.setattr(sys, 'argv', [
             'main_univariate_dispatcher',
@@ -662,6 +742,20 @@ class TestDispatcherCLI:
         calls = {}
 
         def _stub(**kwargs):
+            """
+            Description
+            -----------
+            Stand-in selector that records the keyword arguments it receives.
+
+            Parameters
+            ----------
+            **kwargs
+                The selector keyword arguments the dispatcher passes.
+
+            Returns
+            -------
+            None
+            """
             calls.update(kwargs)
 
         monkeypatch.setattr(msrc, 'bout_parameter_model_selection', _stub)

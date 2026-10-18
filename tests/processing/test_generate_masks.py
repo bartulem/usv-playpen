@@ -11,6 +11,14 @@ test verifies the usv-playpen-native orchestration around them:
 the ``mask/<session>`` group is written into the per-session spectrogram H5 with the
 right dataset shapes/dtypes and a ``spectrogram_index`` that maps every mask back to
 the usv_summary row it belongs to (placeholder ``duration == 0`` rows getting none).
+
+Coverage: flatten_session_masks (packing and indexing, the flip to natural
+frequency orientation, no masks), generate_session_masks (writing and
+overwriting the mask group, a failed write keeping the old file, the CC detector
+skipping YOLO weights, refusals for missing weights / checkpoint / SAM2 directory
+/ SAM2 config and for a non-boxprompt mode, row subsets that remap and merge,
+work without an existing group and refuse out-of-range rows), and the boxprompt
+kernels taking the IoU floor and minimum duration from the caller.
 """
 
 from __future__ import annotations
@@ -108,6 +116,8 @@ def _install_fake_kernels(monkeypatch, canned_masks):
     ``canned_masks`` verbatim."""
 
     def _fake_process(session_name, *_args, **_kwargs):
+        """Stand in for ``process_session_batch_boxprompt``: return the session name
+        with ``canned_masks`` verbatim, whatever spectrograms and boxes it is given."""
         return session_name, canned_masks
 
     monkeypatch.setattr(generate_masks_module, "setup_device", lambda **_kwargs: "cpu")
@@ -254,8 +264,12 @@ def test_generate_session_masks_failed_write_keeps_the_old_file(tmp_path, monkey
     original_create = h5py.Group.create_dataset
 
     def _failing_create(self, name, *args, **kwargs):
+        """Stand in for ``h5py.Group.create_dataset``: raise OSError("disk full") when
+        the ``spectrogram_index`` dataset is created, so the write dies part-way, and defer to
+        the real method for every other dataset."""
         if name == "spectrogram_index":
-            raise OSError("disk full")
+            message = "disk full"
+            raise OSError(message)
         return original_create(self, name, *args, **kwargs)
 
     monkeypatch.setattr(h5py.Group, "create_dataset", _failing_create)

@@ -6,8 +6,10 @@ uncovered.
 
 The smoke suite drives the *happy path* of
 ``VocalOnsetModelingPipeline.extract_and_save_modeling_input_data`` plus the
-fast ``sklearn`` univariate / model-selection dispatchers. This file instead
-targets the *alternate* branches of ``modeling_vocal_onsets.py`` directly:
+fast ``sklearn`` univariate / model-selection dispatchers.
+
+Coverage: this file instead targets the *alternate* branches of
+``modeling_vocal_onsets.py`` directly:
 
 * ``TestInitBranches`` — the constructor's optional / error paths:
   ``modeling_settings_dict=None`` (load shipped JSON), the
@@ -55,20 +57,20 @@ import pickle
 import warnings
 from pathlib import Path
 
-import matplotlib
+import matplotlib as mpl
 import numpy as np
 import polars as pls
 import pytest
 
-matplotlib.use('Agg')
+mpl.use('Agg')
 
 from tests.modeling._synth import (
     build_behavioral_features_csv,
-    fit_counting_subclass,
     build_modeling_settings,
     build_session_tree,
     build_track_h5,
     build_usv_summary_csv,
+    fit_counting_subclass,
     write_session_list_file,
 )
 
@@ -331,7 +333,7 @@ class TestDataSplitStrategies:
             pipeline.create_data_splits(feature_data, strategy_override='session')
         )
         assert len(splits) >= 1
-        for X_train, y_train, X_test, y_test, _groups_train in splits:
+        for X_train, y_train, _X_test, _y_test, _groups_train in splits:
             assert X_train.shape[1] == HISTORY_FRAMES
             assert int(np.sum(y_train == 1)) == int(np.sum(y_train == 0))
 
@@ -381,7 +383,7 @@ class TestDataSplitStrategies:
         for sess in ('session_1', 'session_2'):
             feature_data[sess]['usv_feature_arr'] = np.empty((0, HISTORY_FRAMES))
         splits = _drain(pipeline.create_data_splits(feature_data))
-        for X_train, y_train, X_test, y_test, _groups_train in splits:
+        for _X_train, y_train, _X_test, _y_test, _groups_train in splits:
             assert int(np.sum(y_train == 1)) == int(np.sum(y_train == 0))
 
     def test_unknown_strategy_raises_value_error(self, tmp_path):
@@ -813,8 +815,6 @@ class TestExtractionGuards:
         )
         settings['model_params']['usv_bout_time'] = FILTER_HISTORY
 
-        import usv_playpen.modeling.modeling_vocal_onsets as onsets_mod
-
         VocalOnsetModelingPipeline(modeling_settings_dict=settings).extract_and_save_modeling_input_data()
         published = sorted(save_dir.glob('modeling_*.pkl'))
         assert len(published) == 1
@@ -822,8 +822,33 @@ class TestExtractionGuards:
         assert len(original_bytes) > 0
 
         def _partial_then_boom(_obj, handle, *_args, **_kwargs):
+            """
+            Description
+            -----------
+            Stands in for ``pickle.dump``: writes a truncated payload, then fails,
+            so the test proves a failed save leaves the published pickle untouched
+            and no temp file behind.
+
+            Parameters
+            ----------
+            _obj (object)
+                Ignored object that would have been pickled.
+            handle (file object)
+                Open binary handle the truncated payload is written to.
+            _args (tuple)
+                Ignored positional arguments.
+            _kwargs (dict)
+                Ignored keyword arguments.
+
+            Returns
+            -------
+            None
+                Always raises ``OSError``.
+            """
+
             handle.write(b'partial')
-            raise OSError("simulated pickle write failure")
+            msg = "simulated pickle write failure"
+            raise OSError(msg)
 
         monkeypatch.setattr(onsets_mod.pickle, 'dump', _partial_then_boom)
 

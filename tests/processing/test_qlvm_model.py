@@ -8,6 +8,14 @@ convolution is checked against a pure-numpy implementation of
 cross-correlation), so we match torch without importing it. The rest cover the
 lattice generators, the TorusBasis round-trip, the Bernoulli likelihood, the
 posterior known-answer, and an end-to-end embed shape/range check.
+
+Coverage: ``conv_transpose2d`` parity with the torch definition, the Korobov /
+Fibonacci / Roberts lattice generators (incl. float32 rounding like the torch
+lattice), the ``TorusBasis`` round-trip and its reverse range, the Bernoulli
+log-likelihood, the posterior and embedding known-answers, decoder forward plus
+end-to-end embedding, chunked embedding equal to one block, float32 precision of
+the decoder and likelihood products, conditional embedding, and the refusal of
+empty blocks.
 """
 
 from __future__ import annotations

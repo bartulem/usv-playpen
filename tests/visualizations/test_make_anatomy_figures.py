@@ -1,6 +1,6 @@
 """
 @author: bartulem
-Smoke / unit tests for visualizations/make_anatomy_figures.py.
+Smoke / unit tests for ``usv_playpen.visualizations.make_anatomy_figures``.
 
 The module renders the multi-panel anatomy overview of the Neuropixels
 dataset from a `unit_catalog.csv` plus the `brain_area_colors` palette.
@@ -8,7 +8,7 @@ Most rendering paths were previously untested (0 % coverage) because the
 heavy 3D methods download Allen CCFv3 meshes over the network and the
 waveform panel needs on-disk ephys / histology artefacts.
 
-These tests exercise the tractable surface without any network or ephys
+Coverage: these tests exercise the tractable surface without any network or ephys
 dependency:
   * the pure coordinate / parsing helpers (`_ccf_to_bregma`,
     `_load_obj_mesh`, `_classify_cell_type`);
@@ -27,15 +27,15 @@ from __future__ import annotations
 import json
 import pathlib
 
+# Force a non-interactive matplotlib backend before the plotting module
+# (which imports matplotlib at module scope) is pulled in, so the figure
+# paths never try to open a window.
+import matplotlib as mpl
 import numpy as np
 import pandas as pd
 import pytest
 
-# Force a non-interactive matplotlib backend before the plotting module
-# (which imports matplotlib at module scope) is pulled in, so the figure
-# paths never try to open a window.
-import matplotlib
-matplotlib.use("Agg")
+mpl.use("Agg")
 import matplotlib.pyplot as plt
 
 from usv_playpen.visualizations import make_anatomy_figures as maf
@@ -44,7 +44,6 @@ from usv_playpen.visualizations.make_anatomy_figures import (
     _ccf_to_bregma,
     _load_obj_mesh,
 )
-
 
 # A minimal axis-aligned cube in CCF µm (8 vertices, 12 triangle faces).
 # OBJ indices are one-based; `_load_obj_mesh` is expected to drop them to
@@ -228,7 +227,8 @@ def test_load_obj_mesh_parses_vertices_and_zero_based_faces(tmp_path: pathlib.Pa
     assert faces.shape == (12, 3)
     # First OBJ face "f 1 2 3" -> zero-based [0, 1, 2].
     np.testing.assert_array_equal(faces[0], np.array([0, 1, 2]))
-    assert faces.min() == 0 and faces.max() == 7
+    assert faces.min() == 0
+    assert faces.max() == 7
 
 
 @pytest.mark.parametrize(
@@ -363,7 +363,7 @@ def test_make_unit_positions_figure_writes_file(catalog_path, viz_settings, tmp_
 
     cube_path = tmp_path / "cube.obj"
     cube_path.write_text(_CUBE_OBJ)
-    monkeypatch.setattr(maf, "_download_allen_mesh", lambda structure_id: cube_path)
+    monkeypatch.setattr(maf, "_download_allen_mesh", lambda _structure_id: cube_path)
 
     maker = AnatomyFigureMaker(catalog_path, viz_settings, message_output=lambda *_: None)
     out_dir = tmp_path / "figs3d"
@@ -409,7 +409,7 @@ def test_build_unit_positions_figure_filters_outliers(catalog_path, viz_settings
 
     cube_path = tmp_path / "cube.obj"
     cube_path.write_text(_CUBE_OBJ)
-    monkeypatch.setattr(maf, "_download_allen_mesh", lambda structure_id: cube_path)
+    monkeypatch.setattr(maf, "_download_allen_mesh", lambda _structure_id: cube_path)
 
     maker = AnatomyFigureMaker(catalog_path, viz_settings, message_output=lambda *_: None)
     fig = maker.build_unit_positions_figure(
@@ -605,7 +605,7 @@ def test_gather_probe_context_builds_templates_and_mappings(tmp_path, viz_settin
     assert ctx["channel_positions"].shape == (_WF_N_CHANNELS, 2)
 
 
-@pytest.mark.parametrize("hemisphere,sub", [("L", "ibl_LH"), ("R", "ibl_RH")])
+@pytest.mark.parametrize(("hemisphere", "sub"), [("L", "ibl_LH"), ("R", "ibl_RH")])
 def test_load_ibl_brain_coords_both_hemispheres(tmp_path, hemisphere, sub):
     """
     Description
@@ -643,7 +643,8 @@ def test_load_ibl_brain_coords_both_hemispheres(tmp_path, hemisphere, sub):
         hemisphere=hemisphere,
     )
     assert coords["ml"].shape == (_WF_N_CHANNELS,)
-    assert coords["ap"][0] == 100.0 and coords["dv"][0] == 200.0
+    assert coords["ap"][0] == 100.0
+    assert coords["dv"][0] == 200.0
 
 
 def test_draw_single_unit_waveforms_adds_line_collections(tmp_path, viz_settings):
@@ -754,7 +755,25 @@ def test_download_allen_mesh_uses_cache_without_network(tmp_path, monkeypatch) -
     cached.write_text("v 0 0 0\n")
 
     def _boom(*_a, **_k):
-        raise AssertionError("urlopen must not be called when the mesh is cached")
+        """
+        Description
+        -----------
+        Stand-in for ``urlopen`` that fails the test if a cached mesh still
+        triggers a download.
+
+        Parameters
+        ----------
+        *_a (tuple)
+            Ignored positional arguments.
+        **_k (dict)
+            Ignored keyword arguments.
+
+        Returns
+        -------
+        None
+        """
+        message = "urlopen must not be called when the mesh is cached"
+        raise AssertionError(message)
 
     monkeypatch.setattr(maf.urllib.request, "urlopen", _boom)
     assert maf._download_allen_mesh(997) == cached
@@ -781,11 +800,11 @@ def test_anatomy_maker_raises_on_missing_catalog(tmp_path, viz_settings) -> None
     None
     """
 
-    with pytest.raises(FileNotFoundError, match="unit_catalog.csv not found"):
+    with pytest.raises(FileNotFoundError, match=r"unit_catalog\.csv not found"):
         AnatomyFigureMaker(
             catalog_path=tmp_path / "does_not_exist.csv",
             visualizations_parameter_dict=viz_settings,
-            message_output=lambda *a, **k: None,
+            message_output=lambda *_a, **_k: None,
         )
 
 
@@ -811,25 +830,84 @@ def test_download_allen_mesh_never_leaves_a_truncated_cache(tmp_path, monkeypatc
     None
     """
 
-    import usv_playpen.visualizations.make_anatomy_figures as maf
-
     class _Response:
+        """Context-manager stand-in for the ``urlopen`` response, serving a small OBJ body."""
+
         def __enter__(self):
+            """
+            Description
+            -----------
+            Enter the ``with urlopen(...)`` block.
+
+            Parameters
+            ----------
+
+            Returns
+            -------
+            self (_Response)
+                The response itself.
+            """
             return self
 
         def __exit__(self, *exc):
+            """
+            Description
+            -----------
+            Leave the ``with`` block without suppressing exceptions.
+
+            Parameters
+            ----------
+            *exc (tuple)
+                Exception type, value and traceback (or ``None`` triple).
+
+            Returns
+            -------
+            suppress (bool)
+                Always ``False``.
+            """
             return False
 
         def read(self):
+            """
+            Description
+            -----------
+            Return the mesh body the download writes to the cache.
+
+            Parameters
+            ----------
+
+            Returns
+            -------
+            body (bytes)
+                One hundred copies of a one-vertex OBJ line.
+            """
             return b"v 0 0 0\n" * 100
 
     monkeypatch.setattr(maf, "_ALLEN_MESH_CACHE", tmp_path)
-    monkeypatch.setattr(maf.urllib.request, "urlopen", lambda url, timeout: _Response())
+    monkeypatch.setattr(maf.urllib.request, "urlopen", lambda _url, timeout: _Response())  # noqa: ARG005 - urlopen receives timeout by keyword
     original_write_bytes = pathlib.Path.write_bytes
 
     def half_write(self, data):
+        """
+        Description
+        -----------
+        Replacement for ``pathlib.Path.write_bytes`` that writes the first half of
+        the payload and then fails, simulating a dropped connection mid-write.
+
+        Parameters
+        ----------
+        self (pathlib.Path)
+            Target path.
+        data (bytes)
+            Payload to (partially) write.
+
+        Returns
+        -------
+        None
+        """
         original_write_bytes(self, data[: len(data) // 2])
-        raise OSError("connection reset")
+        message = "connection reset"
+        raise OSError(message)
 
     monkeypatch.setattr(pathlib.Path, "write_bytes", half_write)
     with pytest.raises(OSError, match="connection reset"):

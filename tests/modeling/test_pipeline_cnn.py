@@ -13,7 +13,7 @@ the analysis notebook drives it:
     data_blocks = runner.load_multivariate_data_blocks(pkl_path=<manifold.pkl>)
     runner.run_cnn_training(data_blocks=data_blocks)
 
-Coverage targets inside the runner:
+Coverage:
 
 * ``load_multivariate_data_blocks`` — reads the session-nested
   ``{feature: {session: {X, Y, w, category}}}`` manifold
@@ -62,11 +62,11 @@ import pickle
 import warnings
 from pathlib import Path
 
-import matplotlib
+import matplotlib as mpl
 import numpy as np
 import pytest
 
-matplotlib.use('Agg')
+mpl.use('Agg')
 
 # The CNN modeling import chain pulls optax -> a one-time JAX
 # DeprecationWarning. Guard the top-level import so collection does not trip
@@ -75,6 +75,7 @@ with warnings.catch_warnings():
     warnings.simplefilter('ignore', DeprecationWarning)
     import jax
     import jax.numpy as jnp
+
     from usv_playpen.modeling.jax_neural_network_cnn import (
         NeuralContinuousCNNRunner,
         init_cnn_params_and_state,
@@ -106,7 +107,7 @@ FEATURE_NAMES = ['self.speed', 'other.speed']
 CATEGORIES = (1, 2)
 
 
-def _build_cnn_settings(save_dir: Path, source_pkl_path: Path, **mp_overrides) -> dict:
+def _build_cnn_settings(save_dir: Path, _source_pkl_path: Path, **mp_overrides) -> dict:
     """
     Description
     -----------
@@ -135,10 +136,11 @@ def _build_cnn_settings(save_dir: Path, source_pkl_path: Path, **mp_overrides) -
     save_dir (pathlib.Path)
         Directory where ``run_cnn_training`` writes its deep-storage pickle
         (must live under ``tmp_path``; never the package tree).
-    source_pkl_path (pathlib.Path)
-        Path to the synthetic manifold input pickle; only its basename is
-        consulted by the runner (for the sex-modifier filename tag) but it is
-        threaded through for provenance fidelity.
+    _source_pkl_path (pathlib.Path)
+        Path to the synthetic manifold input pickle. Unused by the builder
+        (the runner receives the pickle path separately, through
+        ``load_multivariate_data_blocks``); it stays in the signature so every
+        test names the input it pairs these settings with.
     mp_overrides (dict)
         Extra ``model_params`` overrides (e.g. ``split_strategy``,
         ``test_proportion``, ``spatial_cluster_num``).
@@ -149,7 +151,7 @@ def _build_cnn_settings(save_dir: Path, source_pkl_path: Path, **mp_overrides) -
         A ready-to-use ``modeling_settings`` dictionary.
     """
 
-    with open(_SETTINGS_JSON, 'r') as fh:
+    with _SETTINGS_JSON.open() as fh:
         settings = copy.deepcopy(json.load(fh))
 
     settings['io']['save_directory'] = str(save_dir)
@@ -473,7 +475,8 @@ class TestRunCnnTrainingFull:
         for cname, sal in deep['saliency_maps'].items():
             assert cname.startswith('category_')
             assert sal['contrastive_saliency'].ndim == 3
-            assert 'centroid' in sal and 'radius' in sal
+            assert 'centroid' in sal
+            assert 'radius' in sal
         assert 'cluster_geometry' in deep
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
@@ -516,7 +519,7 @@ class TestRunCnnTrainingFull:
         phase, segmented by category (the only level). A modeling pickle without
         the requested labels still stops in the saliency pre-flight check."""
 
-        with open(_SETTINGS_JSON, 'r') as fh:
+        with _SETTINGS_JSON.open() as fh:
             shipped = json.load(fh)
         saliency = shipped['hyperparameters']['deep_learning']['cnn_continuous']['saliency']
         assert saliency['enable'] is True
@@ -552,8 +555,9 @@ class TestRunCnnTrainingFull:
 
         cv = deep['cross_validation']
         assert len(cv) == 2
-        skipped = [f for f in cv if f.get('skipped')]
-        trained = [f for f in cv if not f.get('skipped')]
+        # Only a skipped fold carries the 'skipped' flag; trained folds omit the key.
+        skipped = [f for f in cv if (f['skipped'] if 'skipped' in f else False)]
+        trained = [f for f in cv if not (f['skipped'] if 'skipped' in f else False)]
         assert len(skipped) == 1
         assert len(trained) == 1
         assert deep['feature_importance']['best_fold_idx'] == 1
@@ -695,7 +699,7 @@ class TestSaliencyPreflightGuards:
         settings['hyperparameters']['deep_learning']['cnn_continuous']['saliency']['segmentation'] = 'bogus'
         runner = NeuralContinuousCNNRunner(modeling_settings=settings)
         data_blocks = runner.load_multivariate_data_blocks(pkl_path=str(input_pkl))
-        with pytest.raises(ValueError, match="saliency.segmentation"):
+        with pytest.raises(ValueError, match=r"saliency\.segmentation"):
             runner.run_cnn_training(data_blocks=data_blocks)
 
     @pytest.mark.parametrize('segmentation', ['category'])
@@ -724,7 +728,8 @@ class TestSaliencyPreflightGuards:
             runner.run_cnn_training(data_blocks=data_blocks)
         message = str(excinfo.value)
         assert f"per-USV {segmentation} labels" in message
-        assert 'saliency.enable' in message and 'to false' in message
+        assert 'saliency.enable' in message
+        assert 'to false' in message
         assert 'before Phase 1' in message
         assert not list(save_dir.glob('cnn_manifold_integrated_predictions_*.pkl'))
 

@@ -1,9 +1,16 @@
 """
 @author: bartulem
-
 Tests for processing/qlvm_categories: the content-ridge category build (ranks,
 fields, content change, periodic basins, floor-first joins, session-bootstrap
 consensus) and the assignment of a session's USVs from its torus coordinates.
+
+Coverage: property ranks, content fields and change, basin joining, reference
+alignment, session-bootstrap weights, ``QLVMCategoryBuilder.build`` (output
+directory, refusal of bad settings and unplaced USVs, ``category_order``
+numbering), the pixel-rule assignment and its threshold, the assigner merging
+category columns into the summary and its production-bundle default, the two
+category CLIs, the shipped settings blocks, ``apply_category_order``, and the
+seam-crossing periodic basin.
 """
 
 from __future__ import annotations
@@ -60,6 +67,8 @@ def _corpus(tmp_path, n_sessions=8, usvs_per_session=150, seed=0):
 
 
 def _build(tmp_path, cfg=None, name="categories"):
+    """Write the synthetic corpus under ``tmp_path`` and run a full category build on it
+    (``_CFG`` unless ``cfg`` is given) into ``tmp_path / name``. Returns the output directory."""
     positions, properties = _corpus(tmp_path)
     out_dir = tmp_path / name
     qc.QLVMCategoryBuilder(

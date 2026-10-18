@@ -6,7 +6,7 @@ Coverage: the job that runs vocal occurrence, vocalization identity, nested voca
 and vocal gating for one unit. Its own logic is thin, so these
 tests pin the properties that would fail SILENTLY rather than loudly -- that nulls split across spawned
 worker processes come back identical to the package's serial nulls, that escalation continues a draw
-sequence instead of repeating it, that the written sections follow the 2026-09-14 rulings (held-out
+sequence instead of repeating it, that the written sections follow the agreed design (held-out
 sessions by name, no gating decisions), and that vocal gating's on/off switch reads its threshold from settings
 and skips an untuned unit without loading its kinematics.
 """
@@ -51,12 +51,42 @@ UNIT = {"unit_id": "imec1_cl0000_ch000_good", "unit_uid": "m_20250101_imec1_cl00
 
 
 def _settings() -> dict:
+    """
+    Description
+    -----------
+    Loads the shipped neural-modeling settings fresh from disk, so a test that mutates the dictionary
+    cannot leak the change into another test.
+
+    Parameters
+    ----------
+    None.
+
+    Returns
+    -------
+    settings (dict)
+        The parsed ``neural_modeling_settings.json``.
+    """
     with SETTINGS_PATH.open() as handle:
         return json.load(handle)
 
 
 def _quiet(*_args, **_kwargs) -> None:
-    return None
+    """
+    Description
+    -----------
+    Silent stand-in for the dispatcher's ``message_output`` printer, so the tests produce no output.
+
+    Parameters
+    ----------
+    *_args
+        Ignored positional arguments.
+    **_kwargs
+        Ignored keyword arguments.
+
+    Returns
+    -------
+    None
+    """
 
 
 class TestParallelNullsAreExact:
@@ -64,6 +94,8 @@ class TestParallelNullsAreExact:
     p-values no serial run could reproduce."""
 
     def test_the_vocalization_identity_null_across_workers_equals_the_serial_permutation_null(self):
+        """Five vocalization-identity null draws computed in two spawned workers must equal, value for value,
+        the serial ``permutation_null`` at the same seed."""
         generator = np.random.default_rng(3)
         n_sessions, per_session = 3, 120
         positions = generator.random((n_sessions * per_session, 2))
@@ -117,9 +149,13 @@ class TestParallelNullsAreExact:
 
 
 class TestTheWrittenSections:
-    """The sections follow the 2026-09-14 rulings."""
+    """The written sections name held-out sessions, carry the behaviour control's identity, and store no
+    gating decisions."""
 
     def test_the_nested_decoding_names_the_held_out_session_rather_than_its_slot(self):
+        """Each per-fold record must carry the held-out session's name in place of its slot index, plus the
+        behaviour model's gain over no behaviour and the identity of the behaviour control, so a stored score
+        can be traced to the data and control that produced it."""
         scores = {"added": 0.01, "reduced": -3.70, "full": -3.69, "n_events": 30, "n_regions_scored": 7,
                   "min_leave_one_fold_out": 0.005,
                   "per_fold": [{"held_out": 1, "n_events": 10, "added": 0.02},
@@ -159,6 +195,8 @@ class TestTheWrittenSections:
         write_unit_section(str(tmp_path), UNIT, "vocal_gating", payload, _settings())
 
     def test_the_vocalization_identity_section_derives_its_counts_from_the_null_and_events(self):
+        """The exceed count, mid-p, per-session event counts and event total must be derived from the null and
+        the event arrays, so the stored section is internally consistent with the inputs."""
         identity = {"gain": 0.05}
         events = {"counts": np.array([1.0, 2.0, 3.0, 4.0]), "session_index": np.array([0, 0, 1, 1]),
                   "session_ids": ["a", "b"]}
@@ -174,11 +212,29 @@ class TestTheGatingSwitch:
     threshold read from settings."""
 
     def test_the_threshold_is_a_setting(self):
-        """Ruled 2026-09-14: 0.01, the level every other per-unit threshold in vocal gating already uses."""
+        """Fixed at 0.01, the level every other per-unit threshold in vocal gating already uses."""
         assert _settings()["vocal_gating"]["vocal_tuning_alpha"] == 0.01
 
     def test_an_untuned_unit_is_skipped_without_loading_its_kinematics(self, tmp_path, monkeypatch):
+        """A unit with no stored occurrence or identity tuning must be skipped with reason ``no_vocal_tuning``,
+        written to its artifact, before its kinematics are ever loaded (which would be wasted work)."""
         def refuse(*_args, **_kwargs):
+            """
+            Description
+            -----------
+            Stand-in for ``assemble_unit_sessions`` that fails the test if the kinematics are loaded.
+
+            Parameters
+            ----------
+            *_args
+                Ignored positional arguments.
+            **_kwargs
+                Ignored keyword arguments.
+
+            Returns
+            -------
+            Never returns; always raises ``AssertionError``.
+            """
             msg = "an untuned unit must not load kinematics"
             raise AssertionError(msg)
 
@@ -191,9 +247,25 @@ class TestTheGatingSwitch:
         """At 0.5 the same p-values count as tuned, so the switch opens and reaches for the kinematics."""
 
         class Reached(Exception):
-            pass
+            """Sentinel raised when the dispatcher reaches the kinematics loader."""
 
         def reached(*_args, **_kwargs):
+            """
+            Description
+            -----------
+            Stand-in for ``assemble_unit_sessions`` that signals the switch opened by raising ``Reached``.
+
+            Parameters
+            ----------
+            *_args
+                Ignored positional arguments.
+            **_kwargs
+                Ignored keyword arguments.
+
+            Returns
+            -------
+            Never returns; always raises ``Reached``.
+            """
             raise Reached
 
         settings = _settings()
@@ -203,6 +275,8 @@ class TestTheGatingSwitch:
             vocal.run_vocal_gating(UNIT, settings, "unused", str(tmp_path), 1, 0.2, 0.3, _quiet)
 
     def test_vocal_gating_alone_refuses_without_occurrence_and_identity_results(self, tmp_path):
+        """Requesting vocal gating alone on a unit with no occurrence or identity section must raise
+        ``ValueError`` ("run vocal_occurrence first"), since the gating switch has nothing to read."""
         with pytest.raises(ValueError, match="run vocal_occurrence first"):
             vocal.run_vocal(UNIT, _settings(), "unused", str(tmp_path), 1, steps=("vocal_gating",),
                             message_output=_quiet)
@@ -224,6 +298,8 @@ class TestTheGatingSwitch:
             vocal.check_tuning_threshold_is_reachable(0.01, {"vocal_occurrence": 99})
 
     def test_an_unknown_step_is_refused(self, tmp_path):
+        """An unrecognised step name must raise ``ValueError`` ("unknown vocal step") rather than be skipped,
+        so a typo cannot silently run nothing."""
         with pytest.raises(ValueError, match="unknown vocal step"):
             vocal.run_vocal(UNIT, _settings(), "unused", str(tmp_path), 1, steps=("not_an_analysis",),
                             message_output=_quiet)

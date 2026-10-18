@@ -1,9 +1,8 @@
 """
 @author: bartulem
+Tests for ``usv_playpen.visualizations.qlvm_property_sweep_video``.
 
-Tests for visualizations/qlvm_property_sweep_video.
-
-Covers the pooling filter of load_property_sweep_usvs (through
+Coverage: the pooling filter of load_property_sweep_usvs (through
 make_usv_spectrograms.load_regular_map_cohort_usvs: pure USVs with a position
 and all six properties, the temporary cohort session list removed afterwards),
 the random order within tied values, a still-frame render and a short video
@@ -93,7 +92,31 @@ def test_load_property_sweep_usvs_filters_and_cleans_up(tmp_path, monkeypatch):
                    pls.when(pls.int_range(pls.len()) == 4).then(float("nan")).otherwise(pls.col("duration")).alias("duration"))
     captured = {}
 
-    def _stub(sessions_txt_path, cache_path, exclude_noise_usvs, message_output):
+    def _stub(sessions_txt_path, cache_path, exclude_noise_usvs, message_output):  # noqa: ARG001 - the loader passes every argument by keyword
+        """
+        Description
+        -----------
+        Stand-in for ``build_pooled_embeddings_df`` that records the session list
+        it was handed (read before the loader deletes it) and the cache path, and
+        returns the synthetic pooled table. The signature mirrors the keywords the
+        loader passes, so a renamed keyword fails the test.
+
+        Parameters
+        ----------
+        sessions_txt_path (str)
+            Path to the temporary cohort session list.
+        cache_path (str | None)
+            Embeddings cache path forwarded by the loader.
+        exclude_noise_usvs (bool)
+            Forwarded noise filter (unused by the stub).
+        message_output (callable)
+            Forwarded logger (unused by the stub).
+
+        Returns
+        -------
+        pooled (pls.DataFrame)
+            The synthetic pooled table built in the test.
+        """
         captured["roots"] = pathlib.Path(sessions_txt_path).read_text().splitlines()
         captured["path"] = sessions_txt_path
         captured["cache"] = cache_path

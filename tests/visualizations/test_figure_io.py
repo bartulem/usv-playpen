@@ -21,22 +21,41 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-import pytest  # noqa: E402
+import matplotlib as mpl
 
-from usv_playpen.visualizations.figure_io import (  # noqa: E402
+mpl.use("Agg")
+import matplotlib.pyplot as plt
+import pytest
+
+from usv_playpen.visualizations.figure_io import (
+    resolve_pdf_path,
     resolve_save_path,
     save_figure,
-    resolve_pdf_path,
 )
-
 
 _TS_RE = re.compile(r"_\d{8}_\d{6}$")
 
 
 def _settings(tmp_path: Path, **overrides) -> dict:
+    """
+    Description
+    -----------
+    A minimal settings dict holding only the ``figures`` block that
+    ``figure_io`` reads, pointed at ``tmp_path`` and with timestamps on;
+    keyword overrides replace individual ``figures`` entries.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Directory used as ``figures.save_directory``.
+    **overrides (dict)
+        ``figures`` entries to replace.
+
+    Returns
+    -------
+    settings (dict)
+        ``{"figures": {...}}``.
+    """
     figures = {
         "save_directory": str(tmp_path),
         "fig_format": "svg",
@@ -150,7 +169,25 @@ def test_save_figure_forwards_extra_savefig_kwargs(tmp_path):
     captured = {}
 
     class _FakeFig:
+        """Figure stand-in that records what ``save_figure`` hands to ``savefig``."""
+
         def savefig(self, path, **kwargs):
+            """
+            Description
+            -----------
+            Record the save path and keyword arguments instead of writing a file.
+
+            Parameters
+            ----------
+            path (pathlib.Path)
+                Resolved output path.
+            **kwargs (dict)
+                Keyword arguments forwarded by ``save_figure``.
+
+            Returns
+            -------
+            None
+            """
             captured["path"] = path
             captured["kwargs"] = kwargs
 

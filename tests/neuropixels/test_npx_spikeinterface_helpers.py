@@ -5,6 +5,14 @@ Tests for ``usv_playpen.neuropixels.spikeinterface_helpers``.
 Two owned reimplementations of SpikeInterface fork patches are checked:
 the closest-channel sparsity built around the phy peak channel, and the
 somatic / non-somatic single-channel waveform classifier.
+
+Coverage: the closest-channel mask (peak inclusion, nearest neighbours, the
+total-channel cap) and its ``ChannelSparsity`` wrapper, ``classify_somatic``
+(canonical somatic, both non-somatic conditions, parameter overrides), and
+the template / amplitude metric helpers (exponential decay incl. the
+min-peak variant and the poor-fit NaN, spread with and without smoothing,
+column-range restriction, amplitude CV binning and its NaN edge cases, and
+the SD ratio with and without drift / template correction).
 """
 
 from __future__ import annotations
@@ -60,10 +68,12 @@ class _StubRecording:
     """
 
     def __init__(self, channel_locations, channel_ids):
+        """Store the channel locations and ids the sparsity helper reads."""
         self._channel_locations = channel_locations
         self.channel_ids = channel_ids
 
     def get_channel_locations(self):
+        """Return the stored ``(n_channels, 2)`` probe coordinates."""
         return self._channel_locations
 
 
@@ -79,10 +89,12 @@ class _StubSorting:
     """
 
     def __init__(self, peak_channels, unit_ids):
+        """Store the per-unit phy peak channels and the unit ids."""
         self._peak_channels = peak_channels
         self.unit_ids = unit_ids
 
     def get_property(self, key):
+        """Return the peak channels, failing if anything but the ``ch`` property is requested."""
         assert key == "ch"
         return self._peak_channels
 

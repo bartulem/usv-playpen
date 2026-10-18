@@ -2,7 +2,7 @@
 @author: bartulem
 Tests for processing/build_squeak_spectrogram_store.
 
-The log-frequency bins and their weights (averaging where linear bins fall
+Coverage: the log-frequency bins and their weights (averaging where linear bins fall
 inside a log bin, interpolation where none does, rows summing to 1), the
 channel-averaged log spectrogram of pure tones, the dB quantization round trip,
 the display-window placement and the explorer's tile reader are tested
@@ -11,7 +11,9 @@ a broadband memmap plus a ``*_usv_summary.csv`` with the usv / squeak
 booleans and noise column) and the written store is read back: which rows it holds, their
 frame counts, the window of a segment longer than the stored window, the
 quantized values against a direct recomputation, the attrs, and the resolver
-that finds it without matching the consolidated store's pattern.
+that finds it without matching the consolidated store's pattern. A broken
+session is reported while the rest are written, and the session-list reader
+skips comments and duplicates.
 """
 
 from __future__ import annotations

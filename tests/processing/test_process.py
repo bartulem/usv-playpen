@@ -1,52 +1,58 @@
 """
 @author: bartulem
-Test processing module.
+Tests for the ``usv_playpen.processing`` pipeline: the ``Stylist`` dispatcher
+in ``preprocess_data`` and its single-purpose CLI wrappers, plus the helper
+modules those steps lean on (``os_utils``, ``cli_utils``, ``yaml_utils``,
+``load_audio_files``, ``synchronize_files``, ``anipose_operations``,
+``extract_phidget_data``, ``prepare_cluster_job``,
+``assign_vocalizations_utils``, ``assign_vocalizations`` and ``modify_files``).
+
+Coverage: an end-to-end file pipeline on synthetic video + multichannel audio
+(concatenate, rectify, split, crop) and the A/V sync check; the Stylist's
+boolean gating, step order and failure reporting with every worker mocked; the
+CLI wrappers' option routing into their own settings blocks; path translation,
+glob-or-raise lookups and subprocess waiting in os_utils; dotted-path TOML
+overrides and the StringTuple click type; the YAML-1.1-safe metadata dumper;
+the WAV DataLoader; the LED / LSB event detection behind audio-video sync; the
+rotation helpers and skeleton parsing; phidget gathering; the SLEAP cluster
+job list; the sound-source-localization maths and H5 round trips; and the
+Operator's rectify, cluster-split, binary-concatenation, HPSS and Sox-filter
+steps on synthetic data.
 """
 
 from __future__ import annotations
 
 import ast
-import cv2
-import pytest
+import io
 import json
+import math
+import pathlib
+import platform
 import shutil
 import subprocess
-import numpy as np
-import traceback
-import yaml
-from pathlib import Path
-from click.testing import CliRunner
-from scipy.io import wavfile
-from numpy.testing import assert_array_equal, assert_allclose
-import usv_playpen
-from usv_playpen.processing.preprocess_data import Stylist
-from usv_playpen.processing.preprocess_data import (
-    concatenate_video_files_cli,
-    rectify_video_fps_cli,
-    multichannel_to_channel_audio_cli,
-    crop_wav_files_to_video_cli,
-    av_sync_check_cli,
-    ev_sync_check_cli,
-    hpss_audio_cli,
-    bp_filter_audio_files_cli,
-    concatenate_audio_files_cli,
-    broadband_filter_audio_cli,
-    broadband_filter_audio_batch_cli,
-    sleap_file_conversion_cli,
-    conduct_anipose_calibration_cli,
-    conduct_anipose_triangulation_cli,
-    translate_rotate_metric_cli,
-    das_command_line_inference_cli,
-    summarize_das_findings_cli,
-    concatenate_binary_files_cli,
-    split_clusters_to_sessions_cli,
-    prepare_vcl_assign_cli,
-    vcl_assign_cli,
-    _stamp_processing_version,
-)
-import platform
 import sys
 import time
+import traceback
+from pathlib import Path
+
+import click
+import cv2
+import h5py
+import numpy as np
+import polars as pls
+import pytest
+import yaml
+from click.testing import CliRunner
+from numpy.testing import assert_allclose, assert_array_equal
+from scipy.io import wavfile
+
+import usv_playpen
+from usv_playpen.cli_utils import (
+    StringTuple,
+    _convert_value,
+    override_toml_values,
+    set_nested_value_by_path,
+)
 from usv_playpen.os_utils import (
     configure_path,
     find_base_path,
@@ -54,28 +60,6 @@ from usv_playpen.os_utils import (
     newest_match_or_raise,
     wait_for_subprocesses,
 )
-import click
-from usv_playpen.cli_utils import (
-    StringTuple,
-    _convert_value,
-    override_toml_values,
-    set_nested_value_by_path,
-)
-import io
-from usv_playpen.yaml_utils import (
-    SmartDumper,
-    load_session_metadata,
-    save_session_metadata,
-)
-from usv_playpen.processing.load_audio_files import DataLoader
-from usv_playpen.processing.synchronize_files import (
-    Synchronizer,
-    _combine_and_sort_events,
-    filter_events_by_duration,
-    find_events,
-    validate_sequence,
-)
-import math
 from usv_playpen.processing.anipose_operations import (
     extract_skeleton_nodes,
     find_mouse_names,
@@ -84,16 +68,13 @@ from usv_playpen.processing.anipose_operations import (
     rotate_y,
     rotate_z,
 )
-from usv_playpen.processing.extract_phidget_data import Gatherer
-from usv_playpen.processing.prepare_cluster_job import PrepareClusterJob
-import h5py
-import polars as pls
+from usv_playpen.processing.assign_vocalizations import Vocalocator
 from usv_playpen.processing.assign_vocalizations_utils import (
     are_points_in_conf_set,
     compute_covs_6d,
     convert_from_arb,
-    eval_pdf_with_angle,
     estimate_angle_pdf,
+    eval_pdf_with_angle,
     get_arena_dimensions,
     get_confidence_set,
     load_tracks_from_h5,
@@ -103,10 +84,47 @@ from usv_playpen.processing.assign_vocalizations_utils import (
     to_float,
     write_to_h5,
 )
-import pathlib
-from usv_playpen.processing.assign_vocalizations import Vocalocator
+from usv_playpen.processing.extract_phidget_data import Gatherer
+from usv_playpen.processing.load_audio_files import DataLoader
 from usv_playpen.processing.modify_files import Operator
-
+from usv_playpen.processing.prepare_cluster_job import PrepareClusterJob
+from usv_playpen.processing.preprocess_data import (
+    Stylist,
+    _stamp_processing_version,
+    av_sync_check_cli,
+    bp_filter_audio_files_cli,
+    broadband_filter_audio_batch_cli,
+    broadband_filter_audio_cli,
+    concatenate_audio_files_cli,
+    concatenate_binary_files_cli,
+    concatenate_video_files_cli,
+    conduct_anipose_calibration_cli,
+    conduct_anipose_triangulation_cli,
+    crop_wav_files_to_video_cli,
+    das_command_line_inference_cli,
+    ev_sync_check_cli,
+    hpss_audio_cli,
+    multichannel_to_channel_audio_cli,
+    prepare_vcl_assign_cli,
+    rectify_video_fps_cli,
+    sleap_file_conversion_cli,
+    split_clusters_to_sessions_cli,
+    summarize_das_findings_cli,
+    translate_rotate_metric_cli,
+    vcl_assign_cli,
+)
+from usv_playpen.processing.synchronize_files import (
+    Synchronizer,
+    _combine_and_sort_events,
+    filter_events_by_duration,
+    find_events,
+    validate_sequence,
+)
+from usv_playpen.yaml_utils import (
+    SmartDumper,
+    load_session_metadata,
+    save_session_metadata,
+)
 
 VIDEO_WIDTH = 1280
 VIDEO_HEIGHT = 1024
@@ -225,6 +243,30 @@ def file_pipeline_fixture(tmp_path: Path) -> tuple[Path, dict]:
     # Calculate samples per video frame
     samples_per_frame = int(AUDIO_SR / VIDEO_FPS)
 
+    # Helper to write pulses
+    samples_high = int(0.006 * AUDIO_SR) # 6ms High
+    def write_pulses(arr, start_idx, count):
+        """Writes `count` 6 ms high pulses into `arr`, one per video frame, from `start_idx` on.
+
+        Parameters
+        ----------
+        arr (np.ndarray)
+            The LSB timeline written in place.
+        start_idx (int)
+            Sample index of the first pulse.
+        count (int)
+            Number of frame pulses to write; pulses past the end of `arr` are dropped.
+
+        Returns
+        -------
+        None
+        """
+        cursor = start_idx
+        for _ in range(count):
+            if cursor + samples_high < len(arr):
+                arr[cursor : cursor + samples_high] = 1
+            cursor += samples_per_frame
+
     for device_prefix in ['m', 's']:
         # Add 30 frames (1 sec) of post-recording buffer to be safe
         post_rec_frames = 30
@@ -241,15 +283,6 @@ def file_pipeline_fixture(tmp_path: Path) -> tuple[Path, dict]:
         # Construct the FULL timeline signal first
         total_timeline_samples = idle_samples + pause_samples + recording_samples + (post_rec_frames * samples_per_frame) + 10000
         full_lsb_signal = np.zeros(total_timeline_samples, dtype=np.int16)
-
-        # Helper to write pulses
-        samples_high = int(0.006 * AUDIO_SR) # 6ms High
-        def write_pulses(arr, start_idx, count):
-            cursor = start_idx
-            for _ in range(count):
-                if cursor + samples_high < len(arr):
-                    arr[cursor : cursor + samples_high] = 1
-                cursor += samples_per_frame
 
         # 1. Write Idle Pulses (Before recording starts)
         write_pulses(full_lsb_signal, 0, idle_frames)
@@ -314,10 +347,10 @@ def file_pipeline_fixture(tmp_path: Path) -> tuple[Path, dict]:
             'microphone_channels': NUM_AUDIO_CHANNELS
         }
     }
-    with open(session_root / metadata_filename, 'w') as f:
+    with (session_root / metadata_filename).open('w') as f:
         yaml.dump(metadata, f)
 
-    yield session_root, ground_truth_audio
+    return session_root, ground_truth_audio
 
 
 @pytest.fixture
@@ -335,7 +368,7 @@ def av_sync_fixture(tmp_path: Path) -> Path:
     (video_dir / session_root.name.replace("_", "")).mkdir(parents=True)
 
     # 1. Create Ground Truth IPI Log File
-    with open(sync_dir / "CoolTerm Capture 2025-10-17 15-02-00.txt", "w") as f:
+    with (sync_dir / "CoolTerm Capture 2025-10-17 15-02-00.txt").open("w") as f:
         f.write("Header\nLine2\nLine3\n" + "\n".join(map(str, GROUND_TRUTH_IPIS_MS)))
 
     # 2. Create Video with LEDs matching the IPI sequence
@@ -370,7 +403,7 @@ def av_sync_fixture(tmp_path: Path) -> Path:
         CAMERA_SERIALS[0]: [total_video_frames, VIDEO_FPS],
         CAMERA_SERIALS[1]: [total_video_frames, VIDEO_FPS],
     }
-    with open(video_dir / f"{session_root.name.replace('_', '')}_camera_frame_count_dict.json", 'w') as f:
+    with (video_dir / f"{session_root.name.replace('_', '')}_camera_frame_count_dict.json").open('w') as f:
         json.dump(frame_count_dict, f)
 
     # 6. Create the session_metadata.yaml required by the CLI loader
@@ -381,10 +414,10 @@ def av_sync_fixture(tmp_path: Path) -> Path:
             'camera_serials': CAMERA_SERIALS
         }
     }
-    with open(session_root / metadata_filename, 'w') as f:
+    with (session_root / metadata_filename).open('w') as f:
         yaml.dump(metadata, f)
 
-    yield session_root
+    return session_root
 
 
 # The Integration Tests
@@ -397,8 +430,24 @@ def test_file_manipulation_pipeline(file_pipeline_fixture: Path, mocker):
     total_video_duration_s = VIDEO_DURATION_S * NUM_VIDEO_SEGMENTS
 
     def check_frame_content(capture, frame_index, expected_text):
+        """Checks that a frame of the concatenated video shows the expected frame number.
+
+        Parameters
+        ----------
+        capture (cv2.VideoCapture)
+            Open capture of the concatenated video.
+        frame_index (int)
+            Frame to seek to.
+        expected_text (int)
+            Frame number the synthetic writer drew on that frame.
+
+        Returns
+        -------
+        matches (bool)
+            True when the drawn-number region matches within compression tolerance.
+        """
         capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
-        ret, frame = capture.read();
+        ret, frame = capture.read()
         assert ret
         expected_frame = np.zeros((VIDEO_HEIGHT, VIDEO_WIDTH, 3), dtype=np.uint8)
         cv2.putText(expected_frame, str(expected_text), (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 3, (255, 255, 255), 4)
@@ -477,7 +526,7 @@ def test_file_manipulation_pipeline(file_pipeline_fixture: Path, mocker):
     # logic bypasses the real calculations that update these files.
 
     # 1. Update JSON
-    with open(json_path, 'w') as f:
+    with json_path.open('w') as f:
          json.dump({
              'total_frame_number_least': expected_total_frames,
              'total_video_time_least': expected_video_duration,
@@ -487,14 +536,14 @@ def test_file_manipulation_pipeline(file_pipeline_fixture: Path, mocker):
     # 2. Update Metadata
     metadata_filename = f"{root_dir.name}_metadata.yaml"
     metadata_path = root_dir / metadata_filename
-    with open(metadata_path, 'r') as f:
+    with metadata_path.open() as f:
         meta = yaml.safe_load(f)
     meta['Session']['session_duration'] = expected_video_duration
-    with open(metadata_path, 'w') as f:
+    with metadata_path.open('w') as f:
         yaml.dump(meta, f)
 
     # Now verify reading them back works
-    with open(json_path, 'r') as f:
+    with json_path.open() as f:
         frame_count_data = json.load(f)
 
     assert frame_count_data['total_frame_number_least'] == expected_total_frames
@@ -525,7 +574,7 @@ def test_file_manipulation_pipeline(file_pipeline_fixture: Path, mocker):
         for p in (root_dir / "audio").rglob("*"):
             print(f"  - {p.relative_to(root_dir / 'audio')}")
 
-    sr_actual, data_actual = wavfile.read(next(original_audio_dir.glob(search_pattern)))
+    _sr_actual, data_actual = wavfile.read(next(original_audio_dir.glob(search_pattern)))
     expected_start = ground_truth_audio['m'][0]['start_samples'][target_channel_key]
     expected_end = ground_truth_audio['m'][-1]['end_samples'][target_channel_key]
     assert_array_equal(data_actual[:5], expected_start)
@@ -559,10 +608,10 @@ def test_file_manipulation_pipeline(file_pipeline_fixture: Path, mocker):
         for p in cropped_dir.rglob("*"):
             print(f"  - {p.name}")
 
-    sr_m, data_m = wavfile.read(next(cropped_dir.glob(expected_pattern)))
+    _sr_m, data_m = wavfile.read(next(cropped_dir.glob(expected_pattern)))
 
     s_pattern = f"s_*_ch0{SYNC_AUDIO_CHANNEL_IDX + 1}_cropped_to_video.wav"
-    sr_s, data_s = wavfile.read(next(cropped_dir.glob(s_pattern)))
+    _sr_s, data_s = wavfile.read(next(cropped_dir.glob(s_pattern)))
 
     assert len(data_m) == len(data_s)
     expected_samples = int(total_video_duration_s * AUDIO_SR)
@@ -575,7 +624,7 @@ def test_file_manipulation_pipeline(file_pipeline_fixture: Path, mocker):
     print("Audio cropping verified.")
 
 
-def test_av_sync_check(av_sync_fixture: Path, mocker, mock_dependencies):
+def test_av_sync_check(av_sync_fixture: Path, mock_dependencies):
     """A dedicated test for the `av-sync-check` CLI command."""
     root_dir = av_sync_fixture
     runner = CliRunner()
@@ -608,14 +657,14 @@ def test_av_sync_check(av_sync_fixture: Path, mocker, mock_dependencies):
     # FIX: Assertion now uses the mock object from mock_dependencies
     assert mock_plotter.called, "SummaryPlotter.preprocessing_summary was not called!"
 
-    call_args, call_kwargs = mock_plotter.call_args
-    ipi_discrepancy_dict = call_kwargs.get('ipi_discrepancy_dict')
+    _call_args, call_kwargs = mock_plotter.call_args
+    ipi_discrepancy_dict = call_kwargs['ipi_discrepancy_dict']
     assert ipi_discrepancy_dict is not None, "ipi_discrepancy_dict was not passed to the plotter."
 
     assert len(ipi_discrepancy_dict) > 0, "Discrepancy dictionary is empty."
 
-    first_sync_key = list(ipi_discrepancy_dict.keys())[0]
-    discrepancies = ipi_discrepancy_dict[first_sync_key].get('ipi_discrepancy_ms')
+    first_sync_key = next(iter(ipi_discrepancy_dict.keys()))
+    discrepancies = ipi_discrepancy_dict[first_sync_key]['ipi_discrepancy_ms']
     assert discrepancies is not None, "ipi_discrepancy_ms not found in the output dictionary."
 
     assert_allclose(discrepancies, 0, atol=1.0, err_msg="Calculated A/V sync discrepancy is too high!")
@@ -663,6 +712,7 @@ def test_environment_ffmpeg_is_functional():
 
 @pytest.mark.skipif(not SOX_INSTALLED, reason="static_sox executable not found in PATH")
 def test_environment_sox_is_functional():
+    """The bundled static_sox runs: the audio band-filtering steps shell out to it, so a broken binary would fail them at run time."""
     assert subprocess.Popen(["static_sox", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).wait() == 0, \
         "SOX failed to execute. Check installation."
 
@@ -952,7 +1002,7 @@ def synchronizer_instance(tmp_path, mock_sync_settings):
         'total_video_time_least': 10.0,
         'CAM123': (1000, 100.0)  # (frame_count, fps)
     }
-    with open(root_dir / "video" / "camera_counts.json", 'w') as f:
+    with (root_dir / "video" / "camera_counts.json").open('w') as f:
         json.dump(frame_count_data, f)
 
     return Synchronizer(root_directory=str(root_dir), input_parameter_dict=mock_sync_settings)
@@ -985,11 +1035,14 @@ def test_find_ipi_intervals_static_method():
 
 
 def test_find_base_path_matches_current_platform():
-    expected = {
+    """find_base_path returns the lab-share mount for the running OS (None elsewhere), the root every configured path is translated against."""
+    base_paths = {
         "Windows": "F:\\",
         "Darwin": "/Volumes/falkner",
         "Linux": "/mnt/falkner",
-    }.get(platform.system(), None)
+    }
+    current_system = platform.system()
+    expected = base_paths[current_system] if current_system in base_paths else None
     assert find_base_path() == expected
 
 
@@ -1005,11 +1058,13 @@ def test_find_base_path_matches_current_platform():
     ],
 )
 def test_configure_path_translates_between_oses(monkeypatch, incoming, current_os, expected):
+    """A lab-share path written on one OS is rewritten to the same location on another, so settings saved on one machine work on the others."""
     monkeypatch.setattr(platform, "system", lambda: current_os)
     assert configure_path(incoming) == expected
 
 
 def test_configure_path_passes_through_unrecognized_prefix():
+    """Paths outside the lab share (local or relative) come back unchanged instead of being mangled by the translation."""
     assert configure_path("/some/local/path") == "/some/local/path"
     assert configure_path("relative/path/file.txt") == "relative/path/file.txt"
 
@@ -1025,6 +1080,7 @@ def test_first_match_or_raise_refuses_several_matches(tmp_path):
 
 
 def test_first_match_or_raise_recursive_descends(tmp_path):
+    """recursive=True finds a file nested below the search root, the mode callers use when the file sits in a per-camera subdirectory."""
     sub = tmp_path / "nested" / "deeper"
     sub.mkdir(parents=True)
     (sub / "target.json").write_text("{}")
@@ -1034,6 +1090,7 @@ def test_first_match_or_raise_recursive_descends(tmp_path):
 
 
 def test_first_match_or_raise_recursive_off_does_not_descend(tmp_path):
+    """Without recursive=True a file in a subdirectory is not found, so a lookup cannot silently pick up a same-named file from deeper in the tree."""
     sub = tmp_path / "nested"
     sub.mkdir()
     (sub / "target.json").write_text("{}")
@@ -1042,6 +1099,7 @@ def test_first_match_or_raise_recursive_off_does_not_descend(tmp_path):
 
 
 def test_first_match_or_raise_includes_label_in_error(tmp_path):
+    """The human-readable label appears in the FileNotFoundError, so the user learns which input is missing rather than seeing a bare glob."""
     with pytest.raises(FileNotFoundError, match="camera frame count JSON"):
         first_match_or_raise(
             root=tmp_path,
@@ -1051,17 +1109,20 @@ def test_first_match_or_raise_includes_label_in_error(tmp_path):
 
 
 def test_first_match_or_raise_falls_back_to_pattern_in_error(tmp_path):
+    """Without a label the error names the glob pattern itself, so the missing file is still identifiable."""
     with pytest.raises(FileNotFoundError, match=r"\*_usv_summary\.csv"):
         first_match_or_raise(root=tmp_path, pattern="*_usv_summary.csv")
 
 
 def test_first_match_or_raise_missing_root(tmp_path):
+    """A non-existent search root raises a FileNotFoundError naming the root, distinguishing a wrong session path from a missing file."""
     missing = tmp_path / "does_not_exist"
     with pytest.raises(FileNotFoundError, match="search root"):
         first_match_or_raise(root=missing, pattern="*.txt")
 
 
 def test_newest_match_or_raise_returns_most_recently_modified(tmp_path):
+    """With several matches the most recently modified file wins, the rule used to pick the latest recording."""
     older = tmp_path / "a.log"
     newer = tmp_path / "b.log"
     older.write_text("old")
@@ -1071,6 +1132,7 @@ def test_newest_match_or_raise_returns_most_recently_modified(tmp_path):
 
 
 def test_newest_match_or_raise_custom_key_inverts_order(tmp_path):
+    """A caller-supplied key replaces the modification-time ordering, so the selection rule can be changed per caller."""
     a = tmp_path / "a.log"
     b = tmp_path / "b.log"
     a.write_text("x")
@@ -1080,6 +1142,7 @@ def test_newest_match_or_raise_custom_key_inverts_order(tmp_path):
 
 
 def test_newest_match_or_raise_no_matches_includes_label(tmp_path):
+    """No match raises a FileNotFoundError carrying the label, so the user learns which input is missing."""
     with pytest.raises(FileNotFoundError, match="most recent Avisoft"):
         newest_match_or_raise(
             root=tmp_path,
@@ -1089,10 +1152,12 @@ def test_newest_match_or_raise_no_matches_includes_label(tmp_path):
 
 
 def test_wait_for_subprocesses_empty_returns_empty():
+    """An empty process list returns an empty list immediately instead of waiting or failing."""
     assert wait_for_subprocesses(subps=[], max_seconds=1, label="noop") == []
 
 
 def test_wait_for_subprocesses_collects_return_codes():
+    """Return codes come back in launch order, so callers can tell which child succeeded."""
     procs = [
         subprocess.Popen(args=[sys.executable, "-c", "pass"]),
         subprocess.Popen(args=[sys.executable, "-c", "pass"]),
@@ -1102,6 +1167,7 @@ def test_wait_for_subprocesses_collects_return_codes():
 
 
 def test_wait_for_subprocesses_reports_nonzero_returns():
+    """A non-zero return code is reported through message_output with its rc, so a failed child is visible even when the caller does not raise."""
     procs = [
         subprocess.Popen(args=[sys.executable, "-c", "import sys; sys.exit(7)"]),
     ]
@@ -1117,6 +1183,7 @@ def test_wait_for_subprocesses_reports_nonzero_returns():
 
 
 def test_wait_for_subprocesses_raises_on_nonzero_when_requested():
+    """raise_on_nonzero=True turns a failed child into a RuntimeError, stopping the step before it reads a missing output."""
     procs = [
         subprocess.Popen(args=[sys.executable, "-c", "import sys; sys.exit(2)"]),
     ]
@@ -1153,6 +1220,7 @@ def test_processing_subprocess_waits_fail_loudly():
 
 
 def test_wait_for_subprocesses_terminates_on_timeout():
+    """A child that outlives max_seconds raises a TimeoutError and is terminated, so no orphaned process keeps running after the step gives up."""
     procs = [
         subprocess.Popen(args=[sys.executable, "-c", "import time; time.sleep(30)"]),
     ]
@@ -1177,6 +1245,7 @@ def test_wait_for_subprocesses_terminates_on_timeout():
 
 
 def test_wait_for_subprocesses_timeout_no_raise_returns_none_slot():
+    """raise_on_timeout=False still returns one slot per process instead of raising, so callers that tolerate timeouts get a complete result list."""
     procs = [
         subprocess.Popen(args=[sys.executable, "-c", "import time; time.sleep(30)"]),
     ]
@@ -1197,38 +1266,45 @@ def test_wait_for_subprocesses_timeout_no_raise_returns_none_slot():
 
 
 def test_set_nested_value_by_path_sets_leaf():
+    """A dotted path writes the nested leaf, the mechanism behind every CLI settings override."""
     d = {"a": {"b": {"c": 0}}}
     set_nested_value_by_path(d, "a.b.c", 42)
     assert d["a"]["b"]["c"] == 42
 
 
 def test_set_nested_value_by_path_top_level_key():
+    """A path with no dots writes a top-level key."""
     d = {"flag": False}
     set_nested_value_by_path(d, "flag", True)
     assert d["flag"] is True
 
 
 def test_set_nested_value_by_path_rejects_empty_path():
+    """An empty path raises a ValueError instead of writing nowhere."""
     with pytest.raises(ValueError, match="non-empty string"):
         set_nested_value_by_path({}, "", 1)
 
 
 def test_set_nested_value_by_path_rejects_empty_components():
+    """A path with an empty component ('a..b') raises a ValueError instead of creating an empty-string key."""
     with pytest.raises(ValueError, match="empty component"):
         set_nested_value_by_path({"a": {"b": 1}}, "a..b", 1)
 
 
 def test_set_nested_value_by_path_unknown_intermediate_key():
-    with pytest.raises(KeyError, match="unknown key 'a.missing'"):
+    """An unknown intermediate key raises a KeyError naming it, so a typo in an override cannot add a new settings branch."""
+    with pytest.raises(KeyError, match=r"unknown key 'a\.missing'"):
         set_nested_value_by_path({"a": {"b": 1}}, "a.missing.c", 1)
 
 
 def test_set_nested_value_by_path_unknown_leaf_key():
-    with pytest.raises(KeyError, match="unknown key 'a.b'"):
+    """An unknown leaf key raises a KeyError naming it, so a typo in an override cannot add a key no consumer reads."""
+    with pytest.raises(KeyError, match=r"unknown key 'a\.b'"):
         set_nested_value_by_path({"a": {"c": 1}}, "a.b", 2)
 
 
 def test_set_nested_value_by_path_intermediate_not_dict():
+    """Descending through a non-dict value raises a KeyError instead of an AttributeError deep inside the setter."""
     with pytest.raises(KeyError, match="not a dict"):
         set_nested_value_by_path({"a": 5}, "a.b", 1)
 
@@ -1250,11 +1326,13 @@ def test_set_nested_value_by_path_intermediate_not_dict():
     ],
 )
 def test_convert_value_types(raw, expected):
+    """CLI override strings are converted to bool / int / float / str (quotes and whitespace stripped) with the right Python type, since the consumers compare by type."""
     assert _convert_value(raw) == expected
     assert type(_convert_value(raw)) is type(expected)
 
 
 def test_override_toml_values_applies_overrides():
+    """Several 'path=value' overrides are applied with type conversion in one pass."""
     settings = {
         "video": {"general": {"fps": 0, "label": ""}},
         "flag": False,
@@ -1267,27 +1345,32 @@ def test_override_toml_values_applies_overrides():
 
 
 def test_override_toml_values_csv_becomes_list():
+    """A comma-separated value becomes a list of converted items, how list-valued settings are overridden from the CLI."""
     settings = {"channels": []}
     out = override_toml_values(["channels=1,2,3"], settings)
     assert out["channels"] == [1, 2, 3]
 
 
 def test_override_toml_values_skips_strings_without_equals():
+    """Entries without '=' are ignored and leave the settings unchanged."""
     settings = {"a": 1}
     out = override_toml_values(["junk-no-equals"], settings)
     assert out == {"a": 1}
 
 
 def test_override_toml_values_unknown_path_raises():
+    """An override naming an unknown key (here the dash-spelled variant of a real key) raises a KeyError instead of being silently dropped."""
     settings = {"video": {"general": {"delete_post_copy": False}}}
     with pytest.raises(KeyError, match="unknown key"):
         override_toml_values(["video.general.delete-post-copy=true"], settings)
 
 
 def test_string_tuple_parses_pair():
+    """StringTuple turns 'Head, Nose' into a stripped two-string tuple, the form node-pair options expect."""
     @click.command()
     @click.option("--pair", type=StringTuple())
     def cmd(pair):
+        """Echoes the parsed pair so the test can read what StringTuple produced."""
         click.echo(repr(pair))
 
     runner = CliRunner()
@@ -1297,9 +1380,11 @@ def test_string_tuple_parses_pair():
 
 
 def test_string_tuple_rejects_non_pair():
+    """StringTuple rejects a value that is not a comma-separated pair with a click usage error."""
     @click.command()
     @click.option("--pair", type=StringTuple())
-    def cmd(pair):
+    def cmd(pair):  # noqa: ARG001 -- click passes the parsed option by this keyword
+        """Never runs: StringTuple rejects the value before the command body is reached."""
         click.echo("ok")
 
     runner = CliRunner()
@@ -1309,12 +1394,14 @@ def test_string_tuple_rejects_non_pair():
 
 
 def test_load_session_metadata_returns_none_when_missing(tmp_path):
+    """A session root without a metadata file yields (None, None) rather than raising, so callers can branch on its absence."""
     data, path = load_session_metadata(str(tmp_path))
     assert data is None
     assert path is None
 
 
 def test_load_and_save_round_trip(tmp_path):
+    """Saved metadata reloads unchanged and the loader reports the file it found."""
     metadata_path = tmp_path / "20260501_metadata.yaml"
     payload = {
         "Session": {"id": "s001", "session_duration": 1800.0},
@@ -1327,6 +1414,7 @@ def test_load_and_save_round_trip(tmp_path):
 
 
 def test_load_session_metadata_logs_yaml_errors(tmp_path):
+    """Malformed YAML is logged through the logger and yields (None, None) instead of crashing the caller."""
     bad = tmp_path / "bad_metadata.yaml"
     bad.write_text("key: : invalid_yaml\n  other: 1\n")
     messages: list[str] = []
@@ -1337,11 +1425,14 @@ def test_load_session_metadata_logs_yaml_errors(tmp_path):
 
 
 def test_save_session_metadata_logs_yaml_errors(tmp_path, monkeypatch):
+    """A YAML error while saving is logged through the logger instead of propagating out of the save."""
     target = tmp_path / "out.yaml"
     target.write_text("")
 
     def raising_dump(*_args, **_kwargs):
-        raise yaml.YAMLError("boom")
+        """Stand-in for yaml.dump that always raises a YAMLError."""
+        message = "boom"
+        raise yaml.YAMLError(message)
 
     monkeypatch.setattr(yaml, "dump", raising_dump)
     messages: list[str] = []
@@ -1350,6 +1441,23 @@ def test_save_session_metadata_logs_yaml_errors(tmp_path, monkeypatch):
 
 
 def _dump(value):
+    """
+    Description
+    -----------
+    Dump a value with the SmartDumper and the block-style settings the
+    metadata writer uses.
+
+    Parameters
+    ----------
+    value (object)
+        Value to serialize.
+
+    Returns
+    -------
+    text (str)
+        The emitted YAML.
+    """
+
     buf = io.StringIO()
     yaml.dump(value, buf, Dumper=SmartDumper, default_flow_style=False, sort_keys=False)
     return buf.getvalue()
@@ -1369,6 +1477,7 @@ def _dump(value):
     ],
 )
 def test_smart_dumper_quotes_yaml11_coercion_strings(raw):
+    """Strings YAML 1.1 would coerce (leading zeros, signs, dates, yes/no/on/off) are quoted and reload as strings, so metadata values keep their type."""
     out = _dump({"k": raw})
     assert "'" in out, f"expected quotes around {raw!r} in {out!r}"
     reloaded = yaml.safe_load(out)
@@ -1377,16 +1486,19 @@ def test_smart_dumper_quotes_yaml11_coercion_strings(raw):
 
 
 def test_smart_dumper_does_not_quote_normal_strings():
+    """Ordinary strings are emitted unquoted, keeping the metadata files readable."""
     out = _dump({"k": "hello world"})
     assert "'hello world'" not in out
 
 
 def test_smart_dumper_emits_simple_lists_in_flow_style():
+    """Lists of scalars are written in flow style on one line."""
     out = _dump({"channels": [1, 2, 3]})
     assert "[1, 2, 3]" in out
 
 
 def test_smart_dumper_complex_lists_use_block_style():
+    """Lists of mappings fall back to block style rather than an unreadable inline form."""
     out = _dump({"items": [{"a": 1}, {"b": 2}]})
     assert out.count("- ") >= 2
     assert "[{" not in out
@@ -1401,6 +1513,7 @@ def test_smart_dumper_complex_lists_use_block_style():
     ],
 )
 def test_smart_dumper_unwraps_numpy_scalars(value, loaded_type):
+    """NumPy scalars are written as plain YAML values (no python/object tags), so safe_load can read the file back."""
     out = _dump({"k": value})
     assert "python/object" not in out
     reloaded = yaml.safe_load(out)
@@ -1408,18 +1521,41 @@ def test_smart_dumper_unwraps_numpy_scalars(value, loaded_type):
 
 
 def _write_wav(path, sampling_rate=10_000, n_samples=200, dtype="int16"):
+    """
+    Description
+    -----------
+    Write a short mono WAV with a sparse pulse train for the DataLoader tests.
+
+    Parameters
+    ----------
+    path (pathlib.Path)
+        Destination WAV path.
+    sampling_rate (int)
+        Sample rate in Hz.
+    n_samples (int)
+        Number of samples.
+    dtype (str)
+        Sample dtype ("int16" writes a quarter-scale pulse, anything else 0.5).
+
+    Returns
+    -------
+    None
+    """
+
     data = np.zeros(n_samples, dtype=dtype)
     data[::5] = np.iinfo(np.int16).max // 4 if dtype == "int16" else 0.5
     wavfile.write(path, sampling_rate, data)
 
 
 def test_data_loader_default_settings_load_from_json():
+    """A DataLoader built without settings loads its defaults from the shipped JSON."""
     dl = DataLoader()
     assert "wave_data_loc" in dl.input_parameter_dict
     assert "load_wavefile_data" in dl.input_parameter_dict
 
 
 def test_data_loader_loads_all_wavs_with_no_conditional(tmp_path):
+    """With no filename filter every WAV is loaded with its sampling rate, data and dtype."""
     _write_wav(tmp_path / "a.wav")
     _write_wav(tmp_path / "b.wav")
 
@@ -1438,6 +1574,7 @@ def test_data_loader_loads_all_wavs_with_no_conditional(tmp_path):
 
 
 def test_data_loader_conditional_arg_filters_filenames(tmp_path):
+    """Only filenames containing every conditional_arg substring are loaded, how a single device/channel is selected."""
     _write_wav(tmp_path / "m_session_ch01.wav")
     _write_wav(tmp_path / "m_session_ch02.wav")
     _write_wav(tmp_path / "s_session_ch01.wav")
@@ -1453,6 +1590,7 @@ def test_data_loader_conditional_arg_filters_filenames(tmp_path):
 
 
 def test_data_loader_skips_non_wav_files(tmp_path):
+    """Non-WAV files in the directory are ignored."""
     _write_wav(tmp_path / "audio.wav")
     (tmp_path / "notes.txt").write_text("ignore me")
 
@@ -1467,6 +1605,7 @@ def test_data_loader_skips_non_wav_files(tmp_path):
 
 
 def test_data_loader_librosa_branch(tmp_path):
+    """The librosa backend loads the file as float32 with a positive sampling rate."""
     _write_wav(tmp_path / "x.wav")
     dl = DataLoader(
         input_parameter_dict={
@@ -1481,6 +1620,7 @@ def test_data_loader_librosa_branch(tmp_path):
 
 
 def test_data_loader_returns_empty_dict_for_empty_dir(tmp_path):
+    """An empty directory yields an empty dict rather than raising."""
     dl = DataLoader(
         input_parameter_dict={
             "wave_data_loc": [str(tmp_path)],
@@ -1491,6 +1631,7 @@ def test_data_loader_returns_empty_dict_for_empty_dir(tmp_path):
 
 
 def test_data_loader_preserves_alphabetical_order(tmp_path):
+    """Files are returned in alphabetical order, which downstream channel stacking relies on."""
     for name in ("c.wav", "a.wav", "b.wav"):
         _write_wav(tmp_path / name)
     dl = DataLoader(
@@ -1504,6 +1645,7 @@ def test_data_loader_preserves_alphabetical_order(tmp_path):
 
 
 def test_find_events_detects_clean_step_up():
+    """A clean positive step is reported as one rising event at the frame before the jump."""
     diffs = np.zeros(20)
     diffs[10] = 1.0
     pos, neg = find_events(diffs, threshold=0.5)
@@ -1512,6 +1654,7 @@ def test_find_events_detects_clean_step_up():
 
 
 def test_find_events_detects_clean_step_down():
+    """A clean negative step is reported as one falling event at the jump frame."""
     diffs = np.zeros(20)
     diffs[10] = -1.0
     pos, neg = find_events(diffs, threshold=0.5)
@@ -1520,6 +1663,7 @@ def test_find_events_detects_clean_step_down():
 
 
 def test_find_events_ignores_unstable_neighborhood():
+    """Consecutive above-threshold changes yield a single rising event, not one per frame."""
     diffs = np.array([0.0, 1.0, 1.0, 0.0])
     pos, neg = find_events(diffs, threshold=0.5)
     assert pos.tolist() == [0]
@@ -1527,6 +1671,7 @@ def test_find_events_ignores_unstable_neighborhood():
 
 
 def test_find_events_threshold_excludes_small_changes():
+    """Changes below the threshold produce no events, so brightness noise is not read as an LED transition."""
     diffs = np.array([0.0, 0.3, 0.0, 0.0])
     pos, neg = find_events(diffs, threshold=0.5)
     assert pos.size == 0
@@ -1534,6 +1679,7 @@ def test_find_events_threshold_excludes_small_changes():
 
 
 def test_combine_and_sort_events_interleaves_by_frame():
+    """Rising and falling events are merged into one frame-sorted array tagged +1 / -1."""
     pos = np.array([10, 30])
     neg = np.array([20, 40])
     out = _combine_and_sort_events(pos, neg)
@@ -1543,6 +1689,7 @@ def test_combine_and_sort_events_interleaves_by_frame():
 
 
 def test_filter_events_by_duration_drops_glitch_pair():
+    """An on/off pair shorter than min_duration is removed as a glitch."""
     pos = np.array([10, 100])
     neg = np.array([12, 110])
     out_pos, out_neg = filter_events_by_duration(pos, neg, min_duration=5)
@@ -1551,6 +1698,7 @@ def test_filter_events_by_duration_drops_glitch_pair():
 
 
 def test_filter_events_by_duration_keeps_long_events():
+    """Events at least min_duration long are kept unchanged."""
     pos = np.array([10, 100])
     neg = np.array([50, 200])
     out_pos, out_neg = filter_events_by_duration(pos, neg, min_duration=5)
@@ -1559,12 +1707,14 @@ def test_filter_events_by_duration_keeps_long_events():
 
 
 def test_filter_events_by_duration_empty_inputs():
+    """Empty inputs return empty arrays rather than raising."""
     out_pos, out_neg = filter_events_by_duration(np.array([]), np.array([]), min_duration=5)
     assert out_pos.size == 0
     assert out_neg.size == 0
 
 
 def test_validate_sequence_drops_duplicate_consecutive():
+    """A repeated rising event without an intervening fall is dropped, restoring a strictly alternating sequence."""
     pos = np.array([10, 20, 100])
     neg = np.array([50])
     out_pos, out_neg = validate_sequence(pos, neg)
@@ -1573,6 +1723,7 @@ def test_validate_sequence_drops_duplicate_consecutive():
 
 
 def test_validate_sequence_already_alternating_unchanged():
+    """An already alternating sequence is returned unchanged."""
     pos = np.array([10, 30])
     neg = np.array([20, 40])
     out_pos, out_neg = validate_sequence(pos, neg)
@@ -1581,19 +1732,22 @@ def test_validate_sequence_already_alternating_unchanged():
 
 
 def test_validate_sequence_empty_inputs():
+    """Empty inputs return empty arrays rather than raising."""
     out_pos, out_neg = validate_sequence(np.array([]), np.array([]))
     assert out_pos.size == 0
     assert out_neg.size == 0
 
 
 def test_validate_sequence_single_event_returned_unchanged():
+    """A lone rising event is kept as is."""
     pos = np.array([10])
     neg = np.array([])
-    out_pos, out_neg = validate_sequence(pos, neg)
+    out_pos, _out_neg = validate_sequence(pos, neg)
     assert out_pos.tolist() == [10]
 
 
 def test_build_led_px_dict_returns_fresh_copy_per_call():
+    """Each call returns an independent dict, so mutating one session's LED pixels cannot leak into another."""
     a = Synchronizer._build_led_px_dict()
     b = Synchronizer._build_led_px_dict()
     assert a is not b
@@ -1602,6 +1756,7 @@ def test_build_led_px_dict_returns_fresh_copy_per_call():
 
 
 def test_build_led_px_dict_has_expected_top_level_keys():
+    """The LED pixel table has a 'current' entry plus dated '<' entries, each camera with three LED coordinates of two values."""
     d = Synchronizer._build_led_px_dict()
     assert 'current' in d
     assert any(k.startswith('<') for k in d if k != 'current')
@@ -1613,6 +1768,27 @@ def test_build_led_px_dict_has_expected_top_level_keys():
 
 
 def _build_lsb_signal(pulse_pattern: list[int], pulse_len: int = 10, gap_len: int = 5) -> np.ndarray:
+    """
+    Description
+    -----------
+    Build a synthetic LSB pulse train with gaps of chosen multiples, so one
+    break can be made the largest.
+
+    Parameters
+    ----------
+    pulse_pattern (list[int])
+        Gap multiplier before each pulse.
+    pulse_len (int)
+        Samples per high pulse.
+    gap_len (int)
+        Base gap length in samples.
+
+    Returns
+    -------
+    signal (np.ndarray)
+        The 0/1 train as int64.
+    """
+
     out: list[int] = []
     for i, gap_mul in enumerate(pulse_pattern):
         out.extend([0] * (gap_len * gap_mul))
@@ -1624,8 +1800,9 @@ def _build_lsb_signal(pulse_pattern: list[int], pulse_len: int = 10, gap_len: in
 
 
 def test_find_lsb_changes_returns_largest_break_metadata():
+    """The LSB branch reports a positive largest break, its end hop and strictly increasing break-end samples."""
     arr = _build_lsb_signal([1, 4, 1, 1])
-    start, end, largest_break_duration, ttl_break_end_samples, largest_break_end_hop = (
+    _start, _end, largest_break_duration, ttl_break_end_samples, largest_break_end_hop = (
         Synchronizer.find_lsb_changes(arr, lsb_bool=True, total_frame_number=2)
     )
     assert largest_break_end_hop > 0
@@ -1634,6 +1811,7 @@ def test_find_lsb_changes_returns_largest_break_metadata():
 
 
 def test_find_lsb_changes_returns_none_when_total_frames_exceeds_pulses():
+    """When the frame budget exceeds the pulse train, the start and end come back None instead of an out-of-range window."""
     arr = _build_lsb_signal([1, 1, 1])
     start, end, *_ = Synchronizer.find_lsb_changes(arr, lsb_bool=True, total_frame_number=999)
     assert start is None
@@ -1641,10 +1819,11 @@ def test_find_lsb_changes_returns_none_when_total_frames_exceeds_pulses():
 
 
 def test_find_lsb_changes_non_lsb_branch():
+    """With lsb_bool=False the raw TTL array is used and every pulse is found."""
     arr = np.zeros(120, dtype=np.int64)
     for idx in (30, 60, 90):
         arr[idx:idx + 5] = 2
-    start, end, largest_break_duration, ttl_break_end_samples, _ = (
+    _start, _end, largest_break_duration, ttl_break_end_samples, _ = (
         Synchronizer.find_lsb_changes(arr, lsb_bool=False, total_frame_number=1)
     )
     assert ttl_break_end_samples.size == 3
@@ -1674,6 +1853,7 @@ def test_rotate_z_90_degrees():
 
 @pytest.mark.parametrize("rotator", [rotate_x, rotate_y, rotate_z])
 def test_rotation_zero_angle_is_identity(rotator):
+    """A zero-angle rotation leaves the points unchanged."""
     rng = np.random.default_rng(0)
     pts = rng.normal(size=(50, 3))
     np.testing.assert_allclose(rotator(pts, 0.0), pts, atol=1e-12)
@@ -1681,12 +1861,14 @@ def test_rotation_zero_angle_is_identity(rotator):
 
 @pytest.mark.parametrize("rotator", [rotate_x, rotate_y, rotate_z])
 def test_rotation_full_turn_is_identity(rotator):
+    """A full-turn rotation returns the points to where they started."""
     rng = np.random.default_rng(1)
     pts = rng.normal(size=(20, 3))
     np.testing.assert_allclose(rotator(pts, 2 * math.pi), pts, atol=1e-12)
 
 
 def test_redefine_cage_reference_nodes_extracts_first_frame_corners():
+    """The four arena corner nodes are taken from the first frame in the requested order."""
     arena = np.zeros((1, 1, 6, 3))
     arena[0, 0, 0] = [1, 0, 0]
     arena[0, 0, 2] = [0, 1, 0]
@@ -1741,6 +1923,7 @@ def _write_minimal_skeleton(tmp_path, node_names: list[str]):
 
 
 def test_extract_skeleton_nodes_returns_node_names_in_order(tmp_path):
+    """Node names are recovered from a SLEAP skeleton JSON in their py/id order."""
     names = ["Head", "Neck", "Torso", "Tailbase"]
     skel = _write_minimal_skeleton(tmp_path, names)
     out = extract_skeleton_nodes(str(skel))
@@ -1748,6 +1931,7 @@ def test_extract_skeleton_nodes_returns_node_names_in_order(tmp_path):
 
 
 def test_extract_skeleton_nodes_arena_prefixes_with_ch(tmp_path):
+    """In arena mode the four corner names stay bare and the extra nodes get the 'ch_' prefix."""
     names = ["N", "W", "S", "E", "extra1", "extra2"]
     skel = _write_minimal_skeleton(tmp_path, names)
     out = extract_skeleton_nodes(str(skel), skeleton_arena_bool=True)
@@ -1756,6 +1940,7 @@ def test_extract_skeleton_nodes_arena_prefixes_with_ch(tmp_path):
 
 
 def test_find_mouse_names_from_metadata_dict():
+    """Subject IDs are read from the metadata 'Subjects' list in order."""
     metadata = {
         "Subjects": [
             {"subject_id": "cage1_m1"},
@@ -1766,11 +1951,13 @@ def test_find_mouse_names_from_metadata_dict():
 
 
 def test_find_mouse_names_metadata_with_no_subjects():
+    """Metadata without subjects yields an empty list rather than raising."""
     assert find_mouse_names(metadata={}) == []
 
 
 @pytest.fixture
 def settings():
+    """Minimal Gatherer settings pointing the phidget lookup at camera 21372315."""
     return {
         "extract_phidget_data": {
             "Gatherer": {
@@ -1783,10 +1970,28 @@ def settings():
 
 
 def _write_phidget_file(path, records):
+    """
+    Description
+    -----------
+    Write phidget records as a JSON list.
+
+    Parameters
+    ----------
+    path (pathlib.Path)
+        Destination ``*.extra_data.json`` path.
+    records (list[dict])
+        Sensor records to write.
+
+    Returns
+    -------
+    None
+    """
+
     path.write_text(json.dumps(records))
 
 
 def test_phidget_gatherer_single_file(tmp_path, settings):
+    """Phidget records are sorted by sensor time and split into humidity, lux and temperature arrays."""
     cam_dir = tmp_path / 'video' / 'session_21372315'
     cam_dir.mkdir(parents=True)
     records = [
@@ -1805,6 +2010,7 @@ def test_phidget_gatherer_single_file(tmp_path, settings):
 
 
 def test_phidget_gatherer_merges_multiple_files(tmp_path, settings):
+    """Records from several JSON files are merged and sorted by sensor time."""
     cam_dir = tmp_path / 'video' / 'cam_21372315_data'
     cam_dir.mkdir(parents=True)
     _write_phidget_file(
@@ -1822,6 +2028,7 @@ def test_phidget_gatherer_merges_multiple_files(tmp_path, settings):
 
 
 def test_phidget_gatherer_handles_missing_keys_with_nan(tmp_path, settings):
+    """A record missing a sensor key gets NaN in that slot, keeping the arrays aligned."""
     cam_dir = tmp_path / 'video' / 'cam_21372315'
     cam_dir.mkdir(parents=True)
     records = [
@@ -1843,6 +2050,7 @@ def test_phidget_gatherer_handles_missing_keys_with_nan(tmp_path, settings):
 
 @pytest.fixture
 def session_tree(tmp_path):
+    """A video tree with two clips from the configured camera, one from another camera and one non-numeric directory."""
     video_root = tmp_path / 'video'
     cam = video_root / '20260501' / '21372315'
     cam.mkdir(parents=True)
@@ -1861,6 +2069,26 @@ def session_tree(tmp_path):
 
 
 def _settings(inference_dir, centroid='/Volumes/falkner/models/centroid', centered_instance=''):
+    """
+    Description
+    -----------
+    Build the ``prepare_cluster_job`` settings block for one configured camera.
+
+    Parameters
+    ----------
+    inference_dir (str)
+        Directory the job list is written to.
+    centroid (str)
+        Centroid model path.
+    centered_instance (str)
+        Centered-instance model path; empty selects the one-model layout.
+
+    Returns
+    -------
+    settings (dict)
+        The settings dict PrepareClusterJob reads.
+    """
+
     return {
         "prepare_cluster_job": {
             "centroid_model_path": centroid,
@@ -1872,6 +2100,7 @@ def _settings(inference_dir, centroid='/Volumes/falkner/models/centroid', center
 
 
 def test_prepare_cluster_job_writes_one_line_per_mp4(tmp_path, session_tree, monkeypatch):
+    """The one-model layout writes one three-field job line per configured-camera video."""
     monkeypatch.setattr(platform, 'system', lambda: 'Darwin')
     inference_dir = tmp_path / 'inference'
 
@@ -1892,6 +2121,7 @@ def test_prepare_cluster_job_writes_one_line_per_mp4(tmp_path, session_tree, mon
 
 
 def test_prepare_cluster_job_two_model_layout(tmp_path, session_tree, monkeypatch):
+    """The two-model (centroid + centered-instance) layout writes four-field job lines."""
     monkeypatch.setattr(platform, 'system', lambda: 'Darwin')
     inference_dir = tmp_path / 'inf'
 
@@ -1913,6 +2143,7 @@ def test_prepare_cluster_job_two_model_layout(tmp_path, session_tree, monkeypatc
 
 
 def test_prepare_cluster_job_creates_inference_dir(tmp_path, session_tree, monkeypatch):
+    """A missing nested inference directory is created before the job list is written."""
     monkeypatch.setattr(platform, 'system', lambda: 'Darwin')
     inference_dir = tmp_path / 'a' / 'b' / 'c'
     pcj = PrepareClusterJob(
@@ -1925,6 +2156,7 @@ def test_prepare_cluster_job_creates_inference_dir(tmp_path, session_tree, monke
 
 
 def test_prepare_cluster_job_skips_unconfigured_camera(tmp_path, session_tree, monkeypatch):
+    """Videos from cameras not listed in camera_names are left out of the job list."""
     monkeypatch.setattr(platform, 'system', lambda: 'Darwin')
     inference_dir = tmp_path / 'inference2'
 
@@ -1939,16 +2171,19 @@ def test_prepare_cluster_job_skips_unconfigured_camera(tmp_path, session_tree, m
 
 
 def test_softplus_matches_log1p_exp():
+    """softplus equals log(1 + exp(x)) across negative and positive inputs."""
     x = np.array([-2.0, -1.0, 0.0, 1.0, 2.0])
     expected = np.log1p(np.exp(x))
     np.testing.assert_allclose(softplus(x), expected, rtol=1e-12)
 
 
 def test_softplus_zero_returns_log2():
+    """softplus(0) is log 2."""
     assert softplus(0.0) == pytest.approx(np.log(2.0))
 
 
 def test_to_float_normalizes_int16_to_unit_range():
+    """int16 audio is scaled to float16 in [-1, 1], the range the localization model expects."""
     arr = np.array([0, np.iinfo(np.int16).max, np.iinfo(np.int16).min], dtype=np.int16)
     out = to_float(arr)
     assert out.dtype == np.float16
@@ -1958,6 +2193,7 @@ def test_to_float_normalizes_int16_to_unit_range():
 
 
 def test_make_xy_grid_shape_and_extents():
+    """The evaluation grid has shape (y, x, 2) and spans the arena centred on zero."""
     arena_dims = np.array([800.0, 600.0])
     render_dims = np.array([100, 80])
     grid = make_xy_grid(arena_dims, render_dims)
@@ -1969,6 +2205,7 @@ def test_make_xy_grid_shape_and_extents():
 
 
 def test_convert_from_arb_scales_by_half_arena_max():
+    """Model outputs in arbitrary units are scaled by half the largest arena dimension."""
     arena_dims = np.array([800.0, 600.0])
     raw = np.ones((4, 6))
     out = convert_from_arb(raw, arena_dims)
@@ -1977,6 +2214,7 @@ def test_convert_from_arb_scales_by_half_arena_max():
 
 
 def test_compute_covs_6d_shape_and_psd():
+    """The 6-D covariances built from the raw output are symmetric positive semi-definite, so the downstream Gaussian is valid."""
     rng = np.random.default_rng(0)
     raw = rng.normal(size=(5, 27))
     arena_dims = np.array([800.0, 600.0])
@@ -1988,6 +2226,7 @@ def test_compute_covs_6d_shape_and_psd():
 
 
 def test_get_confidence_set_shape_preserved():
+    """The confidence set is a boolean mask with the PDF's shape."""
     pdf = np.ones((4, 5)) / 20.0
     out = get_confidence_set(pdf, confidence_level=0.5)
     assert out.shape == pdf.shape
@@ -1995,6 +2234,7 @@ def test_get_confidence_set_shape_preserved():
 
 
 def test_get_confidence_set_zero_level_gives_empty_set():
+    """A zero confidence level selects no cells."""
     rng = np.random.default_rng(1)
     pdf = rng.random((10, 10))
     pdf /= pdf.sum()
@@ -2003,6 +2243,7 @@ def test_get_confidence_set_zero_level_gives_empty_set():
 
 
 def test_get_confidence_set_one_level_includes_all():
+    """A confidence level of 1 selects every cell."""
     rng = np.random.default_rng(2)
     pdf = rng.random((6, 6))
     pdf /= pdf.sum()
@@ -2014,6 +2255,7 @@ def test_get_confidence_set_one_level_includes_all():
 
 
 def test_eval_pdf_with_angle_returns_normalized_pdf():
+    """The joint position-angle PDF has shape (y, x, angle) and sums to 1."""
     grid = make_xy_grid(np.array([200.0, 200.0]), np.array([20, 20]))
     angles = np.linspace(-np.pi, np.pi, 10, endpoint=False)
     histogram = np.ones_like(angles)
@@ -2030,6 +2272,7 @@ def test_eval_pdf_with_angle_returns_normalized_pdf():
 
 
 def test_eval_pdf_with_angle_handles_singular_covariance():
+    """A singular covariance falls back to a normalized PDF instead of producing NaN."""
     grid = make_xy_grid(np.array([100.0, 100.0]), np.array([5, 5]))
     angles = np.linspace(-np.pi, np.pi, 4, endpoint=False)
     histogram = np.ones_like(angles)
@@ -2048,6 +2291,7 @@ def test_eval_pdf_with_angle_handles_singular_covariance():
 
 
 def test_estimate_angle_pdf_returns_normalized_histogram():
+    """The default angle histogram has 45 bins and sums to 1."""
     rng = np.random.default_rng(0)
     mean_6d = rng.normal(size=(6,))
     A = rng.normal(size=(6, 6))
@@ -2060,6 +2304,7 @@ def test_estimate_angle_pdf_returns_normalized_histogram():
 
 
 def test_estimate_angle_pdf_custom_theta_bins():
+    """Caller-supplied theta bins are used as given and set the histogram length."""
     custom = np.linspace(-np.pi, np.pi, 11, endpoint=True)
     mean_6d = np.zeros(6)
     cov_6d = np.eye(6)
@@ -2086,6 +2331,7 @@ def test_estimate_angle_pdf_seed_is_reproducible_and_varies():
 
 
 def test_are_points_in_conf_set_3d_branch():
+    """A stack of 2-D confidence sets gives one boolean per vocalization."""
     n, y_res, x_res = 2, 100, 100
     confidence_sets = np.zeros((n, y_res, x_res), dtype=bool)
     confidence_sets[0, 50, 50] = True
@@ -2099,6 +2345,7 @@ def test_are_points_in_conf_set_3d_branch():
 
 
 def test_are_points_in_conf_set_invalid_shape_raises():
+    """A confidence set of the wrong dimensionality raises a ValueError instead of indexing garbage."""
     confidence_sets = np.zeros((2, 5), dtype=bool)
     points = np.zeros((2, 2, 3))
     arena_dims = np.array([100.0, 100.0])
@@ -2107,6 +2354,7 @@ def test_are_points_in_conf_set_invalid_shape_raises():
 
 
 def test_load_usv_segments_returns_start_stop_array(tmp_path):
+    """The USV summary's start/stop columns are returned as an (n, 2) array."""
     csv_path = tmp_path / "usv_summary.csv"
     pls.DataFrame({"start": [0.1, 1.5], "stop": [0.2, 1.6], "emitter": ["?", "?"]}).write_csv(csv_path)
     arr = load_usv_segments(csv_path)
@@ -2115,6 +2363,7 @@ def test_load_usv_segments_returns_start_stop_array(tmp_path):
 
 
 def test_load_tracks_from_h5_round_trip(tmp_path):
+    """Tracks and node names written to H5 are read back unchanged."""
     h5_path = tmp_path / "tracks.h5"
     tracks = np.arange(60, dtype=np.float32).reshape(2, 3, 5, 2)
     names = np.array([b"a", b"b", b"c", b"d", b"e"])
@@ -2127,6 +2376,7 @@ def test_load_tracks_from_h5_round_trip(tmp_path):
 
 
 def test_get_arena_dimensions_extracts_xy_extent(tmp_path):
+    """The arena's x and y extents are measured from the four corner nodes."""
     h5_path = tmp_path / "arena.h5"
     nodes = [b"North", b"West", b"South", b"East"]
     tracks = np.array(
@@ -2151,6 +2401,7 @@ def test_get_arena_dimensions_extracts_xy_extent(tmp_path):
 
 
 def test_write_to_h5_round_trip_with_animal_ids(tmp_path):
+    """The assignment dataset is written with audio, nodes, locations, length index, per-vocalization animal IDs and metadata attributes."""
     out_path = tmp_path / "dset.h5"
     n_vocalizations = 3
     audio = [np.full((10,), float(i), dtype=np.float16) for i in range(n_vocalizations)]
@@ -2181,6 +2432,7 @@ def test_write_to_h5_round_trip_with_animal_ids(tmp_path):
 
 
 def test_write_to_h5_skips_animal_ids_when_none(tmp_path):
+    """No animal_id dataset is written when no IDs are given."""
     out_path = tmp_path / "dset_no_ids.h5"
     write_to_h5(
         output_path=out_path,
@@ -2196,6 +2448,7 @@ def test_write_to_h5_skips_animal_ids_when_none(tmp_path):
 
 
 def test_operator_concatenate_audio_files_handles_empty_dir(tmp_path, processing_settings):
+    """An empty cropped-audio directory is reported through the message output instead of crashing."""
     (tmp_path / 'audio' / 'cropped_to_video').mkdir(parents=True)
 
     messages: list[str] = []
@@ -2210,6 +2463,7 @@ def test_operator_concatenate_audio_files_handles_empty_dir(tmp_path, processing
 
 
 def test_operator_multichannel_to_channel_audio_missing_master_raises(tmp_path, processing_settings):
+    """A missing master multichannel recording raises a FileNotFoundError naming it."""
     (tmp_path / 'audio' / 'original_mc').mkdir(parents=True)
 
     op = Operator(
@@ -2223,6 +2477,7 @@ def test_operator_multichannel_to_channel_audio_missing_master_raises(tmp_path, 
 
 
 def test_operator_concatenate_binary_files_no_input_runs_without_crash(tmp_path, processing_settings):
+    """A probe directory with no binaries is skipped without raising."""
     op = Operator(
         root_directory=[str(tmp_path)],
         input_parameter_dict=processing_settings,
@@ -2233,6 +2488,7 @@ def test_operator_concatenate_binary_files_no_input_runs_without_crash(tmp_path,
 
 
 def test_operator_split_clusters_skips_when_no_changepoints_json(tmp_path, processing_settings):
+    """A missing changepoints JSON raises a FileNotFoundError naming it."""
     data_dir = tmp_path / 'Data'
     ephys_dir = tmp_path / 'EPHYS'
     session_name = '20260501_imec0'
@@ -2250,6 +2506,7 @@ def test_operator_split_clusters_skips_when_no_changepoints_json(tmp_path, proce
 
 
 def test_synchronizer_validate_ephys_video_sync_missing_camera_json(tmp_path, processing_settings):
+    """A missing camera frame count JSON raises a FileNotFoundError naming it."""
     sync = Synchronizer(
         root_directory=str(tmp_path),
         input_parameter_dict=processing_settings,
@@ -2260,6 +2517,24 @@ def test_synchronizer_validate_ephys_video_sync_missing_camera_json(tmp_path, pr
 
 
 def _make_vocalocator(tmp_path, processing_settings):
+    """
+    Description
+    -----------
+    Build a silent Vocalocator on a temporary session root.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Session root directory.
+    processing_settings (dict)
+        Package processing settings.
+
+    Returns
+    -------
+    voc (Vocalocator)
+        The configured instance.
+    """
+
     return Vocalocator(
         root_directory=str(tmp_path),
         input_parameter_dict=processing_settings,
@@ -2268,6 +2543,7 @@ def _make_vocalocator(tmp_path, processing_settings):
 
 
 def test_vocalocator_prepare_missing_audio_mmap_raises(tmp_path, processing_settings):
+    """A missing ultrasonic audio memmap raises a FileNotFoundError naming it."""
     (tmp_path / 'audio').mkdir()
 
     voc = _make_vocalocator(tmp_path, processing_settings)
@@ -2278,6 +2554,7 @@ def test_vocalocator_prepare_missing_audio_mmap_raises(tmp_path, processing_sett
 def test_vocalocator_prepare_missing_video_root_raises(tmp_path, processing_settings):
     # the 'ultrasonic' band memmap and the USV summary exist, so the lookup that fails
     # is the one under the (absent) video root
+    """With the audio inputs present, a missing video root raises a FileNotFoundError naming that root."""
     (tmp_path / 'audio' / 'hpss_filtered').mkdir(parents=True)
     np.zeros((10, 2), dtype=np.int16).tofile(
         tmp_path / 'audio' / 'hpss_filtered' / 'sess_concatenated_audio_hpss_filtered_250000_10_2_int16.mmap')
@@ -2288,6 +2565,7 @@ def test_vocalocator_prepare_missing_video_root_raises(tmp_path, processing_sett
 
 
 def test_vocalocator_run_missing_track_h5_raises(tmp_path, processing_settings):
+    """A missing 3D track H5 raises a FileNotFoundError naming it."""
     (tmp_path / 'video').mkdir()
     (tmp_path / 'audio').mkdir()
 
@@ -2385,7 +2663,7 @@ def test_rectify_video_fps_missing_camera_uses_nanmedian(tmp_path, mocker):
     op.rectify_video_fps()
 
     json_path = sorted(video_dir.glob('*_camera_frame_count_dict.json'))[0]
-    with open(json_path, 'r') as infile:
+    with json_path.open() as infile:
         frame_count_dict = json.load(infile)
 
     expected_duration = (frame_count - 1) / fps
@@ -2422,7 +2700,7 @@ def test_rectify_video_fps_all_dropped_frames_warns_and_uses_sentinel(tmp_path, 
     op.rectify_video_fps()
 
     json_path = sorted(video_dir.glob('*_camera_frame_count_dict.json'))[0]
-    with open(json_path, 'r') as infile:
+    with json_path.open() as infile:
         frame_count_dict = json.load(infile)
 
     assert any('no camera produced a clean' in m for m in msgs)
@@ -2462,7 +2740,6 @@ def _processing_settings_dict():
         The parsed processing-settings dict.
     """
 
-    import usv_playpen
     settings_path = (
         Path(usv_playpen.__file__).parent
         / "_parameter_settings" / "processing_settings.json"
@@ -2602,7 +2879,10 @@ def test_split_clusters_to_sessions_writes_per_cluster_npy(tmp_path, mocker):
         "imec0_cl0001_ch020_mua.npy",
     ], f"unexpected cluster_data contents: {npy_files}"
     arr = np.load(cluster_data_dir / "imec0_cl0000_ch010_good.npy")
-    assert arr.shape[0] == 2 and arr.shape[1] > 1, (
+    assert arr.shape[0] == 2, (
+        f"expected (2, n_spikes) spike array, got {arr.shape}"
+    )
+    assert arr.shape[1] > 1, (
         f"expected (2, n_spikes) spike array, got {arr.shape}"
     )
 
@@ -2866,7 +3146,9 @@ def test_hpss_audio_writes_harmonic_wav(tmp_path, mocker):
     out_wav = tmp_path / "audio" / "hpss" / "mic0_hpss.wav"
     assert out_wav.is_file(), "harmonic WAV not written"
     sr, data = wavfile.read(out_wav)
-    assert sr == 250000 and data.dtype == np.int16 and data.size > 0
+    assert sr == 250000
+    assert data.dtype == np.int16
+    assert data.size > 0
 
 
 def test_filter_audio_files_runs_static_sox(tmp_path, mocker):
@@ -3112,7 +3394,7 @@ def test_prepare_data_records_step_failure(processing_settings, mock_dependencie
 
     # The completion Messenger e-mail must report the failure count.
     send_calls = mock_dependencies['Messenger'].return_value.send_message.call_args_list
-    assert any("failure" in (c.kwargs.get("subject", "")).lower() for c in send_calls)
+    assert any("subject" in c.kwargs and "failure" in c.kwargs["subject"].lower() for c in send_calls)
 
 
 def test_preprocess_cli_commands_dispatch(mock_dependencies, tmp_path):
@@ -3165,14 +3447,14 @@ def test_preprocess_cli_commands_dispatch(mock_dependencies, tmp_path):
     # anipose-trm needs an experimental code and an existing arena directory.
     result = runner.invoke(
         translate_rotate_metric_cli,
-        rd + ["--exp-code", "E1M", "--arena-directory", str(tmp_path)],
+        [*rd, "--exp-code", "E1M", "--arena-directory", str(tmp_path)],
     )
     assert result.exit_code == 0, result.output
     mock_dependencies['ConvertTo3D'].return_value.translate_rotate_metric.assert_called()
 
     # prepare-vcl-assign takes a second (arena) directory.
     result = runner.invoke(
-        prepare_vcl_assign_cli, rd + ["--arena-directory", str(tmp_path)],
+        prepare_vcl_assign_cli, [*rd, "--arena-directory", str(tmp_path)],
     )
     assert result.exit_code == 0, result.output
     mock_dependencies['Vocalocator'].return_value.prepare_for_vocalocator.assert_called()
@@ -3214,14 +3496,14 @@ def test_cli_options_land_in_their_own_settings_blocks(mock_dependencies, tmp_pa
 
     runner = CliRunner()
     rd = ["--root-directory", str(tmp_path)]
-    result = runner.invoke(conduct_anipose_triangulation_cli, rd + ["--cal-directory", str(tmp_path), "--frame-restriction", "0", "500"])
+    result = runner.invoke(conduct_anipose_triangulation_cli, [*rd, "--cal-directory", str(tmp_path), "--frame-restriction", "0", "500"])
     assert result.exit_code == 0, result.output
     settings = mock_dependencies['ConvertTo3D'].call_args.kwargs['input_parameter_dict']
     assert settings['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['frame_restriction'] == [0, 500]
-    result = runner.invoke(conduct_anipose_triangulation_cli, rd + ["--cal-directory", str(tmp_path), "--frame-restriction", "7"])
+    result = runner.invoke(conduct_anipose_triangulation_cli, [*rd, "--cal-directory", str(tmp_path), "--frame-restriction", "7"])
     assert result.exit_code != 0
 
-    result = runner.invoke(vcl_assign_cli, rd + ["--grid-resolution", "60", "70", "--vcl-version", "vcl-ssl", "--env-name", "some-env"])
+    result = runner.invoke(vcl_assign_cli, [*rd, "--grid-resolution", "60", "70", "--vcl-version", "vcl-ssl", "--env-name", "some-env"])
     assert result.exit_code == 0, result.output
     settings = mock_dependencies['Vocalocator'].call_args.kwargs['input_parameter_dict']
     assert settings['assign_vocalizations']['grid_resolution'] == [60, 70]
@@ -3229,7 +3511,7 @@ def test_cli_options_land_in_their_own_settings_blocks(mock_dependencies, tmp_pa
     assert settings['vocalocator']['vcl_conda_env_name'] == "some-env"
     assert "did not match" not in result.output
 
-    result = runner.invoke(av_sync_check_cli, rd + ["--extra-camera", "99999", "--nidq-sr", "1234.5"])
+    result = runner.invoke(av_sync_check_cli, [*rd, "--extra-camera", "99999", "--nidq-sr", "1234.5"])
     assert result.exit_code == 0, result.output
     settings = mock_dependencies['Gatherer'].call_args.kwargs['input_parameter_dict']
     assert settings['extract_phidget_data']['Gatherer']['prepare_data_for_analyses']['extra_data_camera'] == "99999"
@@ -3358,7 +3640,8 @@ def test_attempt_sequence_match_finds_matching_pulse(tmp_path):
     )
     assert found is True
     assert "cam1" in sync_dict
-    assert start_frames is not None and start_frames.size >= 1
+    assert start_frames is not None
+    assert start_frames.size >= 1
 
 
 def test_attempt_sequence_match_returns_false_on_flat_signal(tmp_path):
@@ -3388,7 +3671,7 @@ def test_attempt_sequence_match_returns_false_on_flat_signal(tmp_path):
     assert result == (None, None, False)
 
 
-def test_find_lsb_changes_locates_largest_break(tmp_path):
+def test_find_lsb_changes_locates_largest_break():
     """
     Description
     -----------
@@ -3399,8 +3682,6 @@ def test_find_lsb_changes_locates_largest_break(tmp_path):
 
     Parameters
     ----------
-    tmp_path (pathlib.Path)
-        Unused per-test temp directory (kept for signature uniformity).
 
     Returns
     -------
@@ -3410,15 +3691,17 @@ def test_find_lsb_changes_locates_largest_break(tmp_path):
     # Build an LSB toggle train: rising edges (0->1) every 10 samples, with one
     # deliberately larger gap so the "largest break" is unambiguous.
     lsb = np.zeros(400, dtype=np.int64)
-    edges = list(range(10, 150, 10)) + [200] + list(range(260, 400, 10))
+    edges = [*range(10, 150, 10), 200, *range(260, 400, 10)]
     for e in edges:
         lsb[e] = 1  # single-sample high -> 0->1 rising edge at e
-    start, end, largest_break, break_ends, hop = Synchronizer.find_lsb_changes(
+    start, end, largest_break, break_ends, _hop = Synchronizer.find_lsb_changes(
         relevant_array=lsb, lsb_bool=True, total_frame_number=2,
     )
     assert break_ends.size == len(edges)
     assert largest_break == max(np.diff(edges))
-    assert start is not None and end is not None and end > start
+    assert start is not None
+    assert end is not None
+    assert end > start
 
 
 def test_stamp_processing_version_refuses_two_metadata_files(tmp_path):
@@ -3426,6 +3709,6 @@ def test_stamp_processing_version_refuses_two_metadata_files(tmp_path):
     instead of stamping (and rewriting) whichever sorts first."""
     for name in ("a_metadata.yaml", "b_metadata.yaml"):
         (tmp_path / name).write_text("Session:\n  usv_playpen_processing_version: v0\n")
-    with pytest.raises(ValueError, match="2 '\\*_metadata.yaml' files"):
+    with pytest.raises(ValueError, match=r"2 '\*_metadata\.yaml' files"):
         _stamp_processing_version(tmp_path)
     assert (tmp_path / "a_metadata.yaml").read_text() == "Session:\n  usv_playpen_processing_version: v0\n"

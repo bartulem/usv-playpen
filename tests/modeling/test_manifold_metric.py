@@ -13,19 +13,37 @@ case is the circular mean of two points straddling the seam
 though the arithmetic mean is ``0.5`` (the antipode). The JAX mirrors are
 checked for numerical agreement with the NumPy versions, and the
 ``sin_cos`` encode/decode pair is checked for round-trip identity.
+
+Coverage: ``_validate_metric_period``, ``signed_diff`` / ``signed_diff_jax``,
+``pairwise_distance``, ``circular_mean``, ``total_dispersion``, the (sin, cos)
+encode / decode pair, ``torus_embed``, ``resolve_manifold_metric``,
+``resolve_manifold_selection_score_key``, ``distance_correlation`` /
+``dcor_prediction_truth``, ``manifold_prediction_metrics``,
+``_fit_von_mises_kappa``, ``macro_von_mises_logscore``, ``macro_region_mean``,
+``inverse_region_frequency_weights``, ``von_mises_logpdf_per_point`` and
+``warn_if_no_region_labels``.
 """
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
+from scipy.optimize import brentq
+from scipy.special import i0e, i1e
+from scipy.stats import vonmises
 
+from usv_playpen.modeling import manifold_metric
 from usv_playpen.modeling.manifold_metric import (
+    _fit_von_mises_kappa,
+    _geodesic_distance_matrix,
     _validate_metric_period,
     angle_decode_jax,
     circular_mean,
     dcor_prediction_truth,
     distance_correlation,
+    inverse_region_frequency_weights,
+    macro_region_mean,
+    macro_von_mises_logscore,
     manifold_prediction_metrics,
     pairwise_distance,
     resolve_manifold_metric,
@@ -35,23 +53,17 @@ from usv_playpen.modeling.manifold_metric import (
     sin_cos_encode_jax,
     torus_embed,
     total_dispersion,
-    _fit_von_mises_kappa,
-    macro_von_mises_logscore,
-    macro_region_mean,
-    inverse_region_frequency_weights,
     von_mises_logpdf_per_point,
     warn_if_no_region_labels,
 )
-from usv_playpen.modeling import manifold_metric
-from scipy.optimize import brentq
-from scipy.special import i0e, i1e
-from scipy.stats import vonmises
-
 
 # Validation
 
 
 class TestValidateMetricPeriod:
+    """``_validate_metric_period`` -- the shared guard every manifold helper runs
+    first: supported tags with a positive finite period pass, anything else is a
+    settings bug that must raise."""
 
     def test_accepts_supported_metrics(self):
         """Both canonical tags with a positive finite period must pass
@@ -64,7 +76,7 @@ class TestValidateMetricPeriod:
         """An unsupported metric tag is a settings bug, not a soft
         fallback — the helper raises ``ValueError``."""
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='manifold_metric must be one of'):
             _validate_metric_period('spherical', 1.0)
 
     @pytest.mark.parametrize("bad_period", [0.0, -1.0, np.inf, np.nan])
@@ -73,7 +85,7 @@ class TestValidateMetricPeriod:
         euclidean, so a caller cannot mis-specify on a euclidean run and
         silently flip to torus later."""
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='manifold_period must be a positive finite number'):
             _validate_metric_period('torus', bad_period)
 
 
@@ -81,6 +93,8 @@ class TestValidateMetricPeriod:
 
 
 class TestSignedDiff:
+    """``signed_diff`` (and its JAX mirror): plain subtraction on euclidean, the
+    shortest wrapped displacement on the torus, which every residual relies on."""
 
     def test_euclidean_is_plain_difference(self):
         """On euclidean the signed difference is exactly ``a - b``."""
@@ -128,6 +142,8 @@ class TestSignedDiff:
 
 
 class TestPairwiseDistance:
+    """``pairwise_distance``: the L2 norm on euclidean and the wrapped geodesic on
+    the torus, so a seam-straddling pair is near, not far apart."""
 
     def test_euclidean_is_l2_norm(self):
         """Euclidean distance is the row-wise L2 norm of ``a - b``."""
@@ -162,6 +178,8 @@ class TestPairwiseDistance:
 
 
 class TestCircularMean:
+    """``circular_mean``: the arithmetic mean on euclidean and the circular mean
+    on the torus, whose seam-straddling case is the headline invariant."""
 
     def test_euclidean_is_arithmetic_mean(self):
         """On euclidean the unweighted centroid is the column mean."""
@@ -203,7 +221,7 @@ class TestCircularMean:
         must raise ``ValueError``."""
 
         Y = np.array([[0.0, 0.0], [1.0, 1.0]])
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='weights must have positive sum'):
             circular_mean(Y, metric='euclidean', period=1.0,
                           weights=np.array([0.0, 0.0]))
 
@@ -212,6 +230,8 @@ class TestCircularMean:
 
 
 class TestTotalDispersion:
+    """``total_dispersion``: the sum of squared (wrapped) distances to the
+    centroid, including the degenerate single-point and zero-weight cases."""
 
     def test_single_point_has_zero_dispersion(self):
         """A degenerate one-point cloud sits exactly on its own
@@ -236,7 +256,7 @@ class TestTotalDispersion:
         call raises first, but a non-uniform path is also guarded)."""
 
         Y = np.array([[0.0, 0.0], [1.0, 1.0]])
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='weights must have positive sum'):
             total_dispersion(Y, metric='euclidean', period=1.0,
                              weights=np.array([0.0, 0.0]))
 
@@ -245,6 +265,8 @@ class TestTotalDispersion:
 
 
 class TestSinCosEncodeDecode:
+    """The (sin, cos) encoding and its atan2 decode: shapes, round-trip identity
+    and wrap behaviour that the torus regressors depend on."""
 
     def test_encode_shape_doubles_last_axis(self):
         """Encoding maps ``(..., D)`` to ``(..., 2D)``."""
@@ -297,6 +319,8 @@ class TestSinCosEncodeDecode:
 
 
 class TestTorusEmbed:
+    """``torus_embed``: the 4-D (cos, sin) embedding whose chord distance must be
+    the monotone wrapped distance used by the torus kd-tree."""
 
     def test_shape_doubles_last_axis(self):
         """The 4-D embedding maps ``(N, D)`` to ``(N, 2D)``."""
@@ -346,7 +370,7 @@ class TestTorusEmbed:
     def test_rejects_non_positive_period(self):
         """A non-positive period is rejected at the embedding boundary."""
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='period must be positive finite'):
             torus_embed(np.zeros((3, 2)), period=0.0)
 
 
@@ -354,6 +378,8 @@ class TestTorusEmbed:
 
 
 class TestResolveManifoldMetric:
+    """``resolve_manifold_metric``: reads the two settings keys strictly and
+    validates them, so a mis-specified settings file fails loudly."""
 
     def test_reads_and_validates_settings(self):
         """The resolver reads the two canonical keys and returns the
@@ -371,7 +397,7 @@ class TestResolveManifoldMetric:
 
         settings = {'vocal_features': {'usv_manifold_metric': 'bogus',
                                        'usv_manifold_period': 1.0}}
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='manifold_metric must be one of'):
             resolve_manifold_metric(settings)
 
     def test_missing_key_raises_keyerror(self):
@@ -412,7 +438,7 @@ class TestResolveManifoldSelectionScoreKey:
         """A present-but-invalid mode is a settings-file bug and raises."""
 
         bad = {'vocal_features': {'usv_manifold_selection_score': 'meso'}}
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="usv_manifold_selection_score must be 'macro' or"):
             resolve_manifold_selection_score_key(bad, 'torus')
 
 
@@ -432,7 +458,8 @@ class TestDistanceCorrelation:
         g = np.random.default_rng(seed)
         X = g.standard_normal((n, 4))
         w = g.standard_normal((4, 4))
-        thx = np.arctan2(X @ w[0], X @ w[1]); thy = np.arctan2(X @ w[2], X @ w[3])
+        thx = np.arctan2(X @ w[0], X @ w[1])
+        thy = np.arctan2(X @ w[2], X @ w[3])
         Y = np.column_stack([(thx / (2 * np.pi)) % 1.0, (thy / (2 * np.pi)) % 1.0])
         return X, Y
 
@@ -441,8 +468,8 @@ class TestDistanceCorrelation:
         perfectly dependent (identical) one; a constant input gives 0."""
 
         rng = np.random.default_rng(0)
-        from usv_playpen.modeling.manifold_metric import _geodesic_distance_matrix
-        A = rng.random((300, 2)); B = rng.random((300, 2))
+        A = rng.random((300, 2))
+        B = rng.random((300, 2))
         da = _geodesic_distance_matrix(A, metric='torus', period=1.0)
         db = _geodesic_distance_matrix(B, metric='torus', period=1.0)
         assert distance_correlation(da, da) == pytest.approx(1.0, abs=1e-9)   # self
@@ -469,7 +496,6 @@ class TestDistanceCorrelation:
         magnitude-shrinkage (the atan2 embedding scale drops out)."""
 
         rng = np.random.default_rng(3)
-        from usv_playpen.modeling.manifold_metric import _geodesic_distance_matrix
         A = _geodesic_distance_matrix(rng.random((250, 2)), metric='euclidean', period=1.0)
         B = _geodesic_distance_matrix(rng.random((250, 2)), metric='euclidean', period=1.0)
         base = distance_correlation(A, B)
@@ -491,19 +517,20 @@ class TestManifoldPredictionMetrics:
     non-fitted baselines (the `null_model_free` empirical-density draw and the
     forward-selection Step-0 baseline)."""
 
-    _KEYS = {
+    _KEYS = frozenset({
         'r2_spatial', 'euclidean_mae', 'euclidean_rmse', 'euclidean_mae_weighted',
         'euclidean_mae_raw', 'euclidean_mae_macro', 'mahalanobis_mae', 'mae_x', 'mae_y',
         'pearson_x', 'pearson_y', 'spearman_x', 'spearman_y', 'dcor_xy',
         'vm_logscore', 'vm_logscore_pooled',
-    }
+    })
 
     def test_bundle_keys_and_raw_equals_mae(self):
         """Returns exactly the fitted-strategy key set; with no snap, the raw
         and snapped MAE coincide."""
 
         rng = np.random.default_rng(0)
-        Y = rng.random((200, 2)); Yp = rng.random((200, 2))
+        Y = rng.random((200, 2))
+        Yp = rng.random((200, 2))
         bundle = manifold_prediction_metrics(Y, Yp, metric='euclidean', period=1.0)
         assert set(bundle) == self._KEYS
         assert bundle['euclidean_mae_raw'] == bundle['euclidean_mae']
@@ -534,7 +561,8 @@ class TestManifoldPredictionMetrics:
         NaN."""
 
         rng = np.random.default_rng(2)
-        Y = rng.random((200, 2)); Yp = rng.random((200, 2))
+        Y = rng.random((200, 2))
+        Yp = rng.random((200, 2))
         euc = manifold_prediction_metrics(Y, Yp, metric='euclidean', period=1.0)
         assert np.isfinite(euc['dcor_xy'])
         assert np.isnan(euc['vm_logscore'])
@@ -631,7 +659,8 @@ class TestManifoldPredictionMetrics:
         finite once one is supplied."""
 
         rng = np.random.default_rng(4)
-        Y = rng.random((100, 2)); Yp = rng.random((100, 2))
+        Y = rng.random((100, 2))
+        Yp = rng.random((100, 2))
         assert np.isnan(
             manifold_prediction_metrics(Y, Yp, metric='euclidean', period=1.0)['mahalanobis_mae']
         )
@@ -674,23 +703,57 @@ class TestFitVonMisesKappa:
         """A root-finder failure (``ValueError``: no sign change in the bracket;
         ``RuntimeError``: no convergence) means no usable concentration and
         returns 0."""
-        import usv_playpen.modeling.manifold_metric as mm
         residuals = np.random.default_rng(4).vonmises(0.0, 2.0, size=500)
         for exc in (ValueError('no sign change'), RuntimeError('no convergence')):
             def _fail(*_a, _exc=exc, **_k):
+                """
+                Description
+                -----------
+                Stand-in for ``brentq`` that raises the bound root-finder failure,
+                one of the two the kappa MLE treats as "no usable concentration".
+
+                Parameters
+                ----------
+                *_a, **_k
+                    Ignored; accepted so the stand-in matches any ``brentq`` form.
+                _exc (Exception)
+                    The exception to raise, bound at definition time so each loop
+                    iteration raises its own failure.
+
+                Returns
+                -------
+                None
+                    Never returns; always raises ``_exc``.
+                """
                 raise _exc
-            monkeypatch.setattr(mm, 'brentq', _fail)
+            monkeypatch.setattr(manifold_metric, 'brentq', _fail)
             assert _fit_von_mises_kappa(residuals) == 0.0
 
     def test_unexpected_root_finder_error_propagates(self, monkeypatch):
         """Any other exception from the root finder is a bug and propagates
         (the guard used to be a bare ``except Exception: return 0.0``)."""
-        import usv_playpen.modeling.manifold_metric as mm
 
         def _fail(*_a, **_k):
-            raise ZeroDivisionError('forced failure')
+            """
+            Description
+            -----------
+            Stand-in for ``brentq`` that raises an error type the kappa MLE must
+            NOT swallow.
 
-        monkeypatch.setattr(mm, 'brentq', _fail)
+            Parameters
+            ----------
+            *_a, **_k
+                Ignored; accepted so the stand-in matches any ``brentq`` form.
+
+            Returns
+            -------
+            None
+                Never returns; always raises ``ZeroDivisionError``.
+            """
+            msg = 'forced failure'
+            raise ZeroDivisionError(msg)
+
+        monkeypatch.setattr(manifold_metric, 'brentq', _fail)
         residuals = np.random.default_rng(5).vonmises(0.0, 2.0, size=500)
         with pytest.raises(ZeroDivisionError, match='forced failure'):
             _fit_von_mises_kappa(residuals)
@@ -708,7 +771,8 @@ class TestMacroVonMisesLogscore:
         poor = (Y + rng.normal(0, 0.2, Y.shape)) % 1.0
         s_good = macro_von_mises_logscore(good, Y, None, metric='torus', period=1.0)
         s_poor = macro_von_mises_logscore(poor, Y, None, metric='torus', period=1.0)
-        assert np.isfinite(s_good) and np.isfinite(s_poor)
+        assert np.isfinite(s_good)
+        assert np.isfinite(s_poor)
         assert s_good > s_poor
 
     def test_pooled_when_no_labels(self):
@@ -820,7 +884,8 @@ class TestRegionLabelFallbackIsLoud:
         first = macro_von_mises_logscore(y_pred, y_true, no_labels, metric='torus', period=1.0)
         second = macro_von_mises_logscore(y_pred, y_true, no_labels, metric='torus', period=1.0)
         pooled = macro_von_mises_logscore(y_pred, y_true, None, metric='torus', period=1.0)
-        assert first == pytest.approx(pooled) and second == pytest.approx(pooled)
+        assert first == pytest.approx(pooled)
+        assert second == pytest.approx(pooled)
         printed = capsys.readouterr().out
         assert printed.count('macro score fell back to the pooled von Mises score') == 1
 
@@ -1000,6 +1065,22 @@ class TestKnownAnswers:
         assert distance_correlation(dist_a, np.zeros_like(dist_a)) == 0.0
 
         def centre(m):
+            """
+            Description
+            -----------
+            Double-centres a distance matrix (subtracts row and column means and
+            adds back the grand mean), the brute-force reference for dCor.
+
+            Parameters
+            ----------
+            m (np.ndarray)
+                Square ``(n, n)`` distance matrix.
+
+            Returns
+            -------
+            centred (np.ndarray)
+                The double-centred ``(n, n)`` matrix.
+            """
             return m - m.mean(0, keepdims=True) - m.mean(1, keepdims=True) + m.mean()
 
         ca, cb = centre(dist_a), centre(dist_b)
@@ -1027,5 +1108,5 @@ class TestKnownAnswers:
         diff = signed_diff(Y, centroid[None, :], metric='torus', period=period)
         weighted = 60 * float(np.sum((w / w.sum())[:, None] * diff ** 2))
         assert total_dispersion(Y, metric='torus', period=period, weights=w) == pytest.approx(weighted, rel=1e-12)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='weights must have positive sum'):
             total_dispersion(Y, metric='torus', period=period, weights=np.zeros(60))

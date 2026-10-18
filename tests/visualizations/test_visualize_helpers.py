@@ -1,9 +1,10 @@
 """
 @author: bartulem
 Mock-based tests for the leaf-level public helpers in
-`make_neuronal_tuning_figures` and `make_behavioral_videos`.
+``usv_playpen.visualizations.make_neuronal_tuning_figures`` and
+``usv_playpen.visualizations.make_behavioral_videos``.
 
-We deliberately stay out of the matplotlib rendering paths (which need
+Coverage: we deliberately stay out of the matplotlib rendering paths (which need
 real per-cluster pkls and tracking data) and instead test:
 
 - pure logic helpers (decision-rules, channel→region resolution, TTL
@@ -14,29 +15,30 @@ real per-cluster pkls and tracking data) and instead test:
 
 from __future__ import annotations
 
+import pickle
+
+# Force a non-interactive backend before importing the visualization modules
+import matplotlib as mpl
 import numpy as np
 import pytest
 from scipy.io import wavfile
 
-# Force a non-interactive backend before importing the visualization modules
-import matplotlib
-matplotlib.use("Agg")
+mpl.use("Agg")
 
 from usv_playpen import os_utils
+from usv_playpen.visualizations.make_behavioral_videos import (
+    Create3DVideo,
+    create_spike_sound_file,
+    filter_spikes_for_raster,
+    find_region_by_channel,
+    load_audio_data,
+    read_ttl_events,
+    spectrogram_window_columns,
+)
 from usv_playpen.visualizations.make_neuronal_tuning_figures import (
     NeuronalTuningFigureMaker,
     _decide_strip_xscale,
 )
-from usv_playpen.visualizations.make_behavioral_videos import (
-    read_ttl_events,
-    filter_spikes_for_raster,
-    find_region_by_channel,
-    spectrogram_window_columns,
-    load_audio_data,
-    create_spike_sound_file,
-    Create3DVideo,
-)
-
 
 # _decide_strip_xscale — pure decision rule
 
@@ -72,7 +74,25 @@ def test_decide_strip_xscale_returns_linear_when_below_threshold():
 
 
 def _make_fig_maker(root_directory: str, **viz_overrides) -> NeuronalTuningFigureMaker:
-    """Build a fig maker with a minimal (but valid) settings dict."""
+    """
+    Description
+    -----------
+    Build a ``NeuronalTuningFigureMaker`` with a minimal (but valid)
+    visualizations settings dict and a message sink that collects every
+    log line, so the early-exit tests can assert on what was reported.
+
+    Parameters
+    ----------
+    root_directory (str)
+        Session root the maker looks for ``ephys/tuning_curves`` under.
+    **viz_overrides (dict)
+        Top-level settings blocks to replace.
+
+    Returns
+    -------
+    maker, msg (tuple[NeuronalTuningFigureMaker, list[str]])
+        The maker and the list its messages are appended to.
+    """
     msg = []
     viz = {
         "male_colors": ["#1f77b4"],
@@ -134,15 +154,15 @@ def test_fig_maker_skips_when_tuning_dir_empty(tmp_path):
     assert any("no tuning pkls" in m for m in msgs)
 
 
-def test_fig_maker_skips_pkl_with_no_payload(tmp_path, mocker, qlvm_category_bundle):
+@pytest.mark.usefixtures("qlvm_category_bundle")
+def test_fig_maker_skips_pkl_with_no_payload(tmp_path, mocker):
     """A pkl with neither beh_offset= nor vocal_q keys is silently skipped
     (no save attempted), so the run finishes without errors."""
-    import pickle as _pickle
     tuning_dir = tmp_path / "ephys" / "tuning_curves"
     tuning_dir.mkdir(parents=True)
     pkl_path = tuning_dir / "cl_001_tuning_curves_data.pkl"
     with pkl_path.open("wb") as f:
-        _pickle.dump({"unrelated_key": 42}, f)
+        pickle.dump({"unrelated_key": 42}, f)
 
     maker, _msgs = _make_fig_maker(str(tmp_path))
     # Patch smart_wait so we don't actually sleep.
@@ -314,8 +334,8 @@ def test_create_spike_sound_file_overlapping_spikes_sum(tmp_path):
     one_dir.mkdir()
     two_dir = tmp_path / "two"
     two_dir.mkdir()
-    common = dict(audio_duration=5.0, sound_frame_start=0, sound_frame_span=600,
-                  tracking_esr=150.0, unit_id="u")
+    common = {"audio_duration": 5.0, "sound_frame_start": 0, "sound_frame_span": 600,
+              "tracking_esr": 150.0, "unit_id": "u"}
     create_spike_sound_file(spike_array=np.array([100], dtype=np.int64),
                             sound_save_directory=str(one_dir), sound_session_id="one", **common)
     create_spike_sound_file(spike_array=np.array([100, 100], dtype=np.int64),

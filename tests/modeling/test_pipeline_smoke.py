@@ -3,8 +3,8 @@
 End-to-end smoke tests for the USV vocal-onset modeling pipeline and the two
 HPC dispatchers, driven entirely on tiny synthetic data built by ``_synth``.
 
-These tests deliberately walk the *production* code paths rather than testing
-isolated helpers:
+Coverage: these tests deliberately walk the *production* code paths rather
+than testing isolated helpers:
 
 * ``TestOnsetInputExtraction`` runs the real
   ``VocalOnsetModelingPipeline.extract_and_save_modeling_input_data`` against a
@@ -48,11 +48,11 @@ import pickle
 import warnings
 from pathlib import Path
 
-import matplotlib
+import matplotlib as mpl
 import numpy as np
 import pytest
 
-matplotlib.use('Agg')
+mpl.use('Agg')
 
 from tests.modeling._synth import (
     build_modeling_input_pickle,
@@ -237,7 +237,7 @@ class TestOnsetInputExtraction:
         feature_keys = sorted(k for k in artifact if not k.startswith('_'))
         assert feature_keys, 'no feature arrays extracted'
         for feature in feature_keys:
-            for session, arrays in artifact[feature].items():
+            for arrays in artifact[feature].values():
                 assert arrays['usv_feature_arr'].shape[1] == pipeline.history_frames
                 assert arrays['no_usv_feature_arr'].shape[1] == pipeline.history_frames
                 assert arrays['usv_feature_arr'].shape[0] == arrays['no_usv_feature_arr'].shape[0] > 0
@@ -284,7 +284,8 @@ class TestOnsetInputExtraction:
             no_usv = artifact[anchor][sess]['no_usv_feature_arr']
             assert usv.shape[1] == HISTORY_FRAMES
             assert no_usv.shape[1] == HISTORY_FRAMES
-            assert np.isfinite(usv).all() and np.isfinite(no_usv).all()
+            assert np.isfinite(usv).all()
+            assert np.isfinite(no_usv).all()
             total_usv += usv.shape[0]
             total_no_usv += no_usv.shape[0]
 
@@ -557,6 +558,24 @@ class TestModelSelectionDispatcher:
         real_selection = vocal_onset_model_selection
 
         def _wrapped(**kwargs):
+            """
+            Description
+            -----------
+            Forwards to the real selector with the synthetic settings path swapped
+            in, so the dispatcher's routing is exercised without editing the shipped
+            settings.
+
+            Parameters
+            ----------
+            kwargs (dict)
+                Keyword arguments the dispatcher passes; ``settings_path`` is overwritten.
+
+            Returns
+            -------
+            result (object)
+                Whatever ``vocal_onset_model_selection`` returns.
+            """
+
             kwargs['settings_path'] = str(settings_json)
             return real_selection(**kwargs)
 

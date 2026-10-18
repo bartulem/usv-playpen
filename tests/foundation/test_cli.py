@@ -1,26 +1,37 @@
 """
 @author: bartulem
-Test CLI.
+Test CLI: the click entry points of analyze_data, preprocess_data and
+visualize_data parse their arguments and hand them, with the settings dict
+rewritten by modify_settings_json_for_cli, to the right backend class.
+
+Coverage: generate-beh-features, generate-usv-playback, generate-rm-files,
+visualize-3D-data (including shared keys landing in the video block),
+generate-rm-figures, concatenate-video-files, rectify-video-fps (flag form),
+crop-wav-files-to-video, av-sync-check, and the usage error raised when a
+required directory option is missing.
 """
+
+from __future__ import annotations
 
 import pytest
 from click.testing import CliRunner
 
 from usv_playpen.analyses.analyze_data import (
     generate_beh_features_cli,
-    generate_usv_playback_cli,
     generate_rm_files_cli,
+    generate_usv_playback_cli,
 )
 from usv_playpen.processing.preprocess_data import (
+    av_sync_check_cli,
     concatenate_video_files_cli,
-    rectify_video_fps_cli,
     crop_wav_files_to_video_cli,
-    av_sync_check_cli
+    rectify_video_fps_cli,
 )
 from usv_playpen.visualizations.visualize_data import (
+    generate_rm_figures_cli,
     visualize_3D_data_cli,
-    generate_rm_figures_cli
 )
+
 
 @pytest.fixture
 def runner():

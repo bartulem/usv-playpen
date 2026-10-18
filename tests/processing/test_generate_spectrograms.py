@@ -7,6 +7,12 @@ sampling rate / sample count / channel count / dtype the way das_inference
 writes it) plus a small ``*_usv_summary.csv``, then checks that one session's
 spectrograms are written to ``audio/spectrograms/<session>_spectrograms.h5``
 with the expected datasets and shapes.
+
+Coverage: compute_usv_spectrogram (shape and range, channel-variance offsets
+steering the weights, too-short segments, the legacy QLVM defaults, absolute dB
+at native length) and generate_session_spectrograms (writing the H5, placeholders
+for invalid USVs, dropping metadata-excluded channels, row-subset patches and
+their refusals, a failed full pass or patch keeping the old file).
 """
 
 from __future__ import annotations
@@ -302,8 +308,12 @@ def test_generate_session_spectrograms_failed_full_pass_keeps_the_old_file(tmp_p
     original_create = h5py.Group.create_dataset
 
     def _failing_create(self, name, *args, **kwargs):
+        """Stand in for ``h5py.Group.create_dataset``: raise OSError("disk full") when
+        the ``durations`` dataset is created, so the write dies part-way, and defer to
+        the real method for every other dataset."""
         if name == "durations":
-            raise OSError("disk full")
+            message = "disk full"
+            raise OSError(message)
         return original_create(self, name, *args, **kwargs)
 
     mocker.patch.object(h5py.Group, "create_dataset", _failing_create)
@@ -332,9 +342,13 @@ def test_generate_session_spectrograms_failed_patch_keeps_the_old_file(tmp_path,
     writes = []
 
     def _failing_setitem(self, key, value):
+        """Stand in for ``h5py.Dataset.__setitem__``: record each write and raise
+        OSError("disk full") on the second, so the patch dies after writing some
+        rows; the first write goes through to the real method."""
         writes.append(key)
         if len(writes) == 2:
-            raise OSError("disk full")
+            message = "disk full"
+            raise OSError(message)
         return original_setitem(self, key, value)
 
     mocker.patch.object(h5py.Dataset, "__setitem__", _failing_setitem)

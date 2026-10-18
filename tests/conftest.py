@@ -1,3 +1,13 @@
+"""
+@author: bartulem
+Session-wide pytest configuration and shared synthetic-data writers for the suite.
+
+It forces a headless Qt platform under WSL, snapshots the SHA-256 of every file under
+``src/usv_playpen`` at session start (read back by ``tests/test_src_integrity.py``, which is
+reordered to run last), and provides the broadband-memmap writer, the synthetic QLVM category
+bundle writer and the ``qlvm_category_bundle`` fixture that redirects the bundle loader to it.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -94,7 +104,7 @@ def pytest_sessionstart(session):
     session.config._src_tree_baseline = _hash_src_tree()
 
 
-def pytest_collection_modifyitems(config, items):
+def pytest_collection_modifyitems(items):
     """
     Description
     -----------
@@ -107,8 +117,6 @@ def pytest_collection_modifyitems(config, items):
 
     Parameters
     ----------
-    config (pytest.Config)
-        Pytest configuration object (unused).
     items (list[pytest.Item])
         Collected test items; reordered in place.
 

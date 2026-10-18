@@ -6,6 +6,14 @@ The orchestrator is mostly integration glue over real session data, so
 these tests cover the pure-logic pieces that are both self-contained and
 historically bug-prone: the metric-name / catalog-column bookkeeping and
 the per-shank channel ordering.
+
+Coverage: catalog-path resolution, the metric-name split and the 55-column
+catalog, per-shank channel ordering, the session-in-catalog check and the
+``run`` skip / overwrite behaviour, ``SpikeQualityMetricsExtractor``
+construction (paths, meta, metric-parameter overrides, hemisphere and meta
+errors), the template / amplitude / unit-location / cross-session firing-rate
+computations on duck-typed analyzer stubs, and the idempotent session-catalog
+merge.
 """
 
 from __future__ import annotations
@@ -264,14 +272,17 @@ class _StubExtension:
     """
 
     def __init__(self, data=None, nbefore=None, random_spikes=None):
+        """Store the extension payload, waveform ``nbefore`` index and random-spike table."""
         self._data = data
         self.nbefore = nbefore
         self._random_spikes = random_spikes
 
     def get_data(self):
+        """Return the stored extension array, as ``AnalyzerExtension.get_data`` would."""
         return self._data
 
     def get_random_spikes(self):
+        """Return the stored random-spike table of the ``random_spikes`` extension."""
         return self._random_spikes
 
 
@@ -280,6 +291,7 @@ class _StubSparsity:
     per-unit channel-index mapping the metric methods consult."""
 
     def __init__(self, mask=None, unit_id_to_channel_indices=None):
+        """Store the sparsity mask and the per-unit channel-index mapping."""
         self.mask = mask
         self.unit_id_to_channel_indices = unit_id_to_channel_indices
 
@@ -290,6 +302,7 @@ class _StubAnalyzer:
 
     def __init__(self, unit_ids, sampling_frequency=None,
                  channel_locations=None, sparsity=None, extensions=None):
+        """Store the analyzer attributes and the name-to-extension map."""
         self.unit_ids = unit_ids
         self.sampling_frequency = sampling_frequency
         self._channel_locations = channel_locations
@@ -297,9 +310,11 @@ class _StubAnalyzer:
         self._extensions = extensions or {}
 
     def get_channel_locations(self):
+        """Return the stored probe channel coordinates."""
         return self._channel_locations
 
     def get_extension(self, name):
+        """Return the named extension stub, raising ``KeyError`` if the code asks for one not provided."""
         return self._extensions[name]
 
 
@@ -308,13 +323,16 @@ class _StubSorting:
     ``ch`` peak-channel property."""
 
     def __init__(self, spike_trains=None, ch=None):
+        """Store the per-unit spike trains and the ``ch`` peak-channel property."""
         self._spike_trains = spike_trains or {}
         self._ch = ch
 
     def get_unit_spike_train(self, unit_id):
+        """Return the stored spike-sample array for ``unit_id``."""
         return self._spike_trains[unit_id]
 
     def get_property(self, key):
+        """Return the peak channels, failing if anything but the ``ch`` property is requested."""
         assert key == 'ch'
         return self._ch
 
@@ -323,9 +341,11 @@ class _StubRecording:
     """Stand-in for ``BaseRecording`` exposing only the total sample count."""
 
     def __init__(self, n_samples):
+        """Store the total recording sample count."""
         self._n = n_samples
 
     def get_num_samples(self):
+        """Return the stored total sample count."""
         return self._n
 
 

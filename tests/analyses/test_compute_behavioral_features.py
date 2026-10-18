@@ -14,19 +14,31 @@ dyadic forward/reverse angle phrasing, the derivative suffix, the
 no-sex and unknown-key fallbacks, and — crucially — that EVERY kinematic
 base feature in ``feature_boundaries`` has a display label (so no feature
 silently falls back to its raw key).
+
+Coverage: label resolution for egocentric, head-angle, dyadic distance / angle,
+engagement and derivative keys plus the missing-sex and unknown-key fallbacks;
+display-label completeness over ``feature_boundaries``; registration of the
+head-head distance and the head yaw / pitch columns alongside their nose
+counterparts; and the atomic write of the per-session behavioral-features CSV.
 """
 
 from __future__ import annotations
 
+import ast
+import inspect
 import re
+import textwrap
 
-import matplotlib
-matplotlib.use("Agg")
+import matplotlib as mpl
+
+mpl.use("Agg")
 
 from usv_playpen.analyses.compute_behavioral_features import FeatureZoo
 
 
 class TestResolveFeatureLabel:
+    """``FeatureZoo.resolve_feature_label`` turns generic feature keys into the
+    cohort-specific labels the modeling figures print."""
 
     def test_egocentric_prefixes_get_sex_word(self):
         """``self.<x>`` / ``other.<x>`` are prefixed with the target /
@@ -92,6 +104,8 @@ class TestResolveFeatureLabel:
 
 
 class TestFeatureDisplayNamesCompleteness:
+    """Every kinematic base feature must carry a display label, so no figure falls
+    back to printing a raw key."""
 
     def test_every_boundary_base_has_a_display_label(self):
         """Every kinematic base feature in ``feature_boundaries`` (with the
@@ -142,6 +156,8 @@ class TestSocialHeadYawColumns:
 
 
 class TestBehavioralFeaturesCsvIsWrittenAtomically:
+    """The per-session behavioral-features CSV is written through
+    ``atomic_output_path`` so a crash never leaves a truncated file."""
 
     def test_write_csv_goes_through_atomic_output_path(self):
         """
@@ -154,10 +170,6 @@ class TestBehavioralFeaturesCsvIsWrittenAtomically:
         call in ``save_behavioral_features_to_file`` sits inside a
         ``with atomic_output_path(...)`` block and writes to the temp path it yields.
         """
-
-        import ast
-        import inspect
-        import textwrap
 
         tree = ast.parse(textwrap.dedent(inspect.getsource(FeatureZoo.save_behavioral_features_to_file)))
         write_calls = [node for node in ast.walk(tree)
@@ -172,4 +184,5 @@ class TestBehavioralFeaturesCsvIsWrittenAtomically:
         temp_name = atomic_withs[0].items[0].optional_vars.id
         assert write_calls[0] in list(ast.walk(atomic_withs[0]))
         file_kw = next(kw for kw in write_calls[0].keywords if kw.arg == "file")
-        assert isinstance(file_kw.value, ast.Name) and file_kw.value.id == temp_name
+        assert isinstance(file_kw.value, ast.Name)
+        assert file_kw.value.id == temp_name

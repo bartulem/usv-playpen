@@ -24,6 +24,7 @@ from usv_playpen.neural_modeling.shift_null_inference import (
 
 class TestShiftRange:
 
+    """The admissible circular-shift range, the shift sampler, and the shifted spike train."""
     def test_range_is_the_full_wrap_minus_a_guard_at_both_ends(self):
         """A narrow window holds few INDEPENDENT draws however many are nominally taken, which is why
         the range is the whole session rather than a fixed 20-60 s band."""
@@ -32,10 +33,14 @@ class TestShiftRange:
         assert high == pytest.approx(1180.0)
 
     def test_a_session_too_short_for_the_guard_raises(self):
+        """A session shorter than twice the guard has no admissible shift, so it must raise ``ValueError``
+        ("too short") instead of sampling from an empty or inverted range."""
         with pytest.raises(ValueError, match="too short"):
             shift_range_seconds(30.0, guard_seconds=20.0)
 
     def test_sampled_shifts_respect_the_guard(self):
+        """Over 200 draws every sampled shift (in seconds) must lie inside [guard, duration - guard], so no null
+        draw sits close enough to zero lag to keep the true spike-behaviour alignment."""
         generator = np.random.default_rng(0)
         fps, n_frames = 150.0, 180_000
         # the sampler returns SECONDS, which is what `shifted_spike_frames` takes
@@ -59,7 +64,10 @@ class TestShiftRange:
 
 class TestEmpiricalPvalue:
 
+    """The empirical p-value with its 1/(n+1) floor and the at-floor flag."""
     def test_p_floors_at_one_over_n_plus_one(self):
+        """An observation beyond every null draw must give exactly 1/(n+1) and set the at-floor flag, the flag
+        the escalation ladder keys on."""
         null = np.random.default_rng(2).normal(size=999)
         p_value, at_floor = empirical_pvalue(null, 50.0)
 
@@ -67,6 +75,8 @@ class TestEmpiricalPvalue:
         assert at_floor
 
     def test_an_ordinary_observation_is_not_at_the_floor(self):
+        """An observation at the null centre must give a mid-range p and leave the at-floor flag unset, so the
+        ladder is not triggered for unremarkable units."""
         null = np.random.default_rng(3).normal(size=999)
         p_value, at_floor = empirical_pvalue(null, 0.0)
 
@@ -76,6 +86,7 @@ class TestEmpiricalPvalue:
 
 class TestBhFloorRequirement:
 
+    """The number of floor-tied units BH needs before it can reject any of them."""
     def test_the_requirement_falls_as_draws_are_added(self):
         """This is the arithmetic that motivates the ladder: at 1,000 draws a 2,525-unit cohort needs
         253 units tied at the floor before BH can reject any of them."""
@@ -88,11 +99,29 @@ class TestBhFloorRequirement:
 
 class TestEscalationLadder:
 
+    """The accumulate-and-stop-early escalation of the shift null."""
     def test_it_accumulates_and_stops_when_the_p_lifts_off_the_floor(self):
+        """An observation beyond every draw must top the null up rung by rung (9,000 then 90,000 extra draws,
+        never a fresh redraw) and end at the deepest floor 1/100,001, so earlier draws are never wasted."""
         generator = np.random.default_rng(4)
         calls = []
 
         def draw_more(count):
+            """
+            Description
+            -----------
+            Records the requested top-up size and returns that many standard-normal null draws.
+
+            Parameters
+            ----------
+            count (int)
+                Number of extra null draws the ladder requests.
+
+            Returns
+            -------
+            draws (np.ndarray)
+                ``count`` draws from the enclosing generator.
+            """
             calls.append(count)
             return generator.normal(size=count)
 
@@ -106,10 +135,27 @@ class TestEscalationLadder:
         assert at_floor
 
     def test_an_unremarkable_observation_never_escalates(self):
+        """An observation off the floor at the initial 1,000 draws must never request more, so the expensive
+        top-ups are spent only on units that could clear BH."""
         generator = np.random.default_rng(5)
         calls = []
 
         def draw_more(count):
+            """
+            Description
+            -----------
+            Records the requested top-up size and returns that many standard-normal null draws.
+
+            Parameters
+            ----------
+            count (int)
+                Number of extra null draws the ladder requests.
+
+            Returns
+            -------
+            draws (np.ndarray)
+                ``count`` draws from the enclosing generator.
+            """
             calls.append(count)
             return generator.normal(size=count)
 

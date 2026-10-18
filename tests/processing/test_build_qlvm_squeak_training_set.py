@@ -2,7 +2,7 @@
 @author: bartulem
 Tests for processing/build_qlvm_squeak_training_set.
 
-The frame count, the candidate selection from the USV summary (squeak true:
+Coverage: the frame count, the candidate selection from the USV summary (squeak true:
 pure squeaks and overlap segments, the crop window that widens a segment to hold a squeak running
 past it), the crop gates of both crop windows, the per-session/stratum cap, the
 natural and uniform duration-stratified draws and the crop normalizations are
@@ -184,6 +184,12 @@ def cohort(tmp_path, mocker):
 
 
 def _build(tmp_path, roots, cfg, name="out"):
+    """
+    Run QLVMSqueakTrainingSetBuilder.build on ``roots`` with ``cfg`` as its
+    ``build_qlvm_squeak_training_set`` settings block and a silent message
+    output, writing into ``tmp_path / name`` so several builds of one cohort can
+    sit side by side. Returns the output directory.
+    """
     out_dir = tmp_path / name
     squeak_set.QLVMSqueakTrainingSetBuilder(
         root_directories=[str(root) for root in roots],

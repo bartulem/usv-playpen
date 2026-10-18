@@ -1,12 +1,18 @@
 """
 @author: bartulem
-Smoke tests for make_coactivity_figures: every plotter returns a matplotlib
-Figure with the expected axis count (or None for the empty case), the summary
-builders emit their labelled sections, and one integration test feeds real
-neuronal_coactivity_engine output through the figure / summary layer to catch
+Smoke tests for ``usv_playpen.visualizations.make_coactivity_figures``.
+
+Coverage: every plotter returns a matplotlib Figure with the expected axis count
+(or None for the empty case), the summary builders emit their labelled sections,
+the default colours come from the shipped settings, and one integration test feeds
+real neuronal_coactivity_engine output through the figure / summary layer to catch
 any drift in the result-object contract between the two modules.
 """
+
 from __future__ import annotations
+
+import json
+import pathlib
 
 import matplotlib as mpl
 
@@ -26,17 +32,14 @@ def test_coactivity_default_colors_derive_from_settings():
     ``coactivity_colors`` block of ``visualizations_settings.json`` rather than
     hard-coded, so the module constants must equal the shipped palette."""
 
-    import json
-    import pathlib
-
     settings_path = (pathlib.Path(mcf.__file__).parent.parent
                      / "_parameter_settings" / "visualizations_settings.json")
     with settings_path.open() as fh:
         colors = json.load(fh)["coactivity_colors"]
-    assert mcf.COACTIVITY_GROUP_A_COLOR == colors["group_a"]
-    assert mcf.COACTIVITY_GROUP_B_COLOR == colors["group_b"]
-    assert mcf.COACTIVITY_NULL_COLOR == colors["null"]
-    assert mcf.COACTIVITY_THRESHOLD_COLOR == colors["threshold"]
+    assert colors["group_a"] == mcf.COACTIVITY_GROUP_A_COLOR
+    assert colors["group_b"] == mcf.COACTIVITY_GROUP_B_COLOR
+    assert colors["null"] == mcf.COACTIVITY_NULL_COLOR
+    assert colors["threshold"] == mcf.COACTIVITY_THRESHOLD_COLOR
 
 
 _METRICS = ("r_sc", "similarity", "pop_corr")
@@ -50,7 +53,24 @@ _FEATURE_LABELS = {
 
 
 def _acoustics(rng, mean):
-    """Fresh per-feature array dict, one independent random draw per feature."""
+    """
+    Description
+    -----------
+    Fresh per-feature array dict, one independent random draw per feature, so
+    the acoustic panels see distinct data for every feature.
+
+    Parameters
+    ----------
+    rng (np.random.Generator)
+        Seeded generator the draws come from.
+    mean (float)
+        Mean of the normal draws (shifted between the two groups).
+
+    Returns
+    -------
+    out (dict)
+        Maps each of ``_FEATURES`` to a length-100 array.
+    """
     out = {}
     for feature in _FEATURES:
         out[feature] = rng.normal(mean, 1.0, 100)
@@ -86,9 +106,9 @@ def _results():
     for i in range(2):
         per_session.append({
             "session_id": f"sess{i}", "n_a": 12, "n_b": 9,
-            "metrics_a": {metric: 0.3 for metric in _METRICS},
-            "metrics_b": {metric: 0.1 for metric in _METRICS},
-            "deltas": {metric: 0.2 for metric in _METRICS},
+            "metrics_a": dict.fromkeys(_METRICS, 0.3),
+            "metrics_b": dict.fromkeys(_METRICS, 0.1),
+            "deltas": dict.fromkeys(_METRICS, 0.2),
         })
     return {
         "boot_a": boot_a, "boot_b": boot_b,

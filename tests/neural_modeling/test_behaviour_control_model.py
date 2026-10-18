@@ -3,7 +3,7 @@
 Coverage: the cohort-scale behaviour control -- its embedding, its acceptance rule, and its guards.
 
 Every test here pins a failure that actually occurred. The control was refitted per unit on ~2,000
-calls against thousands of columns and scored BELOW a constant fitted on the same calls, so the added
+USVs against thousands of columns and scored BELOW a constant fitted on the same USVs, so the added
 score it produced was the neuron measured against nothing; the forward selection was written from prose
 rather than from the fixed implementation and reproduced a known defect, selecting one feature while an
 unselected set scored better; and a control silently out of step with its settings would change every
@@ -105,9 +105,13 @@ class TestFeatureColumns:
     """Column selection has to honour the ASKED order, not the design's."""
 
     def test_columns_follow_the_requested_order(self) -> None:
+        """Asking for ``["c", "a"]`` at three lags must return c's lag columns before a's, so the control's
+        weights line up with the order it was fitted in, not the design's."""
         assert feature_columns(["a", "b", "c"], ["c", "a"], 3).tolist() == [6, 7, 8, 0, 1, 2]
 
     def test_an_absent_feature_raises(self) -> None:
+        """A feature missing from the design must raise ``KeyError`` ("not in the assembled design") rather than
+        select the wrong columns."""
         with pytest.raises(KeyError, match="not in the assembled design"):
             feature_columns(["a", "b"], ["z"], 3)
 
@@ -129,7 +133,7 @@ class TestApplyBehaviourControl:
         assert controlled["behaviour_control"]["settings_sha256"] == "abc123"
 
     def test_the_original_design_is_not_mutated(self, settings: dict, artifact: dict) -> None:
-        """The caller keeps the raw block; a in-place swap would corrupt anything else holding it."""
+        """The caller keeps the raw block; an in-place swap would corrupt anything else holding it."""
         generator = np.random.default_rng(4)
         design = {"behaviour": generator.normal(size=(20, 10)),
                   "feature_names": ["nose-nose", "other.speed"], "neural": np.zeros((20, 1))}
@@ -172,6 +176,8 @@ class TestLoadControlModel:
     """A control out of step with its settings changes every added score and no reported value."""
 
     def test_drifted_features_raise(self, settings: dict, artifact: dict, tmp_path) -> None:
+        """A stored control whose features differ from the settings' reduced-model features must raise
+        ``ValueError`` ("behaviour control drift") instead of being applied."""
         path = tmp_path / "control.pkl"
         write_control_model(artifact, str(path))
         settings["nested_vocal_manifold_position_decoding"]["behaviour_control_model_path"] = str(path)
@@ -180,6 +186,8 @@ class TestLoadControlModel:
             load_control_model(settings)
 
     def test_matching_features_load(self, settings: dict, artifact: dict, tmp_path) -> None:
+        """A stored control whose features match the settings must load and return those features, so the
+        drift guard does not refuse a valid control."""
         path = tmp_path / "control.pkl"
         write_control_model(artifact, str(path))
         settings["nested_vocal_manifold_position_decoding"]["behaviour_control_model_path"] = str(path)
@@ -188,6 +196,8 @@ class TestLoadControlModel:
         assert load_control_model(settings)["features"] == artifact["features"]
 
     def test_a_missing_control_names_the_dispatcher(self, settings: dict, tmp_path) -> None:
+        """A missing control file must raise ``FileNotFoundError`` naming the behaviour-control dispatcher, so the
+        reader knows which job produces it."""
         settings["nested_vocal_manifold_position_decoding"]["behaviour_control_model_path"] = str(
             tmp_path / "absent.pkl")
         with pytest.raises(FileNotFoundError, match="behaviour-control dispatcher"):
@@ -232,6 +242,8 @@ class TestReducedModelFeaturesRepoint:
             reduced_model_features(settings)
 
     def test_a_cohort_selection_is_read_and_checked(self, settings: dict, tmp_path) -> None:
+        """A cohort selection result's ``selected_features`` must be read and, when it matches the frozen
+        settings list, returned unchanged."""
         path = tmp_path / "selection.pkl"
         chosen = ["nose-nose", "other.speed", "allo_yaw-nose"]
         path.write_bytes(pickle.dumps({"selected_features": chosen}))

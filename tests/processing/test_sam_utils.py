@@ -6,6 +6,8 @@ Tests for ``get_bbox`` — the one pure mask-geometry helper in
 The bounding-box op is easy to get subtly wrong (index order, empty-mask edge
 case), so it is pinned directly here rather than only through the
 (detector-stubbed) pipeline tests.
+
+Coverage: ``get_bbox`` bounds on rectangular masks and its empty-mask result.
 """
 
 from __future__ import annotations

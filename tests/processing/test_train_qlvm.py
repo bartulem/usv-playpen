@@ -15,6 +15,17 @@ without torch through the inference path (``read_torch_checkpoint``,
 objective and its gradients, the decoder initialization, and the JAX inference
 decoder and posterior are checked against torch transcriptions of the reference
 code. The full-scale GPU run is not exercised here.
+
+Coverage: decoder parameter shapes and default initialization against torch,
+the binary evidence and its gradients, JAX inference against the torch decoder
+and posterior, the training loss, the checkpoint structure and its torch and
+torch-free round-trips, split loading (min-max and mask rules), the validation
+subset, legacy-head full-data training, settings / dataset / metadata
+refusals, full-dataset builds and stale splits, and the conditional path
+(condition bin edges, grouped batches, decode grid, decoder input, the scaled
+padded step, recorded bins, the conditional decode round-trip, duration and
+spectral-entropy conditions, condition tables and gaps, empty-bin counting,
+and a failed rerun leaving the earlier cell whole).
 """
 
 from __future__ import annotations

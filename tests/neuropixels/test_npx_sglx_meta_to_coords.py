@@ -8,13 +8,20 @@ strings (``snsGeomMap`` / ``snsShankMap`` / ``imroTbl`` / ``snsApLfSy``)
 entirely in-code, exercise the pure parsers against hand-computed
 electrode coordinates, and round-trip every writer through ``tmp_path``.
 No real ``.meta`` files, hardware, or network are required.
+
+Coverage: the geometry / mux tables and ``OutputFormat``, ``ShankCoords``,
+meta parsing (``parse_spikeglx_meta``, channel counts, part number, geometry
+lookup), the ``snsGeomMap`` / ``snsShankMap`` decoders and their precedence in
+``coords_from_meta``, bad-channel removal, every coordinate writer and the
+format dispatcher, IMRO-derived meta fields and legacy-meta augmentation,
+``plot_coords``, and ``main`` in both its scripted-Qt and headless modes.
 """
 
 from __future__ import annotations
 
-import matplotlib
+import matplotlib as mpl
 
-matplotlib.use("Agg")
+mpl.use("Agg")
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -23,11 +30,11 @@ import scipy.io as sio
 
 import usv_playpen.neuropixels.sglx_meta_to_coords as sglx
 from usv_playpen.neuropixels.sglx_meta_to_coords import (
+    MUX_TABLE,
+    PROBE_GEOMETRY,
     ChannelCounts,
     OutputFormat,
     ProbeGeometry,
-    PROBE_GEOMETRY,
-    MUX_TABLE,
     ShankCoords,
     _imro_derived_meta_fields,
     _lookup_geometry,
@@ -528,7 +535,7 @@ def test_augment_legacy_meta_unknown_part_number_raises(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "output_format,suffix",
+    ("output_format", "suffix"),
     [
         (OutputFormat.TEXT, "_siteCoords.txt"),
         (OutputFormat.NPY, "_siteCoords.npy"),
@@ -621,7 +628,8 @@ class _FakeFileDialog:
     _result = ("", "")
 
     @classmethod
-    def getOpenFileName(cls, *args, **kwargs):
+    def getOpenFileName(cls, *_args, **_kwargs):
+        """Return the preset ``(path, filter)`` tuple, as the dialog would on a pick or cancel."""
         return cls._result
 
 
@@ -630,11 +638,13 @@ class _FakeInputDialog:
     _result = ("text", True)
 
     @classmethod
-    def getItem(cls, *args, **kwargs):
+    def getItem(cls, *_args, **_kwargs):
+        """Return the preset ``(label, ok)`` tuple, as the format chooser would."""
         return cls._result
 
 
 class _FakeStandardButton:
+    """Qt ``QMessageBox.StandardButton`` stand-in with distinct Yes / No values."""
     Yes = 1
     No = 2
 
@@ -645,12 +655,13 @@ class _FakeMessageBox:
     _answer = _FakeStandardButton.No
 
     @classmethod
-    def question(cls, *args, **kwargs):
+    def question(cls, *_args, **_kwargs):
+        """Return the preset button, scripting the user's answer to the plot prompt."""
         return cls._answer
 
     @classmethod
-    def critical(cls, *args, **kwargs):
-        return None
+    def critical(cls, *_args, **_kwargs):
+        """Swallow the error dialog so the conversion-error branch runs headless."""
 
 
 def _patch_qt(monkeypatch, file_result, item_result=("text", True), answer=_FakeStandardButton.No):
@@ -679,7 +690,7 @@ def test_main_writes_selected_format_and_returns_zero(tmp_path, monkeypatch):
     assert (tmp_path / "run.imec0.ap_siteCoords.txt").is_file()
 
 
-def test_main_returns_zero_when_file_dialog_cancelled(tmp_path, monkeypatch):
+def test_main_returns_zero_when_file_dialog_cancelled(monkeypatch):
     """
     Description
     -----------
@@ -733,7 +744,7 @@ def test_main_shows_plot_when_requested(tmp_path, monkeypatch):
         monkeypatch, file_result=(str(meta_file), ""),
         item_result=("text", True), answer=_FakeStandardButton.Yes,
     )
-    monkeypatch.setattr(plt, "show", lambda *a, **k: None)
+    monkeypatch.setattr(plt, "show", lambda *_a, **_k: None)
     assert sglx.main([]) == 0
 
 
@@ -759,6 +770,8 @@ def test_main_legacy_meta_augment_in_place(tmp_path, monkeypatch):
     )
     assert sglx.main([]) == 0
     assert "snsGeomMap" in parse_spikeglx_meta(meta_file)
+
+
 def test_main_headless_writes_selected_format_and_returns_zero(tmp_path):
     """
     Description

@@ -1,9 +1,9 @@
 """
 @author: bartulem
 Tests for the per-frame plotting helpers in
-visualizations/make_behavioral_videos.py.
+``usv_playpen.visualizations.make_behavioral_videos``.
 
-These module-level functions render one composited video frame's worth of
+Coverage: these module-level functions render one composited video frame's worth of
 content (3D mouse skeleton, speaker, arena + microphones, spectrogram, spike
 raster, behavioral-feature traces) onto pre-existing matplotlib axes. They are
 the pure-rendering core of the otherwise opencv/ffmpeg-bound video builder, so
@@ -18,25 +18,26 @@ import pathlib
 from unittest.mock import MagicMock
 
 import h5py
+import matplotlib as mpl
 import numpy as np
 import polars as pls
 import pytest
 
-import matplotlib
-matplotlib.use("Agg")
+mpl.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.colors import to_rgba
 
 import usv_playpen
 from usv_playpen.visualizations.make_behavioral_videos import (
+    Create3DVideo,
+    load_arena_tracks,
+    plot_arena_corners_mics,
+    plot_behavioral_features,
     plot_mouse_data,
+    plot_raster,
     plot_speaker_data,
     plot_spectrogram,
-    plot_raster,
-    plot_behavioral_features,
-    plot_arena_corners_mics,
-    Create3DVideo,
 )
-
 
 _COLOR_MODE = {
     "tick_color": "#888888",
@@ -94,7 +95,7 @@ def test_plot_mouse_data_renders_history_polygons_and_nodes():
 
     rng = np.random.default_rng(0)
     data = rng.uniform(-0.2, 0.2, size=(20, 2, len(_MOUSE_NODES), 3))
-    cmaps = [matplotlib.colormaps["Reds"], matplotlib.colormaps["Greens"]]
+    cmaps = [mpl.colormaps["Reds"], mpl.colormaps["Greens"]]
     fig, ax = _ax3d()
     try:
         plot_mouse_data(
@@ -294,7 +295,8 @@ def test_plot_raster_draws_eventplot_and_area_labels():
         )
         assert len(ax.collections) >= 1, "raster eventplot not drawn"
         texts = [t.get_text() for t in ax.texts]
-        assert "PAG" in texts and "MRN" in texts
+        assert "PAG" in texts
+        assert "MRN" in texts
     finally:
         plt.close(fig)
 
@@ -408,8 +410,6 @@ def test_plot_arena_corners_mics_honors_corner_colors():
     settings block rather than hard-coded, so an explicit ``corner_colors`` dict
     must be reflected in the rendered corner scatter facecolors."""
 
-    from matplotlib.colors import to_rgba
-
     rng = np.random.default_rng(0)
     arena_names = ["North", "West", "South", "East"]
     data = np.zeros((1, 1, 28, 3), dtype=float)
@@ -452,9 +452,11 @@ def test_shipped_semantic_palette_blocks_present():
                      / "_parameter_settings" / "visualizations_settings.json")
     with settings_path.open() as fh:
         viz = json.load(fh)
-    assert isinstance(viz["cell_type_colors"], list) and len(viz["cell_type_colors"]) == 3
+    assert isinstance(viz["cell_type_colors"], list)
+    assert len(viz["cell_type_colors"]) == 3
     assert set(viz["coactivity_colors"]) >= {"group_a", "group_b", "null", "threshold"}
-    assert isinstance(viz["component_colors"], list) and len(viz["component_colors"]) >= 8
+    assert isinstance(viz["component_colors"], list)
+    assert len(viz["component_colors"]) >= 8
     assert set(viz["corner_colors"]) == {"North", "West", "South", "East"}
 
 
@@ -712,10 +714,50 @@ class _FakeAnim:
     """
 
     def __init__(self, fig=None, func=None, frames=None, interval=None):
+        """
+        Description
+        -----------
+        Keep the frame callback and the frame list; the figure and interval are
+        stored as the real ``FuncAnimation`` does, but never used.
+
+        Parameters
+        ----------
+        fig (matplotlib.figure.Figure | None)
+            Figure being animated.
+        func (callable | None)
+            Per-frame callback.
+        frames (iterable | None)
+            Frame indices.
+        interval (float | None)
+            Delay between frames in ms.
+
+        Returns
+        -------
+        None
+        """
+        self.fig = fig
+        self.interval = interval
         self._func = func
         self._frames = list(frames) if frames is not None else []
 
     def save(self, *_a, **_k):
+        """
+        Description
+        -----------
+        Instead of encoding, invoke the frame callback for the first two frames,
+        so the per-frame render path runs without any ffmpeg encoding.
+
+        Parameters
+        ----------
+        *_a (tuple)
+            Ignored positional arguments of ``FuncAnimation.save``.
+        **_k (dict)
+            Ignored keyword arguments of ``FuncAnimation.save``.
+
+        Returns
+        -------
+        None
+        """
         for fr in self._frames[:2]:
             self._func(fr)
 
@@ -944,7 +986,6 @@ def test_animate_path_warns_when_pitch_shift_mux_fails(tmp_path, mocker):
 def test_load_arena_tracks_skips_the_playback_speaker_track(tmp_path):
     """A USV-playback session given as the arena directory holds a ``speaker_*`` track beside
     the main one; the arena lookup must resolve to the main file rather than raise on two."""
-    from usv_playpen.visualizations.make_behavioral_videos import load_arena_tracks
 
     video = tmp_path / "video" / "20260101120000"
     video.mkdir(parents=True)
@@ -954,5 +995,6 @@ def test_load_arena_tracks_skips_the_playback_speaker_track(tmp_path):
     with h5py.File(video / "speaker_20260101120000_points3d_translated_rotated_metric.h5", "w") as speaker:
         speaker.create_dataset("tracks", data=np.ones((1, 1, 1, 3)))
         speaker.create_dataset("node_names", data=[b"speaker"])
-    directory, tracks, nodes = load_arena_tracks(str(tmp_path))
-    assert nodes == ["North", "South"] and tracks.shape == (1, 1, 2, 3)
+    _directory, tracks, nodes = load_arena_tracks(str(tmp_path))
+    assert nodes == ["North", "South"]
+    assert tracks.shape == (1, 1, 2, 3)

@@ -25,6 +25,12 @@ block supplies it. Keys a block legitimately lacks — because the caller inject
 them at runtime, or because the read is guarded by which block is in play — are
 declared per block, so an intentional asymmetry is recorded rather than
 silently tolerated.
+
+Coverage: the AST extraction of the literal keys a consumer reads off its
+settings dictionary, the key set each feeding settings block ships, the
+per-(contract, block) completeness check, and the check that every declared
+exemption is still read by the consumer, still absent from the block and
+carries a reason.
 """
 
 from __future__ import annotations

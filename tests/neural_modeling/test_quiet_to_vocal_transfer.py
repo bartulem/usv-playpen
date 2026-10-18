@@ -10,7 +10,7 @@ Coverage:
   predictor, the gain's sign recovered.
 - combine_folds under the count grain: a planted unit passes, the per-frame descriptors survive, the
   diagnostics carry no bin arrays; the frame grain is untouched.
-- The shipped transfer block carries the ruled values.
+- The shipped transfer block carries the chosen values.
 """
 
 from __future__ import annotations
@@ -43,7 +43,26 @@ TRANSFER = {"calibration_grain": "pooled_across_folds", "d2_reference_rate": "sc
 
 
 def spans(usvs: list, fps: float = FPS) -> tuple[np.ndarray, np.ndarray]:
-    """Span frames and offsets for USVs given as (start, stop) seconds, as vocal_span_frames lays them out."""
+    """
+    Description
+    -----------
+    Builds span frames and their offsets for USVs given as (start, stop) seconds, laid out the way
+    ``vocal_span_frames`` returns them.
+
+    Parameters
+    ----------
+    usvs (list)
+        ``(start, stop)`` pairs in seconds, one per USV.
+    fps (float)
+        Frame rate used to convert seconds to frame indices.
+
+    Returns
+    -------
+    frames (np.ndarray)
+        Concatenated span frames of every USV.
+    pointer (np.ndarray)
+        Offsets into ``frames``: USV ``i`` occupies ``frames[pointer[i]:pointer[i + 1]]``.
+    """
     frames, pointer = [], [0]
     for start, stop in usvs:
         block = np.arange(round(start * fps), round(stop * fps))
@@ -53,7 +72,10 @@ def spans(usvs: list, fps: float = FPS) -> tuple[np.ndarray, np.ndarray]:
 
 
 class TestTransferFrames:
+    """The frame universe the frozen quiet filter is scored on during vocal periods."""
     def test_the_span_universe_passes_the_spans_through(self):
+        """Under ``universe = "usv_span"`` the output must be the USV span frames unchanged, so the span
+        universe adds no run-up and merges nothing."""
         frames, pointer = spans([(2.0, 2.1), (2.15, 2.25)])
         out = transfer_frames(frames, pointer, FPS, 1000, 50, np.arange(0, 100), {**TRANSFER, "universe": "usv_span"})
         np.testing.assert_array_equal(out, frames)
@@ -66,6 +88,8 @@ class TestTransferFrames:
         np.testing.assert_array_equal(out, np.arange(400, 525))
 
     def test_a_long_gap_starts_a_new_bout_with_its_own_run_up(self):
+        """USVs 3 s apart (beyond the inter-bout threshold) must form two bouts, each with its own 1 s run-up and
+        nothing filled in between, so silence between bouts is never scored as vocal."""
         frames, pointer = spans([(5.0, 5.1), (8.0, 8.1)])
         out = transfer_frames(frames, pointer, FPS, 2000, 50, np.zeros(0, dtype=np.int64), TRANSFER)
         expected = np.concatenate([np.arange(400, 510), np.arange(700, 810)])
@@ -82,13 +106,18 @@ class TestTransferFrames:
         assert out.max() == 69
 
     def test_an_unknown_universe_is_refused(self):
+        """An unrecognised universe must raise ``ValueError`` naming ``transfer.universe`` rather than fall back
+        to a default frame set."""
         frames, pointer = spans([(1.0, 1.1)])
         with pytest.raises(ValueError, match=r"transfer\.universe"):
             transfer_frames(frames, pointer, FPS, 500, 10, np.zeros(0, dtype=np.int64), {**TRANSFER, "universe": "bouts"})
 
 
 class TestBinsAndCounts:
+    """Cutting contiguous frame runs into bins and counting spikes per frame."""
     def test_runs_are_cut_into_full_bins_only(self):
+        """A 25-frame and a 12-frame run at bin width 10 must give three full bins (two, then one), dropping the
+        partial remainders and never letting a bin straddle the gap between runs."""
         frames = np.concatenate([np.arange(10, 35), np.arange(100, 112)])
         bins = bin_frame_matrix(frames, 10)
         assert bins.shape == (3, 10)
@@ -96,6 +125,8 @@ class TestBinsAndCounts:
         np.testing.assert_array_equal(bins[2], np.arange(100, 110))
 
     def test_multi_spike_frames_count_more_than_once(self):
+        """Three spikes on one frame must count 3, and a spike past the last frame must be dropped, so the count
+        grain sees every spike inside the session and nothing outside it."""
         counts = counts_per_frame(np.array([3, 3, 3, 7, 999]), 10)
         assert counts[3] == 3
         assert counts[7] == 1
@@ -103,8 +134,31 @@ class TestBinsAndCounts:
 
 
 class TestPooledPoisson:
+    """The pooled-across-sessions Poisson explained deviance used by the count grain."""
     @staticmethod
     def _bins(seed, gain):
+        """
+        Description
+        -----------
+        Builds two 2,000-bin sessions of Poisson counts whose log-rate is linear in a Gaussian predictor,
+        with a 0.3 log-rate offset in the second session.
+
+        Parameters
+        ----------
+        seed (int)
+            Seed for ``np.random.default_rng``.
+        gain (float)
+            Log-rate coefficient of the predictor.
+
+        Returns
+        -------
+        x (np.ndarray)
+            The predictor, shape ``(4000,)``.
+        counts (np.ndarray)
+            The Poisson counts per bin.
+        session (np.ndarray)
+            Session index (0 or 1) of every bin.
+        """
         generator = np.random.default_rng(seed)
         x = generator.normal(size=4000)
         session = np.repeat(np.arange(2), 2000)
@@ -112,6 +166,8 @@ class TestPooledPoisson:
         return x, generator.poisson(rate), session
 
     def test_a_planted_gain_is_recovered_with_its_sign(self):
+        """A +0.5 planted gain must score D2 above 0.05 with slope above 0.3, and a -0.5 gain must give slope
+        below -0.3, so the count grain keeps the sign the verdict reads."""
         x, counts, session = self._bins(0, 0.5)
         d2, slope = pooled_poisson_explained_deviance(x, counts, session, 30, 1.0)
         assert d2 > 0.05
@@ -121,11 +177,14 @@ class TestPooledPoisson:
         assert slope < -0.3
 
     def test_shuffled_counts_explain_nothing(self):
+        """Counts permuted against the predictor must explain essentially no deviance (|D2| < 0.01), so the
+        cross-session offset alone cannot produce a score."""
         x, counts, session = self._bins(2, 0.5)
         d2, _slope = pooled_poisson_explained_deviance(x, np.random.default_rng(3).permutation(counts), session, 30, 1.0)
         assert abs(d2) < 0.01
 
     def test_a_flat_predictor_is_nan(self):
+        """A constant predictor must return NaN for both D2 and slope, since there is no spread to calibrate."""
         d2, slope = pooled_poisson_explained_deviance(np.ones(100), np.ones(100, dtype=int), np.zeros(100, dtype=int), 30, 1.0)
         assert np.isnan(d2)
         assert np.isnan(slope)
@@ -139,6 +198,24 @@ class TestCountGrainCombine:
 
     @classmethod
     def _session(cls, seed, planted):
+        """
+        Description
+        -----------
+        Builds one synthetic session: a stationary unit-variance slow feature and spikes drawn as Poisson
+        counts per frame, either following the planted filter on that feature or at a flat rate.
+
+        Parameters
+        ----------
+        seed (int)
+            Seed for ``np.random.default_rng``.
+        planted (bool)
+            True to drive the rate with the feature; False for a flat rate.
+
+        Returns
+        -------
+        session (dict)
+            ``feature_time_series``, ``n_frames``, ``spike_frames``, ``fps`` and ``quiet`` (the quiet anchors).
+        """
         generator = np.random.default_rng(seed)
         n_frames = 6000
         # A STATIONARY slow feature (smoothed noise at unit variance), as z-scored kinematics are. A random
@@ -154,6 +231,24 @@ class TestCountGrainCombine:
 
     @classmethod
     def _run(cls, planted, grain):
+        """
+        Description
+        -----------
+        Scores a frozen filter matching the planted one on two synthetic sessions with ``score_fold`` and
+        combines the folds with ``combine_folds`` under the requested grain.
+
+        Parameters
+        ----------
+        planted (bool)
+            Whether the sessions follow the planted filter.
+        grain (str)
+            ``"count"`` or ``"frame"``.
+
+        Returns
+        -------
+        result (dict)
+            The combined transfer result.
+        """
         sessions = {"a": cls._session(10, planted), "b": cls._session(11, planted)}
         filters = np.zeros(cls.N_LAGS)
         filters[-1] = 1.2
@@ -170,6 +265,8 @@ class TestCountGrainCombine:
         return combine_folds(results, sessions, list(sessions), frames, settings, message_output=lambda *_a: None)
 
     def test_a_planted_unit_passes_under_the_count_grain(self):
+        """A planted unit under the count grain must report 800 bins of 10 frames, a positive score and slope at
+        the null floor, and one leave-one-session-out entry per session."""
         out = self._run(planted=True, grain="count")
         assert out["grain"] == "count"
         assert out["n_bins"] == 2 * (4000 // 10)
@@ -180,10 +277,14 @@ class TestCountGrainCombine:
         assert set(out["leave_one_session_out"]) == {"a", "b"}
 
     def test_a_flat_unit_does_not(self):
+        """A unit with no planted filter must not pass (p > 0.05), so the count grain does not manufacture
+        transfer."""
         out = self._run(planted=False, grain="count")
         assert out["p"] > 0.05
 
     def test_the_diagnostics_keep_the_per_frame_descriptors_and_drop_the_arrays(self):
+        """Each stored fold must keep its scalar descriptors and drop the per-frame and per-bin arrays, so the
+        per-unit artifact stays small."""
         out = self._run(planted=True, grain="count")
         fold = out["folds"][0]
         for key in ("auroc", "spike_rate", "n_frames", "metrics", "level", "n_bins"):
@@ -192,6 +293,8 @@ class TestCountGrainCombine:
             assert key not in fold
 
     def test_the_frame_grain_is_the_old_statistic(self):
+        """The frame grain must report zero bins and score all 8,000 frames, so switching the grain leaves the
+        previous per-frame statistic intact."""
         out = self._run(planted=True, grain="frame")
         assert out["grain"] == "frame"
         assert out["n_bins"] == 0
@@ -200,8 +303,9 @@ class TestCountGrainCombine:
 
 
 class TestShippedTransferSettings:
+    """The transfer block of the shipped settings file."""
     def test_the_ruled_values_are_shipped(self):
-        """Ruled 2026-10-14 after the two-day test: bout window with a 4 s run-up at the repo's inter-bout
+        """The shipped choice: bout window with a 4 s run-up at the repo's inter-bout
         threshold, Poisson counts per 100 ms bin."""
         with (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"
               / "_parameter_settings" / "neural_modeling_settings.json").open() as handle:

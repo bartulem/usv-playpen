@@ -13,14 +13,25 @@ and the Student-t dispatch / progress-callback paths of :func:`bootstrap_lrt`.
 Conventions mirror ``tests/analyses/test_analyze.py``: headless matplotlib,
 seeded ``numpy`` RNG, sklearn ``GaussianMixture`` fixtures built from synthetic
 log-space data, and direct dictionary access by key.
+
+Coverage: mode finding and Newton fallbacks; log-space boundaries; the Student-t
+degrees-of-freedom update and EM fits (plain, tied-scale, nested by splitting);
+cross-validated likelihoods; CDF / quantile helpers; inverse-Gaussian mixture
+fitting and reporting; mixture sampling; the bootstrap LRT (Gaussian / t /
+inverse-Gaussian dispatch, progress callback, warm starts, ``n_jobs``
+independence, the session-corrected statistic and its design effect, stable
+subsampling); the tied peak bootstrap LRT; step-up component selection; and the
+mixture density plotting helpers.
 """
+
 from __future__ import annotations
 
 import math
 import struct
+from typing import ClassVar
 from unittest.mock import MagicMock
 
-import matplotlib
+import matplotlib as mpl
 import numpy as np
 import polars as pls
 import pytest
@@ -34,7 +45,7 @@ from sklearn.mixture import GaussianMixture
 from sklearn.model_selection import KFold
 
 # Headless matplotlib in case any imported helper touches a backend.
-matplotlib.use("Agg")
+mpl.use("Agg")
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import to_hex
@@ -346,6 +357,23 @@ def test_t_update_nu_heavy_tails_clamp_to_the_lower_bound():
     assert heavy == 2.001
 
     def score(nu, u, nu_old):
+        """
+        Evaluates the Student-t degrees-of-freedom score whose root ``_t_update_nu`` solves.
+
+        Parameters
+        ----------
+        nu (float)
+            Candidate degrees of freedom.
+        u (np.ndarray)
+            Per-point E-step weights.
+        nu_old (float)
+            Degrees of freedom of the previous iteration.
+
+        Returns
+        -------
+        score (float)
+            The score value; zero at the update's solution.
+        """
         psi_old = digamma((nu_old + 1.0) / 2.0) - np.log((nu_old + 1.0) / 2.0)
         return -digamma(nu / 2.0) + np.log(nu / 2.0) + 1.0 + psi_old + np.mean(np.log(u) - u)
 
@@ -607,8 +635,8 @@ def test_bootstrap_lrt_parallel_deterministic_and_finite():
     deterministic RNGs) and return finite statistics with the same shapes as
     the sequential path."""
     x = _synthetic_ig_intervals(n_per=300)
-    kwargs = dict(intervals_sec=x, K_null=1, K_alt=2, B=4, n_subsample=300,
-                  model_class="ig", n_init_obs=1, n_init_boot=1, seed=0)
+    kwargs = {"intervals_sec": x, "K_null": 1, "K_alt": 2, "B": 4, "n_subsample": 300,
+              "model_class": "ig", "n_init_obs": 1, "n_init_boot": 1, "seed": 0}
     res1 = bootstrap_lrt(n_jobs=2, **kwargs)
     res2 = bootstrap_lrt(n_jobs=2, **kwargs)
     np.testing.assert_allclose(res1["lr_null"], res2["lr_null"])
@@ -706,7 +734,7 @@ def test_x_is_log_survives_a_draw_that_overflows_exp(fitter):
         seconds = np.exp(log_x)
     assert np.isinf(seconds).any()
 
-    with pytest.raises(ValueError, match="infinity|too large"):
+    with pytest.raises(ValueError, match=r"infinity|too large"):
         fitter(seconds, 2, seed=0, n_init=1)
 
     model, _ = fitter(log_x, 2, seed=0, n_init=1, x_is_log=True)
@@ -983,8 +1011,8 @@ def test_bootstrap_lrt_session_correction_matches_its_own_statistic():
     rng = np.random.default_rng(3)
     pool = np.exp(np.concatenate([rng.normal(-2.7, 0.25, 1500), rng.normal(0.0, 1.2, 700)]))
     labels = np.repeat(np.arange(20), pool.size // 20 + 1)[:pool.size]
-    kwargs = dict(K_null=2, K_alt=3, B=4, n_subsample=1500, model_class="t", n_init_obs=1,
-                  n_init_boot=1, seed=0)
+    kwargs = {"K_null": 2, "K_alt": 3, "B": 4, "n_subsample": 1500, "model_class": "t", "n_init_obs": 1,
+              "n_init_boot": 1, "seed": 0}
     plain = bootstrap_lrt(pool, **kwargs)
     corrected = bootstrap_lrt(pool, **kwargs, session_labels=labels, n_design_bootstrap=100)
 
@@ -1545,7 +1573,8 @@ def test_t_mixture_quantile_inverts_the_cdf_including_far_tails():
     q_tail = np.array([1e-3, 0.999])
     tails = t_mixture_quantile_logspace(q_tail, wide)
     np.testing.assert_allclose(t_mixture_cdf_logspace(tails, wide), q_tail, atol=1e-10)
-    assert tails[0] < -10.0 and tails[1] > 11.0
+    assert tails[0] < -10.0
+    assert tails[1] > 11.0
 
 
 def test_t_mixture_cv_neg_loglik_matches_a_manual_kfold(monkeypatch):
@@ -1572,7 +1601,7 @@ def test_t_mixture_cv_neg_loglik_matches_a_manual_kfold(monkeypatch):
     folds = list(KFold(n_splits=3, shuffle=True, random_state=7).split(log_x))
     assert len(calls) == 3
     expected = 0.0
-    for (train_idx, test_idx), (x_train, kwargs, model) in zip(folds, calls):
+    for (train_idx, test_idx), (x_train, kwargs, model) in zip(folds, calls, strict=True):
         np.testing.assert_allclose(x_train, np.exp(log_x[train_idx]), rtol=1e-12)
         assert kwargs == {"n_components": 2, "seed": 7, "n_init": 1, "reg_covar": 2e-3}
         expected += float(np.sum(model.score_samples(log_x[test_idx])))
@@ -1644,7 +1673,8 @@ def test_fit_log_t_mixture_kmeans_start_is_returned_at_zero_iterations():
     w, mu, sigma2, nu = _t_kmeans_start(log_x, 2, 3, 1e-3)
 
     assert np.min(w) == pytest.approx(1e-3 / (1.0 + 1e-3 - 1.0 / 2001), rel=1e-6)
-    assert np.max(sigma2) > 1e-3 and np.min(sigma2) == 1e-3
+    assert np.max(sigma2) > 1e-3
+    assert np.min(sigma2) == 1e-3
     _t_assert_model_equals(model, w, mu, sigma2, nu)
 
 
@@ -1854,7 +1884,7 @@ def test_fit_tied_nested_by_splitting_builds_every_split_start_and_keeps_the_bes
     scripted = [-50.0, -40.0, -30.0, -45.0, -35.0]
     calls = []
 
-    def recording_fit(log_x, n_peak, n_background, **kwargs):
+    def recording_fit(_log_x, n_peak, n_background, **kwargs):
         """Records the call and returns a scripted (model, log-likelihood, scale) triple."""
         calls.append((n_peak, n_background, dict(kwargs)))
         return ("fit", len(calls) - 1), scripted[len(calls) - 1], 0.1
@@ -1878,9 +1908,11 @@ def test_fit_tied_nested_by_splitting_builds_every_split_start_and_keeps_the_bes
             mu = [-2.6, -1.6 - offset * sigma, -1.6 + offset * sigma, 0.0]
             nu = [8.0, 6.0, 6.0, 4.0]
         expected.append((w, mu, [shared, shared, shared, 1.0], nu))
-    for (n_peak, n_background, kwargs), (w, mu, s2, nu) in zip(calls[1:], expected):
+    for (n_peak, n_background, kwargs), (w, mu, s2, nu) in zip(calls[1:], expected, strict=True):
         assert (n_peak, n_background) == (3, 1)
-        assert kwargs["seed"] == 3 and kwargs["n_init"] == 0 and kwargs["reg_covar"] == 2e-3
+        assert kwargs["seed"] == 3
+        assert kwargs["n_init"] == 0
+        assert kwargs["reg_covar"] == 2e-3
         got = kwargs["init_params"]
         np.testing.assert_allclose(got[0], w, rtol=1e-12)
         np.testing.assert_allclose(got[1], mu, rtol=1e-12)
@@ -1898,7 +1930,7 @@ def test_fit_tied_nested_by_splitting_keeps_the_random_fit_when_no_split_beats_i
     scripted = [5.0, 5.0, 4.0]
     counter = []
 
-    def recording_fit(log_x, n_peak, n_background, **kwargs):
+    def recording_fit(_log_x, _n_peak, _n_background, **_kwargs):
         """Returns a scripted (model, log-likelihood, scale) triple."""
         counter.append(1)
         return ("fit", len(counter) - 1), scripted[len(counter) - 1], 9.0
@@ -1984,7 +2016,7 @@ def _t_patch_tied_lrt(monkeypatch, record, lr_values, null_scores, alt_scores):
         record["null"] = (np.asarray(log_sub).copy(), n_peak, n_background, dict(kwargs))
         return null_model, -120.0, 0.25
 
-    def fake_nested(log_sub, base, n_peak, n_background, **kwargs):
+    def fake_nested(_log_sub, base, n_peak, n_background, **kwargs):
         """Records the observed alternative fit and returns a scripted result."""
         record["alt"] = (base, n_peak, n_background, dict(kwargs))
         return alt_model, -118.0, 0.2
@@ -2198,7 +2230,8 @@ def test_t_mixture_modes_single_newton_step_from_a_concave_grid_point():
     model = TMixture(weights=np.array([0.7, 0.3]), means=np.array([0.0, 1.0]),
                      covariances=np.array([0.36, 0.36]), nus=np.array([5.0, 5.0]))
     g, h = _t_numeric_derivatives(0.5, model)
-    assert h < 0.0 and abs(g) > 0.1
+    assert h < 0.0
+    assert abs(g) > 0.1
 
     modes, _ = t_mixture_modes(model, max_iter=1, grid_size=3)
 
@@ -2216,7 +2249,8 @@ def test_t_mixture_modes_gradient_fallback_step_on_a_convex_grid_point():
     model = TMixture(weights=np.array([0.6, 0.4]), means=np.array([-1.0, 1.0]),
                      covariances=np.array([0.09, 0.09]), nus=np.array([3.0, 3.0]))
     g, h = _t_numeric_derivatives(0.0, model)
-    assert h > 1.0 and abs(g) > 0.1
+    assert h > 1.0
+    assert abs(g) > 0.1
 
     modes, _ = t_mixture_modes(model, max_iter=1, grid_size=3)
 
@@ -2341,7 +2375,8 @@ def test_fit_tied_scale_one_em_sweep_pools_the_peak_scatter():
     tied_start = tuple(p[order] for p in start)
     w, mu, sigma2, nu, n_k, scatter = _t_one_free_em_sweep(log_x, *tied_start, 1e-4)
     sigma2[0] = max(scatter[0] / n_k[0], 1e-4)
-    assert n_k[0] < 0.1 and sigma2[0] > 2e-4
+    assert n_k[0] < 0.1
+    assert sigma2[0] > 2e-4
 
     model, ll, shared = fit_tied_scale_t_mixture(log_x, 1, 2, n_init=0, max_iter=1,
                                                  init_params=tied_start)
@@ -3803,6 +3838,22 @@ class _CFakeModel:
     """
 
     def __init__(self, n_components, level, slope=0.0):
+        """
+        Builds a fake with equal weights, evenly spaced means and fixed variances.
+
+        Parameters
+        ----------
+        n_components (int)
+            Number of components the fake claims to have.
+        level (float)
+            Constant per-point log-likelihood.
+        slope (float)
+            Per-point log-likelihood slope; defaults to 0.
+
+        Returns
+        -------
+        None
+        """
         self.n_components = int(n_components)
         self.weights_ = np.full(self.n_components, 1.0 / self.n_components)
         self.means_ = np.linspace(-1.0, 1.0, self.n_components).reshape(-1, 1)
@@ -3826,7 +3877,8 @@ class _CFakeModel:
             An (N,) shape ndarray equal to ``level + slope * X[:, 0]``.
         """
         X = np.asarray(X)
-        assert X.ndim == 2 and X.shape[1] == 1, f"score_samples got shape {X.shape}"
+        assert X.ndim == 2, f"score_samples got shape {X.shape}"
+        assert X.shape[1] == 1, f"score_samples got shape {X.shape}"
         return self.level + self.slope * X[:, 0]
 
 
@@ -3850,6 +3902,20 @@ class _CFakeFitter:
     """
 
     def __init__(self, level_fn, slope_fn=None):
+        """
+        Stores the level / slope maps and starts an empty request log.
+
+        Parameters
+        ----------
+        level_fn (callable)
+            Maps ``(n_components, seed, x_is_log)`` to the fake's per-point level.
+        slope_fn (callable or None)
+            Optional map of the same arguments to the fake's slope.
+
+        Returns
+        -------
+        None
+        """
         self.level_fn = level_fn
         self.slope_fn = slope_fn
         self.requests = []
@@ -3905,6 +3971,18 @@ class _CFakeSplitter:
     """
 
     def __init__(self, level_fn):
+        """
+        Stores the level map and starts an empty request log.
+
+        Parameters
+        ----------
+        level_fn (callable)
+            Maps ``(n_components, seed)`` to the per-point level of the split model.
+
+        Returns
+        -------
+        None
+        """
         self.level_fn = level_fn
         self.requests = []
 
@@ -3946,9 +4024,21 @@ class _CParallelSpy:
     replicates.
     """
 
-    n_jobs_seen: list = []
+    n_jobs_seen: ClassVar[list] = []
 
     def __init__(self, n_jobs):
+        """
+        Records the requested worker count on the class-level log.
+
+        Parameters
+        ----------
+        n_jobs (int)
+            Worker count the caller asked ``joblib.Parallel`` for.
+
+        Returns
+        -------
+        None
+        """
         type(self).n_jobs_seen.append(n_jobs)
 
     def __call__(self, tasks):
@@ -4118,7 +4208,7 @@ def test_stable_subsample_matches_a_loop_reference_with_heavy_ties():
         assert np.array_equal(subsample, pool[indices])
 
 
-@pytest.mark.parametrize("pool_seed, n_subsample, seed", [(101, 333, 32), (100, 500, 26)])
+@pytest.mark.parametrize(("pool_seed", "n_subsample", "seed"), [(101, 333, 32), (100, 500, 26)])
 def test_stable_subsample_takes_exactly_the_smallest_keys(pool_seed, n_subsample, seed):
     """
     The draw must be exactly the ``n_subsample`` smallest keys, which needs
@@ -4399,7 +4489,7 @@ def _c_design_effect_by_hand(delta, session_index, n_bootstrap, seed):
     n_sessions = int(max(session_index.tolist())) + 1
     mean_delta = sum(delta.tolist()) / delta.size
     delta = np.array([d - mean_delta for d in delta.tolist()])
-    per_session = [sum(d for d, s in zip(delta.tolist(), session_index.tolist()) if s == j)
+    per_session = [sum(d for d, s in zip(delta.tolist(), session_index.tolist(), strict=True) if s == j)
                    for j in range(n_sessions)]
     rng = np.random.default_rng(seed)
     draws = rng.integers(0, n_sessions, size=(n_bootstrap, n_sessions))
@@ -4504,7 +4594,7 @@ def test_session_corrected_statistic_floors_the_design_effect_at_one():
     A raw design effect below one is floored at exactly one, which must leave
     the statistic and the effective sample size untouched (not NaN).
     """
-    delta, labels, chosen, session_index = _c_corrected_inputs(8)
+    delta, labels, chosen, _session_index = _c_corrected_inputs(8)
     out = _session_corrected_statistic(12.0, delta, labels, labels.size, chosen, 300, 0, "caller")
 
     assert out["design_effect_raw"] < 1.0
@@ -4529,7 +4619,7 @@ def _c_gauss_levels(gains):
     level_fn (callable)
         ``level_fn(n_components, seed, x_is_log)``.
     """
-    return lambda n_components, seed, x_is_log: -1.0 if n_components == 1 else -1.0 + gains[seed]
+    return lambda n_components, seed, _x_is_log: -1.0 if n_components == 1 else -1.0 + gains[seed]
 
 
 def test_bootstrap_lrt_gauss_statistic_p_value_and_fit_arguments(monkeypatch):
@@ -4584,7 +4674,7 @@ def test_bootstrap_lrt_rejects_equal_component_counts():
 
 
 @pytest.mark.parametrize(
-    "null_level, alt_level, should_raise",
+    ("null_level", "alt_level", "should_raise"),
     [
         (0.0, 0.0, False),
         (-1.0, -1.0, False),
@@ -4602,8 +4692,8 @@ def test_bootstrap_lrt_negative_observed_lr_tolerance(monkeypatch, null_level, a
     """
     levels = {1: null_level, 2: alt_level}
     monkeypatch.setattr(mixture_model_utils, "fit_log_gmm",
-                        _CFakeFitter(lambda n_components, seed, x_is_log: levels[n_components]))
-    kwargs = dict(K_null=1, K_alt=2, B=1, n_subsample=100, model_class="gauss", seed=0)
+                        _CFakeFitter(lambda n_components, _seed, _x_is_log: levels[n_components]))
+    kwargs = {"K_null": 1, "K_alt": 2, "B": 1, "n_subsample": 100, "model_class": "gauss", "seed": 0}
 
     if should_raise:
         with pytest.raises(RuntimeError, match="observed LR is negative"):
@@ -4620,7 +4710,7 @@ def test_bootstrap_lrt_progress_messages_every_tenth_replicate(monkeypatch):
     emitted. Without a progress callable nothing is attempted.
     """
     monkeypatch.setattr(mixture_model_utils, "fit_log_gmm",
-                        _CFakeFitter(_c_gauss_levels({s: 0.5 for s in range(12)})))
+                        _CFakeFitter(_c_gauss_levels(dict.fromkeys(range(12), 0.5))))
     messages = []
     bootstrap_lrt(_c_pool(), K_null=1, K_alt=2, B=12, n_subsample=100, model_class="gauss",
                   seed=0, message_output=messages.append)
@@ -4661,7 +4751,7 @@ def test_bootstrap_lrt_session_correction_receives_its_own_fits(monkeypatch):
     """
     recorded = {}
 
-    def _spy(lr_obs, delta, session_labels, n_values, chosen, n_design_bootstrap, seed, caller):
+    def _spy(lr_obs, delta, _session_labels, n_values, chosen, n_design_bootstrap, seed, caller):
         """Records the correction arguments and returns a canned correction."""
         recorded.update(lr_obs=lr_obs, delta=np.array(delta), n_values=n_values,
                         chosen=np.array(chosen), n_design_bootstrap=n_design_bootstrap,
@@ -4670,7 +4760,7 @@ def test_bootstrap_lrt_session_correction_receives_its_own_fits(monkeypatch):
 
     monkeypatch.setattr(mixture_model_utils, "_session_corrected_statistic", _spy)
     fitter = _CFakeFitter(_c_gauss_levels({5: 0.5, 6: 0.25, 7: 1.0, 8: 0.0, 9: 0.75}),
-                          slope_fn=lambda n_components, seed, x_is_log:
+                          slope_fn=lambda n_components, _seed, x_is_log:
                           0.125 if (n_components == 2 and x_is_log == _C_MISSING) else 0.0)
     monkeypatch.setattr(mixture_model_utils, "fit_log_gmm", fitter)
     pool = _c_pool()
@@ -4715,7 +4805,7 @@ def test_bootstrap_lrt_t_family_builds_both_sides_by_splitting(monkeypatch):
     the alternative by one split of that refit.
     """
     level = {2: -1.0, 3: -0.75, 4: -0.5}
-    fitter = _CFakeFitter(lambda n_components, seed, x_is_log: level[n_components] + 0.0 * seed)
+    fitter = _CFakeFitter(lambda n_components, seed, _x_is_log: level[n_components] + 0.0 * seed)
     splitter = _CFakeSplitter(lambda n_components, seed: level[n_components] + 0.0 * seed)
     monkeypatch.setattr(mixture_model_utils, "fit_log_t_mixture", fitter)
     monkeypatch.setattr(mixture_model_utils, "fit_nested_by_splitting", splitter)
@@ -4762,7 +4852,7 @@ def test_bootstrap_lrt_t_family_one_component_null_is_one_component(monkeypatch)
     alternative and the alternative a three-component fit).
     """
     level = {1: -1.0, 2: -0.75, 3: -0.5}
-    fitter = _CFakeFitter(lambda n_components, seed, x_is_log: level[n_components] + 0.0 * seed)
+    fitter = _CFakeFitter(lambda n_components, seed, _x_is_log: level[n_components] + 0.0 * seed)
     splitter = _CFakeSplitter(lambda n_components, seed: level[n_components] + 0.0 * seed)
     monkeypatch.setattr(mixture_model_utils, "fit_log_t_mixture", fitter)
     monkeypatch.setattr(mixture_model_utils, "fit_nested_by_splitting", splitter)
@@ -4804,7 +4894,7 @@ def test_bootstrap_lrt_replicate_gauss_path_arguments_and_statistic():
     floor and ``x_is_log=True``, and returns their LR statistic
     (``2 * 20 * 0.5 = 20``).
     """
-    fitter = _CFakeFitter(lambda n_components, seed, x_is_log: -1.0 if n_components == 1 else -0.5)
+    fitter = _CFakeFitter(lambda n_components, _seed, _x_is_log: -1.0 if n_components == 1 else -0.5)
     model_null = _CFakeModel(1, -1.0)
     lr = _bootstrap_lrt_replicate(3, 5, model_null, fitter, 1, 2, 20, 2, 1e-3)
     expected_draws = _sample_from_mixture(model_null, 20, np.random.default_rng((5, 3)))
@@ -4824,7 +4914,7 @@ def test_bootstrap_lrt_replicate_t_path_starts_null_at_truth_and_splits(monkeypa
     the bootstrap restarts and the variance floor, and returns
     ``2 (logL_alt - logL_null)``: ``2 (-10 - 20 * -1) = 20``.
     """
-    fitter = _CFakeFitter(lambda n_components, seed, x_is_log: -1.0)
+    fitter = _CFakeFitter(lambda _n_components, _seed, _x_is_log: -1.0)
     splitter_requests = []
 
     def _splitter(log_x, base_model, n_init=_C_MISSING, seed=_C_MISSING, reg_covar=_C_MISSING):
@@ -4846,7 +4936,7 @@ def test_bootstrap_lrt_replicate_t_path_starts_null_at_truth_and_splits(monkeypa
     np.testing.assert_array_equal(request["x"], expected_draws)
     assert (request["K"], request["seed"], request["n_init"], request["reg_covar"], request["x_is_log"]) == (2, 8, 2, 1e-3, True)
     for got, want in zip(request["init_params"], (model_null.weights_, model_null.means_.ravel(),
-                                               model_null.covariances_.ravel(), model_null.nus_)):
+                                               model_null.covariances_.ravel(), model_null.nus_), strict=True):
         np.testing.assert_array_equal(got, want)
     assert len(request["init_params"]) == 4
     (split,) = splitter_requests
@@ -4896,10 +4986,10 @@ def test_fit_nested_by_splitting_tries_every_split_and_keeps_the_first_best(monk
         ([0.25, 0.375, 0.375], [-1.0, 2.0, 2.0], [0.25, 1.0, 1.0], [5.0, 10.0, 10.0]),
         ([0.25, 0.375, 0.375], [-1.0, 1.5, 2.5], [0.25, 1.0, 1.0], [5.0, 10.0, 10.0]),
     ]
-    for request, start in zip(requests[1:], expected_starts):
+    for request, start in zip(requests[1:], expected_starts, strict=True):
         assert (request["K"], request["seed"], request["n_init"], request["reg_covar"], request["x_is_log"]) \
             == (3, 4, 0, 1e-3, True)
-        for got, want in zip(request["init_params"], start):
+        for got, want in zip(request["init_params"], start, strict=True):
             np.testing.assert_allclose(got, want, rtol=1e-12)
         np.testing.assert_array_equal(request["x"], log_x)
 
@@ -5004,7 +5094,7 @@ def test_plot_gmm_fit_point_wise_curve_and_components():
     assert to_hex(mixture.get_color()) == "#000000"
     assert mixture.get_linestyle() == "-"
     assert mixture.get_label() == "mixture"
-    for line, (w, mu, sd) in zip(lines[1:], [(0.4, -1.0, 0.3), (0.6, 1.0, 0.5)]):
+    for line, (w, mu, sd) in zip(lines[1:], [(0.4, -1.0, 0.3), (0.6, 1.0, 0.5)], strict=True):
         assert line.get_linestyle() == "--"
         np.testing.assert_allclose(np.ravel(line.get_xdata()), grid, rtol=1e-12)
         np.testing.assert_allclose(np.ravel(line.get_ydata()), w * stats.norm.pdf(grid, mu, sd),
@@ -5040,8 +5130,10 @@ def test_plot_gmm_fit_bin_mean_curve_is_the_density_averaged_over_one_bin():
     expected = (_cdf(gx + width / 2) - _cdf(gx - width / 2)) / width
 
     assert gx.size > 1000
-    assert gx.min() >= xlims[0] and gx.max() <= xlims[1]
-    assert gx.min() - xlims[0] < 0.01 and xlims[1] - gx.max() < 0.01
+    assert gx.min() >= xlims[0]
+    assert gx.max() <= xlims[1]
+    assert gx.min() - xlims[0] < 0.01
+    assert xlims[1] - gx.max() < 0.01
     assert np.max(np.abs(gy - expected)) < 2e-3 * expected.max()
     assert to_hex(line.get_color()) == "#000000"
     assert line.get_linestyle() == "-"
@@ -5073,7 +5165,8 @@ def test_qqplot_gmm_points_and_reference_line():
     np.testing.assert_allclose(diagonal.get_ydata(), [obs_q.min(), obs_q.max()])
     assert to_hex(diagonal.get_color()) == "#ff0000"
     assert diagonal.get_linestyle() == "--"
-    assert ax.get_xscale() == "log" and ax.get_yscale() == "log"
+    assert ax.get_xscale() == "log"
+    assert ax.get_yscale() == "log"
     assert ax.get_xlabel() == "Observed quantiles (s)"
     assert ax.get_ylabel() == "Model quantiles (s)"
     assert ax.get_title() == "Q-Q (mixture model vs. data)"

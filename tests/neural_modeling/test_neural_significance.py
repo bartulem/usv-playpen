@@ -21,6 +21,7 @@ from usv_playpen.neural_modeling.neural_significance import (
 
 class TestBenjaminiHochberg:
 
+    """The shared Benjamini-Hochberg step-up procedure every cohort-level decision goes through."""
     def test_step_up_rejects_everything_below_the_largest_passing_rank(self):
         """BH is a step-UP procedure: once the largest passing rank is found, every smaller p goes with
         it, including any that individually fail their own threshold."""
@@ -32,6 +33,8 @@ class TestBenjaminiHochberg:
         assert count == 3
 
     def test_nothing_passes_when_every_p_is_large(self):
+        """With every p above its rank threshold, BH must reject nothing and report a zero threshold and count,
+        so a cohort with no signal produces no survivors."""
         rejected, threshold, count = benjamini_hochberg(np.array([0.4, 0.6, 0.9]), 0.01)
 
         assert not rejected.any()
@@ -48,6 +51,8 @@ class TestBenjaminiHochberg:
         assert with_nan[0].tolist() == [True, False, True, True, False]
 
     def test_all_nan_is_handled(self):
+        """A cohort in which no unit could be tested must return zero rejections rather than raise on an
+        empty multiplicity."""
         rejected, threshold, count = benjamini_hochberg(np.array([np.nan, np.nan]), 0.05)
         assert not rejected.any()
         assert threshold == 0.0
@@ -67,6 +72,22 @@ class TestBenjaminiHochberg:
         assert required == pytest.approx(252.2, abs=0.1)
 
         def cohort(n_tied):
+            """
+            Description
+            -----------
+            Builds a cohort of ``m`` p-values at 0.9 with the first ``n_tied`` set to the empirical floor and
+            returns how many BH rejects.
+
+            Parameters
+            ----------
+            n_tied (int)
+                Number of units placed at the empirical floor 1/(n+1).
+
+            Returns
+            -------
+            rejection_count (int)
+                The BH rejection count at the enclosing ``q``.
+            """
             values = np.full(m, 0.9)
             values[:n_tied] = floor
             return benjamini_hochberg(values, q)[2]
@@ -83,7 +104,10 @@ class TestBenjaminiHochberg:
 
 class TestWithinSessionPermutation:
 
+    """The exact within-session permutation that the vocalization-identity null is built from."""
     def test_events_are_exchanged_only_within_their_own_session(self):
+        """Across 50 draws the permuted session labels must equal the originals and the permutation must be a
+        bijection, since an exchange across sessions would mix rate and repertoire differences into the null."""
         sessions = np.array([0, 0, 0, 1, 1, 2, 2, 2, 2])
         generator = np.random.default_rng(0)
 
@@ -100,6 +124,8 @@ class TestWithinSessionPermutation:
         assert permutation[0] == 0
 
     def test_it_actually_permutes(self):
+        """On a single 200-event session over 90% of positions must move on average, so the null is not
+        accidentally the identity (which would make every observed statistic look extreme)."""
         sessions = np.zeros(200, dtype=int)
         generator = np.random.default_rng(2)
         moved = [np.mean(within_session_permutation(sessions, generator) != np.arange(200))
@@ -110,11 +136,29 @@ class TestWithinSessionPermutation:
 
 class TestPermutationNull:
 
+    """The permutation-null driver that evaluates a statistic over seeded within-session draws."""
     def test_the_null_is_reproducible_and_the_statistic_sees_every_draw(self):
+        """The same seed must give the identical null, of the requested size, with the statistic evaluated once
+        per draw, so a stored p-value can be regenerated exactly."""
         sessions = np.array([0, 0, 0, 1, 1, 1])
         seen = []
 
         def statistic(permutation):
+            """
+            Description
+            -----------
+            Records each permutation it receives and returns its first index as the statistic.
+
+            Parameters
+            ----------
+            permutation (np.ndarray)
+                The within-session permutation of event indices for this draw.
+
+            Returns
+            -------
+            value (float)
+                ``permutation[0]`` as a float.
+            """
             seen.append(permutation.copy())
             return float(permutation[0])
 

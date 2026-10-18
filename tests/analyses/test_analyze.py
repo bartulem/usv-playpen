@@ -1,29 +1,45 @@
 """
 @author: bartulem
-Test analyses module.
+Test the ``usv_playpen.analyses`` package: the ``Analyst`` dispatcher and its helpers.
+
+Coverage: the ``Analyst`` boolean routing and its completion e-mail; experiment-code decoding;
+the behavioral-feature geometry (derivatives, speed, head / back frames, Euler angles, tail
+curvature, SEI) and the ``FeatureZoo`` end-to-end feature table; the neuronal tuning pure helpers
+(runs, peak z, selectivity, Skaggs information / sparsity, coherence, ramp index, bout detection,
+VMI, smoothing, validity grids) and the synthetic-session behavioral / vocal compute with its
+squeak-exclusion and re-run rules; the unit-triage flaggers; the Gaussian / Student-t / IG mixture
+utilities (fits, CDF / quantile inversion, boundaries, ICL, CV, bootstrap LRT, step-up selection,
+plots); the inter-USV interval helpers (session lists, per-animal pairing, chain breaks, serial
+dependence, pool summaries); and the HDF5 interval-archive round-trip with its provenance helpers.
 """
+
+from __future__ import annotations
 
 import json
 import math
 import pathlib
 import pickle
 import subprocess as _subprocess
+import warnings
 from unittest.mock import MagicMock
 
 import h5py
-import matplotlib
+import matplotlib as mpl
 import numpy as np
 import polars as pls
 import pytest
-from scipy.stats import norm
+from matplotlib.figure import Figure
+from scipy.stats import multivariate_normal, norm
+from scipy.stats import t as t_dist
 from sklearn.mixture import GaussianMixture
 
 # Headless matplotlib for the mixture_model_utils plotting smoke tests.
-matplotlib.use("Agg")
+mpl.use("Agg")
 
+from usv_playpen.analyses import compute_inter_usv_interval_distributions as cmod
 from usv_playpen.analyses import compute_neuronal_tuning_curves as tuning_module
+from usv_playpen.analyses._usv_io import extract_animal_sexes
 from usv_playpen.analyses.analyze_data import Analyst, generate_beh_features_cli
-from usv_playpen.analyses.decode_experiment_label import extract_information
 from usv_playpen.analyses.compute_behavioral_features import (
     FeatureZoo,
     calculate_derivatives,
@@ -42,41 +58,37 @@ from usv_playpen.analyses.compute_inter_usv_interval_distributions import (
     _session_source_map,
     compute_session_usv_intervals,
     consecutive_interval_pairs,
+    fit_serial_dependence,
+    summarize_interval_pool,
 )
 from usv_playpen.analyses.compute_neuronal_tuning_curves import (
-    generate_ratemaps,
-    shuffle_spikes,
     NeuronalTuning,
-    _longest_run,
-    _peak_z_info,
-    _run_analysis,
-    _selectivity_index,
-    _monotonicity_spearman,
-    _skaggs_info_rate_bps,
-    _skaggs_sparsity,
-    _spatial_coherence,
-    _ramp_index,
-    _bin_property_indices,
+    _anchor_bin_validity_grid,
     _bin_count_for_property,
+    _bin_property_indices,
+    _circular_shift_spike_times,
     _gaussian_smooth_1d,
     _gaussian_smooth_2d,
     _generate_shuffle_offsets,
-    _circular_shift_spike_times,
-    _percentiles_block,
-    _within_usv_validity,
     _latest_other_stop_before_anchor,
-    _anchor_bin_validity_grid,
+    _longest_run,
+    _monotonicity_spearman,
+    _peak_z_info,
+    _percentiles_block,
+    _ramp_index,
+    _run_analysis,
+    _selectivity_index,
+    _skaggs_info_rate_bps,
+    _skaggs_sparsity,
+    _spatial_coherence,
+    _within_usv_validity,
+    behavioral_feature_base,
+    generate_ratemaps,
+    shuffle_spikes,
 )
-from usv_playpen.analyses.unit_triage_aggregator import (
-    _to_jsonable,
-    _safe_float,
-    _flag_vmi,
-    _flag_runs,
-    _flag_categorical,
-    _flag_spatial,
-    _emitter_role_map,
-)
+from usv_playpen.analyses.decode_experiment_label import extract_information
 from usv_playpen.analyses.mixture_model_utils import (
+    IGMixture,
     TMixture,
     _alpha,
     _extract_params,
@@ -107,6 +119,15 @@ from usv_playpen.analyses.mixture_model_utils import (
     t_mixture_icl,
     t_mixture_quantile_logspace,
 )
+from usv_playpen.analyses.unit_triage_aggregator import (
+    _emitter_role_map,
+    _flag_categorical,
+    _flag_runs,
+    _flag_spatial,
+    _flag_vmi,
+    _safe_float,
+    _to_jsonable,
+)
 from usv_playpen.analyses.usv_interval_archive import (
     _attr_value,
     _decode_attr,
@@ -124,9 +145,22 @@ from usv_playpen.analyses.usv_interval_archive import (
 @pytest.fixture
 def mock_settings():
     """
-    Loads the live analyses_settings.json so the fixture stays in sync with
-    the schema the Analyst actually references. Every analyses_booleans flag
-    is forced to False; tests then flip individual flags as needed.
+    Description
+    -----------
+    Loads the live ``analyses_settings.json`` so the fixture stays in sync with
+    the schema the ``Analyst`` actually references. Every ``analyses_booleans``
+    flag is forced to False (tests then flip individual flags as needed), the
+    credentials directory is pointed at a fake path, and the e-mail block gets
+    an empty receiver list plus placeholder PC / experimenter strings so no
+    message can leave the machine.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    settings (dict)
+        The analyses settings dictionary with every boolean off.
     """
     settings_path = pathlib.Path(__file__).parent.parent.parent / 'src' / 'usv_playpen' / '_parameter_settings' / 'analyses_settings.json'
     settings = json.loads(settings_path.read_text())
@@ -144,15 +178,32 @@ def mock_settings():
 
 @pytest.fixture
 def mock_dependencies(mocker):
-    """Mocks all external class dependencies for the Analyst class."""
-    mocked_classes = {
+    """
+    Description
+    -----------
+    Patches every class the ``Analyst`` dispatches to (``FeatureZoo``,
+    ``NeuronalTuning``, ``AudioGenerator``, ``InterUSVIntervalCalculator``,
+    ``Messenger``) at their ``analyze_data`` module-local references, so the
+    dispatcher's routing can be checked by call counts without running any
+    analysis or sending e-mail.
+
+    Parameters
+    ----------
+    mocker (pytest_mock.MockerFixture)
+        Fixture used to install the patches for the duration of one test.
+
+    Returns
+    -------
+    mocked_classes (dict)
+        The patched class mocks keyed by class name.
+    """
+    return {
         'FeatureZoo': mocker.patch('usv_playpen.analyses.analyze_data.FeatureZoo'),
         'NeuronalTuning': mocker.patch('usv_playpen.analyses.analyze_data.NeuronalTuning'),
         'AudioGenerator': mocker.patch('usv_playpen.analyses.analyze_data.AudioGenerator'),
         'InterUSVIntervalCalculator': mocker.patch('usv_playpen.analyses.analyze_data.InterUSVIntervalCalculator'),
         'Messenger': mocker.patch('usv_playpen.analyses.analyze_data.Messenger'),
     }
-    return mocked_classes
 
 def test_analyze_data_no_booleans_true(mock_settings, mock_dependencies):
     """
@@ -345,15 +396,21 @@ def test_frequency_shift_logic(mock_settings, mock_dependencies):
 
 
 def test_extract_information_returns_none_for_none_input():
+    """A missing experiment code (None) decodes to None rather than raising, so sessions without a
+    code are skipped cleanly."""
     assert extract_information(None) is None
 
 
 def test_extract_information_returns_none_for_non_string():
+    """A non-string code (an int or a list) decodes to None instead of being parsed character by
+    character."""
     assert extract_information(123) is None
     assert extract_information(["E", "2"]) is None
 
 
 def test_extract_information_simple_courtship_pair():
+    """``E2CFM`` decodes to an ephys courtship experiment with two mice whose sexes are female and
+    male, the most common code in the cohort."""
     out = extract_information("E2CFM")
     assert out is not None
     assert "ephys" in out["experiment_type"]
@@ -363,6 +420,8 @@ def test_extract_information_simple_courtship_pair():
 
 
 def test_extract_information_solo_recording_with_estrus():
+    """``B1QFSe`` decodes every field of a solo recording: one mouse, behavior + alone, female,
+    single-housed, in estrus."""
     out = extract_information("B1QFSe")
     assert out is not None
     assert out["mouse_number"] == 1
@@ -374,16 +433,20 @@ def test_extract_information_solo_recording_with_estrus():
 
 
 def test_extract_information_multi_digit_mouse_number():
+    """The animal count is read as the whole digit run, so a 12-animal code gives 12 and not 1."""
     # `\d+` must capture the full count, not just the first digit (>= 10 animals).
     assert extract_information("BG12")["mouse_number"] == 12
 
 
 def test_extract_information_no_digit_defaults_to_zero():
+    """A code with no digit sets ``mouse_number`` to 0 instead of raising on the failed
+    regex match."""
     # a code with no digit must default mouse_number to 0, not raise AttributeError.
     assert extract_information("BCFM")["mouse_number"] == 0
 
 
 def test_extract_information_lighting_decoded():
+    """The ``L`` and ``D`` letters decode to light and dark experiment types respectively."""
     light = extract_information("E1L")
     assert light is not None
     assert "light" in light["experiment_type"]
@@ -397,12 +460,15 @@ def test_extract_information_lighting_decoded():
     [("p", "proestrus"), ("e", "estrus"), ("m", "metestrus"), ("d", "diestrus")],
 )
 def test_extract_information_estrus_letters(estrus_letter, expected):
+    """Each of the four lowercase estrus letters (p, e, m, d) maps to its estrus-stage name."""
     out = extract_information(f"B1F{estrus_letter}")
     assert out is not None
     assert expected in out["mouse_estrus"]
 
 
 def test_extract_information_default_lists_are_empty_when_unmatched():
+    """A code carrying no sex, housing or estrus letters returns empty lists for those fields rather
+    than missing keys or None."""
     out = extract_information("E1")
     assert out is not None
     assert out["mouse_estrus"] == []
@@ -411,6 +477,8 @@ def test_extract_information_default_lists_are_empty_when_unmatched():
 
 
 def test_generate_feature_distributions_1d_returns_seconds():
+    """A 1-D feature histogram has ``num_bins`` bins and ``num_bins + 1`` edges, and its occupancy
+    is in seconds (200 frames at 100 fps sum to 2 s)."""
     arr = np.linspace(0.001, 0.999, 200)
     occ, centers, edges = generate_feature_distributions(
         feature_arr=arr,
@@ -426,6 +494,8 @@ def test_generate_feature_distributions_1d_returns_seconds():
 
 
 def test_generate_feature_distributions_2d_grid_when_space_bool():
+    """With ``space_bool`` the occupancy is a square grid whose side is ceil(sqrt(num_bins)), with
+    matching centre and edge lengths."""
     rng = np.random.default_rng(0)
     arr = rng.uniform(low=-1, high=1, size=(50, 2))
     occ, centers, edges = generate_feature_distributions(
@@ -443,6 +513,8 @@ def test_generate_feature_distributions_2d_grid_when_space_bool():
 
 
 def test_calculate_derivatives_linear_input_first_der_is_constant():
+    """A linear ramp has a constant first derivative (slope x frame rate) and zero second derivative
+    in the interior, with the first and last ``diff_bins`` frames NaN."""
     fr = 100
     n = 50
     a = 2.0
@@ -462,6 +534,8 @@ def test_calculate_derivatives_linear_input_first_der_is_constant():
 
 
 def test_calculate_derivatives_propagates_nan_locations():
+    """A NaN input frame stays NaN in both derivatives instead of being filled from its
+    neighbours."""
     x = np.zeros((30, 1))
     x[10] = np.nan
     first_der, second_der = calculate_derivatives(
@@ -472,6 +546,8 @@ def test_calculate_derivatives_propagates_nan_locations():
 
 
 def test_calculate_derivatives_angle_wraps_at_pi():
+    """For an angle jumping from 179 to -179 degrees, ``is_angle`` takes the short way round, so the
+    derivative at the jump stays far below a full 360-degree turn per frame."""
     n = 30
     diff_bins = 1
     angles = np.zeros(n)
@@ -488,6 +564,8 @@ def test_calculate_derivatives_angle_wraps_at_pi():
 
 
 def test_calculate_tail_curvature_zero_for_straight_tail():
+    """A tail whose nodes lie on a straight line has zero curvature in every frame, with one value
+    per frame."""
     n_frames = 4
     n_nodes = 6
     pts = np.zeros((n_frames, n_nodes, 3))
@@ -498,6 +576,7 @@ def test_calculate_tail_curvature_zero_for_straight_tail():
 
 
 def test_calculate_tail_curvature_positive_for_bent_tail():
+    """A tail bent through a corner has positive curvature, so the measure responds to bending."""
     n_frames = 1
     bend = np.array(
         [[0.0, 0.0, 0.0],
@@ -512,6 +591,7 @@ def test_calculate_tail_curvature_positive_for_bent_tail():
 
 
 def test_get_egocentric_direction_target_in_front_of_observer():
+    """A target straight ahead along the head's x-axis has zero egocentric yaw and pitch."""
     head_root = np.eye(3)[None, :, :]
     head_pivot = np.array([[0.0, 0.0, 0.0]])
     target = np.array([[1.0, 0.0, 0.0]])
@@ -521,6 +601,8 @@ def test_get_egocentric_direction_target_in_front_of_observer():
 
 
 def test_get_egocentric_direction_target_above_observer():
+    """A target directly above the head has +90 degrees egocentric pitch, which fixes the sign
+    convention."""
     head_root = np.eye(3)[None, :, :]
     head_pivot = np.zeros((1, 3))
     target = np.array([[0.0, 0.0, 1.0]])
@@ -529,6 +611,8 @@ def test_get_egocentric_direction_target_above_observer():
 
 
 def test_get_egocentric_direction_below_tolerance_returns_nan():
+    """A target closer to the head than the tolerance gives NaN yaw and pitch, since the direction
+    is undefined."""
     head_root = np.eye(3)[None, :, :]
     head_pivot = np.zeros((1, 3))
     target = np.array([[1e-6, 0.0, 0.0]])
@@ -538,6 +622,8 @@ def test_get_egocentric_direction_below_tolerance_returns_nan():
 
 
 def test_calculate_speed_zero_for_stationary_centroid():
+    """A stationary animal has zero speed after the first frame, which is NaN because it has no
+    predecessor."""
     n_frames = 30
     pts = np.zeros((n_frames, 4, 3))
     speed = calculate_speed(pts, capture_framerate=100, smoothing_time_window=0.05)
@@ -547,6 +633,8 @@ def test_calculate_speed_zero_for_stationary_centroid():
 
 
 def test_calculate_speed_constant_velocity_recovered():
+    """A centroid moving 0.01 m per frame at 100 fps gives a speed of 100 (cm/s) in the interior,
+    which checks the unit scaling."""
     n_frames = 60
     pts = np.zeros((n_frames, 1, 3))
     pts[:, 0, 0] = np.arange(n_frames) * 0.01
@@ -556,6 +644,8 @@ def test_calculate_speed_constant_velocity_recovered():
 
 
 def test_get_head_root_canonical_orientation():
+    """Head, ears and nose in the canonical layout give the identity head frame: x toward the nose,
+    y toward the left ear, z up."""
     head = np.array([0.0, 0.0, 0.0])
     nose = np.array([1.0, 0.0, 0.0])
     ear_l = np.array([0.0, 1.0, 0.0])
@@ -569,6 +659,7 @@ def test_get_head_root_canonical_orientation():
 
 
 def test_get_head_root_propagates_nan_in_inputs():
+    """A NaN in any head node makes the whole head frame NaN instead of a partly valid rotation."""
     pts = np.zeros((1, 4, 3))
     pts[0, 0, 0] = np.nan
     R = get_head_root(pts)
@@ -576,6 +667,7 @@ def test_get_head_root_propagates_nan_in_inputs():
 
 
 def test_get_euler_ang_identity_returns_zero_angles():
+    """The identity rotation decomposes to zero Euler angles, one (3,) row per frame."""
     R = np.eye(3)[None, :, :]
     angles = get_euler_ang(R)
     assert angles.shape == (1, 3)
@@ -583,6 +675,8 @@ def test_get_euler_ang_identity_returns_zero_angles():
 
 
 def test_generate_ratemaps_1d_returns_expected_shapes():
+    """A 1-D rate map returns the (bins, 2) spike / occupancy table, the (shuffles, bins) shuffled
+    counts, and centre / edge arrays of matching length."""
     feature = np.linspace(0, 1, 200)
     spikes = np.array([10, 50, 100, 150])
     sh_spikes = np.tile(spikes, (3, 1))
@@ -602,6 +696,8 @@ def test_generate_ratemaps_1d_returns_expected_shapes():
 
 
 def test_generate_ratemaps_1d_total_occupancy_matches_samples_over_fr():
+    """The occupancy column sums to the session length in seconds (250 frames at 100 fps =
+    2.5 s)."""
     feature = np.linspace(0.001, 0.999, 250)
     spikes = np.array([0])
     sh_spikes = np.array([[0]])
@@ -618,6 +714,8 @@ def test_generate_ratemaps_1d_total_occupancy_matches_samples_over_fr():
 
 
 def test_generate_ratemaps_1d_spike_count_matches_input():
+    """Every in-range spike lands in exactly one bin, so the spike column sums to the input spike
+    count."""
     feature = np.linspace(0.0, 1.0, 100)
     spikes = np.array([5, 50, 95])
     sh_spikes = np.zeros((1, 3), dtype=int)
@@ -634,6 +732,8 @@ def test_generate_ratemaps_1d_spike_count_matches_input():
 
 
 def test_generate_ratemaps_2d_returns_expected_shapes():
+    """A spatial rate map is a (side, side, 2) grid with side = ceil(sqrt(num_bins)) and centre /
+    edge arrays sized to it."""
     rng = np.random.default_rng(0)
     feature_xy = rng.uniform(low=-1, high=1, size=(100, 2))
     spikes = np.arange(20)
@@ -655,6 +755,8 @@ def test_generate_ratemaps_2d_returns_expected_shapes():
 
 
 def test_shuffle_spikes_shape_and_wraparound():
+    """Shuffled spike frames have one row per shuffle and wrap circularly into [0, total frames), so
+    no shifted spike falls outside the recording."""
     spikes = np.array([10, 20, 30])
     out = shuffle_spikes(
         spike_array=spikes,
@@ -669,6 +771,8 @@ def test_shuffle_spikes_shape_and_wraparound():
 
 
 def test_shuffle_spikes_per_row_is_sorted():
+    """Each shuffled row is re-sorted after the circular shift, which the downstream binary-search
+    binning needs."""
     spikes = np.array([5, 50, 95])
     out = shuffle_spikes(
         spike_array=spikes,
@@ -686,8 +790,8 @@ def test_shuffle_spikes_seed_is_reproducible_and_varies():
     (so the significance verdict is stable across runs), a different seed
     produces a different draw, and the default (seed=None) stays
     non-reproducible -- the property the seeding was introduced to control."""
-    kwargs = dict(spike_array=np.array([10, 20, 30]), total_fr_num=100,
-                  shuffle_min_fr=10, shuffle_max_fr=99, n_shuffles=20)
+    kwargs = {'spike_array': np.array([10, 20, 30]), 'total_fr_num': 100,
+              'shuffle_min_fr': 10, 'shuffle_max_fr': 99, 'n_shuffles': 20}
 
     same_a = shuffle_spikes(seed=0, **kwargs)
     same_b = shuffle_spikes(seed=0, **kwargs)
@@ -698,6 +802,8 @@ def test_shuffle_spikes_seed_is_reproducible_and_varies():
 
 
 def test_fit_log_gmm_recovers_two_modes():
+    """A two-component GMM fitted to log intervals from modes near 0.05 s and 2 s puts one sorted
+    mean on each side of log(0.5)."""
     rng = np.random.default_rng(0)
     short = np.exp(rng.normal(loc=np.log(0.05), scale=0.1, size=300))
     long_ = np.exp(rng.normal(loc=np.log(2.0), scale=0.15, size=300))
@@ -713,6 +819,7 @@ def test_fit_log_gmm_recovers_two_modes():
 
 
 def test_gmm_cdf_logspace_matches_norm_cdf_for_single_component():
+    """With one component the mixture CDF equals the normal CDF with the fitted mean and SD."""
     rng = np.random.default_rng(0)
     log_x = rng.normal(loc=0.0, scale=1.0, size=500).reshape(-1, 1)
     gmm = GaussianMixture(n_components=1, covariance_type='full', random_state=0).fit(log_x)
@@ -727,6 +834,8 @@ def test_gmm_cdf_logspace_matches_norm_cdf_for_single_component():
 
 
 def test_gmm_quantile_logspace_inverts_cdf():
+    """The GMM quantile function inverts the CDF to 1e-6 at five test points, so percentile lookups
+    are exact."""
     rng = np.random.default_rng(1)
     log_x = rng.normal(loc=0.0, scale=1.0, size=400).reshape(-1, 1)
     gmm = GaussianMixture(n_components=2, covariance_type='full', random_state=0, n_init=2).fit(log_x)
@@ -738,6 +847,8 @@ def test_gmm_quantile_logspace_inverts_cdf():
 
 
 def test_gmm_boundaries_logspace_returns_log_and_seconds():
+    """Two separated components give one boundary that lies between the means in log space, with the
+    seconds value equal to its exponential."""
     rng = np.random.default_rng(2)
     short = rng.normal(loc=-3.0, scale=0.3, size=300)
     long_ = rng.normal(loc=1.0, scale=0.3, size=300)
@@ -753,6 +864,8 @@ def test_gmm_boundaries_logspace_returns_log_and_seconds():
 
 @pytest.mark.parametrize("cov_type", ["full", "tied", "diag", "spherical"])
 def test_extract_params_returns_consistent_shapes(cov_type):
+    """For every sklearn covariance type the extracted weights, means, covariances and precisions
+    have full (K, d, d) shapes, and each precision inverts its covariance."""
     rng = np.random.default_rng(0)
     X = rng.normal(size=(200, 2))
     gmm = GaussianMixture(n_components=3, covariance_type=cov_type, random_state=0).fit(X)
@@ -767,6 +880,8 @@ def test_extract_params_returns_consistent_shapes(cov_type):
 
 
 def test_extract_params_rejects_unknown_covariance_type():
+    """An unrecognised covariance type raises ValueError instead of returning wrongly shaped
+    parameters."""
     rng = np.random.default_rng(0)
     X = rng.normal(size=(50, 1))
     gmm = GaussianMixture(n_components=1, covariance_type='full', random_state=0).fit(X)
@@ -776,7 +891,8 @@ def test_extract_params_rejects_unknown_covariance_type():
 
 
 def test_log_gauss_matches_scipy_for_2d():
-    from scipy.stats import multivariate_normal
+    """The hand-written multivariate Gaussian log-density matches scipy's
+    ``multivariate_normal.logpdf`` for a correlated 2-D covariance."""
     mu = np.array([0.0, 0.0])
     Sig = np.array([[1.0, 0.2], [0.2, 0.5]])
     Prec = np.linalg.inv(Sig)
@@ -786,6 +902,8 @@ def test_log_gauss_matches_scipy_for_2d():
 
 
 def test_alpha_returns_nonnegative_responsibilities():
+    """The unnormalised responsibilities at a point are finite and non-negative, one per component,
+    and the log-max shift makes the largest exactly 1."""
     rng = np.random.default_rng(0)
     X = rng.normal(size=(100, 1))
     gmm = GaussianMixture(n_components=2, covariance_type='full', random_state=0, n_init=2).fit(X)
@@ -798,7 +916,8 @@ def test_alpha_returns_nonnegative_responsibilities():
 
 
 def test_t_logpdf_1d_matches_scipy():
-    from scipy.stats import t as t_dist
+    """The 1-D Student-t log-density with location and scale matches scipy's location-scale
+    ``t.logpdf``."""
     x = np.linspace(-3, 3, 25)
     mu, sigma2, nu = 0.5, 2.0, 5.0
     expected = t_dist.logpdf((x - mu) / np.sqrt(sigma2), df=nu) - 0.5 * np.log(sigma2)
@@ -806,6 +925,8 @@ def test_t_logpdf_1d_matches_scipy():
 
 
 def test_t_logpdf_1d_gaussian_limit():
+    """With very large degrees of freedom the Student-t log-density approaches the standard
+    normal's."""
     x = np.linspace(-2, 2, 11)
     mu, sigma2, nu = 0.0, 1.0, 1e6
     np.testing.assert_allclose(
@@ -816,6 +937,22 @@ def test_t_logpdf_1d_gaussian_limit():
 
 
 def _make_tmixture():
+    """
+    Description
+    -----------
+    Builds a fixed two-component Student-t mixture (weights 0.4 / 0.6, means
+    -2.0 / 1.5, variances 0.25 / 0.4, degrees of freedom 10 / 8) directly from
+    its parameters, so the ``TMixture`` methods can be checked against
+    hand-computed values without running a fit.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    model (TMixture)
+        The constructed two-component t-mixture.
+    """
     return TMixture(
         weights=[0.4, 0.6],
         means=[-2.0, 1.5],
@@ -825,6 +962,8 @@ def _make_tmixture():
 
 
 def test_tmixture_init_normalizes_shapes():
+    """``TMixture`` reshapes flat parameter lists into the sklearn layout ((K,), (K, 1), (K, 1, 1))
+    so it can stand in for a GaussianMixture in shared code."""
     m = _make_tmixture()
     assert m.weights_.shape == (2,)
     assert m.means_.shape == (2, 1)
@@ -835,6 +974,8 @@ def test_tmixture_init_normalizes_shapes():
 
 
 def test_tmixture_score_samples_matches_logaddexp_of_components():
+    """``score_samples`` equals the log-sum-exp of the weighted per-component Student-t log-
+    densities."""
     m = _make_tmixture()
     x = np.linspace(-3.0, 3.0, 7)
     out = m.score_samples(x)
@@ -848,6 +989,7 @@ def test_tmixture_score_samples_matches_logaddexp_of_components():
 
 
 def test_tmixture_predict_proba_rows_sum_to_one():
+    """Posterior responsibilities are non-negative and each row sums to one."""
     m = _make_tmixture()
     z = m.predict_proba(np.linspace(-3.0, 3.0, 25))
     assert z.shape == (25, 2)
@@ -856,12 +998,15 @@ def test_tmixture_predict_proba_rows_sum_to_one():
 
 
 def test_tmixture_score_is_mean_of_score_samples():
+    """``score`` is the mean per-sample log-likelihood, matching sklearn's convention."""
     m = _make_tmixture()
     x = np.array([-1.0, 0.0, 1.0, 2.0])
     assert m.score(x) == pytest.approx(float(np.mean(m.score_samples(x))))
 
 
 def test_tmixture_n_params_and_aic_bic_relations():
+    """BIC and AIC use 4K - 1 free parameters (weights, means, scales and degrees of freedom), so
+    information-criterion comparisons with Gaussian fits are fair."""
     m = _make_tmixture()
     x = np.linspace(-2.0, 2.0, 100)
     n_params = 4 * m.n_components - 1
@@ -873,6 +1018,7 @@ def test_tmixture_n_params_and_aic_bic_relations():
 
 
 def test_t_mixture_cdf_in_unit_interval():
+    """The t-mixture CDF lies strictly inside (0, 1) and is non-decreasing over the grid."""
     m = _make_tmixture()
     x = np.linspace(-5.0, 5.0, 30)
     cdf = t_mixture_cdf_logspace(x, m)
@@ -881,6 +1027,7 @@ def test_t_mixture_cdf_in_unit_interval():
 
 
 def test_t_mixture_quantile_inverts_cdf():
+    """The t-mixture quantile function inverts its CDF to 1e-6."""
     m = _make_tmixture()
     test_points = np.array([-1.5, -0.5, 0.5, 1.0])
     cdf_values = t_mixture_cdf_logspace(test_points, m)
@@ -891,9 +1038,9 @@ def test_t_mixture_quantile_inverts_cdf():
 # triage helpers (compute_neuronal_tuning_curves.py)
 
 
-# _longest_run --------------------------------------------------------------
+# _longest_run
 
-@pytest.mark.parametrize("mask, circular, expected", [
+@pytest.mark.parametrize(("mask", "circular", "expected"), [
     (np.empty(0, dtype=bool), False, (-1, -1, 0)),
     (np.zeros(5, dtype=bool), False, (-1, -1, 0)),
     (np.ones(5, dtype=bool), False, (0, 4, 5)),
@@ -908,43 +1055,59 @@ def test_longest_run(mask, circular, expected):
     assert _longest_run(mask, circular=circular) == expected
 
 
-# _peak_z_info --------------------------------------------------------------
+# _peak_z_info
 
 
 def test_peak_z_info_all_nan_returns_nan():
+    """An all-NaN rate gives a NaN peak, index -1 and a NaN signed z instead of raising on an empty
+    argmax."""
     nan = np.full(5, np.nan)
     a, idx, signed = _peak_z_info(nan, nan, nan)
-    assert math.isnan(a) and idx == -1 and math.isnan(signed)
+    assert math.isnan(a)
+    assert idx == -1
+    assert math.isnan(signed)
 
 
 def test_peak_z_info_zero_std_filtered():
+    """Bins with zero null SD are left out of the z-score, so a zero-variance null gives no peak
+    rather than an infinite z."""
     rate = np.array([1.0, 2.0, 3.0])
     null_mean = np.zeros(3)
     null_std = np.zeros(3)
-    a, idx, signed = _peak_z_info(rate, null_mean, null_std)
-    assert math.isnan(a) and idx == -1
+    a, idx, _signed = _peak_z_info(rate, null_mean, null_std)
+    assert math.isnan(a)
+    assert idx == -1
 
 
 def test_peak_z_info_picks_max_abs_excitation():
+    """An excitatory bin 4 SD above the null mean is reported as the peak with positive signed z."""
     rate = np.array([1.0, 5.0, 1.0])
     null_mean = np.array([1.0, 1.0, 1.0])
     null_std = np.array([1.0, 1.0, 1.0])
     a, idx, signed = _peak_z_info(rate, null_mean, null_std)
-    assert a == 4.0 and idx == 1 and signed == 4.0
+    assert a == 4.0
+    assert idx == 1
+    assert signed == 4.0
 
 
 def test_peak_z_info_picks_max_abs_suppression():
+    """The peak is chosen by absolute z, so a -10 SD suppression wins and keeps its
+    negative sign."""
     rate = np.array([0.0, 0.0, -10.0])
     null_mean = np.array([0.0, 0.0, 0.0])
     null_std = np.array([1.0, 1.0, 1.0])
     a, idx, signed = _peak_z_info(rate, null_mean, null_std)
-    assert a == 10.0 and idx == 2 and signed == -10.0
+    assert a == 10.0
+    assert idx == 2
+    assert signed == -10.0
 
 
-# _run_analysis -------------------------------------------------------------
+# _run_analysis
 
 
 def test_run_analysis_no_divergence():
+    """A rate inside the null band in every bin gives zero significant bins and zero-length runs on
+    both sides."""
     rate = np.full(5, 1.0)
     null_low = np.zeros(5)
     null_high = np.full(5, 2.0)
@@ -958,6 +1121,8 @@ def test_run_analysis_no_divergence():
 
 
 def test_run_analysis_pure_excitation():
+    """A rate above the null band everywhere gives a full-length excitation run and no suppression
+    run."""
     rate = np.full(3, 5.0)
     null_low = np.zeros(3)
     null_high = np.full(3, 1.0)
@@ -969,6 +1134,8 @@ def test_run_analysis_pure_excitation():
 
 
 def test_run_analysis_pure_suppression():
+    """A rate below the null band everywhere gives a full-length suppression run and no excitation
+    run."""
     rate = np.full(3, -5.0)
     null_low = np.full(3, -1.0)
     null_high = np.full(3, 1.0)
@@ -980,6 +1147,8 @@ def test_run_analysis_pure_suppression():
 
 
 def test_run_analysis_circular_wraps_excitation():
+    """On a circular axis an excitation run crossing the last-to-first bin boundary counts as one
+    length-3 run starting at index 3 and ending at 0."""
     rate = np.array([5.0, 0.0, 0.0, 5.0, 5.0])  # last 2 + first 1 = wrap of length 3
     null_low = np.full(5, -1.0)
     null_high = np.full(5, 1.0)
@@ -994,6 +1163,7 @@ def test_run_analysis_circular_wraps_excitation():
 
 
 def test_run_analysis_propagates_axis_indices_for_peak():
+    """The excitation block reports the index and z of its peak bin (bin 2, z = 9)."""
     rate = np.array([1.0, 2.0, 10.0, 2.0, 1.0])
     null_low = np.full(5, 0.0)
     null_high = np.full(5, 1.5)
@@ -1005,6 +1175,8 @@ def test_run_analysis_propagates_axis_indices_for_peak():
 
 
 def test_run_analysis_handles_nan_rate():
+    """NaN rate bins break no comparisons: the three valid excited bins still form a run starting at
+    index 1."""
     rate = np.array([np.nan, 5.0, 5.0, 5.0, np.nan])
     null_low = np.full(5, 0.0)
     null_high = np.full(5, 1.0)
@@ -1015,50 +1187,60 @@ def test_run_analysis_handles_nan_rate():
     assert out["excit"]["run_start_idx"] == 1
 
 
-# _selectivity_index --------------------------------------------------------
+# _selectivity_index
 
 
 def test_selectivity_uniform_returns_zero():
+    """A flat tuning curve has zero selectivity."""
     assert _selectivity_index(np.full(10, 5.0)) == 0.0
 
 
 def test_selectivity_max_min_normalized():
+    """Selectivity is (max - min) / (max + min), so a curve with a zero minimum scores 1."""
     assert _selectivity_index(np.array([0.0, 10.0])) == 1.0
 
 
 def test_selectivity_all_nan_returns_nan():
+    """An all-NaN curve gives NaN selectivity instead of raising."""
     assert math.isnan(_selectivity_index(np.full(5, np.nan)))
 
 
-# _monotonicity_spearman ----------------------------------------------------
+# _monotonicity_spearman
 
 
 def test_monotonicity_increasing():
+    """A strictly increasing curve has Spearman monotonicity 1."""
     assert _monotonicity_spearman(np.arange(10).astype(float)) == pytest.approx(1.0)
 
 
 def test_monotonicity_decreasing():
+    """A strictly decreasing curve has Spearman monotonicity -1."""
     assert _monotonicity_spearman(
         np.arange(10)[::-1].astype(float)
     ) == pytest.approx(-1.0)
 
 
 def test_monotonicity_constant_returns_nan():
+    """A constant curve has undefined rank correlation and returns NaN (scipy's constant-input
+    warning is silenced)."""
     # filterwarnings to suppress scipy ConstantInputWarning
-    import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         assert math.isnan(_monotonicity_spearman(np.full(10, 5.0)))
 
 
 def test_monotonicity_too_few_returns_nan():
+    """Fewer than three points give NaN monotonicity, since a rank correlation on two points is
+    trivially 1."""
     assert math.isnan(_monotonicity_spearman(np.array([1.0, 2.0])))
 
 
-# _skaggs_info_rate_bps -----------------------------------------------------
+# _skaggs_info_rate_bps
 
 
 def test_skaggs_info_place_cell():
+    """A single hot bin out of ten with uniform occupancy carries log2(10) bits per spike, the
+    textbook place-cell value."""
     rate = np.array([10.0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
     occ = np.ones(10)
     # R = 1.0, p_hot = 0.1, info = 0.1 * 10 * log2(10)
@@ -1066,20 +1248,25 @@ def test_skaggs_info_place_cell():
 
 
 def test_skaggs_info_uniform_returns_zero():
+    """A uniform rate map carries zero spatial information."""
     assert _skaggs_info_rate_bps(np.full(10, 5.0), np.ones(10)) == pytest.approx(0.0)
 
 
 def test_skaggs_info_all_zero_rate_returns_nan():
+    """A silent unit (mean rate 0) gives NaN information, not a division-by-zero result."""
     assert math.isnan(_skaggs_info_rate_bps(np.zeros(10), np.ones(10)))
 
 
 def test_skaggs_info_all_nan_returns_nan():
+    """An all-NaN rate map gives NaN information."""
     assert math.isnan(
         _skaggs_info_rate_bps(np.full(10, np.nan), np.ones(10))
     )
 
 
 def test_skaggs_info_zero_occ_excluded():
+    """A zero-occupancy bin is left out of the occupancy probabilities, so one hot bin among nine
+    visited bins gives log2(9)."""
     rate = np.array([10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
     occ = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0])
     # 9 valid bins, R = 10/9, info_per_spike = log2(9)
@@ -1098,6 +1285,8 @@ def test_skaggs_info_zero_rate_bins_count_in_R():
 
 
 def test_skaggs_info_2d_ravels_to_1d_answer():
+    """A 2-D map gives the same information as the same values flattened to 1-D, so spatial maps
+    share the 1-D formula."""
     rate1d = np.array([10.0, 0.0, 0.0, 0.0])
     occ1d = np.ones(4)
     rate2d = rate1d.reshape(2, 2)
@@ -1105,43 +1294,50 @@ def test_skaggs_info_2d_ravels_to_1d_answer():
     assert _skaggs_info_rate_bps(rate1d, occ1d) == _skaggs_info_rate_bps(rate2d, occ2d)
 
 
-# _skaggs_sparsity ----------------------------------------------------------
+# _skaggs_sparsity
 
 
 def test_skaggs_sparsity_uniform_is_one():
+    """A uniform map has Skaggs sparsity 1, the least sparse value."""
     assert _skaggs_sparsity(np.full(10, 5.0), np.ones(10)) == pytest.approx(1.0)
 
 
 def test_skaggs_sparsity_place_cell_is_one_over_n():
+    """One hot bin out of ten gives sparsity 1/10."""
     rate = np.array([10.0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
     assert _skaggs_sparsity(rate, np.ones(10)) == pytest.approx(0.1)
 
 
 def test_skaggs_sparsity_all_nan_returns_nan():
+    """An all-NaN map gives NaN sparsity."""
     assert math.isnan(_skaggs_sparsity(np.full(10, np.nan), np.ones(10)))
 
 
-# _spatial_coherence --------------------------------------------------------
+# _spatial_coherence
 
 
 def test_spatial_coherence_gradient_high():
+    """A smooth gradient map has neighbour coherence above 0.9."""
     grid = np.tile(np.arange(10), (10, 1)).astype(float)
     assert _spatial_coherence(grid) > 0.9
 
 
 def test_spatial_coherence_random_low():
+    """A white-noise map has neighbour coherence near zero (|r| < 0.3)."""
     rng = np.random.default_rng(42)
     assert abs(_spatial_coherence(rng.standard_normal((20, 20)))) < 0.3
 
 
 def test_spatial_coherence_1d_returns_nan():
+    """Coherence is only defined on 2-D maps, so a 1-D input returns NaN."""
     assert math.isnan(_spatial_coherence(np.zeros(10)))
 
 
-# _ramp_index ---------------------------------------------------------------
+# _ramp_index
 
 
 def test_ramp_index_up_returns_positive():
+    """A PETH rising from 1 to 5 toward onset gives ramp index (5 - 1) / (5 + 1)."""
     centers = np.linspace(-2, 0, 41)
     rate = np.zeros(41)
     rate[centers >= -0.2] = 5.0
@@ -1150,39 +1346,50 @@ def test_ramp_index_up_returns_positive():
 
 
 def test_ramp_index_equal_endpoints_returns_zero():
+    """A flat PETH has ramp index 0."""
     centers = np.linspace(-2, 0, 41)
     rate = np.full(41, 3.0)
     assert _ramp_index(rate, centers) == 0.0
 
 
 def test_ramp_index_both_zero_returns_nan():
+    """Zero rate at both ends gives NaN, since the normalised difference is 0 / 0."""
     centers = np.linspace(-2, 0, 41)
     rate = np.zeros(41)
     assert math.isnan(_ramp_index(rate, centers))
 
 
 def test_ramp_index_nan_endpoints_returns_nan():
+    """An all-NaN PETH gives a NaN ramp index."""
     centers = np.linspace(-2, 0, 41)
     rate = np.full(41, np.nan)
     assert math.isnan(_ramp_index(rate, centers))
 
 
-# _detect_bouts -------------------------------------------------------------
+# _detect_bouts
 
 
 def test_detect_bouts_empty():
+    """No USVs give empty bout start, stop and index arrays."""
     bs, be, bi = NeuronalTuning._detect_bouts(np.empty(0), np.empty(0), 2.0)
-    assert bs.size == 0 and be.size == 0 and bi.size == 0
+    assert bs.size == 0
+    assert be.size == 0
+    assert bi.size == 0
 
 
 def test_detect_bouts_single_usv():
+    """A single USV forms one bout spanning its own start and stop."""
     bs, be, bi = NeuronalTuning._detect_bouts(
         np.array([5.0]), np.array([5.5]), 2.0
     )
-    assert bs.tolist() == [5.0] and be.tolist() == [5.5] and bi.tolist() == [0]
+    assert bs.tolist() == [5.0]
+    assert be.tolist() == [5.5]
+    assert bi.tolist() == [0]
 
 
 def test_detect_bouts_close_gaps_one_bout():
+    """USVs separated by gaps shorter than the quiet threshold merge into one bout from the first
+    start to the last stop."""
     bs, be, bi = NeuronalTuning._detect_bouts(
         np.array([5.0, 5.5, 6.0]), np.array([5.4, 5.9, 6.4]), 2.0
     )
@@ -1192,7 +1399,8 @@ def test_detect_bouts_close_gaps_one_bout():
 
 
 def test_detect_bouts_far_gaps_separate_bouts():
-    bs, be, bi = NeuronalTuning._detect_bouts(
+    """USVs separated by gaps longer than the quiet threshold each start their own bout."""
+    bs, _be, bi = NeuronalTuning._detect_bouts(
         np.array([5.0, 10.0, 15.0]), np.array([5.5, 10.5, 15.5]), 2.0
     )
     assert bs.tolist() == [5.0, 10.0, 15.0]
@@ -1200,6 +1408,7 @@ def test_detect_bouts_far_gaps_separate_bouts():
 
 
 def test_detect_bouts_mixed():
+    """A mix of short and long gaps gives the right bout starts, stops and per-USV bout indices."""
     bs, be, bi = NeuronalTuning._detect_bouts(
         np.array([5.0, 5.5, 10.0, 15.0, 15.3]),
         np.array([5.4, 5.9, 10.5, 15.2, 15.5]),
@@ -1210,17 +1419,20 @@ def test_detect_bouts_mixed():
     assert bi.tolist() == [0, 0, 1, 2, 2]
 
 
-# _compute_vmi_for_emitter --------------------------------------------------
+# _compute_vmi_for_emitter
 
 
 def test_vmi_empty_returns_all_nan():
+    """An emitter with no USVs gives NaN VMI and zero bouts instead of raising."""
     out = NeuronalTuning._compute_vmi_for_emitter(
         np.array([0.0]), np.empty(0), np.empty(0), np.empty(0), 2.0
     )
-    assert math.isnan(out["vmi"]) and out["n_bouts"] == 0
+    assert math.isnan(out["vmi"])
+    assert out["n_bouts"] == 0
 
 
 def test_vmi_pure_excitation_returns_one():
+    """Spikes only inside the USV and none in the baseline window give VMI = +1."""
     sp = np.array([5.05, 5.15, 5.25])
     em_starts = np.array([5.0])
     em_stops = np.array([5.3])
@@ -1232,6 +1444,7 @@ def test_vmi_pure_excitation_returns_one():
 
 
 def test_vmi_pure_suppression_returns_minus_one():
+    """Spikes only in the baseline window and none inside the USV give VMI = -1."""
     sp = np.array([3.0, 3.5, 4.0])  # all in baseline window, none in USV
     em_starts = np.array([5.0])
     em_stops = np.array([5.5])
@@ -1243,6 +1456,8 @@ def test_vmi_pure_suppression_returns_minus_one():
 
 
 def test_vmi_baseline_pre_recording_is_nan():
+    """A bout whose baseline window would start before time 0 has a NaN baseline rate, not a rate
+    computed over a truncated window."""
     sp = np.array([0.6])
     em_starts = np.array([0.5])
     em_stops = np.array([1.0])
@@ -1254,6 +1469,8 @@ def test_vmi_baseline_pre_recording_is_nan():
 
 
 def test_vmi_equal_pairs_wilcoxon_nan():
+    """When every bout's USV and baseline rates are equal the Wilcoxon test is undefined and its
+    p-value is NaN."""
     sp = np.linspace(0, 100, 1000)  # uniform spike rate
     em_starts = np.array([5.0, 10.0, 15.0, 20.0])
     em_stops = np.array([6.0, 11.0, 16.0, 21.0])
@@ -1265,6 +1482,8 @@ def test_vmi_equal_pairs_wilcoxon_nan():
 
 
 def test_vmi_n_bouts_matches_detector():
+    """The VMI bout count matches ``_detect_bouts`` on the same USVs (three close USVs and one
+    isolated USV give two bouts)."""
     # 2 bouts: one big (3 USVs), one small (1 USV)
     em_starts = np.array([5.0, 5.5, 5.8, 20.0])
     em_stops = np.array([5.4, 5.7, 6.0, 20.5])
@@ -1278,10 +1497,10 @@ def test_vmi_n_bouts_matches_detector():
 # unit_triage_aggregator.py
 
 
-# _to_jsonable / _safe_float ------------------------------------------------
+# _to_jsonable / _safe_float
 
 
-@pytest.mark.parametrize("inp, expected", [
+@pytest.mark.parametrize(("inp", "expected"), [
     (np.int64(5), 5),
     (np.float64(2.5), 2.5),
     (np.float64(np.nan), None),
@@ -1291,17 +1510,20 @@ def test_vmi_n_bouts_matches_detector():
     (pathlib.Path("/foo"), "/foo"),
 ])
 def test_to_jsonable(inp, expected):
+    """numpy scalars and arrays and Paths convert to plain JSON values, with non-finite floats
+    becoming None."""
     assert _to_jsonable(inp) == expected
 
 
 def test_to_jsonable_unhandled_type_raises():
+    """An unsupported object raises TypeError instead of being written as an opaque string."""
     class _X:
-        pass
+        """Bare class with no JSON conversion, used to trigger the TypeError path."""
     with pytest.raises(TypeError):
         _to_jsonable(_X())
 
 
-@pytest.mark.parametrize("inp, expected", [
+@pytest.mark.parametrize(("inp", "expected"), [
     (None, None),
     (5.0, 5.0),
     (np.nan, None),
@@ -1310,31 +1532,38 @@ def test_to_jsonable_unhandled_type_raises():
     (np.float64(2.5), 2.5),
 ])
 def test_safe_float(inp, expected):
+    """Finite numbers pass through as floats, while None, NaN, inf and non-numeric strings become
+    None."""
     assert _safe_float(inp) == expected
 
 
-# _flag_vmi -----------------------------------------------------------------
+# _flag_vmi
 
 
 def test_flag_vmi_significant_excit():
+    """A significant positive VMI with enough bouts is flagged as excitation and returns its
+    payload."""
     payload = {
         "vmi": 0.5, "wilcoxon_pvalue": 0.001, "n_bouts": 20,
         "fr_baseline": 1.0, "fr_usv": 3.0,
     }
     direction, info = _flag_vmi(payload, alpha=0.01, min_bouts=10)
-    assert direction == "excit" and info["vmi"] == 0.5
+    assert direction == "excit"
+    assert info["vmi"] == 0.5
 
 
 def test_flag_vmi_significant_suppress():
+    """A significant negative VMI is flagged as suppression."""
     payload = {
         "vmi": -0.5, "wilcoxon_pvalue": 0.001, "n_bouts": 20,
         "fr_baseline": 3.0, "fr_usv": 1.0,
     }
-    direction, info = _flag_vmi(payload, alpha=0.01, min_bouts=10)
+    direction, _info = _flag_vmi(payload, alpha=0.01, min_bouts=10)
     assert direction == "suppress"
 
 
 def test_flag_vmi_below_min_bouts():
+    """Fewer bouts than ``min_bouts`` rejects the unit even when p is small."""
     payload = {
         "vmi": 0.5, "wilcoxon_pvalue": 0.001, "n_bouts": 5,
         "fr_baseline": 1.0, "fr_usv": 3.0,
@@ -1343,6 +1572,7 @@ def test_flag_vmi_below_min_bouts():
 
 
 def test_flag_vmi_above_alpha_rejected():
+    """A p-value above alpha rejects the unit."""
     payload = {
         "vmi": 0.5, "wilcoxon_pvalue": 0.5, "n_bouts": 20,
         "fr_baseline": 1.0, "fr_usv": 3.0,
@@ -1351,6 +1581,7 @@ def test_flag_vmi_above_alpha_rejected():
 
 
 def test_flag_vmi_nan_pvalue_rejected():
+    """A NaN p-value is treated as not significant, not as passing."""
     payload = {
         "vmi": 0.5, "wilcoxon_pvalue": float("nan"), "n_bouts": 20,
         "fr_baseline": 1.0, "fr_usv": 3.0,
@@ -1359,6 +1590,8 @@ def test_flag_vmi_nan_pvalue_rejected():
 
 
 def test_flag_vmi_gates_on_n_valid_pairs_over_n_bouts():
+    """The bout gate counts the paired observations that entered the Wilcoxon (``n_valid_pairs``),
+    not all bouts, so 20 bouts with only 5 valid pairs are rejected."""
     # plenty of total bouts, but only 5 paired observations entered the
     # Wilcoxon -> the n_valid_pairs gate (5 < 10) must reject it even though
     # n_bouts (20) would have passed.
@@ -1370,52 +1603,65 @@ def test_flag_vmi_gates_on_n_valid_pairs_over_n_bouts():
 
 
 def test_flag_vmi_n_valid_pairs_passes():
+    """With ``n_valid_pairs`` above the minimum the unit is flagged and the count is carried into
+    the returned info."""
     payload = {
         "vmi": 0.5, "wilcoxon_pvalue": 0.001, "n_bouts": 20,
         "n_valid_pairs": 15, "fr_baseline": 1.0, "fr_usv": 3.0,
     }
     direction, info = _flag_vmi(payload, alpha=0.01, min_bouts=10)
-    assert direction == "excit" and info["n_valid_pairs"] == 15
+    assert direction == "excit"
+    assert info["n_valid_pairs"] == 15
 
 
-# _flag_runs ----------------------------------------------------------------
+# _flag_runs
 
 
 def test_flag_runs_pass():
+    """A run at least ``min_run`` long whose peak |z| clears the threshold passes and returns its
+    block."""
     block = {"max_run": 5, "peak_z": 4.0, "n_bins": 5}
     info = _flag_runs(block, z_threshold=3.0, min_run=3)
-    assert info is not None and info["max_run"] == 5
+    assert info is not None
+    assert info["max_run"] == 5
 
 
 def test_flag_runs_short_run_rejected():
+    """A run shorter than ``min_run`` is rejected even with a high peak z."""
     block = {"max_run": 2, "peak_z": 4.0, "n_bins": 2}
     assert _flag_runs(block, z_threshold=3.0, min_run=3) is None
 
 
 def test_flag_runs_low_z_rejected():
+    """A long run whose peak z is below threshold is rejected."""
     block = {"max_run": 5, "peak_z": 1.0, "n_bins": 5}
     assert _flag_runs(block, z_threshold=3.0, min_run=3) is None
 
 
 def test_flag_runs_negative_z_passes_via_abs():
+    """The z threshold is applied to |peak_z|, so a strongly negative peak passes."""
     block = {"max_run": 5, "peak_z": -4.0, "n_bins": 5}
     info = _flag_runs(block, z_threshold=3.0, min_run=3)
     assert info is not None
 
 
-# _flag_categorical ---------------------------------------------------------
+# _flag_categorical
 
 
 def test_flag_categorical_pass():
+    """A category tuning whose peak |z| clears the threshold is flagged and keeps its best
+    category."""
     payload = {
         "peak_abs_z": 4.0, "best_cat": 5, "n_sig_categories": 3,
         "selectivity": 0.5, "peak_signed_z": 4.0,
     }
     info = _flag_categorical(payload, z_threshold=3.0)
-    assert info is not None and info["best_cat"] == 5
+    assert info is not None
+    assert info["best_cat"] == 5
 
 
 def test_flag_categorical_fail():
+    """A category tuning below the z threshold is not flagged."""
     payload = {
         "peak_abs_z": 1.0, "best_cat": 5, "n_sig_categories": 0,
         "selectivity": 0.0, "peak_signed_z": 1.0,
@@ -1423,19 +1669,22 @@ def test_flag_categorical_fail():
     assert _flag_categorical(payload, z_threshold=3.0) is None
 
 
-# _flag_spatial -------------------------------------------------------------
+# _flag_spatial
 
 
 def test_flag_spatial_pass():
+    """A spatial map whose information rate clears the threshold is flagged with its metrics."""
     payload = {
         "info_rate_bps": 1.5, "sparsity": 0.3, "coherence": 0.8,
         "peak_rate_sps": 5.0, "peak_row": 3, "peak_col": 4,
     }
     info = _flag_spatial(payload, info_threshold=0.5)
-    assert info is not None and info["info_rate_bps"] == 1.5
+    assert info is not None
+    assert info["info_rate_bps"] == 1.5
 
 
 def test_flag_spatial_fail():
+    """A spatial map below the information threshold is not flagged."""
     payload = {
         "info_rate_bps": 0.1, "sparsity": 0.9, "coherence": 0.5,
         "peak_rate_sps": 1.0, "peak_row": 0, "peak_col": 0,
@@ -1443,10 +1692,11 @@ def test_flag_spatial_fail():
     assert _flag_spatial(payload, info_threshold=0.5) is None
 
 
-# _emitter_role_map ---------------------------------------------------------
+# _emitter_role_map
 
 
 def test_emitter_role_map_from_usv_peth():
+    """Emitter roles are read from the ``usv_peth`` block when it carries them."""
     cluster_data = {
         "usv_peth": {"emitter_a": {"role": "self", "rate": np.zeros(5)}}
     }
@@ -1454,6 +1704,8 @@ def test_emitter_role_map_from_usv_peth():
 
 
 def test_emitter_role_map_from_property_tuning():
+    """When the PETH block has no roles they are read from the per-property tuning payloads
+    instead."""
     cluster_data = {
         "usv_property_tuning": {
             "emitter_b": {"duration": {"role": "partner"}}
@@ -1463,6 +1715,8 @@ def test_emitter_role_map_from_property_tuning():
 
 
 def test_emitter_role_map_missing_role_returns_empty():
+    """An emitter whose payload has no role is left out of the map instead of getting a guessed
+    role."""
     cluster_data = {"usv_peth": {"emitter_x": {"rate": np.zeros(5)}}}
     assert _emitter_role_map(cluster_data) == {}
 
@@ -1470,7 +1724,26 @@ def test_emitter_role_map_missing_role_returns_empty():
 
 
 def _make_two_component_gmm(seed=0, n_per=2000):
-    """Build a fitted 1D GaussianMixture with two well-separated modes."""
+    """
+    Description
+    -----------
+    Builds a fitted 1-D ``GaussianMixture`` with two well-separated modes
+    (N(-2, 0.3) and N(+2, 0.4) in log space, ``n_per`` samples each), so
+    mode-finding, ICL and summary helpers have an unambiguous two-mode target.
+
+    Parameters
+    ----------
+    seed (int)
+        Seed for both the sample generator and the sklearn fit.
+    n_per (int)
+        Number of samples drawn per mode.
+
+    Returns
+    -------
+    gmm, order, log_x (tuple)
+        The fitted mixture, the argsort of its means (ascending), and the
+        (2 * n_per, 1) log-space sample array it was fitted to.
+    """
     rng = np.random.default_rng(seed)
     a = rng.normal(loc=-2.0, scale=0.3, size=n_per)
     b = rng.normal(loc=+2.0, scale=0.4, size=n_per)
@@ -1481,6 +1754,8 @@ def _make_two_component_gmm(seed=0, n_per=2000):
 
 
 def test_gmm_modes_1d_recovers_component_centers():
+    """A well-separated two-component 1-D mixture has two modes near the component means, with
+    densities sorted descending."""
     gmm, _, _ = _make_two_component_gmm()
     modes, dens = gmm_modes(gmm)
     modes_flat = np.asarray(modes).ravel()
@@ -1502,6 +1777,8 @@ def test_gmm_modes_returns_same_count_for_modes_and_densities():
 
 
 def test_gmm_icl_matches_bic_minus_entropy_term():
+    """ICL adds a non-negative classification-entropy penalty to BIC, so ICL >= BIC for a fitted
+    mixture."""
     gmm, _, log_x = _make_two_component_gmm()
     icl = gmm_icl(gmm, log_x)
     bic = gmm.bic(log_x)
@@ -1511,6 +1788,7 @@ def test_gmm_icl_matches_bic_minus_entropy_term():
 
 
 def test_gmm_cv_neg_loglik_returns_finite_with_sufficient_data():
+    """With enough data for every fold the cross-validated negative log-likelihood is finite."""
     rng = np.random.default_rng(2)
     intervals = np.exp(rng.normal(0.0, 1.0, size=400))
     val = gmm_cv_neg_loglik(intervals, n_components=2, seed=0, n_folds=3, n_init=2)
@@ -1529,12 +1807,15 @@ def test_select_best_n_components_picks_min_ic():
     # The function may return either an int or a dict per key; assert the
     # n_comp value either way.
     def _n_comp(v):
+        """Read ``n_comp`` from either a per-key dict or a bare integer selection."""
         return v["n_comp"] if isinstance(v, dict) else int(v)
     assert _n_comp(out["a"]) == 3
     assert _n_comp(out["b"]) == 3
 
 
 def test_report_gmm_stats_returns_aligned_outputs():
+    """``report_gmm_stats`` returns one mean and SD per component in ascending order, and modes
+    aligned with their densities."""
     gmm, order, _ = _make_two_component_gmm()
     means, sds, modes, mode_dens = report_gmm_stats(gmm, order)
     assert means.shape == sds.shape == (2,)
@@ -1544,6 +1825,8 @@ def test_report_gmm_stats_returns_aligned_outputs():
 
 
 def test_summarize_best_gmm_includes_log_and_seconds():
+    """The best-GMM summary carries both log-space and seconds-space entries, which the archive and
+    figures both read."""
     gmm, order, _ = _make_two_component_gmm()
     out = summarize_best_gmm(gmm, order, tau=0.5)
     # the dict must carry both log-space and seconds-space entries
@@ -1551,19 +1834,41 @@ def test_summarize_best_gmm_includes_log_and_seconds():
     assert any("sec" in k.lower() for k in out)
 
 
-# Student-t mixture --------------------------------------------------------
+# Student-t mixture
 
 
 def _t_mixture_intervals(rng, n_per=300, log_loc_a=-2.0, log_loc_b=2.0):
-    """Return strictly-positive interval values whose log values follow
-    a 2-mode Student-t mixture. `fit_log_t_mixture` takes raw intervals
-    (in seconds) and applies log internally."""
+    """
+    Description
+    -----------
+    Returns strictly positive interval values whose logs follow a two-mode
+    Student-t mixture (df = 10, scale 0.4, locations ``log_loc_a`` and
+    ``log_loc_b``). ``fit_log_t_mixture`` takes raw intervals in seconds and
+    applies the log internally, so the samples are exponentiated here.
+
+    Parameters
+    ----------
+    rng (np.random.Generator)
+        Seeded random generator.
+    n_per (int)
+        Number of samples per mode.
+    log_loc_a (float)
+        Log-space location of the first mode.
+    log_loc_b (float)
+        Log-space location of the second mode.
+
+    Returns
+    -------
+    intervals (np.ndarray)
+        A (2 * n_per,) array of positive intervals in seconds.
+    """
     a = rng.standard_t(df=10.0, size=n_per) * 0.4 + log_loc_a
     b = rng.standard_t(df=10.0, size=n_per) * 0.4 + log_loc_b
     return np.exp(np.concatenate([a, b]))
 
 
 def test_fit_log_t_mixture_recovers_one_component():
+    """A one-component t-mixture fit returns one component whose weights sum to 1."""
     rng = np.random.default_rng(3)
     intervals = np.exp(rng.standard_t(df=10.0, size=500) * 0.5)
     model, _ = fit_log_t_mixture(
@@ -1574,6 +1879,8 @@ def test_fit_log_t_mixture_recovers_one_component():
 
 
 def test_fit_log_t_mixture_two_modes_recovered_centers():
+    """A two-mode t-mixture fit to log intervals centred at -2 and +2 puts one sorted mean on each
+    side of zero."""
     rng = np.random.default_rng(4)
     intervals = _t_mixture_intervals(rng, n_per=400)
     model, _ = fit_log_t_mixture(
@@ -1584,6 +1891,7 @@ def test_fit_log_t_mixture_two_modes_recovered_centers():
 
 
 def test_t_mixture_icl_finite():
+    """ICL of a fitted two-component t-mixture is finite."""
     rng = np.random.default_rng(5)
     intervals = _t_mixture_intervals(rng, n_per=200)
     model, _ = fit_log_t_mixture(
@@ -1594,6 +1902,7 @@ def test_t_mixture_icl_finite():
 
 
 def test_t_mixture_cv_neg_loglik_finite():
+    """The cross-validated t-mixture negative log-likelihood is finite with enough data."""
     rng = np.random.default_rng(6)
     intervals = _t_mixture_intervals(rng, n_per=150)
     val = t_mixture_cv_neg_loglik(
@@ -1603,6 +1912,8 @@ def test_t_mixture_cv_neg_loglik_finite():
 
 
 def test_report_t_mixture_stats_shapes():
+    """``report_t_mixture_stats`` returns one mean, SD and nu per component, and modes aligned with
+    their densities."""
     rng = np.random.default_rng(7)
     intervals = _t_mixture_intervals(rng, n_per=200)
     model, order = fit_log_t_mixture(
@@ -1614,6 +1925,7 @@ def test_report_t_mixture_stats_shapes():
 
 
 def test_summarize_best_t_mixture_log_and_seconds():
+    """The best t-mixture summary carries both log-space and seconds-space entries."""
     rng = np.random.default_rng(8)
     intervals = _t_mixture_intervals(rng, n_per=200)
     model, order = fit_log_t_mixture(
@@ -1624,10 +1936,12 @@ def test_summarize_best_t_mixture_log_and_seconds():
     assert any("sec" in k.lower() for k in out)
 
 
-# Helper functions ---------------------------------------------------------
+# Helper functions
 
 
 def test_sample_from_mixture_returns_correct_shape():
+    """Sampling N points from a fitted mixture returns exactly N values, which the parametric
+    bootstrap relies on."""
     rng = np.random.default_rng(9)
     intervals = _t_mixture_intervals(rng, n_per=200)
     model, _ = fit_log_t_mixture(
@@ -1670,14 +1984,33 @@ def test_t_update_nu_returns_finite_in_range():
 
 def _make_synthetic_session(tmp_path, *, n_frames=1500, n_usvs=120, fps=150.0):
     """
-    Build a minimal session directory layout with the files NeuronalTuning
-    looks for: a behavioral_features.csv, a translated/rotated H5, an
-    audio_triggerbox_sync_info.json, and a per-cluster spike .npy.
+    Description
+    -----------
+    Builds a minimal session directory layout with the files ``NeuronalTuning``
+    looks for: a ``*_behavioral_features.csv`` for one animal ``m1`` (speed,
+    acceleration, allocentric yaw and spaceX / spaceY), a translated/rotated
+    tracking H5 whose ``tracks`` leading axis sets the session length, a
+    ``session_metadata.yaml`` giving ``m1``'s sex, an
+    ``audio_triggerbox_sync_info.json``, a ``*_usv_summary.csv`` of pure USVs
+    (noise / squeak false, usv true, null squeak extents, a QLVM category and
+    the continuous acoustic properties), and one cluster ``.npy`` of spike
+    seconds and frames. All values are drawn from a seeded generator.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temporary directory under which ``session/`` is created.
+    n_frames (int)
+        Number of tracked frames.
+    n_usvs (int)
+        Number of USV rows in the summary.
+    fps (float)
+        Camera frame rate written to the tracking H5.
 
     Returns
     -------
-    (root, cluster_path) : (Path, Path)
-        Session root and the cluster file path that the compute consumes.
+    root, cluster_path (tuple)
+        The session root and the path of the cluster file the compute consumes.
     """
 
     root = tmp_path / "session"
@@ -1762,12 +2095,49 @@ def _make_synthetic_session(tmp_path, *, n_frames=1500, n_usvs=120, fps=150.0):
 
 @pytest.fixture
 def synthetic_compute_session(tmp_path):
-    """Provides (root, cluster_path) for synthetic compute tests."""
+    """
+    Description
+    -----------
+    Builds the synthetic tuning-curve session of ``_make_synthetic_session``
+    with its default sizes for one test.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temporary directory.
+
+    Returns
+    -------
+    root, cluster_path (tuple)
+        The session root and the cluster file path.
+    """
     return _make_synthetic_session(tmp_path)
 
 
 def _make_neuronal_tuning(root, *, n_shuffles=5, smoothing_sd=0.0):
-    """Construct a NeuronalTuning instance with small, fast settings."""
+    """
+    Description
+    -----------
+    Constructs a ``NeuronalTuning`` instance with small, fast settings: one
+    temporal offset, a handful of shuffles, ten feature bins, 36 spatial bins,
+    a two-second PETH window, the IBI bout-onset block, the squeak-exclusion
+    and minimum-count rules, and a silent message sink. Tests change individual
+    entries of ``tuning_parameters_dict`` afterwards when they need to.
+
+    Parameters
+    ----------
+    root (pathlib.Path)
+        Session root directory.
+    n_shuffles (int)
+        Number of null shuffles.
+    smoothing_sd (float)
+        Gaussian smoothing SD in bins; 0 disables smoothing.
+
+    Returns
+    -------
+    nt (NeuronalTuning)
+        The configured tuning instance.
+    """
     return NeuronalTuning(
         root_directory=str(root),
         tuning_parameters_dict={
@@ -1810,15 +2180,17 @@ def _make_neuronal_tuning(root, *, n_shuffles=5, smoothing_sd=0.0):
             "smoothing_sd": smoothing_sd,
             "circular_features": ["allo_yaw", "body_dir"],
         },
-        message_output=lambda *a, **k: None,
+        message_output=lambda *_a, **_k: None,
     )
 
 
-# _load_behavioral_inputs ---------------------------------------------------
+# _load_behavioral_inputs
 
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 def test_load_behavioral_inputs_returns_expected_keys(synthetic_compute_session):
+    """The behavioral loader returns the feature table, the track names and the empirical camera
+    rate read from the tracking H5."""
     root, _ = synthetic_compute_session
     nt = _make_neuronal_tuning(root)
     bundle = nt._load_behavioral_inputs()
@@ -1834,11 +2206,14 @@ def test_load_behavioral_inputs_returns_none_when_csv_missing(tmp_path):
     assert nt._load_behavioral_inputs() is None
 
 
-# _compute_one_cluster_behavioral ------------------------------------------
+# _compute_one_cluster_behavioral
 
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 def test_compute_one_cluster_behavioral_smoke(synthetic_compute_session):
+    """One cluster's behavioral compute returns the offset block, metadata and triage stats, with
+    1-D features and the 2-D spatial map built from spaceX / spaceY carrying rate, occupancy and
+    null statistics."""
     root, cluster_path = synthetic_compute_session
     nt = _make_neuronal_tuning(root)
     beh_inputs = nt._load_behavioral_inputs()
@@ -1860,15 +2235,19 @@ def test_compute_one_cluster_behavioral_smoke(synthetic_compute_session):
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 def test_compute_one_cluster_behavioral_attaches_triage_stats(synthetic_compute_session):
+    """Behavioral triage stats carry run analysis and selectivity for 1-D features, the circular
+    flag for yaw, and Skaggs metrics for the spatial map."""
     root, cluster_path = synthetic_compute_session
     nt = _make_neuronal_tuning(root)
     beh_inputs = nt._load_behavioral_inputs()
     partial = nt._compute_one_cluster_behavioral(cluster_path, beh_inputs)
     ts = partial["triage_stats"]
-    assert "behavioral" in ts and "spatial" in ts
+    assert "behavioral" in ts
+    assert "spatial" in ts
     # 1D feature triage stats have run analysis fields
     speed_ts = ts["behavioral"]["beh_offset=0s"]["m1.speed"]
-    assert "excit" in speed_ts and "suppress" in speed_ts
+    assert "excit" in speed_ts
+    assert "suppress" in speed_ts
     assert "selectivity" in speed_ts
     # circular feature flagged correctly
     yaw_ts = ts["behavioral"]["beh_offset=0s"]["m1.allo_yaw"]
@@ -1902,11 +2281,13 @@ def test_compute_one_cluster_behavioral_with_smoothing(synthetic_compute_session
     )
 
 
-# _load_vocal_inputs --------------------------------------------------------
+# _load_vocal_inputs
 
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 def test_load_vocal_inputs_returns_expected_keys(synthetic_compute_session):
+    """The vocal loader returns the USV table, track names, per-animal sex from metadata and USV
+    timing, with no legacy per-sex keys."""
     root, _ = synthetic_compute_session
     nt = _make_neuronal_tuning(root)
     bundle = nt._load_vocal_inputs()
@@ -1914,7 +2295,8 @@ def test_load_vocal_inputs_returns_expected_keys(synthetic_compute_session):
     for k in ("usv_df", "track_names", "animal_sex", "duration_seconds",
               "starts", "stops", "emitters"):
         assert k in bundle
-    assert "male" not in bundle and "female" not in bundle
+    assert "male" not in bundle
+    assert "female" not in bundle
     assert bundle["animal_sex"] == {"m1": "male"}
 
 
@@ -1939,15 +2321,19 @@ def test_load_vocal_inputs_unmatched_track_raises(synthetic_compute_session):
 
 
 def test_load_vocal_inputs_returns_none_when_no_inputs(tmp_path):
+    """A session with no USV summary or tracking file makes the vocal loader return None so the
+    vocal path is skipped."""
     nt = _make_neuronal_tuning(tmp_path)
     assert nt._load_vocal_inputs() is None
 
 
-# _build_vocal_side_precompute ---------------------------------------------
+# _build_vocal_side_precompute
 
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 def test_build_vocal_side_precompute_includes_self_side(synthetic_compute_session):
+    """The vocal precompute holds the shared grid and a self side whose anchors belong to the
+    recorded animal."""
     root, _ = synthetic_compute_session
     nt = _make_neuronal_tuning(root)
     voc_inputs = nt._load_vocal_inputs()
@@ -1961,15 +2347,13 @@ def test_build_vocal_side_precompute_includes_self_side(synthetic_compute_sessio
     assert self_block["side"]["emitter"] == "m1"
 
 
-# _compute_one_cluster_vocal ------------------------------------------------
+# _compute_one_cluster_vocal
 
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 def test_behavioral_feature_base_strips_prefix_and_derivatives():
     """A behavioral column's base feature drops the animal / pair prefix and any
     derivative suffix, so an exclusion covers the feature and its derivatives."""
-    from usv_playpen.analyses.compute_neuronal_tuning_curves import behavioral_feature_base
-
     assert behavioral_feature_base("158112_0-156693_3.allo_yaw-nose_1st_der") == "allo_yaw-nose"
     assert behavioral_feature_base("158112_0-156693_3.nose-nose_2nd_der") == "nose-nose"
     assert behavioral_feature_base("158112_0-156693_3.head-head") == "head-head"
@@ -1996,7 +2380,8 @@ def test_load_behavioral_inputs_drops_excluded_features(synthetic_compute_sessio
 
     columns = nt._load_behavioral_inputs()["behavioral_data"].columns
 
-    assert "m1-f1.nose-nose" not in columns and "m1-f1.nose-nose_1st_der" not in columns
+    assert "m1-f1.nose-nose" not in columns
+    assert "m1-f1.nose-nose_1st_der" not in columns
     assert "m1-f1.allo_yaw-nose" not in columns
     assert {"m1-f1.head-head", "m1-f1.allo_yaw-head", "m1-f1.nose-TTI", "m1.speed"} <= set(columns)
 
@@ -2162,7 +2547,8 @@ def test_compute_one_cluster_vocal_smoke(synthetic_compute_session):
     # VMI block populated for the self emitter
     vmi = partial["triage_stats"]["vmi"]
     assert "m1" in vmi
-    assert "vmi" in vmi["m1"] and "wilcoxon_pvalue" in vmi["m1"]
+    assert "vmi" in vmi["m1"]
+    assert "wilcoxon_pvalue" in vmi["m1"]
     # usv_peth payload structure
     peth = partial["usv_peth"]["m1"]
     for k in ("rate", "bin_centers_s", "null_mean", "null_std", "null_p99_5"):
@@ -2220,6 +2606,7 @@ def test_rerun_replaces_each_side_and_clears_a_skipped_or_failed_side(synthetic_
     pkl_path = root / "ephys" / "tuning_curves" / f"{cluster_path.stem}_tuning_curves_data.pkl"
 
     def read_pkl():
+        """Load the cluster's tuning-curve pickle as written by the last run."""
         with pkl_path.open("rb") as handle:
             return pickle.load(handle)
 
@@ -2296,7 +2683,7 @@ def test_compute_one_cluster_vocal_triage_stats_populated(synthetic_compute_sess
 # _attr_value / _decode_attr round-trip
 
 
-@pytest.mark.parametrize("v,expected_type", [
+@pytest.mark.parametrize(("v", "expected_type"), [
     (None, str),       # None -> "null" str
     (True, bool),
     (42, int),
@@ -2391,14 +2778,16 @@ def test_polars_h5_roundtrip_empty_frame(tmp_path):
 def test_try_git_sha_happy(monkeypatch, tmp_path):
     """Mocked git rev-parse returns a SHA → that's what we get back."""
     fake = MagicMock(returncode=0, stdout="abc1234\n")
-    monkeypatch.setattr(_subprocess, "run", lambda *a, **kw: fake)
+    monkeypatch.setattr(_subprocess, "run", lambda *_a, **_kw: fake)
     assert _try_git_sha(tmp_path) == "abc1234"
 
 
 def test_try_git_sha_error_returns_unknown(monkeypatch, tmp_path):
     """Any subprocess error must yield "unknown" (provenance-only field)."""
     def _explode(*_a, **_kw):
-        raise FileNotFoundError("no git here")
+        """Stand-in for ``subprocess.run`` that fails as when git is not installed."""
+        msg = "no git here"
+        raise FileNotFoundError(msg)
     monkeypatch.setattr(_subprocess, "run", _explode)
     assert _try_git_sha(tmp_path) == "unknown"
 
@@ -2406,6 +2795,7 @@ def test_try_git_sha_error_returns_unknown(monkeypatch, tmp_path):
 def test_try_git_sha_timeout_returns_unknown(monkeypatch, tmp_path):
     """TimeoutExpired must be caught silently."""
     def _explode(*_a, **_kw):
+        """Stand-in for ``subprocess.run`` that fails as when git hangs past the timeout."""
         raise _subprocess.TimeoutExpired(cmd="git", timeout=2)
     monkeypatch.setattr(_subprocess, "run", _explode)
     assert _try_git_sha(tmp_path) == "unknown"
@@ -2414,7 +2804,7 @@ def test_try_git_sha_timeout_returns_unknown(monkeypatch, tmp_path):
 def test_try_git_sha_nonzero_returncode_returns_unknown(monkeypatch, tmp_path):
     """Non-zero exit code (not in repo) → unknown."""
     fake = MagicMock(returncode=128, stdout="")
-    monkeypatch.setattr(_subprocess, "run", lambda *a, **kw: fake)
+    monkeypatch.setattr(_subprocess, "run", lambda *_a, **_kw: fake)
     assert _try_git_sha(tmp_path) == "unknown"
 
 
@@ -2444,7 +2834,7 @@ def test_git_sha_for_provenance_combines_helpers(monkeypatch, tmp_path):
     repo = tmp_path / "r"
     (repo / ".git").mkdir(parents=True)
     fake = MagicMock(returncode=0, stdout="deadbee\n")
-    monkeypatch.setattr(_subprocess, "run", lambda *a, **kw: fake)
+    monkeypatch.setattr(_subprocess, "run", lambda *_a, **_kw: fake)
     assert git_sha_for_provenance(repo) == "deadbee"
 
 
@@ -2452,7 +2842,22 @@ def test_git_sha_for_provenance_combines_helpers(monkeypatch, tmp_path):
 
 
 def _example_per_mode_payload():
-    """Builds a minimal per_mode payload covering both populated and None cases."""
+    """
+    Description
+    -----------
+    Builds a minimal ``per_mode`` payload for ``write_ivi_h5`` with one ``s2s``
+    mode carrying attributes, an intervals table and a drop-count table, and
+    ``None`` for the three optional mixture-model tables, so the archive
+    round-trip covers both written and absent tables.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    per_mode (dict)
+        The per-mode payload keyed by interval type.
+    """
     return {
         "s2s": {
             "attrs": {"alpha_effective": 0.05, "K_selected_male": 2, "K_selected_female": 3},
@@ -2514,7 +2919,33 @@ def test_write_ivi_h5_creates_parent_dir(tmp_path):
 
 
 def _mixture_model_fits_row(model_class, sex="male", K=2, bic=10.0, cv=1.0):
-    """Build a single-row sweep DF that reconstruct_best_model can consume."""
+    """
+    Description
+    -----------
+    Builds a single-row mixture-model sweep table that ``reconstruct_best_model``
+    can consume: identity columns (sex, n_comp, rep, bic, cv_neg_loglik,
+    model_class) plus per-component weight, log-mean, log-SD, nu and lambda
+    columns, so the Gaussian, t and inverse-Gaussian reconstruction paths all
+    find their parameters.
+
+    Parameters
+    ----------
+    model_class (str)
+        Model family label (``gauss``, ``t``, ``ig`` or an invalid value).
+    sex (str)
+        Sex the row belongs to.
+    K (int)
+        Number of components.
+    bic (float)
+        BIC value of the row.
+    cv (float)
+        Cross-validated negative log-likelihood of the row.
+
+    Returns
+    -------
+    df (pls.DataFrame)
+        The one-row sweep table.
+    """
     row = {
         "sex": sex,
         "n_comp": K,
@@ -2536,7 +2967,6 @@ def test_reconstruct_best_model_gauss():
     """Gauss path returns an sklearn GMM with score_samples working."""
     df = _mixture_model_fits_row("gauss", K=2)
     model, order = reconstruct_best_model(df, sex="male", K=2)
-    from sklearn.mixture import GaussianMixture
     assert isinstance(model, GaussianMixture)
     # score_samples must work on synthetic input — proves precisions_cholesky_
     # was set correctly.
@@ -2547,7 +2977,6 @@ def test_reconstruct_best_model_gauss():
 
 def test_reconstruct_best_model_t_mixture():
     """t-mixture path returns a TMixture object."""
-    from usv_playpen.analyses.mixture_model_utils import TMixture
     df = _mixture_model_fits_row("t", K=2)
     model, order = reconstruct_best_model(df, sex="male", K=2)
     assert isinstance(model, TMixture)
@@ -2557,7 +2986,6 @@ def test_reconstruct_best_model_t_mixture():
 def test_reconstruct_best_model_ig_mixture():
     """IG path returns an IGMixture whose mus are exp(logmean_k) and whose
     lambdas come from the lambda_k columns."""
-    from usv_playpen.analyses.mixture_model_utils import IGMixture
     df = _mixture_model_fits_row("ig", K=2)
     model, order = reconstruct_best_model(df, sex="male", K=2)
     assert isinstance(model, IGMixture)
@@ -2658,10 +3086,10 @@ def test_compute_session_usv_intervals_invalid_type_raises():
 
 def test_compute_session_usv_intervals_missing_session_returns_empty(monkeypatch):
     """Missing session metadata → empty dict (graceful skip, not crash)."""
-    import usv_playpen.analyses.compute_inter_usv_interval_distributions as cmod
-
     def _raise(_root):
-        raise FileNotFoundError("no such session")
+        """Stand-in for ``extract_session_metadata`` that fails as for a missing session."""
+        msg = "no such session"
+        raise FileNotFoundError(msg)
     monkeypatch.setattr(cmod, "extract_session_metadata", _raise)
     out = compute_session_usv_intervals(
         session_root="/missing",
@@ -2673,8 +3101,6 @@ def test_compute_session_usv_intervals_missing_session_returns_empty(monkeypatch
 
 def test_compute_session_usv_intervals_basic_pairs(monkeypatch):
     """Synthesise 4 USVs (M, M, F, F) → expect one M-M interval and one F-F."""
-    import usv_playpen.analyses.compute_inter_usv_interval_distributions as cmod
-
     monkeypatch.setattr(cmod, "extract_session_metadata", lambda _root: {
         "track_names": ["M", "F"], "frame_rate": 150.0,
     })
@@ -2688,7 +3114,7 @@ def test_compute_session_usv_intervals_basic_pairs(monkeypatch):
         "emitter": ["M", "M", "F", "F"],
     })
     monkeypatch.setattr(cmod, "load_and_filter_usv_data",
-                        lambda **kw: fake_usv)
+                        lambda **_kw: fake_usv)
     out = compute_session_usv_intervals(
         session_root="/ok", interval_type="s2s",
         exclude_noise_usvs=True,
@@ -2704,7 +3130,6 @@ def test_compute_session_usv_intervals_basic_pairs(monkeypatch):
 
 def test_compute_session_usv_intervals_empty_usv_returns_empty_arrays(monkeypatch):
     """Zero rows in the USV CSV → empty interval arrays, not a crash."""
-    import usv_playpen.analyses.compute_inter_usv_interval_distributions as cmod
     monkeypatch.setattr(cmod, "extract_session_metadata", lambda _root: {
         "track_names": ["M", "F"], "frame_rate": 150.0,
     })
@@ -2712,7 +3137,7 @@ def test_compute_session_usv_intervals_empty_usv_returns_empty_arrays(monkeypatc
         "M": "male", "F": "female",
     })
     monkeypatch.setattr(cmod, "load_and_filter_usv_data",
-                        lambda **kw: pls.DataFrame({
+                        lambda **_kw: pls.DataFrame({
                             "start": pls.Series([], dtype=pls.Float64),
                             "stop":  pls.Series([], dtype=pls.Float64),
                             "duration": pls.Series([], dtype=pls.Float64),
@@ -2722,12 +3147,12 @@ def test_compute_session_usv_intervals_empty_usv_returns_empty_arrays(monkeypatc
         session_root="/ok", interval_type="s2s",
         exclude_noise_usvs=True,
     )
-    assert out["male"].size == 0 and out["female"].size == 0
+    assert out["male"].size == 0
+    assert out["female"].size == 0
 
 
 def test_compute_session_usv_intervals_e2s_drops_overlapping(monkeypatch):
     """e2s mode: stop[0]=0.6, start[1]=0.5 → -0.1 interval, dropped, counted."""
-    import usv_playpen.analyses.compute_inter_usv_interval_distributions as cmod
     monkeypatch.setattr(cmod, "extract_session_metadata", lambda _root: {
         "track_names": ["M", "F"], "frame_rate": 150.0,
     })
@@ -2741,7 +3166,7 @@ def test_compute_session_usv_intervals_e2s_drops_overlapping(monkeypatch):
         "emitter": ["M", "M", "M"],
     })
     monkeypatch.setattr(cmod, "load_and_filter_usv_data",
-                        lambda **kw: fake_usv)
+                        lambda **_kw: fake_usv)
     out = compute_session_usv_intervals(
         session_root="/ok", interval_type="e2s",
         exclude_noise_usvs=True,
@@ -2759,7 +3184,6 @@ def test_compute_session_usv_intervals_same_sex_session_pairs_per_animal(monkeyp
     one female is never paired with a USV of the other (the A->B step breaks the
     chain), and each interval carries the animal it belongs to.
     """
-    import usv_playpen.analyses.compute_inter_usv_interval_distributions as cmod
     monkeypatch.setattr(cmod, "extract_session_metadata", lambda _root: {
         "track_names": ["A", "B"], "frame_rate": 150.0,
     })
@@ -2772,7 +3196,7 @@ def test_compute_session_usv_intervals_same_sex_session_pairs_per_animal(monkeyp
         "duration": [0.1] * 5,
         "emitter": ["A", "A", "B", "B", "A"],
     })
-    monkeypatch.setattr(cmod, "load_and_filter_usv_data", lambda **kw: fake_usv)
+    monkeypatch.setattr(cmod, "load_and_filter_usv_data", lambda **_kw: fake_usv)
     out = compute_session_usv_intervals(
         session_root="/ok", interval_type="s2s", exclude_noise_usvs=True,
     )
@@ -2787,7 +3211,6 @@ def test_extract_animal_sexes_reads_metadata_and_refuses_to_guess(tmp_path):
     Sex comes from the metadata Subjects block, matched on the stripped track
     name; a track without a recorded sex raises instead of falling back to its slot.
     """
-    from usv_playpen.analyses._usv_io import extract_animal_sexes
     (tmp_path / "20260101_120000_metadata.yaml").write_text(
         "Subjects:\n- subject_id: '124784_2'\n  sex: female\n"
         "- subject_id: '124784_3'\n  sex: female\n")
@@ -2959,6 +3382,8 @@ def test_t_mixture_cv_neg_loglik_returns_inf_when_n_below_folds():
 
 
 def test_t_mixture_cv_neg_loglik_returns_inf_when_train_smaller_than_n_components():
+    """When a fold's training set is smaller than the component count the t-mixture CV returns inf
+    instead of fitting a degenerate model."""
     short = np.array([0.1, 0.2, 0.3, 0.4, 0.5])
     val = t_mixture_cv_neg_loglik(short, n_components=5, n_folds=5, seed=0)
     assert val == float("inf")
@@ -2994,32 +3419,31 @@ def test_plot_gmm_fit_returns_figure_and_axes():
                           random_state=0).fit(log_x)
     # Signature: plot_gmm_fit(model, x, ...)
     fig, ax = plot_gmm_fit(gmm, log_x.ravel(), bins=20)
-    assert fig is not None and ax is not None
+    assert fig is not None
+    assert ax is not None
 
 
 def test_plot_gmm_fit_with_xlims_filters_data():
     """xlims=(lo, hi) clips the input data before plotting; show_components=True
     triggers the per-component density-curve overlay. Returns a Figure that
     the caller can save via `figure_io.save_figure`."""
-    import matplotlib.figure
     rng = np.random.RandomState(0)
     log_x = rng.normal(0.0, 1.0, 200)
     gmm = GaussianMixture(n_components=2, covariance_type="full",
                           random_state=0).fit(log_x.reshape(-1, 1))
     fig, _ax = plot_gmm_fit(gmm, log_x, bins=10,
                             xlims=(-1.0, 1.0), show_components=True)
-    assert isinstance(fig, matplotlib.figure.Figure)
+    assert isinstance(fig, Figure)
 
 
 def test_qqplot_gmm_returns_figure():
     """qqplot_gmm returns a matplotlib Figure (caller saves via figure_io)."""
-    import matplotlib.figure
     rng = np.random.RandomState(0)
     log_x = rng.normal(0.0, 0.5, 300)
     gmm = GaussianMixture(n_components=1, covariance_type="full",
                           random_state=0).fit(log_x.reshape(-1, 1))
     fig = qqplot_gmm(log_x, gmm, n_q=50)
-    assert isinstance(fig, matplotlib.figure.Figure)
+    assert isinstance(fig, Figure)
 
 
 # compute_behavioral_features — FeatureZoo class + missing pure helpers
@@ -3377,8 +3801,27 @@ def test_calculate_sei_returns_negative_when_target_is_behind():
 
 
 def _make_back_input(neck_pos, tti_pos, n_frames=1):
-    """Build a (n_frames, 1 mouse, 2 nodes, 3) array with neck at index 0
-    and TTI at index 1 of the per-mouse node axis."""
+    """
+    Description
+    -----------
+    Builds a (n_frames, 1 mouse, 2 nodes, 3) point array with the neck at node
+    index 0 and the TTI at node index 1, the minimal input ``get_back_root``
+    needs to build a back frame.
+
+    Parameters
+    ----------
+    neck_pos (list)
+        Neck (x, y, z) coordinates.
+    tti_pos (list)
+        TTI (x, y, z) coordinates.
+    n_frames (int)
+        Number of frames to repeat the pose over.
+
+    Returns
+    -------
+    arr (np.ndarray)
+        The (n_frames, 1, 2, 3) point array.
+    """
     arr = np.zeros((n_frames, 1, 2, 3), dtype=float)
     arr[:, 0, 0, :] = neck_pos
     arr[:, 0, 1, :] = tti_pos
@@ -3485,17 +3928,21 @@ def test_get_back_angles_handles_multi_frame_input():
     assert np.all(np.isfinite(out))
 
 
-# compute_neuronal_tuning_curves — pure-helper edge branches -----------------
+# compute_neuronal_tuning_curves — pure-helper edge branches
 
 
 def test_bin_property_indices_nan_and_degenerate_range():
+    """NaN values, values at the upper edge of the half-open range, all-NaN input and a zero-width
+    range all map to the -1 sentinel, while in-range values bin normally."""
     vals = np.array([0.0, 5.0, 10.0, np.nan])
     out = _bin_property_indices(vals, [0.0, 10.0], 5)
     assert out[3] == -1                      # NaN -> sentinel
     # In-range values bin normally; a value == the upper edge (10.0) is out of the
     # half-open [low, high) range and is now DROPPED to the -1 sentinel (previously it
     # was clipped into the last bin), matching the behavioral/spatial occupancy binning.
-    assert out[0] == 0 and out[1] == 2 and out[2] == -1
+    assert out[0] == 0
+    assert out[1] == 2
+    assert out[2] == -1
     # all-NaN -> all sentinel
     assert np.all(_bin_property_indices(np.array([np.nan, np.nan]), [0.0, 1.0], 4) == -1)
     # degenerate (zero-width) range -> all sentinel
@@ -3503,6 +3950,8 @@ def test_bin_property_indices_nan_and_degenerate_range():
 
 
 def test_bin_count_for_property_mask_vs_default():
+    """Continuous properties use the default bin count, while the integer ``mask_number`` gets its
+    own count."""
     assert _bin_count_for_property("duration", 36) == 36
     assert _bin_count_for_property("mask_number", 36) != 36
 
@@ -3534,11 +3983,14 @@ def test_gaussian_smooth_1d_wraps_a_circular_axis():
 
 
 def test_gaussian_smooth_1d_sigma_nonpositive_returns_input():
+    """A non-positive sigma returns the input array object unchanged (no smoothing, no copy)."""
     data = np.arange(5, dtype=float)
     assert _gaussian_smooth_1d(data, sigma=0.0) is data
 
 
 def test_gaussian_smooth_1d_nan_aware():
+    """With ``preserve_nan`` NaN bins stay NaN and their neighbours stay finite; without it the NaN
+    bin is filled from its neighbours."""
     data = np.array([1.0, np.nan, 3.0, 4.0])
     out = _gaussian_smooth_1d(data, sigma=1.0, preserve_nan=True)
     assert np.isnan(out[1])                   # NaN restored
@@ -3548,29 +4000,41 @@ def test_gaussian_smooth_1d_nan_aware():
 
 
 def test_gaussian_smooth_2d_sigma_nonpositive_and_nan():
+    """In 2-D a non-positive sigma returns the input object, and ``preserve_nan`` keeps NaN cells
+    NaN while smoothing the rest."""
     arr = np.array([[1.0, np.nan], [3.0, 4.0]])
     assert _gaussian_smooth_2d(arr, sigma=0.0) is arr
     out = _gaussian_smooth_2d(arr, sigma=1.0, preserve_nan=True)
-    assert np.isnan(out[0, 1]) and np.isfinite(out[0, 0])
+    assert np.isnan(out[0, 1])
+    assert np.isfinite(out[0, 0])
 
 
 def test_longest_run_empty_all_false_all_true_circular():
+    """Edge cases of ``_longest_run``: empty and all-False masks give no run, an all-True mask gives
+    a full run, and True at both ends of a circular mask gives one wrapped run that ends before
+    it starts."""
     assert _longest_run(np.array([], dtype=bool)) == (-1, -1, 0)
     assert _longest_run(np.array([False, False])) == (-1, -1, 0)
     s, e, length = _longest_run(np.array([True, True, True]))
     assert length == 3
     # wrap: True at the two ends -> one length-2 circular run
     s, e, length = _longest_run(np.array([True, False, False, True]), circular=True)
-    assert length == 2 and e < s
+    assert length == 2
+    assert e < s
 
 
 def test_peak_z_info_all_invalid_returns_nan():
+    """When every bin has zero null SD there is no valid z, so the peak is NaN with index -1."""
     rate = np.array([1.0, 2.0])
     pa, pi, ps = _peak_z_info(rate, np.array([0.0, 0.0]), np.array([0.0, 0.0]))
-    assert np.isnan(pa) and pi == -1 and np.isnan(ps)
+    assert np.isnan(pa)
+    assert pi == -1
+    assert np.isnan(ps)
 
 
 def test_run_analysis_circular_wrap_and_suppress():
+    """A circular excitation run over indices 4, 5, 0 has length 3, and a linear suppression run
+    over the first three bins has length 3."""
     rate = np.array([10.0, 1.0, 1.0, 1.0, 10.0, 10.0])
     low = np.zeros(6)
     high = np.full(6, 2.0)
@@ -3585,6 +4049,8 @@ def test_run_analysis_circular_wrap_and_suppress():
 
 
 def test_run_analysis_all_nan_z_in_run():
+    """A run whose null mean is NaN in every bin is still counted by length, but its peak z
+    is NaN."""
     rate = np.array([10.0, 10.0, 10.0])
     out = _run_analysis(
         rate, np.zeros(3), np.full(3, 2.0), np.full(3, np.nan), np.zeros(3)
@@ -3594,16 +4060,20 @@ def test_run_analysis_all_nan_z_in_run():
 
 
 def test_selectivity_index_edges():
+    """Selectivity is NaN for all-NaN or all-zero curves and 1 for a curve with a zero minimum."""
     assert np.isnan(_selectivity_index(np.array([np.nan, np.nan])))
     assert np.isnan(_selectivity_index(np.array([0.0, 0.0])))
     assert _selectivity_index(np.array([0.0, 4.0])) == 1.0
 
 
 def test_monotonicity_spearman_too_few_finite():
+    """Fewer than three finite points give NaN monotonicity even when the array is longer."""
     assert np.isnan(_monotonicity_spearman(np.array([1.0, np.nan])))
 
 
 def test_skaggs_info_and_sparsity_edges():
+    """A single hot bin gives positive information and sparsity in (0, 1]; zero total occupancy or
+    zero rate gives NaN."""
     rate = np.array([0.0, 0.0, 4.0, 0.0])
     occ = np.array([1.0, 1.0, 1.0, 1.0])
     assert _skaggs_info_rate_bps(rate, occ) > 0
@@ -3616,6 +4086,8 @@ def test_skaggs_info_and_sparsity_edges():
 
 
 def test_spatial_coherence_edges():
+    """Coherence is NaN for 1-D input or a map with fewer than three valid cells, and finite for a
+    valid gradient."""
     assert np.isnan(_spatial_coherence(np.array([1.0, 2.0, 3.0])))   # not 2D
     nan_map = np.full((3, 3), np.nan)
     assert np.isnan(_spatial_coherence(nan_map))                     # <3 valid
@@ -3624,6 +4096,8 @@ def test_spatial_coherence_edges():
 
 
 def test_ramp_index_edges():
+    """The ramp index is finite on a full window, NaN when the window does not reach the -1.5 s
+    anchor, and NaN when rate and centre lengths differ."""
     centers = np.linspace(-2.0, 0.0, 40)
     rate = np.linspace(1.0, 2.0, 40)
     assert np.isfinite(_ramp_index(rate, centers))
@@ -3635,6 +4109,8 @@ def test_ramp_index_edges():
 
 
 def test_circular_shift_spike_times_modulo_wrap():
+    """Shifting spikes by more than the session length wraps them into [0, duration) and re-sorts
+    them."""
     spikes = np.array([0.1, 0.5, 0.9])
     shifted = _circular_shift_spike_times(spikes, duration_seconds=1.0, shift_seconds=2.7)
     assert np.all((shifted >= 0.0) & (shifted < 1.0))
@@ -3642,6 +4118,7 @@ def test_circular_shift_spike_times_modulo_wrap():
 
 
 def test_generate_shuffle_offsets_seeded_and_in_range():
+    """Shuffle offsets are reproducible under a fixed seed and fall in [min, max) seconds."""
     a = _generate_shuffle_offsets(8, 1.0, 3.0, seed=7)
     b = _generate_shuffle_offsets(8, 1.0, 3.0, seed=7)
     assert a.shape == (8,)
@@ -3650,6 +4127,8 @@ def test_generate_shuffle_offsets_seeded_and_in_range():
 
 
 def test_percentiles_block_keys_and_values():
+    """The null summary carries the mean, SD and the four percentile keys, with the mean taken per
+    bin across shuffles."""
     arr = np.array([[0.0, 10.0], [2.0, 20.0], [4.0, 30.0]])
     out = _percentiles_block(arr)
     assert set(out) == {
@@ -3659,6 +4138,8 @@ def test_percentiles_block_keys_and_values():
 
 
 def test_within_usv_validity_overlap_vs_clean():
+    """An anchor USV is valid when no other USV overlaps it and invalid when an earlier USV extends
+    past its onset."""
     starts = np.array([0.0, 1.0, 2.0])
     stops = np.array([0.5, 1.5, 2.5])
     assert _within_usv_validity(np.array([1]), starts, stops)[0]      # clean
@@ -3668,6 +4149,7 @@ def test_within_usv_validity_overlap_vs_clean():
 
 
 def test_latest_other_stop_before_anchor():
+    """For each anchor the latest earlier USV stop is returned, or -inf when no USV precedes it."""
     starts = np.array([0.0, 1.0, 2.0])
     stops = np.array([0.5, 1.5, 2.5])
     out = _latest_other_stop_before_anchor(np.array([2]), starts, stops)
@@ -3677,6 +4159,8 @@ def test_latest_other_stop_before_anchor():
 
 
 def test_anchor_bin_validity_grid_post_and_prior():
+    """The validity grid has one boolean row per anchor and one column per PETH bin with both clean-
+    post and clean-prior rules on."""
     starts = np.array([0.0, 1.0, 2.0])
     stops = np.array([0.5, 1.5, 2.5])
     grid = _anchor_bin_validity_grid(
@@ -3714,7 +4198,8 @@ def test_anchor_bin_validity_grid_cuts_post_onset_bins_at_the_next_onset():
         rel_bin_lo=rel_bin_lo, rel_bin_hi=rel_bin_hi,
         require_clean_post=False, require_clean_prior=False,
     )
-    assert not same[0, post].any() and same[0, ~post].all()
+    assert not same[0, post].any()
+    assert same[0, ~post].all()
 
 
 def test_consecutive_interval_pairs_stay_within_one_animal_of_one_session():
@@ -3747,7 +4232,6 @@ def test_fit_serial_dependence_recovers_a_known_bend():
     covers it, the slope near 0.6, and the tables carry the pool identity and one bend per
     replicate.
     """
-    from usv_playpen.analyses.compute_inter_usv_interval_distributions import fit_serial_dependence
     rng = np.random.default_rng(0)
     n = 6000
     x = rng.uniform(np.log(0.02), np.log(5.0), n)
@@ -3764,8 +4248,10 @@ def test_fit_serial_dependence_recovers_a_known_bend():
     assert 85.0 < row["bend_ms"] < 118.0
     assert row["bend_low_ms"] <= 100.0 <= row["bend_high_ms"]
     assert 0.5 < row["slope"] < 0.7
-    assert row["n_pairs"] == n and row["n_sessions"] == 30
-    assert curves.height == 50 and bends.height == 20
+    assert row["n_pairs"] == n
+    assert row["n_sessions"] == 30
+    assert curves.height == 50
+    assert bends.height == 20
     assert set(curves["sex"].to_list()) == {"male"}
     assert (curves["spline_low_ms"] <= curves["spline_high_ms"]).all()
 
@@ -3773,12 +4259,13 @@ def test_fit_serial_dependence_recovers_a_known_bend():
 def test_summarize_interval_pool_reports_counts_and_percentiles():
     """The descriptive summary written for every pool: count, sessions and the 5/25/50/75/95th
     percentiles; an empty pool gives NaN percentiles rather than raising."""
-    from usv_playpen.analyses.compute_inter_usv_interval_distributions import summarize_interval_pool
     values = np.arange(1, 101, dtype=float) / 1000.0
     out = summarize_interval_pool(values, 7)
-    assert out["n_intervals"] == 100 and out["n_sessions"] == 7
+    assert out["n_intervals"] == 100
+    assert out["n_sessions"] == 7
     assert out["median_s"] == pytest.approx(np.percentile(values, 50))
     assert out["p05_s"] == pytest.approx(np.percentile(values, 5))
     assert out["p95_s"] == pytest.approx(np.percentile(values, 95))
     empty = summarize_interval_pool(np.array([]), 0)
-    assert empty["n_intervals"] == 0 and np.isnan(empty["median_s"])
+    assert empty["n_intervals"] == 0
+    assert np.isnan(empty["median_s"])

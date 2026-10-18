@@ -6,6 +6,12 @@ The load-bearing checks are the ones a wrong answer would be silent about: the e
 from the bundle's ``decision`` block (and the refusal of a bundle without one), the input the models are
 handed (segment frames only, cut out of a context window), and the merge, which must replace stale noise
 columns and leave the summary in the canonical column order with the noise block before the vocal-class block.
+
+Coverage: the bundle loader (decision block, band check, missing bundle, decision keys written before the
+rename), the segment input and frame-budget batching, row scoring against the threshold, the merge (column
+placement, nulling the squeak map on rows newly marked noise), the detection and training CLIs, the training
+inputs, label and calibration readers, batch augmentation, the training run whose bundle the detector loads
+(and that publishes nothing when it fails to load), and the squeak audio-channel resolver.
 """
 
 from __future__ import annotations
@@ -479,7 +485,7 @@ def test_detect_and_merge_nulls_the_squeak_map_on_rows_newly_marked_noise(tmp_pa
                 "batch_size": 256,
             }
         },
-        message_output=lambda message: None,
+        message_output=lambda _message: None,
     ).detect_and_merge()
 
     written = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})
@@ -505,7 +511,7 @@ def test_squeak_audio_channels_drops_excluded_channels_when_the_recording_id_hol
     metadata = {"Equipment": {"audio_Avisoft": {"excluded_channels": ["m_ch02"]}}}
     (root / f"{SESSION_ID}_metadata.yaml").write_text(yaml.dump(metadata))
 
-    readers = noise.squeak_audio_channels(root, True, lambda message: None)
+    readers = noise.squeak_audio_channels(root, True, lambda _message: None)
 
     assert [reader._column for reader in readers] == [0, 2, 3]
 
@@ -521,5 +527,5 @@ def test_squeak_audio_channels_refuses_a_source_name_without_a_channel_token(tmp
     metadata = {"Equipment": {"audio_Avisoft": {"excluded_channels": ["m_ch02"]}}}
     (root / f"{SESSION_ID}_metadata.yaml").write_text(yaml.dump(metadata))
 
-    with pytest.raises(ValueError, match="m_250913193920_a_hpss.wav"):
-        noise.squeak_audio_channels(root, True, lambda message: None)
+    with pytest.raises(ValueError, match=r"m_250913193920_a_hpss\.wav"):
+        noise.squeak_audio_channels(root, True, lambda _message: None)

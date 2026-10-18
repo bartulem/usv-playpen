@@ -91,9 +91,10 @@ def _non_atomic_pickle_dumps(source: str) -> list[int]:
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                 and node.func.attr == 'dump' and isinstance(node.func.value, ast.Name)
                 and node.func.value.id == 'pickle'):
-            ancestor = parents.get(node)
+            # The module root has no parent entry: it ends the ancestor walk as None.
+            ancestor = parents[node] if node in parents else None
             while ancestor is not None and not _is_atomic_with(ancestor):
-                ancestor = parents.get(ancestor)
+                ancestor = parents[ancestor] if ancestor in parents else None
             if ancestor is None:
                 offending.append(node.lineno)
     return offending

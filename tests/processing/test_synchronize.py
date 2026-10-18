@@ -7,20 +7,34 @@ audio WAV cropping, e-phys sync channels, and Arduino IPI matching. We
 exercise the constructor, the static helpers (_build_led_px_dict,
 find_lsb_changes), and the early skip / file-missing paths in the four
 public methods.
+
+Coverage: ``Synchronizer`` construction (defaults, required root directory),
+``_build_led_px_dict``, ``find_lsb_changes`` (LSB and raw signals, the capacity
+limit), ``find_video_sync_trains`` (no video dir, LED pulse-train matching),
+LED pixel gathering into a memmap, ``find_audio_sync_trains`` (missing JSON,
+cross-device mismatch warnings, tolerance and start-sample differences, dropped
+first / last audio and video pulses, shape-mismatch fallbacks, original-audio
+retention or deletion, the NIDQ block), e-phys sync validation (changepoint
+writing, failed-rewrite atomicity, a second changepoints file), the AP
+phase-shift correction, and ``crop_wav_files_to_video`` (single and two-device
+sessions with tempo adjustment, missing device keys, oversized cropped files).
 """
 
 from __future__ import annotations
 
-import glob
+import configparser
 import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import cv2
 import numpy as np
 import pytest
 from scipy.io import wavfile
 from scipy.io.wavfile import read as _real_wavfile_read
 
+import usv_playpen
+from usv_playpen.processing import synchronize_files as sf
 from usv_playpen.processing.synchronize_files import Synchronizer
 
 # Shared fixtures
@@ -29,13 +43,30 @@ from usv_playpen.processing.synchronize_files import Synchronizer
 @pytest.fixture
 def processing_settings():
     """Loads processing_settings.json from the package."""
-    import usv_playpen
     package_dir = Path(usv_playpen.__file__).parent
     with (package_dir / '_parameter_settings' / 'processing_settings.json').open('r') as f:
         return json.load(f)
 
 
 def _make_sync(tmp_path, processing_settings) -> Synchronizer:
+    """
+    Description
+    -----------
+    Build a ``Synchronizer`` rooted at ``tmp_path`` with the shipped settings and
+    a silent message sink, the common starting point of the method tests.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Session root directory.
+    processing_settings (dict)
+        The parsed processing-settings dict.
+
+    Returns
+    -------
+    sync (Synchronizer)
+        The constructed synchronizer.
+    """
     return Synchronizer(
         root_directory=str(tmp_path),
         input_parameter_dict=processing_settings,
@@ -113,7 +144,7 @@ def test_find_lsb_changes_lsb_true_returns_correct_endpoints():
     out = Synchronizer.find_lsb_changes(
         relevant_array=sound, lsb_bool=True, total_frame_number=2,
     )
-    start, end, largest_break, ttl_breaks, hop = out
+    start, end, largest_break, ttl_breaks, _hop = out
     # Should have detected 4 rising edges → 3 inter-edge gaps; largest gap
     # is between edge 0 and edge 1 (10 samples).
     assert ttl_breaks.size >= 3
@@ -134,7 +165,7 @@ def test_find_lsb_changes_returns_none_when_total_frames_exceeds_capacity():
     out = Synchronizer.find_lsb_changes(
         relevant_array=sound, lsb_bool=True, total_frame_number=10,
     )
-    start, end, largest_break, ttl_breaks, hop = out
+    start, end, largest_break, _ttl_breaks, _hop = out
     assert start is None
     assert end is None
     # The duration of the largest break is still computed and returned
@@ -153,7 +184,7 @@ def test_find_lsb_changes_lsb_false_uses_raw_signal():
     out = Synchronizer.find_lsb_changes(
         relevant_array=raw, lsb_bool=False, total_frame_number=2,
     )
-    start, end, largest_break, ttl_breaks, hop = out
+    _start, _end, largest_break, ttl_breaks, _hop = out
     assert ttl_breaks.size >= 2
     assert largest_break > 0
 
@@ -199,7 +230,7 @@ def test_find_audio_sync_trains_raises_when_camera_json_missing(processing_setti
     # Empty wave_data_dict is fine (DataLoader returns {} when the path
     # doesn't exist), but the next step queries the JSON, which raises.
     mocker.patch("usv_playpen.processing.synchronize_files.DataLoader",
-                 return_value=MagicMock(load_wavefile_data=lambda: {}))
+                 return_value=MagicMock(load_wavefile_data=dict))
     with pytest.raises(FileNotFoundError, match="camera frame count JSON"):
         sync.find_audio_sync_trains()
 
@@ -421,12 +452,9 @@ def test_validate_ephys_video_sync_writes_changepoints(tmp_path, processing_sett
     None
     """
 
-    import configparser
-
     mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
 
     # SR for the headstage SN we put in the synthetic .meta (must be in the ini).
-    import usv_playpen
     ini = configparser.ConfigParser()
     ini.read(Path(usv_playpen.__file__).parent / "_config" / "calibrated_sample_rates_imec.ini")
     headstage_sn = "23280356"
@@ -520,9 +548,11 @@ def test_validate_ephys_video_sync_failed_rewrite_keeps_the_old_changepoints(tmp
     before = cp.read_bytes()
     assert (root / "ephys" / "imec0" / "20250919_155842_imec0_sync_ch_data.npy").is_file()
 
-    def _failing_dump(obj, file_handle, **_kwargs):
+    def _failing_dump(_obj, file_handle, **_kwargs):
+        """Write a truncated JSON prefix into the open handle and fail, like a disk filling mid-dump."""
         file_handle.write('{"20250919_155842.imec0": {')
-        raise OSError("disk full")
+        message = "disk full"
+        raise OSError(message)
 
     mocker.patch("usv_playpen.processing.synchronize_files.json.dump", side_effect=_failing_dump)
     sync = Synchronizer(root_directory=str(root), input_parameter_dict=processing_settings,
@@ -563,8 +593,6 @@ def test_phase_shift_correct_in_place_deskews_ap_preserves_sync_and_is_idempoten
     -------
     None
     """
-
-    from usv_playpen.processing import synchronize_files as sf
 
     n_ch, n_samples = 8, 20000
     # 7 AP channels (first at shift 0 -> untouched) + 1 trailing sync channel
@@ -629,8 +657,6 @@ def test_gather_px_information_writes_led_memmap(tmp_path, processing_settings):
     None
     """
 
-    import cv2
-
     serial = "21372315"
     coords = list(Synchronizer._build_led_px_dict()["current"][serial].values())  # [y, x] each
     h, w = 720, 1280
@@ -675,8 +701,8 @@ def _processing_settings_full():
         The parsed processing-settings dict.
     """
 
-    path = glob.glob("**/processing_settings.json", recursive=True)[0]
-    return json.loads(Path(path).read_text())
+    path = Path(usv_playpen.__file__).parent / "_parameter_settings" / "processing_settings.json"
+    return json.loads(path.read_text())
 
 
 def test_crop_wav_files_to_video_single_device(tmp_path, mocker):
@@ -1738,7 +1764,7 @@ def _crop_both_m_longer(tmp_path, mocker, read_side_effect):
     sync.crop_wav_files_to_video()
 
 
-def _touch_wav(filename, rate, data):
+def _touch_wav(filename, **_kwargs):
     """
     Description
     -----------
@@ -1750,10 +1776,8 @@ def _touch_wav(filename, rate, data):
     ----------
     filename (str | pathlib.Path)
         The path the WAV would be written to.
-    rate (int)
-        Sampling rate (ignored).
-    data (np.ndarray)
-        Samples (ignored).
+    **_kwargs
+        The ``rate`` and ``data`` keywords the module passes (ignored).
 
     Returns
     -------
@@ -1790,6 +1814,7 @@ def _make_read_side_effect(cropped_size, real_read):
     """
 
     def _side_effect(path):
+        """Serve the fixed cropped array for ``cropped_to_video`` paths, else read the file for real."""
         path = str(path)
         if "cropped_to_video" in path:
             data = np.zeros(cropped_size, dtype=np.int16)
@@ -1940,5 +1965,5 @@ def test_validate_ephys_video_sync_refuses_a_second_changepoints_file(tmp_path, 
     (ephys_dir / "changepoints_info_20250919_imec0_copy.json").write_text("{}")
     sync = Synchronizer(root_directory=str(tmp_path / "Data" / "20250919_155842"), input_parameter_dict=processing_settings,
                         message_output=lambda *_a, **_k: None)
-    with pytest.raises(ValueError, match="changepoints_info_20250919_imec0_copy.json"):
+    with pytest.raises(ValueError, match=r"changepoints_info_20250919_imec0_copy.json"):
         sync.validate_ephys_video_sync()

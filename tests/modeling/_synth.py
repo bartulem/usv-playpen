@@ -54,7 +54,6 @@ import h5py
 import numpy as np
 import polars as pls
 
-
 # Canonical location of the shipped settings JSON, resolved relative to the
 # installed package so the synthetic settings inherit every real key.
 _SETTINGS_JSON = (
@@ -129,6 +128,28 @@ def build_behavioral_features_csv(
     columns: dict[str, np.ndarray] = {}
 
     def _signal(freq: float, phase: float) -> np.ndarray:
+        """
+        Description
+        -----------
+        Builds one smooth, noisy synthetic feature trace: a sinusoid whose
+        frequency is expressed in cycles per session plus small Gaussian noise
+        drawn from the enclosing seeded generator, so each column is distinct,
+        deterministic and carries non-zero variance for z-scoring and basis
+        projection to act on.
+
+        Parameters
+        ----------
+        freq (float)
+            Number of sinusoid cycles across the full ``n_frames`` session.
+        phase (float)
+            Phase offset in radians, staggered per column.
+
+        Returns
+        -------
+        trace (np.ndarray)
+            Float array of shape ``(n_frames,)``.
+        """
+
         return np.sin(2.0 * np.pi * freq * t / max(n_frames, 1) + phase) + 0.05 * rng.standard_normal(n_frames)
 
     col_counter = 0
@@ -280,7 +301,8 @@ def build_usv_summary_csv(
     warmup = filter_history * 2.0 + 1.0
     usable = session_duration_sec - warmup - filter_history * 2.0
     if usable <= 0 or n_bouts <= 0:
-        raise ValueError("Session too short to host the requested number of bouts.")
+        msg = "Session too short to host the requested number of bouts."
+        raise ValueError(msg)
     bout_spacing = usable / n_bouts
 
     emitters: list[str | None] = []
@@ -566,7 +588,7 @@ def build_modeling_settings(
         A ready-to-use ``modeling_settings`` dictionary.
     """
 
-    with open(_SETTINGS_JSON, 'r') as fh:
+    with _SETTINGS_JSON.open() as fh:
         settings = json.load(fh)
     settings = copy.deepcopy(settings)
 

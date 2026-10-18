@@ -25,6 +25,14 @@ Two tiers of checks:
 The cross-checks use ``AllenAtlas(mock=True)`` so the test suite never
 downloads the ~300 MB Allen NRRD volumes; ``mock=True`` still installs
 the ``BrainCoordinates`` affine that ``ccf2xyz`` relies on.
+
+Coverage: the CCF apdvml -> IBL xyz mlapdv conversion (bregma origin, axis
+flips, broadcasting), IMRO-table and AP-meta parsing, NP2 sample-to-volt
+scaling, ``IBLAlignmentExporter`` construction (hemisphere, meta discovery,
+probe type), cluster/template bookkeeping, waveform durations, nearest-channel
+restriction, spike depths, xyz-picks writing, raw channel-id remapping, the
+unified channel-locations JSON, Kilosort array loading, direct file copies,
+the end-to-end ALF export, and the ``iblatlas`` drift cross-checks.
 """
 
 from __future__ import annotations
@@ -35,11 +43,11 @@ import numpy as np
 import pytest
 
 from usv_playpen.neuropixels.histology_ibl_alignment_export import (
-    ALLEN_BREGMA_MLAPDV_UM,
-    IBLAlignmentExporter,
-    NP2_PROBE_TYPES,
-    N_CLOSEST_CHANNELS,
     _REQUIRED_COPIES,
+    ALLEN_BREGMA_MLAPDV_UM,
+    N_CLOSEST_CHANNELS,
+    NP2_PROBE_TYPES,
+    IBLAlignmentExporter,
     ccf_apdvml_to_xyz_mlapdv_um,
     parse_imro_table,
     read_ap_meta,
@@ -263,7 +271,7 @@ def test_constructor_raises_when_no_meta_found(tmp_path):
     EPHYS directory, construction raises ``FileNotFoundError``.
     """
 
-    with pytest.raises(FileNotFoundError, match="No concatenated_.*ap.meta"):
+    with pytest.raises(FileNotFoundError, match=r"No concatenated_.*ap.meta"):
         IBLAlignmentExporter(tmp_path, "M1", "20240101", "imec0", "R")
 
 
@@ -294,7 +302,7 @@ def test_constructor_rejects_non_np2_probe(tmp_path):
     ephys = tmp_path / "EPHYS" / "20240101_imec0"
     ephys.mkdir(parents=True)
     (ephys / "concatenated_x.ap.meta").write_text("imDatPrb_type=0\n")
-    with pytest.raises(NotImplementedError, match="not a supported Neuropixels 2.0"):
+    with pytest.raises(NotImplementedError, match=r"not a supported Neuropixels 2.0"):
         IBLAlignmentExporter(tmp_path, "M1", "20240101", "imec0", "R")
 
 

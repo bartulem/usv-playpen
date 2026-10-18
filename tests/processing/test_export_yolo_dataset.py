@@ -2,12 +2,14 @@
 @author: bartulem
 Tests for processing/export_yolo_dataset.YOLODatasetExporter.
 
-Synthesizes a per-session spectrogram H5, then checks the Ultralytics dataset
+Coverage: on a synthesized per-session spectrogram H5, checks that the Ultralytics dataset
 layout is written (images/{train,val}, labels/{train,val}, data.yaml), that the
 rendering helper matches the inference window shape, that the connected-component
 label source produces a label file per valid spectrogram, that the manual source
 copies hand-verified labels verbatim, and that manual/merge without a labels
-directory is rejected.
+directory is rejected. The validation split is an exact fraction (0 routes
+everything to train, 1 everything to val, a small cohort keeps val non-empty)
+and the merge source prefers manual labels over connected-component ones.
 """
 
 from __future__ import annotations
@@ -26,6 +28,9 @@ _SESSION_ID = "20230119_155302"
 
 
 def _cfg(**overrides):
+    """Return an ``export_yolo_dataset`` settings block with the connected-component
+    label source and every image going to train (so assertions are deterministic),
+    with ``overrides`` replacing individual keys."""
     base = {
         "label_source": "cc",
         "validation_split": 0.0,  # all -> train, deterministic for assertions

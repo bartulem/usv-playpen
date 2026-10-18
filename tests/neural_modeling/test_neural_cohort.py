@@ -3,9 +3,9 @@
 Unit tests for ``usv_playpen.neural_modeling.neural_cohort``.
 
 Coverage: the session-list union, the brain-area scheme, and the two session sets the cohort hands
-out. The property that matters is the asymmetry: a session in which the recorded animal barely called
+out. The property that matters is the asymmetry: a session in which the recorded animal barely vocalized
 stays available to the kinematic encoding, which is fitted on silence and is if anything better off, and
-is withheld from everything scored on the calls themselves, where it would contribute a fold resting
+is withheld from everything scored on the vocalizations themselves, where it would contribute a fold resting
 on a handful of events.
 """
 
@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import pathlib
 
-import polars as pl
+import polars as pls
 import pytest
 
 from usv_playpen.neural_modeling.neural_cohort import (
@@ -29,9 +29,25 @@ SETTINGS_PATH = (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_play
 
 
 def _catalog(tmp_path) -> str:
-    """Four units: two PAG somatic good, one MUA, one non-somatic."""
+    """
+    Description
+    -----------
+    Writes a four-unit synthetic unit catalog: two PAG somatic good units, one MUA unit and one
+    non-somatic good unit, all from mouse ``m1``. The first unit was recorded in a thin session
+    (``s_thin``) as well as the two rich ones.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Directory the ``unit_catalog.csv`` is written to.
+
+    Returns
+    -------
+    catalog_path (str)
+        Path to the written CSV.
+    """
     path = tmp_path / "unit_catalog.csv"
-    pl.DataFrame({
+    pls.DataFrame({
         "mouse_id": ["m1", "m1", "m1", "m1"],
         "rec_date": [20250101, 20250101, 20250101, 20250101],
         "unit_id": ["imec0_cl0001_ch001_good", "imec0_cl0002_ch002_good",
@@ -50,6 +66,25 @@ MOUSE_BY_SESSION = {"s_rich": "m1", "s_rich2": "m1", "s_thin": "m1"}
 
 
 def _select(tmp_path, **overrides):
+    """
+    Description
+    -----------
+    Runs ``select_cohort`` on the four-unit synthetic catalog with the shipped-like defaults (PAG,
+    include, good, somatic, two courtship sessions, 20 emitter USVs per session, two vocal sessions),
+    letting a test override any single keyword.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Directory the synthetic catalog is written to.
+    **overrides
+        Keyword arguments replacing the defaults passed to ``select_cohort``.
+
+    Returns
+    -------
+    cohort (list[dict])
+        The per-unit records ``select_cohort`` returns.
+    """
     kwargs = {"catalog_path": _catalog(tmp_path),
               "courtship_session_ids": {"s_rich", "s_rich2", "s_thin"},
               "brain_areas": ["PAG"], "area_mode": "include", "quality": ["good"],
@@ -61,7 +96,10 @@ def _select(tmp_path, **overrides):
 
 class TestSessionLists:
 
+    """Loading the courtship session ids from the session-list text files."""
     def test_ids_are_unioned_across_files_and_reduced_to_basenames(self, tmp_path):
+        """Ids repeated across files and blank lines must collapse to one set of directory basenames, so a
+        session listed twice is not counted twice."""
         (tmp_path / "a.txt").write_text("/mnt/x/Data/20250101_000000\n/mnt/x/Data/20250101_010000\n")
         (tmp_path / "b.txt").write_text("/mnt/x/Data/20250101_010000\n\n/mnt/x/Data/20250102_000000\n")
         ids = load_courtship_session_ids([str(tmp_path / "a.txt"), str(tmp_path / "b.txt")])
@@ -70,7 +108,10 @@ class TestSessionLists:
 
 class TestAreaScheme:
 
+    """The include / exclude / all brain-area filter."""
     def test_include_exclude_and_all(self):
+        """``include`` keeps only listed areas, ``exclude`` keeps only unlisted ones and ``all`` keeps every
+        area, so each mode selects exactly the population it names."""
         assert _area_pass("PAG", ["PAG"], "include")
         assert not _area_pass("VTA", ["PAG"], "include")
         assert _area_pass("VTA", ["PAG"], "exclude")
@@ -78,13 +119,18 @@ class TestAreaScheme:
         assert _area_pass("anything", [], "all")
 
     def test_an_unknown_mode_fails_loudly(self):
+        """An unrecognised mode must raise ``ValueError`` naming ``area_mode`` rather than silently passing or
+        failing every unit."""
         with pytest.raises(ValueError, match="area_mode"):
             _area_pass("PAG", ["PAG"], "sometimes")
 
 
 class TestTwoSessionSets:
 
+    """The courtship (quiet) and vocal session sets handed out per unit."""
     def test_a_thin_session_is_kept_for_quiet_and_withheld_from_vocal(self, tmp_path):
+        """A session with 3 emitter USVs must stay in the unit's courtship set but be dropped from its vocal set,
+        with the counts and the vocal-testable flag following from that split."""
         unit = next(u for u in _select(tmp_path) if u["unit_id"].endswith("cl0001_ch001_good"))
         assert unit["courtship_sessions"] == ["s_rich", "s_rich2", "s_thin"]
         assert unit["vocal_sessions"] == ["s_rich", "s_rich2"]
@@ -105,12 +151,16 @@ class TestTwoSessionSets:
         assert not any(u["vocal_testable"] for u in cohort)
 
     def test_the_threshold_moves_the_vocal_set_and_nothing_else(self, tmp_path):
+        """Lowering the per-session USV threshold to 2 must restore the thin session to the vocal set while the
+        courtship set is unchanged, so the threshold acts on the vocal side only."""
         loose = next(u for u in _select(tmp_path, min_emitter_usvs_per_session=2)
                      if u["unit_id"].endswith("cl0001_ch001_good"))
         assert loose["vocal_sessions"] == ["s_rich", "s_rich2", "s_thin"]
         assert loose["courtship_sessions"] == ["s_rich", "s_rich2", "s_thin"]
 
     def test_quality_and_somatic_filters_still_apply(self, tmp_path):
+        """The MUA unit and the non-somatic unit must be excluded, so the session-set logic did not bypass the
+        quality and somatic filters."""
         kept = {u["unit_id"] for u in _select(tmp_path)}
         assert kept == {"imec0_cl0001_ch001_good", "imec0_cl0002_ch002_good"}
 
@@ -126,7 +176,10 @@ class TestTwoSessionSets:
 
 class TestSummary:
 
+    """The cohort summary that reports what the sufficiency gate removed."""
     def test_the_summary_reports_what_the_gate_removed(self, tmp_path):
+        """The summary must count the units, the courtship and vocal session slots, and the total versus
+        retained focal USVs, so the gate's effect on every denominator is stated."""
         summary = summarize_cohort(_select(tmp_path))
         assert summary["n_units"] == 2
         assert summary["session_slots"] == 5              # 3 + 2
@@ -138,7 +191,10 @@ class TestSummary:
 
 class TestShippedSettings:
 
+    """The data-sufficiency and kinematic-encoding keys of the shipped settings file."""
     def test_the_gate_keys_are_present_and_the_threshold_is_the_ruled_one(self):
+        """The shipped settings must carry the three gate keys at 20 USVs per session, two vocal sessions and
+        two courtship sessions, so the cohort a run uses is the agreed one."""
         with SETTINGS_PATH.open() as handle:
             sufficiency = json.load(handle)["data_sufficiency"]
         assert sufficiency["min_emitter_usvs_per_session"] == 20

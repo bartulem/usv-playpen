@@ -9,6 +9,11 @@ substituted so the whole figure pipeline — A/V IPI discrepancy histograms +
 scatter, the per-mouse subject table (`m_*` device branch), and the phidget
 humidity/lux/temperature insets (`s_*` device branch) — runs against a tiny
 synthetic session and writes a real summary figure to `<root>/sync/`.
+
+Coverage: ``SummaryPlotter`` construction (root_directory required) and
+``preprocessing_summary`` end to end with session metadata, without metadata
+(Motif user-metadata fields parsed from the imgstore), and with the cropped
+WAV missing.
 """
 
 from __future__ import annotations
@@ -16,11 +21,11 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock
 
+import matplotlib as mpl
 import numpy as np
 import pytest
 
-import matplotlib
-matplotlib.use("Agg")
+mpl.use("Agg")
 
 from scipy.io import wavfile
 
@@ -299,7 +304,7 @@ def test_preprocessing_summary_no_metadata_parses_motif_fields(tmp_path, mocker)
     assert list((root / "sync").glob("*_summary.*")), "summary figure not written"
 
 
-def test_preprocessing_summary_missing_wav_raises(tmp_path, mocker):
+def test_preprocessing_summary_missing_wav_raises(tmp_path):
     """
     Description
     -----------
@@ -310,8 +315,6 @@ def test_preprocessing_summary_missing_wav_raises(tmp_path, mocker):
     ----------
     tmp_path (pathlib.Path)
         Session root parent.
-    mocker (pytest_mock.MockerFixture)
-        Patches the metadata loader (unused before the raise).
 
     Returns
     -------
@@ -329,7 +332,7 @@ def test_preprocessing_summary_missing_wav_raises(tmp_path, mocker):
         root_directory=str(root),
         message_output=lambda *_a, **_k: None,
     )
-    with pytest.raises(FileNotFoundError, match="No .wav files"):
+    with pytest.raises(FileNotFoundError, match=r"No .wav files"):
         plotter.preprocessing_summary(
             ipi_discrepancy_dict=ipi, phidget_data_dictionary=phidget,
         )

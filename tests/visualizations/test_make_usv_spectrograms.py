@@ -23,6 +23,14 @@ are narrow (message substring + category) and only cover legitimate
 numpy / matplotlib / librosa noise; the project-wide
 ``filterwarnings = ["error"]`` otherwise turns any stray warning into a
 failure.
+
+Coverage: plotter construction and settings validation; the memmap filename parse, window
+resolution, spectrogram computation and figure saving; the single / all-channel / stitched plots
+and the mode dispatch; the per-session property histograms, counts and USV timeline; the pooled
+embedding table with its cache (fingerprint, schema and layout rebuilds, atomic write); category
+sample picking (random, nearest, spiral, periodic snapping across the torus seam); the embedding
+thumbnail figure and its refusals; the sequence figure (density, loudest channel, torus wrap,
+noise and squeak exclusion); the cohort driver; and the embedding-explorer notebook controls.
 """
 
 from __future__ import annotations
@@ -37,21 +45,20 @@ import types
 import altair as alt
 import h5py
 import marimo as mo
-import matplotlib
+import matplotlib as mpl
 
-matplotlib.use("Agg")
-
-import matplotlib.pyplot as plt
+mpl.use("Agg")
 import matplotlib.contour
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import polars as pls
 import pytest
+from matplotlib.collections import LineCollection, PathCollection
 
 from usv_playpen import os_utils
 from usv_playpen.notebooks import usv_embedding_explorer
 from usv_playpen.os_utils import SQUEAK_CLASS_SELECTIONS, vocal_class_mask
-
 from usv_playpen.visualizations.make_usv_spectrograms import (
     BANDWIDTH_BIMODAL_SPLIT_KHZ,
     EMBEDDING_COORD_COLS,
@@ -65,6 +72,7 @@ from usv_playpen.visualizations.make_usv_spectrograms import (
     _medoid_xy,
     _pick_category_samples,
     _pick_spiral_with_grid,
+    _read_session_track_names,
     _resolve_session_emitter_sexes,
     build_pooled_embeddings_df,
     plot_embedding_with_category_thumbnails,
@@ -90,11 +98,11 @@ def test_session_type_and_timeline_colors_derive_from_settings():
     with settings_path.open() as settings_file:
         viz_settings = json.load(settings_file)
 
-    assert SESSION_TYPE_MALE_COLOR == viz_settings["male_colors"][0]
-    assert SESSION_TYPE_FEMALE_COLOR == viz_settings["female_colors"][0]
-    assert USV_TIMELINE_MALE_COLOR == viz_settings["male_colors"][0]
-    assert USV_TIMELINE_FEMALE_COLOR == viz_settings["female_colors"][0]
-    assert USV_TIMELINE_UNASSIGNED_COLOR == viz_settings["unassigned_colors"][0]
+    assert viz_settings["male_colors"][0] == SESSION_TYPE_MALE_COLOR
+    assert viz_settings["female_colors"][0] == SESSION_TYPE_FEMALE_COLOR
+    assert viz_settings["male_colors"][0] == USV_TIMELINE_MALE_COLOR
+    assert viz_settings["female_colors"][0] == USV_TIMELINE_FEMALE_COLOR
+    assert viz_settings["unassigned_colors"][0] == USV_TIMELINE_UNASSIGNED_COLOR
 
 
 # synthetic-artifact builders
@@ -359,7 +367,7 @@ def _write_tracking_h5(
             "track_names",
             data=np.array([n.encode("utf-8") for n in track_names]),
         )
-    _write_session_metadata(video_dir.parent, dict(zip(track_names, sexes)))
+    _write_session_metadata(video_dir.parent, dict(zip(track_names, sexes, strict=False)))
     return path
 
 
@@ -448,7 +456,21 @@ def test_init_preserves_explicit_message_output(tmp_path):
     """An explicit message_output is preserved (not overwritten by print)."""
 
     def _logger(_msg: str) -> None:
-        return None
+        """
+        Description
+        -----------
+        Sentinel logger whose identity the test compares against the
+        plotter's stored ``message_output``.
+
+        Parameters
+        ----------
+        _msg (str)
+            Message text (discarded).
+
+        Returns
+        -------
+        None
+        """
 
     plotter = USVSpectrogramPlotter(
         root_directory=str(tmp_path),
@@ -601,7 +623,7 @@ def test_render_raw_audio_zero_signal(tmp_path):
         root_directory=str(tmp_path),
         visualizations_parameter_dict=_base_settings(),
     )
-    fig, ax = plt.subplots()
+    _fig, ax = plt.subplots()
     time_vec = np.linspace(0, 1, 100)
     plotter._render_raw_audio(
         ax, time_vec, np.zeros(100), color="#808080", title="flat"
@@ -971,7 +993,7 @@ def test_dispatch_unknown_mode(tmp_path):
         root_directory=str(tmp_path),
         visualizations_parameter_dict=_base_settings(mode="banana"),
     )
-    with pytest.raises(ValueError, match="Unknown make_usv_spectrograms.mode"):
+    with pytest.raises(ValueError, match=r"Unknown make_usv_spectrograms\.mode"):
         plotter.make_usv_spectrograms()
 
 
@@ -1168,7 +1190,7 @@ def test_plot_session_usv_timeline_full_session(tmp_path):
 # build_pooled_embeddings_df
 
 
-def _write_embedding_session(root: pathlib.Path, session_id: str):
+def _write_embedding_session(root: pathlib.Path):
     """
     Description
     -----------
@@ -1178,10 +1200,8 @@ def _write_embedding_session(root: pathlib.Path, session_id: str):
     Parameters
     ----------
     root (pathlib.Path)
-        Session root directory.
-    session_id (str)
-        Used only for documentation symmetry; the session id is derived
-        from ``root.name`` by the loader.
+        Session root directory; the loader derives the session id from
+        ``root.name``.
 
     Returns
     -------
@@ -1220,7 +1240,7 @@ def test_build_pooled_embeddings_df_and_cache(tmp_path):
     """Pooled embeddings are built from CSVs, noise-filtered, sex-mapped,
     and round-trip through the parquet cache."""
     sess = tmp_path / "20230101_000000"
-    _write_embedding_session(sess, "20230101_000000")
+    _write_embedding_session(sess)
     txt = _write_sessions_txt(tmp_path, [sess])
     cache = tmp_path / "cache.parquet"
     pooled = build_pooled_embeddings_df(
@@ -1242,7 +1262,8 @@ def test_build_pooled_embeddings_df_and_cache(tmp_path):
     # the explorer derive the vocal class from them)
     assert pooled["usv"].to_list() == [False, True, True]
     assert pooled["squeak"].to_list() == [True, False, True]
-    assert pooled.schema["usv"] == pls.Boolean and pooled.schema["squeak"] == pls.Boolean
+    assert pooled.schema["usv"] == pls.Boolean
+    assert pooled.schema["squeak"] == pls.Boolean
     assert "call_class" not in pooled.columns
     # the squeak map's coordinates are carried, null off the squeak rows
     assert pooled["qlvm_squeak1"].to_list() == [0.25, None, None]
@@ -1271,14 +1292,14 @@ def test_build_pooled_embeddings_df_sex_comes_from_metadata(tmp_path):
     no attributed emitter stays unassigned; editing the metadata invalidates
     the cache."""
     sess = tmp_path / "20230101_000000"
-    _write_embedding_session(sess, "20230101_000000")
+    _write_embedding_session(sess)
     _write_session_metadata(sess, {"M": "female", "F": "female"})
     txt = _write_sessions_txt(tmp_path, [sess])
     cache = tmp_path / "cache.parquet"
     pooled = build_pooled_embeddings_df(
         sessions_txt_path=str(txt), cache_path=str(cache), message_output=lambda *_: None,
     )
-    assert dict(zip(pooled["emitter"].to_list(), pooled["sex"].to_list())) == {
+    assert dict(zip(pooled["emitter"].to_list(), pooled["sex"].to_list(), strict=False)) == {
         "F": "female", "M": "female", "ghost": "unassigned"}
 
     meta_path = sess / f"{sess.name}_metadata.yaml"
@@ -1289,14 +1310,14 @@ def test_build_pooled_embeddings_df_sex_comes_from_metadata(tmp_path):
         sessions_txt_path=str(txt), cache_path=str(cache), message_output=logs.append,
     )
     assert any("stale" in m for m in logs)
-    assert dict(zip(rebuilt["emitter"].to_list(), rebuilt["sex"].to_list()))["M"] == "male"
+    assert dict(zip(rebuilt["emitter"].to_list(), rebuilt["sex"].to_list(), strict=False))["M"] == "male"
 
 
 def test_build_pooled_embeddings_df_unmatched_track_raises(tmp_path):
     """A tracked animal the metadata cannot resolve raises instead of being
     assigned a sex by its slot."""
     sess = tmp_path / "20230101_000000"
-    _write_embedding_session(sess, "20230101_000000")
+    _write_embedding_session(sess)
     _write_session_metadata(sess, {"M": "male"})
     txt = _write_sessions_txt(tmp_path, [sess])
     with pytest.raises(ValueError, match="'F' has no subject"):
@@ -1308,7 +1329,7 @@ def test_build_pooled_embeddings_df_skips_empty_session(tmp_path):
     which would break the integer noise filter / vertical concat) is skipped, not
     crashed on."""
     good = tmp_path / "20230101_000000"
-    _write_embedding_session(good, "20230101_000000")
+    _write_embedding_session(good)
     empty = tmp_path / "20230102_000000"
     _write_usv_summary_csv(
         empty / "audio",
@@ -1328,7 +1349,7 @@ def test_build_pooled_embeddings_df_coerces_string_numeric_columns(tmp_path):
     all-null coordinates) is coerced to the common dtype, so the diagonal concat
     across sessions does not raise 'String is incompatible with Float64'."""
     good = tmp_path / "20230101_000000"
-    _write_embedding_session(good, "20230101_000000")
+    _write_embedding_session(good)
     weird = tmp_path / "20230103_000000"
     _write_tracking_h5(weird / "video", ("M", "F"))
     _write_usv_summary_csv(
@@ -1361,7 +1382,7 @@ def test_build_pooled_embeddings_df_rebuild_on_schema_miss(tmp_path):
     """An old cache missing a required column triggers a transparent
     rebuild."""
     sess = tmp_path / "20230102_000000"
-    _write_embedding_session(sess, "20230102_000000")
+    _write_embedding_session(sess)
     txt = _write_sessions_txt(tmp_path, [sess])
     cache = tmp_path / "stale.parquet"
     pls.DataFrame({"session_id": ["x"], "row_index": [0]}).write_parquet(cache)
@@ -1382,7 +1403,7 @@ def test_build_pooled_embeddings_df_rebuilds_an_old_layout_cache(tmp_path, old_c
     even when its summaries fingerprint still matches; the rebuilt table carries the two
     booleans and no ``call_class``."""
     sess = tmp_path / "20230103_000000"
-    _write_embedding_session(sess, "20230103_000000")
+    _write_embedding_session(sess)
     txt = _write_sessions_txt(tmp_path, [sess])
     cache = tmp_path / "cache.parquet"
     build_pooled_embeddings_df(sessions_txt_path=str(txt), cache_path=str(cache), message_output=lambda *_: None)
@@ -1405,7 +1426,7 @@ def test_build_pooled_embeddings_df_rebuilds_when_a_summary_changes(tmp_path):
     never served from an old cache; the old cache file is overwritten, not deleted
     beforehand."""
     sess = tmp_path / "20230104_000000"
-    _write_embedding_session(sess, "20230104_000000")
+    _write_embedding_session(sess)
     txt = _write_sessions_txt(tmp_path, [sess])
     cache = tmp_path / "cache.parquet"
     first = build_pooled_embeddings_df(sessions_txt_path=str(txt), cache_path=str(cache),
@@ -1439,7 +1460,7 @@ def test_build_pooled_embeddings_df_rebuilds_a_cache_without_fingerprint(tmp_pat
     before fingerprints existed, as the first shared cohort cache was) is treated
     as stale rather than trusted."""
     sess = tmp_path / "20230105_000000"
-    _write_embedding_session(sess, "20230105_000000")
+    _write_embedding_session(sess)
     txt = _write_sessions_txt(tmp_path, [sess])
     cache = tmp_path / "legacy.parquet"
     fresh = build_pooled_embeddings_df(sessions_txt_path=str(txt), message_output=lambda *_: None)
@@ -1472,7 +1493,8 @@ def test_build_pooled_embeddings_df_without_qlvm_labels(tmp_path):
     pooled = build_pooled_embeddings_df(sessions_txt_path=str(txt), cache_path=str(cache),
                                         message_output=lambda *_: None)
     assert pooled.height == 2
-    assert "qlvm_category" not in pooled.columns and "qlvm_supercategory" not in pooled.columns
+    assert "qlvm_category" not in pooled.columns
+    assert "qlvm_supercategory" not in pooled.columns
     logs: list[str] = []
     build_pooled_embeddings_df(sessions_txt_path=str(txt), cache_path=str(cache), message_output=logs.append)
     assert any("from cache" in m for m in logs)
@@ -1516,7 +1538,8 @@ def test_pick_category_samples_methods(method):
     out = _pick_category_samples(pts, n_per=8, method=method, rng=rng)
     assert out.size == 8
     assert len(set(out.tolist())) == out.size
-    assert out.min() >= 0 and out.max() < 40
+    assert out.min() >= 0
+    assert out.max() < 40
 
 
 def test_pick_category_samples_seeded_reproducible():
@@ -1555,7 +1578,8 @@ def test_pick_spiral_with_grid_no_grid():
         labels_grid=None, xx=None, yy=None, cluster_label=1, rng=None,
     )
     assert picks.size == 6
-    assert xs.size == ys.size and xs.size > 0
+    assert xs.size == ys.size
+    assert xs.size > 0
 
 
 def test_pick_spiral_with_grid_zero_radius():
@@ -1566,7 +1590,8 @@ def test_pick_spiral_with_grid_zero_radius():
         labels_grid=None, xx=None, yy=None, cluster_label=1,
     )
     assert picks.tolist() == [0, 1, 2, 3]
-    assert xs.size == 0 and ys.size == 0
+    assert xs.size == 0
+    assert ys.size == 0
 
 
 def test_pick_spiral_with_grid_empty_pts():
@@ -1575,7 +1600,9 @@ def test_pick_spiral_with_grid_empty_pts():
         np.zeros((0, 2)), n_per=4, cx0=0.0, cy0=0.0, r_max=1.0,
         labels_grid=None, xx=None, yy=None, cluster_label=1,
     )
-    assert picks.size == 0 and xs.size == 0 and ys.size == 0
+    assert picks.size == 0
+    assert xs.size == 0
+    assert ys.size == 0
 
 
 def test_pick_spiral_with_grid_with_label_grid():
@@ -1587,7 +1614,7 @@ def test_pick_spiral_with_grid_with_label_grid():
     yy = np.linspace(0, 1, 20)
     labels = np.ones((20, 20))
     labels[:, :10] = 2.0  # half the grid belongs to a different cluster
-    picks, xs, ys = _pick_spiral_with_grid(
+    picks, _xs, _ys = _pick_spiral_with_grid(
         pts, n_per=5, cx0=0.5, cy0=0.5, r_max=0.4,
         labels_grid=labels, xx=xx, yy=yy, cluster_label=1, rng=rng,
     )
@@ -1602,7 +1629,7 @@ def test_pick_spiral_with_grid_filter_kills_all():
     xx = np.linspace(0, 1, 16)
     yy = np.linspace(0, 1, 16)
     labels = np.full((16, 16), 2.0)  # nothing matches cluster_label == 1
-    picks, xs, ys = _pick_spiral_with_grid(
+    picks, xs, _ys = _pick_spiral_with_grid(
         pts, n_per=5, cx0=0.5, cy0=0.5, r_max=0.3,
         labels_grid=labels, xx=xx, yy=yy, cluster_label=1, rng=None,
     )
@@ -1644,7 +1671,8 @@ def test_pick_spiral_with_grid_reads_the_pixel_a_position_falls_in():
         pts, n_per=4, cx0=0.25, cy0=0.5, r_max=0.03,
         labels_grid=labels, xx=axis, yy=axis, cluster_label=1, rng=None,
     )
-    assert xs_two.min() >= 0.25 and xs_two.min() < 0.25 + 0.5 / resolution
+    assert xs_two.min() >= 0.25
+    assert xs_two.min() < 0.25 + 0.5 / resolution
     assert xs_one.max() < 0.25
 
 
@@ -1666,9 +1694,11 @@ def test_pick_spiral_with_grid_periodic_snaps_across_the_seam():
         pts, n_per=1, cx0=0.01, cy0=0.5, r_max=1e-6,
         labels_grid=None, xx=None, yy=None, cluster_label=1, rng=None, periodic=True,
     )
-    assert flat.tolist() == [0] and wrapped.tolist() == [1]
+    assert flat.tolist() == [0]
+    assert wrapped.tolist() == [1]
     finite = np.isfinite(xs)
-    assert np.all((xs[finite] >= 0.0) & (xs[finite] < 1.0)) and np.all((ys[finite] >= 0.0) & (ys[finite] < 1.0))
+    assert np.all((xs[finite] >= 0.0) & (xs[finite] < 1.0))
+    assert np.all((ys[finite] >= 0.0) & (ys[finite] < 1.0))
 
 
 def test_pick_category_samples_periodic_nearest_uses_the_circular_centre():
@@ -1825,7 +1855,7 @@ def test_plot_umap_thumbnails_conditional_map_centres_wrap_around_the_torus(tmp_
     """
 
     pooled = _make_pooled_df("sessW", n_per_cat=6)
-    seam_x = np.array([0.95, 0.96, 0.97, 0.03, 0.04, 0.05] + [0.45, 0.47, 0.5, 0.52, 0.55, 0.53])
+    seam_x = np.array([0.95, 0.96, 0.97, 0.03, 0.04, 0.05, 0.45, 0.47, 0.5, 0.52, 0.55, 0.53])
     pooled = pooled.with_columns(pls.Series("qlvm_duration1", seam_x), pls.lit(0.5).alias("qlvm_duration2"))
     h5_path = tmp_path / "store.h5"
     _write_consolidated_h5(h5_path, "sessW", n_usvs=12, n_freq=16, n_time=24)
@@ -1944,7 +1974,7 @@ def test_plot_umap_thumbnails_bundle_centers_and_boundaries(tmp_path):
     assert any(isinstance(child, matplotlib.contour.ContourSet) for child in fig.axes[0].get_children())
 
 
-def test_plot_umap_thumbnails_bundle_label_mismatch_raises(tmp_path):
+def test_plot_umap_thumbnails_bundle_label_mismatch_raises():
     """A pooled qlvm_category outside the bundle's 1..k means the summaries were labelled
     with another partition than the bundle drawn: raise."""
     pooled = _make_pooled_df().with_columns(pls.lit(7).alias("qlvm_category"))
@@ -1958,7 +1988,7 @@ def test_plot_umap_thumbnails_bundle_label_mismatch_raises(tmp_path):
         )
 
 
-def test_plot_umap_thumbnails_bad_qlvm_map(tmp_path):
+def test_plot_umap_thumbnails_bad_qlvm_map():
     """A qlvm_map outside os_utils.QLVM_MAPS (e.g. the retired 'vae') raises
     ValueError before any rendering."""
     with pytest.raises(ValueError, match="qlvm_map must be"):
@@ -2008,7 +2038,7 @@ def test_plot_umap_thumbnails_excludes_squeaks_by_default(tmp_path):
     assert isinstance(fig_all, plt.Figure)
 
 
-def test_plot_umap_thumbnails_squeak_filter_needs_the_column(tmp_path):
+def test_plot_umap_thumbnails_squeak_filter_needs_the_column():
     """Excluding squeaks from a pooled table without the usv / squeak booleans raises."""
     with pytest.raises(KeyError, match=r"no \['usv', 'squeak'\] columns"):
         plot_embedding_with_category_thumbnails(
@@ -2017,7 +2047,7 @@ def test_plot_umap_thumbnails_squeak_filter_needs_the_column(tmp_path):
         )
 
 
-def test_plot_umap_thumbnails_no_categories(tmp_path):
+def test_plot_umap_thumbnails_no_categories():
     """A pooled frame with no usable category leaves nothing to draw."""
     pooled = pls.DataFrame(
         {
@@ -2074,9 +2104,33 @@ def _write_spectrograms_dir(
     n_time: int = 32,
     with_mask: bool = True,
 ) -> str:
-    """Lay out a ``shared_resources.spectrograms_dir`` the way the readers resolve
+    """
+    Description
+    -----------
+    Lay out a ``shared_resources.spectrograms_dir`` the way the readers resolve
     it: the consolidated store ``<base>/spectrograms_<key>.h5``. The QLVM category
-    grid is not under it (it is the category bundle). Returns ``str(base)``."""
+    grid is not under it (it is the category bundle).
+
+    Parameters
+    ----------
+    base (pathlib.Path)
+        Directory to create.
+    session_key (str)
+        Session key naming the store and its groups.
+    n_usvs (int)
+        Number of USVs in the store.
+    n_freq (int)
+        Spectrogram frequency bins.
+    n_time (int)
+        Spectrogram time bins.
+    with_mask (bool)
+        Write the mask group.
+
+    Returns
+    -------
+    spectrograms_dir (str)
+        ``str(base)``.
+    """
     base = pathlib.Path(base)
     base.mkdir(parents=True, exist_ok=True)
     _write_consolidated_h5(
@@ -2089,9 +2143,27 @@ def _write_spectrograms_dir(
 def _write_sequence_session(
     tmp_path: pathlib.Path, session_id: str = "20230101_120000", *, with_dur: bool = True
 ) -> pathlib.Path:
-    """Lay out a synthetic session (audio memmap + usv_summary CSV with
+    """
+    Description
+    -----------
+    Lay out a synthetic session (audio memmap + usv_summary CSV with
     embedding columns + tracking h5) for the sequence figure. Four USVs in
-    [0, 0.006] s: male, female, male, unassigned (track_names male_x/female_y)."""
+    [0, 0.006] s: male, female, male, unassigned (track_names male_x/female_y).
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Parent directory of the session.
+    session_id (str)
+        Session directory name.
+    with_dur (bool)
+        Also write the duration-map coordinates.
+
+    Returns
+    -------
+    root (pathlib.Path)
+        The session root.
+    """
     root = tmp_path / session_id
     audio_dir = root / "audio"
     _write_audio_memmap(root, channel_num=3)
@@ -2128,12 +2200,36 @@ def _seq_settings(
     apply_mask: bool = True,
     exclude_squeaks: bool = True,
 ) -> dict:
-    """Build a sequence-mode settings dict: a make_usv_spectrograms block (with a
+    """
+    Description
+    -----------
+    Build a sequence-mode settings dict: a make_usv_spectrograms block (with a
     `sequence` sub-dict, whose ``exclude_squeaks`` is the argument of that name),
     ``shared_resources.qlvm_map`` and the emitter color palettes. The consolidated
     store is resolved from ``spectrograms_dir`` (build it with
     ``_write_spectrograms_dir``); the regular map's landscape is the category
-    bundle."""
+    bundle.
+
+    Parameters
+    ----------
+    spectrograms_dir (pathlib.Path)
+        Directory holding the consolidated store.
+    save_dir (pathlib.Path)
+        Figure output directory.
+    qlvm_map (str)
+        Embedding map the sequence is drawn on.
+    plot_raw_audio (bool)
+        Draw the raw-audio spectrogram instead of the stored one.
+    apply_mask (bool)
+        Apply the stored masks.
+    exclude_squeaks (bool)
+        Drop squeak segments from the sequence.
+
+    Returns
+    -------
+    settings (dict)
+        Visualizations settings dict.
+    """
     settings = _base_settings(
         mode="sequence",
         save_dir=str(save_dir),
@@ -2237,7 +2333,6 @@ def test_plot_sequence_draws_connecting_line(tmp_path):
     """The window USVs are joined by a single LineCollection with one segment per
     consecutive pair (n - 1 for n window USVs) and per-segment widths that vary
     with the inter-USV interval."""
-    from matplotlib.collections import LineCollection
 
     session_id = "20230101_120000"
     root = _write_sequence_session(tmp_path, session_id)  # 4 window USVs, all with coords
@@ -2263,7 +2358,6 @@ def test_plot_sequence_qlvm_path_wraps_on_torus(tmp_path):
     """Every QLVM map is a periodic unit torus: two USVs near opposite edges connect
     via the short toroidal route, so that pair's segment is split into two
     edge-clipped sub-segments; a pair that does not cross a seam is one segment."""
-    from matplotlib.collections import LineCollection
 
     session_id = "20230101_120000"
     root = tmp_path / session_id
@@ -2285,6 +2379,24 @@ def test_plot_sequence_qlvm_path_wraps_on_torus(tmp_path):
     )
 
     def _n_subsegments(qlvm_map: str) -> int:
+        """
+        Description
+        -----------
+        Render the sequence figure on the given map and count the segments of
+        the LineCollection joining the window's USVs, which reveals whether
+        the joining line was split at the torus seam.
+
+        Parameters
+        ----------
+        qlvm_map (str)
+            Embedding map whose coordinates position the USVs.
+
+        Returns
+        -------
+        n_segments (int)
+            Number of segments in the joining LineCollection.
+        """
+
         settings = _seq_settings(
             spec_dir, tmp_path / f"out_{qlvm_map}", qlvm_map=qlvm_map
         )
@@ -2292,7 +2404,7 @@ def test_plot_sequence_qlvm_path_wraps_on_torus(tmp_path):
         fig = USVSpectrogramPlotter(
             root_directory=str(root), visualizations_parameter_dict=settings
         ).plot_sequence()
-        lc = [c for c in fig.axes[0].collections if isinstance(c, LineCollection)][0]
+        lc = next(c for c in fig.axes[0].collections if isinstance(c, LineCollection))
         return len(lc.get_segments())
 
     assert _n_subsegments("qlvm") == 2  # short route wraps the seam -> two pieces
@@ -2324,7 +2436,6 @@ def test_plot_sequence_drops_noise_and_optionally_squeaks(tmp_path, exclude_sque
     pure USV) the map numbers two segments with the flag on and three with it off, and
     the stitched spectrogram still renders (the store rows are looked up by the
     pre-filter row index)."""
-    from matplotlib.collections import PathCollection
 
     session_id = "20230101_120000"
     root = tmp_path / session_id
@@ -2390,7 +2501,7 @@ def test_read_cohort_session_roots_pools_dedupes_and_needs_a_non_playback_list(t
     input_dir = tmp_path / "input_files"
     input_dir.mkdir()
     (input_dir / "ephys_playback_sessions_list.txt").write_text("/root/sessP\n")
-    with pytest.raises(FileNotFoundError, match="qlvm-figures: no '\\*sessions_list.txt'"):
+    with pytest.raises(FileNotFoundError, match=r"qlvm-figures: no '\*sessions_list\.txt'"):
         read_cohort_session_roots(str(input_dir), "qlvm-figures")
     (input_dir / "b_sessions_list.txt").write_text("/root/sessB\n\n# comment\n/root/sessC\n")
     (input_dir / "a_sessions_list.txt").write_text("/root/sessA\n/root/sessB\n")
@@ -2412,6 +2523,23 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     captured = {}
 
     def _stub(**kwargs):
+        """
+        Description
+        -----------
+        Stand-in renderer that records its keyword arguments and reads the
+        pooled session list before the driver deletes it.
+
+        Parameters
+        ----------
+        **kwargs
+            Keyword arguments the driver dispatches to the renderer.
+
+        Returns
+        -------
+        fig (matplotlib.figure.Figure)
+            An empty figure, as the real renderer returns one.
+        """
+
         captured.update(kwargs)
         # Read the combined session list WHILE it still exists (the driver unlinks
         # it in a finally after this call returns).
@@ -2430,7 +2558,7 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     opened = []
     monkeypatch.setattr(
         "usv_playpen.visualizations.make_usv_spectrograms._open_path_in_default_viewer",
-        lambda path, message_output=None: opened.append(str(path)),
+        lambda path, _message_output=None: opened.append(str(path)),
     )
 
     viz = {
@@ -2659,7 +2787,8 @@ def test_explorer_colours_by_qlvm_category_and_draws_bundle_boundaries_on_the_re
     assert sorted(definitions["chart_data"]["qlvm_category"].tolist()) == [1, 2, 3, 4]
     chart = definitions["chart_widget"]._chart
     if qlvm_map == "qlvm":
-        assert isinstance(chart, alt.LayerChart) and len(chart.layer) == 3
+        assert isinstance(chart, alt.LayerChart)
+        assert len(chart.layer) == 3
         assert chart.title is alt.Undefined
     else:
         assert not isinstance(chart, alt.LayerChart)
@@ -2671,14 +2800,37 @@ def test_build_pooled_embeddings_df_cache_write_is_atomic(tmp_path, monkeypatch)
     half-way leaves no ``cache.parquet`` behind (the direct ``write_parquet(cache_path)`` left a
     truncated file that the next call would try to read)."""
     sess = tmp_path / "20230101_000000"
-    _write_embedding_session(sess, "20230101_000000")
+    _write_embedding_session(sess)
     txt = _write_sessions_txt(tmp_path, [sess])
     cache_dir = tmp_path / "cache_dir"
     cache = cache_dir / "cache.parquet"
 
-    def half_write_parquet(self, file, **kwargs):
+    def half_write_parquet(_self, file, **_kwargs):
+        """
+        Description
+        -----------
+        Replacement for ``DataFrame.write_parquet`` that writes a truncated
+        file at the target path and then fails, mimicking a disk filling up
+        mid-write.
+
+        Parameters
+        ----------
+        _self (pls.DataFrame)
+            The frame being written (ignored).
+        file (str | pathlib.Path)
+            Target path the writer was given.
+        **_kwargs
+            Writer options (ignored).
+
+        Returns
+        -------
+        None
+            Always raises OSError.
+        """
+
         pathlib.Path(file).write_bytes(b"PAR1 truncated")
-        raise OSError("disk full")
+        msg = "disk full"
+        raise OSError(msg)
 
     monkeypatch.setattr(pls.DataFrame, "write_parquet", half_write_parquet)
     with pytest.raises(OSError, match="disk full"):
@@ -2690,7 +2842,6 @@ def test_read_session_track_names_skips_the_playback_speaker_track(tmp_path):
     """A USV-playback session keeps a ``speaker_*`` track beside the mouse track; with the
     one-match lookup a loose pattern would raise on the two files, so the speaker track is
     excluded by name."""
-    from usv_playpen.visualizations.make_usv_spectrograms import _read_session_track_names
 
     video = tmp_path / "video" / "20260101120000"
     video.mkdir(parents=True)

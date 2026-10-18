@@ -1,4 +1,5 @@
 """
+@author: bartulem
 Source-tree integrity check -- the regression guard for the v0.10.1 / v0.10.2
 empty-YAML disaster.
 
@@ -13,6 +14,9 @@ in the working tree (or, worse, in a tagged release).
 
 This module is forced to run LAST by ``pytest_collection_modifyitems`` in
 ``conftest.py``.
+
+Coverage: the end-of-session re-hash of ``src/usv_playpen`` against the
+session-start baseline, reporting added, removed and mutated files.
 """
 
 from __future__ import annotations

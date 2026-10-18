@@ -67,11 +67,11 @@ import json
 import pickle
 import warnings
 from pathlib import Path
+from typing import ClassVar
 
 import numpy as np
 import polars as pls
 import pytest
-
 from scipy import stats
 
 from tests.modeling._synth import (
@@ -84,6 +84,7 @@ from tests.modeling._synth import (
 # Guard the import so collection does not trip ``filterwarnings = ["error"]``.
 with warnings.catch_warnings():
     warnings.simplefilter('ignore', DeprecationWarning)
+    from usv_playpen.modeling.load_input_files import find_variable_length_bouts
     from usv_playpen.modeling.modeling_behavioral_response import (
         BehavioralResponsePipeline,
         MatchedDivergencePipeline,
@@ -96,8 +97,8 @@ with warnings.catch_warnings():
         derived_covariate_transform,
         duration_tercile_labels,
         fit_contrast,
-        forward_window_mean,
         forward_clean_times,
+        forward_window_mean,
         inter_bout_quiet_anchors,
         normal_scores,
         select_covariate_columns,
@@ -106,7 +107,6 @@ with warnings.catch_warnings():
         windows_touch_vocalization,
         yeo_johnson_covariates,
     )
-    from usv_playpen.modeling.load_input_files import find_variable_length_bouts
 
 CAMERA_FPS = 150.0
 HISTORY_FRAMES = 600      # 4 s
@@ -144,7 +144,7 @@ class TestBoutOffsetAnchors:
             HISTORY_FRAMES, LOOKAHEAD_FRAMES, silence_seconds=0.5,
             vocal_starts=np.empty(0), vocal_stops=np.empty(0))
 
-        assert frames.tolist() == [int(round(10.5 * CAMERA_FPS))]
+        assert frames.tolist() == [round(10.5 * CAMERA_FPS)]
 
     def test_a_bout_followed_too_soon_is_dropped(self):
         """Otherwise the forward window would contain the next bout."""
@@ -157,7 +157,7 @@ class TestBoutOffsetAnchors:
             vocal_starts=np.empty(0), vocal_stops=np.empty(0))
 
         # 10.5 has only 0.2 s before the next onset; 11.0 has no successor.
-        assert frames.tolist() == [int(round(11.0 * CAMERA_FPS))]
+        assert frames.tolist() == [round(11.0 * CAMERA_FPS)]
 
     def test_durations_stay_aligned_with_surviving_anchors(self):
         """A misaligned duration would mislabel every bout's dose."""
@@ -190,7 +190,8 @@ class TestBoutOffsetAnchors:
             HISTORY_FRAMES, LOOKAHEAD_FRAMES, silence_seconds=0.5,
             vocal_starts=np.empty(0), vocal_stops=np.empty(0))
 
-        assert frames.size == 0 and kept.size == 0
+        assert frames.size == 0
+        assert kept.size == 0
 
 
 class TestInterBoutQuietAnchors:
@@ -352,7 +353,7 @@ class TestControlWindowsTouchNoVocalization:
             for anchor in anchors:
                 low = (anchor - HISTORY_FRAMES) / CAMERA_FPS
                 high = (anchor + LOOKAHEAD_FRAMES) / CAMERA_FPS
-                assert not (16.0 < high and 16.1 > low)
+                assert not (high > 16.0 and low < 16.1)
             n_anchors += anchors.size
         # The gap still holds silent room on both sides of the singleton.
         assert n_anchors == 500
@@ -391,7 +392,7 @@ class TestControlWindowsTouchNoVocalization:
         times = guarded / CAMERA_FPS
         lows = times - HISTORY_FRAMES / CAMERA_FPS
         highs = times + LOOKAHEAD_FRAMES / CAMERA_FPS
-        assert not np.any((60.0 < highs) & (60.1 > lows))
+        assert not np.any((highs > 60.0) & (lows < 60.1))
 
     def test_a_singleton_inside_the_forward_window_drops_the_bout_offset(self):
         """
@@ -425,7 +426,7 @@ class TestControlWindowsTouchNoVocalization:
             HISTORY_FRAMES, LOOKAHEAD_FRAMES, silence_seconds=0.5,
             vocal_starts=np.array([10.0, 10.3]), vocal_stops=np.array([10.2, 10.5]))
 
-        assert frames.tolist() == [int(round(10.5 * CAMERA_FPS))]
+        assert frames.tolist() == [round(10.5 * CAMERA_FPS)]
 
     def test_windows_touch_vocalization_edges(self):
         """
@@ -1156,18 +1157,29 @@ class TestNormalScores:
     """Rank-based covariate transform."""
 
     def test_ranking_is_invariant_to_any_monotone_transform(self):
-        # This is why the transform can be applied to the stored z-scores without
-        # re-extracting: it sees only the ordering.
+        """
+        Normal scores depend only on the ordering, so log-transforming the input leaves them
+        unchanged; this is why the transform can be applied to the stored z-scores without
+        re-extracting.
+        """
+
         generator = np.random.default_rng(0)
         raw = generator.lognormal(0.0, 1.0, 400).reshape(-1, 1)
         assert np.allclose(normal_scores(raw), normal_scores(np.log(raw)))
 
     def test_output_is_standard_normal_shaped(self):
+        """
+        A heavily skewed lognormal column comes out with near-zero skew, the shape the contrast
+        GLM assumes.
+        """
+
         generator = np.random.default_rng(1)
         transformed = normal_scores(generator.lognormal(0.0, 1.5, 2000).reshape(-1, 1))
         assert abs(float(stats.skew(transformed[:, 0]))) < 0.1
 
     def test_non_finite_entries_survive_as_nan(self):
+        """A NaN input stays NaN and does not poison the ranks of its finite neighbours."""
+
         values = np.array([[1.0], [np.nan], [3.0]])
         transformed = normal_scores(values)
         assert np.isnan(transformed[1, 0])
@@ -1179,10 +1191,30 @@ class TestYeoJohnsonCovariates:
 
     @staticmethod
     def _z_scored(values: np.ndarray) -> tuple:
+        """
+        Z-scores a native column and returns the scaling entry the transform un-does.
+
+        Parameters
+        ----------
+        values : np.ndarray
+            Native-unit samples of one covariate.
+
+        Returns
+        -------
+        column, scaling : tuple
+            The z-scored column and a ``{'mean', 'std'}`` dict, the shape the pipeline
+            stores per feature in its pooled scaling table.
+        """
+
         return (values - values.mean()) / values.std(), {
             'mean': float(values.mean()), 'std': float(values.std())}
 
     def test_a_lognormal_column_is_straightened(self):
+        """
+        A right-skewed column is mapped to near-zero skew with a lambda below 0.5, i.e. a log-
+        like power.
+        """
+
         generator = np.random.default_rng(2)
         native = generator.lognormal(0.5, 0.8, 3000)
         column, scaling = self._z_scored(native)
@@ -1193,8 +1225,11 @@ class TestYeoJohnsonCovariates:
         assert lambdas['self.speed__mean_0.5s'] < 0.5
 
     def test_a_symmetric_column_is_left_essentially_alone(self):
-        # The support rule became unnecessary rather than being replaced: a signed
-        # feature returns lambda near the identity without being told it is signed.
+        """
+        A signed, symmetric feature returns lambda near the identity without being told it
+        is signed: the support rule became unnecessary rather than being replaced.
+        """
+
         generator = np.random.default_rng(3)
         native = generator.normal(0.0, 10.0, 3000)
         column, scaling = self._z_scored(native)
@@ -1203,8 +1238,12 @@ class TestYeoJohnsonCovariates:
         assert 0.8 < lambdas['self.back_pitch__mean_4s'] < 1.2
 
     def test_a_near_zero_narrow_column_does_not_explode(self):
-        # A plain log on this shape drives the skew past -30; the lambda = 0 branch
-        # is log(x + 1), which is what keeps it finite.
+        """
+        A narrow column pressed against zero stays finite with modest skew: a plain log on this
+        shape drives the skew past -30, and the lambda = 0 branch is log(x + 1), which is what
+        keeps it finite.
+        """
+
         generator = np.random.default_rng(4)
         native = np.clip(generator.normal(4.0, 1.0, 3000), 0.01, None)
         column, scaling = self._z_scored(native)
@@ -1214,6 +1253,10 @@ class TestYeoJohnsonCovariates:
         assert abs(float(stats.skew(transformed[:, 0]))) < 0.5
 
     def test_output_is_standardised(self):
+        """
+        The transformed column has mean 0 and std 1 to 1e-9, so coefficients stay on a per-SD scale.
+        """
+
         generator = np.random.default_rng(5)
         native = generator.lognormal(0.0, 1.0, 500)
         column, scaling = self._z_scored(native)
@@ -1223,6 +1266,11 @@ class TestYeoJohnsonCovariates:
         assert abs(float(transformed[:, 0].std()) - 1.0) < 1e-9
 
     def test_a_missing_scaling_entry_raises_rather_than_guessing(self):
+        """
+        Without the stored native scaling the column cannot be un-z-scored, so it must raise,
+        not guess.
+        """
+
         with pytest.raises(KeyError, match='re-extracted'):
             yeo_johnson_covariates(np.zeros((5, 1)), ['self.speed__mean_4s'], {})
 
@@ -1231,6 +1279,11 @@ class TestVarianceExplainedByVocalTerms:
     """Decomposition stored beside the coefficients."""
 
     def test_an_unrelated_vocal_block_adds_nothing(self):
+        """
+        When the target depends only on the covariate, the vocal block's share stays below 1 %
+        while the full model still explains over 90 % -- the share must not leak covariate variance.
+        """
+
         generator = np.random.default_rng(6)
         covariate = generator.normal(size=800)
         design = np.column_stack([np.ones(800), generator.integers(0, 2, 800).astype(float),
@@ -1242,6 +1295,8 @@ class TestVarianceExplainedByVocalTerms:
         assert result['r_squared_full'] > 0.9
 
     def test_a_planted_vocal_effect_takes_a_visible_share(self):
+        """A strong planted condition effect claims over half the explained variance."""
+
         generator = np.random.default_rng(7)
         treated = generator.integers(0, 2, 800).astype(float)
         design = np.column_stack([np.ones(800), treated, np.zeros(800),
@@ -1256,20 +1311,29 @@ class TestForwardCleanTimes:
     """All-animal silence test used by the matched-divergence anchors."""
 
     def test_a_vocalization_starting_inside_the_window_disqualifies(self):
+        """A vocalization beginning 2 s into a 4 s forward window makes that moment unclean."""
+
         mask = forward_clean_times(np.array([10.0]), np.array([12.0]), np.array([12.1]), 4.0)
         assert not bool(mask[0])
 
     def test_a_vocalization_starting_after_the_window_does_not(self):
+        """A vocalization beginning after the 4 s window ends leaves the moment clean."""
+
         mask = forward_clean_times(np.array([10.0]), np.array([15.0]), np.array([15.1]), 4.0)
         assert bool(mask[0])
 
     def test_a_vocalization_straddling_the_moment_disqualifies(self):
-        # A starts-only test would pass this: the vocalization began before the anchor and
-        # is still running at it.
+        """
+        A vocalization that began before the anchor and is still running at it disqualifies
+        the moment; a starts-only test would wrongly pass this.
+        """
+
         mask = forward_clean_times(np.array([10.0]), np.array([9.0]), np.array([11.0]), 4.0)
         assert not bool(mask[0])
 
     def test_a_session_without_vocalizations_is_entirely_clean(self):
+        """With no vocalizations at all, every candidate moment is clean."""
+
         mask = forward_clean_times(np.array([1.0, 2.0]), np.empty(0), np.empty(0), 4.0)
         assert mask.all()
 
@@ -1279,9 +1343,27 @@ class TestMatchedDivergencePipeline:
 
     @staticmethod
     def _settings() -> dict:
+        """
+        Returns a fresh copy of the shipped modeling settings for one test to mutate.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        settings : dict
+            Parsed ``modeling_settings.json``.
+        """
+
         return _shipped_settings()
 
     def test_windows_convert_to_frames_at_the_configured_rate(self):
+        """
+        Every matched-divergence window is floor(rate * seconds) frames on the configured camera
+        grid.
+        """
+
         settings = self._settings()
         pipeline = MatchedDivergencePipeline(modeling_settings_dict=settings)
         rate = settings['io']['camera_sampling_rate']
@@ -1292,9 +1374,12 @@ class TestMatchedDivergencePipeline:
             assert pipeline.divergence_frames[name] == expected
 
     def test_a_matching_window_that_does_not_precede_the_anchor_raises(self):
-        # The window must END before the anchor: with it running up to the anchor
-        # the two arms still differed at t=0 in the direction of the effect,
-        # because the divergence is already under way inside it.
+        """
+        The baseline-matching window must END before the anchor: with it running up to the
+        anchor the two arms still differed at t=0 in the direction of the effect, because the
+        divergence is already under way inside it.
+        """
+
         settings = self._settings()
         settings['behavioral_response']['matched_divergence']['baseline_start_seconds'] = 0.5
         settings['behavioral_response']['matched_divergence']['baseline_end_seconds'] = 4.0
@@ -1302,6 +1387,11 @@ class TestMatchedDivergencePipeline:
             MatchedDivergencePipeline(modeling_settings_dict=settings)
 
     def test_it_inherits_the_response_features_and_likelihood_rule(self):
+        """
+        The subclass keeps the parent's support-based likelihood rule: speed is lognormal, pitch
+        gaussian.
+        """
+
         pipeline = MatchedDivergencePipeline(modeling_settings_dict=self._settings())
         assert pipeline._response_likelihood('speed') == 'lognormal'
         assert pipeline._response_likelihood('back_pitch') == 'gaussian'
@@ -1310,34 +1400,66 @@ class TestMatchedDivergencePipeline:
 class TestSelectCovariateColumns:
     """The fit-time choice of which animal's covariates adjust the contrast."""
 
-    labels = ['self.speed__mean_0.5s', 'self.speed__mean_4s', 'other.speed__mean_0.5s',
-              'other.neck_elevation__mean_4s', 'nose-nose__mean_0.5s', 'nose-allo_yaw__mean_4s']
+    labels: ClassVar[list[str]] = [
+        'self.speed__mean_0.5s', 'self.speed__mean_4s', 'other.speed__mean_0.5s',
+        'other.neck_elevation__mean_4s', 'nose-nose__mean_0.5s', 'nose-allo_yaw__mean_4s']
 
     def _covariates(self) -> np.ndarray:
+        """
+        Builds a distinct-valued covariate matrix with one column per class label.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        covariates : np.ndarray
+            Shape ``(3, len(labels))`` with every entry unique, so a column swap is visible.
+        """
+
         return np.arange(3 * len(self.labels), dtype=float).reshape(3, len(self.labels))
 
     def test_both_keeps_every_column_in_order(self):
+        """'both' returns every column untouched and in its original order."""
+
         selected, kept = select_covariate_columns(self._covariates(), self.labels, 'both')
         assert kept == self.labels
         np.testing.assert_array_equal(selected, self._covariates())
 
     def test_self_drops_the_partner_and_keeps_dyadic(self):
+        """
+        'self' drops the ``other.`` columns but keeps the dyadic ones, which belong to neither
+        animal.
+        """
+
         selected, kept = select_covariate_columns(self._covariates(), self.labels, 'self')
         assert kept == ['self.speed__mean_0.5s', 'self.speed__mean_4s',
                         'nose-nose__mean_0.5s', 'nose-allo_yaw__mean_4s']
         np.testing.assert_array_equal(selected, self._covariates()[:, [0, 1, 4, 5]])
 
     def test_partner_drops_self_and_keeps_dyadic(self):
+        """'partner' drops the ``self.`` columns but keeps the dyadic ones."""
+
         selected, kept = select_covariate_columns(self._covariates(), self.labels, 'partner')
         assert kept == ['other.speed__mean_0.5s', 'other.neck_elevation__mean_4s',
                         'nose-nose__mean_0.5s', 'nose-allo_yaw__mean_4s']
         np.testing.assert_array_equal(selected, self._covariates()[:, [2, 3, 4, 5]])
 
     def test_unknown_choice_is_rejected_by_name(self):
+        """
+        An unknown choice raises naming ``covariate_features`` instead of silently selecting
+        nothing.
+        """
+
         with pytest.raises(ValueError, match='covariate_features'):
             select_covariate_columns(self._covariates(), self.labels, 'female')
 
     def test_shipped_settings_carry_a_valid_choice(self):
+        """
+        The shipped settings hold one of the three accepted choices, so a default run cannot raise.
+        """
+
         settings_path = (Path(__file__).resolve().parents[2] / 'src' / 'usv_playpen'
                          / '_parameter_settings' / 'modeling_settings.json')
         with settings_path.open('r') as handle:

@@ -60,9 +60,10 @@ N_LAGS = int(HISTORY * FPS)
 
 
 class TestFrameDefinitions:
+    """The quiet-anchor and vocal-span frame sets, and the disjointness between them."""
 
-    def test_quiet_excludes_the_guard_band_around_every_call(self):
-        """A call forbids [start - clean_post, stop + history_pre], so a quiet anchor's whole 4 s
+    def test_quiet_excludes_the_guard_band_around_every_usv(self):
+        """A USV forbids [start - clean_post, stop + history_pre], so a quiet anchor's whole 4 s
         history is vocalization-free by construction."""
         starts, stops = np.array([100.0]), np.array([100.5])
         quiet = quiet_anchor_frames(starts, stops, 60_000, FPS, HISTORY, POST)
@@ -84,18 +85,21 @@ class TestFrameDefinitions:
 
         assert np.intersect1d(quiet, vocal).size == 0
 
-    def test_vocal_spans_cover_the_call_and_drop_calls_without_full_history(self):
+    def test_vocal_spans_cover_the_usv_and_drop_usvs_without_full_history(self):
+        """A vocal span runs from onset to offset in frames, and a USV too close to the recording start
+        for a full 4 s history is masked out instead of being scored on a truncated design."""
         starts = np.array([0.5, 100.0])           # the first has no room for 4 s of history
         stops = np.array([0.6, 100.2])
         kept, frames, pointer = vocal_span_frames(starts, stops, FPS, 60_000, N_LAGS)
 
-        assert kept.tolist() == [False, True]      # `kept` is a MASK over the input calls
+        assert kept.tolist() == [False, True]      # `kept` is a MASK over the input USVs
         assert pointer.size == 2
         assert frames.min() >= int(100.0 * FPS)
         assert frames.max() < int(np.ceil(100.2 * FPS))
 
 
 class TestLaggedDesign:
+    """Orientation and history requirement of the lagged predictor design."""
 
     def test_the_last_column_is_the_anchor_frame_itself(self):
         """Column 0 is the OLDEST lag and the final column is the anchor, so a filter plotted against
@@ -108,20 +112,26 @@ class TestLaggedDesign:
         assert design[0, 0] == pytest.approx(600.0 - (N_LAGS - 1))
 
     def test_anchors_without_full_history_are_rejected(self):
+        """An anchor earlier than ``n_lags - 1`` would need lags before frame 0; it must raise rather
+        than wrap around or zero-pad the history."""
         series = np.arange(1000, dtype=float).reshape(-1, 1)
         with pytest.raises(ValueError, match="n_lags-1"):
             lagged_design(series, np.array([10]), N_LAGS)
 
 
 class TestSpikeLabels:
+    """The per-frame spike labels the Bernoulli fit is trained on."""
 
     def test_labels_are_binary_and_mark_the_right_frames(self):
+        """Labels are 1 exactly on frames holding at least one spike and stay binary on multi-spike
+        frames, since the model is a per-frame Bernoulli, not a count model."""
         labels = spike_labels_at_frames(np.array([5, 5, 9]), np.array([4, 5, 6, 9]), 20)
 
         assert labels.tolist() == [0.0, 1.0, 0.0, 1.0]   # a multi-spike frame is still 1
 
 
 class TestBlockCrossValidation:
+    """The within-session block fallback used when the leave-one-session-out pool is too small."""
 
     def test_blocks_are_separated_by_at_least_the_requested_gap(self):
         """The gap must exceed the predictor history or a validation frame's lags reach into a training
@@ -138,6 +148,8 @@ class TestBlockCrossValidation:
             assert later["quiet"][0] - earlier["quiet"][-1] >= required * FPS
 
     def test_too_few_usable_blocks_is_reported_not_hidden(self):
+        """When the quiet frames cannot fill the requested blocks plus gaps, no blocks are returned, so
+        the caller sees the shortfall instead of training on overlapping pieces."""
         session = {"quiet": np.arange(600, 1000), "spike_frames": np.array([1]),
                    "n_frames": 60_000, "fps": FPS,
                    "feature_time_series": np.zeros((60_000, 2)), "feature_names": ["a"]}
@@ -150,12 +162,33 @@ class TestBlockCrossValidation:
 
 
 class TestRepresentativeFold:
+    """The rule that picks the one fold whose model is reported as the unit's representative."""
 
     @staticmethod
     def _fold(quiet, vocal_frames, no_model=False):
+        """
+        Description
+        -----------
+        Build the minimal fold record ``representative_fold`` reads.
+
+        Parameters
+        ----------
+        quiet (float)
+            The fold's held-out quiet score.
+        vocal_frames (int)
+            Number of vocal frames the fold scored (only the length of the array is used).
+        no_model (bool)
+            Whether the fold found no model; defaults to ``False``.
+
+        Returns
+        -------
+        fold (dict)
+            ``quiet_score``, a zero ``vocal_frames`` array of that length, and ``no_model``.
+        """
         return {"quiet_score": quiet, "vocal_frames": np.zeros(vocal_frames), "no_model": no_model}
 
     def test_odd_counts_take_the_median(self):
+        """With an odd number of usable folds the fold holding the median quiet score is chosen."""
         folds = [self._fold(0.09287, 14934), self._fold(0.21020, 14683), self._fold(0.16110, 4920)]
         assert representative_fold(folds) == 2          # cl0401: the +0.16110 fold
 
@@ -167,10 +200,13 @@ class TestRepresentativeFold:
         assert representative_fold(folds) == 1          # cl0499: 10,695 frames beats 4,745
 
     def test_folds_without_a_model_are_ignored(self):
+        """A no-model fold carries no filter to report, so it must not take part in the median."""
         folds = [self._fold(0.0, 0, no_model=True), self._fold(0.05, 100), self._fold(0.09, 100)]
         assert representative_fold(folds) == 1
 
     def test_no_usable_fold_returns_minus_one(self):
+        """With no fold holding a model the sentinel -1 is returned rather than an index into a fold
+        with nothing to report."""
         assert representative_fold([self._fold(0.0, 0, no_model=True)]) == -1
 
 
@@ -179,6 +215,25 @@ class TestFilterBand:
 
     @staticmethod
     def _session(n_frames=4000, seed=0):
+        """
+        Description
+        -----------
+        Build one synthetic quiet session whose spikes follow a logistic function of a slow
+        random-walk feature, so a filter fit on it has real signal to find.
+
+        Parameters
+        ----------
+        n_frames (int)
+            Session length in frames; defaults to 4000.
+        seed (int)
+            Seed for ``np.random.default_rng``; defaults to 0.
+
+        Returns
+        -------
+        session (dict)
+            ``feature_time_series`` (n_frames x 1), ``n_frames``, ``spike_frames`` and ``quiet``
+            anchor frames.
+        """
         generator = np.random.default_rng(seed)
         feature = np.cumsum(generator.normal(size=n_frames)) / 20.0
         rate = 1.0 / (1.0 + np.exp(-(0.8 * feature - 2.0)))
@@ -188,6 +243,21 @@ class TestFilterBand:
 
     @staticmethod
     def _encoding():
+        """
+        Description
+        -----------
+        Return a small ``kinematic_encoding`` settings block (raw per-frame basis, short solver
+        budget) that keeps the quiet fits in these tests fast.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        encoding (dict)
+            A self-contained ``kinematic_encoding`` block with every key ``fit_quiet_model`` reads.
+        """
         return {"significance_model": {"lambda_group": 0.0, "lambda_smooth": 1000.0,
                                        "lambda_ridge": 0.01},
                 "smoothness_order": 1, "negatives_per_positive": 10, "max_train_total": 4000,
@@ -199,6 +269,8 @@ class TestFilterBand:
                                    "lambda_ridge": 0.1, "lambda_smooth": 0.0, "spike_end_correction": "none"}}
 
     def test_block_resampling_keeps_the_count_and_the_ordering(self):
+        """A block resample keeps the anchor count, stays sorted and draws only real anchors, so the
+        refit sees a dataset of the same size and structure."""
         anchors = np.arange(1000)
         drawn = block_resample_anchors(anchors, 50, np.random.default_rng(0))
         assert drawn.size == anchors.size
@@ -216,9 +288,12 @@ class TestFilterBand:
         assert np.mean(steps == 1) > 0.9
 
     def test_an_empty_anchor_set_is_returned_unchanged(self):
+        """An empty anchor set must come back empty rather than raise inside the block sampler."""
         assert block_resample_anchors(np.array([]), 10, np.random.default_rng(0)).size == 0
 
     def test_the_band_has_one_filter_per_resample_and_summarises_them(self):
+        """The band stores one filter per resample, and its mean, sd (ddof=1) and low/high summaries are
+        computed from exactly those filters, so the reported band is reproducible from what is stored."""
         sessions = {"a": self._session(seed=0), "b": self._session(seed=1)}
         band = filter_band(sessions, ["a", "b"], [0], 5, np.random.default_rng(0),
                            self._encoding(), 4, message_output=lambda *_a: None)
@@ -245,23 +320,43 @@ class TestSelectionGuards:
 
     @staticmethod
     def _settings(**overrides):
+        """
+        Description
+        -----------
+        Build a minimal settings dict with a valid ``feature_selection`` block, with any key
+        overridden by keyword.
+
+        Parameters
+        ----------
+        **overrides (dict)
+            ``feature_selection`` keys to replace (e.g. ``selection_method``).
+
+        Returns
+        -------
+        settings (dict)
+            ``{"kinematic_encoding": {"feature_selection": ...}}``.
+        """
         selection = {"screen_alpha": 0.01, "selection_method": "forward_d2",
                      "acceptance_rule": "paired_1se", **overrides}
         return {"kinematic_encoding": {"feature_selection": selection}}
 
     def test_an_unimplemented_selection_method_is_refused(self):
+        """Declaring a selection method the code does not implement must raise before any fitting."""
         with pytest.raises(ValueError, match="forward"):
             forward_select({}, ["a", "b"], [0], 5, np.random.default_rng(0),
                            self._settings(selection_method="marginal_d2"), ["f"],
                            message_output=lambda *_a: None)
 
     def test_an_unimplemented_acceptance_rule_is_refused(self):
+        """Declaring an acceptance rule other than the paired 1SE must raise before any fitting."""
         with pytest.raises(ValueError, match="paired"):
             forward_select({}, ["a", "b"], [0], 5, np.random.default_rng(0),
                            self._settings(acceptance_rule="unpaired_1se"), ["f"],
                            message_output=lambda *_a: None)
 
     def test_the_shipped_settings_declare_what_the_code_implements(self):
+        """The shipped block names the implemented method and rule, and carries none of the
+        stability-selection knobs of the method that was never built."""
         with (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"
               / "_parameter_settings" / "neural_modeling_settings.json").open() as handle:
             selection = json.load(handle)["kinematic_encoding"]["feature_selection"]
@@ -274,6 +369,7 @@ class TestSelectionGuards:
 
 
 class TestSolverSettings:
+    """The solver keys in the shipped settings are real and reach the solver."""
 
     def test_tol_reaches_the_solver(self):
         """`tol` sat in settings unpassed, and the solver's own default was the SAME value -- so it
@@ -310,6 +406,30 @@ class TestFoldsWithoutAModel:
 
     @classmethod
     def _model_fold(cls, fold_index, test_id, names, indices, seed):
+        """
+        Description
+        -----------
+        Build a fold record for a fold that found a model, carrying every key the fold writer and
+        ``per_fold_roster`` read.
+
+        Parameters
+        ----------
+        fold_index (int)
+            The fold's position.
+        test_id (str)
+            The held-out session id.
+        names (list[str])
+            Selected feature names.
+        indices (list[int])
+            Selected feature indices.
+        seed (int)
+            Seed for the random filter coefficients.
+
+        Returns
+        -------
+        fold (dict)
+            A complete model fold with ``len(indices) * N_LAGS`` coefficients.
+        """
         rng = np.random.default_rng(seed)
         return {"fold_index": fold_index, "test_id": test_id, "no_model": False,
                 "selected": list(names), "selected_indices": list(indices),
@@ -321,15 +441,49 @@ class TestFoldsWithoutAModel:
 
     @staticmethod
     def _no_model_fold(fold_index, test_id):
-        """ONLY the keys a no-model fold is guaranteed to carry: no quiet metrics, fit time, iteration
-        count or filter -- and no quiet p, which one of the two no-model branches used to omit."""
+        """
+        Description
+        -----------
+        Build a fold record with ONLY the keys a no-model fold is guaranteed to carry: no quiet
+        metrics, fit time, iteration count or filter -- and no quiet p, which one of the two no-model
+        branches used to omit.
+
+        Parameters
+        ----------
+        fold_index (int)
+            The fold's position.
+        test_id (str)
+            The held-out session id.
+
+        Returns
+        -------
+        fold (dict)
+            A no-model fold whose screen table holds one near-miss feature (p = 5e-3).
+        """
         return {"fold_index": fold_index, "test_id": test_id, "no_model": True,
                 "selected": [], "path": [], "quiet_score": 0.0,
                 "screen": [{"feature": 4, "survived": False, "p": 5e-3}]}
 
     @classmethod
     def _round_trip(cls, tmp_path, folds):
-        """Through the real fold writer, and loaded back exactly as `combine` loads them."""
+        """
+        Description
+        -----------
+        Write the folds through the real fold writer and load them back exactly as `combine` loads
+        them.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Directory the fold ``.npz`` files are written to.
+        folds (list[dict])
+            Fold records to write.
+
+        Returns
+        -------
+        loaded (list[dict])
+            The folds as read back from disk, in input order.
+        """
         unit = {"unit_id": cls.UNIT_ID}
         for fold in folds:
             write_fold_artifact(fold, unit, fold["fold_index"], str(tmp_path),
@@ -338,11 +492,27 @@ class TestFoldsWithoutAModel:
                 for fold in folds]
 
     def _mixed(self):
+        """
+        Description
+        -----------
+        Build three folds -- model, no model, model -- with different selected feature sets.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        folds (list[dict])
+            Fold 0 selects ``a, b``; fold 1 has no model; fold 2 selects ``a``.
+        """
         return [self._model_fold(0, "s0", ["a", "b"], [0, 1], seed=1),
                 self._no_model_fold(1, "s1"),
                 self._model_fold(2, "s2", ["a"], [0], seed=2)]
 
     def test_a_no_model_fold_still_writes_the_file_combine_looks_for(self, tmp_path):
+        """A no-model fold must still write its ``.npz``, or ``combine`` stops on a missing fold and the
+        untuned unit saves nothing."""
         write_fold_artifact(self._no_model_fold(0, "s0"), {"unit_id": self.UNIT_ID}, 0, str(tmp_path),
                             message_output=lambda *_a: None)
         assert (tmp_path / f"{self.UNIT_ID}_fold0.npz").exists()
@@ -400,7 +570,26 @@ class TestLeaveOneSessionOut:
 
     @staticmethod
     def _pooled(n_per_session, slopes, seed=0):
-        """Sessions whose eta predicts labels at the given per-session strength, on different baselines."""
+        """
+        Description
+        -----------
+        Build pooled sessions whose eta predicts labels at the given per-session strength, on
+        different per-session baselines.
+
+        Parameters
+        ----------
+        n_per_session (list[int])
+            Number of frames per session.
+        slopes (list[float])
+            Per-session strength of the eta-to-label relation (0 means no signal).
+        seed (int)
+            Seed for ``np.random.default_rng``; defaults to 0.
+
+        Returns
+        -------
+        pooled (tuple)
+            ``(eta, labels, session_index, session_ids)`` concatenated over sessions.
+        """
         rng = np.random.default_rng(seed)
         eta, labels, index = [], [], []
         for session, (count, strength) in enumerate(zip(n_per_session, slopes, strict=True)):
@@ -449,21 +638,40 @@ class TestLeaveOneSessionOut:
 
 
 class TestTransferGuards:
+    """Guards that refuse transfer configurations the scoring does not implement."""
 
     @staticmethod
     def _settings(**overrides):
+        """
+        Description
+        -----------
+        Build a minimal settings dict with a valid ``transfer`` block, with any key overridden by
+        keyword.
+
+        Parameters
+        ----------
+        **overrides (dict)
+            ``transfer`` keys to replace.
+
+        Returns
+        -------
+        settings (dict)
+            ``{"kinematic_encoding": {"transfer": ...}}``.
+        """
         return {"kinematic_encoding": {"transfer": {"calibration_grain": "pooled_across_folds",
                                                     "d2_reference_rate": "scored_frames",
                                                     **overrides}}}
 
     def test_fold_averaged_scoring_is_refused(self):
-        """Pooling is what stopped a 372-call session's null -- mean four times its own observed --
+        """Pooling is what stopped a 372-USV session's null -- mean four times its own observed --
         swamping the average, and it flipped cl0401 from p 0.065 to 9.9e-06."""
         with pytest.raises(ValueError, match="ONE calibration"):
             combine_folds([], {}, [], {}, self._settings(calibration_grain="per_fold"),
                           message_output=lambda *_a: None)
 
     def test_a_non_local_reference_rate_is_refused(self):
+        """D2 must be referenced to the scored session's own spike rate; a training-session rate would
+        credit the model for a rate difference it did not predict."""
         with pytest.raises(ValueError, match="own spike rate"):
             combine_folds([], {}, [], {}, self._settings(d2_reference_rate="training_sessions"),
                           message_output=lambda *_a: None)
@@ -491,11 +699,45 @@ class TestTemporalBasis:
 
     @staticmethod
     def _basis_settings(kind="bspline", alpha=100.0, correction="none"):
+        """
+        Description
+        -----------
+        Build a ``temporal_basis`` settings block.
+
+        Parameters
+        ----------
+        kind (str)
+            Basis type; defaults to ``"bspline"``.
+        alpha (float)
+            The lag-ridge ``l2_lag_alpha``; defaults to 100.0.
+        correction (str)
+            The ``spike_end_correction``; defaults to ``"none"``.
+
+        Returns
+        -------
+        basis (dict)
+            A complete ``temporal_basis`` block with 8 cubic splines.
+        """
         return {"type": kind, "n_splines": 8, "spline_order": 3, "l2_lag_alpha": alpha,
                 "lambda_ridge": 0.1, "lambda_smooth": 0.0, "spike_end_correction": correction}
 
     @classmethod
     def _encoding(cls, kind):
+        """
+        Description
+        -----------
+        Build a ``kinematic_encoding`` block for the planted-filter sessions with the given basis.
+
+        Parameters
+        ----------
+        kind (str)
+            Basis type passed to ``_basis_settings`` (``"none"`` or ``"bspline"``).
+
+        Returns
+        -------
+        encoding (dict)
+            A complete ``kinematic_encoding`` block.
+        """
         return {"significance_model": {"lambda_group": 0.0, "lambda_smooth": 1000.0, "lambda_ridge": 0.01},
                 "smoothness_order": 1, "negatives_per_positive": 10, "max_train_total": 6000,
                 "solver": {"max_iter": 3000, "tol": 1e-6}, "subsampling_correction": "log_prior_offset",
@@ -505,7 +747,24 @@ class TestTemporalBasis:
 
     @classmethod
     def _session(cls, seed, n_frames=6000):
-        """A unit whose log-odds follow a smooth 0.4 s filter of one slow feature."""
+        """
+        Description
+        -----------
+        Build a unit whose log-odds follow a smooth 0.4 s filter (summed weight 0.9) of one slow
+        feature.
+
+        Parameters
+        ----------
+        seed (int)
+            Seed for ``np.random.default_rng``.
+        n_frames (int)
+            Session length in frames; defaults to 6000.
+
+        Returns
+        -------
+        session (dict)
+            ``feature_time_series``, ``n_frames``, ``spike_frames`` and ``quiet`` anchor frames.
+        """
         generator = np.random.default_rng(seed)
         feature = np.cumsum(generator.normal(size=n_frames)) / 25.0
         lags = np.arange(cls.N_LAGS)
@@ -517,13 +776,17 @@ class TestTemporalBasis:
                 "quiet": np.arange(cls.N_LAGS, n_frames - 5)}
 
     def test_an_unknown_basis_type_is_refused(self):
+        """An unsupported basis type must raise rather than silently fall back to the raw path."""
         with pytest.raises(ValueError, match=r"temporal_basis\.type"):
             lag_basis(self.N_LAGS, self._basis_settings("fourier"))
 
     def test_none_keeps_one_weight_per_frame(self):
+        """``"none"`` returns no basis, the signal for the raw one-weight-per-lag solver."""
         assert lag_basis(self.N_LAGS, self._basis_settings("none")) is None
 
     def test_the_basis_spans_the_window_and_is_scaled_to_lag_averages(self):
+        """The basis has one row per lag and one column per spline, is finite and non-negative, and its
+        columns average to unit mass, so spline weights read as lag-averaged filter values."""
         basis = lag_basis(self.N_LAGS, self._basis_settings())
         assert basis.shape == (self.N_LAGS, 8)
         assert np.all(np.isfinite(basis))
@@ -531,6 +794,7 @@ class TestTemporalBasis:
         assert np.isclose(basis.sum(axis=0).mean(), 1.0)
 
     def test_an_unknown_spike_end_correction_is_refused(self):
+        """An unsupported spike-end correction must raise rather than be ignored."""
         with pytest.raises(ValueError, match=r"spike_end_correction"):
             lag_basis(self.N_LAGS, self._basis_settings(correction="clamp"))
 
@@ -584,7 +848,27 @@ class TestTemporalBasis:
 
     @classmethod
     def _shifted_session(cls, seed, feature_shift, baseline_shift, n_frames=8000):
-        """The planted unit, with the feature's mean and the session's firing level both moved."""
+        """
+        Description
+        -----------
+        Build the planted unit with the feature's mean and the session's firing level both moved.
+
+        Parameters
+        ----------
+        seed (int)
+            Seed for ``np.random.default_rng``.
+        feature_shift (float)
+            Mean the feature is re-centred on.
+        baseline_shift (float)
+            Amount added to the log-odds baseline.
+        n_frames (int)
+            Session length in frames; defaults to 8000.
+
+        Returns
+        -------
+        session (dict)
+            ``feature_time_series``, ``n_frames``, ``spike_frames`` and ``quiet`` anchor frames.
+        """
         generator = np.random.default_rng(seed)
         feature = np.cumsum(generator.normal(size=n_frames)) / 25.0
         feature = feature - feature.mean() + feature_shift

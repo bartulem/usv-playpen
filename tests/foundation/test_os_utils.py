@@ -30,33 +30,35 @@ import numpy as np
 import polars as pls
 import pytest
 
+from tests.conftest import write_qlvm_category_bundle
 from usv_playpen import os_utils
 from usv_playpen.processing.generate_spectrograms import open_hpss_audio
-from usv_playpen.visualizations.make_behavioral_videos import load_audio_data
 from usv_playpen.processing.qlvm_latents import (
     model_cell_reserved_columns,
     validate_model_cells,
 )
-from tests.conftest import write_qlvm_category_bundle
+from usv_playpen.visualizations.make_behavioral_videos import load_audio_data
 
 
 @pytest.fixture
 def as_os(monkeypatch):
     """Return a setter that pins os_utils.platform.system() to a given value."""
     def _set(system_name):
+        """Pin os_utils.platform.system() to ``system_name`` for the rest of the test."""
         monkeypatch.setattr(os_utils.platform, "system", lambda: system_name)
     return _set
 
 
 # find_base_path
 
-@pytest.mark.parametrize("system,expected", [
+@pytest.mark.parametrize(("system", "expected"), [
     ("Windows", "F:\\"),
     ("Darwin", "/Volumes/falkner"),
     ("Linux", "/mnt/falkner"),
     ("SunOS", None),
 ])
 def test_find_base_path_per_os(as_os, system, expected):
+    """Each supported host OS must map to its own share root (F:, /Volumes, /mnt) and an unknown OS to None, since every path translation starts here."""
     as_os(system)
     assert os_utils.find_base_path() == expected
 
@@ -114,7 +116,7 @@ def test_host_experimenter_env_var_used_when_config_missing(monkeypatch, tmp_pat
     assert os_utils._host_experimenter() == "Charlie"
 
 
-@pytest.mark.parametrize("system,expected", [
+@pytest.mark.parametrize(("system", "expected"), [
     ("Linux", "/mnt/falkner/Liza/EPHYS"),
     ("Darwin", "/Volumes/falkner/Liza/EPHYS"),
     ("Windows", "F:\\Liza\\EPHYS"),
@@ -177,7 +179,8 @@ def test_host_lab_shares_reads_from_host_config(monkeypatch):
     assert file_server == "cup"
     assert [s["name"] for s in shares][:2] == ["falkner", "murthy"]
     # the TOML stores tokens ('F', '/mnt'); _host_lab_shares returns full roots
-    assert shares[0]["windows"] == "F:" and shares[0]["linux"] == "/mnt/falkner"
+    assert shares[0]["windows"] == "F:"
+    assert shares[0]["linux"] == "/mnt/falkner"
     assert shares[0]["unc"] == r"\\cup\falkner"
 
 
@@ -243,7 +246,7 @@ def test_recording_destinations_derives_selected_only():
 
 # configure_path
 
-@pytest.mark.parametrize("system,pa,expected", [
+@pytest.mark.parametrize(("system", "pa", "expected"), [
     # to Linux
     ("Linux", "F:\\Bartul\\Data\\s1", "/mnt/falkner/Bartul/Data/s1"),
     ("Linux", "/Volumes/falkner/Bartul/Data/s1", "/mnt/falkner/Bartul/Data/s1"),
@@ -259,18 +262,20 @@ def test_recording_destinations_derives_selected_only():
     ("Darwin", "F:\\Bartul\\x", "/Volumes/falkner/Bartul/x"),
 ])
 def test_configure_path_translations(as_os, system, pa, expected):
+    """Paths written on any host must translate to the running OS's mount form, including the murthy -> Windows case the mount table fixed."""
     as_os(system)
     assert os_utils.configure_path(pa) == expected
 
 
 def test_configure_path_does_not_corrupt_embedded_substring(as_os):
+    """Only the leading mount root may be rewritten; an inner 'mnt' token in a folder name must survive translation."""
     # The old all-occurrence `.replace("mnt", "Volumes")` mangled inner tokens.
     as_os("Darwin")
     assert (os_utils.configure_path("/mnt/falkner/exp_mnt_2025/data")
             == "/Volumes/falkner/exp_mnt_2025/data")
 
 
-@pytest.mark.parametrize("system,pa", [
+@pytest.mark.parametrize(("system", "pa"), [
     ("Linux", "/mnt/falkner/already/native"),     # already in host-OS form
     ("Darwin", "/Volumes/murthy/already"),         # already in host-OS form
     ("Linux", "/home/user/not/a/share"),           # unrelated path
@@ -278,16 +283,19 @@ def test_configure_path_does_not_corrupt_embedded_substring(as_os):
     ("Linux", "/mnt/other_lab/x"),                 # /mnt but not a known share
 ])
 def test_configure_path_passthrough(as_os, system, pa):
+    """Paths already in host form, unrelated paths and unknown /mnt shares must come back unchanged rather than being mangled."""
     as_os(system)
     assert os_utils.configure_path(pa) == pa
 
 
 def test_configure_path_unknown_os_passthrough(as_os):
+    """On an unsupported OS the path must pass through untouched instead of raising or guessing a mount."""
     as_os("SunOS")
     assert os_utils.configure_path("F:\\Bartul\\x") == "F:\\Bartul\\x"
 
 
 def test_configure_path_bare_root(as_os):
+    """A bare drive root ('F:') must translate to the bare share root, not to a path with a trailing artefact."""
     as_os("Linux")
     assert os_utils.configure_path("F:") == "/mnt/falkner"
 
@@ -298,7 +306,7 @@ def test_configure_path_bare_root(as_os):
 # the host OS's pathlib; POSIX inputs are used since the suite runs on
 # POSIX CI/dev machines, and results are compared Path-to-Path for robustness.
 
-@pytest.mark.parametrize("data_root,expected", [
+@pytest.mark.parametrize(("data_root", "expected"), [
     # canonical single-'Data' session roots -> sibling EPHYS base (byte-identical
     # to the old str(parent).replace('Data','EPHYS') on these real paths)
     ("/mnt/falkner/Bartul/Data/20230101_120000", "/mnt/falkner/Bartul/EPHYS"),
@@ -306,10 +314,12 @@ def test_configure_path_bare_root(as_os):
     ("/mnt/murthy/Lab/Data/sess_01", "/mnt/murthy/Lab/EPHYS"),
 ])
 def test_ephys_base_for_data_root_maps_data_to_ephys(data_root, expected):
+    """Canonical session roots must map to the sibling EPHYS base, byte-identical to the old string replace on real paths."""
     assert os_utils.ephys_base_for_data_root(data_root) == pathlib.Path(expected)
 
 
 def test_ephys_base_for_data_root_does_not_corrupt_lookalike_component():
+    """Only an exact 'Data' component is swapped, so a 'Database' folder must survive."""
     # 'Database' must survive: only the exact 'Data' component is swapped, where
     # the old unanchored replace would have produced '.../EPHYSbase/EPHYS'.
     assert (os_utils.ephys_base_for_data_root("/mnt/falkner/Database/Data/sess")
@@ -317,6 +327,7 @@ def test_ephys_base_for_data_root_does_not_corrupt_lookalike_component():
 
 
 def test_ephys_base_for_data_root_ignores_data_inside_session_id():
+    """A session id containing 'Data' must never be rewritten, because the mapping only looks at the parent."""
     # The session id lives below the parent, so a 'Data'-containing id is never
     # rewritten; the parent's 'Data' component still maps to 'EPHYS'.
     assert (os_utils.ephys_base_for_data_root("/mnt/falkner/Bartul/Data/Data_collection_01")
@@ -324,6 +335,7 @@ def test_ephys_base_for_data_root_ignores_data_inside_session_id():
 
 
 def test_ephys_base_for_data_root_swaps_only_final_data_component():
+    """With two 'Data' components only the last one is swapped, so an upper 'Data' folder stays intact."""
     # Old unanchored replace turned BOTH 'Data's into 'EPHYS'; the anchored
     # helper rewrites only the last, leaving the upper one intact.
     assert (os_utils.ephys_base_for_data_root("/mnt/falkner/Data/Bartul/Data/sess")
@@ -331,6 +343,7 @@ def test_ephys_base_for_data_root_swaps_only_final_data_component():
 
 
 def test_ephys_base_for_data_root_no_data_component_returns_parent_unchanged():
+    """Without a 'Data' component the parent comes back unchanged, so no accidental rewrite happens."""
     # No 'Data' component -> parent returned unchanged (no accidental rewrite).
     assert (os_utils.ephys_base_for_data_root("/mnt/falkner/Bartul/Other/sess")
             == pathlib.Path("/mnt/falkner/Bartul/Other"))
@@ -342,7 +355,7 @@ def test_ephys_base_for_data_root_no_data_component_returns_parent_unchanged():
 # no platform monkeypatching: every host-OS source form is matched regardless
 # of the running OS.
 
-@pytest.mark.parametrize("pa,expected", [
+@pytest.mark.parametrize(("pa", "expected"), [
     # falkner from every host form -> identical to the old per-OS .replace
     ("F:\\Bartul\\Data\\s1", "/mnt/cup/labs/falkner/Bartul/Data/s1"),
     ("/Volumes/falkner/Bartul/Data/s1", "/mnt/cup/labs/falkner/Bartul/Data/s1"),
@@ -354,16 +367,19 @@ def test_ephys_base_for_data_root_no_data_component_returns_parent_unchanged():
     ("/mnt/murthy/a/b", "/mnt/cup/labs/murthy/a/b"),
 ])
 def test_to_cluster_path_maps_every_host_form(pa, expected):
+    """Every host form of the falkner and murthy shares must map to the cluster mount, independent of the submitting OS."""
     assert os_utils.to_cluster_path(pa) == expected
 
 
 def test_to_cluster_path_windows_murthy_regression():
+    """A Windows murthy path must resolve to the murthy cluster mount, not stay an unconverted drive path (the dropped-murthy bug)."""
     # Explicit regression for the dropped-murthy bug: a Windows murthy path must
     # resolve to the murthy cluster mount, not stay an unconverted drive path.
     assert os_utils.to_cluster_path("M:\\Lab\\Data\\s1") == "/mnt/cup/labs/murthy/Lab/Data/s1"
 
 
 def test_to_cluster_path_does_not_corrupt_inner_mnt_token():
+    """Anchoring on the leading root must leave an inner 'mnt_backup' folder intact."""
     # The old Linux .replace('mnt', 'mnt/cup/labs') mangled any inner 'mnt';
     # anchoring on the leading root leaves 'mnt_backup' intact.
     assert (os_utils.to_cluster_path("/mnt/falkner/mnt_backup/x")
@@ -371,16 +387,18 @@ def test_to_cluster_path_does_not_corrupt_inner_mnt_token():
 
 
 def test_to_cluster_path_bare_root():
+    """A bare share root must map to the bare cluster root."""
     assert os_utils.to_cluster_path("/mnt/murthy") == "/mnt/cup/labs/murthy"
 
 
-@pytest.mark.parametrize("pa,expected", [
+@pytest.mark.parametrize(("pa", "expected"), [
     ("", ""),                                       # empty -> unchanged
     ("/home/user/not/a/share", "/home/user/not/a/share"),
     ("C:\\Windows\\System32", "C:/Windows/System32"),   # only separators normalised
     ("/mnt/other_lab/x", "/mnt/other_lab/x"),       # /mnt but not a known share
 ])
 def test_to_cluster_path_passthrough(pa, expected):
+    """Empty, unrelated and unknown-share paths must pass through with only separators normalised."""
     assert os_utils.to_cluster_path(pa) == expected
 
 
@@ -435,6 +453,7 @@ def test_configure_path_keeps_host_form_off_cluster(as_os, monkeypatch):
 # atomic_output_path
 
 def test_atomic_output_path_publishes_only_on_clean_exit(tmp_path):
+    """The final file must appear only after a clean exit, hold exactly what was written and leave no temp sibling behind."""
     # The final file must not appear until the with-block exits cleanly; once
     # it does, it holds exactly what was written and no temp sibling remains.
     final = tmp_path / "data.txt"
@@ -445,15 +464,39 @@ def test_atomic_output_path_publishes_only_on_clean_exit(tmp_path):
     assert list(tmp_path.glob(".data.txt.tmp*")) == []
 
 
+def _write_then_crash(final):
+    """
+    Description
+    -----------
+    Opens ``atomic_output_path`` on ``final``, writes partial content into the
+    temporary sibling and raises before the with-block can exit cleanly, the
+    crash the helper must survive without publishing.
+
+    Parameters
+    ----------
+    final (pathlib.Path)
+        Destination file the atomic writer would publish on a clean exit.
+
+    Returns
+    -------
+    None
+        Never returns; always raises RuntimeError("boom") from inside the block.
+    """
+
+    with os_utils.atomic_output_path(final) as tmp:
+        tmp.write_text("half-written, never published")
+        error_message = "boom"
+        raise RuntimeError(error_message)
+
+
 def test_atomic_output_path_preserves_original_on_error(tmp_path):
+    """A crash mid-write must leave the pre-existing file untouched and clean up the temp sibling, the whole point of the helper."""
     # A crash mid-write must leave the pre-existing file untouched (the whole
     # point of the helper) and clean up the temp sibling.
     final = tmp_path / "data.txt"
     final.write_text("original")
     with pytest.raises(RuntimeError):
-        with os_utils.atomic_output_path(final) as tmp:
-            tmp.write_text("half-written, never published")
-            raise RuntimeError("boom")
+        _write_then_crash(final)
     assert final.read_text() == "original"
     assert list(tmp_path.glob(".data.txt.tmp*")) == []
 
@@ -483,6 +526,7 @@ def test_first_match_refuses_several_matches_and_lists_them(tmp_path):
 
 
 def test_first_match_recursive(tmp_path):
+    """recursive=True must find a single match inside a subfolder."""
     sub = tmp_path / "deep"
     sub.mkdir()
     (sub / "found.json").touch()
@@ -490,16 +534,19 @@ def test_first_match_recursive(tmp_path):
 
 
 def test_first_match_raises_with_label(tmp_path):
+    """No match must raise FileNotFoundError naming the caller's label, so the error says what was missing."""
     with pytest.raises(FileNotFoundError, match="my-thing"):
         os_utils.first_match_or_raise(tmp_path, "*.nope", label="my-thing")
 
 
 def test_first_match_raises_on_missing_root(tmp_path):
+    """A missing search root must raise FileNotFoundError saying the root does not exist, not 'no match'."""
     with pytest.raises(FileNotFoundError, match="does not exist"):
         os_utils.first_match_or_raise(tmp_path / "absent", "*.txt")
 
 
 def test_first_match_digit_prefix_excludes_speaker(tmp_path):
+    """A '[0-9]*' pattern must select the timestamp-prefixed session track h5 and exclude the speaker_* file, as assign_vocalizations relies on."""
     # Mirrors assign_vocalizations: track files are timestamp-prefixed, so a
     # '[0-9]*' pattern selects the session track h5 and excludes 'speaker_*'.
     (tmp_path / "speaker_points3d_translated_rotated_metric.h5").touch()
@@ -546,6 +593,7 @@ def _write_band_mmap(root, band, value, n_samples=40, n_channels=3, session_id="
 
 
 def test_find_audio_mmap_returns_the_band_file(tmp_path):
+    """Each band must resolve to its own memmap, for both Path and str session roots."""
     usv = _write_band_mmap(tmp_path, "ultrasonic", 1)
     broadband = _write_band_mmap(tmp_path, "broadband", 2)
     assert os_utils.find_audio_mmap(tmp_path, "ultrasonic") == usv
@@ -553,6 +601,7 @@ def test_find_audio_mmap_returns_the_band_file(tmp_path):
 
 
 def test_find_audio_mmap_ignores_strays_temporaries_and_other_folders(tmp_path):
+    """Stray memmaps in other folders, temporaries, non-canonical names and another band's file must never be returned for a band."""
     usv = _write_band_mmap(tmp_path, "ultrasonic", 1)
     # a stray unfiltered memmap that sorts first under audio/, a temporary
     # sibling, a non-canonical name and another band's name in the usv folder
@@ -568,6 +617,7 @@ def test_find_audio_mmap_ignores_strays_temporaries_and_other_folders(tmp_path):
 
 
 def test_find_audio_mmap_raises_unless_exactly_one(tmp_path):
+    """A missing folder, an empty folder, two candidates and an unknown band each raise their own error rather than picking a file."""
     with pytest.raises(FileNotFoundError, match="does not exist"):
         os_utils.find_audio_mmap(tmp_path, "ultrasonic")
     (tmp_path / "audio" / "hpss_filtered").mkdir(parents=True)
@@ -582,6 +632,7 @@ def test_find_audio_mmap_raises_unless_exactly_one(tmp_path):
 
 
 def test_parse_audio_mmap_name_reads_layout(tmp_path):
+    """The canonical memmap name must parse into band, id, rate, shape and dtype, and a non-canonical name must be refused."""
     path = _write_band_mmap(tmp_path, "broadband", 0, n_samples=123, n_channels=24)
     assert os_utils.parse_audio_mmap_name(path) == {
         "band": "broadband", "id": "230101120000", "sampling_rate": 250000,
@@ -591,6 +642,7 @@ def test_parse_audio_mmap_name_reads_layout(tmp_path):
 
 
 def test_usv_readers_get_the_ultrasonic_file_when_both_bands_exist(tmp_path):
+    """With both bands and a stray memmap on disk, the spectrogram and video readers must load the ultrasonic samples."""
     # ultrasonic band = 1, broadband = 2, stray recursive-glob trap = 3
     _write_band_mmap(tmp_path, "ultrasonic", 1)
     _write_band_mmap(tmp_path, "broadband", 2)
@@ -606,6 +658,7 @@ def test_usv_readers_get_the_ultrasonic_file_when_both_bands_exist(tmp_path):
 
 
 def test_every_audio_mmap_reader_asks_for_the_ultrasonic_band():
+    """Static guard: no package module globs for a memmap and every find_audio_mmap reader names 'ultrasonic', so no USV reader can get broadband audio."""
     # Static guard over the package: no reader may locate a memmap with a glob
     # ('*.mmap' patterns, recursive or not) and every find_audio_mmap call names
     # the 'ultrasonic' band, so no USV reader can be handed the broadband memmap; the
@@ -638,6 +691,7 @@ def test_every_audio_mmap_reader_asks_for_the_ultrasonic_band():
 # newest_match_or_raise
 
 def test_newest_match_picks_max_key(tmp_path):
+    """The match with the largest key wins; an explicit key keeps the test independent of filesystem timestamp resolution."""
     older = tmp_path / "old.bin"
     newer = tmp_path / "new.bin"
     older.touch()
@@ -648,6 +702,7 @@ def test_newest_match_picks_max_key(tmp_path):
 
 
 def test_newest_match_raises_when_empty(tmp_path):
+    """No match must raise FileNotFoundError naming the label."""
     with pytest.raises(FileNotFoundError, match="newest"):
         os_utils.newest_match_or_raise(tmp_path, "*.bin", label="newest")
 
@@ -706,7 +761,7 @@ def test_qlvm_map_cell_directory_covers_the_usv_and_squeak_maps():
     through qlvm_production_cell_directory, the squeak map to the squeak package cell;
     a prefix naming no map raises."""
     assert os_utils.QLVM_SQUEAK_MAP == "qlvm_squeak"
-    assert os_utils.QLVM_DECODER_MAPS == os_utils.QLVM_MAPS + ("qlvm_squeak",)
+    assert (*os_utils.QLVM_MAPS, "qlvm_squeak") == os_utils.QLVM_DECODER_MAPS
     for qlvm_map in os_utils.QLVM_MAPS:
         assert os_utils.qlvm_map_cell_directory(qlvm_map) == os_utils.qlvm_production_cell_directory(qlvm_map)
     assert os_utils.qlvm_map_cell_directory("qlvm_squeak") == "/mnt/falkner/Bartul/spectrograms/qlvm/qlvm_squeak"
@@ -721,29 +776,32 @@ def test_load_qlvm_category_bundle_reads_the_one_bundle(qlvm_category_bundle):
     bundle = os_utils.load_qlvm_category_bundle()
     res = bundle["resolution"]
     assert bundle["directory"] == str(qlvm_category_bundle)
-    assert bundle["label_grid"].shape == (res, res) and bundle["label_grid"].dtype == np.int64
+    assert bundle["label_grid"].shape == (res, res)
+    assert bundle["label_grid"].dtype == np.int64
     assert sorted(np.unique(bundle["label_grid"]).tolist()) == [1, 2, 3, 4]
-    assert bundle["label_grid"][0, -1] == 2 and bundle["label_grid"][-1, 0] == 3  # [y, x]
+    assert bundle["label_grid"][0, -1] == 2  # [y, x]
+    assert bundle["label_grid"][-1, 0] == 3
     assert bundle["density"].shape == (res, res)
     np.testing.assert_allclose(bundle["axis"], (np.arange(res) + 0.5) / res)
     np.testing.assert_allclose(bundle["centers"], [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]])
     assert bundle["names"] == ["R-1", "R-2", "R-3", "R-4"]
     assert bundle["map"] == "qlvm"
     assert bundle["model_id"] == "spectrograms/qlvm/qlvm"
-    assert "built 2026-10-03T12:00:00" in bundle["identity"] and "0123456789ab" in bundle["identity"]
+    assert "built 2026-10-03T12:00:00" in bundle["identity"]
+    assert "0123456789ab" in bundle["identity"]
 
 
 def test_read_qlvm_category_bundle_refuses_a_malformed_bundle(tmp_path):
     """A missing file names the bundle; a grid whose labels are not the nomenclature's
     1..k, or grids of different shapes, are refused."""
-    with pytest.raises(FileNotFoundError, match="category_grids.npz"):
+    with pytest.raises(FileNotFoundError, match=r"category_grids.npz"):
         os_utils.read_qlvm_category_bundle(str(tmp_path / "empty"))
     directory = write_qlvm_category_bundle(tmp_path / "bad_labels")
     with np.load(directory / "category_grids.npz") as grids:
         arrays = {key: grids[key] for key in grids.files}
     arrays["label_grid"] = np.where(arrays["label_grid"] == 4, 5, arrays["label_grid"]).astype(np.int16)
     np.savez_compressed(directory / "category_grids.npz", **arrays)
-    with pytest.raises(ValueError, match="not 1..4"):
+    with pytest.raises(ValueError, match=r"not 1..4"):
         os_utils.read_qlvm_category_bundle(str(directory))
     directory = write_qlvm_category_bundle(tmp_path / "bad_shape")
     with np.load(directory / "category_grids.npz") as grids:
@@ -796,6 +854,7 @@ def test_read_qlvm_category_bundle_reads_a_bundle_built_before_the_rename(tmp_pa
 
 
 def test_resolve_consolidated_h5_picks_newest_and_skips_other_h5(tmp_path):
+    """The newest spectrograms_*.h5 by mtime must be chosen and an unrelated .h5 in the folder ignored."""
     (tmp_path / "qlvm_clusters_20260506.h5").write_bytes(b"x")  # different store -> must be ignored
     old = tmp_path / "spectrograms_old.h5"
     new = tmp_path / "spectrograms_new.h5"
@@ -1007,6 +1066,7 @@ def test_tidy_usv_summary_columns_leaves_a_canonical_summary_alone():
 # derive_spectrogram_model_paths
 
 def test_derive_spectrogram_model_paths_fills_empties_from_root():
+    """Empty model paths must be derived from spectrograms_root, which is how the shipped settings point at the models."""
     settings = {
         "spectrograms_root": "/mnt/falkner/Bartul/spectrograms",
         "generate_masks": {
@@ -1057,6 +1117,7 @@ def test_derive_spectrogram_model_paths_fills_empties_from_root():
 
 
 def test_derive_spectrogram_model_paths_preserves_explicit_overrides():
+    """An explicitly set model path must survive derivation; only empty entries are filled."""
     settings = {
         "spectrograms_root": "/mnt/falkner/Bartul/spectrograms",
         "generate_masks": {
@@ -1131,6 +1192,7 @@ def test_derived_qlvm_model_cells_pass_model_cell_validation():
 
 
 def test_derive_spectrogram_model_paths_noop_when_root_absent():
+    """Legacy settings without (or with an empty) spectrograms_root must be left untouched, not KeyError or get '/sam' garbage paths."""
     # legacy settings: granular paths set directly, no spectrograms_root key -> must not KeyError
     settings = {
         "generate_masks": {
@@ -1149,6 +1211,7 @@ def test_derive_spectrogram_model_paths_noop_when_root_absent():
 
 
 def test_resolve_consolidated_h5_raises_when_no_store(tmp_path):
+    """A folder with no consolidated store must raise FileNotFoundError instead of returning an unrelated .h5."""
     (tmp_path / "qlvm_clusters_x.h5").write_bytes(b"x")  # only a non-consolidated .h5
     with pytest.raises(FileNotFoundError, match="consolidated"):
         os_utils.resolve_consolidated_h5_path(str(tmp_path))
@@ -1170,6 +1233,7 @@ class FakePopen:
     """Minimal subprocess.Popen stand-in with a scriptable poll()."""
 
     def __init__(self, returncode=0, finish_after=0, terminate_code=-15, args=("fake", "command")):
+        """Script the return code, how many polls pass before exit, the code reported after terminate, and the command args."""
         self.args = list(args)
         self._returncode = returncode
         self._finish_after = finish_after
@@ -1180,6 +1244,7 @@ class FakePopen:
         self.killed = False
 
     def poll(self):
+        """Return None until ``finish_after`` polls have passed, then the scripted code (or the terminate code once terminated)."""
         if self._terminated:
             return self._terminate_code
         if self._polls >= self._finish_after:
@@ -1188,24 +1253,29 @@ class FakePopen:
         return None
 
     def terminate(self):
+        """Record the terminate request and make the next poll report the terminate code."""
         self.terminated = True
         self._terminated = True
 
     def kill(self):
+        """Record the kill request and make the next poll report the terminate code."""
         self.killed = True
         self._terminated = True
 
 
 def test_wait_empty_is_noop():
+    """An empty process list must return an empty list immediately."""
     assert os_utils.wait_for_subprocesses([], max_seconds=1, label="x") == []
 
 
 def test_wait_all_success_returns_codes():
+    """All-zero exits must return every return code in input order."""
     procs = [FakePopen(returncode=0), FakePopen(returncode=0)]
     assert os_utils.wait_for_subprocesses(procs, max_seconds=5, label="ok") == [0, 0]
 
 
 def test_wait_nonzero_logged_and_optionally_raised():
+    """A non-zero exit is logged and returned, and raises only when raise_on_nonzero is set."""
     logs = []
     procs = [FakePopen(returncode=0), FakePopen(returncode=2)]
     codes = os_utils.wait_for_subprocesses(procs, max_seconds=5, label="mix",
@@ -1232,6 +1302,7 @@ def test_wait_failure_and_timeout_messages_name_the_command():
 
 
 def test_wait_timeout_terminates_and_raises():
+    """A hung process must be terminated at the deadline and a TimeoutError raised, so a pipeline never hangs forever."""
     hung = FakePopen(finish_after=10 ** 9)  # never finishes on its own
     with pytest.raises(TimeoutError, match="did not finish"):
         os_utils.wait_for_subprocesses([hung], max_seconds=0.2, label="hang",
@@ -1240,6 +1311,7 @@ def test_wait_timeout_terminates_and_raises():
 
 
 def test_wait_timeout_no_raise_returns_status():
+    """With raise_on_timeout=False the hung process is still terminated and a status returned without blocking past the grace period."""
     hung = FakePopen(finish_after=10 ** 9)
     start = time.monotonic()
     status = os_utils.wait_for_subprocesses([hung], max_seconds=0.2, label="hang",
@@ -1646,13 +1718,16 @@ class FakeClock:
     advances through ``sleep(seconds)``, and every sleep is recorded."""
 
     def __init__(self, start=100.0):
+        """Start the simulated clock at ``start`` seconds with no recorded sleeps."""
         self.now = start
         self.sleeps = []
 
     def monotonic(self):
+        """Return the simulated time, which only sleep() advances."""
         return self.now
 
     def sleep(self, seconds):
+        """Record the requested sleep and advance the simulated clock by it."""
         self.sleeps.append(seconds)
         self.now += seconds
 
@@ -1663,6 +1738,7 @@ class StubbornPopen:
     makes it exit at once with -9 (or never, when ``survives_kill``)."""
 
     def __init__(self, clock, exit_delay, survives_kill=False):
+        """Bind the shared clock, the post-terminate exit delay and whether kill() is ignored."""
         self.args = ["stubborn", "command"]
         self.clock = clock
         self.exit_delay = exit_delay
@@ -1671,6 +1747,7 @@ class StubbornPopen:
         self.killed = False
 
     def poll(self):
+        """Report -9 after an effective kill, -15 once ``exit_delay`` has elapsed since terminate, otherwise None."""
         if self.killed and not self.survives_kill:
             return -9
         if self.terminated_at is not None and self.clock.now >= self.terminated_at + self.exit_delay:
@@ -1678,9 +1755,11 @@ class StubbornPopen:
         return None
 
     def terminate(self):
+        """Remember the simulated time terminate was requested."""
         self.terminated_at = self.clock.now
 
     def kill(self):
+        """Mark the process as killed."""
         self.killed = True
 
 

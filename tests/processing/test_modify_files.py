@@ -22,6 +22,17 @@ methods without performing heavy real I/O:
 All external heavy tools (imgstore frame reads, ffmpeg) are mocked; only the
 bundled `static_sox`/`cat`/`copy` real binaries are exercised where they are
 fast and deterministic on tiny inputs.
+
+Coverage: ``concatenate_audio_files`` (memmap write, fewer-than-two skip),
+``concatenate_binary_files`` (outputs, chained / merged / extended
+changepoints, the concatenated tracking clock on rerun, failed-rewrite
+atomicity, the non-zero return warning), ``split_clusters_to_sessions``
+(duplicate-spike removal, failed-save atomicity), ``rectify_video_fps``
+(copy path and calibration handling), the broadband helpers (high-pass cutoff
+and design, unit phasors, line-noise estimation, low-band variance and its
+backfill function and CLI), ``broadband_filter_audio`` (tone removal, column
+order, chunk-length independence, idempotency / revalidation), the batch
+runner, the session-list reader, and the required root directory.
 """
 
 from __future__ import annotations
@@ -38,21 +49,21 @@ from scipy import signal
 from scipy.io import wavfile
 
 import usv_playpen
+from tests.conftest import write_broadband_audio
 from usv_playpen.os_utils import find_audio_mmap
 from usv_playpen.processing import preprocess_data
-from tests.conftest import write_broadband_audio
 from usv_playpen.processing.modify_files import (
     BROADBAND_BATCH_REPORT_COLUMNS,
     BROADBAND_REPORT_NAME,
     Operator,
     add_broadband_low_band_variance,
-    estimate_low_band_variance,
     block_mean_phasors,
     broadband_filter_sessions,
     broadband_highpass_cutoff,
     broadband_output_settings,
     design_broadband_highpass,
     estimate_line_noise,
+    estimate_low_band_variance,
     read_broadband_session_list,
     unit_phasor,
 )
@@ -375,6 +386,7 @@ def test_split_clusters_to_sessions_removes_duplicate_spikes(tmp_path, processin
     saved_npy = root / "ephys" / "imec0" / "cluster_data" / "imec0_cl0000_ch010_good.npy"
 
     def run_and_count(remove_duplicate_spikes):
+        """Split clusters with duplicate removal set to ``remove_duplicate_spikes`` and return the saved spike count."""
         processing_settings['modify_files']['Operator']['get_spike_times']['remove_duplicate_spikes'] = remove_duplicate_spikes
         _make_operator([str(root)], processing_settings, []).split_clusters_to_sessions()
         return int(np.load(saved_npy).shape[1])
@@ -522,9 +534,11 @@ def test_concatenate_binary_files_failed_changepoints_rewrite_keeps_the_old_json
     }, indent=4))
     before = changepoints_json.read_bytes()
 
-    def _failing_dump(obj, file_handle, **_kwargs):
+    def _failing_dump(_obj, file_handle, **_kwargs):
+        """Write a truncated JSON prefix into the open handle and fail, like a disk filling mid-dump."""
         file_handle.write('{"20250101_120000.imec0": {"session_')
-        raise OSError("disk full")
+        message = "disk full"
+        raise OSError(message)
 
     mocker.patch("usv_playpen.processing.modify_files.json.dump", side_effect=_failing_dump)
     with pytest.raises(OSError, match="disk full"):
@@ -561,9 +575,11 @@ def test_split_clusters_to_sessions_failed_save_keeps_the_old_spike_file(tmp_pat
     saved_npy = root / "ephys" / "imec0" / "cluster_data" / "imec0_cl0000_ch010_good.npy"
     before = saved_npy.read_bytes()
 
-    def _failing_save(file, arr, **_kwargs):
+    def _failing_save(file, **_kwargs):
+        """Write a truncated .npy magic into the open handle and fail, like a disk filling mid-save."""
         file.write(b"\x93NUMPY")
-        raise OSError("disk full")
+        message = "disk full"
+        raise OSError(message)
 
     mocker.patch("usv_playpen.processing.modify_files.np.save", side_effect=_failing_save)
     with pytest.raises(OSError, match="disk full"):
@@ -834,14 +850,16 @@ def test_rectify_video_fps_no_concat_copies_and_handles_calibration(tmp_path, pr
     )
     saved = {}
 
-    def _fake_save(data, filepath, logger):
+    def _fake_save(data, filepath, **_kwargs):
+        """Record the metadata dict and target path instead of writing the YAML."""
         saved['data'] = data
         saved['filepath'] = filepath
 
     mocker.patch("usv_playpen.processing.modify_files.save_session_metadata", side_effect=_fake_save)
 
     # ffmpeg mock: create the new_file output in cwd so the later move succeeds.
-    def _fake_popen(args, stdout=None, stderr=None, cwd=None, shell=None):
+    def _fake_popen(args, cwd=None, **_kwargs):
+        """Create ffmpeg's output file (the last argument) in ``cwd`` and return a process that exits with 0."""
         new_file = args[-1]
         (pathlib.Path(cwd) / new_file).write_bytes(b"\x00")
         proc = mocker.MagicMock()
@@ -1160,7 +1178,7 @@ def test_broadband_filter_removes_tones_highpasses_and_keeps_column_order(tmp_pa
     assert find_audio_mmap(tmp_path, "broadband") == expected
     output = _read_broadband(tmp_path)
 
-    with open(tmp_path / "audio" / "broadband_filtered" / BROADBAND_REPORT_NAME, encoding="utf-8") as report_file:
+    with (tmp_path / "audio" / "broadband_filtered" / BROADBAND_REPORT_NAME).open(encoding="utf-8") as report_file:
         report = json.load(report_file)
     assert report['complete'] is True
     assert [source['file'] for source in report['sources']] == [
@@ -1213,7 +1231,8 @@ def test_estimate_low_band_variance_recovers_the_removed_band(tmp_path):
         channels.append((name, np.clip(high + noise[:, column], -32768, 32767).astype(np.int16)))
     mmap_path = write_broadband_audio(tmp_path, channels, sr)
     estimate = estimate_low_band_variance([hpss / name for name in names], mmap_path, n_windows=12, window_s=0.2)
-    assert estimate['windows'] == 12 and estimate['unit'] == "(int16 / 32768)^2"
+    assert estimate['windows'] == 12
+    assert estimate['unit'] == "(int16 / 32768)^2"
     for value, amplitude in zip(estimate['per_column'], low_amplitudes, strict=True):
         expected = (amplitude / 32768.0) ** 2 / 2
         assert abs(value - expected) / expected < 0.05
@@ -1228,14 +1247,14 @@ def test_add_broadband_low_band_variance_fills_an_older_report(tmp_path, process
     _make_operator(str(tmp_path), processing_settings, []).broadband_filter_audio()
     settings = processing_settings['modify_files']['Operator']['broadband_filter_audio']
     report_path = tmp_path / "audio" / "broadband_filtered" / BROADBAND_REPORT_NAME
-    with open(report_path, encoding="utf-8") as report_file:
+    with report_path.open(encoding="utf-8") as report_file:
         written = json.load(report_file)
     older = {key: value for key, value in written.items() if key != 'low_band_variance'}
     report_path.write_text(json.dumps(older, indent=2))
 
     result = add_broadband_low_band_variance(tmp_path, settings, message_output=lambda *_a, **_kw: None)
     assert result['status'] == 'written'
-    with open(report_path, encoding="utf-8") as report_file:
+    with report_path.open(encoding="utf-8") as report_file:
         restored = json.load(report_file)
     assert {key: value for key, value in restored.items() if key != 'low_band_variance'} == older
     assert restored['low_band_variance']['per_column'] == pytest.approx(written['low_band_variance']['per_column'])
@@ -1250,7 +1269,7 @@ def test_add_broadband_low_band_variance_cli_runs_every_listed_session(tmp_path,
     """The command collects sessions from --root-directories and --sessions-file (each once) and
     reports each one's status."""
     added = mocker.patch("usv_playpen.processing.preprocess_data.add_broadband_low_band_variance",
-                         side_effect=lambda root, settings, message_output, force: {'status': 'written', 'reason': 'added'})
+                         side_effect=lambda _root, _settings, **_kwargs: {'status': 'written', 'reason': 'added'})
     sessions_file = tmp_path / "sessions.txt"
     sessions_file.write_text("/data/b\n/data/c\n")
     result = CliRunner().invoke(preprocess_data.add_broadband_low_band_variance_cli,
@@ -1267,9 +1286,11 @@ def test_add_broadband_low_band_variance_cli_lists_the_failed_sessions(mocker):
     """A session that raises is reported with its error type and the batch goes on;
     the run ends with a line naming every failed (skipped) session."""
 
-    def _added(root, settings, message_output, force):
+    def _added(root, _settings, **_kwargs):
+        """Fail for ``/data/b`` and report every other session as written."""
         if root == "/data/b":
-            raise OSError("memmap missing")
+            message = "memmap missing"
+            raise OSError(message)
         return {'status': 'written', 'reason': 'added'}
 
     mocker.patch("usv_playpen.processing.preprocess_data.add_broadband_low_band_variance", side_effect=_added)
@@ -1404,7 +1425,7 @@ def test_broadband_batch_runner_reports_and_resumes(tmp_path, processing_setting
     rows_again = broadband_filter_sessions([str(good)], processing_settings, n_workers=1, log_path=str(log_path),
                                            report_csv_path=str(report_path), message_output=lambda *_args: None)
     assert rows_again[0]['status'] == 'skipped'
-    with open(report_path, encoding="utf-8") as report_file:
+    with report_path.open(encoding="utf-8") as report_file:
         lines = report_file.read().splitlines()
     assert lines[0] == ",".join(BROADBAND_BATCH_REPORT_COLUMNS)
     assert len(lines) == 4

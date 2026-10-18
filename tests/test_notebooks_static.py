@@ -17,7 +17,11 @@ whitelisted. This does NOT execute the notebooks — data-dependent runtime
 behaviour still needs a real ``jupyter nbconvert --execute`` run on a machine
 with the data mounted. The undefined-name check is skipped (not failed) when the
 ``ruff`` executable is unavailable.
+
+Coverage: notebook enumeration, code-cell extraction with magic stripping, the
+per-cell ``ast.parse`` check and the concatenated-cells ruff ``F821`` check.
 """
+
 from __future__ import annotations
 
 import ast

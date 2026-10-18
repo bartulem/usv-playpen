@@ -10,12 +10,22 @@ the pooled result has ~zero mean and ~unit std across the concatenation
 (not per session); out-of-bounds values are nulled before pooling; the
 plain-abs branch folds the sign; and the smooth-abs branch applies
 ``sqrt(x^2 + eps^2)`` so the kink at zero is rounded.
+
+Coverage:
+
+* the shipped ``modeling_settings.json`` blocks the normalization and the
+  selectors read (abs-feature lists, decision threshold, borderline tunables),
+  and the module-level constants resolved from them.
+* ``zscore_different_sessions_together`` -- pooled z-scoring, in-place mutation,
+  bounds clipping, plain/smooth abs folds, suffix matching, reference sessions,
+  absent / constant / all-null features.
 """
 
 from __future__ import annotations
 
 import importlib.resources
 import json
+import warnings
 
 import numpy as np
 import polars as pls
@@ -24,6 +34,17 @@ import pytest
 from usv_playpen.modeling.modeling_cross_session_normalization import (
     zscore_different_sessions_together,
 )
+from usv_playpen.os_utils import resolve_modeling_setting
+
+# These modules pull the JAX / optax stack, whose import emits a one-time
+# DeprecationWarning that the suite's warnings-as-errors would promote.
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", DeprecationWarning)
+    from usv_playpen.modeling import (
+        jax_neural_network_cnn,
+        model_selection,
+        modeling_utils,
+    )
 
 
 def test_shipped_settings_expose_abs_features_list():
@@ -37,7 +58,8 @@ def test_shipped_settings_expose_abs_features_list():
     )
     kinematic_features = json.loads(settings_traversable.read_text())['kinematic_features']
     abs_features = kinematic_features['abs_features']
-    assert isinstance(abs_features, list) and len(abs_features) > 0
+    assert isinstance(abs_features, list)
+    assert len(abs_features) > 0
     assert all(isinstance(feature, str) for feature in abs_features)
     # `smooth_abs_features` must remain a sibling key (the two folds are distinct).
     assert 'smooth_abs_features' in kinematic_features
@@ -83,27 +105,20 @@ def test_modeling_constants_resolve_from_settings():
     the settings file via ``resolve_modeling_setting``, so they must equal the
     shipped values (guards the wiring end-to-end)."""
 
-    import warnings
-
-    from usv_playpen.os_utils import resolve_modeling_setting
-    # These modules pull the JAX / optax stack, whose import emits a one-time
-    # DeprecationWarning that the suite's warnings-as-errors would promote.
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        from usv_playpen.modeling import jax_neural_network_cnn, model_selection, modeling_utils
-
-    assert model_selection._SELECTION_P_VAL == resolve_modeling_setting('model_params', 'selection_p_val')
-    assert model_selection._ECE_N_BINS == resolve_modeling_setting('diagnostics', 'ece_n_bins')
-    assert modeling_utils._ECE_N_BINS == resolve_modeling_setting('diagnostics', 'ece_n_bins')
-    assert jax_neural_network_cnn._SESSION_SPLIT_INITIAL_TOLERANCE == resolve_modeling_setting(
+    assert resolve_modeling_setting('model_params', 'selection_p_val') == model_selection._SELECTION_P_VAL
+    assert resolve_modeling_setting('diagnostics', 'ece_n_bins') == model_selection._ECE_N_BINS
+    assert resolve_modeling_setting('diagnostics', 'ece_n_bins') == modeling_utils._ECE_N_BINS
+    assert resolve_modeling_setting(
         'model_validation', 'session_split_initial_tolerance'
-    )
+    ) == jax_neural_network_cnn._SESSION_SPLIT_INITIAL_TOLERANCE
 
 
 # zscore_different_sessions_together
 
 
 class TestZscorePooled:
+    """``zscore_different_sessions_together``: one global mean/std per feature across sessions, with
+    bounds clipping and abs folds applied before pooling."""
 
     def test_pooled_zscore_has_zero_mean_unit_std(self):
         """The pooled (concatenated) feature across both sessions has mean

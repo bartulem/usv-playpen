@@ -1,18 +1,44 @@
-import pytest
+"""
+@author: bartulem
+Tests for the PyQt6 GUI (usv_playpen.usv_playpen_gui): window construction and
+navigation through every Record / Process / Analyze / Visualize page, the
+intervention dialogs, the subject repository ("remembered animals") and its
+consistency with the session record, the playback-context listing, and the
+small pure helpers the windows rely on.
 
+Coverage: replace_name_in_path; main-window title and navigation to each page
+chain and the credentials window; record_one settings saving; the bundled
+_metadata.yaml template; ChemoDialog / EphysDialog / LesionDialog / OptoDialog
+add and edit/delete modes; the _start_* handlers and the button enable/disable
+helpers; _update_subject_in_repository, _add_subject and the subject completer;
+_save_metadata_to_yaml gating on the Metadata page; _safe_literal_eval;
+_nudge_button_icon_up; _available_playback_contexts and its background
+narrowing; the processing runner's settings copy; and the atomic
+_save_subject_to_repository.
+"""
+
+from __future__ import annotations
+
+import copy
 import threading
 from importlib import metadata
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 import yaml
-from PyQt6.QtCore import Qt  # Added import
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon, QPixmap
-from PyQt6.QtWidgets import QPushButton
+from PyQt6.QtWidgets import QComboBox, QPushButton
 
 from usv_playpen import os_utils, usv_playpen_gui
 from usv_playpen.usv_playpen_gui import (
-    ChemoDialog, EphysDialog, LesionDialog, OptoDialog, _safe_literal_eval,
+    ChemoDialog,
+    EphysDialog,
+    LesionDialog,
+    OptoDialog,
+    _safe_literal_eval,
+    initialize_main_window,
     replace_name_in_path,
 )
 
@@ -47,7 +73,25 @@ def test_replace_name_in_path_pairs_each_destination_with_its_own_name():
 
 @pytest.fixture
 def app(qtbot):
-    app_obj, window = usv_playpen_gui.initialize_main_window(no_splash=True)
+    """
+    Description
+    -----------
+    Builds the real main window without the splash screen and registers it
+    with qtbot, so every GUI test drives the same window the user sees and
+    the widget is torn down after the test.
+
+    Parameters
+    ----------
+    qtbot (pytestqt.qtbot.QtBot)
+        Qt test driver that owns the window's lifetime.
+
+    Returns
+    -------
+    window (USVPlaypenWindow)
+        The initialised main window.
+    """
+
+    _app_obj, window = usv_playpen_gui.initialize_main_window(no_splash=True)
     qtbot.addWidget(window)
     return window
 
@@ -99,16 +143,20 @@ def preserve_all_settings():
         p.write_text(text)
 
 def test_main_window_initialization(app):
+    """The title must carry the installed release version and the experimenter box must default to the shipped experimenter."""
     expected_version = metadata.version('usv-playpen').split('.dev')[0].split('.post')[0]
     assert app.windowTitle() == f"USV Playpen v{expected_version}"
     assert app.exp_id_cb.currentText() == "Bartul"
 
 def test_navigation_to_record_window(app, qtbot):
+    """Clicking Record must open the config-selection page with its settings editor built."""
     qtbot.mouseClick(app.button_map['Record'], Qt.MouseButton.LeftButton)
     assert "Record > Select config" in app.windowTitle()
     assert app.recorder_settings_edit is not None
 
-def test_record_one_settings_are_saved(app, qtbot, preserve_settings_toml):
+@pytest.mark.usefixtures("preserve_settings_toml")
+def test_record_one_settings_are_saved(app, qtbot):
+    """A duration typed on the first Record page must reach exp_settings_dict only when Next is pressed, as a float."""
     qtbot.mouseClick(app.button_map['Record'], Qt.MouseButton.LeftButton)
 
     new_duration = "25.5"
@@ -152,14 +200,16 @@ def test_bundled_metadata_yaml_is_a_dict():
     metadata_yaml_path = (
         Path(usv_playpen_gui.__file__).parent / '_config' / '_metadata.yaml'
     )
-    with open(metadata_yaml_path, 'r') as metadata_file:
+    with metadata_yaml_path.open() as metadata_file:
         loaded = yaml.safe_load(metadata_file)
     assert isinstance(loaded, dict), (
         f"{metadata_yaml_path} did not parse to a dict (got {type(loaded).__name__}); "
         "the bundled metadata template must not be empty."
     )
-    assert 'Session' in loaded and isinstance(loaded['Session'], dict)
-    assert 'Equipment' in loaded and isinstance(loaded['Equipment'], dict)
+    assert 'Session' in loaded
+    assert isinstance(loaded['Session'], dict)
+    assert 'Equipment' in loaded
+    assert isinstance(loaded['Equipment'], dict)
     for required_session_key in (
         'institution', 'lab', 'session_experiment_code',
         'calibration_session', 'session_usv_playback_file',
@@ -223,7 +273,8 @@ def test_navigation_to_record_metadata_window(app, qtbot):
 #     qtbot.mouseClick(process_button, Qt.MouseButton.LeftButton)
 
 
-def test_navigation_to_record_conduct_window(app, qtbot, preserve_all_settings):
+@pytest.mark.usefixtures("preserve_all_settings")
+def test_navigation_to_record_conduct_window(app, qtbot):
     """
     Description
     -----------
@@ -238,9 +289,6 @@ def test_navigation_to_record_conduct_window(app, qtbot, preserve_all_settings):
         The main GUI window fixture.
     qtbot (pytestqt.qtbot.QtBot)
         Qt test driver used to synthesise the button clicks.
-    preserve_all_settings (None)
-        Fixture backing up / restoring the package config files the
-        label-save handlers rewrite during navigation.
 
     Returns
     -------
@@ -257,7 +305,8 @@ def test_navigation_to_record_conduct_window(app, qtbot, preserve_all_settings):
     assert "Conduct recording" in app.windowTitle()
 
 
-def test_navigation_to_process_windows(app, qtbot, preserve_all_settings):
+@pytest.mark.usefixtures("preserve_all_settings")
+def test_navigation_to_process_windows(app, qtbot):
     """
     Description
     -----------
@@ -271,8 +320,6 @@ def test_navigation_to_process_windows(app, qtbot, preserve_all_settings):
         The main GUI window fixture.
     qtbot (pytestqt.qtbot.QtBot)
         Qt test driver used to synthesise the button clicks.
-    preserve_all_settings (None)
-        Fixture backing up / restoring the package config files.
 
     Returns
     -------
@@ -285,7 +332,8 @@ def test_navigation_to_process_windows(app, qtbot, preserve_all_settings):
     assert "Conduct Processing" in app.windowTitle()
 
 
-def test_navigation_to_analyze_windows(app, qtbot, preserve_all_settings):
+@pytest.mark.usefixtures("preserve_all_settings")
+def test_navigation_to_analyze_windows(app, qtbot):
     """
     Description
     -----------
@@ -299,8 +347,6 @@ def test_navigation_to_analyze_windows(app, qtbot, preserve_all_settings):
         The main GUI window fixture.
     qtbot (pytestqt.qtbot.QtBot)
         Qt test driver used to synthesise the button clicks.
-    preserve_all_settings (None)
-        Fixture backing up / restoring the package config files.
 
     Returns
     -------
@@ -313,7 +359,8 @@ def test_navigation_to_analyze_windows(app, qtbot, preserve_all_settings):
     assert "Conduct Analyses" in app.windowTitle()
 
 
-def test_navigation_to_visualize_windows(app, qtbot, preserve_all_settings):
+@pytest.mark.usefixtures("preserve_all_settings")
+def test_navigation_to_visualize_windows(app, qtbot):
     """
     Description
     -----------
@@ -328,8 +375,6 @@ def test_navigation_to_visualize_windows(app, qtbot, preserve_all_settings):
         The main GUI window fixture.
     qtbot (pytestqt.qtbot.QtBot)
         Qt test driver used to synthesise the button clicks.
-    preserve_all_settings (None)
-        Fixture backing up / restoring the package config files.
 
     Returns
     -------
@@ -399,11 +444,11 @@ def app_with_subject(app):
 
     app.metadata_settings = {"Subjects": [{"subject_id": "M", "interventions": {}}]}
     app._save_metadata_to_yaml = lambda: None
-    app._update_subject_in_repository = lambda s: None
+    app._update_subject_in_repository = lambda _s: None
     return app
 
 
-@pytest.mark.parametrize("dialog_cls,key", _INTERVENTION_DIALOGS)
+@pytest.mark.parametrize(("dialog_cls", "key"), _INTERVENTION_DIALOGS)
 def test_intervention_dialog_add_mode_saves(app_with_subject, qtbot, dialog_cls, key):
     """
     Description
@@ -438,7 +483,7 @@ def test_intervention_dialog_add_mode_saves(app_with_subject, qtbot, dialog_cls,
     assert isinstance(interventions[key], dict)
 
 
-@pytest.mark.parametrize("dialog_cls,key", _INTERVENTION_DIALOGS)
+@pytest.mark.parametrize(("dialog_cls", "key"), _INTERVENTION_DIALOGS)
 def test_intervention_dialog_edit_mode_populates_and_deletes(
     app_with_subject, qtbot, dialog_cls, key,
 ):
@@ -655,7 +700,7 @@ def test_record_pages_have_their_own_containers_and_only_metadata_saves(qtbot, m
     assert writes == []
 
 
-@pytest.mark.parametrize("raw, expected", [
+@pytest.mark.parametrize(("raw", "expected"), [
     ("5", 5),
     ("3.14", 3.14),
     ("(1, 2)", (1, 2)),
@@ -713,7 +758,6 @@ def _subject_window(qtbot, monkeypatch, tmp_path):
     redirected away from the user's real config files."""
 
     monkeypatch.chdir(tmp_path)
-    from usv_playpen.usv_playpen_gui import initialize_main_window
 
     _app, win = initialize_main_window(no_splash=True)
     qtbot.addWidget(win)
@@ -732,7 +776,24 @@ _REMEMBERED = {
 
 
 def _interventions(subject: dict) -> list:
-    return sorted((subject or {}).get('interventions', {}) or {})
+    """
+    Description
+    -----------
+    Lists the intervention types stored on a subject record, so the tests can
+    compare what the repository and the session record carry.
+
+    Parameters
+    ----------
+    subject (dict)
+        Subject record holding an ``interventions`` mapping.
+
+    Returns
+    -------
+    intervention_types (list)
+        Sorted keys of ``subject['interventions']``.
+    """
+
+    return sorted(subject['interventions'])
 
 
 def test_add_subject_after_recall_keeps_remembered_interventions(qtbot, monkeypatch, tmp_path):
@@ -741,7 +802,6 @@ def test_add_subject_after_recall_keeps_remembered_interventions(qtbot, monkeypa
     form-only dict (no `interventions` key), so a repository writer that
     replaces wholesale destroys them."""
 
-    import copy
     win = _subject_window(qtbot, monkeypatch, tmp_path)
     win.subject_repository = [copy.deepcopy(_REMEMBERED)]
     win.metadata_settings['Subjects'] = []
@@ -759,15 +819,13 @@ def test_add_subject_by_typed_id_inherits_remembered_interventions(qtbot, monkey
     pressing "Add Subject" must seed the session record from the remembered
     preset, so the recording's metadata carries its interventions."""
 
-    import copy
-    from PyQt6.QtWidgets import QComboBox
 
     win = _subject_window(qtbot, monkeypatch, tmp_path)
     win.subject_repository = [copy.deepcopy(_REMEMBERED)]
     win.metadata_settings['Subjects'] = []
 
     for key, widget in win.subject_form_widgets.items():
-        value = str(_REMEMBERED.get(key, ''))
+        value = str(_REMEMBERED[key] if key in _REMEMBERED else '')
         widget.setCurrentText(value) if isinstance(widget, QComboBox) else widget.setText(value)
     win._add_subject()
 
@@ -780,7 +838,6 @@ def test_update_subject_in_repository_still_persists_intervention_deletion(qtbot
     subject whose `interventions` dict is present with the entry removed, so the
     whole sub-dict is replaced."""
 
-    import copy
     win = _subject_window(qtbot, monkeypatch, tmp_path)
     both = copy.deepcopy(_REMEMBERED)
     both['interventions'] = {'optogenetics': {'name': 'RED0'}, 'lesion': {'name': ''}}
@@ -835,11 +892,12 @@ def test_available_playback_contexts_lists_each_sex_folder_once(tmp_path, monkey
     (tmp_path / 'male' / 'naturalistic_usv_repository_courtship_20260101.h5').touch()
     (tmp_path / 'male' / 'notes.txt').touch()
     (tmp_path / 'female' / 'naturalistic_usv_repository_lone_20260101.h5').touch()
-    monkeypatch.setattr(usv_playpen_gui, 'resolve_data_root', lambda key: tmp_path)
+    monkeypatch.setattr(usv_playpen_gui, 'resolve_data_root', lambda _key: tmp_path)
     listed = []
     original_iterdir = Path.iterdir
 
     def counting_iterdir(self):
+        """Record which folder is listed, then defer to the real Path.iterdir."""
         listed.append(self.name)
         return original_iterdir(self)
 
@@ -855,7 +913,8 @@ def test_available_playback_contexts_lists_each_sex_folder_once(tmp_path, monkey
     assert usv_playpen_gui.USVPlaypenWindow._available_playback_contexts(None) == list(usv_playpen_gui._PLAYBACK_CONTEXTS)
 
 
-def test_analyze_window_opens_without_listing_and_narrows_contexts_later(app, qtbot, preserve_all_settings, monkeypatch):
+@pytest.mark.usefixtures("preserve_all_settings")
+def test_analyze_window_opens_without_listing_and_narrows_contexts_later(app, qtbot, monkeypatch):
     """
     Description
     -----------
@@ -870,8 +929,6 @@ def test_analyze_window_opens_without_listing_and_narrows_contexts_later(app, qt
         The main GUI window fixture.
     qtbot (pytestqt.qtbot.QtBot)
         Qt test driver.
-    preserve_all_settings (None)
-        Fixture backing up / restoring the package config files.
     monkeypatch (pytest.MonkeyPatch)
         Replaces the listing with one that blocks until released.
 
@@ -882,7 +939,8 @@ def test_analyze_window_opens_without_listing_and_narrows_contexts_later(app, qt
 
     release = threading.Event()
 
-    def slow_listing(self):
+    def slow_listing(_self):
+        """Block until the test releases the listing, then report one built context."""
         release.wait(10)
         return ['lone_female']
 
@@ -896,7 +954,8 @@ def test_analyze_window_opens_without_listing_and_narrows_contexts_later(app, qt
 
 
 
-def test_late_playback_listing_keeps_the_context_the_user_already_chose(app, qtbot, preserve_all_settings, monkeypatch):
+@pytest.mark.usefixtures("preserve_all_settings")
+def test_late_playback_listing_keeps_the_context_the_user_already_chose(app, qtbot, monkeypatch):
     """
     Description
     -----------
@@ -911,8 +970,6 @@ def test_late_playback_listing_keeps_the_context_the_user_already_chose(app, qtb
         The main GUI window fixture.
     qtbot (pytestqt.qtbot.QtBot)
         Qt test driver.
-    preserve_all_settings (None)
-        Fixture backing up / restoring the package config files.
     monkeypatch (pytest.MonkeyPatch)
         Replaces the listing with one that blocks until released.
 
@@ -925,7 +982,8 @@ def test_late_playback_listing_keeps_the_context_the_user_already_chose(app, qtb
     default = app.analyses_input_dict['create_naturalistic_usv_playback_wav']['context_label']
     chosen = next(label for label in usv_playpen_gui._PLAYBACK_CONTEXTS if label != default)
 
-    def slow_listing(self):
+    def slow_listing(_self):
+        """Block until the test releases the listing, then report the default and the chosen context."""
         release.wait(10)
         return [default, chosen]
 
@@ -939,7 +997,8 @@ def test_late_playback_listing_keeps_the_context_the_user_already_chose(app, qtb
     assert app.playback_context == chosen
     assert app.playback_context_cb.currentText() == chosen
 
-def test_processing_runner_gets_a_copy_of_the_settings_it_may_fill(app, qtbot, preserve_all_settings):
+@pytest.mark.usefixtures("preserve_all_settings")
+def test_processing_runner_gets_a_copy_of_the_settings_it_may_fill(app, qtbot):
     """
     Description
     -----------
@@ -958,8 +1017,6 @@ def test_processing_runner_gets_a_copy_of_the_settings_it_may_fill(app, qtbot, p
         The main GUI window fixture.
     qtbot (pytestqt.qtbot.QtBot)
         Qt test driver used to synthesise the button clicks.
-    preserve_all_settings (None)
-        Fixture backing up / restoring the package config files.
 
     Returns
     -------
@@ -996,13 +1053,16 @@ def test_available_playback_contexts_raises_on_a_missing_settings_key(monkeypatc
     None
     """
 
-    def unreadable(key):
-        raise OSError("share offline")
+    def unreadable(_key):
+        """Simulate an unreachable share: resolving the repository root fails with OSError."""
+        error_message = "share offline"
+        raise OSError(error_message)
 
     monkeypatch.setattr(usv_playpen_gui, 'resolve_data_root', unreadable)
     assert usv_playpen_gui.USVPlaypenWindow._available_playback_contexts(None) == list(usv_playpen_gui._PLAYBACK_CONTEXTS)
 
     def missing_key(key):
+        """Simulate a settings file without the requested key."""
         raise KeyError(key)
 
     monkeypatch.setattr(usv_playpen_gui, 'resolve_data_root', missing_key)

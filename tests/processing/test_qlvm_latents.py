@@ -7,14 +7,27 @@ label-grid pixel rule, training-contract checks, input normalization, condition
 values) and end-to-end runs that synthesize QLVM model package cells, a session
 spectrogram H5 and a ``usv_summary.csv``, then check the ``model_cells`` columns
 are merged into the right rows.
+
+Coverage: the label-grid pixel rule, ``infer_and_merge`` (SAM masking on/off,
+target shape, idempotence and row order, failed writes leaving the summary
+intact, model-package cells, conditional and phase-11 cells reading their
+condition from the summary, masking refusals and mask-less USVs, empty and
+invalid model cells, package-value reuse with its verification gate, pure
+squeaks skipped, summary/H5 length and vocal-flag refusals), the training
+contract checks, the torch-free checkpoint reader, input normalization,
+condition values (frozen bin means, phase-11 clamping and grid snapping,
+quantile placement, bandwidth / loudness / spectral-entropy scaling),
+``load_model_cell`` (bin checks, the v3 layout), ``cell_file`` lookup errors,
+model-cell prefix validation and reserved columns, and the summary-tidy
+function and CLI.
 """
 
 from __future__ import annotations
 
 import json
 import pathlib
-import shutil
 import pickle
+import shutil
 import warnings
 import zipfile
 
@@ -27,7 +40,11 @@ from click.testing import CliRunner
 
 from usv_playpen.os_utils import cell_cluster_directory
 from usv_playpen.processing import qlvm_latents as ql
-from usv_playpen.processing.build_qlvm_training_set import build_session_masks, file_sha256, stretch_specs
+from usv_playpen.processing.build_qlvm_training_set import (
+    build_session_masks,
+    file_sha256,
+    stretch_specs,
+)
 
 # train_qlvm pulls optax -> a one-time JAX DeprecationWarning at import.
 with warnings.catch_warnings():
@@ -153,7 +170,8 @@ def test_infer_and_merge_masking_type_applies_or_skips_sam_mask(tmp_path, mocker
     # embedding; return valid torus coordinates so the downstream lookup succeeds.
     captured = {}
 
-    def _fake_embed(lattice, data, params, *_block_sizes):
+    def _fake_embed(_lattice, data, _params, *_block_sizes):
+        """Record the spectrogram batch handed to the decoder and place every USV at the torus center."""
         captured["data"] = np.asarray(data)
         return np.full((data.shape[0], 2), 0.5, dtype=np.float64)
 
@@ -161,6 +179,7 @@ def test_infer_and_merge_masking_type_applies_or_skips_sam_mask(tmp_path, mocker
     mocker.patch("usv_playpen.processing.qlvm_latents.embed_data", side_effect=_fake_embed)
 
     def _run(masking_type):
+        """Run inference with the cell built for ``masking_type`` and return the batch the decoder saw."""
         cfg["masking_type"] = masking_type
         cfg["model_cells"] = {"qlvm": cells[masking_type]}
         ql.QLVMLatentInference(
@@ -194,7 +213,8 @@ def test_infer_and_merge_honors_target_shape(tmp_path, mocker):
 
     captured = {}
 
-    def _fake_embed(lattice, data, params, *_block_sizes):
+    def _fake_embed(_lattice, data, _params, *_block_sizes):
+        """Record the spectrogram batch handed to the decoder and place every USV at the torus center."""
         captured["data"] = np.asarray(data)
         return np.full((data.shape[0], 2), 0.5, dtype=np.float64)
 
@@ -270,6 +290,7 @@ def test_infer_and_merge_keeps_row_order_whatever_order_the_join_returns(tmp_pat
     original_join = pls.DataFrame.join
 
     def _reversed_join(self, *args, **kwargs):
+        """Join as polars does, then reverse the rows, so a merge that trusts join order would misalign."""
         return original_join(self, *args, **kwargs).reverse()
 
     mocker.patch.object(pls.DataFrame, "join", _reversed_join)
@@ -371,6 +392,7 @@ def test_infer_and_merge_failed_write_keeps_previous_summary(tmp_path, mocker):
     before = summary_path.read_bytes()
 
     def _partial_write(_self, file, **_kwargs):
+        """Leave a truncated CSV at the target path and then fail, like a disk filling mid-write."""
         pathlib.Path(file).write_text("usv_id,start\n0000,")
         message = "disk full"
         raise OSError(message)
@@ -537,6 +559,7 @@ def test_infer_and_merge_with_a_model_package_cell(tmp_path, mocker):
     real_embed = ql.embed_data
 
     def _capture(lattice, data, params, *block_sizes):
+        """Record the lattice, batch and decoder parameters, then delegate to the real ``embed_data``."""
         captured["lattice"], captured["data"], captured["params"] = np.asarray(lattice), np.asarray(data), params
         return real_embed(lattice, data, params, *block_sizes)
 
@@ -612,6 +635,7 @@ def test_infer_and_merge_conditional_cell_decodes_at_frozen_mean_freq(tmp_path, 
     real_embed = ql.embed_data
 
     def _capture(lattice, data, params, lattice_batch_size, data_batch_size, condition_values=None):
+        """Record the condition values the decoder was given, then delegate to the real ``embed_data``."""
         captured["condition_values"] = condition_values
         return real_embed(lattice, data, params, lattice_batch_size, data_batch_size, condition_values)
 
@@ -756,6 +780,7 @@ def _run_capturing_c(root, cfg, mocker, extra_settings=None):
     real_embed = ql.embed_data
 
     def _capture(lattice, data, params, lattice_batch_size, data_batch_size, condition_values=None):
+        """Record the condition values the decoder was given, then delegate to the real ``embed_data``."""
         captured["condition_values"] = condition_values
         return real_embed(lattice, data, params, lattice_batch_size, data_batch_size, condition_values)
 
@@ -972,7 +997,8 @@ def _fake_embed_counting(captured):
     """An embed_data stand-in that records how many spectrograms it was given and
     places every one at the torus center."""
 
-    def _fake_embed(lattice, data, params, *_rest):
+    def _fake_embed(_lattice, data, _params, *_rest):
+        """Record the number of spectrograms embedded and place each at the torus center."""
         captured["n_embedded"] = data.shape[0]
         return np.full((data.shape[0], 2), 0.5, dtype=np.float64)
 
@@ -1116,7 +1142,8 @@ def _run_model_cells(root, cfg, mocker):
     (embedded counts per USV, messages)."""
     embedded = []
 
-    def _fake_embed(lattice, data, params, *_rest):
+    def _fake_embed(_lattice, data, _params, *_rest):
+        """Record this USV's spectrogram count and place each at the torus center."""
         embedded.append(data.shape[0])
         return np.full((data.shape[0], 2), 0.5, dtype=np.float64)
 
@@ -1209,7 +1236,8 @@ def test_load_model_cell_reads_the_v3_layout(tmp_path):
                             condition=condition, bins=_phase11_bins("bandwidth", 0.05, 0.95, 0.01))
     before = ql.load_model_cell(str(cell))
     _to_v3_layout(tmp_path / "pkg")
-    assert not (cell / "training_contract.json").exists() and (cell / "config" / "training_contract.json").is_file()
+    assert not (cell / "training_contract.json").exists()
+    assert (cell / "config" / "training_contract.json").is_file()
 
     after = ql.load_model_cell(str(cell))
 
@@ -1219,7 +1247,8 @@ def test_load_model_cell_reads_the_v3_layout(tmp_path):
         np.asarray(after["lattice"]),
         np.asarray(ql.gen_fib_basis_float32(after["contract"]["embedding_fib_m"])),
     )
-    assert "fine_grid" not in after and "coarse_grid" not in after
+    assert "fine_grid" not in after
+    assert "coarse_grid" not in after
     for key in before["condition_bins"]:
         np.testing.assert_array_equal(after["condition_bins"][key], before["condition_bins"][key])
     for key in before["params"]:
@@ -1230,7 +1259,7 @@ def test_load_model_cell_reads_the_v3_layout(tmp_path):
 def test_cell_file_names_what_it_looked_for(tmp_path):
     """A file in neither layout raises FileNotFoundError naming every folder searched."""
     (tmp_path / "cell").mkdir()
-    with pytest.raises(FileNotFoundError, match="no posterior_cache.npz in"):
+    with pytest.raises(FileNotFoundError, match=r"no posterior_cache.npz in"):
         ql.cell_file(tmp_path / "cell", "posterior_cache.npz")
     with pytest.raises(FileNotFoundError, match="no fine cluster folder"):
         cell_cluster_directory(tmp_path / "cell", "fine")
@@ -1399,7 +1428,7 @@ def test_model_cell_coordinates_of_the_summary_and_production_maps_are_writable(
     assert ql.validate_model_cells(summary_maps.items()) == summary_maps
     with pytest.raises(ValueError, match=r"prefix 'qlvm_squeak' would overwrite"):
         ql.validate_model_cells([("qlvm_squeak", "/cell")])
-    production = {prefix: "/cell" for prefix in ql.QLVM_PRODUCTION_MODEL_CELLS}
+    production = dict.fromkeys(ql.QLVM_PRODUCTION_MODEL_CELLS, "/cell")
     assert ql.validate_model_cells(production.items()) == production
     assert list(production) == ["qlvm", "qlvm_duration", "qlvm_entropy", "qlvm_bandwidth", "qlvm_loudness"]
     assert "qlvm_category" in ql.model_cell_reserved_columns()
@@ -1423,7 +1452,8 @@ def test_infer_and_merge_sam_inputs_equal_the_masked_training_inputs(tmp_path, m
     cfg.update(masking_type="sam", time_stretch=True, model_cells={"qlvm_masked": str(cell)})
     captured = {}
 
-    def _fake_embed(lattice, data, params, *_block_sizes):
+    def _fake_embed(_lattice, data, _params, *_block_sizes):
+        """Record the spectrogram batch handed to the decoder and place every USV at the torus center."""
         captured["data"] = np.asarray(data)
         return np.full((data.shape[0], 2), 0.5, dtype=np.float64)
 
@@ -1458,7 +1488,7 @@ def test_model_cells_embed_an_unclustered_cell(tmp_path, mocker):
     shutil.rmtree(cell / "cluster")
     mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
     mocker.patch("usv_playpen.processing.qlvm_latents.embed_data",
-                 side_effect=lambda lattice, data, *_rest: np.full((data.shape[0], 2), 0.25, dtype=np.float64))
+                 side_effect=lambda _lattice, data, *_rest: np.full((data.shape[0], 2), 0.25, dtype=np.float64))
     summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
 
     cfg["model_cells"] = {"qlvm_new": str(cell)}

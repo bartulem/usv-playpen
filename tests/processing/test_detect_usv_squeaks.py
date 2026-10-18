@@ -2,7 +2,7 @@
 @author: bartulem
 Tests for processing/detect_usv_squeaks.
 
-The vocal-class model: the network (and its noise-trunk initialization), the squeak-extent rule (the
+Coverage: the vocal-class model: the network (and its noise-trunk initialization), the squeak-extent rule (the
 envelope of above-threshold frames in runs touching the segment, no minimum run, half-hop edges, and
 the highest-scoring-frame fallback), the window input (segment indicator, frame grid) and the bundle
 loader with its refusals (and its acceptance of a legacy bundle whose overlap class is still named
@@ -111,7 +111,8 @@ class _StubVocalClassModel(torch.nn.Module):
         frame_logits = torch.full((n_batch, n_time), -5.0)
         for item in range(n_batch):
             n_segment = int(segment[item].sum())
-            class_logits[item, self.class_by_segment_frames.get(n_segment, 0)] = 4.0
+            class_index = self.class_by_segment_frames[n_segment] if n_segment in self.class_by_segment_frames else 0
+            class_logits[item, class_index] = 4.0
             first = int(torch.nonzero(segment[item])[0, 0])
             if self.peak_offset is not None:
                 frame_logits[item, first + self.peak_offset] = -1.0
@@ -474,7 +475,7 @@ def test_squeak_audio_channels_refuses_an_incomplete_record(tmp_path):
     with pytest.raises(ValueError, match="add-broadband-low-band-variance"):
         squeaks.squeak_audio_channels(root, False, print)
     record_path.unlink()
-    with pytest.raises(FileNotFoundError, match="line_noise.json"):
+    with pytest.raises(FileNotFoundError, match=r"line_noise\.json"):
         squeaks.squeak_audio_channels(root, False, print)
 
 
@@ -1166,6 +1167,27 @@ def test_embed_and_merge_keeps_row_order_whatever_order_the_join_returns(tmp_pat
     original_join = pls.DataFrame.join
 
     def _reversed_join(self, *args, **kwargs):
+        """
+        Description
+        -----------
+        Stands in for polars.DataFrame.join and returns the real join's rows in
+        reverse order, the order polars is free to return without a maintain-order
+        promise.
+
+        Parameters
+        ----------
+        self : polars.DataFrame
+            The left frame of the join.
+        *args : tuple
+            Positional arguments forwarded to the real join.
+        **kwargs : dict
+            Keyword arguments forwarded to the real join.
+
+        Returns
+        -------
+        polars.DataFrame
+            The real join's result with its rows reversed.
+        """
         return original_join(self, *args, **kwargs).reverse()
 
     mocker.patch.object(pls.DataFrame, "join", _reversed_join)

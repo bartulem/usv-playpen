@@ -7,6 +7,15 @@ invokes the mixture-model sweep + bootstrap LRT, and writes a single HDF5 archiv
 mock every heavy compute helper (compute_session_usv_intervals,
 fit_mixture_model_sweep, bootstrap_lrt, write_ivi_h5) so the orchestration can be
 exercised end-to-end against synthetic disk fixtures.
+
+Coverage: settings validation and the skip branches of the save step; the archive
+written with and without the mixture-model sweep (session-labelled LRT inputs, the
+step-up selector); interval pools (fitted vs described-only, per-pool filters); the
+tied peak ladder and serial-dependence fits run on fitted pools only; the ladder's
+warm-started nulls; per-session interval computation (overlap segments excluded,
+chains broken by another animal's vocalization, squeaks timed by their extent); the polars <-> HDF5 round trip of nullable columns; and the
+shared USV I/O helpers (emitter-sex resolution, track ids, unique matching, loading
+and filtering).
 """
 
 from __future__ import annotations
@@ -27,14 +36,14 @@ from usv_playpen.analyses._usv_io import (
     sex_track_ids,
     unique_match_or_none,
 )
-from usv_playpen.yaml_utils import extract_animal_sexes as yaml_extract_animal_sexes
 from usv_playpen.analyses.compute_inter_usv_interval_distributions import (
     InterUSVIntervalCalculator,
     compute_session_usv_intervals,
     fit_mixture_model_sweep,
     fit_tied_peak_ladder_and_lrt,
 )
-from usv_playpen.analyses.usv_interval_archive import _polars_to_h5, _h5_to_polars
+from usv_playpen.analyses.usv_interval_archive import _h5_to_polars, _polars_to_h5
+from usv_playpen.yaml_utils import extract_animal_sexes as yaml_extract_animal_sexes
 
 
 def test_polars_h5_roundtrip_nullable_int_and_bool(tmp_path):
@@ -55,11 +64,16 @@ def test_polars_h5_roundtrip_nullable_int_and_bool(tmp_path):
     with h5py.File(str(out), "r") as f:
         back = _h5_to_polars(f["t"])
 
-    assert back["i"].dtype == pls.Float64 and back["b"].dtype == pls.Float64
+    assert back["i"].dtype == pls.Float64
+    assert back["b"].dtype == pls.Float64
     i_vals = back["i"].to_list()
     b_vals = back["b"].to_list()
-    assert i_vals[0] == 1.0 and i_vals[2] == 3.0 and np.isnan(i_vals[1])
-    assert b_vals[0] == 1.0 and b_vals[2] == 0.0 and np.isnan(b_vals[1])
+    assert i_vals[0] == 1.0
+    assert i_vals[2] == 3.0
+    assert np.isnan(i_vals[1])
+    assert b_vals[0] == 1.0
+    assert b_vals[2] == 0.0
+    assert np.isnan(b_vals[1])
     assert back["f"].to_list() == [1.5, 2.5, 3.5]
 
 
@@ -172,7 +186,7 @@ def test_save_iui_no_output_directory_raises(tmp_path):
         calc.save_inter_usv_interval_distributions_to_file()
 
 
-def test_save_iui_zero_resolved_sessions_logs_skip(tmp_path, mocker, monkeypatch):
+def test_save_iui_zero_resolved_sessions_logs_skip(tmp_path, monkeypatch):
     """A session list that resolves to zero readable sessions → log + return.
 
     We patch _read_session_lists to return an empty list (the real helper
@@ -187,8 +201,8 @@ def test_save_iui_zero_resolved_sessions_logs_skip(tmp_path, mocker, monkeypatch
 
     # Force _read_session_lists to return [] regardless of file contents
     monkeypatch.setattr(iui_mod, "_read_session_lists",
-                        lambda lists, msg: [])
-    monkeypatch.setattr(iui_mod, "_session_source_map", lambda lists: {})
+                        lambda _lists, _msg: [])
+    monkeypatch.setattr(iui_mod, "_session_source_map", lambda _lists: {})
 
     msgs: list[str] = []
     calc = InterUSVIntervalCalculator(
@@ -208,12 +222,38 @@ def _mock_session_resolution(monkeypatch, tmp_path):
     a known interval payload for both modes."""
     sess_root = str(tmp_path / "20260101_120000")
     monkeypatch.setattr(iui_mod, "_read_session_lists",
-                        lambda lists, msg: [sess_root])
+                        lambda _lists, _msg: [sess_root])
     monkeypatch.setattr(iui_mod, "_session_source_map",
-                        lambda lists: {sess_root: "groupA"})
+                        lambda _lists: {sess_root: "groupA"})
 
     def fake_compute(session_root, interval_type, exclude_noise_usvs, vocal_class=None,
                      adjacency="filtered"):
+        """
+        Description
+        -----------
+        Stands in for ``compute_session_usv_intervals``: returns a fixed male / female
+        interval payload for the one synthetic session and an empty dict for any other.
+        The filter arguments are accepted by name, as the orchestrator passes them, and ignored.
+
+        Parameters
+        ----------
+        session_root (str)
+            Session root; only the synthetic one yields intervals.
+        interval_type (str)
+            ``s2s`` or ``e2s``; sets ``n_dropped_male`` and is echoed back.
+        exclude_noise_usvs (bool)
+            Noise filter flag (ignored).
+        vocal_class (str | None)
+            Vocal-class filter (ignored).
+        adjacency (str)
+            Adjacency rule (ignored).
+
+        Returns
+        -------
+        payload (dict)
+            The synthetic interval payload, or ``{}`` for an unknown session.
+        """
+        del exclude_noise_usvs, vocal_class, adjacency
         if session_root != sess_root:
             return {}
         return {
@@ -295,7 +335,7 @@ def test_save_iui_writes_archive_when_fit_mixture_model_true(tmp_path, mocker, m
         "weight_1": [1.0], "logmean_1": [0.0], "logsd_1": [0.5], "nu_1": [float("nan")],
     })
     monkeypatch.setattr(iui_mod, "fit_mixture_model_sweep",
-                        lambda **kw: fake_sweep)
+                        lambda **_kw: fake_sweep)
 
     fake_lrt_res = {
         "K_null": 1, "K_alt": 2, "B": 2, "n_subsample": 5,
@@ -308,12 +348,47 @@ def test_save_iui_writes_archive_when_fit_mixture_model_true(tmp_path, mocker, m
     lrt_calls: list[dict] = []
 
     def fake_bootstrap_lrt(**kw):
+        """
+        Description
+        -----------
+        Stands in for ``bootstrap_lrt``: records the keyword arguments of every
+        invocation and returns one fixed LRT result.
+
+        Parameters
+        ----------
+        **kw (dict)
+            Keyword arguments the orchestrator passes.
+
+        Returns
+        -------
+        result (dict)
+            The fixed ``fake_lrt_res`` payload.
+        """
         lrt_calls.append(kw)
         return fake_lrt_res
     monkeypatch.setattr(iui_mod, "bootstrap_lrt", fake_bootstrap_lrt)
     selector_inputs: list[dict] = []
 
     def fake_select(pair_results, alpha):
+        """
+        Description
+        -----------
+        Stands in for ``select_n_components_step_up_lrt``: records the per-pair inputs
+        and always selects one component. ``alpha`` arrives by keyword and is ignored.
+
+        Parameters
+        ----------
+        pair_results (dict)
+            Per-(K_null, K_alt) p-values handed to the selector.
+        alpha (float)
+            Effective significance level (ignored).
+
+        Returns
+        -------
+        n_components (int)
+            Always 1.
+        """
+        del alpha
         selector_inputs.append(pair_results)
         return 1
     monkeypatch.setattr(iui_mod, "select_n_components_step_up_lrt", fake_select)
@@ -340,7 +415,8 @@ def test_save_iui_writes_archive_when_fit_mixture_model_true(tmp_path, mocker, m
         assert mode["bootstrap_lrt"]["p_value_corrected"].to_list()[0] == 0.5
         assert mode["bootstrap_lrt"]["p_value"].to_list()[0] == 0.0
     # the male pool is 3 intervals from one session, and its labels travel with it
-    assert lrt_calls and all(list(kw["session_labels"]) == ["20260101_120000"] * 3 for kw in lrt_calls)
+    assert lrt_calls
+    assert all(list(kw["session_labels"]) == ["20260101_120000"] * 3 for kw in lrt_calls)
     assert all(res["p_value"] == 0.5 for inputs in selector_inputs for res in inputs.values())
 
 
@@ -374,8 +450,8 @@ def test_save_iui_rejects_pools_the_archive_cannot_hold_before_computing(tmp_pat
     block["session_lists"] = [str(list_file)]
     block["interval_pools"] = pools
     computed: list = []
-    monkeypatch.setattr(iui_mod, "_read_session_lists", lambda lists, msg: ["/dummy/session"])
-    monkeypatch.setattr(iui_mod, "_session_source_map", lambda lists: {})
+    monkeypatch.setattr(iui_mod, "_read_session_lists", lambda _lists, _msg: ["/dummy/session"])
+    monkeypatch.setattr(iui_mod, "_session_source_map", lambda _lists: {})
     monkeypatch.setattr(iui_mod, "compute_session_usv_intervals",
                         lambda **kwargs: computed.append(kwargs) or {})
 
@@ -461,6 +537,23 @@ def test_save_iui_runs_tied_model_on_fitted_pools_only(tmp_path, mocker, monkeyp
     calls: list[dict] = []
 
     def fake_tied(**kwargs):
+        """
+        Description
+        -----------
+        Stands in for ``fit_tied_peak_ladder_and_lrt``: records the keyword arguments
+        and returns four one-row tables tagged with the pool identity, two selected
+        peaks and a fixed effective alpha.
+
+        Parameters
+        ----------
+        **kwargs (dict)
+            Keyword arguments the orchestrator passes, including ``pool_identity``.
+
+        Returns
+        -------
+        result (tuple)
+            Four one-row DataFrames, the selected peak count 2 and 0.0033.
+        """
         calls.append(kwargs)
         identity = kwargs["pool_identity"]
         one = pls.DataFrame([{**identity, "n_peak": 2}])
@@ -483,7 +576,7 @@ def test_save_iui_runs_tied_model_on_fitted_pools_only(tmp_path, mocker, monkeyp
         assert mode["tied_fits"] is not None
         assert mode["peak_lrt"] is not None
         assert mode["attrs"]["selected_n_peak_male_usv"] == 2
-        fitted = dict(zip(mode["pool_summary"]["sex"], mode["pool_summary"]["fitted"]))
+        fitted = dict(zip(mode["pool_summary"]["sex"], mode["pool_summary"]["fitted"], strict=True))
         assert fitted == {"male": True, "female": False}
 
 
@@ -500,6 +593,23 @@ def test_save_iui_fits_serial_dependence_on_fitted_pools_only(tmp_path, mocker, 
     calls: list[dict] = []
 
     def fake_fit(**kw):
+        """
+        Description
+        -----------
+        Stands in for ``fit_serial_dependence``: records the keyword arguments and
+        returns the three result tables (curve, summary, bootstrap) tagged with the
+        pool identity.
+
+        Parameters
+        ----------
+        **kw (dict)
+            Keyword arguments the orchestrator passes, including ``pool_identity`` and ``current``.
+
+        Returns
+        -------
+        tables (tuple)
+            Three polars DataFrames shaped like the real fit's output.
+        """
         calls.append(kw)
         identity = kw["pool_identity"]
         return (pls.DataFrame({**{k: [v] for k, v in identity.items()}, "current_ms": [1.0]}),
@@ -527,7 +637,8 @@ def test_save_iui_fits_serial_dependence_on_fitted_pools_only(tmp_path, mocker, 
     per_mode = write_mock.call_args.kwargs["per_mode"]
     for mode in per_mode.values():
         for table in ("serial_dependence_curves", "serial_dependence_fit", "serial_dependence_bends"):
-            assert mode[table] is not None and set(mode[table]["sex"].to_list()) == {"male"}
+            assert mode[table] is not None
+            assert set(mode[table]["sex"].to_list()) == {"male"}
     assert write_mock.call_args.kwargs["analysis_attrs"]["serial_dependence_level"] == 99.0
 
 
@@ -587,13 +698,15 @@ def test_fit_tied_peak_ladder_and_lrt_tables_and_selection():
         assert np.allclose(peaks["logscale"].to_numpy(), rows["shared_peak_scale"][0])
         assert np.isclose(rows["weight"].sum(), 1.0)
     assert set(modes["n_peak"].unique().to_list()) == {1, 2, 3}
-    assert lrt.height == 2 and lrt["n_peak_null"].to_list() == [1, 2]
+    assert lrt.height == 2
+    assert lrt["n_peak_null"].to_list() == [1, 2]
     assert (lrt["design_effect"] >= 1.0).all()
     assert np.allclose(lrt["alpha_used"].to_numpy(), 0.005)
     assert alpha_eff == pytest.approx(0.005)
     assert null.height == 2 * 19
     for table in (fits, modes, lrt, null):
-        assert (table["sex"] == "male").all() and (table["vocal_class"] == "usv").all()
+        assert (table["sex"] == "male").all()
+        assert (table["vocal_class"] == "usv").all()
     assert selected in (1, 2, 3)
     assert any("step-up selection" in m for m in messages)
 
@@ -652,7 +765,8 @@ def test_fit_tied_peak_ladder_and_lrt_without_bonferroni_keeps_alpha():
 
     assert alpha_eff == pytest.approx(0.05)
     assert sorted(fits["n_peak"].unique().to_list()) == [1, 2]
-    assert lrt.height == 1 and null.height == 9
+    assert lrt.height == 1
+    assert null.height == 9
     assert selected in (1, 2)
 
 
@@ -677,7 +791,8 @@ def test_fit_mixture_model_sweep_model_class_branches(model_class):
         cv_n_folds=5, cv_n_init=1, mixture_model_n_init=1, model_class=model_class)
 
     male = table.filter(pls.col("sex") == "male")
-    assert male.height == 2 and sorted(male["n_comp"].to_list()) == [1, 2]
+    assert male.height == 2
+    assert sorted(male["n_comp"].to_list()) == [1, 2]
     assert (table["model_class"] == model_class).all()
     assert np.isfinite(table["bic"].to_numpy()).all()
     male_cv = male["cv_neg_loglik"].to_numpy()
@@ -912,7 +1027,8 @@ def test_compute_session_usv_intervals_overlap_is_neither_usv_nor_squeak(tmp_pat
                                         vocal_class="usv", adjacency="filtered")
     np.testing.assert_allclose(filtered["female"], [2.0, 1.0])
     np.testing.assert_allclose(strict["female"], [1.0])
-    assert usv["male"].size == 0 and usv["female"].size == 0
+    assert usv["male"].size == 0
+    assert usv["female"].size == 0
 
 
 def test_compute_session_usv_intervals_chains_break_at_another_animals_vocalization(tmp_path, monkeypatch):

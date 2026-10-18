@@ -1,11 +1,11 @@
 """
 @author: bartulem
-Unit tests for the call-grain data layer in ``usv_playpen.neural_modeling.neural_design_assembly``.
+Unit tests for the USV-grain data layer in ``usv_playpen.neural_modeling.neural_design_assembly``.
 
 Coverage: the clean-prevocal filter's exact overlap rule, the header-only tracking read, and the
 end-to-end event assembler run against a synthetic session tree written under ``tmp_path``. The
-properties asserted are the ones both vocal-decoding axes depend on -- a call never excludes itself, a partner's
-call excludes just as a focal one does, calls with no torus position are dropped and counted rather than
+properties asserted are the ones both vocal-decoding axes depend on -- a USV never excludes itself, a partner's
+USV excludes just as a focal one does, USVs with no torus position are dropped and counted rather than
 carried as NaN, and the vocal-occurrence negatives are the same quiet definition the kinematic encoding uses, tiled at
 the analysis window's own width so the two counts are comparable.
 
@@ -23,7 +23,7 @@ from typing import ClassVar
 
 import h5py
 import numpy as np
-import polars as pl
+import polars as pls
 import pytest
 
 from usv_playpen.neural_modeling.main_neural_encoding_dispatcher import (
@@ -50,29 +50,37 @@ def _load_settings() -> dict:
 
 
 class TestCleanWindowMask:
+    """The clean-prevocal overlap rule: which USVs (focal or partner) reach into an event's pre-onset
+    window and so disqualify it."""
 
-    def test_a_call_never_excludes_itself(self):
-        """A call's own span starts exactly at its onset, so it can never sit inside its own window."""
+    def test_a_usv_never_excludes_itself(self):
+        """A USV's own span starts exactly at its onset, so it can never sit inside its own window."""
         starts = np.array([1.0, 5.0])
         stops = np.array([1.2, 5.3])
         keep = clean_window_mask(starts, starts, stops, 0.05)
         assert keep.tolist() == [True, True]
 
-    def test_a_preceding_call_that_reaches_into_the_window_excludes(self):
+    def test_a_preceding_usv_that_reaches_into_the_window_excludes(self):
+        """A previous USV whose stop falls inside the next event's pre-onset window must drop that event,
+        or the window's spikes could be a response to the earlier USV rather than a prediction."""
         starts = np.array([1.0, 1.22])
         stops = np.array([1.2, 1.4])
-        # the second call's window is (1.17, 1.22); the first call runs to 1.2 and so overlaps it
+        # the second USV's window is (1.17, 1.22); the first USV runs to 1.2 and so overlaps it
         keep = clean_window_mask(starts, starts, stops, 0.05)
         assert keep.tolist() == [True, False]
 
-    def test_a_preceding_call_that_stops_before_the_window_does_not(self):
+    def test_a_preceding_usv_that_stops_before_the_window_does_not(self):
+        """The overlap rule must not over-exclude: a previous USV that ended before the window opened
+        leaves the event clean, otherwise dense bouts would lose events for no reason."""
         starts = np.array([1.0, 1.30])
         stops = np.array([1.2, 1.5])
-        # the window is (1.25, 1.30) and the previous call ended at 1.2
+        # the window is (1.25, 1.30) and the previous USV ended at 1.2
         keep = clean_window_mask(starts, starts, stops, 0.05)
         assert keep.tolist() == [True, True]
 
-    def test_a_partner_call_excludes_exactly_as_a_focal_one_does(self):
+    def test_a_partner_usv_excludes_exactly_as_a_focal_one_does(self):
+        """Contamination is judged against every emitter passed in: a partner USV just before the focal
+        onset excludes it, and removing that partner USV from the contaminant list restores it."""
         focal = np.array([2.0])
         every_start = np.array([1.98, 2.0])
         every_stop = np.array([1.99, 2.1])
@@ -80,6 +88,8 @@ class TestCleanWindowMask:
         assert clean_window_mask(focal, every_start[1:], every_stop[1:], 0.05).tolist() == [True]
 
     def test_empty_inputs_return_the_right_shapes(self):
+        """No events gives an empty mask, and no contaminants keeps every event, so a session with no
+        USVs on either side cannot crash the assembler or drop events."""
         assert clean_window_mask(np.array([]), np.array([1.0]), np.array([2.0]), 0.05).size == 0
         assert clean_window_mask(np.array([1.0]), np.array([]), np.array([]), 0.05).tolist() == [True]
 
@@ -88,9 +98,38 @@ VOCAL_SETTINGS = {"exclude_noise": True, "exclude_squeaks": True, "squeaks_block
 
 
 def _write_session(root: pathlib.Path, session_id: str, unit_id: str, *, n_frames: int,
-                   frame_rate: float, calls: list[tuple[float, float, str, float, float]],
+                   frame_rate: float, usvs: list[tuple[float, float, str, float, float]],
                    spike_seconds: np.ndarray) -> None:
-    """Write one synthetic session tree: tracking H5, USV summary CSV and a cluster_data spike file."""
+    """
+    Description
+    -----------
+    Write one synthetic session tree under ``root``: the tracking H5 (zero tracks, a frame rate and
+    the ``male``/``female`` track names), the USV summary CSV with the torus-position and classifier
+    columns the assembler reads, and one ``cluster_data`` spike file for the unit.
+
+    Parameters
+    ----------
+    root (pathlib.Path)
+        Directory the session folder is created in (normally ``tmp_path``).
+    session_id (str)
+        Session folder name, e.g. ``"20250101_000000"``.
+    unit_id (str)
+        Unit identifier; the spike file is written as ``<unit_id>.npy``.
+    n_frames (int)
+        Number of tracking frames in the H5.
+    frame_rate (float)
+        Tracking frame rate in frames per second.
+    usvs (list[tuple])
+        One tuple per USV: ``(start, stop, emitter, qlvm1, qlvm2)``, optionally followed by a
+        ``noise`` and a ``squeak`` flag (both default to ``False``, a clean vocalization).
+    spike_seconds (np.ndarray)
+        Spike times in seconds; written with their frame equivalents as a 2-row array.
+
+    Returns
+    -------
+    None
+        The files are written to disk.
+    """
     video_dir = root / session_id / "video" / f"{session_id}_cam"
     video_dir.mkdir(parents=True)
     with h5py.File(video_dir / f"{session_id}_points3d_translated_rotated_metric.h5", "w") as handle:
@@ -100,17 +139,17 @@ def _write_session(root: pathlib.Path, session_id: str, unit_id: str, *, n_frame
 
     audio_dir = root / session_id / "audio"
     audio_dir.mkdir(parents=True)
-    pl.DataFrame({
-        "usv_id": list(range(len(calls))),
-        "start": [c[0] for c in calls],
-        "stop": [c[1] for c in calls],
-        "emitter": [c[2] for c in calls],
-        "qlvm1": [c[3] for c in calls],
-        "qlvm2": [c[4] for c in calls],
-        # The classifier columns the vocalization filter reads. A call tuple may carry them as a
+    pls.DataFrame({
+        "usv_id": list(range(len(usvs))),
+        "start": [c[0] for c in usvs],
+        "stop": [c[1] for c in usvs],
+        "emitter": [c[2] for c in usvs],
+        "qlvm1": [c[3] for c in usvs],
+        "qlvm2": [c[4] for c in usvs],
+        # The classifier columns the vocalization filter reads. A USV tuple may carry them as a
         # 6th and 7th element; the default is a clean vocalization, which is what most tests want.
-        "noise": [bool(c[5]) if len(c) > 5 else False for c in calls],
-        "squeak": [bool(c[6]) if len(c) > 6 else False for c in calls],
+        "noise": [bool(c[5]) if len(c) > 5 else False for c in usvs],
+        "squeak": [bool(c[6]) if len(c) > 6 else False for c in usvs],
     }).write_csv(audio_dir / f"{session_id}_usv_summary.csv")
 
     ephys_dir = root / session_id / "ephys" / "imec0" / "cluster_data"
@@ -120,10 +159,13 @@ def _write_session(root: pathlib.Path, session_id: str, unit_id: str, *, n_frame
 
 
 class TestSessionTimebase:
+    """The header-only tracking read that supplies track names, frame rate and frame count."""
 
     def test_the_header_read_returns_names_rate_and_frame_count(self, tmp_path):
+        """The three header values must come back exactly as written, since every frame index and the
+        focal-animal lookup downstream are built from them."""
         _write_session(tmp_path, "20250101_000000", "imec0_cl0001_ch001_good", n_frames=1500,
-                       frame_rate=150.0, calls=[(1.0, 1.1, "male", 0.1, 0.2)],
+                       frame_rate=150.0, usvs=[(1.0, 1.1, "male", 0.1, 0.2)],
                        spike_seconds=np.array([0.5]))
         names, rate, n_frames = session_timebase(str(tmp_path), "20250101_000000")
         assert names == ["male", "female"]
@@ -131,33 +173,79 @@ class TestSessionTimebase:
         assert n_frames == 1500
 
     def test_a_missing_tracking_file_fails_loudly(self, tmp_path):
+        """A session without its tracking H5 must raise FileNotFoundError rather than return defaults
+        that would silently misalign frames."""
         (tmp_path / "20250101_000000" / "video").mkdir(parents=True)
         with pytest.raises(FileNotFoundError):
             session_timebase(str(tmp_path), "20250101_000000")
 
 
 class TestAssembleUnitVocalEvents:
+    """The end-to-end vocal-event assembler run on synthetic session trees: which USVs become events,
+    how their counts, positions and gaps are read, and how the quiet tiles are laid."""
 
     UNIT = "imec0_cl0001_ch001_good"
 
     def _settings(self) -> dict:
+        """
+        Description
+        -----------
+        Return the shipped neural-modeling settings with ``max_quiet_tiles_per_session`` lowered
+        to 20, so tile subsampling is exercised on small synthetic sessions.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        settings (dict)
+            A fresh copy of the shipped settings with the tile cap overridden.
+        """
         settings = _load_settings()
         # a tiny cap keeps the synthetic sessions' tile subsampling exercised without a huge tile set
         settings["vocal_decoding"]["max_quiet_tiles_per_session"] = 20
         return settings
 
-    def _build(self, tmp_path, *, calls, spike_seconds, n_frames=150000, frame_rate=150.0):
+    def _build(self, tmp_path, *, usvs, spike_seconds, n_frames=150000, frame_rate=150.0):
+        """
+        Description
+        -----------
+        Write one synthetic session for ``UNIT`` and return the cohort-style unit record that
+        points at it as both its courtship and its vocal session.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Root the session tree is written under.
+        usvs (list[tuple])
+            USV tuples in the ``_write_session`` format.
+        spike_seconds (np.ndarray)
+            Spike times in seconds for the unit.
+        n_frames (int)
+            Number of tracking frames; defaults to 150000 (1000 s at 150 fps).
+        frame_rate (float)
+            Tracking frame rate; defaults to 150.0.
+
+        Returns
+        -------
+        unit (dict)
+            Unit record with ``unit_id``, ``mouse_id`` (``"male"``), ``courtship_sessions`` and
+            ``vocal_sessions``.
+        """
         _write_session(tmp_path, "20250101_000000", self.UNIT, n_frames=n_frames,
-                       frame_rate=frame_rate, calls=calls, spike_seconds=spike_seconds)
+                       frame_rate=frame_rate, usvs=usvs, spike_seconds=spike_seconds)
         return {"unit_id": self.UNIT, "mouse_id": "male",
                 "courtship_sessions": ["20250101_000000"],
                 "vocal_sessions": ["20250101_000000"]}
 
-    def test_only_focal_calls_become_events(self, tmp_path):
-        calls = [(100.0, 100.1, "male", 0.10, 0.20),
+    def test_only_focal_usvs_become_events(self, tmp_path):
+        """Only the recorded animal's own USVs are decoded; a partner USV turning into an event would
+        attribute the partner's repertoire to this unit."""
+        usvs = [(100.0, 100.1, "male", 0.10, 0.20),
                  (200.0, 200.1, "female", 0.30, 0.40),
                  (300.0, 300.1, "male", 0.50, 0.60)]
-        unit = self._build(tmp_path, calls=calls, spike_seconds=np.array([99.98, 299.97]))
+        unit = self._build(tmp_path, usvs=usvs, spike_seconds=np.array([99.98, 299.97]))
         events = assemble_unit_vocal_events(unit, str(tmp_path), self._settings(), 0.05, 0.05)
 
         assert events["positions"].shape == (2, 2)
@@ -166,16 +254,20 @@ class TestAssembleUnitVocalEvents:
         assert events["per_session"]["20250101_000000"]["n_focal_calls"] == 2
 
     def test_counts_come_from_the_window_before_onset(self, tmp_path):
-        calls = [(100.0, 100.1, "male", 0.10, 0.20), (300.0, 300.1, "male", 0.50, 0.60)]
-        # two spikes inside the first call's [99.95, 100.0) window, none inside the second's
+        """Spike counts are read from [onset - pre_offset, onset - pre_offset + width), so a spike just
+        after the onset of a later USV must not leak into its count."""
+        usvs = [(100.0, 100.1, "male", 0.10, 0.20), (300.0, 300.1, "male", 0.50, 0.60)]
+        # two spikes inside the first USV's [99.95, 100.0) window, none inside the second's
         spikes = np.array([99.96, 99.99, 300.05])
-        unit = self._build(tmp_path, calls=calls, spike_seconds=spikes)
+        unit = self._build(tmp_path, usvs=usvs, spike_seconds=spikes)
         events = assemble_unit_vocal_events(unit, str(tmp_path), self._settings(), 0.05, 0.05)
         assert events["counts"].tolist() == [2.0, 0.0]
 
     def test_a_missing_torus_position_is_dropped_and_counted(self, tmp_path):
-        calls = [(100.0, 100.1, "male", 0.10, 0.20), (300.0, 300.1, "male", float("nan"), 0.60)]
-        unit = self._build(tmp_path, calls=calls, spike_seconds=np.array([99.98]))
+        """A USV with a NaN torus coordinate is removed and tallied, never carried as NaN into a
+        regression that would either crash or silently down-weight it."""
+        usvs = [(100.0, 100.1, "male", 0.10, 0.20), (300.0, 300.1, "male", float("nan"), 0.60)]
+        unit = self._build(tmp_path, usvs=usvs, spike_seconds=np.array([99.98]))
         events = assemble_unit_vocal_events(unit, str(tmp_path), self._settings(), 0.05, 0.05)
 
         assert events["positions"].shape == (1, 2)
@@ -183,9 +275,11 @@ class TestAssembleUnitVocalEvents:
         assert events["per_session"]["20250101_000000"]["n_dropped_missing_position"] == 1
 
     def test_the_clean_filter_is_recorded_and_can_be_switched_off(self, tmp_path):
-        # the second call opens 20 ms after the first closes, so its 50 ms window is contaminated
-        calls = [(100.0, 100.10, "male", 0.10, 0.20), (100.12, 100.22, "male", 0.50, 0.60)]
-        unit = self._build(tmp_path, calls=calls, spike_seconds=np.array([99.98]))
+        """The clean-prevocal filter drops a contaminated event and records the drop, and
+        ``require_clean_prevocal_bool=False`` really disables it, so the knob is honoured both ways."""
+        # the second USV opens 20 ms after the first closes, so its 50 ms window is contaminated
+        usvs = [(100.0, 100.10, "male", 0.10, 0.20), (100.12, 100.22, "male", 0.50, 0.60)]
+        unit = self._build(tmp_path, usvs=usvs, spike_seconds=np.array([99.98]))
 
         settings = self._settings()
         events = assemble_unit_vocal_events(unit, str(tmp_path), settings, 0.05, 0.05)
@@ -197,8 +291,10 @@ class TestAssembleUnitVocalEvents:
         assert loose["positions"].shape[0] == 2
 
     def test_the_when_arrays_stack_positives_over_quiet_tiles(self, tmp_path):
-        calls = [(100.0, 100.1, "male", 0.10, 0.20), (300.0, 300.1, "male", 0.50, 0.60)]
-        unit = self._build(tmp_path, calls=calls, spike_seconds=np.array([99.98, 500.0]))
+        """The vocal-occurrence arrays put the USV events first (label 1, same counts as the decoding
+        events) and the quiet tiles after (label 0), the layout the occurrence classifier indexes by."""
+        usvs = [(100.0, 100.1, "male", 0.10, 0.20), (300.0, 300.1, "male", 0.50, 0.60)]
+        unit = self._build(tmp_path, usvs=usvs, spike_seconds=np.array([99.98, 500.0]))
         events = assemble_unit_vocal_events(unit, str(tmp_path), self._settings(), 0.05, 0.05)
 
         windows = events["occurrence_windows"]
@@ -211,12 +307,12 @@ class TestAssembleUnitVocalEvents:
 
     def test_the_when_edges_reconstruct_the_when_counts(self, tmp_path):
         """The vocal-occurrence null is a circular shift that recounts BOTH classes from the shifted train. With
-        counts alone that is impossible -- a caller can only recount the positives and has to leave
+        counts alone that is impossible -- a consumer can only recount the positives and has to leave
         the tiles frozen, which is a different null from the specified one. The edges make it a
         per-session recount, so they have to line up with the counts exactly."""
-        calls = [(100.0, 100.1, "male", 0.10, 0.20), (300.0, 300.1, "male", 0.50, 0.60)]
+        usvs = [(100.0, 100.1, "male", 0.10, 0.20), (300.0, 300.1, "male", 0.50, 0.60)]
         spikes = np.sort(np.random.default_rng(0).uniform(0, 1000, 4000))
-        unit = self._build(tmp_path, calls=calls, spike_seconds=spikes)
+        unit = self._build(tmp_path, usvs=usvs, spike_seconds=spikes)
         events = assemble_unit_vocal_events(unit, str(tmp_path), self._settings(), 0.05, 0.05)
 
         windows = events["occurrence_windows"]
@@ -229,8 +325,8 @@ class TestAssembleUnitVocalEvents:
         frame. The earlier design laid them at a fixed baseline width and re-centred wider windows on
         the same lattice, which made adjacent tiles overlap by half and their counts correlated. With
         one window per run there is no second width, and the negatives are a genuine sample."""
-        calls = [(100.0, 100.1, "male", 0.10, 0.20)]
-        unit = self._build(tmp_path, calls=calls, spike_seconds=np.array([99.98]))
+        usvs = [(100.0, 100.1, "male", 0.10, 0.20)]
+        unit = self._build(tmp_path, usvs=usvs, spike_seconds=np.array([99.98]))
         for width in (0.05, 0.10):
             events = assemble_unit_vocal_events(unit, str(tmp_path), self._settings(), 0.05, width)
             n_events = int(events["counts"].size)
@@ -239,16 +335,18 @@ class TestAssembleUnitVocalEvents:
             assert np.all(gaps >= width - 1e-9)
 
     def test_tiles_are_capped_per_session(self, tmp_path):
-        calls = [(100.0, 100.1, "male", 0.10, 0.20)]
-        unit = self._build(tmp_path, calls=calls, spike_seconds=np.array([99.98]))
+        """``max_quiet_tiles_per_session`` bounds the negatives per session, so one long session cannot
+        dominate the vocal-occurrence baseline."""
+        usvs = [(100.0, 100.1, "male", 0.10, 0.20)]
+        unit = self._build(tmp_path, usvs=usvs, spike_seconds=np.array([99.98]))
         events = assemble_unit_vocal_events(unit, str(tmp_path), self._settings(), 0.05, 0.05)
         assert events["per_session"]["20250101_000000"]["n_baseline_tiles"] == 20
 
     def test_a_legacy_position_column_name_fails_loudly(self, tmp_path):
         """The columns were renamed repo-wide; a loader that silently harmonised them would hide
         which embedding a result was actually computed on."""
-        calls = [(100.0, 100.1, "male", 0.10, 0.20)]
-        unit = self._build(tmp_path, calls=calls, spike_seconds=np.array([99.98]))
+        usvs = [(100.0, 100.1, "male", 0.10, 0.20)]
+        unit = self._build(tmp_path, usvs=usvs, spike_seconds=np.array([99.98]))
         settings = self._settings()
         settings["vocal_decoding"]["usv_manifold_column_names"] = ["qlvm_dim1", "qlvm_dim2"]
         with pytest.raises(KeyError, match="qlvm_dim1"):
@@ -258,8 +356,8 @@ class TestAssembleUnitVocalEvents:
         """The focal animal is resolved by LOOKUP from the unit's own mouse_id, never by track slot --
         a slot says "whatever is in position 0", which is a different question. If the unit's mouse is
         not in this session's track_names, that is unrecoverable and must not be guessed at."""
-        calls = [(100.0, 100.1, "male", 0.10, 0.20)]
-        unit = self._build(tmp_path, calls=calls, spike_seconds=np.array([99.98]))
+        usvs = [(100.0, 100.1, "male", 0.10, 0.20)]
+        unit = self._build(tmp_path, usvs=usvs, spike_seconds=np.array([99.98]))
         unit["mouse_id"] = "some_other_mouse"
         with pytest.raises(ValueError, match="not in track_names"):
             assemble_unit_vocal_events(unit, str(tmp_path), self._settings(), 0.05, 0.05)
@@ -267,52 +365,56 @@ class TestAssembleUnitVocalEvents:
     def test_unsorted_spike_files_still_count_correctly(self, tmp_path):
         """Window counts are read by bisection, so an out-of-order train would return wrong counts
         with no error at all. The order on disk is the writer's habit, not a guarantee here."""
-        calls = [(100.0, 100.1, "male", 0.10, 0.20)]
+        usvs = [(100.0, 100.1, "male", 0.10, 0.20)]
         shuffled = np.array([99.99, 99.96, 300.0, 99.97])
-        unit = self._build(tmp_path, calls=calls, spike_seconds=shuffled)
+        unit = self._build(tmp_path, usvs=usvs, spike_seconds=shuffled)
         events = assemble_unit_vocal_events(unit, str(tmp_path), self._settings(), 0.05, 0.05)
         assert events["counts"].tolist() == [3.0]
 
-    def test_out_of_order_calls_fail_loudly(self, tmp_path):
+    def test_out_of_order_usvs_fail_loudly(self, tmp_path):
         """The gap covariate is start[i] - stop[i-1], which is silently meaningless -- negative, even
         -- if the rows are not in temporal order."""
-        calls = [(300.0, 300.1, "male", 0.50, 0.60), (100.0, 100.1, "male", 0.10, 0.20)]
-        unit = self._build(tmp_path, calls=calls, spike_seconds=np.array([99.98]))
+        usvs = [(300.0, 300.1, "male", 0.50, 0.60), (100.0, 100.1, "male", 0.10, 0.20)]
+        unit = self._build(tmp_path, usvs=usvs, spike_seconds=np.array([99.98]))
         with pytest.raises(ValueError, match="ordered by start"):
             assemble_unit_vocal_events(unit, str(tmp_path), self._settings(), 0.05, 0.05)
 
-    def test_the_recorded_gap_is_to_the_previous_focal_call(self, tmp_path):
-        calls = [(100.0, 100.10, "male", 0.10, 0.20),
+    def test_the_recorded_gap_is_to_the_previous_focal_usv(self, tmp_path):
+        """``silent_gap`` is the start of each USV minus the stop of the previous focal USV, with +inf
+        for the first, so the gap covariate reflects real silence and never a made-up value."""
+        usvs = [(100.0, 100.10, "male", 0.10, 0.20),
                  (100.50, 100.60, "male", 0.30, 0.40),
                  (102.00, 102.10, "male", 0.50, 0.60)]
-        unit = self._build(tmp_path, calls=calls, spike_seconds=np.array([99.98]))
+        unit = self._build(tmp_path, usvs=usvs, spike_seconds=np.array([99.98]))
         events = assemble_unit_vocal_events(unit, str(tmp_path), self._settings(), 0.05, 0.05)
-        assert np.isinf(events["silent_gap"][0])          # nothing precedes the first call
+        assert np.isinf(events["silent_gap"][0])          # nothing precedes the first USV
         assert events["silent_gap"][1] == pytest.approx(0.40)
         assert events["silent_gap"][2] == pytest.approx(1.40)
 
-    def test_clean_against_selects_whose_calls_contaminate(self, tmp_path):
+    def test_clean_against_selects_whose_usvs_contaminate(self, tmp_path):
         """`vocalization_settings.clean_against` was read nowhere: every window was judged against every emitter, so
         setting it to a mouse index changed nothing at all."""
-        calls = [(100.00, 100.10, "female", 0.90, 0.90),   # partner call, 20 ms before the focal one
+        usvs = [(100.00, 100.10, "female", 0.90, 0.90),   # partner USV, 20 ms before the focal one
                  (100.12, 100.22, "male", 0.50, 0.60)]
-        unit = self._build(tmp_path, calls=calls, spike_seconds=np.array([99.98]))
+        unit = self._build(tmp_path, usvs=usvs, spike_seconds=np.array([99.98]))
 
         against_all = self._settings()
         assert against_all["vocalization_settings"]["clean_against"] == "all"
         assert against_all["vocalization_settings"]["vocal_emitter"] == "self"
         strict = assemble_unit_vocal_events(unit, str(tmp_path), against_all, 0.05, 0.05)
-        assert strict["positions"].shape[0] == 0          # the partner's call contaminates it
+        assert strict["positions"].shape[0] == 0          # the partner's USV contaminates it
 
         against_self = self._settings()
-        against_self["vocalization_settings"]["clean_against"] = "self"    # only the recorded animal's own calls
+        against_self["vocalization_settings"]["clean_against"] = "self"    # only the recorded animal's own USVs
         loose = assemble_unit_vocal_events(unit, str(tmp_path), against_self, 0.05, 0.05)
         assert loose["positions"].shape[0] == 1
 
     def test_sessions_are_indexed_by_slot(self, tmp_path):
+        """``session_index`` is each event's position in ``vocal_sessions``, so the per-session
+        permutation and folds group events by the right session."""
         for slot, session_id in enumerate(["20250101_000000", "20250101_010000"]):
             _write_session(tmp_path, session_id, self.UNIT, n_frames=150000, frame_rate=150.0,
-                           calls=[(100.0 + slot, 100.1 + slot, "male", 0.1, 0.2)],
+                           usvs=[(100.0 + slot, 100.1 + slot, "male", 0.1, 0.2)],
                            spike_seconds=np.array([99.98 + slot]))
         unit = {"unit_id": self.UNIT, "mouse_id": "male",
                 "courtship_sessions": ["20250101_000000", "20250101_010000"],
@@ -323,6 +425,7 @@ class TestAssembleUnitVocalEvents:
 
 
 class TestSettingsInvariants:
+    """Shipped-settings invariants the assembler and the downstream decodings rely on."""
 
     def test_one_window_per_run_lives_in_the_shared_anchors_block(self):
         """ONE window is analysed per run, not a pair looped over. It sits in `vocalization_settings` because it is
@@ -338,18 +441,18 @@ class TestSettingsInvariants:
 
     def test_the_shipped_window_straddles_onset_deliberately(self):
         """RULED 2026-09-11 (user): width 0.10 against a pre-offset of 0.05, so the window runs
-        [start - 50 ms, start + 50 ms) and roughly 40-55% of a typical call (median duration 87-127
+        [start - 50 ms, start + 50 ms) and roughly 40-55% of a typical USV (median duration 87-127
         ms) falls INSIDE it.
 
         This is a deliberate trade and it reverses the earlier prediction-clean default. It buys
         POWER -- banked gains rise from +0.05726 to +0.07199 on cl0401 and from +0.0031 to +0.0114 on
         cl0499, a 3.7x lift on the weak unit, and passes are decided at the faint margin. It costs the
-        ability to say the gain is purely PREDICTIVE: part of it is response to the call in progress, and
+        ability to say the gain is purely PREDICTIVE: part of it is response to the USV in progress, and
         the design cannot separate the two. The user ruled that showing the activity is purely
         premotor is not required.
 
-        The pre-window is unchanged at 50 ms, so contamination from the PREVIOUS call is unaffected
-        (3.7% of USVs cohort-wide have a gap below 50 ms); the post-onset half is inside the call by
+        The pre-window is unchanged at 50 ms, so contamination from the PREVIOUS USV is unaffected
+        (3.7% of USVs cohort-wide have a gap below 50 ms); the post-onset half is inside the USV by
         construction and needs no cleanliness guard.
 
         The two numbers stay independent rather than collapsing into one duration precisely so this
@@ -421,7 +524,7 @@ class TestSettingsInvariants:
             "min_decoding_spikes", "single_session_inner_split_blocks"}
 
     def test_the_session_gate_is_named_for_the_emitter_it_follows(self):
-        """The gate counts calls from whoever `vocalization_settings.vocal_emitter` names, so a name
+        """The gate counts USVs from whoever `vocalization_settings.vocal_emitter` names, so a name
         saying `focal` would misdescribe it for two of that knob's three values -- reading as correct
         while gating on the partner."""
         settings = _load_settings()
@@ -456,11 +559,11 @@ class TestFocalVocalFrames:
 
     UNIT = "imec0_cl0001_ch001_good"
 
-    def test_a_session_where_the_focal_animal_never_called_yields_no_frames(self, tmp_path):
+    def test_a_session_where_the_focal_animal_never_vocalized_yields_no_frames(self, tmp_path):
         """Ordinary, not exceptional: it happens in 8 of 77 courtship sessions. It used to raise
         IndexError and kill the whole fold."""
         _write_session(tmp_path, "20250101_000000", self.UNIT, n_frames=150000, frame_rate=150.0,
-                       calls=[(100.0, 100.1, "female", 0.1, 0.2)],   # partner only
+                       usvs=[(100.0, 100.1, "female", 0.1, 0.2)],   # partner only
                        spike_seconds=np.array([99.98]))
         session = {"n_frames": 150000}
         frames, pointer, gaps = focal_vocal_frames(session, "20250101_000000", str(tmp_path),
@@ -471,22 +574,22 @@ class TestFocalVocalFrames:
 
     def test_the_emitter_is_matched_exactly_not_by_substring(self, tmp_path):
         """A bare mouse id is a prefix of the same animal's suffixed form, so a substring match can
-        silently pick up another animal's calls."""
+        silently pick up another animal's USVs."""
         _write_session(tmp_path, "20250101_000000", self.UNIT, n_frames=150000, frame_rate=150.0,
-                       calls=[(100.0, 100.1, "147366_1", 0.1, 0.2),
+                       usvs=[(100.0, 100.1, "147366_1", 0.1, 0.2),
                               (200.0, 200.1, "147366", 0.3, 0.4)],
                        spike_seconds=np.array([99.98]))
         session = {"n_frames": 150000}
         frames, _pointer, gaps = focal_vocal_frames(session, "20250101_000000", str(tmp_path),
                                                     "147366", 150.0, 600, VOCAL_SETTINGS)
-        assert gaps.size == 1                     # only the exact-match call, not the "147366_1" one
+        assert gaps.size == 1                     # only the exact-match USV, not the "147366_1" one
         assert frames.min() >= int(200.0 * 150.0)
 
 
 class TestQuietSideKeepsEverySession:
     """The load-bearing half of the two-session-set design, and the easier one to break by accident.
 
-    A session in which the recorded animal barely called is EXCLUDED from everything scored on
+    A session in which the recorded animal barely vocalized is EXCLUDED from everything scored on
     vocalizations and must stay in everything fitted on silence -- it has more quiet, not less. If a
     future change points the kinematic assembler at `vocal_sessions`, the kinematic encoding would quietly lose
     training data for the exact sessions that offer the most of it."""
@@ -494,9 +597,29 @@ class TestQuietSideKeepsEverySession:
     UNIT = "imec0_cl0001_ch001_good"
 
     def test_the_kinematic_assembler_reads_courtship_sessions_not_vocal_sessions(self, monkeypatch):
+        """The kinematic feature loader must receive every courtship session (the thin one included) and
+        the unit's own mouse id, so quiet-side training data is never lost to the vocal-session gate."""
         seen = {}
 
         def _spy(session_dirs, **kwargs):
+            """
+            Description
+            -----------
+            Stand-in for ``build_zscored_feature_frames`` that records the session directories and
+            the ``recorded_mouse_id`` it was handed, then returns empty feature containers.
+
+            Parameters
+            ----------
+            session_dirs (list[str])
+                Session directories the assembler asked for.
+            **kwargs (dict)
+                Remaining keyword arguments; ``recorded_mouse_id`` is read.
+
+            Returns
+            -------
+            empty (tuple[dict, dict, dict, dict])
+                Four empty dicts, the shape of the real loader's return.
+            """
             seen["dirs"] = list(session_dirs)
             seen["mouse"] = kwargs["recorded_mouse_id"]
             return {}, {}, {}, {}
@@ -524,6 +647,8 @@ class TestSelfAndPartnerAreResolvedByName:
     NAMES: ClassVar[list[str]] = ["male", "female"]
 
     def test_self_is_the_units_own_mouse_not_a_slot(self):
+        """``self`` resolves to whichever name the unit's mouse carries, whatever slot it occupies, so
+        flipping the track order cannot flip which animal is focal."""
         assert emitter_names(self.NAMES, "female", "self") == ["female"]
         assert emitter_names(self.NAMES, "male", "self") == ["male"]
 
@@ -535,15 +660,18 @@ class TestSelfAndPartnerAreResolvedByName:
         assert emitter_names(trio, "female", "partner") == ["male", "pup"]
 
     def test_all_is_no_filter_rather_than_the_two_track_names(self):
-        """A session's USV table can carry rows whose emitter was never assigned, and a call nobody was
-        credited with is still a call the animal heard."""
+        """A session's USV table can carry rows whose emitter was never assigned, and a USV nobody was
+        credited with is still a USV the animal heard."""
         assert emitter_names(self.NAMES, "male", "all") == []
 
     def test_an_absent_mouse_raises_rather_than_being_guessed_at(self):
+        """A mouse id missing from the track names must raise, never fall back to a slot."""
         with pytest.raises(ValueError, match="not in track_names"):
             emitter_names(self.NAMES, "some_other_mouse", "self")
 
     def test_an_unknown_spec_raises(self):
+        """Only ``self``/``partner``/``all`` are valid; a legacy ``focal`` spec must raise rather than
+        be interpreted."""
         with pytest.raises(ValueError, match="emitter spec must be"):
             emitter_names(self.NAMES, "male", "focal")
 
@@ -552,7 +680,23 @@ class TestSelfAndPartnerAreResolvedByName:
         only in a dyad. Measured 2 track names in 73 of 73 cohort sessions -- so a third one would go
         unnoticed, which is what the assertion is for."""
         def _three_tracks(**_kwargs):
-            return ({"s1": pl.DataFrame({"male.speed": [0.0]})}, {"s1": 150.0},
+            """
+            Description
+            -----------
+            Stand-in for ``load_behavioral_feature_data`` that reports three track names for one
+            session, which the dyad assertion must reject.
+
+            Parameters
+            ----------
+            **_kwargs (dict)
+                Ignored loader arguments.
+
+            Returns
+            -------
+            loaded (tuple[dict, dict, dict])
+                Feature frames, frame rates and track names keyed by session.
+            """
+            return ({"s1": pls.DataFrame({"male.speed": [0.0]})}, {"s1": 150.0},
                     {"s1": ["male", "female", "pup"]})
 
         monkeypatch.setattr(
@@ -569,6 +713,8 @@ class TestOneQuietDefinition:
     would have moved the vocal decoding's tiles while leaving the kinematic encoding's anchors all-emitter."""
 
     def test_the_kinematic_assembler_takes_clean_against(self):
+        """The kinematic assembler must accept ``clean_against`` so both sides can share one quiet
+        definition."""
         assert "clean_against" in inspect.signature(assemble_unit_sessions).parameters
 
     def test_the_kinematic_assembler_takes_vocal_emitter(self):
@@ -578,6 +724,9 @@ class TestOneQuietDefinition:
         assert "vocal_emitter" in inspect.signature(assemble_unit_sessions).parameters
 
     def test_the_dispatcher_passes_the_same_setting_to_both_sides(self):
+        """Every ``assemble_unit_sessions`` site in the dispatcher must forward the shared
+        ``clean_against`` and ``vocal_emitter`` values, so the kinematic side cannot drift from the
+        vocal side through a hard-coded argument."""
         source = (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"
                   / "neural_modeling" / "main_neural_encoding_dispatcher.py").read_text()
         # every assemble_unit_sessions call site must hand it the shared anchors values
@@ -589,15 +738,17 @@ class TestOneQuietDefinition:
 
 class TestVocalSessionScope:
     """The cohort builder hands out two session sets, and the vocal-side assembler must read the
-    vocal one. A session the male barely called in stays available to the kinematic encoding,
-    which needs silence, and is kept away from everything scored on the calls themselves."""
+    vocal one. A session the male barely vocalized in stays available to the kinematic encoding,
+    which needs silence, and is kept away from everything scored on the USVs themselves."""
 
     UNIT = "imec0_cl0001_ch001_good"
 
     def test_only_vocal_sessions_contribute_events(self, tmp_path):
+        """A courtship session absent from ``vocal_sessions`` must contribute no events and no session
+        index, while listing both sessions yields both."""
         for slot, session_id in enumerate(["20250101_000000", "20250101_010000"]):
             _write_session(tmp_path, session_id, self.UNIT, n_frames=150000, frame_rate=150.0,
-                           calls=[(100.0 + slot, 100.1 + slot, "male", 0.1, 0.2)],
+                           usvs=[(100.0 + slot, 100.1 + slot, "male", 0.1, 0.2)],
                            spike_seconds=np.array([99.98 + slot]))
         settings = _load_settings()
         settings["vocal_decoding"]["max_quiet_tiles_per_session"] = 20
@@ -618,15 +769,16 @@ class TestVocalizationFilter:
     """Noise and squeaks are excluded, and the two categories deliberately have DIFFERENT scopes.
 
     Noise is not a vocalization, so it is dropped everywhere including the quiet guard. A squeak is a
-    real sound of a different type, so it leaves the analysed call set but -- at the shipped default --
+    real sound of a different type, so it leaves the analysed USV set but -- at the shipped default --
     still stops a frame counting as quiet.
     """
 
-    TABLE = pl.DataFrame({"start": [0.0, 1.0, 2.0, 3.0],
+    TABLE = pls.DataFrame({"start": [0.0, 1.0, 2.0, 3.0],
                           "noise": [True, False, False, False],
                           "squeak": [False, True, False, False]})
 
     def test_analysed_scope_drops_both(self):
+        """The analysed set excludes both noise and squeaks, so only genuine USVs are decoded."""
         kept = filter_vocalizations(self.TABLE, VOCAL_SETTINGS, "analysed")
         assert kept["start"].to_list() == [2.0, 3.0]
 
@@ -636,6 +788,8 @@ class TestVocalizationFilter:
         assert kept["start"].to_list() == [1.0, 2.0, 3.0]
 
     def test_guard_drops_squeaks_when_they_do_not_block_quiet(self):
+        """With ``squeaks_block_quiet=False`` the guard drops squeaks too, so the knob really controls
+        whether squeaks veto quiet frames."""
         settings = dict(VOCAL_SETTINGS, squeaks_block_quiet=False)
         kept = filter_vocalizations(self.TABLE, settings, "guard")
         assert kept["start"].to_list() == [2.0, 3.0]
@@ -647,20 +801,25 @@ class TestVocalizationFilter:
             assert 0.0 not in kept["start"].to_list()
 
     def test_flags_off_keeps_everything(self):
+        """With both exclusion flags off neither scope removes a row, so the flags are the only thing
+        that filters."""
         settings = {"exclude_noise": False, "exclude_squeaks": False, "squeaks_block_quiet": True}
         for scope in ("analysed", "guard"):
             assert filter_vocalizations(self.TABLE, settings, scope).height == 4
 
     def test_a_missing_column_raises_rather_than_silently_skipping(self):
         """An unfiltered run must never be indistinguishable from a filtered one in its numbers."""
-        table = pl.DataFrame({"start": [0.0, 1.0]})
+        table = pls.DataFrame({"start": [0.0, 1.0]})
         with pytest.raises(KeyError, match="no such column"):
             filter_vocalizations(table, VOCAL_SETTINGS, "analysed")
 
     def test_an_unknown_scope_raises(self):
+        """A misspelled scope must raise rather than default to one of the two filters."""
         with pytest.raises(ValueError, match="scope must be one of"):
             filter_vocalizations(self.TABLE, VOCAL_SETTINGS, "everything")
 
     def test_the_filter_preserves_row_order(self):
-        table = pl.DataFrame({"start": [5.0, 1.0, 9.0], "noise": [False] * 3, "squeak": [False] * 3})
+        """Filtering must not reorder rows, since the assembler's start-order check and the gap
+        covariate read the table in its stored order."""
+        table = pls.DataFrame({"start": [5.0, 1.0, 9.0], "noise": [False] * 3, "squeak": [False] * 3})
         assert filter_vocalizations(table, VOCAL_SETTINGS, "analysed")["start"].to_list() == [5.0, 1.0, 9.0]

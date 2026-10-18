@@ -6,6 +6,15 @@ The class wraps four orchestration methods around external tools
 (sleap-convert, sleap_anipose.draw_board / calibrate / triangulate); we
 substitute every external call so the orchestration itself can be
 exercised against tmp_path-based session layouts.
+
+Coverage: ConvertTo3D construction (session-directory resolution and its
+error paths), sleap_file_conversion (one sleap-convert subprocess per .slp, a
+failed conversion stops the step, no .slp files), conduct_anipose_calibration
+(board drawing on/off), conduct_anipose_triangulation (calibration-file lookup,
+arena vs session frame restriction), translate_rotate_metric (arena and animal
+branches, a failed write keeps the old output, session index range),
+find_mouse_names in the legacy metadata layout, and the cv2.aruco API the
+ChArUco pose pipeline depends on.
 """
 
 from __future__ import annotations
@@ -150,7 +159,7 @@ def test_sleap_file_conversion_invokes_subprocess_per_slp(
     assert popen_mock.call_count == 3  # exactly one per .slp
     # Every subprocess call should target sleap-convert with --format analysis
     for call in popen_mock.call_args_list:
-        argv = call.kwargs.get("args") or call.args[0]
+        argv = call.kwargs["args"]
         assert "sleap-convert" in argv
         assert "--format" in argv
         assert "analysis" in argv
@@ -165,9 +174,37 @@ def test_sleap_file_conversion_failure_stops_the_step(processing_settings, sessi
         """A finished Popen stand-in whose conversion failed (return code 1)."""
 
         def __init__(self, args, **_kwargs):
+            """
+            Description
+            -----------
+            Records the command the step launched, as a real Popen would, so the
+            failure message the step raises can name it.
+
+            Parameters
+            ----------
+            args : list
+                The sleap-convert command the step passed as ``args=``.
+            **_kwargs : dict
+                The remaining Popen keyword arguments (stdout, stderr), ignored.
+
+            Returns
+            -------
+            None
+            """
             self.args = args
 
         def poll(self):
+            """
+            Description
+            -----------
+            Reports the subprocess as finished with a non-zero exit, the
+            condition the step must turn into an error.
+
+            Returns
+            -------
+            int
+                The return code 1.
+            """
             return 1
 
     root, sess_dir = session_with_video_dir
@@ -303,7 +340,7 @@ def test_conduct_anipose_triangulation_refuses_several_calibrations(
     mocker.patch("usv_playpen.processing.anipose_operations.smart_wait")
     converter = ConvertTo3D(root_directory=str(root), input_parameter_dict=processing_settings,
                             message_output=lambda *_a, **_kw: None)
-    with pytest.raises(ValueError, match="2 \\*_calibration.toml files"):
+    with pytest.raises(ValueError, match=r"2 \*_calibration.toml files"):
         converter.conduct_anipose_triangulation()
     assert triangulate_mock.call_count == 0
 
@@ -636,8 +673,32 @@ def test_translate_rotate_metric_failed_write_keeps_the_old_output(processing_se
     original_create = h5py.Group.create_dataset
 
     def _failing_create(self, name, *args, **kwargs):
+        """
+        Description
+        -----------
+        Stands in for h5py.Group.create_dataset and fails on the last dataset the
+        writer creates, so the test can check that a mid-write failure leaves the
+        earlier output file untouched.
+
+        Parameters
+        ----------
+        self : h5py.Group
+            The group the dataset is created in.
+        name : str
+            The dataset name; ``track_names`` raises.
+        *args : tuple
+            Positional arguments forwarded to the real create_dataset.
+        **kwargs : dict
+            Keyword arguments forwarded to the real create_dataset.
+
+        Returns
+        -------
+        h5py.Dataset
+            The dataset the real create_dataset returns for every other name.
+        """
         if name == "track_names":
-            raise OSError("disk full")
+            message = "disk full"
+            raise OSError(message)
         return original_create(self, name, *args, **kwargs)
 
     mocker.patch.object(h5py.Group, "create_dataset", _failing_create)

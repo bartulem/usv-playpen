@@ -2,7 +2,7 @@
 @author: bartulem
 Tests for processing/build_qlvm_training_set.
 
-Covers the pure helpers directly (session typing, mask-count strata, uniform
+Coverage: the pure helpers directly (session typing, mask-count strata, uniform
 headroom, capped-even water-filling, the natural / uniform within-session draw,
 the type-budgeted draw, the type-stratified session split, the loudness floor and
 the resize), and end-to-end builds on synthetic sessions (per-session spectrogram
@@ -214,7 +214,8 @@ def test_split_sessions_by_type_single_session_type_goes_to_training():
     types = {"a": "MF", "b": "MF", "c": "MF", "d": "MM", "e": "lone_male"}
     train, val, single = split_sessions_by_type(list(counts), types, counts, 0.2, 5)
     assert single == ["MM", "lone_male"]
-    assert "d" in train and "e" in train
+    assert "d" in train
+    assert "e" in train
     assert {"a", "b", "c"} & set(val)
     assert {"a", "b", "c"} & set(train)
     rng = np.random.default_rng(5)
@@ -310,6 +311,12 @@ def _write_session(tmp_path, session_id, session_type, n=8, n_f=16, n_t=20, sque
 
 
 def _build(tmp_path, roots, cfg, name="out", **kwargs):
+    """
+    Run QLVMTrainingSetBuilder.build on ``roots`` with ``cfg`` as its
+    ``build_qlvm_training_set`` settings block and a silent message output,
+    writing into ``tmp_path / name`` so several builds of one cohort can sit side
+    by side; ``kwargs`` are forwarded to the builder. Returns the output directory.
+    """
     out_dir = tmp_path / name
     QLVMTrainingSetBuilder(
         root_directories=[str(root) for root in roots],
@@ -398,7 +405,8 @@ def _write_reference_index(tmp_path, roots, flagged=None, missing_session=None):
         if root.name == missing_session:
             continue
         for row in range(8):
-            is_bbv, n_bouts = flagged.get(root.name, {}).get(row, (False, 0))
+            session_flags = flagged[root.name] if root.name in flagged else {}
+            is_bbv, n_bouts = session_flags[row] if row in session_flags else (False, 0)
             rows.append({"session_id": root.name, "seg_index": row, "p_bbv": 0.1, "is_bbv": is_bbv, "n_bouts_min3": n_bouts})
     path = tmp_path / "bbv_segment_index.csv"
     pls.DataFrame(rows).write_csv(path)
@@ -458,7 +466,8 @@ def test_build_exclude_squeaks_keeps_usv_rows_only(tmp_path, cohort):
     all_dir = _build(tmp_path, cohort, {**_CFG, "full_dataset": True, "exclude_squeaks": False}, "all")
     kept_ids = np.load(kept_dir / "full_data.npz")["spec_id"].tolist()
     all_ids = np.load(all_dir / "full_data.npz")["spec_id"].tolist()
-    assert "20230101_100000_1" not in kept_ids and "20230101_100000_2" not in kept_ids
+    assert "20230101_100000_1" not in kept_ids
+    assert "20230101_100000_2" not in kept_ids
     assert "20230101_110000_3" in kept_ids
     assert sorted(set(all_ids) - set(kept_ids)) == ["20230101_100000_1", "20230101_100000_2"]
 

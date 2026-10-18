@@ -6,6 +6,15 @@ The orchestration methods invoke `static_sox` via subprocess, librosa.load,
 and soundfile.write. We mock all three so we can exercise the file-handling
 and branching logic without sox installed and without any real WAV files
 larger than a handful of samples.
+
+Coverage: the class-level SoX settings and kwargs storage; the frequency-shift
+segment extractor (missing source, no match, explicit window, the double-SoX
+volume pass, the filtered branch that drops ``sinc``, and the timeout plus checked
+return code on every SoX pass); the seeded USV-playback WAV; the naturalistic
+playback WAV (overlap-gap clamping, emitted sequences, per-chunk metadata that
+matches the truncated WAV, seed reproducibility, the complexity ratio / ramp /
+threshold knobs, and the missing-repository report); and the int16 / sampling-rate
+guards of ``_read_int16_snippet``.
 """
 
 from __future__ import annotations
@@ -185,7 +194,7 @@ def test_frequency_shift_audio_segment_filtered_branch_skips_sinc(tmp_path, mock
     ag.frequency_shift_audio_segment()
 
     # Verify that the sox command in the filtered branch does not contain "sinc".
-    last_call_args = fake_popen.call_args_list[-1].kwargs.get("args", "")
+    last_call_args = fake_popen.call_args_list[-1].kwargs["args"]
     assert "sinc" not in last_call_args
     assert "tempo" in last_call_args
 
@@ -617,8 +626,10 @@ def test_naturalistic_playback_metadata_matches_truncated_wav(tmp_path, mocker):
     assert len(spacing_counts) == len(usvid_labels)   # 1:1 per-chunk metadata
     assert wav.shape[0] <= 2 * 250000                 # up to the requested duration @ 250 kHz
     # fixed 0.1 s (edge_silence_seconds) lead-in and lead-out: file opens and closes on an ISI
-    assert usvid_labels[0] == "ISI" and usvid_labels[-1] == "ISI"
-    assert spacing_counts[0] == int(0.1 * 250000) and spacing_counts[-1] == int(0.1 * 250000)
+    assert usvid_labels[0] == "ISI"
+    assert usvid_labels[-1] == "ISI"
+    assert spacing_counts[0] == int(0.1 * 250000)
+    assert spacing_counts[-1] == int(0.1 * 250000)
 
 
 def test_create_naturalistic_usv_playback_wav_seed_reproducible(tmp_path, mocker):

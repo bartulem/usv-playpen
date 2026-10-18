@@ -21,9 +21,9 @@ import json
 import pathlib
 import shutil
 
-import matplotlib
+import matplotlib as mpl
 
-matplotlib.use("Agg")
+mpl.use("Agg")
 import h5py
 import matplotlib.pyplot as plt
 import numpy as np

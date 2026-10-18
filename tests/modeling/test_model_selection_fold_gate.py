@@ -5,7 +5,9 @@ Unit tests for the fold-grain manifold selection gate helper in
 
 These drive the operative building block of the behaviour -> acoustic-manifold-
 position feature-acceptance rule directly, with hand-built CV-fold dicts, so no
-model fitting or on-disk artefacts are needed:
+model fitting or on-disk artefacts are needed.
+
+Coverage:
 
 * ``_fold_paired_margin_bootstrap`` -- the per-fold paired score margin and fold
   bootstrap that both the screen (pooled von Mises, ``event_to_region=None``) and
@@ -15,7 +17,12 @@ model fitting or on-disk artefacts are needed:
   p not small), a degenerate single-fold input must return the non-significant
   sentinel rather than raise, the macro path must honour supplied region labels,
   and folds below ``min_fold_events`` must be dropped from the margin.
+* ``_frozen_selection_kappa`` -- the frozen concentration lets a fold predicted
+  worse than the marginal score below the flat-torus floor.
+* the three selection-gate settings and the gate's no-signal acceptance rate.
 """
+
+from __future__ import annotations
 
 import warnings
 
@@ -28,21 +35,41 @@ import pytest
 # ``test_model_selection_tail``).
 with warnings.catch_warnings():
     warnings.simplefilter('ignore', DeprecationWarning)
+    from usv_playpen.modeling.manifold_metric import macro_von_mises_logscore
     from usv_playpen.modeling.model_selection import (
-        _frozen_selection_kappa,
-        _fold_paired_margin_bootstrap,
+        _SELECTION_CI_LEVEL,
         _SELECTION_EFFECT_FLOOR,
         _SELECTION_N_BOOTSTRAP,
-        _SELECTION_CI_LEVEL,
+        _fold_paired_margin_bootstrap,
+        _frozen_selection_kappa,
     )
-    from usv_playpen.modeling.manifold_metric import macro_von_mises_logscore
 
 
 def _folds_from_predictions(n_folds, n_per_fold, prediction_fn, seed):
     """
+    Description
+    -----------
     Build ``n_folds`` CV folds of ``n_per_fold`` events each, contiguous in the
     global event index space, with ``prediction_fn(truth, rng)`` supplying each
-    fold's predictions against a random torus truth.
+    fold's predictions against a random torus truth drawn uniformly on [0, 1)^2.
+
+    Parameters
+    ----------
+    n_folds (int)
+        Number of folds to build.
+    n_per_fold (int)
+        Number of events in every fold.
+    prediction_fn (Callable[[np.ndarray, np.random.Generator], np.ndarray])
+        Maps a fold's (n_per_fold, 2) truth and the shared generator to that
+        fold's (n_per_fold, 2) predictions; invoked positionally.
+    seed (int)
+        Seed of the generator that draws the truths and feeds ``prediction_fn``.
+
+    Returns
+    -------
+    folds (dict)
+        ``{'test_indices': [...], 'y_pred_xy': [...], 'y_true': [...]}``, one
+        list entry per fold, in the CV-fold dict shape the gate consumes.
     """
     rng = np.random.default_rng(seed)
     folds = {'test_indices': [], 'y_pred_xy': [], 'y_true': []}
@@ -58,7 +85,26 @@ def _folds_from_predictions(n_folds, n_per_fold, prediction_fn, seed):
 
 
 def _paired_null(actual, seed):
-    """An independent-draw ``null`` block that shares `actual`'s truth/indices."""
+    """
+    Description
+    -----------
+    Build an independent-draw ``null`` fold block that shares ``actual``'s truth
+    and test indices, so the gate sees a paired comparison against predictions
+    that carry no information about the truth.
+
+    Parameters
+    ----------
+    actual (dict)
+        Fold dict from ``_folds_from_predictions``.
+    seed (int)
+        Base seed; fold ``k`` draws its uniform predictions with ``seed + k``.
+
+    Returns
+    -------
+    null (dict)
+        Fold dict with ``actual``'s ``test_indices`` / ``y_true`` and uniform
+        random ``y_pred_xy`` of matching shapes.
+    """
     return {
         'test_indices': actual['test_indices'],
         'y_true': actual['y_true'],
@@ -107,7 +153,7 @@ def test_fold_bootstrap_honors_frozen_kappa():
     expected = float(np.mean([
         macro_von_mises_logscore(ap, at, None, metric='torus', period=1.0, kappa=k)
         - macro_von_mises_logscore(npred, at, None, metric='torus', period=1.0, kappa=k)
-        for ap, npred, at in zip(actual['y_pred_xy'], null['y_pred_xy'], actual['y_true'])
+        for ap, npred, at in zip(actual['y_pred_xy'], null['y_pred_xy'], actual['y_true'], strict=True)
     ]))
     assert res['mean_margin'] == pytest.approx(expected)
     # A different frozen kappa moves the margin.
@@ -136,7 +182,7 @@ def test_fold_bootstrap_degenerate_input_returns_non_significant():
     """Fewer than two usable folds -> NaN margin and p=1.0 (cannot pass), no raise."""
     actual = _folds_from_predictions(
         n_folds=1, n_per_fold=200,
-        prediction_fn=lambda y, rng: y, seed=0)
+        prediction_fn=lambda y, _rng: y, seed=0)
     null = {'test_indices': actual['test_indices'], 'y_true': actual['y_true'],
             'y_pred_xy': actual['y_pred_xy']}
     result = _fold_paired_margin_bootstrap(

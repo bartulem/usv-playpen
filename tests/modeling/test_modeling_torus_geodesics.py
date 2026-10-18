@@ -9,6 +9,15 @@ possible: the density geodesic must recover the flat graph metric at
 ``density_exponent=0`` and grow through low-density regions; the pullback metric
 must equal ``J^T J`` for a known linear decoder, reduce to the flat graph under
 the identity decoder, and stretch distances along a deliberately stretched axis.
+
+Coverage:
+
+* ``flat_torus_distance_matrix``, ``torus_grid``, ``torus_kde_density``.
+* ``density_geodesic_matrix`` and ``pullback_metric_at_nodes`` /
+  ``pullback_geodesic_matrix`` against analytic ground truth.
+* the ``torus_distance`` dispatcher and its argument guards.
+* the per-event helpers (grid snapping, the geodesic context, per-event errors,
+  MAE columns, column-name and decoder-source resolution, QLVM decoder wiring).
 """
 
 from __future__ import annotations
@@ -17,6 +26,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from tests.processing.test_qlvm_latents import _make_model_cell, _phase11_bins
 from usv_playpen import os_utils
 from usv_playpen.modeling.manifold_metric import _geodesic_distance_matrix
 from usv_playpen.modeling.modeling_torus_geodesics import (
@@ -27,21 +37,29 @@ from usv_playpen.modeling.modeling_torus_geodesics import (
     geodesic_mae_columns,
     make_qlvm_decode_fn_from_model_cell,
     make_qlvm_decode_fn_from_source,
-    resolve_geodesic_decoder_source,
-    resolve_manifold_column_names,
     per_event_geodesic_error,
     pullback_geodesic_matrix,
     pullback_metric_at_nodes,
+    resolve_geodesic_decoder_source,
+    resolve_manifold_column_names,
     torus_distance,
     torus_grid,
     torus_kde_density,
 )
-from usv_playpen.processing.qlvm_latents import condition_quantile_value, load_model_cell
-from usv_playpen.processing.qlvm_model import decode_lattice_atlas, decoder_forward, torus_basis_forward
-from tests.processing.test_qlvm_latents import _make_model_cell, _phase11_bins
+from usv_playpen.processing.qlvm_latents import (
+    condition_quantile_value,
+    load_model_cell,
+)
+from usv_playpen.processing.qlvm_model import (
+    decode_lattice_atlas,
+    decoder_forward,
+    torus_basis_forward,
+)
 
 
 class TestFlat:
+    """``flat_torus_distance_matrix``: the wrap-aware Euclidean distance on the flat torus."""
+
     def test_matches_manifold_metric_and_wraps(self):
         """Flat-torus matrix equals the pipeline's wrap-aware distance, is a
         symmetric zero-diagonal matrix, and takes the short way round the seam."""
@@ -58,15 +76,20 @@ class TestFlat:
 
 
 class TestGrid:
+    """``torus_grid``: the regular node lattice the graph geodesics are built on."""
+
     def test_shape_and_range(self):
         """The grid tiles ``[0, period)^2`` at cell centres (nothing on the seam)."""
 
         g = torus_grid(7, period=1.0)
         assert g.shape == (49, 2)
-        assert g.min() > 0.0 and g.max() < 1.0
+        assert g.min() > 0.0
+        assert g.max() < 1.0
 
 
 class TestKDE:
+    """``torus_kde_density``: the wrap-aware kernel density the density geodesic weights edges by."""
+
     def test_nonnegative_and_periodic(self):
         """The wrap-aware KDE is non-negative and (near) identical at the two
         sides of the seam, which are physically the same torus point."""
@@ -80,6 +103,8 @@ class TestKDE:
 
 
 class TestDensityGeodesic:
+    """``density_geodesic_matrix``: graph geodesics with inverse-density edge weights."""
+
     def test_uniform_density_is_exponent_invariant(self):
         """With uniform density every edge weight is just the flat length
         regardless of the exponent, so the geodesic matrix cannot depend on it."""
@@ -108,12 +133,18 @@ class TestDensityGeodesic:
 
 
 class TestPullback:
+    """Decoder-Jacobian pullback metric and the graph geodesic it induces."""
+
     def test_metric_is_JtJ_for_linear_decoder(self):
         """For a linear decoder ``g(z) = A z`` the pullback metric is the
         constant ``A^T A`` at every node (J is constant)."""
 
         A = jnp.array([[2.0, 0.0], [0.0, 0.5], [1.0, 1.0]])   # (3, 2)
-        decode = lambda z: A @ z
+
+        def decode(z):
+            """Linear decoder ``z -> A z`` with the constant Jacobian ``A``."""
+            return A @ z
+
         nodes = torus_grid(5, period=1.0)
         g = pullback_metric_at_nodes(nodes, decode)
         ata = np.asarray(A.T @ A)
@@ -126,7 +157,10 @@ class TestPullback:
         length -- the pullback geodesic must equal the flat-length graph geodesic
         (the uniform density geodesic)."""
 
-        decode = lambda z: z
+        def decode(z):
+            """Identity decoder: its Jacobian is ``I``, so the pullback metric is flat."""
+            return z
+
         nodes = torus_grid(9, period=1.0)
         d_pull = pullback_geodesic_matrix(nodes, decode, period=1.0, k=8)
         d_flat_graph = density_geodesic_matrix(
@@ -139,10 +173,15 @@ class TestPullback:
         target."""
 
         A = jnp.array([[3.0, 0.0], [0.0, 1.0]])
-        decode = lambda z: A @ z
+
+        def decode(z):
+            """Anisotropic linear decoder stretching x by 3 and leaving y unchanged."""
+            return A @ z
+
         nodes = torus_grid(13, period=1.0)
 
         def nearest(pt):
+            """Index of the grid node closest (in unwrapped Euclidean distance) to ``pt``."""
             return int(np.argmin(np.sum((nodes - np.asarray(pt)) ** 2, axis=1)))
 
         src = nearest([0.5, 0.5])
@@ -154,23 +193,30 @@ class TestPullback:
 
 
 class TestDispatcher:
+    """``torus_distance``: the single entry point routing to the three geometries."""
+
     def test_flat_route_matches_direct(self):
+        """The 'flat' route must return exactly the direct flat matrix, so callers can switch geometry by name."""
         nodes = torus_grid(6, period=1.0)
         np.testing.assert_allclose(
             torus_distance(nodes, 'flat', period=1.0),
             flat_torus_distance_matrix(nodes, period=1.0))
 
     def test_missing_inputs_and_unknown_method_raise(self):
+        """A geodesic route without its required input, or an unknown method name, must raise rather than
+        silently fall back to another geometry."""
         nodes = torus_grid(6, period=1.0)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="method='density_geodesic' requires `density`"):
             torus_distance(nodes, 'density_geodesic')            # no density
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="method='pullback_geodesic' requires `decode_fn` or"):
             torus_distance(nodes, 'pullback_geodesic')           # no decode_fn / tensors
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Unknown method 'not_a_method'"):
             torus_distance(nodes, 'not_a_method')
 
 
 class TestPerEventHelpers:
+    """Per-event geodesic error helpers and the context / decoder plumbing behind them."""
+
     def test_snap_to_grid_hits_own_nodes_and_wraps(self):
         """Every grid node snaps to itself, and a point just below the seam
         snaps to the last (nearest) node, not across the wrap."""

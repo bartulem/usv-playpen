@@ -1,6 +1,10 @@
 """
 @author: bartulem
-Coverage: the vocal-gating statistic, its bases, and the three-condition verdict.
+Unit tests for ``usv_playpen.neural_modeling.neural_vocal_gating``.
+
+Coverage: the vocal-gating statistic, its bases, and the three-condition verdict; the shuffle-count
+bar, the activation rules, the implemented options, survivor reporting, the frame universe, the
+spike-train shift null, the alpha settings and the per-unit p-value.
 
 Every test here pins a failure that actually occurred during the pilot work, because the gating
 result is decided by WHICH frames each effect is measured on and WHICH base it is scored over, and
@@ -13,7 +17,7 @@ import json
 import pathlib
 
 import numpy as np
-import polars as pl
+import polars as pls
 import pytest
 
 from usv_playpen.neural_modeling import neural_vocal_gating as gating_module
@@ -42,10 +46,35 @@ def _gating() -> dict:
 
 
 def _universe(n_per_session=900, n_sessions=3, seed=0, gate=0.0, main=0.0, vocal_drive=1.0):
-    """A synthetic unit whose vocal response is scaled by a feature to a controllable degree.
+    """
+    Description
+    -----------
+    Build a synthetic unit whose vocal response is scaled by a feature to a controllable degree.
 
     `gate` is the interaction: how much the feature scales firing INSIDE vocalizations. `main` is the
-    feature's effect during quiet. `vocal_drive` is the plain vocal main effect."""
+    feature's effect during quiet. `vocal_drive` is the plain vocal main effect.
+
+    Parameters
+    ----------
+    n_per_session (int)
+        Frames per session; defaults to 900.
+    n_sessions (int)
+        Number of sessions; defaults to 3.
+    seed (int)
+        Seed for ``np.random.default_rng``; defaults to 0.
+    gate (float)
+        Feature x vocal interaction weight on the log-odds; defaults to 0.0.
+    main (float)
+        Feature main-effect weight; defaults to 0.0.
+    vocal_drive (float)
+        Vocal main-effect weight; defaults to 1.0.
+
+    Returns
+    -------
+    data (dict)
+        ``feature``, ``vocal``, ``spikes`` and ``session`` over all frames, plus their quiet-only
+        subsets ``feature_quiet``, ``spikes_quiet`` and ``session_quiet``.
+    """
     rng = np.random.default_rng(seed)
     n = n_per_session * n_sessions
     feature = rng.normal(size=n)
@@ -60,6 +89,24 @@ def _universe(n_per_session=900, n_sessions=3, seed=0, gate=0.0, main=0.0, vocal
 
 
 def _statistic(data, settings=None):
+    """
+    Description
+    -----------
+    Run ``feature_gating_statistic`` on a ``_universe`` dict.
+
+    Parameters
+    ----------
+    data (dict)
+        Output of ``_universe``.
+    settings (dict | None)
+        A ``vocal_gating`` block; the shipped block when ``None``.
+
+    Returns
+    -------
+    statistic (dict)
+        The per-feature gating statistic (``interaction``, ``vocal_main``, ``feature_main``,
+        ``interaction_minus_vocal``, ``gating_sign``, ...).
+    """
     return feature_gating_statistic(data["feature"], data["feature_quiet"], data["vocal"],
                                     data["spikes"], data["spikes_quiet"], data["session"],
                                     data["session_quiet"], settings or _gating())
@@ -78,12 +125,16 @@ class TestTheBases:
         assert base.shape[1] == 1          # feature alone -- no product anywhere
 
     def test_the_interaction_base_carries_both_main_effects(self):
+        """The interaction is scored against a base holding the feature AND V, so delta measures only
+        what the product adds beyond both main effects."""
         blocks = gating_terms(np.arange(6.0), np.array([0.0, 0, 0, 1, 1, 1]))
         full, base = blocks["interaction"]
         assert full.shape[1] == 3
         assert base.shape[1] == 2
 
     def test_the_feature_main_is_scored_over_an_intercept_alone(self):
+        """The quiet feature main effect has no other term to compete with, so its base is the
+        intercept alone (zero columns)."""
         blocks = gating_terms(np.arange(6.0), np.zeros(6))
         full, base = blocks["feature_main"]
         assert full.shape[1] == 1
@@ -97,24 +148,30 @@ class TestTheBases:
 
 
 class TestTheStatistic:
+    """The per-feature statistic on synthetic units with planted gating, main and vocal effects."""
 
     def test_a_gated_unit_shows_an_interaction_a_flat_one_does_not(self):
+        """A planted gate raises the interaction above the same data without one, and above zero."""
         gated = _statistic(_universe(gate=1.5, seed=1))
         flat = _statistic(_universe(gate=0.0, seed=1))
         assert gated["interaction"] > flat["interaction"]
         assert gated["interaction"] > 0
 
     def test_the_gating_sign_follows_the_interaction(self):
+        """``gating_sign`` reports the direction of the planted interaction, so suppressive and
+        facilitating gates are not reported alike."""
         assert _statistic(_universe(gate=1.5, seed=2))["gating_sign"] > 0
         assert _statistic(_universe(gate=-1.5, seed=2))["gating_sign"] < 0
 
     def test_a_quiet_main_effect_is_detected_on_quiet_frames(self):
+        """A planted quiet main effect raises ``feature_main``, so the third verdict condition has
+        something real to detect."""
         with_main = _statistic(_universe(main=1.2, gate=0.0, seed=3))
         without = _statistic(_universe(main=0.0, gate=0.0, seed=3))
         assert with_main["feature_main"] > without["feature_main"]
 
     def test_a_pure_vocal_main_effect_does_not_masquerade_as_a_gate(self):
-        """A unit that simply fires during calls, with no feature dependence, must show a vocal main
+        """A unit that simply fires during USVs, with no feature dependence, must show a vocal main
         effect WITHOUT an interaction -- the distinction the delta > beta_V condition enforces."""
         data = _universe(gate=0.0, vocal_drive=2.0, seed=4)
         statistic = _statistic(data)
@@ -137,6 +194,8 @@ class TestTheStatistic:
         assert statistic["interaction_minus_vocal"] < 0   # and still smaller than the vocal main
 
     def test_a_single_session_is_refused_rather_than_silently_scored(self):
+        """Leave-one-session-out needs at least two sessions; one session must raise instead of
+        returning a score fitted and tested on the same data."""
         blocks = gating_terms(np.arange(10.0), np.zeros(10))
         with pytest.raises(ValueError, match="at least two sessions"):
             loso_added_deviance(*blocks["feature_main"], np.zeros(10), np.zeros(10),
@@ -144,10 +203,13 @@ class TestTheStatistic:
 
 
 class TestTheVerdict:
+    """The three-condition verdict labels against a fixed null."""
 
     NULL = np.linspace(-5.0, 5.0, 4001)
 
     def test_all_three_conditions_must_hold_for_a_clean_gate(self):
+        """Significant interaction, interaction above the vocal main, and no quiet main effect together
+        give the clean ``GATE`` label."""
         observed = {"interaction": 50.0, "interaction_minus_vocal": 20.0, "feature_main": -3.0}
         verdict = gating_verdict(observed, self.NULL, self.NULL, self.NULL, _gating(), 19)
         assert verdict["label"] == "GATE"
@@ -160,11 +222,14 @@ class TestTheVerdict:
         assert verdict["label"] == "GATE+silentME"
 
     def test_an_interaction_smaller_than_the_vocal_main_is_not_a_gate(self):
+        """A significant interaction that does not beat the vocal main effect is labelled
+        ``int<vocal``, separating secondary modulation from gating."""
         observed = {"interaction": 50.0, "interaction_minus_vocal": -20.0, "feature_main": -3.0}
         verdict = gating_verdict(observed, self.NULL, self.NULL, self.NULL, _gating(), 19)
         assert verdict["label"] == "int<vocal"
 
     def test_an_unremarkable_interaction_is_ns(self):
+        """An interaction at the centre of its null is ``ns`` whatever the other two conditions say."""
         observed = {"interaction": 0.0, "interaction_minus_vocal": 20.0, "feature_main": -3.0}
         verdict = gating_verdict(observed, self.NULL, self.NULL, self.NULL, _gating(), 19)
         assert verdict["label"] == "ns"
@@ -183,10 +248,14 @@ class TestTheShuffleCountCanReachTheBar:
     every feature unpassable however strong -- silently, since nothing else would complain."""
 
     def test_the_shipped_count_clears_the_bar_for_nineteen_features(self):
+        """The Bonferroni bar is screen_alpha / 19 and the shipped shuffle count's p floor lies at or
+        below it, so a strong feature can actually pass."""
         assert settings_bonferroni_bar(_gating(), 19) == pytest.approx(0.01 / 19)
         assert 1.0 / (_gating()["gating_screen_n_shuffles"] + 1.0) <= 0.01 / 19
 
     def test_too_few_shuffles_is_refused_with_the_count_that_would_work(self):
+        """1,000 shuffles cannot reach 0.01/19, so the bar computation must raise rather than run a
+        screen no feature could pass."""
         settings = _gating()
         settings["gating_screen_n_shuffles"] = 1000
         with pytest.raises(ValueError, match="no feature could pass"):
@@ -202,6 +271,8 @@ class TestActivation:
     nothing for a gate to modulate, the other says we could not test it."""
 
     def test_a_unit_with_vocal_tuning_is_run(self):
+        """A unit tuned on either vocal axis, with enough spikes and feature spread, is run with no
+        skip reason."""
         run, reason = should_run_gating(True, False, 500, 1.0, _gating())
         assert run
         assert reason is None
@@ -215,6 +286,7 @@ class TestActivation:
         assert reason == "no_vocal_tuning"
 
     def test_the_filter_can_be_turned_off(self):
+        """``require_vocal_tuning=False`` runs an untuned unit, so the tuning filter is a real knob."""
         settings = _gating()
         settings["require_vocal_tuning"] = False
         assert should_run_gating(False, False, 500, 1.0, settings)[0]
@@ -245,13 +317,17 @@ class TestActivation:
         assert should_run_gating(False, False, 10, 1.0, settings)[1] == "not_testable"
 
     def test_the_gates_default_off_like_every_other_min_knob(self):
+        """Both identifiability minimums ship as ``None`` (disabled), matching the other ``min_*``
+        knobs."""
         assert _gating()["min_vocal_spikes"] is None
         assert _gating()["min_feature_iqr_vocal"] is None
 
 
 class TestImplementedOptions:
+    """``check_settings`` accepts the shipped block and refuses options that are not implemented."""
 
     def test_the_shipped_block_is_accepted(self):
+        """The shipped ``vocal_gating`` block passes validation, so a default run is never refused."""
         check_settings(_gating())
 
     def test_the_vocal_window_names_what_it_means(self):
@@ -261,6 +337,8 @@ class TestImplementedOptions:
         assert _gating()["vocal_window"] == "during_call"
 
     def test_a_peri_onset_vocal_window_is_refused(self):
+        """The rejected peri-onset window must raise rather than be silently treated as the
+        during-vocalization window."""
         settings = _gating()
         settings["vocal_window"] = "peri_onset"
         with pytest.raises(ValueError, match="is not implemented"):
@@ -283,10 +361,26 @@ class TestSurvivorReporting:
 
     @staticmethod
     def _verdicts(labels_and_margins):
+        """
+        Description
+        -----------
+        Build per-feature verdicts carrying only a label and a sigma margin.
+
+        Parameters
+        ----------
+        labels_and_margins (list[tuple[str, str, float]])
+            ``(feature_name, label, sigma_margin)`` per feature.
+
+        Returns
+        -------
+        per_feature (dict)
+            ``{feature_name: {"label": ..., "sigma_margin": ...}}``.
+        """
         return {name: {"label": label, "sigma_margin": margin}
                 for name, label, margin in labels_and_margins}
 
     def test_only_gated_labels_survive(self):
+        """Only ``GATE`` and ``GATE+silentME`` count as survivors; ``int<vocal`` and ``ns`` do not."""
         per_feature = self._verdicts([("a", "GATE", 40.0), ("b", "int<vocal", 30.0),
                                       ("c", "ns", 1.0), ("d", "GATE+silentME", 20.0)])
         values = {name: np.arange(10.0) for name in per_feature}
@@ -295,6 +389,7 @@ class TestSurvivorReporting:
         assert summary["n_survivors"] == 2
 
     def test_survivors_are_ordered_strongest_first(self):
+        """Survivors are listed by descending sigma margin, so the first one named is the strongest."""
         per_feature = self._verdicts([("weak", "GATE", 6.0), ("strong", "GATE", 46.0)])
         values = {name: np.arange(10.0) for name in per_feature}
         assert gating_survivors(per_feature, values)["survivors"] == ["strong", "weak"]
@@ -311,17 +406,21 @@ class TestSurvivorReporting:
         assert "x|x_proxy" in summary["correlations"]
 
     def test_independent_survivors_are_not_flagged(self):
+        """Uncorrelated survivors report a small maximum correlation, so the collinearity flag does not
+        fire on noise."""
         rng = np.random.default_rng(1)
         per_feature = self._verdicts([("x", "GATE", 40.0), ("y", "GATE", 38.0)])
         values = {"x": rng.normal(size=400), "y": rng.normal(size=400)}
         assert abs(gating_survivors(per_feature, values)["max_abs_correlation"]) < 0.3
 
     def test_a_flat_feature_gives_nan_rather_than_a_spurious_correlation(self):
+        """A zero-variance feature has an undefined correlation, reported as NaN rather than 0 or 1."""
         per_feature = self._verdicts([("x", "GATE", 40.0), ("flat", "GATE", 38.0)])
         values = {"x": np.arange(50.0), "flat": np.zeros(50)}
         assert np.isnan(gating_survivors(per_feature, values)["correlations"]["x|flat"])
 
     def test_no_survivors_reports_cleanly(self):
+        """With no survivor the list is empty and the maximum correlation NaN, rather than an error."""
         summary = gating_survivors(self._verdicts([("a", "ns", 1.0)]), {"a": np.arange(10.0)})
         assert summary["survivors"] == []
         assert np.isnan(summary["max_abs_correlation"])
@@ -342,19 +441,56 @@ class TestTheUniverse:
 
     FPS, N_FRAMES = 100.0, 4000
 
-    def _patch(self, monkeypatch, calls):
-        """Two sessions with identical structure, and features that ARE the frame index so an
-        instantaneous read can be checked exactly."""
+    def _patch(self, monkeypatch, usvs):
+        """
+        Description
+        -----------
+        Patch the session timebase and USV loader so every session has identical structure
+        (male/female tracks, ``FPS``, ``N_FRAMES``) and the given USV table.
+
+        Parameters
+        ----------
+        monkeypatch (pytest.MonkeyPatch)
+            The test's monkeypatch fixture.
+        usvs (list[tuple[float, float, str]])
+            ``(start, stop, emitter)`` per USV; written as clean (non-noise, non-squeak) rows.
+
+        Returns
+        -------
+        None
+            The patches stay active for the test.
+        """
         module = gating_module
         monkeypatch.setattr(module, "session_timebase",
                             lambda _root, _sid: (["male", "female"], self.FPS, self.N_FRAMES))
-        monkeypatch.setattr(module, "load_session_usvs", lambda _root, _sid: pl.DataFrame(
-            {"start": [c[0] for c in calls], "stop": [c[1] for c in calls],
-             "emitter": [c[2] for c in calls],
+        monkeypatch.setattr(module, "load_session_usvs", lambda _root, _sid: pls.DataFrame(
+            {"start": [c[0] for c in usvs], "stop": [c[1] for c in usvs],
+             "emitter": [c[2] for c in usvs],
              # The classifier columns the vocalization filter reads, as the real summaries carry them.
-             "noise": [False] * len(calls), "squeak": [False] * len(calls)}))
+             "noise": [False] * len(usvs), "squeak": [False] * len(usvs)}))
 
     def _per_session(self, session_ids, quiet, spike_frames):
+        """
+        Description
+        -----------
+        Build per-session kinematic records whose two features ARE the frame index and its negative,
+        so an instantaneous read can be checked exactly.
+
+        Parameters
+        ----------
+        session_ids (list[str])
+            Session ids to build (all identical).
+        quiet (array-like)
+            Quiet anchor frames.
+        spike_frames (array-like)
+            Spike frames.
+
+        Returns
+        -------
+        per_session (dict)
+            ``{session_id: {...}}`` with ``feature_time_series``, ``feature_names``, ``fps``,
+            ``n_frames``, ``quiet`` and ``spike_frames``.
+        """
         series = np.column_stack([np.arange(self.N_FRAMES, dtype=float),
                                   -np.arange(self.N_FRAMES, dtype=float)])
         return {sid: {"feature_time_series": series, "feature_names": ["f0", "f1"],
@@ -364,22 +500,38 @@ class TestTheUniverse:
                 for sid in session_ids}
 
     def _unit(self):
+        """
+        Description
+        -----------
+        Return the unit record the universe builder reads.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        unit (dict)
+            ``mouse_id`` ``"male"`` with vocal sessions ``s0`` and ``s1``.
+        """
         return {"mouse_id": "male", "vocal_sessions": ["s0", "s1"]}
 
     def test_peri_vocal_frames_reach_neither_class(self, monkeypatch):
-        """A frame just outside a call is neither vocal nor quiet, and must appear in no row."""
+        """A frame just outside a USV is neither vocal nor quiet, and must appear in no row."""
         self._patch(monkeypatch, [(10.0, 10.5, "male")])          # frames 1000-1049
-        quiet = np.arange(3000, 3500)                              # far from the call
+        quiet = np.arange(3000, 3500)                              # far from the USV
         universe = gating_universe(self._unit(), "/data",
                                    self._per_session(["s0", "s1"], quiet, [1005, 3010]),
                                    _gating(), VOCAL_SETTINGS)
         frames_used = universe["features"][:, 0]                   # feature 0 IS the frame index
-        assert 1005 in frames_used                                 # inside the call -> vocal
+        assert 1005 in frames_used                                 # inside the USV -> vocal
         assert 3010 in frames_used                                 # a quiet anchor
         assert 1100 not in frames_used                             # just after it -> peri-vocal, gone
         assert 2000 not in frames_used
 
-    def test_the_vocal_indicator_marks_exactly_the_call_frames(self, monkeypatch):
+    def test_the_vocal_indicator_marks_exactly_the_usv_frames(self, monkeypatch):
+        """V is 1 on exactly the frames between the focal USV's start and stop and 0 elsewhere, so the
+        interaction is measured on vocalizing frames only."""
         self._patch(monkeypatch, [(10.0, 10.5, "male")])
         universe = gating_universe(self._unit(), "/data",
                                    self._per_session(["s0", "s1"], np.arange(3000, 3500), [1005]),
@@ -398,8 +550,8 @@ class TestTheUniverse:
         assert universe["features"].shape[1] == 2                  # one column per feature, no lags
         np.testing.assert_allclose(universe["features"][:, 1], -universe["features"][:, 0])
 
-    def test_a_partner_call_does_not_create_vocal_frames(self, monkeypatch):
-        """V is the RECORDED animal vocalizing; a partner call is not that."""
+    def test_a_partner_usv_does_not_create_vocal_frames(self, monkeypatch):
+        """V is the RECORDED animal vocalizing; a partner USV is not that."""
         self._patch(monkeypatch, [(10.0, 10.5, "female")])
         universe = gating_universe(self._unit(), "/data",
                                    self._per_session(["s0", "s1"], np.arange(3000, 3100), [1005]),
@@ -407,6 +559,8 @@ class TestTheUniverse:
         assert universe["vocal"].sum() == 0
 
     def test_the_quiet_cap_is_honoured(self, monkeypatch):
+        """``max_quiet_frames_per_session`` limits the quiet rows in the FIT only; every quiet frame is
+        still scored, which is what keeps the cap from setting the effect size."""
         self._patch(monkeypatch, [(10.0, 10.5, "male")])
         settings = _gating()
         settings["max_quiet_frames_per_session"] = 50
@@ -454,6 +608,26 @@ class TestTheNull:
 
     @staticmethod
     def _universe(n=1200, n_sessions=2, seed=0):
+        """
+        Description
+        -----------
+        Build a minimal gating universe (one feature, every third row vocal, random spikes) with
+        every key ``gating_null`` reads.
+
+        Parameters
+        ----------
+        n (int)
+            Total rows; defaults to 1200.
+        n_sessions (int)
+            Number of sessions; defaults to 2.
+        seed (int)
+            Seed for ``np.random.default_rng``; defaults to 0.
+
+        Returns
+        -------
+        universe (dict)
+            Row arrays, their quiet subsets, per-session spike frames, frame counts and rates.
+        """
         rng = np.random.default_rng(seed)
         per = n // n_sessions
         index = np.repeat(np.arange(n_sessions), per)
@@ -476,6 +650,8 @@ class TestTheNull:
                 "feature_names": ["f0"], "per_session": {}}
 
     def test_all_four_arrays_come_back_aligned(self):
+        """The null returns exactly the four statistics, each with one value per draw, so they can be
+        compared draw by draw."""
         null = gating_null(self._universe(), 0, _gating(), 1.0, 6, seed=0)
         assert set(null) == {"interaction", "vocal_main", "feature_main", "difference"}
         for values in null.values():
@@ -490,10 +666,13 @@ class TestTheNull:
                                    null["interaction"] - null["vocal_main"], atol=1e-9)
 
     def test_draws_differ_from_each_other(self):
+        """Different shifts give different interaction values; identical draws would mean the shift is
+        not applied."""
         null = gating_null(self._universe(), 0, _gating(), 1.0, 8, seed=0)
         assert np.unique(null["interaction"]).size > 1
 
     def test_the_same_seed_reproduces_the_null(self):
+        """A fixed seed reproduces the null exactly, so a stored p-value can be regenerated."""
         first = gating_null(self._universe(), 0, _gating(), 1.0, 5, seed=7)
         second = gating_null(self._universe(), 0, _gating(), 1.0, 5, seed=7)
         np.testing.assert_allclose(first["interaction"], second["interaction"])
@@ -511,11 +690,13 @@ class TestTheAlphasAreSettings:
     warns against."""
 
     def test_all_three_are_present_and_independent(self):
+        """Each of the three alphas is its own shipped key at 0.01."""
         settings = _gating()
         for key in ("screen_alpha", "interaction_gt_vocal_alpha", "feature_main_alpha"):
             assert settings[key] == 0.01
 
     def test_the_screen_bar_follows_its_own_alpha(self):
+        """Changing ``screen_alpha`` moves the Bonferroni bar to screen_alpha / 19."""
         settings = _gating()
         settings["screen_alpha"] = 0.05
         assert settings_bonferroni_bar(settings, 19) == pytest.approx(0.05 / 19)
@@ -532,6 +713,8 @@ class TestTheAlphasAreSettings:
         assert gating_verdict(observed, null, null, null, strict, 19)["label"] == "GATE"
 
     def test_the_difference_bar_can_be_relaxed_alone(self):
+        """Relaxing ``interaction_gt_vocal_alpha`` alone turns ``int<vocal`` into ``GATE``, so that
+        condition reads its own alpha."""
         observed = {"interaction": 50.0, "interaction_minus_vocal": 0.0, "feature_main": -3.0}
         null = np.linspace(-5.0, 5.0, 4001)
         assert gating_verdict(observed, null, null, null, _gating(), 19)["label"] == "int<vocal"
@@ -545,6 +728,21 @@ class TestTheUnitPvalue:
 
     @staticmethod
     def _verdicts(rows):
+        """
+        Description
+        -----------
+        Build per-feature verdicts carrying label, margin and the two p-values the unit p combines.
+
+        Parameters
+        ----------
+        rows (list[tuple[str, str, float, float, float]])
+            ``(feature_name, label, sigma_margin, p_interaction, p_interaction_gt_vocal)``.
+
+        Returns
+        -------
+        per_feature (dict)
+            ``{feature_name: {...}}`` with those four fields.
+        """
         return {name: {"label": label, "sigma_margin": margin,
                        "p_interaction": p_int, "p_interaction_gt_vocal": p_diff}
                 for name, label, margin, p_int, p_diff in rows}
@@ -555,6 +753,8 @@ class TestTheUnitPvalue:
         assert gating_unit_pvalue(per_feature, _gating())["p_unit"] == pytest.approx(3.0e-3)
 
     def test_it_comes_from_the_strongest_surviving_feature(self):
+        """The unit p is taken from the survivor with the largest sigma margin, and that feature is
+        named."""
         per_feature = self._verdicts([("weak", "GATE", 6.0, 5.0e-4, 9.0e-3),
                                       ("strong", "GATE", 72.0, 5.0e-4, 5.0e-4)])
         result = gating_unit_pvalue(per_feature, _gating())
@@ -578,5 +778,6 @@ class TestTheUnitPvalue:
         assert gating_unit_pvalue(per_feature, settings)["at_floor"]
 
     def test_a_resolved_p_is_not_flagged_as_floored(self):
+        """A p above the shuffle floor is not flagged, so ``at_floor`` marks only true ties."""
         per_feature = self._verdicts([("a", "GATE", 72.0, 5.0e-4, 4.0e-3)])
         assert not gating_unit_pvalue(per_feature, _gating())["at_floor"]

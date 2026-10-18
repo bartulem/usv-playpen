@@ -1,31 +1,36 @@
 """
 @author: bartulem
-Unit tests for the pure data-builder / transform helpers in
-``usv_playpen.visualizations.modeling_plots`` (the modeling-figure module
+Tests for ``usv_playpen.visualizations.modeling_plots`` (the modeling-figure module
 that lives under ``visualizations/``, hence its tests mirror it here
 rather than under ``tests/modeling/``).
 
-Only the non-drawing helpers are covered — the colour-pastelisation,
-the predictor-feature group classifier, the centred rolling mean, the
-consecutive-run locator, and the seeded jitter sampler. The 7k lines of
-matplotlib figure code are out of scope. The matplotlib backend is forced
-to ``Agg`` before import so loading the module never tries to open a
-window.
+Coverage: the pure helpers (the predictor-feature group classifier, the centred
+rolling mean, the consecutive-run locator, the final-step null filter weights, the
+Benjamini-Hochberg step-up and the reportable-effect scale), figure-emission smoke
+tests of every plotter against minimal synthetic artifacts written under
+``tmp_path`` (feature ranking, filters, model selection, multinomial performance and
+filters, raw feature differences, collinearity and timescale audits, selection
+trajectories, the manifold filter atlas, the CNN results visualizer, and the
+behavioural-response figures), the refusals of malformed artifacts, and a source
+check that library plotting code neither shows figures nor prints. The matplotlib
+backend is forced to ``Agg`` before import so loading the module never tries to
+open a window.
 """
 
 from __future__ import annotations
 
+import ast
 import pathlib
 import pickle
 import warnings
 
 import h5py
+import matplotlib as mpl
 import numpy as np
 import pytest
 from scipy.ndimage import gaussian_filter1d
 
-import matplotlib
-matplotlib.use("Agg")
+mpl.use("Agg")
 import matplotlib.pyplot as plt
 
 from usv_playpen import os_utils
@@ -43,19 +48,20 @@ with warnings.catch_warnings():
         _GLOBAL_CMAP,
         _VIZ_SETTINGS,
         DeepResultsVisualizer,
+        _benjamini_hochberg,
         _classify_predictor_feature,
+        _compute_timescale_horizons,
         _final_null_filter_weights,
         _last_bin_of_consecutive_run,
+        _reportable_effect,
         _resolve_atlas_tiles_and_categories,
         _rolling_mean_1d,
+        plot_behavioral_response_forest,
         plot_collinearity_audit,
         plot_feature_ranking,
-        _benjamini_hochberg,
-        _reportable_effect,
-        plot_behavioral_response_forest,
         plot_manifold_filter_atlas,
-        plot_matched_divergence,
         plot_manifold_selection_trajectory,
+        plot_matched_divergence,
         plot_model_selection_results,
         plot_multinomial_multivariate_filters,
         plot_multinomial_selection_diagnosis,
@@ -65,7 +71,6 @@ with warnings.catch_warnings():
         plot_significant_filters_grid,
         plot_timescale_audit,
         plot_timescale_audit_per_feature,
-        _compute_timescale_horizons,
         plot_univariate_multinomial_filters_grid,
         plot_univariate_multinomial_performance,
     )
@@ -80,17 +85,18 @@ def test_figure_dpi_seed_cmap_derive_from_settings():
     hard-coded, so every ``plt.subplots(...)`` / ``savefig(...)`` / estimator call
     honours the single configured source."""
 
-    assert _FIGURE_DPI == _VIZ_SETTINGS["figures"]["dpi"]
-    assert _FIGURE_SEED == _VIZ_SETTINGS["figures"]["seed"]
-    assert _GLOBAL_CMAP == _VIZ_SETTINGS["figures"]["sequential_cmap"]
+    assert _VIZ_SETTINGS["figures"]["dpi"] == _FIGURE_DPI
+    assert _VIZ_SETTINGS["figures"]["seed"] == _FIGURE_SEED
+    assert _VIZ_SETTINGS["figures"]["sequential_cmap"] == _GLOBAL_CMAP
 
 
 # _classify_predictor_feature
 
 
 class TestClassifyPredictorFeature:
+    """Presentation-group assignment of predictor feature names (self / SEI / other / dyadic)."""
 
-    @pytest.mark.parametrize("fname,group", [
+    @pytest.mark.parametrize(("fname", "group"), [
         ('self.speed', 0),
         ('self.neck_elevation_1st_der', 0),
         ('orofacial-sei', 1),
@@ -110,6 +116,7 @@ class TestClassifyPredictorFeature:
 
 
 class TestRollingMean1d:
+    """The centred rolling mean used to smooth plotted curves: no-op, constant, variance, window-size edges."""
 
     def test_window_le_one_returns_input(self):
         """A window of 1 (or less) is a no-op smoother."""
@@ -156,6 +163,7 @@ class TestRollingMean1d:
 
 
 class TestLastBinOfConsecutiveRun:
+    """The locator of the latest bin ending a run of consecutive True bins, and its ``None`` edge cases."""
 
     def test_finds_latest_run_end(self):
         """The latest index ending a run of ``run_length`` True bins is
@@ -215,7 +223,25 @@ def _close_all_figures(monkeypatch):
     """
 
     def _no_show(*_args, **_kwargs):
-        raise AssertionError("library plotting code must return its figure, not call plt.show()")
+        """
+        Description
+        -----------
+        Replacement for ``plt.show`` that fails the test, enforcing that library
+        plotters return their figures instead of showing them.
+
+        Parameters
+        ----------
+        *_args (tuple)
+            Ignored positional arguments.
+        **_kwargs (dict)
+            Ignored keyword arguments.
+
+        Returns
+        -------
+        None
+        """
+        message = "library plotting code must return its figure, not call plt.show()"
+        raise AssertionError(message)
 
     monkeypatch.setattr(plt, "show", _no_show)
     yield
@@ -356,7 +382,8 @@ class TestPlotFeatureRanking:
         rng = np.random.default_rng(8)
         pkl = _write_univariate_pickle(tmp_path, rng)
         figures = plot_feature_ranking(results_file_loc=pkl, evaluation_metric='auc')
-        assert len(figures) == 2 and all(isinstance(figure, plt.Figure) for figure in figures)
+        assert len(figures) == 2
+        assert all(isinstance(figure, plt.Figure) for figure in figures)
         assert all(plt.fignum_exists(figure.number) for figure in figures)
         assert not list(tmp_path.glob(f"*_ranking_*.{_FIGURE_FORMAT}"))
 
@@ -634,6 +661,23 @@ def _multinomial_feature_entry(rng, n_classes: int, sig: bool,
     classes = [f"cat{c}" for c in range(n_classes)]
 
     def _block(is_actual: bool) -> dict:
+        """
+        Description
+        -----------
+        Build the ``actual`` or ``null`` half of the entry: per-fold metrics
+        (``ll`` pushed low only for a significant actual model), string-labelled
+        ``y_true`` / ``y_pred`` and a per-fold weight tensor.
+
+        Parameters
+        ----------
+        is_actual (bool)
+            Build the actual-model half (else the null half).
+
+        Returns
+        -------
+        block (dict)
+            ``{'folds': {...}, 'classes': [...]}``.
+        """
         if is_actual and sig:
             ll = rng.uniform(0.1, 0.3, size=n_folds)
         else:
@@ -707,6 +751,23 @@ class TestPlotUnivariateMultinomialPerformance:
         n_folds, n = 6, 30
 
         def _block(actual: bool) -> dict:
+            """
+            Description
+            -----------
+            Build the ``actual`` or ``null`` half of the entry: true labels never
+            include ``cat2``; the actual model sometimes predicts it while the null
+            model predicts only ``cat0``.
+
+            Parameters
+            ----------
+            actual (bool)
+                Build the actual-model half (else the null half).
+
+            Returns
+            -------
+            block (dict)
+                ``{'folds': {...}, 'classes': [...]}``.
+            """
             ll = rng.uniform(0.1, 0.3, n_folds) if actual else rng.uniform(0.6, 0.9, n_folds)
             # True labels never include 'cat2'. The ACTUAL model still predicts it
             # sometimes; the NULL model predicts only the majority 'cat0'. So
@@ -1129,10 +1190,10 @@ class TestPlotTimescaleAudit:
         refused up front with the clear error instead of a bare ``KeyError`` later."""
 
         path = _write_timescale_pickle(tmp_path, np.random.default_rng(0))
-        with open(path, 'rb') as fh:
+        with pathlib.Path(path).open('rb') as fh:
             payload = pickle.load(fh)
         del payload['rho_signal_null_p0_5']
-        with open(path, 'wb') as fh:
+        with pathlib.Path(path).open('wb') as fh:
             pickle.dump(payload, fh)
         with pytest.raises(ValueError, match=r"rho_signal_null_p0_5"):
             plot_timescale_audit(timescale_pkl_path=path, save_plot_bool=False)
@@ -1743,7 +1804,7 @@ def _write_fake_spectrogram_store(tmp_path, rng, model_ids: dict | None = None, 
 
     store_dir = tmp_path / "spectrograms"
     store_dir.mkdir(exist_ok=True)
-    ids = {m: _FAKE_CELL_MODEL_ID for m in _FAKE_STORE_MAPS}
+    ids = dict.fromkeys(_FAKE_STORE_MAPS, _FAKE_CELL_MODEL_ID)
     if model_ids is not None:
         ids.update(model_ids)
     with h5py.File(store_dir / "spectrograms_fake_2sessions_80vocalizations_20260101_000000Z.h5", "w") as h5:
@@ -1784,7 +1845,8 @@ class TestPlotManifoldFilterAtlas:
     torus-only atlas (real vocalizations tiling the vocal space + |W(t)| magnitude
     + per-feature affinity filmstrips)."""
 
-    def test_writes_filter_atlas(self, tmp_path, monkeypatch, capsys, qlvm_category_bundle):
+    @pytest.mark.usefixtures("qlvm_category_bundle")
+    def test_writes_filter_atlas(self, tmp_path, monkeypatch, capsys):
         """A torus (4-D sin/cos) final step, with a stand-in store and the category
         bundle, emits exactly one ``*_filter_atlas_*`` figure; the tiles come from
         the run's own sessions (one of the store's two) and an artifact without a
@@ -1809,7 +1871,8 @@ class TestPlotManifoldFilterAtlas:
         assert len(list(out_dir.glob(
             f"model_selection_manifold_*_filter_atlas_*.{_FIGURE_FORMAT}"))) == 1
 
-    def test_filmstrip_titles_are_plain(self, tmp_path, monkeypatch, qlvm_category_bundle):
+    @pytest.mark.usefixtures("qlvm_category_bundle")
+    def test_filmstrip_titles_are_plain(self, tmp_path, monkeypatch):
         """Every filmstrip deck is titled with the feature's label in the plain text
         colour at full opacity (no cohort colour, no fading between features)."""
 
@@ -1821,10 +1884,11 @@ class TestPlotManifoldFilterAtlas:
         titles = [t for t in ax_film.texts if t.get_fontsize() == 8]
         assert len(titles) == 3
         for title in titles:
-            assert matplotlib.colors.to_hex(title.get_color()) == matplotlib.colors.to_hex(modeling_plots.TEXT_COLOR)
+            assert mpl.colors.to_hex(title.get_color()) == mpl.colors.to_hex(modeling_plots.TEXT_COLOR)
             assert title.get_alpha() is None
 
-    def test_null_band_lines_and_rounded_colour_scale(self, tmp_path, monkeypatch, qlvm_category_bundle):
+    @pytest.mark.usefixtures("qlvm_category_bundle")
+    def test_null_band_lines_and_rounded_colour_scale(self, tmp_path, monkeypatch):
         """With a stored no-signal band the magnitude panel draws, per feature, a
         dashed line at the 95th percentile (over permutations) of the permuted
         filters' magnitude |W(t)| -- read in the plotted feature order although
@@ -1867,7 +1931,7 @@ class TestPlotManifoldFilterAtlas:
         proxy = next(h for h, t in zip(ax_mag.get_legend().legend_handles, legend_texts, strict=True)
                      if t == 'permuted target, 95th pct')
         assert proxy.get_linestyle() == '--'
-        assert matplotlib.colors.to_hex(proxy.get_color()) == '#7f7f7f'
+        assert mpl.colors.to_hex(proxy.get_color()) == '#7f7f7f'
 
         cbar_ax = next(ax for ax in fig.axes if ax.get_ylabel() == "vocal region affinity (per SD)")
         np.testing.assert_allclose(cbar_ax.get_yticks(), [-0.003, 0.0, 0.003])
@@ -1886,7 +1950,8 @@ class TestPlotManifoldFilterAtlas:
             smoothed = gaussian_filter1d(null_magnitude, sigma=1.5, mode='nearest', axis=1)
             np.testing.assert_allclose(dashed[i].get_ydata(), np.percentile(smoothed, 95, axis=0))
 
-    def test_zero_onset_filters_without_band_fall_back_to_default_scale(self, tmp_path, monkeypatch, qlvm_category_bundle):
+    @pytest.mark.usefixtures("qlvm_category_bundle")
+    def test_zero_onset_filters_without_band_fall_back_to_default_scale(self, tmp_path, monkeypatch):
         """When every onset filter is exactly zero the colour scale cannot be
         rounded from the data and falls back to +-0.1; an artifact without a
         stored band still draws the magnitude panel, with no dashed band line and
@@ -1957,7 +2022,8 @@ class TestPlotManifoldFilterAtlas:
         rng = np.random.default_rng(75)
         monkeypatch.setattr(modeling_plots, "SPECTROGRAMS_DIRECTORY", str(_write_fake_spectrogram_store(tmp_path, rng)))
         lattice, tiles, bundle, model_id = _resolve_atlas_tiles_and_categories()
-        assert lattice.shape == (144, 2) and tiles.shape == (144, 16, 24)
+        assert lattice.shape == (144, 2)
+        assert tiles.shape == (144, 16, 24)
         assert model_id == bundle["model_id"] == _FAKE_CELL_MODEL_ID
         assert bundle["directory"] == str(qlvm_category_bundle)
         assert sorted(np.unique(bundle["label_grid"]).tolist()) == [1, 2, 3, 4]
@@ -1980,9 +2046,11 @@ class TestPlotManifoldFilterAtlas:
         tile = tiles[0]
         pad = (24 - 5) // 2
         np.testing.assert_allclose(tile[:, pad:pad + 5], spec[:, :5] * mask[:, :5])
-        assert not tile[:, :pad].any() and not tile[:, pad + 5:].any()
+        assert not tile[:, :pad].any()
+        assert not tile[:, pad + 5:].any()
 
-    def test_store_of_another_cell_raises(self, tmp_path, monkeypatch, qlvm_category_bundle):
+    @pytest.mark.usefixtures("qlvm_category_bundle")
+    def test_store_of_another_cell_raises(self, tmp_path, monkeypatch):
         """A store whose regular-map positions were embedded with a cell other than
         the one the category bundle is defined on is refused, so boundaries always
         partition the torus the tiles sit on."""
@@ -2196,7 +2264,7 @@ def _write_cnn_results_pickle(tmp_path, rng, n_folds: int = 8,
     # Include the knockoff probe so the explicit knockoff-filter branch runs.
     means['knockoff_probe'] = 0.01
     stds['knockoff_probe'] = 0.01
-    ranked = sorted(features, key=lambda f: means[f], reverse=True) + ['knockoff_probe']
+    ranked = [*sorted(features, key=lambda f: means[f], reverse=True), 'knockoff_probe']
 
     # Pre-computed saliency entry for one circular region centred on the
     # data cloud (so a generous radius captures >= 3 in-region samples).
@@ -2494,7 +2562,7 @@ def _write_cnn_torus_results_pickle(tmp_path, rng, n_folds: int = 6,
     stds = {f: float(rng.uniform(0.02, 0.1)) for f in features}
     means['knockoff_probe'] = 0.01
     stds['knockoff_probe'] = 0.01
-    ranked = sorted(features, key=lambda f: means[f], reverse=True) + ['knockoff_probe']
+    ranked = [*sorted(features, key=lambda f: means[f], reverse=True), 'knockoff_probe']
 
     # Region centred mid-cell with a generous radius so the in-region
     # mask (wrap-aware) captures plenty of samples.
@@ -2726,7 +2794,7 @@ def _divergence_artifact(tmp_path, n_pairs: int = 40, n_frames: int = 120):
                   for f in features},
         'pair_sessions': {f: ['s1'] * n_pairs for f in features},
         'pair_control_counts': {f: np.full(n_pairs, 7) for f in features},
-        'caliper_rejected': {f: 0 for f in features},
+        'caliper_rejected': dict.fromkeys(features, 0),
         'anchor_index': n_frames // 2,
         'pooled_scaling': {f: {'mean': 0.0, 'std': 1.0} for f in features},
         'parameters': {},
@@ -2742,15 +2810,17 @@ class TestBenjaminiHochberg:
     """Correction shared by both behavioural-response figures."""
 
     def test_nothing_passes_when_every_p_is_large(self):
+        """With every p-value far above the rate, no feature is marked significant."""
         assert not _benjamini_hochberg(np.array([0.4, 0.6, 0.9]), 0.05).any()
 
     def test_the_step_up_threshold_is_not_a_flat_alpha(self):
-        # The second-smallest p must beat q * 2 / m, not q. At q = 0.01 over four
-        # tests that is 0.005, so 0.008 fails despite being under 0.01.
+        """The second-smallest p must beat q * 2 / m, not q. At q = 0.01 over four
+        tests that is 0.005, so 0.008 fails despite being under 0.01."""
         rejected = _benjamini_hochberg(np.array([0.001, 0.008, 0.4, 0.9]), 0.01)
         assert rejected.tolist() == [True, False, False, False]
 
     def test_a_looser_rate_admits_more(self):
+        """At q = 0.05 the same p-values clear the step-up for the two smallest, not just the first."""
         rejected = _benjamini_hochberg(np.array([0.001, 0.008, 0.4, 0.9]), 0.05)
         assert rejected.tolist() == [True, True, False, False]
 
@@ -2759,6 +2829,7 @@ class TestReportableEffect:
     """Coefficient placed on the scale it should be read in."""
 
     def test_a_lognormal_coefficient_becomes_a_percent_change(self):
+        """A log-scale coefficient of log(1.1) is reported as a +10% change in the median."""
         value, low, high, unit = _reportable_effect(
             {'coefficient': np.log(1.1), 'std_error': 0.0}, 'lognormal', 0.01)
         assert unit == '% change in median'
@@ -2766,12 +2837,14 @@ class TestReportableEffect:
         assert low == pytest.approx(high)
 
     def test_a_gaussian_coefficient_stays_additive(self):
+        """A Gaussian (angle) coefficient is reported unchanged, in degrees."""
         value, _, _, unit = _reportable_effect(
             {'coefficient': -0.3, 'std_error': 0.1}, 'gaussian', 0.01)
         assert unit == 'degrees'
         assert value == pytest.approx(-0.3)
 
     def test_the_interval_widens_with_a_stricter_alpha(self):
+        """The interval's lower bound at alpha = 0.01 lies below the one at alpha = 0.05."""
         _, low_99, _, _ = _reportable_effect(
             {'coefficient': 0.0, 'std_error': 1.0}, 'gaussian', 0.01)
         _, low_95, _, _ = _reportable_effect(
@@ -2779,7 +2852,8 @@ class TestReportableEffect:
         assert low_99 < low_95
 
     def test_the_interval_is_rebuilt_not_read_from_the_artifact(self):
-        # The stored bounds are 95%; a figure claiming 99% must not use them.
+        """The stored bounds are 95%; a figure claiming 99% must not use them, so the
+        interval is rebuilt from the standard error (+-2.5758 SE)."""
         _, low, high, _ = _reportable_effect(
             {'coefficient': 0.0, 'std_error': 1.0, 'ci_low': -99.0, 'ci_high': 99.0},
             'gaussian', 0.01)
@@ -2792,24 +2866,43 @@ class TestBehavioralResponseFigures:
 
     @staticmethod
     def _draw(function, **kwargs):
+        """
+        Description
+        -----------
+        Run a behavioural-response plotter, check it returns a figure, and close
+        every open figure.
+
+        Parameters
+        ----------
+        function (callable)
+            The plotter to run.
+        **kwargs (dict)
+            Keyword arguments forwarded to the plotter.
+
+        Returns
+        -------
+        None
+        """
         figure = function(**kwargs)
         assert isinstance(figure, plt.Figure)
         plt.close("all")
 
     def test_forest_plot_writes_a_file(self, tmp_path):
+        """With ``save_plot=True`` the forest plot writes its figure file into ``output_dir``."""
         self._draw(plot_behavioral_response_forest,
                    contrast_results_path=_contrast_artifact(tmp_path),
                    save_plot=True, output_dir=str(tmp_path))
         assert list(tmp_path.glob(f'behavioral_response_forest*.{_FIGURE_FORMAT}'))
 
     def test_forest_plot_does_not_write_when_not_asked(self, tmp_path):
+        """With ``save_plot=False`` the forest plot returns its figure and writes nothing."""
         self._draw(plot_behavioral_response_forest,
                    contrast_results_path=_contrast_artifact(tmp_path), save_plot=False)
         assert not list(tmp_path.glob(f'behavioral_response_forest*.{_FIGURE_FORMAT}'))
 
     def test_forest_plot_draws_when_every_feature_shares_one_likelihood(self, tmp_path):
-        # Both features are non-negative (lognormal), so the signed group is empty; an
-        # empty group must not become a zero-height grid row (LinAlgError) or an empty panel.
+        """Both features are non-negative (lognormal), so the signed group is empty; an
+        empty group must not become a zero-height grid row (LinAlgError) or an empty panel."""
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
             plot_behavioral_response_forest(
@@ -2822,29 +2915,31 @@ class TestBehavioralResponseFigures:
         plt.close("all")
 
     def test_forest_plot_titles_state_the_interval_level_of_alpha(self, tmp_path):
-        # alpha = 0.001 is a 99.9% interval; truncating to an integer titled it 99%.
+        """alpha = 0.001 is a 99.9% interval; truncating to an integer titled it 99%."""
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
             plot_behavioral_response_forest(
                 contrast_results_path=_contrast_artifact(tmp_path), alpha=0.001, save_plot=False)
         titles = [axis.get_title() for axis in plt.gcf().axes if axis.get_title()]
-        assert titles and all("99.9% CI" in title for title in titles)
+        assert titles
+        assert all("99.9% CI" in title for title in titles)
         plt.close("all")
 
     def test_matched_divergence_writes_a_file(self, tmp_path):
+        """With ``save_plot=True`` the matched-divergence figure is written into ``output_dir``."""
         self._draw(plot_matched_divergence,
                    divergence_results_path=_divergence_artifact(tmp_path),
                    display_seconds=(-0.5, 0.5), save_plot=True, output_dir=str(tmp_path))
         assert list(tmp_path.glob(f'matched_divergence*.{_FIGURE_FORMAT}'))
 
     def test_matched_divergence_reads_the_frame_rate_from_the_artifact(self, tmp_path):
-        # A plotter that assumed 150 fps would mislabel every timestamp on a
-        # cohort recorded at another rate, so the key must be required.
+        """A plotter that assumed 150 fps would mislabel every timestamp on a
+        cohort recorded at another rate, so the ``camera_fps`` key must be required."""
         path = _divergence_artifact(tmp_path)
-        with open(path, 'rb') as handle:
+        with pathlib.Path(path).open('rb') as handle:
             artifact = pickle.load(handle)
         del artifact['camera_fps']
-        with open(path, 'wb') as handle:
+        with pathlib.Path(path).open('wb') as handle:
             pickle.dump(artifact, handle)
         with pytest.raises(KeyError):
             plot_matched_divergence(divergence_results_path=path)
@@ -2856,21 +2951,21 @@ class TestDeepResultsVisualizerRequiresManifoldMetadata:
 
     @pytest.mark.parametrize("missing", ["manifold_metric", "manifold_period"])
     def test_missing_manifold_key_raises(self, tmp_path, missing):
-        # The old __init__ silently assumed a flat euclidean plane with period 1.0, which
-        # mis-measured every prediction error of a torus run.
+        """The old __init__ silently assumed a flat euclidean plane with period 1.0, which
+        mis-measured every prediction error of a torus run; a missing key now raises."""
         rng = np.random.default_rng(3)
         pkl = _write_cnn_results_pickle(tmp_path, rng)
-        with open(pkl, 'rb') as handle:
+        with pathlib.Path(pkl).open('rb') as handle:
             artifact = pickle.load(handle)
         del artifact['metadata'][missing]
-        with open(pkl, 'wb') as handle:
+        with pathlib.Path(pkl).open('wb') as handle:
             pickle.dump(artifact, handle)
         with pytest.raises(KeyError, match=missing):
             DeepResultsVisualizer(results_pkl_path=pkl, modeling_settings={}, visualization_settings={})
 
     def test_default_save_dir_is_the_pickle_directory(self, tmp_path):
-        # The metadata holds no save directory, so the old './plots' fallback wrote into
-        # whatever the working directory happened to be.
+        """The metadata holds no save directory, so the old './plots' fallback wrote into
+        whatever the working directory happened to be; the default is now the pickle's directory."""
         rng = np.random.default_rng(3)
         pkl = _write_cnn_results_pickle(tmp_path, rng)
         viz = DeepResultsVisualizer(results_pkl_path=pkl, modeling_settings={}, visualization_settings={})
@@ -2880,11 +2975,7 @@ class TestDeepResultsVisualizerRequiresManifoldMetadata:
 def test_modeling_plots_has_no_plt_show_and_no_print():
     """Library plotting code returns figures instead of showing them and routes messages
     through ``message_output`` (CONTRIBUTING: no ``print`` in library code)."""
-    import ast
-
-    import usv_playpen.visualizations.modeling_plots as modeling_plots_module
-
-    tree = ast.parse(pathlib.Path(modeling_plots_module.__file__).read_text())
+    tree = ast.parse(pathlib.Path(modeling_plots.__file__).read_text())
     calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
     assert not [c for c in calls if isinstance(c.func, ast.Attribute) and c.func.attr == 'show'
                 and isinstance(c.func.value, ast.Name) and c.func.value.id == 'plt']

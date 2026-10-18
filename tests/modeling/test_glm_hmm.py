@@ -12,6 +12,19 @@ preference (BIC / held-out log-likelihood favour the true K over K=1). The pure
 HMM machinery is exercised with the X-independent Gaussian emission; the
 acoustic-manifold integration (regressor refit + von Mises density + weighted
 concentration) is exercised with the torus ManifoldEmission.
+
+Coverage:
+
+* the per-sample von Mises log-density and weighted kappa fit (emission kernel);
+* the static ``GLMHMM`` with Gaussian, torus-manifold and multinomial emissions:
+  parameter and state recovery, BIC preference, the BIC parameter count, the
+  stored EM log-likelihood, and unseen/unknown-label handling;
+* the input-driven ``InputDrivenGLMHMM`` / ``InputDrivenManifoldGLMHMM`` engines:
+  no state collapse, reference-coded shapes, held-out K selection, kappa modes,
+  region reweighting and the macro score;
+* the ``glm_hmm`` pipeline end to end on synthetic pickles (static and
+  input-driven, multinomial and manifold), its selected-feature reader, NaN-row
+  dropping in the per-session sequences and the label-target guard.
 """
 
 from __future__ import annotations
@@ -39,16 +52,16 @@ with warnings.catch_warnings():
     from usv_playpen.modeling.jax_multinomial_logistic_regression import (
         SmoothMultinomialLogisticRegression,
     )
+    from usv_playpen.modeling.manifold_metric import (
+        _fit_von_mises_kappa,
+        macro_von_mises_logscore,
+        signed_diff,
+        von_mises_logpdf_per_point,
+    )
     from usv_playpen.modeling.modeling_glm_hmm import (
-        run_glm_hmm_state_selection,
         _build_session_sequences,
         _read_selected_features,
-    )
-    from usv_playpen.modeling.manifold_metric import (
-        macro_von_mises_logscore,
-        von_mises_logpdf_per_point,
-        signed_diff,
-        _fit_von_mises_kappa,
+        run_glm_hmm_state_selection,
     )
 
 REPO_SETTINGS = pathlib.Path(__file__).resolve().parents[2] / \
@@ -56,7 +69,28 @@ REPO_SETTINGS = pathlib.Path(__file__).resolve().parents[2] / \
 
 
 def _simulate_markov_states(n_seqs, seq_len, transition, rng):
-    """Sample `n_seqs` state sequences of length `seq_len` from a Markov chain."""
+    """
+    Description
+    -----------
+    Samples ``n_seqs`` latent-state sequences of length ``seq_len`` from a Markov
+    chain whose initial state is uniform and whose steps follow ``transition``.
+
+    Parameters
+    ----------
+    n_seqs (int)
+        Number of sequences.
+    seq_len (int)
+        Length of every sequence.
+    transition (np.ndarray)
+        ``(K, K)`` row-stochastic transition matrix.
+    rng (np.random.Generator)
+        Random generator for the draws.
+
+    Returns
+    -------
+    sequences (list[np.ndarray])
+        ``n_seqs`` integer arrays of state labels in ``[0, K)``.
+    """
     n_states = transition.shape[0]
     sequences = []
     for _ in range(n_seqs):
@@ -69,7 +103,25 @@ def _simulate_markov_states(n_seqs, seq_len, transition, rng):
 
 
 def _match_by_nearest(true_means, fit_means):
-    """Greedy nearest-mean permutation aligning fitted states to true states."""
+    """
+    Description
+    -----------
+    Greedily aligns fitted states to true states: for each true state in order,
+    picks the nearest (Euclidean) fitted mean not already taken, so recovery can
+    be scored up to a state relabelling.
+
+    Parameters
+    ----------
+    true_means (np.ndarray)
+        ``(K, D)`` generating emission means.
+    fit_means (np.ndarray)
+        ``(K, D)`` fitted emission means.
+
+    Returns
+    -------
+    order (list[int])
+        ``order[k]`` is the fitted state matched to true state ``k``.
+    """
     order = []
     for k in range(true_means.shape[0]):
         dists = np.linalg.norm(fit_means - true_means[k][None, :], axis=1)
@@ -134,7 +186,7 @@ def test_gaussian_hmm_recovers_states_and_transitions():
     # Viterbi decoding accuracy (aligned to the recovered labelling).
     inv = np.argsort(order)
     correct = total = 0
-    for (X, y), states in zip(sequences, state_seqs):
+    for (X, y), states in zip(sequences, state_seqs, strict=True):
         decoded = inv[model.viterbi(X, y)]
         correct += int((decoded == states).sum())
         total += states.shape[0]
@@ -185,8 +237,8 @@ def test_manifold_emission_separates_two_torus_states():
         y = np.mod(positions[states] + 0.03 * rng.standard_normal((n, 2)), 1.0)
         sequences.append((X, y))
 
-    reg_kwargs = dict(n_features=n_features, n_time_bins=n_time_bins,
-                      lambda_smooth=1.0, l2_reg=1.0, metric='torus', period=1.0)
+    reg_kwargs = {'n_features': n_features, 'n_time_bins': n_time_bins,
+                      'lambda_smooth': 1.0, 'l2_reg': 1.0, 'metric': 'torus', 'period': 1.0}
     model = GLMHMM(n_states=2, emission_factory=lambda: ManifoldEmission(reg_kwargs),
                    n_em_iters=40, n_restarts=3, tol=1e-4, random_state=0)
     model.fit(sequences)
@@ -203,7 +255,7 @@ def test_manifold_emission_separates_two_torus_states():
     order = _match_by_nearest(positions, fit_state_pos)
     inv = np.argsort(order)
     correct = total = 0
-    for (X, y), states in zip(sequences, state_seqs):
+    for (X, y), states in zip(sequences, state_seqs, strict=True):
         decoded = inv[model.viterbi(X, y)]
         correct += int((decoded == states).sum())
         total += states.shape[0]
@@ -247,8 +299,8 @@ def test_multinomial_emission_recovers_two_states():
         y = np.array([int(np.argmax(X[t] @ W[states[t]] + b[states[t]])) for t in range(n)])
         sequences.append((X, y))
 
-    clf_kwargs = dict(n_features=n_features, n_time_bins=n_time_bins,
-                      lambda_smooth=1.0, l2_reg=0.1, focal_gamma=0.0, max_iter=200)
+    clf_kwargs = {'n_features': n_features, 'n_time_bins': n_time_bins,
+                      'lambda_smooth': 1.0, 'l2_reg': 0.1, 'focal_gamma': 0.0, 'max_iter': 200}
     model = GLMHMM(n_states=2, emission_factory=lambda: MultinomialEmission(clf_kwargs),
                    n_em_iters=40, n_restarts=3, tol=1e-4, random_state=0)
     model.fit(sequences)
@@ -268,7 +320,7 @@ def test_multinomial_emission_recovers_two_states():
     for perm in ([0, 1], [1, 0]):
         inv = np.argsort(perm)
         correct = total = 0
-        for (X, y), states in zip(sequences, state_seqs):
+        for (X, y), states in zip(sequences, state_seqs, strict=True):
             decoded = inv[model.viterbi(X, y)]
             correct += int((decoded == states).sum())
             total += states.shape[0]
@@ -279,10 +331,28 @@ def test_multinomial_emission_recovers_two_states():
 # Pipeline (input pickle -> per-session sequences -> held-out K-selection)
 def _write_synthetic_manifold_pickle(path, feature_names, history_frames, rng):
     """
-    Build a small continuous-manifold input pickle with a 2-state torus GLM-HMM
+    Description
+    -----------
+    Builds a small continuous-manifold input pickle with a 2-state torus GLM-HMM
     structure: six sessions (one reserved held-out), each a Markov chain over two
-    manifold positions, stored in the `D[feature][session]={'X','Y','w',
-    'category'}` shape the pipeline consumes.
+    manifold positions, stored in the ``D[feature][session]={'X','Y','w',
+    'category'}`` shape the pipeline consumes, plus the ``_input_metadata`` block.
+
+    Parameters
+    ----------
+    path (pathlib.Path)
+        Destination of the pickle.
+    feature_names (list[str])
+        Behavioural feature keys; every feature shares the same sessions and targets.
+    history_frames (int)
+        Number of history columns in each session's ``X``.
+    rng (np.random.Generator)
+        Random generator for the chain, the targets and ``X``.
+
+    Returns
+    -------
+    session_ids (list[str])
+        The six session ids (``s0`` .. ``s5``; ``s5`` is held out).
     """
     positions = np.array([[0.2, 0.2], [0.75, 0.75]])
     transition = np.array([[0.9, 0.1], [0.1, 0.9]])
@@ -307,13 +377,28 @@ def _write_synthetic_manifold_pickle(path, feature_names, history_frames, rng):
         'analysis_specific': {'manifold_metric': 'torus', 'manifold_period': 1.0},
         'held_out_session_ids': ['s5'],
     }
-    with open(path, 'wb') as handle:
+    with pathlib.Path(path).open('wb') as handle:
         pickle.dump(raw, handle)
     return session_ids
 
 
 def _write_glm_hmm_settings(path):
-    """Shipped modeling settings with the glm_hmm block trimmed for the synthetic run."""
+    """
+    Description
+    -----------
+    Writes the shipped modeling settings with the ``glm_hmm`` block trimmed for a
+    fast synthetic run (K in 1..3, 2 restarts, 25 EM iterations, 2 CV folds, 60
+    multinomial iterations) and a fixed random seed.
+
+    Parameters
+    ----------
+    path (pathlib.Path)
+        Destination of the settings JSON.
+
+    Returns
+    -------
+    None
+    """
     settings = json.loads(REPO_SETTINGS.read_text())
     settings['glm_hmm']['n_states_min'] = 1
     settings['glm_hmm']['n_states_max'] = 3
@@ -326,8 +411,24 @@ def _write_glm_hmm_settings(path):
 
 
 def _write_model_selection_file(path, feature_names):
-    """A minimal finalized manifold-selection pickle carrying `final_model_features`."""
-    with open(path, 'wb') as handle:
+    """
+    Description
+    -----------
+    Writes a minimal finalized manifold-selection pickle carrying
+    ``final_model_features``, the key the pipeline's selected-feature reader needs.
+
+    Parameters
+    ----------
+    path (pathlib.Path)
+        Destination of the pickle.
+    feature_names (list[str])
+        The selected features to record.
+
+    Returns
+    -------
+    None
+    """
+    with pathlib.Path(path).open('wb') as handle:
         pickle.dump({'final_model_features': list(feature_names),
                      'step_idx': len(feature_names)}, handle)
 
@@ -438,7 +539,7 @@ def test_read_selected_features_from_directory_and_error_paths(tmp_path):
 
     # A pickle without `final_model_features` (an unfinished selection) is rejected.
     unfinished = tmp_path / 'unfinished.pkl'
-    with open(unfinished, 'wb') as handle:
+    with pathlib.Path(unfinished).open('wb') as handle:
         pickle.dump({'step_idx': 1, 'current_features': ['x']}, handle)
     with pytest.raises(ValueError, match="final_model_features"):
         _read_selected_features(str(unfinished))
@@ -455,7 +556,7 @@ def test_read_selected_features_from_the_consolidated_artifact(tmp_path):
     one carrying ``final_model_features``) is read both as a file and through its directory,
     where it wins over leftover step pickles of other runs."""
     consolidated = tmp_path / 'model_selection_final_male_cohort_manifold_qlvm_session.pkl'
-    with open(consolidated, 'wb') as handle:
+    with pathlib.Path(consolidated).open('wb') as handle:
         pickle.dump({
             'steps': [{'step_idx': 0, 'current_features': []},
                       {'step_idx': 1, 'final_model_features': ['neck', 'nose']}],
@@ -470,9 +571,31 @@ def test_read_selected_features_from_the_consolidated_artifact(tmp_path):
 def _simulate_input_driven_categorical(rng, n_features, n_time_bins, n_classes,
                                        n_seqs, seq_len):
     """
-    Two states with DISTINCT behaviour -> USV-category rules (each its own light
-    X-dependence plus a strong opposing base rate), emitted along a sticky Markov
-    chain. Returns ``(sequences, state_seqs)`` in the engine's ``(X, y)`` shape.
+    Description
+    -----------
+    Simulates two states with DISTINCT behaviour -> USV-category rules (each its
+    own light X-dependence plus a strong opposing base rate), emitted along a
+    sticky Markov chain.
+
+    Parameters
+    ----------
+    rng (np.random.Generator)
+        Random generator for weights, chain and inputs.
+    n_features (int)
+        Number of behavioural features.
+    n_time_bins (int)
+        History bins per feature (inputs are ``n_features * n_time_bins`` wide).
+    n_classes (int)
+        Number of USV categories.
+    n_seqs (int)
+        Number of sequences.
+    seq_len (int)
+        Length of every sequence.
+
+    Returns
+    -------
+    sequences, state_seqs (tuple)
+        ``(X, y)`` pairs in the engine's shape and the true state sequences.
     """
     n_inputs = n_features * n_time_bins
     weights = [0.5 * rng.standard_normal((n_inputs, n_classes)) for _ in range(2)]
@@ -496,12 +619,32 @@ def _simulate_input_driven_categorical(rng, n_features, n_time_bins, n_classes,
 
 
 def _viterbi_best_accuracy(model, sequences, state_seqs):
-    """Best-of-both-labellings Viterbi decoding accuracy against the true chain."""
+    """
+    Description
+    -----------
+    Viterbi-decodes every sequence and scores it against the true chain under both
+    labellings of a 2-state model, returning the better accuracy (states are only
+    identified up to a relabelling).
+
+    Parameters
+    ----------
+    model (object)
+        A fitted 2-state model exposing ``viterbi(X, y)``.
+    sequences (list[tuple])
+        ``(X, y)`` pairs.
+    state_seqs (list[np.ndarray])
+        True state sequences aligned with ``sequences``.
+
+    Returns
+    -------
+    best_acc (float)
+        Fraction of time steps decoded correctly under the better labelling.
+    """
     best_acc = 0.0
     for perm in ([0, 1], [1, 0]):
         inv = np.argsort(perm)
         correct = total = 0
-        for (X, y), states in zip(sequences, state_seqs):
+        for (X, y), states in zip(sequences, state_seqs, strict=True):
             decoded = inv[model.viterbi(X, y)]
             correct += int((decoded == states).sum())
             total += states.shape[0]
@@ -585,11 +728,11 @@ def test_glmhmm_input_driven_em_machinery_runs():
     n_features, n_time_bins, n_classes = 2, 2, 2
     sequences, _ = _simulate_input_driven_categorical(
         rng, n_features, n_time_bins, n_classes, n_seqs=8, seq_len=60)
-    clf_kwargs = dict(n_features=n_features, n_time_bins=n_time_bins,
-                      lambda_smooth=1.0, l2_reg=0.1, focal_gamma=0.0, max_iter=120)
-    trans_kwargs = dict(n_features=n_features, n_time_bins=n_time_bins,
-                        lambda_smooth=1.0, l2_reg=0.1, focal_gamma=0.0,
-                        uniform_class_weights=True, max_iter=120)
+    clf_kwargs = {'n_features': n_features, 'n_time_bins': n_time_bins,
+                      'lambda_smooth': 1.0, 'l2_reg': 0.1, 'focal_gamma': 0.0, 'max_iter': 120}
+    trans_kwargs = {'n_features': n_features, 'n_time_bins': n_time_bins,
+                        'lambda_smooth': 1.0, 'l2_reg': 0.1, 'focal_gamma': 0.0,
+                        'uniform_class_weights': True, 'max_iter': 120}
     model = GLMHMM(
         n_states=2, emission_factory=lambda: MultinomialEmission(clf_kwargs),
         n_em_iters=20, n_restarts=1, tol=1e-4, random_state=0,
@@ -614,9 +757,29 @@ def test_glmhmm_input_driven_requires_transition_factory():
 
 def _simulate_input_driven_torus(rng, n_features, n_time_bins, n_seqs, seq_len):
     """
-    Two states at distinct torus positions along a sticky Markov chain. Returns
-    ``(sequences, state_seqs)`` in the manifold engine's ``(X, y)`` shape, with ``y``
-    a ``(T, 2)`` torus position.
+    Description
+    -----------
+    Simulates two states at distinct torus positions along a sticky Markov chain,
+    with Gaussian behavioural inputs unrelated to the state.
+
+    Parameters
+    ----------
+    rng (np.random.Generator)
+        Random generator for chain, inputs and position noise.
+    n_features (int)
+        Number of behavioural features.
+    n_time_bins (int)
+        History bins per feature.
+    n_seqs (int)
+        Number of sequences.
+    seq_len (int)
+        Length of every sequence.
+
+    Returns
+    -------
+    sequences, state_seqs (tuple)
+        ``(X, y)`` float32 pairs in the manifold engine's shape (``y`` a ``(T, 2)``
+        torus position) and the true state sequences.
     """
     positions = np.array([[0.2, 0.2], [0.75, 0.75]])
     transition = np.array([[0.9, 0.1], [0.1, 0.9]])
@@ -706,8 +869,8 @@ def test_input_driven_manifold_glmhmm_region_reweighting_changes_the_fit():
     # Upweight the second half of every sequence's events (a stand-in for region balancing).
     weighted = [(X, y, np.where(np.arange(len(y)) >= len(y) // 2, 4.0, 1.0).astype(np.float32))
                 for X, y in sequences]
-    shared = dict(n_states=2, n_features=n_features, n_time_bins=n_time_bins, period=1.0,
-                  lambda_smooth=0.05, n_restarts=2, n_lbfgs=200, random_state=0)
+    shared = {'n_states': 2, 'n_features': n_features, 'n_time_bins': n_time_bins, 'period': 1.0,
+                  'lambda_smooth': 0.05, 'n_restarts': 2, 'n_lbfgs': 200, 'random_state': 0}
     unweighted_model = InputDrivenManifoldGLMHMM(**shared).fit(sequences)
     weighted_model = InputDrivenManifoldGLMHMM(**shared).fit(weighted)
     assert not np.allclose(np.asarray(unweighted_model.params_['W_emit']),
@@ -788,12 +951,12 @@ def test_glm_hmm_pipeline_input_driven_maps_one_based_category_labels(tmp_path):
     feature_names = ['featA', 'featB']
     input_pkl = tmp_path / 'manifold_input.pkl'
     _write_synthetic_manifold_pickle(input_pkl, feature_names, 3, rng)
-    with open(input_pkl, 'rb') as handle:
+    with pathlib.Path(input_pkl).open('rb') as handle:
         raw = pickle.load(handle)
     for feat in feature_names:
         for session_entry in raw[feat].values():
             session_entry['category'] = session_entry['category'] + 1.0
-    with open(input_pkl, 'wb') as handle:
+    with pathlib.Path(input_pkl).open('wb') as handle:
         pickle.dump(raw, handle)
     settings_json = tmp_path / 'settings.json'
     _write_glm_hmm_settings(settings_json)
@@ -868,7 +1031,8 @@ def test_session_sequences_drop_nan_manifold_positions(capsys):
     raw = {'self.speed': {'s0': {'X': rng.random((6, 5)), 'Y': y}}}
     (sess, x_seq, y_seq), = _build_session_sequences(raw, ['self.speed'], ['s0'], 'Y', False, 3)
     assert sess == 's0'
-    assert x_seq.shape == (4, 3) and y_seq.shape == (4, 2)
+    assert x_seq.shape == (4, 3)
+    assert y_seq.shape == (4, 2)
     assert np.isfinite(y_seq).all()
     np.testing.assert_array_equal(x_seq, raw['self.speed']['s0']['X'][[0, 2, 3, 5]][:, -3:])
     assert 'dropped 2 events with NaN manifold positions' in capsys.readouterr().out
@@ -911,11 +1075,11 @@ def test_static_multinomial_cv_scores_a_category_absent_from_the_training_folds(
     feature_names = ['featA', 'featB']
     input_pkl = tmp_path / 'manifold_input.pkl'
     _write_synthetic_manifold_pickle(input_pkl, feature_names, 3, rng)
-    with open(input_pkl, 'rb') as handle:
+    with pathlib.Path(input_pkl).open('rb') as handle:
         raw = pickle.load(handle)
     for feat in feature_names:
         raw[feat]['s0']['category'][:3] = 2.0
-    with open(input_pkl, 'wb') as handle:
+    with pathlib.Path(input_pkl).open('wb') as handle:
         pickle.dump(raw, handle)
     settings_json = tmp_path / 'settings.json'
     _write_glm_hmm_settings(settings_json)
@@ -940,7 +1104,7 @@ def test_multinomial_emission_unseen_known_label_gets_the_floor_and_unknown_rais
     rng = np.random.default_rng(0)
     X = rng.standard_normal((60, 2))
     y = rng.integers(1, 3, 60)
-    emission = MultinomialEmission(dict(n_features=1, n_time_bins=2, max_iter=50),
+    emission = MultinomialEmission({'n_features': 1, 'n_time_bins': 2, 'max_iter': 50},
                                    class_labels=np.array([1, 2, 3])).fit(X, y, np.ones(60))
     log_density = emission.log_density(X[:3], np.array([1, 2, 3]))
     assert np.all(np.isfinite(log_density))
@@ -985,7 +1149,7 @@ def test_bic_counts_exactly_the_free_parameters_by_hand():
 
     X = rng.standard_normal((80, 4))
     y = (X[:, 0] > 0).astype(int)
-    clf_kwargs = dict(n_features=2, n_time_bins=2, lambda_smooth=1.0, l2_reg=0.1, max_iter=30)
+    clf_kwargs = {'n_features': 2, 'n_time_bins': 2, 'lambda_smooth': 1.0, 'l2_reg': 0.1, 'max_iter': 30}
     static = GLMHMM(2, lambda: MultinomialEmission(clf_kwargs), n_em_iters=2, n_restarts=1).fit(
         [(X[:40], y[:40]), (X[40:], y[40:])])
     assert all(emission.n_params == 5 for emission in static.emissions_)

@@ -46,12 +46,26 @@ SETTINGS_PATH = (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_play
 
 
 def _settings(**surface_overrides) -> dict:
-    """The SHIPPED vocal_decoding block with only the tiny-run knobs overridden.
+    """
+    Description
+    -----------
+    Returns the SHIPPED vocal_decoding block with only the tiny-run knobs overridden.
 
     Building from the real file rather than a hand-written literal is what makes these tests notice a
     settings-versus-code drift: a key the decoder starts reading, or stops honouring, shows up here
     instead of only at run time. The grid is coarsened and the bandwidth widened so the synthetic units
-    stay fast; nothing that changes the decoder's structure is touched."""
+    stay fast; nothing that changes the decoder's structure is touched.
+
+    Parameters
+    ----------
+    **surface_overrides
+        Extra ``tuning_surface`` keys applied after ``grid_n = 24`` and ``kde_bandwidth = 0.10``.
+
+    Returns
+    -------
+    block (dict)
+        A deep copy of the shipped ``vocal_decoding`` block with the overrides applied.
+    """
     with SETTINGS_PATH.open() as handle:
         block = copy.deepcopy(json.load(handle)["vocal_decoding"])
     block["tuning_surface"].update({"grid_n": 24, "kde_bandwidth": 0.10, **surface_overrides})
@@ -62,14 +76,56 @@ SETTINGS = _settings()
 
 
 def _fixed_alpha(alpha):
-    """SETTINGS with the amplitude calibration pinned to one value, for tests about the surface."""
+    """
+    Description
+    -----------
+    Returns the test settings with the amplitude calibration pinned to one value, for tests about the
+    surface rather than the tuning of its amplitude.
+
+    Parameters
+    ----------
+    alpha (float)
+        The single value of the amplitude grid (and so the amplitude every fold uses).
+
+    Returns
+    -------
+    block (dict)
+        The ``vocal_decoding`` block from ``_settings`` with a one-value ``alpha_grid``.
+    """
     return _settings(amplitude_calibration={"enabled": True, "alpha_grid": [alpha], "alpha_min": 0.0,
                                             "mode": "train_tuned_inner_loso"})
 
 
 def _tuned_unit(n_sessions=3, per_session=200, depth=1.4, seed=0, tuned=True):
-    """Events uniform on the torus; counts Poisson with a rate that either does or does not depend on
-    position, at MATCHED mean rate so the comparison isolates tuning from firing rate."""
+    """
+    Description
+    -----------
+    Builds events uniform on the torus with Poisson counts whose rate either does or does not depend on
+    position (a two-cosine surface), at MATCHED peak rate so the comparison isolates tuning from firing
+    rate.
+
+    Parameters
+    ----------
+    n_sessions (int)
+        Number of sessions.
+    per_session (int)
+        Events per session.
+    depth (float)
+        Log-rate modulation depth of the surface.
+    seed (int)
+        Seed for ``np.random.default_rng``.
+    tuned (bool)
+        True for the position-dependent rate; False for a flat rate.
+
+    Returns
+    -------
+    counts (np.ndarray)
+        Spike count of every event as float.
+    positions (np.ndarray)
+        Torus position of every event, shape ``(n_events, 2)``.
+    sessions (np.ndarray)
+        Session index of every event.
+    """
     generator = np.random.default_rng(seed)
     positions = generator.random((n_sessions * per_session, 2))
     sessions = np.repeat(np.arange(n_sessions), per_session)
@@ -81,15 +137,20 @@ def _tuned_unit(n_sessions=3, per_session=200, depth=1.4, seed=0, tuned=True):
 
 class TestTorusGeometry:
 
+    """Wrapped distances and the decoding grid on the unit torus."""
     def test_distance_wraps(self):
+        """Points at 0.98 and 0.02 must be 0.04 apart, not 0.96, so the decoder treats the seam as continuous."""
         near_edges = wrapped_square_distance(np.array([[0.98, 0.5]]), np.array([[0.02, 0.5]]))
         assert near_edges[0, 0] == pytest.approx(0.04 ** 2)
 
     def test_distance_is_zero_to_itself(self):
+        """Every point must be at zero distance from itself, the basic metric property the KDE relies on."""
         points = np.random.default_rng(0).random((5, 2))
         assert np.allclose(np.diag(wrapped_square_distance(points, points)), 0.0)
 
     def test_grid_cells_tile_the_torus(self):
+        """A 24 x 24 grid must have 576 cells whose areas sum to the torus area, so grid integrals of the
+        posterior are correctly normalised."""
         grid, area = torus_grid(24)
         assert grid.shape == (576, 2)
         assert area * 576 == pytest.approx(PERIOD ** 2)
@@ -97,6 +158,7 @@ class TestTorusGeometry:
 
 class TestBases:
 
+    """The Fourier and occupancy-gated bump tuning bases."""
     def test_fourier_is_periodic_across_the_seam(self):
         """A seam in the basis would put an artificial discontinuity in every fitted surface."""
         left = fourier_basis(np.array([[0.0, 0.3]]), 2)
@@ -104,6 +166,7 @@ class TestBases:
         assert np.allclose(left, right, atol=1e-12)
 
     def test_fourier_width_matches_k(self):
+        """At ``k = 2`` the Fourier basis must have 12 columns, the width the stored coefficients assume."""
         assert fourier_basis(np.random.default_rng(0).random((4, 2)), 2).shape == (4, 12)
 
     def test_bump_nodes_are_gated_by_occupancy(self):
@@ -117,6 +180,7 @@ class TestBases:
         assert far.shape[0] == 0
 
     def test_bump_basis_peaks_at_its_node(self):
+        """A bump must equal 1.0 at its own node and be near zero far away, so each column is a local feature."""
         nodes = np.array([[0.5, 0.5]])
         values = bump_basis(np.array([[0.5, 0.5], [0.9, 0.9]]), nodes, 0.1)
         assert values[0, 0] == pytest.approx(1.0)
@@ -125,7 +189,10 @@ class TestBases:
 
 class TestPoissonFit:
 
+    """The ridge Poisson fit of the tuning surface."""
     def test_it_recovers_a_known_surface(self):
+        """On 4,000 events from a known cosine surface the fitted rate must correlate above 0.9 with the truth,
+        so the fit recovers the surface it is given."""
         counts, positions, _sessions = _tuned_unit(n_sessions=1, per_session=4000, depth=1.0)
         basis = fourier_basis(positions, 2)
         beta = poisson_tuning_fit(basis, counts, ridge=1.0, n_steps=50)
@@ -146,8 +213,9 @@ class TestPoissonFit:
 
 class TestOccupancyAndMask:
 
+    """The KDE occupancy and the decode-grid mask built from it."""
     def test_occupancy_is_kde_weighted_not_a_cell_count(self):
-        """Stated because the mask admits cells holding ZERO training calls -- two calls a bandwidth
+        """Stated because the mask admits cells holding ZERO training USVs -- two USVs a bandwidth
         away sum above 1.0 -- and that is a property to report, not to present as conservative."""
         grid, _area = torus_grid(24)
         occupancy = torus_occupancy(np.array([[0.5, 0.5], [0.52, 0.5]]), grid, 0.10)
@@ -156,7 +224,7 @@ class TestOccupancyAndMask:
         assert occupancy[empty_cell] > 1.0
 
     def test_masked_events_are_excluded_and_counted(self):
-        """Events far from any training call are dropped rather than scored against an invented prior."""
+        """Events far from any training USV are dropped rather than scored against an invented prior."""
         counts, positions, sessions = _tuned_unit()
         loose = decoding_context(positions, sessions, SETTINGS)
         strict = decoding_context(positions, sessions,
@@ -172,6 +240,7 @@ class TestOccupancyAndMask:
 
 class TestDecodeGain:
 
+    """The leave-one-session-out Bayesian decoding gain and its permutation null."""
     def test_a_tuned_unit_gains_and_an_untuned_one_does_not(self):
         """The test that matters: matched firing rate, only the position dependence differs."""
         tuned = _tuned_unit(depth=1.4, seed=0, tuned=True)
@@ -203,11 +272,24 @@ class TestDecodeGain:
         observed = decode_gain(counts, folds, SETTINGS)["gain"]
 
         def statistic(permutation):
-            # the context is built ONCE from the real positions -- the prior, the mask and the
-            # occupancy are properties of the events, not of the pairing, and the null is meant to
-            # destroy the count-to-position pairing and nothing else. `decode_gain` applies the
-            # permutation to the basis rows and truth cells, leaving counts (and so the per-fold
-            # ridge) exactly where they were.
+            """
+            Description
+            -----------
+            Scores one permutation draw. The context is built ONCE from the real positions -- the prior, the
+            mask and the occupancy are properties of the events, not of the pairing, and the null is meant to
+            destroy the count-to-position pairing and nothing else. ``decode_gain`` applies the permutation to
+            the basis rows and truth cells, leaving counts (and so the per-fold ridge) exactly where they were.
+
+            Parameters
+            ----------
+            permutation (np.ndarray)
+                Within-session permutation of event indices.
+
+            Returns
+            -------
+            gain (float)
+                The decoding gain under that permutation.
+            """
             return decode_gain(counts, folds, SETTINGS, permutation)["gain"]
 
         null = permutation_null(statistic, sessions, 12, seed=0)
@@ -220,6 +302,8 @@ class TestDecodeGain:
         assert observed - np.nanmean(null) > 0.1
 
     def test_the_permutation_keeps_events_within_their_session(self):
+        """A within-session permutation of the synthetic sessions must leave every session label in place, so
+        the null re-pairs positions only inside a session."""
         _counts, _positions, sessions = _tuned_unit()
         permutation = within_session_permutation(sessions, np.random.default_rng(0))
         assert np.array_equal(sessions[permutation], sessions)
@@ -227,7 +311,9 @@ class TestDecodeGain:
 
 class TestSessionExposureOffsets:
 
+    """Per-session log exposure offsets that absorb session rate drift."""
     def test_the_offset_is_the_log_of_the_session_mean(self):
+        """Each event's offset must be the log of its own session's mean count (log 2 and log 15 here)."""
         counts = np.array([0.0, 2.0, 4.0, 10.0, 20.0])
         sessions = np.array([0, 0, 0, 1, 1])
         offsets = session_exposure_offsets(counts, sessions)
@@ -235,6 +321,7 @@ class TestSessionExposureOffsets:
         assert offsets[3:] == pytest.approx(np.log(15.0))
 
     def test_a_silent_session_is_floored_rather_than_infinite(self):
+        """A session with no spikes must get the floored offset log(1e-3) rather than -inf, so the fit stays finite."""
         offsets = session_exposure_offsets(np.zeros(4), np.array([0, 0, 1, 1]))
         assert np.isfinite(offsets).all()
         assert offsets[0] == pytest.approx(np.log(1e-3))
@@ -257,6 +344,21 @@ class TestSessionExposureOffsets:
         ridge = 0.02 * counts.sum()
 
         def modulation_depth(beta):
+            """
+            Description
+            -----------
+            Measures the peak-to-trough range of a fitted surface's shape over the decoding grid.
+
+            Parameters
+            ----------
+            beta (np.ndarray)
+                Fitted coefficients with the intercept last.
+
+            Returns
+            -------
+            depth (float)
+                ``max - min`` of the shape (intercept excluded) over the grid, in log-rate units.
+            """
             shape = grid_basis @ beta[:-1]
             return float(shape.max() - shape.min())
 
@@ -271,6 +373,7 @@ class TestSessionExposureOffsets:
 
 class TestAmplitudeCalibration:
 
+    """The amplitude ``alpha`` that scales the surface's modulation depth."""
     def test_alpha_scales_depth_and_leaves_the_prior_weighted_level_alone(self):
         """Alpha must move the surface's modulation DEPTH only. The shape is centred on its
         prior-weighted mean first, so the exposure term keeps setting the level -- without the centring
@@ -294,6 +397,8 @@ class TestAmplitudeCalibration:
             assert weighted_mean == pytest.approx(level)
 
     def test_alpha_zero_flattens_the_surface_completely(self):
+        """At ``alpha = 0`` every held-out event's gain must be zero, so the amplitude really switches the
+        surface off."""
         counts, positions, sessions = _tuned_unit()
         folds = decoding_context(positions, sessions, SETTINGS)
         fold = folds[0]
@@ -319,6 +424,7 @@ class TestConfigurationGuards:
     configured and is not. Each of these switches is either honoured or refused."""
 
     def test_a_non_poisson_likelihood_is_refused(self):
+        """A ``likelihood_family`` other than Poisson must raise ``ValueError`` instead of being ignored."""
         counts, positions, sessions = _tuned_unit()
         settings = _settings()
         settings["tuning_surface"]["likelihood_family"] = "gaussian"
@@ -326,6 +432,7 @@ class TestConfigurationGuards:
             decode_gain(counts, decoding_context(positions, sessions, SETTINGS), settings)
 
     def test_a_different_ridge_mode_is_refused(self):
+        """A ridge-selection mode the decoder does not implement must raise ``ValueError`` naming the ridge."""
         counts, positions, sessions = _tuned_unit()
         settings = _settings()
         settings["tuning_surface"]["ridge_selection"]["mode"] = "nested_inner_loso"
@@ -342,6 +449,7 @@ class TestConfigurationGuards:
             decode_gain(counts, decoding_context(positions, sessions, SETTINGS), settings)
 
     def test_a_different_calibration_mode_is_refused(self):
+        """An amplitude-calibration mode other than inner LOSO must raise ``ValueError`` instead of being ignored."""
         counts, positions, sessions = _tuned_unit()
         settings = _settings()
         settings["tuning_surface"]["amplitude_calibration"]["mode"] = "held_out_mle"
@@ -362,6 +470,8 @@ class TestSaveRoster:
     whole result. The plan requires the folds themselves to be persisted, not just the mean."""
 
     def test_the_per_fold_detail_is_returned(self):
+        """Each of the three per-fold records must carry exactly the stored keys and the 13 surface coefficients,
+        so a figure or population decode can be rebuilt without refitting."""
         counts, positions, sessions = _tuned_unit(depth=1.4)
         result = decode_gain(counts, decoding_context(positions, sessions, SETTINGS), SETTINGS)
         assert len(result["per_fold"]) == 3
@@ -373,6 +483,8 @@ class TestSaveRoster:
             assert entry["coefficients"].size == 13
 
     def test_the_leave_one_fold_out_minimum_tracks_the_weakest_fold(self):
+        """For a strongly tuned unit all three folds must be positive and the leave-one-fold-out minimum positive
+        and no larger than the pooled gain, so no one session carries the result."""
         counts, positions, sessions = _tuned_unit(depth=1.4)
         result = decode_gain(counts, decoding_context(positions, sessions, SETTINGS), SETTINGS)
         assert result["n_folds_positive"] == 3
@@ -382,6 +494,7 @@ class TestSaveRoster:
         assert result["min_leave_one_fold_out"] <= result["gain"] + 1e-12
 
     def test_masked_events_are_counted_per_fold_and_in_total(self):
+        """Per-fold masked counts must sum to the total masked count, so the two stored numbers cannot disagree."""
         counts, positions, sessions = _tuned_unit()
         strict = _settings(decode_grid_min_occupancy=20.0)
         result = decode_gain(counts, decoding_context(positions, sessions, strict), strict)
@@ -393,6 +506,8 @@ class TestFlaggedDescriptors:
     read by nothing -- so a run could declare them true and record none of them."""
 
     def test_the_overdispersion_index_follows_its_flag(self):
+        """The overdispersion index must be present when its flag is on, absent when off, and near 1 for Poisson
+        counts, so the flag is honoured and the value is a real measurement."""
         counts, positions, sessions = _tuned_unit(seed=5)
         folds = decoding_context(positions, sessions, SETTINGS)
         on = decode_gain(counts, folds, SETTINGS, with_detail=True)
@@ -418,6 +533,8 @@ class TestFlaggedDescriptors:
         assert fourier > 0
 
     def test_the_bump_refit_does_not_mutate_the_caller_settings(self):
+        """The bump refit must leave the caller's ``tuning_basis`` at ``"fourier"``, so a descriptor cannot
+        switch the basis of every later decode."""
         counts, positions, sessions = _tuned_unit(seed=7)
         settings = _settings()
         bump_basis_gain(counts, positions, sessions, settings)
@@ -436,6 +553,8 @@ class TestFlaggedDescriptors:
         assert not middle["anti_aligned"]
 
     def test_the_flags_gate_what_is_recorded(self):
+        """With both flags on, the bump gain and the left-tail p must be recorded; with both off, nothing is, so
+        each flag controls exactly its own descriptor."""
         counts, positions, sessions = _tuned_unit(seed=8)
         null = np.linspace(-0.01, 0.01, 51)
         both = flagged_descriptors(counts, positions, sessions, SETTINGS, 0.05, null)
@@ -470,6 +589,7 @@ class TestTuningBasisIsAFirstClassOption:
                                  _settings(tuning_basis=bad))
 
     def test_both_shipped_bases_are_accepted(self):
+        """Every basis in ``TUNING_BASES`` must build three folds and score a finite gain, so both options run."""
         counts, positions, sessions = _tuned_unit(seed=11)
         for basis in sorted(TUNING_BASES):
             folds, score = basis_context(positions, sessions, SETTINGS, basis)
@@ -477,6 +597,7 @@ class TestTuningBasisIsAFirstClassOption:
             assert np.isfinite(score(counts)["gain"])
 
     def test_basis_context_refuses_an_unknown_basis(self):
+        """``basis_context`` must raise ``ValueError`` for an unknown basis rather than default to one."""
         _counts, positions, sessions = _tuned_unit(seed=12)
         with pytest.raises(ValueError, match="basis must be one of"):
             basis_context(positions, sessions, SETTINGS, "gaussian")
@@ -495,6 +616,7 @@ class TestTuningBasisIsAFirstClassOption:
         assert len(folds) == 3
 
     def test_basis_context_does_not_mutate_the_caller_settings(self):
+        """Building a bump context must leave the caller's ``tuning_basis`` at ``"fourier"``."""
         _counts, positions, sessions = _tuned_unit(seed=14)
         settings = _settings()
         basis_context(positions, sessions, settings, "bumps")

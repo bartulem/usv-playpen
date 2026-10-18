@@ -22,6 +22,12 @@ Two surfaces are covered:
      directories surfaced under `sessions_skipped`, `consistency =
      n_significant / n_tested`, and the orphan-pkl `KeyError` guard
      that protects catalog authority.
+
+Coverage: the per-modality gates of ``flag_one_cluster`` above and below
+threshold with their bookkeeping fields; unit-id parsing and its malformed-input
+guard; empty-input modality aggregation; and the cross-session roll-up (duplicate
+collapse, multi-condition units, ``n_tested`` / ``consistency``, skipped sessions,
+the orphan-pkl guard and the one-date-one-mouse guard).
 """
 
 from __future__ import annotations
@@ -39,7 +45,6 @@ from usv_playpen.analyses.unit_triage_aggregator import (
     aggregate_units_across_conditions,
     flag_one_cluster,
 )
-
 
 # Shared synthetic-payload helpers
 
@@ -513,9 +518,9 @@ def test_parse_unit_id_raises_on_malformed_input():
     rather than producing a unit record with garbage fields.
     """
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="does not have 4 underscore-separated tokens"):
         _parse_unit_id("imec0_cl0007_good")  # only 3 tokens
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="does not have 4 underscore-separated tokens"):
         _parse_unit_id("imec0_cl0007_ch207_extra_good")  # 5 tokens
 
 
@@ -1013,7 +1018,8 @@ def test_aggregator_raises_on_orphan_pkl(tmp_path):
         )
     msg = str(exc_info.value)
     assert "2 pkl(s)" in msg
-    assert "cl9999" in msg and "cl8888" in msg
+    assert "cl9999" in msg
+    assert "cl8888" in msg
 
 
 def test_aggregator_raises_on_date_mapped_to_multiple_mice(tmp_path):
@@ -1028,7 +1034,7 @@ def test_aggregator_raises_on_date_mapped_to_multiple_mice(tmp_path):
 
     fx = _build_aggregator_tree(tmp_path)
     # Append a row giving 20240101 a SECOND mouse, violating the invariant.
-    with open(fx["catalog"], "a") as fh:
+    with pathlib.Path(fx["catalog"]).open("a") as fh:
         fh.write("M99,20240101,imec0_cl0003_ch300_good,PAG\n")
     with pytest.raises(ValueError, match="one-date-one-mouse"):
         aggregate_units_across_conditions(
@@ -1120,7 +1126,8 @@ def test_aggregate_modality_stats_empty_per_session_yields_none():
         "usv_peth_self_excit",
     ):
         agg = _aggregate_modality_stats(key, [])
-        assert agg and all(v is None for v in agg.values())
+        assert agg
+        assert all(v is None for v in agg.values())
 
 
 def test_flag_one_cluster_skips_non_dict_blocks():

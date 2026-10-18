@@ -53,6 +53,13 @@ and undefined-metric warnings, and ``astropy``'s Gaussian smoothing emits an
 narrow per-test ``@pytest.mark.filterwarnings`` markers. ``matplotlib`` is
 forced onto the headless ``Agg`` backend because the dispatcher imports
 ``pyplot`` for basis-verification plotting.
+
+Coverage: ``VocalCategoryModelingPipeline.extract_and_save_category_input_data``
+and ``_run_modeling_category`` (mixed / session splits, label-shuffle null,
+fit-failure and ECE-failure branches), ``_collect_category_windows``, the
+univariate dispatcher's ``category`` route, and
+``vocal_category_model_selection`` driven directly and through
+``main_model_selection_dispatcher``.
 """
 
 from __future__ import annotations
@@ -63,18 +70,19 @@ import pickle
 import warnings
 from pathlib import Path
 
-import matplotlib
+import matplotlib as mpl
 import numpy as np
 import polars as pls
 import pytest
 
-matplotlib.use('Agg')
+# The headless backend must be selected before the modeling import chain pulls pyplot.
+mpl.use('Agg')
 
 from tests.modeling._synth import (
     build_behavioral_features_csv,
     build_modeling_settings,
-    fit_counting_subclass,
     build_track_h5,
+    fit_counting_subclass,
     write_session_list_file,
 )
 
@@ -193,7 +201,8 @@ def _write_category_usv_summary(
     warmup = filter_history * 2.0 + 1.0
     usable = session_duration_sec - warmup - filter_history * 2.0
     if usable <= 0 or n_bouts <= 0:
-        raise ValueError("Session too short to host the requested number of events.")
+        msg = "Session too short to host the requested number of events."
+        raise ValueError(msg)
     bout_spacing = usable / n_bouts
 
     syllable_gap = 0.3
@@ -580,7 +589,7 @@ def _run_univariate_category_and_consolidate(
 
     # Pull the upstream input metadata so the consolidated pickle stays
     # provenance-complete for the selection orchestrator.
-    with open(input_pkl, 'rb') as fh:
+    with Path(input_pkl).open('rb') as fh:
         loaded = pickle.load(fh)
     input_md = loaded['_input_metadata']
     feature_keys = [k for k in loaded if not k.startswith('_')]
@@ -657,7 +666,8 @@ class TestCategoryInputExtraction:
             other = artifact[anchor][sess]['other_feature_arr']
             assert targ.shape[1] == HISTORY_FRAMES
             assert other.shape[1] == HISTORY_FRAMES
-            assert np.isfinite(targ).all() and np.isfinite(other).all()
+            assert np.isfinite(targ).all()
+            assert np.isfinite(other).all()
             total_target += targ.shape[0]
             total_other += other.shape[0]
 
@@ -1093,6 +1103,23 @@ class TestModelSelectionDispatcherCategory:
         real_selection = vocal_category_model_selection
 
         def _wrapped(**kwargs):
+            """
+            Description
+            -----------
+            Forwards the dispatcher's keyword arguments to the real
+            ``vocal_category_model_selection`` with ``settings_path`` redirected
+            to the synthetic settings JSON.
+
+            Parameters
+            ----------
+            **kwargs
+                The selector keyword arguments the dispatcher builds.
+
+            Returns
+            -------
+            result
+                Whatever the real selector returns.
+            """
             kwargs['settings_path'] = str(settings_json)
             return real_selection(**kwargs)
 
@@ -1367,11 +1394,48 @@ class TestRunModelingCategoryHandlers:
         basis = np.eye(HISTORY_FRAMES, 3, dtype=float)
 
         class _ExplodingLR:
-            def __init__(self, *a, **k):
-                pass
+            """
+            Description
+            -----------
+            Stand-in for ``LogisticRegressionCV`` whose constructor is a no-op and whose
+            ``.fit`` always raises, so every fit routed through it fails.
+            """
 
-            def fit(self, *a, **k):
-                raise RuntimeError("forced logistic fit failure")
+            def __init__(self, *_args, **_kwargs):
+                """
+                Description
+                -----------
+                Accepts and ignores any constructor arguments.
+
+                Parameters
+                ----------
+                *_args, **_kwargs
+                    Ignored estimator hyperparameters.
+
+                Returns
+                -------
+                None
+                """
+
+            def fit(self, *_args, **_kwargs):
+                """
+                Description
+                -----------
+                Always raises ``RuntimeError`` to force the fit-failure branch.
+
+                Parameters
+                ----------
+                *_args, **_kwargs
+                    Ignored training data and fit options.
+
+                Returns
+                -------
+                None
+                    Never returns.
+                """
+
+                msg = "forced logistic fit failure"
+                raise RuntimeError(msg)
 
         monkeypatch.setattr(category_module, 'LogisticRegressionCV', _ExplodingLR)
 
@@ -1396,8 +1460,25 @@ class TestRunModelingCategoryHandlers:
         feature_data = _category_feature_data(HISTORY_FRAMES)
         basis = np.eye(HISTORY_FRAMES, 3, dtype=float)
 
-        def _ece_boom(*a, **k):
-            raise RuntimeError("forced ece failure")
+        def _ece_boom(*_args, **_kwargs):
+            """
+            Description
+            -----------
+            Stand-in for ``expected_calibration_error`` that always raises.
+
+            Parameters
+            ----------
+            *_args, **_kwargs
+                Ignored; accepted so the stand-in matches any invocation form.
+
+            Returns
+            -------
+            None
+                Never returns; always raises ``RuntimeError``.
+            """
+
+            msg = "forced ece failure"
+            raise RuntimeError(msg)
 
         monkeypatch.setattr(category_module, 'expected_calibration_error', _ece_boom)
 

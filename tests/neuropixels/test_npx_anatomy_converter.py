@@ -8,6 +8,13 @@ the pure run-length compressor with hand-computed ranges, and drive the
 file-joining helpers / top-level regenerator against a fully synthetic
 ephys + histology directory tree built under ``tmp_path`` (no real data,
 no network).
+
+Coverage: ``_runs_to_ranges`` (empty, single, contiguous and interleaved
+runs), the IBL channel-locations loader, the Kilosort-keyed block join, the
+full ``regenerate`` (dry run, write, skip reasons, preserved blocks for
+skipped triples), ``add_session`` (new, present, forced, absent converter,
+missing data), the one-line region-row writer, the CLI modes and their
+argument errors, and the settings-derived probe map / Kilosort version.
 """
 
 from __future__ import annotations
@@ -563,12 +570,12 @@ def test_probe_map_and_kilosort_version_derive_from_settings():
     drifting out of sync with the rest of the neuropixels pipeline).
     """
 
-    assert _PROBE_TO_HEMISPHERE == resolve_analyses_setting(
+    assert resolve_analyses_setting(
         "npx_histology_ibl_alignment_export", "probe_to_hemisphere"
-    )
-    assert _KILOSORT_VERSION == int(
+    ) == _PROBE_TO_HEMISPHERE
+    assert int(
         resolve_analyses_setting("npx_spike_quality_metrics", "kilosort_version")
-    )
+    ) == _KILOSORT_VERSION
 
 
 def test_cli_probe_to_hemisphere_malformed_pair_errors(monkeypatch):

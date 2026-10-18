@@ -9,6 +9,13 @@ an end-to-end two-tile stitch of tiny synthetic uint16 planes in
 so overlap pixels become the plain mean of the contributing tiles and
 single-coverage pixels equal their source exactly — making the blend
 hand-verifiable.
+
+Coverage: ``compute_tile_layout`` (offsets, canvas size, single-tile and
+empty inputs), ``make_bevel_weights`` (plateau, floor, feather < 1 error),
+SmartSPIM ``metadata.txt`` parsing, tile-directory enumeration, plane-file
+listing, channel-directory resolution, and ``stitch_smartspim_tiles`` end to
+end (overlap mean blend, z flip, missing metadata, wavelength validation,
+inconsistent plane counts, non-unsigned tiles).
 """
 
 from __future__ import annotations
@@ -274,7 +281,7 @@ def test_stitch_smartspim_tiles_missing_metadata_raises(tmp_path):
 
     root = tmp_path / "acq"
     (root / "Ex_488_Ch0").mkdir(parents=True)
-    with pytest.raises(FileNotFoundError, match="metadata.txt not found"):
+    with pytest.raises(FileNotFoundError, match=r"metadata.txt not found"):
         stitch_smartspim_tiles(root, tmp_path / "o.tif", wavelength_nm=488)
 
 

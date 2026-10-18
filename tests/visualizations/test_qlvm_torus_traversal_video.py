@@ -1,8 +1,8 @@
 """
 @author: bartulem
-Tests for visualizations/qlvm_torus_traversal_video.
+Tests for ``usv_playpen.visualizations.qlvm_torus_traversal_video``.
 
-Covers the torus embedding helper, pooling per-USV latent coords from the
+Coverage: the torus embedding helper, pooling per-USV latent coords from the
 consolidated H5 (`qlvm/<key>/<map>`), the phase-script builder, the store
 provenance check against the cell the QLVM category bundle is defined on, a small
 end-to-end three-part render to a temporary GIF (Pillow writer, no FFmpeg) that
@@ -19,7 +19,6 @@ from click.testing import CliRunner
 
 from usv_playpen.os_utils import load_qlvm_category_bundle
 from usv_playpen.visualizations import qlvm_torus_traversal_video as traversal_module
-
 from usv_playpen.visualizations.qlvm_torus_traversal_video import (
     QLVMTorusTraversalVideo,
     build_phases,
@@ -72,9 +71,27 @@ def test_build_phases_structure():
 
 
 def _tiny_cfg(spectrograms_dir, peaks_only=False, qlvm_map="qlvm"):
-    """A small render input dict (the qlvm block + the shared_resources block)
+    """
+    Description
+    -----------
+    A small render input dict (the qlvm block + the shared_resources block)
     that exercises all phases quickly at low dpi. The consolidated store is
-    resolved from ``spectrograms_dir``; the landscape is the category bundle."""
+    resolved from ``spectrograms_dir``; the landscape is the category bundle.
+
+    Parameters
+    ----------
+    spectrograms_dir (str | pathlib.Path)
+        Shared spectrograms directory holding the consolidated store.
+    peaks_only (bool)
+        Render Part 1 (category peaks) only, skipping the traversal parts.
+    qlvm_map (str)
+        The shared ``qlvm_map`` setting the video is handed.
+
+    Returns
+    -------
+    input_parameter_dict (dict)
+        The ``shared_resources`` / ``figures`` / ``qlvm_torus_traversal_video`` blocks.
+    """
     return {
         "shared_resources": {
             "spectrograms_dir": str(spectrograms_dir),
@@ -100,10 +117,34 @@ _PRODUCTION_PACKAGE = "/mnt/falkner/Bartul/spectrograms"
 
 
 def _write_inputs(tmp_path, n=12, n_f=16, n_t=16, package_root=_PRODUCTION_PACKAGE, cell="qlvm/qlvm"):
-    """Build a shared spectrograms dir holding <dir>/spectrograms_<key>.h5 with
-    per-session spectrograms, qlvm/<key>/qlvm coords and the qlvm_models/qlvm
-    provenance attrs (package_root / cell, the production regular cell by default).
-    Returns str(<dir>)."""
+    """
+    Description
+    -----------
+    Build a shared spectrograms dir holding ``<dir>/spectrograms_<key>.h5`` with
+    per-session spectrograms, durations, SAM2 masks, ``qlvm/<key>/qlvm`` coords
+    and the ``qlvm_models/qlvm`` provenance attrs (``package_root`` / ``cell``,
+    the production regular cell by default).
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        The pytest temporary directory the store is written under.
+    n (int)
+        Number of USVs in the session.
+    n_f (int)
+        Frequency bins per spectrogram.
+    n_t (int)
+        Time bins per spectrogram.
+    package_root (str)
+        Provenance ``package_root`` attribute written on ``qlvm_models/qlvm``.
+    cell (str)
+        Provenance ``cell`` attribute written on ``qlvm_models/qlvm``.
+
+    Returns
+    -------
+    spec_dir (str)
+        Path to the spectrograms directory.
+    """
     rng = np.random.default_rng(0)
     session_key = "20250907_190610"
     spec_dir = tmp_path / "spectrograms"
@@ -143,8 +184,8 @@ def test_make_video_writes_gif(tmp_path, qlvm_category_bundle):
     assert any("4 categories" in message and str(qlvm_category_bundle) in message for message in messages)
 
 
-
-def test_make_video_outlines_sit_on_the_bundle_pixel_centres(tmp_path, qlvm_category_bundle, monkeypatch):
+@pytest.mark.usefixtures("qlvm_category_bundle")
+def test_make_video_outlines_sit_on_the_bundle_pixel_centres(tmp_path, monkeypatch):
     """
     Description
     -----------
@@ -157,7 +198,30 @@ def test_make_video_outlines_sit_on_the_bundle_pixel_centres(tmp_path, qlvm_cate
     real_outlines = traversal_module.draw_category_outlines
 
     def _record_outlines(ax, xx, yy, labels, **kwargs):
-        """Record the grid the outlines are contoured on, then draw them."""
+        """
+        Description
+        -----------
+        Record the grid the outlines are contoured on, then draw them with the
+        real ``draw_category_outlines`` so the render proceeds unchanged.
+
+        Parameters
+        ----------
+        ax (matplotlib.axes.Axes)
+            Axes the outlines are drawn on.
+        xx (np.ndarray)
+            Contour x grid.
+        yy (np.ndarray)
+            Contour y grid.
+        labels (np.ndarray)
+            Category label grid.
+        **kwargs (dict)
+            Styling keywords forwarded to the real drawer.
+
+        Returns
+        -------
+        result (object)
+            Whatever the real drawer returns.
+        """
         recorded.append((np.asarray(xx), np.asarray(yy)))
         return real_outlines(ax, xx, yy, labels, **kwargs)
 
@@ -174,7 +238,9 @@ def test_make_video_outlines_sit_on_the_bundle_pixel_centres(tmp_path, qlvm_cate
         np.testing.assert_allclose(xx, axis)
         np.testing.assert_allclose(yy, axis)
 
-def test_make_video_ignores_a_conditional_shared_map(tmp_path, qlvm_category_bundle):
+
+@pytest.mark.usefixtures("qlvm_category_bundle")
+def test_make_video_ignores_a_conditional_shared_map(tmp_path):
     """The bundle's regions are defined on the regular map only, so the video always
     walks the regular map: a conditional shared qlvm_map is reported as ignored and
     the render reads the store's qlvm/<key>/qlvm coordinates (the fixture holds no
@@ -192,7 +258,8 @@ def test_make_video_ignores_a_conditional_shared_map(tmp_path, qlvm_category_bun
     assert any("Pooled 12 qlvm latents" in message for message in messages)
 
 
-def test_make_video_refuses_a_store_of_another_cell(tmp_path, qlvm_category_bundle):
+@pytest.mark.usefixtures("qlvm_category_bundle")
+def test_make_video_refuses_a_store_of_another_cell(tmp_path):
     """A store whose qlvm coordinates come from another cell (e.g. the v3 archive)
     places the USVs on another torus than the bundle partitions: refused."""
     spec_dir = _write_inputs(
@@ -234,7 +301,8 @@ def test_check_store_map_provenance(tmp_path):
         check_store_map_provenance(h5, "qlvm")
 
 
-def test_make_video_errors_without_map_coordinates(tmp_path, qlvm_category_bundle):
+@pytest.mark.usefixtures("qlvm_category_bundle")
+def test_make_video_errors_without_map_coordinates(tmp_path):
     """If the H5 has no coordinates of the regular map, render fails with a clear,
     actionable error naming the map."""
     rng = np.random.default_rng(1)
@@ -257,7 +325,19 @@ def test_make_video_errors_without_map_coordinates(tmp_path, qlvm_category_bundl
 
 @pytest.fixture
 def runner():
-    """Provides a CliRunner instance for invoking commands."""
+    """
+    Description
+    -----------
+    A Click ``CliRunner`` for invoking the traversal-video command in-process.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    runner (click.testing.CliRunner)
+        The runner instance.
+    """
     return CliRunner()
 
 

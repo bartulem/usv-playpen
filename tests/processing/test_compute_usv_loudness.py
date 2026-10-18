@@ -6,6 +6,11 @@ image-level loudness a QLVM loudness conditional is decoded at.
 The port was checked against the package's corpus values outside the test suite
 (every checked USV of two corpus sessions reproduced ``image_level_db``
 exactly); these tests pin the properties that check relies on with synthetic audio.
+
+Coverage: usv_image_level_db (scaling with the audio level, channel weighting by
+variance, averaging only inside the region, NaN without a usable USV) and
+session_image_level_db (slicing like the spectrogram generator, dropping
+metadata-excluded channels).
 """
 
 from __future__ import annotations
@@ -15,8 +20,8 @@ import pytest
 import yaml
 
 from usv_playpen.processing.compute_usv_loudness import (
-    usv_image_level_db,
     session_image_level_db,
+    usv_image_level_db,
 )
 
 _SR = 250000

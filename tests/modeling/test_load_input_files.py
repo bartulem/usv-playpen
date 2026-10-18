@@ -1,15 +1,30 @@
 """
 @author: bartulem
-Unit tests for the pure helpers in
-``usv_playpen.modeling.load_input_files``: the IBI-threshold formula, the
-USV-timestamp-to-trace renderer, the "clean" (no-USV) epoch tiler, and the
-pickle loader.
+Unit tests for ``usv_playpen.modeling.load_input_files``: the pure temporal
+helpers and the on-disk ``find_*`` event loaders.
 
-The big ``find_*`` orchestrators require on-disk session trees and are out
-of scope here; these four helpers are pure and carry the load-bearing
-temporal logic. The tests assert the closed-form IBI cutoff, the binary /
-smoothed trace shapes, and — most importantly — that every tiled clean
-epoch's history window avoids the forbidden zone around each USV.
+The pure helpers carry the load-bearing temporal logic and are checked against
+closed forms and exact values; the ``find_*`` loaders are driven on tiny
+synthetic session trees written under ``tmp_path`` in the exact on-disk layout
+the production code reads (USV summary CSV, behavioural-feature CSV, tracking
+file), so their event sets, loop control and console messages are asserted
+without real recordings.
+
+Coverage:
+
+* the IBI-threshold formulas (Gaussian-mixture and inverse-Gaussian), the
+  USV-timestamp-to-trace renderer, the vocal-class traces, occupancy
+  rasterisation and smoothing edges;
+* the "clean" (no-USV) epoch tiler, including the guarantee that every tiled
+  epoch's history window avoids the forbidden zone around each USV, and the
+  history-is-dirty check;
+* the USV summary-table reader, the pickle loader and the behavioural-feature
+  loader (including its skip paths);
+* vocalization-to-bout grouping and the bout-offset pairing rules;
+* ``find_onset_epochs``, ``find_usv_categories``, ``find_variable_length_bouts``
+  and the bout-offset epochs: exact event sets, sex-specific thresholds, loop
+  control and messages;
+* the USV-category label requirement and the vocal-setting messages.
 """
 
 from __future__ import annotations
@@ -25,6 +40,7 @@ import pytest
 from scipy import integrate
 from scipy.stats import norm
 
+from tests.modeling._synth import _SETTINGS_JSON
 from usv_playpen.modeling.load_input_files import (
     _bout_offset_events,
     _build_binary_occupancy,
@@ -50,7 +66,6 @@ from usv_playpen.modeling.load_input_files import (
     validate_vocal_class_settings,
     vocal_trace_name,
 )
-from tests.modeling._synth import _SETTINGS_JSON
 
 
 def test_read_usv_summary_table_infers_types_from_every_row_and_warns_on_no_emitter(tmp_path, capsys):
@@ -177,6 +192,8 @@ def _features_df(n_frames: int):
 
 
 class TestCalculateIbiThreshold:
+    """The log-normal IBI cutoff is the closed form ``exp(mu + z * sd)`` and grows with z, since
+    every bout grouping downstream inherits this threshold."""
 
     def test_log_normal_formula(self):
         """The threshold is ``exp(mu + z * sd)``."""
@@ -193,14 +210,49 @@ class TestCalculateIbiThreshold:
 
 
 class TestCalculateIbiThresholdIg:
+    """The inverse-Gaussian IBI cutoff is the IG quantile of the z tail, checked against an
+    independently integrated density so a parametrisation slip in the src cannot pass."""
 
     @staticmethod
     def _ig_cdf(x: float, mu: float, lam: float) -> float:
-        """The inverse-Gaussian CDF at ``x``, integrated from the density
-        ``sqrt(lam / (2 pi t^3)) exp(-lam (t - mu)^2 / (2 mu^2 t))`` written out
-        here, independent of scipy's parametrization."""
+        """
+        Description
+        -----------
+        Evaluates the inverse-Gaussian CDF at ``x`` by numerically integrating the
+        density ``sqrt(lam / (2 pi t^3)) exp(-lam (t - mu)^2 / (2 mu^2 t))`` written
+        out here, independent of scipy's parametrization.
+
+        Parameters
+        ----------
+        x (float)
+            Upper integration limit (seconds).
+        mu (float)
+            Inverse-Gaussian mean.
+        lam (float)
+            Inverse-Gaussian shape parameter.
+
+        Returns
+        -------
+        cdf (float)
+            ``P(T <= x)`` under the inverse-Gaussian distribution.
+        """
 
         def density(t):
+            """
+            Description
+            -----------
+            The inverse-Gaussian density at ``t`` for the enclosing ``mu`` and ``lam``.
+
+            Parameters
+            ----------
+            t (float)
+                Evaluation point (seconds, > 0).
+
+            Returns
+            -------
+            pdf (float)
+                The density value at ``t``.
+            """
             return np.sqrt(lam / (2.0 * np.pi * t ** 3)) * np.exp(-lam * (t - mu) ** 2 / (2.0 * mu ** 2 * t))
 
         return integrate.quad(density, 0.0, x, limit=200)[0]
@@ -225,6 +277,8 @@ class TestCalculateIbiThresholdIg:
 
 
 class TestGenerateVocalTrace:
+    """The USV-timestamp renderer fills the right frame spans (binary) and keeps the trace
+    shape when smoothed, since every vocal predictor is built from this trace."""
 
     def test_binary_interval_fill(self):
         """Without smoothing the trace is binary and 1 across the
@@ -271,6 +325,8 @@ class TestGenerateVocalTrace:
 
 
 class TestGetCleanTiledEpochs:
+    """The clean (no-USV) tiler covers the silent session and never lets a window's history
+    overlap the forbidden zone around a USV, which is what makes the negatives clean."""
 
     def test_no_usv_tiles_whole_session(self):
         """With no USVs the entire session is tiled into window end-times,
@@ -322,6 +378,7 @@ class TestGetCleanTiledEpochs:
 
 
 class TestLoadPickleModelingData:
+    """The modeling pickle loader returns the stored dict unchanged."""
 
     def test_round_trip(self, tmp_path):
         """A pickled dict is returned verbatim."""
@@ -339,6 +396,8 @@ class TestLoadPickleModelingData:
 
 
 class TestLoadBehavioralFeatureData:
+    """The behavioural-feature loader reads the features CSV, the recording frame rate and the
+    track names from the session's ``video`` subtree."""
 
     def test_reads_features_fps_and_track_names(self, tmp_path):
         """A session whose ``video`` subtree holds the behavioral-features CSV
@@ -370,11 +429,35 @@ class TestLoadBehavioralFeatureData:
 
 
 class TestFindBoutEpochs:
+    """``find_onset_epochs`` on synthetic session trees: the bout / individual / state modes
+    and their event sets, vocal output types, noise filtering, target-category and
+    target-class selection, label requirements and the skip / error paths."""
 
     def _build(self, tmp_path, rows: dict, n_frames: int = 600, fps: float = 100.0):
-        """Builds a one-session tree from ``rows`` and returns the kwargs
-        triplet (mouse_ids/camera_fps/features dicts) plus the root list that
-        every ``find_onset_epochs`` test below feeds in."""
+        """
+        Description
+        -----------
+        Builds a one-session tree (``sess_B``) holding a synthetic USV summary and
+        returns the common loader kwargs for the ``find_onset_epochs`` tests below.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            The test's temporary directory; the session root is created under it.
+        rows (dict)
+            Column-name -> value-list mapping for the USV summary, forwarded to
+            ``_write_usv_summary``.
+        n_frames (int)
+            Number of frames in the synthetic behavioural-feature table.
+        fps (float)
+            Camera frame rate recorded for the session.
+
+        Returns
+        -------
+        kwargs (dict)
+            ``root_directories``, ``mouse_ids_dict``, ``camera_fps_dict`` and
+            ``features_dict`` keyed for the single session.
+        """
 
         sess = tmp_path / 'sess_B'
         _write_usv_summary(sess, rows)
@@ -588,9 +671,9 @@ class TestFindBoutEpochs:
             'usv_category': [3, 2, 3],
         }
         kwargs = self._build(tmp_path, rows)
-        common = dict(prediction_mode='individual', filter_history=1.0,
-                      usv_bout_time=0.5, min_usv_per_bout=2,
-                      proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params())
+        common = {'prediction_mode': 'individual', 'filter_history': 1.0,
+                      'usv_bout_time': 0.5, 'min_usv_per_bout': 2,
+                      'proportion_smoothing_sd': None, 'mixture_model_params': _mixture_model_params()}
         # Both calls read the same (read-only) session tree.
         out_all = find_onset_epochs(target_category=None, **common, **kwargs)
         out_cat = find_onset_epochs(target_category=3, **common, **kwargs)
@@ -636,9 +719,9 @@ class TestFindBoutEpochs:
             'squeak_end': [None, 3.04, None, 5.06, None],
         }
         kwargs = self._build(tmp_path, rows)
-        common = dict(prediction_mode='individual', filter_history=1.0,
-                      usv_bout_time=0.5, min_usv_per_bout=2,
-                      proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params())
+        common = {'prediction_mode': 'individual', 'filter_history': 1.0,
+                      'usv_bout_time': 0.5, 'min_usv_per_bout': 2,
+                      'proportion_smoothing_sd': None, 'mixture_model_params': _mixture_model_params()}
         expected = {
             ('usv',): [2.0, 4.0],
             ('usv', 'overlap'): [2.0, 4.0, 5.0],
@@ -674,16 +757,16 @@ class TestFindBoutEpochs:
             'squeak': [False, True, False],
         }
         kwargs = self._build(tmp_path, rows)
-        common = dict(prediction_mode='bout_onset', filter_history=1.0, usv_bout_time=0.5,
-                      min_usv_per_bout=2, proportion_smoothing_sd=None,
-                      mixture_model_params=_mixture_model_params())
+        common = {'prediction_mode': 'bout_onset', 'filter_history': 1.0, 'usv_bout_time': 0.5,
+                      'min_usv_per_bout': 2, 'proportion_smoothing_sd': None,
+                      'mixture_model_params': _mixture_model_params()}
         with_overlap = find_onset_epochs(target_classes=['usv', 'overlap'], **common, **kwargs)['sess_B']['male']
         pure = find_onset_epochs(target_classes=['usv'], **common, **kwargs)['sess_B']['male']
         np.testing.assert_allclose(with_overlap['positive_events'], [2.0])
         assert len(pure['positive_events']) == 0
         np.testing.assert_allclose(with_overlap['negative_events'], pure['negative_events'])
 
-    @pytest.mark.parametrize('emitter, squeak_start, kept', [
+    @pytest.mark.parametrize(('emitter', 'squeak_start', 'kept'), [
         ('male', 1.5, False),     # the mouse's own squeak 0.5 s before the onset
         (None, 1.5, False),       # a vocalization assigned to no animal
         ('male', 0.5, True),      # own squeak, but ended before the 1 s history window
@@ -729,8 +812,8 @@ class TestFindBoutEpochs:
             'squeak': [False, True],
         }
         kwargs = self._build(tmp_path, rows)
-        common = dict(filter_history=1.0, usv_bout_time=0.5, min_usv_per_bout=2,
-                      proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params())
+        common = {'filter_history': 1.0, 'usv_bout_time': 0.5, 'min_usv_per_bout': 2,
+                      'proportion_smoothing_sd': None, 'mixture_model_params': _mixture_model_params()}
         for mode in ('bout_onset', 'bout_offset'):
             with pytest.raises(ValueError, match="bouts are grouped from"):
                 find_onset_epochs(prediction_mode=mode, target_classes=['squeak', 'overlap'], **common, **kwargs)
@@ -793,9 +876,9 @@ class TestFindBoutEpochs:
             'usv_category': [3, 2, 3],
         }
         kwargs = self._build(tmp_path, rows)
-        common = dict(prediction_mode='bout_onset', filter_history=1.0, usv_bout_time=0.5,
-                      min_usv_per_bout=2, proportion_smoothing_sd=None,
-                      mixture_model_params=_mixture_model_params())
+        common = {'prediction_mode': 'bout_onset', 'filter_history': 1.0, 'usv_bout_time': 0.5,
+                      'min_usv_per_bout': 2, 'proportion_smoothing_sd': None,
+                      'mixture_model_params': _mixture_model_params()}
         out_all = find_onset_epochs(target_category=None, **common, **kwargs)
         out_cat = find_onset_epochs(target_category=3, **common, **kwargs)
         np.testing.assert_allclose(out_all['sess_B']['male']['positive_events'],
@@ -1024,10 +1107,34 @@ class TestFindBoutEpochs:
 
 
 class TestFindUsvCategories:
+    """``find_usv_categories`` on synthetic session trees: target-versus-other splitting,
+    per-category streams and the handling of unknown or null categories."""
 
     def _kwargs(self, tmp_path, rows: dict, n_frames: int = 600, fps: float = 100.0):
-        """Builds a one-session tree and returns the common loader kwargs for
-        the ``find_usv_categories`` tests below."""
+        """
+        Description
+        -----------
+        Builds a one-session tree (``sess_D``) holding a synthetic USV summary and
+        returns the common loader kwargs for the ``find_usv_categories`` tests below.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            The test's temporary directory; the session root is created under it.
+        rows (dict)
+            Column-name -> value-list mapping for the USV summary, forwarded to
+            ``_write_usv_summary``.
+        n_frames (int)
+            Number of frames in the synthetic behavioural-feature table.
+        fps (float)
+            Camera frame rate recorded for the session.
+
+        Returns
+        -------
+        kwargs (dict)
+            ``root_directories``, ``mouse_ids_dict``, ``camera_fps_dict`` and
+            ``features_dict`` keyed for the single session.
+        """
 
         sess = tmp_path / 'sess_D'
         _write_usv_summary(sess, rows)
@@ -1419,10 +1526,34 @@ class TestFindUsvCategories:
 
 
 class TestFindVariableLengthBouts:
+    """``find_variable_length_bouts`` on synthetic session trees: bout onsets, durations,
+    counts, mask complexity and the vocal output types."""
 
     def _kwargs(self, tmp_path, rows: dict, n_frames: int = 600, fps: float = 100.0):
-        """Builds a one-session tree and returns the common loader kwargs for
-        the ``find_variable_length_bouts`` tests below."""
+        """
+        Description
+        -----------
+        Builds a one-session tree (``sess_E``) holding a synthetic USV summary and
+        returns the common loader kwargs for the ``find_variable_length_bouts`` tests below.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            The test's temporary directory; the session root is created under it.
+        rows (dict)
+            Column-name -> value-list mapping for the USV summary, forwarded to
+            ``_write_usv_summary``.
+        n_frames (int)
+            Number of frames in the synthetic behavioural-feature table.
+        fps (float)
+            Camera frame rate recorded for the session.
+
+        Returns
+        -------
+        kwargs (dict)
+            ``root_directories``, ``mouse_ids_dict``, ``camera_fps_dict`` and
+            ``features_dict`` keyed for the single session.
+        """
 
         sess = tmp_path / 'sess_E'
         _write_usv_summary(sess, rows)
@@ -1471,7 +1602,7 @@ class TestFindVariableLengthBouts:
             'usv': [True, True, True, True],
             'squeak': [False, False, True, False],
         }
-        common = dict(min_vocalizations=2, filter_history=1.0, mixture_model_params=_mixture_model_params())
+        common = {'min_vocalizations': 2, 'filter_history': 1.0, 'mixture_model_params': _mixture_model_params()}
         pure = find_variable_length_bouts(target_classes=['usv'], **common, **self._kwargs(tmp_path, rows))['sess_E']['male']
         np.testing.assert_allclose(pure['bout_onsets'], [2.0])
         np.testing.assert_allclose(pure['bout_durations'], [0.3])
@@ -1674,6 +1805,30 @@ class TestBoutOffsetEpochs:
     """
 
     def _build(self, tmp_path, rows: dict, n_frames: int = 1000, fps: float = 100.0):
+        """
+        Description
+        -----------
+        Builds a one-session tree (``sess_O``) holding a synthetic USV summary and
+        returns the common loader kwargs for the ``bout_offset`` tests below.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            The test's temporary directory; the session root is created under it.
+        rows (dict)
+            Column-name -> value-list mapping for the USV summary, forwarded to
+            ``_write_usv_summary``.
+        n_frames (int)
+            Number of frames in the synthetic behavioural-feature table.
+        fps (float)
+            Camera frame rate recorded for the session.
+
+        Returns
+        -------
+        kwargs (dict)
+            ``root_directories``, ``mouse_ids_dict``, ``camera_fps_dict`` and
+            ``features_dict`` keyed for the single session.
+        """
         sess = tmp_path / 'sess_O'
         _write_usv_summary(sess, rows)
         return {
@@ -1685,6 +1840,17 @@ class TestBoutOffsetEpochs:
 
     @staticmethod
     def _two_bouts() -> dict:
+        """
+        Description
+        -----------
+        The USV summary rows for the class's two male bouts: three USVs starting at
+        2.0-2.2 s and six starting at 6.0-7.0 s, each 50 ms long and category 1.
+
+        Returns
+        -------
+        rows (dict)
+            Column-name -> value-list mapping for ``_write_usv_summary``.
+        """
         starts = [2.0, 2.1, 2.2, 6.0, 6.2, 6.4, 6.6, 6.8, 7.0]
         return {
             'emitter': ['male'] * len(starts),
@@ -1694,6 +1860,29 @@ class TestBoutOffsetEpochs:
         }
 
     def _run(self, tmp_path, rows, **offset_kwargs):
+        """
+        Description
+        -----------
+        Runs ``find_onset_epochs`` in ``'bout_offset'`` mode on a one-session tree
+        built from ``rows`` with the class's default pairing settings (cross-bout,
+        0.5 s minimum singing left, 0.10 s position tolerance, at most 3 negatives
+        per bout), any of which ``offset_kwargs`` overrides.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            The test's temporary directory.
+        rows (dict)
+            Column-name -> value-list mapping for the USV summary.
+        **offset_kwargs
+            Overrides for the bout-offset pairing keywords.
+
+        Returns
+        -------
+        male (dict)
+            The male's entry of the loader output (``positive_events``,
+            ``negative_events`` and the rest).
+        """
         kwargs = self._build(tmp_path, rows)
         base = {'negative_scheme': 'cross_bout', 'min_singing_after_negative': 0.5,
                 'time_since_bout_onset_tolerance': 0.10, 'max_negatives_per_bout': 3}
@@ -1731,11 +1920,11 @@ class TestBoutOffsetEpochs:
         rows = {'emitter': ['male'] * len(starts), 'start': starts,
                 'stop': [round(t + 0.05, 6) for t in starts],
                 'usv_category': [1] * len(starts)}
-        kwargs = dict(n_frames=1200)
+        kwargs = {'n_frames': 1200}
         sess_kwargs = self._build(tmp_path, rows, **kwargs)
-        common = dict(prediction_mode='bout_offset', filter_history=1.0, usv_bout_time=0.5, min_usv_per_bout=2,
-                      proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
-                      min_singing_after_negative=0.5, time_since_bout_onset_tolerance=0.30)
+        common = {'prediction_mode': 'bout_offset', 'filter_history': 1.0, 'usv_bout_time': 0.5, 'min_usv_per_bout': 2,
+                      'proportion_smoothing_sd': None, 'mixture_model_params': _mixture_model_params(),
+                      'min_singing_after_negative': 0.5, 'time_since_bout_onset_tolerance': 0.30}
         loose = find_onset_epochs(negative_scheme='cross_bout', max_negatives_per_bout=None, **common, **sess_kwargs)['sess_O']['male']
         assert loose['positive_events'].size == 3
         assert set(np.round(loose['negative_events'], 2)) == {8.05, 8.25, 8.45}
@@ -1754,16 +1943,25 @@ class TestBoutOffsetEpochs:
         np.testing.assert_allclose(out['negative_events'], [6.45])
 
     def test_positives_and_negatives_never_share_a_usv(self, tmp_path):
+        """Under both negative schemes no USV offset is both a positive and a negative, and
+        the groups are equal in size, so the contrast compares disjoint, matched events."""
+
         for scheme in ('cross_bout', 'within_bout'):
             out = self._run(tmp_path, self._two_bouts(), negative_scheme=scheme)
             assert not set(out['positive_events']) & set(out['negative_events'])
             assert out['positive_events'].size == out['negative_events'].size
 
     def test_unknown_scheme_raises(self, tmp_path):
+        """An unrecognised ``negative_scheme`` raises naming the setting instead of silently
+        producing no negatives."""
+
         with pytest.raises(ValueError, match='negative_scheme'):
             self._run(tmp_path, self._two_bouts(), negative_scheme='sideways')
 
     def test_female_without_usvs_is_empty_in_both_groups(self, tmp_path):
+        """A mouse with no USVs gets empty positive and negative arrays (not a missing key),
+        so downstream pooling sees every listed mouse."""
+
         kwargs = self._build(tmp_path, self._two_bouts())
         out = find_onset_epochs(prediction_mode='bout_offset', filter_history=1.0, usv_bout_time=0.5, min_usv_per_bout=2,
                                 proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
@@ -1779,11 +1977,20 @@ class TestVocalClassTraces:
 
     @staticmethod
     def _rows() -> pls.DataFrame:
-        """Five segments at 0.1 s steps: pure USV (category 1), pure squeak, pure USV
+        """
+        Description
+        -----------
+        Five segments at 0.1 s steps: pure USV (category 1), pure squeak, pure USV
         (category 2), overlap (category 1), and an unscored row (null flags). The squeaks'
         own extents differ from their segments: the pure squeak sounds at 0.220-0.225 s
         (frame 22) and the overlap segment's squeak at 0.450-0.455 s (frame 45), after the
-        segment's USV onset (0.40 s, frame 40)."""
+        segment's USV onset (0.40 s, frame 40).
+
+        Returns
+        -------
+        rows (polars.DataFrame)
+            The five-row USV summary table.
+        """
 
         return pls.DataFrame({
             'start': [0.10, 0.20, 0.30, 0.40, 0.50],
@@ -1795,7 +2002,7 @@ class TestVocalClassTraces:
             'squeak_end': [None, 0.225, None, 0.455, None],
         })
 
-    @pytest.mark.parametrize('classes, name', [
+    @pytest.mark.parametrize(('classes', 'name'), [
         (['usv'], 'usv'), (['usv', 'overlap'], 'usv'),
         (['squeak'], 'squeak'), (['squeak', 'overlap'], 'squeak'),
         (['overlap'], 'overlap'),
@@ -1838,7 +2045,8 @@ class TestVocalClassTraces:
         assert sorted(both) == ['usv_cat_1', 'usv_cat_2', 'usv_rate']
         empty = build_vocal_predictor_signals(rows.filter(pls.col('squeak') == False), [['squeak']], 'pooled_rate',  # noqa: E712
                                               'qlvm_category', duration_frames=60, fps=100.0, smooth_sd=None, source='s')
-        assert list(empty) == ['squeak_rate'] and not empty['squeak_rate'].any()
+        assert list(empty) == ['squeak_rate']
+        assert not empty['squeak_rate'].any()
         assert build_vocal_predictor_signals(rows, [['usv']], None, None, 60, 100.0, None, 's') == {}
 
     def test_overlap_alone_spans_the_union(self):
@@ -1888,7 +2096,7 @@ class TestVocalClassTraces:
         assert onset_target_tag(['overlap', 'usv']) == '_usv+overlap'
         assert onset_target_tag(['squeak']) == '_squeak'
 
-    @pytest.mark.parametrize('column, vocal, pooled', [
+    @pytest.mark.parametrize(('column', 'vocal', 'pooled'), [
         ('other.usv_rate', True, True), ('self.squeak_event', True, True),
         ('other.all_vocalizations_rate', True, True), ('other.overlap_cat_3', True, False),
         ('usv_cat_0', True, False), ('other.speed', False, False), ('other.usv_cat_x', False, False),
@@ -1918,7 +2126,7 @@ class TestCategoryLabelRequirement:
     def test_column_absent_from_summary_raises(self):
         """A set column missing from one summary's columns raises, naming the file."""
 
-        with pytest.raises(ValueError, match='absent from s.csv'):
+        with pytest.raises(ValueError, match=r'absent from s\.csv'):
             require_usv_category_column('absent_label_column', 'x', summary_columns=['qlvm1'], source='s.csv')
 
     def test_present_column_passes(self):
@@ -1926,7 +2134,7 @@ class TestCategoryLabelRequirement:
 
         require_usv_category_column('qlvm_category', 'x', summary_columns=['qlvm_category'], source='s.csv')
 
-    @pytest.mark.parametrize('predictor_type, raises', [
+    @pytest.mark.parametrize(('predictor_type', 'raises'), [
         ('categories_rate', True), ('all_rate', True),
         ('pooled_rate', False), ('pooled_binary', False), (None, False),
     ])
@@ -1948,12 +2156,12 @@ class TestCategoryLabelRequirement:
         label check passes on them; the check (and its error) still guards a summary
         that genuinely lacks the column."""
 
-        with open(_SETTINGS_JSON, 'r') as fh:
+        with _SETTINGS_JSON.open() as fh:
             voc = json.load(fh)['vocal_features']
         assert voc['vocal_predictor_type'] == 'categories_rate'
         assert voc['usv_category_column_name'] == 'qlvm_category'
         require_labels_for_vocal_predictors(voc)
-        with pytest.raises(ValueError, match='absent from s.csv'):
+        with pytest.raises(ValueError, match=r'absent from s\.csv'):
             require_usv_category_column(voc['usv_category_column_name'], 'x', summary_columns=['qlvm1'], source='s.csv')
 
 
@@ -1999,6 +2207,8 @@ def _write_behavior_session(session_root, with_features: bool, with_track: bool,
 
 
 class TestLoadBehavioralFeatureDataSkips:
+    """A session missing either behavioural input is skipped with a warning while the loader
+    carries on, so one incomplete session cannot abort a cohort load."""
 
     def test_missing_inputs_skip_only_their_session(self, tmp_path, capsys):
         """A session without the features CSV and a session without the track H5 are
@@ -2029,6 +2239,8 @@ class TestLoadBehavioralFeatureDataSkips:
 
 
 class TestUsvSummaryTableWarning:
+    """The USV summary reader honours ``csv_sep`` and warns about missing emitters only when
+    an emitter column exists, has rows and is entirely null."""
 
     def test_separator_and_emitter_warning_cases(self, tmp_path, capsys):
         """The summary is split by ``csv_sep`` (a ';' file gives its three columns), and
@@ -2055,6 +2267,8 @@ class TestUsvSummaryTableWarning:
 
 
 class TestVocalSettingMessages:
+    """The vocal-predictor settings errors name the exact offending lists or values, so a
+    misconfiguration is diagnosable from the message alone."""
 
     def test_trace_name_clash_names_the_clashing_lists(self):
         """The duplicate-trace error names exactly the lists that clash (the two USV
@@ -2088,11 +2302,22 @@ class TestVocalSettingMessages:
 
 
 class TestPredictorSignalsExact:
+    """``build_vocal_predictor_signals`` produces exact per-frame values for each predictor
+    type on a hand-placed USV table."""
 
     @staticmethod
     def _rows() -> pls.DataFrame:
-        """Four pure USVs at 100 fps frames 10, 20, 30 and 40: categories 1, null, 2 and
-        1; no squeaks."""
+        """
+        Description
+        -----------
+        Four pure USVs at 100 fps frames 10, 20, 30 and 40: categories 1, null, 2 and
+        1; no squeaks.
+
+        Returns
+        -------
+        rows (polars.DataFrame)
+            The four-row USV summary table.
+        """
 
         return pls.DataFrame({
             'start': [0.10, 0.20, 0.30, 0.40],
@@ -2145,6 +2370,8 @@ class TestPredictorSignalsExact:
 
 
 class TestCleanTiledEpochsExact:
+    """Exact tiling boundaries of the clean-epoch tiler: unsorted, overlapping forbidden zones
+    merge, and every clean gap is tiled from its start."""
 
     def test_unsorted_overlapping_zones_merge_and_every_gap_is_tiled(self):
         """Unsorted USVs at 5.0, 1.5, 2.0 and 8.0 s (fh 1 s, 12 s session) give the
@@ -2173,6 +2400,8 @@ class TestCleanTiledEpochsExact:
 
 
 class TestHistoryIsDirty:
+    """``_history_is_dirty`` treats the window edge as exclusive and ignores the onset's own
+    vocalization, so positives and negatives share one boundary convention."""
 
     def test_window_edge_is_exclusive_and_the_onset_itself_is_excluded(self):
         """A reference vocalization ending exactly at ``onset - filter_history`` abuts
@@ -2204,6 +2433,8 @@ class TestHistoryIsDirty:
 
 
 class TestOccupancyAndSmoothing:
+    """Occupancy rasterisation clips events at the session edges and smoothing preserves the
+    trace at its edges, so no event leaks or wraps around the trace."""
 
     def test_event_starting_before_the_session_is_clipped_to_frame_zero(self):
         """An event from -0.5 s to 0.3 s (10 fps) covers frames 0..2: its start index is
@@ -2239,6 +2470,8 @@ class TestOccupancyAndSmoothing:
 
 
 class TestGroupVocalizationsIntoBouts:
+    """Vocalization-to-bout grouping returns integer index arrays and splits a bout at a gap
+    equal to the threshold."""
 
     def test_empty_single_and_threshold_gap(self):
         """No vocalizations give empty INTEGER index arrays (usable as indices); one
@@ -2433,6 +2666,8 @@ _ONSET_COMMON = {'filter_history': 1.0, 'usv_bout_time': 0.5, 'min_usv_per_bout'
 
 
 class TestOnsetEpochsExact:
+    """``find_onset_epochs`` exact event sets, loop control, sex-specific thresholds and
+    console messages on hand-placed USVs."""
 
 
     def test_bout_onset_negatives_are_exact(self, tmp_path):
@@ -2621,6 +2856,8 @@ class TestOnsetEpochsExact:
 
 
 class TestUsvCategoriesExact:
+    """``find_usv_categories`` exact event sets, loop control, counts and console messages on
+    hand-placed USVs."""
 
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
     def test_events_streams_and_traces_are_exact(self, tmp_path):
@@ -2777,6 +3014,8 @@ class TestUsvCategoriesExact:
 
 
 class TestVariableLengthBoutsExact:
+    """``find_variable_length_bouts`` exact bouts, loop control, sex-specific thresholds and
+    console messages on hand-placed USVs."""
 
     def test_bout_metrics_and_rejections_are_exact(self, tmp_path):
         """Four male bouts (1 s threshold): one starting exactly at ``filter_history``

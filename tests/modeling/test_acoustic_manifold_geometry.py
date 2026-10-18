@@ -11,6 +11,14 @@ checked against analytic expectations rather than against a frozen
 snapshot. Wrap-boundary cases are exercised explicitly because the
 torus codepath uses 3x3 lattice replication and any regression there is
 silent on standard fixtures.
+
+Coverage:
+
+* ``derive_cluster_centers_empirically`` -- known-centre recovery, noise-label
+  handling, minimum-point skips, NaN labels, torus seam recovery, validation.
+* ``derive_cluster_geometry`` -- adaptive / uniform radii, alpha tangency, radius
+  clamp, torus nearest neighbour, argument guards.
+* ``usv_in_circle`` -- closed-disk membership, zero radius, torus wrap, shape.
 """
 
 from __future__ import annotations
@@ -24,15 +32,36 @@ from usv_playpen.modeling.acoustic_manifold_geometry import (
     usv_in_circle,
 )
 
-
 # Synthetic-data builders
 
 
 def _make_euclidean_clusters(rng_seed: int = 0,
                              scale: float = 0.05,
                              n_per_cluster: int = 500) -> tuple[np.ndarray, np.ndarray, dict]:
-    """Build a (Y, labels, true_centres) fixture of four tight Gaussian
-    blobs on the Euclidean plane plus a sparse noise label (label 0)."""
+    """
+    Description
+    -----------
+    Build a (Y, labels, true_centres) fixture of four tight Gaussian
+    blobs on the Euclidean plane plus a sparse noise label (label 0).
+
+    Parameters
+    ----------
+    rng_seed (int)
+        Seed of the point generator.
+    scale (float)
+        Standard deviation of every blob.
+    n_per_cluster (int)
+        Number of points per blob (the noise label always gets 30 points).
+
+    Returns
+    -------
+    Y (np.ndarray)
+        (4 * n_per_cluster + 30, 2) point coordinates.
+    labels (np.ndarray)
+        int64 cluster labels, 1-4 for the blobs and 0 for noise.
+    true_centres (dict)
+        Label -> (2,) blob centre at the corners of [0.2, 0.8]^2.
+    """
 
     rng = np.random.default_rng(rng_seed)
     true_centres = {
@@ -58,13 +87,36 @@ def _make_torus_wrap_cluster(rng_seed: int = 0,
                              scale: float = 0.04,
                              period: float = 1.0,
                              n_per_cluster: int = 500) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Build a single cluster whose true centre sits at the origin (a
-    wrap-boundary corner of the unit torus). Returns `(Y, labels, true_centre)`.
+    """
+    Description
+    -----------
+    Build a single cluster whose true centre sits at the origin (a
+    wrap-boundary corner of the unit torus).
 
     Roughly half of the synthesised points end up with each coordinate
     just above 0 and half just below `period` after the modulo wrap, so
     a naive (non-wrap-aware) KDE on the canonical cell would put the
     estimated mode near `period/2` — the antipode of the true centre.
+
+    Parameters
+    ----------
+    rng_seed (int)
+        Seed of the point generator.
+    scale (float)
+        Standard deviation of the cluster before wrapping.
+    period (float)
+        Torus period the points are wrapped into.
+    n_per_cluster (int)
+        Number of points.
+
+    Returns
+    -------
+    Y (np.ndarray)
+        (n_per_cluster, 2) wrapped coordinates in ``[0, period)``.
+    labels (np.ndarray)
+        int64 labels, all 1.
+    true_centre (np.ndarray)
+        (2,) true centre, the origin.
     """
 
     rng = np.random.default_rng(rng_seed)
@@ -79,6 +131,7 @@ def _make_torus_wrap_cluster(rng_seed: int = 0,
 
 
 class TestDeriveClusterCenters:
+    """``derive_cluster_centers_empirically``: KDE-mode centres per label, wrap-aware on the torus."""
 
     def test_euclidean_recovers_known_centres_and_drops_noise(self):
         """KDE-mode centres on tight Gaussian blobs should land within a
@@ -240,6 +293,7 @@ class TestDeriveClusterCenters:
 
 
 class TestDeriveClusterGeometry:
+    """``derive_cluster_geometry``: nearest-neighbour distances and per-cluster radii from the centres."""
 
     def test_adaptive_radii_match_alpha_dnn_over_two(self):
         """In adaptive mode each cluster's radius must equal
@@ -274,7 +328,7 @@ class TestDeriveClusterGeometry:
             centres, alpha=alpha, mode='uniform', metric='euclidean',
         )
         expected_radius = alpha * 1.0 / 2.0  # min d_nn is 1.0
-        radii = [geo[k]['radius'] for k in centres.keys()]
+        radii = [geo[k]['radius'] for k in centres]
         assert all(r == pytest.approx(expected_radius) for r in radii)
         # `nearest_neighbour_distance` should still be the per-centre raw
         # value for diagnostic purposes.
@@ -336,19 +390,22 @@ class TestDeriveClusterGeometry:
         assert geo['c']['nearest_neighbour_distance'] == pytest.approx(0.10, abs=1e-9)
 
     def test_raises_on_invalid_alpha(self):
+        """A zero or negative alpha would give zero or negative radii, so both are rejected up front."""
         centres = {'a': np.array([0.0, 0.0]), 'b': np.array([1.0, 0.0])}
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='alpha must be > 0'):
             derive_cluster_geometry(centres, alpha=0.0)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='alpha must be > 0'):
             derive_cluster_geometry(centres, alpha=-0.5)
 
     def test_raises_on_invalid_mode(self):
+        """Only 'adaptive' and 'uniform' radius modes exist; a typo must fail rather than fall through."""
         centres = {'a': np.array([0.0, 0.0]), 'b': np.array([1.0, 0.0])}
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="mode must be 'adaptive' or 'uniform'"):
             derive_cluster_geometry(centres, alpha=0.5, mode='quadratic')
 
     def test_raises_on_fewer_than_two_centres(self):
-        with pytest.raises(ValueError):
+        """A single centre has no nearest neighbour, so its radius is undefined and the helper must raise."""
+        with pytest.raises(ValueError, match='needs at least 2 centres'):
             derive_cluster_geometry({'a': np.array([0.0, 0.0])}, alpha=0.5)
 
 
@@ -356,6 +413,7 @@ class TestDeriveClusterGeometry:
 
 
 class TestUsvInCircle:
+    """``usv_in_circle``: boolean closed-disk membership of each USV, wrap-aware on the torus."""
 
     def test_euclidean_inside_outside_boundary(self):
         """Boundary points (`||y - c|| == r`) are inside (closed disk);

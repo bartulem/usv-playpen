@@ -14,6 +14,13 @@ data): a raw noise mmap, a ``usv_summary.csv``, and a spectrogram H5 carrying
 ``durations`` + a ``mask/<session>`` group. Batch robustness (a bad session is
 skipped, not fatal), the no-bouts short-circuit, and the CLI routing are checked
 too.
+
+Coverage: emitter normalization; bout segmentation; masked-ISTFT waveform
+reconstruction; the full ``build()`` run (written H5 layout, preceding-ISI measured
+from the previous vocalization, noise dropped before segmentation, courtship emitter
+filtering and its skip / log branches, unreadable / mismatched / noise-less sessions
+skipped, unknown context label rejected, reconstruction failure raised, skipped
+sessions summarized, atomic repository write); and the CLI routing.
 """
 
 from __future__ import annotations
@@ -45,7 +52,7 @@ _SPEC_PARAMS = json.loads(
 # _normalize_emitter
 
 
-@pytest.mark.parametrize("value,expected", [
+@pytest.mark.parametrize(("value", "expected"), [
     (None, ""),
     ("mouse_1", "mouse_1"),
     ("mouse_1\x00\x00", "mouse_1"),   # NUL padding stripped
@@ -187,7 +194,7 @@ def _write_fake_session(
         "stop": stops,
         "emitter": [emitter] * n_usv,
         "noise": noise if noise is not None else [False] * n_usv,
-        "duration_s": [float(b - a) for a, b in zip(starts, stops)],
+        "duration_s": [float(b - a) for a, b in zip(starts, stops, strict=True)],
     }).write_csv(str(audio_dir / f"{session_id}_usv_summary.csv"))
 
     num_freq = int(_SPEC_PARAMS["num_freq_bins"])
@@ -230,7 +237,8 @@ def _patched_env(mocker):
     mocker.patch.object(bnr, "resolve_experimenter_path", side_effect=lambda p: p)
 
 
-def test_build_writes_repository_h5(tmp_path, _patched_env):
+@pytest.mark.usefixtures("_patched_env")
+def test_build_writes_repository_h5(tmp_path):
     """
     Description
     -----------
@@ -273,7 +281,8 @@ def test_build_writes_repository_h5(tmp_path, _patched_env):
         assert h5_file["audio"].dtype == np.int16
         offsets = h5_file["usv/offset"][:]
         lengths = h5_file["usv/length"][:]
-        assert offsets.shape == (5,) and lengths.shape == (5,)
+        assert offsets.shape == (5,)
+        assert lengths.shape == (5,)
         assert int(offsets[0]) == 0
         assert int(offsets[-1] + lengths[-1]) == h5_file["audio"].shape[0]
         # Bout structure: two bouts of 3 then 2 USVs.
@@ -287,7 +296,8 @@ def test_build_writes_repository_h5(tmp_path, _patched_env):
         assert str(session_root) in roots
 
 
-def test_build_preceding_isi_is_measured_from_the_previous_vocalization(tmp_path, _patched_env):
+@pytest.mark.usefixtures("_patched_env")
+def test_build_preceding_isi_is_measured_from_the_previous_vocalization(tmp_path):
     """
     Description
     -----------
@@ -320,7 +330,8 @@ def test_build_preceding_isi_is_measured_from_the_previous_vocalization(tmp_path
         np.testing.assert_allclose(h5_file["bout/preceding_isi_s"][:], [0.27, 0.28])
 
 
-def test_build_no_complete_bouts_writes_nothing(tmp_path, _patched_env):
+@pytest.mark.usefixtures("_patched_env")
+def test_build_no_complete_bouts_writes_nothing(tmp_path):
     """When no bout meets ``min_vocalizations`` (every USV is isolated by a
     supra-threshold gap) nothing is written and the build still completes."""
 
@@ -342,7 +353,8 @@ def test_build_no_complete_bouts_writes_nothing(tmp_path, _patched_env):
     assert any("no repository written" in m.lower() for m in messages)
 
 
-def test_build_skips_unreadable_session(tmp_path, _patched_env):
+@pytest.mark.usefixtures("_patched_env")
+def test_build_skips_unreadable_session(tmp_path):
     """A session missing its raw ``hpss_filtered`` mmap is skipped (logged), so a
     batch that also contains a good session still completes and writes it."""
 
@@ -366,7 +378,8 @@ def test_build_skips_unreadable_session(tmp_path, _patched_env):
     assert len(list((repo_out / "male").glob("*.h5"))) == 1
 
 
-def test_build_courtship_emitter_filter_keeps_target_sex(tmp_path, mocker, _patched_env):
+@pytest.mark.usefixtures("_patched_env")
+def test_build_courtship_emitter_filter_keeps_target_sex(tmp_path, mocker):
     """
     Description
     -----------
@@ -412,10 +425,11 @@ def test_build_courtship_emitter_filter_keeps_target_sex(tmp_path, mocker, _patc
     assert len(written) == 1
     with h5py.File(str(written[0]), "r") as h5_file:
         assert int(h5_file.attrs["n_usv"]) == 3   # only the male bout
-        assert set(e.decode() if isinstance(e, bytes) else e for e in h5_file["usv/emitter"][:]) == {"male_mouse"}
+        assert {e.decode() if isinstance(e, bytes) else e for e in h5_file["usv/emitter"][:]} == {"male_mouse"}
 
 
-def test_build_drops_noise_before_bout_segmentation(tmp_path, _patched_env):
+@pytest.mark.usefixtures("_patched_env")
+def test_build_drops_noise_before_bout_segmentation(tmp_path):
     """
     Description
     -----------
@@ -456,7 +470,8 @@ def test_build_drops_noise_before_bout_segmentation(tmp_path, _patched_env):
     assert any("dropped 1 noise segment(s) of 6" in m for m in messages)
 
 
-def test_build_skips_session_without_noise_column(tmp_path, _patched_env):
+@pytest.mark.usefixtures("_patched_env")
+def test_build_skips_session_without_noise_column(tmp_path):
     """A summary lacking the ``noise`` column cannot have its noise excluded, so
     the session is skipped and logged rather than built with noise left in."""
 
@@ -479,7 +494,8 @@ def test_build_skips_session_without_noise_column(tmp_path, _patched_env):
     assert not (repo_out / "male").exists() or not list((repo_out / "male").glob("*.h5"))
 
 
-def test_build_skips_session_whose_summary_the_h5_does_not_match(tmp_path, _patched_env):
+@pytest.mark.usefixtures("_patched_env")
+def test_build_skips_session_whose_summary_the_h5_does_not_match(tmp_path):
     """Summary rows index the spectrogram H5 rows (durations, masks) and are stored as usv_row,
     so a summary with more rows than the H5 (re-curated after the spectrograms were made) is
     skipped and logged instead of attaching masks to the wrong USVs."""
@@ -504,7 +520,8 @@ def test_build_skips_session_whose_summary_the_h5_does_not_match(tmp_path, _patc
     assert not (repo_out / "male").exists() or not list((repo_out / "male").glob("*.h5"))
 
 
-def test_build_courtship_logs_a_session_without_attributed_usvs(tmp_path, mocker, _patched_env):
+@pytest.mark.usefixtures("_patched_env")
+def test_build_courtship_logs_a_session_without_attributed_usvs(tmp_path, mocker):
     """A courtship build whose session has an empty emitter column (vcl-assign not run since the
     last das-summarize) skips the session with a log line naming the cause, not silently."""
 
@@ -532,7 +549,8 @@ def test_build_courtship_logs_a_session_without_attributed_usvs(tmp_path, mocker
     assert any("skipping session_root" in m.lower() and "empty emitter column" in m for m in messages)
 
 
-def test_build_courtship_skips_a_session_without_one_animal_of_the_target_sex(tmp_path, mocker, _patched_env):
+@pytest.mark.usefixtures("_patched_env")
+def test_build_courtship_skips_a_session_without_one_animal_of_the_target_sex(tmp_path, mocker):
     """The courtship target track is the animal the metadata records with the target sex,
     never a track slot; a session whose metadata names no single male (here female-female)
     is skipped with a log line instead of reading track 0 as the male."""
@@ -561,7 +579,8 @@ def test_build_courtship_skips_a_session_without_one_animal_of_the_target_sex(tm
     assert any("skipping session_root" in m.lower() and "exactly one male" in m for m in messages)
 
 
-def test_build_rejects_unknown_context_label(tmp_path, _patched_env):
+@pytest.mark.usefixtures("_patched_env")
+def test_build_rejects_unknown_context_label(tmp_path):
     """An unrecognised ``context_label`` fails fast with a clear ValueError."""
 
     cfg = _build_cfg("not_a_context")
@@ -579,7 +598,7 @@ def test_build_rejects_unknown_context_label(tmp_path, _patched_env):
 # CLI routing
 
 
-def test_cli_routes_to_builder(mocker, tmp_path):
+def test_cli_routes_to_builder(mocker):
     """``build-naturalistic-usv-repository`` loads the settings block and drives
     the builder exactly once."""
 
@@ -596,7 +615,8 @@ def test_cli_routes_to_builder(mocker, tmp_path):
     fake_builder.return_value.build.assert_called_once()
 
 
-def test_build_raises_when_reconstruction_fails(tmp_path, mocker, _patched_env):
+@pytest.mark.usefixtures("_patched_env")
+def test_build_raises_when_reconstruction_fails(tmp_path, mocker):
     """
     Description
     -----------
@@ -622,7 +642,8 @@ def test_build_raises_when_reconstruction_fails(tmp_path, mocker, _patched_env):
         builder.build()
 
 
-def test_build_logs_the_skipped_sessions_summary(tmp_path, _patched_env):
+@pytest.mark.usefixtures("_patched_env")
+def test_build_logs_the_skipped_sessions_summary(tmp_path):
     """
     Description
     -----------
@@ -646,7 +667,8 @@ def test_build_logs_the_skipped_sessions_summary(tmp_path, _patched_env):
     assert any("1 of 2 sessions were skipped" in m and "bad_session" in m for m in messages)
 
 
-def test_write_repository_is_atomic(tmp_path, mocker, _patched_env):
+@pytest.mark.usefixtures("_patched_env")
+def test_write_repository_is_atomic(tmp_path, mocker):
     """
     Description
     -----------
@@ -662,8 +684,31 @@ def test_write_repository_is_atomic(tmp_path, mocker, _patched_env):
     original_create_group = h5py.Group.create_group
 
     def failing_create_group(self, name, *args, **kwargs):
+        """
+        Description
+        -----------
+        Replaces ``h5py.Group.create_group`` so that creating the ``bout`` group fails
+        mid-write, simulating a full disk after the USV datasets were already written.
+
+        Parameters
+        ----------
+        self (h5py.Group)
+            The group the new subgroup is created under.
+        name (str)
+            Name of the subgroup; ``"bout"`` triggers the failure.
+        *args (tuple)
+            Positional arguments forwarded to the original method.
+        **kwargs (dict)
+            Keyword arguments forwarded to the original method.
+
+        Returns
+        -------
+        group (h5py.Group)
+            The subgroup created by the original method for any other name.
+        """
         if name == "bout":
-            raise OSError("disk full")
+            message = "disk full"
+            raise OSError(message)
         return original_create_group(self, name, *args, **kwargs)
 
     mocker.patch.object(h5py.Group, "create_group", failing_create_group)

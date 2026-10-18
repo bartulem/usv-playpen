@@ -10,6 +10,12 @@ linearly-generated 2-D target where the model must recover a high
 ``r2_spatial`` and a near-zero raw MAE. Reproducibility is pinned via
 ``random_state`` (identical coefficients across two fits), and the
 constructor / fit input-validation paths are exercised.
+
+Coverage: ``SmoothBivariateRegression`` -- ``_initialize_params``, constructor
+validation, ``fit`` (shape / weight guards, Python and ``lax`` loops,
+convergence flag, verbose output), ``predict`` (raw and kd-tree snapped),
+``evaluate_metrics`` (metric bundle, weights, NaN fallbacks) and the
+``metric='torus'`` path.
 """
 
 from __future__ import annotations
@@ -27,6 +33,7 @@ import pytest
 # it is a third-party transition warning, not a defect in code under test.
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", DeprecationWarning)
+    import usv_playpen.modeling.jax_bivariate_regression as biv
     from usv_playpen.modeling.jax_bivariate_regression import SmoothBivariateRegression
 
 
@@ -46,12 +53,12 @@ def _fit_kwargs(n_inputs):
     """Clean-fit hyperparameters: no regularisation, a single time bin
     (no temporal-smoothness penalty), enough iterations to converge."""
 
-    return dict(
-        n_features=n_inputs, n_time_bins=1,
-        lambda_smooth=0.0, l2_reg=0.0,
-        learning_rate=0.05, max_iter=3000, tol=1e-7,
-        random_state=0,
-    )
+    return {
+        'n_features': n_inputs, 'n_time_bins': 1,
+        'lambda_smooth': 0.0, 'l2_reg': 0.0,
+        'learning_rate': 0.05, 'max_iter': 3000, 'tol': 1e-7,
+        'random_state': 0,
+    }
 
 
 def _make_torus_2d(n_samples=120, n_inputs=4, period=1.0, seed=1):
@@ -93,6 +100,8 @@ def _make_torus_2d(n_samples=120, n_inputs=4, period=1.0, seed=1):
 
 
 class TestInitParams:
+    """Weight initialisation: shapes, a zero bias and per-key determinism are what
+    every later fit starts from, so a regression here would shift all fits."""
 
     def test_weight_shape_and_zero_bias(self):
         """Initialisation returns a ``(n_inputs, 2)`` weight matrix and a
@@ -112,21 +121,25 @@ class TestInitParams:
 
 
 class TestConstructorValidation:
+    """Constructor guards: an unsupported smoothness order or metric must fail at
+    construction instead of producing a silently mis-specified model."""
 
     def test_bad_smoothness_order_raises(self):
         """Only first/second-order smoothness penalties are supported."""
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='smoothness_derivative_order must be 1 or 2'):
             SmoothBivariateRegression(smoothness_derivative_order=3)
 
     def test_bad_metric_raises(self):
         """An unsupported manifold metric is rejected at construction."""
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='manifold_metric must be one of'):
             SmoothBivariateRegression(metric='spherical')
 
 
 class TestFitPredictEvaluate:
+    """The full fit / predict / evaluate cycle on a noiseless linear target, where
+    a correct regressor must recover the map, plus the fit-time shape guards."""
 
     def test_recovers_clean_linear_target(self):
         """On a noiseless linear target the unconstrained (raw) prediction
@@ -179,7 +192,7 @@ class TestFitPredictEvaluate:
         ``n_features * n_time_bins``."""
 
         X, y = _make_linear_2d(n_inputs=4)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='Input X has 4 columns'):
             SmoothBivariateRegression(n_features=3, n_time_bins=1).fit(X, y)
 
     def test_non_two_column_target_raises(self):
@@ -187,11 +200,13 @@ class TestFitPredictEvaluate:
 
         X, _ = _make_linear_2d(n_inputs=4)
         y_bad = np.zeros((X.shape[0], 3))
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='Target y must have exactly 2 columns'):
             SmoothBivariateRegression(n_features=4, n_time_bins=1).fit(X, y_bad)
 
 
 class TestSampleWeightAndVerbose:
+    """The explicit ``sample_weight`` and ``verbose`` branches of ``fit`` /
+    ``evaluate_metrics``, which the default-argument tests never reach."""
 
     def test_explicit_sample_weight_path(self):
         """Supplying an explicit ``sample_weight`` array drives the
@@ -232,6 +247,8 @@ class TestSampleWeightAndVerbose:
 
 
 class TestConvergence:
+    """The convergence flag: a tiny ``max_iter`` must report non-convergence and a
+    loose ``tol`` must report convergence, so callers can trust the flag."""
 
     def test_tiny_max_iter_does_not_converge(self):
         """A tiny ``max_iter`` (below the first 100-step convergence check)
@@ -257,6 +274,8 @@ class TestConvergence:
 
 
 class TestLaxLoopPath:
+    """The ``jax.lax`` optimisation loop must agree with the Python loop it
+    replaces and honour the same tolerance-based early stop."""
 
     def test_lax_loop_matches_python_loop(self):
         """The fused ``jax.lax.while_loop`` training path (``_use_lax_loop
@@ -284,6 +303,8 @@ class TestLaxLoopPath:
 
 
 class TestTorusMetric:
+    """The ``metric='torus'`` path on a wrapped target: wrap-aware residuals,
+    the torus kd-tree and a circular training mean inside ``[0, period)``."""
 
     def test_torus_fit_predict_evaluate(self):
         """A full fit / predict / evaluate cycle on ``metric='torus'``
@@ -328,10 +349,13 @@ class TestTorusMetric:
 
 
 class TestDegenerateMetrics:
+    """NaN-safe fallbacks of ``evaluate_metrics`` and the kd-tree guard: degenerate
+    predictions or a failed tree build must yield NaN / raw predictions, while
+    an unexpected error type must propagate."""
 
     @pytest.mark.filterwarnings("ignore:.*:RuntimeWarning")
     @pytest.mark.filterwarnings("ignore::scipy.stats.ConstantInputWarning")
-    def test_constant_prediction_yields_nan_correlations(self, monkeypatch):
+    def test_constant_prediction_yields_nan_correlations(self):
         """When the snapped predictions are constant along an axis the
         Pearson denominator is zero and Spearman raises / returns
         non-finite, so the correlation entries fall back to NaN.
@@ -378,10 +402,26 @@ class TestDegenerateMetrics:
         sets ``_train_kdtree=None`` (the ``except ValueError`` guard), and
         ``predict(snap=True)`` then returns the raw prediction unchanged."""
 
-        import usv_playpen.modeling.jax_bivariate_regression as biv
+        def _boom(*_args, **_kwargs):
+            """
+            Description
+            -----------
+            Stand-in for ``cKDTree`` that always fails with the ``ValueError``
+            cKDTree raises on non-finite / empty data.
 
-        def _boom(*args, **kwargs):
-            raise ValueError("forced kd-tree failure")
+            Parameters
+            ----------
+            *_args, **_kwargs
+                Ignored; accepted so the stand-in matches any constructor form.
+
+            Returns
+            -------
+            None
+                Never returns; always raises ``ValueError``.
+            """
+
+            msg = "forced kd-tree failure"
+            raise ValueError(msg)
 
         monkeypatch.setattr(biv, "cKDTree", _boom)
         X, y = _make_linear_2d()
@@ -396,10 +436,26 @@ class TestDegenerateMetrics:
         not a degenerate target: ``fit`` must raise it instead of silently
         disabling the snap (the guard used to be a bare ``except Exception``)."""
 
-        import usv_playpen.modeling.jax_bivariate_regression as biv
+        def _boom(*_args, **_kwargs):
+            """
+            Description
+            -----------
+            Stand-in for ``cKDTree`` that fails with an error type the guard
+            must NOT swallow.
 
-        def _boom(*args, **kwargs):
-            raise RuntimeError("forced kd-tree failure")
+            Parameters
+            ----------
+            *_args, **_kwargs
+                Ignored; accepted so the stand-in matches any constructor form.
+
+            Returns
+            -------
+            None
+                Never returns; always raises ``RuntimeError``.
+            """
+
+            msg = "forced kd-tree failure"
+            raise RuntimeError(msg)
 
         monkeypatch.setattr(biv, "cKDTree", _boom)
         X, y = _make_linear_2d()
@@ -412,10 +468,26 @@ class TestDegenerateMetrics:
         NaN via the ``except ValueError`` guard, while Pearson stays
         finite."""
 
-        import usv_playpen.modeling.jax_bivariate_regression as biv
+        def _raise_value_error(*_args, **_kwargs):
+            """
+            Description
+            -----------
+            Stand-in for ``spearmanr`` that raises the ``ValueError`` it emits on
+            some degenerate inputs.
 
-        def _raise_value_error(*args, **kwargs):
-            raise ValueError("forced spearman failure")
+            Parameters
+            ----------
+            *_args, **_kwargs
+                Ignored; accepted so the stand-in matches any invocation form.
+
+            Returns
+            -------
+            None
+                Never returns; always raises ``ValueError``.
+            """
+
+            msg = "forced spearman failure"
+            raise ValueError(msg)
 
         monkeypatch.setattr(biv, "spearmanr", _raise_value_error)
         X, y = _make_linear_2d()

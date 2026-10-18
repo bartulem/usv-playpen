@@ -4,7 +4,7 @@ End-to-end smoke tests for the continuous bout-PARAMETER (regression) modeling
 pipeline and its forward-stepwise model-selection path, driven entirely on tiny
 synthetic data.
 
-These tests walk the *production* code paths for the continuous-regression
+Coverage: these tests walk the *production* code paths for the continuous-regression
 branch of the modeling stack (the ``'params'`` analysis route) rather than
 exercising isolated helpers:
 
@@ -74,16 +74,17 @@ import pickle
 import warnings
 from pathlib import Path
 
-import matplotlib
+import matplotlib as mpl
 import numpy as np
 import pytest
 
-matplotlib.use('Agg')
+# Headless backend forced before the univariate dispatcher import pulls pyplot.
+mpl.use('Agg')
 
 from tests.modeling._synth import (
     build_modeling_settings,
-    fit_counting_subclass,
     build_session_tree,
+    fit_counting_subclass,
     write_session_list_file,
 )
 
@@ -96,7 +97,9 @@ with warnings.catch_warnings():
     import usv_playpen.modeling.main_univariate_dispatcher as univ_dispatcher
     import usv_playpen.modeling.modeling_vocal_bout_parameters as bout_params_module
     from usv_playpen.modeling.model_selection import bout_parameter_model_selection
-    from usv_playpen.modeling.modeling_vocal_bout_parameters import BoutParameterPipeline
+    from usv_playpen.modeling.modeling_vocal_bout_parameters import (
+        BoutParameterPipeline,
+    )
 
 
 # Tiny-data geometry shared across tests. ``HISTORY_FRAMES`` is the derived
@@ -416,7 +419,7 @@ class TestBoutParameterExtraction:
         pipeline = BoutParameterPipeline(modeling_settings_dict=settings)
         # Force the intra-session group-alignment check (the only np.array_equal in
         # this code path) to fail, simulating an upstream extraction misalignment.
-        monkeypatch.setattr(bout_params_module.np, "array_equal", lambda *a, **k: False)
+        monkeypatch.setattr(bout_params_module.np, "array_equal", lambda *_a, **_k: False)
         with pytest.raises(RuntimeError, match="alignment FAILED"):
             pipeline.extract_and_save_modeling_input_data()
         assert list(save_dir.glob('modeling_bout_durations_*.pkl')) == []
@@ -765,6 +768,20 @@ class TestBoutParameterSelectionDispatcher:
         real_selection = bout_parameter_model_selection
 
         def _wrapped(**kwargs):
+            """
+            Forwards the dispatcher's selection invocation with the synthetic settings path swapped in.
+
+            Parameters
+            ----------
+            **kwargs
+                The keyword arguments the dispatcher passes to the selection entry point.
+
+            Returns
+            -------
+            result
+                Whatever the real ``bout_parameter_model_selection`` returns.
+            """
+
             kwargs['settings_path'] = str(settings_json)
             return real_selection(**kwargs)
 
@@ -1009,7 +1026,8 @@ class TestCreateDataSplitsBranches:
         assert len(splits) >= 1
         X_tr, y_tr, _X_te, y_te, groups_tr = splits[0]
         assert X_tr.shape[1] == pipeline.history_frames
-        assert len(y_tr) > 0 and len(y_te) > 0
+        assert len(y_tr) > 0
+        assert len(y_te) > 0
         # the training rows' sessions travel with the split, for the session-grouped inner CV
         assert groups_tr.shape == y_tr.shape
 
@@ -1025,7 +1043,22 @@ class TestCreateDataSplitsBranches:
         feature_data = _bout_feature_data(pipeline.history_frames, n_sessions=4)
 
         def _boom(*_a, **_k):
-            raise RuntimeError("forced binning failure")
+            """
+            Raises in place of ``np.digitize`` to force the failure branch under test.
+
+            Parameters
+            ----------
+            *_a, **_k
+                Ignored arguments of the patched function.
+
+            Returns
+            -------
+            None
+                Never returns; always raises ``RuntimeError``.
+            """
+
+            msg = "forced binning failure"
+            raise RuntimeError(msg)
 
         monkeypatch.setattr(bout_params_module.np, 'digitize', _boom)
         with pytest.raises(RuntimeError, match="forced binning failure"):
@@ -1046,8 +1079,23 @@ class TestCreateDataSplitsBranches:
 
         real_percentile = bout_params_module.np.percentile
 
-        def _boom(*a, **k):
-            raise ValueError("forced percentile failure")
+        def _boom(*_a, **_k):
+            """
+            Raises in place of ``np.percentile`` to force the failure branch under test.
+
+            Parameters
+            ----------
+            *_a, **_k
+                Ignored arguments of the patched function.
+
+            Returns
+            -------
+            None
+                Never returns; always raises ``ValueError``.
+            """
+
+            msg = "forced percentile failure"
+            raise ValueError(msg)
 
         monkeypatch.setattr(bout_params_module.np, 'percentile', _boom)
         try:
@@ -1078,11 +1126,39 @@ class TestPerFeatureFitFailureHandlers:
         basis = np.eye(pipeline.history_frames, 3, dtype=float)
 
         class _ExplodingSearch:
-            def __init__(self, *a, **k):
-                pass
+            """``GridSearchCV`` stand-in whose ``fit`` always raises."""
 
-            def fit(self, *a, **k):
-                raise RuntimeError("forced sklearn fit failure")
+            def __init__(self, *_a, **_k):
+                """
+                Accepts and discards every constructor argument the runner passes to ``GridSearchCV``.
+
+                Parameters
+                ----------
+                *_a, **_k
+                    Ignored constructor arguments.
+
+                Returns
+                -------
+                None
+                """
+
+            def fit(self, *_a, **_k):
+                """
+                Fails every fit so each fold takes the sklearn fit-failure handler.
+
+                Parameters
+                ----------
+                *_a, **_k
+                    Ignored design matrix, target and fit options.
+
+                Returns
+                -------
+                None
+                    Never returns; always raises ``RuntimeError``.
+                """
+
+                msg = "forced sklearn fit failure"
+                raise RuntimeError(msg)
 
         monkeypatch.setattr(bout_params_module, 'GridSearchCV', _ExplodingSearch)
 
@@ -1109,8 +1185,23 @@ class TestPerFeatureFitFailureHandlers:
         feature_data = _bout_feature_data(pipeline.history_frames)
         basis = np.eye(pipeline.history_frames, 3, dtype=float)
 
-        def _boom(*a, **k):
-            raise ValueError("forced gamma-deviance failure")
+        def _boom(*_a, **_k):
+            """
+            Raises in place of ``mean_gamma_deviance`` to force the failure branch under test.
+
+            Parameters
+            ----------
+            *_a, **_k
+                Ignored arguments of the patched function.
+
+            Returns
+            -------
+            None
+                Never returns; always raises ``ValueError``.
+            """
+
+            msg = "forced gamma-deviance failure"
+            raise ValueError(msg)
 
         monkeypatch.setattr(bout_params_module, 'mean_gamma_deviance', _boom)
 
@@ -1138,11 +1229,39 @@ class TestPerFeatureFitFailureHandlers:
         feature_data = _bout_feature_data(pipeline.history_frames)
 
         class _ExplodingGAM:
-            def __init__(self, *a, **k):
-                pass
+            """``pygam.GAM`` stand-in whose ``fit`` always raises."""
 
-            def fit(self, *a, **k):
-                raise RuntimeError("forced GAM fit failure")
+            def __init__(self, *_a, **_k):
+                """
+                Accepts and discards every constructor argument the runner passes to ``GAM``.
+
+                Parameters
+                ----------
+                *_a, **_k
+                    Ignored constructor arguments.
+
+                Returns
+                -------
+                None
+                """
+
+            def fit(self, *_a, **_k):
+                """
+                Fails every fit so each fold takes the pygam fit-failure handler.
+
+                Parameters
+                ----------
+                *_a, **_k
+                    Ignored design matrix, target and fit options.
+
+                Returns
+                -------
+                None
+                    Never returns; always raises ``RuntimeError``.
+                """
+
+                msg = "forced GAM fit failure"
+                raise RuntimeError(msg)
 
         monkeypatch.setattr(bout_params_module, 'GAM', _ExplodingGAM)
 
@@ -1170,8 +1289,23 @@ class TestPerFeatureFitFailureHandlers:
         pipeline = _minimal_bout_pipeline(split_strategy='mixed', split_num=2)
         feature_data = _bout_feature_data(pipeline.history_frames)
 
-        def _boom(*a, **k):
-            raise ValueError("forced gamma-deviance failure")
+        def _boom(*_a, **_k):
+            """
+            Raises in place of ``mean_gamma_deviance`` to force the failure branch under test.
+
+            Parameters
+            ----------
+            *_a, **_k
+                Ignored arguments of the patched function.
+
+            Returns
+            -------
+            None
+                Never returns; always raises ``ValueError``.
+            """
+
+            msg = "forced gamma-deviance failure"
+            raise ValueError(msg)
 
         monkeypatch.setattr(bout_params_module, 'mean_gamma_deviance', _boom)
 
@@ -1198,7 +1332,7 @@ class TestPerFeatureFitFailureHandlers:
         feature_data = _bout_feature_data(pipeline.history_frames)
         basis = np.eye(pipeline.history_frames, 3, dtype=float)
 
-        monkeypatch.setattr(bout_params_module, 'mean_gamma_deviance', lambda *a, **k: 0.0)
+        monkeypatch.setattr(bout_params_module, 'mean_gamma_deviance', lambda *_a, **_k: 0.0)
 
         _fn, res = pipeline._run_model_for_feature_sklearn('self.speed', feature_data, basis)
         assert np.allclose(res['actual']['explained_deviance'], 0.0)
@@ -1219,7 +1353,7 @@ class TestPerFeatureFitFailureHandlers:
         pipeline = _minimal_bout_pipeline(split_strategy='mixed', split_num=2)
         feature_data = _bout_feature_data(pipeline.history_frames)
 
-        monkeypatch.setattr(bout_params_module, 'mean_gamma_deviance', lambda *a, **k: 0.0)
+        monkeypatch.setattr(bout_params_module, 'mean_gamma_deviance', lambda *_a, **_k: 0.0)
 
         _fn, res = pipeline._run_model_for_feature_pygam('self.speed', feature_data, None)
         assert np.allclose(res['actual']['explained_deviance'], 0.0)

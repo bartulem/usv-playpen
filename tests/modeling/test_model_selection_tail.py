@@ -34,6 +34,13 @@ that ignores ``DeprecationWarning`` during import. ``pygam`` (Python 3.13)
 emits ``DeprecationWarning: Bitwise inversion '~' on bool`` from inside its GAM
 fit, demoted with a narrow per-test marker. ``matplotlib`` is forced onto the
 headless ``Agg`` backend because the modeling import chain pulls ``pyplot``.
+
+Coverage: ``compute_filter_shapes_per_fold_vocal_onset``; resume, split-strategy,
+early-abort, per-fold-failure and all-folds-failed branches of
+``vocal_onset_model_selection``, ``vocal_category_model_selection`` and
+``bout_parameter_model_selection``; the manifold selector's null-margin gate;
+``get_unrolled_X_for_multivariate``; the shared missing-settings guard of every
+selector; and the empty-final-model path.
 """
 
 from __future__ import annotations
@@ -43,11 +50,12 @@ import pickle
 import warnings
 from pathlib import Path
 
-import matplotlib
+import matplotlib as mpl
 import numpy as np
 import pytest
 
-matplotlib.use('Agg')
+# The headless backend must be selected before the modeling import chain pulls pyplot.
+mpl.use('Agg')
 
 from tests.modeling._synth import (
     build_modeling_input_pickle,
@@ -63,13 +71,13 @@ with warnings.catch_warnings():
     warnings.simplefilter('ignore', DeprecationWarning)
     from usv_playpen.modeling import model_selection as ms
     from usv_playpen.modeling.model_selection import (
-        vocal_onset_model_selection,
         bout_parameter_model_selection,
         compute_filter_shapes_per_fold_vocal_onset,
         continuous_vocal_manifold_model_selection,
         get_unrolled_X_for_multivariate,
         multinomial_vocal_category_model_selection,
         vocal_category_model_selection,
+        vocal_onset_model_selection,
     )
 
 
@@ -326,11 +334,48 @@ class TestComputeFilterShapesHelper:
         """
 
         class _BoomGAM:
-            def __init__(self, *a, **k):
-                pass
+            """
+            Description
+            -----------
+            Stand-in for ``LogisticGAM`` whose constructor is a no-op and whose
+            ``.fit`` always raises, so every fit routed through it fails.
+            """
 
-            def fit(self, *a, **k):
-                raise RuntimeError("forced fit failure")
+            def __init__(self, *_args, **_kwargs):
+                """
+                Description
+                -----------
+                Accepts and ignores any constructor arguments.
+
+                Parameters
+                ----------
+                *_args, **_kwargs
+                    Ignored estimator hyperparameters.
+
+                Returns
+                -------
+                None
+                """
+
+            def fit(self, *_args, **_kwargs):
+                """
+                Description
+                -----------
+                Always raises ``RuntimeError`` to force the fit-failure branch.
+
+                Parameters
+                ----------
+                *_args, **_kwargs
+                    Ignored training data and fit options.
+
+                Returns
+                -------
+                None
+                    Never returns.
+                """
+
+                msg = "forced fit failure"
+                raise RuntimeError(msg)
 
         monkeypatch.setattr(ms, 'LogisticGAM', _BoomGAM)
 
@@ -479,11 +524,48 @@ class TestBoutOnsetSelectionBranches:
         """
 
         class _BoomGAM:
-            def __init__(self, *a, **k):
-                pass
+            """
+            Description
+            -----------
+            Stand-in for ``LogisticGAM`` whose constructor is a no-op and whose
+            ``.fit`` always raises, so every fit routed through it fails.
+            """
 
-            def fit(self, *a, **k):
-                raise RuntimeError("forced GAM failure")
+            def __init__(self, *_args, **_kwargs):
+                """
+                Description
+                -----------
+                Accepts and ignores any constructor arguments.
+
+                Parameters
+                ----------
+                *_args, **_kwargs
+                    Ignored estimator hyperparameters.
+
+                Returns
+                -------
+                None
+                """
+
+            def fit(self, *_args, **_kwargs):
+                """
+                Description
+                -----------
+                Always raises ``RuntimeError`` to force the fit-failure branch.
+
+                Parameters
+                ----------
+                *_args, **_kwargs
+                    Ignored training data and fit options.
+
+                Returns
+                -------
+                None
+                    Never returns.
+                """
+
+                msg = "forced GAM failure"
+                raise RuntimeError(msg)
 
         monkeypatch.setattr(ms, 'LogisticGAM', _BoomGAM)
 
@@ -891,11 +973,48 @@ class TestCategorySelectionBranches:
         """
 
         class _BoomLRCV:
-            def __init__(self, *a, **k):
-                pass
+            """
+            Description
+            -----------
+            Stand-in for ``LogisticRegressionCV`` whose constructor is a no-op and whose
+            ``.fit`` always raises, so every fit routed through it fails.
+            """
 
-            def fit(self, *a, **k):
-                raise RuntimeError("forced LRCV failure")
+            def __init__(self, *_args, **_kwargs):
+                """
+                Description
+                -----------
+                Accepts and ignores any constructor arguments.
+
+                Parameters
+                ----------
+                *_args, **_kwargs
+                    Ignored estimator hyperparameters.
+
+                Returns
+                -------
+                None
+                """
+
+            def fit(self, *_args, **_kwargs):
+                """
+                Description
+                -----------
+                Always raises ``RuntimeError`` to force the fit-failure branch.
+
+                Parameters
+                ----------
+                *_args, **_kwargs
+                    Ignored training data and fit options.
+
+                Returns
+                -------
+                None
+                    Never returns.
+                """
+
+                msg = "forced LRCV failure"
+                raise RuntimeError(msg)
 
         monkeypatch.setattr(ms, 'LogisticRegressionCV', _BoomLRCV)
 
@@ -1429,6 +1548,22 @@ class TestMultinomialAndManifoldAborts:
         truth = rng.random((n_sessions * per_session, 2))
 
         def _noise_folds():
+            """
+            Description
+            -----------
+            Builds leave-one-session-out CV-fold results whose predictions are
+            uniform noise, independent of the truth.
+
+            Parameters
+            ----------
+            None
+
+            Returns
+            -------
+            folds (dict)
+                ``metrics`` / ``y_pred_xy`` / ``y_true`` / ``test_indices`` in the
+                per-fold layout the manifold gate reads, one entry per session.
+            """
             # Leave-one-session-out folds; predictions are independent of the
             # truth so the per-fold dcor margin is null.
             folds = {'metrics': {'dcor_xy': [0.1, 0.1, 0.1, 0.1]},
@@ -1443,7 +1578,7 @@ class TestMultinomialAndManifoldAborts:
         ranking: dict = {
             '_input_metadata': {
                 'session_ids': session_ids,
-                'n_events_per_session': {s: per_session for s in session_ids},
+                'n_events_per_session': dict.fromkeys(session_ids, per_session),
             }
         }
         for feature in ['self.speed', 'other.speed']:
@@ -1506,13 +1641,13 @@ def test_missing_settings_file_raises(tmp_path, selector):
     """
 
     missing = str(tmp_path / 'no_such_settings.json')
-    kwargs = dict(
-        univariate_results_path=str(tmp_path / 'u.pkl'),
-        input_data_path=str(tmp_path / 'i.pkl'),
-        output_directory=str(tmp_path / 'out'),
-        settings_path=missing,
-        p_val=0.05,
-    )
+    kwargs = {
+        'univariate_results_path': str(tmp_path / 'u.pkl'),
+        'input_data_path': str(tmp_path / 'i.pkl'),
+        'output_directory': str(tmp_path / 'out'),
+        'settings_path': missing,
+        'p_val': 0.05,
+    }
     with pytest.raises(FileNotFoundError):
         selector(**kwargs)
 
@@ -1705,6 +1840,20 @@ class TestEmptySelectionFinalizes:
             settings_path = _settings_json(tmp_path, settings)
 
             def run():
+                """
+                Description
+                -----------
+                Runs ``vocal_onset_model_selection`` once on the prepared inputs with no anchor forced,
+                writing its step pickles into ``ms_dir``.
+
+                Parameters
+                ----------
+                None
+
+                Returns
+                -------
+                None
+                """
                 vocal_onset_model_selection(
                     univariate_results_path=ranking_pkl, input_data_path=input_pkl, settings_path=settings_path,
                     output_directory=str(ms_dir), use_top_rank_as_anchor=False, p_val=0.5)
@@ -1716,6 +1865,20 @@ class TestEmptySelectionFinalizes:
             settings_path = _settings_json(tmp_path, settings)
 
             def run():
+                """
+                Description
+                -----------
+                Runs ``vocal_category_model_selection`` once on the prepared inputs with no anchor forced,
+                writing its step pickles into ``ms_dir``.
+
+                Parameters
+                ----------
+                None
+
+                Returns
+                -------
+                None
+                """
                 vocal_category_model_selection(
                     univariate_results_path=ranking_pkl, input_data_path=input_pkl, settings_path=settings_path,
                     output_directory=str(ms_dir), use_top_rank_as_anchor=False, p_val=0.5)
@@ -1726,6 +1889,20 @@ class TestEmptySelectionFinalizes:
             settings_path = _settings_json(tmp_path, settings)
 
             def run():
+                """
+                Description
+                -----------
+                Runs ``bout_parameter_model_selection`` once on the prepared inputs with no anchor forced,
+                writing its step pickles into ``ms_dir``.
+
+                Parameters
+                ----------
+                None
+
+                Returns
+                -------
+                None
+                """
                 bout_parameter_model_selection(
                     univariate_results_path=ranking_pkl, input_data_path=input_pkl, settings_path=settings_path,
                     output_directory=str(ms_dir), target_variable='bout_durations',

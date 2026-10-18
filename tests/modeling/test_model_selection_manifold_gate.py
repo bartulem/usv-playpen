@@ -1,9 +1,8 @@
 """
 @author: bartulem
-
 Regression tests for the manifold (behaviour -> acoustic-position) selection gates.
 
-Two rules are pinned here:
+Coverage: two rules are pinned here.
 
 * The fold-margin p-value is an exact one-sided sign-flip permutation test over the
   folds (``_sign_flip_p_value``): calibrated under a symmetric null, never 0, with the
@@ -29,15 +28,22 @@ import pickle
 import warnings
 from pathlib import Path
 
-import matplotlib
+import matplotlib as mpl
 import numpy as np
 import pytest
 
-matplotlib.use('Agg')
+# Headless backend before the modeling modules (which import pyplot) load.
+mpl.use('Agg')
 
 with warnings.catch_warnings():
     warnings.simplefilter('ignore', DeprecationWarning)
     import usv_playpen.modeling.model_selection as model_selection_module
+    from tests.modeling.test_pipeline_manifold import (
+        HISTORY_FRAMES,
+        _build_manifold_settings,
+        _build_signal_continuous_pickle,
+    )
+    from usv_playpen.modeling.manifold_metric import circular_mean
     from usv_playpen.modeling.model_selection import (
         _SIGN_FLIP_EXACT_MAX_FOLDS,
         _SIGN_FLIP_MONTE_CARLO_DRAWS,
@@ -46,15 +52,9 @@ with warnings.catch_warnings():
         _sign_flip_p_value,
         continuous_vocal_manifold_model_selection,
     )
-    from usv_playpen.modeling.manifold_metric import circular_mean
     from usv_playpen.modeling.modeling_usv_manifold_position import (
         ContinuousModelingPipeline,
         ContinuousModelRunner,
-    )
-    from tests.modeling.test_pipeline_manifold import (
-        HISTORY_FRAMES,
-        _build_manifold_settings,
-        _build_signal_continuous_pickle,
     )
 
 SHIPPED_SETTINGS = Path(model_selection_module.__file__).resolve().parent.parent / '_parameter_settings' / 'modeling_settings.json'
@@ -86,7 +86,7 @@ def _fold_dicts_from_scores(actual_scores: np.ndarray, null_scores: np.ndarray, 
     """
     actual = {'test_indices': [], 'y_pred_xy': [], 'y_true': []}
     null = {'test_indices': [], 'y_pred_xy': [], 'y_true': []}
-    for a_score, n_score in zip(actual_scores, null_scores):
+    for a_score, n_score in zip(actual_scores, null_scores, strict=True):
         y_a, y_n = np.zeros((40, 2)), np.zeros((40, 2))
         scores[id(y_a)], scores[id(y_n)] = float(a_score), float(n_score)
         for bundle, y_pred in ((actual, y_a), (null, y_n)):
@@ -133,7 +133,7 @@ class TestSignFlipPValue:
         """
         scores = {}
         monkeypatch.setattr(model_selection_module, 'dcor_prediction_truth',
-                            lambda y_pred, y_true, **kwargs: scores[id(y_pred)])
+                            lambda y_pred, _y_true, **_kwargs: scores[id(y_pred)])
         rng = np.random.default_rng(0)
         n_folds, n_rep = 10, 3000
         p_values = np.empty(n_rep)
@@ -151,7 +151,7 @@ class TestSignFlipPValue:
         shipped = json.loads(SHIPPED_SETTINGS.read_text())
         assert shipped['model_validation']['manifold_n_cv_folds'] == 20
         # 19 features enter the shipped cohort screen; BH's rank-1 threshold is q / 19.
-        assert 1.0 / 2 ** 20 < shipped['model_params']['selection_p_val'] / 19
+        assert shipped['model_params']['selection_p_val'] / 19 > 1.0 / 2 ** 20
 
     def test_shipped_fold_count_of_the_other_pipelines_is_ten(self):
         """Every pipeline other than the manifold position keeps 10 outer folds."""
@@ -186,8 +186,8 @@ class TestStepZeroGateBaseline:
                 bundle['test_indices'].append(test_idx)
                 bundle['y_true'].append(Y[test_idx])
                 bundle['y_pred_xy'].append(y_pred)
-        kwargs = dict(metric='torus', period=period, n_bootstrap=1000, ci_level=0.99, random_state=0,
-                      event_to_region=regions, min_region_events=1, kappa=kappa)
+        kwargs = {'metric': 'torus', 'period': period, 'n_bootstrap': 1000, 'ci_level': 0.99, 'random_state': 0,
+                      'event_to_region': regions, 'min_region_events': 1, 'kappa': kappa}
         versus_intercept = _fold_paired_margin_bootstrap(intercept, intercept, **kwargs)
         versus_draw = _fold_paired_margin_bootstrap(intercept, draw, **kwargs)
         assert versus_intercept['mean_margin'] == 0.0
@@ -217,7 +217,7 @@ class TestStepZeroGateBaseline:
             'analysis_type': 'continuous',
             'analysis_tag': 'manifold_qlvm_category',
             'session_ids': session_ids,
-            'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
+            'n_events_per_session': dict.fromkeys(session_ids, 60),
             'analysis_specific': {
                 'usv_category_column_name': 'qlvm_category',
                 'manifold_metric': 'torus',
@@ -293,7 +293,7 @@ class TestStepZeroGateBaseline:
         n_screen_calls = len(feature_names)
         anchor_baseline = gate_calls[n_screen_calls][1]
         intercept_folds = step0['candidates_summary']['null_model_intercept']['folds']
-        for fold_pred, stored_pred in zip(anchor_baseline['y_pred_xy'], intercept_folds['y_pred_xy']):
-            fold_pred = np.asarray(fold_pred)
+        for raw_fold_pred, stored_pred in zip(anchor_baseline['y_pred_xy'], intercept_folds['y_pred_xy'], strict=False):
+            fold_pred = np.asarray(raw_fold_pred)
             assert np.all(fold_pred == fold_pred[0])
             np.testing.assert_array_equal(fold_pred, np.asarray(stored_pred))

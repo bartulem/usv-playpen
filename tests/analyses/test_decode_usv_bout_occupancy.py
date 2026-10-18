@@ -5,7 +5,10 @@ Test the vocal-bout occupancy decoder and the bout-onset statistics.
 Coverage: IBI bout grouping and its minimum-USV rule; the labelling, whose single-USV-bin
 rule and kept-time floor are where a regression would hide; raw counting and the common-lag
 shift; the class-balance guard; the bout-onset descriptors against a hand-built spike train;
-and the decoding figure's refusal to draw when its assumptions do not hold.
+the decoding figure's refusal to draw when its assumptions do not hold; the session driver
+(emitter resolution, the per-area floor, requested brain areas, silence judged against every
+vocalization, skip reasons); and the figure's construction guards, acronym pooling, shared-rung
+checks and per-mouse opacity.
 """
 
 from __future__ import annotations
@@ -13,15 +16,15 @@ from __future__ import annotations
 import json
 import pathlib
 
-import matplotlib
+import matplotlib as mpl
 import numpy as np
 import polars as pls
 import pytest
 
-matplotlib.use("Agg")
+mpl.use("Agg")
 
 from usv_playpen.analyses import decode_usv_bout_occupancy as bout_decoder
-from usv_playpen.analyses.compute_neuronal_tuning_curves import (  # noqa: E402
+from usv_playpen.analyses.compute_neuronal_tuning_curves import (
     ibi_bout_extents,
     ibi_bout_onset_block,
     ibi_bout_onset_statistics,
@@ -29,7 +32,7 @@ from usv_playpen.analyses.compute_neuronal_tuning_curves import (  # noqa: E402
     ibi_bout_threshold,
     weighted_usv_response,
 )
-from usv_playpen.analyses.decode_usv_bout_occupancy import (  # noqa: E402
+from usv_playpen.analyses.decode_usv_bout_occupancy import (
     BoutOccupancyDecoder,
     bout_occupancy_bins,
     count_matrix,
@@ -37,7 +40,7 @@ from usv_playpen.analyses.decode_usv_bout_occupancy import (  # noqa: E402
     free_intervals,
     nearest_neighbour,
 )
-from usv_playpen.visualizations.make_neuronal_decoding_figures import (  # noqa: E402
+from usv_playpen.visualizations.make_neuronal_decoding_figures import (
     NeuronalDecodingFigureMaker,
     blend,
 )
@@ -138,6 +141,24 @@ def test_silence_is_judged_against_every_vocalization() -> None:
     # the squeak at 10.1 s sits in the lattice bin [10.0, 10.25): a negative under pure-USV
     # silence, dropped once every vocalization counts
     def negative_at(result, t):
+        """
+        Description
+        -----------
+        Reports whether a negative (silence) bin of a ``bout_occupancy_bins`` result
+        starts at or before ``t`` and ends after it.
+
+        Parameters
+        ----------
+        result (tuple)
+            The ``(spans, labels, ...)`` tuple returned by ``bout_occupancy_bins``.
+        t (float)
+            Time in seconds to look up.
+
+        Returns
+        -------
+        found (bool)
+            True when a label-0 bin covers ``t`` with its first kept interval.
+        """
         spans, labels = result[0], result[1]
         return any(label == 0 and spans[i][0][0] <= t < spans[i][0][1] for i, label in enumerate(labels))
     assert negative_at(usv_only, 10.15)
@@ -146,6 +167,22 @@ def test_silence_is_judged_against_every_vocalization() -> None:
 
     # inside the bout the squeak's 30 ms is cut from the first positive bin's kept time
     def first_positive_kept(result):
+        """
+        Description
+        -----------
+        Sums the kept time of the first positive (in-bout) bin of a
+        ``bout_occupancy_bins`` result.
+
+        Parameters
+        ----------
+        result (tuple)
+            The ``(spans, labels, ...)`` tuple returned by ``bout_occupancy_bins``.
+
+        Returns
+        -------
+        kept (float)
+            Total kept seconds over the first label-1 bin's intervals.
+        """
         spans, labels = result[0], result[1]
         index = int(np.flatnonzero(labels == 1)[0])
         return sum(b - a for a, b in spans[index])
@@ -175,7 +212,31 @@ def test_a_null_draw_is_the_mean_of_runs_on_one_shared_shift(mocker) -> None:
     mean of runs."""
     lags, subsets = [], []
 
-    def fake_count_matrix(flat, n_bins, trains, duration_seconds, lag_seconds=None):
+    def fake_count_matrix(_flat, n_bins, trains, _duration_seconds, lag_seconds=None):
+        """
+        Description
+        -----------
+        Stands in for ``count_matrix``: records the lag and the size of the unit
+        subset of every invocation and returns an all-zero count matrix.
+
+        Parameters
+        ----------
+        _flat (tuple)
+            Flattened spans (unused).
+        n_bins (int)
+            Number of bins; sets the output width.
+        trains (list)
+            The unit subset drawn for this run.
+        _duration_seconds (float)
+            Session duration (unused).
+        lag_seconds (float | None)
+            The common shift applied to every unit.
+
+        Returns
+        -------
+        counts (np.ndarray)
+            Zeros of shape ``(2, n_bins)``.
+        """
         lags.append(lag_seconds)
         subsets.append(len(trains))
         return np.zeros((2, n_bins))
@@ -314,7 +375,8 @@ def test_decoding_figure_draws_and_summarizes_decoded_sessions(tmp_path: pathlib
     assert pathlib.Path(destination).exists()
 
     curve = maker._curve(session_a, "PAG", (5, 10, 20))
-    assert curve["rungs"] == [5, 10] and all(curve["clears"])
+    assert curve["rungs"] == [5, 10]
+    assert all(curve["clears"])
 
     summary = maker.summarize(sessions=(session_a, session_b))
     assert summary.height == 2 * 3 + 2 * 2

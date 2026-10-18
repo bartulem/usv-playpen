@@ -1,9 +1,8 @@
 """
 @author: bartulem
+Tests for ``usv_playpen.visualizations.qlvm_figures``.
 
-Tests for visualizations/qlvm_figures.
-
-Covers the metric helpers (torus neighbors, kNN rank readout, neighborhood
+Coverage: the metric helpers (torus neighbors, kNN rank readout, neighborhood
 scores, standardized property ranks, aligned correlation, normalized
 similarity, group contrast, aligned means), the session-root helpers, the
 category check against the bundle's grid, the masked thumbnail, the seed-cell
@@ -174,7 +173,8 @@ def test_knn_rank_readout_separates_signal_from_shuffle():
     target = np.sin(2 * np.pi * xy[:, 0])
     groups = np.repeat(np.arange(6), 100)
     r2, folds = qf.knn_rank_r2(xy, target, groups, True, 10, 3)
-    assert r2 > 0.8 and len(folds) == 3
+    assert r2 > 0.8
+    assert len(folds) == 3
     assert qf.knn_rank_r2(xy[rng.permutation(600)], target, groups, True, 10, 3)[0] < 0.1
 
 
@@ -185,10 +185,12 @@ def test_neighborhood_scores_of_a_perfect_and_a_random_map():
     reference = np.linalg.norm(points[:, None] - points[None], axis=2)
     perfect = qf.neighborhood_scores(reference, reference, 5)
     assert perfect["overlap"] == pytest.approx(1.0)
-    assert perfect["false_neighbors"] == pytest.approx(0.0) and perfect["torn_neighbors"] == pytest.approx(0.0)
+    assert perfect["false_neighbors"] == pytest.approx(0.0)
+    assert perfect["torn_neighbors"] == pytest.approx(0.0)
     other = rng.random((80, 2))
     random_map = qf.neighborhood_scores(np.linalg.norm(other[:, None] - other[None], axis=2), reference, 5)
-    assert random_map["overlap"] < 0.3 and random_map["false_neighbors"] > 0.1
+    assert random_map["overlap"] < 0.3
+    assert random_map["false_neighbors"] > 0.1
 
 
 def test_aligned_correlation_finds_a_shifted_copy():
@@ -225,7 +227,6 @@ def test_group_contrast_is_positive_for_coherent_groups():
     assert np.allclose(qf.group_contrast(filled, labels), 0.7)
 
 
-
 def test_group_contrast_marks_a_single_usv_group_undefined_and_partition_skips_it():
     """
     Description
@@ -241,11 +242,14 @@ def test_group_contrast_marks_a_single_usv_group_undefined_and_partition_skips_i
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         delta = qf.group_contrast(filled, labels)
-    assert np.isnan(delta[-1]) and np.all(np.isfinite(delta[:-1]))
+    assert np.isnan(delta[-1])
+    assert np.all(np.isfinite(delta[:-1]))
     values = qf.partition_group_values(delta, labels)
-    assert values.shape == (2,) and np.all(np.isfinite(values))
+    assert values.shape == (2,)
+    assert np.all(np.isfinite(values))
     with pytest.raises(ValueError, match="no group holds two or more"):
         qf.partition_group_values(np.full(3, np.nan), np.array([1, 2, 3]))
+
 
 def test_standardized_property_ranks_fills_missing_and_standardizes():
     """Each property becomes zero-mean, unit-variance ranks; a missing value takes the property's median, so it
@@ -253,7 +257,8 @@ def test_standardized_property_ranks_fills_missing_and_standardizes():
     properties = np.array([[1.0, 10.0], [2.0, np.nan], [3.0, 30.0], [4.0, 40.0]])
     ranks = qf.standardized_property_ranks(properties)
     assert ranks.shape == (4, 2)
-    assert np.allclose(ranks.mean(axis=0), 0.0) and np.allclose(ranks.std(axis=0), 1.0)
+    assert np.allclose(ranks.mean(axis=0), 0.0)
+    assert np.allclose(ranks.std(axis=0), 1.0)
     assert np.all(np.diff(ranks[:, 0]) > 0)
     assert ranks[1, 1] == pytest.approx(ranks[2, 1])
 
@@ -297,8 +302,10 @@ def test_read_thumbnail_applies_the_mask_union_and_centres_the_usv(tmp_path):
     with h5py.File(h5_path, "r") as h5:
         tile = qf.read_thumbnail(h5, "s", 0)
     assert tile.shape == (8, 16)
-    assert np.all(tile[:, :5] == 0) and np.all(tile[:, 11:] == 0)
-    assert np.all(tile[:6, 5:11] == 1.0) and np.all(tile[6:, 5:11] == 0)
+    assert np.all(tile[:, :5] == 0)
+    assert np.all(tile[:, 11:] == 0)
+    assert np.all(tile[:6, 5:11] == 1.0)
+    assert np.all(tile[6:, 5:11] == 0)
 
 
 def test_embed_with_cells_keys_positions_by_cell_name(monkeypatch):
@@ -308,6 +315,31 @@ def test_embed_with_cells_keys_positions_by_cell_name(monkeypatch):
     calls = []
 
     def _embed(lattice, inputs, params, lattice_batch_size, data_batch_size):
+        """
+        Description
+        -----------
+        Stand-in for ``embed_data`` that records every argument it receives and
+        places every input at (0.25, 0.25), so the test checks the plumbing
+        (per-cell lattice / params, input shape, batch sizes) without a model.
+
+        Parameters
+        ----------
+        lattice (str)
+            The stubbed cell's lattice.
+        inputs (np.ndarray)
+            Decoder inputs with the channel axis added.
+        params (str)
+            The stubbed cell's parameters.
+        lattice_batch_size (int)
+            Lattice batch size forwarded by the caller.
+        data_batch_size (int)
+            Data batch size forwarded by the caller.
+
+        Returns
+        -------
+        positions (np.ndarray)
+            ``(n, 2)`` float32 positions, all 0.25.
+        """
         calls.append((lattice, inputs.shape, params, lattice_batch_size, data_batch_size))
         return np.full((inputs.shape[0], 2), 0.25, dtype=np.float32)
 
@@ -315,7 +347,8 @@ def test_embed_with_cells_keys_positions_by_cell_name(monkeypatch):
     inputs = np.zeros((3, 128, 128), dtype=np.float16)
     positions = qf.embed_with_cells(inputs, ["/cells/seed7", "/cells/seed1234"], 64, 32, message_output=lambda *_a, **_k: None)
     assert list(positions) == ["seed7", "seed1234"]
-    assert positions["seed7"].shape == (3, 2) and positions["seed7"].dtype == np.float64
+    assert positions["seed7"].shape == (3, 2)
+    assert positions["seed7"].dtype == np.float64
     assert calls[0] == ("lattice:/cells/seed7", (3, 1, 128, 128), "params:/cells/seed7", 64, 32)
 
 
@@ -335,14 +368,16 @@ def test_figure_sample_reads_images_and_reuses_its_cache(tmp_path, monkeypatch):
     """The sample holds masked native-length images (zeros after the USV), decoder inputs of the same
     USVs, and is served from the cache only for the same USVs."""
     usvs, roots = _synthetic_cohort(tmp_path)
-    monkeypatch.setattr(qf, "load_model_cell", lambda directory: {"contract": {"input_normalization": "none"}})
+    monkeypatch.setattr(qf, "load_model_cell", lambda _directory: {"contract": {"input_normalization": "none"}})
     cache = tmp_path / "cache" / "sample.npz"
     sample = qf.build_qlvm_figure_sample(usvs, roots, 10, 0, "cell", str(cache), message_output=lambda *_a, **_k: None)
-    assert sample["images"].shape == (30, 128, 128) and sample["inputs"].shape == (30, 128, 128)
+    assert sample["images"].shape == (30, 128, 128)
+    assert sample["inputs"].shape == (30, 128, 128)
     first = int(sample["lengths"][0])
-    assert np.all(sample["images"][0, :, first:] == 0) and sample["images"][0].max() > 0
+    assert np.all(sample["images"][0, :, first:] == 0)
+    assert sample["images"][0].max() > 0
     assert cache.exists()
-    monkeypatch.setattr(qf, "load_model_cell", lambda directory: pytest.fail("the cache should have been served"))
+    monkeypatch.setattr(qf, "load_model_cell", lambda _directory: pytest.fail("the cache should have been served"))
     again = qf.build_qlvm_figure_sample(usvs, roots, 10, 0, "cell", str(cache), message_output=lambda *_a, **_k: None)
     assert np.array_equal(again["row_index"], sample["row_index"])
 
@@ -357,19 +392,22 @@ def test_three_figures_render_on_synthetic_sessions(tmp_path, monkeypatch):
     grid = _two_band_grid()
     bundle = _bundle(tmp_path, grid)
     cfg = _cfg()
-    monkeypatch.setattr(qf, "load_model_cell", lambda directory: {"contract": {"input_normalization": "none"}})
+    monkeypatch.setattr(qf, "load_model_cell", lambda _directory: {"contract": {"input_normalization": "none"}})
     sample = qf.build_qlvm_figure_sample(usvs, roots, cfg["usvs_per_session"], 0, "cell", None, message_output=lambda *_a, **_k: None)
 
     fig, table = qf.plot_qlvm_overview(usvs, bundle, roots, cfg, "inferno", 0)
-    assert isinstance(fig, Figure) and table.height == 2 * cfg["overview"]["n_examples"]
+    assert isinstance(fig, Figure)
+    assert table.height == 2 * cfg["overview"]["n_examples"]
 
     class Geometry:
+        """Stub geodesic context: an 8 x 8 pixel-centre grid with random pullback and density matrices."""
+
         grid = np.stack(np.meshgrid((np.arange(8) + 0.5) / 8, (np.arange(8) + 0.5) / 8), axis=-1).reshape(-1, 2)
         pullback_matrix = np.random.default_rng(2).random((64, 64))
         density_matrix = np.random.default_rng(3).random((64, 64))
 
-    monkeypatch.setattr(qf, "make_qlvm_decode_fn_from_model_cell", lambda directory: None)
-    monkeypatch.setattr(qf, "build_torus_geodesic_context", lambda points, decode_fn, n_per_dim: Geometry())
+    monkeypatch.setattr(qf, "make_qlvm_decode_fn_from_model_cell", lambda _directory: None)
+    monkeypatch.setattr(qf, "build_torus_geodesic_context", lambda _points, decode_fn, n_per_dim: Geometry())  # noqa: ARG005 - decode_fn and n_per_dim are passed by keyword
     metrics = qf.compute_qlvm_quality_metrics(sample, cfg, 0, "cell", {}, message_output=lambda *_a, **_k: None)
     assert set(metrics["maps"]) == {"QLVM", "PCA", "UMAP"}
     assert np.mean(metrics["readout_folds"]["QLVM"]["mean_freq_hz"]) > 0.5
@@ -414,7 +452,7 @@ def _quality_inputs(n_seeds: int, fidelity_high: float) -> tuple[dict, dict]:
     columns = [column for column, _, _ in qf.FIGURE_PROPERTIES]
     maps = {"QLVM": (rng.random((n, 2)), True), "PCA": (rng.normal(size=(n, 2)), False), "UMAP": (rng.normal(size=(n, 2)), False)}
     folds = {name: {column: [0.4, 0.5] for column in columns} for name in maps}
-    metrics = {"maps": maps, "readout_folds": folds, "readout_null": {name: {column: 0.0 for column in columns} for name in maps},
+    metrics = {"maps": maps, "readout_folds": folds, "readout_null": {name: dict.fromkeys(columns, 0.0) for name in maps},
                "per_seed": {f"seed{k}": {column: [0.4, 0.5] for column in columns} for k in range(n_seeds)},
                "neighborhoods": {name: {"overlap": [0.3, 0.4], "false_neighbors": [0.1, 0.2], "torn_neighbors": [0.1, 0.2]}
                                  for name in maps},
@@ -460,12 +498,30 @@ def test_figure_sample_cache_write_is_atomic(tmp_path, monkeypatch):
     leaves no ``sample.npz`` behind (the direct ``np.savez(cache_path)`` left a truncated archive,
     which the next call would try to serve)."""
     usvs, roots = _synthetic_cohort(tmp_path)
-    monkeypatch.setattr(qf, "load_model_cell", lambda directory: {"contract": {"input_normalization": "none"}})
+    monkeypatch.setattr(qf, "load_model_cell", lambda _directory: {"contract": {"input_normalization": "none"}})
     cache = tmp_path / "cache" / "sample.npz"
 
-    def half_savez(file, **arrays):
+    def half_savez(file, **_arrays):
+        """
+        Description
+        -----------
+        Replacement for ``np.savez`` that writes a truncated archive header and
+        then fails, simulating a disk that fills up mid-write.
+
+        Parameters
+        ----------
+        file (file-like)
+            Open handle the archive is written to.
+        **_arrays (dict)
+            The sample arrays (ignored).
+
+        Returns
+        -------
+        None
+        """
         file.write(b"PK\x03\x04 truncated")
-        raise OSError("disk full")
+        message = "disk full"
+        raise OSError(message)
 
     monkeypatch.setattr(qf.np, "savez", half_savez)
     with pytest.raises(OSError, match="disk full"):

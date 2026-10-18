@@ -6,16 +6,28 @@ Both modules orchestrate external CLI tools (DAS via conda, vocalocator via
 conda) and rely on file-system state. These tests substitute every subprocess
 call and provide synthetic disk fixtures so the orchestration logic itself can
 be exercised without any external software installed.
+
+Coverage: FindMouseVocalizations construction, DAS command-line inference (one
+subprocess per wav), summarize_das_findings (no annotations, unknown or excluded
+channels, merge across channels, quality gates, the summary CSV and histogram,
+the atomic write, the long-interval refusal), the cross-channel merge, the
+consensus re-merge, the seam-ladder repair, prepare_for_vocalocator (animal-id
+encoding, track names, the audio band, an existing dataset), the Vocalocator
+wrapper (kwargs, subprocess invocation and timeout, calibration lookup, emitter
+assignment), the confidence-set angle binning and the shipped
+assign_vocalizations settings block.
 """
 
 from __future__ import annotations
 
+import importlib.resources
 import json
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import h5py
+import matplotlib as mpl
 import numpy as np
 import polars as pls
 import pytest
@@ -23,23 +35,26 @@ import soundfile as sf
 import yaml
 
 # Headless matplotlib for the das_inference plotting code path.
-import matplotlib
-matplotlib.use("Agg")
+mpl.use("Agg")
 
-from usv_playpen.processing.das_inference import (
-    FindMouseVocalizations,
-    _DAS_ANNOTATION_FILE_RE,
-    _greedy_merge_segments,
-    _write_usv_summary_csv,
-    _ladder_gap_leading_stops,
-    _repaired_facing_edges,
-    _remerge_from_consensus,
+import usv_playpen
+from usv_playpen.processing.assign_vocalizations import (
+    Vocalocator,
+    vocalocator_subprocess_timeout_s,
 )
-from usv_playpen.processing.assign_vocalizations import Vocalocator, vocalocator_subprocess_timeout_s
 from usv_playpen.processing.assign_vocalizations_utils import are_points_in_conf_set
+from usv_playpen.processing.das_inference import (
+    _DAS_ANNOTATION_FILE_RE,
+    FindMouseVocalizations,
+    _greedy_merge_segments,
+    _ladder_gap_leading_stops,
+    _remerge_from_consensus,
+    _repaired_facing_edges,
+    _write_usv_summary_csv,
+)
 
 
-@pytest.mark.parametrize("name,expected", [
+@pytest.mark.parametrize(("name", "expected"), [
     # real DAS annotation names: the chNN token sits before the pipeline suffix
     ("m_260421185826_ch01_cropped_to_video_hpss_filtered_annotations.csv", ("m", "ch01")),
     ("s_230207213541_ch12_cropped_to_video_hpss_filtered_annotations.csv", ("s", "ch12")),
@@ -50,6 +65,10 @@ from usv_playpen.processing.assign_vocalizations_utils import are_points_in_conf
     ("m_foo_annotations.csv", None),
 ])
 def test_das_annotation_regex_matches_real_filenames(name, expected):
+    """The DAS annotation filename regex pulls the device prefix and the chNN token
+    out of real annotation names (pipeline suffix or short form) and rejects a
+    wrong prefix or a missing channel token, since the channel it reads decides
+    which audio channel each annotation is attributed to."""
     m = _DAS_ANNOTATION_FILE_RE.match(name)
     assert (m.groups() if m else None) == expected
 
@@ -61,7 +80,6 @@ def processing_settings():
     """Loads processing_settings.json from the package — same fixture pattern
     as test_process.py uses, but local-scoped so test_inference doesn't depend
     on test_process being collected first."""
-    import usv_playpen
     package_dir = Path(usv_playpen.__file__).parent
     with (package_dir / '_parameter_settings' / 'processing_settings.json').open('r') as f:
         return json.load(f)
@@ -78,7 +96,7 @@ def test_find_mouse_vocalizations_init_loads_defaults_when_no_input_dict(tmp_pat
     assert fmv.root_directory == str(tmp_path)
 
 
-def test_find_mouse_vocalizations_init_root_directory_can_be_none(tmp_path):
+def test_find_mouse_vocalizations_init_root_directory_can_be_none():
     """Construction is permitted without a root_directory; downstream methods
     will raise when they try to use it. This mirrors the documented optional
     nature of the kwarg without crashing in the constructor itself."""
@@ -129,8 +147,9 @@ def test_das_command_line_inference_invokes_subprocess_per_wav(processing_settin
     assert popen_mock.call_count == 2
     # Verify "das predict" appears in every command
     for call in popen_mock.call_args_list:
-        argv = call.kwargs.get("args") or call.args[0]
-        assert "das" in argv and "predict" in argv
+        argv = call.kwargs["args"]
+        assert "das" in argv
+        assert "predict" in argv
 
     # The annotation CSV was moved
     moved_csv = tmp_path / "audio" / "das_annotations" / "ch1_annotations.csv"
@@ -246,6 +265,27 @@ def test_summarize_das_findings_zero_after_merge(processing_settings, tmp_path,
 
 
 def _make_vocalocator(tmp_path, processing_settings, **extras):
+    """
+    Description
+    -----------
+    Builds a Vocalocator on the session root ``tmp_path`` with the given settings
+    and a silent message output, so each test only spells out the keyword
+    arguments it is about.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        The session root directory.
+    processing_settings : dict
+        The processing settings passed as ``input_parameter_dict``.
+    **extras : dict
+        Further keyword arguments forwarded to the Vocalocator constructor.
+
+    Returns
+    -------
+    Vocalocator
+        The constructed instance.
+    """
     return Vocalocator(
         root_directory=str(tmp_path),
         input_parameter_dict=processing_settings,
@@ -462,7 +502,7 @@ def test_vocalocator_run_vocalocator_ssl_refuses_two_calibrations(tmp_path, proc
 
 def test_vocalocator_run_vocalocator_ssl_handles_missing_calibration(tmp_path,
                                                                      processing_settings,
-                                                                     mocker, monkeypatch):
+                                                                     mocker):
     """When no *cal*.npz file is in model_directory, run_vocalocator_ssl raises a
     RuntimeError naming the missing calibration NPZ before any subprocess runs."""
     # Set up the minimum disk layout to reach the calibration check.
@@ -498,7 +538,7 @@ def test_vocalocator_run_vocalocator_ssl_handles_missing_calibration(tmp_path,
 
 def test_vocalocator_run_vocalocator_ssl_empty_assignments_no_crash(tmp_path,
                                                                     processing_settings,
-                                                                    mocker, monkeypatch):
+                                                                    mocker):
     """An empty predictions array (zero vocalizations) must not raise
     ZeroDivisionError in the percentage reporting; the run logs a 'no
     vocalizations' message and still writes the (empty) emitter column."""
@@ -641,6 +681,8 @@ def test_usv_id_is_six_digit_zero_padded_and_widens_past_the_pad(tmp_path):
     is a MINIMUM width, so ids past the pad widen instead of truncating and
     uniqueness is never at risk."""
     def _interval(idx):
+        """Return a minimal merged-interval dict starting at ``idx`` seconds and
+        lasting 50 ms, carrying every key the summary writer reads."""
         return {
             'start': float(idx), 'stop': float(idx) + 0.05,
             'peak_amp_ch': 0.0, 'mean_amp_ch': 0.0,
@@ -667,9 +709,32 @@ def test_write_usv_summary_csv_replaces_atomically(tmp_path, mocker):
     out_path.write_text("usv_id,start,stop\n000000,0.0,0.1\n")
     before = out_path.read_bytes()
 
-    def _failing_write(self, file, *args, **kwargs):
+    def _failing_write(_self, file, *_args, **_kwargs):
+        """
+        Description
+        -----------
+        Stands in for polars.DataFrame.write_csv: writes a truncated CSV to the
+        target path and then fails, the way a write that dies part-way would.
+
+        Parameters
+        ----------
+        _self : polars.DataFrame
+            The frame being written (unused).
+        file : str
+            The target path the summary writer writes to.
+        *_args : tuple
+            Further positional arguments (unused).
+        **_kwargs : dict
+            Further keyword arguments (unused).
+
+        Returns
+        -------
+        None
+            Never returns; always raises OSError("disk full").
+        """
         Path(file).write_text("usv_id,sta")
-        raise OSError("disk full")
+        message = "disk full"
+        raise OSError(message)
 
     mocker.patch.object(pls.DataFrame, "write_csv", _failing_write)
     interval = {'start': 0.0, 'stop': 0.05, 'peak_amp_ch': 0.0, 'mean_amp_ch': 0.0, 'chs_count': 1, 'chs_detected': [0]}
@@ -1165,7 +1230,9 @@ def test_prepare_for_vocalocator_writes_dset_h5(tmp_path, processing_settings, m
     dset = tmp_path / "audio" / "sound_localization" / "dset.h5"
     assert dset.is_file(), "vocalocator dset.h5 not written"
     with h5py.File(dset, "r") as f:
-        assert "node_names" in f and "locations" in f and "length_idx" in f
+        assert "node_names" in f
+        assert "locations" in f
+        assert "length_idx" in f
         # Two USVs -> length_idx is a cumulative-sum of length 3 ([0, l0, l0+l1]).
         assert f["length_idx"].shape == (3,)
         assert float(f.attrs["audio_sr"]) == 250000.0
@@ -1520,8 +1587,6 @@ def test_shipped_assign_vocalizations_block_schema():
     ``assign_vocalizations`` block of ``processing_settings.json`` rather than
     hard-coded, so the block must expose the expected keys with sane types."""
 
-    import importlib.resources
-
     settings_traversable = importlib.resources.files("usv_playpen").joinpath(
         "_parameter_settings", "processing_settings.json"
     )
@@ -1718,6 +1783,8 @@ def test_seam_repair_corrects_flagged_pair_and_preserves_columns(
     snippet_dir = tmp_path / "audio" / "seam_repair_snippets"
 
     def _fake_wait(**_kwargs):
+        """Stand in for ``wait_for_subprocesses``: write the snippet annotation CSV
+        the real das predict run would produce and report a zero exit code."""
         # stand in for das predict on the snippet folder: recover 1 ms of
         # USV-1 tail and 8 ms of USV-2 onset (snippet offset is 0.050 s)
         pls.DataFrame({
@@ -1744,7 +1811,7 @@ def test_seam_repair_corrects_flagged_pair_and_preserves_columns(
     )
     fmv.repair_seam_snapped_boundaries()
 
-    argv = popen_mock.call_args.kwargs.get("args") or popen_mock.call_args.args[0]
+    argv = popen_mock.call_args.kwargs["args"]
     assert "das" in argv
     assert "predict" in argv
     df = pls.read_csv(
@@ -1835,10 +1902,12 @@ def test_greedy_merge_segments_unions_overlapping_and_separates_disjoint():
     segments = [(0.0, 0.1, 'ch01'), (0.05, 0.2, 'ch02'), (0.5, 0.6, 'ch01')]
     merged = _greedy_merge_segments(segments)
     assert len(merged) == 2
-    assert merged[0]['start'] == 0.0 and merged[0]['stop'] == 0.2
+    assert merged[0]['start'] == 0.0
+    assert merged[0]['stop'] == 0.2
     assert merged[0]['chs_detected'] == {'ch01', 'ch02'}
     assert len(merged[0]['segments']) == 2
-    assert merged[1]['start'] == 0.5 and merged[1]['stop'] == 0.6
+    assert merged[1]['start'] == 0.5
+    assert merged[1]['stop'] == 0.6
 
 
 def test_consensus_remerge_recovers_usvs_masked_by_one_channel():
@@ -1850,7 +1919,8 @@ def test_consensus_remerge_recovers_usvs_masked_by_one_channel():
             segments.append((start, start + 0.06, channel))
     segments.append((0.0, 0.96, 'ch06'))          # the lone fused detection
     merged = _greedy_merge_segments(sorted(segments, key=lambda seg: seg[0]))
-    assert len(merged) == 1 and merged[0]['stop'] - merged[0]['start'] > 0.9
+    assert len(merged) == 1
+    assert merged[0]['stop'] - merged[0]['start'] > 0.9
 
     corrected, n_split = _remerge_from_consensus(
         merged, min_duration_s=0.25, span_factor=2.0,
@@ -2012,7 +2082,7 @@ def test_summarize_rejects_implausibly_long_intervals(processing_settings, tmp_p
     FindMouseVocalizations(
         root_directory=str(tmp_path),
         input_parameter_dict=settings,
-        message_output=lambda *a, **k: messages.append(" ".join(str(x) for x in a)),
+        message_output=lambda *a, **_k: messages.append(" ".join(str(x) for x in a)),
     ).summarize_das_findings()
     assert any("Rejected" in m and "longer than" in m for m in messages), messages
 
@@ -2035,8 +2105,8 @@ def test_consensus_remerge_will_not_cut_at_a_gap_the_segmenter_could_not_make():
     segments.sort(key=lambda seg: seg[0])
     merged = _greedy_merge_segments(segments)
 
-    unfloored, _ = _remerge_from_consensus(_greedy_merge_segments(segments),
-                                           0.08, 2.0, 2, 3, max_depth=4, min_gap_s=0.0)
+    _unfloored, _ = _remerge_from_consensus(_greedy_merge_segments(segments),
+                                            0.08, 2.0, 2, 3, max_depth=4, min_gap_s=0.0)
     floored, _ = _remerge_from_consensus(_greedy_merge_segments(segments),
                                          0.08, 2.0, 2, 3, max_depth=4, min_gap_s=0.015)
     assert len(floored) == 1, "a 5 ms gap is finer than the segmenter's own resolution"

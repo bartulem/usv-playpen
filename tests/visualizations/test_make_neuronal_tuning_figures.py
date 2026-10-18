@@ -27,6 +27,13 @@ A passing test here therefore requires:
 
 We do not assert byte-exact figure contents — only that real files
 appear on disk and contain a sensible number of pages.
+
+Coverage: the full compute-to-figure pipeline (PDF and per-page PNG) with the tracking file at
+either location; the pickle payload contract; the property / categorical panel axis rules; every
+cross-unit summary figure (VMI, PETH timing, property and category tuning, behavioral tuning, Venn
+overlaps, PAG gradient); the unit filter and the collectors' consistency rules; the behavioral,
+spatial and vocal page renderers, the bout-onset panels and the QLVM segmentation loaded from the
+category bundle; figures closed when a page or cluster fails; and the settings the maker requires.
 """
 
 from __future__ import annotations
@@ -36,8 +43,10 @@ import pathlib
 import pickle
 import re
 
+import matplotlib as mpl
+
+mpl.use("Agg")
 import h5py
-import matplotlib
 import matplotlib.collections
 import matplotlib.pyplot as plt
 import numpy as np
@@ -55,9 +64,9 @@ from usv_playpen.analyses.compute_neuronal_tuning_curves import (
 from usv_playpen.visualizations import make_neuronal_tuning_figures as tuning_figures
 from usv_playpen.visualizations.make_neuronal_tuning_figures import (
     DISPLAY_FACTOR,
-    NeuronalTuningFigureMaker,
     USV_CATEGORY_SEGMENTATIONS,
     USV_PROPERTY_ORDER,
+    NeuronalTuningFigureMaker,
     _category_class_count,
     load_qlvm_category_segmentation,
 )
@@ -301,7 +310,8 @@ def _count_pdf_pages(pdf_path: pathlib.Path) -> int:
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 @pytest.mark.filterwarnings("ignore::UserWarning")
-def test_full_pipeline_writes_pdf_with_behavioral_and_vocal_pages(tmp_path, qlvm_category_bundle):
+@pytest.mark.usefixtures("qlvm_category_bundle")
+def test_full_pipeline_writes_pdf_with_behavioral_and_vocal_pages(tmp_path):
     """
     Description
     -----------
@@ -339,7 +349,7 @@ def test_full_pipeline_writes_pdf_with_behavioral_and_vocal_pages(tmp_path, qlvm
     nt = NeuronalTuning(
         root_directory=str(root),
         tuning_parameters_dict=_make_tuning_parameters(),
-        message_output=lambda *a, **k: None,
+        message_output=lambda *_args, **_kwargs: None,
     )
     nt.calculate_neuronal_tuning_curves()
 
@@ -361,7 +371,7 @@ def test_full_pipeline_writes_pdf_with_behavioral_and_vocal_pages(tmp_path, qlvm
     figure_maker = NeuronalTuningFigureMaker(
         root_directory=str(root),
         visualizations_parameter_dict=_make_visualizations_parameters(),
-        message_output=lambda *a, **k: None,
+        message_output=lambda *_args, **_kwargs: None,
     )
     figure_maker.make_neuronal_tuning_figures()
 
@@ -388,7 +398,8 @@ def test_full_pipeline_writes_pdf_with_behavioral_and_vocal_pages(tmp_path, qlvm
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 @pytest.mark.filterwarnings("ignore::UserWarning")
-def test_figures_render_when_tracking_h5_at_session_root(tmp_path, qlvm_category_bundle):
+@pytest.mark.usefixtures("qlvm_category_bundle")
+def test_figures_render_when_tracking_h5_at_session_root(tmp_path):
     """
     Description
     -----------
@@ -418,14 +429,14 @@ def test_figures_render_when_tracking_h5_at_session_root(tmp_path, qlvm_category
     nt = NeuronalTuning(
         root_directory=str(root),
         tuning_parameters_dict=_make_tuning_parameters(),
-        message_output=lambda *a, **k: None,
+        message_output=lambda *_args, **_kwargs: None,
     )
     nt.calculate_neuronal_tuning_curves()
 
     figure_maker = NeuronalTuningFigureMaker(
         root_directory=str(root),
         visualizations_parameter_dict=_make_visualizations_parameters(),
-        message_output=lambda *a, **k: None,
+        message_output=lambda *_args, **_kwargs: None,
     )
     figure_maker.make_neuronal_tuning_figures()
 
@@ -474,7 +485,7 @@ def _make_figure_maker() -> NeuronalTuningFigureMaker:
     return NeuronalTuningFigureMaker(
         root_directory="/tmp",
         visualizations_parameter_dict=_make_visualizations_parameters(),
-        message_output=lambda *a, **k: None,
+        message_output=lambda *_args, **_kwargs: None,
     )
 
 
@@ -512,8 +523,10 @@ def test_property_cell_xlim_matches_finite_data_extent_not_occupancy():
     centers = 0.5 * (edges[:-1] + edges[1:])
     rate = np.full(n_bins, np.nan)
     rate[5:21] = 9.0
-    p0_5 = np.full(n_bins, np.nan); p0_5[5:21] = 2.0
-    p99_5 = np.full(n_bins, np.nan); p99_5[5:21] = 16.0
+    p0_5 = np.full(n_bins, np.nan)
+    p0_5[5:21] = 2.0
+    p99_5 = np.full(n_bins, np.nan)
+    p99_5[5:21] = 16.0
     occ = np.zeros(n_bins)
     occ[5:21] = 5.0
     occ[31] = 0.12  # outlier: positive but below min-occ -> rate stays NaN
@@ -682,7 +695,7 @@ def test_categorical_strip_symlog_xlim_uses_geometric_buffer():
             "expected symlog scale given max(120) / min_positive(0.5) "
             "ratio = 240 >> log_threshold 10"
         )
-        x_lo_lim, x_hi_lim = ax.get_xlim()
+        x_lo_lim, _x_hi_lim = ax.get_xlim()
         x_lo_data = float(p0_5.min())   # 0.5
         x_hi_data = float(p99_5.max())  # 120.0
         old_linear_lower = x_lo_data - 0.05 * (x_hi_data - x_lo_data)
@@ -915,7 +928,7 @@ def test_pkl_contract_includes_entire_expected_payload_structure(tmp_path):
     nt = NeuronalTuning(
         root_directory=str(root),
         tuning_parameters_dict=_make_tuning_parameters(),
-        message_output=lambda *a, **k: None,
+        message_output=lambda *_args, **_kwargs: None,
     )
     nt.calculate_neuronal_tuning_curves()
 
@@ -935,7 +948,8 @@ def test_pkl_contract_includes_entire_expected_payload_structure(tmp_path):
 
     # beh_offset=0s
     beh = d["beh_offset=0s"]
-    assert isinstance(beh, dict) and beh, "beh_offset=0s is empty"
+    assert isinstance(beh, dict), "beh_offset=0s is empty"
+    assert beh, "beh_offset=0s is empty"
     for feat_name, feat_payload in beh.items():
         is_2d = feat_name.endswith(".space")
         expected = _BEH_2D_STAT_KEYS if is_2d else _BEH_1D_STAT_KEYS
@@ -961,7 +975,8 @@ def test_pkl_contract_includes_entire_expected_payload_structure(tmp_path):
 
     # usv_peth[emitter]
     usv_peth = d["usv_peth"]
-    assert isinstance(usv_peth, dict) and usv_peth, "usv_peth is empty"
+    assert isinstance(usv_peth, dict), "usv_peth is empty"
+    assert usv_peth, "usv_peth is empty"
     for emitter, payload in usv_peth.items():
         missing = _USV_PETH_KEYS - set(payload.keys())
         assert not missing, (
@@ -1171,7 +1186,7 @@ def _mod_block(per_session):
     """
 
     n_test = len(per_session)
-    n_sig = sum(1 for e in per_session if e.get("significant"))
+    n_sig = sum(1 for e in per_session if e["significant"])
     return {
         "per_session":   per_session,
         "n_tested":      n_test,
@@ -1670,7 +1685,7 @@ def _aggregate_maker(tmp_path):
     return NeuronalTuningFigureMaker(
         root_directory=str(tmp_path),
         visualizations_parameter_dict=_make_aggregate_visualizations_parameters(),
-        message_output=lambda *a, **k: None,
+        message_output=lambda *_args, **_kwargs: None,
     )
 
 
@@ -1985,7 +2000,8 @@ def test_all_property_tuning_distribution_figures_writes_pngs(triage_fixture):
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 @pytest.mark.filterwarnings("ignore::UserWarning")
-def test_all_category_figures_writes_pngs(triage_fixture, qlvm_category_bundle):
+@pytest.mark.usefixtures("qlvm_category_bundle")
+def test_all_category_figures_writes_pngs(triage_fixture):
     """
     Description
     -----------
@@ -2172,10 +2188,27 @@ def test_unit_passes_filter(tmp_path):
     viz = _make_aggregate_visualizations_parameters()
 
     def _maker(**kw):
+        """
+        Description
+        -----------
+        Construct a silent `NeuronalTuningFigureMaker` on the throwaway root
+        with the aggregate settings, overriding only the unit-filter knobs.
+
+        Parameters
+        ----------
+        **kw
+            Constructor overrides (``kslabels``, ``somatic_filter``).
+
+        Returns
+        -------
+        maker (NeuronalTuningFigureMaker)
+            The configured figure maker.
+        """
+
         return NeuronalTuningFigureMaker(
             root_directory=str(tmp_path),
             visualizations_parameter_dict=viz,
-            message_output=lambda *a, **k: None,
+            message_output=lambda *_args, **_kwargs: None,
             **kw,
         )
 
@@ -2192,7 +2225,7 @@ def test_unit_passes_filter(tmp_path):
     assert non_somatic._unit_passes_filter({"kslabel": "good"}, {"somatic": "False"})
     assert not non_somatic._unit_passes_filter({"kslabel": "good"}, {"somatic": "True"})
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="somatic_filter must be one of"):
         _maker(somatic_filter="bogus")
 
 
@@ -2260,7 +2293,8 @@ def test_compute_behavioral_bucket_flags_dyadic_pooling(tmp_path):
         k_min=2, require_majority=True,
     )
     assert flags["social"] is True
-    assert flags["pose"] is False and flags["movement"] is False
+    assert flags["pose"] is False
+    assert flags["movement"] is False
 
 
 def test_collect_vmi_consistency_below_n_tested_min(tmp_path):
@@ -2340,6 +2374,26 @@ def test_consistent_peth_majority_is_strict(tmp_path):
     """
 
     def _peth_unit(unit_id, peak_ts):
+        """
+        Description
+        -----------
+        Build one triage unit whose only modality is a self-excitatory USV
+        PETH, with one significant session per requested peak time, so the
+        peak-time clustering rule alone decides whether the unit is kept.
+
+        Parameters
+        ----------
+        unit_id (str)
+            Unit identifier, also embedded in ``unit_uid``.
+        peak_ts (list[float])
+            Per-session PETH peak times (s).
+
+        Returns
+        -------
+        unit (dict)
+            Triage unit record in the shape the collectors read.
+        """
+
         per_session = [
             {"significant": True, "peak_t": t, "peak_z": 5.0} for t in peak_ts
         ]
@@ -2424,7 +2478,7 @@ def test_collectors_honor_configurable_filter(triage_fixture, tmp_path):
     permissive = NeuronalTuningFigureMaker(
         root_directory=str(tmp_path),
         visualizations_parameter_dict=_make_aggregate_visualizations_parameters(),
-        message_output=lambda *a, **k: None,
+        message_output=lambda *_args, **_kwargs: None,
         kslabels=("good", "mua"),
         somatic_filter="both",
     )
@@ -2459,7 +2513,7 @@ def _beh_1d_payload(n_bins: int = 12) -> dict:
     `rate`, `occupancy_seconds` (all above the occupancy threshold so
     the rate line / shuffle band render), and the `null_p0_5` /
     `null_p99_5` shuffle bounds. No `_smoothed` variants are included so
-    the renderer takes its un-smoothed `.get(..., default)` fallbacks.
+    the renderer falls back to the un-smoothed keys.
 
     Parameters
     ----------
@@ -2513,7 +2567,8 @@ def _beh_2d_payload(side: int = 8) -> dict:
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 @pytest.mark.filterwarnings("ignore::UserWarning")
-def test_per_cluster_pipeline_png_writes_per_page_files(tmp_path, qlvm_category_bundle):
+@pytest.mark.usefixtures("qlvm_category_bundle")
+def test_per_cluster_pipeline_png_writes_per_page_files(tmp_path):
     """
     Description
     -----------
@@ -2543,7 +2598,7 @@ def test_per_cluster_pipeline_png_writes_per_page_files(tmp_path, qlvm_category_
     nt = NeuronalTuning(
         root_directory=str(root),
         tuning_parameters_dict=_make_tuning_parameters(),
-        message_output=lambda *a, **k: None,
+        message_output=lambda *_args, **_kwargs: None,
     )
     nt.calculate_neuronal_tuning_curves()
 
@@ -2553,7 +2608,7 @@ def test_per_cluster_pipeline_png_writes_per_page_files(tmp_path, qlvm_category_
     figure_maker = NeuronalTuningFigureMaker(
         root_directory=str(root),
         visualizations_parameter_dict=viz,
-        message_output=lambda *a, **k: None,
+        message_output=lambda *_args, **_kwargs: None,
     )
     figure_maker.make_neuronal_tuning_figures()
 
@@ -2624,7 +2679,7 @@ def test_render_behavioral_pages_renders_social_and_directional_sei():
     maker = NeuronalTuningFigureMaker(
         root_directory="/tmp",
         visualizations_parameter_dict=_make_aggregate_visualizations_parameters(),
-        message_output=lambda *a, **k: None,
+        message_output=lambda *_args, **_kwargs: None,
     )
 
     saved_labels: list[str] = []
@@ -2678,7 +2733,7 @@ def test_render_behavioral_pages_draws_spatial_maps_x_across_y_up():
     maker = NeuronalTuningFigureMaker(
         root_directory="/tmp",
         visualizations_parameter_dict=_make_aggregate_visualizations_parameters(),
-        message_output=lambda *a, **k: None,
+        message_output=lambda *_args, **_kwargs: None,
     )
     images = []
 
@@ -2722,7 +2777,7 @@ def test_render_behavioral_pages_returns_early_without_beh_offset():
     maker = NeuronalTuningFigureMaker(
         root_directory="/tmp",
         visualizations_parameter_dict=_make_aggregate_visualizations_parameters(),
-        message_output=lambda *a, **k: None,
+        message_output=lambda *_args, **_kwargs: None,
     )
 
     calls: list[str] = []
@@ -3001,7 +3056,7 @@ def test_draw_vocal_page_closes_its_figure_when_drawing_fails():
     open_before = set(plt.get_fignums())
     with pytest.raises(KeyError):
         maker._draw_vocal_page(emitter="m1", cluster_data={}, usv_summary_df=None,
-                               segmentation={}, save_fig=lambda fig, label: plt.close(fig),
+                               segmentation={}, save_fig=lambda fig, _label: plt.close(fig),
                                page_label="vocal_m1")
     assert set(plt.get_fignums()) == open_before
 
@@ -3033,10 +3088,11 @@ def test_failed_cluster_render_closes_the_figures_it_opened(tmp_path, monkeypatc
         with (tuning_dir / f"{cluster}_tuning_curves_data.pkl").open("wb") as fh:
             pickle.dump({"usv_peth": {}}, fh)
 
-    def _half_drawn_page(self, **_kwargs):
+    def _half_drawn_page(_self, **_kwargs):
         """Open a page figure and fail before it is saved."""
         plt.figure()
-        raise ValueError("panel failed")
+        msg = "panel failed"
+        raise ValueError(msg)
 
     messages: list[str] = []
     maker = NeuronalTuningFigureMaker(
@@ -3044,7 +3100,7 @@ def test_failed_cluster_render_closes_the_figures_it_opened(tmp_path, monkeypatc
         visualizations_parameter_dict=_make_visualizations_parameters(),
         message_output=messages.append,
     )
-    monkeypatch.setattr(NeuronalTuningFigureMaker, "_load_segmentation", lambda self: {})
+    monkeypatch.setattr(NeuronalTuningFigureMaker, "_load_segmentation", lambda _self: {})
     monkeypatch.setattr(NeuronalTuningFigureMaker, "_render_vocal_pages", _half_drawn_page)
     monkeypatch.setattr(tuning_figures, "smart_wait", lambda **_kwargs: None)
     kept = plt.figure()

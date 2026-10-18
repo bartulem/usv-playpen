@@ -3,6 +3,15 @@
 Mock-based tests for visualizations/usv_summary_statistics.py and
 visualizations/usv_interval_summary_statistics.py — both files are pure
 compute / data-loading helpers when wired to synthetic sessions on disk.
+
+Coverage: session metadata (sex from metadata rather than track order, the playback speaker track
+skipped, missing or single-track files refused); USV loading with noise dropped and the vocal-flag
+columns required; the behavioral-feature join and the master USV table across heterogeneous,
+female-female and incomplete sessions; the interval archive readers (intervals, mixture-model
+sweeps, best fits, bootstrap-LRT sweeps including the session-corrected statistic, selected K,
+serial dependence, tied-peak ladders) and their refusals; every summary plot drawn end to end on
+synthetic data, with the error branches of the category / estrous grids and the bootstrap-LRT
+panel; and the squeak-time heatmap's rates, class selector, noise handling and refusals.
 """
 
 from __future__ import annotations
@@ -11,71 +20,73 @@ import json
 from pathlib import Path
 
 import h5py
+import matplotlib as mpl
 import numpy as np
 import pandas as pd
 import polars as pls
 import pytest
+from sklearn.mixture import GaussianMixture
 
 # Force a non-interactive matplotlib backend before any plotting helpers
 # import matplotlib so figure-rendering tests don't try to open a window.
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+mpl.use("Agg")
 import matplotlib.contour
+import matplotlib.pyplot as plt
 
 from usv_playpen import os_utils
-
-from usv_playpen.visualizations.usv_summary_statistics import (
-    extract_session_metadata,
-    load_and_filter_usv_data,
-    extract_category_embedding_data,
-    get_session_behavioral_features,
-    merge_usv_and_behavioral_features,
-    build_master_usv_dataframe,
-    plot_assignment_stacked_bars,
-    plot_assignment_summary_panel,
-    plot_animal_participation_stats,
-    plot_polar_kde_distance_angle,
-    plot_behavior_duration_regressions,
-    plot_distance_by_assignment_kde_anova,
-    plot_duration_histograms_by_sex,
-    plot_estrous_ratio_scatter,
-    plot_estrous_usv_rates,
-    plot_estrous_stage_pie_chart,
-    plot_category_global_fatigue_heatmap,
-    plot_category_estrous_rates_grid,
-    plot_category_estrous_ratio_grid,
-    plot_unassigned_proportion_vs_distance_jointplot,
-    plot_session_squeak_time_heatmap,
-    plot_hourly_regressions,
-    plot_local_fatigue_binned_trends,
-    plot_category_local_fatigue_heatmap,
-    plot_category_prevalence_and_embedding,
-    plot_category_polar_kde_grid,
-    plot_estrous_category_kde_grid,
+from usv_playpen.analyses.compute_inter_usv_interval_distributions import (
+    fit_mixture_model_sweep,
 )
+from usv_playpen.analyses.usv_interval_archive import write_ivi_h5
+from usv_playpen.visualizations import usv_interval_summary_statistics as uiss
 from usv_playpen.visualizations.usv_interval_summary_statistics import (
     find_latest_archive,
-    load_intervals_from_h5,
-    load_mixture_model_fits_from_h5,
     load_best_fit_from_h5,
+    load_intervals_from_h5,
     load_lrt_sweep_from_h5,
-    selected_K_from_h5,
-    plot_log_usv_interval_histograms,
-    plot_ic_curves,
-    plot_qq,
+    load_mixture_model_fits_from_h5,
+    load_peak_lrt_sweep_from_h5,
+    load_serial_dependence_from_h5,
+    load_tied_ic_table_from_h5,
+    load_tied_model_from_h5,
     plot_best_fit_with_annotations,
     plot_bootstrap_lrt_panel,
-    serial_dependence_pairs,
-    load_serial_dependence_from_h5,
+    plot_ic_curves,
+    plot_log_usv_interval_histograms,
+    plot_qq,
     plot_serial_dependence,
-    load_tied_model_from_h5,
-    load_peak_lrt_sweep_from_h5,
-    load_tied_ic_table_from_h5,
+    selected_K_from_h5,
+    serial_dependence_pairs,
 )
-from usv_playpen.visualizations import usv_interval_summary_statistics as uiss
-from usv_playpen.analyses.compute_inter_usv_interval_distributions import fit_mixture_model_sweep
-from usv_playpen.analyses.usv_interval_archive import write_ivi_h5
+from usv_playpen.visualizations.usv_summary_statistics import (
+    build_master_usv_dataframe,
+    extract_category_embedding_data,
+    extract_session_metadata,
+    get_session_behavioral_features,
+    load_and_filter_usv_data,
+    merge_usv_and_behavioral_features,
+    plot_animal_participation_stats,
+    plot_assignment_stacked_bars,
+    plot_assignment_summary_panel,
+    plot_behavior_duration_regressions,
+    plot_category_estrous_rates_grid,
+    plot_category_estrous_ratio_grid,
+    plot_category_global_fatigue_heatmap,
+    plot_category_local_fatigue_heatmap,
+    plot_category_polar_kde_grid,
+    plot_category_prevalence_and_embedding,
+    plot_distance_by_assignment_kde_anova,
+    plot_duration_histograms_by_sex,
+    plot_estrous_category_kde_grid,
+    plot_estrous_ratio_scatter,
+    plot_estrous_stage_pie_chart,
+    plot_estrous_usv_rates,
+    plot_hourly_regressions,
+    plot_local_fatigue_binned_trends,
+    plot_polar_kde_distance_angle,
+    plot_session_squeak_time_heatmap,
+    plot_unassigned_proportion_vs_distance_jointplot,
+)
 
 
 def test_component_palette_colors_derive_from_settings():
@@ -117,7 +128,10 @@ def _make_synthetic_session(
     male_sex: str = "male",
     female_sex: str = "female",
 ):
-    """Build a session_root containing:
+    """
+    Description
+    -----------
+    Build a session_root containing:
 
     - A 3D-tracking H5 file at <root>/video/<session_id>_points3d_translated_rotated_metric.h5
       with `track_names`, `recording_frame_rate`, `experimental_code`.
@@ -133,6 +147,49 @@ def _make_synthetic_session(
 
     The session_root.name is taken as <YYYYMMDD>_<HHMMSS> (e.g. "20260101_120000")
     to satisfy the build_master_usv_dataframe split('_') / int parsing.
+
+    Parameters
+    ----------
+    session_root (Path)
+        Session directory to create; its name is the session id.
+    male_id (str)
+        Track name of the male mouse.
+    female_id (str)
+        Track name of the female mouse.
+    frame_rate (float)
+        Tracking frame rate (fps) stored as ``recording_frame_rate``.
+    experiment_code (str)
+        Value stored as ``experimental_code``.
+    n_male_usvs (int)
+        Number of pure-USV rows emitted by the male.
+    n_female_usvs (int)
+        Number of pure-USV rows emitted by the female.
+    n_unassigned (int)
+        Number of rows with no emitter.
+    include_behavioral (bool)
+        Write the behavioral features CSV.
+    include_embedding (bool)
+        Write the embedding coordinate columns.
+    write_noise_column (bool)
+        Write the ``noise`` column.
+    cat_col (str)
+        Name of the category column.
+    n_noise (int)
+        Number of noise rows appended at the end.
+    n_squeak (int)
+        Number of male pure-squeak rows.
+    n_overlap (int)
+        Number of male squeak-plus-USV rows.
+    write_vocal_flag_columns (bool)
+        Write the ``usv`` / ``squeak`` boolean columns.
+    male_sex (str)
+        Sex string recorded for the male track.
+    female_sex (str)
+        Sex string recorded for the female track.
+
+    Returns
+    -------
+    None
     """
     session_root.mkdir(parents=True, exist_ok=True)
     session_id = session_root.name  # e.g. "20260101_120000"
@@ -269,7 +326,8 @@ def test_extract_session_metadata_happy_path(tmp_path):
                             frame_rate=200.0, experiment_code="my_exp")
     md = extract_session_metadata(str(sess))
     assert md["track_names"] == ["Mx", "Fy"]
-    assert "male_id" not in md and "female_id" not in md
+    assert "male_id" not in md
+    assert "female_id" not in md
     assert md["frame_rate"] == 200.0
     assert md["experiment_code"] == "my_exp"
     assert md["tracking_file"].name.endswith("_points3d_translated_rotated_metric.h5")
@@ -370,7 +428,8 @@ def test_extract_category_embedding_data_concats_sessions(tmp_path):
     assert df.height > 0
     # Both 'male' and 'female' rows should appear
     sexes = set(df["sex"].to_list())
-    assert "male" in sexes and "female" in sexes
+    assert "male" in sexes
+    assert "female" in sexes
 
 
 def test_extract_category_embedding_data_skips_missing_columns(tmp_path):
@@ -387,7 +446,7 @@ def test_extract_category_embedding_data_skips_missing_columns(tmp_path):
     assert df.height == 0
 
 
-def test_extract_category_embedding_data_skips_bad_session(tmp_path):
+def test_extract_category_embedding_data_skips_bad_session():
     """A non-existent session is skipped silently (FileNotFoundError caught)."""
     df = extract_category_embedding_data(
         session_roots=["/no/such/session"],
@@ -469,7 +528,23 @@ def test_build_master_usv_dataframe_returns_two_frames_and_count(tmp_path):
 
 
 def _master_df(session_roots):
-    """build_master_usv_dataframe over ``session_roots`` with the default suffixes."""
+    """
+    Description
+    -----------
+    Run build_master_usv_dataframe over ``session_roots`` with noise exclusion,
+    the ``qlvm_category`` column and the default distance / angle suffixes.
+
+    Parameters
+    ----------
+    session_roots (list[Path])
+        Session directories to pool.
+
+    Returns
+    -------
+    result (tuple)
+        Whatever build_master_usv_dataframe returns (USV table, background
+        table, number of noise rows dropped).
+    """
     return build_master_usv_dataframe(
         session_roots=[str(root) for root in session_roots],
         exclude_noise_usvs=True,
@@ -497,7 +572,7 @@ def test_build_master_usv_dataframe_sex_comes_from_metadata_not_track_order(tmp_
     }).write_csv(beh_csv)
 
     usv_df, bg_df, _n = _master_df([sess])
-    sex_of = dict(zip(usv_df["emitter"].to_list(), usv_df["sex"].to_list()))
+    sex_of = dict(zip(usv_df["emitter"].to_list(), usv_df["sex"].to_list(), strict=False))
     assert sex_of == {"Fa": "female", "Mb": "male", "UNKNOWN": "unassigned"}
     assert set(usv_df["male_id"].to_list()) == {"Mb"}
     assert set(usv_df["female_id"].to_list()) == {"Fa"}
@@ -590,10 +665,11 @@ def test_build_master_usv_dataframe_counts_pure_usvs_only(tmp_path):
     sess = tmp_path / "20260101_120000"
     _make_synthetic_session(sess, n_male_usvs=4, n_female_usvs=3, n_unassigned=1,
                             n_squeak=2, n_overlap=1, n_noise=2)
-    common = dict(session_roots=[str(sess)], exclude_noise_usvs=True, usv_category_col="qlvm_category",
-                  distance_suffix="nose-nose", mf_angle_suffix="allo_yaw-nose", fm_angle_suffix="nose-allo_yaw")
+    common = {"session_roots": [str(sess)], "exclude_noise_usvs": True, "usv_category_col": "qlvm_category",
+              "distance_suffix": "nose-nose", "mf_angle_suffix": "allo_yaw-nose", "fm_angle_suffix": "nose-allo_yaw"}
     usv_only_df, _bg, n_noise = build_master_usv_dataframe(**common)
-    assert usv_only_df.height == 8 and n_noise == 2
+    assert usv_only_df.height == 8
+    assert n_noise == 2
     assert 4 not in usv_only_df["category"].to_list()
     every_vocalization_df, _bg, _n = build_master_usv_dataframe(**common, usv_only=False)
     assert every_vocalization_df.height == 11
@@ -617,8 +693,8 @@ def test_extract_category_embedding_data_keeps_pure_usvs_only(tmp_path):
     (category 4 in the synthetic session) come back with ``usv_only=False``."""
     sess = tmp_path / "20260101_120000"
     _make_synthetic_session(sess, n_squeak=1, n_overlap=1)
-    kwargs = dict(session_roots=[str(sess)], exclude_noise_usvs=True, usv_category_col="qlvm_category",
-                  usv_continuous_cols=("qlvm1", "qlvm2"))
+    kwargs = {"session_roots": [str(sess)], "exclude_noise_usvs": True, "usv_category_col": "qlvm_category",
+              "usv_continuous_cols": ("qlvm1", "qlvm2")}
     assert 4 not in extract_category_embedding_data(**kwargs)["category"].to_list()
     assert extract_category_embedding_data(**kwargs, usv_only=False)["category"].to_list().count(4) == 2
 
@@ -628,8 +704,28 @@ def test_extract_category_embedding_data_keeps_pure_usvs_only(tmp_path):
 
 def _build_archive(tmp_path: Path, *, with_mixture_model: bool = True, with_lrt: bool = True,
                    corrected_lrt: bool = False) -> Path:
-    """Constructs a usv_interval_analysis_<ts>.h5 file with both modes populated.
-    ``corrected_lrt`` adds the session-corrected columns a current sweep writes."""
+    """
+    Description
+    -----------
+    Construct a usv_interval_analysis_<ts>.h5 file with both modes populated.
+    ``corrected_lrt`` adds the session-corrected columns a current sweep writes.
+
+    Parameters
+    ----------
+    tmp_path (Path)
+        Directory the archive is written into.
+    with_mixture_model (bool)
+        Include the mixture-model sweep table.
+    with_lrt (bool)
+        Include the bootstrap-LRT table.
+    corrected_lrt (bool)
+        Add the session-corrected LRT columns.
+
+    Returns
+    -------
+    archive_path (Path)
+        Path of the written archive.
+    """
     intervals_df = pls.DataFrame({
         "session_id": ["s1", "s1", "s1", "s2"],
         "source_list": ["g", "g", "g", "g"],
@@ -765,7 +861,7 @@ def test_load_mixture_model_fits_from_h5_round_trip(tmp_path):
 def test_load_mixture_model_fits_from_h5_missing_raises(tmp_path):
     """Archive without mixture-model sweep (fit_mixture_model=false at compute time) → ValueError."""
     arc = _build_archive(tmp_path, with_mixture_model=False)
-    with pytest.raises(ValueError, match="contains no\\s+mixture model sweep"):
+    with pytest.raises(ValueError, match=r"contains no\s+mixture model sweep"):
         load_mixture_model_fits_from_h5(str(arc), interval_type="s2s")
 
 
@@ -802,8 +898,10 @@ def test_load_lrt_sweep_from_h5_reads_the_corrected_statistic(tmp_path):
     corrected ones the step-up decided on, and the raw ones sit next to the design effect."""
     arc = _build_archive(tmp_path, with_mixture_model=True, with_lrt=True, corrected_lrt=True)
     entry = load_lrt_sweep_from_h5(str(arc), interval_type="s2s")["male"][(1, 2)]
-    assert entry["lr_obs"] == 3.0 and entry["p_value"] == 0.2
-    assert entry["lr_raw"] == 4.5 and entry["p_value_raw"] == 0.02
+    assert entry["lr_obs"] == 3.0
+    assert entry["p_value"] == 0.2
+    assert entry["lr_raw"] == 4.5
+    assert entry["p_value_raw"] == 0.02
     assert entry["design_effect"] == 1.5
 
 
@@ -842,7 +940,7 @@ def test_serial_dependence_pairs_respect_chains_and_refuse_an_archive_without_th
 def test_load_lrt_sweep_from_h5_missing_tables_raises(tmp_path):
     """Archive without bootstrap_lrt → ValueError."""
     arc = _build_archive(tmp_path, with_mixture_model=False, with_lrt=False)
-    with pytest.raises(ValueError, match="missing the\\s+bootstrap-LRT"):
+    with pytest.raises(ValueError, match=r"missing the\s+bootstrap-LRT"):
         load_lrt_sweep_from_h5(str(arc), interval_type="s2s")
 
 
@@ -921,7 +1019,7 @@ def test_plot_assignment_stacked_bars_counts_and_proportions():
 
     df = _assignment_frame()
     for plot_proportions in (False, True):
-        fig, ax, stats = plot_assignment_stacked_bars(
+        fig, _ax, stats = plot_assignment_stacked_bars(
             df, plot_proportions, _HEX_MALE, _HEX_FEMALE, _HEX_UNASSIGNED,
         )
         assert fig is not None
@@ -1033,13 +1131,31 @@ def test_plot_behavior_duration_regressions():
     rng = np.random.default_rng(1)
 
     def _df(n: int) -> pd.DataFrame:
+        """
+        Description
+        -----------
+        Draw one sex's synthetic per-USV table with uniform distance, angle and
+        duration columns from the seeded generator, so both regression panels
+        have data spanning their whole axis range.
+
+        Parameters
+        ----------
+        n (int)
+            Number of USV rows.
+
+        Returns
+        -------
+        df (pd.DataFrame)
+            Columns ``distance`` (cm), ``angle`` (deg) and ``usv_duration`` (s).
+        """
+
         return pd.DataFrame({
             "distance": rng.uniform(0, 25, n),
             "angle": rng.uniform(-180, 180, n),
             "usv_duration": rng.uniform(0.02, 0.3, n),
         })
 
-    fig, axes, stats = plot_behavior_duration_regressions(
+    fig, _axes, stats = plot_behavior_duration_regressions(
         _df(60), _df(50), _HEX_MALE, _HEX_FEMALE, _HEX_LINE,
     )
     assert fig is not None
@@ -1074,7 +1190,7 @@ def test_plot_distance_by_assignment_kde_anova():
         for d in rng.normal(loc, 3.0, 40):
             rows.append({"distance": float(d), "category": cat})
     df_plot = pd.DataFrame(rows)
-    fig, ax, stats = plot_distance_by_assignment_kde_anova(
+    fig, _ax, stats = plot_distance_by_assignment_kde_anova(
         df_plot, min_samples_anova=5,
         male_color=_HEX_MALE, female_color=_HEX_FEMALE, unassigned_color=_HEX_UNASSIGNED,
     )
@@ -1109,7 +1225,8 @@ def test_plot_duration_histograms_by_sex():
         male_color=_HEX_MALE, female_color=_HEX_FEMALE,
     )
     assert len(axes) == 2
-    assert "male_mean" in stats and "female_mean" in stats
+    assert "male_mean" in stats
+    assert "female_mean" in stats
     plt.close(fig)
 
 
@@ -1131,7 +1248,7 @@ def test_plot_estrous_ratio_scatter():
 
     rng = np.random.default_rng(4)
     ratio_dict = {stage: rng.uniform(0.5, 3.0, 6).tolist() for stage in _ESTROUS_ORDER}
-    fig, ax, stats = plot_estrous_ratio_scatter(
+    fig, _ax, stats = plot_estrous_ratio_scatter(
         ratio_dict, _ESTROUS_ORDER, _ESTROUS_LABELS, _ESTROUS_COLORS,
         line_color=_HEX_LINE, text_color=_HEX_LINE,
     )
@@ -1184,8 +1301,8 @@ def test_plot_estrous_stage_pie_chart():
     """
 
     session_counts = {"p": 5, "e": 4, "m": 6, "d": 3}
-    label_map = dict(zip(_ESTROUS_ORDER, _ESTROUS_LABELS))
-    fig, ax, stats = plot_estrous_stage_pie_chart(
+    label_map = dict(zip(_ESTROUS_ORDER, _ESTROUS_LABELS, strict=False))
+    fig, _ax, stats = plot_estrous_stage_pie_chart(
         session_counts, label_map, _ESTROUS_COLORS,
     )
     assert fig is not None
@@ -1216,10 +1333,11 @@ def test_plot_log_usv_interval_histograms():
             rng.normal(0.0, 1.0, 100), rng.normal(0.5, 1.0, 80),
         ]).tolist(),
     })
-    fig, ax, stats = plot_log_usv_interval_histograms(
+    fig, _ax, stats = plot_log_usv_interval_histograms(
         df, bins=30, male_color=_HEX_MALE, female_color=_HEX_FEMALE,
     )
-    assert stats["n_M"] == 100 and stats["n_F"] == 80
+    assert stats["n_M"] == 100
+    assert stats["n_F"] == 80
     plt.close(fig)
 
 
@@ -1255,7 +1373,8 @@ def test_plot_ic_curves():
         selected_n_components={"male": 3, "female": 2},
     )
     assert len(axes) == 2
-    assert "male" in stats and "female" in stats
+    assert "male" in stats
+    assert "female" in stats
     plt.close(fig)
 
 
@@ -1275,14 +1394,13 @@ def test_plot_qq():
     None
     """
 
-    from sklearn.mixture import GaussianMixture
 
     rng = np.random.default_rng(8)
     intervals_sec = np.exp(rng.normal(0.0, 1.0, 300))
     mixture_model = GaussianMixture(n_components=2, random_state=0).fit(
         np.log(intervals_sec).reshape(-1, 1)
     )
-    fig, ax, stats = plot_qq(intervals_sec, mixture_model, dot_color=_HEX_MALE)
+    fig, _ax, stats = plot_qq(intervals_sec, mixture_model, dot_color=_HEX_MALE)
     assert "pearson_r" in stats
     plt.close(fig)
 
@@ -1371,7 +1489,7 @@ def test_plot_category_estrous_rates_grid():
     """
 
     estrous_data = _category_estrous_data(np.random.default_rng(10))
-    fig, axes, stats = plot_category_estrous_rates_grid(
+    fig, _axes, stats = plot_category_estrous_rates_grid(
         estrous_data, _ESTROUS_ORDER, _HEX_MALE, _HEX_FEMALE,
     )
     assert set(stats) == set(estrous_data)
@@ -1395,7 +1513,7 @@ def test_plot_category_estrous_ratio_grid():
     """
 
     estrous_data = _category_estrous_data(np.random.default_rng(11))
-    (figs, axes, stats) = plot_category_estrous_ratio_grid(
+    (figs, _axes, _stats) = plot_category_estrous_ratio_grid(
         estrous_data, _ESTROUS_ORDER, _ESTROUS_COLORS,
     )
     assert len(figs) == 2
@@ -1459,7 +1577,8 @@ def test_plot_hourly_regressions():
         male_color=_HEX_MALE, female_color=_HEX_FEMALE, line_color=_HEX_LINE,
     )
     assert len(axes) == 2
-    assert "male_r" in stats and "female_r" in stats
+    assert "male_r" in stats
+    assert "female_r" in stats
     plt.close(fig)
 
 
@@ -1517,7 +1636,6 @@ def test_plot_best_fit_with_annotations():
     None
     """
 
-    from sklearn.mixture import GaussianMixture
 
     rng = np.random.default_rng(15)
     intervals_sec = np.exp(np.concatenate([
@@ -1527,7 +1645,7 @@ def test_plot_best_fit_with_annotations():
         np.log(intervals_sec).reshape(-1, 1)
     )
     mixture_model_order = np.argsort(mixture_model.means_.ravel())
-    fig, ax, summary = plot_best_fit_with_annotations(
+    fig, _ax, summary = plot_best_fit_with_annotations(
         intervals_sec, mixture_model, mixture_model_order, color=_HEX_MALE,
     )
     assert "qq_pearson_r" in summary
@@ -1562,7 +1680,7 @@ def test_fit_mixture_model_sweep_feeds_plot_ic_curves():
     assert df_results.height > 0
     assert {"sex", "n_comp", "bic"}.issubset(df_results.columns)
 
-    fig, axes, stats = plot_ic_curves(df_results, _HEX_MALE, _HEX_FEMALE)
+    fig, axes, _stats = plot_ic_curves(df_results, _HEX_MALE, _HEX_FEMALE)
     assert len(axes) == 2
     plt.close(fig)
 
@@ -1644,7 +1762,8 @@ def test_plot_category_local_fatigue_heatmap_both_sexes():
         binned_df, bin_width_seconds=120, n_bins=n_bins, smoothing_sigma=0.75,
     )
     assert len(axes) == 2
-    assert "male_peaks" in stats and "female_peaks" in stats
+    assert "male_peaks" in stats
+    assert "female_peaks" in stats
     assert stats["male_peaks"], "expected per-category male peak rates"
     plt.close(fig)
 
@@ -1688,7 +1807,8 @@ def test_plot_category_local_fatigue_heatmap_empty_sex_and_no_smoothing():
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 @pytest.mark.filterwarnings("ignore::UserWarning")
 @pytest.mark.parametrize("plot_type", ["density", "scatter"])
-def test_plot_category_prevalence_and_embedding(plot_type, qlvm_category_bundle):
+@pytest.mark.usefixtures("qlvm_category_bundle")
+def test_plot_category_prevalence_and_embedding(plot_type):
     """
     Description
     -----------
@@ -1809,7 +1929,7 @@ def _polar_metrics(rng, *, sparse_last: bool = True) -> dict:
         }
 
     metrics = {"all_frames": _block(300)}
-    for idx, cat in enumerate(("1", "2", "3", "4")):
+    for _idx, cat in enumerate(("1", "2", "3", "4")):
         k = 2 if (sparse_last and cat == "4") else 60
         metrics[cat] = {"male": _block(k), "female": _block(k)}
     return metrics
@@ -1836,11 +1956,12 @@ def test_plot_category_polar_kde_grid_dense_and_sparse():
     """
 
     metrics = _polar_metrics(np.random.default_rng(103))
-    fig, axes, stats = plot_category_polar_kde_grid(
+    fig, _axes, stats = plot_category_polar_kde_grid(
         metrics, sex_key="male", max_distance=20.0, threshold=10,
         colormap="inferno",
     )
-    assert "global_vmax" in stats and stats["sex_plotted"] == "male"
+    assert "global_vmax" in stats
+    assert stats["sex_plotted"] == "male"
     plt.close(fig)
 
 
@@ -2031,7 +2152,7 @@ def test_plot_estrous_category_kde_grid_error_branches():
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 @pytest.mark.filterwarnings("ignore::UserWarning")
 @pytest.mark.parametrize(
-    "cats, stages, want_shape",
+    ("cats", "stages", "want_shape"),
     [
         ((1,), ("p", "e"), (1, 2)),   # single category -> row reshape branch
         ((1, 2), ("p",),  (2, 1)),    # single stage    -> column reshape branch
@@ -2196,9 +2317,8 @@ def test_plot_bootstrap_lrt_panel_broken_normal_and_empty_fill():
 
     fig, axes = plot_bootstrap_lrt_panel(_lrt_sweep())
     assert axes.shape == (2, 2)
-    assert isinstance(axes[0, 0], tuple) and len(axes[0, 0]) == 2, (
-        "far-out LR_obs cell should be rendered as a broken-axis pair"
-    )
+    assert isinstance(axes[0, 0], tuple), "far-out LR_obs cell should be rendered as a broken-axis pair"
+    assert len(axes[0, 0]) == 2, "far-out LR_obs cell should be rendered as a broken-axis pair"
     assert not isinstance(axes[0, 1], tuple), "in-bulk cell should be a single Axes"
     plt.close(fig)
 
@@ -2243,7 +2363,6 @@ def _fit_two_comp_gmm(seed: int):
         component order.
     """
 
-    from sklearn.mixture import GaussianMixture
 
     rng = np.random.default_rng(seed)
     intervals_sec = np.exp(np.concatenate([
@@ -2282,7 +2401,7 @@ def test_plot_best_fit_with_annotations_corners_auto_inset_and_components(corner
     """
 
     intervals_sec, mixture_model, mixture_model_order = _fit_two_comp_gmm(seed=21)
-    fig, ax, summary = plot_best_fit_with_annotations(
+    fig, _ax, summary = plot_best_fit_with_annotations(
         intervals_sec, mixture_model, mixture_model_order, color=_HEX_MALE,
         legend_corner=corner,
         auto_inset_below_legend=True,
@@ -2316,8 +2435,20 @@ def test_plot_best_fit_with_annotations_invalid_corner_raises():
 
 
 def _serial_dependence_tables():
-    """Archived-shape serial-dependence tables for one male USV pool: a curve rising to a flat
-    level near 90 ms, bands around it, a bend at 110 ms, and five replicate bends."""
+    """
+    Description
+    -----------
+    Archived-shape serial-dependence tables for one male USV pool: a curve rising to a flat
+    level near 90 ms, bands around it, a bend at 110 ms, and five replicate bends.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    tables (tuple[pls.DataFrame, pls.DataFrame, pls.DataFrame])
+        The curve table, the one-row fit table and the bootstrap bend table.
+    """
     grid = np.geomspace(30.0, 20000.0, 40)
     line = np.minimum(grid, 110.0) * 0.8
     identity = {"sex": ["male"] * grid.size, "vocal_class": ["usv"] * grid.size,
@@ -2345,7 +2476,8 @@ def test_load_serial_dependence_from_h5_round_trips_one_pool(tmp_path):
                                    "serial_dependence_fit": fit, "serial_dependence_bends": bends}})
     loaded_curves, loaded_fit = load_serial_dependence_from_h5(out, "e2s", "male", "usv")
     np.testing.assert_allclose(loaded_curves["current_ms"].to_numpy(), curves["current_ms"].to_numpy())
-    assert loaded_fit["bend_ms"] == 110.0 and loaded_fit["level"] == 99.0
+    assert loaded_fit["bend_ms"] == 110.0
+    assert loaded_fit["level"] == 99.0
     with pytest.raises(KeyError, match="no serial-dependence fit"):
         load_serial_dependence_from_h5(out, "e2s", "female", "usv")
 
@@ -2359,12 +2491,16 @@ def test_plot_serial_dependence_draws_spline_and_bent_panels():
     following = np.exp(rng.uniform(np.log(0.03), np.log(5.0), 500))
     f, axes, stats = plot_serial_dependence((current, following), "#4C9BB5", curves,
                                             fit.row(0, named=True), boundary_ms=115.5)
-    assert len(axes) == 2 and stats["n_pairs"] == 500
-    assert stats["bend_ms"] == 110.0 and stats["bend_high_ms"] == 125.0
+    assert len(axes) == 2
+    assert stats["n_pairs"] == 500
+    assert stats["bend_ms"] == 110.0
+    assert stats["bend_high_ms"] == 125.0
     assert "bend 110 ms (100-125, 99%)" in [t.get_text() for t in axes[1].get_legend().get_texts()]
-    assert axes[0].get_title() == "A: median spline" and axes[1].get_title() == "B: bent-line median fit"
+    assert axes[0].get_title() == "A: median spline"
+    assert axes[1].get_title() == "B: bent-line median fit"
     # the one colorbar is an inset of the right panel, none on the left
-    assert len(axes[1].child_axes) == 1 and len(axes[0].child_axes) == 0
+    assert len(axes[1].child_axes) == 1
+    assert len(axes[0].child_axes) == 0
     plt.close(f)
 
 
@@ -2392,15 +2528,29 @@ def test_plot_serial_dependence_labels_the_axes_with_the_pool_vocal_type():
     plt.close(f)
 
 def _tied_archive(tmp_path):
-    """An archive holding a male USV tied ladder at 1 and 2 peaks (plus 2 background components
-    each), the session-corrected peak test for both rungs with their null draws, and the
-    selected peak count (2) in the mode attributes."""
+    """
+    Description
+    -----------
+    Write an archive holding a male USV tied ladder at 1 and 2 peaks (plus 2 background
+    components each), the session-corrected peak test for both rungs with their null draws,
+    and the selected peak count (2) in the mode attributes.
+
+    Parameters
+    ----------
+    tmp_path (Path)
+        Directory the archive is written into.
+
+    Returns
+    -------
+    archive_path (Path)
+        Path of the written archive.
+    """
     rows = []
     for n_peak, loglik, bic in ((1, -100.0, 230.0), (2, -90.0, 215.0)):
         roles = ["peak"] * n_peak + ["background"] * 2
-        means = [-2.8, -1.7][:n_peak] + [-1.2, 2.4]
+        means = [*[-2.8, -1.7][:n_peak], -1.2, 2.4]
         scales = [0.24] * n_peak + [1.2, 1.1]
-        for component, (role, mean, scale) in enumerate(zip(roles, means, scales)):
+        for component, (role, mean, scale) in enumerate(zip(roles, means, scales, strict=False)):
             rows.append({"sex": "male", "vocal_class": "usv", "adjacency": "filtered", "n_peak": n_peak,
                          "n_background": 2, "component": component, "role": role, "logmean": mean,
                          "median_sec": float(np.exp(mean)), "logscale": scale, "nu": 20.0,
@@ -2431,13 +2581,15 @@ def test_load_tied_model_from_h5_rebuilds_the_selected_and_requested_fits(tmp_pa
     honoured; a pool with no fit raises."""
     arc = _tied_archive(tmp_path)
     model, order, n_peak, rows = load_tied_model_from_h5(arc, "e2s", "male", "usv")
-    assert n_peak == 2 and rows.height == 4
+    assert n_peak == 2
+    assert rows.height == 4
     np.testing.assert_allclose(np.asarray(model.means_).ravel(), [-2.8, -1.7, -1.2, 2.4])
     np.testing.assert_allclose(np.asarray(model.covariances_).ravel(), np.array([0.24, 0.24, 1.2, 1.1]) ** 2)
     np.testing.assert_array_equal(order, [0, 1, 2, 3])
     assert rows["role"].to_list() == ["peak", "peak", "background", "background"]
     _, _, n_one, rows_one = load_tied_model_from_h5(arc, "e2s", "male", "usv", n_peak=1)
-    assert n_one == 1 and rows_one.height == 3
+    assert n_one == 1
+    assert rows_one.height == 3
     with pytest.raises(KeyError):
         load_tied_model_from_h5(arc, "e2s", "male", "usv", n_peak=4)
 
@@ -2449,9 +2601,11 @@ def test_load_peak_lrt_sweep_from_h5_reads_the_corrected_statistic(tmp_path):
     assert alpha == 0.0033
     assert list(sweep["male"]) == [(1, 2), (2, 3)]
     first = sweep["male"][(1, 2)]
-    assert first["lr_obs"] == 43.5 and first["p_value"] == 0.0
+    assert first["lr_obs"] == 43.5
+    assert first["p_value"] == 0.0
     np.testing.assert_allclose(first["lr_null"], [1.0, 2.0, 3.0])
-    assert sweep["male"][(2, 3)]["p_value"] == 0.028 and sweep["male"][(2, 3)]["null_max"] == 6.0
+    assert sweep["male"][(2, 3)]["p_value"] == 0.028
+    assert sweep["male"][(2, 3)]["null_max"] == 6.0
 
 
 def test_load_tied_ic_table_from_h5_gives_one_row_per_peak_count(tmp_path):
@@ -2459,7 +2613,8 @@ def test_load_tied_ic_table_from_h5_gives_one_row_per_peak_count(tmp_path):
     table = load_tied_ic_table_from_h5(_tied_archive(tmp_path), "e2s", "male", "usv")
     assert table["n_comp"].to_list() == [1, 2]
     assert table["bic"].to_list() == [230.0, 215.0]
-    assert set(table["sex"].to_list()) == {"male"} and set(table["rep"].to_list()) == {0}
+    assert set(table["sex"].to_list()) == {"male"}
+    assert set(table["rep"].to_list()) == {0}
 
 
 _SQUEAK_STYLES = {
@@ -2469,10 +2624,29 @@ _SQUEAK_STYLES = {
 
 
 def _write_squeak_session(root: Path, starts: list[float], classes: list[str | None], noise: list[bool]) -> None:
-    """Writes ``<root>/audio/<name>_usv_summary.csv`` with the columns the heatmap reads: each
+    """
+    Description
+    -----------
+    Write ``<root>/audio/<name>_usv_summary.csv`` with the columns the heatmap reads: each
     class ("usv", "squeak", "overlap" or None) written as the ``usv`` / ``squeak`` booleans
     detect-usv-squeaks writes ((true, false), (false, true), (true, true), null on noise rows),
-    each segment 10 ms long, and the squeak extent equal to the segment on every squeak row."""
+    each segment 10 ms long, and the squeak extent equal to the segment on every squeak row.
+
+    Parameters
+    ----------
+    root (Path)
+        Session directory; its name prefixes the CSV.
+    starts (list[float])
+        Segment start times (s).
+    classes (list[str | None])
+        Per-segment class: "usv", "squeak", "overlap" or None for noise.
+    noise (list[bool])
+        Per-segment noise flag.
+
+    Returns
+    -------
+    None
+    """
 
     (root / "audio").mkdir(parents=True)
     squeak_rows = [c in ("squeak", "overlap") for c in classes]
@@ -2491,6 +2665,8 @@ def _write_squeak_session(root: Path, starts: list[float], classes: list[str | N
 
 def _squeak_cohort(tmp_path: Path) -> dict[str, list[str]]:
     """
+    Description
+    -----------
     Three sessions over two conditions, written to disk with one session-list file per
     condition:
 
@@ -2500,6 +2676,16 @@ def _squeak_cohort(tmp_path: Path) -> dict[str, list[str]]:
       ``squeak+overlap``;
     * ``s_lo`` (courtship): 5 segments at 10-14 s, 1 pure squeak -- rate 1/5;
     * ``s_none`` (female_female): 5 USVs, no squeak -- drawn as a 0 % row.
+
+    Parameters
+    ----------
+    tmp_path (Path)
+        Directory the sessions and list files are written into.
+
+    Returns
+    -------
+    lists (dict[str, list[str]])
+        Condition name to its session-list file paths.
     """
 
     sessions = {
@@ -2518,7 +2704,27 @@ def _squeak_cohort(tmp_path: Path) -> dict[str, list[str]]:
 
 
 def _squeak_heatmap(lists, exclude_noise_usvs, min_session_segments, squeak_class="squeak+overlap"):
-    """Runs the heatmap on a 180 s axis with a 1 s grid and a 2 s kernel."""
+    """
+    Description
+    -----------
+    Run the squeak-time heatmap on a 180 s axis with a 1 s grid and a 2 s kernel.
+
+    Parameters
+    ----------
+    lists (dict[str, list[str]])
+        Condition name to its session-list file paths.
+    exclude_noise_usvs (bool)
+        Drop noise segments before counting.
+    min_session_segments (int)
+        Sessions with fewer segments are not drawn.
+    squeak_class (str)
+        Which segments count as squeaks.
+
+    Returns
+    -------
+    result (tuple)
+        Whatever plot_session_squeak_time_heatmap returns.
+    """
 
     return plot_session_squeak_time_heatmap(
         condition_session_lists=lists, condition_styles=_SQUEAK_STYLES,
@@ -2546,9 +2752,12 @@ def test_plot_session_squeak_time_heatmap_rates_order_and_silence(tmp_path):
         assert sessions["n_segments"].to_list() == [5, 5, 5]
         assert sessions["n_noise_dropped"].to_list() == [1, 0, 0]
         assert sessions["drawn"].to_list() == [True, True, True]
-        assert stats["n_drawn"] == 3 and stats["n_no_squeak"] == 1 and stats["n_too_few"] == 0
+        assert stats["n_drawn"] == 3
+        assert stats["n_no_squeak"] == 1
+        assert stats["n_too_few"] == 0
         matrix, grid = stats["rate_matrix"], stats["grid_s"]
-        assert matrix.shape == (3, 180) and grid[0] == pytest.approx(0.5)
+        assert matrix.shape == (3, 180)
+        assert grid[0] == pytest.approx(0.5)
         # Row 2 is s_none (female_female block, after both courtship rows): 0 % where it vocalizes.
         assert matrix[2, int(np.argmin(np.abs(grid - 12.5)))] == pytest.approx(0.0, abs=1e-9)
         at = int(np.argmin(np.abs(grid - 11.5)))
@@ -2559,7 +2768,8 @@ def test_plot_session_squeak_time_heatmap_rates_order_and_silence(tmp_path):
         assert matrix[0, int(np.argmin(np.abs(grid - 90.5)))] == pytest.approx(0.0, abs=1e-6)
         assert np.isnan(matrix[0, int(np.argmin(np.abs(grid - 50.5)))])
         assert np.isnan(matrix[1, int(np.argmin(np.abs(grid - 150.5)))])
-        assert np.nanmax(matrix) <= 1.0 and np.nanmin(matrix) >= 0.0
+        assert np.nanmax(matrix) <= 1.0
+        assert np.nanmin(matrix) >= 0.0
         assert len(axes) == 4
     finally:
         plt.close(fig)
@@ -2576,7 +2786,8 @@ def test_plot_session_squeak_time_heatmap_keeps_noise_when_asked(tmp_path):
         sessions = stats["sessions"].sort("session_id")
         assert sessions["n_segments"].to_list() == [6, 5, 5]
         assert sessions["n_squeaks"].to_list() == [2, 1, 0]
-        assert stats["n_drawn"] == 1 and stats["n_too_few"] == 2
+        assert stats["n_drawn"] == 1
+        assert stats["n_too_few"] == 2
     finally:
         plt.close(fig)
 

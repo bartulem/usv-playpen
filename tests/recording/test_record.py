@@ -1,26 +1,46 @@
 """
 @author: bartulem
-Test recording module.
+Test recording module: usv_playpen.recording.behavioral_experiments
+(ExperimentController and its CLI wrappers) and the e-mail Messenger it uses,
+all without real hardware -- subprocess, paramiko, motifapi, SMTP and
+file-system polling are mocked or redirected into tmp_path.
+
+Coverage: count_last_recording_dropouts; get_cpu_affinity_mask;
+get_connection_params / get_cup_mount_params (read and missing-file raise);
+get_custom_dir_names; check_remote_mount (success, auth failure, not a mount,
+remote stderr, SSHException); Messenger (no receivers, credentials parsing,
+successful and failing SMTP sends); check_ethernet_connection;
+purge_cup_connections_on_windows; remount_cup_drives_on_windows;
+verify_avisoft_is_recording; check_camera_vitals; conduct_tracking_calibration;
+modify_audio_file; conduct_behavioral_recording (orchestration and the
+credential raise); and the conduct-calibration / conduct-recording CLIs.
 """
 
+from __future__ import annotations
+
 import builtins
+import configparser
+import datetime as _dt
 import os
 import pathlib
 import shutil
-
-import pytest
-import configparser
-import paramiko
-from click.testing import CliRunner
+from email.message import EmailMessage
 from unittest.mock import MagicMock, mock_open
+
+import motifapi as _motifapi
+import paramiko
+import pytest
+import toml as _toml
+from click.testing import CliRunner
+
 import usv_playpen.recording.behavioral_experiments as be_mod
+import usv_playpen.send_email as send_email_mod
 from usv_playpen.recording.behavioral_experiments import (
     ExperimentController,
-    count_last_recording_dropouts,
     conduct_calibration_cli,
     conduct_recording_cli,
+    count_last_recording_dropouts,
 )
-from email.message import EmailMessage
 from usv_playpen.send_email import Messenger
 
 
@@ -84,7 +104,7 @@ def test_get_cpu_affinity_mask(controller):
     assert controller.get_cpu_affinity_mask() == '0x13'
 
 
-def test_get_connection_params(mocker, tmp_path, controller):
+def test_get_connection_params(tmp_path, controller):
     """Tests reading of connection parameters from a simulated config file."""
 
     # tmp_path is a pytest fixture that provides a temporary directory
@@ -102,7 +122,7 @@ def test_get_connection_params(mocker, tmp_path, controller):
         'ssh_password': 'pw',
         'api': 'fake_api_key'
     }
-    with open(config_file, 'w') as f:
+    with config_file.open('w') as f:
         config.write(f)
 
     params = controller.get_connection_params()
@@ -163,6 +183,22 @@ def test_check_remote_mount_auth_failure(mocker, controller):
 
 @pytest.fixture
 def credentials_file(tmp_path):
+    """
+    Description
+    -----------
+    Writes a complete ``[email]`` credentials INI file, so Messenger tests can
+    exercise parsing and sending without the lab's real credentials.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest temporary directory the INI file is written into.
+
+    Returns
+    -------
+    credentials_path (str)
+        Path to the written email_config.ini (host smtp.example.com, port 465).
+    """
     cfg = tmp_path / 'email_config.ini'
     cfg.write_text(
         "[email]\n"
@@ -175,6 +211,7 @@ def credentials_file(tmp_path):
 
 
 def test_send_message_no_receivers_returns_none_and_notifies():
+    """With no receivers the send returns None and tells the user nobody is notified, so a silent skip is visible."""
     messages: list[str] = []
     m = Messenger(receivers=[], message_output=messages.append)
     out = m.send_message(subject='s', message='m')
@@ -183,6 +220,7 @@ def test_send_message_no_receivers_returns_none_and_notifies():
 
 
 def test_send_message_no_receivers_silent_when_notification_disabled():
+    """no_receivers_notification=False must suppress that notice entirely while still returning None."""
     messages: list[str] = []
     m = Messenger(
         receivers=[],
@@ -195,6 +233,7 @@ def test_send_message_no_receivers_silent_when_notification_disabled():
 
 
 def test_get_email_params_reads_ini(credentials_file):
+    """All four [email] fields must be read back verbatim (port as the INI string)."""
     m = Messenger(credentials_file=credentials_file)
     host, port, addr, pwd = m.get_email_params()
     assert host == 'smtp.example.com'
@@ -204,32 +243,40 @@ def test_get_email_params_reads_ini(credentials_file):
 
 
 def test_get_email_params_raises_when_credentials_missing(tmp_path):
+    """A missing credentials file must raise FileNotFoundError rather than exit the process."""
     m = Messenger(credentials_file=str(tmp_path / 'absent.ini'))
     with pytest.raises(FileNotFoundError):
         m.get_email_params()
 
 
 def test_send_message_success(monkeypatch, credentials_file):
+    """A successful send returns True and hands SMTP the right host, int port, login and a correctly addressed message."""
     sent: dict = {}
 
     class FakeSMTP:
+        """SMTP_SSL stand-in that records every interaction into ``sent``."""
+
         def __init__(self, host, port):
+            """Record the host and port the Messenger connects to."""
             sent['host'] = host
             sent['port'] = port
 
         def __enter__(self):
+            """Return the fake itself, mirroring ``with smtplib.SMTP_SSL(...) as server``."""
             return self
 
         def __exit__(self, *_exc):
+            """Do not swallow exceptions raised inside the with-block."""
             return False
 
         def login(self, addr, pwd):
+            """Record the credentials used to authenticate."""
             sent['login'] = (addr, pwd)
 
         def send_message(self, msg):
+            """Record the outgoing EmailMessage."""
             sent['msg'] = msg
 
-    import usv_playpen.send_email as send_email_mod
     monkeypatch.setattr(send_email_mod.smtplib, 'SMTP_SSL', FakeSMTP)
 
     m = Messenger(
@@ -250,17 +297,22 @@ def test_send_message_success(monkeypatch, credentials_file):
 
 
 def test_send_message_logs_smtp_error_and_returns_false(monkeypatch, credentials_file):
+    """An SMTP failure returns False and logs the error type with the exact host:port, so a bad server is diagnosable."""
     class FailingSMTP:
+        """SMTP_SSL stand-in whose connection fails on entering the with-block."""
+
         def __init__(self, host, port):
-            pass
+            """Accept the host and port without connecting."""
 
         def __enter__(self):
-            raise OSError("connection reset")
+            """Fail the connection the way a reset socket does."""
+            error_message = "connection reset"
+            raise OSError(error_message)
 
         def __exit__(self, *_exc):
+            """Do not swallow exceptions raised inside the with-block."""
             return False
 
-    import usv_playpen.send_email as send_email_mod
     monkeypatch.setattr(send_email_mod.smtplib, 'SMTP_SSL', FailingSMTP)
 
     messages: list[str] = []
@@ -351,7 +403,6 @@ def test_get_cpu_affinity_mask_single_high_bit(controller):
 def test_get_custom_dir_names_format(controller):
     """sub_dir_name must be YYYYMMDD_HHMMSS; total_dir_names must list one entry
     per selected lab, derived from the lab_shares table + experimenter."""
-    import datetime as _dt
     now = _dt.datetime(2026, 5, 9, 13, 7, 2).timestamp()
     controller.exp_settings_dict['selected_labs'] = ['falkner', 'murthy']
     start_str, lin_dirs, win_dirs, sub = controller.get_custom_dir_names(now=now)
@@ -369,7 +420,7 @@ def test_get_cup_mount_params_reads_ini(tmp_path, controller):
     controller.exp_settings_dict['credentials_directory'] = str(tmp_path)
     cfg = configparser.ConfigParser()
     cfg['cup'] = {'username': 'someuser', 'password': 'somepw'}
-    with open(tmp_path / 'cup_config.ini', 'w') as f:
+    with (tmp_path / 'cup_config.ini').open('w') as f:
         cfg.write(f)
     assert controller.get_cup_mount_params() == ('someuser', 'somepw')
 
@@ -429,6 +480,7 @@ def test_check_ethernet_connection_timeout_exits(mocker, controller):
     """Adapter never comes up within the polling budget → SystemExit(1)."""
     # Always-Down responses for status checks; netsh enable is a no-op.
     def _fake(cmd, **_kw):
+        """Answer netsh enable with success and every status query with 'Disconnected'."""
         if 'netsh' in cmd:
             return MagicMock(stdout='', returncode=0)
         return MagicMock(stdout='Disconnected', returncode=0)
@@ -468,17 +520,32 @@ def test_purge_cup_connections_invokes_expected_commands(mocker, controller):
 
 
 def _stub_get_cup_params(monkeypatch):
+    """
+    Description
+    -----------
+    Replaces ExperimentController.get_cup_mount_params with a stub returning
+    fixed credentials, so the remount tests never read a credentials file.
+
+    Parameters
+    ----------
+    monkeypatch (pytest.MonkeyPatch)
+        Fixture used to patch the class method for the duration of the test.
+
+    Returns
+    -------
+    None
+    """
     monkeypatch.setattr(
         ExperimentController, 'get_cup_mount_params',
-        lambda self: ('cup_user', 'cup_pw'),
+        lambda _self: ('cup_user', 'cup_pw'),
     )
 
 
 def test_remount_cup_drives_happy_path(mocker, monkeypatch, controller):
     """Mount succeeds on first try; verification reports the drive accessible."""
     _stub_get_cup_params(monkeypatch)
-    monkeypatch.setattr(ExperimentController, 'check_ethernet_connection', lambda self: None)
-    monkeypatch.setattr(ExperimentController, 'purge_cup_connections_on_windows', lambda self: None)
+    monkeypatch.setattr(ExperimentController, 'check_ethernet_connection', lambda _self: None)
+    monkeypatch.setattr(ExperimentController, 'purge_cup_connections_on_windows', lambda _self: None)
     mocker.patch('usv_playpen.recording.behavioral_experiments.smart_wait')
     fake_run = mocker.patch('usv_playpen.recording.behavioral_experiments.subprocess.run')
     fake_run.return_value = MagicMock(returncode=0, stderr='', stdout='')
@@ -503,8 +570,8 @@ def test_remount_cup_drives_happy_path(mocker, monkeypatch, controller):
 def test_remount_cup_drives_critical_when_all_fail(mocker, monkeypatch, controller):
     """All retries fail → CRITICAL ERROR message is emitted."""
     _stub_get_cup_params(monkeypatch)
-    monkeypatch.setattr(ExperimentController, 'check_ethernet_connection', lambda self: None)
-    monkeypatch.setattr(ExperimentController, 'purge_cup_connections_on_windows', lambda self: None)
+    monkeypatch.setattr(ExperimentController, 'check_ethernet_connection', lambda _self: None)
+    monkeypatch.setattr(ExperimentController, 'purge_cup_connections_on_windows', lambda _self: None)
     mocker.patch('usv_playpen.recording.behavioral_experiments.smart_wait')
     fake_run = mocker.patch('usv_playpen.recording.behavioral_experiments.subprocess.run')
     fake_run.return_value = MagicMock(returncode=2, stderr='generic failure', stdout='')
@@ -560,6 +627,7 @@ def avisoft_dir_factory(tmp_path):
     base = tmp_path / 'avisoft'
     base.mkdir()
     def _make(mic_indices):
+        """Create one ch{N} folder per 0-based mic index and return the avisoft base directory."""
         for mic_idx in mic_indices:
             (base / f"ch{mic_idx + 1}").mkdir()
         return base
@@ -583,7 +651,8 @@ def test_verify_avisoft_detects_new_file(mocker, controller, avisoft_dir_factory
     controller.exp_settings_dict['audio']['used_mics'] = [0]
 
     sleeps = []
-    def fake_wait(app_context_bool=False, seconds=0):
+    def fake_wait(seconds=0, **_kwargs):
+        """Record each wait and drop a fresh wav into ch1 on the second one (the first poll)."""
         # On the first poll, drop a fresh wav into ch1/.
         sleeps.append(seconds)
         if len(sleeps) == 2:
@@ -608,7 +677,8 @@ def test_verify_avisoft_detects_growth(mocker, controller, avisoft_dir_factory):
     # at 1024 bytes; on the next (poll) wait we bump the file to 8192 so the
     # poll observes growth.
     counter = [0]
-    def fake_wait(app_context_bool=False, seconds=0):
+    def fake_wait(**_kwargs):
+        """Count waits and grow the wav to 8192 bytes from the second wait (the first poll) on."""
         counter[0] += 1
         if counter[0] >= 2:
             wav.write_bytes(b'a' * 8192)
@@ -633,24 +703,41 @@ def test_verify_avisoft_returns_false_when_no_growth(mocker, controller, avisoft
 
 
 def _stub_motif_creds(monkeypatch):
+    """
+    Description
+    -----------
+    Stubs the Motif connection parameters and makes the remote mount check
+    pass, so check_camera_vitals reaches the Motif API without SSH or a
+    credentials file.
+
+    Parameters
+    ----------
+    monkeypatch (pytest.MonkeyPatch)
+        Fixture used to patch the two class methods for the duration of the test.
+
+    Returns
+    -------
+    None
+    """
     monkeypatch.setattr(
         ExperimentController, 'get_connection_params',
-        lambda self: ('1.2.3.4', '1.2.3.5', '22', 'sshuser', 'sshpw', 'apikey'),
+        lambda _self: ('1.2.3.4', '1.2.3.5', '22', 'sshuser', 'sshpw', 'apikey'),
     )
     monkeypatch.setattr(
         ExperimentController, 'check_remote_mount',
-        lambda self, **kw: True,
+        lambda _self, **_kw: True,
     )
 
 
 def test_check_camera_vitals_motif_unreachable(mocker, monkeypatch, controller):
     """When MotifApi raises MotifError, the method exits with code 1."""
-    import motifapi as _motifapi
     _stub_motif_creds(monkeypatch)
     controller.exp_settings_dict['video']['general']['expected_cameras'] = ['SN12345']
 
     def _explode(*_a, **_kw):
-        raise _motifapi.api.MotifError('not running')
+        """Fail MotifApi construction the way an unreachable Motif server does."""
+        error_message = 'not running'
+        raise _motifapi.api.MotifError(error_message)
 
     mocker.patch('usv_playpen.recording.behavioral_experiments.motifapi.MotifApi', side_effect=_explode)
     with pytest.raises(RuntimeError, match=r"Motif is not running or reachable"):
@@ -667,10 +754,13 @@ def test_check_camera_vitals_happy_path_single_camera(mocker, monkeypatch, contr
     }
 
     fake_api = MagicMock()
-    fake_api.call.side_effect = lambda endpoint, **_kw: {
+    motif_responses = {
         'cameras': {'cameras': [{'serial': 'SN12345'}]},
         'version': {'software': '4.2.0'},
-    }.get(endpoint, MagicMock())
+    }
+    fake_api.call.side_effect = lambda endpoint, **_kw: (
+        motif_responses[endpoint] if endpoint in motif_responses else MagicMock()
+    )
 
     mocker.patch('usv_playpen.recording.behavioral_experiments.motifapi.MotifApi', return_value=fake_api)
     mocker.patch('usv_playpen.recording.behavioral_experiments.smart_wait')
@@ -685,17 +775,18 @@ def test_check_camera_vitals_happy_path_single_camera(mocker, monkeypatch, contr
     # And the single-camera AcquisitionFrameRate path was taken
     fr_calls = [c for c in fake_api.call.call_args_list
                 if c.args and c.args[0] == 'camera/SN12345/configure'
-                and c.kwargs.get('AcquisitionFrameRate') == 150]
+                and 'AcquisitionFrameRate' in c.kwargs
+                and c.kwargs['AcquisitionFrameRate'] == 150]
     assert len(fr_calls) == 1
 
 
-def test_check_camera_vitals_remote_mount_fails(mocker, monkeypatch, controller):
+def test_check_camera_vitals_remote_mount_fails(monkeypatch, controller):
     """A failing remote-mount check exits before any Motif call is made."""
     monkeypatch.setattr(
         ExperimentController, 'get_connection_params',
-        lambda self: ('1.2.3.4', '1.2.3.5', '22', 'u', 'p', 'k'),
+        lambda _self: ('1.2.3.4', '1.2.3.5', '22', 'u', 'p', 'k'),
     )
-    monkeypatch.setattr(ExperimentController, 'check_remote_mount', lambda self, **kw: False)
+    monkeypatch.setattr(ExperimentController, 'check_remote_mount', lambda _self, **_kw: False)
     with pytest.raises(RuntimeError, match=r"is not valid"):
         controller.check_camera_vitals(camera_fr=150)
 
@@ -706,7 +797,7 @@ def test_check_camera_vitals_remote_mount_fails(mocker, monkeypatch, controller)
 def test_conduct_tracking_calibration_kicks_off_recording(mocker, monkeypatch, controller):
     """Calibration: vitals check + 'recording/start' call with calibration_duration."""
     monkeypatch.setattr(ExperimentController, 'check_camera_vitals',
-                        lambda self, camera_fr: setattr(self, 'api', MagicMock()))
+                        lambda self, **_kwargs: setattr(self, 'api', MagicMock()))
     mocker.patch('usv_playpen.recording.behavioral_experiments.smart_wait')
 
     controller.exp_settings_dict['video']['general']['calibration_frame_rate'] = 50
@@ -721,8 +812,8 @@ def test_conduct_tracking_calibration_kicks_off_recording(mocker, monkeypatch, c
     rec_starts = [c for c in calls if c.args and c.args[0] == 'recording/start']
     assert len(rec_starts) == 1
     # duration is in seconds in the API: 3 minutes -> 180 s
-    assert rec_starts[0].kwargs.get('duration') == 180
-    assert rec_starts[0].kwargs.get('codec') == 'H264'
+    assert rec_starts[0].kwargs['duration'] == 180
+    assert rec_starts[0].kwargs['codec'] == 'H264'
 
 
 # modify_audio_file (uses real config + redirected __file__)
@@ -759,8 +850,7 @@ def _realistic_audio_settings():
     so modify_audio_file can iterate over a complete settings dict without us
     having to hand-build every nested section. Resolved via the import-time
     captured _REAL_PKG_DIR so a monkeypatched __file__ does not redirect us."""
-    import toml as _toml
-    with open(_REAL_PKG_DIR / '_config' / 'behavioral_experiments_settings.toml') as f:
+    with (_REAL_PKG_DIR / '_config' / 'behavioral_experiments_settings.toml').open() as f:
         return _toml.load(f)
 
 
@@ -852,7 +942,7 @@ def full_recording_settings(tmp_path):
         'email_address': 'a@example.com',
         'email_password': 'pw',
     }
-    with open(creds_dir / 'email_config.ini', 'w') as f:
+    with (creds_dir / 'email_config.ini').open('w') as f:
         cfg.write(f)
     win_dir = tmp_path / 'win_dest'
     win_dir.mkdir()
@@ -912,20 +1002,24 @@ def test_conduct_behavioral_recording_orchestrates_calls(mocker, monkeypatch,
         'remount_cup_drives_on_windows',
     ):
         monkeypatch.setattr(ExperimentController, method_name,
-                            lambda self, *a, **kw: True if method_name == 'verify_avisoft_is_recording' else None)
+                            lambda _self, *_a, _name=method_name, **_kw: True if _name == 'verify_avisoft_is_recording' else None)
 
     # Fake Motif API: schedule call returns a 'now' float, recording/start
     # accepts duration/codec, copy_all is a no-op, is_copying always False
     # so the post-recording wait loop falls through immediately.
     fake_api = MagicMock()
-    fake_api.call.side_effect = lambda endpoint, **_kw: {
+    motif_responses = {
         'schedule': {'now': 1_700_000_000.0},
-    }.get(endpoint, MagicMock())
+    }
+    fake_api.call.side_effect = lambda endpoint, **_kw: (
+        motif_responses[endpoint] if endpoint in motif_responses else MagicMock()
+    )
     fake_api.is_copying.return_value = False
 
     # check_camera_vitals is patched above to a no-op; it would normally set
     # self.api and self.camera_serial_num. Provide them via a wrapper.
-    def _vitals(self, camera_fr=None):
+    def _vitals(self, **_kwargs):
+        """Stand in for check_camera_vitals: attach the fake Motif API and one camera serial."""
         self.api = fake_api
         self.camera_serial_num = ['SN12345']
     monkeypatch.setattr(ExperimentController, 'check_camera_vitals', _vitals)
@@ -939,7 +1033,7 @@ def test_conduct_behavioral_recording_orchestrates_calls(mocker, monkeypatch,
     # 'F:\\TestBot\\Data\\...' folder in the repo root (backslashes aren't path
     # separators on POSIX, so the Windows destination becomes one real dir here).
     monkeypatch.setattr(ExperimentController, 'get_custom_dir_names',
-                        lambda self, now=None: ('00:00:00', [str(tmp_path / 'lin_dest')],
+                        lambda _self, **_kwargs: ('00:00:00', [str(tmp_path / 'lin_dest')],
                                                 [str(tmp_path / 'win_dest')], 'sess'))
 
     ec = ExperimentController(
@@ -975,11 +1069,12 @@ def test_conduct_behavioral_recording_raises_not_exits_on_bad_credentials(mocker
         'purge_cup_connections_on_windows',
         'modify_audio_file',
     ):
-        monkeypatch.setattr(ExperimentController, method_name, lambda self, *a, **kw: None)
+        monkeypatch.setattr(ExperimentController, method_name, lambda _self, *_a, **_kw: None)
 
     fake_api = MagicMock()
     fake_api.call.return_value = {'now': 1.0}
-    def _vitals(self, camera_fr=None):
+    def _vitals(self, **_kwargs):
+        """Stand in for check_camera_vitals: attach the fake Motif API and one camera serial."""
         self.api = fake_api
         self.camera_serial_num = ['SN1']
     monkeypatch.setattr(ExperimentController, 'check_camera_vitals', _vitals)
@@ -1011,7 +1106,7 @@ def test_conduct_calibration_cli_invokes_controller(mocker):
     )
     fake_override = mocker.patch(
         'usv_playpen.recording.behavioral_experiments.override_toml_values',
-        side_effect=lambda overrides, exp_settings_dict: exp_settings_dict,
+        side_effect=lambda exp_settings_dict, **_kwargs: exp_settings_dict,
     )
 
     runner = CliRunner()
@@ -1025,7 +1120,7 @@ def test_conduct_calibration_cli_invokes_controller(mocker):
     assert isinstance(fake_ctrl_cls.call_args.kwargs['exp_settings_dict'], dict)
 
 
-def test_conduct_recording_cli_invokes_controller_and_dumps_metadata(mocker, tmp_path):
+def test_conduct_recording_cli_invokes_controller_and_dumps_metadata(mocker):
     """conduct-recording CLI: builds an ExperimentController, runs the
     recording, and dumps the returned metadata back to _config/_metadata.yaml.
 
@@ -1053,6 +1148,7 @@ def test_conduct_recording_cli_invokes_controller_and_dumps_metadata(mocker, tmp
     real_open = builtins.open
 
     def _safe_open(path, mode='r', *args, **kwargs):
+        """Route writes to any *_metadata.yaml into mock_open; pass every other open to the real builtin."""
         if 'w' in mode and str(path).endswith('_metadata.yaml'):
             return mock_open()(path, mode, *args, **kwargs)
         return real_open(path, mode, *args, **kwargs)

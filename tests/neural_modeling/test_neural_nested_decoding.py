@@ -1,6 +1,10 @@
 """
 @author: bartulem
-Coverage: the nested vocal-manifold position decoding's block-diagonal penalty and the behaviour control it is fitted against.
+Unit tests for ``usv_playpen.neural_modeling.neural_nested_decoding``.
+
+Coverage: the nested vocal-manifold position decoding's block-diagonal penalty and the behaviour control it is
+fitted against; the nested design, the leave-one-session-out scores, the spike-train shift null and its
+escalation, the settings guards, the no-behaviour baseline and the posterior (behaviour-as-prior) statistic.
 
 The penalty is the piece that makes a mixed design legal -- five behavioural features wanting 600 lags
 of smoothing beside one neural column that must receive ridge only -- so these tests pin its SHAPE
@@ -65,14 +69,43 @@ SETTINGS_PATH = (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_play
 
 
 def _settings() -> dict:
+    """
+    Description
+    -----------
+    Read the shipped neural-modeling settings fresh from disk.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    settings (dict)
+        The parsed ``neural_modeling_settings.json``; a new dict on every read, so tests may mutate it.
+    """
     with SETTINGS_PATH.open() as handle:
         return json.load(handle)
 
 
 def _nested(**overrides) -> dict:
-    """The SHIPPED nested_vocal_manifold_position_decoding block, merged and validated exactly as a run does, with
-    only tiny-synthetic knobs overridden. Built from the real file rather than a literal so that a key
-    the code starts reading -- or stops honouring -- shows up here instead of only at run time."""
+    """
+    Description
+    -----------
+    Return the SHIPPED nested_vocal_manifold_position_decoding block, merged and validated exactly as a
+    run does, with only tiny-synthetic knobs overridden. Built from the real file rather than a literal
+    so that a key the code starts reading -- or stops honouring -- shows up here instead of only at run
+    time.
+
+    Parameters
+    ----------
+    **overrides (dict)
+        Keys of the merged block to replace (e.g. ``min_region_events``).
+
+    Returns
+    -------
+    block (dict)
+        The merged, validated nested-decoding block with the overrides applied.
+    """
     block = nested_settings(_settings())
     block.update(overrides)
     return block
@@ -82,6 +115,8 @@ class TestBlockDiagonalPenalty:
     """One temporal block per behavioural feature, and NOTHING on the neural column."""
 
     def test_the_neural_column_is_unsmoothed(self):
+        """The neural column's diagonal entry and every cross term with it are zero, so the neuron gets
+        ridge only and is never smoothed against a behavioural lag."""
         est = NestedTorusRegression(n_behaviour_features=3, n_lags=10, n_neural_columns=1)
         penalty = est._smoothness_penalty()
         assert penalty.shape == (31, 31)
@@ -107,10 +142,13 @@ class TestBlockDiagonalPenalty:
         np.testing.assert_allclose(nested._smoothness_penalty(), parent._smoothness_penalty())
 
     def test_the_reduced_model_penalty_has_no_neural_block(self):
+        """With no neural column the penalty is exactly features x lags square, so the reduced model is
+        the behaviour-only estimator."""
         est = NestedTorusRegression(n_behaviour_features=5, n_lags=20, n_neural_columns=0)
         assert est._smoothness_penalty().shape == (100, 100)
 
     def test_the_shipped_shape_is_five_features_by_six_hundred_lags_plus_one(self):
+        """At the shipped design (5 features, 600 lags, one neural column) the penalty is 3001 x 3001."""
         est = NestedTorusRegression(n_behaviour_features=5, n_lags=600, n_neural_columns=1)
         assert est._smoothness_penalty().shape == (3001, 3001)
 
@@ -121,6 +159,30 @@ class TestTheEstimatorFits:
 
     @staticmethod
     def _design(n=240, n_features=3, n_lags=8, seed=0, neural_signal=0.0):
+        """
+        Description
+        -----------
+        Build a random behaviour block, one neural column, and a 2-D torus target driven by two
+        behaviour columns plus, optionally, the neural column.
+
+        Parameters
+        ----------
+        n (int)
+            Number of rows; defaults to 240.
+        n_features (int)
+            Number of behavioural features; defaults to 3.
+        n_lags (int)
+            Lags per feature; defaults to 8.
+        seed (int)
+            Seed for ``np.random.default_rng``; defaults to 0.
+        neural_signal (float)
+            Weight of the neural column in the target angle; defaults to 0.0.
+
+        Returns
+        -------
+        design (tuple[np.ndarray, np.ndarray, np.ndarray])
+            ``(behaviour, neural, y)`` with ``y`` wrapped to [0, 1) on both axes.
+        """
         rng = np.random.default_rng(seed)
         behaviour = rng.normal(size=(n, n_features * n_lags))
         neural = rng.normal(size=(n, 1))
@@ -130,6 +192,8 @@ class TestTheEstimatorFits:
         return behaviour, neural, y
 
     def test_a_mixed_design_fits(self):
+        """A behaviour-plus-neural design passes the parent's column check, converges, and returns one
+        coefficient row per column for the 4-D torus embedding."""
         behaviour, neural, y = self._design()
         est = NestedTorusRegression(n_behaviour_features=3, n_lags=8, n_neural_columns=1)
         est.fit(np.hstack([behaviour, neural]), y)
@@ -137,6 +201,8 @@ class TestTheEstimatorFits:
         assert est.converged_
 
     def test_a_wrong_column_count_is_still_refused(self):
+        """Omitting the declared neural column must still raise, so the shape override does not disable
+        the parent's guard."""
         behaviour, _neural, y = self._design()
         est = NestedTorusRegression(n_behaviour_features=3, n_lags=8, n_neural_columns=1)
         with pytest.raises(ValueError, match="columns"):
@@ -171,7 +237,7 @@ class TestTheBehaviourControl:
     silently redefine 'beyond behaviour'; freezing alone lets the control drift from the selection.
 
     A behavioural selection's FEATURE SET may be adopted; its COEFFICIENTS may not. The fitted map is
-    what fails to transfer to the ephys preparation (-0.00113 over 41,087 calls), while the same
+    what fails to transfer to the ephys preparation (-0.00113 over 41,087 USVs), while the same
     estimator refitted in domain predicts perfectly well -- so the names are read from either artifact
     shape and the control is always refitted in domain. An externally chosen set also carries NO
     selection optimism, since those features were never chosen on this preparation."""
@@ -180,6 +246,23 @@ class TestTheBehaviourControl:
 
     @staticmethod
     def _fake_selection(tmp_path, features):
+        """
+        Description
+        -----------
+        Pickle a cohort-selection result carrying ``selected_features``.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Directory the pickle is written to.
+        features (list[str])
+            The selected feature names.
+
+        Returns
+        -------
+        path (pathlib.Path)
+            Path to ``selection.pkl``.
+        """
         path = tmp_path / "selection.pkl"
         with path.open("wb") as handle:
             pickle.dump({"selected_features": list(features)}, handle)
@@ -187,7 +270,23 @@ class TestTheBehaviourControl:
 
     @staticmethod
     def _behavioural_selection(tmp_path, features):
-        """A behavioural-modelling selection, whose last forward step carries the chosen set."""
+        """
+        Description
+        -----------
+        Pickle a behavioural-modelling selection, whose last forward step carries the chosen set.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Directory the pickle is written to.
+        features (list[str])
+            The final step's feature names; the first step holds only the first of them.
+
+        Returns
+        -------
+        path (pathlib.Path)
+            Path to ``behavioural_selection.pkl``.
+        """
         path = tmp_path / "behavioural_selection.pkl"
         with path.open("wb") as handle:
             pickle.dump({"steps": [{"current_features": list(features[:1])},
@@ -220,15 +319,20 @@ class TestTheBehaviourControl:
             reduced_model_features(settings)
 
     def test_the_shipped_settings_freeze_the_selected_features(self):
+        """The shipped ``reduced_model_features`` equal the frozen list, so the control cannot change
+        without this test changing too."""
         assert _settings()["nested_vocal_manifold_position_decoding"]["reduced_model_features"] == self.FROZEN
 
     def test_a_matching_file_returns_the_selection_order(self, tmp_path):
+        """A selection file agreeing with the freeze returns the features in selection order."""
         settings = _settings()
         settings["data"]["behaviour_selection_result_path"] = str(
             self._fake_selection(tmp_path, self.FROZEN))
         assert reduced_model_features(settings) == self.FROZEN
 
     def test_drift_fails_loudly_rather_than_being_absorbed(self, tmp_path):
+        """A selection file disagreeing with the freeze must raise rather than silently redefine the
+        control."""
         settings = _settings()
         settings["data"]["behaviour_selection_result_path"] = str(
             self._fake_selection(tmp_path, [*self.FROZEN, "self.speed"]))
@@ -236,6 +340,8 @@ class TestTheBehaviourControl:
             reduced_model_features(settings)
 
     def test_a_missing_file_raises_unless_explicitly_tolerated(self, tmp_path):
+        """An absent selection file raises by default and falls back to the frozen list only when
+        ``require_selection_file=False``."""
         settings = _settings()
         settings["data"]["behaviour_selection_result_path"] = str(tmp_path / "absent.pkl")
         with pytest.raises(FileNotFoundError, match="behaviour selection result not found"):
@@ -251,6 +357,7 @@ class TestTheBehaviourControl:
             reduced_model_features(settings, require_selection_file=False)
 
     def test_the_settings_do_not_mutate(self, tmp_path):
+        """Reading the control must not modify the frozen list in the caller's settings."""
         settings = _settings()
         original = copy.deepcopy(settings["nested_vocal_manifold_position_decoding"]["reduced_model_features"])
         settings["data"]["behaviour_selection_result_path"] = str(
@@ -260,13 +367,33 @@ class TestTheBehaviourControl:
 
 
 class TestNestedDesign:
-    """Rows are CALLS: each behavioural feature contributes `n_lags` columns of history ending at the
-    call's onset, and the neuron contributes exactly one z-scored count."""
+    """Rows are USVs: each behavioural feature contributes `n_lags` columns of history ending at the
+    USV's onset, and the neuron contributes exactly one z-scored count."""
 
     N_LAGS = 4
 
     @staticmethod
     def _events(n_per_session=6, n_sessions=2, first_frame=10):
+        """
+        Description
+        -----------
+        Build a vocal-decoding event set with one-second-spaced onsets per session.
+
+        Parameters
+        ----------
+        n_per_session (int)
+            Events per session; defaults to 6.
+        n_sessions (int)
+            Number of sessions; defaults to 2.
+        first_frame (int)
+            First onset in frames at 10 fps; defaults to 10.
+
+        Returns
+        -------
+        events (dict)
+            ``call_start``, ``session_index``, ``counts``, ``positions``, ``region_labels`` and
+            ``session_ids``.
+        """
         starts = np.concatenate([np.arange(n_per_session) * 1.0 + first_frame / 10.0
                                  for _ in range(n_sessions)])
         return {"call_start": starts,
@@ -278,6 +405,31 @@ class TestNestedDesign:
 
     @staticmethod
     def _per_session(session_ids, feature_names, n_frames=400, fps=10.0, shuffle_from=None):
+        """
+        Description
+        -----------
+        Build per-session feature records where feature ``f``'s series is ``f * 1000 + frame``, so a
+        design column reveals which feature and frame it was read from.
+
+        Parameters
+        ----------
+        session_ids (list[str])
+            Session ids to build.
+        feature_names (list[str])
+            Canonical feature order.
+        n_frames (int)
+            Frames per session; defaults to 400.
+        fps (float)
+            Frame rate; defaults to 10.0.
+        shuffle_from (int | None)
+            Sessions from this index on store their columns in REVERSED order; ``None`` keeps every
+            session canonical.
+
+        Returns
+        -------
+        per_session (dict)
+            ``{session_id: {"feature_time_series", "feature_names", "fps", "n_frames"}}``.
+        """
         out = {}
         for i, sid in enumerate(session_ids):
             names = list(feature_names)
@@ -291,6 +443,7 @@ class TestNestedDesign:
         return out
 
     def test_shapes_are_features_by_lags_plus_one_neural_column(self):
+        """The behaviour block is events x (features * lags) and the neural block one column."""
         names = ["a", "b", "c"]
         events = self._events()
         design = nested_design(events, self._per_session(events["session_ids"], names),
@@ -322,7 +475,7 @@ class TestNestedDesign:
         np.testing.assert_allclose(design["behaviour"][:, self.N_LAGS - 1], frames)
 
     def test_events_without_a_full_history_are_dropped_and_counted(self):
-        """A call in a session's first 4 s is usable for the vocal decoding and not for the nested
+        """A USV in a session's first 4 s is usable for the vocal decoding and not for the nested
         decoding. Both counts are
         recorded so the difference is reported rather than discovered."""
         names = ["a"]
@@ -337,6 +490,8 @@ class TestNestedDesign:
         assert book["n_dropped_short_history"] > 0
 
     def test_kept_indexes_back_into_the_vocal_decoding_event_set(self):
+        """``kept`` maps design rows back to the vocal-decoding events, so positions and region labels
+        stay paired with the right rows after short-history drops."""
         names = ["a"]
         events = self._events(n_sessions=1, first_frame=0)
         events["call_start"] = np.array([0.0, 0.1, 1.0, 2.0, 3.0, 4.0])
@@ -360,6 +515,8 @@ class TestNestedDesign:
             assert abs(column.std() - 1.0) < 1e-9
 
     def test_a_near_silent_session_cannot_produce_an_enormous_z(self):
+        """The sigma floor keeps a session with almost no count spread from producing a huge z-score
+        that would dominate the fit."""
         names = ["a"]
         events = self._events(n_sessions=1)
         events["counts"] = np.zeros(6)
@@ -369,6 +526,7 @@ class TestNestedDesign:
         assert np.abs(design["neural"]).max() < 10.0
 
     def test_a_feature_the_assembler_never_built_fails_loudly(self):
+        """Requesting a feature absent from the assembled set must raise, never yield a zero block."""
         names = ["a", "b"]
         events = self._events()
         with pytest.raises(ValueError, match="not in the assembled feature set"):
@@ -376,6 +534,7 @@ class TestNestedDesign:
                           ["a", "does.not.exist"], self.N_LAGS, 0.05)
 
     def test_an_empty_feature_set_is_refused(self):
+        """A nested design with no behaviour is meaningless and must raise."""
         events = self._events()
         with pytest.raises(ValueError, match="at least one behavioural feature"):
             nested_design(events, self._per_session(events["session_ids"], ["a"]), [], self.N_LAGS, 0.05)
@@ -389,8 +548,33 @@ class TestNestedScores:
     @staticmethod
     def _design(n_per_session=90, n_sessions=3, n_lags=3, n_features=2, seed=0,
                 neuron="informative"):
-        """A target driven by behaviour, plus a neuron that either adds independent position
-        information, merely RELAYS the behaviour, or carries nothing at all."""
+        """
+        Description
+        -----------
+        Build a nested design whose target is driven by behaviour, plus a neuron that either adds
+        independent position information, merely RELAYS the behaviour, or carries nothing at all.
+
+        Parameters
+        ----------
+        n_per_session (int)
+            Events per session; defaults to 90.
+        n_sessions (int)
+            Number of sessions; defaults to 3.
+        n_lags (int)
+            Lags per feature; defaults to 3.
+        n_features (int)
+            Number of behavioural features; defaults to 2.
+        seed (int)
+            Seed for ``np.random.default_rng``; defaults to 0.
+        neuron (str)
+            ``"informative"``, ``"relay"``, ``"relay_noisy"`` or anything else for pure noise.
+
+        Returns
+        -------
+        design (dict)
+            ``behaviour``, z-scored ``neural``, ``positions``, ``session_index``, ``region_labels``,
+            ``feature_names``, ``kept`` and ``per_session``.
+        """
         rng = np.random.default_rng(seed)
         n = n_per_session * n_sessions
         behaviour = rng.normal(size=(n, n_features * n_lags))
@@ -416,6 +600,7 @@ class TestNestedScores:
                 "kept": np.arange(n), "per_session": {}}
 
     def test_it_returns_the_pieces_the_conjunction_needs(self):
+        """The result carries every key the verdict reads, and ``added`` is exactly full minus reduced."""
         scores = nested_scores(self._design(), self.SETTINGS, n_lags=3)
         for key in ("added", "reduced", "full", "per_fold", "min_leave_one_fold_out",
                     "n_events", "n_regions_scored"):
@@ -424,6 +609,7 @@ class TestNestedScores:
         assert scores["added"] == pytest.approx(scores["full"] - scores["reduced"])
 
     def test_a_neuron_carrying_position_beyond_behaviour_adds(self):
+        """A neuron with independent position information yields a positive added score."""
         scores = nested_scores(self._design(neuron="informative", seed=1), self.SETTINGS, n_lags=3)
         assert scores["added"] > 0
 
@@ -454,6 +640,7 @@ class TestNestedScores:
         assert scores["added"] < 0.05
 
     def test_a_neuron_carrying_nothing_does_not_add(self):
+        """A second noise seed: a neuron with no information stays below the small added-score bound."""
         scores = nested_scores(self._design(neuron="noise", seed=4), self.SETTINGS, n_lags=3)
         assert scores["added"] < 0.05
 
@@ -467,11 +654,13 @@ class TestNestedScores:
         assert observed > scrambled
 
     def test_the_leave_one_fold_out_minimum_is_reported(self):
+        """The leave-one-fold-out minimum is finite and there is one fold per session."""
         scores = nested_scores(self._design(neuron="informative", seed=6), self.SETTINGS, n_lags=3)
         assert np.isfinite(scores["min_leave_one_fold_out"])
         assert len(scores["per_fold"]) == 3
 
     def test_a_single_session_is_refused_rather_than_silently_scored(self):
+        """Leave-one-session-out needs two sessions; one must raise rather than score in-sample."""
         design = self._design(n_sessions=1)
         with pytest.raises(ValueError, match="at least two sessions"):
             nested_scores(design, self.SETTINGS, n_lags=3)
@@ -496,11 +685,34 @@ class TestTheNull:
 
     @staticmethod
     def _train(n_sessions=2, rate=40.0, duration=600.0, seed=0):
+        """
+        Description
+        -----------
+        Build uniform random spike trains per session with their durations.
+
+        Parameters
+        ----------
+        n_sessions (int)
+            Number of sessions; defaults to 2.
+        rate (float)
+            Scales the spike count (``rate * duration / 10`` spikes); defaults to 40.0.
+        duration (float)
+            Session duration in seconds; defaults to 600.0.
+        seed (int)
+            Seed for ``np.random.default_rng``; defaults to 0.
+
+        Returns
+        -------
+        trains (tuple[dict, dict])
+            ``({session: sorted spike seconds}, {session: duration})``.
+        """
         rng = np.random.default_rng(seed)
         return {s: np.sort(rng.uniform(0, duration, int(rate * duration / 10)))
                 for s in range(n_sessions)}, dict.fromkeys(range(n_sessions), duration)
 
     def test_a_shifted_column_is_z_scored_per_session_like_the_observed_one(self):
+        """The null column has one row per event and is centred within each session, matching the
+        observed column's normalisation so the null compares like with like."""
         design = TestNestedScores._design(n_sessions=2, n_per_session=60, seed=9)
         spikes, durations = self._train()
         edges = np.linspace(30.0, 550.0, design["positions"].shape[0])
@@ -523,6 +735,7 @@ class TestTheNull:
         assert not np.allclose(first, second)
 
     def test_the_same_seed_reproduces_a_draw(self):
+        """A fixed generator seed reproduces the shifted column exactly."""
         design = TestNestedScores._design(n_sessions=2, n_per_session=60, seed=11)
         spikes, durations = self._train()
         edges = np.linspace(30.0, 550.0, design["positions"].shape[0])
@@ -550,6 +763,21 @@ class TestEscalation:
     SETTINGS: ClassVar[dict] = _nested(min_region_events=2)
 
     def _factory(self, seed=0):
+        """
+        Description
+        -----------
+        Build a ``null_draw_factory`` over a fixed synthetic design and spike train.
+
+        Parameters
+        ----------
+        seed (int)
+            Seed passed to the factory; defaults to 0.
+
+        Returns
+        -------
+        draw_more (callable)
+            ``draw_more(n)`` returning ``n`` fresh null added scores.
+        """
         design = TestNestedScores._design(n_sessions=2, n_per_session=60, seed=20)
         spikes, durations = TestTheNull._train(n_sessions=2, seed=1)
         edges = np.linspace(30.0, 550.0, design["positions"].shape[0])
@@ -558,12 +786,14 @@ class TestEscalation:
                                  reduced, seed=seed, sigma_floor=0.05)
 
     def test_successive_batches_are_fresh_not_repeats(self):
+        """Two consecutive batches from one factory differ, so escalation adds new draws."""
         draw_more = self._factory()
         first, second = draw_more(4), draw_more(4)
         assert first.shape == (4,)
         assert not np.allclose(np.sort(first), np.sort(second))
 
     def test_a_batch_is_reproducible_from_the_same_seed(self):
+        """Two factories with the same seed produce the same first batch."""
         np.testing.assert_allclose(self._factory(seed=3)(4), self._factory(seed=3)(4))
 
     def test_it_plugs_into_the_shared_escalation_ladder(self):
@@ -587,6 +817,7 @@ class TestSettingsAreNotHardCoded:
     NOTHING, so a run could declare one and silently get another."""
 
     def test_the_shipped_block_is_accepted(self):
+        """The shipped block validates and carries the shared torus period of 1.0."""
         assert nested_settings(_settings())["torus_period"] == 1.0
 
     @pytest.mark.parametrize(("key", "bad"), [("vm_score_mode", "micro"),
@@ -595,6 +826,7 @@ class TestSettingsAreNotHardCoded:
                                               ("rate_transform", "sqrt"),
                                               ("rate_basis", "bins")])
     def test_an_unimplemented_option_is_refused(self, key, bad):
+        """Each named alternative that is not implemented must raise rather than run the default."""
         settings = _settings()
         settings["nested_vocal_manifold_position_decoding"][key] = bad
         with pytest.raises(ValueError, match="is not implemented"):
@@ -633,6 +865,7 @@ class TestNoBehaviourBaseline:
     SETTINGS: ClassVar[dict] = _nested(min_region_events=2)
 
     def test_it_can_only_learn_a_constant_per_held_out_session(self):
+        """With no behaviour the estimator can only predict one position per held-out session."""
         design = TestNestedScores._design(seed=40)
         predicted = no_behaviour_predictions(design, self.SETTINGS, n_lags=3)
         for slot in np.unique(design["session_index"]):
@@ -640,6 +873,8 @@ class TestNoBehaviourBaseline:
             assert np.allclose(rows, rows[0])
 
     def test_behaviour_that_drives_position_beats_it(self):
+        """When behaviour drives position the reduced model outscores the no-behaviour baseline, so the
+        baseline is a real floor."""
         design = TestNestedScores._design(neuron="informative", seed=41)
         baseline = pooled_macro_score(no_behaviour_predictions(design, self.SETTINGS, n_lags=3),
                                       design["positions"], design["region_labels"], self.SETTINGS)
@@ -647,8 +882,22 @@ class TestNoBehaviourBaseline:
 
 
 def _decoding(**surface_overrides) -> dict:
-    """The SHIPPED vocal_decoding block with only the tiny-run knobs overridden, as the identity tests
-    build it: coarser grid, wider bandwidth, nothing structural touched."""
+    """
+    Description
+    -----------
+    Return the SHIPPED vocal_decoding block with only the tiny-run knobs overridden, as the identity
+    tests build it: coarser grid, wider bandwidth, nothing structural touched.
+
+    Parameters
+    ----------
+    **surface_overrides (dict)
+        Extra ``tuning_surface`` keys to replace.
+
+    Returns
+    -------
+    block (dict)
+        A deep copy of ``vocal_decoding`` with ``grid_n=24`` and ``kde_bandwidth=0.10``.
+    """
     block = copy.deepcopy(_settings()["vocal_decoding"])
     block["tuning_surface"].update({"grid_n": 24, "kde_bandwidth": 0.10, **surface_overrides})
     return block
@@ -669,6 +918,31 @@ class TestPosteriorNested:
 
     @staticmethod
     def _unit(n_sessions=3, per_session=240, seed=0, neuron="region", control_noise=0.25):
+        """
+        Description
+        -----------
+        Build synthetic torus events with a behaviour-control prediction and Poisson counts from a
+        region-tuned, relaying or null neuron.
+
+        Parameters
+        ----------
+        n_sessions (int)
+            Number of sessions; defaults to 3.
+        per_session (int)
+            Events per session; defaults to 240.
+        seed (int)
+            Seed for ``np.random.default_rng``; defaults to 0.
+        neuron (str)
+            ``"region"`` (count ladder over x-quadrants), ``"relay"`` (a function of the control's
+            prediction) or anything else for a constant rate.
+        control_noise (float)
+            Gaussian noise added to the true position to form the control's prediction.
+
+        Returns
+        -------
+        unit (tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray])
+            ``(counts, positions, predicted, sessions)``.
+        """
         rng = np.random.default_rng(seed)
         n = n_sessions * per_session
         positions = rng.random((n, 2))
@@ -685,6 +959,27 @@ class TestPosteriorNested:
         return counts, positions, predicted, sessions
 
     def _run(self, neuron, control_noise, seed=0, permutation=None):
+        """
+        Description
+        -----------
+        Build a ``_unit``, fit the behaviour priors on its folds and compute the posterior nested gain.
+
+        Parameters
+        ----------
+        neuron (str)
+            Neuron kind passed to ``_unit``.
+        control_noise (float)
+            Control noise passed to ``_unit``.
+        seed (int)
+            Seed passed to ``_unit``; defaults to 0.
+        permutation (np.ndarray | None)
+            Optional within-session permutation for a null draw.
+
+        Returns
+        -------
+        run (tuple)
+            ``(result, kappas, (counts, positions, predicted, sessions, folds))``.
+        """
         counts, positions, predicted, sessions = self._unit(seed=seed, neuron=neuron,
                                                             control_noise=control_noise)
         folds = decoding_context(positions, sessions, self.DECODING)
@@ -694,6 +989,8 @@ class TestPosteriorNested:
         return result, kappas, (counts, positions, predicted, sessions, folds)
 
     def test_a_region_tuned_neuron_adds_beyond_a_weak_control(self):
+        """A region-tuned neuron adds beyond a weak control, the control still beats no behaviour, and
+        the ladder's two steps sum to the full gain."""
         result, _kappas, _ = self._run("region", control_noise=0.25)
         assert result["added"] > 0.02
         assert result["behaviour_over_no_behaviour"] > 0.0     # the control is still worth something
@@ -709,10 +1006,13 @@ class TestPosteriorNested:
         assert abs(result["added"]) < 0.015
 
     def test_a_null_neuron_adds_nothing(self):
+        """A constant-rate neuron's added gain stays within a small band around zero."""
         result, _kappas, _ = self._run("none", control_noise=0.25)
         assert abs(result["added"]) < 0.012
 
     def test_the_prior_is_a_density_over_the_masked_grid(self):
+        """Each prior row integrates to 1 over the grid, places no mass outside the mask, and comes with
+        a positive kappa."""
         _result, _kappas, (_c, positions, predicted, _s, folds) = self._run("none", 0.25)
         fold = folds[0]
         kappa, log_prior = behaviour_prior_log_density(fold, predicted, positions, PERIOD, self.NESTED)
@@ -722,6 +1022,7 @@ class TestPosteriorNested:
         assert kappa > 0.0
 
     def test_kappa_sharpens_with_the_control(self):
+        """A more accurate control yields larger concentrations than a noisier one on every fold."""
         _r, sharp, _ = self._run("none", control_noise=0.05)
         _r, broad, _ = self._run("none", control_noise=0.30)
         assert min(sharp) > max(broad)
@@ -737,6 +1038,7 @@ class TestPosteriorNested:
         assert drawn["added"] < observed["added"]
 
     def test_the_same_permutation_reproduces_a_draw(self):
+        """The same permutation gives the same added gain, so null draws are reproducible."""
         permutation = within_session_permutation(np.repeat(np.arange(3), 240),
                                                  np.random.default_rng(3))
         first, _k, _ = self._run("region", 0.25, permutation=permutation)
@@ -744,6 +1046,8 @@ class TestPosteriorNested:
         assert first["added"] == second["added"]
 
     def test_the_section_pieces_are_all_there(self):
+        """The result carries every key the reporting reads, and every fold records its kappa and added
+        gain."""
         result, _kappas, _ = self._run("region", 0.25)
         for key in ("added", "added_uncalibrated", "nats_per_spike", "behaviour_over_no_behaviour",
                     "full_over_no_behaviour", "n_masked", "n_folds_positive", "min_leave_one_fold_out",
@@ -753,10 +1057,28 @@ class TestPosteriorNested:
 
     @staticmethod
     def _shrunk_control(n_sessions=3, per_session=240, seed=5):
-        """A CONCENTRATED occupancy (calls cluster on the torus) with a SHRUNK control that returns
+        """
+        Description
+        -----------
+        Build a CONCENTRATED occupancy (USVs cluster on the torus) with a SHRUNK control that returns
         the cluster's centre whatever the truth. It knows nothing beyond the base rate, so the right
         prior is the occupancy prior itself, kappa = 0 -- yet its residual spread is the truth's own
-        spread, which is exactly what makes a residual-fitted kappa double-count the base rate."""
+        spread, which is exactly what makes a residual-fitted kappa double-count the base rate.
+
+        Parameters
+        ----------
+        n_sessions (int)
+            Number of sessions; defaults to 3.
+        per_session (int)
+            Events per session; defaults to 240.
+        seed (int)
+            Seed for ``np.random.default_rng``; defaults to 5.
+
+        Returns
+        -------
+        control (tuple[np.ndarray, np.ndarray, np.ndarray])
+            ``(positions, predicted, sessions)``.
+        """
         rng = np.random.default_rng(seed)
         n = n_sessions * per_session
         positions = (0.5 + rng.vonmises(0.0, 2.0, size=(n, 2)) / (2.0 * np.pi)) % 1.0
@@ -766,7 +1088,25 @@ class TestPosteriorNested:
 
     @staticmethod
     def _over_occupancy(folds, priors):
-        """Held-out log prior(truth) minus log occupancy(truth), pooled over the folds' test rows."""
+        """
+        Description
+        -----------
+        Compute the held-out log prior(truth) minus log occupancy(truth), pooled over the folds' test
+        rows.
+
+        Parameters
+        ----------
+        folds (list[dict])
+            Decoding folds with ``truth_cell``, ``test_rows`` and the occupancy ``log_prior``.
+        priors (list[np.ndarray])
+            Per-fold behaviour log-prior arrays (events x grid cells).
+
+        Returns
+        -------
+        gain (float)
+            Mean nats per held-out event by which the behaviour prior beats occupancy (negative when
+            it is worse).
+        """
         values = []
         for fold, log_prior in zip(folds, priors, strict=True):
             cells = fold["truth_cell"][fold["test_rows"]]
@@ -821,6 +1161,8 @@ class TestPosteriorNested:
         assert max(kappas) <= nested["behaviour_prior"]["kappa_grid"][1]
 
     def test_an_inner_loso_kappa_is_positive_when_the_control_knows_something(self):
+        """An accurate control earns a positive tuned kappa on every fold, so tuning does not collapse
+        every prior to occupancy."""
         _counts, positions, predicted, sessions = self._unit(control_noise=0.05)
         folds = decoding_context(positions, sessions, self.DECODING)
         nested = copy.deepcopy(self.NESTED)
@@ -833,6 +1175,7 @@ class TestPosteriorNested:
                                            (("behaviour_prior", "concentration"), "cohort_fit"),
                                            (("discrimination_null", "method"), "circular_shift")])
     def test_unimplemented_posterior_options_are_refused(self, path, bad):
+        """Each named posterior option that is not implemented must raise in ``check_settings``."""
         block = copy.deepcopy(self.NESTED)
         target = block
         for key in path[:-1]:

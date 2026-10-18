@@ -5,21 +5,30 @@ helpers (`luminance_equalizer`, `create_colormap`) that back every per-mouse
 colormap and luminance-matched palette in the figure suite, the per-category
 outline helper (`draw_category_outlines`) and the periodic torus density
 (`periodic_density`) of the QLVM figures and videos.
+
+Coverage: the luminance equalizer's three match modes, its explicit set value, saturation override
+and unknown-mode refusal; sequential and diverging colormap construction (0-255 RGB scaling at any
+length, even-length diverging maps, the input left unmodified, unknown types refused); the category
+outline drawing exactly one shared border between neighbouring categories; and the torus density
+being additive and wrapping across the periodic edges.
 """
 
 from __future__ import annotations
 
 import colorsys
 
+import matplotlib as mpl
+
+mpl.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 from matplotlib.colors import ListedColormap
 
 from usv_playpen.visualizations.auxiliary_plot_functions import (
-    luminance_equalizer,
     create_colormap,
     draw_category_outlines,
+    luminance_equalizer,
     periodic_density,
 )
 

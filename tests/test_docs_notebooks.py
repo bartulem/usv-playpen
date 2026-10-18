@@ -9,6 +9,10 @@ Every analysis notebook (and the marimo app) shipped under
 invariant: adding a notebook without documenting it fails the suite rather than
 silently orphaning it (as happened previously with
 ``usv_summary_statistics_plots.ipynb``).
+
+Coverage: the shipped-notebook enumeration (``.ipynb`` files plus non-dunder
+``.py`` marimo apps under ``src/usv_playpen/notebooks/``) and the check that
+each one is named in ``docs/Notebooks.rst``.
 """
 
 from __future__ import annotations

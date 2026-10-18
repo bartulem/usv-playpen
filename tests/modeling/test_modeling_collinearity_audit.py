@@ -12,15 +12,22 @@ column and sits near 1 for orthogonal columns; the FFT autocorrelation is
 normalised to ``acf[0] == 1``; Sokal's integrated time is bounded below by
 1; and the binary trace renderers light up exactly the frames an event
 occupies.
+
+Coverage: ``_vif_from_design``, ``_flagged_pairs`` (and the shipped
+``diagnostics`` collinearity thresholds), ``_per_session_acf``,
+``_integrated_autocorr_time``, ``_first_crossing_below``,
+``_binary_event_trace``, ``_build_event_summary_matrix``,
+``audit_predictor_collinearity`` and ``audit_predictor_timescales``.
 """
 
 from __future__ import annotations
 
+import importlib.resources
 import json
 import pickle
 
 import numpy as np
-import polars as pl
+import polars as pls
 import pytest
 
 from usv_playpen.modeling.modeling_collinearity_audit import (
@@ -35,11 +42,13 @@ from usv_playpen.modeling.modeling_collinearity_audit import (
     audit_predictor_timescales,
 )
 
-
 # _vif_from_design
 
 
 class TestVifFromDesign:
+    """``_vif_from_design``: VIF near 1 for orthogonal columns, infinite for an
+    exact linear combination or a constant column, NaN when underdetermined --
+    the values that decide whether a predictor pair is flagged as redundant."""
 
     def test_orthogonal_columns_have_vif_near_one(self):
         """Independent (near-orthogonal) columns carry essentially no
@@ -102,6 +111,8 @@ class TestVifFromDesign:
 
 
 class TestFlaggedPairs:
+    """``_flagged_pairs``: tiering and ordering of correlated predictor pairs by
+    absolute correlation against the concern / exclude thresholds."""
 
     def test_tiers_and_sorting(self):
         """Pairs at/above the exclude threshold are tier ``'exclude'``,
@@ -167,8 +178,6 @@ def test_shipped_collinearity_thresholds_in_diagnostics_block():
     function defaults, so the shipped block must expose both as probabilities in
     ``[0, 1]`` with concern <= exclude."""
 
-    import importlib.resources
-
     settings_traversable = importlib.resources.files("usv_playpen").joinpath(
         "_parameter_settings", "modeling_settings.json"
     )
@@ -182,6 +191,8 @@ def test_shipped_collinearity_thresholds_in_diagnostics_block():
 
 
 class TestPerSessionAcf:
+    """``_per_session_acf``: the FFT autocorrelation is normalised to
+    ``acf[0] == 1``, NaN for a constant trace, and decays for a smooth series."""
 
     def test_length_and_lag_zero_normalisation(self):
         """The ACF spans ``max_lag + 1`` lags and is normalised so that
@@ -216,6 +227,8 @@ class TestPerSessionAcf:
 
 
 class TestIntegratedAutocorrTime:
+    """``_integrated_autocorr_time``: Sokal's integrated time is at least 1 and
+    grows with autocorrelation, which sets the effective sample size of a trace."""
 
     def test_white_noise_is_at_least_one(self):
         """Only positive lags up to the first non-positive crossing are
@@ -245,6 +258,8 @@ class TestIntegratedAutocorrTime:
 
 
 class TestFirstCrossingBelow:
+    """``_first_crossing_below``: the first lag at which the ACF drops under a
+    threshold, NaN when it never does or the ACF is non-finite."""
 
     def test_returns_first_lag_under_threshold(self):
         """The first lag whose ACF dips below the threshold is returned."""
@@ -269,6 +284,8 @@ class TestFirstCrossingBelow:
 
 
 class TestBinaryEventTrace:
+    """``_binary_event_trace``: lights up exactly the onset frames and drops
+    events outside the trace."""
 
     def test_lights_up_onset_frames(self):
         """Each event onset sets exactly its floor(t * fps) frame to 1."""
@@ -297,7 +314,7 @@ class TestBinaryEventTrace:
 # Synthetic-fixture builders shared by the orchestrator tests
 
 
-def _make_session_df(n_frames: int, seed: int) -> pl.DataFrame:
+def _make_session_df(n_frames: int, seed: int) -> pls.DataFrame:
     """
     Builds one synthetic per-session feature DataFrame in the exact column
     naming the audits expect.
@@ -319,7 +336,7 @@ def _make_session_df(n_frames: int, seed: int) -> pl.DataFrame:
 
     Returns
     -------
-    pl.DataFrame
+    pls.DataFrame
         A ``(n_frames, 5)`` DataFrame whose column names follow the
         ``{mouse}.{feat}`` / ``dyad`` conventions of the real loader.
     """
@@ -330,7 +347,7 @@ def _make_session_df(n_frames: int, seed: int) -> pl.DataFrame:
     other_speed = rng.standard_normal(n_frames).astype(np.float64)
     nose = rng.standard_normal(n_frames).astype(np.float64)
     embedding = rng.standard_normal(n_frames).astype(np.float64)
-    return pl.DataFrame({
+    return pls.DataFrame({
         'm0.speed': speed,
         'm0.accel': accel,
         'm1.speed': other_speed,
@@ -343,6 +360,9 @@ def _make_session_df(n_frames: int, seed: int) -> pl.DataFrame:
 
 
 class TestBuildEventSummaryMatrix:
+    """``_build_event_summary_matrix``: the event-pooled design the VIF audit runs
+    on -- naming, bounds, common-feature intersection, NaN handling and the
+    empty-result paths."""
 
     def test_generic_naming_shapes_and_digit_skip(self):
         """The summary matrix renames target/predictor columns to
@@ -432,7 +452,7 @@ class TestBuildEventSummaryMatrix:
         df = _make_session_df(n_frames=100, seed=20)
         col = df['m0.speed'].to_numpy().copy()
         col[44:50] = np.nan  # falls inside the [45, 50] window of t=5.0
-        df = df.with_columns(pl.Series('m0.speed', col))
+        df = df.with_columns(pls.Series('m0.speed', col))
         beh = {'s0': df}
         names = {'s0': ['m0', 'm1']}
         cam = {'s0': fps}
@@ -453,8 +473,8 @@ class TestBuildEventSummaryMatrix:
         is present for every session, so the builder returns empty."""
 
         fps = 10.0
-        df0 = pl.DataFrame({'m0.speed': np.arange(100.0)})
-        df1 = pl.DataFrame({'m0.accel': np.arange(100.0)})
+        df0 = pls.DataFrame({'m0.speed': np.arange(100.0)})
+        df1 = pls.DataFrame({'m0.accel': np.arange(100.0)})
         beh = {'s0': df0, 's1': df1}
         names = {'s0': ['m0', 'm1'], 's1': ['m0', 'm1']}
         cam = {'s0': fps, 's1': fps}
@@ -508,7 +528,7 @@ class TestBuildEventSummaryMatrix:
             's_empty': ['m0', 'm1'],
             's_good': ['m0', 'm1'],
         }
-        cam = {k: fps for k in beh}
+        cam = dict.fromkeys(beh, fps)
         events = {
             's_empty': np.array([]),
             's_no_names': np.array([5.0]),
@@ -531,6 +551,9 @@ class TestBuildEventSummaryMatrix:
 
 
 class TestAuditPredictorCollinearity:
+    """``audit_predictor_collinearity`` end to end: payload structure and the
+    persisted artifact, the empty-matrix payload, zero-variance handling, VIF
+    tiers and the two-feature Spearman fallback."""
 
     def test_full_payload_structure_and_artifact(self, tmp_path):
         """A populated audit returns square Spearman/Pearson matrices, a
@@ -636,7 +659,7 @@ class TestAuditPredictorCollinearity:
 
         fps = 10.0
         df = _make_session_df(n_frames=400, seed=14)
-        df = df.with_columns(pl.lit(7.0).alias('m0.speed'))  # constant self col
+        df = df.with_columns(pls.lit(7.0).alias('m0.speed'))  # constant self col
         beh = {'s0': df}
         names = {'s0': ['m0', 'm1']}
         cam = {'s0': fps}
@@ -667,7 +690,7 @@ class TestAuditPredictorCollinearity:
         speed = rng.standard_normal(n)
         # accel shares ~85% of speed's variance -> R^2 ~ 0.85 -> VIF ~ 6.7.
         accel = speed + np.sqrt(1.0 / 0.85 - 1.0) * rng.standard_normal(n)
-        df = pl.DataFrame({
+        df = pls.DataFrame({
             'm0.speed': speed,
             'm0.accel': accel,
             'm1.speed': rng.standard_normal(n),
@@ -699,7 +722,7 @@ class TestAuditPredictorCollinearity:
 
         fps = 10.0
         n = 400
-        df = pl.DataFrame({
+        df = pls.DataFrame({
             'm0.speed': np.full(n, 1.0),
             'm0.accel': np.full(n, 2.0),
             'm1.speed': np.full(n, 3.0),
@@ -809,6 +832,9 @@ def _make_timescale_inputs(n_frames: int, fps: float, n_sessions: int):
 @pytest.mark.filterwarnings(
     'ignore:invalid value encountered in scalar divide:RuntimeWarning')
 class TestAuditPredictorTimescales:
+    """``audit_predictor_timescales`` end to end: argument guards, payload shapes
+    and the persisted artifact, null reproducibility, the lag sign convention
+    and the skipped / empty-session paths."""
 
     def test_raises_when_max_lag_exceeds_shuffle_floor(self, tmp_path):
         """A config where max_lag_seconds > shuffle_range_seconds[0] would make the
@@ -847,7 +873,7 @@ class TestAuditPredictorTimescales:
         fps = 10.0
         n_frames = 800
         max_lag_seconds = 2.0
-        beh, names, cam, bouts, intervals, events = _make_timescale_inputs(
+        beh, names, cam, bouts, intervals, _events = _make_timescale_inputs(
             n_frames=n_frames, fps=fps, n_sessions=3,
         )
         save_path = tmp_path / 'ts' / 'timescales.pkl'
@@ -910,24 +936,24 @@ class TestAuditPredictorTimescales:
         identical null bands while a different seed perturbs them."""
 
         fps = 10.0
-        beh, names, cam, bouts, intervals, events = _make_timescale_inputs(
+        beh, names, cam, bouts, intervals, _events = _make_timescale_inputs(
             n_frames=800, fps=fps, n_sessions=3,
         )
-        common = dict(
-            processed_beh_dict=beh,
-            mouse_names_dict=names,
-            target_idx=0,
-            predictor_idx=1,
-            configured_filter_history=1.0,
-            camera_fps_dict=cam,
-            max_lag_seconds=2.0,
-            n_shuffles=12,
-            ibi_thresholds={'male': 0.25, 'female': 0.30},
-            source_pickle='input.pkl',
-            shuffle_range_seconds=(3.0, 5.0),
-            event_intervals_per_session=intervals,
-            onset_times_per_session=bouts,
-        )
+        common = {
+            'processed_beh_dict': beh,
+            'mouse_names_dict': names,
+            'target_idx': 0,
+            'predictor_idx': 1,
+            'configured_filter_history': 1.0,
+            'camera_fps_dict': cam,
+            'max_lag_seconds': 2.0,
+            'n_shuffles': 12,
+            'ibi_thresholds': {'male': 0.25, 'female': 0.30},
+            'source_pickle': 'input.pkl',
+            'shuffle_range_seconds': (3.0, 5.0),
+            'event_intervals_per_session': intervals,
+            'onset_times_per_session': bouts,
+        }
         p_a = audit_predictor_timescales(
             save_path=str(tmp_path / 'a.pkl'), random_seed=7, **common)
         p_b = audit_predictor_timescales(
@@ -954,7 +980,7 @@ class TestAuditPredictorTimescales:
         fps = 10.0
         n_frames = 800
         delay_frames = 8  # feature lags the bout train by 0.8 s
-        beh, names, cam, bouts, intervals, events = _make_timescale_inputs(
+        beh, names, cam, bouts, intervals, _events = _make_timescale_inputs(
             n_frames=n_frames, fps=fps, n_sessions=2,
         )
         # Overwrite one feature with a delayed copy of the bout impulse
@@ -965,7 +991,7 @@ class TestAuditPredictorTimescales:
             delayed = np.zeros(n_frames, dtype=np.float64)
             delayed[delay_frames:] = y[:n_frames - delay_frames]
             delayed += 1e-3 * np.arange(n_frames)  # break the all-zero tail
-            beh[sid] = beh[sid].with_columns(pl.Series('m0.speed', delayed))
+            beh[sid] = beh[sid].with_columns(pls.Series('m0.speed', delayed))
         payload = audit_predictor_timescales(
             processed_beh_dict=beh,
             mouse_names_dict=names,
@@ -993,13 +1019,13 @@ class TestAuditPredictorTimescales:
 
         fps = 10.0
         n_frames = 800
-        beh, names, cam, bouts, intervals, events = _make_timescale_inputs(
+        beh, names, cam, bouts, intervals, _events = _make_timescale_inputs(
             n_frames=n_frames, fps=fps, n_sessions=2,
         )
         for sid in beh:
             y = _binary_event_trace(bouts[sid], n_frames, fps).astype(np.float64)
             y += 1e-3 * np.arange(n_frames)  # break the all-zero tail
-            beh[sid] = beh[sid].with_columns(pl.Series('m0.speed', y))
+            beh[sid] = beh[sid].with_columns(pls.Series('m0.speed', y))
         payload = audit_predictor_timescales(
             processed_beh_dict=beh,
             mouse_names_dict=names,
@@ -1026,7 +1052,7 @@ class TestAuditPredictorTimescales:
         sole ``Y`` source and must raise ``ValueError``."""
 
         fps = 10.0
-        beh, names, cam, _, intervals, events = _make_timescale_inputs(
+        beh, names, cam, _, intervals, _events = _make_timescale_inputs(
             n_frames=400, fps=fps, n_sessions=2,
         )
         with pytest.raises(ValueError, match='onset_times_per_session'):
@@ -1051,7 +1077,7 @@ class TestAuditPredictorTimescales:
         IBI-percentile source and must raise ``ValueError``."""
 
         fps = 10.0
-        beh, names, cam, bouts, _, events = _make_timescale_inputs(
+        beh, names, cam, bouts, _, _events = _make_timescale_inputs(
             n_frames=400, fps=fps, n_sessions=2,
         )
         with pytest.raises(ValueError, match='event_intervals_per_session'):
@@ -1128,14 +1154,14 @@ class TestAuditPredictorTimescales:
 
         fps = 10.0
         n_frames = 800
-        beh, names, cam, bouts, _, events = _make_timescale_inputs(
+        beh, names, cam, bouts, _, _events = _make_timescale_inputs(
             n_frames=n_frames, fps=fps, n_sessions=2,
         )
         # Make one feature constant in a single session so its
         # cross-correlation denom <= 0 there (the zero-denom skip), while
         # the feature stays finite in the other session so the headline's
         # per-feature nanargmax has a valid lag to report.
-        beh['s0'] = beh['s0'].with_columns(pl.lit(0.0).alias('m1.speed'))
+        beh['s0'] = beh['s0'].with_columns(pls.lit(0.0).alias('m1.speed'))
         save_path = tmp_path / 'no_ibi.pkl'
         payload = audit_predictor_timescales(
             processed_beh_dict=beh,
@@ -1168,7 +1194,7 @@ class TestAuditPredictorTimescales:
         (reporting the lag axis at one fps), exercising the name-skip and
         mixed-fps branches."""
 
-        beh, names, cam, bouts, intervals, events = _make_timescale_inputs(
+        beh, names, cam, bouts, intervals, _events = _make_timescale_inputs(
             n_frames=800, fps=10.0, n_sessions=2,
         )
         # Add a third session that has feature data but no mouse-names entry.
@@ -1204,7 +1230,7 @@ class TestAuditPredictorTimescales:
         summary for the session that has it."""
 
         fps = 10.0
-        beh, names, cam, bouts, intervals, events = _make_timescale_inputs(
+        beh, names, cam, bouts, intervals, _events = _make_timescale_inputs(
             n_frames=800, fps=fps, n_sessions=2,
         )
         # Drop the dyadic feature from one session only.
@@ -1242,7 +1268,7 @@ class TestAuditPredictorTimescales:
             n_frames=n_frames, fps=fps, n_sessions=1,
         )
         # Featureless session: only a digit-suffixed embedding column.
-        beh['s_blank'] = pl.DataFrame({
+        beh['s_blank'] = pls.DataFrame({
             'm0.embedding.0': np.zeros(n_frames, dtype=np.float64),
         })
         names['s_blank'] = ['m0', 'm1']
@@ -1276,7 +1302,7 @@ class TestAuditPredictorTimescales:
         correct shape while the ACF block is still computed."""
 
         fps = 10.0
-        beh, names, cam, _, _, events = _make_timescale_inputs(
+        beh, names, cam, _, _, _events = _make_timescale_inputs(
             n_frames=400, fps=fps, n_sessions=2,
         )
         save_path = tmp_path / 'no_valid.pkl'
@@ -1310,7 +1336,6 @@ class TestAuditPredictorTimescales:
         """Pins the reported lag convention: a feature that consistently rises
         BEFORE each bout onset (behaviour precedes vocalisation) must peak on
         the NEGATIVE side of the signal-correlation lag axis."""
-        import polars as _pl
 
         fps = 10.0
         n_frames = 800
@@ -1324,7 +1349,7 @@ class TestAuditPredictorTimescales:
             rise_frames = np.clip(onset_frames - lead_frames, 0, n_frames - 1)
             for rf in rise_frames:
                 precursor[rf:rf + 3] = 1.0                  # short pulse BEFORE each onset
-            beh[sid] = beh[sid].with_columns(_pl.Series('m0.speed', precursor))
+            beh[sid] = beh[sid].with_columns(pls.Series('m0.speed', precursor))
 
         payload = audit_predictor_timescales(
             processed_beh_dict=beh,

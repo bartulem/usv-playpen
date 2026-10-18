@@ -7,6 +7,13 @@ synthetic monopolar source at a known 3D location, generate the exact
 ``alpha / distance`` feature vector it would produce over a cloud of
 contacts, and confirm both optimisers recover the known location. The
 helper functions are checked directly against hand-computed values.
+
+Coverage: ``_data_at_3d`` (hand-computed values), the weighted
+centre-of-mass initial guess and its distance-expanded bounds (including
+the zero-feature uniform-weight fallback), source recovery by both the
+``least_square`` and ``minimize_with_log_penality`` optimisers, the log
+objective at the true source, and the NaN sentinels each optimiser branch
+returns when scipy raises.
 """
 
 from __future__ import annotations
@@ -17,8 +24,8 @@ import scipy.optimize
 
 from usv_playpen.neuropixels.monopolar_triangulation import (
     _data_at_3d,
-    make_initial_guess_and_bounds_3d,
     estimate_distance_error_with_log_3d,
+    make_initial_guess_and_bounds_3d,
     solve_monopolar_triangulation_3d,
 )
 
@@ -103,7 +110,8 @@ def test_initial_guess_is_weighted_centre_of_mass_and_bounds_expand_by_max_dista
 
     assert x0.shape == (4,)
     np.testing.assert_allclose(x0[:3], contacts.mean(axis=0), atol=1e-3)
-    assert len(low_bounds) == 4 and len(high_bounds) == 4
+    assert len(low_bounds) == 4
+    assert len(high_bounds) == 4
     assert low_bounds[0] == pytest.approx(contacts[:, 0].min() - max_distance_um)
     assert high_bounds[0] == pytest.approx(contacts[:, 0].max() + max_distance_um)
     assert low_bounds[3] == 0
@@ -200,7 +208,24 @@ def test_least_square_returns_nan_sentinel_on_optimizer_failure(monkeypatch):
     """
 
     def _boom(*_args, **_kwargs):
-        raise RuntimeError("forced optimiser failure")
+        """
+        Description
+        -----------
+        Stand-in for the scipy optimiser that always raises, forcing the
+        solver down its exception-handling branch.
+
+        Parameters
+        ----------
+        *_args, **_kwargs
+            Ignored optimiser arguments.
+
+        Returns
+        -------
+        None
+            Never returns; always raises ``RuntimeError``.
+        """
+        msg = "forced optimiser failure"
+        raise RuntimeError(msg)
 
     monkeypatch.setattr(scipy.optimize, "least_squares", _boom)
     contacts = _contact_cloud()
@@ -220,7 +245,24 @@ def test_minimize_with_log_penality_returns_nan_sentinel_on_optimizer_failure(mo
     """
 
     def _boom(*_args, **_kwargs):
-        raise RuntimeError("forced optimiser failure")
+        """
+        Description
+        -----------
+        Stand-in for the scipy optimiser that always raises, forcing the
+        solver down its exception-handling branch.
+
+        Parameters
+        ----------
+        *_args, **_kwargs
+            Ignored optimiser arguments.
+
+        Returns
+        -------
+        None
+            Never returns; always raises ``RuntimeError``.
+        """
+        msg = "forced optimiser failure"
+        raise RuntimeError(msg)
 
     monkeypatch.setattr(scipy.optimize, "minimize", _boom)
     contacts = _contact_cloud()

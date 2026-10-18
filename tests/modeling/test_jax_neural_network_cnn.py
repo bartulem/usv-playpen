@@ -7,8 +7,11 @@ helpers that feed the continuous-manifold CNN.
 This module also locks in the **M3** fix: ``apply_kinematic_masking`` and
 ``get_grid_balanced_indices`` now default their ``rng`` fallback to a
 deterministic seed-0 generator, so a standalone call with ``rng=None`` is
-reproducible (production always threads a live seeded rng). The
-architecture coverage is end-to-end ("maximal"): deterministic parameter
+reproducible (production always threads a live seeded rng).
+
+Coverage: the masking / grid-balancing helpers, the output-head gates, the
+shipped ``cnn_continuous`` block, and end-to-end ("maximal") architecture
+coverage -- deterministic parameter
 init, a forward pass on both the euclidean (2-output) and torus sin/cos
 (4-output) heads, batch-norm normalisation, the warmup-cosine schedule,
 and a short gradient-descent smoke that must drive an MSE loss down on a
@@ -45,9 +48,25 @@ with warnings.catch_warnings():
 
 
 def _load_cnn_hp(metric='euclidean', period=1.0):
-    """Load the shipped CNN hyperparameter block and promote the manifold
+    """
+    Description
+    -----------
+    Load the shipped CNN hyperparameter block and promote the manifold
     metric/period in, exactly as ``NeuralContinuousCNNRunner.__init__``
-    does. Reading the settings file is side-effect-free (no mutation)."""
+    does. Reading the settings file is side-effect-free (no mutation).
+
+    Parameters
+    ----------
+    metric (str)
+        Value written to ``hp['manifold_metric']`` ('euclidean' or 'torus').
+    period (float)
+        Value written to ``hp['manifold_period']``.
+
+    Returns
+    -------
+    hp (HashableDict)
+        The ``cnn_continuous`` block, hashable so it can be a static JIT argument.
+    """
 
     settings_path = (pathlib.Path(__file__).resolve().parents[2]
                      / 'src' / 'usv_playpen' / '_parameter_settings'
@@ -67,6 +86,7 @@ def _load_cnn_hp(metric='euclidean', period=1.0):
 
 
 class TestApplyKinematicMasking:
+    """``apply_kinematic_masking``: random channel-chunk blanking used as augmentation."""
 
     def test_seeded_rng_is_reproducible(self):
         """Passing the same seeded generator yields identical masks."""
@@ -104,6 +124,7 @@ class TestApplyKinematicMasking:
 
 
 class TestGetGridBalancedIndices:
+    """``get_grid_balanced_indices``: density-balanced resampling over a grid on the manifold."""
 
     def test_seeded_rng_is_reproducible(self):
         """The per-cell draws are reproducible under a seeded rng."""
@@ -158,13 +179,14 @@ class TestGetGridBalancedIndices:
 
 
 class TestOutputHeadGates:
+    """The output-width and sin/cos-head selection helpers."""
 
     def test_output_axes_count_is_two(self):
         """The manifold is 2-D, so the axis count is fixed at 2."""
 
         assert _output_axes_count({}) == 2
 
-    @pytest.mark.parametrize("metric,encoding,expected", [
+    @pytest.mark.parametrize(("metric", "encoding", "expected"), [
         ('euclidean', 'sin_cos', False),
         ('euclidean', 'raw', False),
         ('torus', 'raw', False),
@@ -180,7 +202,7 @@ class TestOutputHeadGates:
     def test_invalid_encoding_raises_on_torus(self):
         """An unrecognised encoding on the torus path is rejected."""
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="cnn_torus_output_encoding must be 'sin_cos' or 'raw'"):
             _use_sin_cos_torus_output({'manifold_metric': 'torus',
                                        'cnn_torus_output_encoding': 'polar'})
 
@@ -189,6 +211,7 @@ class TestOutputHeadGates:
 
 
 class TestBuildLrSchedule:
+    """``build_lr_schedule``: linear warmup followed by cosine decay."""
 
     def test_warmup_and_decay_shape(self):
         """The schedule starts at 0, peaks near ``peak_lr`` after warmup,
@@ -237,7 +260,8 @@ def test_shipped_cnn_continuous_has_block_channels_and_warmup_fraction():
                      / 'modeling_settings.json')
     with settings_path.open() as fh:
         cnn = json.load(fh)['hyperparameters']['deep_learning']['cnn_continuous']
-    assert isinstance(cnn['block_channels'], list) and len(cnn['block_channels']) > 0
+    assert isinstance(cnn['block_channels'], list)
+    assert len(cnn['block_channels']) > 0
     assert all(isinstance(channel, int) for channel in cnn['block_channels'])
     assert 0.0 <= float(cnn['warmup_fraction']) <= 1.0
 
@@ -246,6 +270,7 @@ def test_shipped_cnn_continuous_has_block_channels_and_warmup_fraction():
 
 
 class TestBatchNorm1d:
+    """``_batch_norm_1d``: per-channel normalisation and its EMA running statistics."""
 
     def test_training_normalises_per_channel(self):
         """In training mode with gamma=1/beta=0 the output is per-channel
@@ -281,8 +306,34 @@ class TestBatchNorm1d:
 
 
 class TestCnnArchitecture:
+    """``init_cnn_params_and_state`` + ``cnn_forward``: init, head width, forward pass, learning."""
 
     def _init(self, metric='euclidean', in_channels=4, time_steps=32, seed=0):
+        """
+        Description
+        -----------
+        Initialise CNN parameters and state from the shipped hyperparameters.
+
+        Parameters
+        ----------
+        metric (str)
+            Manifold metric promoted into the hyperparameters ('euclidean' or 'torus').
+        in_channels (int)
+            Number of input feature channels.
+        time_steps (int)
+            Length of the input history window.
+        seed (int)
+            Seed of the ``jax.random.PRNGKey`` used for initialisation.
+
+        Returns
+        -------
+        hp (HashableDict)
+            The hyperparameter block used.
+        params (dict)
+            Initialised network parameters.
+        state (dict)
+            Initialised batch-norm running statistics.
+        """
         hp = _load_cnn_hp(metric=metric)
         params, state = init_cnn_params_and_state(
             jax.random.PRNGKey(seed), in_channels, time_steps, hp)
@@ -334,6 +385,7 @@ class TestCnnArchitecture:
         y_scale = jnp.ones(2)
 
         def loss_fn(p):
+            """Training-mode MSE of the forward pass under parameters ``p`` against the fixed target."""
             pred, _ = cnn_forward(p, state, x, y_center, y_scale, hp,
                                   rng_key=jax.random.PRNGKey(0), is_training=True)
             return jnp.mean((pred - target) ** 2)

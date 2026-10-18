@@ -2,6 +2,13 @@
 @author: bartulem
 Tests for yaml_utils: SmartDumper formatting, sync_equipment_dynamic_fields,
 load/save_session_metadata round-trip, set_sync_LEDs_device_port.
+
+Coverage: SmartDumper list flow/block styling, quoting of YAML 1.1 coercible
+strings and numpy-scalar conversion; load_session_metadata (absent, first
+match, YAML error) and the save/load round trip; _set_block_field_in_position
+canonical-order insertion; sync_equipment_dynamic_fields reconciliation of the
+sync port, audio and video blocks; set_sync_LEDs_device_port; and
+read_excluded_audio_channels (listed, absent, missing metadata, malformed).
 """
 
 from __future__ import annotations

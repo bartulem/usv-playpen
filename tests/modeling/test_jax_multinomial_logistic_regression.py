@@ -5,12 +5,16 @@ Unit tests for
 JAX/Optax smooth multinomial logistic classifier used for the vocal-
 category analyses.
 
-Coverage is end-to-end ("maximal"): weight/bias initialisation (the bias
+Coverage: end-to-end ("maximal") -- weight/bias initialisation (the bias
 is seeded from the empirical log-priors so the untrained softmax matches
 the class marginal), then a full fit / predict / predict_proba cycle on a
 small, well-separated 3-class synthetic problem where the model must reach
 high accuracy. Reproducibility is pinned via ``random_state`` and the
-constructor / fit validation paths are exercised.
+constructor / fit validation paths are exercised. Further branches: the
+balanced (prior-neutralised) prediction, the class-weighting and binary
+expansion paths, verbose / convergence reporting, the fused ``lax`` loop, the
+reflective order-2 smoothness boundary, and the focal-modulator clamp at
+float32 saturation.
 """
 
 from __future__ import annotations
@@ -34,8 +38,29 @@ with warnings.catch_warnings():
 
 
 def _make_separable_3class(n_per_class=80, n_inputs=4, seed=0):
-    """Synthesise a well-separated 3-class problem so a correct classifier
-    reaches near-perfect training accuracy."""
+    """
+    Description
+    -----------
+    Synthesise a well-separated, balanced 3-class problem so a correct
+    classifier reaches near-perfect training accuracy.
+
+    Parameters
+    ----------
+    n_per_class (int)
+        Samples per class.
+    n_inputs (int)
+        Width of the design matrix (the class centres use the first three
+        columns, so it must be 4 here).
+    seed (int)
+        Seed for the NumPy default-RNG.
+
+    Returns
+    -------
+    X (np.ndarray)
+        ``(3 * n_per_class, n_inputs)`` design matrix, ``float64``.
+    y (np.ndarray)
+        ``(3 * n_per_class,)`` integer labels in ``{0, 1, 2}``.
+    """
 
     rng = np.random.default_rng(seed)
     centres = np.array([
@@ -53,20 +78,37 @@ def _make_separable_3class(n_per_class=80, n_inputs=4, seed=0):
 
 
 def _fit_kwargs(n_inputs):
-    """Clean-fit hyperparameters: no smoothness penalty, light L2, uniform
-    class weights (the synthetic data is already balanced)."""
+    """
+    Description
+    -----------
+    Clean-fit hyperparameters: no smoothness penalty, light L2, uniform
+    class weights (the synthetic data is already balanced).
 
-    return dict(
-        n_features=n_inputs, n_time_bins=1,
-        lambda_smooth=0.0, l2_reg=1e-3, focal_gamma=0.0,
-        uniform_class_weights=True,
-        learning_rate=0.05, max_iter=2000, tol=1e-7,
-        random_state=0,
-    )
+    Parameters
+    ----------
+    n_inputs (int)
+        Number of design columns, passed as ``n_features`` with one time bin.
+
+    Returns
+    -------
+    kwargs (dict)
+        Constructor keyword arguments for ``SmoothMultinomialLogisticRegression``.
+    """
+
+    return {
+        "n_features": n_inputs, "n_time_bins": 1,
+        "lambda_smooth": 0.0, "l2_reg": 1e-3, "focal_gamma": 0.0,
+        "uniform_class_weights": True,
+        "learning_rate": 0.05, "max_iter": 2000, "tol": 1e-7,
+        "random_state": 0,
+    }
 
 
 def _make_imbalanced_3class(counts=(120, 60, 20), n_inputs=4, seed=2):
-    """Synthesise an imbalanced, well-separated 3-class problem.
+    """
+    Description
+    -----------
+    Synthesise an imbalanced, well-separated 3-class problem.
 
     The class counts are deliberately uneven so the default (non-uniform)
     softened inverse-frequency class-weighting branch in ``fit`` is
@@ -75,18 +117,18 @@ def _make_imbalanced_3class(counts=(120, 60, 20), n_inputs=4, seed=2):
 
     Parameters
     ----------
-    counts : tuple of int
+    counts (tuple of int)
         Per-class sample counts (length sets the number of classes).
-    n_inputs : int
+    n_inputs (int)
         Width of the design matrix.
-    seed : int
+    seed (int)
         Seed for the NumPy default-RNG so the data is reproducible.
 
     Returns
     -------
-    X : np.ndarray
+    X (np.ndarray)
         ``(sum(counts), n_inputs)`` design matrix, ``float64``.
-    y : np.ndarray
+    y (np.ndarray)
         ``(sum(counts),)`` integer class labels.
     """
 
@@ -106,7 +148,10 @@ def _make_imbalanced_3class(counts=(120, 60, 20), n_inputs=4, seed=2):
 
 
 def _make_binary(n_per_class=80, n_inputs=4, seed=3):
-    """Synthesise a well-separated 2-class problem.
+    """
+    Description
+    -----------
+    Synthesise a well-separated 2-class problem.
 
     A binary target makes ``LabelBinarizer`` emit a single column, which
     triggers the ``Y_onehot = np.hstack([1 - Y_onehot, Y_onehot])``
@@ -114,18 +159,18 @@ def _make_binary(n_per_class=80, n_inputs=4, seed=3):
 
     Parameters
     ----------
-    n_per_class : int
+    n_per_class (int)
         Samples per class.
-    n_inputs : int
+    n_inputs (int)
         Width of the design matrix.
-    seed : int
+    seed (int)
         Seed for the NumPy default-RNG.
 
     Returns
     -------
-    X : np.ndarray
+    X (np.ndarray)
         Design matrix, ``float64``.
-    y : np.ndarray
+    y (np.ndarray)
         Integer ``{0, 1}`` labels.
     """
 
@@ -144,6 +189,7 @@ def _make_binary(n_per_class=80, n_inputs=4, seed=3):
 
 
 class TestInitParams:
+    """``_initialize_params``: weight shape and the log-prior bias seed."""
 
     def test_bias_equals_log_priors_and_weight_shape(self):
         """The bias is initialised verbatim from the supplied log-priors,
@@ -171,15 +217,17 @@ class TestInitParams:
 
 
 class TestConstructorValidation:
+    """Constructor argument guards."""
 
     def test_bad_smoothness_order_raises(self):
         """Only first/second-order smoothness penalties are supported."""
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='smoothness_derivative_order must be 1 or 2'):
             SmoothMultinomialLogisticRegression(smoothness_derivative_order=0)
 
 
 class TestFitPredictProba:
+    """The fit / predict / predict_proba cycle on separable data."""
 
     def test_high_accuracy_on_separable_data(self):
         """The classifier reaches near-perfect accuracy on a cleanly
@@ -245,11 +293,12 @@ class TestFitPredictProba:
         ``n_features * n_time_bins``."""
 
         X, y = _make_separable_3class(n_inputs=4)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match=r'Input X has 4 columns, but init parameters expect'):
             SmoothMultinomialLogisticRegression(n_features=3, n_time_bins=1).fit(X, y)
 
 
 class TestBalancedPrediction:
+    """``balanced=True`` prediction, which removes the stored log-priors from the logits."""
 
     def test_predict_proba_balanced_subtracts_log_priors(self):
         """``predict_proba(balanced=True)`` subtracts the stored log-priors
@@ -282,6 +331,7 @@ class TestBalancedPrediction:
 
 
 class TestClassWeightingBranches:
+    """The softened inverse-frequency class weights and the binary two-column expansion."""
 
     def test_softened_inverse_frequency_weights(self):
         """With ``uniform_class_weights=False`` on imbalanced data the
@@ -309,6 +359,7 @@ class TestClassWeightingBranches:
 
 
 class TestVerboseAndConvergence:
+    """Verbose progress output and the convergence bookkeeping of the Python loop."""
 
     def test_verbose_prints_convergence(self, capsys):
         """``verbose=True`` with a loose ``tol`` prints the start banner and
@@ -350,6 +401,7 @@ class TestVerboseAndConvergence:
 
 
 class TestLaxLoopPath:
+    """The fused ``jax.lax.while_loop`` training path."""
 
     def test_lax_loop_classifies_separable_data(self):
         """The fused ``jax.lax.while_loop`` training path (``_use_lax_loop
@@ -387,7 +439,10 @@ class TestSmoothnessBoundary:
 
     @staticmethod
     def _isolated_smooth_loss(W, b, n_feats, n_time, lam_smooth, class_weights, order):
-        """Return the smoothness term of the multinomial loss in isolation.
+        """
+        Description
+        -----------
+        Return the smoothness term of the multinomial loss in isolation.
 
         Evaluating ``_multinomial_loss_static`` with an all-zero design matrix
         makes every logit equal to the bias ``b`` regardless of ``W``, so the
@@ -399,22 +454,24 @@ class TestSmoothnessBoundary:
 
         Parameters
         ----------
-        W : np.ndarray
+        W (np.ndarray)
             Weight matrix of shape ``(n_feats * n_time, n_classes)``.
-        b : np.ndarray
+        b (np.ndarray)
             Bias vector of shape ``(n_classes,)``.
-        n_feats, n_time : int
-            Filter grid dimensions used to reshape ``W`` along the time axis.
-        lam_smooth : float
+        n_feats (int)
+            Number of features in the filter grid.
+        n_time (int)
+            Number of time bins per feature (``W`` is reshaped along this axis).
+        lam_smooth (float)
             Smoothness regularisation strength.
-        class_weights : np.ndarray
+        class_weights (np.ndarray)
             Per-class weights of shape ``(n_classes,)`` applied to the penalty.
-        order : int
+        order (int)
             Derivative order of the smoothness penalty (1 or 2).
 
         Returns
         -------
-        float
+        smooth_loss (float)
             The isolated ``smooth_loss(W)`` value.
         """
 
@@ -526,8 +583,25 @@ class TestFocalSaturation:
 
     @staticmethod
     def _saturated_problem():
-        """Three events, one feature with two frames, four classes; event 0 is separated by a
-        logit margin of 25, so its ``p_t`` is exactly ``1.0`` in float32."""
+        """
+        Description
+        -----------
+        Three events, one feature with two frames, four classes; event 0 is separated by a
+        logit margin of 25, so its ``p_t`` is exactly ``1.0`` in float32.
+
+        Returns
+        -------
+        X (jnp.ndarray)
+            (3, 2) float32 design.
+        Y (jnp.ndarray)
+            (3, 4) int32 one-hot targets (classes 0, 1, 2).
+        params (tuple)
+            ``(W, b)``: (2, 4) weights with ``W[0, 0] = 25`` and a (4,) zero bias.
+        sw (jnp.ndarray)
+            (3,) unit sample weights.
+        cw (jnp.ndarray)
+            (4,) unit class weights.
+        """
 
         X = jnp.array([[1.0, 0.0], [0.0, 1.0], [0.5, 0.5]], dtype=jnp.float32)
         Y = jnp.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]], dtype=jnp.int32)
@@ -538,6 +612,8 @@ class TestFocalSaturation:
         return X, Y, (W, b), sw, cw
 
     def test_saturated_event_is_exact_in_float32(self):
+        """Precondition for the clamp tests: the fixture really saturates, i.e. event 0's float32
+        ``p_t`` is exactly 1, which is what made ``(1 - p_t) ** gamma`` produce a NaN gradient."""
         X, Y, (W, b), _, _ = self._saturated_problem()
         pt = jnp.sum(jax.nn.softmax(X @ W + b, axis=-1) * Y, axis=1)
         assert float(pt[0]) == 1.0
@@ -549,7 +625,8 @@ class TestFocalSaturation:
 
         X, Y, params, sw, cw = self._saturated_problem()
         grads = jax.grad(_multinomial_loss_static)(params, X, Y, sw, 1, 2, 0.0, 0.0, cw, gamma, 1, True)
-        assert bool(jnp.isfinite(grads[0]).all()) and bool(jnp.isfinite(grads[1]).all())
+        assert bool(jnp.isfinite(grads[0]).all())
+        assert bool(jnp.isfinite(grads[1]).all())
 
     def test_loss_unchanged_away_from_saturation(self):
         """For ``p_t < 1 - 1e-7`` the clamp is inactive: the loss equals the unclamped focal formula."""

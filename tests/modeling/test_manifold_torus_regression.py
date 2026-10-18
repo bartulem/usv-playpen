@@ -6,7 +6,7 @@ manifold-position analyses, plus the ``resolve_manifold_regressor_cls``
 factory that wires it into the univariate runner and the model-selection
 forward search.
 
-Coverage is end-to-end: the factory dispatch (so euclidean runs keep the
+Coverage: end-to-end -- the factory dispatch (so euclidean runs keep the
 unchanged coordinate model byte-for-byte and torus runs swap in the
 embedding ridge), the closed-form solve validated bit-for-bit against an
 independent normal-equation implementation (so the L2 + temporal-smoothness
@@ -41,27 +41,71 @@ with warnings.catch_warnings():
 
 def _torus_kwargs(n_features, n_time_bins, l2_reg=0.01, lambda_smooth=1.0,
                   smoothness_derivative_order=2):
-    """Reproduce the exact keyword set the wired call sites (the runner's
+    """
+    Description
+    -----------
+    Reproduce the exact keyword set the wired invocation sites (the runner's
     outer fit and the model-selection candidate fits) pass to the resolved
     estimator class, including the iterative-optimiser arguments the torus
-    estimator accepts-but-ignores."""
+    estimator accepts-but-ignores.
 
-    return dict(
-        n_features=n_features, n_time_bins=n_time_bins,
-        lambda_smooth=lambda_smooth, l2_reg=l2_reg,
-        smoothness_derivative_order=smoothness_derivative_order,
-        huber_delta=1.0,
-        learning_rate=0.005, max_iter=20000,
-        tol=1e-4, random_state=0,
-        _use_lax_loop=False,
-        metric='torus', period=1.0,
-    )
+    Parameters
+    ----------
+    n_features (int)
+        Number of behavioural features in the design.
+    n_time_bins (int)
+        Number of history bins per feature.
+    l2_reg (float)
+        Ridge strength.
+    lambda_smooth (float)
+        Temporal-smoothness penalty strength.
+    smoothness_derivative_order (int)
+        Order of the difference operator in the smoothness penalty.
+
+    Returns
+    -------
+    kwargs (dict)
+        Constructor keyword arguments with ``metric='torus'`` and ``period=1.0``.
+    """
+
+    return {
+        "n_features": n_features, "n_time_bins": n_time_bins,
+        "lambda_smooth": lambda_smooth, "l2_reg": l2_reg,
+        "smoothness_derivative_order": smoothness_derivative_order,
+        "huber_delta": 1.0,
+        "learning_rate": 0.005, "max_iter": 20000,
+        "tol": 1e-4, "random_state": 0,
+        "_use_lax_loop": False,
+        "metric": 'torus', "period": 1.0,
+    }
 
 
 def _make_wrapped_torus_2d(n_samples=300, n_inputs=4, period=1.0, seed=3):
-    """Synthesise a 2-D torus target as ``(X @ W) % period`` — coordinates
+    """
+    Description
+    -----------
+    Synthesise a 2-D torus target as ``(X @ W) % period`` -- coordinates
     densely populate the periodic manifold including the wrap seam. Used to
-    exercise the closed-form solve and the fit / predict / evaluate paths."""
+    exercise the closed-form solve and the fit / predict / evaluate paths.
+
+    Parameters
+    ----------
+    n_samples (int)
+        Number of rows.
+    n_inputs (int)
+        Number of design columns.
+    period (float)
+        Torus period the target is wrapped into.
+    seed (int)
+        Seed for the design and the mixing weights.
+
+    Returns
+    -------
+    X (np.ndarray)
+        (n_samples, n_inputs) float64 standard-normal design.
+    y (np.ndarray)
+        (n_samples, 2) float64 wrapped target in ``[0, period)``.
+    """
 
     rng = np.random.default_rng(seed)
     X = rng.standard_normal((n_samples, n_inputs))
@@ -71,17 +115,55 @@ def _make_wrapped_torus_2d(n_samples=300, n_inputs=4, period=1.0, seed=3):
 
 
 def _make_wound_torus_2d(n_samples=600, n_inputs=4, period=1.0, seed=7):
-    """Synthesise a target that *winds* around the torus: each coordinate is
+    """
+    Description
+    -----------
+    Synthesise a target that *winds* around the torus: each coordinate is
     ``atan2(X @ w2, X @ w1)`` wrapped into ``[0, period)``. The 4-D embedding
     of this target is linear in ``X`` (up to the per-pair magnitude that
     ``atan2`` discards), so the embedding ridge recovers it almost exactly,
     while the wrapped ``atan2`` is strongly nonlinear in ``X`` so the
-    coordinate model is structurally blind to it."""
+    coordinate model is structurally blind to it.
+
+    Parameters
+    ----------
+    n_samples (int)
+        Number of rows.
+    n_inputs (int)
+        Number of design columns.
+    period (float)
+        Torus period the target is wrapped into.
+    seed (int)
+        Seed for the design; the two coordinates use ``seed + 1`` / ``seed + 2``.
+
+    Returns
+    -------
+    X (np.ndarray)
+        (n_samples, n_inputs) float64 standard-normal design.
+    y (np.ndarray)
+        (n_samples, 2) float64 wound target in ``[0, period)``.
+    """
 
     rng = np.random.default_rng(seed)
     X = rng.standard_normal((n_samples, n_inputs))
 
     def _coord(g):
+        """
+        Description
+        -----------
+        Draw one wound coordinate: the angle of ``(X @ w1, X @ w2)`` mapped
+        into ``[0, period)``.
+
+        Parameters
+        ----------
+        g (np.random.Generator)
+            Generator for the two projection vectors.
+
+        Returns
+        -------
+        coord (np.ndarray)
+            (n_samples,) wound coordinate.
+        """
         w1, w2 = g.standard_normal(n_inputs), g.standard_normal(n_inputs)
         theta = np.arctan2(X @ w2, X @ w1)
         return (theta / (2.0 * np.pi) * period) % period
@@ -93,10 +175,42 @@ def _make_wound_torus_2d(n_samples=600, n_inputs=4, period=1.0, seed=7):
 
 def _manual_closed_form(X, Y, sample_weight, n_features, n_time_bins,
                         l2_reg, lambda_smooth, order, period):
-    """Independent reference implementation of the weighted generalised-ridge
+    """
+    Description
+    -----------
+    Independent reference implementation of the weighted generalised-ridge
     normal-equation solve, used to validate the estimator's ``fit`` output
     bit-for-bit. Mirrors the documented objective without reusing any of the
-    class's private helpers."""
+    class's private helpers.
+
+    Parameters
+    ----------
+    X (np.ndarray)
+        (n, n_features * n_time_bins) design.
+    Y (np.ndarray)
+        (n, 2) torus target.
+    sample_weight (np.ndarray)
+        (n,) per-row weights (normalised to mean 1 inside).
+    n_features (int)
+        Number of features (penalty blocks).
+    n_time_bins (int)
+        History bins per feature.
+    l2_reg (float)
+        Ridge strength.
+    lambda_smooth (float)
+        Smoothness penalty strength.
+    order (int)
+        Difference order; order 2 adds the reflective edge-slope rows.
+    period (float)
+        Torus period used for the sin-cos embedding.
+
+    Returns
+    -------
+    coef (np.ndarray)
+        (n_features * n_time_bins, 4) embedding coefficients.
+    intercept (np.ndarray)
+        (4,) embedding intercept.
+    """
 
     a = 2.0 * np.pi * Y / period
     emb = np.column_stack([
@@ -307,7 +421,8 @@ def test_evaluate_metrics_honors_frozen_kappa():
     refit = model.evaluate_metrics(X, Y)['vm_logscore']
     frozen_a = model.evaluate_metrics(X, Y, kappa=2.5)['vm_logscore']
     frozen_b = model.evaluate_metrics(X, Y, kappa=0.5)['vm_logscore']
-    assert np.isfinite(frozen_a) and np.isfinite(frozen_b)
+    assert np.isfinite(frozen_a)
+    assert np.isfinite(frozen_b)
     assert frozen_a != pytest.approx(refit)
     assert frozen_a != pytest.approx(frozen_b)
 

@@ -56,6 +56,12 @@ metric aggregations, and the JAX / sklearn / SciPy stack emit assorted benign
 are demoted with narrow per-test ``@pytest.mark.filterwarnings`` markers.
 ``matplotlib`` is forced onto the headless ``Agg`` backend because the modeling
 import chain pulls ``pyplot``.
+
+Coverage: the per-fold fit-failure NaN-padding branches of
+``multinomial_vocal_category_model_selection`` and
+``continuous_vocal_manifold_model_selection`` (anchor padding, forward-loop
+no-finite-folds skip, REJECT persistence, finalize), and the manifold anchor's
+single-failed-fold placeholder shape.
 """
 
 from __future__ import annotations
@@ -64,10 +70,11 @@ import json
 import pickle
 from pathlib import Path
 
-import matplotlib
+import matplotlib as mpl
 import pytest
 
-matplotlib.use('Agg')
+# The headless backend must be selected before the modeling import chain pulls pyplot.
+mpl.use('Agg')
 
 from tests.modeling.test_model_selection_tail import ms
 from tests.modeling.test_pipeline_manifold import (
@@ -132,15 +139,14 @@ class _BoomMultinomial:
     the first call inside every fold's ``try`` block.
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *_args, **_kwargs):
         """Accept and discard every constructor argument."""
 
-        pass
-
-    def fit(self, *args, **kwargs):
+    def fit(self, *_args, **_kwargs):
         """Raise unconditionally so the per-fold failure branch executes."""
 
-        raise RuntimeError("forced multinomial fit failure")
+        msg = "forced multinomial fit failure"
+        raise RuntimeError(msg)
 
 
 class _BoomManifold:
@@ -154,15 +160,14 @@ class _BoomManifold:
     the geometry-resolved estimator is replaced wholesale.
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *_args, **_kwargs):
         """Accept and discard every constructor argument."""
 
-        pass
-
-    def fit(self, *args, **kwargs):
+    def fit(self, *_args, **_kwargs):
         """Raise unconditionally so the per-fold failure branch executes."""
 
-        raise RuntimeError("forced manifold fit failure")
+        msg = "forced manifold fit failure"
+        raise RuntimeError(msg)
 
 
 class TestMultinomialFoldFailure:
@@ -342,7 +347,7 @@ class TestManifoldFoldFailure:
             # matching `_build_signal_continuous_pickle`'s default `n_per_session`);
             # the fold-grain gate no longer reads them, but downstream provenance does.
             'session_ids': session_ids,
-            'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
+            'n_events_per_session': dict.fromkeys(session_ids, 60),
             'analysis_specific': {
                 'usv_category_column_name': 'qlvm_category',
                 'manifold_metric': 'euclidean',
@@ -374,7 +379,7 @@ class TestManifoldFoldFailure:
         # Patch only the selector's estimator-class resolution so every learned
         # fold's fit raises; the runner's ranking above is already computed.
         monkeypatch.setattr(
-            ms, 'resolve_manifold_regressor_cls', lambda *a, **k: _BoomManifold
+            ms, 'resolve_manifold_regressor_cls', lambda *_a, **_k: _BoomManifold
         )
 
         ms_dir = tmp_path / 'model_selection'
@@ -419,7 +424,7 @@ class TestManifoldFoldFailure:
             'analysis_type': 'continuous',
             'analysis_tag': 'manifold_qlvm_category',
             'session_ids': session_ids,
-            'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
+            'n_events_per_session': dict.fromkeys(session_ids, 60),
             'analysis_specific': {
                 'usv_category_column_name': 'qlvm_category',
                 'manifold_metric': 'euclidean',
@@ -440,6 +445,23 @@ class TestManifoldFoldFailure:
         real_resolve = ms.resolve_manifold_regressor_cls
 
         def resolve_first_fit_fails(*args, **kwargs):
+            """
+            Description
+            -----------
+            Wraps the real ``resolve_manifold_regressor_cls``: resolves the real
+            regressor class, then returns a subclass whose first ``fit`` of the
+            run raises, so exactly one anchor fold fails.
+
+            Parameters
+            ----------
+            *args, **kwargs
+                Forwarded unchanged to the real resolver.
+
+            Returns
+            -------
+            cls (type)
+                The ``_FirstFitFails`` subclass of the resolved regressor.
+            """
             real_cls = real_resolve(*args, **kwargs)
 
             class _FirstFitFails(real_cls):

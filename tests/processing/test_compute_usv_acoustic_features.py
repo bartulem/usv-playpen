@@ -6,6 +6,12 @@ Synthesizes a per-session spectrogram H5 (a few specs with a known bright pixel)
 plus a matching ``*_usv_summary.csv``, then checks the computed acoustic-feature
 columns are merged into the right summary rows (joined on the per-USV index in
 each spec_id), with USVs absent from the H5 left null.
+
+Coverage: the time-window and mask-region masks, compute_acoustic_features
+(peak frequency, refusal of negative spectrograms, the region mask), and the
+merge into the summary (refusal of a summary the H5 does not match, usv_id
+padding, the mask group when present, row order whatever order the join
+returns, an untouched summary when the write fails).
 """
 
 from __future__ import annotations
@@ -199,7 +205,7 @@ def test_merge_features_refuses_a_summary_the_h5_does_not_match(tmp_path, mocker
               session_id, n_usv=4, valid_rows=[0, 1, 3])
 
     mocker.patch("usv_playpen.processing.compute_usv_acoustic_features.smart_wait")
-    with pytest.raises(ValueError, match="5 rows but .* holds 4 spectrograms"):
+    with pytest.raises(ValueError, match=r"5 rows but .* holds 4 spectrograms"):
         USVAcousticFeatureExtractor(
             root_directory=str(root),
             input_parameter_dict={"compute_usv_acoustic_features": _CFG},
@@ -276,6 +282,23 @@ def test_merge_features_uses_mask_group_when_present(tmp_path, mocker):
     measured = {}
 
     def _loudness(**kwargs):
+        """
+        Description
+        -----------
+        Stands in for session_image_level_db: records the keyword arguments the
+        extractor passes (so the test can check which spectrogram settings reach
+        the loudness computation) and returns one fixed loudness value.
+
+        Parameters
+        ----------
+        **kwargs : dict
+            The keyword arguments the extractor passes to the loudness function.
+
+        Returns
+        -------
+        np.ndarray
+            A one-element float32 array holding 61.5 dB.
+        """
         measured.update(kwargs)
         return np.array([61.5], dtype=np.float32)
 
@@ -340,6 +363,27 @@ def test_merge_features_keeps_row_order_whatever_order_the_join_returns(tmp_path
     original_join = pls.DataFrame.join
 
     def _reversed_join(self, *args, **kwargs):
+        """
+        Description
+        -----------
+        Stands in for polars.DataFrame.join and returns the real join's rows in
+        reverse order, the order polars is free to return without a maintain-order
+        promise.
+
+        Parameters
+        ----------
+        self : polars.DataFrame
+            The left frame of the join.
+        *args : tuple
+            Positional arguments forwarded to the real join.
+        **kwargs : dict
+            Keyword arguments forwarded to the real join.
+
+        Returns
+        -------
+        polars.DataFrame
+            The real join's result with its rows reversed.
+        """
         return original_join(self, *args, **kwargs).reverse()
 
     mocker.patch.object(pls.DataFrame, "join", _reversed_join)
@@ -361,9 +405,32 @@ def test_merge_features_leaves_the_summary_whole_when_the_write_fails(tmp_path, 
     root, summary_path = _feature_session(tmp_path)
     before = summary_path.read_bytes()
 
-    def _failing_write(self, file, *args, **kwargs):
+    def _failing_write(_self, file, *_args, **_kwargs):
+        """
+        Description
+        -----------
+        Stands in for polars.DataFrame.write_csv: writes a truncated CSV to the
+        target path and then fails, the way a write that dies part-way would.
+
+        Parameters
+        ----------
+        _self : polars.DataFrame
+            The frame being written (unused).
+        file : str
+            The target path the extractor writes to.
+        *_args : tuple
+            Further positional arguments (unused).
+        **_kwargs : dict
+            Further keyword arguments (unused).
+
+        Returns
+        -------
+        None
+            Never returns; always raises OSError("disk full").
+        """
         pathlib.Path(file).write_text("usv_id,sta")
-        raise OSError("disk full")
+        message = "disk full"
+        raise OSError(message)
 
     mocker.patch.object(pls.DataFrame, "write_csv", _failing_write)
     mocker.patch("usv_playpen.processing.compute_usv_acoustic_features.smart_wait")

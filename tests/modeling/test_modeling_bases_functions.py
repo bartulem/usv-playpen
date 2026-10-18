@@ -2,7 +2,7 @@
 @author: bartulem
 Unit tests for the temporal basis-function generators in
 ``usv_playpen.modeling.modeling_bases_functions`` (adapted from the
-Clemens-lab GLM basis utilities).
+``glm_utils`` GLM basis utilities).
 
 These bases tile a temporal-filter window for GLM/GAM fits, so the
 properties that matter downstream are structural: column-normalised
@@ -10,14 +10,24 @@ raised cosines, the flipped identity time ordering, and the
 multi-resolution Gaussian levels of the Laplacian pyramid. Each test
 asserts such an analytic invariant on a small synthetic window rather
 than pinning a frozen matrix.
+
+Coverage:
+
+* ``_nlin`` / ``_invnl``, ``_ff``, ``_normalizecols`` -- the private helpers.
+* ``raised_cosine``, ``bsplines``, ``identity``, ``laplacian_pyramid`` -- the
+  classic basis generators.
+* ``gam_bspline_basis``, ``resolve_temporal_basis``,
+  ``project_history_onto_basis`` / ``basis_coefficients_to_frames`` -- the
+  pyGAM-matched spline basis, its settings resolution (including the
+  lag-varying ridge), and the projection round trip.
 """
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
-
-from pygam import LinearGAM, s as spline_term
+from pygam import LinearGAM
+from pygam import s as spline_term
 
 from usv_playpen.modeling.modeling_bases_functions import (
     _ff,
@@ -34,11 +44,11 @@ from usv_playpen.modeling.modeling_bases_functions import (
     resolve_temporal_basis,
 )
 
-
 # Non-linear log transform pair
 
 
 class TestNlinInvnl:
+    """``_nlin`` / ``_invnl``: the log time warp the raised cosines are spaced on, and its inverse."""
 
     def test_round_trip_recovers_input(self):
         """``_invnl(_nlin(x))`` returns ``x`` for positive inputs (the
@@ -58,6 +68,7 @@ class TestNlinInvnl:
 
 
 class TestRaisedCosineValues:
+    """``_ff``: a single raised-cosine bump."""
 
     def test_values_bounded_in_unit_interval(self):
         """Raised-cosine bumps are bounded in ``[0, 1]`` everywhere."""
@@ -82,6 +93,7 @@ class TestRaisedCosineValues:
 
 @pytest.mark.filterwarnings("ignore:invalid value encountered in divide:RuntimeWarning")
 class TestNormalizeCols:
+    """``_normalizecols``: L2 column normalisation with a zero-column guard."""
 
     def test_columns_have_unit_l2_norm(self):
         """Every non-zero column is rescaled to unit L2 norm."""
@@ -109,6 +121,7 @@ class TestNormalizeCols:
 
 @pytest.mark.filterwarnings("ignore:invalid value encountered in divide:RuntimeWarning")
 class TestRaisedCosine:
+    """``raised_cosine``: the log-spaced raised-cosine basis."""
 
     def test_shape_respects_w_and_nbasis(self):
         """Requesting ``w`` time points and ``nbasis`` bases yields a
@@ -137,6 +150,7 @@ class TestRaisedCosine:
 
 
 class TestBSplines:
+    """``bsplines``: the clamped B-spline basis on explicit knot positions."""
 
     def test_shape_time_by_bases(self):
         """A B-spline basis spans ``width`` time points with one column
@@ -161,6 +175,7 @@ class TestBSplines:
 
 
 class TestIdentityBasis:
+    """``identity``: the one-column-per-frame basis, newest frame first."""
 
     def test_is_flipped_identity(self):
         """``identity`` returns the row-flipped identity so column 0
@@ -175,6 +190,7 @@ class TestIdentityBasis:
 
 
 class TestLaplacianPyramid:
+    """``laplacian_pyramid``: the multi-resolution Gaussian basis."""
 
     def test_shape_is_time_by_bases(self):
         """The pyramid returns a 2-D ``[time, bases]`` matrix spanning
@@ -195,7 +211,26 @@ class TestLaplacianPyramid:
 
 
 def _jax_block(basis_type: str, bin_resizing_factor: int = 1) -> dict:
-    """A JAX linear-model settings block with a temporal_basis sub-block."""
+    """
+    Description
+    -----------
+    Build a JAX linear-model settings block with a ``temporal_basis`` sub-block,
+    with distinct block-level and basis-level penalties so a test can tell which
+    one ``resolve_temporal_basis`` returned.
+
+    Parameters
+    ----------
+    basis_type (str)
+        Value of ``temporal_basis.type`` ('none', 'bspline', or an invalid name).
+    bin_resizing_factor (int)
+        Value of the block's ``bin_resizing_factor``.
+
+    Returns
+    -------
+    block (dict)
+        A fresh settings block (8 cubic splines, basis lambda 0.6 / L2 0.0,
+        block lambda 1.0 / L2 0.01, lag alpha 0).
+    """
 
     return {"bin_resizing_factor": bin_resizing_factor, "lambda_smooth_fixed": 1.0, "l2_reg_fixed": 0.01,
             "smoothness_derivative_order": 1, "tune_regularization_bool": False,
@@ -205,6 +240,7 @@ def _jax_block(basis_type: str, bin_resizing_factor: int = 1) -> dict:
 
 
 class TestGamBsplineBasis:
+    """``gam_bspline_basis``: the B-spline basis pyGAM itself builds for a spline term."""
 
     def test_matches_a_fitted_pygam_spline_term(self):
         """The basis is exactly the one a pyGAM spline term over the same frames uses."""
@@ -229,14 +265,17 @@ class TestGamBsplineBasis:
 
 
 class TestResolveTemporalBasis:
+    """``resolve_temporal_basis``: settings block -> (basis, effective penalty block)."""
 
     def test_none_keeps_the_block(self):
         """'none': no basis, the block's own penalty, reflective edges."""
 
         basis, block = resolve_temporal_basis(_jax_block("none"), 30)
         assert basis is None
-        assert block["lambda_smooth_fixed"] == 1.0 and block["l2_reg_fixed"] == 0.01
-        assert block["smoothness_derivative_order"] == 1 and block["smoothness_reflective_edges"] is True
+        assert block["lambda_smooth_fixed"] == 1.0
+        assert block["l2_reg_fixed"] == 0.01
+        assert block["smoothness_derivative_order"] == 1
+        assert block["smoothness_reflective_edges"] is True
 
     def test_bspline_mirrors_the_gam_penalty(self):
         """'bspline': pyGAM's basis averaged over the window, second-order open-boundary penalty, no L2, its own strength
@@ -245,21 +284,25 @@ class TestResolveTemporalBasis:
         raw = _jax_block("bspline")
         basis, block = resolve_temporal_basis(raw, 30)
         np.testing.assert_allclose(basis, gam_bspline_basis(30, 8, 3) / 30)
-        assert block["lambda_smooth_fixed"] == 0.6 and block["l2_reg_fixed"] == 0.0
-        assert block["smoothness_derivative_order"] == 2 and block["smoothness_reflective_edges"] is False
+        assert block["lambda_smooth_fixed"] == 0.6
+        assert block["l2_reg_fixed"] == 0.0
+        assert block["smoothness_derivative_order"] == 2
+        assert block["smoothness_reflective_edges"] is False
         assert block["tune_regularization_params"] == {"lambda_smooth_decades_each_side": 3, "l2_reg_decades_each_side": 0}
-        assert raw["lambda_smooth_fixed"] == 1.0 and raw["tune_regularization_params"]["l2_reg_decades_each_side"] == 4
+        assert raw["lambda_smooth_fixed"] == 1.0
+        assert raw["tune_regularization_params"]["l2_reg_decades_each_side"] == 4
 
     def test_bspline_with_binning_or_unknown_type_raises(self):
         """Binning cannot be combined with the basis; unknown types are rejected."""
 
         with pytest.raises(ValueError, match="bin_resizing_factor"):
             resolve_temporal_basis(_jax_block("bspline", bin_resizing_factor=2), 30)
-        with pytest.raises(ValueError, match="temporal_basis.type"):
+        with pytest.raises(ValueError, match=r"temporal_basis\.type"):
             resolve_temporal_basis(_jax_block("splines"), 30)
 
 
 class TestBasisProjection:
+    """Projecting history onto the basis and mapping coefficients back to frame-axis filters."""
 
     def test_projection_and_back_conversion_round_trip(self):
         """A filter built from the basis gives the same linear predictor on the frame axis as its
@@ -293,6 +336,7 @@ class TestBasisProjection:
 
 
 class TestLagVaryingRidge:
+    """The ``l2_lag_alpha`` column scaling that implements a lag-dependent ridge."""
 
     def test_scaled_basis_is_the_lag_varying_ridge(self):
         """With ``l2_lag_alpha`` > 0 the basis columns are scaled by 1/sqrt(1 + alpha * lag**2), so a uniform
@@ -308,7 +352,9 @@ class TestLagVaryingRidge:
         block["temporal_basis"]["l2_lag_alpha"] = 0
         plain, _ = resolve_temporal_basis(block, frames)
         scale = scaled.sum(axis=0) / plain.sum(axis=0)
-        assert scale[-1] > 0.99 and scale[0] < scale[-1] and np.all(np.diff(scale) >= -1e-12)
+        assert scale[-1] > 0.99
+        assert scale[0] < scale[-1]
+        assert np.all(np.diff(scale) >= -1e-12)
         X = rng.normal(size=(400, frames)).cumsum(axis=1) / 10.0
         y = X[:, -10:].mean(axis=1) + rng.normal(scale=0.5, size=400)
         Xs, Xp = X @ scaled, X @ plain

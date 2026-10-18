@@ -23,11 +23,17 @@ CAM = "21372315"
 
 
 def _input_dict(camera=CAM):
+    """Return the minimal settings dict Gatherer reads: the
+    ``extract_phidget_data`` block naming ``camera`` as the camera whose directory
+    holds the phidget ``*.extra_data.json`` files."""
     return {"extract_phidget_data": {"Gatherer": {
         "prepare_data_for_analyses": {"extra_data_camera": camera}}}}
 
 
 def _make_session(tmp_path, records_per_file, cam=CAM, make_json=True):
+    """Create ``<tmp_path>/video/20250101_120000.<cam>/`` and, unless ``make_json`` is
+    False, write one ``NNNNNN.extra_data.json`` per entry of ``records_per_file``
+    holding that entry's records. Returns the session root (``tmp_path``)."""
     cam_dir = tmp_path / "video" / f"20250101_120000.{cam}"
     cam_dir.mkdir(parents=True)
     if make_json:
@@ -37,10 +43,15 @@ def _make_session(tmp_path, records_per_file, cam=CAM, make_json=True):
 
 
 def _gatherer(tmp_path):
+    """Return a Gatherer on the session root ``tmp_path`` configured for the default
+    camera ``CAM``."""
     return Gatherer(input_parameter_dict=_input_dict(), root_directory=str(tmp_path))
 
 
 def test_happy_path_single_file_sorted_by_sensor_time(tmp_path):
+    """Records written out of order come back sorted by sensor_time, with hum_h,
+    lux and hum_t mapped to humidity, lux and temperature, so the sensor traces
+    line up with time."""
     recs = [
         {"sensor_time": 2.0, "hum_h": 51.0, "lux": 110.0, "hum_t": 23.0},
         {"sensor_time": 1.0, "hum_h": 50.0, "lux": 100.0, "hum_t": 22.0},
@@ -53,6 +64,8 @@ def test_happy_path_single_file_sorted_by_sensor_time(tmp_path):
 
 
 def test_multiple_files_concatenated(tmp_path):
+    """Records spread over several json files are concatenated into one trace, so
+    a recording split across files loses no samples."""
     root = _make_session(tmp_path, [
         [{"sensor_time": 1.0, "hum_h": 50.0}],
         [{"sensor_time": 2.0, "hum_h": 60.0}],
@@ -62,6 +75,8 @@ def test_multiple_files_concatenated(tmp_path):
 
 
 def test_missing_keys_become_nan(tmp_path):
+    """A record lacking a sensor key yields NaN for that channel instead of a
+    KeyError, while the channels it does hold keep their values."""
     root = _make_session(tmp_path, [[{"sensor_time": 1.0, "lux": 100.0}]])
     out = _gatherer(root).prepare_data_for_analyses()
     assert np.isnan(out["humidity"][0])
@@ -106,18 +121,24 @@ def test_stray_non_extra_data_json_is_ignored(tmp_path):
 
 
 def test_no_matching_camera_dir_raises(tmp_path):
+    """No directory of the configured camera raises a FileNotFoundError that says
+    so, instead of the AttributeError / IndexError it used to crash with."""
     _make_session(tmp_path, [[{"sensor_time": 1.0}]], cam="99999999")
     with pytest.raises(FileNotFoundError, match="No camera directory"):
         _gatherer(tmp_path).prepare_data_for_analyses()
 
 
 def test_empty_json_set_raises(tmp_path):
+    """A camera directory with no phidget json files raises a FileNotFoundError
+    naming the missing phidget data rather than returning empty traces."""
     _make_session(tmp_path, [], make_json=False)
     with pytest.raises(FileNotFoundError, match="No phidget"):
         _gatherer(tmp_path).prepare_data_for_analyses()
 
 
 def test_missing_video_dir_raises(tmp_path):
+    """A session without a video directory raises a FileNotFoundError that names
+    it, instead of a raw iterdir error."""
     with pytest.raises(FileNotFoundError, match="Video directory not found"):
         _gatherer(tmp_path).prepare_data_for_analyses()
 

@@ -1,4 +1,5 @@
 """
+@author: bartulem
 Regression tests for the bout-onset selector's per-fold filter-shape
 loop in ``model_selection.py``.
 
@@ -10,32 +11,101 @@ a zero-width line. The lost per-fold data was only spotted after a
 per-fold loop. These tests pin the structural invariants the
 plotter consumes so a future regression that collapses the layout
 breaks at test time rather than after another long run.
+
+Coverage:
+
+* ``compute_filter_shapes_per_fold_vocal_onset`` -- returns one filter-shape dict
+  per CV fold, keyed by every model feature, with non-zero 1-D deltas.
+* ``load_selection_results`` -- round-trips a multi-fold ``filter_shapes`` list
+  unchanged.
 """
 
 from __future__ import annotations
 
 import pickle
+import warnings
 
 import numpy as np
 import pytest
 
+from usv_playpen.modeling.modeling_metadata import load_selection_results
+
+# The modeling import chain pulls optax -> a one-time JAX DeprecationWarning.
+# Guard the top-level import so collection does not trip ``filterwarnings =
+# ["error"]`` (mirrors the guard in ``test_model_selection_tail``).
+with warnings.catch_warnings():
+    warnings.simplefilter('ignore', DeprecationWarning)
+    from usv_playpen.modeling.model_selection import (
+        compute_filter_shapes_per_fold_vocal_onset,
+    )
+
 
 def _make_fake_gam_class(n_features: int):
     """
+    Description
+    -----------
     Build a fake ``LogisticGAM`` class whose ``.fit(...).predict_mu(grid)``
     returns a deterministic function of the grid columns so the
     partial-dependence delta is non-zero per feature.
+
+    Parameters
+    ----------
+    n_features (int)
+        Number of model features; feature ``k`` contributes ``(k + 1)`` times
+        grid column ``2 * k`` to the predicted mean.
+
+    Returns
+    -------
+    _FakeGAM (type)
+        A class with the ``LogisticGAM`` constructor / ``fit`` / ``predict_mu``
+        surface the per-fold filter-shape loop uses.
     """
 
     class _FakeGAM:
+        """Stand-in for ``pygam.LogisticGAM`` with a linear, feature-weighted mean."""
+
         def __init__(self, *_args, **_kwargs):
+            """Accept and ignore any GAM constructor arguments (terms, lam, ...)."""
             self._fitted = False
 
         def fit(self, _X, _y):
+            """
+            Description
+            -----------
+            Mark the model fitted without looking at the data.
+
+            Parameters
+            ----------
+            _X (np.ndarray)
+                Design matrix (ignored).
+            _y (np.ndarray)
+                Binary targets (ignored).
+
+            Returns
+            -------
+            self (_FakeGAM)
+                The same instance, so ``fit(...).predict_mu(...)`` chains.
+            """
             self._fitted = True
             return self
 
         def predict_mu(self, grid):
+            """
+            Description
+            -----------
+            Return a deterministic mean that varies with each feature's value
+            column, so the partial-dependence delta is non-zero per feature.
+
+            Parameters
+            ----------
+            grid (np.ndarray)
+                (n_rows, 2 * n_features) grid of interleaved value/time columns.
+
+            Returns
+            -------
+            mu (np.ndarray)
+                (n_rows,) sum over features of ``(k + 1) * grid[:, 2 * k]``.
+            """
             mu = np.zeros(grid.shape[0], dtype=float)
             for k in range(n_features):
                 mu += (k + 1) * grid[:, 2 * k]
@@ -66,7 +136,7 @@ def test_compute_filter_shapes_per_fold_returns_one_dict_per_fold(mocker):
     )
     mocker.patch(
         'usv_playpen.modeling.model_selection.te',
-        lambda *_a, **_kw: 1,
+        return_value=1,
     )
 
     n_pos_total = 12
@@ -97,10 +167,6 @@ def test_compute_filter_shapes_per_fold_returns_one_dict_per_fold(mocker):
             'n_pos_total': n_pos_total,
             'n_neg_total': n_neg_total,
         })
-
-    from usv_playpen.modeling.model_selection import (
-        compute_filter_shapes_per_fold_vocal_onset,
-    )
 
     result = compute_filter_shapes_per_fold_vocal_onset(
         cv_folds=cv_folds,
@@ -148,8 +214,6 @@ def test_load_selection_results_round_trips_multi_fold_filter_shapes(tmp_path):
     plotter consumes that exact shape. This test pins the shape so
     a future load-side refactor cannot silently flatten it.
     """
-
-    from usv_playpen.modeling.modeling_metadata import load_selection_results
 
     history_frames = 5
     feature_names = ['feat_a', 'feat_b']

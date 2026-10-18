@@ -12,11 +12,18 @@ merging. The tests pin: the filename parsers / prefix inference, the
 leaf-level metadata diff, and a full ``consolidate()`` round-trip built
 from synthetic pickles under ``tmp_path`` (never committed) — including
 the metadata-mismatch and malformed-input failure modes.
+
+Coverage: ``consolidate_univariate_results`` (feature-index parsing, default
+output filename, ``_diff_metadata``, ``consolidate`` round-trip / gap / count /
+metadata-mismatch / legacy / delete / explicit-output paths) and
+``consolidate_model_selection_results`` (step-index parsing, prefix inference,
+run-timestamp extraction, default output filename and its tag grafting,
+``consolidate`` round-trip / mismatch / legacy / non-contiguous / move-to-steps
+paths), plus both modules' ``__main__`` CLI blocks.
 """
 
 from __future__ import annotations
 
-import pathlib
 import pickle
 import runpy
 import sys
@@ -26,7 +33,6 @@ import pytest
 
 from usv_playpen.modeling import consolidate_model_selection_results as cms
 from usv_playpen.modeling import consolidate_univariate_results as cuv
-
 
 # Helpers
 
@@ -57,6 +63,9 @@ def _step_pkl(step_data, md_in, md_run):
 
 
 class TestUnivariateHelpers:
+    """Pure helpers of the univariate consolidator: the filename parsers and the
+    metadata diff are what the merge relies on to order features and explain an
+    abort, so each is pinned on hand-built inputs."""
 
     def test_parse_feature_idx_extracts_first_numeric_token(self):
         """The first integer token after the leading ``univariate`` tag is
@@ -92,8 +101,29 @@ class TestUnivariateHelpers:
 
 
 class TestUnivariateConsolidate:
+    """``consolidate_univariate_results.consolidate`` end to end on synthetic
+    per-feature pickles under ``tmp_path``: the happy merge, every abort that
+    keeps an incomplete or inconsistent run from being merged silently, and the
+    output-placement options."""
 
     def _md(self):
+        """
+        Description
+        -----------
+        Builds the matching ``_input_metadata`` / ``_run_metadata`` pair that
+        every per-feature pickle in a consistent univariate run carries.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        md_pair (tuple of dict)
+            ``(input_metadata, run_metadata)``: the analysis tag + cohort, and
+            the split strategy.
+        """
+
         return ({'analysis_tag': 'tag', 'experimental_condition': 'male_mute_partner'},
                 {'split_strategy': 'mixed'})
 
@@ -108,9 +138,10 @@ class TestUnivariateConsolidate:
                    _univariate_feature_pkl('feat_b', md_in, md_run))
 
         out_path = cuv.consolidate(str(tmp_path))
-        with open(out_path, 'rb') as fh:
+        with Path(out_path).open('rb') as fh:
             cons = pickle.load(fh)
-        assert 'feat_a' in cons and 'feat_b' in cons
+        assert 'feat_a' in cons
+        assert 'feat_b' in cons
         assert cons['_input_metadata'] == md_in
         assert cons['_run_metadata'] == md_run
         assert cons['_consolidation_metadata']['n_files_merged'] == 2
@@ -136,7 +167,7 @@ class TestUnivariateConsolidate:
         with pytest.raises(ValueError, match="input pickle holds 3"):
             cuv.consolidate(str(tmp_path))
         _write_pkl(tmp_path / 'univariate_tag_0002_c.pkl', _univariate_feature_pkl('feat_c', md_in, md_run))
-        assert pathlib.Path(cuv.consolidate(str(tmp_path))).is_file()
+        assert Path(cuv.consolidate(str(tmp_path))).is_file()
 
     def test_metadata_mismatch_raises(self, tmp_path):
         """A per-feature file disagreeing on a run-level metadata key
@@ -147,7 +178,7 @@ class TestUnivariateConsolidate:
                    _univariate_feature_pkl('feat_a', md_in, md_run))
         _write_pkl(tmp_path / 'univariate_tag_0001_b.pkl',
                    _univariate_feature_pkl('feat_b', md_in, {'split_strategy': 'session'}))
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='`_run_metadata` mismatch'):
             cuv.consolidate(str(tmp_path))
 
     def test_input_metadata_mismatch_raises(self, tmp_path):
@@ -171,7 +202,7 @@ class TestUnivariateConsolidate:
         md_in, md_run = self._md()
         bad = {'feat_a': {}, 'feat_b': {}, '_input_metadata': md_in, '_run_metadata': md_run}
         _write_pkl(tmp_path / 'univariate_tag_0000_bad.pkl', bad)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='Expected exactly one feature key'):
             cuv.consolidate(str(tmp_path))
 
     def test_legacy_without_flag_raises(self, tmp_path):
@@ -179,7 +210,7 @@ class TestUnivariateConsolidate:
         ``allow_legacy`` is set."""
 
         _write_pkl(tmp_path / 'univariate_tag_0000_a.pkl', {'feat_a': {}})
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='allow_legacy'):
             cuv.consolidate(str(tmp_path))
 
     def test_empty_directory_raises(self, tmp_path):
@@ -219,9 +250,10 @@ class TestUnivariateConsolidate:
 
         out_path = cuv.consolidate(str(tmp_path), allow_legacy=True)
         assert Path(out_path).name.startswith('legacy_univariate_')
-        with open(out_path, 'rb') as fh:
+        with Path(out_path).open('rb') as fh:
             cons = pickle.load(fh)
-        assert 'feat_a' in cons and 'feat_b' in cons
+        assert 'feat_a' in cons
+        assert 'feat_b' in cons
         assert '_input_metadata' not in cons
         assert '_run_metadata' not in cons
         assert cons['_consolidation_metadata']['n_files_merged'] == 2
@@ -259,6 +291,9 @@ class TestUnivariateConsolidate:
 
 
 class TestSelectionHelpers:
+    """Pure helpers of the model-selection consolidator: step-index parsing,
+    prefix inference, timestamp extraction and default-filename construction
+    decide which pickles are merged and where the result lands."""
 
     def test_parse_step_idx_matches_prefix(self):
         """A filename matching ``<prefix><k>.pkl`` yields ``k``; a
@@ -283,7 +318,7 @@ class TestSelectionHelpers:
                  tmp_path / 'model_selection_bbb_step_0.pkl']
         for f in files:
             f.touch()
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match=r'Multiple `model_selection_\.\.\._step_` prefixes'):
             cms._infer_prefix(files)
 
     def test_infer_prefix_none_match_raises(self, tmp_path):
@@ -291,7 +326,7 @@ class TestSelectionHelpers:
 
         files = [tmp_path / 'unrelated.pkl']
         files[0].touch()
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match=r'Could not infer a `model_selection_\.\.\._step_` prefix'):
             cms._infer_prefix(files)
 
     def test_extract_run_timestamp(self):
@@ -379,8 +414,29 @@ class TestSelectionHelpers:
 
 
 class TestSelectionConsolidate:
+    """``consolidate_model_selection_results.consolidate`` end to end on
+    synthetic per-step pickles: step ordering, the metadata-agreement aborts,
+    prefix inference, legacy handling, the non-contiguous warning and the
+    post-merge relocation / output-placement options."""
 
     def _md(self):
+        """
+        Description
+        -----------
+        Builds the matching ``_input_metadata`` / ``_run_metadata`` pair that
+        every per-step pickle in a consistent selection run carries.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        md_pair (tuple of dict)
+            ``(input_metadata, run_metadata)``: sex, cohort, analysis tag and an
+            empty ``analysis_specific`` block, and the split strategy.
+        """
+
         return ({'target_mouse_sex': 'male',
                  'experimental_condition': 'intact_partners_male',
                  'analysis_tag': 'bout',
@@ -398,7 +454,7 @@ class TestSelectionConsolidate:
                    _step_pkl({'selected_feature': 'b'}, md_in, md_run))
 
         out_path = cms.consolidate(str(tmp_path), prefix='model_selection_test_step_')
-        with open(out_path, 'rb') as fh:
+        with Path(out_path).open('rb') as fh:
             cons = pickle.load(fh)
         assert isinstance(cons['steps'], list)
         assert len(cons['steps']) == 2
@@ -416,7 +472,7 @@ class TestSelectionConsolidate:
                    _step_pkl({'selected_feature': 'a'}, md_in, md_run))
         _write_pkl(tmp_path / 'model_selection_test_step_1.pkl',
                    _step_pkl({'selected_feature': 'b'}, md_in, {'split_strategy': 'session'}))
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='`_run_metadata` mismatch'):
             cms.consolidate(str(tmp_path), prefix='model_selection_test_step_')
 
     def test_empty_directory_raises(self, tmp_path):
@@ -447,7 +503,7 @@ class TestSelectionConsolidate:
                     '_run_metadata': md_run, '_univariate_metadata': md_univ})
 
         out_path = cms.consolidate(str(tmp_path))  # prefix inferred
-        with open(out_path, 'rb') as fh:
+        with Path(out_path).open('rb') as fh:
             cons = pickle.load(fh)
         assert len(cons['steps']) == 2
         assert cons['_univariate_metadata'] == md_univ
@@ -505,7 +561,7 @@ class TestSelectionConsolidate:
                                    prefix='model_selection_test_step_',
                                    allow_legacy=True)
         assert Path(out_path).name.startswith('legacy_selection_')
-        with open(out_path, 'rb') as fh:
+        with Path(out_path).open('rb') as fh:
             cons = pickle.load(fh)
         assert len(cons['steps']) == 2
         assert '_input_metadata' not in cons
@@ -534,7 +590,7 @@ class TestSelectionConsolidate:
                                    prefix='model_selection_test_step_')
         captured = capsys.readouterr()
         assert 'not contiguous' in captured.out
-        with open(out_path, 'rb') as fh:
+        with Path(out_path).open('rb') as fh:
             cons = pickle.load(fh)
         assert len(cons['steps']) == 2
 
@@ -623,7 +679,8 @@ class TestConsolidatorCLI:
             'usv_playpen.modeling.consolidate_univariate_results',
             ['--input_dir', str(tmp_path / 'absent')], monkeypatch,
         )
-        assert isinstance(exc, SystemExit) and exc.code == 1
+        assert isinstance(exc, SystemExit)
+        assert exc.code == 1
         assert 'FATAL' in capsys.readouterr().err
 
     def test_selection_cli_round_trip(self, tmp_path, monkeypatch, capsys):
@@ -654,5 +711,6 @@ class TestConsolidatorCLI:
             ['--input_dir', str(tmp_path / 'absent'),
              '--prefix', 'model_selection_test_step_'], monkeypatch,
         )
-        assert isinstance(exc, SystemExit) and exc.code == 1
+        assert isinstance(exc, SystemExit)
+        assert exc.code == 1
         assert 'FATAL' in capsys.readouterr().err

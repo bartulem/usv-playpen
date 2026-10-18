@@ -7,6 +7,12 @@ time-gap merge -> asymmetric dilate).
 The mask-generation pipeline tests (``test_generate_masks``) stub the detector
 with a fake, so the real algorithm is exercised here directly on tiny synthetic
 spectrograms with known bright blobs.
+
+Coverage: the detector config (list -> tuple coercion, invalid-field refusal),
+the box -> xyxy axis swap, the time-gap merge (time-adjacent boxes that overlap
+in frequency join, frequency-stacked USVs stay apart), the ridge map on a
+degenerate spectrogram, and detect_boxes on a single bright blob, a degenerate
+spectrogram and a uniform one.
 """
 
 from __future__ import annotations
@@ -21,7 +27,6 @@ from usv_playpen.processing.masks.cc_box_detector import (
     merge_time_gaps,
     ridge_map,
 )
-
 
 # BoxDetectorConfig
 

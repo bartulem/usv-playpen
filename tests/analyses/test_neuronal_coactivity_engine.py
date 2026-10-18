@@ -10,10 +10,21 @@ permutation / onset-sampling). The significance tests assert that the
 ``seed`` parameter makes results reproducible — locking in the N2 seed
 plumbing so coactivity significance is no longer dependent on global
 RNG entropy.
+
+Coverage: snippet counts, the three coactivity metrics, the joint circular shift
+and the sliding-window sweep against hand-computed values; bootstrap resampling
+without duplicate trials and the subsample-size rule; the false-positive rate of
+the bootstrap-vs-null comparison; seed reproducibility of every significance
+routine; finite-only null draws and NaN observed deltas in the label permutation
+test; session loading from the catalog; group acoustics (``peak_amp_ch`` routing,
+the channel-0 fallback and forwarded STFT parameters); the shipped
+``neuronal_coactivity`` settings block; and the mid-level group-comparison helpers.
 """
 
 from __future__ import annotations
 
+import importlib.resources
+import json
 import pathlib
 
 import h5py
@@ -209,6 +220,22 @@ def test_bootstrap_draws_distinct_trials_and_resolves_the_subsample_size(monkeyp
     seen: list[np.ndarray] = []
 
     def recording_metrics(count_matrix):
+        """
+        Description
+        -----------
+        Stands in for ``compute_coactivity_metrics``: stores row 0 of every resampled
+        matrix (the trial indices it holds) and returns zero metrics.
+
+        Parameters
+        ----------
+        count_matrix (np.ndarray)
+            The resampled (neurons, trials) matrix; row 0 carries trial indices.
+
+        Returns
+        -------
+        metrics (dict)
+            Zero ``r_sc`` / ``similarity`` / ``pop_corr`` values.
+        """
         seen.append(count_matrix[0].copy())
         return {"r_sc": 0.0, "similarity": 0.0, "pop_corr": 0.0}
 
@@ -271,15 +298,15 @@ def test_bootstrap_vs_null_false_positive_rate_is_near_alpha_under_a_true_null()
     null = {"similarity": [], "pop_corr": []}
     for _ in range(99):
         metrics = engine.compute_coactivity_metrics(rng.poisson(rates, size=(20, n_subsample)).astype(float))
-        for metric in null:
-            null[metric].append(metrics[metric])
+        for metric, null_values in null.items():
+            null_values.append(metrics[metric])
     rejections = dict.fromkeys(null, 0)
     for sim in range(n_sims):
         group = rng.poisson(rates, size=(20, 40)).astype(float)
         boot = engine.bootstrap_coactivity_distribution(group, 40, n_iterations=30, seed=sim,
                                                         subsample_fraction=0.8)
-        for metric in null:
-            _, _, p_val, _ = engine.bootstrap_vs_null_stats(boot[metric], np.asarray(null[metric]))
+        for metric, null_values in null.items():
+            _, _, p_val, _ = engine.bootstrap_vs_null_stats(boot[metric], np.asarray(null_values))
             rejections[metric] += int(p_val <= alpha)
     for metric, count in rejections.items():
         assert count / n_sims <= 1.5 * alpha, f"{metric}: false-positive rate {count / n_sims:.2f}"
@@ -296,7 +323,7 @@ def test_circular_shuffle_is_seed_reproducible():
     """
 
     onsets = np.array([10.0, 30.0, 50.0, 70.0, 90.0])
-    kwargs = dict(total_duration=100.0, window_s=5.0, n_shuffles=12)
+    kwargs = {"total_duration": 100.0, "window_s": 5.0, "n_shuffles": 12}
     a = engine.perform_circular_shuffle(onsets, _neural_data(), seed=7, **kwargs)
     b = engine.perform_circular_shuffle(onsets, _neural_data(), seed=7, **kwargs)
     c = engine.perform_circular_shuffle(onsets, _neural_data(), seed=8, **kwargs)
@@ -323,13 +350,13 @@ def test_chained_circular_shuffle_is_seed_reproducible():
 
     onsets = np.array([10.0, 30.0, 50.0, 70.0, 90.0])
     nd = _neural_data()
-    kwargs = dict(
-        session_onsets=[onsets, onsets],
-        session_neural_data=[nd, nd],
-        session_durations=[100.0, 100.0],
-        window_s=5.0,
-        n_shuffles=10,
-    )
+    kwargs = {
+        "session_onsets": [onsets, onsets],
+        "session_neural_data": [nd, nd],
+        "session_durations": [100.0, 100.0],
+        "window_s": 5.0,
+        "n_shuffles": 10,
+    }
     a = engine.perform_chained_circular_shuffle(seed=3, **kwargs)
     b = engine.perform_chained_circular_shuffle(seed=3, **kwargs)
     c = engine.perform_chained_circular_shuffle(seed=4, **kwargs)
@@ -405,7 +432,7 @@ def test_sample_onsets_across_sessions_is_seed_reproducible():
     a = engine.sample_onsets_across_sessions(sessions, "group", n_total=4, seed=5)
     b = engine.sample_onsets_across_sessions(sessions, "group", n_total=4, seed=5)
     assert len(a) == 2
-    for arr_a, arr_b in zip(a, b):
+    for arr_a, arr_b in zip(a, b, strict=True):
         np.testing.assert_array_equal(arr_a, arr_b)
         np.testing.assert_array_equal(arr_a, np.sort(arr_a))
     assert sum(arr.size for arr in a) == 4
@@ -624,6 +651,22 @@ def test_label_permutation_test_counts_only_finite_null_draws(monkeypatch):
     calls = {"n": 0}
 
     def fake_metrics(count_matrix):
+        """
+        Description
+        -----------
+        Stands in for ``compute_coactivity_metrics``: returns the matrix sum as ``r_sc``
+        for the two observed groups and NaN for both halves of every other permutation.
+
+        Parameters
+        ----------
+        count_matrix (np.ndarray)
+            The group count matrix being scored.
+
+        Returns
+        -------
+        metrics (dict)
+            ``{'r_sc': value}`` with value the matrix sum or NaN.
+        """
         calls["n"] += 1
         # calls 1-2 are the observed groups; then two per permutation (a, b)
         permutation = (calls["n"] - 3) // 2
@@ -662,6 +705,22 @@ def test_label_permutation_test_non_finite_observed_delta_gives_nan_p(monkeypatc
     calls = {"n": 0}
 
     def fake_metrics(count_matrix):
+        """
+        Description
+        -----------
+        Stands in for ``compute_coactivity_metrics``: NaN on the first invocation (the
+        first observed group), the matrix sum on every later one.
+
+        Parameters
+        ----------
+        count_matrix (np.ndarray)
+            The group count matrix being scored.
+
+        Returns
+        -------
+        metrics (dict)
+            ``{'r_sc': value}`` with value NaN or the matrix sum.
+        """
         calls["n"] += 1
         return {"r_sc": np.nan if calls["n"] == 1 else float(count_matrix.sum())}
 
@@ -844,7 +903,7 @@ def _write_session_dir(
     frame_rate : float
         Recording frame rate written to the H5.
     category_column : str
-        ``usv_summary`` column used to split calls into the two groups.
+        ``usv_summary`` column used to split USVs into the two groups.
     rows : list[dict] or None
         Explicit ``usv_summary`` rows; when None a default focal/other split is
         written.
@@ -1005,10 +1064,10 @@ def test_load_animal_sessions_strips_track_names_and_logs_unattributed_sessions(
     with h5py.File(name=session / "mouse_translated_rotated_metric.h5", mode="r+") as track_file:
         del track_file["track_names"]
         track_file.create_dataset("track_names", data=np.array([b" mouse_focal", b"mouse_other "]))
-    load_kwargs = dict(
-        data_root=tmp_path, catalog=catalog, category_column="qlvm_category", group_a_ids=[1], group_b_ids=[3],
-        cluster_group="good", require_somatic=True, brain_areas={"PAG"},
-    )
+    load_kwargs = {
+        "data_root": tmp_path, "catalog": catalog, "category_column": "qlvm_category", "group_a_ids": [1],
+        "group_b_ids": [3], "cluster_group": "good", "require_somatic": True, "brain_areas": {"PAG"},
+    }
     out = engine.load_animal_sessions(animal_id, ["20240101_run0"], message_output=lambda *_a: None, **load_kwargs)
     assert out[0]["group_a_df"].height == 3
 
@@ -1082,7 +1141,7 @@ def test_load_animal_sessions_absent_category_column_raises(tmp_path):
     assert "QLVM category labels are not available" in str(excinfo.value)
 
 
-def test_compute_group_acoustics_reads_peak_amp_ch(tmp_path, monkeypatch):
+def test_compute_group_acoustics_reads_peak_amp_ch(monkeypatch):
     """
     Description
     -----------
@@ -1099,6 +1158,28 @@ def test_compute_group_acoustics_reads_peak_amp_ch(tmp_path, monkeypatch):
     captured = {}
 
     def _fake_extract(session_root, onsets, peak_channels, window_s):
+        """
+        Description
+        -----------
+        Stands in for ``extract_snippet_acoustics``: records every argument it receives
+        and returns a zero RMS vector of matching length.
+
+        Parameters
+        ----------
+        session_root (str)
+            Session root forwarded by the helper.
+        onsets (np.ndarray)
+            USV onsets in seconds.
+        peak_channels (np.ndarray)
+            Per-USV peak-amplitude channels.
+        window_s (float)
+            Snippet window in seconds.
+
+        Returns
+        -------
+        acoustics (dict)
+            ``{'rms': zeros}`` with one entry per onset.
+        """
         captured["session_root"] = session_root
         captured["onsets"] = onsets
         captured["peak_channels"] = peak_channels
@@ -1129,7 +1210,32 @@ def test_compute_group_acoustics_forwards_acoustics_params(monkeypatch):
 
     captured = {}
 
-    def _fake_extract(session_root, onsets, peak_channels, window_s, **kwargs):
+    def _fake_extract(_session_root, onsets, _peak_channels, _window_s, **kwargs):
+        """
+        Description
+        -----------
+        Stands in for ``extract_snippet_acoustics``: records the keyword arguments
+        (the forwarded STFT parameters) and returns a zero RMS vector.
+
+        Parameters
+        ----------
+        _session_root (str)
+            Session root (unused).
+        onsets (np.ndarray)
+            USV onsets in seconds.
+        _peak_channels (np.ndarray)
+            Per-USV channels (unused).
+        _window_s (float)
+            Snippet window (unused).
+        **kwargs (dict)
+            Forwarded acoustics parameters.
+
+        Returns
+        -------
+        acoustics (dict)
+            ``{'rms': zeros}`` with one entry per onset.
+        """
+
         captured["kwargs"] = kwargs
         return {"rms": np.zeros(onsets.shape[0])}
 
@@ -1147,13 +1253,10 @@ def test_shipped_neuronal_coactivity_block_schema():
     shipped block must expose the expected scalar hyperparameters and the nested
     ``acoustics`` STFT sub-block."""
 
-    import importlib.resources
-    import json as _json
-
     settings_traversable = importlib.resources.files("usv_playpen").joinpath(
         "_parameter_settings", "analyses_settings.json"
     )
-    block = _json.loads(settings_traversable.read_text())["neuronal_coactivity"]
+    block = json.loads(settings_traversable.read_text())["neuronal_coactivity"]
     for key in ("seed", "window_s", "bootstrap_n", "n_boot", "bootstrap_subsample_fraction", "n_shuffles",
                 "n_permutations", "per_session_n_shuffles", "n_amplitude_bins",
                 "min_bin_trials", "min_shift_s", "max_shift_s"):
@@ -1163,7 +1266,7 @@ def test_shipped_neuronal_coactivity_block_schema():
         assert acoustic_key in block["acoustics"], f"missing acoustics key: {acoustic_key}"
 
 
-def test_compute_group_acoustics_missing_peak_amp_ch_falls_back_to_channel_zero(tmp_path, monkeypatch):
+def test_compute_group_acoustics_missing_peak_amp_ch_falls_back_to_channel_zero(monkeypatch):
     """
     Description
     -----------
@@ -1178,7 +1281,29 @@ def test_compute_group_acoustics_missing_peak_amp_ch_falls_back_to_channel_zero(
 
     captured = {}
 
-    def _fake_extract(session_root, onsets, peak_channels, window_s):
+    def _fake_extract(_session_root, onsets, peak_channels, _window_s):
+        """
+        Description
+        -----------
+        Stands in for ``extract_snippet_acoustics``: records the channel vector it
+        receives and returns a zero RMS vector.
+
+        Parameters
+        ----------
+        _session_root (str)
+            Session root (unused).
+        onsets (np.ndarray)
+            USV onsets in seconds.
+        peak_channels (np.ndarray)
+            Per-USV channels; all zero on the fallback path.
+        _window_s (float)
+            Snippet window (unused).
+
+        Returns
+        -------
+        acoustics (dict)
+            ``{'rms': zeros}`` with one entry per onset.
+        """
         captured["peak_channels"] = peak_channels
         return {"rms": np.zeros(onsets.shape[0])}
 
@@ -1233,7 +1358,8 @@ def test_pool_group_count_matrices_concatenates_trials():
     assert pooled_a.shape == (3, 10)   # 5 group-A onsets x 2 sessions, 3 neurons
     assert pooled_b.shape == (3, 8)    # 4 group-B onsets x 2 sessions
     empty_a, empty_b = engine.pool_group_count_matrices([], window_s=1.0)
-    assert empty_a.shape == (0, 0) and empty_b.shape == (0, 0)
+    assert empty_a.shape == (0, 0)
+    assert empty_b.shape == (0, 0)
 
 
 @pytest.mark.filterwarnings("ignore:Mean of empty slice:RuntimeWarning")
@@ -1293,7 +1419,8 @@ def test_per_session_group_metrics_filters_deltas_and_null():
     rows = engine.per_session_group_metrics(sessions, window_s=1.0)
     assert [row["session_id"] for row in rows] == ["s0", "s1"]   # sparse session dropped
     for row in rows:
-        assert row["n_a"] == 5 and row["n_b"] == 4
+        assert row["n_a"] == 5
+        assert row["n_b"] == 4
         assert set(row["metrics_a"]) == {"r_sc", "similarity", "pop_corr"}
         for metric in row["deltas"]:
             expected = row["metrics_a"][metric] - row["metrics_b"][metric]
@@ -1319,14 +1446,15 @@ def test_run_group_comparison_keys_and_reproducibility():
     """
 
     sessions = _group_sessions()
-    kwargs = dict(window_s=1.0, bootstrap_n=6, n_boot=32, n_shuffles=16, n_permutations=32,
-                  subsample_fraction=0.8)
+    kwargs = {"window_s": 1.0, "bootstrap_n": 6, "n_boot": 32, "n_shuffles": 16, "n_permutations": 32,
+              "subsample_fraction": 0.8}
     out = engine.run_group_comparison(sessions, seed=1, **kwargs)
     assert set(out) == {
         "pooled_a", "pooled_b", "boot_a", "boot_b", "perm",
         "chained_null_a", "chained_null_b", "per_session", "bootstrap_n",
     }
-    assert out["pooled_a"].shape == (3, 10) and out["pooled_b"].shape == (3, 8)
+    assert out["pooled_a"].shape == (3, 10)
+    assert out["pooled_b"].shape == (3, 8)
     assert len(out["per_session"]) == 2
 
     again = engine.run_group_comparison(sessions, seed=1, **kwargs)

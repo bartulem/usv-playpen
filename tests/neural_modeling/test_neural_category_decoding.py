@@ -1,19 +1,27 @@
 """
 @author: bartulem
+Unit tests for ``usv_playpen.neural_modeling.neural_category_decoding``.
 
 Coverage: the categorical decoding target -- code mapping, per-category rates, the posterior, the
 leave-one-session-out context, the amplitude calibration and the gain's key roster.
 """
+
 from __future__ import annotations
+
+from typing import ClassVar
 
 import numpy as np
 import pytest
 
-from usv_playpen.neural_modeling.neural_category_decoding import (category_codes, category_context,
-                                                                  category_gain, category_posterior,
-                                                                  category_rates,
-                                                                  decoding_spike_sufficiency,
-                                                                  tuned_category_amplitude)
+from usv_playpen.neural_modeling.neural_category_decoding import (
+    category_codes,
+    category_context,
+    category_gain,
+    category_posterior,
+    category_rates,
+    decoding_spike_sufficiency,
+    tuned_category_amplitude,
+)
 
 SETTINGS = {"category_surface": {"ridge_selection": {"mode": "count_normalized_fixed",
                                                      "ridge_frac": 0.02},
@@ -24,7 +32,34 @@ SETTINGS = {"category_surface": {"ridge_selection": {"mode": "count_normalized_f
 
 
 def _synthetic(n_sessions=3, per_session=200, n_categories=4, strength=3.0, seed=0):
-    """A unit whose rate depends on category, with the strength of that dependence controllable."""
+    """
+    Description
+    -----------
+    Builds a synthetic unit whose Poisson spike count depends on the category of each event, with the
+    strength of that dependence controllable.
+
+    Parameters
+    ----------
+    n_sessions (int)
+        Number of sessions.
+    per_session (int)
+        Events per session.
+    n_categories (int)
+        Number of categories; labels are drawn uniformly from them.
+    strength (float)
+        Rates run linearly from 1.0 to ``1.0 + strength`` across categories; 0 gives an untuned unit.
+    seed (int)
+        Seed for ``np.random.default_rng``.
+
+    Returns
+    -------
+    counts (np.ndarray)
+        Spike count of every event as float.
+    labels (np.ndarray)
+        Integer category code of every event.
+    session (np.ndarray)
+        Session index of every event.
+    """
     rng = np.random.default_rng(seed)
     labels, counts, session = [], [], []
     rates = np.linspace(1.0, 1.0 + strength, n_categories)
@@ -38,7 +73,10 @@ def _synthetic(n_sessions=3, per_session=200, n_categories=4, strength=3.0, seed
 
 
 class TestCategoryCodes:
+    """Mapping raw category labels to contiguous integer codes."""
     def test_labels_are_made_contiguous(self):
+        """Labels {1, 2, 4} must map to codes {0, 1, 2} in sorted order with every event kept, so per-category
+        arrays can be indexed directly by code without gaps."""
         codes, kept, values = category_codes(np.array([1.0, 4.0, 4.0, 2.0]))
         assert codes.tolist() == [0, 2, 2, 1]
         assert values.tolist() == [1.0, 2.0, 4.0]
@@ -53,7 +91,10 @@ class TestCategoryCodes:
 
 
 class TestRates:
+    """The ridge-shrunk per-category firing rates."""
     def test_rates_recover_the_generating_values(self):
+        """With 4,000 events and no ridge, the estimated per-category rates must match the generating rates
+        1..4 within 0.15, so the rate estimator is unbiased."""
         counts, labels, _ = _synthetic(n_sessions=1, per_session=4000, strength=3.0)
         rates = category_rates(counts, labels, 4, ridge=0.0)
         assert np.allclose(rates, np.linspace(1.0, 4.0, 4), atol=0.15)
@@ -66,6 +107,8 @@ class TestRates:
         assert (rates > 0).all()
 
     def test_the_ridge_shrinks_toward_the_pooled_rate(self):
+        """A heavy ridge must pull both category rates toward the pooled mean (the high one down, the low one
+        up) without overshooting it, so the ridge regularises rather than distorts the profile."""
         counts = np.array([10.0, 10.0, 0.0, 0.0])
         labels = np.array([0, 0, 1, 1])
         loose = category_rates(counts, labels, 2, ridge=0.0)
@@ -75,6 +118,7 @@ class TestRates:
 
 
 class TestPosterior:
+    """The Poisson category posterior given a spike count, rates, prior and amplitude."""
     def test_alpha_zero_collapses_to_the_prior(self):
         """With no amplitude the categories share a rate, so the count carries nothing."""
         prior = np.array([0.5, 0.3, 0.2])
@@ -89,13 +133,18 @@ class TestPosterior:
             assert post[0, 1] > post[0, 0]
 
     def test_rows_are_normalised(self):
+        """Every row of the log-posterior must exponentiate to a distribution summing to 1, so the decoded
+        entropy and log-score are well defined."""
         post = category_posterior(np.arange(1.0, 6.0), np.array([1.0, 2.0, 3.0]),
                                   np.array([0.2, 0.3, 0.5]), 1.0, 1.0)
         assert np.allclose(np.exp(post).sum(axis=1), 1.0)
 
 
 class TestContext:
+    """The leave-one-session-out folds and their training-only priors."""
     def test_one_session_is_refused(self):
+        """A single session leaves nothing to hold out, so building folds must raise ``ValueError`` ("at least two
+        sessions")."""
         with pytest.raises(ValueError, match="at least two sessions"):
             category_context(np.array([0, 1, 0]), np.zeros(3, dtype=int))
 
@@ -108,12 +157,15 @@ class TestContext:
         assert held0["prior"][1] > held0["prior"][0]
 
     def test_an_absent_category_keeps_prior_mass(self):
+        """A category absent from a fold's training sessions must still get positive prior mass, otherwise its
+        held-out events would score -inf."""
         labels = np.array([0, 0, 1, 1])
         folds = category_context(labels, np.array([0, 0, 1, 1]))
         assert all((f["prior"] > 0).all() for f in folds)
 
 
 class TestAmplitude:
+    """The inner leave-one-session-out amplitude calibration."""
     def test_a_single_training_session_cannot_tune(self):
         """Two-session units have no inner rotation; the fallback must be explicit, not silent."""
         counts, labels, session = _synthetic(n_sessions=2, per_session=100)
@@ -121,6 +173,8 @@ class TestAmplitude:
         assert tuned_category_amplitude(counts, labels, folds[0], SETTINGS) == 1.0
 
     def test_disabling_the_calibration_returns_one(self):
+        """With ``amplitude_calibration.enabled = False`` the amplitude must be exactly 1.0, so the switch turns
+        the tuning off completely."""
         counts, labels, session = _synthetic()
         folds = category_context(labels, session)
         off = {"category_surface": {**SETTINGS["category_surface"],
@@ -131,17 +185,23 @@ class TestAmplitude:
 
 
 class TestGain:
+    """The decoding gain over the prior and its per-fold bookkeeping."""
     def test_a_category_tuned_unit_scores_above_zero(self):
+        """A unit whose rate rises fourfold across categories must decode with a gain above 0.05 nats."""
         counts, labels, session = _synthetic(strength=4.0)
         folds = category_context(labels, session)
         assert category_gain(counts, labels, folds, SETTINGS)["gain"] > 0.05
 
     def test_an_untuned_unit_scores_near_zero(self):
+        """A unit with the same rate in every category must decode with a gain within 0.02 of zero, so the
+        calibrated decoder does not invent information."""
         counts, labels, session = _synthetic(strength=0.0)
         folds = category_context(labels, session)
         assert abs(category_gain(counts, labels, folds, SETTINGS)["gain"]) < 0.02
 
     def test_a_permutation_destroys_the_gain(self):
+        """Permuting labels within session must drop the gain of a tuned unit by more than 0.03, so the
+        within-session permutation null is sensitive to real tuning."""
         counts, labels, session = _synthetic(strength=4.0)
         folds = category_context(labels, session)
         rng = np.random.default_rng(0)
@@ -156,7 +216,7 @@ class TestGain:
     def test_the_permutation_stays_within_session(self):
         """Permuting across sessions would also break the session structure the folds rely on."""
         counts, labels, session = _synthetic()
-        folds = category_context(labels, session)
+        category_context(labels, session)
         rng = np.random.default_rng(1)
         perm = np.arange(counts.size)
         for s in np.unique(session):
@@ -177,6 +237,8 @@ class TestGain:
         assert len(r["alphas"]) == 3
 
     def test_the_leave_one_fold_out_minimum_is_scored_on_n_minus_one_folds(self):
+        """The leave-one-fold-out minimum must not exceed the best single fold's gain, as expected of a score
+        recomputed with one fold removed."""
         counts, labels, session = _synthetic(strength=4.0)
         folds = category_context(labels, session)
         r = category_gain(counts, labels, folds, SETTINGS)
@@ -193,6 +255,8 @@ class TestSilentSessions:
     """
 
     def test_a_silent_held_out_session_scores_zero_not_nan(self):
+        """Zeroing the spikes of held-out session 1 must leave the overall gain finite and that fold's gain
+        within 1e-3 of zero."""
         counts, labels, session = _synthetic(strength=3.0)
         counts[session == 1] = 0.0
         folds = category_context(labels, session)
@@ -204,6 +268,7 @@ class TestSilentSessions:
         assert abs(silent["gain"]) < 1e-3
 
     def test_a_unit_silent_everywhere_is_finite_and_flat(self):
+        """A unit with no spikes at all must give a finite gain within 1e-3 of zero rather than NaN."""
         counts, labels, session = _synthetic()
         folds = category_context(labels, session)
         result = category_gain(np.zeros_like(counts), labels, folds, SETTINGS)
@@ -211,6 +276,8 @@ class TestSilentSessions:
         assert abs(result["gain"]) < 1e-3
 
     def test_the_posterior_stays_finite_at_zero_exposure(self):
+        """At zero exposure the log-posterior must be finite and equal to the uniform prior, so ``0 * log(0)``
+        never reaches the score."""
         post = category_posterior(np.zeros(3), np.array([1.0, 2.0, 3.0, 4.0]),
                                   np.full(4, 0.25), 1.0, 0.0)
         assert np.isfinite(post).all()
@@ -225,13 +292,18 @@ class TestSpikeSufficiency:
     gate therefore protects every analysis that reads the gain rather than the p-value.
     """
 
-    SETTINGS = {"data_sufficiency": {"min_decoding_spikes": 50}}
+    SETTINGS: ClassVar[dict] = {"data_sufficiency": {"min_decoding_spikes": 50}}
 
     def test_a_well_firing_unit_is_sufficient(self):
+        """200 spikes against a 50-spike floor must be sufficient, with the count recorded and no reason given."""
         v = decoding_spike_sufficiency(np.full(100, 2.0), self.SETTINGS)
-        assert v["sufficient"] and v["n_spikes"] == 200 and v["reason"] is None
+        assert v["sufficient"]
+        assert v["n_spikes"] == 200
+        assert v["reason"] is None
 
     def test_a_near_silent_unit_is_flagged_with_a_reason(self):
+        """Two spikes against a 50-spike floor must be insufficient, with a reason naming the floor and the count
+        recorded."""
         v = decoding_spike_sufficiency(np.array([1.0, 1.0]), self.SETTINGS)
         assert not v["sufficient"]
         assert "below min_decoding_spikes=50" in v["reason"]
@@ -241,8 +313,11 @@ class TestSpikeSufficiency:
         """The standing rule: the quantity is recorded whether or not anything gates on it."""
         v = decoding_spike_sufficiency(np.array([1.0, 1.0]),
                                        {"data_sufficiency": {"min_decoding_spikes": None}})
-        assert v["sufficient"] and v["n_spikes"] == 2 and v["threshold"] is None
+        assert v["sufficient"]
+        assert v["n_spikes"] == 2
+        assert v["threshold"] is None
 
     def test_the_boundary_is_inclusive(self):
+        """Exactly 50 spikes must pass and 49 must fail, pinning the floor as inclusive."""
         assert decoding_spike_sufficiency(np.full(50, 1.0), self.SETTINGS)["sufficient"]
         assert not decoding_spike_sufficiency(np.full(49, 1.0), self.SETTINGS)["sufficient"]

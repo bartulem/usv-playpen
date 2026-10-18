@@ -6,6 +6,10 @@ The real Ultralytics fine-tune needs a GPU + network (to fetch the base weights)
 and is not exercised here. The ``YOLO`` class ``train_masks`` imports is replaced
 with a light fake, and the test checks that the trainer copies the run's ``best.pt`` to the stable
 output path and that a missing ``data.yaml`` is rejected before any training starts.
+
+Coverage: ``MaskDetectorTrainer.train`` copying ``best.pt`` to the output
+directory, raising when the run leaves no ``best.pt``, and refusing a dataset
+directory without ``data.yaml``.
 """
 
 from __future__ import annotations
@@ -35,10 +39,14 @@ def _install_fake_ultralytics(monkeypatch):
     best.pt under project/name/weights and returns a save_dir, like the real trainer."""
 
     class _FakeYOLO:
+        """Ultralytics ``YOLO`` stand-in whose ``train`` writes a ``best.pt`` like a real run."""
+
         def __init__(self, weights):
+            """Record the base-weights name the trainer passes in."""
             self.weights = weights
 
         def train(self, **kwargs):
+            """Create ``<project>/<name>/weights/best.pt`` and return a result with its ``save_dir``."""
             save_dir = pathlib.Path(kwargs["project"]) / kwargs["name"]
             (save_dir / "weights").mkdir(parents=True, exist_ok=True)
             (save_dir / "weights" / "best.pt").write_bytes(b"fake-weights")
@@ -80,10 +88,14 @@ def test_train_raises_when_best_weights_missing(tmp_path, monkeypatch, mocker):
     dataset_dir = _write_dataset(tmp_path)
 
     class _NoWeightsYOLO:
+        """Ultralytics ``YOLO`` stand-in whose run finishes without producing ``best.pt``."""
+
         def __init__(self, weights):
+            """Record the base-weights name the trainer passes in."""
             self.weights = weights
 
         def train(self, **kwargs):
+            """Create only the run directory and return a result pointing at it."""
             save_dir = pathlib.Path(kwargs["project"]) / kwargs["name"]
             save_dir.mkdir(parents=True, exist_ok=True)  # deliberately writes no weights/best.pt
             return types.SimpleNamespace(save_dir=str(save_dir))
@@ -91,7 +103,7 @@ def test_train_raises_when_best_weights_missing(tmp_path, monkeypatch, mocker):
     monkeypatch.setattr(train_masks_module, "YOLO", _NoWeightsYOLO)
     mocker.patch("usv_playpen.processing.train_masks.smart_wait")
 
-    with pytest.raises(FileNotFoundError, match="best.pt"):
+    with pytest.raises(FileNotFoundError, match=r"best.pt"):
         MaskDetectorTrainer(
             dataset_directory=str(dataset_dir),
             output_directory=str(tmp_path / "detector"),
@@ -106,7 +118,7 @@ def test_train_missing_data_yaml_raises(tmp_path, mocker):
     dataset_dir = tmp_path / "empty"
     dataset_dir.mkdir()
     mocker.patch("usv_playpen.processing.train_masks.smart_wait")
-    with pytest.raises(FileNotFoundError, match="data.yaml"):
+    with pytest.raises(FileNotFoundError, match=r"data.yaml"):
         MaskDetectorTrainer(
             dataset_directory=str(dataset_dir),
             output_directory=str(tmp_path / "out"),

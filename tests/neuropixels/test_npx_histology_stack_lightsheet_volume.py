@@ -6,6 +6,12 @@ Covers the pure in-plane flip helper against hand-computed arrays, the
 LaVision filename discovery / sidecar exclusion, and an end-to-end stack
 of tiny synthetic 4x4 uint16 OME-TIFF planes written into ``tmp_path``
 (no real microscope data).
+
+Coverage: ``apply_xy_flip`` (every mode plus the unknown-mode error),
+``find_lavision_files`` (sorting and filter-sidecar exclusion) and
+``stack_lightsheet_volume`` (skip-first ordering, xy and z flips, the
+multi-wavelength placeholder requirement, unknown or empty wavelength
+arguments, and missing channel files).
 """
 
 from __future__ import annotations
@@ -109,8 +115,10 @@ def test_stack_lightsheet_volume_skips_first_and_stacks_in_order(tmp_path):
 
     volume = tifffile.imread(out)
     assert volume.shape == (2, 4, 4)
-    assert volume[0].max() == 11 and volume[0].min() == 11
-    assert volume[1].max() == 22 and volume[1].min() == 22
+    assert volume[0].max() == 11
+    assert volume[0].min() == 11
+    assert volume[1].max() == 22
+    assert volume[1].min() == 22
 
 
 def test_stack_lightsheet_volume_applies_xy_flip(tmp_path):
@@ -199,4 +207,5 @@ def test_stack_lightsheet_volume_z_flip_reverses_plane_order(tmp_path):
     out = tmp_path / "zflip.tif"
     stack_lightsheet_volume(raw, out, wavelength_nm=488, z_flip=True, skip_first=False)
     volume = tifffile.imread(out)
-    assert volume[0].max() == 2 and volume[1].max() == 1
+    assert volume[0].max() == 2
+    assert volume[1].max() == 1

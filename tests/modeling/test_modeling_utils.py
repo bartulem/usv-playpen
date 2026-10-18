@@ -11,9 +11,29 @@ global RNG seeded for the down-sampling draws), the 1SE margin against the
 paired/unpaired case it exists to separate, and the column selectors against
 small synthetic column lists exercising the directional dyadic folding rules
 documented in the source.
+
+Coverage:
+
+* classification / probabilistic metrics (multi-class Brier, ECE, safe MCC and
+  confusion matrix, canonical class alignment) and regression metrics;
+* the two-class array ops (session pooling, balancing, concatenation with
+  labels, history unrolling, train/test shuffling, bounded test proportion);
+* the paired 1SE forward-selection improvement;
+* mouse-role resolution and kinematic / vocal-signal column selection;
+* session-list loading, empty-event session detection, column harmonisation,
+  cross-session z-scoring and the predictor-audit orchestration (including its
+  keyword forwarding);
+* the standardised console-output formatters and the univariate headline;
+* the seeded session holdout, held-out ids from metadata, development /
+  held-out masks, session-grouped inner CV and the manifold tag segment;
+* mutation-round known-answer checks across the core helpers.
 """
 
 from __future__ import annotations
+
+from datetime import datetime
+from itertools import pairwise
+from typing import ClassVar
 
 import numpy as np
 import polars as pls
@@ -28,14 +48,20 @@ from usv_playpen.modeling.modeling_utils import (
     brier_score_multi,
     build_vocal_signal_columns,
     concat_two_class_with_labels,
+    development_heldout_masks,
     expected_calibration_error,
+    extract_univariate_headline,
+    format_run_header,
+    format_run_summary,
+    format_selection_step,
+    format_split_line,
     harmonize_session_columns,
+    held_out_session_ids_from_metadata,
     identify_empty_event_sessions,
     manifold_tag_segment,
     mean_absolute_error_1d,
     paired_one_se_improvement,
     pearson_r_safe,
-    spearman_r_safe,
     pool_session_arrays,
     prepare_modeling_sessions,
     resolve_mouse_roles,
@@ -43,26 +69,20 @@ from usv_playpen.modeling.modeling_utils import (
     run_predictor_audits,
     safe_confusion_matrix,
     safe_matthews_corrcoef,
+    seeded_session_holdout,
     select_kinematic_columns,
     shuffle_train_test_arrays,
+    spearman_r_safe,
     unroll_history_matrix,
     zscore_features_across_sessions,
-    format_run_header,
-    format_split_line,
-    format_run_summary,
-    format_selection_step,
-    extract_univariate_headline,
-    seeded_session_holdout,
-    held_out_session_ids_from_metadata,
-    development_heldout_masks,
 )
-from datetime import datetime
-
 
 # Probabilistic / classification metrics
 
 
 class TestBrierScoreMulti:
+    """The multi-class Brier score hits its textbook extremes (0 for perfect predictions, the
+    closed form for uniform ones), since it is reported as a calibration headline."""
 
     def test_perfect_predictions_score_zero(self):
         """One-hot probabilities matching the labels give a Brier score of
@@ -84,6 +104,8 @@ class TestBrierScoreMulti:
 
 
 class TestExpectedCalibrationError:
+    """ECE is 0 for confident correct predictions, positive for overconfident wrong ones, and
+    refuses a non-2-D probability array instead of mis-binning it."""
 
     def test_perfectly_calibrated_confident_is_zero(self):
         """Confident (prob 1) and always-correct predictions are perfectly
@@ -106,11 +128,13 @@ class TestExpectedCalibrationError:
     def test_non_2d_proba_raises(self):
         """A 1-D probability array is rejected with ``ValueError``."""
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match=r'requires y_proba of shape \(N, K\)'):
             expected_calibration_error(np.array([0]), np.array([0]), np.array([1.0]))
 
 
 class TestSafeMatthews:
+    """The safe MCC is 1 on perfect agreement and 0 (not NaN) when predictions collapse to one
+    class, so a degenerate fold cannot poison an average."""
 
     def test_perfect_agreement_is_one(self):
         """Identical label vectors give MCC == 1."""
@@ -128,6 +152,8 @@ class TestSafeMatthews:
 
 
 class TestSafeConfusionMatrix:
+    """The safe confusion matrix keeps the canonical shape when a class is absent from a fold,
+    so per-fold matrices can be summed."""
 
     def test_canonical_shape_with_missing_class(self):
         """Passing explicit ``labels`` forces the canonical (K, K) shape
@@ -138,11 +164,14 @@ class TestSafeConfusionMatrix:
         cm = safe_confusion_matrix(y_true, y_pred, labels=np.array([0, 1, 2]))
         assert cm.shape == (3, 3)
         # Perfect prediction -> mass only on the diagonal of observed classes.
-        assert cm[0, 0] == 2 and cm[1, 1] == 2
+        assert cm[0, 0] == 2
+        assert cm[1, 1] == 2
         assert cm[2].sum() == 0
 
 
 class TestAlignProbsToCanonical:
+    """Fold probabilities are realigned to the canonical class order (absent classes zero-filled)
+    and a non-ascending canonical order is rejected rather than silently shuffling columns."""
 
     def test_missing_class_column_filled_with_zeros(self):
         """A fold missing class 1 yields a canonical matrix whose class-1
@@ -162,7 +191,7 @@ class TestAlignProbsToCanonical:
         columns, so it is rejected."""
 
         probs = np.array([[1.0]])
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='strictly ascending'):
             align_probs_to_canonical(probs, model_classes=np.array([2]),
                                      canonical_classes=np.array([2, 1, 0]))
 
@@ -171,6 +200,8 @@ class TestAlignProbsToCanonical:
 
 
 class TestRegressionMetrics:
+    """Pearson, Spearman, RMSE and MAE hit their textbook extremes, give NaN on constant input,
+    and keep RMSE >= MAE."""
 
     def test_pearson_perfect_and_anti(self):
         """Pearson r is +1 for a perfect linear match and -1 for its
@@ -220,6 +251,8 @@ class TestRegressionMetrics:
 
 
 class TestPoolSessionArrays:
+    """Session pooling stacks the sessions that are present, skips missing ones and returns a
+    zero-row placeholder for an empty class, so downstream shapes stay valid."""
 
     def test_pools_present_sessions_and_skips_missing(self):
         """Arrays are concatenated across the sessions present in
@@ -250,6 +283,8 @@ class TestPoolSessionArrays:
 
 
 class TestBalanceTwoClassArrays:
+    """Two-class balancing down-samples the majority class to the minority size, reproducibly
+    under a seed, and passes empty input through."""
 
     def test_downsamples_majority_to_minority(self):
         """The majority class is subsampled down to the minority count;
@@ -282,6 +317,7 @@ class TestBalanceTwoClassArrays:
 
 
 class TestConcatTwoClassWithLabels:
+    """Positive and negative arrays are stacked with 1 / 0 labels aligned to their rows."""
 
     def test_stacks_and_labels(self):
         """Positive rows come first with label 1, negatives after with
@@ -295,6 +331,8 @@ class TestConcatTwoClassWithLabels:
 
 
 class TestUnrollHistoryMatrix:
+    """History unrolling flattens ``(n_samples, n_frames)`` into one row per (sample, lag) with
+    the lag index (default or custom) tiled into the time column."""
 
     def test_layout_and_time_column(self):
         """Unrolling ``(n_samples, n_frames)`` produces
@@ -317,6 +355,7 @@ class TestUnrollHistoryMatrix:
 
 
 class TestShuffleTrainTestArrays:
+    """Train/test shuffling permutes rows without breaking the feature-label alignment."""
 
     def test_preserves_label_alignment_and_shapes(self):
         """Shuffling permutes rows but keeps each X row paired with its y
@@ -335,6 +374,8 @@ class TestShuffleTrainTestArrays:
 
 
 class TestBoundedTestProportion:
+    """The test proportion is raised to a floor when too few sessions would be held out, kept
+    when already sufficient, and returned unchanged with zero sessions."""
 
     def test_raises_floor_for_small_session_count(self):
         """A nominal 0.2 across 3 sessions would round to 0 test sessions,
@@ -356,6 +397,9 @@ class TestBoundedTestProportion:
 
 
 class TestPairedOneSeImprovement:
+    """The forward-selection 1SE margin compares the PAIRED per-fold improvement to its own SE:
+    it accepts consistent gains the unpaired rule rejects, follows the metric's sign, drops
+    failed folds pairwise and returns NaN when no fold is usable."""
 
     def test_consistent_improvement_is_accepted_where_unpaired_rejects(self):
         """The case the paired rule exists for: a candidate that improves every
@@ -432,6 +476,7 @@ class TestPairedOneSeImprovement:
 
 
 class TestResolveMouseRoles:
+    """The target mouse is the slot opposite the predictor index, with names swapped to match."""
 
     def test_target_is_opposite_slot(self):
         """The target index is the opposite two-mouse slot of the
@@ -456,8 +501,26 @@ class TestResolveMouseRoles:
 
 
 class TestSelectKinematicColumns:
+    """Kinematic column selection keeps egocentric features for both mice, adds derivatives only
+    when flagged, and applies the directional dyadic-pose and engagement folding rules."""
 
     def _kin_settings(self, **overrides):
+        """
+        Description
+        -----------
+        A minimal kinematic-settings block (egocentric ``speed`` only, no dyadic
+        features, symmetric dyadic pose, no derivatives) with ``overrides`` applied.
+
+        Parameters
+        ----------
+        **overrides
+            Keys of the kinematic-settings block to replace.
+
+        Returns
+        -------
+        kin_settings (dict)
+            The settings block passed to ``select_kinematic_columns``.
+        """
         base = {
             'egocentric': ['speed'],
             'dyadic_pose': [],
@@ -598,8 +661,28 @@ class TestSelectKinematicColumns:
 
 
 class TestPrepareModelingSessions:
+    """The session-list loader skips blank lines, leaves the global RNG untouched and raises on a
+    missing or empty file."""
 
     def _settings(self, seed, session_file):
+        """
+        Description
+        -----------
+        The two settings blocks ``prepare_modeling_sessions`` reads: the
+        ``model_validation`` random seed and the ``io`` session-list path.
+
+        Parameters
+        ----------
+        seed (int | None)
+            The configured ``random_seed``.
+        session_file (pathlib.Path)
+            Path of the session-list text file.
+
+        Returns
+        -------
+        settings (dict)
+            The minimal modeling settings.
+        """
         # `random_seed` moved from `model_params` into the `model_validation`
         # block; `prepare_modeling_sessions` reads it exclusively from there.
         return {'model_validation': {'random_seed': seed},
@@ -630,7 +713,7 @@ class TestPrepareModelingSessions:
 
         f = tmp_path / 'blank.txt'
         f.write_text("\n   \n\n")
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='No valid session paths found'):
             prepare_modeling_sessions(self._settings(0, f))
 
 
@@ -638,8 +721,21 @@ class TestPrepareModelingSessions:
 
 
 class TestBuildVocalSignalColumns:
+    """Vocal predictor columns honour the self-exclusion and partner-only rules and skip mice
+    absent from the vocal dict, so a mouse's own vocal trace never predicts itself."""
 
     def _usv_dict(self):
+        """
+        Description
+        -----------
+        A one-session vocal dict with a target mouse (rate, event and one category
+        trace) and a partner mouse (rate and one category trace), three frames each.
+
+        Returns
+        -------
+        usv_dict (dict)
+            ``{session: {mouse: {'continuous_vocal_signals': {name: trace}}}}``.
+        """
         return {
             'sess': {
                 'mTarget': {'continuous_vocal_signals': {
@@ -662,7 +758,8 @@ class TestBuildVocalSignalColumns:
             voc_settings={'vocal_predictor_type': None,
                           'vocal_predictor_partner_only': False},
         )
-        assert cols == [] and names == []
+        assert cols == []
+        assert names == []
 
     def test_self_exclusion_drops_rate_and_event(self):
         """For the target mouse the default ``usv_self_exclude`` keys
@@ -733,6 +830,8 @@ class TestBuildVocalSignalColumns:
 
 
 class TestIdentifyEmptyEventSessions:
+    """Sessions with a missing or empty event array are flagged (and reported) so they can be
+    excluded before fitting."""
 
     def test_flags_missing_and_empty_sessions(self, capsys):
         """Sessions are flagged when absent from the USV dict, when the
@@ -768,6 +867,9 @@ class TestIdentifyEmptyEventSessions:
 
 
 class TestHarmonizeSessionColumns:
+    """Column harmonisation renames dyad-prefixed columns to their suffix, zero-fills columns a
+    session lacks and gates USV columns by the existence map, so every session shares one
+    column set."""
 
     def test_dyad_rename_and_zero_fill_and_suffixes(self):
         """Dyadic-prefixed columns are renamed to their suffix; non-USV
@@ -794,10 +896,13 @@ class TestHarmonizeSessionColumns:
         assert 'nose-nose' in out['s2'].columns
         assert out['s2']['nose-nose'].to_list() == [0.0, 0.0]
         # Non-USV ego suffix 'speed' filled for both roles everywhere.
-        assert 'mM.speed' in out['s1'].columns and 'mF.speed' in out['s1'].columns
-        assert 'mM.speed' in out['s2'].columns and 'mF.speed' in out['s2'].columns
+        assert 'mM.speed' in out['s1'].columns
+        assert 'mF.speed' in out['s1'].columns
+        assert 'mM.speed' in out['s2'].columns
+        assert 'mF.speed' in out['s2'].columns
         assert suffixes == sorted(suffixes)
-        assert 'speed' in suffixes and 'nose-nose' in suffixes
+        assert 'speed' in suffixes
+        assert 'nose-nose' in suffixes
 
     def test_usv_gated_by_existence_map(self):
         """A ``usv_*`` ego suffix is only zero-filled where the matching
@@ -824,6 +929,8 @@ class TestHarmonizeSessionColumns:
 
 
 class TestZscoreFeaturesAcrossSessions:
+    """Cross-session z-scoring pools the sessions so the pooled feature has zero mean and unit
+    sample spread."""
 
     def test_pools_and_zscores_in_place(self):
         """The wrapper forwards to the pooled z-scorer: a feature suffix is
@@ -850,8 +957,29 @@ class TestZscoreFeaturesAcrossSessions:
 
 
 class TestRunPredictorAudits:
+    """The predictor-audit orchestration runs the enabled audits with derived paths and event
+    times, and keeps every audit failure non-fatal."""
 
     def _settings(self, collinearity=True, timescale=True):
+        """
+        Description
+        -----------
+        A minimal modeling-settings dict for ``run_predictor_audits``: the
+        diagnostics block with each audit switchable, plus the model, validation and
+        mixture-model parameters the event extraction reads.
+
+        Parameters
+        ----------
+        collinearity (bool)
+            Whether the collinearity audit is enabled.
+        timescale (bool)
+            Whether the timescale audit is enabled.
+
+        Returns
+        -------
+        settings (dict)
+            The settings dict.
+        """
         return {
             'diagnostics': {
                 'collinearity_audit': collinearity,
@@ -881,6 +1009,17 @@ class TestRunPredictorAudits:
         }
 
     def _inputs(self):
+        """
+        Description
+        -----------
+        A one-session audit input: a three-frame behavioural table, the female's two
+        USV events, the mouse names and the camera frame rate.
+
+        Returns
+        -------
+        inputs (tuple)
+            ``(beh, usv, names, fps)`` dicts keyed by session.
+        """
         beh = {'s1': pls.DataFrame({'mF.speed': [0.0, 1.0, 2.0]})}
         usv = {'s1': {'mF': {
             'positive_events': np.array([0.5, 1.5]),
@@ -1089,9 +1228,10 @@ class TestRunPredictorAudits:
             save_dir=str(tmp_path), pickle_basename='nan.pkl',
         )
         thr = ts.call_args.kwargs['ibi_thresholds']
-        assert np.isnan(thr['male']) and np.isnan(thr['female'])
+        assert np.isnan(thr['male'])
+        assert np.isnan(thr['female'])
 
-    @pytest.mark.parametrize('bad_key,bad_val', [
+    @pytest.mark.parametrize(('bad_key', 'bad_val'), [
         ('timescale_shuffle_range', [60.0]),         # not 2-element
         ('timescale_shuffle_range', [60.0, 20.0]),   # min >= max
         ('timescale_signal_floor_seconds', -1.0),    # negative floor
@@ -1163,8 +1303,11 @@ def test_format_run_header_lists_files_and_config():
         output_directory='/a/out', split_strategy='session', n_splits=10,
     )
     lines = header.splitlines()
-    assert lines[0] == '=' * 70 and lines[-1] == '=' * 70
-    assert 'task=ONSET' in header and 'engine=pygam' in header and 'feature=self.speed' in header
+    assert lines[0] == '=' * 70
+    assert lines[-1] == '=' * 70
+    assert 'task=ONSET' in header
+    assert 'engine=pygam' in header
+    assert 'feature=self.speed' in header
     assert 'split_strategy=session | n_splits=10' in header
     assert '  input data: /a/in.pkl' in lines
     assert '  settings: /a/s.json' in lines
@@ -1306,16 +1449,16 @@ class TestSeededSessionHoldout:
 
     def test_out_of_range_proportion_raises(self):
         """Proportions outside [0, 1) are rejected."""
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match=r'must be in \[0, 1\)'):
             seeded_session_holdout(['s0', 's1'], 1.0, 0)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match=r'must be in \[0, 1\)'):
             seeded_session_holdout(['s0', 's1'], -0.1, 0)
 
     def test_reserving_zero_raises(self):
         """A positive proportion too small to reserve even one whole session
         (floor rounds it to 0) leaves the holdout meaningless -> ValueError,
         rather than silently disabling it."""
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='must reserve at least one session'):
             seeded_session_holdout(['s0', 's1', 's2'], 0.1, 0)  # floor(3 * 0.1) == 0
 
     def test_positive_proportion_always_leaves_a_development_set(self):
@@ -1441,7 +1584,23 @@ class TestHeldOutSessionsNeverShapeTheScale:
 
     @staticmethod
     def _sessions(held_out_values: np.ndarray) -> dict:
-        """Three development sessions and one held-out session of two features."""
+        """
+        Description
+        -----------
+        Three development sessions of 50 random rows and one held-out session built
+        from ``held_out_values``, each with ``self.speed`` and ``other.speed``.
+
+        Parameters
+        ----------
+        held_out_values (np.ndarray)
+            Values of the held-out session's ``self.speed`` (reversed for
+            ``other.speed``).
+
+        Returns
+        -------
+        sessions (dict)
+            Session id -> ``polars.DataFrame``.
+        """
         rng = np.random.default_rng(3)
         sessions = {
             f"dev_{i}": pls.DataFrame({"self.speed": rng.normal(5.0, 2.0, 50), "other.speed": rng.normal(1.0, 0.5, 50)})
@@ -1486,7 +1645,8 @@ class TestCoreHelperKnownAnswers:
         np.testing.assert_array_equal(X_pos, np.concatenate([data[s]["pos"] for s in ("s2", "s0", "s1")]))
         np.testing.assert_array_equal(X_neg, np.concatenate([data[s]["neg"] for s in ("s2", "s0", "s1")]))
         X_pos, X_neg = mu.pool_session_arrays(data, ["s_empty"], pos_key="pos", neg_key="neg", n_frames=4)
-        assert X_pos.shape == (0, 4) and X_neg.shape == (0, 4)
+        assert X_pos.shape == (0, 4)
+        assert X_neg.shape == (0, 4)
 
     def test_balance_two_class_arrays_subsamples_without_replacement(self):
         """The majority class is cut to the minority size by drawing DISTINCT rows of itself; the
@@ -1501,7 +1661,8 @@ class TestCoreHelperKnownAnswers:
         assert len(rows) == 5
         assert rows <= {tuple(row) for row in X_neg}
         empty_pos, empty_neg = mu.balance_two_class_arrays(np.empty((0, 3)), X_neg, rng)
-        assert empty_pos.shape == (0, 3) and empty_neg.shape == (0, 3)
+        assert empty_pos.shape == (0, 3)
+        assert empty_neg.shape == (0, 3)
         swapped_pos, swapped_neg = mu.balance_two_class_arrays(X_neg, X_pos, rng)
         np.testing.assert_array_equal(swapped_neg, X_pos)
         assert len({tuple(row) for row in swapped_pos}) == 5
@@ -1516,7 +1677,7 @@ class TestCoreHelperKnownAnswers:
         correct = (y_pred == y_true).astype(float)
         edges = np.linspace(0.0, 1.0, 11)
         expected = 0.0
-        for k, (lo, hi) in enumerate(zip(edges[:-1], edges[1:], strict=True)):
+        for k, (lo, hi) in enumerate(pairwise(edges)):
             in_bin = (conf > lo) & (conf <= hi + (1e-9 if k == 9 else 0.0))
             if in_bin.any():
                 expected += in_bin.mean() * abs(correct[in_bin].mean() - conf[in_bin].mean())
@@ -1553,7 +1714,7 @@ class TestFeatureSelectionKnownAnswers:
     """Known-answer checks for the predictor-column rules, added after mutation testing showed the
     derivative, asymmetric-pose and vocal-trace rules could be broken without any test noticing."""
 
-    _COLUMNS = [
+    _COLUMNS: ClassVar[list[str]] = [
         'M.speed', 'M.speed_1st_der', 'M.neck_elevation', 'M.neck_elevation_1st_der',
         'M.neck_elevation_2nd_der', 'F.neck_elevation',
         'M-F.allo_yaw-nose', 'M-F.nose-allo_yaw', 'M-F.nose-nose', 'M-F.nose-nose_1st_der',
@@ -1562,6 +1723,26 @@ class TestFeatureSelectionKnownAnswers:
 
     @staticmethod
     def _kin(symmetric=False, first=True, second=False):
+        """
+        Description
+        -----------
+        A kinematic-settings block over the class's column list, with the dyadic-pose
+        symmetry and derivative switches exposed.
+
+        Parameters
+        ----------
+        symmetric (bool)
+            ``dyadic_pose_symmetric``.
+        first (bool)
+            ``include_1st_derivatives``.
+        second (bool)
+            ``include_2nd_derivatives``.
+
+        Returns
+        -------
+        kin_settings (dict)
+            The settings block passed to ``select_kinematic_columns``.
+        """
         return {'egocentric': ['speed', 'neck_elevation'],
                 'dyadic_pose': ['allo_yaw-nose', 'nose-allo_yaw', 'nose-nose'],
                 'dyadic_engagement': ['orofacial-sei'], 'dyadic_pose_symmetric': symmetric,
@@ -1574,11 +1755,11 @@ class TestFeatureSelectionKnownAnswers:
         base = ['M-F.nose-nose', 'M-F.nose-nose_1st_der', 'M-F.orofacial-sei', 'M.neck_elevation',
                 'M.neck_elevation_1st_der', 'M.speed', 'F.neck_elevation']
         got = mu.select_kinematic_columns(self._COLUMNS, 'M', 'F', self._kin(), predictor_idx=0)
-        assert got == sorted(base + ['M-F.nose-allo_yaw'])
+        assert got == sorted([*base, 'M-F.nose-allo_yaw'])
         got = mu.select_kinematic_columns(self._COLUMNS, 'M', 'F', self._kin(), predictor_idx=1)
-        assert got == sorted(base + ['M-F.allo_yaw-nose'])
+        assert got == sorted([*base, 'M-F.allo_yaw-nose'])
         got = mu.select_kinematic_columns(self._COLUMNS, 'M', 'F', self._kin(symmetric=True, second=True), predictor_idx=0)
-        assert got == sorted(base + ['M-F.allo_yaw-nose', 'M-F.nose-allo_yaw', 'M.neck_elevation_2nd_der'])
+        assert got == sorted([*base, 'M-F.allo_yaw-nose', 'M-F.nose-allo_yaw', 'M.neck_elevation_2nd_der'])
         got = mu.select_kinematic_columns(self._COLUMNS, 'M', 'F', self._kin(first=False), predictor_idx=0)
         assert got == sorted(['M-F.nose-nose', 'M-F.orofacial-sei', 'M.neck_elevation', 'M.speed',
                               'F.neck_elevation', 'M-F.nose-allo_yaw'])
@@ -1738,8 +1919,17 @@ class TestSessionLabelsThroughPooledTasks:
 
     @staticmethod
     def _data():
-        """Three sessions whose rows carry the session index in every column, with
-        different class balances (s0: 4 pos / 1 neg, s1: 1 / 4, s2: 2 / 2)."""
+        """
+        Description
+        -----------
+        Three sessions whose rows carry the session index in every column, with
+        different class balances (s0: 4 pos / 1 neg, s1: 1 / 4, s2: 2 / 2).
+
+        Returns
+        -------
+        data (dict)
+            Session id -> ``{'pos': (n_pos, 3), 'neg': (n_neg, 3)}`` arrays.
+        """
         counts = {"s0": (4, 1), "s1": (1, 4), "s2": (2, 2)}
         return {sess: {"pos": np.full((n_pos, 3), float(i)), "neg": np.full((n_neg, 3), float(i))}
                 for i, (sess, (n_pos, n_neg)) in enumerate(counts.items())}
@@ -1812,8 +2002,8 @@ def _assert_same_kwargs(actual: dict, expected: dict) -> None:
     """
 
     assert set(actual) == set(expected), (sorted(actual), sorted(expected))
-    for key in expected:
-        _assert_same_value(actual[key], expected[key], key)
+    for key, expected_value in expected.items():
+        _assert_same_value(actual[key], expected_value, key)
 
 
 def _assert_same_value(actual, expected, where: str) -> None:
@@ -1852,8 +2042,9 @@ def _assert_same_value(actual, expected, where: str) -> None:
         for sub_key in expected:
             _assert_same_value(actual[sub_key], expected[sub_key], f"{where}[{sub_key!r}]")
     elif isinstance(expected, tuple):
-        assert isinstance(actual, tuple) and len(actual) == len(expected), where
-        for i, (a_item, e_item) in enumerate(zip(actual, expected)):
+        assert isinstance(actual, tuple), where
+        assert len(actual) == len(expected), where
+        for i, (a_item, e_item) in enumerate(zip(actual, expected, strict=True)):
             _assert_same_value(a_item, e_item, f"{where}[{i}]")
     elif isinstance(expected, float):
         assert isinstance(actual, float), where
@@ -1968,8 +2159,10 @@ class TestThirdMutationRoundKnownAnswers:
                                                          neg_key='neg', n_frames=1, return_groups=True)
         np.testing.assert_array_equal(X_pos, np.array([[7.0]]))
         np.testing.assert_array_equal(X_neg, np.ones((2, 1)))
-        assert g_pos.dtype == object and list(g_pos) == ['s2']
-        assert g_neg.dtype == object and list(g_neg) == ['s1', 's1']
+        assert g_pos.dtype == object
+        assert list(g_pos) == ['s2']
+        assert g_neg.dtype == object
+        assert list(g_neg) == ['s1', 's1']
         X_pos, X_neg = pool_session_arrays({'s1': {'pos': np.array([[7.0]]), 'neg': np.array([[3.0]])}},
                                            ['s1'], pos_key='pos', neg_key='neg', n_frames=1)
         np.testing.assert_array_equal(X_pos, np.array([[7.0]]))
@@ -1984,14 +2177,19 @@ class TestThirdMutationRoundKnownAnswers:
                 's2': {'pos': np.ones((2, 4)), 'neg': np.ones((1, 4))}}
         X_pos, X_neg, g_pos, g_neg = pool_session_arrays(data, ['s1', 's2'], pos_key='pos',
                                                          neg_key='neg', n_frames=4, return_groups=True)
-        assert X_pos.shape == (2, 4) and X_neg.shape == (1, 4)
-        assert list(g_pos) == ['s2', 's2'] and list(g_neg) == ['s2']
+        assert X_pos.shape == (2, 4)
+        assert X_neg.shape == (1, 4)
+        assert list(g_pos) == ['s2', 's2']
+        assert list(g_neg) == ['s2']
         X_pos, X_neg, g_pos, g_neg = pool_session_arrays({'s1': {'pos': np.array([]), 'neg': None}}, ['s1'],
                                                          pos_key='pos', neg_key='neg', n_frames=4,
                                                          return_groups=True)
-        assert X_pos.shape == (0, 4) and X_neg.shape == (0, 4)
-        assert g_pos.shape == (0,) and g_pos.dtype == object
-        assert g_neg.shape == (0,) and g_neg.dtype == object
+        assert X_pos.shape == (0, 4)
+        assert X_neg.shape == (0, 4)
+        assert g_pos.shape == (0,)
+        assert g_pos.dtype == object
+        assert g_neg.shape == (0,)
+        assert g_neg.dtype == object
 
     def test_balance_one_empty_class_returns_empty_labels_without_drawing(self):
         """When one class is empty both classes come back empty with size-0 OBJECT label
@@ -2003,9 +2201,12 @@ class TestThirdMutationRoundKnownAnswers:
                                        groups_neg=np.array(['s1', 's1', 's2']))
         assert len(out) == 4
         bp, bn, gp, gn = out
-        assert bp.shape == (0, 2) and bn.shape == (0, 2)
-        assert gp.shape == (0,) and gp.dtype == object
-        assert gn.shape == (0,) and gn.dtype == object
+        assert bp.shape == (0, 2)
+        assert bn.shape == (0, 2)
+        assert gp.shape == (0,)
+        assert gp.dtype == object
+        assert gn.shape == (0,)
+        assert gn.dtype == object
         assert rng.random() == np.random.default_rng(0).random()
 
     def test_balance_labels_follow_subsampled_rows_and_need_both_label_arrays(self):
@@ -2048,7 +2249,8 @@ class TestThirdMutationRoundKnownAnswers:
         groups2 = np.repeat(np.array(['a', 'b']), 4)
         y2 = np.tile(np.array([1, 0]), 4)
         splits = mu.classification_inner_cv_splits(y2, groups2, 5, 0)
-        assert isinstance(splits, list) and len(splits) == 2
+        assert isinstance(splits, list)
+        assert len(splits) == 2
         assert sorted(set(groups2[val]).pop() for _train, val in splits) == ['a', 'b']
         counts = [(3, 1), (1, 3), (3, 1), (1, 3), (2, 2), (2, 2), (3, 1), (1, 3), (4, 0), (0, 4), (2, 2), (3, 1)]
         groups = np.concatenate([[f"s{i:02d}"] * (n_pos + n_neg) for i, (n_pos, n_neg) in enumerate(counts)])
@@ -2058,7 +2260,7 @@ class TestThirdMutationRoundKnownAnswers:
         expected = list(StratifiedGroupKFold(n_splits=3, shuffle=True, random_state=11).split(
             np.zeros(len(y)), y, groups))
         assert len(splits) == 3
-        for (train, val), (e_train, e_val) in zip(splits, expected):
+        for (train, val), (e_train, e_val) in zip(splits, expected, strict=True):
             np.testing.assert_array_equal(train, e_train)
             np.testing.assert_array_equal(val, e_val)
 
@@ -2141,7 +2343,7 @@ class TestThirdMutationRoundKnownAnswers:
         """A canonical ordering with a repeated class is not strictly ascending and is
         rejected; the aligned matrix keeps the input probabilities' dtype (float32 here)."""
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match='strictly ascending'):
             align_probs_to_canonical(np.array([[0.5, 0.5]]), model_classes=np.array([0, 1]),
                                      canonical_classes=np.array([0, 1, 1]))
         out = align_probs_to_canonical(np.array([[0.25, 0.75]], dtype=np.float32),
@@ -2312,7 +2514,7 @@ class TestRunPredictorAuditsForwarding:
         beh = {'s1': pls.DataFrame({'mF.speed': [0.0, 1.0]})}
         return beh, usv, {'s1': ['mM', 'mF']}, {'s1': 30.0}, small, large
 
-    @pytest.mark.parametrize('seed,rng_seed', [(7, 7), (None, 0), (3, 3)])
+    @pytest.mark.parametrize(('seed', 'rng_seed'), [(7, 7), (None, 0), (3, 3)])
     def test_balanced_pool_is_the_seeded_draw(self, mocker, tmp_path, seed, rng_seed):
         """With ``balance_event_keys`` the smallest key (listed first) is kept whole WITHOUT
         consuming the generator, and the larger key is cut to its size by one draw without
@@ -2390,7 +2592,7 @@ class TestRunPredictorAuditsForwarding:
         assert thr['male'] == float(mu._calculate_ibi_threshold(0.3, 0.07, 1.0))
         assert np.isnan(thr['female'])
 
-    @pytest.mark.parametrize('bad_key,bad_val', [
+    @pytest.mark.parametrize(('bad_key', 'bad_val'), [
         ('timescale_shuffle_range', [20.0, 40.0, 60.0]),   # three elements
         ('timescale_shuffle_range', [0.0, 60.0]),          # min not > 0
         ('timescale_shuffle_range', [30.0, 30.0]),         # min == max
@@ -2405,7 +2607,7 @@ class TestRunPredictorAuditsForwarding:
         ts.assert_not_called()
         assert 'timescale audit failed' in capsys.readouterr().out
 
-    @pytest.mark.parametrize('key,val,kwarg,expected', [
+    @pytest.mark.parametrize(('key', 'val', 'kwarg', 'expected'), [
         ('timescale_shuffle_range', [0.5, 60.0], 'shuffle_range_seconds', (0.5, 60.0)),
         ('timescale_signal_floor_seconds', 0.0, 'signal_floor_seconds', 0.0),
     ])
