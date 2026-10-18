@@ -42,7 +42,13 @@ from click.core import ParameterSource
 from scipy.ndimage import binary_dilation, gaussian_filter
 
 from ..cli_utils import modify_settings_json_for_cli
-from ..os_utils import atomic_output_path, drop_noise_usvs, find_audio_mmap, first_match_or_raise, resolve_experimenter_path
+from ..os_utils import (
+    atomic_output_path,
+    drop_noise_usvs,
+    find_audio_mmap,
+    first_match_or_raise,
+    resolve_experimenter_path,
+)
 from ..processing.build_qlvm_training_set import build_session_masks
 from ..time_utils import is_gui_context, smart_wait
 from ._usv_io import extract_animal_sexes, extract_session_metadata, sex_track_ids

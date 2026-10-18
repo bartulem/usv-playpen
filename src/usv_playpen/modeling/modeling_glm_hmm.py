@@ -94,28 +94,31 @@ def _read_selected_features(model_selection_path: str) -> list:
             step_files = sorted(path.glob('*_step_*.pkl'),
                                 key=lambda p: int(p.stem.rsplit('_', 1)[1]))
             if not step_files:
-                raise ValueError(
+                msg = (
                     f"No '*_step_*.pkl' selection files or consolidated selection artifact found in "
                     f"{model_selection_path!r}; point model_selection_path at a manifold model-selection output."
                 )
+                raise ValueError(msg)
             path = step_files[-1]
-        with open(path, 'rb') as handle:
+        with Path(path).open('rb') as handle:
             selection = pickle.load(handle)
         # A consolidated artifact holds the steps in order; the last one is final.
         if 'steps' in selection and isinstance(selection['steps'], list):
             selection = selection['steps'][-1] if selection['steps'] else {}
     if 'final_model_features' not in selection:
-        raise ValueError(
+        msg = (
             f"{path} does not carry 'final_model_features'; it is not a finalized "
             "manifold model-selection result (re-run selection to completion)."
         )
+        raise ValueError(msg)
     features = list(selection['final_model_features'])
     if not features:
-        raise ValueError(
+        msg = (
             f"The manifold selection at {path} kept no features "
             "('final_model_features' is empty), so there is nothing to build a "
             "GLM-HMM emission from."
         )
+        raise ValueError(msg)
     return features
 
 
@@ -252,9 +255,9 @@ def _manifold_emission_factory(n_features: int, n_time_bins: int, *,
         A zero-argument callable returning a new ``ManifoldEmission``.
     """
     emission_cls = resolve_emission_cls('manifold')
-    regressor_kwargs = dict(n_features=n_features, n_time_bins=n_time_bins,
-                            lambda_smooth=lambda_smooth, l2_reg=l2_reg,
-                            metric=metric, period=period)
+    regressor_kwargs = {'n_features': n_features, 'n_time_bins': n_time_bins,
+                            'lambda_smooth': lambda_smooth, 'l2_reg': l2_reg,
+                            'metric': metric, 'period': period}
     return lambda: emission_cls(regressor_kwargs)
 
 
@@ -293,9 +296,9 @@ def _multinomial_emission_factory(n_features: int, n_time_bins: int, *,
         A zero-argument callable returning a new ``MultinomialEmission``.
     """
     emission_cls = resolve_emission_cls('multinomial')
-    classifier_kwargs = dict(n_features=n_features, n_time_bins=n_time_bins,
-                             lambda_smooth=lambda_smooth, l2_reg=l2_reg,
-                             focal_gamma=focal_gamma, max_iter=max_iter)
+    classifier_kwargs = {'n_features': n_features, 'n_time_bins': n_time_bins,
+                             'lambda_smooth': lambda_smooth, 'l2_reg': l2_reg,
+                             'focal_gamma': focal_gamma, 'max_iter': max_iter}
     return lambda: emission_cls(classifier_kwargs, class_labels=class_labels)
 
 
@@ -348,17 +351,18 @@ def run_glm_hmm_state_selection(input_data_path: str, settings_path: str,
         ``transition_matrix``, ``state_paths`` (session -> Viterbi states), and a
         ``metadata`` block describing the run.
     """
-    with open(settings_path, 'r') as settings_file:
+    with Path(settings_path).open() as settings_file:
         settings = json.load(settings_file)
     glm_hmm_settings = settings['glm_hmm']
     emission_type = glm_hmm_settings['emission_type']
     if emission_type not in ('manifold', 'multinomial'):
-        raise ValueError(
+        msg = (
             f"run_glm_hmm_state_selection supports emission_type 'manifold' "
             f"(behaviour -> acoustic-manifold position, von Mises density) or "
             f"'multinomial' (behaviour -> USV category, categorical density); got "
             f"{emission_type!r}."
         )
+        raise ValueError(msg)
     # Transition dynamics. 'static' fits the EM-based `GLMHMM` (stationary K x K
     # matrix). 'input_driven' fits a direct-marginal engine with Calhoun-faithful
     # per-timestep transition GLMs -- the reference-coded `InputDrivenGLMHMM` for the
@@ -385,7 +389,7 @@ def run_glm_hmm_state_selection(input_data_path: str, settings_path: str,
     l2_reg = float(glm_hmm_settings['l2_reg'])
     random_seed = int(settings['model_validation']['random_seed'])
 
-    with open(input_data_path, 'rb') as input_file:
+    with Path(input_data_path).open('rb') as input_file:
         raw_data = pickle.load(input_file)
     # A legacy input pickle without `_input_metadata` reads as an empty block:
     # no held-out reserve, settings-side geometry, no provenance re-injection.
@@ -437,11 +441,12 @@ def run_glm_hmm_state_selection(input_data_path: str, settings_path: str,
     held_sequences = _build_session_sequences(
         raw_data, emission_features, held_ids, target_key, drop_nan_target, history_frames)
     if not dev_sequences:
-        raise ValueError(
+        msg = (
             "GLM-HMM state selection found no usable development sequences for "
             f"emission_features={emission_features}. Check the feature names and "
             "that the input pickle carries their per-session 'X'."
         )
+        raise ValueError(msg)
 
     n_time_bins = dev_sequences[0][1].shape[1] // len(emission_features)
     dev_xy = [(x_seq, target_seq) for _, x_seq, target_seq in dev_sequences]
@@ -548,10 +553,11 @@ def run_glm_hmm_state_selection(input_data_path: str, settings_path: str,
     # reserved-set log-likelihood are recorded alongside as DIAGNOSTICS only.
     n_folds = min(int(glm_hmm_settings['cv_folds']), len(dev_xy))
     if n_folds < 2:
-        raise ValueError(
+        msg = (
             "GLM-HMM state selection needs at least 2 development sessions for "
             f"cross-validation; got {len(dev_xy)}."
         )
+        raise ValueError(msg)
     # Round-robin session -> fold assignment (deterministic, balanced).
     fold_of = [i % n_folds for i in range(len(dev_xy))]
     print(f"  Selecting K by {n_folds}-fold cross-validated held-out log-likelihood "

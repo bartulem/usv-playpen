@@ -36,13 +36,13 @@ import time
 
 import numpy as np
 from scipy.linalg import block_diag
-from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
+from sklearn.utils.validation import check_array, check_is_fitted, check_X_y
 
 from .jax_bivariate_regression import SmoothBivariateRegression
 from .manifold_metric import (
+    _validate_metric_period,
     circular_mean,
     signed_diff,
-    _validate_metric_period,
 )
 
 
@@ -189,7 +189,7 @@ class SmoothTorusManifoldRegression(SmoothBivariateRegression):
             return block
         return block_diag(*([block] * int(self.n_features)))
 
-    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight=None) -> "SmoothTorusManifoldRegression":
+    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight=None) -> SmoothTorusManifoldRegression:
         """
         Description
         -----------
@@ -241,9 +241,8 @@ class SmoothTorusManifoldRegression(SmoothBivariateRegression):
         """
 
         if self.metric != 'torus':
-            raise ValueError(
-                f"SmoothTorusManifoldRegression requires metric='torus'; got {self.metric!r}."
-            )
+            msg = f"SmoothTorusManifoldRegression requires metric='torus'; got {self.metric!r}."
+            raise ValueError(msg)
         _validate_metric_period(self.metric, self.period)
         fit_start = time.perf_counter()
 
@@ -251,15 +250,15 @@ class SmoothTorusManifoldRegression(SmoothBivariateRegression):
         n_samples, n_inputs = X.shape
         expected_inputs = int(self.n_features) * int(self.n_time_bins)
         if n_inputs != expected_inputs:
-            raise ValueError(
+            msg = (
                 f"Input X has {n_inputs} columns, but init parameters expect "
                 f"n_features({self.n_features}) * n_time_bins({self.n_time_bins}) "
                 f"= {expected_inputs} columns."
             )
+            raise ValueError(msg)
         if y.shape[1] != 2:
-            raise ValueError(
-                f"Target y must have exactly 2 columns (torus x and y). Found shape {y.shape}."
-            )
+            msg = f"Target y must have exactly 2 columns (torus x and y). Found shape {y.shape}."
+            raise ValueError(msg)
 
         if sample_weight is None:
             sample_weight = np.ones(n_samples)
@@ -333,7 +332,7 @@ class SmoothTorusManifoldRegression(SmoothBivariateRegression):
         self.is_fitted_ = True
         return self
 
-    def predict(self, X: np.ndarray, snap: bool = True) -> np.ndarray:
+    def predict(self, X: np.ndarray, snap: bool = True) -> np.ndarray:  # noqa: ARG002  shared estimator interface; callers pass snap= by keyword
         """
         Description
         -----------

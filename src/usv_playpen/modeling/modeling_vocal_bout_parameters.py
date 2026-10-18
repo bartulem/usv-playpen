@@ -33,49 +33,62 @@ Key Scientific and Computational Components:
 
 from __future__ import annotations
 
-from datetime import datetime
-import numpy as np
-from numpy.lib.stride_tricks import sliding_window_view
-from pathlib import Path
-import pickle
 import gc
+import pickle
 import time
 import warnings
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 from pygam import GAM, te
-from sklearn.model_selection import StratifiedGroupKFold, StratifiedShuffleSplit, GridSearchCV
 from sklearn.linear_model import GammaRegressor
 from sklearn.metrics import mean_gamma_deviance, mean_squared_log_error
+from sklearn.model_selection import (
+    GridSearchCV,
+    StratifiedGroupKFold,
+    StratifiedShuffleSplit,
+)
 from tqdm import tqdm
 
 from ..os_utils import atomic_output_path
-from .modeling_vocal_onsets import VocalOnsetModelingPipeline
-from .load_input_files import load_behavioral_feature_data, find_variable_length_bouts
-from .load_input_files import is_pooled_vocal_signal, is_vocal_signal, require_labels_for_vocal_predictors
+from .load_input_files import (
+    _calculate_ibi_threshold,
+    find_variable_length_bouts,
+    is_pooled_vocal_signal,
+    is_vocal_signal,
+    load_behavioral_feature_data,
+    require_labels_for_vocal_predictors,
+)
 from .modeling_metadata import (
-    build_input_metadata, derive_experimental_condition,
-    derive_feature_zoo_full, derive_camera_fps_field, inject_metadata,
+    build_input_metadata,
+    derive_camera_fps_field,
+    derive_experimental_condition,
+    derive_feature_zoo_full,
+    inject_metadata,
 )
-from .load_input_files import _calculate_ibi_threshold
 from .modeling_utils import (
-    prepare_modeling_sessions,
-    seeded_session_holdout,
-    development_heldout_masks,
-    resolve_mouse_roles,
-    select_kinematic_columns,
     build_vocal_signal_columns,
-    identify_empty_event_sessions,
-    harmonize_session_columns,
-    zscore_features_across_sessions,
-    run_predictor_audits,
-    unroll_history_matrix,
-    pearson_r_safe,
-    spearman_r_safe,
-    root_mean_squared_error,
-    mean_absolute_error_1d,
+    development_heldout_masks,
     format_split_line,
+    harmonize_session_columns,
+    identify_empty_event_sessions,
+    mean_absolute_error_1d,
+    pearson_r_safe,
+    prepare_modeling_sessions,
+    resolve_mouse_roles,
+    root_mean_squared_error,
+    run_predictor_audits,
+    seeded_session_holdout,
+    select_kinematic_columns,
     session_grouped_inner_cv,
+    spearman_r_safe,
+    unroll_history_matrix,
     within_group_permutation,
+    zscore_features_across_sessions,
 )
+from .modeling_vocal_onsets import VocalOnsetModelingPipeline
 
 
 class BoutParameterPipeline(VocalOnsetModelingPipeline):
@@ -424,7 +437,8 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             t_name = mouse_track_names_dict[sess_id][target_mouse_idx]
             p_name = mouse_track_names_dict[sess_id][predictor_mouse_idx]
 
-            if t_name not in bout_data_dict[sess_id]: continue
+            if t_name not in bout_data_dict[sess_id]:
+                continue
             onsets = bout_data_dict[sess_id][t_name]['bout_onsets']
             targets = bout_data_dict[sess_id][t_name][target_variable]
             onset_frames = np.round(onsets * camera_fr_dict[sess_id]).astype(int)
@@ -449,7 +463,8 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
             for col in df.columns:
                 base_feature = col.split('.')[-1]
-                if base_feature.isdigit(): continue
+                if base_feature.isdigit():
+                    continue
 
                 if '-' in base_feature:
                     generic_key = base_feature
@@ -477,11 +492,11 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 final_data_dict[generic_key]['y'].extend(valid_targets)
                 final_data_dict[generic_key]['groups'].extend([sess_id] * n_valid)
 
-        for feat in final_data_dict:
+        for feat_entry in final_data_dict.values():
             for k in ['X', 'y', 'groups']:
-                final_data_dict[feat][k] = np.array(final_data_dict[feat][k])
+                feat_entry[k] = np.array(feat_entry[k])
 
-        final_features = sorted(list(final_data_dict.keys()))
+        final_features = sorted(final_data_dict.keys())
         total_covariates = len(final_features)
 
         alignment_passed = True
@@ -575,7 +590,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         # `ref_counts`; reuse them rather than re-running `np.unique`.
         n_events_per_session = {}
         if final_features:
-            for sess_id, sess_count in zip(ref_uniq, ref_counts):
+            for sess_id, sess_count in zip(ref_uniq, ref_counts, strict=False):
                 n_events_per_session[str(sess_id)] = {
                     'bout_onsets': int(sess_count),
                 }
@@ -587,7 +602,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             pickle.dump(artifact, f)
         print(f"[+] Saved: {save_path}")
 
-    def create_data_splits(self, feature_data: dict, strategy_override: str = None):
+    def create_data_splits(self, feature_data: dict, strategy_override: str | None = None):
         """
         Generates stratified splits for continuous regression targets using a
         Repeated Monte Carlo approach.
@@ -640,7 +655,8 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
         # 2. Safety checks
         if test_prop <= 0 or test_prop >= 1:
-            raise ValueError(f"test_proportion must be (0, 1). Got {test_prop}")
+            msg = f"test_proportion must be (0, 1). Got {test_prop}"
+            raise ValueError(msg)
 
         # 3. Stratification binning (discretize continuous Y)
         try:
@@ -718,9 +734,10 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 except (StopIteration, ValueError):
                     continue
         else:
-            raise ValueError(f"Unknown split strategy: {split_strategy}")
+            msg = f"Unknown split strategy: {split_strategy}"
+            raise ValueError(msg)
 
-    def _run_model_for_feature_pygam(self, feature_name, feature_data, basis_matrix, held_out_session_ids=None):
+    def _run_model_for_feature_pygam(self, feature_name, feature_data, basis_matrix, held_out_session_ids=None):  # noqa: ARG002  shared engine interface with the sklearn path; callers pass basis_matrix (by keyword in tests)
         r"""
         Runs a univariate GammaGAM regression and permutation test for a single feature.
 
@@ -898,7 +915,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 fit_time = float(time.perf_counter() - fit_start)
 
                 gam_diffs = gam.logs_['diffs']
-                n_iter_actual = int(len(gam_diffs))
+                n_iter_actual = len(gam_diffs)
                 converged_actual = bool(gam_diffs and gam_diffs[-1] < tol_val)
 
                 # Prediction: the per-frame predictions are averaged on the LINK (log)
@@ -917,10 +934,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                     null_dev = mean_gamma_deviance(y_te_safe, y_null_pred)
 
                     # Calculate D2
-                    if null_dev == 0:
-                        d2 = 0.0
-                    else:
-                        d2 = 1 - (res_dev / null_dev)
+                    d2 = 0.0 if null_dev == 0 else 1 - res_dev / null_dev
 
                 except Exception as e:
                     print(f"      [!] Actual Metric Failed: {e}")
@@ -988,7 +1002,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 fit_time_null = float(time.perf_counter() - fit_start)
 
                 null_diffs = gam_null.logs_['diffs']
-                n_iter_null = int(len(null_diffs))
+                n_iter_null = len(null_diffs)
                 converged_null = bool(null_diffs and null_diffs[-1] < tol_val)
 
                 y_pred_shuff = np.exp(np.mean(np.log(gam_null.predict_mu(X_te_gam)).reshape(len(y_te), hist_frames), axis=1))
@@ -1005,10 +1019,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                     null_dev = mean_gamma_deviance(y_te_safe, y_null_pred)
 
                     # Calculate D2
-                    if null_dev == 0:
-                        d2_null = 0.0
-                    else:
-                        d2_null = 1 - (res_dev_null / null_dev)
+                    d2_null = 0.0 if null_dev == 0 else 1 - res_dev_null / null_dev
 
                 except Exception as e:
                     print(f"      [!] Null Metric Failed: {e}")
@@ -1059,9 +1070,9 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             }))
 
         # Safely convert lists to arrays
-        for k in results:
-            for m in results[k]:
-                results[k][m] = np.array(results[k][m])
+        for strategy_results in results.values():
+            for m, m_values in strategy_results.items():
+                strategy_results[m] = np.array(m_values)
 
         # Honest held-out score (pyGAM). Refit on ALL development rows and score
         # once on the reserved held-out rows, mirroring the actual-branch fold fit
@@ -1077,7 +1088,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             y_dev_all = dev_feature_data['y']
             X_dev_gam = unroll_history_matrix(X_dev_all, time_indices=time_indices).astype(np.float32)
             X_held_gam = unroll_history_matrix(X_held, time_indices=time_indices).astype(np.float32)
-            n_held_sessions = int(len(np.unique(feature_data['groups'][held_mask])))
+            n_held_sessions = len(np.unique(feature_data['groups'][held_mask]))
             n_held_events = int(held_mask.sum())
             # Distinct-but-deterministic seed for the held-out null permutation;
             # offset the fold seeds by `n_splits` so it never collides with a fold.
@@ -1109,7 +1120,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                     gam.fit(X_dev_gam, y_dev_tiled)
                     rec['fit_time'] = float(time.perf_counter() - fit_start)
                     gam_diffs = gam.logs_['diffs']
-                    rec['n_iter'] = int(len(gam_diffs))
+                    rec['n_iter'] = len(gam_diffs)
                     rec['converged'] = bool(gam_diffs and gam_diffs[-1] < tol_val)
 
                     # Link-scale reduction, as in the CV folds above.
@@ -1330,10 +1341,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                     null_dev = mean_gamma_deviance(y_te_safe, y_null_pred)
 
                     # Calculate Explained Deviance (D2)
-                    if null_dev == 0:
-                        d2 = 0.0
-                    else:
-                        d2 = 1 - (res_dev / null_dev)
+                    d2 = 0.0 if null_dev == 0 else 1 - res_dev / null_dev
 
                 except Exception as e:
                     print(f"      [!] Actual Metric Failed: {e}")
@@ -1406,10 +1414,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                     null_dev = mean_gamma_deviance(y_te_safe, y_null_pred)
 
                     # Calculate explained deviance (D2)
-                    if null_dev == 0:
-                        d2_null = 0.0
-                    else:
-                        d2_null = 1 - (res_dev_null / null_dev)
+                    d2_null = 0.0 if null_dev == 0 else 1 - res_dev_null / null_dev
 
                 except Exception as e:
                     print(f"      [!] Null Metric Failed: {e}")
@@ -1454,9 +1459,9 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             }))
 
         # Safely convert lists to arrays
-        for k in results:
-            for m in results[k]:
-                results[k][m] = np.array(results[k][m])
+        for strategy_results in results.values():
+            for m, m_values in strategy_results.items():
+                strategy_results[m] = np.array(m_values)
 
         # Honest held-out score (Gamma GLM). Refit on ALL development rows and
         # score once on the reserved held-out rows, mirroring the actual-branch
@@ -1472,7 +1477,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             y_dev_all = dev_feature_data['y']
             X_dev_proj = np.dot(X_dev_all, basis_matrix)
             X_held_proj = np.dot(X_held, basis_matrix)
-            n_held_sessions = int(len(np.unique(feature_data['groups'][held_mask])))
+            n_held_sessions = len(np.unique(feature_data['groups'][held_mask]))
             n_held_events = int(held_mask.sum())
             # Distinct-but-deterministic seed for the held-out null permutation;
             # offset the fold seeds by `n_splits` so it never collides with a fold.

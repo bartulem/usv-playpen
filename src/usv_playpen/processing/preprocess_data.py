@@ -74,16 +74,15 @@ def _stamp_processing_version(root_directory: str | pathlib.Path) -> None:
                f"{', '.join(match.name for match in matches)}; the processing version was not stamped.")
         raise ValueError(msg)
     metadata_path = matches[0]
-    with open(metadata_path, 'r') as yaml_in:
+    with pathlib.Path(metadata_path).open() as yaml_in:
         session_metadata = yaml.safe_load(yaml_in)
     if not isinstance(session_metadata, dict):
         return
     if 'Session' not in session_metadata or 'usv_playpen_processing_version' not in session_metadata['Session']:
         return
     session_metadata['Session']['usv_playpen_processing_version'] = f"v{metadata.version('usv-playpen').split('.dev')[0]}"
-    with atomic_output_path(metadata_path) as tmp_path:
-        with open(tmp_path, 'w') as yaml_out:
-            yaml.dump(session_metadata, yaml_out, Dumper=SmartDumper, default_flow_style=False, sort_keys=False, indent=2)
+    with atomic_output_path(metadata_path) as tmp_path, pathlib.Path(tmp_path).open('w') as yaml_out:
+        yaml.dump(session_metadata, yaml_out, Dumper=SmartDumper, default_flow_style=False, sort_keys=False, indent=2)
 
 
 class Stylist:
@@ -97,9 +96,9 @@ class Stylist:
     """
 
     def __init__(self,
-                 exp_settings_dict: dict = None,
-                 input_parameter_dict: dict = None,
-                 root_directories: list = None,
+                 exp_settings_dict: dict | None = None,
+                 input_parameter_dict: dict | None = None,
+                 root_directories: list | None = None,
                  message_output: Callable | None = None) -> None:
 
         """
@@ -125,7 +124,7 @@ class Stylist:
         """
 
         if input_parameter_dict is None or root_directories is None:
-            with open(pathlib.Path(__file__).parent.parent / '_parameter_settings/processing_settings.json') as json_file:
+            with (pathlib.Path(__file__).parent.parent / '_parameter_settings/processing_settings.json').open() as json_file:
                 _settings = json.load(json_file)
 
         self.root_directories = root_directories if root_directories is not None else _settings['preprocess_data']['root_directories']
@@ -236,7 +235,7 @@ class Stylist:
                 self.message_output(f"Preprocessing data finished at: "
                                     f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
 
-            except (OSError, RuntimeError, TypeError, IndexError, IOError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError) as exc:
+            except (OSError, RuntimeError, TypeError, IndexError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError) as exc:
                 self.message_output(traceback.format_exc())
                 failed_preprocessing.append(("ephys/cluster preprocessing (all root directories)", f"{type(exc).__name__}: {exc}"))
 
@@ -262,11 +261,10 @@ class Stylist:
                                  message_output=self.message_output).rectify_video_fps(conduct_concat=self.input_parameter_dict['processing_booleans']['conduct_video_concatenation'])
 
                     # # # convert multichannel to single channel files
-                    if self.input_parameter_dict['processing_booleans']['conduct_audio_multichannel_to_single_ch']:
-                        if len(list((pathlib.Path(one_directory) / 'audio' / 'original').iterdir())) == 0:
-                            Operator(root_directory=one_directory,
-                                     input_parameter_dict=self.input_parameter_dict,
-                                     message_output=self.message_output).multichannel_to_channel_audio()
+                    if self.input_parameter_dict['processing_booleans']['conduct_audio_multichannel_to_single_ch'] and len(list((pathlib.Path(one_directory) / 'audio' / 'original').iterdir())) == 0:
+                        Operator(root_directory=one_directory,
+                                 input_parameter_dict=self.input_parameter_dict,
+                                 message_output=self.message_output).multichannel_to_channel_audio()
 
                     # # # crop audio files to match video
                     if self.input_parameter_dict['processing_booleans']['conduct_audio_cropping']:
@@ -427,7 +425,7 @@ class Stylist:
                     self.message_output(f"Preprocessing data in {one_directory} finished at: "
                                         f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}.")
 
-                except (OSError, RuntimeError, TypeError, IndexError, IOError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError) as exc:
+                except (OSError, RuntimeError, TypeError, IndexError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError) as exc:
                     self.message_output(traceback.format_exc())
                     failed_preprocessing.append((one_directory, f"{type(exc).__name__}: {exc}"))
 
@@ -977,7 +975,8 @@ def add_broadband_low_band_variance_cli(ctx, root_directories, sessions_file, us
         session_roots += read_broadband_session_list(sessions_file=sessions_file, usv_counts_csv=usv_counts_csv, tag=tag)
     session_roots = list(dict.fromkeys(session_roots))
     if not session_roots:
-        raise click.UsageError("Give --root-directories, --sessions-file or --usv-counts-csv.")
+        msg = "Give --root-directories, --sessions-file or --usv-counts-csv."
+        raise click.UsageError(msg)
 
     def one(root: str) -> str:
         """
@@ -1474,7 +1473,7 @@ def prepare_vcl_assign_cli(root_directory, arena_directory) -> None:
     None
     """
 
-    with open((pathlib.Path(__file__).parent.parent / '_parameter_settings/processing_settings.json'), 'r') as json_file:
+    with (pathlib.Path(__file__).parent.parent / '_parameter_settings/processing_settings.json').open() as json_file:
         processing_settings_dict = json.load(json_file)
 
     processing_settings_dict['anipose_operations']['ConvertTo3D']['conduct_anipose_triangulation']['calibration_file_loc'] = arena_directory

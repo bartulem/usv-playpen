@@ -103,9 +103,9 @@ from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import (
     CATEGORY_CONFIDENCE_SUFFIXES,
     QLVM_CATEGORY_BUILD_CONFIG_NAME,
-    QLVM_CATEGORY_USV_LABELS_NAME,
     QLVM_CATEGORY_GRIDS_NAME,
     QLVM_CATEGORY_NOMENCLATURE_NAME,
+    QLVM_CATEGORY_USV_LABELS_NAME,
     atomic_output_path,
     derive_spectrogram_model_paths,
     first_match_or_raise,

@@ -51,7 +51,11 @@ import polars as pls
 from click.core import ParameterSource
 
 from ..cli_utils import modify_settings_json_for_cli
-from ..os_utils import atomic_output_path, first_match_or_raise, order_usv_summary_columns
+from ..os_utils import (
+    atomic_output_path,
+    first_match_or_raise,
+    order_usv_summary_columns,
+)
 from ..time_utils import is_gui_context, smart_wait
 from .build_qlvm_training_set import build_session_masks
 from .compute_usv_loudness import session_image_level_db
@@ -251,11 +255,12 @@ def compute_acoustic_features(
     # pixel) and the power normalization / entropy would emit garbage / NaN. Fail
     # loudly instead of silently corrupting the features.
     if specs.size and specs.min() < 0:
-        raise ValueError(
+        msg = (
             "compute_acoustic_features requires non-negative spectrograms (a "
             "normalized [0, 1] or linear-power spectrogram); got specs.min() = "
             f"{specs.min():.4g}. Run generate_spectrograms with normalize=True."
         )
+        raise ValueError(msg)
     if region_masks is None:
         region_time = build_time_window_masks(durations, n_time)    # [N, T]
         region = region_time[:, None, :]                            # [N, 1, T] broadcasts over freq

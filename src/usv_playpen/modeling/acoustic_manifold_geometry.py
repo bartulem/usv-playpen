@@ -286,14 +286,17 @@ def derive_cluster_geometry(centres: dict,
 
     _validate_metric_period(metric, period)
     if alpha <= 0.0:
-        raise ValueError(f"alpha must be > 0; got {alpha!r}")
+        msg = f"alpha must be > 0; got {alpha!r}"
+        raise ValueError(msg)
     if mode not in ('adaptive', 'uniform'):
-        raise ValueError(f"mode must be 'adaptive' or 'uniform'; got {mode!r}")
+        msg = f"mode must be 'adaptive' or 'uniform'; got {mode!r}"
+        raise ValueError(msg)
     if len(centres) < 2:
-        raise ValueError(
+        msg = (
             f"derive_cluster_geometry needs at least 2 centres to define a nearest-neighbour distance; "
             f"got {len(centres)}."
         )
+        raise ValueError(msg)
 
     labels = list(centres.keys())
     C = np.asarray([np.asarray(centres[k], dtype=np.float64) for k in labels])
@@ -306,8 +309,7 @@ def derive_cluster_geometry(centres: dict,
             if i == j:
                 continue
             d_ij = float(np.sqrt((signed_diff(C[i], C[j], metric=metric, period=period) ** 2).sum()))
-            if d_ij < d_nn[i]:
-                d_nn[i] = d_ij
+            d_nn[i] = min(d_nn[i], d_ij)
 
     if mode == 'uniform':
         uniform_radius = alpha * float(d_nn.min()) / 2.0

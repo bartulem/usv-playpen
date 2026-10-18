@@ -19,16 +19,17 @@ routine in `model_selection.py`, not by the loss function.
 
 from __future__ import annotations
 
+import time
+from functools import partial
+from typing import Any
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
-import time
-from functools import partial
 from sklearn.base import BaseEstimator, ClassifierMixin
-from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
 from sklearn.preprocessing import LabelBinarizer
-from typing import Tuple, Any
+from sklearn.utils.validation import check_array, check_is_fitted, check_X_y
 
 
 def _multinomial_loss_static(
@@ -632,9 +633,8 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
             If ``smoothness_derivative_order`` is not 1 or 2.
         """
         if smoothness_derivative_order not in (1, 2):
-            raise ValueError(
-                f"smoothness_derivative_order must be 1 or 2; got {smoothness_derivative_order}."
-            )
+            msg = f"smoothness_derivative_order must be 1 or 2; got {smoothness_derivative_order}."
+            raise ValueError(msg)
         self.n_features = n_features
         self.n_time_bins = n_time_bins
         self.lambda_smooth = lambda_smooth
@@ -667,7 +667,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         self._use_lax_loop = bool(_use_lax_loop)
 
     @staticmethod
-    def _initialize_params(n_inputs: int, n_classes: int, key: Any, log_priors: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    def _initialize_params(n_inputs: int, n_classes: int, key: Any, log_priors: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
         """
         Initializes weights (W) and bias (b) for the multinomial fit.
 
@@ -715,7 +715,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
     @staticmethod
     @partial(jax.jit, static_argnums=(4, 5, 10, 11))
     def _loss_fn(
-            params: Tuple[jnp.ndarray, jnp.ndarray],
+            params: tuple[jnp.ndarray, jnp.ndarray],
             X: jnp.ndarray,
             Y_onehot: jnp.ndarray,
             sample_weight: jnp.ndarray,
@@ -859,7 +859,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         return mean_focal_loss + l2_loss + smooth_loss
 
     def fit(self, X: np.ndarray, y: np.ndarray,
-            sample_weight: np.ndarray = None) -> "SmoothMultinomialLogisticRegression":
+            sample_weight: np.ndarray = None) -> SmoothMultinomialLogisticRegression:
         """
         Fits the model to the training data using JAX/Optax optimization.
 
@@ -899,11 +899,12 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
 
         expected_inputs = self.n_features * self.n_time_bins
         if n_inputs != expected_inputs:
-            raise ValueError(
+            msg = (
                 f"Input X has {n_inputs} columns, but init parameters expect "
                 f"n_features({self.n_features}) * n_time_bins({self.n_time_bins}) = "
                 f"{expected_inputs} columns."
             )
+            raise ValueError(msg)
 
         X_j = jnp.array(X)
         Y_j = jnp.array(Y_onehot)
@@ -916,13 +917,15 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         else:
             sample_weight = np.asarray(sample_weight, dtype=np.float64)
             if sample_weight.shape[0] != X.shape[0]:
-                raise ValueError(
+                msg = (
                     f"sample_weight has {sample_weight.shape[0]} entries but X has "
                     f"{X.shape[0]} rows."
                 )
+                raise ValueError(msg)
             mean_sw = float(np.mean(sample_weight))
             if mean_sw <= 0.0:
-                raise ValueError("sample_weight must have a positive mean.")
+                msg = "sample_weight must have a positive mean."
+                raise ValueError(msg)
             # float32 (NOT Y_onehot's int dtype) so fractional responsibilities are
             # not truncated to 0/1.
             sw_j = jnp.asarray(sample_weight / mean_sw, dtype=jnp.float32)
@@ -1094,9 +1097,8 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
 
         max_logits = np.max(logits, axis=1, keepdims=True)
         e_x = np.exp(logits - max_logits)
-        probs = e_x / e_x.sum(axis=1, keepdims=True)
+        return e_x / e_x.sum(axis=1, keepdims=True)
 
-        return probs
 
     def predict(self, X: np.ndarray, balanced: bool = False) -> np.ndarray:
         """

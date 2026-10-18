@@ -39,6 +39,7 @@ import json
 import pathlib
 import warnings
 from datetime import datetime
+from typing import ClassVar
 
 import h5py
 import matplotlib.pyplot as plt
@@ -50,12 +51,12 @@ from matplotlib.backends.backend_pdf import PdfPages
 from scipy.optimize import minimize
 
 from ..os_utils import atomic_output_path, first_match_or_raise
-from ..visualizations.plot_style import apply_plot_style
 from ..time_utils import is_gui_context, smart_wait
 from ..visualizations.auxiliary_plot_functions import (
     choose_animal_colors,
     create_colormap,
 )
+from ..visualizations.plot_style import apply_plot_style
 from .decode_experiment_label import extract_information
 
 apply_plot_style()
@@ -224,7 +225,7 @@ def calculate_sei(
         idx_nose: int = 0,
         idx_tti: int = 3,
         idx_head: int = 5,
-        v_max: float = None,
+        v_max: float | None = None,
 ) -> np.ndarray:
     """
     Description
@@ -350,9 +351,8 @@ def calculate_sei(
         w_proximity = np.exp(-d_norm)
         w_social = w_pursuit + w_proximity
 
-        sei = np.sign(cos_theta) * (np.abs(cos_theta) ** gamma) * w_social
+        return np.sign(cos_theta) * (np.abs(cos_theta) ** gamma) * w_social
 
-    return sei
 
 def calculate_tail_curvature(input_arr: np.ndarray) -> np.ndarray:
     """
@@ -729,10 +729,10 @@ def get_head_root(
 
 def get_back_root(
     point_data_3d: np.ndarray,
-    mouse_id: int = None,
-    neck_point_pos: int = None,
-    tti_point_pos: int = None,
-    root_method: str = None,
+    mouse_id: int | None = None,
+    neck_point_pos: int | None = None,
+    tti_point_pos: int | None = None,
+    root_method: str | None = None,
     spatial_resolution_tolerance: int | float = 0.001,
 ) -> np.ndarray:
     """
@@ -1157,7 +1157,7 @@ class FeatureZoo:
     constructed by ``analyses/analyze_data.py``.
     """
 
-    feature_boundaries = {
+    feature_boundaries: ClassVar[dict] = {
         "speed": [0, 54],
         "acceleration": [-180, 180],
         "neck_elevation": [0, 12],
@@ -1246,7 +1246,7 @@ class FeatureZoo:
         "anogenital-sei_2nd_der": [-72, 72]
     }
 
-    feature_labels = {
+    feature_labels: ClassVar[dict] = {
         "individual": {
             "speed": "slow -- (cm/s) -- fast",
             "acceleration": "slow -- (cm/s²) -- fast",
@@ -1357,7 +1357,7 @@ class FeatureZoo:
     # Units are CSV-native: `duration` in seconds, `*_freq_hz` and
     # `freq_bandwidth_hz` in Hz, amplitudes and entropy unitless,
     # `mask_number` integer count.
-    vocal_boundaries = {
+    vocal_boundaries: ClassVar[dict] = {
         "duration": [0.0, 1.8],
         "mean_freq_hz": [30000.0, 120000.0],
         "peak_freq_hz": [30000.0, 120000.0],
@@ -1372,7 +1372,7 @@ class FeatureZoo:
     # Display labels for each vocal property; the unit shown matches the
     # display-unit convention applied by the plotter (ms for duration,
     # kHz for frequencies, raw units otherwise).
-    vocal_labels = {
+    vocal_labels: ClassVar[dict] = {
         "duration": "short -- (ms) -- long",
         "mean_freq_hz": "low -- (kHz) -- high",
         "peak_freq_hz": "low -- (kHz) -- high",
@@ -1388,7 +1388,7 @@ class FeatureZoo:
     # axis labels, which read as a spectrum ("short -- (ms) -- long") and are the wrong thing to
     # title a panel with; the raw column names are wrong in the other direction. Keyed by the
     # same property names.
-    vocal_titles = {
+    vocal_titles: ClassVar[dict] = {
         "duration": "duration",
         "mean_freq_hz": "mean frequency",
         "peak_freq_hz": "peak frequency",
@@ -1410,7 +1410,7 @@ class FeatureZoo:
     # consumed by `visualizations.modeling_plots` so plot labels stay
     # consistent and cohort-correct (male- vs female-target) without
     # per-figure override dicts.
-    feature_display_names = {
+    feature_display_names: ClassVar[dict] = {
         # egocentric (rendered with a leading {self}/{other} sex word)
         "speed": "speed",
         "acceleration": "acceleration",
@@ -1551,16 +1551,19 @@ class FeatureZoo:
         expected_kwargs = {'root_directory', 'behavioral_parameters_dict', 'message_output'}
         unexpected_kwargs = set(kwargs) - expected_kwargs
         if unexpected_kwargs:
-            raise TypeError(f"{type(self).__name__}() got unexpected keyword argument(s) "
+            msg = (
+                f"{type(self).__name__}() got unexpected keyword argument(s) "
                             f"{', '.join(map(repr, sorted(unexpected_kwargs)))}; expected only "
-                            f"{', '.join(map(repr, sorted(expected_kwargs)))}.")
+                            f"{', '.join(map(repr, sorted(expected_kwargs)))}."
+            )
+            raise TypeError(msg)
         for kw_arg, kw_val in kwargs.items():
             self.__dict__[kw_arg] = kw_val
 
-        with open(
+        with (
             pathlib.Path(__file__).parent.parent
             / "_parameter_settings/visualizations_settings.json"
-        ) as json_file:
+        ).open() as json_file:
             self.visualizations_parameter_dict = json.load(json_file)
 
         self.app_context_bool = is_gui_context()
@@ -1669,7 +1672,7 @@ class FeatureZoo:
                 )
 
             plot_features = {}
-            for feature_key in feature_dict.keys():
+            for feature_key in feature_dict:
                 mouse_id = feature_key.split(".")[0]
                 if (
                     f"individual.{mouse_id}" not in plot_features
@@ -1688,7 +1691,7 @@ class FeatureZoo:
                 self.visualizations_parameter_dict["figures"]["dpi"]
             )
             with PdfPages(plot_file_name) as pdf_fig:
-                for plot_feature_key in plot_features:
+                for plot_feature_key, plot_feature_list in plot_features.items():
                     if "social" in plot_feature_key:
                         histogram_color = mouse_color_dict["social"]
                         mouse_colormap = 0
@@ -1704,7 +1707,7 @@ class FeatureZoo:
                         warnings.simplefilter(action="ignore")
 
                         row_num = int(
-                            np.ceil((len(plot_features[plot_feature_key])) / 6)
+                            np.ceil((len(plot_feature_list)) / 6)
                         )
                         fig = plt.figure(
                             figsize=(6.4, float(row_num)), dpi=600, tight_layout=True
@@ -1714,8 +1717,8 @@ class FeatureZoo:
 
                         gs_x = 0
                         gs_y = 0
-                        for feature_idx, feature in enumerate(
-                            plot_features[plot_feature_key]
+                        for _feature_idx, feature in enumerate(
+                            plot_feature_list
                         ):
                             if "space" in feature:
                                 cbar_width = 0.005

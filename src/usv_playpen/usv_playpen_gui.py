@@ -6,8 +6,9 @@ GUI to run behavioral experiments, data processing and analyses.
 from __future__ import annotations
 
 import ast
-import configparser
 import concurrent.futures
+import configparser
+import contextlib
 import copy
 import ctypes
 import fnmatch
@@ -16,9 +17,13 @@ import os
 import platform
 import shutil
 import sys
+from collections.abc import Callable
 from functools import partial
 from importlib import metadata
 from pathlib import Path
+
+import platformdirs
+import toml
 
 # torch MUST be imported before PyQt6. On Windows, importing Qt first makes
 # torch's c10.dll fail to initialise (OSError [WinError 1114]) because Qt and
@@ -27,9 +32,6 @@ from pathlib import Path
 # is hoisted to the front here so its native DLLs load first. Keep it first;
 # do not re-sort below the PyQt6 imports.
 import torch  # noqa: F401
-
-import platformdirs
-import toml
 import yaml
 from PyQt6.QtCore import QEvent, QRegularExpression, QStringListModel, Qt, QTimer
 from PyQt6.QtGui import (
@@ -89,7 +91,7 @@ from .yaml_utils import (
 # do NOT print logs (debug, warnings, or otherwise) from the qt.qpa.window category.
 os.environ["QT_LOGGING_RULES"] = "qt.qpa.window=false"
 
-# automatically scale your UI based on the screen’s DPI (helpful on high-DPI monitors)
+# automatically scale your UI based on the screen's DPI (helpful on high-DPI monitors)
 os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
 
 # controls how Windows represents your app in the taskbar, etc. (important for icon)
@@ -203,10 +205,11 @@ def _safe_literal_eval(raw: str):
     try:
         return ast.literal_eval(raw)
     except (ValueError, SyntaxError) as exc:
-        raise ValueError(
+        msg = (
             f"Could not parse the GUI field value {raw!r}; expected a number, "
             "tuple, or list literal (check for blank or malformed input)."
-        ) from exc
+        )
+        raise ValueError(msg) from exc
 
 
 class YamlHighlighter(QSyntaxHighlighter):
@@ -232,7 +235,7 @@ class YamlHighlighter(QSyntaxHighlighter):
         (None)
         """
 
-        super(YamlHighlighter, self).__init__(parent)
+        super().__init__(parent)
 
         self.highlighting_rules = []
 
@@ -286,7 +289,7 @@ class ChemoDialog(QDialog):
     ``USVPlaypenWindow`` with the window as ``parent``.
     """
 
-    def __init__(self, parent=None, subject: dict = None):
+    def __init__(self, parent=None, subject: dict | None = None):
         """
         Description
         -----------
@@ -499,7 +502,7 @@ class EphysDialog(QDialog):
     -----------
     A custom dialog for E-phys Interventions with edit/delete functionality.
     """
-    def __init__(self, parent=None, subject: dict = None):
+    def __init__(self, parent=None, subject: dict | None = None):
         """
         Description
         -----------
@@ -691,7 +694,8 @@ class EphysDialog(QDialog):
 
         selected_id = self.subject_combo.currentText()
         target_subject = self.subject if self.is_edit_mode else next((s for s in self.parent_window.metadata_settings['Subjects'] if s['subject_id'] == selected_id), None)
-        if not target_subject: return
+        if not target_subject:
+            return
 
         intervention_data = {}
         for key, widget in self.fields.items():
@@ -705,7 +709,8 @@ class EphysDialog(QDialog):
         else:
             intervention_data['probe_sn'] = []
 
-        if 'interventions' not in target_subject: target_subject['interventions'] = {}
+        if 'interventions' not in target_subject:
+            target_subject['interventions'] = {}
         target_subject['interventions'][self.intervention_key] = intervention_data
 
         self.parent_window._save_metadata_to_yaml()
@@ -719,7 +724,7 @@ class LesionDialog(QDialog):
     -----------
     A custom dialog for Lesion Interventions with edit/delete functionality.
     """
-    def __init__(self, parent=None, subject: dict = None):
+    def __init__(self, parent=None, subject: dict | None = None):
         """
         Description
         -----------
@@ -881,13 +886,15 @@ class LesionDialog(QDialog):
 
         selected_id = self.subject_combo.currentText()
         target_subject = self.subject if self.is_edit_mode else next((s for s in self.parent_window.metadata_settings['Subjects'] if s['subject_id'] == selected_id), None)
-        if not target_subject: return
+        if not target_subject:
+            return
 
         intervention_data = {}
         for key, widget in self.fields.items():
             intervention_data[key] = widget.currentText() if isinstance(widget, QComboBox) else widget.text()
 
-        if 'interventions' not in target_subject: target_subject['interventions'] = {}
+        if 'interventions' not in target_subject:
+            target_subject['interventions'] = {}
         target_subject['interventions'][self.intervention_key] = intervention_data
 
         self.parent_window._save_metadata_to_yaml()
@@ -902,7 +909,7 @@ class OptoDialog(QDialog):
     A custom dialog for Optogenetic Interventions with edit/delete functionality.
     """
 
-    def __init__(self, parent=None, subject: dict = None):
+    def __init__(self, parent=None, subject: dict | None = None):
         """
         Description
         -----------
@@ -1096,22 +1103,24 @@ class OptoDialog(QDialog):
 
         selected_id = self.subject_combo.currentText()
         target_subject = self.subject if self.is_edit_mode else next((s for s in self.parent_window.metadata_settings['Subjects'] if s['subject_id'] == selected_id), None)
-        if not target_subject: return
+        if not target_subject:
+            return
 
         intervention_data = {}
         for key, widget in self.fields.items():
             intervention_data[key] = widget.currentText() if isinstance(widget, QComboBox) else widget.text()
 
-        if 'interventions' not in target_subject: target_subject['interventions'] = {}
+        if 'interventions' not in target_subject:
+            target_subject['interventions'] = {}
         target_subject['interventions'][self.intervention_key] = intervention_data
 
         self.parent_window._save_metadata_to_yaml()
         self.parent_window._update_subject_in_repository(target_subject)
         self.accept()
 
-def replace_name_in_path(experimenter_list: list = None,
-                         recording_files_destinations: list = None,
-                         exp_id : str = None) -> str:
+def replace_name_in_path(experimenter_list: list | None = None,
+                         recording_files_destinations: list | None = None,
+                         exp_id : str | None = None) -> str:
     """
     Description
     -----------
@@ -1234,7 +1243,7 @@ class Credentials(QWidget):
         -------
         None
         """
-        super(Credentials, self).__init__(parent)
+        super().__init__(parent)
 
 class Record(QWidget):
     """
@@ -1266,7 +1275,7 @@ class Record(QWidget):
         -------
         None
         """
-        super(Record, self).__init__(parent)
+        super().__init__(parent)
 
 
 class VideoSettings(QWidget):
@@ -1298,7 +1307,7 @@ class VideoSettings(QWidget):
         -------
         None
         """
-        super(VideoSettings, self).__init__(parent)
+        super().__init__(parent)
 
 
 class Metadata(QWidget):
@@ -1332,7 +1341,7 @@ class Metadata(QWidget):
         -------
         None
         """
-        super(Metadata, self).__init__(parent)
+        super().__init__(parent)
 
 class ConductRecording(QWidget):
     """
@@ -1364,7 +1373,7 @@ class ConductRecording(QWidget):
         -------
         None
         """
-        super(ConductRecording, self).__init__(parent)
+        super().__init__(parent)
 
 class ProcessSettings(QWidget):
     """
@@ -1397,7 +1406,7 @@ class ProcessSettings(QWidget):
         -------
         None
         """
-        super(ProcessSettings, self).__init__(parent)
+        super().__init__(parent)
 
 class ConductProcess(QWidget):
     """
@@ -1429,7 +1438,7 @@ class ConductProcess(QWidget):
         -------
         None
         """
-        super(ConductProcess, self).__init__(parent)
+        super().__init__(parent)
 
 class AnalysesSettings(QWidget):
     """
@@ -1461,7 +1470,7 @@ class AnalysesSettings(QWidget):
         -------
         None
         """
-        super(AnalysesSettings, self).__init__(parent)
+        super().__init__(parent)
 
 class ConductAnalyses(QWidget):
     """
@@ -1493,7 +1502,7 @@ class ConductAnalyses(QWidget):
         -------
         None
         """
-        super(ConductAnalyses, self).__init__(parent)
+        super().__init__(parent)
 
 class VisualizationsSettings(QWidget):
     """
@@ -1526,7 +1535,7 @@ class VisualizationsSettings(QWidget):
         -------
         None
         """
-        super(VisualizationsSettings, self).__init__(parent)
+        super().__init__(parent)
 
 class ConductVisualizations(QWidget):
     """
@@ -1558,7 +1567,7 @@ class ConductVisualizations(QWidget):
         -------
         None
         """
-        super(ConductVisualizations, self).__init__(parent)
+        super().__init__(parent)
 
 
 # noinspection PyUnresolvedReferences,PyTypeChecker
@@ -1805,7 +1814,7 @@ class USVPlaypenWindow(QMainWindow):
 
         try:
             if self.subject_repo_path.exists():
-                with open(self.subject_repo_path, 'r') as f:
+                with Path(self.subject_repo_path).open() as f:
                     self.subject_repository = json.load(f)
                     if not isinstance(self.subject_repository, list):
                         self.subject_repository = []
@@ -1814,7 +1823,7 @@ class USVPlaypenWindow(QMainWindow):
         except (json.JSONDecodeError, FileNotFoundError):
             self.subject_repository = []
 
-    def _save_subject_to_repository(self):
+    def _save_subject_to_repository(self, message_output: Callable = print):
         """
         Description
         -----------
@@ -1822,6 +1831,9 @@ class USVPlaypenWindow(QMainWindow):
 
         Parameters
         ----------
+        message_output (Callable)
+            Sink for the report of an I/O failure while writing the repository;
+            defaults to print.
 
         Returns
         -------
@@ -1830,12 +1842,12 @@ class USVPlaypenWindow(QMainWindow):
 
         try:
             self.subject_repo_path.parent.mkdir(parents=True, exist_ok=True)
-            with atomic_output_path(self.subject_repo_path) as tmp_settings_path, open(tmp_settings_path, 'w') as f:
+            with atomic_output_path(self.subject_repo_path) as tmp_settings_path, Path(tmp_settings_path).open('w') as f:
                 json.dump(self.subject_repository, f, indent=4)
         except OSError as e:
             # A write failure (permissions, full disk) leaves the previous repository file
             # intact (atomic rename) and is reported; any other error is a bug and raises.
-            print(f"Error saving subject repository: {e}")
+            message_output(f"Error saving subject repository: {e}")
 
     def _on_subject_form_changed(self):
         """
@@ -1886,10 +1898,8 @@ class USVPlaypenWindow(QMainWindow):
             else:
                 current_form_data[key] = widget.text()
 
-        try:
+        with contextlib.suppress(ValueError, SyntaxError):
             current_form_data['weight'] = _safe_literal_eval(current_form_data['weight'])
-        except (ValueError, SyntaxError):
-            pass
 
         new_subject_id = current_form_data['subject_id']
         old_subject_id = self.active_subject_id
@@ -2153,7 +2163,7 @@ class USVPlaypenWindow(QMainWindow):
 
         self.equipment_settings_dict = toml.load(Path(__file__).parent / '_config/equipment.toml')
 
-        with open(Path(__file__).parent / '_config/_metadata.yaml', 'r') as metadata_file:
+        with (Path(__file__).parent / '_config/_metadata.yaml').open() as metadata_file:
             self.metadata_settings = yaml.safe_load(metadata_file)
 
         # Reconcile every dynamic Equipment field in the metadata yaml with
@@ -2169,7 +2179,7 @@ class USVPlaypenWindow(QMainWindow):
         # port, USGH sample rate, video frame rates / codec, and the
         # camera-derived sensor fields.
         if sync_equipment_dynamic_fields(self.metadata_settings, self.exp_settings_dict):
-            with atomic_output_path(Path(__file__).parent / '_config/_metadata.yaml') as tmp_settings_path, open(tmp_settings_path, 'w') as metadata_file:
+            with atomic_output_path(Path(__file__).parent / '_config/_metadata.yaml') as tmp_settings_path, Path(tmp_settings_path).open('w') as metadata_file:
                 yaml.dump(
                     self.metadata_settings,
                     metadata_file,
@@ -2179,13 +2189,13 @@ class USVPlaypenWindow(QMainWindow):
                     indent=2
                 )
 
-        with open((Path(__file__).parent / '_parameter_settings/processing_settings.json'), 'r') as process_json_file:
+        with (Path(__file__).parent / '_parameter_settings/processing_settings.json').open() as process_json_file:
             self.processing_input_dict = json.load(process_json_file)
 
-        with open((Path(__file__).parent / '_parameter_settings/analyses_settings.json'), 'r') as analyses_json_file:
+        with (Path(__file__).parent / '_parameter_settings/analyses_settings.json').open() as analyses_json_file:
             self.analyses_input_dict = json.load(analyses_json_file)
 
-        with open((Path(__file__).parent / '_parameter_settings/visualizations_settings.json'), 'r') as visualizations_json_file:
+        with (Path(__file__).parent / '_parameter_settings/visualizations_settings.json').open() as visualizations_json_file:
             self.visualizations_input_dict = json.load(visualizations_json_file)
 
         # Experimenter-scoped paths in the settings files are shipped under a
@@ -2534,10 +2544,8 @@ class USVPlaypenWindow(QMainWindow):
             else:
                 subject_data[key] = widget.text()
 
-        try:
+        with contextlib.suppress(ValueError, SyntaxError):
             subject_data['weight'] = _safe_literal_eval(subject_data['weight'])
-        except (ValueError, SyntaxError):
-            pass
 
         # Seed from the remembered preset (or, failing that, the record already in
         # this session) so keys that have no form widget -- notably `interventions`
@@ -2556,7 +2564,8 @@ class USVPlaypenWindow(QMainWindow):
         if target_subject_in_session:
             target_subject_in_session.update(subject_data)
         else:
-            if 'Subjects' not in self.metadata_settings: self.metadata_settings['Subjects'] = []
+            if 'Subjects' not in self.metadata_settings:
+                self.metadata_settings['Subjects'] = []
             self.metadata_settings['Subjects'].append(subject_data)
 
         self._update_subject_in_repository(subject_data)
@@ -2627,9 +2636,8 @@ class USVPlaypenWindow(QMainWindow):
             # field in its canonical YAML position instead of trailing it
             # at the end of the block.
             sync_equipment_dynamic_fields(self.metadata_settings, self.exp_settings_dict)
-        else:
-            if yaml_key in self.metadata_settings['Equipment']:
-                del self.metadata_settings['Equipment'][yaml_key]
+        elif yaml_key in self.metadata_settings['Equipment']:
+            del self.metadata_settings['Equipment'][yaml_key]
 
         self._save_metadata_to_yaml()
 
@@ -2687,10 +2695,8 @@ class USVPlaypenWindow(QMainWindow):
             # to record_two destroys the underlying C++ object while the
             # Python attribute still references the dead wrapper, so hasattr
             # is not enough to know whether the widget is still usable.
-            try:
+            with contextlib.suppress(RuntimeError):
                 self.metadata_preview_edit.setPlainText(preview_text)
-            except RuntimeError:
-                pass
 
     def _on_arduino_sync_port_changed(self, text: str) -> None:
         """
@@ -2725,7 +2731,7 @@ class USVPlaypenWindow(QMainWindow):
         if isinstance(equipment, dict) and isinstance((equipment['sync_LEDs'] if 'sync_LEDs' in equipment else None), dict):
             set_sync_LEDs_device_port(self.metadata_settings, text)
             metadata_path = Path(__file__).parent / '_config/_metadata.yaml'
-            with atomic_output_path(metadata_path) as tmp_settings_path, open(tmp_settings_path, 'w') as metadata_file:
+            with atomic_output_path(metadata_path) as tmp_settings_path, Path(tmp_settings_path).open('w') as metadata_file:
                 yaml.dump(
                     self.metadata_settings,
                     metadata_file,
@@ -2764,7 +2770,7 @@ class USVPlaypenWindow(QMainWindow):
         """
 
         metadata_path = Path(__file__).parent / '_config/_metadata.yaml'
-        with atomic_output_path(metadata_path) as tmp_settings_path, open(tmp_settings_path, 'w') as metadata_file:
+        with atomic_output_path(metadata_path) as tmp_settings_path, Path(tmp_settings_path).open('w') as metadata_file:
             yaml.dump(
                 self.metadata_settings,
                 metadata_file,
@@ -2948,7 +2954,7 @@ class USVPlaypenWindow(QMainWindow):
         conduct_audio_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
         conduct_audio_label.setStyleSheet(self.orange_label_style)
         conduct_audio_label.move(5, 300)
-        self.conduct_audio_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['conduct_audio_recording'], not self.exp_settings_dict['conduct_audio_recording']], self.boolean_list), reverse=True)]
+        self.conduct_audio_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['conduct_audio_recording'], not self.exp_settings_dict['conduct_audio_recording']], self.boolean_list, strict=True), reverse=True)]
         self.conduct_audio_cb = QComboBox(self.Record)
         self.conduct_audio_cb.addItems(self.conduct_audio_cb_list)
         self.conduct_audio_cb.setStyleSheet('QComboBox { width: 465px; }')
@@ -2959,7 +2965,7 @@ class USVPlaypenWindow(QMainWindow):
         conduct_tracking_cal_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
         conduct_tracking_cal_label.setStyleSheet(self.orange_label_style)
         conduct_tracking_cal_label.move(5, 330)
-        self.conduct_tracking_calibration_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['conduct_tracking_calibration'], not self.exp_settings_dict['conduct_tracking_calibration']], self.boolean_list), reverse=True)]
+        self.conduct_tracking_calibration_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['conduct_tracking_calibration'], not self.exp_settings_dict['conduct_tracking_calibration']], self.boolean_list, strict=True), reverse=True)]
         self.conduct_tracking_calibration_cb = QComboBox(self.Record)
         self.conduct_tracking_calibration_cb.addItems(self.conduct_tracking_calibration_cb_list)
         self.conduct_tracking_calibration_cb.setStyleSheet('QComboBox { width: 465px; }')
@@ -2970,7 +2976,7 @@ class USVPlaypenWindow(QMainWindow):
         disable_ethernet_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
         disable_ethernet_label.setStyleSheet(self.orange_label_style)
         disable_ethernet_label.move(5, 360)
-        self.disable_ethernet_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['disable_ethernet'], not self.exp_settings_dict['disable_ethernet']], self.boolean_list), reverse=True)]
+        self.disable_ethernet_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['disable_ethernet'], not self.exp_settings_dict['disable_ethernet']], self.boolean_list, strict=True), reverse=True)]
         self.disable_ethernet_cb = QComboBox(self.Record)
         self.disable_ethernet_cb.addItems(self.disable_ethernet_cb_list)
         self.disable_ethernet_cb.setStyleSheet('QComboBox { width: 465px; }')
@@ -3039,7 +3045,7 @@ class USVPlaypenWindow(QMainWindow):
         usgh_sync_label = QLabel('USGH devices synchronized:', self.VideoSettings)
         usgh_sync_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         usgh_sync_label.move(5, 40)
-        self.usgh_devices_sync_cb_list = [x for _, x in sorted(zip([self.usgh_devices_sync_cb_bool, not self.usgh_devices_sync_cb_bool], self.boolean_list), reverse=True)]
+        self.usgh_devices_sync_cb_list = [x for _, x in sorted(zip([self.usgh_devices_sync_cb_bool, not self.usgh_devices_sync_cb_bool], self.boolean_list, strict=True), reverse=True)]
         self.usgh_devices_sync_cb = QComboBox(self.VideoSettings)
         self.usgh_devices_sync_cb.addItems(self.usgh_devices_sync_cb_list)
         self.usgh_devices_sync_cb.setStyleSheet('QComboBox { width: 120px; }')
@@ -3126,7 +3132,7 @@ class USVPlaypenWindow(QMainWindow):
         monitor_rec_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
         monitor_rec_label.setStyleSheet(self.orange_label_style)
         monitor_rec_label.move(5, 360)
-        self.monitor_recording_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['video']['general']['monitor_recording'], not self.exp_settings_dict['video']['general']['monitor_recording']], self.boolean_list), reverse=True)]
+        self.monitor_recording_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['video']['general']['monitor_recording'], not self.exp_settings_dict['video']['general']['monitor_recording']], self.boolean_list, strict=True), reverse=True)]
         self.monitor_recording_cb = QComboBox(self.VideoSettings)
         self.monitor_recording_cb.addItems(self.monitor_recording_cb_list)
         self.monitor_recording_cb.setStyleSheet('QComboBox { width: 120px; }')
@@ -3137,7 +3143,7 @@ class USVPlaypenWindow(QMainWindow):
         monitor_cam_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
         monitor_cam_label.setStyleSheet(self.orange_label_style)
         monitor_cam_label.move(5, 390)
-        self.monitor_specific_camera_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['video']['general']['monitor_specific_camera'], not self.exp_settings_dict['video']['general']['monitor_specific_camera']], self.boolean_list), reverse=True)]
+        self.monitor_specific_camera_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['video']['general']['monitor_specific_camera'], not self.exp_settings_dict['video']['general']['monitor_specific_camera']], self.boolean_list, strict=True), reverse=True)]
         self.monitor_specific_camera_cb = QComboBox(self.VideoSettings)
         self.monitor_specific_camera_cb.addItems(self.monitor_specific_camera_cb_list)
         self.monitor_specific_camera_cb.setStyleSheet('QComboBox { width: 120px; }')
@@ -3158,7 +3164,7 @@ class USVPlaypenWindow(QMainWindow):
         delete_post_copy_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
         delete_post_copy_label.setStyleSheet(self.orange_label_style)
         delete_post_copy_label.move(5, 450)
-        self.delete_post_copy_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['video']['general']['delete_post_copy'], not self.exp_settings_dict['video']['general']['delete_post_copy']], self.boolean_list), reverse=True)]
+        self.delete_post_copy_cb_list = [x for _, x in sorted(zip([self.exp_settings_dict['video']['general']['delete_post_copy'], not self.exp_settings_dict['video']['general']['delete_post_copy']], self.boolean_list, strict=True), reverse=True)]
         self.delete_post_copy_cb = QComboBox(self.VideoSettings)
         self.delete_post_copy_cb.addItems(self.delete_post_copy_cb_list )
         self.delete_post_copy_cb.setStyleSheet('QComboBox { width: 120px; }')
@@ -3266,7 +3272,7 @@ class USVPlaypenWindow(QMainWindow):
         self.ambient_light_cb.setStyleSheet('QComboBox { width: 220px; }')
         self.ambient_light_cb.move(x_widget, y_pos)
 
-        def on_ambient_light_changed(index):
+        def on_ambient_light_changed(_index):
             """
             Description
             -----------
@@ -3276,7 +3282,7 @@ class USVPlaypenWindow(QMainWindow):
 
             Parameters
             ----------
-            index (int)
+            _index (int)
                 Newly selected combo-box index supplied by Qt (unused; the
                 current text is read directly from the widget).
 
@@ -3501,7 +3507,7 @@ class USVPlaypenWindow(QMainWindow):
         horizontal_spacing = 100
         vertical_spacing = 20
 
-        for i, (button, callback) in enumerate(zip(buttons, callbacks)):
+        for i, (button, callback) in enumerate(zip(buttons, callbacks, strict=True)):
 
             row, col = divmod(i, items_per_row)
 
@@ -3575,7 +3581,7 @@ class USVPlaypenWindow(QMainWindow):
         self.txt_edit.setReadOnly(True)
         self.txt_edit.move((record_four_x - self.txt_edit.width()) // 2, 5)
 
-        with atomic_output_path(Path(__file__).parent / '_config/behavioral_experiments_settings.toml') as tmp_settings_path, open(tmp_settings_path, 'w') as updated_toml_file:
+        with atomic_output_path(Path(__file__).parent / '_config/behavioral_experiments_settings.toml') as tmp_settings_path, Path(tmp_settings_path).open('w') as updated_toml_file:
             toml.dump(self.exp_settings_dict, updated_toml_file)
 
         self.run_exp = ExperimentController(message_output=self._message,
@@ -4354,10 +4360,10 @@ class USVPlaypenWindow(QMainWindow):
         self.txt_edit_process.setFixedSize(855, 940)
         self.txt_edit_process.setReadOnly(True)
 
-        with atomic_output_path(Path(__file__).parent / '_config/behavioral_experiments_settings.toml') as tmp_settings_path, open(tmp_settings_path, 'w') as updated_toml_file:
+        with atomic_output_path(Path(__file__).parent / '_config/behavioral_experiments_settings.toml') as tmp_settings_path, Path(tmp_settings_path).open('w') as updated_toml_file:
             toml.dump(self.exp_settings_dict, updated_toml_file)
 
-        with atomic_output_path(Path(__file__).parent / '_parameter_settings/processing_settings.json') as tmp_settings_path, open(tmp_settings_path, 'w') as processing_settings_file:
+        with atomic_output_path(Path(__file__).parent / '_parameter_settings/processing_settings.json') as tmp_settings_path, Path(tmp_settings_path).open('w') as processing_settings_file:
             json.dump(self.processing_input_dict, processing_settings_file, indent=2)
 
         # A deep copy: the processing steps fill derived model paths into their settings in place
@@ -4528,7 +4534,7 @@ class USVPlaypenWindow(QMainWindow):
         frequency_shift_channel_id_label = QLabel('Recording device channel (1-12):', self.AnalysesSettings)
         frequency_shift_channel_id_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         frequency_shift_channel_id_label.move(analyses_col_two_x1, 130)
-        self.frequency_shift_channel_id_list = sorted(list(range(1, 13)), key=lambda x: x == self.analyses_input_dict['frequency_shift_audio_segment']['fs_channel_id'], reverse=True)
+        self.frequency_shift_channel_id_list = sorted(range(1, 13), key=lambda x: x == self.analyses_input_dict['frequency_shift_audio_segment']['fs_channel_id'], reverse=True)
         self.frequency_shift_channel_id_cb = QComboBox(self.AnalysesSettings)
         self.frequency_shift_channel_id_cb.addItems([str(ch_id_item) for ch_id_item in self.frequency_shift_channel_id_list])
         self.frequency_shift_channel_id_cb.setStyleSheet('QComboBox { width: 57px; }')
@@ -4741,7 +4747,7 @@ class USVPlaypenWindow(QMainWindow):
         self.txt_edit_analyze.setFixedSize(855, 740)
         self.txt_edit_analyze.setReadOnly(True)
 
-        with atomic_output_path(Path(__file__).parent / '_parameter_settings/analyses_settings.json') as tmp_settings_path, open(tmp_settings_path, 'w') as analyses_settings_file:
+        with atomic_output_path(Path(__file__).parent / '_parameter_settings/analyses_settings.json') as tmp_settings_path, Path(tmp_settings_path).open('w') as analyses_settings_file:
             json.dump(self.analyses_input_dict, analyses_settings_file, indent=2)
 
         self.run_analyses = Analyst(message_output=self._analyses_message,
@@ -4778,7 +4784,7 @@ class USVPlaypenWindow(QMainWindow):
         self.analyses_input_dict['analyze_data']['root_directories'] = self.analyses_dir_edit
 
         self.analyses_input_dict['send_email']['experimenter'] = f'{self.exp_id}'
-        self.analyses_input_dict['send_email']['analyses_pc_choice'] = str(getattr(self, 'analyses_pc_choice'))
+        self.analyses_input_dict['send_email']['analyses_pc_choice'] = str(self.analyses_pc_choice)
 
         self.pc_usage_analyses = self.pc_usage_analyses.text()
         if len(self.pc_usage_analyses) == 0:
@@ -5120,7 +5126,7 @@ class USVPlaypenWindow(QMainWindow):
         spectrogram_ch_label = QLabel('Audio spectrogram channel (0-23):', self.VisualizationsSettings)
         spectrogram_ch_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         spectrogram_ch_label.move(vis_col_two_x1, 520)
-        self.spectrogram_ch_list = sorted(list(range(24)), key=lambda x: x == self.visualizations_input_dict['make_behavioral_videos']['spectrogram_ch'], reverse=True)
+        self.spectrogram_ch_list = sorted(range(24), key=lambda x: x == self.visualizations_input_dict['make_behavioral_videos']['spectrogram_ch'], reverse=True)
         self.spectrogram_ch_cb = QComboBox(self.VisualizationsSettings)
         self.spectrogram_ch_cb.addItems([str(spec_ch_item) for spec_ch_item in self.spectrogram_ch_list])
         self.spectrogram_ch_cb.setStyleSheet('QComboBox { width: 57px; }')
@@ -5436,7 +5442,7 @@ class USVPlaypenWindow(QMainWindow):
         self.txt_edit_visualize.setFixedSize(855, 740)
         self.txt_edit_visualize.setReadOnly(True)
 
-        with atomic_output_path(Path(__file__).parent / '_parameter_settings/visualizations_settings.json') as tmp_settings_path, open(tmp_settings_path, 'w') as visualizations_settings_file:
+        with atomic_output_path(Path(__file__).parent / '_parameter_settings/visualizations_settings.json') as tmp_settings_path, Path(tmp_settings_path).open('w') as visualizations_settings_file:
             json.dump(self.visualizations_input_dict, visualizations_settings_file, indent=2)
 
         self.run_visualizations = Visualizer(message_output=self._visualizations_message,
@@ -5473,7 +5479,7 @@ class USVPlaypenWindow(QMainWindow):
         self.visualizations_input_dict['visualize_data']['root_directories'] = self.visualizations_dir_edit
 
         self.visualizations_input_dict['send_email']['experimenter'] = f'{self.exp_id}'
-        self.visualizations_input_dict['send_email']['visualizations_pc_choice'] = str(getattr(self, 'visualizations_pc_choice'))
+        self.visualizations_input_dict['send_email']['visualizations_pc_choice'] = str(self.visualizations_pc_choice)
 
         # Make the experimenter-scoped paths follow the selected experimenter -- the
         # same name-swap the Record/Process model dirs use (replace_name_in_path):
@@ -5611,11 +5617,11 @@ class USVPlaypenWindow(QMainWindow):
         lists_in_string = ['v_camera_serial_num', 'frame_restriction', 'excluded_views']
 
         for one_elem_str in qlabel_strings:
-            if type(self.__dict__[one_elem_str]) != str:
+            if type(self.__dict__[one_elem_str]) is not str:
                 self.__dict__[one_elem_str] = self.__dict__[one_elem_str].text()
 
         for one_elem_lst in lists_in_string:
-            if type(self.__dict__[one_elem_lst]) != str:
+            if type(self.__dict__[one_elem_lst]) is not str:
                 self.__dict__[one_elem_lst] = self.__dict__[one_elem_lst].text().split(',')
 
         if os.name == 'nt':
@@ -5643,16 +5649,16 @@ class USVPlaypenWindow(QMainWindow):
         else:
             self.pc_usage_process = self.pc_usage_process.split(',')
 
-        self.processing_input_dict['vocalocator']['vcl_version'] = str(getattr(self, 'vcl_version'))
+        self.processing_input_dict['vocalocator']['vcl_version'] = str(self.vcl_version)
 
-        self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['device_receiving_input'] = str(getattr(self, 'device_receiving_input'))
+        self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['device_receiving_input'] = str(self.device_receiving_input)
         self.device_receiving_input = self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['device_receiving_input']
 
-        self.processing_input_dict['send_email']['Messenger']['processing_pc_choice'] = str(getattr(self, 'processing_pc_choice'))
+        self.processing_input_dict['send_email']['Messenger']['processing_pc_choice'] = str(self.processing_pc_choice)
 
         self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['conversion_target_file'] = self.conversion_target_file
-        self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['constant_rate_factor'] = int(round(_safe_literal_eval(self.constant_rate_factor)))
-        self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['encoding_preset'] = str(getattr(self, 'encoding_preset'))
+        self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['constant_rate_factor'] = round(_safe_literal_eval(self.constant_rate_factor))
+        self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['encoding_preset'] = str(self.encoding_preset)
         self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['triggerbox_ch_receiving_input'] = int(_safe_literal_eval(self.ch_receiving_input))
         self.processing_input_dict['modify_files']['Operator']['get_spike_times']['min_spike_num'] = int(_safe_literal_eval(self.min_spike_num))
         self.processing_input_dict['synchronize_files']['Synchronizer']['find_audio_sync_trains']['sync_ch_receiving_input'] = int(_safe_literal_eval(self.a_ch_receiving_input))
@@ -5784,13 +5790,13 @@ class USVPlaypenWindow(QMainWindow):
         None
         """
 
-        if type(self.email_recipients) != str:
+        if type(self.email_recipients) is not str:
             self.email_recipients = self.email_recipients.text()
-        if type(self.video_session_duration) != str:
+        if type(self.video_session_duration) is not str:
             self.video_session_duration = self.video_session_duration.text()
-        if type(self.calibration_session_duration) != str:
+        if type(self.calibration_session_duration) is not str:
             self.calibration_session_duration = self.calibration_session_duration.text()
-        if type(self.ethernet_network) != str:
+        if type(self.ethernet_network) is not str:
             self.ethernet_network = self.ethernet_network.text()
 
         if len(self.email_recipients) == 0:
@@ -5844,7 +5850,7 @@ class USVPlaypenWindow(QMainWindow):
 
         self.exp_settings_dict['audio']['cpu_priority'] = self.cpu_priority
 
-        if not self.cpu_affinity_edit.text() == '':
+        if self.cpu_affinity_edit.text() != '':
             self.exp_settings_dict['audio']['cpu_affinity'] = [int(x) for x in self.cpu_affinity_edit.text().split(',')]
         else:
             self.exp_settings_dict['audio']['cpu_affinity'] = []
@@ -5931,7 +5937,7 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_cpu_priority(self,
                                 index: int,
-                                variable_id: str = None) -> None:
+                                variable_id: str | None = None) -> None:
         """
         Description
         -----------
@@ -5956,7 +5962,7 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_usgh_sr(self,
                            index: int,
-                           variable_id: str = None) -> None:
+                           variable_id: str | None = None) -> None:
         """
         Description
         -----------
@@ -5981,7 +5987,7 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_specific_camera(self,
                                    index: int,
-                                   variable_id: str = None) -> None:
+                                   variable_id: str | None = None) -> None:
         """
         Description
         -----------
@@ -6006,7 +6012,7 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_fs_channel_id(self,
                                  index: int,
-                                 variable_id: str = None) -> None:
+                                 variable_id: str | None = None) -> None:
         """
         Description
         -----------
@@ -6031,7 +6037,7 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_fs_device_id(self,
                                 index: int,
-                                variable_id: str = None) -> None:
+                                variable_id: str | None = None) -> None:
         """
         Description
         -----------
@@ -6057,7 +6063,7 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_playback_context(self,
                                     index: int,
-                                    variable_id: str = None) -> None:
+                                    variable_id: str | None = None) -> None:
         """
         Description
         -----------
@@ -6261,7 +6267,7 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_fs_audio_dir(self,
                                 index: int,
-                                variable_id: str = None) -> None:
+                                variable_id: str | None = None) -> None:
         """
         Description
         -----------
@@ -6286,7 +6292,7 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_spectrogram_ch(self,
                                   index: int,
-                                  variable_id: str = None) -> None:
+                                  variable_id: str | None = None) -> None:
         """
         Description
         -----------
@@ -6311,7 +6317,7 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_view_angle(self,
                               index: int,
-                              variable_id: str = None) -> None:
+                              variable_id: str | None = None) -> None:
         """
         Description
         -----------
@@ -6336,7 +6342,7 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_figure_format(self,
                                  index: int,
-                                 variable_id: str = None) -> None:
+                                 variable_id: str | None = None) -> None:
         """
         Description
         -----------
@@ -6361,8 +6367,8 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_usv_seq_choice(self,
                                   index: int,
-                                  variable_id: str = None,
-                                  choices: list = None) -> None:
+                                  variable_id: str | None = None,
+                                  choices: list | None = None) -> None:
         """
         Description
         -----------
@@ -6388,7 +6394,7 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_default_fig_format(self,
                                       index: int,
-                                      variable_id: str = None) -> None:
+                                      variable_id: str | None = None) -> None:
         """
         Description
         -----------
@@ -6414,7 +6420,7 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_default_cmap(self,
                                 index: int,
-                                variable_id: str = None) -> None:
+                                variable_id: str | None = None) -> None:
         """
         Description
         -----------
@@ -6440,7 +6446,7 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_plot_theme(self,
                               index: int,
-                              variable_id: str = None) -> None:
+                              variable_id: str | None = None) -> None:
         """
         Description
         -----------
@@ -6465,7 +6471,7 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_prior_transformed_tracking_data(self,
                                                    index: int,
-                                                   variable_id: str = None) -> None:
+                                                   variable_id: str | None = None) -> None:
         """
         Description
         -----------
@@ -6490,7 +6496,7 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_encoding_preset(self,
                                    index: int,
-                                   variable_id: str = None) -> None:
+                                   variable_id: str | None = None) -> None:
         """
         Description
         -----------
@@ -6515,7 +6521,7 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_vcl_version(self,
                                index: int,
-                               variable_id: str = None) -> None:
+                               variable_id: str | None = None) -> None:
         """
         Description
         -----------
@@ -6540,7 +6546,7 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_prior_name(self,
                               index: int,
-                              variable_id: str = None) -> None:
+                              variable_id: str | None = None) -> None:
         """
         Description
         -----------
@@ -6573,7 +6579,7 @@ class USVPlaypenWindow(QMainWindow):
                     setattr(self, _settings_dict_name,
                             rebase_experimenter_in_paths(getattr(self, _settings_dict_name), _experimenter_list, self.exp_id))
 
-    def _checkbox_state_read(self, checkbox_id: str = None, variable_id: str = None) -> None:
+    def _checkbox_state_read(self, checkbox_id: str | None = None, variable_id: str | None = None) -> None:
         """
         Description
         -----------
@@ -6597,8 +6603,8 @@ class USVPlaypenWindow(QMainWindow):
             self.__dict__[variable_id] = False
 
     def _create_checkbox_general(self,
-                                 camera_id: str = None,
-                                 x_start: int = None) -> None:
+                                 camera_id: str | None = None,
+                                 x_start: int | None = None) -> None:
         """
         Description
         -----------
@@ -6626,8 +6632,8 @@ class USVPlaypenWindow(QMainWindow):
         self.__dict__[f'{camera_id}_rec_checkbox'].stateChanged.connect(partial(self._checkbox_state_read, checkbox_id=f'{camera_id}_rec_checkbox', variable_id=f'{camera_id}_rec_checkbox_bool'))
 
     def _create_checkbox_file_destinations(self,
-                                           lab_id: str = None,
-                                           x_start: int = None) -> None:
+                                           lab_id: str | None = None,
+                                           x_start: int | None = None) -> None:
         """
         Description
         -----------
@@ -6656,7 +6662,7 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_prior_codec(self,
                               index: int,
-                              variable_id: str = None) -> None:
+                              variable_id: str | None = None) -> None:
         """
         Description
         -----------
@@ -6681,7 +6687,7 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_prior_processing_pc_choice(self,
                                               index: int,
-                                              variable_id: str = None) -> None:
+                                              variable_id: str | None = None) -> None:
         """
         Description
         -----------
@@ -6706,7 +6712,7 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_prior_analyses_pc_choice(self,
                                             index: int,
-                                            variable_id: str = None) -> None:
+                                            variable_id: str | None = None) -> None:
         """
         Description
         -----------
@@ -6731,7 +6737,7 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_prior_visualizations_pc_choice(self,
                                                   index: int,
-                                                  variable_id: str = None) -> None:
+                                                  variable_id: str | None = None) -> None:
         """
         Description
         -----------
@@ -6756,7 +6762,7 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_prior_audio_device_camera_input(self,
                                                    index: int,
-                                                   variable_id: str = None) -> None:
+                                                   variable_id: str | None = None) -> None:
         """
         Description
         -----------
@@ -6782,7 +6788,7 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_prior_true(self,
                               index: int,
-                              variable_id: str = None) -> None:
+                              variable_id: str | None = None) -> None:
         """
         Description
         -----------
@@ -6807,7 +6813,7 @@ class USVPlaypenWindow(QMainWindow):
 
     def _combo_box_prior_false(self,
                                index: int,
-                               variable_id: str = None) -> None:
+                               variable_id: str | None = None) -> None:
         """
         Description
         -----------
@@ -6846,7 +6852,7 @@ class USVPlaypenWindow(QMainWindow):
         None
         """
 
-        self.fr_label.setText(f'Recording ({str(value)} fps):')
+        self.fr_label.setText(f'Recording ({value!s} fps):')
 
     def _update_cal_fr_label(self, value: int) -> None:
         """
@@ -6864,7 +6870,7 @@ class USVPlaypenWindow(QMainWindow):
         None
         """
 
-        self.cal_fr_label.setText(f'Calibration ({str(value)} fps):')
+        self.cal_fr_label.setText(f'Calibration ({value!s} fps):')
 
     def _update_qlvm_fps_label(self, value: int) -> None:
         """
@@ -6950,9 +6956,9 @@ class USVPlaypenWindow(QMainWindow):
         self.login_button.clicked.connect(self.credentials_window)
 
     def _create_buttons_credentials(self,
-                                    class_option: str = None,
-                                    button_pos_y: int = None,
-                                    next_button_x_pos: int = None) -> None:
+                                    class_option: str | None = None,
+                                    button_pos_y: int | None = None,
+                                    next_button_x_pos: int | None = None) -> None:
 
         """
         Description
@@ -6991,10 +6997,10 @@ class USVPlaypenWindow(QMainWindow):
 
 
     def _create_buttons_record(self,
-                               seq: int = None,
-                               class_option: str = None,
-                               button_pos_y: int = None,
-                               next_button_x_pos: int = None) -> None:
+                               seq: int | None = None,
+                               class_option: str | None = None,
+                               button_pos_y: int | None = None,
+                               next_button_x_pos: int | None = None) -> None:
         """
         Description
         -----------
@@ -7063,10 +7069,10 @@ class USVPlaypenWindow(QMainWindow):
             self.button_map['Record'].clicked.connect(self._enable_other_buttons_post_rec)
 
     def _create_buttons_process(self,
-                                seq: int = None,
-                                class_option: str = None,
-                                button_pos_y: int = None,
-                                next_button_x_pos: int = None) -> None:
+                                seq: int | None = None,
+                                class_option: str | None = None,
+                                button_pos_y: int | None = None,
+                                next_button_x_pos: int | None = None) -> None:
         """
         Description
         -----------
@@ -7120,10 +7126,10 @@ class USVPlaypenWindow(QMainWindow):
             self.button_map['Process'].clicked.connect(self._enable_process_buttons)
 
     def _create_buttons_analyze(self,
-                                seq: int = None,
-                                class_option: str = None,
-                                button_pos_y: int = None,
-                                next_button_x_pos: int = None) -> None:
+                                seq: int | None = None,
+                                class_option: str | None = None,
+                                button_pos_y: int | None = None,
+                                next_button_x_pos: int | None = None) -> None:
         """
         Description
         -----------
@@ -7177,10 +7183,10 @@ class USVPlaypenWindow(QMainWindow):
             self.button_map['Analyze'].clicked.connect(self._enable_analyze_buttons)
 
     def _create_buttons_visualize(self,
-                                  seq: int = None,
-                                  class_option: str = None,
-                                  button_pos_y: int = None,
-                                  next_button_x_pos: int = None) -> None:
+                                  seq: int | None = None,
+                                  class_option: str | None = None,
+                                  button_pos_y: int | None = None,
+                                  next_button_x_pos: int | None = None) -> None:
         """
         Description
         -----------
@@ -7266,14 +7272,14 @@ class USVPlaypenWindow(QMainWindow):
             'ssh_username': f"{self.motif_username.text()}",
             'ssh_password': f"{self.motif_password.text()}",
             'api': f"{self.motif_api.text()}"}
-        with open(credentials_dir / 'motif_config.ini', mode='w') as motif_configfile:
+        with Path(credentials_dir / 'motif_config.ini').open(mode='w') as motif_configfile:
             motif_config.write(motif_configfile, space_around_delimiters=False)
 
         university_config = configparser.ConfigParser()
         university_config['cup'] = {
             'username': f"{self.university_username.text()}",
             'password': f"{self.university_password.text()}"}
-        with open(credentials_dir / 'cup_config.ini', mode='w') as university_configfile:
+        with Path(credentials_dir / 'cup_config.ini').open(mode='w') as university_configfile:
             university_config.write(university_configfile, space_around_delimiters=False)
 
         emai_config = configparser.ConfigParser()
@@ -7282,7 +7288,7 @@ class USVPlaypenWindow(QMainWindow):
             'email_port': f"{self.email_port.text()}",
             'email_address': f"{self.email_address.text()}",
             'email_password': f"{self.email_password.text()}"}
-        with open(credentials_dir / 'email_config.ini', mode='w') as email_configfile:
+        with Path(credentials_dir / 'email_config.ini').open(mode='w') as email_configfile:
             emai_config.write(email_configfile, space_around_delimiters=False)
 
     def _start_visualizations(self) -> None:
@@ -7531,9 +7537,9 @@ class USVPlaypenWindow(QMainWindow):
             self.button_map['Calibrate'].setEnabled(False)
 
     def _update_nested_dict_value(self,
-                                  base_dict: dict = None,
-                                  keys_path: tuple = None,
-                                  text: str = None) -> None:
+                                  base_dict: dict | None = None,
+                                  keys_path: tuple | None = None,
+                                  text: str | None = None) -> None:
         """
         Description
         -----------
@@ -7570,8 +7576,8 @@ class USVPlaypenWindow(QMainWindow):
 
     def _open_directory_dialog(self,
                                target_line_edit: QLineEdit,
-                               dialog_title: str = None,
-                               start_dir: str = None) -> None:
+                               dialog_title: str | None = None,
+                               start_dir: str | None = None) -> None:
         """
         Description
         -----------
@@ -7607,9 +7613,9 @@ class USVPlaypenWindow(QMainWindow):
 
     def _open_file_dialog(self,
                           target_line_edit: QLineEdit,
-                          dialog_title: str = None,
-                          file_filter: str = None,
-                          start_dir: str = None) -> None:
+                          dialog_title: str | None = None,
+                          file_filter: str | None = None,
+                          start_dir: str | None = None) -> None:
         """
         Description
         -----------
@@ -7893,7 +7899,7 @@ def initialize_main_window(no_splash: bool = False) -> tuple[QApplication, QMain
 
     usv_playpen_app.setStyle('Fusion')
 
-    with open((Path(__file__).parent / '_config/gui_style_sheet.css') , 'r') as file:
+    with (Path(__file__).parent / '_config/gui_style_sheet.css').open() as file:
         usv_playpen_app.setStyleSheet(file.read())
 
     usv_playpen_app.setWindowIcon(QIcon(gui_icon))
@@ -7908,13 +7914,13 @@ def initialize_main_window(no_splash: bool = False) -> tuple[QApplication, QMain
 
     _toml = toml.load(Path(__file__).parent / '_config/behavioral_experiments_settings.toml')
 
-    with open((Path(__file__).parent / '_parameter_settings/processing_settings.json'), 'r') as processing_json_file:
+    with (Path(__file__).parent / '_parameter_settings/processing_settings.json').open() as processing_json_file:
         processing_input_dict = json.load(processing_json_file)
 
-    with open((Path(__file__).parent / '_parameter_settings/analyses_settings.json'), 'r') as analyses_json_file:
+    with (Path(__file__).parent / '_parameter_settings/analyses_settings.json').open() as analyses_json_file:
         analyses_input_dict = json.load(analyses_json_file)
 
-    with open((Path(__file__).parent / '_parameter_settings/visualizations_settings.json'), 'r') as visualizations_json_file:
+    with (Path(__file__).parent / '_parameter_settings/visualizations_settings.json').open() as visualizations_json_file:
         visualizations_input_dict = json.load(visualizations_json_file)
 
     splash = None

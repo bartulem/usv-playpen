@@ -27,7 +27,12 @@ from numba import njit
 from scipy.io import wavfile
 
 from ..analyses.generate_audio_files import AudioGenerator
-from ..os_utils import drop_noise_usvs, find_audio_mmap, first_match_or_raise, vocal_occupancy_times
+from ..os_utils import (
+    drop_noise_usvs,
+    find_audio_mmap,
+    first_match_or_raise,
+    vocal_occupancy_times,
+)
 from ..time_utils import is_gui_context, smart_wait
 from ..yaml_utils import extract_animal_sexes
 from .auxiliary_plot_functions import choose_animal_colors, create_colormap
@@ -590,17 +595,17 @@ def plot_mouse_data(data: np.ndarray,
                                color=animal_cm[mouse_idx](int(255*(hist_point - (frame_number - history_frame_span))/history_frame_span)), ls=history_ls, lw=history_lw)
 
         # plot node connection lines
-        for nc_idx, nc in enumerate(node_connections):
+        for nc_idx, nc_name in enumerate(node_connections):
             line_color = body_edge_color if nc_idx <= 7 else animal_color[mouse_idx]
-            nc = nc.split('-')
+            nc = nc_name.split('-')
             plot_axes.plot([data[frame_number, mouse_idx, node_idx[nc[0]], 0], data[frame_number, mouse_idx, node_idx[nc[1]], 0]],
                            [data[frame_number, mouse_idx, node_idx[nc[0]], 1], data[frame_number, mouse_idx, node_idx[nc[1]], 1]],
                            [data[frame_number, mouse_idx, node_idx[nc[0]], 2], data[frame_number, mouse_idx, node_idx[nc[1]], 2]],
                            c=line_color, lw=animal_line_width)
 
         # plot node polygon shading
-        for npol in node_polygons:
-            npol = npol.split('-')
+        for npol_name in node_polygons:
+            npol = npol_name.split('-')
             xs, ys, zs = np.zeros(len(npol)), np.zeros(len(npol)), np.zeros(len(npol))
             for i in range(len(npol)):
                 xs[i] = data[frame_number, mouse_idx, node_idx[npol[i]], 0]
@@ -888,8 +893,8 @@ def plot_raster(plot_axes: plt.Axes,
     # region is stored per bucket so its bucket colour can be resolved.
     brain_area_label_order = ['CENT', 'SC', 'PAG', 'MRN', 'MB', 'VTA', 'other']
     bucket_to_region = {}
-    for probe_id in raster_brain_area:
-        for brain_region in raster_brain_area[probe_id]:
+    for probe_brain_regions in raster_brain_area.values():
+        for brain_region in probe_brain_regions:
             bucket = pool_brain_area(brain_region)
             area_selected = (
                 len(filtered_brain_areas) == 0
@@ -1297,8 +1302,8 @@ def plot_arena_corners_mics(data: np.ndarray,
 
     # plot mesh walls
     if plot_mesh_walls_bool:
-        for wall in ['North-West', 'North-East', 'South-West', 'South-East']:
-            wall = wall.split('-')
+        for wall_name in ['North-West', 'North-East', 'South-West', 'South-East']:
+            wall = wall_name.split('-')
             mesh_wall = [[data[0, 0, node_idx[wall[0]], :],
                          np.array([data[0, 0, node_idx[wall[0]], 0], data[0, 0, node_idx[wall[0]], 1], 0.25]),
                          np.array([data[0, 0, node_idx[wall[1]], 0], data[0, 0, node_idx[wall[1]], 1], 0.25]),
@@ -1306,8 +1311,8 @@ def plot_arena_corners_mics(data: np.ndarray,
             plot_axes.add_collection3d(Poly3DCollection(verts=mesh_wall, facecolors=mesh_color, alpha=mesh_opacity))
 
     if arena_node_connections_bool:
-        for arena_nc in arena_node_connections:
-            arena_nc = arena_nc.split('-')
+        for arena_nc_name in arena_node_connections:
+            arena_nc = arena_nc_name.split('-')
             plot_axes.plot([data[0, 0, node_idx[arena_nc[0]], 0], data[0, 0, node_idx[arena_nc[1]], 0]],
                            [data[0, 0, node_idx[arena_nc[0]], 1], data[0, 0, node_idx[arena_nc[1]], 1]],
                            [0, data[0, 0, node_idx[arena_nc[1]], 2]],
@@ -1468,9 +1473,12 @@ class Create3DVideo:
                            'visualizations_parameter_dict', 'message_output'}
         unexpected_kwargs = set(kwargs) - expected_kwargs
         if unexpected_kwargs:
-            raise TypeError(f"{type(self).__name__}() got unexpected keyword argument(s) "
+            msg = (
+                f"{type(self).__name__}() got unexpected keyword argument(s) "
                             f"{', '.join(map(repr, sorted(unexpected_kwargs)))}; expected only "
-                            f"{', '.join(map(repr, sorted(expected_kwargs)))}.")
+                            f"{', '.join(map(repr, sorted(expected_kwargs)))}."
+            )
+            raise TypeError(msg)
         for kw_arg, kw_val in kwargs.items():
             self.__dict__[kw_arg] = kw_val
 
@@ -1543,9 +1551,8 @@ class Create3DVideo:
             recursive=True,
             label="behavioral features CSV",
         )
-        beh_feature_data = pls.read_csv(str(behavioral_data_file))
+        return pls.read_csv(str(behavioral_data_file))
 
-        return beh_feature_data
 
     def load_h5_file(self) -> tuple:
         """
@@ -1618,27 +1625,27 @@ class Create3DVideo:
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         if self.visualizations_parameter_dict['make_behavioral_videos']['speaker_bool']:
-            (arena_dir_name,
+            (_arena_dir_name,
              arena_data,
              arena_node_names,
              mouse_dir_name,
              mouse_data,
              mouse_track_names,
              mouse_node_names,
-             mouse_experimental_code,
+             _mouse_experimental_code,
              empirical_camera_sr,
              speaker_data,
-             speaker_track_name,
-             speaker_node_name) = self.load_h5_file()
+             _speaker_track_name,
+             _speaker_node_name) = self.load_h5_file()
         else:
-            (arena_dir_name,
+            (_arena_dir_name,
              arena_data,
              arena_node_names,
              mouse_dir_name,
              mouse_data,
              mouse_track_names,
              mouse_node_names,
-             mouse_experimental_code,
+             _mouse_experimental_code,
              empirical_camera_sr) = self.load_h5_file()
 
         # Create the save directory only AFTER load_h5_file() has validated that
@@ -1737,13 +1744,11 @@ class Create3DVideo:
                 data_start_index = re.search(f"Data{os.sep}{pathlib.Path(self.root_directory).name}", self.root_directory, re.IGNORECASE).start()
                 ephys_directory = self.root_directory[:data_start_index] + 'EPHYS'
 
-                with open(
-                    first_match_or_raise(
+                with first_match_or_raise(
                         root=pathlib.Path(ephys_directory),
                         pattern='neuropixels_sites_to_anatomy_converter.json',
                         label="neuropixels-to-anatomy converter JSON",
-                    ),
-                ) as anatomy_converter_json:
+                    ).open() as anatomy_converter_json:
                     neuropixels_sites_to_anatomy_converter = json.load(anatomy_converter_json)
 
                 # find cluster data files and sort them in ascending order (0 channel first)
@@ -1767,7 +1772,7 @@ class Create3DVideo:
                                                                      return_only_area=True)
                             cl_brain_bucket = pool_brain_area(cl_brain_region)
                             select_area_bool = any(
-                                area_keyword == cl_brain_region or area_keyword == cl_brain_bucket
+                                area_keyword in (cl_brain_region, cl_brain_bucket)
                                 for area_keyword in self.visualizations_parameter_dict['make_behavioral_videos']['raster_selection_criteria']["brain_areas"]
                             )
                         if select_other_bool and select_area_bool:
@@ -1896,14 +1901,14 @@ class Create3DVideo:
                 first_fr_spectrogram_center = int((audio_sr * half_window_size_sec) // stft_hop)
 
                 if self.speaker_audio_file != '' and pathlib.Path(self.speaker_audio_file).is_file():
-                    speaker_audio_sr, speaker_audio_data = wavfile.read(self.speaker_audio_file)
+                    _speaker_audio_sr, speaker_audio_data = wavfile.read(self.speaker_audio_file)
                     raspi_input_loc = first_match_or_raise(
                         root=pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video',
                         pattern='m_*ch03_*.wav',
                         label="raspi sync audio (ch03)",
                     )
-                    raspi_input_mic_sr, raspi_input_mic_data = wavfile.read(raspi_input_loc)
-                    ttl_start, ttl_end = read_ttl_events(raspi_input_mic_data)
+                    _raspi_input_mic_sr, raspi_input_mic_data = wavfile.read(raspi_input_loc)
+                    ttl_start, _ttl_end = read_ttl_events(raspi_input_mic_data)
                     time_correction_coefficient = 20000  # 80 ms
                     window_start_signal = window_start_signal - ttl_start - time_correction_coefficient
                     window_end_signal = window_end_signal - ttl_start - time_correction_coefficient
@@ -2134,11 +2139,11 @@ class Create3DVideo:
                 else:
                     special_unit_ll = max(1, int(np.floor(len(cluster_data_dict.keys()) / 36)))
                     event_plot_line_lengths = [self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['raster_ll']
-                                               if one_unit not in self.visualizations_parameter_dict['make_behavioral_videos']['raster_special_units'] else special_unit_ll for one_unit in cluster_data_dict.keys()]
+                                               if one_unit not in self.visualizations_parameter_dict['make_behavioral_videos']['raster_special_units'] else special_unit_ll for one_unit in cluster_data_dict]
                     event_plot_line_widths = [self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['raster_lw']
-                                              if one_unit not in self.visualizations_parameter_dict['make_behavioral_videos']['raster_special_units'] else .2 for one_unit in cluster_data_dict.keys()]
+                                              if one_unit not in self.visualizations_parameter_dict['make_behavioral_videos']['raster_special_units'] else .2 for one_unit in cluster_data_dict]
                     change_brain_area_colors = []
-                for cluster_key in cluster_data_dict.keys():
+                for cluster_key in cluster_data_dict:
                     raster_data.append(filter_spikes_for_raster(input_arr=cluster_data_dict[cluster_key],
                                                                 ra_st_fr=raster_start_frame,
                                                                 ra_end_fr=raster_end_frame,
@@ -2365,7 +2370,7 @@ class Create3DVideo:
                     current_raster_start_frame = frame_num - raster_half_window
                     current_raster_end_frame = frame_num + raster_half_window
                     current_raster_data = []
-                    for cluster_name in cluster_data_dict.keys():
+                    for cluster_name in cluster_data_dict:
                         current_raster_data.append(filter_spikes_for_raster(input_arr=cluster_data_dict[cluster_name],
                                                                             ra_st_fr=current_raster_start_frame,
                                                                             ra_end_fr=current_raster_end_frame,

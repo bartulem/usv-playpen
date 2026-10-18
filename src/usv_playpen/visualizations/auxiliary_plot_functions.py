@@ -14,7 +14,6 @@ lines.
 from __future__ import annotations
 
 import colorsys
-
 from typing import Any
 
 import numpy as np
@@ -45,7 +44,7 @@ def choose_animal_colors(
     mouse_colors = []
     n_males = 0
     n_females = 0
-    for sex_idx, sex in enumerate(exp_info_dict["mouse_sex"]):
+    for _sex_idx, sex in enumerate(exp_info_dict["mouse_sex"]):
         if sex == "male":
             mouse_colors.append(visualizations_parameter_dict["male_colors"][n_males])
             n_males += 1
@@ -261,9 +260,8 @@ def create_colormap(input_parameter_dict: dict | None = None) -> ListedColormap:
     cm_values[:, 3] = (
         np.ones(input_parameter_dict["cm_length"]) * input_parameter_dict["cm_opacity"]
     )
-    new_cm = ListedColormap(colors=cm_values, name=input_parameter_dict["cm_name"])
+    return ListedColormap(colors=cm_values, name=input_parameter_dict["cm_name"])
 
-    return new_cm
 
 
 def draw_category_outlines(

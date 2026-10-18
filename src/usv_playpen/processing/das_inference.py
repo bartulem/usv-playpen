@@ -496,8 +496,7 @@ class FindMouseVocalizations:
         """
 
         if input_parameter_dict is None:
-            with open(
-                pathlib.Path(__file__).parent.parent / "_parameter_settings/processing_settings.json"
+            with (pathlib.Path(__file__).parent.parent / "_parameter_settings/processing_settings.json").open(
             ) as json_file:
                 _defaults = json.load(json_file)
             self.input_parameter_dict = _defaults["usv_inference"]["FindMouseVocalizations"]

@@ -73,7 +73,7 @@ import pickle
 import re
 import shutil
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ..os_utils import atomic_output_path
@@ -157,16 +157,18 @@ def _infer_prefix(pkl_files: list) -> str:
         if m:
             prefixes.add(m.group(1))
     if not prefixes:
-        raise ValueError(
+        msg = (
             "Could not infer a `model_selection_..._step_` prefix from "
             f"any file in the input directory ({len(pkl_files)} candidates)."
         )
+        raise ValueError(msg)
     if len(prefixes) > 1:
-        raise ValueError(
+        msg = (
             "Multiple `model_selection_..._step_` prefixes detected in the "
             "input directory; pass --prefix to disambiguate. Found: "
             f"{sorted(prefixes)}"
         )
+        raise ValueError(msg)
     return prefixes.pop()
 
 
@@ -191,7 +193,7 @@ def _file_mtime_iso(path) -> str:
         `'20260511T203829Z'`-style `'2026-05-11T20:38:29Z'`).
     """
 
-    ts = datetime.fromtimestamp(Path(path).stat().st_mtime, tz=timezone.utc)
+    ts = datetime.fromtimestamp(Path(path).stat().st_mtime, tz=UTC)
     return ts.replace(microsecond=0).isoformat().replace('+00:00', 'Z')
 
 
@@ -416,9 +418,9 @@ def _diff_metadata(a: dict, b: dict, prefix: str = '',
 
 
 def consolidate(input_dir: str,
-                prefix: str = None,
-                output_dir: str = None,
-                output_filename: str = None,
+                prefix: str | None = None,
+                output_dir: str | None = None,
+                output_filename: str | None = None,
                 move_to_steps_subdir: bool = False,
                 allow_legacy: bool = False,
                 ignore_provenance_keys: tuple = (
@@ -471,11 +473,13 @@ def consolidate(input_dir: str,
 
     in_dir = Path(input_dir)
     if not in_dir.is_dir():
-        raise FileNotFoundError(f"Input directory does not exist: {input_dir}")
+        msg = f"Input directory does not exist: {input_dir}"
+        raise FileNotFoundError(msg)
 
     all_pkls = sorted(in_dir.glob('*.pkl'))
     if not all_pkls:
-        raise FileNotFoundError(f"No .pkl files found in {input_dir}")
+        msg = f"No .pkl files found in {input_dir}"
+        raise FileNotFoundError(msg)
 
     if prefix is None:
         prefix = _infer_prefix(all_pkls)
@@ -487,9 +491,8 @@ def consolidate(input_dir: str,
         if idx >= 0:
             indexed.append((idx, fp))
     if not indexed:
-        raise FileNotFoundError(
-            f"No files in {input_dir} match prefix {prefix!r}."
-        )
+        msg = f"No files in {input_dir} match prefix {prefix!r}."
+        raise FileNotFoundError(msg)
     indexed.sort(key=lambda pair: pair[0])
 
     print(f"[consolidate] Walking {len(indexed)} step pickle(s) under prefix "
@@ -505,7 +508,7 @@ def consolidate(input_dir: str,
     step_payloads = []  # list of (idx, clean_dict)
 
     for step_idx, fp in indexed:
-        with open(fp, 'rb') as fh:
+        with Path(fp).open('rb') as fh:
             payload = pickle.load(fh)
         clean, md_blocks = extract_metadata_blocks(payload)
 
@@ -517,12 +520,13 @@ def consolidate(input_dir: str,
 
         if not has_metadata:
             if not allow_legacy:
-                raise ValueError(
+                msg = (
                     f"{fp} lacks `_input_metadata` / `_run_metadata` "
                     "(legacy step pickle). Re-run with --allow_legacy "
                     "to consolidate without provenance, or regenerate "
                     "the step pickles with the current selectors."
                 )
+                raise ValueError(msg)
             legacy_run_seen = True
         else:
             cur_in = md_blocks['_input_metadata']
@@ -609,7 +613,7 @@ def consolidate(input_dir: str,
 
     if output_filename is None:
         if legacy_run_seen and canonical_input_md is None:
-            ts = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%SZ')
+            ts = datetime.now(UTC).strftime('%Y%m%d_%H%M%SZ')
             output_filename = f"legacy_selection_{ts}.pkl"
         else:
             output_filename = _build_default_output_filename(

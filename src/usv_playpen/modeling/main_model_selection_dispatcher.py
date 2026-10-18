@@ -44,11 +44,11 @@ from datetime import datetime
 from pathlib import Path
 
 from .model_selection import (
-    vocal_onset_model_selection,
-    vocal_category_model_selection,
     bout_parameter_model_selection,
+    continuous_vocal_manifold_model_selection,
     multinomial_vocal_category_model_selection,
-    continuous_vocal_manifold_model_selection
+    vocal_category_model_selection,
+    vocal_onset_model_selection,
 )
 
 # The settings JSON ships with the package at
@@ -91,7 +91,8 @@ def validate_paths(
     for p in paths_to_check:
         if not Path(p).exists():
             print(f"CRITICAL ERROR: Path not found: {p}")
-            raise FileNotFoundError(f"Missing required file or mount point: {p}")
+            msg = f"Missing required file or mount point: {p}"
+            raise FileNotFoundError(msg)
 
 
 def dispatch_model_selection(args: argparse.Namespace) -> int:
@@ -133,7 +134,7 @@ def dispatch_model_selection(args: argparse.Namespace) -> int:
     )
 
     # The selection knobs come from the same settings file the selectors read.
-    with open(settings_path) as settings_file:
+    with Path(settings_path).open() as settings_file:
         model_params = json.load(settings_file)['model_params']
     p_val = model_params['selection_p_val']
     target_variable = model_params['model_target_variable']

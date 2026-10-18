@@ -40,7 +40,7 @@ dependencies = [
     "motifapi",
     "noisereduce",
     "numba",
-    "numpy",
+    "numpy>=2",
     "omegaconf",
     "opencv-contrib-python",
     "optax",
@@ -296,8 +296,21 @@ isort.required-imports = ["from __future__ import annotations"]
 # Uncomment if using a _compat.typing backport
 # typing-modules = ["usv_playpen._compat.typing"]
 
+# Scientific notation in docstrings, comments and figure labels: multiplication sign,
+# Greek letters (rho, sigma, nu), the true minus sign, the set union and the en dash in
+# numeric ranges are written on purpose and must not be "fixed" to ASCII look-alikes.
+allowed-confusables = ["×", "ρ", "σ", "ν", "−", "∪", "–"]
+
+# polars is imported as `pls` across the package (the project's long-standing alias).
+[tool.ruff.lint.flake8-import-conventions.extend-aliases]
+polars = "pls"
+
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["T20"]
+# The modeling pipelines are the documented exception to the no-print rule (CONTRIBUTING,
+# "Modeling"): they report progress through the shared formatters, which print.
+"src/usv_playpen/modeling/**" = ["T20"]
+"src/usv_playpen/neural_modeling/**" = ["T20"]
 
 [tool.pylint]
 py-version = "3.12"

@@ -81,11 +81,11 @@ import json
 import os
 import re
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-
 
 ALLEN_BREGMA_MLAPDV_UM = np.array([5739.0, 5400.0, 332.0], dtype=np.float64)
 """numpy.ndarray: Bregma landmark in Allen CCF v3 (ML, AP, DV) micrometres.
@@ -242,8 +242,8 @@ def parse_imro_table(value: str) -> list[list[Any]]:
         else:
             tokens = group.split(' ')
         row: list[Any] = []
-        for token in tokens:
-            token = token.strip()
+        for raw_token in tokens:
+            token = raw_token.strip()
             if not token:
                 continue
             try:
@@ -283,9 +283,9 @@ def read_ap_meta(meta_path: str | os.PathLike) -> dict[str, str]:
         All key/value pairs found in the metadata file.
     """
     out: dict[str, str] = {}
-    with open(meta_path, 'r', encoding='utf-8') as fh:
-        for line in fh:
-            line = line.strip()
+    with Path(meta_path).open(encoding='utf-8') as fh:
+        for raw_line in fh:
+            line = raw_line.strip()
             if not line or '=' not in line:
                 continue
             key, _, value = line.partition('=')
@@ -334,12 +334,13 @@ def sample_to_volts_ap(meta: dict[str, str]) -> float:
     """
     probe_type = int(meta['imDatPrb_type'])
     if probe_type not in NP2_PROBE_TYPES:
-        raise NotImplementedError(
+        msg = (
             f"Probe type {probe_type} is not a Neuropixels 2.0 variant; "
             f"this module supports only NP2.0 ({sorted(NP2_PROBE_TYPES)}). "
             f"Add the new probe family to NP2_PROBE_TYPES if appropriate, "
             f"or extend sample_to_volts_ap with the correct gain formula."
         )
+        raise NotImplementedError(msg)
     ai_range_max = float(meta['imAiRangeMax'])
     max_int = int(meta['imMaxInt'])
     return ai_range_max / max_int / NP2_AP_GAIN
@@ -402,7 +403,15 @@ class IBLAlignmentExporter:
         sibling directory — useful for validating a new exporter
         against an existing IBL reference output without overwriting
         it (e.g. ``out_subdir='ibl_LH_v2'``).
+    message_output : Callable, default ``print``
+        Sink for the exporter's progress and skip messages (e.g. a GUI
+        log widget's writer). Defaults to ``print``.
     """
+
+    # Class-level fallback so an instance created without __init__ (e.g. via
+    # object.__new__) still reports through print; __init__ sets the
+    # per-instance sink.
+    message_output: Callable = print
 
     def __init__(
         self,
@@ -415,6 +424,7 @@ class IBLAlignmentExporter:
         histology_dirname: str = 'histology',
         ephys_dirname: str = 'EPHYS',
         out_subdir: str | None = None,
+        message_output: Callable = print,
     ) -> None:
         """
         Description
@@ -450,6 +460,9 @@ class IBLAlignmentExporter:
         out_subdir : str or None, default ``None``
             Leaf name of the ALF output directory; ``None`` gives
             ``ibl_{hemisphere}H``.
+        message_output : Callable, default ``print``
+            Sink for progress and skip messages; stored as
+            ``self.message_output``.
 
         Returns
         -------
@@ -462,9 +475,11 @@ class IBLAlignmentExporter:
         """
 
         if hemisphere not in ('L', 'R'):
-            raise ValueError(f"hemisphere must be 'L' or 'R', got {hemisphere!r}")
+            msg = f"hemisphere must be 'L' or 'R', got {hemisphere!r}"
+            raise ValueError(msg)
 
         self.os_cup_loc = Path(os_cup_loc)
+        self.message_output = message_output
         self.mouse_id = mouse_id
         self.session_date = session_date
         self.probe_id = probe_id
@@ -487,25 +502,28 @@ class IBLAlignmentExporter:
 
         meta_candidates = sorted(self.ephys_path.glob('concatenated_*.ap.meta'))
         if not meta_candidates:
-            raise FileNotFoundError(
+            msg = (
                 f"No concatenated_*.ap.meta found under {self.ephys_path}. "
                 f"Run modify_files.concatenate_binary_files() first."
             )
+            raise FileNotFoundError(msg)
         if len(meta_candidates) > 1:
-            raise RuntimeError(
+            msg = (
                 f"Multiple concatenated .ap.meta files under {self.ephys_path}; "
                 f"expected exactly one. Found: {[p.name for p in meta_candidates]}"
             )
+            raise RuntimeError(msg)
         self.meta_path = meta_candidates[0]
         self.meta = read_ap_meta(self.meta_path)
 
         self.probe_type = int(self.meta['imDatPrb_type'])
         if self.probe_type not in NP2_PROBE_TYPES:
-            raise NotImplementedError(
+            msg = (
                 f"Probe type {self.probe_type} in {self.meta_path.name} "
                 f"is not a supported Neuropixels 2.0 variant "
                 f"({sorted(NP2_PROBE_TYPES)})."
             )
+            raise NotImplementedError(msg)
         self.is_multishank = self.probe_type in NP2_MULTISHANK_PROBE_TYPES
         self.sample_rate = float(self.meta['imSampRate'])
         self.sample2v = sample_to_volts_ap(self.meta)
@@ -568,20 +586,21 @@ class IBLAlignmentExporter:
             # remap), instead of being silently renumbered to shank1/shank2.
             shank_label = one_file.stem[len(self.hemisphere):]
             if not shank_label.isdigit() or int(shank_label) < 1:
-                raise ValueError(
+                msg = (
                     f"track file {one_file.name!r} does not encode a positive shank "
                     f"number after the hemisphere letter {self.hemisphere!r}; expected "
                     f"a name like {self.hemisphere}1.npy / {self.hemisphere}4.npy."
                 )
+                raise ValueError(msg)
             out_name = f"xyz_picks_shank{int(shank_label)}.json"
             out_path = self.ephys_out_path / out_name
             if out_path.is_file():
-                print(f"xyz_picks: {out_name} already exists in {self.ephys_out_path}; skipping.")
+                self.message_output(f"xyz_picks: {out_name} already exists in {self.ephys_out_path}; skipping.")
                 continue
             xyz_apdvml = np.load(one_file)
             xyz_mlapdv_um = ccf_apdvml_to_xyz_mlapdv_um(xyz_apdvml)
             xyz_picks = {'xyz_picks': xyz_mlapdv_um.tolist()}
-            with open(out_path, 'w', encoding='utf-8') as fh:
+            with Path(out_path).open('w', encoding='utf-8') as fh:
                 json.dump(xyz_picks, fh, indent=2)
             written.append(out_path)
         return written
@@ -696,11 +715,12 @@ class IBLAlignmentExporter:
         for shank_num in sorted(set(shank_indices_in_imro)):
             shank_json = self.ephys_out_path / f"channel_locations_shank{shank_num + 1}.json"
             if not shank_json.exists():
-                raise FileNotFoundError(
+                msg = (
                     f"Missing {shank_json.name} in {self.ephys_out_path}; "
                     f"run the IBL alignment GUI for shank {shank_num + 1} first."
                 )
-            with open(shank_json, 'r', encoding='utf-8') as fh:
+                raise FileNotFoundError(msg)
+            with Path(shank_json).open(encoding='utf-8') as fh:
                 shank_data = json.load(fh)
 
             remapped: dict[str, Any] = {}
@@ -715,7 +735,7 @@ class IBLAlignmentExporter:
             if 'origin' in shank_data:
                 remapped['origin'] = shank_data['origin']
 
-            with open(shank_json, 'w', encoding='utf-8') as fh:
+            with Path(shank_json).open('w', encoding='utf-8') as fh:
                 json.dump(remapped, fh, indent=4)
             rewritten.append(shank_json)
         return rewritten
@@ -751,13 +771,12 @@ class IBLAlignmentExporter:
         """
         shank_jsons = sorted(self.ephys_out_path.glob('channel_locations_shank*.json'))
         if not shank_jsons:
-            raise FileNotFoundError(
-                f"No channel_locations_shank*.json found under {self.ephys_out_path}."
-            )
+            msg = f"No channel_locations_shank*.json found under {self.ephys_out_path}."
+            raise FileNotFoundError(msg)
 
         merged: dict[str, Any] = {}
         for shank_json in shank_jsons:
-            with open(shank_json, 'r', encoding='utf-8') as fh:
+            with Path(shank_json).open(encoding='utf-8') as fh:
                 shank_data = json.load(fh)
             for key, value in shank_data.items():
                 if key not in merged:
@@ -795,7 +814,7 @@ class IBLAlignmentExporter:
         merged = dict(sorted(merged.items(), key=_sort_key))
 
         out_path = self.ephys_out_path / 'channel_locations.json'
-        with open(out_path, 'w', encoding='utf-8') as fh:
+        with Path(out_path).open('w', encoding='utf-8') as fh:
             json.dump(merged, fh, indent=4)
         return out_path
 
@@ -868,16 +887,15 @@ class IBLAlignmentExporter:
             src = self.ks_path / src_name
             dst = self.ephys_out_path / dst_name
             if not src.is_file():
-                raise FileNotFoundError(
-                    f"Expected Kilosort file {src} is missing; cannot complete ALF export."
-                )
+                msg = f"Expected Kilosort file {src} is missing; cannot complete ALF export."
+                raise FileNotFoundError(msg)
             shutil.copyfile(src, dst)
 
         for src_name, dst_name in _OPTIONAL_COPIES:
             src = self.ks_path / src_name
             dst = self.ephys_out_path / dst_name
             if not src.is_file():
-                print(
+                self.message_output(
                     f"Optional file {src_name} not present in {self.ks_path}; "
                     f"skipping (the IBL alignment GUI does not require it)."
                 )
@@ -1164,7 +1182,7 @@ class IBLAlignmentExporter:
         template_ids = unique_codes % n_templates_max
 
         pair_counts: dict[int, dict[int, int]] = {cid: {} for cid in range(n_clusters)}
-        for cid, tid, cnt in zip(cluster_ids.tolist(), template_ids.tolist(), counts.tolist()):
+        for cid, tid, cnt in zip(cluster_ids.tolist(), template_ids.tolist(), counts.tolist(), strict=True):
             pair_counts[cid][tid] = cnt
 
         nan_clusters = np.array(

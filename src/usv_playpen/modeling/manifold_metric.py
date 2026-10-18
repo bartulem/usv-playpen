@@ -35,11 +35,11 @@ floating-point noise.
 
 from __future__ import annotations
 
-import numpy as np
 import jax.numpy as jnp
-from scipy.stats import spearmanr
-from scipy.special import i0e, i1e
+import numpy as np
 from scipy.optimize import brentq
+from scipy.special import i0e, i1e
+from scipy.stats import spearmanr
 
 # Holds one entry once `macro_von_mises_logscore` has announced its pooled fallback
 # (no region labels), so the per-fold / per-candidate calls print it only once.
@@ -78,13 +78,11 @@ def _validate_metric_period(metric: str, period: float) -> None:
     """
 
     if metric not in VALID_METRICS:
-        raise ValueError(
-            f"manifold_metric must be one of {VALID_METRICS}; got {metric!r}"
-        )
+        msg = f"manifold_metric must be one of {VALID_METRICS}; got {metric!r}"
+        raise ValueError(msg)
     if not (np.isfinite(period) and period > 0):
-        raise ValueError(
-            f"manifold_period must be a positive finite number; got {period!r}"
-        )
+        msg = f"manifold_period must be a positive finite number; got {period!r}"
+        raise ValueError(msg)
 
 
 def signed_diff(a: np.ndarray, b: np.ndarray, *,
@@ -358,11 +356,12 @@ def dcor_prediction_truth(Y_pred: np.ndarray, Y_true: np.ndarray, *,
     Y_pred = np.asarray(Y_pred, dtype=np.float64)
     Y_true = np.asarray(Y_true, dtype=np.float64)
     if len(Y_pred) != len(Y_true):
-        raise ValueError(
+        msg = (
             f'dcor_prediction_truth received mismatched lengths: Y_pred has '
             f'{len(Y_pred)} rows but Y_true has {len(Y_true)}; the subsample '
             f'indices must address paired rows.'
         )
+        raise ValueError(msg)
     n = len(Y_true)
     rng = np.random.default_rng(random_state)
     vals = []
@@ -436,7 +435,26 @@ def _fit_von_mises_kappa(r: np.ndarray, weights: np.ndarray = None) -> float:
         return 0.0
     if r_bar >= 1.0 - 1e-9:
         return 1e6
-    a_func = lambda k: i1e(k) / i0e(k) - r_bar
+    def a_func(k):
+        """
+        Description
+        -----------
+        Residual of the von Mises MLE equation ``A(kappa) = r_bar``, i.e.
+        ``I1(k) / I0(k) - r_bar``, evaluated with the exponentially-scaled
+        Bessel functions so the ``exp(k)`` factors cancel; its root in ``k``
+        is the MLE concentration.
+
+        Parameters
+        ----------
+        k : float
+            Candidate concentration ``kappa``.
+
+        Returns
+        -------
+        float
+            ``i1e(k) / i0e(k) - r_bar`` (zero at the MLE).
+        """
+        return i1e(k) / i0e(k) - r_bar
     try:
         return float(brentq(a_func, 1e-6, 1e6, maxiter=200))
     except (ValueError, RuntimeError):
@@ -543,7 +561,7 @@ def macro_von_mises_logscore(Y_pred: np.ndarray, Y_true: np.ndarray,
                              region_labels: np.ndarray = None, *,
                              metric: str, period: float,
                              min_region_events: int = 1,
-                             kappa: float = None) -> float:
+                             kappa: float | None = None) -> float:
     """
     Macro (per-region) product-von-Mises log-likelihood of manifold predictions.
 
@@ -712,7 +730,7 @@ def inverse_region_frequency_weights(region_labels: np.ndarray) -> np.ndarray:
     labelled = ~np.isnan(region_labels)
     if labelled.any():
         unique_regions, region_counts = np.unique(region_labels[labelled], return_counts=True)
-        count_map = {float(u): int(c) for u, c in zip(unique_regions, region_counts)}
+        count_map = {float(u): int(c) for u, c in zip(unique_regions, region_counts, strict=False)}
         labelled_factors = np.array([1.0 / count_map[float(r)] for r in region_labels[labelled]])
         factor[labelled] = labelled_factors
         if int(labelled.sum()) < n_rows:
@@ -779,7 +797,7 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
                                 random_state: int = 0,
                                 region_labels: np.ndarray = None,
                                 min_region_events: int = 1,
-                                kappa: float = None) -> dict:
+                                kappa: float | None = None) -> dict:
     """
     Description
     -----------
@@ -1049,7 +1067,8 @@ def circular_mean(Y: np.ndarray, *,
         weights = np.asarray(weights, dtype=np.float64)
         s = np.sum(weights)
         if s <= 0:
-            raise ValueError("weights must have positive sum")
+            msg = "weights must have positive sum"
+            raise ValueError(msg)
         w = weights / s
 
     if metric == 'euclidean':
@@ -1122,7 +1141,8 @@ def total_dispersion(Y: np.ndarray, *,
     weights = np.asarray(weights, dtype=np.float64)
     s = np.sum(weights)
     if s <= 0:
-        raise ValueError("weights must have positive sum")
+        msg = "weights must have positive sum"
+        raise ValueError(msg)
     w = weights / s
     return float(np.sum(w[:, None] * diff ** 2) * len(Y))  # scale to match unweighted convention
 
@@ -1267,7 +1287,8 @@ def torus_embed(Y: np.ndarray, period: float) -> np.ndarray:
     """
 
     if not (np.isfinite(period) and period > 0):
-        raise ValueError(f"period must be positive finite; got {period!r}")
+        msg = f"period must be positive finite; got {period!r}"
+        raise ValueError(msg)
     Y = np.asarray(Y, dtype=np.float64)
     angles = (2.0 * np.pi / period) * Y
     return np.concatenate([np.cos(angles), np.sin(angles)], axis=-1)
@@ -1353,8 +1374,9 @@ def resolve_manifold_selection_score_key(modeling_settings: dict, metric: str) -
     mode = (voc['usv_manifold_selection_score']
             if 'usv_manifold_selection_score' in voc else 'macro')
     if mode not in ('macro', 'micro'):
-        raise ValueError(
+        msg = (
             f"vocal_features.usv_manifold_selection_score must be 'macro' or "
             f"'micro'; got {mode!r}."
         )
+        raise ValueError(msg)
     return 'vm_logscore_pooled' if mode == 'micro' else 'vm_logscore'

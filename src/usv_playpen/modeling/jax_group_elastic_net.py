@@ -486,7 +486,7 @@ class GroupElasticNetGLM:
             return w_f, b_f, int(n_iter_f), bool(conv_f)
 
         nf, nt, order, fam = self.n_features, self.n_time_bins, self.smoothness_order, self.family
-        static = dict(n_features=nf, n_time=nt, smoothness_order=order, family=fam)
+        static = {"n_features": nf, "n_time": nt, "smoothness_order": order, "family": fam}
 
         def f_val(w: jnp.ndarray, b: jnp.ndarray) -> jnp.ndarray:
             return _smooth_objective_jit(
@@ -501,7 +501,6 @@ class GroupElasticNetGLM:
             )
 
         w_cur, b_cur = w_init, b_init
-        w_prev, b_prev = w_cur, b_cur
         z_w, z_b = w_cur, b_cur
         t_cur = 1.0
         lipschitz = self.lipschitz_init
@@ -537,7 +536,6 @@ class GroupElasticNetGLM:
 
             change = float(jnp.sqrt(jnp.sum((w_new - w_cur) ** 2) + (b_new - b_cur) ** 2))
             scale = float(jnp.sqrt(jnp.sum(w_cur ** 2) + b_cur ** 2)) + 1e-12
-            w_prev, b_prev = w_cur, b_cur
             w_cur, b_cur = w_new, b_new
             t_cur = t_new
             if change / scale < self.tol:
@@ -552,7 +550,7 @@ class GroupElasticNetGLM:
             y: np.ndarray,
             sample_weight: np.ndarray | None = None,
             offset: np.ndarray | None = None,
-    ) -> "GroupElasticNetGLM":
+    ) -> GroupElasticNetGLM:
         """
         Description
         -----------
@@ -590,7 +588,7 @@ class GroupElasticNetGLM:
 
     def _fit_in_double(self, x_design: np.ndarray, y: np.ndarray,
                        sample_weight: np.ndarray | None, offset: np.ndarray | None,
-                       t0: float) -> "GroupElasticNetGLM":
+                       t0: float) -> GroupElasticNetGLM:
         """The body of ``fit``, run inside :func:`double_precision` so the float64 casts below take."""
         n_inputs = self.n_features * self.n_time_bins
         x_j = jnp.asarray(x_design, dtype=jnp.float64)

@@ -30,7 +30,7 @@ import pathlib
 import pickle
 from datetime import datetime
 from functools import partial
-from typing import Dict, Any, List, Tuple
+from typing import Any
 
 import numpy as np
 
@@ -50,34 +50,34 @@ os.environ['XLA_FLAGS'] = '--xla_gpu_autotune_level=0'
 # TF_CPP_MIN_LOG_LEVEL suppresses JAX info/warning logs.
 # GLOG_minloglevel suppresses C++ level logs (0=INFO, 1=WARN, 2=ERROR, 3=FATAL).
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-os.environ['GLOG_minloglevel'] = '2'
+os.environ['GLOG_minloglevel'] = '2'  # noqa: SIM112  glog reads this exact lower-case flag name
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 
 import jax
 import jax.numpy as jnp
 import optax
 
+from ..os_utils import atomic_output_path, resolve_modeling_setting
 from .acoustic_manifold_geometry import (
     derive_cluster_centers_empirically,
     derive_cluster_geometry,
     usv_in_circle,
 )
 from .manifold_metric import (
-    pairwise_distance,
-    signed_diff_jax,
-    resolve_manifold_metric,
-    sin_cos_encode_jax,
     angle_decode_jax,
+    pairwise_distance,
+    resolve_manifold_metric,
+    signed_diff_jax,
+    sin_cos_encode_jax,
 )
 from .modeling_metadata import read_reserved_block
 from .modeling_usv_manifold_position import (
     get_stratified_spatial_splits_stable as _manifold_spatial_splits,
 )
 from .modeling_utils import (
-    held_out_session_ids_from_metadata,
     development_heldout_masks,
+    held_out_session_ids_from_metadata,
 )
-from ..os_utils import atomic_output_path, resolve_modeling_setting
 
 # Initial spatial-CV session-split matching tolerance, read from the settings
 # block (it auto-widens at runtime; this is the starting value) rather than a
@@ -126,7 +126,7 @@ class HashableDict(dict):
             """
             if isinstance(v, list):
                 return tuple(make_hashable(e) for e in v)
-            elif isinstance(v, dict):
+            if isinstance(v, dict):
                 return tuple(sorted((k, make_hashable(val)) for k, val in v.items()))
             return v
 
@@ -258,9 +258,8 @@ def apply_temporal_warping(x_seq: np.ndarray, warp_factors: np.ndarray) -> np.nd
     # loop, which wrote float64 `np.interp` results into a `np.zeros_like(x_seq)`
     # buffer (downcasting to `x_seq.dtype` on assignment). For float32 input this
     # round-trip is bit-identical to that per-element downcast.
-    warped_batch = (x0 * (1.0 - frac) + x1 * frac).astype(x_seq.dtype)
+    return (x0 * (1.0 - frac) + x1 * frac).astype(x_seq.dtype)
 
-    return warped_batch
 
 
 def get_grid_balanced_indices(Y_vals: np.ndarray, grid_size: int = 25,
@@ -319,14 +318,14 @@ def get_grid_balanced_indices(Y_vals: np.ndarray, grid_size: int = 25,
     y_idx = np.digitize(Y_vals[:, 1], y_bins)
 
     cells = {}
-    for i, cell_coord in enumerate(zip(x_idx, y_idx)):
+    for i, cell_coord in enumerate(zip(x_idx, y_idx, strict=True)):
         if cell_coord not in cells:
             cells[cell_coord] = []
         cells[cell_coord].append(i)
 
     sampled_indices = []
-    for c in cells:
-        true_count = len(cells[c])
+    for c_indices in cells.values():
+        true_count = len(c_indices)
         # Scale the sampling target based on the cell's actual density
         target_samples = int(np.ceil(base_samples * (true_count ** alpha) / (base_samples ** alpha)))
 
@@ -334,7 +333,7 @@ def get_grid_balanced_indices(Y_vals: np.ndarray, grid_size: int = 25,
         target_samples = max(1, target_samples)
 
         sampled_indices.append(
-            rng.choice(cells[c], size=target_samples, replace=True)
+            rng.choice(c_indices, size=target_samples, replace=True)
         )
 
     return np.concatenate(sampled_indices)
@@ -348,7 +347,7 @@ def get_grid_balanced_indices(Y_vals: np.ndarray, grid_size: int = 25,
 # through a single helper keeps the output-head plumbing explicit and
 # leaves a single place to revisit if a future modality ever ships a
 # D != 2 manifold.
-def _output_axes_count(hp: Dict[str, Any]) -> int:
+def _output_axes_count(hp: dict[str, Any]) -> int:  # noqa: ARG001  reserved for a config-driven axis count (see docstring)
     """
     Returns the number of manifold axes the CNN predicts. The CNN
     pipeline assumes a 2-D acoustic manifold (e.g. `qlvm{1,2}` /
@@ -375,7 +374,7 @@ def _output_axes_count(hp: Dict[str, Any]) -> int:
     return 2
 
 
-def _use_sin_cos_torus_output(hp: Dict[str, Any]) -> bool:
+def _use_sin_cos_torus_output(hp: dict[str, Any]) -> bool:
     """
     Returns True if the CNN should use the per-axis `(sin, cos)`
     output encoding on the torus.
@@ -410,15 +409,16 @@ def _use_sin_cos_torus_output(hp: Dict[str, Any]) -> bool:
         return False
     encoding = hp['cnn_torus_output_encoding']
     if encoding not in ('sin_cos', 'raw'):
-        raise ValueError(
+        msg = (
             f"cnn_torus_output_encoding must be 'sin_cos' or 'raw'; "
             f"got {encoding!r}"
         )
+        raise ValueError(msg)
     return encoding == 'sin_cos'
 
 
 def init_cnn_params_and_state(key: jax.Array, in_channels: int,
-                              time_steps: int, hp: Dict[str, Any]) -> Tuple[Dict[str, jax.Array], Dict[str, jax.Array]]:
+                              time_steps: int, hp: dict[str, Any]) -> tuple[dict[str, jax.Array], dict[str, jax.Array]]:
     r"""
     Initializes the trainable weights, biases, and non-trainable Batch Normalization
     states for the Depthwise-Separable 1D ResNet.
@@ -500,12 +500,13 @@ def init_cnn_params_and_state(key: jax.Array, in_channels: int,
             inc_pw_key_offset = inc_dw_key_offset + len(inc_kernels)
             inc_sc_key_offset = inc_pw_key_offset + 1
             if inc_sc_key_offset >= len(k) - 2:
-                raise ValueError(
+                msg = (
                     f"Too many inception kernels ({len(inc_kernels)}) for the reserved "
                     f"PRNG-key budget: keys {inc_dw_key_offset}..{inc_sc_key_offset} "
                     f"would collide with the dense-head keys in the {len(k)} split keys. "
                     f"Reduce `inception_kernel_sizes` or widen the `jax.random.split` count."
                 )
+                raise ValueError(msg)
             for j, k_size in enumerate(inc_kernels):
                 params[f'b0_dw_w_{j}'] = jax.random.normal(k[inc_dw_key_offset + j], (c_in, 1, k_size)) * jnp.sqrt(2.0 / k_size)
 
@@ -585,7 +586,7 @@ def init_cnn_params_and_state(key: jax.Array, in_channels: int,
 
 def _batch_norm_1d(x: jax.Array, gamma: jax.Array, beta: jax.Array,
                    mean: jax.Array, var: jax.Array, is_training: bool,
-                   momentum: float = 0.99, eps: float = 1e-5) -> Tuple[jax.Array, jax.Array, jax.Array]:
+                   momentum: float = 0.99, eps: float = 1e-5) -> tuple[jax.Array, jax.Array, jax.Array]:
     r"""
     Internal helper function for 1D Batch Normalization over the NCW tensor format.
 
@@ -633,20 +634,19 @@ def _batch_norm_1d(x: jax.Array, gamma: jax.Array, beta: jax.Array,
 
         x_norm = (x - batch_mean) / jnp.sqrt(batch_var + eps)
         return x_norm * gamma + beta, new_mean, new_var
-    else:
-        x_norm = (x - mean) / jnp.sqrt(var + eps)
-        return x_norm * gamma + beta, mean, var
+    x_norm = (x - mean) / jnp.sqrt(var + eps)
+    return x_norm * gamma + beta, mean, var
 
 
 @partial(jax.jit, static_argnames=['is_training', 'hp'])
-def cnn_forward(params: Dict[str, jax.Array],
-                state: Dict[str, jax.Array],
+def cnn_forward(params: dict[str, jax.Array],
+                state: dict[str, jax.Array],
                 x: jax.Array,
                 Y_center: jax.Array,
                 Y_scale: jax.Array,
-                hp: Dict[str, Any],
+                hp: dict[str, Any],
                 rng_key: jax.Array = None,
-                is_training: bool = False) -> Tuple[jax.Array, Dict[str, jax.Array]]:
+                is_training: bool = False) -> tuple[jax.Array, dict[str, jax.Array]]:
     """
     Executes the pure JAX forward pass of the Depthwise-Separable ResNet-1D.
 
@@ -861,14 +861,13 @@ def build_lr_schedule(peak_lr: float, total_epochs: int, steps_per_epoch: int, w
     # Ensure at least 1 warmup step to prevent Optax errors on extremely short runs
     warmup_steps = max(1, warmup_steps)
 
-    schedule = optax.warmup_cosine_decay_schedule(
+    return optax.warmup_cosine_decay_schedule(
         init_value=0.0,
         peak_value=peak_lr,
         warmup_steps=warmup_steps,
         decay_steps=total_steps,
         end_value=0.0
     )
-    return schedule
 
 
 # PHASE 4: THE TRAINING ENGINE
@@ -917,10 +916,11 @@ class NeuralContinuousCNNRunner:
         if modeling_settings is None:
             settings_path = pathlib.Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
             try:
-                with open(settings_path, 'r') as settings_json_file:
+                with pathlib.Path(settings_path).open() as settings_json_file:
                     self.modeling_settings = json.load(settings_json_file)
-            except FileNotFoundError:
-                raise FileNotFoundError(f"Settings file not found at {settings_path}")
+            except FileNotFoundError as err:
+                msg = f"Settings file not found at {settings_path}"
+                raise FileNotFoundError(msg) from err
         else:
             self.modeling_settings = modeling_settings
 
@@ -964,7 +964,7 @@ class NeuralContinuousCNNRunner:
                                              test_prop: float = 0.2,
                                              n_splits: int = 100,
                                              tolerance: float = _SESSION_SPLIT_INITIAL_TOLERANCE,
-                                             random_seed: int = 0) -> List[Tuple[np.ndarray, np.ndarray]]:
+                                             random_seed: int = 0) -> list[tuple[np.ndarray, np.ndarray]]:
         """
         Thin delegator to the canonical splitter in
         `modeling_usv_manifold_position.get_stratified_spatial_splits_stable`.
@@ -1020,7 +1020,7 @@ class NeuralContinuousCNNRunner:
             period=self.manifold_period,
         )
 
-    def load_multivariate_data_blocks(self, pkl_path: str) -> Dict[str, Any]:
+    def load_multivariate_data_blocks(self, pkl_path: str) -> dict[str, Any]:
         """
         Loads extracted feature data and constructs the 3D tensor required for the 1D CNN.
 
@@ -1048,7 +1048,7 @@ class NeuralContinuousCNNRunner:
             - 'num_bins': The finalized length of the temporal dimension after binning.
         """
         print(f"Loading and fusing multivariate data from: {pkl_path}")
-        with open(pkl_path, 'rb') as f:
+        with pathlib.Path(pkl_path).open('rb') as f:
             raw_data = pickle.load(f)
 
         # Strip top-level metadata keys (e.g. `_input_metadata`,
@@ -1056,14 +1056,14 @@ class NeuralContinuousCNNRunner:
         # the X/Y/w arrays. Without this filter, `_input_metadata` sorts
         # to the front and the loop below tries to index an int-valued
         # metadata field as if it were a session dict.
-        features = sorted(k for k in raw_data.keys() if not str(k).startswith('_'))
+        features = sorted(k for k in raw_data if not str(k).startswith('_'))
 
         # The CNN consumes the raw history frames directly
         num_frames = self.history_frames
 
         X_seq_list, Y_list, w_list, groups_list = [], [], [], []
         cat_list = []
-        sessions = sorted(list(raw_data[features[0]].keys()))
+        sessions = sorted(raw_data[features[0]].keys())
 
         for sess in sessions:
             sess_dict = raw_data[features[0]][sess]
@@ -1115,7 +1115,7 @@ class NeuralContinuousCNNRunner:
             block['category'] = np.concatenate(cat_list)
         return block
 
-    def _compute_global_saliency_template(self, params: Dict[str, jax.Array], state: Dict[str, jax.Array],
+    def _compute_global_saliency_template(self, params: dict[str, jax.Array], state: dict[str, jax.Array],
                                           X_te: jax.Array, Y_center: jax.Array, Y_scale: jax.Array) -> np.ndarray:
         """
         Description
@@ -1255,10 +1255,10 @@ class NeuralContinuousCNNRunner:
         glob_saliency = X_te_np * np.abs(glob_grads)
         return np.mean(glob_saliency, axis=0)
 
-    def compute_centroid_saliency(self, params: Dict[str, jax.Array], state: Dict[str, jax.Array],
+    def compute_centroid_saliency(self, params: dict[str, jax.Array], state: dict[str, jax.Array],
                                   X_te: jax.Array, Y_center: jax.Array, Y_scale: jax.Array,
-                                  polygon_centroid: Tuple[float, float],
-                                  global_template: np.ndarray) -> Dict[str, np.ndarray]:
+                                  polygon_centroid: tuple[float, float],
+                                  global_template: np.ndarray) -> dict[str, np.ndarray]:
         r"""
         Extracts kinematic drivers for a specific manifold region via Contrastive Centroid-Gradient Saliency.
 
@@ -1470,7 +1470,7 @@ class NeuralContinuousCNNRunner:
             'contrastive_saliency': contrastive_saliency.astype(np.float32)
         }
 
-    def run_cnn_training(self, data_blocks: Dict[str, Any]) -> None:
+    def run_cnn_training(self, data_blocks: dict[str, Any]) -> None:
         """
         Executes the Deep 1D-CNN pipeline: Tri-strategy validation and Permutation Importance.
 
@@ -1500,11 +1500,12 @@ class NeuralContinuousCNNRunner:
         # error deep in the JIT trace. Fail fast and explicitly here instead.
         # `raise` rather than `assert` so the check survives under `python -O`.
         if int(self.hp['epochs']) < 1:
-            raise ValueError(
+            msg = (
                 f"hyperparameters.deep_learning.cnn_continuous.epochs must be >= 1; "
                 f"got {self.hp['epochs']!r}. With zero epochs no parameters are ever "
                 f"trained and the final evaluation has no model to score."
             )
+            raise ValueError(msg)
 
         X_seq = data_blocks['X_seq']
         Y = data_blocks['Y']
@@ -1556,13 +1557,14 @@ class NeuralContinuousCNNRunner:
         if saliency_cfg['enable']:
             preflight_seg = saliency_cfg['segmentation']
             if preflight_seg != 'category':
-                raise ValueError(
+                msg = (
                     f"saliency.segmentation must be 'category' (the QLVM category; there is no "
                     f"coarse level); got {preflight_seg!r}"
                 )
+                raise ValueError(msg)
             preflight_labels = cluster_labels_cat
             if preflight_labels is None:
-                raise RuntimeError(
+                msg = (
                     f"saliency.enable=true and saliency.segmentation="
                     f"'{preflight_seg}', but the modeling pickle carries no "
                     f"per-USV {preflight_seg} labels: QLVM category labels are "
@@ -1576,6 +1578,7 @@ class NeuralContinuousCNNRunner:
                     f"(before Phase 1) to avoid burning training time on a run "
                     f"that would die in Phase 3."
                 )
+                raise RuntimeError(msg)
             preflight_centres = derive_cluster_centers_empirically(
                 np.asarray(Y),
                 np.asarray(preflight_labels),
@@ -1583,13 +1586,14 @@ class NeuralContinuousCNNRunner:
                 period=self.manifold_period,
             )
             if len(preflight_centres) < 2:
-                raise RuntimeError(
+                msg = (
                     f"saliency.segmentation='{preflight_seg}' produces only "
                     f"{len(preflight_centres)} cluster centre(s) on this "
                     f"modeling pickle; need at least 2 for the alpha-gap "
                     f"radius rule. Check the label coverage. Failing now "
                     f"(before Phase 1)."
                 )
+                raise RuntimeError(msg)
 
         n_feats = len(features)
         n_bins = data_blocks['num_bins']
@@ -1626,10 +1630,11 @@ class NeuralContinuousCNNRunner:
             _held_set = set(_held_positions.tolist())
             for _tr_idx, _te_idx in folds:
                 if _held_set.intersection(_tr_idx.tolist()) or _held_set.intersection(_te_idx.tolist()):
-                    raise AssertionError(
+                    msg = (
                         "Held-out session events leaked into a CNN CV fold; the "
                         "development/held-out split is inconsistent."
                     )
+                    raise AssertionError(msg)
 
         deep_storage = {
             'metadata': {
@@ -1956,7 +1961,7 @@ class NeuralContinuousCNNRunner:
         actual_errors = []
         actual_test_errors = []
 
-        for fold, (train_idx, test_idx) in enumerate(folds):
+        for fold, (fold_train_idx, test_idx) in enumerate(folds):
             # Skip non-target folds when the runner has been configured
             # to only retrain a specific subset (Phase-3 recovery
             # workflow). Per-fold list positions are still filled so
@@ -1987,7 +1992,7 @@ class NeuralContinuousCNNRunner:
             # early-stopping epoch and the best weights, so the test fold is scored
             # exactly once, by weights it never helped pick. The network is fit on the
             # remaining training sessions.
-            train_sessions = np.unique(groups[train_idx])
+            train_sessions = np.unique(groups[fold_train_idx])
             if train_sessions.size < 2:
                 msg = (f"Fold {fold + 1} has {train_sessions.size} training session(s); the CNN needs at "
                        f"least two to hold one out for early stopping.")
@@ -1996,9 +2001,9 @@ class NeuralContinuousCNNRunner:
                                             train_sessions.size - 1))
             validation_sessions = np.random.default_rng(self.random_seed + fold + 1).choice(
                 train_sessions, size=n_validation_sessions, replace=False)
-            is_validation = np.isin(groups[train_idx], validation_sessions)
-            val_idx = train_idx[is_validation]
-            train_idx = train_idx[~is_validation]
+            is_validation = np.isin(groups[fold_train_idx], validation_sessions)
+            val_idx = fold_train_idx[is_validation]
+            train_idx = fold_train_idx[~is_validation]
 
             X_tr, X_te, X_val = X_seq[train_idx], X_seq[test_idx], X_seq[val_idx]
             Y_tr_base, Y_te, Y_val = Y[train_idx], Y[test_idx], Y[val_idx]
@@ -2029,7 +2034,7 @@ class NeuralContinuousCNNRunner:
                     print(f"  > [Model-free prior] {self.manifold_metric.capitalize()} Err: {err:.4f}")
                     continue
 
-                elif strategy == 'null':
+                if strategy == 'null':
                     # 2. Strict Session-Isolated Shuffling
                     unique_groups = np.unique(groups[train_idx])
                     groups_tr = groups[train_idx]
@@ -2124,7 +2129,7 @@ class NeuralContinuousCNNRunner:
                     Tuple[Dict[str, jax.Array], optax.OptState]
                         ``(p_new, o_state_new)``: the updated weights and optimiser state.
                     """
-                    updates, o_state_new = optimizer.update(grads, o_state, p)
+                    updates, o_state_new = optimizer.update(grads, o_state, p)  # noqa: B023  used only within this iteration; binding it as an argument would break the jit trace
                     p_new = optax.apply_updates(p, updates)
                     return p_new, o_state_new
 
@@ -2313,7 +2318,7 @@ class NeuralContinuousCNNRunner:
 
         for f_idx, feat_name in enumerate(features):
             feat_scores = []
-            for k in range(perm_iters):
+            for _k in range(perm_iters):
                 X_perm = X_te_base.copy()
                 perm_idx = rng.permutation(len(Y_te_final))
 
@@ -2380,13 +2385,14 @@ class NeuralContinuousCNNRunner:
             if segmentation == 'category':
                 labels_all = cluster_labels_cat
             else:
-                raise ValueError(
+                msg_0 = (
                     f"saliency.segmentation must be 'category' (the QLVM category; there is no "
                     f"coarse level); got {segmentation!r}"
                 )
+                raise ValueError(msg_0)
 
             if labels_all is None:
-                raise RuntimeError(
+                msg_0 = (
                     f"saliency.segmentation='{segmentation}' but the modeling pickle carries "
                     f"no per-USV {segmentation} labels: QLVM category labels are not "
                     f"available. Every saliency segmentation is label-based, so set "
@@ -2394,6 +2400,7 @@ class NeuralContinuousCNNRunner:
                     f"or re-extract the modeling pickle (extract_and_save_continuous_data) "
                     f"from summaries that carry a <prefix>_{segmentation} label column."
                 )
+                raise RuntimeError(msg_0)
 
             labels_all_np = np.asarray(labels_all)
             labels_test = labels_all_np[test_idx_final]
@@ -2409,11 +2416,12 @@ class NeuralContinuousCNNRunner:
             )
 
             if len(centres) < 2:
-                raise RuntimeError(
+                msg_0 = (
                     f"saliency.segmentation='{segmentation}' produced only {len(centres)} "
                     f"cluster centre(s); need at least 2 for the alpha-gap radius rule. "
                     f"Check label coverage in the modeling pickle."
                 )
+                raise RuntimeError(msg_0)
 
             geometry = derive_cluster_geometry(
                 centres,

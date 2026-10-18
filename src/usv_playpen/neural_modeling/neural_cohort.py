@@ -46,7 +46,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-import polars as pl
+import polars as pls
 
 from ..os_utils import configure_path
 from .neural_design_assembly import (
@@ -142,7 +142,7 @@ def recorded_mouse_by_session(catalog_path: str) -> dict:
         ``{session_id: mouse_id}``.
     """
 
-    catalog = pl.read_csv(catalog_path, infer_schema_length=5000)
+    catalog = pls.read_csv(catalog_path, infer_schema_length=5000)
     mapping: dict = {}
     for row in catalog.iter_rows(named=True):
         for session in (ast.literal_eval(row["rec_sessions"]) if row["rec_sessions"] else []):
@@ -261,7 +261,7 @@ def select_cohort(
         msg = f"somatic must be 'somatic' | 'non_somatic' | 'both'; got {somatic!r}."
         raise ValueError(msg)
 
-    catalog = pl.read_csv(catalog_path, infer_schema_length=5000)
+    catalog = pls.read_csv(catalog_path, infer_schema_length=5000)
     cohort: list[dict] = []
     for row in catalog.iter_rows(named=True):
         if not _area_pass(row["brain_area"], brain_areas, area_mode):

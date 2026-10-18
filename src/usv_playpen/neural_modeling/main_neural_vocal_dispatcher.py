@@ -1089,7 +1089,7 @@ def dispatch(args: argparse.Namespace) -> int:
         traceback.print_exc()
         return 1
     # bare print rather than an injected `message_output`: this is the task's own exit line.
-    print(f"finished in {(datetime.now() - started).total_seconds() / 60:.1f} min")  # noqa: T201
+    print(f"finished in {(datetime.now() - started).total_seconds() / 60:.1f} min")
     return 0
 
 

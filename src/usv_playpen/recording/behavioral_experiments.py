@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import configparser
+import contextlib
 import datetime
 import functools
 import json
@@ -63,7 +64,7 @@ def count_last_recording_dropouts(log_file_path: str,
     """
 
     try:
-        with open(pathlib.Path(log_file_path) / log_file_ch / f"{log_file_ch}.log", 'r') as log_txt_file:
+        with (pathlib.Path(log_file_path) / log_file_ch / f"{log_file_ch}.log").open() as log_txt_file:
             content = log_txt_file.read()
     except FileNotFoundError:
         return None
@@ -80,9 +81,7 @@ def count_last_recording_dropouts(log_file_path: str,
     last_recording = recordings[-1]
 
     # count the occurrences of "dropout" in the last recording
-    dropout_count = last_recording.count('dropout')
-
-    return dropout_count
+    return last_recording.count('dropout')
 
 
 class ExperimentController:
@@ -106,9 +105,9 @@ class ExperimentController:
     entry points of this module.
     """
 
-    def __init__(self, email_receivers: list = None,
-                 exp_settings_dict: dict = None,
-                 metadata_settings: dict = None,
+    def __init__(self, email_receivers: list | None = None,
+                 exp_settings_dict: dict | None = None,
+                 metadata_settings: dict | None = None,
                  message_output: Callable | None = None) -> None:
 
         """
@@ -241,7 +240,8 @@ class ExperimentController:
                     smart_wait(app_context_bool=self.app_context_bool, seconds=poll_interval_seconds)
             else:
                 self.message_output(f"Timeout: Adapter '{ethernet_name}' did not come Up after {max_wait_seconds} seconds.")
-                raise RuntimeError(f"Adapter '{ethernet_name}' did not come Up after {max_wait_seconds} seconds.")
+                msg = f"Adapter '{ethernet_name}' did not come Up after {max_wait_seconds} seconds."
+                raise RuntimeError(msg)
 
     def verify_avisoft_is_recording(self,
                                     warmup_s: int = 3,
@@ -419,17 +419,17 @@ class ExperimentController:
         # Use shell=False and argv lists so drive-letter / UNC values are never
         # interpolated into a cmd.exe string.
         for letter, unc in all_possible_drives.items():
-            subprocess.run(["net", "use", letter, "/delete", "/y"], shell=False,
+            subprocess.run(["net", "use", letter, "/delete", "/y"], shell=False, check=False,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.run(["net", "use", unc, "/delete", "/y"], shell=False,
+            subprocess.run(["net", "use", unc, "/delete", "/y"], shell=False, check=False,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         # Kill the server-level session itself, not just individual share mappings
-        subprocess.run(["net", "use", r"\\cup", "/delete", "/y"], shell=False,
+        subprocess.run(["net", "use", r"\\cup", "/delete", "/y"], shell=False, check=False,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         # Clear any cached Kerberos tickets that may hold stale auth
-        subprocess.run(["klist", "purge"], shell=False,
+        subprocess.run(["klist", "purge"], shell=False, check=False,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         # Clear the persistent Credential Manager entry for \\cup. Without
@@ -437,7 +437,7 @@ class ExperimentController:
         # "Domain:target=cup" entry tied to the previous user's identity,
         # which Windows can prefer over the /user: argument we pass on the
         # next mount, producing System error 1326 even with correct creds.
-        subprocess.run(["cmdkey", "/delete:cup"], shell=False,
+        subprocess.run(["cmdkey", "/delete:cup"], shell=False, check=False,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         # Brief pause so Windows fully tears down the SMB sessions
@@ -516,7 +516,8 @@ class ExperimentController:
                     ],
                     shell=False,
                     capture_output=True,
-                    text=True
+                    text=True,
+                    check=False
                 )
 
                 if mount_result.returncode != 0:
@@ -524,11 +525,11 @@ class ExperimentController:
 
                     # If "already in use" or "multiple connections", try removing again
                     if "already" in mount_result.stderr.lower() or "multiple" in mount_result.stderr.lower():
-                        subprocess.run(["net", "use", drive_letter, "/delete", "/y"], shell=False,
+                        subprocess.run(["net", "use", drive_letter, "/delete", "/y"], shell=False, check=False,
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        subprocess.run(["net", "use", unc_path, "/delete", "/y"], shell=False,
+                        subprocess.run(["net", "use", unc_path, "/delete", "/y"], shell=False, check=False,
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        subprocess.run(["net", "use", r"\\cup", "/delete", "/y"], shell=False,
+                        subprocess.run(["net", "use", r"\\cup", "/delete", "/y"], shell=False, check=False,
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         smart_wait(app_context_bool=self.app_context_bool, seconds=3)
                         continue
@@ -549,8 +550,7 @@ class ExperimentController:
                         self.message_output(f"[**Local mount check**] '{drive_letter}' has been successfully mounted and verified.")
                         mounted_successfully = True
                         break
-                    else:
-                        self.message_output(f"[**Local mount check**] '{drive_letter}' was mapped but path verification failed.")
+                    self.message_output(f"[**Local mount check**] '{drive_letter}' was mapped but path verification failed.")
                 except concurrent.futures.TimeoutError:
                     self.message_output(f"[**Local mount check**] '{drive_letter}' verification timed out.")
 
@@ -630,7 +630,7 @@ class ExperimentController:
             None
             """
             self.message_output(msg)
-            print(msg, flush=True)
+            print(msg, flush=True)  # noqa: T201  deliberate stdout mirror of the message sink (documented in emit's docstring)
 
         try:
             # Disable the legacy 'ssh-rsa' (SHA-1) public-key algorithm during
@@ -650,22 +650,21 @@ class ExperimentController:
 
             command = f"python3 -c \"import os; print(os.path.ismount('{mount_path}'))\""
 
-            stdin, stdout, stderr = client.exec_command(command)
+            _stdin, stdout, stderr = client.exec_command(command)
             result = stdout.read().decode('utf-8').strip()
             error = stderr.read().decode('utf-8').strip()
 
             if error:
                 emit(f"[**Remote mount check**] On {hostname}, an error occurred on the remote machine: {error}")
                 return False
-            elif result == "True":
+            if result == "True":
                 emit(f"[**Remote mount check**] On {hostname} '{mount_path}' is a mounted filesystem.")
                 return True
-            elif result == "False":
+            if result == "False":
                 emit(f"[**Remote mount check**] On {hostname}, '{mount_path}' exists but is not a mount point, or the path does not exist.")
                 return False
-            else:
-                emit(f"[**Remote mount check**] On {hostname}, received an unexpected result: {result}")
-                return False
+            emit(f"[**Remote mount check**] On {hostname}, received an unexpected result: {result}")
+            return False
 
         except paramiko.AuthenticationException:
             emit(f"[**Remote mount check**] On {hostname}, authentication failed. Please check your username and password.")
@@ -717,11 +716,13 @@ class ExperimentController:
         config = configparser.ConfigParser()
 
         if not (pathlib.Path(configure_path(self.exp_settings_dict['credentials_directory'])) / 'cup_config.ini').exists():
-            raise FileNotFoundError(f"Cup config file 'cup_config.ini' not found in "
-                                    f"'{configure_path(self.exp_settings_dict['credentials_directory'])}'.")
-        else:
-            config.read(pathlib.Path(configure_path(self.exp_settings_dict['credentials_directory'])) / 'cup_config.ini')
-            return config['cup']['username'], config['cup']['password']
+            msg = (
+                f"Cup config file 'cup_config.ini' not found in "
+                                    f"'{configure_path(self.exp_settings_dict['credentials_directory'])}'."
+            )
+            raise FileNotFoundError(msg)
+        config.read(pathlib.Path(configure_path(self.exp_settings_dict['credentials_directory'])) / 'cup_config.ini')
+        return config['cup']['username'], config['cup']['password']
 
     def get_connection_params(self) -> tuple:
         """
@@ -751,13 +752,15 @@ class ExperimentController:
         config = configparser.ConfigParser()
 
         if not (pathlib.Path(configure_path(self.exp_settings_dict['credentials_directory'])) / 'motif_config.ini').exists():
-            raise FileNotFoundError(f"Motif config file 'motif_config.ini' not found in "
-                                    f"'{configure_path(self.exp_settings_dict['credentials_directory'])}'.")
-        else:
-            config.read(pathlib.Path(configure_path(self.exp_settings_dict['credentials_directory'])) / 'motif_config.ini')
-            return (config['motif']['master_ip_address'], config['motif']['second_ip_address'],
-                    config['motif']['ssh_port'], config['motif']['ssh_username'],
-                    config['motif']['ssh_password'], config['motif']['api'])
+            msg = (
+                f"Motif config file 'motif_config.ini' not found in "
+                                    f"'{configure_path(self.exp_settings_dict['credentials_directory'])}'."
+            )
+            raise FileNotFoundError(msg)
+        config.read(pathlib.Path(configure_path(self.exp_settings_dict['credentials_directory'])) / 'motif_config.ini')
+        return (config['motif']['master_ip_address'], config['motif']['second_ip_address'],
+                config['motif']['ssh_port'], config['motif']['ssh_username'],
+                config['motif']['ssh_password'], config['motif']['api'])
 
     def get_custom_dir_names(self, now: float) -> tuple:
         """
@@ -816,12 +819,14 @@ class ExperimentController:
                 lin_dir_elements = lin_directory.split('/')[0:3]
                 mount_check_bool = self.check_remote_mount(hostname=ip_address_pc, port=int(ssh_port), username=ssh_username, password=ssh_password, mount_path='/'.join(lin_dir_elements))
                 if not mount_check_bool:
-                    raise RuntimeError(f"Mount point {lin_directory} on {ip_address_pc} is not valid; fix the mount and try again.")
+                    msg = f"Mount point {lin_directory} on {ip_address_pc} is not valid; fix the mount and try again."
+                    raise RuntimeError(msg)
 
         try:
             api = motifapi.MotifApi(ip_address, api_key)
         except motifapi.api.MotifError as exc:
-            raise RuntimeError("Motif is not running or reachable; check hardware and connections.") from exc
+            msg = "Motif is not running or reachable; check hardware and connections."
+            raise RuntimeError(msg) from exc
         else:
             if 1 < len(self.exp_settings_dict['video']['general']['expected_cameras']) < 5:
                 temp_camera_serial_num = [camera_dict['serial'] for camera_dict in api.call('cameras')['cameras']]
@@ -915,7 +920,7 @@ class ExperimentController:
         self.config_1 = configparser.ConfigParser()
         self.config_1.read(pathlib.Path(__file__).parent.parent / '_config/avisoft_config.ini')
 
-        if f"{str(self.exp_settings_dict['avisoft_basedirectory'])}{os.sep}" != self.config_1['Configuration']['basedirectory']:
+        if f"{self.exp_settings_dict['avisoft_basedirectory']!s}{os.sep}" != self.config_1['Configuration']['basedirectory']:
             self.config_1['Configuration']['basedirectory'] = f"{self.exp_settings_dict['avisoft_basedirectory']}{os.sep}"
             changes += 1
 
@@ -924,19 +929,17 @@ class ExperimentController:
                 if self.config_1['Configuration'][f"active{mic_num}"] != str(1):
                     self.config_1['Configuration'][f"active{mic_num}"] = str(1)
                     changes += 1
-            else:
-                if self.config_1['Configuration'][f"active{mic_num}"] != str(0):
-                    self.config_1['Configuration'][f"active{mic_num}"] = str(0)
-                    changes += 1
+            elif self.config_1['Configuration'][f"active{mic_num}"] != str(0):
+                self.config_1['Configuration'][f"active{mic_num}"] = str(0)
+                changes += 1
 
         if self.exp_settings_dict['audio']['general']['total'] == 0:
             if not math.isclose ((self.exp_settings_dict['video_session_duration'] + .41), float(self.config_1['MaxFileSize']['minutes'])):
                 self.config_1['MaxFileSize']['minutes'] = f"{(self.exp_settings_dict['video_session_duration'] + .41)}"
                 changes += 1
-        else:
-            if not math.isclose(float(self.config_1['MaxFileSize']['minutes']), 5.09):
-                self.config_1['MaxFileSize']['minutes'] = str(5.09)
-                changes += 1
+        elif not math.isclose(float(self.config_1['MaxFileSize']['minutes']), 5.09):
+            self.config_1['MaxFileSize']['minutes'] = str(5.09)
+            changes += 1
 
         if self.config_1['Configuration']['configfilename'] != str(pathlib.Path(self.exp_settings_dict['avisoft_config_directory']) / 'avisoft_config.ini'):
             self.config_1['Configuration']['configfilename'] = str(pathlib.Path(self.exp_settings_dict['avisoft_config_directory']) / 'avisoft_config.ini')
@@ -944,7 +947,7 @@ class ExperimentController:
         if self.config_1['Info']['configfilename'] != str(pathlib.Path(self.exp_settings_dict['avisoft_config_directory']) / 'avisoft_config.ini'):
             self.config_1['Info']['configfilename'] = str(pathlib.Path(self.exp_settings_dict['avisoft_config_directory']) / 'avisoft_config.ini')
 
-        for general_key in self.exp_settings_dict['audio']['general'].keys():
+        for general_key in self.exp_settings_dict['audio']['general']:
             if str(self.exp_settings_dict['audio']['general'][general_key]) != self.config_1['Configuration'][general_key]:
                 self.config_1['Configuration'][general_key] = str(self.exp_settings_dict['audio']['general'][general_key])
                 changes += 1
@@ -952,9 +955,8 @@ class ExperimentController:
                     if self.exp_settings_dict['audio']['general']['total'] == 0:
                         if self.config_1['FileNameMode']['channelname'] != str(0):
                             self.config_1['FileNameMode']['channelname'] = str(0)
-                    elif self.exp_settings_dict['audio']['general']['total'] == 1:
-                        if self.config_1['FileNameMode']['channelname'] != str(1):
-                            self.config_1['FileNameMode']['channelname'] = str(1)
+                    elif self.exp_settings_dict['audio']['general']['total'] == 1 and self.config_1['FileNameMode']['channelname'] != str(1):
+                        self.config_1['FileNameMode']['channelname'] = str(1)
 
         if self.exp_settings_dict['audio']['mics_config']['triggertype'] == 41:
             timer_duration = self.exp_settings_dict['video_session_duration'] + .36
@@ -962,34 +964,27 @@ class ExperimentController:
                 self.config_1['Configuration']['timer'] = str(timer_duration * 60)
                 changes += 1
 
-        for screen_pos_key in self.exp_settings_dict['audio']['screen_position'].keys():
+        for screen_pos_key in self.exp_settings_dict['audio']['screen_position']:
             if str(self.exp_settings_dict['audio']['screen_position'][screen_pos_key]) != self.config_1['MainWindowPos'][screen_pos_key]:
                 self.config_1['MainWindowPos'][screen_pos_key] = str(self.exp_settings_dict['audio']['screen_position'][screen_pos_key])
                 changes += 1
 
         for device_num in range(self.exp_settings_dict['audio']['total_device_num']):
-            for device_setting_key in self.exp_settings_dict['audio']['devices'].keys():
-                if device_setting_key != "usghflags":
+            for device_setting_key in self.exp_settings_dict['audio']['devices']:
+                if device_setting_key != "usghflags" or device_num == 0:
                     if not math.isclose(self.exp_settings_dict['audio']['devices'][device_setting_key], float(self.config_1['Configuration'][f"{device_setting_key}{device_num}"])):
                         self.config_1['Configuration'][f"{device_setting_key}{device_num}"] = str(self.exp_settings_dict['audio']['devices'][device_setting_key])
                         changes += 1
-                else:
-                    if device_num == 0:
-                        if not math.isclose(self.exp_settings_dict['audio']['devices'][device_setting_key], float(self.config_1['Configuration'][f"{device_setting_key}{device_num}"])):
-                            self.config_1['Configuration'][f"{device_setting_key}{device_num}"] = str(self.exp_settings_dict['audio']['devices'][device_setting_key])
-                            changes += 1
-                    else:
-                        if self.exp_settings_dict['audio']['devices'][device_setting_key] == 1574:
-                            if not math.isclose(self.exp_settings_dict['audio']['devices'][device_setting_key], float(self.config_1['Configuration'][f"{device_setting_key}{device_num}"])):
-                                self.config_1['Configuration'][f"{device_setting_key}{device_num}"] = str(self.exp_settings_dict['audio']['devices'][device_setting_key] - 2)
-                                changes += 1
-                        else:
-                            if not math.isclose(self.exp_settings_dict['audio']['devices'][device_setting_key], float(self.config_1['Configuration'][f"{device_setting_key}{device_num}"])):
-                                self.config_1['Configuration'][f"{device_setting_key}{device_num}"] = str(self.exp_settings_dict['audio']['devices'][device_setting_key])
-                                changes += 1
+                elif self.exp_settings_dict['audio']['devices'][device_setting_key] == 1574:
+                    if not math.isclose(self.exp_settings_dict['audio']['devices'][device_setting_key], float(self.config_1['Configuration'][f"{device_setting_key}{device_num}"])):
+                        self.config_1['Configuration'][f"{device_setting_key}{device_num}"] = str(self.exp_settings_dict['audio']['devices'][device_setting_key] - 2)
+                        changes += 1
+                elif not math.isclose(self.exp_settings_dict['audio']['devices'][device_setting_key], float(self.config_1['Configuration'][f"{device_setting_key}{device_num}"])):
+                    self.config_1['Configuration'][f"{device_setting_key}{device_num}"] = str(self.exp_settings_dict['audio']['devices'][device_setting_key])
+                    changes += 1
 
         for mic_num in range(self.exp_settings_dict['audio']['total_mic_number']):
-            for mic_spec_key in self.exp_settings_dict['audio']['mics_config'].keys():
+            for mic_spec_key in self.exp_settings_dict['audio']['mics_config']:
                 if mic_spec_key in ['name', 'deviceid', 'id', 'channel', 'ditctime']:
                     if (mic_num in self.exp_settings_dict['audio']['used_mics'] and f"{mic_spec_key}{mic_num}" not in self.config_1['Configuration']) or \
                             (mic_num in self.exp_settings_dict['audio']['used_mics'] and str(self.exp_settings_dict['audio']['mics_config'][mic_spec_key]) != self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"]):
@@ -1002,38 +997,34 @@ class ExperimentController:
                                 if self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] != '0':
                                     self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = '0'
                                     changes += 1
-                            else:
-                                if self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] != '1':
-                                    self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = '1'
-                                    changes += 1
+                            elif self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] != '1':
+                                self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = '1'
+                                changes += 1
                         elif mic_spec_key == 'channel':
                             if mic_num < 12:
                                 if self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] != f"{mic_num}":
                                     self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = f"{mic_num}"
                                     changes += 1
-                            else:
-                                if self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] != f"{mic_num - 12}":
-                                    self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = f"{mic_num - 12}"
-                                    changes += 1
-                        else:
-                            if self.config_1['Configuration'][f"{mic_spec_key}"] != str(self.exp_settings_dict['audio']['mics_config'][mic_spec_key]):
-                                self.config_1['Configuration'][f"{mic_spec_key}"] = str(self.exp_settings_dict['audio']['mics_config'][mic_spec_key])
+                            elif self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] != f"{mic_num - 12}":
+                                self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = f"{mic_num - 12}"
                                 changes += 1
-                else:
-                    if (mic_num in self.exp_settings_dict['audio']['used_mics'] and f"{mic_spec_key}{mic_num}" not in self.config_1['Configuration']) or \
+                        elif self.config_1['Configuration'][f"{mic_spec_key}"] != str(self.exp_settings_dict['audio']['mics_config'][mic_spec_key]):
+                            self.config_1['Configuration'][f"{mic_spec_key}"] = str(self.exp_settings_dict['audio']['mics_config'][mic_spec_key])
+                            changes += 1
+                elif (mic_num in self.exp_settings_dict['audio']['used_mics'] and f"{mic_spec_key}{mic_num}" not in self.config_1['Configuration']) or \
                             (mic_num in self.exp_settings_dict['audio']['used_mics'] and not math.isclose(self.exp_settings_dict['audio']['mics_config'][mic_spec_key], float(self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"]))):
-                        self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = str(self.exp_settings_dict['audio']['mics_config'][mic_spec_key])
-                        changes += 1
+                    self.config_1['Configuration'][f"{mic_spec_key}{mic_num}"] = str(self.exp_settings_dict['audio']['mics_config'][mic_spec_key])
+                    changes += 1
 
         for mic_num in range(self.exp_settings_dict['audio']['total_mic_number']):
-            for monitor_key in self.exp_settings_dict['audio']['monitor'].keys():
+            for monitor_key in self.exp_settings_dict['audio']['monitor']:
                 if (mic_num in self.exp_settings_dict['audio']['used_mics'] and f"{monitor_key}{mic_num}" not in self.config_1['Monitor']) or \
                         (mic_num in self.exp_settings_dict['audio']['used_mics'] and not math.isclose(self.exp_settings_dict['audio']['monitor'][monitor_key], float(self.config_1['Monitor'][f"{monitor_key}{mic_num}"]))):
                     self.config_1['Monitor'][f"{monitor_key}{mic_num}"] = str(self.exp_settings_dict['audio']['monitor'][monitor_key])
                     changes += 1
 
         for mic_num in range(self.exp_settings_dict['audio']['total_mic_number']):
-            for call_key in self.exp_settings_dict['audio']['call'].keys():
+            for call_key in self.exp_settings_dict['audio']['call']:
                 if (mic_num in self.exp_settings_dict['audio']['used_mics'] and f"{call_key}{mic_num}" not in self.config_1['Call']) or \
                         (mic_num in self.exp_settings_dict['audio']['used_mics'] and not math.isclose(self.exp_settings_dict['audio']['call'][call_key], float(self.config_1['Call'][f"{call_key}{mic_num}"]))):
                     self.config_1['Call'][f"{call_key}{mic_num}"] = str(self.exp_settings_dict['audio']['call'][call_key])
@@ -1041,7 +1032,7 @@ class ExperimentController:
 
         if changes > 0:
             self.message_output(f"{changes} lines changed in the avisoft_config_file!")
-            with open(pathlib.Path(__file__).parent.parent / '_config/avisoft_config.ini', 'w') as configfile:
+            with (pathlib.Path(__file__).parent.parent / '_config/avisoft_config.ini').open('w') as configfile:
                 self.config_1.write(configfile, space_around_delimiters=False)
 
         shutil.copy(src=pathlib.Path(__file__).parent.parent / '_config/avisoft_config.ini',
@@ -1104,7 +1095,7 @@ class ExperimentController:
         # Only the Port line is rewritten; every other line is preserved
         # verbatim so locally-tweaked CoolTerm settings are not clobbered.
         desired_sync_port = self.exp_settings_dict['arduino_sync_port']
-        with open(coolterm_config_dst, 'r') as stc_in:
+        with pathlib.Path(coolterm_config_dst).open() as stc_in:
             stc_lines = stc_in.readlines()
         rewrote_port = False
         for line_idx, stc_line in enumerate(stc_lines):
@@ -1114,7 +1105,7 @@ class ExperimentController:
                 break
         if not rewrote_port:
             stc_lines.insert(0, f'Port = {desired_sync_port}\n')
-        with open(coolterm_config_dst, 'w') as stc_out:
+        with pathlib.Path(coolterm_config_dst).open('w') as stc_out:
             stc_out.writelines(stc_lines)
 
         # Reconcile every dynamic Equipment field in the in-memory session
@@ -1184,7 +1175,8 @@ class ExperimentController:
                     subprocess.Popen(['powershell', '-Command', "Stop-Process -Name 'CoolTerm' -Force -ErrorAction SilentlyContinue"]).wait()
                     subprocess.Popen(['powershell', '-Command', f"Stop-Process -Name '{avisoft_recorder_program_name}' -Force -ErrorAction SilentlyContinue"]).wait()
                     self.message_output("Aborted experiment: Avisoft Recorder did not produce audio bytes after launch.")
-                    raise RuntimeError("Aborted experiment: Avisoft Recorder did not produce audio bytes after launch.")
+                    msg = "Aborted experiment: Avisoft Recorder did not produce audio bytes after launch."
+                    raise RuntimeError(msg)
 
         # record video data
         if len(self.exp_settings_dict['video']['general']['expected_cameras']) == 1:
@@ -1269,7 +1261,7 @@ class ExperimentController:
 
             destination_path = Path(total_dir_name_windows[0]) / f"{session_id}_metadata.yaml"
 
-            with open(destination_path, 'w') as f:
+            with pathlib.Path(destination_path).open('w') as f:
                 yaml.dump(
                     self.metadata_settings,
                     f,
@@ -1305,7 +1297,7 @@ class ExperimentController:
             audio_triggerbox_sync_info_dict = {device: {'start_first_recorded_frame': 0, 'end_last_recorded_frame': 0, 'largest_break_duration': 0,
                                                         'duration_samples': 0, 'duration_seconds': 0, 'audio_tracking_diff_seconds': 0, 'num_dropouts': 0} for device in ['m', 's']}
 
-            for log_ch, log_device in zip(['ch1', 'ch13'], ['m', 's']):
+            for log_ch, log_device in zip(['ch1', 'ch13'], ['m', 's'], strict=True):
                 dropout_count = count_last_recording_dropouts(log_file_path=self.exp_settings_dict['avisoft_basedirectory'],
                                                               log_file_ch=log_ch)
 
@@ -1313,13 +1305,12 @@ class ExperimentController:
 
                 if dropout_count is None:
                     self.message_output(f"Could not determine the number of dropouts for {log_device} device, please check the log file.")
+                elif dropout_count > 0:
+                    self.message_output(f"[***Important!***] Number of dropouts registered on {log_device} device: {dropout_count}.")
                 else:
-                    if dropout_count > 0:
-                        self.message_output(f"[***Important!***] Number of dropouts registered on {log_device} device: {dropout_count}.")
-                    else:
-                        self.message_output(f"Number of dropouts registered on {log_device} device: {dropout_count}.")
+                    self.message_output(f"Number of dropouts registered on {log_device} device: {dropout_count}.")
 
-            with open(pathlib.Path(total_dir_name_windows[0]) / 'audio' / 'audio_triggerbox_sync_info.json', 'w') as audio_dict_outfile:
+            with (pathlib.Path(total_dir_name_windows[0]) / 'audio' / 'audio_triggerbox_sync_info.json').open('w') as audio_dict_outfile:
                 json.dump(audio_triggerbox_sync_info_dict, audio_dict_outfile, indent=4)
 
         # move audio file(s) to primary file server.
@@ -1380,7 +1371,7 @@ class ExperimentController:
 
                     planned.append((ch_dir, prefixed_name))
             else:
-                relevant_file_count = max(1, int(math.ceil((self.exp_settings_dict['video_session_duration']+.36) / 5.09)))
+                relevant_file_count = max(1, math.ceil((self.exp_settings_dict['video_session_duration']+.36) / 5.09))
                 device_id = ['m', 's']
                 dest_dir = pathlib.Path(total_dir_name_windows[0]) / 'audio' / 'original_mc'
                 for mic_pos_idx, mic_idx in enumerate([0, 12]):
@@ -1453,10 +1444,13 @@ class ExperimentController:
                 tuple[subprocess.Popen, pathlib.Path, str, pathlib.Path]
             ] = []
             for ch_dir, prefixed_name in planned:
-                log_file = tempfile.NamedTemporaryFile(
+                # Leaving the context closes our handle to the tempfile
+                # (delete=False keeps the file on disk); the subprocess
+                # already has its own duplicated FD. We re-open the file
+                # for reading after the subprocess exits.
+                with tempfile.NamedTemporaryFile(
                     mode='wb', suffix='_robocopy.log', delete=False
-                )
-                try:
+                ) as log_file:
                     subp = subprocess.Popen(
                         args=['robocopy', str(ch_dir), str(dest_dir), prefixed_name,
                               '/R:60', '/W:10', '/MOV',
@@ -1465,11 +1459,6 @@ class ExperimentController:
                         stderr=subprocess.STDOUT,
                         shell=False
                     )
-                finally:
-                    # Close our handle to the tempfile; the subprocess
-                    # already has its own duplicated FD. We re-open
-                    # the file for reading after the subprocess exits.
-                    log_file.close()
                 audio_copy_subps.append(
                     (subp, ch_dir, prefixed_name, pathlib.Path(log_file.name))
                 )
@@ -1498,22 +1487,18 @@ class ExperimentController:
                 tuple[pathlib.Path, str, int | None, str]
             ] = []
             for (_subp, ch_dir, prefixed_name, log_path), rc in zip(
-                audio_copy_subps, return_codes
+                audio_copy_subps, return_codes, strict=True
             ):
                 captured = ''
-                try:
+                with contextlib.suppress(OSError):
                     captured = log_path.read_text(
                         encoding='utf-8', errors='replace'
                     ).strip()
-                except OSError:
-                    pass
                 # Best-effort cleanup; if the unlink fails (file
                 # locked, permission issue) it's harmless -- the OS
                 # cleans up temp files eventually.
-                try:
+                with contextlib.suppress(OSError):
                     log_path.unlink()
-                except OSError:
-                    pass
                 audio_copy_outcomes.append((ch_dir, prefixed_name, rc, captured))
 
             # Per-file outcome: report failures by source -> destination
@@ -1615,7 +1600,7 @@ class ExperimentController:
                     raise_on_nonzero=False,
                     raise_on_timeout=False,
                 )
-                for (_subp, win_dir), rc in zip(backup_subps, backup_return_codes):
+                for (_subp, win_dir), rc in zip(backup_subps, backup_return_codes, strict=True):
                     # robocopy rc < 8 is success/info; rc is None or rc >= 8 is a
                     # genuine failure (or a child terminated on the timeout).
                     if rc is None or rc >= 8:
@@ -1656,7 +1641,7 @@ def conduct_calibration_cli( overrides):
     None
     """
 
-    with open((pathlib.Path(__file__).parent.parent / '_config/behavioral_experiments_settings.toml'), 'r') as f:
+    with (pathlib.Path(__file__).parent.parent / '_config/behavioral_experiments_settings.toml').open() as f:
         exp_settings_dict = toml.load(f)
 
     if len(overrides) > 0:
@@ -1682,11 +1667,11 @@ def conduct_recording_cli(overrides):
     None
     """
 
-    with open((pathlib.Path(__file__).parent.parent / '_config/behavioral_experiments_settings.toml'), 'r') as f:
+    with (pathlib.Path(__file__).parent.parent / '_config/behavioral_experiments_settings.toml').open() as f:
         exp_settings_dict = toml.load(f)
 
     metadata_path = pathlib.Path(__file__).parent.parent / '_config/_metadata.yaml'
-    with open(metadata_path, 'r') as f:
+    with pathlib.Path(metadata_path).open() as f:
         metadata_settings = yaml.safe_load(f)
 
     if len(overrides) > 0:
@@ -1700,7 +1685,7 @@ def conduct_recording_cli(overrides):
     updated_metadata = controller.conduct_behavioral_recording()
 
     if updated_metadata:
-        with open(metadata_path, 'w') as f:
+        with open(metadata_path, 'w') as f:  # noqa: PTH123  tests/recording/test_record.py guards the shipped _metadata.yaml by patching builtins.open; Path.open bypasses that patch and would truncate the file
             yaml.dump(
                 updated_metadata,
                 f,

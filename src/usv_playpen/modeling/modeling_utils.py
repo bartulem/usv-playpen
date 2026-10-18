@@ -92,22 +92,28 @@ the single audit-orchestration entry point:
 
 from __future__ import annotations
 
+import itertools
+import re
 from datetime import datetime
 from pathlib import Path
-import re
+
 import numpy as np
 import polars as pls
 from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import confusion_matrix, matthews_corrcoef
 from sklearn.model_selection import GroupKFold, StratifiedGroupKFold
 
-from .load_input_files import _calculate_ibi_threshold, is_pooled_vocal_signal, is_vocal_signal
+from ..os_utils import configure_path, resolve_modeling_setting
+from .load_input_files import (
+    _calculate_ibi_threshold,
+    is_pooled_vocal_signal,
+    is_vocal_signal,
+)
 from .modeling_collinearity_audit import (
     audit_predictor_collinearity,
     audit_predictor_timescales,
 )
 from .modeling_cross_session_normalization import zscore_different_sessions_together
-from ..os_utils import configure_path, resolve_modeling_setting
 
 # Expected-Calibration-Error histogram bin count, read from the settings block
 # rather than a bare 10 default.
@@ -150,20 +156,23 @@ def prepare_modeling_sessions(modeling_settings: dict) -> list:
     txt_modeling_sessions = []
     sessions_file = modeling_settings['io']['session_list_file']
     try:
-        with open(configure_path(sessions_file)) as f:
-            for line in f:
-                line = line.strip()
+        with Path(configure_path(sessions_file)).open() as f:
+            for raw_line in f:
+                line = raw_line.strip()
                 if line:
                     txt_modeling_sessions.append(configure_path(line))
         if not txt_modeling_sessions:
-            raise ValueError("No valid session paths found.")
+            msg = "No valid session paths found."
+            raise ValueError(msg)
         print(f"Loaded {len(txt_modeling_sessions)} session paths.")
-    except FileNotFoundError:
-        raise FileNotFoundError(f"Sessions list file not found: {sessions_file}")
+    except FileNotFoundError as err:
+        msg = f"Sessions list file not found: {sessions_file}"
+        raise FileNotFoundError(msg) from err
     except ValueError:
         raise
     except Exception as e:
-        raise RuntimeError(f"Error reading session paths: {e}")
+        msg = f"Error reading session paths: {e}"
+        raise RuntimeError(msg) from e
 
     return txt_modeling_sessions
 
@@ -246,10 +255,11 @@ def seeded_session_holdout(session_ids: list,
     """
 
     if not (0.0 <= held_out_test_proportion < 1.0):
-        raise ValueError(
+        msg = (
             f"`held_out_test_proportion` must be in [0, 1); got "
             f"{held_out_test_proportion!r}."
         )
+        raise ValueError(msg)
 
     if held_out_test_proportion == 0.0:
         return []
@@ -259,17 +269,17 @@ def seeded_session_holdout(session_ids: list,
     n_held_out = int(np.floor(n_sessions * held_out_test_proportion))
 
     if n_held_out <= 0 or n_held_out >= n_sessions:
-        raise ValueError(
+        msg = (
             f"`held_out_test_proportion`={held_out_test_proportion} reserves "
             f"{n_held_out}/{n_sessions} sessions; it must reserve at least one "
             f"session and leave at least one development session."
         )
+        raise ValueError(msg)
 
     rng = np.random.default_rng(int(random_seed) if random_seed is not None else 0)
     held_out_positions = rng.permutation(n_sessions)[:n_held_out]
-    held_out_sessions = sorted(sorted_sessions[pos] for pos in held_out_positions)
+    return sorted(sorted_sessions[pos] for pos in held_out_positions)
 
-    return held_out_sessions
 
 
 def held_out_session_ids_from_metadata(input_metadata: dict) -> list:
@@ -517,9 +527,8 @@ def select_kinematic_columns(session_df_columns: list,
                     if predictor_idx == 0:
                         if feat_parts[0] in ('allo_yaw', 'allo_pitch') or feat_parts[1] == 'TTI':
                             continue
-                    else:
-                        if feat_parts[1] in ('allo_yaw', 'allo_pitch') or feat_parts[0] == 'TTI':
-                            continue
+                    elif feat_parts[1] in ('allo_yaw', 'allo_pitch') or feat_parts[0] == 'TTI':
+                        continue
             columns_to_keep.append(feature)
             _maybe_add_derivatives(feature, base_feature)
 
@@ -533,7 +542,7 @@ def select_kinematic_columns(session_df_columns: list,
             columns_to_keep.append(feature)
             _maybe_add_derivatives(feature, base_feature)
 
-    return sorted(list(set(columns_to_keep)))
+    return sorted(set(columns_to_keep))
 
 
 def build_vocal_signal_columns(usv_data_dict: dict,
@@ -755,7 +764,8 @@ def harmonize_session_columns(processed_beh_dict: dict,
     final_suffixes = set()
     generic_existence_map = set()
 
-    for sess_id, df in processed_beh_dict.items():
+    for sess_id, session_df in processed_beh_dict.items():
+        df = session_df
         t_name = mouse_names_dict[sess_id][target_idx]
         p_name = mouse_names_dict[sess_id][predictor_idx]
 
@@ -803,7 +813,7 @@ def harmonize_session_columns(processed_beh_dict: dict,
         if new_zeros:
             processed_beh_dict[sess_id] = df.with_columns(new_zeros)
 
-    return processed_beh_dict, sorted(list(final_suffixes))
+    return processed_beh_dict, sorted(final_suffixes)
 
 
 def zscore_features_across_sessions(processed_beh_dict: dict,
@@ -1509,7 +1519,8 @@ def expected_calibration_error(y_true: np.ndarray,
     y_pred = np.asarray(y_pred)
     y_proba = np.asarray(y_proba, dtype=np.float64)
     if y_proba.ndim != 2:
-        raise ValueError(f"expected_calibration_error requires y_proba of shape (N, K); got {y_proba.shape}.")
+        msg = f"expected_calibration_error requires y_proba of shape (N, K); got {y_proba.shape}."
+        raise ValueError(msg)
 
     confidences = np.max(y_proba, axis=1)
     correct = (y_pred == y_true).astype(np.float64)
@@ -1520,7 +1531,7 @@ def expected_calibration_error(y_true: np.ndarray,
         return float('nan')
 
     ece = 0.0
-    for lo, hi in zip(bin_edges[:-1], bin_edges[1:]):
+    for lo, hi in itertools.pairwise(bin_edges):
         if hi == 1.0:
             mask = (confidences > lo) & (confidences <= hi + 1e-9)
         else:
@@ -1655,10 +1666,11 @@ def align_probs_to_canonical(probabilities: np.ndarray,
     # a custom (unsorted) class ordering fails loudly rather than silently
     # returning a column-shuffled probability matrix.
     if canonical_arr.size > 1 and not np.all(np.diff(canonical_arr) > 0):
-        raise ValueError(
+        msg = (
             "align_probs_to_canonical requires `canonical_classes` to be "
             "strictly ascending; got an unsorted ordering."
         )
+        raise ValueError(msg)
     probs_canonical = np.zeros(
         (n_samples, len(canonical_arr)), dtype=probabilities.dtype
     )
@@ -1676,11 +1688,12 @@ def align_probs_to_canonical(probabilities: np.ndarray,
     # enforce it loudly here (mirroring the ascending-order check above)
     # rather than corrupting the probability matrix silently.
     if np.any(target_cols >= len(canonical_arr)) or not np.all(canonical_arr[target_cols] == model_classes_arr):
-        raise ValueError(
+        msg = (
             "align_probs_to_canonical requires every `model_classes` value "
             "to be present in `canonical_classes`; got a model class absent "
             "from the canonical ordering."
         )
+        raise ValueError(msg)
     probs_canonical[:, target_cols] = probabilities
     return probs_canonical
 
@@ -1973,9 +1986,9 @@ def format_run_summary(*, label: str, metrics_by_strategy: dict,
     return line_one + "\n" + line_two
 
 
-def format_selection_step(stage: str, *, feature: str = None,
-                          metrics: dict = None, decision: str = None,
-                          detail: str = None) -> str:
+def format_selection_step(stage: str, *, feature: str | None = None,
+                          metrics: dict | None = None, decision: str | None = None,
+                          detail: str | None = None) -> str:
     """
     Builds one standardized forward-feature-selection console line.
 
@@ -2110,48 +2123,47 @@ def extract_univariate_headline(analysis_type: str, res: dict) -> dict:
                     'bal-acc': _safe_fold_mean(metrics['score']),
                     'AUC': _safe_fold_mean(metrics['auc']),
                 }
-    elif analysis_type == 'continuous':
+    elif analysis_type == 'continuous' and 'actual' in res and 'folds' in res['actual'] and 'metrics' in res['actual']['folds']:
         # Geometry selects the headline: `vm_logscore` is finite only on the
         # torus (NaN on euclidean), `dcor_xy` only on euclidean (NaN on the
         # torus), else `r2_spatial`. Guard the unconditional `actual` read so a
         # malformed / minimal result dict (e.g. a mocked dispatcher test) yields
         # an empty summary rather than raising.
-        if 'actual' in res and 'folds' in res['actual'] and 'metrics' in res['actual']['folds']:
-            actual_metrics = res['actual']['folds']['metrics']
+        actual_metrics = res['actual']['folds']['metrics']
 
-            def _finite(metric_key):
-                """
-                Reports whether the actual-strategy fold metrics hold at
-                least one finite value for `metric_key`.
+        def _finite(metric_key):
+            """
+            Reports whether the actual-strategy fold metrics hold at
+            least one finite value for `metric_key`.
 
-                Parameters
-                ----------
-                metric_key : str
-                    Key into `res['actual']['folds']['metrics']`.
+            Parameters
+            ----------
+            metric_key : str
+                Key into `res['actual']['folds']['metrics']`.
 
-                Returns
-                -------
-                bool
-                    True when the key is present and its per-fold values
-                    contain at least one finite number; False otherwise
-                    (absent key, empty array or all non-finite).
-                """
-                if metric_key not in actual_metrics:
-                    return False
-                vals = np.asarray(actual_metrics[metric_key], dtype=np.float64)
-                return bool(vals.size and np.any(np.isfinite(vals)))
+            Returns
+            -------
+            bool
+                True when the key is present and its per-fold values
+                contain at least one finite number; False otherwise
+                (absent key, empty array or all non-finite).
+            """
+            if metric_key not in actual_metrics:
+                return False
+            vals = np.asarray(actual_metrics[metric_key], dtype=np.float64)
+            return bool(vals.size and np.any(np.isfinite(vals)))
 
-            if _finite('vm_logscore'):
-                key = 'vm_logscore'
-            elif _finite('dcor_xy'):
-                key = 'dcor_xy'
-            else:
-                key = 'r2_spatial'
-            for strategy in ('actual', 'null', 'null_model_free'):
-                if strategy in res:
-                    out[_STRATEGY_SUMMARY_LABELS[strategy]] = {
-                        key: _safe_fold_mean(res[strategy]['folds']['metrics'][key])
-                    }
+        if _finite('vm_logscore'):
+            key = 'vm_logscore'
+        elif _finite('dcor_xy'):
+            key = 'dcor_xy'
+        else:
+            key = 'r2_spatial'
+        for strategy in ('actual', 'null', 'null_model_free'):
+            if strategy in res:
+                out[_STRATEGY_SUMMARY_LABELS[strategy]] = {
+                    key: _safe_fold_mean(res[strategy]['folds']['metrics'][key])
+                }
     return out
 
 
@@ -2166,11 +2178,11 @@ def run_predictor_audits(processed_beh_dict: dict,
                          settings: dict,
                          save_dir: str,
                          pickle_basename: str,
-                         precomputed_event_times: dict = None,
-                         input_metadata: dict = None,
+                         precomputed_event_times: dict | None = None,
+                         input_metadata: dict | None = None,
                          balance_event_keys: bool = False,
                          onset_event_key: str = 'positive_events',
-                         precomputed_onset_times: dict = None) -> None:
+                         precomputed_onset_times: dict | None = None) -> None:
     """
     Runs the collinearity and timescale audits as a single non-fatal
     diagnostic step at modeling-input-pickle creation time.
@@ -2462,16 +2474,18 @@ def run_predictor_audits(processed_beh_dict: dict,
             n_shuffles = int(diagnostics_cfg['timescale_n_shuffles'])
             shuffle_range_raw = diagnostics_cfg['timescale_shuffle_range']
             if not (isinstance(shuffle_range_raw, (list, tuple)) and len(shuffle_range_raw) == 2):
-                raise ValueError(
+                msg = (
                     f"`diagnostics.timescale_shuffle_range` must be a 2-element list of "
                     f"positive numbers (got {shuffle_range_raw!r})."
                 )
+                raise ValueError(msg)
             shuffle_range_seconds = (float(shuffle_range_raw[0]), float(shuffle_range_raw[1]))
             if not (0 < shuffle_range_seconds[0] < shuffle_range_seconds[1]):
-                raise ValueError(
+                msg = (
                     f"`diagnostics.timescale_shuffle_range` must satisfy "
                     f"0 < min < max (got {shuffle_range_seconds!r})."
                 )
+                raise ValueError(msg)
             # Lag floor for the cross-correlation right-side significance
             # marker. Crossings at lags below this floor are ignored when
             # locating the outer-run marker; this prevents the very-near-zero
@@ -2479,10 +2493,11 @@ def run_predictor_audits(processed_beh_dict: dict,
             # close to lag 0.
             signal_floor_seconds = float(diagnostics_cfg['timescale_signal_floor_seconds'])
             if signal_floor_seconds < 0:
-                raise ValueError(
+                msg = (
                     f"`diagnostics.timescale_signal_floor_seconds` must be "
                     f"non-negative (got {signal_floor_seconds!r})."
                 )
+                raise ValueError(msg)
             # Minimum sustained-run length for the cross-correlation
             # right-side significance marker. The marker is placed at
             # the end of the *longest* sign-consistent run on the
@@ -2495,10 +2510,11 @@ def run_predictor_audits(processed_beh_dict: dict,
             # `self.back_yaw`, 636 bins / 4.2 s on `self.ego_yaw`).
             signal_min_run_seconds = float(diagnostics_cfg['timescale_signal_min_run_seconds'])
             if signal_min_run_seconds <= 0:
-                raise ValueError(
+                msg = (
                     f"`diagnostics.timescale_signal_min_run_seconds` must be "
                     f"strictly positive (got {signal_min_run_seconds!r})."
                 )
+                raise ValueError(msg)
             random_seed = settings['model_validation']['random_seed'] if settings['model_validation']['random_seed'] is not None else 0
 
             # Bout-onset times for the timescale audit's binary `Y`
@@ -2559,7 +2575,7 @@ def run_predictor_audits(processed_beh_dict: dict,
                 # that legitimately have *some* onsets but not all
                 # continue to skip silently as before.
                 if n_sessions_with_target > 0 and not onset_times_per_session:
-                    raise ValueError(
+                    msg = (
                         f"`onset_event_key={onset_event_key!r}` was not "
                         f"found in any of the {n_sessions_with_target} session(s) "
                         f"that carried a target-mouse entry in `usv_data_dict`. "
@@ -2571,6 +2587,7 @@ def run_predictor_audits(processed_beh_dict: dict,
                         f"since every cross-correlation row would collapse to "
                         f"NaN."
                     )
+                    raise ValueError(msg)
 
             audit_predictor_timescales(
                 processed_beh_dict=processed_beh_dict,

@@ -380,7 +380,9 @@ def compute_session_usv_intervals(
         out[f"n_dropped_{sex}"] = int(n_dropped[sex])
 
     # boundary safety: log() is taken downstream and requires strictly positive input
-    assert np.all(out["male"] > 0) and np.all(out["female"] > 0), \
+    assert np.all(out["male"] > 0), \
+        "Non-positive intervals leaked past the > 0 filter; refusing to log."
+    assert np.all(out["female"] > 0), \
         "Non-positive intervals leaked past the > 0 filter; refusing to log."
 
     return out
@@ -1090,7 +1092,9 @@ def fit_serial_dependence(
     bent_band = np.percentile(np.array([r[3] for r in replicates]), [tail, 100.0 - tail], axis=0)
     bend_low, bend_high = np.percentile(bends, [tail, 100.0 - tail])
 
-    in_ms = lambda v: 1e3 * np.exp(v)
+    def in_ms(v):
+        return 1e3 * np.exp(v)
+
     curves = pls.DataFrame({
         **{k: [v] * grid.size for k, v in pool_identity.items()},
         "current_ms": in_ms(grid),
@@ -1447,9 +1451,12 @@ class InterUSVIntervalCalculator:
         expected_kwargs = {'input_parameter_dict', 'message_output'}
         unexpected_kwargs = set(kwargs) - expected_kwargs
         if unexpected_kwargs:
-            raise TypeError(f"{type(self).__name__}() got unexpected keyword argument(s) "
+            msg = (
+                f"{type(self).__name__}() got unexpected keyword argument(s) "
                             f"{', '.join(map(repr, sorted(unexpected_kwargs)))}; expected only "
-                            f"{', '.join(map(repr, sorted(expected_kwargs)))}.")
+                            f"{', '.join(map(repr, sorted(expected_kwargs)))}."
+            )
+            raise TypeError(msg)
         for kw_arg, kw_val in kwargs.items():
             self.__dict__[kw_arg] = kw_val
 
@@ -1876,7 +1883,7 @@ class InterUSVIntervalCalculator:
             "created_at_iso": run_started_at.isoformat(timespec="seconds"),
             "git_sha": git_sha_for_provenance(pathlib.Path(__file__).resolve().parent),
             "source_lists": [str(p) for p in session_lists],
-            "n_sessions_loaded": int(len(sessions_with_data)),
+            "n_sessions_loaded": len(sessions_with_data),
             "session_roots": sorted(sessions_with_data),
             "exclude_noise_usvs": bool(exclude_noise_usvs),
             "interval_pools": interval_pools,

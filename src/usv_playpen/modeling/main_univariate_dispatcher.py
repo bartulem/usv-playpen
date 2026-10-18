@@ -48,29 +48,47 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-import matplotlib
+import matplotlib as mpl
 import numpy as np
 
 # The headless 'Agg' backend must be selected before pyplot and before any
 # pipeline module (which may import pyplot) is imported; that is the only
 # reason the remaining imports sit below this call.
-matplotlib.use('Agg')
+mpl.use('Agg')
 
 import matplotlib.pyplot as plt
 
-from .modeling_vocal_onsets import VocalOnsetModelingPipeline
-from .modeling_vocal_categories_binomial import VocalCategoryModelingPipeline
-from .modeling_vocal_bout_parameters import BoutParameterPipeline
-from .modeling_vocal_categories_multinomial import MultinomialModelingPipeline, MultinomialModelRunner
-from .modeling_usv_manifold_position import ContinuousModelingPipeline, ContinuousModelRunner
-from .modeling_bases_functions import (raised_cosine, bsplines, identity,
-                                      laplacian_pyramid, _normalizecols)
-from .modeling_metadata import (build_run_metadata, inject_metadata, read_reserved_block,
-                                RESERVED_METADATA_KEYS)
 from ..os_utils import atomic_output_path
-from .modeling_utils import (format_run_header, format_run_summary,
-                             extract_univariate_headline,
-                             held_out_session_ids_from_metadata)
+from .modeling_bases_functions import (
+    _normalizecols,
+    bsplines,
+    identity,
+    laplacian_pyramid,
+    raised_cosine,
+)
+from .modeling_metadata import (
+    RESERVED_METADATA_KEYS,
+    build_run_metadata,
+    inject_metadata,
+    read_reserved_block,
+)
+from .modeling_usv_manifold_position import (
+    ContinuousModelingPipeline,
+    ContinuousModelRunner,
+)
+from .modeling_utils import (
+    extract_univariate_headline,
+    format_run_header,
+    format_run_summary,
+    held_out_session_ids_from_metadata,
+)
+from .modeling_vocal_bout_parameters import BoutParameterPipeline
+from .modeling_vocal_categories_binomial import VocalCategoryModelingPipeline
+from .modeling_vocal_categories_multinomial import (
+    MultinomialModelingPipeline,
+    MultinomialModelRunner,
+)
+from .modeling_vocal_onsets import VocalOnsetModelingPipeline
 
 
 def get_basis_matrix_standardized(
@@ -144,13 +162,14 @@ def get_basis_matrix_standardized(
         # actually support, and `splrep` needs at least `degree + 1` of them.
         knots = np.unique(knots)
         if len(knots) < p['degree'] + 1:
-            raise ValueError(
+            msg = (
                 f"B-spline basis is under-determined for history_frames={w} and "
                 f"degree={p['degree']}: only {len(knots)} distinct knot(s) remain "
                 f"after de-duplicating the truncated knot positions, but splrep "
                 f"needs at least degree + 1 = {p['degree'] + 1}. Reduce "
                 f"`n_splines`/`degree` or increase the temporal history."
             )
+            raise ValueError(msg)
         basis_matrix = _normalizecols(
             bsplines(
                 width=w,
@@ -245,7 +264,7 @@ def dispatch_univariate_job(args: argparse.Namespace) -> int:
 
     # 1. Load Experimental Configuration
     try:
-        with open(settings_path, 'r') as f:
+        with Path(settings_path).open() as f:
             settings = json.load(f)
     except Exception as e:
         print(f"FATAL: Settings load failed: {e}")
@@ -253,7 +272,7 @@ def dispatch_univariate_job(args: argparse.Namespace) -> int:
 
     # 2. Semantic Feature Mapping + upstream-metadata harvest
     try:
-        with open(args.input_data, 'rb') as f:
+        with Path(args.input_data).open('rb') as f:
             # `pickle.load` deserializes the entire dict; we keep the
             # sorted *non-reserved* key list (so `_input_metadata` and
             # any future reserved blocks are not mistaken for features)
@@ -261,7 +280,7 @@ def dispatch_univariate_job(args: argparse.Namespace) -> int:
             # verbatim into the per-feature pickle.
             loaded = pickle.load(f)
             input_metadata = read_reserved_block(loaded, '_input_metadata')
-            all_features = sorted([k for k in loaded.keys() if k not in RESERVED_METADATA_KEYS])
+            all_features = sorted([k for k in loaded if k not in RESERVED_METADATA_KEYS])
 
             # Guard both bounds: a negative index would otherwise wrap via
             # Python negative indexing into a valid-but-wrong feature, silently

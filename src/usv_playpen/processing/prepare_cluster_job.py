@@ -34,8 +34,8 @@ class PrepareClusterJob:
     processing pipeline (``processing/preprocess_data.py``).
     """
 
-    def __init__(self, input_parameter_dict: dict = None,
-                 root_directory: list[str] = None,
+    def __init__(self, input_parameter_dict: dict | None = None,
+                 root_directory: list[str] | None = None,
                  message_output: Callable | None = None) -> None:
 
         """
@@ -61,7 +61,7 @@ class PrepareClusterJob:
         # was supplied; it provides the default for input_parameter_dict alone. The
         # root_directory is always supplied by callers and has no settings default.
         if input_parameter_dict is None:
-            with open(pathlib.Path(__file__).parent.parent / '_parameter_settings/processing_settings.json') as json_file:
+            with (pathlib.Path(__file__).parent.parent / '_parameter_settings/processing_settings.json').open() as json_file:
                 _settings = json.load(json_file)['prepare_cluster_job']
 
         self.input_parameter_dict = input_parameter_dict['prepare_cluster_job'] if input_parameter_dict is not None else _settings
@@ -105,7 +105,7 @@ class PrepareClusterJob:
         inference_root = pathlib.Path(configure_path(self.input_parameter_dict['inference_root_dir']))
         inference_root.mkdir(parents=True, exist_ok=True)
 
-        with open(inference_root / 'job_list.txt', mode='w') as job_list_file:
+        with pathlib.Path(inference_root / 'job_list.txt').open(mode='w') as job_list_file:
             for root_dir in self.root_directory:
 
                 spock_converted_root_dir = to_cluster_path(root_dir)

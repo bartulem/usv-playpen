@@ -22,16 +22,18 @@ from matplotlib.colors import LinearSegmentedColormap, Normalize
 from matplotlib.ticker import MaxNLocator
 from matplotlib.transforms import offset_copy
 
-from ..analyses.compute_inter_usv_interval_distributions import consecutive_interval_pairs
+from ..analyses.compute_inter_usv_interval_distributions import (
+    consecutive_interval_pairs,
+)
 from ..analyses.mixture_model_utils import (
     IGMixture,
     TMixture,
     gmm_quantile_logspace,
+    ig_mixture_quantile_logspace,
     plot_gmm_fit,
     summarize_best_gmm,
     summarize_best_ig_mixture,
     summarize_best_t_mixture,
-    ig_mixture_quantile_logspace,
     t_mixture_quantile_logspace,
 )
 from ..analyses.usv_interval_archive import (
@@ -39,6 +41,7 @@ from ..analyses.usv_interval_archive import (
     reconstruct_best_model,
 )
 from ..os_utils import configure_path
+
 
 def plot_log_usv_interval_histograms(
     usv_interval_df: pls.DataFrame,
@@ -224,7 +227,7 @@ def plot_ic_curves(
         # the caller)
         if selected_n_components is not None and sex in selected_n_components:
             sel_n = int(selected_n_components[sex])
-            n_list = list(int(x) for x in n_arr)
+            n_list = [int(x) for x in n_arr]
             if sel_n in n_list:
                 sel_idx = n_list.index(sel_n)
                 sel_val = float(b_arr[sel_idx])
@@ -638,7 +641,7 @@ except FileNotFoundError:
         "#9467bd", "#8c564b", "#e377c2", "#7f7f7f",
     ]
 _COMPONENT_PALETTE: tuple[tuple[str, object], ...] = tuple(
-    zip(_COMPONENT_COLORS, _COMPONENT_LINESTYLES)
+    zip(_COMPONENT_COLORS, _COMPONENT_LINESTYLES, strict=False)
 )
 
 

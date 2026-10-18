@@ -50,17 +50,17 @@ Conventions
 
 from __future__ import annotations
 
+import matplotlib.pyplot as plt
 import numpy as np
 import polars as pls
+from joblib import Parallel, delayed
 from scipy.optimize import brentq
 from scipy.special import digamma, gammaln
-from scipy.stats import invgauss, norm, t as t_dist
-from joblib import Parallel, delayed
+from scipy.stats import invgauss, norm
+from scipy.stats import t as t_dist
 from sklearn.cluster import KMeans
 from sklearn.mixture import GaussianMixture
 from sklearn.model_selection import KFold
-
-import matplotlib.pyplot as plt
 
 
 def fit_log_gmm(
@@ -220,7 +220,7 @@ def plot_gmm_fit(
         pad = bin_width / 2.0
         dense_grid = np.linspace(val_min - pad, val_max + pad, 4000)
         dense_pdf = np.exp(model.score_samples(dense_grid.reshape(-1, 1)))
-        window = max(1, int(round(bin_width / (dense_grid[1] - dense_grid[0]))))
+        window = max(1, int(round(bin_width / (dense_grid[1] - dense_grid[0]))))  # noqa: RUF046  int() kept: round() of a numpy float returns a float under numpy<2
         kernel = np.ones(window, dtype=float) / window
         smoothed = np.convolve(dense_pdf, kernel, mode='same')
         inside = (dense_grid >= val_min) & (dense_grid <= val_max)
@@ -363,7 +363,7 @@ def gmm_cdf_logspace(x: np.ndarray | float, gmm: GaussianMixture) -> np.ndarray:
     w  = gmm.weights_.flatten()
     # weighted sum of Gaussian CDFs
     cdfs = np.zeros_like(x, dtype=float)
-    for m, s, ww in zip(mu, sd, w):
+    for m, s, ww in zip(mu, sd, w, strict=False):
         cdfs += ww * norm.cdf((x - m) / s)
     return cdfs
 
@@ -482,7 +482,8 @@ def qqplot_gmm(
     plt.plot(obs_q, model_q, '.', alpha=0.7)
     lo, hi = obs_q.min(), obs_q.max()
     plt.plot([lo, hi], [lo, hi], linestyle='--', color='#FF0000', lw=1)
-    plt.xscale('log'); plt.yscale('log')
+    plt.xscale('log')
+    plt.yscale('log')
     plt.xlabel('Observed quantiles (s)')
     plt.ylabel('Model quantiles (s)')
     plt.title('Q-Q (mixture model vs. data)')
@@ -528,7 +529,8 @@ def _extract_params(gmm: GaussianMixture):
     elif cov_type == "spherical":
         Sig = np.array([np.eye(M.shape[1]) * v for v in gmm.covariances_])
     else:
-        raise ValueError("Unsupported covariance type")
+        msg = "Unsupported covariance type"
+        raise ValueError(msg)
     # precompute precisions
     Prec = np.array([np.linalg.inv(Sig[k]) for k in range(len(w))])
     return w, M, Sig, Prec
@@ -600,8 +602,7 @@ def _alpha(x: np.ndarray, w: np.ndarray, M: np.ndarray, Sig: np.ndarray, Prec: n
                      for k in range(len(w))])
     # subtract max for numerical stability, then exp
     m = logs.max(axis=0, keepdims=True)
-    a = np.exp(logs - m)
-    return a  # unnormalized is fine for the fixed-point update
+    return np.exp(logs - m)
 
 
 def gmm_modes(
@@ -1529,7 +1530,7 @@ def fit_log_t_mixture(
             w = w / w.sum()
 
         prev_ll = -np.inf
-        for it in range(max_iter):
+        for _it in range(max_iter):
             log_w_pdf = np.array([
                 np.log(w[k]) + _t_logpdf_1d(log_x, mu[k], sigma2[k], nu[k])
                 for k in range(n_components)
@@ -2090,7 +2091,7 @@ def t_mixture_cv_neg_loglik(
 
     log_x = np.log(np.asarray(intervals_sec, dtype=float))
     N = log_x.size
-    if N < n_folds:
+    if n_folds > N:
         return float("inf")
 
     kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
@@ -2836,7 +2837,7 @@ def fit_log_ig_mixture(
         w = w / w.sum()
 
         prev_ll = -np.inf
-        for it in range(max_iter):
+        for _it in range(max_iter):
             log_w_pdf = np.array([
                 np.log(w[k]) + _ig_logpdf_linear(x, mu[k], lam[k])
                 for k in range(n_components)
@@ -2871,7 +2872,8 @@ def fit_log_ig_mixture(
             best_model = IGMixture(weights=w, mus=mu, lambdas=lam)
 
     if best_model is None:
-        raise RuntimeError("fit_log_ig_mixture: EM did not produce a valid fit.")
+        msg = "fit_log_ig_mixture: EM did not produce a valid fit."
+        raise RuntimeError(msg)
 
     order = np.argsort(best_model.mus_)
     return best_model, order
@@ -3136,7 +3138,7 @@ def ig_mixture_quantile_logspace(q: np.ndarray, model: IGMixture) -> np.ndarray:
 
     out = np.empty(q.size)
     for i, qi in enumerate(q):
-        out[i] = brentq(lambda v: _cdf_scalar(v) - qi, lo, hi, xtol=1e-10)
+        out[i] = brentq(lambda v, qi=qi: _cdf_scalar(v) - qi, lo, hi, xtol=1e-10)
     return out
 
 
@@ -3606,8 +3608,9 @@ def bootstrap_lrt(
     """
 
     if K_alt <= K_null:
+        msg = f"bootstrap_lrt requires K_alt > K_null, got K_null={K_null}, K_alt={K_alt}."
         raise ValueError(
-            f"bootstrap_lrt requires K_alt > K_null, got K_null={K_null}, K_alt={K_alt}."
+            msg
         )
     if model_class == "gauss":
         fit_fn = fit_log_gmm
@@ -3616,8 +3619,9 @@ def bootstrap_lrt(
     elif model_class == "ig":
         fit_fn = fit_log_ig_mixture
     else:
+        msg = f"bootstrap_lrt: model_class must be 'gauss', 't' or 'ig', got {model_class!r}."
         raise ValueError(
-            f"bootstrap_lrt: model_class must be 'gauss', 't' or 'ig', got {model_class!r}."
+            msg
         )
     if fit_fn is fit_log_t_mixture and K_alt != K_null + 1:
         # The Student-t alternative is one split of the null, observed and in every replicate,
@@ -4104,7 +4108,8 @@ def select_n_components_step_up_lrt(
     """
 
     if not pair_results:
-        raise ValueError("select_n_components_step_up_lrt: no pair_results supplied.")
+        msg = "select_n_components_step_up_lrt: no pair_results supplied."
+        raise ValueError(msg)
     pairs_sorted = sorted(pair_results.keys())
     for (K_null, K_alt) in pairs_sorted:
         if pair_results[(K_null, K_alt)]["p_value"] >= alpha:

@@ -50,7 +50,6 @@ import numpy as np
 
 from ..os_utils import resolve_analyses_setting, resolve_data_root
 
-
 # Data-location defaults are configured in `analyses_settings.json` under
 # `data_roots` and resolved to the host OS via `configure_path` (see
 # `resolve_data_root`), so they are user-editable and OS-portable rather than
@@ -122,7 +121,7 @@ def _load_ibl_position_to_region(
         # int() floors toward zero, so a coordinate stored as 31.9999 on one
         # side and 32.0 on the other would key to 31 vs 32 and never join.
         # Both sides of the join must round identically.
-        pos_to_region[(int(round(entry["lateral"])), int(round(entry["axial"])))] = (
+        pos_to_region[(round(entry["lateral"]), round(entry["axial"]))] = (
             entry["brain_region"]
         )
     return pos_to_region
@@ -196,8 +195,8 @@ def _build_ks_keyed_block(
         # `_load_ibl_position_to_region`; int() floors toward zero and would
         # desync the two integer keys at sub-unit coordinate differences.
         pos = (
-            int(round(channel_positions[ks_row, 0])),
-            int(round(channel_positions[ks_row, 1])),
+            round(channel_positions[ks_row, 0]),
+            round(channel_positions[ks_row, 1]),
         )
         # Positions absent from the IBL map (e.g. reference/disconnected
         # sites) become a literal "unknown" region; `_runs_to_ranges`
@@ -667,7 +666,7 @@ def _cli() -> None:
     summary_print = dict(summary)
     if args.dry_run:
         summary_print["output"] = "(dict returned in-memory)"
-    print(json.dumps(summary_print, indent=2))
+    print(json.dumps(summary_print, indent=2))  # noqa: T201  command-line entry point: the summary is the CLI's stdout output
 
 
 if __name__ == "__main__":

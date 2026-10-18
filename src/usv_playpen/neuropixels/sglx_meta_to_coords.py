@@ -1181,7 +1181,7 @@ def augment_legacy_meta(
 # destination path written. ``meta`` and ``base_name`` are only
 # consulted by formats that need them (KS and legacy-meta).
 def _write_text(
-    meta: dict[str, str], coords: ShankCoords, dst: Path, base_name: str
+    _meta: dict[str, str], coords: ShankCoords, dst: Path, _base_name: str
 ) -> Path:
     """
     Description
@@ -1193,13 +1193,13 @@ def _write_text(
 
     Parameters
     ----------
-    meta (dict[str, str])
+    _meta (dict[str, str])
         Parsed meta key/value pairs (unused by this format).
     coords (ShankCoords)
         Per-channel geometry.
     dst (Path)
         Output path.
-    base_name (str)
+    _base_name (str)
         Meta file basename (unused by this format).
 
     Returns
@@ -1212,7 +1212,7 @@ def _write_text(
 
 
 def _write_npy(
-    meta: dict[str, str], coords: ShankCoords, dst: Path, base_name: str
+    _meta: dict[str, str], coords: ShankCoords, dst: Path, _base_name: str
 ) -> Path:
     """
     Description
@@ -1224,13 +1224,13 @@ def _write_npy(
 
     Parameters
     ----------
-    meta (dict[str, str])
+    _meta (dict[str, str])
         Parsed meta key/value pairs (unused by this format).
     coords (ShankCoords)
         Per-channel geometry.
     dst (Path)
         Output path.
-    base_name (str)
+    _base_name (str)
         Meta file basename (unused by this format).
 
     Returns
@@ -1243,7 +1243,7 @@ def _write_npy(
 
 
 def _write_jrclust(
-    meta: dict[str, str], coords: ShankCoords, dst: Path, base_name: str
+    _meta: dict[str, str], coords: ShankCoords, dst: Path, _base_name: str
 ) -> Path:
     """
     Description
@@ -1255,13 +1255,13 @@ def _write_jrclust(
 
     Parameters
     ----------
-    meta (dict[str, str])
+    _meta (dict[str, str])
         Parsed meta key/value pairs (unused by this format).
     coords (ShankCoords)
         Per-channel geometry.
     dst (Path)
         Output path.
-    base_name (str)
+    _base_name (str)
         Meta file basename (unused by this format).
 
     Returns
@@ -1274,7 +1274,7 @@ def _write_jrclust(
 
 
 def _write_kilosort(
-    meta: dict[str, str], coords: ShankCoords, dst: Path, base_name: str
+    _meta: dict[str, str], coords: ShankCoords, dst: Path, base_name: str
 ) -> Path:
     """
     Description
@@ -1286,7 +1286,7 @@ def _write_kilosort(
 
     Parameters
     ----------
-    meta (dict[str, str])
+    _meta (dict[str, str])
         Parsed meta key/value pairs (unused by this format).
     coords (ShankCoords)
         Per-channel geometry.
@@ -1305,7 +1305,7 @@ def _write_kilosort(
 
 
 def _write_legacy_meta(
-    meta: dict[str, str], coords: ShankCoords, dst: Path, base_name: str
+    _meta: dict[str, str], coords: ShankCoords, dst: Path, _base_name: str
 ) -> Path:
     """
     Description
@@ -1318,13 +1318,13 @@ def _write_legacy_meta(
 
     Parameters
     ----------
-    meta (dict[str, str])
+    _meta (dict[str, str])
         Parsed meta key/value pairs (unused; the meta file at ``dst`` is re-read).
     coords (ShankCoords)
         Per-channel geometry.
     dst (Path)
         The meta file to augment in place.
-    base_name (str)
+    _base_name (str)
         Meta file basename (unused by this format).
 
     Returns

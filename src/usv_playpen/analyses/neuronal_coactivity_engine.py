@@ -609,8 +609,8 @@ def perform_circular_shuffle(
         metrics = compute_coactivity_metrics(shuffled_matrix)
 
         # 4. Record the results
-        for key in results.keys():
-            results[key][i] = metrics[key]
+        for key, result_values in results.items():
+            result_values[i] = metrics[key]
 
     return results
 
@@ -661,7 +661,7 @@ def perform_chained_circular_shuffle(
     """
     # 1. Initialize results by checking metric keys from a dummy run
     dummy_matrices = []
-    for onsets, neural, _duration in zip(session_onsets, session_neural_data, session_durations):
+    for onsets, neural, _duration in zip(session_onsets, session_neural_data, session_durations, strict=False):
         # We only need a small slice to get the keys (durations are unused here;
         # they are only needed in the real shuffle loop below).
         dummy_matrices.append(extract_snippet_matrix(onsets[:2], neural, window_s))
@@ -675,7 +675,7 @@ def perform_chained_circular_shuffle(
     for i in range(n_shuffles):
         shuffled_mats_to_combine = []
 
-        for onsets, neural, duration in zip(session_onsets, session_neural_data, session_durations):
+        for onsets, neural, duration in zip(session_onsets, session_neural_data, session_durations, strict=False):
             # 2. Shift and extract for THIS session
             shift = rng.uniform(min_shift_s, max_shift_s)
             shifted_neural = apply_circular_shift(neural, shift, duration)
@@ -687,8 +687,8 @@ def perform_chained_circular_shuffle(
 
         # 4. Compute metrics on the aggregate
         metrics = compute_coactivity_metrics(global_shuffled_matrix)
-        for key in results.keys():
-            results[key][i] = metrics[key]
+        for key, result_values in results.items():
+            result_values[i] = metrics[key]
 
     return results
 
@@ -758,8 +758,8 @@ def perform_label_permutation_test(
         idx_b = perm[n_a:]
         pa = compute_coactivity_metrics(combined[:, idx_a])
         pb = compute_coactivity_metrics(combined[:, idx_b])
-        for k in null_dists:
-            null_dists[k][i] = pa[k] - pb[k]
+        for k, null_values in null_dists.items():
+            null_values[i] = pa[k] - pb[k]
 
     results: dict[str, dict[str, Any]] = {}
     for k, null in null_dists.items():

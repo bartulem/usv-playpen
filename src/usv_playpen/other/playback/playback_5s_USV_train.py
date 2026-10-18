@@ -1,10 +1,12 @@
-import os
+from __future__ import annotations
 
-import numpy as np
+import os
 import pathlib
-import RPi.GPIO as io
 import subprocess
 import time
+
+import numpy as np
+import RPi.GPIO as io
 
 io.setwarnings(False)
 
@@ -51,9 +53,8 @@ def run_playback_files(num_seq,
     # find .wav files
     wav_file_lst = sorted(pathlib.Path(audio_directory).glob('*.wav'))
     if not wav_file_lst:
-        raise FileNotFoundError(
-            f"No .wav files found under '{audio_directory}' — nothing to play back."
-        )
+        msg = f"No .wav files found under '{audio_directory}' — nothing to play back."
+        raise FileNotFoundError(msg)
 
     # get a pseudo-random sequence of audio files — keep the modulo so the
     # random index actually maps onto the discovered file list regardless of

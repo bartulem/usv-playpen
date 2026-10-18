@@ -338,9 +338,7 @@ def compute_covs_6d(raw_outputs: np.ndarray, arena_dims: np.ndarray) -> np.ndarr
     L[:, np.arange(n_dims), np.arange(n_dims)] = new_diagonals
     scale = 0.5 * arena_dims.max()
     L = L * scale
-    covs = np.einsum("bjk,bmk->bjm", L, L)
-
-    return covs
+    return np.einsum("bjk,bmk->bjm", L, L)
 
 
 def estimate_angle_pdf(
@@ -458,15 +456,13 @@ def make_xy_grid(
         A grid of points for evaluating a PMF. Shape: (y_res, x_res, 2)
     """
 
-    test_points = np.stack(
+    return np.stack(
         np.meshgrid(
             np.linspace(-arena_dims[0] / 2, arena_dims[0] / 2, render_dims[0]),
             np.linspace(-arena_dims[1] / 2, arena_dims[1] / 2, render_dims[1]),
         ),
         axis=-1,
     )
-
-    return test_points
 
 
 def convert_from_arb(
@@ -491,9 +487,7 @@ def convert_from_arb(
     """
 
     scale_factor = arena_dims.max() / 2
-    output = output * scale_factor
-
-    return output
+    return output * scale_factor
 
 
 def get_conf_sets_6d(
@@ -692,6 +686,7 @@ def are_points_in_conf_set(
             angle_bin_indices,
         ]
     else:
-        raise ValueError("Invalid confidence set shape")
+        msg = "Invalid confidence set shape"
+        raise ValueError(msg)
 
     return in_set

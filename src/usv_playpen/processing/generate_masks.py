@@ -50,12 +50,17 @@ from datetime import datetime
 
 import click
 import h5py
-import matplotlib
+import matplotlib as mpl
 import numpy as np
 from click.core import ParameterSource
 
 from ..cli_utils import modify_settings_json_for_cli
-from ..os_utils import atomic_output_path, configure_path, derive_spectrogram_model_paths, first_match_or_raise
+from ..os_utils import (
+    atomic_output_path,
+    configure_path,
+    derive_spectrogram_model_paths,
+    first_match_or_raise,
+)
 from ..time_utils import is_gui_context, smart_wait
 from .masks._common_memory import setup_device
 from .masks.box_detectors.detect import get_detector
@@ -475,7 +480,7 @@ class MaskGenerator:
 
         logger = logging.getLogger("usv_playpen.generate_masks")
 
-        cmap = matplotlib.colormaps[cfg['mask_cmap']]
+        cmap = mpl.colormaps[cfg['mask_cmap']]
         # cuDNN's autotuner picks algorithms from the GPU state at process
         # start, and with the bf16 autocast + TF32 this module enables that
         # shifts borderline detections by more than the margin separating a

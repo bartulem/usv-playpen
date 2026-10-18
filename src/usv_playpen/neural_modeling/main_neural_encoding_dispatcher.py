@@ -1024,7 +1024,7 @@ def dispatch(args: argparse.Namespace) -> int:
         return 1
     # bare print rather than an injected `message_output`: this is the array task's own exit
     # line, written after the run object it would have been threaded through is gone.
-    print(f"finished in {(datetime.now() - started).total_seconds() / 60:.1f} min")  # noqa: T201
+    print(f"finished in {(datetime.now() - started).total_seconds() / 60:.1f} min")
     return 0
 
 

@@ -82,9 +82,18 @@ from ..modeling.modeling_torus_geodesics import (
     flat_torus_distance_matrix,
     make_qlvm_decode_fn_from_model_cell,
 )
-from ..os_utils import QLVM_CATEGORY_COLUMN, QLVM_CATEGORY_GRIDS_NAME, atomic_output_path, configure_path
+from ..os_utils import (
+    QLVM_CATEGORY_COLUMN,
+    QLVM_CATEGORY_GRIDS_NAME,
+    atomic_output_path,
+    configure_path,
+)
 from ..processing.build_qlvm_training_set import build_session_masks, stretch_specs
-from ..processing.qlvm_categories import vocalization_pixels, content_fields, property_ranks
+from ..processing.qlvm_categories import (
+    content_fields,
+    property_ranks,
+    vocalization_pixels,
+)
 from ..processing.qlvm_latents import load_model_cell, normalize_model_inputs
 from ..processing.qlvm_model import embed_data
 from .auxiliary_plot_functions import draw_category_outlines, periodic_density
@@ -334,7 +343,7 @@ def build_qlvm_figure_sample(
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         # Temp sibling + rename (through an open handle, so np.savez does not append
         # ".npz" to the temp name): a truncated cache would be read back on the next call.
-        with atomic_output_path(cache_path) as tmp_cache_path, open(tmp_cache_path, "wb") as cache_handle:
+        with atomic_output_path(cache_path) as tmp_cache_path, pathlib.Path(tmp_cache_path).open("wb") as cache_handle:
             np.savez(cache_handle, **sample)
         log(f"[qlvm-figures] sample of {n:,} USVs from {unique_sessions.size} sessions written to {cache_path}.")
     return sample

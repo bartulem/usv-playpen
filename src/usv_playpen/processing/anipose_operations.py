@@ -18,12 +18,17 @@ import numpy as np
 import sleap_anipose
 from imgstore import new_for_filename
 
-from ..os_utils import atomic_output_path, configure_path, first_match_or_raise, wait_for_subprocesses
+from ..os_utils import (
+    atomic_output_path,
+    configure_path,
+    first_match_or_raise,
+    wait_for_subprocesses,
+)
 from ..time_utils import is_gui_context, smart_wait
 from ..yaml_utils import load_session_metadata, save_session_metadata
 
 
-def find_mouse_names(root_directory: str = None,
+def find_mouse_names(root_directory: str | None = None,
                      metadata: dict | None = None) -> list:
     """
     Description
@@ -87,7 +92,7 @@ def find_mouse_names(root_directory: str = None,
                     break
 
                 metadata_key_dict = {}
-                for one_key in user_meta_data.keys():
+                for one_key in user_meta_data:
                     if one_key.endswith("mouse_ID_m1"):
                         metadata_key_dict["mouse_ID_m1"] = one_key
                     elif one_key.endswith("mouse_ID_m2"):
@@ -106,10 +111,11 @@ def find_mouse_names(root_directory: str = None,
                     if expected_key not in metadata_key_dict
                 ]
                 if missing_m1_keys:
-                    raise KeyError(
+                    msg = (
                         f"Legacy imgstore metadata in '{sub_directory.name}' is missing "
                         f"required key(s) {missing_m1_keys}; cannot resolve mouse names."
                     )
+                    raise KeyError(msg)
 
                 if user_meta_data[metadata_key_dict["mouse_ID_m1"]] != "":
                     track_names.append(
@@ -164,7 +170,7 @@ def extract_skeleton_nodes(
         SLEAP skeleton node names.
     """
 
-    with open(skeleton_loc) as json_file:
+    with pathlib.Path(skeleton_loc).open() as json_file:
         skeleton = json.load(json_file)
 
     unsorted_node_list = []
@@ -344,8 +350,8 @@ class ConvertTo3D:
 
     def __init__(
         self,
-        root_directory: str = None,
-        input_parameter_dict: dict = None,
+        root_directory: str | None = None,
+        input_parameter_dict: dict | None = None,
         message_output: Callable | None = None,
     ) -> None:
         """
@@ -374,9 +380,8 @@ class ConvertTo3D:
             raise ValueError(msg)
 
         if input_parameter_dict is None:
-            with open(
-                pathlib.Path(__file__).parent.parent
-                / "_parameter_settings/processing_settings.json"
+            with (pathlib.Path(__file__).parent.parent
+                / "_parameter_settings/processing_settings.json").open(
             ) as json_file:
                 _settings = json.load(json_file)["anipose_operations"]
 
@@ -561,111 +566,109 @@ class ConvertTo3D:
                    f"{self.input_parameter_dict['conduct_anipose_triangulation']['calibration_file_loc']}: "
                    f"run the calibration first and give its path; nothing was triangulated.")
             raise FileNotFoundError(msg)
-        elif len(calibration_dir_search) > 1:
+        if len(calibration_dir_search) > 1:
             msg = (f"{len(calibration_dir_search)} *_calibration.toml files under "
                    f"{self.input_parameter_dict['conduct_anipose_triangulation']['calibration_file_loc']}, expected exactly one: "
                    f"{', '.join(str(one_file) for one_file in calibration_dir_search)}. Point calibration_file_loc at the "
                    f"folder of the one to use, or remove the stray copy; nothing was triangulated.")
             raise ValueError(msg)
+        calibration_toml_file = calibration_dir_search[0]
+
+        if not self.input_parameter_dict["conduct_anipose_triangulation"][
+            "triangulate_arena_points_bool"
+        ]:
+            # Resolve the frame restriction into a local variable instead of
+            # mutating the shared settings dict in place. The previous code
+            # wrote the computed [0, N] back into self.input_parameter_dict
+            # and reset it to None only *after* triangulate returned, so a
+            # raised triangulate left the stale value behind and contaminated
+            # the next session in a batch run.
+            frame_restriction_value = self.input_parameter_dict[
+                "conduct_anipose_triangulation"
+            ]["frame_restriction"]
+            if frame_restriction_value is None:
+                with pathlib.Path(first_match_or_raise(
+                        root=pathlib.Path(self.root_directory) / 'video',
+                        pattern='*_camera_frame_count_dict.json*',
+                        label="camera frame count JSON",
+                    )).open(
+                ) as frame_count_infile:
+                    camera_frame_count_dict = json.load(frame_count_infile)
+                    frame_restriction_value = [
+                        0,
+                        int(camera_frame_count_dict["total_frame_number_least"]),
+                    ]
+
+            sleap_anipose.triangulate(
+                p2d=str(self.session_root_joint_date_dir),
+                calib=str(calibration_toml_file),
+                frames=tuple(frame_restriction_value),
+                excluded_views=tuple(
+                    self.input_parameter_dict["conduct_anipose_triangulation"][
+                        "excluded_views"
+                    ]
+                ),
+                ransac=self.input_parameter_dict["conduct_anipose_triangulation"][
+                    "ransac_bool"
+                ],
+                fname=str(self.session_root_joint_date_dir / f"{self.session_root_name}_points3d.h5"),
+                disp_progress=self.input_parameter_dict[
+                    "conduct_anipose_triangulation"
+                ]["display_progress_bool"],
+                constraints=self.input_parameter_dict[
+                    "conduct_anipose_triangulation"
+                ]["rigid_body_constraints"],
+                constraints_weak=self.input_parameter_dict[
+                    "conduct_anipose_triangulation"
+                ]["weak_body_constraints"],
+                scale_smooth=self.input_parameter_dict[
+                    "conduct_anipose_triangulation"
+                ]["smooth_scale"],
+                scale_length=self.input_parameter_dict[
+                    "conduct_anipose_triangulation"
+                ]["weight_rigid"],
+                scale_length_weak=self.input_parameter_dict[
+                    "conduct_anipose_triangulation"
+                ]["weight_weak"],
+                reproj_error_threshold=self.input_parameter_dict[
+                    "conduct_anipose_triangulation"
+                ]["reprojection_error_threshold"],
+                reproj_loss=self.input_parameter_dict[
+                    "conduct_anipose_triangulation"
+                ]["regularization_function"],
+                n_deriv_smooth=self.input_parameter_dict[
+                    "conduct_anipose_triangulation"
+                ]["n_deriv_smooth"],
+            )
+
         else:
-            calibration_toml_file = calibration_dir_search[0]
+            # Resolve the frame restriction locally (see the note in the
+            # non-arena branch above): never mutate the shared settings dict,
+            # so a raised triangulate cannot leak a stale value into the next
+            # session of a batch run.
+            frame_restriction_value = self.input_parameter_dict[
+                "conduct_anipose_triangulation"
+            ]["frame_restriction"]
+            if frame_restriction_value is None:
+                frame_restriction_value = [0, 1]
 
-            if not self.input_parameter_dict["conduct_anipose_triangulation"][
-                "triangulate_arena_points_bool"
-            ]:
-                # Resolve the frame restriction into a local variable instead of
-                # mutating the shared settings dict in place. The previous code
-                # wrote the computed [0, N] back into self.input_parameter_dict
-                # and reset it to None only *after* triangulate returned, so a
-                # raised triangulate left the stale value behind and contaminated
-                # the next session in a batch run.
-                frame_restriction_value = self.input_parameter_dict[
+            sleap_anipose.triangulate(
+                p2d=str(self.session_root_joint_date_dir),
+                calib=str(calibration_toml_file),
+                frames=tuple(frame_restriction_value),
+                excluded_views=tuple(
+                    self.input_parameter_dict["conduct_anipose_triangulation"][
+                        "excluded_views"
+                    ]
+                ),
+                fname=str(self.session_root_joint_date_dir / f"{self.session_root_name}_points3d.h5"),
+                disp_progress=self.input_parameter_dict[
                     "conduct_anipose_triangulation"
-                ]["frame_restriction"]
-                if frame_restriction_value is None:
-                    with open(
-                        first_match_or_raise(
-                            root=pathlib.Path(self.root_directory) / 'video',
-                            pattern='*_camera_frame_count_dict.json*',
-                            label="camera frame count JSON",
-                        )
-                    ) as frame_count_infile:
-                        camera_frame_count_dict = json.load(frame_count_infile)
-                        frame_restriction_value = [
-                            0,
-                            int(camera_frame_count_dict["total_frame_number_least"]),
-                        ]
-
-                sleap_anipose.triangulate(
-                    p2d=str(self.session_root_joint_date_dir),
-                    calib=str(calibration_toml_file),
-                    frames=tuple(frame_restriction_value),
-                    excluded_views=tuple(
-                        self.input_parameter_dict["conduct_anipose_triangulation"][
-                            "excluded_views"
-                        ]
-                    ),
-                    ransac=self.input_parameter_dict["conduct_anipose_triangulation"][
-                        "ransac_bool"
-                    ],
-                    fname=str(self.session_root_joint_date_dir / f"{self.session_root_name}_points3d.h5"),
-                    disp_progress=self.input_parameter_dict[
-                        "conduct_anipose_triangulation"
-                    ]["display_progress_bool"],
-                    constraints=self.input_parameter_dict[
-                        "conduct_anipose_triangulation"
-                    ]["rigid_body_constraints"],
-                    constraints_weak=self.input_parameter_dict[
-                        "conduct_anipose_triangulation"
-                    ]["weak_body_constraints"],
-                    scale_smooth=self.input_parameter_dict[
-                        "conduct_anipose_triangulation"
-                    ]["smooth_scale"],
-                    scale_length=self.input_parameter_dict[
-                        "conduct_anipose_triangulation"
-                    ]["weight_rigid"],
-                    scale_length_weak=self.input_parameter_dict[
-                        "conduct_anipose_triangulation"
-                    ]["weight_weak"],
-                    reproj_error_threshold=self.input_parameter_dict[
-                        "conduct_anipose_triangulation"
-                    ]["reprojection_error_threshold"],
-                    reproj_loss=self.input_parameter_dict[
-                        "conduct_anipose_triangulation"
-                    ]["regularization_function"],
-                    n_deriv_smooth=self.input_parameter_dict[
-                        "conduct_anipose_triangulation"
-                    ]["n_deriv_smooth"],
-                )
-
-            else:
-                # Resolve the frame restriction locally (see the note in the
-                # non-arena branch above): never mutate the shared settings dict,
-                # so a raised triangulate cannot leak a stale value into the next
-                # session of a batch run.
-                frame_restriction_value = self.input_parameter_dict[
+                ]["display_progress_bool"],
+                reproj_error_threshold=self.input_parameter_dict[
                     "conduct_anipose_triangulation"
-                ]["frame_restriction"]
-                if frame_restriction_value is None:
-                    frame_restriction_value = [0, 1]
-
-                sleap_anipose.triangulate(
-                    p2d=str(self.session_root_joint_date_dir),
-                    calib=str(calibration_toml_file),
-                    frames=tuple(frame_restriction_value),
-                    excluded_views=tuple(
-                        self.input_parameter_dict["conduct_anipose_triangulation"][
-                            "excluded_views"
-                        ]
-                    ),
-                    fname=str(self.session_root_joint_date_dir / f"{self.session_root_name}_points3d.h5"),
-                    disp_progress=self.input_parameter_dict[
-                        "conduct_anipose_triangulation"
-                    ]["display_progress_bool"],
-                    reproj_error_threshold=self.input_parameter_dict[
-                        "conduct_anipose_triangulation"
-                    ]["reprojection_error_threshold"],
-                )
+                ]["reprojection_error_threshold"],
+            )
 
     def translate_rotate_metric(self, **kwargs) -> None:
         """
@@ -698,12 +701,11 @@ class ConvertTo3D:
         )
 
         # get recording frame rate
-        with open(
-            first_match_or_raise(
+        with pathlib.Path(first_match_or_raise(
                 root=pathlib.Path(self.root_directory) / 'video',
                 pattern='*_camera_frame_count_dict.json*',
                 label="camera frame count JSON",
-            )
+            )).open(
         ) as frame_count_infile:
             recording_frame_rate = json.load(frame_count_infile)[
                 "median_empirical_camera_sr"
@@ -926,10 +928,11 @@ class ConvertTo3D:
                 "experimental_codes"
             ]
             if not 0 <= session_idx < len(experimental_codes):
-                raise IndexError(
+                msg = (
                     f"session_idx {session_idx} is out of range for "
                     f"{len(experimental_codes)} configured experimental_codes."
                 )
+                raise IndexError(msg)
             session_experiment_code = experimental_codes[session_idx]
 
             # load metadata
@@ -939,10 +942,11 @@ class ConvertTo3D:
             )
             if metadata is not None:
                 if "Session" not in metadata:
-                    raise KeyError(
+                    msg = (
                         "session metadata is missing the required 'Session' block; "
                         "cannot record the experiment code / 3D-tracking flag."
                     )
+                    raise KeyError(msg)
                 metadata['Session']['session_experiment_code'] = session_experiment_code
                 metadata['Session']['session_tracking_3D'] = True
                 save_session_metadata(data=metadata, filepath=metadata_path, logger=self.message_output)

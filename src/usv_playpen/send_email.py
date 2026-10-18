@@ -91,16 +91,16 @@ class Messenger:
         """
 
         if not Path(self.credentials_file).is_file():
-            raise FileNotFoundError(
-                f"E-mail config file not found: '{self.credentials_file}'."
-            )
+            msg = f"E-mail config file not found: '{self.credentials_file}'."
+            raise FileNotFoundError(msg)
         config = configparser.ConfigParser()
         config.read(self.credentials_file)
         if not config.has_section('email'):
-            raise KeyError(
+            msg = (
                 f"E-mail config '{self.credentials_file}' is missing the "
                 "required [email] section."
             )
+            raise KeyError(msg)
         return config['email']['email_host'], config['email']['email_port'], config['email']['email_address'], config['email']['email_password']
 
     def send_message(self, subject: str | None = None, message: str | None = None) -> bool | None:

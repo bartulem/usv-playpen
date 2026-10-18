@@ -42,7 +42,7 @@ from pathlib import Path
 
 import h5py
 import numpy as np
-import polars as pl
+import polars as pls
 from numpy.lib.stride_tricks import sliding_window_view
 
 from ..analyses.compute_behavioral_features import FeatureZoo
@@ -421,7 +421,7 @@ def load_unit_spike_frames(data_root: str, session_id: str, unit_id: str) -> tup
     return spike_seconds, spike_frames
 
 
-def load_session_usvs(data_root: str, session_id: str, csv_sep: str = ",") -> pl.DataFrame:
+def load_session_usvs(data_root: str, session_id: str, csv_sep: str = ",") -> pls.DataFrame:
     """
     Description
     -----------
@@ -439,7 +439,7 @@ def load_session_usvs(data_root: str, session_id: str, csv_sep: str = ",") -> pl
 
     Returns
     -------
-    usv_df (pl.DataFrame)
+    usv_df (pls.DataFrame)
         The USV summary table.
     """
 
@@ -447,13 +447,13 @@ def load_session_usvs(data_root: str, session_id: str, csv_sep: str = ",") -> pl
     if not usv_path.exists():
         msg = f"usv_summary not found: {usv_path}"
         raise FileNotFoundError(msg)
-    return pl.read_csv(usv_path, separator=csv_sep, infer_schema_length=5000)
+    return pls.read_csv(usv_path, separator=csv_sep, infer_schema_length=5000)
 
 
 VOCALIZATION_SCOPES = ("analysed", "guard")
 
 
-def filter_vocalizations(usv_df: pl.DataFrame, vocal_settings: dict, scope: str) -> pl.DataFrame:
+def filter_vocalizations(usv_df: pls.DataFrame, vocal_settings: dict, scope: str) -> pls.DataFrame:
     """
     Description
     -----------
@@ -479,7 +479,7 @@ def filter_vocalizations(usv_df: pl.DataFrame, vocal_settings: dict, scope: str)
 
     Parameters
     ----------
-    usv_df (pl.DataFrame)
+    usv_df (pls.DataFrame)
         A session's USV summary, as ``load_session_usvs`` returns it.
     vocal_settings (dict)
         The ``vocalization_settings`` block, carrying the three exclusion flags.
@@ -489,7 +489,7 @@ def filter_vocalizations(usv_df: pl.DataFrame, vocal_settings: dict, scope: str)
 
     Returns
     -------
-    filtered (pl.DataFrame)
+    filtered (pls.DataFrame)
         The rows that survive, in their original order.
     """
 
@@ -514,7 +514,7 @@ def filter_vocalizations(usv_df: pl.DataFrame, vocal_settings: dict, scope: str)
 
     filtered = usv_df
     for column, _flag in wanted:
-        filtered = filtered.filter(~pl.col(column).cast(pl.Boolean))
+        filtered = filtered.filter(~pls.col(column).cast(pls.Boolean))
     return filtered
 
 

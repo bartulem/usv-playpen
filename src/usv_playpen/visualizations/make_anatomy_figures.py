@@ -40,19 +40,19 @@ import pathlib
 import urllib.request
 from collections.abc import Callable
 
-import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib import animation
 from matplotlib.collections import LineCollection
 from matplotlib.lines import Line2D
 from matplotlib.transforms import Bbox
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 from usv_playpen.os_utils import atomic_output_path, resolve_data_root
-from usv_playpen.visualizations.plot_style import apply_plot_style
 from usv_playpen.visualizations.figure_io import resolve_pdf_path, save_figure
 from usv_playpen.visualizations.make_behavioral_videos import pool_brain_area
+from usv_playpen.visualizations.plot_style import apply_plot_style
 
 apply_plot_style()
 
@@ -156,7 +156,7 @@ def _download_allen_mesh(structure_id: int) -> pathlib.Path:
     return path
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _load_obj_mesh(path: pathlib.Path) -> tuple[np.ndarray, np.ndarray]:
     """
     Description
@@ -310,10 +310,13 @@ class AnatomyFigureMaker:
         """
 
         if not self.catalog_path.exists():
-            raise FileNotFoundError(
+            msg = (
                 f"unit_catalog.csv not found: {self.catalog_path} "
                 "(the catalog is the authoritative unit scope for every "
                 "anatomy figure)."
+            )
+            raise FileNotFoundError(
+                msg
             )
         df = pd.read_csv(
             self.catalog_path,
@@ -453,7 +456,7 @@ class AnatomyFigureMaker:
 
         df = self.catalog
         pivot = (
-            df.groupby(["mouse_id", "cell_type"]).size()
+            df.groupby(["mouse_id", "cell_type"]).size()  # noqa: PD010  unstack of a groupby size is the intended reshape; pivot_table differs
               .unstack(fill_value=0)
               .reindex(columns=list(_CELL_TYPE_LABELS), fill_value=0)
         )
@@ -464,7 +467,7 @@ class AnatomyFigureMaker:
 
         x_positions = range(len(pivot.index))
         bottom = [0] * len(pivot.index)
-        for label, hex_code in zip(_CELL_TYPE_LABELS, self.visualizations_parameter_dict['cell_type_colors']):
+        for label, hex_code in zip(_CELL_TYPE_LABELS, self.visualizations_parameter_dict['cell_type_colors'], strict=False):
             heights = pivot[label].to_numpy()
             ax.bar(
                 x_positions,
@@ -476,10 +479,10 @@ class AnatomyFigureMaker:
                 linewidth=0.4,
                 label=label,
             )
-            bottom = [b + h for b, h in zip(bottom, heights)]
+            bottom = [b + h for b, h in zip(bottom, heights, strict=False)]
 
         # total annotations above each bar
-        for x, tot in zip(x_positions, totals):
+        for x, tot in zip(x_positions, totals, strict=False):
             ax.text(
                 x, tot * 1.02, str(int(tot)),
                 ha="center", va="bottom",
@@ -527,7 +530,7 @@ class AnatomyFigureMaker:
 
         df = self.catalog
         pivot = (
-            df.groupby(["cell_type", "bucket"]).size()
+            df.groupby(["cell_type", "bucket"]).size()  # noqa: PD010  unstack of a groupby size is the intended reshape; pivot_table differs
               .unstack(fill_value=0)
               .reindex(index=list(_CELL_TYPE_LABELS), fill_value=0)
               .reindex(columns=list(_BRAIN_AREA_BUCKETS), fill_value=0)
@@ -548,9 +551,9 @@ class AnatomyFigureMaker:
                 linewidth=0.4,
                 label=bucket,
             )
-            bottom = [b + h for b, h in zip(bottom, heights)]
+            bottom = [b + h for b, h in zip(bottom, heights, strict=False)]
 
-        for x, tot in zip(x_positions, totals):
+        for x, tot in zip(x_positions, totals, strict=False):
             ax.text(
                 x, tot * 1.02, str(int(tot)),
                 ha="center", va="bottom",
@@ -1223,8 +1226,9 @@ class AnatomyFigureMaker:
                     "ctx": ctx,
                 })
         if not all_units:
+            msg = "No SU-somatic clusters found in any probe for this session."
             raise RuntimeError(
-                "No SU-somatic clusters found in any probe for this session."
+                msg
             )
         all_units.sort(key=lambda u: -u["ptp"])
 
@@ -1241,8 +1245,9 @@ class AnatomyFigureMaker:
                     keep.append(u)
             all_units = keep
         if not all_units:
+            msg = "No units left after probe / shank filters."
             raise RuntimeError(
-                "No units left after probe / shank filters."
+                msg
             )
         top_units = (
             all_units if n_top_units is None else all_units[:n_top_units]
@@ -1453,15 +1458,15 @@ class AnatomyFigureMaker:
         for key, entry in ibl_payload.items():
             if not key.startswith("channel_"):
                 continue
-            pos_to_region[(int(round(entry["lateral"])), int(round(entry["axial"])))] = (
+            pos_to_region[(int(round(entry["lateral"])), int(round(entry["axial"])))] = (  # noqa: RUF046  int() kept: round() of a numpy float returns a float under numpy<2
                 entry["brain_region"]
             )
         contact_colours = [
             self.brain_area_colors[pool_brain_area(
                 pos_to_region[
-                    (int(round(positions_full[ch, 0])), int(round(positions_full[ch, 1])))
+                    (int(round(positions_full[ch, 0])), int(round(positions_full[ch, 1])))  # noqa: RUF046  int() kept: round() of a numpy float returns a float under numpy<2
                 ]
-                if (int(round(positions_full[ch, 0])), int(round(positions_full[ch, 1])))
+                if (int(round(positions_full[ch, 0])), int(round(positions_full[ch, 1])))  # noqa: RUF046  int() kept: round() of a numpy float returns a float under numpy<2
                 in pos_to_region
                 else None
             )]
@@ -1480,14 +1485,14 @@ class AnatomyFigureMaker:
         for shank_id in all_shanks:
             mask = channel_shanks_full == shank_id
             lats = sorted(set(compressed_lat[mask]))
-            for ax_val, alpha in zip(ghost_axials_above, ghost_alphas):
+            for ax_val, alpha in zip(ghost_axials_above, ghost_alphas, strict=False):
                 schematic_ax.scatter(
                     lats, [ax_val] * len(lats),
                     s=10, marker="s",
                     facecolor="#9E9E9E", edgecolor="none",
                     alpha=alpha,
                 )
-            for ax_val, alpha in zip(ghost_axials_below, ghost_alphas):
+            for ax_val, alpha in zip(ghost_axials_below, ghost_alphas, strict=False):
                 schematic_ax.scatter(
                     lats, [ax_val] * len(lats),
                     s=10, marker="s",
@@ -1975,7 +1980,7 @@ class AnatomyFigureMaker:
 
         segs_by_op: dict[float, list[np.ndarray]] = {}
         for ch, op, lat_pos, axi_pos in zip(
-            keep_channels, keep_opacities, plot_lat, plot_axi
+            keep_channels, keep_opacities, plot_lat, plot_axi, strict=False
         ):
             op_bin = float(np.round(op, 2))
             # Template is in raw units: somatic AP is a NEGATIVE
@@ -2125,7 +2130,7 @@ class AnatomyFigureMaker:
         # Group waveform segments by rounded opacity so we can issue a
         # small number of LineCollection draws.
         segs_by_op: dict[float, list[np.ndarray]] = {}
-        for ch, op in zip(keep_channels, keep_opacities):
+        for ch, op in zip(keep_channels, keep_opacities, strict=False):
             op_bin = float(np.round(op, 2))
             wf = template[:, ch] * waveform_voltage_uv_scale
             pts = np.column_stack([

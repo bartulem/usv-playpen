@@ -367,7 +367,7 @@ def pullback_geodesic_matrix(nodes: np.ndarray, decode_fn, *,
     return _dijkstra_from_edges(nodes.shape[0], rows, cols, weights, sources)
 
 
-def make_qlvm_decode_fn(params: dict, condition: float = None):
+def make_qlvm_decode_fn(params: dict, condition: float | None = None):
     """
     Build the differentiable QLVM decode function ``z -> flattened spectrogram``.
 
@@ -428,7 +428,7 @@ def make_qlvm_decode_fn(params: dict, condition: float = None):
     return decode_fn
 
 
-def make_qlvm_decode_fn_from_model_cell(model_cell_directory: str, condition_quantile: float = None):
+def make_qlvm_decode_fn_from_model_cell(model_cell_directory: str, condition_quantile: float | None = None):
     """
     Description
     -----------
@@ -673,17 +673,24 @@ def torus_distance(nodes: np.ndarray, method: str, *,
         return full if sources is None else full[np.asarray(sources)]
     if method == 'density_geodesic':
         if density is None:
-            raise ValueError("method='density_geodesic' requires `density` at each node.")
+            msg = "method='density_geodesic' requires `density` at each node."
+            raise ValueError(msg)
         return density_geodesic_matrix(nodes, density, period=period, k=k,
                                        density_exponent=density_exponent, sources=sources)
     if method == 'pullback_geodesic':
         if decode_fn is None and metric_tensors is None:
-            raise ValueError("method='pullback_geodesic' requires `decode_fn` or "
-                             "`metric_tensors`.")
+            msg = (
+                "method='pullback_geodesic' requires `decode_fn` or "
+                             "`metric_tensors`."
+            )
+            raise ValueError(msg)
         return pullback_geodesic_matrix(nodes, decode_fn, period=period, k=k,
                                         sources=sources, metric_tensors=metric_tensors)
-    raise ValueError(f"Unknown method {method!r}; expected 'flat', "
-                     f"'density_geodesic', or 'pullback_geodesic'.")
+    msg = (
+        f"Unknown method {method!r}; expected 'flat', "
+                     f"'density_geodesic', or 'pullback_geodesic'."
+    )
+    raise ValueError(msg)
 
 
 def _snap_to_grid(points: np.ndarray, n_per_dim: int, period: float) -> np.ndarray:
@@ -807,8 +814,11 @@ def per_event_geodesic_error(y_pred: np.ndarray, y_true: np.ndarray,
     """
 
     if method not in ('density_geodesic', 'pullback_geodesic'):
-        raise ValueError(f"method must be 'density_geodesic' or 'pullback_geodesic', "
-                         f"got {method!r}.")
+        msg = (
+            f"method must be 'density_geodesic' or 'pullback_geodesic', "
+                         f"got {method!r}."
+        )
+        raise ValueError(msg)
     n = np.asarray(y_pred).shape[0]
     matrix = None if ctx is None else (
         ctx.density_matrix if method == 'density_geodesic' else ctx.pullback_matrix)

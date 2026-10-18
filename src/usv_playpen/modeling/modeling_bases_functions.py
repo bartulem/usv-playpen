@@ -41,7 +41,7 @@ def laplacian_pyramid(width: int, levels: int, step: float, fwhm: float, normali
         The basis matrix of shape [time, bases].
     """
 
-    B = list()
+    B = []
     rg = np.arange(0, width)
     for ii in np.arange(0, levels, step, dtype=float):
         lvl_minus_2 = float(2 ** (float(ii) - 2.0))
@@ -58,7 +58,8 @@ def laplacian_pyramid(width: int, levels: int, step: float, fwhm: float, normali
                     v = v / np.linalg.norm(v)
                 B.append(v)
     if not B:
-        raise ValueError(f'laplacian_pyramid produced no basis vectors for width={width}, levels={levels}, step={step}')
+        msg = f'laplacian_pyramid produced no basis vectors for width={width}, levels={levels}, step={step}'
+        raise ValueError(msg)
     return np.stack(B).T
 
 
@@ -120,8 +121,7 @@ def _ff(x: np.ndarray, c: np.ndarray, db: float) -> np.ndarray:
     kbasis : np.ndarray
         The raised cosine values.
     """
-    kbasis = (np.cos(np.maximum(-np.pi, np.minimum(np.pi, (x - c) * np.pi / db / 2))) + 1) / 2
-    return kbasis
+    return (np.cos(np.maximum(-np.pi, np.minimum(np.pi, (x - c) * np.pi / db / 2))) + 1) / 2
 
 
 def _normalizecols(A: np.ndarray) -> np.ndarray:
@@ -139,11 +139,10 @@ def _normalizecols(A: np.ndarray) -> np.ndarray:
         The array with columns normalized to unit length.
     """
     B = A / np.sqrt(np.sum(A ** 2, axis=0))
-    B = np.nan_to_num(B)  # To get rid of nans out of zero divisions
-    return B
+    return np.nan_to_num(B)  # To get rid of nans out of zero divisions
 
 
-def raised_cosine(neye: int, ncos: int, kpeaks: list, b: int, w: int = None, nbasis: int = None) -> np.ndarray:
+def raised_cosine(neye: int, ncos: int, kpeaks: list, b: int, w: int | None = None, nbasis: int | None = None) -> np.ndarray:
     """
     Creates a basis of raised cosines with an optional identity buffer.
 
@@ -219,8 +218,7 @@ def raised_cosine(neye: int, ncos: int, kpeaks: list, b: int, w: int = None, nba
     elif w < kbasis.shape[0]:
         kbasis = kbasis[-w:, :]
 
-    kbasis = _normalizecols(kbasis)
-    return kbasis
+    return _normalizecols(kbasis)
 
 
 def bsplines(width: int, positions: list, degree: int = 3, periodic: bool = False) -> np.ndarray:
@@ -265,8 +263,7 @@ def bsplines(width: int, positions: list, degree: int = 3, periodic: bool = Fals
         bsplines_list.append((positions, coe_ffs_val, degree))
 
     B = np.array([si.splev(t, spline) for spline in bsplines_list])
-    B = B[:, ::-1].T  # invert so bases "begin" at the right and transpose to [time x bases]
-    return B
+    return B[:, ::-1].T  # invert so bases "begin" at the right and transpose to [time x bases]
 
 
 def identity(width: int) -> np.ndarray:

@@ -67,8 +67,7 @@ class DataLoader:
         }
 
         if input_parameter_dict is None:
-            with open(
-                pathlib.Path(__file__).parent.parent / "_parameter_settings/processing_settings.json"
+            with (pathlib.Path(__file__).parent.parent / "_parameter_settings/processing_settings.json").open(
             ) as json_file:
                 self.input_parameter_dict = json.load(json_file)["load_audio_files"][
                     "DataLoader"
@@ -140,7 +139,7 @@ class DataLoader:
                                     wave_data_dict[one_file.name]["sampling_rate"],
                                     wave_data_dict[one_file.name]["wav_data"],
                                 ) = wavfile.read(one_file)
-                        except struct.error:
+                        except struct.error as err:
                             # The .wav header is malformed; try to rewrite it with sox.
                             # We do NOT delete the original until sox has successfully
                             # produced the corrected file, otherwise a sox failure
@@ -157,12 +156,13 @@ class DataLoader:
                                 text=True,
                             )
                             if sox_result.returncode != 0 or not correct_file.is_file():
-                                raise RuntimeError(
+                                msg = (
                                     f"sox failed to repair '{one_file}' "
                                     f"(return code {sox_result.returncode}); "
                                     f"sox output: {sox_result.stdout.strip() if sox_result.stdout else '<empty>'}. "
                                     f"Original file left untouched."
                                 )
+                                raise RuntimeError(msg) from err
                             one_file.unlink()
                             correct_file.rename(one_file)
                             with warnings.catch_warnings():

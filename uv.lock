@@ -4631,7 +4631,7 @@ requires-dist = [
     { name = "motifapi" },
     { name = "noisereduce" },
     { name = "numba" },
-    { name = "numpy" },
+    { name = "numpy", specifier = ">=2" },
     { name = "omegaconf" },
     { name = "opencv-contrib-python" },
     { name = "optax" },

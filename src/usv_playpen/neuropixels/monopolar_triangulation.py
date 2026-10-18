@@ -41,6 +41,8 @@ outside the contact cloud.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
 import scipy.optimize
 
@@ -203,8 +205,7 @@ def _estimate_distance_error_3d(vec: np.ndarray, wf_data: np.ndarray,
     """
     x, y, z, alpha = vec
     data_estimated = _data_at_3d(x, y, z, alpha, local_contact_locations)
-    err = wf_data - data_estimated
-    return err
+    return wf_data - data_estimated
 
 
 def estimate_distance_error_with_log_3d(vec: np.ndarray, wf_data: np.ndarray,
@@ -253,19 +254,17 @@ def estimate_distance_error_with_log_3d(vec: np.ndarray, wf_data: np.ndarray,
     # when the observed feature vector anti-correlates with the unit model,
     # which would otherwise let this objective explore an alpha the bounds
     # forbid. Clamp to 0 to keep the analytic alpha consistent with the bound.
-    if alpha_norm < 0.0:
-        alpha_norm = 0.0
+    alpha_norm = max(alpha_norm, 0.0)
     model_data_norm = _data_at_3d(x, y, z, alpha_norm, local_contact_locations)
 
-    err = np.square(wf_data / max_data - model_data_norm).mean()
-
-    return err
+    return np.square(wf_data / max_data - model_data_norm).mean()
 
 
 def solve_monopolar_triangulation_3d(wf_data: np.ndarray,
                                      local_contact_locations: np.ndarray,
                                      max_distance_um: float,
-                                     optimizer: str) -> tuple:
+                                     optimizer: str,
+                                     message_output: Callable = print) -> tuple:
     """
     Description
     -----------
@@ -286,7 +285,7 @@ def solve_monopolar_triangulation_3d(wf_data: np.ndarray,
     ``success`` flag is ``False`` (non-convergence / maximum iterations
     reached) — the function returns a tuple of NaNs of the appropriate
     length, so a single unit's failure does not abort a batch. Hard
-    exceptions are additionally printed.
+    exceptions are additionally reported through ``message_output``.
 
     Parameters
     ----------
@@ -301,6 +300,8 @@ def solve_monopolar_triangulation_3d(wf_data: np.ndarray,
         (passed to :func:`make_initial_guess_and_bounds_3d`).
     optimizer : {'least_square', 'minimize_with_log_penality'}
         Which optimiser to use.
+    message_output : Callable, default ``print``
+        Sink for the hard-exception report of a failed optimiser run.
 
     Returns
     -------
@@ -329,7 +330,7 @@ def solve_monopolar_triangulation_3d(wf_data: np.ndarray,
                 return (np.nan, np.nan, np.nan, np.nan)
             return tuple(output["x"])
         except Exception as e:
-            print(f"scipy.optimize.least_squares error: {e}")
+            message_output(f"scipy.optimize.least_squares error: {e}")
             return (np.nan, np.nan, np.nan, np.nan)
 
     if optimizer == "minimize_with_log_penality":
@@ -355,5 +356,6 @@ def solve_monopolar_triangulation_3d(wf_data: np.ndarray,
             x_opt, y_opt, z_opt = output["x"]
             return (x_opt, y_opt, z_opt)
         except Exception as e:
-            print(f"scipy.optimize.minimize error: {e}")
+            message_output(f"scipy.optimize.minimize error: {e}")
             return (np.nan, np.nan, np.nan)
+    return None

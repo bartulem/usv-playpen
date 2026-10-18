@@ -167,9 +167,12 @@ def resolve_save_path(
     if override_dir is None:
         save_dir = _figures_setting(viz_settings, "save_directory", "override_dir")
         if not save_dir:
-            raise ValueError(
+            msg = (
                 "No save directory: neither `override_dir` nor "
                 "`viz_settings['figures']['save_directory']` is set."
+            )
+            raise ValueError(
+                msg
             )
     else:
         # An empty-string `override_dir` would otherwise pass through
@@ -178,10 +181,13 @@ def resolve_save_path(
         # the (mis-)configured path instead of scattering figures into
         # the CWD.
         if str(override_dir).strip() == "":
-            raise ValueError(
+            msg = (
                 "`override_dir` is an empty string; pass a real "
                 "directory or `None` to fall back to "
                 "`viz_settings['figures']['save_directory']`."
+            )
+            raise ValueError(
+                msg
             )
         save_dir = override_dir
     save_dir = pathlib.Path(configure_path(str(save_dir)))

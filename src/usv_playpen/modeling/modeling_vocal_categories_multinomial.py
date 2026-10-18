@@ -23,49 +23,69 @@ from __future__ import annotations
 
 import json
 import math
-
-import numpy as np
-from pathlib import Path
 import pickle
 from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import numpy as np
 from sklearn.metrics import (
-    balanced_accuracy_score, log_loss, f1_score,
-    recall_score, roc_auc_score
+    balanced_accuracy_score,
+    f1_score,
+    log_loss,
+    recall_score,
+    roc_auc_score,
 )
 from sklearn.model_selection import StratifiedGroupKFold, StratifiedShuffleSplit
 from tqdm import tqdm
-from typing import Any
 
-from .load_input_files import load_behavioral_feature_data, find_usv_categories
-from .load_input_files import is_vocal_signal, require_labels_for_vocal_predictors, require_usv_category_column
-from .modeling_metadata import (
-    build_input_metadata, derive_experimental_condition,
-    derive_feature_zoo_full, derive_camera_fps_field, inject_metadata,
-    RESERVED_METADATA_KEYS,
-)
-from .load_input_files import _calculate_ibi_threshold
-from .modeling_utils import (
-    prepare_modeling_sessions,
-    seeded_session_holdout,
-    held_out_session_ids_from_metadata,
-    development_heldout_masks,
-    resolve_mouse_roles,
-    select_kinematic_columns,
-    build_vocal_signal_columns,
-    harmonize_session_columns,
-    zscore_features_across_sessions,
-    run_predictor_audits,
-    brier_score_multi,
-    expected_calibration_error,
-    safe_matthews_corrcoef,
-    safe_confusion_matrix,
-    align_probs_to_canonical,
-    format_split_line,
+from ..analyses.compute_behavioral_features import FeatureZoo
+from ..os_utils import (
+    QLVM_CATEGORY_COLUMN,
+    atomic_output_path,
+    load_qlvm_category_bundle,
+    resolve_modeling_setting,
 )
 from .jax_multinomial_logistic_regression import SmoothMultinomialLogisticRegression
-from .modeling_bases_functions import basis_coefficients_to_frames, project_history_onto_basis, resolve_temporal_basis
-from ..analyses.compute_behavioral_features import FeatureZoo
-from ..os_utils import QLVM_CATEGORY_COLUMN, atomic_output_path, load_qlvm_category_bundle, resolve_modeling_setting
+from .load_input_files import (
+    _calculate_ibi_threshold,
+    find_usv_categories,
+    is_vocal_signal,
+    load_behavioral_feature_data,
+    require_labels_for_vocal_predictors,
+    require_usv_category_column,
+)
+from .modeling_bases_functions import (
+    basis_coefficients_to_frames,
+    project_history_onto_basis,
+    resolve_temporal_basis,
+)
+from .modeling_metadata import (
+    RESERVED_METADATA_KEYS,
+    build_input_metadata,
+    derive_camera_fps_field,
+    derive_experimental_condition,
+    derive_feature_zoo_full,
+    inject_metadata,
+)
+from .modeling_utils import (
+    align_probs_to_canonical,
+    brier_score_multi,
+    build_vocal_signal_columns,
+    development_heldout_masks,
+    expected_calibration_error,
+    format_split_line,
+    harmonize_session_columns,
+    held_out_session_ids_from_metadata,
+    prepare_modeling_sessions,
+    resolve_mouse_roles,
+    run_predictor_audits,
+    safe_confusion_matrix,
+    safe_matthews_corrcoef,
+    seeded_session_holdout,
+    select_kinematic_columns,
+    zscore_features_across_sessions,
+)
 
 # Initial spatial-CV session-split matching tolerance (auto-widens at runtime)
 # and the Expected-Calibration-Error histogram bin count, read from the settings
@@ -155,7 +175,8 @@ def get_stratified_group_splits_stable(
     """
 
     if split_strategy not in ['session', 'mixed']:
-        raise ValueError("split_strategy must be 'session' or 'mixed'.")
+        msg = "split_strategy must be 'session' or 'mixed'."
+        raise ValueError(msg)
 
     # Cohort-wide class-coverage invariant. The pooled `y` must
     # cover every theoretical class the multinomial model has a
@@ -167,7 +188,7 @@ def get_stratified_group_splits_stable(
     # cannot quietly weaken the contract.
     observed_n_classes = int(np.unique(y).size)
     if observed_n_classes != n_categories:
-        raise ValueError(
+        msg = (
             f"Pooled y carries {observed_n_classes} distinct classes but "
             f"n_categories={n_categories}. The cohort is missing "
             f"{n_categories - observed_n_classes} theoretical class(es) — "
@@ -177,6 +198,7 @@ def get_stratified_group_splits_stable(
             f"`y` lost a class during binning or the cohort session list "
             f"changed after extraction."
         )
+        raise ValueError(msg)
 
     if split_strategy == 'mixed':
         # MIXED STRATEGY: ignores sessions, perfectly stratifies the
@@ -193,11 +215,12 @@ def get_stratified_group_splits_stable(
         # invariants are enforced manually via rejection sampling.
         unique_sessions = np.unique(groups)
         if len(unique_sessions) < 2:
-            raise ValueError(
+            msg = (
                 f"Cross-session splitting needs at least 2 sessions, but only "
                 f"{len(unique_sessions)} unique session(s) were provided; a "
                 f"held-out test session cannot be formed."
             )
+            raise ValueError(msg)
         # Floor the test-session count to >= 1: with few sessions
         # `int(len * test_prop)` can round down to 0, which yields an empty
         # test set and makes the class-coverage gate below loop until
@@ -263,10 +286,11 @@ def get_stratified_group_splits_stable(
 
             # prevent infinite loops
             if attempts > max_total_attempts:
-                raise RuntimeError(
+                msg_0 = (
                     f"Failed to find {n_splits} valid splits after {attempts} attempts. "
                     "The rare categories may be concentrated in too few sessions."
                 )
+                raise RuntimeError(msg_0)
 
     # Per-fold class-coverage invariant. The `'session'` rejection
     # sampler already enforces this via its in-loop gate; the
@@ -280,11 +304,12 @@ def get_stratified_group_splits_stable(
         tr_n = int(np.unique(y[tr_idx]).size)
         te_n = int(np.unique(y[te_idx]).size)
         if tr_n != n_categories or te_n != n_categories:
-            raise RuntimeError(
+            msg_0 = (
                 f"Fold {i}: train carries {tr_n} classes, test carries "
                 f"{te_n} classes — expected {n_categories} on both sides "
                 f"(strategy='{split_strategy}')."
             )
+            raise RuntimeError(msg_0)
 
     return cv_folds, fold_tolerances
 
@@ -372,9 +397,11 @@ def _log_spaced_grid_multinomial(center: float, decades_each_side: int) -> np.nd
         # No tuning: the fixed value itself (0 allowed, e.g. the pinned L2 of a B-spline fit).
         return np.array([float(center)])
     if decades_each_side < 0:
-        raise ValueError(f"decades_each_side must be >= 0, got {decades_each_side}.")
+        msg = f"decades_each_side must be >= 0, got {decades_each_side}."
+        raise ValueError(msg)
     if center <= 0:
-        raise ValueError(f"center must be positive, got {center}.")
+        msg = f"center must be positive, got {center}."
+        raise ValueError(msg)
     offsets = np.arange(-decades_each_side, decades_each_side + 1, dtype=np.float64)
     return float(center) * (10.0 ** offsets)
 
@@ -512,11 +539,12 @@ def _tune_multinomial_regularization(X_train: np.ndarray,
     elif inner_cv_scoring_metric in lower_is_better_metrics:
         higher_is_better = False
     else:
-        raise ValueError(
+        msg = (
             f"Unsupported inner_cv_scoring_metric '{inner_cv_scoring_metric}' for "
             f"the multinomial tuner. Supported: "
             f"{sorted(higher_is_better_metrics | lower_is_better_metrics)}."
         )
+        raise ValueError(msg)
 
     def _empty_audit():
         """
@@ -805,7 +833,7 @@ class MultinomialModelingPipeline(FeatureZoo):
     natural-rate test" invariant.
     """
 
-    def __init__(self, modeling_settings_dict: dict = None, **kwargs):
+    def __init__(self, modeling_settings_dict: dict | None = None, **kwargs):
         """
         Initializes the MultinomialModelingPipeline class.
 
@@ -831,10 +859,11 @@ class MultinomialModelingPipeline(FeatureZoo):
         if modeling_settings_dict is None:
             settings_path = Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
             try:
-                with open(settings_path, 'r') as f:
+                with Path(settings_path).open() as f:
                     self.modeling_settings = json.load(f)
-            except FileNotFoundError:
-                raise FileNotFoundError(f"Settings file not found at {settings_path}")
+            except FileNotFoundError as err:
+                msg = f"Settings file not found at {settings_path}"
+                raise FileNotFoundError(msg) from err
         else:
             self.modeling_settings = modeling_settings_dict
 
@@ -847,7 +876,8 @@ class MultinomialModelingPipeline(FeatureZoo):
             self.history_frames = int(np.floor(cam_rate * hist_sec))
             print(f"Multinomial Pipeline Init: History frames calculated: {self.history_frames} (for {hist_sec}s at {cam_rate}fps)")
         except KeyError as e:
-            raise KeyError(f"Critical setting missing for history calculation: {e}")
+            msg = f"Critical setting missing for history calculation: {e}"
+            raise KeyError(msg) from e
 
         FeatureZoo.__init__(self)
 
@@ -956,7 +986,7 @@ class MultinomialModelingPipeline(FeatureZoo):
 
             if temp_events:
                 temp_events.sort(key=lambda x: x[0])
-                sorted_onsets, sorted_labels = zip(*temp_events)
+                sorted_onsets, sorted_labels = zip(*temp_events, strict=False)
 
                 multinomial_targets[sess_id] = {
                     'onsets': np.array(sorted_onsets, dtype=int),
@@ -994,7 +1024,7 @@ class MultinomialModelingPipeline(FeatureZoo):
                 voc_settings=voc_settings
             )
 
-            current_df = current_df.select(sorted(list(set(cols_to_keep))))
+            current_df = current_df.select(sorted(set(cols_to_keep)))
 
             if new_voc_cols:
                 current_df = current_df.with_columns(new_voc_cols)
@@ -1057,7 +1087,7 @@ class MultinomialModelingPipeline(FeatureZoo):
         # report `categories_kept` and `class_counts` in the metadata.
         all_labels = np.concatenate([m['labels'] for m in multinomial_targets.values()]) if multinomial_targets else np.empty(0, dtype=int)
         unique_labels, counts = np.unique(all_labels, return_counts=True)
-        class_counts_md = {int(lbl): int(cnt) for lbl, cnt in zip(unique_labels, counts)}
+        class_counts_md = {int(lbl): int(cnt) for lbl, cnt in zip(unique_labels, counts, strict=False)}
 
         # The model's class count C stays the cohort's observed label count (a
         # class with no USVs cannot be fit), but on the QLVM category column the
@@ -1229,7 +1259,7 @@ class MultinomialModelingPipeline(FeatureZoo):
             print("No valid data extracted. Aborting save.")
             return
 
-        feature_names = sorted(list(final_data.keys()))
+        feature_names = sorted(final_data.keys())
         n_feats = len(feature_names)
         sample_feat = feature_names[0] if n_feats > 0 else None
 
@@ -1255,7 +1285,7 @@ class MultinomialModelingPipeline(FeatureZoo):
 
             print("-" * 60)
             print("CATEGORY DISTRIBUTION:")
-            for cat, count in zip(unique_cats, cat_counts):
+            for cat, count in zip(unique_cats, cat_counts, strict=False):
                 percentage = (count / total_samples) * 100
                 print(f"  Category {cat: <2}: {count: >6} USVs ({percentage: >5.2f}%)")
             print("=" * 60 + "\n")
@@ -1433,14 +1463,14 @@ class MultinomialModelRunner:
 
         print(f"Loading and binning data (bin_size={bin_size}) from: {pkl_path}")
 
-        with open(pkl_path, 'rb') as f:
+        with Path(pkl_path).open('rb') as f:
             raw_data = pickle.load(f)
 
         # Strip metadata blocks before iterating features. Without this
         # filter, the underscore-prefixed reserved keys (`_input_metadata`
         # etc.) would be treated as feature names and the per-session
         # array indexing below would raise.
-        feature_keys = [k for k in raw_data.keys() if k not in RESERVED_METADATA_KEYS]
+        feature_keys = [k for k in raw_data if k not in RESERVED_METADATA_KEYS]
 
         if feature_filter is None:
             sorted_features = sorted(feature_keys)
@@ -1452,7 +1482,7 @@ class MultinomialModelRunner:
 
         for feat in sorted_features:
             X_list, y_list, groups_list = [], [], []
-            sessions = sorted(list(raw_data[feat].keys()))
+            sessions = sorted(raw_data[feat].keys())
 
             for sess_id in sessions:
                 X_sess = raw_data[feat][sess_id]['X']
@@ -1466,9 +1496,8 @@ class MultinomialModelRunner:
                     # degenerate (N, 0) design matrix (and n_time_bins=0) into
                     # the JAX estimator. Fail loudly instead.
                     if new_T == 0:
-                        raise ValueError(
-                            f"bin_size={bin_size} exceeds history length {T} for feature {feat}"
-                        )
+                        msg = f"bin_size={bin_size} exceeds history length {T} for feature {feat}"
+                        raise ValueError(msg)
                     # Keep the MOST RECENT `new_T * bin_size` columns (drop the oldest
                     # `T % bin_size`), as the continuous loader does: the last column is
                     # the frame before onset, so truncating the tail would drop the frames
@@ -1605,7 +1634,7 @@ class MultinomialModelRunner:
         # validates against the same count the extractor observed,
         # independent of whatever `usv_category_column_name` or
         # `exclude_noise_usvs` is currently configured.
-        with open(pkl_path, 'rb') as _md_fh:
+        with Path(pkl_path).open('rb') as _md_fh:
             _input_md = pickle.load(_md_fh)['_input_metadata']
         n_categories_total = int(_input_md['analysis_specific']['usv_category_number'])
 
@@ -1643,7 +1672,8 @@ class MultinomialModelRunner:
             pkl_path, bin_size=bin_size, feature_filter=feat_name, basis=temporal_basis
         )
         if feat_name not in all_blocks:
-            raise KeyError(f"Feature '{feat_name}' not found in {pkl_path}.")
+            msg = f"Feature '{feat_name}' not found in {pkl_path}."
+            raise KeyError(msg)
 
         feat_data = all_blocks[feat_name]
         X = feat_data['X']

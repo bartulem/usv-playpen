@@ -53,10 +53,11 @@ def hpss_func(
     wav_dir = pathlib.Path(CLUSTER_LAB_SHARES_ROOT) / cup_recording_directory / recording_identifier / 'audio' / 'cropped_to_video'
     wav_files = sorted(wav_dir.glob('*.wav'))
     if wav_file_idx < 0 or wav_file_idx >= len(wav_files):
-        raise IndexError(
+        msg = (
             f"wav_file_idx={wav_file_idx} is out of range for "
             f"{len(wav_files)} .wav file(s) found under '{wav_dir}'."
         )
+        raise IndexError(msg)
     wav_file = wav_files[wav_file_idx]
 
     # load the HPSS parameters from the shipped processing settings so this cluster
@@ -80,7 +81,7 @@ def hpss_func(
     )
 
     # perform HPSS on the spectrogram data
-    D_harmonic, D_percussive = librosa.decompose.hpss(
+    D_harmonic, _D_percussive = librosa.decompose.hpss(
         S=spectrogram_data,
         kernel_size=hpss_params['kernel_size'],
         power=hpss_params['hpss_power'],

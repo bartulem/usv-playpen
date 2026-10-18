@@ -203,7 +203,7 @@ class _BaseEmission:
     None
     """
 
-    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray) -> "_BaseEmission":
+    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray) -> _BaseEmission:
         """
         Description
         -----------
@@ -312,7 +312,7 @@ class GaussianEmission(_BaseEmission):
         self.mean_ = None
         self.var_ = None
 
-    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray) -> "GaussianEmission":
+    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray) -> GaussianEmission:  # noqa: ARG002  shared emission interface; X is unused by this emission
         """
         Description
         -----------
@@ -348,7 +348,7 @@ class GaussianEmission(_BaseEmission):
         self.var_ = np.maximum((w[:, None] * centred ** 2).sum(axis=0) / total, self.min_var)
         return self
 
-    def log_density(self, X: np.ndarray, y: np.ndarray) -> np.ndarray:
+    def log_density(self, X: np.ndarray, y: np.ndarray) -> np.ndarray:  # noqa: ARG002  shared emission interface; X is unused by this emission
         """
         Description
         -----------
@@ -441,7 +441,7 @@ class ManifoldEmission(_BaseEmission):
         self.regressor_ = None
         self.kappa_ = None
 
-    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray) -> "ManifoldEmission":
+    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray) -> ManifoldEmission:
         """
         Description
         -----------
@@ -589,7 +589,7 @@ class MultinomialEmission(_BaseEmission):
         self.class_labels = None if class_labels is None else np.unique(np.asarray(class_labels))
         self.classifier_ = None
 
-    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray) -> "MultinomialEmission":
+    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray) -> MultinomialEmission:
         """
         Description
         -----------
@@ -696,9 +696,8 @@ def resolve_emission_cls(emission_type: str) -> type:
     registry = {'gaussian': GaussianEmission, 'manifold': ManifoldEmission,
                 'multinomial': MultinomialEmission}
     if emission_type not in registry:
-        raise ValueError(
-            f"Unknown emission_type {emission_type!r}; available: {sorted(registry)}."
-        )
+        msg = f"Unknown emission_type {emission_type!r}; available: {sorted(registry)}."
+        raise ValueError(msg)
     return registry[emission_type]
 
 
@@ -1195,7 +1194,7 @@ class GLMHMM:
             'converged': converged,
         }
 
-    def fit(self, sequences: list) -> "GLMHMM":
+    def fit(self, sequences: list) -> GLMHMM:
         """
         Description
         -----------
@@ -1217,7 +1216,8 @@ class GLMHMM:
             ``emissions_``, ``log_likelihood_``, ``n_iter_`` and ``converged_``.
         """
         if not sequences:
-            raise ValueError("GLMHMM.fit requires at least one sequence.")
+            msg = "GLMHMM.fit requires at least one sequence."
+            raise ValueError(msg)
         X_all = np.concatenate([np.asarray(X) for X, _ in sequences], axis=0)
         y_all = np.concatenate([np.asarray(y) for _, y in sequences], axis=0)
 
@@ -1862,7 +1862,7 @@ class InputDrivenGLMHMM:
         return float(_id_batch_loglik(params, Xp, yp, mask))
 
     def fit(self, sequences: list,
-            held_out_sequences: list | None = None) -> "InputDrivenGLMHMM":
+            held_out_sequences: list | None = None) -> InputDrivenGLMHMM:
         """
         Description
         -----------
@@ -2077,8 +2077,8 @@ class InputDrivenGLMHMM:
         eye = np.eye(self.n_states, dtype=bool)
         total = np.zeros((self.n_states, self.n_states))
         count = 0
-        for X, _ in sequences:
-            X = np.asarray(X, dtype=np.float64)
+        for X_raw, _ in sequences:
+            X = np.asarray(X_raw, dtype=np.float64)
             t_logits = np.einsum('td,idj->tij', X, p['W_trans']) + p['b_trans'][None]
             t_logits = np.where(eye[None], 0.0, t_logits)
             total += np.exp(_np_log_softmax(t_logits, axis=2)).sum(axis=0)
@@ -2789,7 +2789,7 @@ class InputDrivenManifoldGLMHMM:
         Xp, yp, wp, mask = self._pad_stack(sequences)
         return float(_idm_batch_loglik(params, Xp, yp, wp, mask, self.period))
 
-    def fit(self, sequences: list, held_out_sequences: list | None = None) -> "InputDrivenManifoldGLMHMM":
+    def fit(self, sequences: list, held_out_sequences: list | None = None) -> InputDrivenManifoldGLMHMM:
         """
         Description
         -----------

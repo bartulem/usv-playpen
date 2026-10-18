@@ -1987,10 +1987,10 @@ def tidy_usv_summary_columns_cli(root_directories, sessions_file, dry_run, backu
             )
         except (OSError, pls.exceptions.PolarsError) as error:
             failed.append(f"{session}: {error}")
-            print(f"{session}: FAILED -- {error}")
+            print(f"{session}: FAILED -- {error}")  # noqa: T201  click command: stdout is the CLI's report channel
             continue
         n_changed += int(report['changed'])
-    print(
+    print(  # noqa: T201  click command: stdout is the CLI's report channel
         f"{len(sessions)} session(s): {n_changed} {'would change' if dry_run else 'changed'}, "
         f"{len(sessions) - n_changed - len(failed)} already canonical, {len(failed)} failed."
     )

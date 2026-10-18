@@ -80,6 +80,10 @@ use and OS-resolved via ``os_utils.resolve_experimenter_path`` (set the
 app follows whoever launches it and resolves correctly on macOS / Linux.
 """
 
+# marimo cells are functions and share names only through their returns, so every
+# import of the notebook lives inside the imports cell (cell 1) by design.
+# ruff: noqa: PLC0415
+
 from __future__ import annotations
 
 import marimo
@@ -579,7 +583,8 @@ def _map_dependent_controls(
         "squeak + USV": "overlap",
     }
     if not set(_squeak_class_labels.values()) <= set(SQUEAK_CLASS_SELECTIONS):
-        raise ValueError("The explorer's squeak-class options must be os_utils.SQUEAK_CLASS_SELECTIONS names.")
+        msg = "The explorer's squeak-class options must be os_utils.SQUEAK_CLASS_SELECTIONS names."
+        raise ValueError(msg)
     squeak_class_dropdown = mo.ui.dropdown(
         options=_squeak_class_labels,
         value=next(_label for _label, _name in _squeak_class_labels.items() if _name == get_squeak_class_choice()),
@@ -1136,7 +1141,7 @@ def _scatter_chart(
         # "Color by" dropdown already names the field, dropping the title also
         # sidesteps Vega-Lite's inability to rotate a legend title, and a left
         # legend keeps the scatter top-aligned with the spectrogram grid.
-        mark_kwargs = dict(size=12, opacity=0.5)
+        mark_kwargs = {"size": 12, "opacity": 0.5}
         if color_field is None:
             mark_kwargs["color"] = "#9E9E9E"
         scatter = alt.Chart(chart_pd).mark_circle(**mark_kwargs).encode(
@@ -1306,7 +1311,6 @@ def _tooltip_style(mo):
         "<style>.vg-tooltip td.key, .vg-tooltip .key "
         "{ text-align: left !important; }</style>"
     )
-    return
 
 
 @app.cell
@@ -1480,7 +1484,7 @@ def _explorer(
                 _sy = _cy + _r * np.sin(_theta)
                 _sel = np.linspace(0, _sx.size - 1, n_pick).astype(int)
                 _used, _pick_idx = set(), []
-                for _tx, _ty in zip(_sx[_sel], _sy[_sel]):
+                for _tx, _ty in zip(_sx[_sel], _sy[_sel], strict=True):
                     _d2 = (_pts[:, 0] - _tx) ** 2 + (_pts[:, 1] - _ty) ** 2
                     for _kk in np.argsort(_d2):
                         _k = int(_kk)
@@ -1659,7 +1663,6 @@ def _explorer(
         return mo.vstack([session_row, sessions_row, other_controls, plot_row], align="start", gap=0.5)
 
     _()
-    return
 
 
 if __name__ == "__main__":

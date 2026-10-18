@@ -26,49 +26,67 @@ Key scientific capabilities:
 
 from __future__ import annotations
 
-from datetime import datetime
 import json
-import numpy as np
-from numpy.lib.stride_tricks import sliding_window_view
-from pathlib import Path
 import pickle
 import time
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 from pygam import LogisticGAM, te
 from sklearn.linear_model import LogisticRegressionCV
+from sklearn.metrics import (
+    balanced_accuracy_score,
+    brier_score_loss,
+    f1_score,
+    log_loss,
+    recall_score,
+    roc_auc_score,
+)
 from sklearn.model_selection import ShuffleSplit, StratifiedShuffleSplit
-from sklearn.metrics import roc_auc_score, log_loss, f1_score, recall_score, balanced_accuracy_score, brier_score_loss
 from tqdm import tqdm
 
-from .load_input_files import load_behavioral_feature_data, find_usv_categories
-from .load_input_files import CATEGORY_VOCAL_INFIX, VOCAL_TRACE_NAMES, is_vocal_signal, require_labels_for_vocal_predictors, require_usv_category_column
-from .modeling_metadata import (
-    build_input_metadata, derive_experimental_condition,
-    derive_feature_zoo_full, derive_camera_fps_field, inject_metadata,
-)
-from .load_input_files import _calculate_ibi_threshold
-from .modeling_utils import (
-    prepare_modeling_sessions,
-    seeded_session_holdout,
-    resolve_mouse_roles,
-    select_kinematic_columns,
-    build_vocal_signal_columns,
-    harmonize_session_columns,
-    zscore_features_across_sessions,
-    run_predictor_audits,
-    pool_session_arrays,
-    balance_two_class_arrays,
-    classification_inner_cv_splits,
-    unroll_history_matrix,
-    concat_two_class_with_labels,
-    shuffle_train_test_arrays,
-    expected_calibration_error,
-    safe_matthews_corrcoef,
-    safe_confusion_matrix,
-    format_split_line,
-    within_group_permutation,
-)
 from ..analyses.compute_behavioral_features import FeatureZoo
 from ..os_utils import atomic_output_path, resolve_modeling_setting
+from .load_input_files import (
+    CATEGORY_VOCAL_INFIX,
+    VOCAL_TRACE_NAMES,
+    _calculate_ibi_threshold,
+    find_usv_categories,
+    is_vocal_signal,
+    load_behavioral_feature_data,
+    require_labels_for_vocal_predictors,
+    require_usv_category_column,
+)
+from .modeling_metadata import (
+    build_input_metadata,
+    derive_camera_fps_field,
+    derive_experimental_condition,
+    derive_feature_zoo_full,
+    inject_metadata,
+)
+from .modeling_utils import (
+    balance_two_class_arrays,
+    build_vocal_signal_columns,
+    classification_inner_cv_splits,
+    concat_two_class_with_labels,
+    expected_calibration_error,
+    format_split_line,
+    harmonize_session_columns,
+    pool_session_arrays,
+    prepare_modeling_sessions,
+    resolve_mouse_roles,
+    run_predictor_audits,
+    safe_confusion_matrix,
+    safe_matthews_corrcoef,
+    seeded_session_holdout,
+    select_kinematic_columns,
+    shuffle_train_test_arrays,
+    unroll_history_matrix,
+    within_group_permutation,
+    zscore_features_across_sessions,
+)
 
 # Expected-Calibration-Error histogram bin count, read from the settings block
 # rather than a bare 10 literal.
@@ -158,7 +176,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
        diagnostic fields per split.
     """
 
-    def __init__(self, modeling_settings_dict: dict = None, **kwargs):
+    def __init__(self, modeling_settings_dict: dict | None = None, **kwargs):
         """
         Initializes the VocalCategoryModelingPipeline class.
 
@@ -195,10 +213,11 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         if modeling_settings_dict is None:
             settings_path = Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
             try:
-                with open(settings_path, 'r') as f:
+                with Path(settings_path).open() as f:
                     self.modeling_settings = json.load(f)
-            except FileNotFoundError:
-                raise FileNotFoundError(f"Settings file not found at {settings_path}")
+            except FileNotFoundError as err:
+                msg = f"Settings file not found at {settings_path}"
+                raise FileNotFoundError(msg) from err
         else:
             self.modeling_settings = modeling_settings_dict
 
@@ -211,7 +230,8 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             self.history_frames = int(np.floor(cam_rate * hist_sec))
             print(f"History frames calculated: {self.history_frames} (for {hist_sec}s at {cam_rate}fps)")
         except KeyError as e:
-            raise KeyError(f"Critical setting missing for history calculation: {e}")
+            msg = f"Critical setting missing for history calculation: {e}"
+            raise KeyError(msg) from e
 
         FeatureZoo.__init__(self)
 
@@ -540,11 +560,12 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                 final_data[gen_key][sess_id]['target_feature_arr'] = t_arr
                 final_data[gen_key][sess_id]['other_feature_arr'] = o_arr
 
-        final_features = sorted(list(final_data.keys()))
-        if not final_features: return
+        final_features = sorted(final_data.keys())
+        if not final_features:
+            return
 
         first_feat = final_features[0]
-        all_sessions = sorted(list(final_data[first_feat].keys()))
+        all_sessions = sorted(final_data[first_feat].keys())
 
         total_target = sum(final_data[first_feat][s]['target_feature_arr'].shape[0] for s in all_sessions)
         total_rest = sum(final_data[first_feat][s]['other_feature_arr'].shape[0] for s in all_sessions)
@@ -657,9 +678,8 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         # Guard up front so an invalid condition always raises, even when no
         # fold survives the per-split data checks below.
         if strategy != 'actual':
-            raise ValueError(
-                f"Unknown category-split strategy: {strategy!r}. Only 'actual' is supported."
-            )
+            msg = f"Unknown category-split strategy: {strategy!r}. Only 'actual' is supported."
+            raise ValueError(msg)
 
         all_sessions = list(feature_data.keys())
         valid_sessions = []
@@ -725,10 +745,11 @@ class VocalCategoryModelingPipeline(FeatureZoo):
 
                     splits_data.append((X_tr_targ, X_tr_other, X_te_targ, X_te_other, g_tr[y_tr == 1], g_tr[y_tr == 0]))
         else:
-            raise ValueError(f"Unknown split_strategy '{split_strategy}'. Must be 'session' or 'mixed'.")
+            msg = f"Unknown split_strategy '{split_strategy}'. Must be 'session' or 'mixed'."
+            raise ValueError(msg)
 
         # Phase 2: Balance training folds only; keep test folds at the natural class prior.
-        for split_num, (X_tr_targ, X_tr_other, X_te_targ, X_te_other, g_tr_targ, g_tr_other) in enumerate(splits_data):
+        for _split_num, (X_tr_targ, X_tr_other, X_te_targ, X_te_other, g_tr_targ, g_tr_other) in enumerate(splits_data):
 
             n_tr_limit = min(X_tr_targ.shape[0], X_tr_other.shape[0])
             n_te_target = X_te_targ.shape[0]
@@ -751,7 +772,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             yield shuffle_train_test_arrays(X_train, y_train, X_test, y_test, split_rng,
                                             groups_train=np.concatenate((g_tr_A, g_tr_B)))
 
-    def _run_modeling_category(self, feature_name: str, feature_data: dict, basis_matrix: np.ndarray | None, held_out_session_ids: list = None) -> tuple[str, dict]:
+    def _run_modeling_category(self, feature_name: str, feature_data: dict, basis_matrix: np.ndarray | None, held_out_session_ids: list | None = None) -> tuple[str, dict]:
         """
         Executes a one-vs-rest univariate classification analysis for a specific USV category.
 
@@ -883,8 +904,8 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         # `dev_feature_data == feature_data` and `held_sessions` empty, a no-op.
         held_out_session_ids = held_out_session_ids if held_out_session_ids is not None else []
         _held_set = set(held_out_session_ids)
-        dev_sessions = [s for s in feature_data.keys() if s not in _held_set]
-        held_sessions = [s for s in feature_data.keys() if s in _held_set]
+        dev_sessions = [s for s in feature_data if s not in _held_set]
+        held_sessions = [s for s in feature_data if s in _held_set]
         dev_feature_data = {s: feature_data[s] for s in dev_sessions}
         if held_sessions:
             print(
@@ -895,9 +916,11 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         cached_splits = list(self.create_category_splits(dev_feature_data, strategy='actual'))
 
         for strat in strategies:
-            for split_idx, (X_tr, y_tr, X_te, y_te, g_tr) in enumerate(cached_splits):
-                if split_idx >= n_splits: break
+            for split_idx, (X_tr, y_tr_split, X_te, y_te, g_tr) in enumerate(cached_splits):
+                if split_idx >= n_splits:
+                    break
 
+                y_tr = y_tr_split
                 if strat == 'null':
                     # Coalesce a None `random_seed` to 0 so the null branch does not crash
                     # on `None + split_idx` (matches `run_predictor_audits`).
@@ -905,7 +928,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                         (self.modeling_settings['model_validation']['random_seed'] or 0) + split_idx + 1
                     )
                     # Labels shuffled within sessions, so every session keeps its class balance.
-                    y_tr = y_tr[within_group_permutation(g_tr, null_rng)]
+                    y_tr = y_tr_split[within_group_permutation(g_tr, null_rng)]
 
                 try:
                     y_prob = None
@@ -1097,7 +1120,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                 rec : dict
                     The NaN-initialised held-out record.
                 """
-                rec = {m: np.nan for m in metrics}
+                rec = dict.fromkeys(metrics, np.nan)
                 rec['confusion_matrix'] = np.full((2, 2), np.nan)
                 rec['n_iter'] = np.nan
                 rec['converged'] = np.nan

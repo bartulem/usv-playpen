@@ -682,7 +682,7 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
         # floored width of 7 would leave the last 5 frames of the window outside the
         # time course. Rounded edges tile the window exactly, at the cost of bins
         # alternating between 7 and 8 frames.
-        self.n_response_bins = max(1, int(round(
+        self.n_response_bins = max(1, int(round(  # noqa: RUF046  settings may hold NumPy scalars; int() pins the type
             response_settings['target_window_seconds'] / response_settings['target_bin_seconds'])))
         self.response_bin_edges = np.linspace(
             0, self.response_window_frames, self.n_response_bins + 1).round().astype(int)
@@ -1491,9 +1491,8 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
         save_dir = Path(configure_path(self.modeling_settings['io']['save_directory']))
         save_dir.mkdir(parents=True, exist_ok=True)
         save_path = save_dir / fname
-        with atomic_output_path(save_path) as temporary_path:
-            with Path(temporary_path).open('wb') as handle:
-                pickle.dump(artifact, handle)
+        with atomic_output_path(save_path) as temporary_path, Path(temporary_path).open('wb') as handle:
+            pickle.dump(artifact, handle)
         print(f"[{datetime.now().strftime('%Y%m%d_%H%M%S')}] Success. Results saved to: {save_path}")
 
 
@@ -1661,12 +1660,12 @@ class MatchedDivergencePipeline(BehavioralResponsePipeline):
             f: {'vocal': [], 'silence': []} for f in response_features}
         pair_sessions: dict[str, list[str]] = {f: [] for f in response_features}
         pair_control_counts: dict[str, list[int]] = {f: [] for f in response_features}
-        caliper_rejected: dict[str, int] = {f: 0 for f in response_features}
+        caliper_rejected: dict[str, int] = dict.fromkeys(response_features, 0)
 
         for sess_id, session_df in tqdm(beh_feature_data_dict.items(), desc="Matching anchors"):
             if sess_id not in mouse_track_names_dict or sess_id not in session_roots:
                 continue
-            _, _, p_name, t_name = resolve_mouse_roles(
+            _, _, p_name, _t_name = resolve_mouse_roles(
                 modeling_settings=self.modeling_settings,
                 mouse_names_dict=mouse_track_names_dict,
                 session_id=sess_id,
@@ -1708,7 +1707,8 @@ class MatchedDivergencePipeline(BehavioralResponsePipeline):
 
             room_behind = max(frames['baseline_start'], frames['pre_window'])
 
-            def usable(times: np.ndarray) -> np.ndarray:
+            def usable(times: np.ndarray, *, camera_fps: float = camera_fps,
+                       room_behind: int = room_behind, n_frames: int = n_frames) -> np.ndarray:
                 """
                 Keeps anchors with room for the baseline and the stored window.
 
@@ -1716,6 +1716,15 @@ class MatchedDivergencePipeline(BehavioralResponsePipeline):
                 ----------
                 times : np.ndarray
                     Candidate anchor times, in seconds.
+                camera_fps : float
+                    The session's camera frame rate; bound at definition time to
+                    the current loop iteration's value.
+                room_behind : int
+                    Frames needed before an anchor (baseline and pre-window); bound
+                    at definition time to the current loop iteration's value.
+                n_frames : int
+                    Number of frames in the session; bound at definition time to
+                    the current loop iteration's value.
 
                 Returns
                 -------
@@ -1739,7 +1748,7 @@ class MatchedDivergencePipeline(BehavioralResponsePipeline):
                 )
                 trace = session_df[column].to_numpy().astype(float)
 
-                def baseline(anchor_frames: np.ndarray) -> np.ndarray:
+                def baseline(anchor_frames: np.ndarray, *, trace: np.ndarray = trace) -> np.ndarray:
                     """
                     Mean over the matching window preceding each anchor.
 
@@ -1747,6 +1756,9 @@ class MatchedDivergencePipeline(BehavioralResponsePipeline):
                     ----------
                     anchor_frames : np.ndarray
                         Anchor frame indices.
+                    trace : np.ndarray
+                        The response feature's per-frame trace; bound at definition
+                        time to the current loop iteration's value.
 
                     Returns
                     -------
@@ -1869,9 +1881,8 @@ class MatchedDivergencePipeline(BehavioralResponsePipeline):
         stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         cohort = derive_experimental_condition(self.modeling_settings)
         save_path = save_directory / f"matched_divergence_{cohort}_{stamp}.pkl"
-        with atomic_output_path(save_path) as temporary_path:
-            with Path(temporary_path).open('wb') as handle:
-                pickle.dump(artifact, handle)
+        with atomic_output_path(save_path) as temporary_path, Path(temporary_path).open('wb') as handle:
+            pickle.dump(artifact, handle)
         print(f"[{datetime.now().strftime('%Y%m%d_%H%M%S')}] Success. "
               f"Results saved to: {save_path}")
 
@@ -2206,9 +2217,9 @@ def select_covariate_columns(covariates: np.ndarray,
         )
         raise ValueError(msg)
     allowed = prefixes[covariate_features]
-    keep = [not (label.startswith('self.') or label.startswith('other.')) or label.startswith(allowed)
+    keep = [not (label.startswith(('self.', 'other.'))) or label.startswith(allowed)
             for label in covariate_labels]
-    kept_labels = [label for label, flag in zip(covariate_labels, keep) if flag]
+    kept_labels = [label for label, flag in zip(covariate_labels, keep, strict=False) if flag]
     return np.ascontiguousarray(covariates[:, np.asarray(keep, dtype=bool)]), kept_labels
 
 
@@ -2423,7 +2434,7 @@ def build_continuous_design_matrix(covariates: np.ndarray,
         vocal_mask.astype(float) * log_duration,
         covariates,
     ])
-    labels = ['intercept', 'vocal', 'vocal_x_log_duration'] + list(covariate_labels)
+    labels = ['intercept', 'vocal', 'vocal_x_log_duration', *list(covariate_labels)]
     return design, labels
 
 
@@ -2872,9 +2883,8 @@ def behavioral_response_contrast(input_pickle_path: str | Path,
     output_path.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     save_path = output_path / f"behavioral_response_contrast_{control}_{timestamp}.pkl"
-    with atomic_output_path(save_path) as temporary_path:
-        with Path(temporary_path).open('wb') as handle:
-            pickle.dump(results, handle)
+    with atomic_output_path(save_path) as temporary_path, Path(temporary_path).open('wb') as handle:
+        pickle.dump(results, handle)
 
     print(format_run_summary(
         label=f"behavioral response contrast, {len(response_features)} feature(s) / "

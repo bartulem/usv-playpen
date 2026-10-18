@@ -78,7 +78,7 @@ import argparse
 import pickle
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ..os_utils import atomic_output_path
@@ -158,7 +158,7 @@ def _file_mtime_iso(path) -> str:
         ``'2026-10-16T12:34:56Z'``.
     """
 
-    ts = datetime.fromtimestamp(Path(path).stat().st_mtime, tz=timezone.utc)
+    ts = datetime.fromtimestamp(Path(path).stat().st_mtime, tz=UTC)
     return ts.replace(microsecond=0).isoformat().replace('+00:00', 'Z')
 
 
@@ -183,7 +183,7 @@ def _build_default_output_filename(input_metadata: dict) -> str:
 
     tag = input_metadata['analysis_tag']
     cohort = input_metadata['experimental_condition']
-    ts = (datetime.now(timezone.utc)
+    ts = (datetime.now(UTC)
           .strftime('%Y%m%d_%H%M%SZ'))
     return f"univariate_{tag}_{cohort}_{ts}.pkl"
 
@@ -242,8 +242,8 @@ def _diff_metadata(a: dict, b: dict, prefix: str = '', ignore_keys: tuple = ()) 
 
 
 def consolidate(input_dir: str,
-                output_dir: str = None,
-                output_filename: str = None,
+                output_dir: str | None = None,
+                output_filename: str | None = None,
                 delete_individuals_after: bool = False,
                 allow_legacy: bool = False,
                 ignore_provenance_keys: tuple = (
@@ -311,12 +311,14 @@ def consolidate(input_dir: str,
 
     in_dir = Path(input_dir)
     if not in_dir.is_dir():
-        raise FileNotFoundError(f"Input directory does not exist: {input_dir}")
+        msg = f"Input directory does not exist: {input_dir}"
+        raise FileNotFoundError(msg)
 
     pkl_files = sorted(in_dir.glob('*.pkl'),
                        key=lambda p: (_parse_feature_idx(p.name), p.name))
     if not pkl_files:
-        raise FileNotFoundError(f"No .pkl files found in {input_dir}")
+        msg = f"No .pkl files found in {input_dir}"
+        raise FileNotFoundError(msg)
 
     print(f"[consolidate] Walking {len(pkl_files)} per-feature pickle(s) in {input_dir}")
 
@@ -334,7 +336,7 @@ def consolidate(input_dir: str,
     successfully_merged_timestamps = []
 
     for fp in pkl_files:
-        with open(fp, 'rb') as fh:
+        with Path(fp).open('rb') as fh:
             payload = pickle.load(fh)
         feat_dict, md_blocks = extract_metadata_blocks(payload)
 
@@ -343,10 +345,11 @@ def consolidate(input_dir: str,
         # we abort loudly rather than silently merge.
         feat_keys = list(feat_dict.keys())
         if len(feat_keys) != 1:
-            raise ValueError(
+            msg = (
                 f"Expected exactly one feature key in {fp}, got "
                 f"{len(feat_keys)}: {feat_keys}"
             )
+            raise ValueError(msg)
         feat_name = feat_keys[0]
 
         has_metadata = ('_input_metadata' in md_blocks and
@@ -354,12 +357,13 @@ def consolidate(input_dir: str,
 
         if not has_metadata:
             if not allow_legacy:
-                raise ValueError(
+                msg = (
                     f"{fp} lacks `_input_metadata` / `_run_metadata` "
                     "(legacy artifact). Re-run with --allow_legacy to "
                     "consolidate without provenance, or regenerate the "
                     "per-feature pickles with the current dispatcher."
                 )
+                raise ValueError(msg)
             legacy_run_seen = True
         else:
             cur_in = md_blocks['_input_metadata']
@@ -393,10 +397,11 @@ def consolidate(input_dir: str,
                     )
 
         if feat_name in consolidated:
-            raise ValueError(
+            msg = (
                 f"Duplicate feature {feat_name!r} encountered in {fp.name}; "
                 f"already merged from a prior file."
             )
+            raise ValueError(msg)
 
         consolidated[feat_name] = feat_dict[feat_name]
         successfully_merged_paths.append(str(fp.resolve()))
@@ -438,7 +443,7 @@ def consolidate(input_dir: str,
     # Choose output filename
     if output_filename is None:
         if legacy_run_seen and canonical_input_md is None:
-            ts = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%SZ')
+            ts = datetime.now(UTC).strftime('%Y%m%d_%H%M%SZ')
             output_filename = f"legacy_univariate_{ts}.pkl"
         else:
             output_filename = _build_default_output_filename(canonical_input_md)

@@ -5,24 +5,54 @@ Forward stepwise model selection for predicting bout and USV dynamics.
 
 from __future__ import annotations
 
-import numpy as np
-import pickle
-import json
-import re
+import contextlib
 import gc
+import json
+import pickle
+import re
 import time
 import warnings
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
-from pygam import LogisticGAM, GAM, te
+
+import numpy as np
+from pygam import GAM, LogisticGAM, te
 from scipy.stats import spearmanr
-from sklearn.linear_model import LogisticRegressionCV, GammaRegressor
-from sklearn.model_selection import StratifiedGroupKFold, StratifiedShuffleSplit, ShuffleSplit, GridSearchCV
-from sklearn.metrics import (log_loss, roc_auc_score, f1_score, recall_score,
-                             balanced_accuracy_score, mean_squared_log_error,
-                             mean_gamma_deviance, brier_score_loss)
+from sklearn.linear_model import GammaRegressor, LogisticRegressionCV
+from sklearn.metrics import (
+    balanced_accuracy_score,
+    brier_score_loss,
+    f1_score,
+    log_loss,
+    mean_gamma_deviance,
+    mean_squared_log_error,
+    recall_score,
+    roc_auc_score,
+)
+from sklearn.model_selection import (
+    GridSearchCV,
+    ShuffleSplit,
+    StratifiedGroupKFold,
+    StratifiedShuffleSplit,
+)
+
+from ..os_utils import atomic_output_path, resolve_modeling_setting
+from .jax_multinomial_logistic_regression import SmoothMultinomialLogisticRegression
 from .load_input_files import load_pickle_modeling_data, onset_target_tag
+from .manifold_metric import (
+    _fit_von_mises_kappa,
+    circular_mean,
+    dcor_prediction_truth,
+    inverse_region_frequency_weights,
+    macro_von_mises_logscore,
+    manifold_prediction_metrics,
+    resolve_manifold_metric,
+    resolve_manifold_selection_score_key,
+    signed_diff,
+    warn_if_no_region_labels,
+)
+from .manifold_torus_regression import resolve_manifold_regressor_cls
 from .modeling_bases_functions import (
     _normalizecols,
     basis_coefficients_to_frames,
@@ -33,53 +63,11 @@ from .modeling_bases_functions import (
     raised_cosine,
     resolve_temporal_basis,
 )
-from .modeling_utils import (
-    pool_session_arrays,
-    brier_score_multi,
-    expected_calibration_error,
-    safe_matthews_corrcoef,
-    safe_confusion_matrix,
-    align_probs_to_canonical,
-    pearson_r_safe,
-    root_mean_squared_error,
-    mean_absolute_error_1d,
-    bounded_test_proportion,
-    paired_one_se_improvement,
-    format_run_header,
-    format_run_summary,
-    format_selection_step,
-    held_out_session_ids_from_metadata,
-    development_heldout_masks,
-    session_grouped_inner_cv,
-    classification_inner_cv_splits,
-    within_group_permutation,
+from .modeling_metadata import (
+    RESERVED_METADATA_KEYS,
+    build_selection_metadata,
+    inject_metadata,
 )
-from .modeling_vocal_onsets import VocalOnsetModelingPipeline
-from .modeling_vocal_categories_multinomial import (
-    get_stratified_group_splits_stable,
-    _balance_multinomial_train_indices,
-    _log_spaced_grid_multinomial,
-    _tune_multinomial_regularization,
-)
-from .manifold_metric import (
-    circular_mean,
-    dcor_prediction_truth,
-    manifold_prediction_metrics,
-    resolve_manifold_metric,
-    resolve_manifold_selection_score_key,
-    signed_diff,
-    macro_von_mises_logscore,
-    _fit_von_mises_kappa,
-    inverse_region_frequency_weights,
-    warn_if_no_region_labels,
-)
-from .modeling_usv_manifold_position import (
-    get_stratified_spatial_splits_stable,
-    _log_spaced_grid,
-    _tune_manifold_regularization,
-)
-from .jax_multinomial_logistic_regression import SmoothMultinomialLogisticRegression
-from .manifold_torus_regression import resolve_manifold_regressor_cls
 from .modeling_torus_geodesics import (
     build_torus_geodesic_context,
     geodesic_mae_columns,
@@ -87,10 +75,39 @@ from .modeling_torus_geodesics import (
     resolve_geodesic_decoder_source,
     resolve_manifold_column_names,
 )
-from .modeling_metadata import (
-    build_selection_metadata, inject_metadata, RESERVED_METADATA_KEYS,
+from .modeling_usv_manifold_position import (
+    _log_spaced_grid,
+    _tune_manifold_regularization,
+    get_stratified_spatial_splits_stable,
 )
-from ..os_utils import atomic_output_path, resolve_modeling_setting
+from .modeling_utils import (
+    align_probs_to_canonical,
+    bounded_test_proportion,
+    brier_score_multi,
+    classification_inner_cv_splits,
+    development_heldout_masks,
+    expected_calibration_error,
+    format_run_header,
+    format_run_summary,
+    format_selection_step,
+    held_out_session_ids_from_metadata,
+    mean_absolute_error_1d,
+    paired_one_se_improvement,
+    pearson_r_safe,
+    pool_session_arrays,
+    root_mean_squared_error,
+    safe_confusion_matrix,
+    safe_matthews_corrcoef,
+    session_grouped_inner_cv,
+    within_group_permutation,
+)
+from .modeling_vocal_categories_multinomial import (
+    _balance_multinomial_train_indices,
+    _log_spaced_grid_multinomial,
+    _tune_multinomial_regularization,
+    get_stratified_group_splits_stable,
+)
+from .modeling_vocal_onsets import VocalOnsetModelingPipeline
 
 # Forward-selection significance level and the Expected-Calibration-Error
 # histogram bin count, read from the settings blocks rather than bare 0.01 / 10
@@ -197,7 +214,7 @@ def _dump_step_pickle(path: str | Path, payload: Any) -> None:
     -------
     None
     """
-    with atomic_output_path(path) as tmp_path, open(tmp_path, 'wb') as handle:
+    with atomic_output_path(path) as tmp_path, Path(tmp_path).open('wb') as handle:
         pickle.dump(payload, handle)
 
 
@@ -456,7 +473,7 @@ def _write_empty_selection(last_file: Path,
     None
     """
 
-    with open(last_file, 'rb') as f:
+    with Path(last_file).open('rb') as f:
         data = pickle.load(f)
     for _k in RESERVED_METADATA_KEYS:
         data.pop(_k, None)
@@ -545,7 +562,7 @@ def _fold_paired_margin_bootstrap(
         event_to_region: np.ndarray = None,
         min_region_events: int = 1,
         min_fold_events: int = 30,
-        kappa: float = None) -> dict:
+        kappa: float | None = None) -> dict:
     """
     Description
     -----------
@@ -667,11 +684,11 @@ def _fold_paired_margin_bootstrap(
             (and for a torus fold where no region clears ``min_region_events``).
         """
         scores = []
-        for test_indices, y_pred_xy, y_true in zip(
-                folds['test_indices'], folds['y_pred_xy'], folds['y_true']):
-            test_indices = np.asarray(test_indices)
-            y_pred_xy = np.asarray(y_pred_xy)
-            y_true = np.asarray(y_true)
+        for fold_test_indices, fold_y_pred_xy, fold_y_true in zip(
+                folds['test_indices'], folds['y_pred_xy'], folds['y_true'], strict=False):
+            test_indices = np.asarray(fold_test_indices)
+            y_pred_xy = np.asarray(fold_y_pred_xy)
+            y_true = np.asarray(fold_y_true)
             if y_pred_xy.shape[0] < min_fold_events:
                 # Too few test points in this fold for a stable score; drop it so
                 # it neither enters the margin nor destabilises the per-fold kappa.
@@ -733,8 +750,8 @@ def _fold_paired_margin_bootstrap(
     }
 
 
-def get_unrolled_X_for_multivariate(feature_data_dict_list: list = None,
-                                    history_frames: int = None) -> np.ndarray:
+def get_unrolled_X_for_multivariate(feature_data_dict_list: list | None = None,
+                                    history_frames: int | None = None) -> np.ndarray:
     """
     Prepares the 'unrolled' X matrix for a multivariate pyGAM by stacking
     multiple features side-by-side in the specific (Value, Time) format required
@@ -777,11 +794,13 @@ def get_unrolled_X_for_multivariate(feature_data_dict_list: list = None,
     """
 
     if not feature_data_dict_list:
-        raise ValueError("feature_data_dict_list is empty.")
+        msg = "feature_data_dict_list is empty."
+        raise ValueError(msg)
 
     n_samples, n_frames = feature_data_dict_list[0].shape
     if n_frames != history_frames:
-        raise ValueError(f"Frame mismatch: Data has {n_frames}, expected {history_frames}")
+        msg = f"Frame mismatch: Data has {n_frames}, expected {history_frames}"
+        raise ValueError(msg)
 
     n_features = len(feature_data_dict_list)
     n_total_rows = n_samples * n_frames
@@ -793,7 +812,8 @@ def get_unrolled_X_for_multivariate(feature_data_dict_list: list = None,
 
     for i, X_feat in enumerate(feature_data_dict_list):
         if X_feat.shape[0] != n_samples:
-            raise ValueError(f"Sample count mismatch at feature index {i}. Expected {n_samples}, got {X_feat.shape[0]}")
+            msg = f"Sample count mismatch at feature index {i}. Expected {n_samples}, got {X_feat.shape[0]}"
+            raise ValueError(msg)
 
         col_val_idx = i * 2
         col_time_idx = i * 2 + 1
@@ -946,7 +966,7 @@ def compute_filter_shapes_per_fold_vocal_onset(
 
             X_list_fold = [
                 np.concatenate((X_p[idx_p], X_n[idx_n]))
-                for X_p, X_n in zip(X_p_per_feat, X_n_per_feat)
+                for X_p, X_n in zip(X_p_per_feat, X_n_per_feat, strict=False)
             ]
             y_fold = np.concatenate((np.ones(n_k), np.zeros(n_k)))
 
@@ -1000,7 +1020,7 @@ def compute_filter_shapes_per_fold_vocal_onset(
 def vocal_onset_model_selection(univariate_results_path: str,
                                input_data_path: str,
                                output_directory: str,
-                               settings_path: str = None,
+                               settings_path: str | None = None,
                                use_top_rank_as_anchor: bool = False,
                                p_val: float = _SELECTION_P_VAL) -> None:
     """
@@ -1073,15 +1093,16 @@ def vocal_onset_model_selection(univariate_results_path: str,
         settings_path = str(settings_path_obj)
 
     try:
-        with open(settings_path, 'r') as f:
+        with Path(settings_path).open() as f:
             settings = json.load(f)
-    except FileNotFoundError:
-        raise FileNotFoundError(f"Settings file not found at {settings_path}")
+    except FileNotFoundError as err:
+        msg = f"Settings file not found at {settings_path}"
+        raise FileNotFoundError(msg) from err
 
     model_selection_dir = Path(output_directory)
     model_selection_dir.mkdir(parents=True, exist_ok=True)
 
-    with open(univariate_results_path, 'rb') as f:
+    with Path(univariate_results_path).open('rb') as f:
         univariate_data = pickle.load(f)
     all_feature_data = load_pickle_modeling_data(input_data_path)
 
@@ -1122,7 +1143,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
     common_sessions = set(all_feature_data[ranked_features[0]].keys())
     for feat in ranked_features[1:]:
         common_sessions = common_sessions.intersection(set(all_feature_data[feat].keys()))
-    all_sessions = sorted(list(common_sessions))
+    all_sessions = sorted(common_sessions)
 
     # Held-out reserve carved ONCE at extraction time and shipped in the
     # univariate `_input_metadata.held_out_session_ids`. Restrict every selection
@@ -1221,10 +1242,11 @@ def vocal_onset_model_selection(univariate_results_path: str,
         for train_ix, test_ix in sss.split(np.zeros(len(y_full)), y_full):
             cv_folds.append({'train_idx': train_ix, 'test_idx': test_ix, 'n_pos_total': n_pos_total, 'n_neg_total': n_neg_total, 'type': 'mixed'})
     else:
-        raise ValueError(
+        msg = (
             f"Unknown split_strategy '{split_strategy}' for bout-onset model selection. "
             f"Supported strategies: 'session', 'mixed'."
         )
+        raise ValueError(msg)
 
     # Pre-pool each candidate feature's full (positive, negative) design matrix
     # once up front. The forward-selection loop re-evaluates every feature for
@@ -1243,23 +1265,22 @@ def vocal_onset_model_selection(univariate_results_path: str,
         )
         if _anchor_n_pos is None:
             _anchor_n_pos, _anchor_n_neg = _X_p.shape[0], _X_n.shape[0]
-        else:
-            # The 'mixed' fold loop builds train/test indices against the
-            # anchor's `(n_pos, n_neg)` and then applies them to every other
-            # feature's `X_full`. This requires every feature's pooled
-            # (positive, negative) sample counts to match the anchor's; if
-            # they ever drift (e.g., feature-specific NaN drops upstream)
-            # the indices silently land on wrong rows. Fail loudly here.
-            # ``raise`` rather than ``assert`` so the check survives
-            # under ``python -O``.
-            if _X_p.shape[0] != _anchor_n_pos or _X_n.shape[0] != _anchor_n_neg:
-                msg = (
-                    f"pooled_feature_cache misalignment: feature {_feat_name!r} has "
-                    f"({_X_p.shape[0]}, {_X_n.shape[0]}) pos/neg samples but the "
-                    f"anchor has ({_anchor_n_pos}, {_anchor_n_neg}). The 'mixed' "
-                    "fold indices would silently misindex this feature."
-                )
-                raise ValueError(msg)
+        # The 'mixed' fold loop builds train/test indices against the
+        # anchor's `(n_pos, n_neg)` and then applies them to every other
+        # feature's `X_full`. This requires every feature's pooled
+        # (positive, negative) sample counts to match the anchor's; if
+        # they ever drift (e.g., feature-specific NaN drops upstream)
+        # the indices silently land on wrong rows. Fail loudly here.
+        # ``raise`` rather than ``assert`` so the check survives
+        # under ``python -O``.
+        elif _X_p.shape[0] != _anchor_n_pos or _X_n.shape[0] != _anchor_n_neg:
+            msg = (
+                f"pooled_feature_cache misalignment: feature {_feat_name!r} has "
+                f"({_X_p.shape[0]}, {_X_n.shape[0]}) pos/neg samples but the "
+                f"anchor has ({_anchor_n_pos}, {_anchor_n_neg}). The 'mixed' "
+                "fold indices would silently misindex this feature."
+            )
+            raise ValueError(msg)
         pooled_feature_cache[_feat_name] = {
             'X_pos': _X_p,
             'X_neg': _X_n,
@@ -1304,16 +1325,14 @@ def vocal_onset_model_selection(univariate_results_path: str,
     if model_selection_dir.is_dir():
         for f_name in (p.name for p in model_selection_dir.iterdir()):
             if f_name.startswith(prefix) and f_name.endswith(".pkl"):
-                try:
+                with contextlib.suppress(ValueError):
                     existing_steps.append(int(f_name.replace(prefix, "").replace(".pkl", "")))
-                except ValueError:
-                    pass
 
     if existing_steps:
         last_step = max(existing_steps)
         print(f"\n[RESUME] Detected previous run. Checking Step {last_step}...")
         try:
-            with open(model_selection_dir / f"{prefix}{last_step}.pkl", 'rb') as f:
+            with Path(model_selection_dir / f"{prefix}{last_step}.pkl").open('rb') as f:
                 last_results = pickle.load(f)
             # Rebuild the state right after `last_step` from its recorded decision
             # (`_restore_selection_checkpoint`); the incumbent's per-fold log-losses are
@@ -1402,7 +1421,8 @@ def vocal_onset_model_selection(univariate_results_path: str,
                     X_tr_neg = X_tr_all[y_tr_all == 0]
                     n_tr_keep = min(X_tr_pos.shape[0], X_tr_neg.shape[0])
                     if n_tr_keep == 0:
-                        raise ValueError("Training fold has no samples in one class after split.")
+                        msg_0 = "Training fold has no samples in one class after split."
+                        raise ValueError(msg_0)
                     anc_rng = np.random.default_rng(random_seed + fold_i)
                     idx_p = anc_rng.choice(X_tr_pos.shape[0], n_tr_keep, replace=False)
                     idx_n = anc_rng.choice(X_tr_neg.shape[0], n_tr_keep, replace=False)
@@ -1446,16 +1466,16 @@ def vocal_onset_model_selection(univariate_results_path: str,
                 gc.collect()
             except Exception as e:
                 print(f"    [!] Error fitting {anchor_to_force} (Fold {fold_i}): {e}")
-                for _k in metrics:
+                for _k, _k_values in metrics.items():
                     # Keep the per-fold list lengths aligned across every key.
                     # `confusion_matrix` stores (2, 2) arrays, so on failure we
                     # append a NaN-filled (2, 2) placeholder rather than a
                     # scalar NaN; otherwise np.stack(...) downstream would fail
                     # on a heterogeneous list.
                     if _k == 'confusion_matrix':
-                        metrics[_k].append(np.full((2, 2), np.nan))
+                        _k_values.append(np.full((2, 2), np.nan))
                     else:
-                        metrics[_k].append(np.nan)
+                        _k_values.append(np.nan)
 
         valid_ll = [x for x in metrics['ll'] if np.isfinite(x)]
         if valid_ll:
@@ -1532,10 +1552,11 @@ def vocal_onset_model_selection(univariate_results_path: str,
                 base_test_list.append(np.concatenate((f_p_te, f_n_te)))
             session_fold_base[fold_i] = (train_sess, test_sess, idx_p, idx_n, y_tr_fold, y_te_fold, base_train_list, base_test_list)
 
-        for i_feat, feat in enumerate(ranked_features):
-            if feat in current_model_features: continue
+        for _i_feat, feat in enumerate(ranked_features):
+            if feat in current_model_features:
+                continue
             gc.collect()
-            trial_features = current_model_features + [feat]
+            trial_features = [*current_model_features, feat]
 
             gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
             for i in range(1, len(trial_features)):
@@ -1573,7 +1594,8 @@ def vocal_onset_model_selection(univariate_results_path: str,
                         neg_positions = np.where(neg_mask)[0]
                         n_tr_keep = min(pos_positions.size, neg_positions.size)
                         if n_tr_keep == 0:
-                            raise ValueError("Training fold has no samples in one class after split.")
+                            msg_0 = "Training fold has no samples in one class after split."
+                            raise ValueError(msg_0)
                         fs_rng = np.random.default_rng(random_seed + fold_i)
                         sel_pos = fs_rng.choice(pos_positions.size, n_tr_keep, replace=False)
                         sel_neg = fs_rng.choice(neg_positions.size, n_tr_keep, replace=False)
@@ -1836,7 +1858,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
                                   RuntimeWarning, stacklevel=2)
                 heldout_result[branch] = rec
 
-    with open(last_file, 'rb') as f:
+    with Path(last_file).open('rb') as f:
         data = pickle.load(f)
 
     # Strip existing metadata blocks so `_wrap_step` can re-inject
@@ -2019,7 +2041,7 @@ def vocal_category_model_selection(
         univariate_results_path: str,
         input_data_path: str,
         output_directory: str,
-        settings_path: str = None,
+        settings_path: str | None = None,
         use_top_rank_as_anchor: bool = False,
         *,
         p_val: float
@@ -2100,10 +2122,11 @@ def vocal_category_model_selection(
         settings_path = str(settings_path_obj)
 
     try:
-        with open(settings_path, 'r') as f:
+        with Path(settings_path).open() as f:
             settings = json.load(f)
-    except FileNotFoundError:
-        raise FileNotFoundError(f"Settings file not found at {settings_path}")
+    except FileNotFoundError as err:
+        msg = f"Settings file not found at {settings_path}"
+        raise FileNotFoundError(msg) from err
 
     model_selection_dir = Path(output_directory)
     model_selection_dir.mkdir(parents=True, exist_ok=True)
@@ -2116,7 +2139,7 @@ def vocal_category_model_selection(
     cond_match = re.search(r'((?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
     target_condition = cond_match.group(1) if cond_match else "unknown"
 
-    with open(univariate_results_path, 'rb') as f:
+    with Path(univariate_results_path).open('rb') as f:
         univariate_data = pickle.load(f)
 
     # Filter candidates safely
@@ -2189,7 +2212,8 @@ def vocal_category_model_selection(
 
     all_sessions_arr = np.array(sorted(valid_sessions))
     if len(all_sessions_arr) < 2:
-        raise ValueError("Not enough common sessions for cross-validation.")
+        msg = "Not enough common sessions for cross-validation."
+        raise ValueError(msg)
 
     # Held-out reserve carved ONCE at extraction time and shipped in the
     # univariate `_input_metadata.held_out_session_ids`. Restrict every selection
@@ -2209,7 +2233,8 @@ def vocal_category_model_selection(
             f"selection; scored once at finalization."
         )
     if len(all_sessions_arr) < 2:
-        raise ValueError("Not enough development sessions for cross-validation after reserving the held-out block.")
+        msg = "Not enough development sessions for cross-validation after reserving the held-out block."
+        raise ValueError(msg)
 
     # Strict Dictionary Access Only (No .get())
     camera_rate = settings['io']['camera_sampling_rate']
@@ -2262,7 +2287,8 @@ def vocal_category_model_selection(
         }
         print("Engine: PyGAM LogisticGAM with Tensor Splines.")
     else:
-        raise ValueError("model_engine in settings must be either 'sklearn' or 'pygam'.")
+        msg = "model_engine in settings must be either 'sklearn' or 'pygam'."
+        raise ValueError(msg)
 
     print(format_run_header(
         task='SELECTION:CATEGORY',
@@ -2329,7 +2355,8 @@ def vocal_category_model_selection(
         sss = StratifiedShuffleSplit(n_splits=n_splits, test_size=test_prop, random_state=random_seed)
         cv_folds = list(sss.split(np.zeros(len(y_dummy)), y_dummy))
     else:
-        raise ValueError("split_strategy in settings must be either 'session' or 'mixed'.")
+        msg_0 = "split_strategy in settings must be either 'session' or 'mixed'."
+        raise ValueError(msg_0)
 
     # Build the selection-level `_run_metadata` block + step-wrapper once.
     _run_md = build_selection_metadata(
@@ -2377,10 +2404,8 @@ def vocal_category_model_selection(
     if model_selection_dir.is_dir():
         for f_name in (p.name for p in model_selection_dir.iterdir()):
             if f_name.startswith(prefix) and f_name.endswith(".pkl"):
-                try:
+                with contextlib.suppress(ValueError):
                     existing_steps.append(int(f_name.replace(prefix, "").replace(".pkl", "")))
-                except ValueError:
-                    pass
 
     step_counter, current_model_features = 0, []
     best_current_score, best_current_se = chance_ll, 0.0
@@ -2395,7 +2420,7 @@ def vocal_category_model_selection(
         last_step = max(existing_steps)
         print(f"\n[RESUME] Detected previous run. Checking Step {last_step}...")
         try:
-            with open(model_selection_dir / f"{prefix}{last_step}.pkl", 'rb') as f:
+            with Path(model_selection_dir / f"{prefix}{last_step}.pkl").open('rb') as f:
                 last_results = pickle.load(f)
             # Rebuild the state right after `last_step` from its recorded decision
             # (`_restore_selection_checkpoint`); the incumbent's per-fold log-losses are
@@ -2477,12 +2502,12 @@ def vocal_category_model_selection(
                 if (n_te_targ + n_te_other) == 0:
                     continue
 
-                X_tr_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_tr_t, X_tr_o)]
+                X_tr_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_tr_t, X_tr_o, strict=False)]
                 y_tr = np.concatenate([y_tr_t, y_tr_o])
                 perm = np.random.default_rng(random_seed + fold_i).permutation(len(y_tr))
                 groups_tr = np.concatenate([g_tr_t, g_tr_o])
 
-                X_te_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_te_t_raw, X_te_o_raw)]
+                X_te_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_te_t_raw, X_te_o_raw, strict=False)]
                 y_te = np.concatenate([np.ones(n_te_targ), np.zeros(n_te_other)]).astype(int)
 
                 if model_type == 'sklearn':
@@ -2543,14 +2568,14 @@ def vocal_category_model_selection(
                 gc.collect()
             except Exception as e:
                 print(f"    [!] Error fitting {anchor} (Fold {fold_i}): {e}")
-                for _k in metrics:
+                for _k, _k_values in metrics.items():
                     # `confusion_matrix` holds (2, 2) arrays, so on failure we
                     # append a NaN-filled matrix instead of a scalar NaN to
                     # keep the per-fold list homogeneous for downstream stacking.
                     if _k == 'confusion_matrix':
-                        metrics[_k].append(np.full((2, 2), np.nan))
+                        _k_values.append(np.full((2, 2), np.nan))
                     else:
-                        metrics[_k].append(np.nan)
+                        _k_values.append(np.nan)
 
         valid = [s for s in metrics['ll'] if np.isfinite(s)]
         if valid:
@@ -2607,10 +2632,11 @@ def vocal_category_model_selection(
                     b_tr_t, b_tr_o, b_te_t, b_te_o = [], [], [], []
                 fold_base_pooled.append((b_tr_t, b_tr_o, b_te_t, b_te_o))
 
-        for i_feat, feat in enumerate(ranked_features):
-            if feat in current_model_features: continue
+        for _i_feat, feat in enumerate(ranked_features):
+            if feat in current_model_features:
+                continue
             gc.collect()
-            trial_feats = current_model_features + [feat]
+            trial_feats = [*current_model_features, feat]
 
             if model_type == 'pygam':
                 gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
@@ -2663,12 +2689,12 @@ def vocal_category_model_selection(
                     if (n_te_targ + n_te_other) == 0:
                         continue
 
-                    X_tr_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_tr_t, X_tr_o)]
+                    X_tr_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_tr_t, X_tr_o, strict=False)]
                     y_tr = np.concatenate([y_tr_t, y_tr_o])
                     perm = np.random.default_rng(random_seed + fold_i).permutation(len(y_tr))
                     groups_tr = np.concatenate([g_tr_t, g_tr_o])
 
-                    X_te_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_te_t_raw, X_te_o_raw)]
+                    X_te_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_te_t_raw, X_te_o_raw, strict=False)]
                     y_te = np.concatenate([np.ones(n_te_targ), np.zeros(n_te_other)]).astype(int)
 
                     if model_type == 'sklearn':
@@ -2786,7 +2812,8 @@ def vocal_category_model_selection(
             # sampling variability rather than a stale Step-0 value.
             best_current_score, best_current_se, step_counter = best_cand_score, best_cand_se, step_counter + 1
             best_current_folds = best_cand_folds
-            if len(current_model_features) == len(ranked_features): break
+            if len(current_model_features) == len(ranked_features):
+                break
         else:
             print(format_selection_step(f"Step {step_counter}", decision='REJECT',
                                         detail='no candidate beat the 1-SE margin; selection finished'))
@@ -2808,7 +2835,7 @@ def vocal_category_model_selection(
     final_fold_shapes = []
     print(f"  Calculating filter shapes across {len(cv_folds)} folds...")
 
-    for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
+    for fold_idx, (tr_idx, _te_idx) in enumerate(cv_folds):
 
         if split_strategy == 'session':
             X_tr_t_raw, X_tr_o_raw = _pool_category_features(all_feature_data, current_model_features, all_sessions_arr[tr_idx], history_frames)
@@ -2833,7 +2860,7 @@ def vocal_category_model_selection(
         if not X_tr_t:
             continue
 
-        X_tr_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_tr_t, X_tr_o)]
+        X_tr_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_tr_t, X_tr_o, strict=False)]
         y_tr = np.concatenate([y_tr_t, y_tr_o])
         groups_tr = np.concatenate([g_tr_t, g_tr_o])
 
@@ -2921,10 +2948,10 @@ def vocal_category_model_selection(
             'n_held_out_events': int(n_held_targ + n_held_other),
         }
         if X_tr_t and n_held_targ > 0 and n_held_other > 0:
-            X_tr_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_tr_t, X_tr_o)]
+            X_tr_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_tr_t, X_tr_o, strict=False)]
             y_tr_bal = np.concatenate([y_tr_t, y_tr_o])
             groups_dev = np.concatenate([g_tr_t, g_tr_o])
-            X_te_list = [np.concatenate([t, o], axis=0) for t, o in zip(held_t_raw, held_o_raw)]
+            X_te_list = [np.concatenate([t, o], axis=0) for t, o in zip(held_t_raw, held_o_raw, strict=False)]
             y_test_held = np.concatenate([np.ones(n_held_targ), np.zeros(n_held_other)])
             y_te_int = y_test_held.astype(int)
             held_rng = np.random.default_rng(held_seed)
@@ -2986,7 +3013,7 @@ def vocal_category_model_selection(
         'input_data_path': input_data_path
     }
 
-    with open(last_file, 'rb') as f:
+    with Path(last_file).open('rb') as f:
         data = pickle.load(f)
 
     for _k in RESERVED_METADATA_KEYS:
@@ -3013,7 +3040,7 @@ def bout_parameter_model_selection(
         univariate_results_path: str,
         input_data_path: str,
         output_directory: str,
-        settings_path: str = None,
+        settings_path: str | None = None,
         target_variable: str = 'bout_durations',
         use_top_rank_as_anchor: bool = False,
         p_val: float = _SELECTION_P_VAL
@@ -3113,15 +3140,16 @@ def bout_parameter_model_selection(
         settings_path = str(settings_path_obj)
 
     try:
-        with open(settings_path, 'r') as f:
+        with Path(settings_path).open() as f:
             settings = json.load(f)
-    except FileNotFoundError:
-        raise FileNotFoundError(f"Settings file not found at {settings_path}")
+    except FileNotFoundError as err:
+        msg = f"Settings file not found at {settings_path}"
+        raise FileNotFoundError(msg) from err
 
     model_selection_dir = Path(output_directory)
     model_selection_dir.mkdir(parents=True, exist_ok=True)
 
-    with open(univariate_results_path, 'rb') as f:
+    with Path(univariate_results_path).open('rb') as f:
         univariate_data = pickle.load(f)
 
     # Strip the upstream metadata blocks from `univariate_data` before
@@ -3272,7 +3300,8 @@ def bout_parameter_model_selection(
             'lam': pygam_params['lam_penalty']
         }
     else:
-        raise ValueError("model_engine in settings must be either 'sklearn' or 'pygam'.")
+        msg = "model_engine in settings must be either 'sklearn' or 'pygam'."
+        raise ValueError(msg)
 
     # 3. Target Quantile Binning for Stratification
     n_bins = max(2, min(10, len(y_global) // n_splits))
@@ -3299,7 +3328,7 @@ def bout_parameter_model_selection(
     # split. With holdout disabled `_dev_positions` is the identity map, so this
     # is byte-identical to the pre-holdout behaviour.
     cv_folds = []
-    n_folds_mc = max(2, int(round(1.0 / test_prop)))
+    n_folds_mc = max(2, int(round(1.0 / test_prop)))  # noqa: RUF046  test_prop may be a NumPy scalar; int() pins the type
     _y_binned_dev = y_binned[_dev_mask]
     _groups_dev = groups_global[_dev_mask]
 
@@ -3319,17 +3348,19 @@ def bout_parameter_model_selection(
         for tr_dev, te_dev in sss.split(np.zeros(len(_y_binned_dev)), _y_binned_dev):
             cv_folds.append((_dev_positions[tr_dev], _dev_positions[te_dev]))
     else:
-        raise ValueError("split_strategy in settings must be either 'session' or 'mixed'.")
+        msg = "split_strategy in settings must be either 'session' or 'mixed'."
+        raise ValueError(msg)
 
     # Leak guard: no held-out event may appear in any greedy fold (train or test).
     if _held_positions.size > 0:
         _held_set = set(_held_positions.tolist())
         for _tr_idx, _te_idx in cv_folds:
             if _held_set.intersection(_tr_idx.tolist()) or _held_set.intersection(_te_idx.tolist()):
-                raise AssertionError(
+                msg = (
                     "Held-out session events leaked into a bout-parameter selection "
                     "CV fold; the development/held-out split is inconsistent."
                 )
+                raise AssertionError(msg)
 
     # Resume Logic
     current_model_features = []
@@ -3387,16 +3418,14 @@ def bout_parameter_model_selection(
     if model_selection_dir.is_dir():
         for f_name in (p.name for p in model_selection_dir.iterdir()):
             if f_name.startswith(prefix) and f_name.endswith(".pkl"):
-                try:
+                with contextlib.suppress(ValueError):
                     existing_steps.append(int(f_name.replace(prefix, "").replace(".pkl", "")))
-                except ValueError:
-                    pass
 
     if existing_steps:
         last_step = max(existing_steps)
         print(f"[RESUME] Restoring from Step {last_step}...")
         try:
-            with open(model_selection_dir / f"{prefix}{last_step}.pkl", 'rb') as f:
+            with Path(model_selection_dir / f"{prefix}{last_step}.pkl").open('rb') as f:
                 last_res = pickle.load(f)
 
             # Rebuild the state right after `last_step` from its recorded decision
@@ -3608,7 +3637,8 @@ def bout_parameter_model_selection(
         }
 
         for feat in ranked_features:
-            if feat in current_model_features: continue
+            if feat in current_model_features:
+                continue
             gc.collect()
 
             metrics = {
@@ -3762,7 +3792,8 @@ def bout_parameter_model_selection(
             _dump_step_pickle(model_selection_dir / f"{prefix}{step_counter}.pkl", _wrap_step(step_results))
             break
 
-        if len(current_model_features) == len(ranked_features): break
+        if len(current_model_features) == len(ranked_features):
+            break
 
     # 7. Final Model Fit for Visualization
     print("\n--- Final Model Fit for Visualization (CV-based) ---")
@@ -3779,7 +3810,7 @@ def bout_parameter_model_selection(
     final_fold_shapes = []
     print(f"  Calculating filter shapes across {len(cv_folds)} folds...")
 
-    for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
+    for _fold_idx, (tr_idx, _te_idx) in enumerate(cv_folds):
 
         X_list_tr = [all_feature_data[f]['X'][tr_idx] for f in current_model_features]
         y_tr = y_global[tr_idx]
@@ -3813,7 +3844,8 @@ def bout_parameter_model_selection(
 
             time_idx = np.arange(history_frames)
             base_grid = np.zeros((history_frames, 2 * len(current_model_features)))
-            for k in range(len(current_model_features)): base_grid[:, k * 2 + 1] = time_idx
+            for k in range(len(current_model_features)):
+                base_grid[:, k * 2 + 1] = time_idx
 
             pred_base = gam_fold.predict(base_grid)
 
@@ -3847,7 +3879,7 @@ def bout_parameter_model_selection(
         heldout_result = {
             'engine': model_type,
             'features': list(current_model_features),
-            'n_held_out_sessions': int(len(np.unique(groups_global[_held_positions]))),
+            'n_held_out_sessions': len(np.unique(groups_global[_held_positions])),
             'n_held_out_events': int(_held_positions.size),
         }
         for branch in ('actual', 'null'):
@@ -3920,7 +3952,7 @@ def bout_parameter_model_selection(
         'input_data_path': input_data_path
     }
 
-    with open(last_file, 'rb') as open_pkl_file:
+    with Path(last_file).open('rb') as open_pkl_file:
         data = pickle.load(open_pkl_file)
 
     for _k in RESERVED_METADATA_KEYS:
@@ -3947,7 +3979,7 @@ def multinomial_vocal_category_model_selection(
         univariate_results_path: str,
         input_data_path: str,
         output_directory: str,
-        settings_path: str = None,
+        settings_path: str | None = None,
         use_top_rank_as_anchor: bool = False,
         p_val: float = _SELECTION_P_VAL
 ) -> None:
@@ -4075,10 +4107,11 @@ def multinomial_vocal_category_model_selection(
         settings_path = str(settings_path_obj)
 
     try:
-        with open(settings_path, 'r') as f:
+        with Path(settings_path).open() as f:
             settings = json.load(f)
-    except FileNotFoundError:
-        raise FileNotFoundError(f"Settings file not found at {settings_path}")
+    except FileNotFoundError as err:
+        msg = f"Settings file not found at {settings_path}"
+        raise FileNotFoundError(msg) from err
 
     model_selection_dir = Path(output_directory)
     model_selection_dir.mkdir(parents=True, exist_ok=True)
@@ -4097,7 +4130,7 @@ def multinomial_vocal_category_model_selection(
         n_splits=int(settings['model_validation']['n_cv_folds']),
     ))
 
-    with open(univariate_results_path, 'rb') as f:
+    with Path(univariate_results_path).open('rb') as f:
         univariate_data = pickle.load(f)
 
     # Strip upstream metadata blocks before iterating feature entries.
@@ -4141,7 +4174,7 @@ def multinomial_vocal_category_model_selection(
         return
 
     print("Loading and binning raw input data...")
-    with open(input_data_path, 'rb') as f:
+    with Path(input_data_path).open('rb') as f:
         raw_data = pickle.load(f)
 
     # Final upstream-metadata harvest. The univariate-side blocks were
@@ -4171,7 +4204,7 @@ def multinomial_vocal_category_model_selection(
 
     for feat in ranked_features:
         X_list, y_list, g_list = [], [], []
-        sessions = sorted(list(raw_data[feat].keys()))
+        sessions = sorted(raw_data[feat].keys())
         for sess_id in sessions:
             X_s = raw_data[feat][sess_id]['X']
             y_s = raw_data[feat][sess_id]['y']
@@ -4261,10 +4294,11 @@ def multinomial_vocal_category_model_selection(
         _held_set = set(_held_positions.tolist())
         for _tr_idx, _te_idx in cv_folds:
             if _held_set.intersection(_tr_idx.tolist()) or _held_set.intersection(_te_idx.tolist()):
-                raise AssertionError(
+                msg_0 = (
                     "Held-out session events leaked into a multinomial selection "
                     "CV fold; the development/held-out split is inconsistent."
                 )
+                raise AssertionError(msg_0)
 
     # When balance_train_bool is active the learned-model paths (anchor,
     # forward-selection trials) down-sample each training fold per-class and
@@ -4502,16 +4536,14 @@ def multinomial_vocal_category_model_selection(
     if model_selection_dir.is_dir():
         for f_name in (p.name for p in model_selection_dir.iterdir()):
             if f_name.startswith(prefix) and f_name.endswith(".pkl"):
-                try:
+                with contextlib.suppress(ValueError):
                     existing_steps.append(int(f_name.replace(prefix, "").replace(".pkl", "")))
-                except ValueError:
-                    pass
 
     if existing_steps:
         last_step = max(existing_steps)
         print(f"[RESUME] Restoring from Step {last_step}...")
         try:
-            with open(model_selection_dir / f"{prefix}{last_step}.pkl", 'rb') as f:
+            with Path(model_selection_dir / f"{prefix}{last_step}.pkl").open('rb') as f:
                 last_res = pickle.load(f)
 
             # Rebuild the state right after `last_step` from its recorded decision
@@ -4900,12 +4932,12 @@ def multinomial_vocal_category_model_selection(
                 if current_model_features else None
             )
 
-        for i_feat, feat in enumerate(ranked_features):
+        for _i_feat, feat in enumerate(ranked_features):
             if feat in current_model_features:
                 continue
             gc.collect()
 
-            trial_feats = current_model_features + [feat]
+            trial_feats = [*current_model_features, feat]
             n_trial_feats = len(trial_feats)
             cand_data = {
                 'folds': {
@@ -4926,7 +4958,7 @@ def multinomial_vocal_category_model_selection(
                 'canonical_classes': canonical_classes
             }
 
-            for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
+            for fold_idx, (_tr_idx, te_idx) in enumerate(cv_folds):
                 try:
                     # Reuse the per-fold cached balanced-train index and base
                     # block; project/slice only the new candidate and hstack it
@@ -5121,7 +5153,7 @@ def multinomial_vocal_category_model_selection(
     # No blanket except: a failed final refit or save must stop the run loudly, not
     # pass as a finished selection with no final model.
     last_file_path = model_selection_dir / f"{prefix}{max(0, step_counter - 1)}.pkl"
-    with open(last_file_path, 'rb') as f:
+    with Path(last_file_path).open('rb') as f:
         step_data = pickle.load(f)
 
     winner = step_data['selected_feature'] or current_model_features[-1]
@@ -5346,7 +5378,7 @@ def multinomial_vocal_category_model_selection(
     baseline_score = float('nan')
     step0_path = model_selection_dir / f"{prefix}0.pkl"
     if step0_path.exists():
-        with open(step0_path, 'rb') as f:
+        with Path(step0_path).open('rb') as f:
             _step0 = pickle.load(f)
         if 'baseline_score' in _step0:
             baseline_score = _step0['baseline_score']
@@ -5366,7 +5398,7 @@ def continuous_vocal_manifold_model_selection(
         univariate_results_path: str,
         input_data_path: str,
         output_directory: str,
-        settings_path: str = None,
+        settings_path: str | None = None,
         use_top_rank_as_anchor: bool = False,
         p_val: float = _SELECTION_P_VAL
 ) -> None:
@@ -5509,10 +5541,11 @@ def continuous_vocal_manifold_model_selection(
         settings_path = str(settings_path_obj)
 
     try:
-        with open(settings_path, 'r') as f:
+        with Path(settings_path).open() as f:
             settings = json.load(f)
-    except FileNotFoundError:
-        raise FileNotFoundError(f"Settings file not found at {settings_path}")
+    except FileNotFoundError as err:
+        msg = f"Settings file not found at {settings_path}"
+        raise FileNotFoundError(msg) from err
 
     model_selection_dir = Path(output_directory)
     model_selection_dir.mkdir(parents=True, exist_ok=True)
@@ -5531,7 +5564,7 @@ def continuous_vocal_manifold_model_selection(
         n_splits=int(settings['model_validation']['manifold_n_cv_folds']),
     ))
 
-    with open(univariate_results_path, 'rb') as f:
+    with Path(univariate_results_path).open('rb') as f:
         univariate_data = pickle.load(f)
 
     # Strip upstream metadata blocks before iterating feature entries.
@@ -5639,12 +5672,13 @@ def continuous_vocal_manifold_model_selection(
         for _p in univariate_data.values()
     )
     if num_features > 0 and not _pred_keys_present:
-        raise ValueError(
+        msg = (
             "The manifold fold-grain screen needs per-fold predictions "
             f"({', '.join(_required_fold_keys)}) in both 'actual' and "
             f"'{SCREEN_BASELINE_STRATEGY}', but the univariate results do not "
             "carry them. Re-run the univariate stage with prediction-saving on."
         )
+        raise ValueError(msg)
 
     print(f"Screening {num_features} features (fold-grain paired score margin "
           f"[torus: {SELECTION_SCORE_KEY} von Mises log-lik; euclidean: dcor], "
@@ -5670,7 +5704,7 @@ def continuous_vocal_manifold_model_selection(
     freeze_selection_kappa = bool(_vf['freeze_selection_kappa'])
     if _selection_manifold_metric == 'torus':
         print("Loading raw continuous input data (the torus screen needs per-event regions)...")
-        with open(input_data_path, 'rb') as f:
+        with Path(input_data_path).open('rb') as f:
             raw_data = pickle.load(f)
         _screen_feature = next(k for k in raw_data if not k.startswith('_'))
         _screen_sessions = sorted(raw_data[_screen_feature].keys())
@@ -5788,7 +5822,7 @@ def continuous_vocal_manifold_model_selection(
     # touch `input_data_path` (the contract two abort tests rely on).
     if raw_data is None:
         print("Loading and binning raw continuous input data...")
-        with open(input_data_path, 'rb') as f:
+        with Path(input_data_path).open('rb') as f:
             raw_data = pickle.load(f)
 
     # Final upstream-metadata harvest: prefer the univariate copy, fall back to
@@ -5818,7 +5852,7 @@ def continuous_vocal_manifold_model_selection(
 
     for feat in ranked_features:
         X_list, y_list, w_list, g_list, region_list = [], [], [], [], []
-        sessions = sorted(list(raw_data[feat].keys()))
+        sessions = sorted(raw_data[feat].keys())
         for sess_id in sessions:
             X_s = raw_data[feat][sess_id]['X']
             y_s = raw_data[feat][sess_id]['Y']
@@ -6035,10 +6069,11 @@ def continuous_vocal_manifold_model_selection(
         _held_set = set(_held_positions.tolist())
         for _tr_idx, _te_idx in cv_folds:
             if _held_set.intersection(_tr_idx.tolist()) or _held_set.intersection(_te_idx.tolist()):
-                raise AssertionError(
+                msg_0 = (
                     "Held-out session events leaked into a selection CV fold; "
                     "the development/held-out split is inconsistent."
                 )
+                raise AssertionError(msg_0)
 
     # The Step-0 strategy the anchor / first forward feature is gated against: the
     # training-fold intercept-only predictor on the torus, the empirical-density draw on
@@ -6128,16 +6163,14 @@ def continuous_vocal_manifold_model_selection(
     if model_selection_dir.is_dir():
         for f_name in (p.name for p in model_selection_dir.iterdir()):
             if f_name.startswith(prefix) and f_name.endswith(".pkl"):
-                try:
+                with contextlib.suppress(ValueError):
                     existing_steps.append(int(f_name.replace(prefix, "").replace(".pkl", "")))
-                except ValueError:
-                    pass
 
     if existing_steps:
         last_step = max(existing_steps)
         print(f"[RESUME] Restoring from Step {last_step}...")
         try:
-            with open(model_selection_dir / f"{prefix}{last_step}.pkl", 'rb') as f:
+            with Path(model_selection_dir / f"{prefix}{last_step}.pkl").open('rb') as f:
                 last_res = pickle.load(f)
 
             # Metric-compatibility guard: if this checkpoint was scored on a
@@ -6838,11 +6871,12 @@ def continuous_vocal_manifold_model_selection(
                 if current_model_features else None
             )
 
-        for i_feat, feat in enumerate(ranked_features):
-            if feat in current_model_features: continue
+        for _i_feat, feat in enumerate(ranked_features):
+            if feat in current_model_features:
+                continue
             gc.collect()
 
-            trial_feats = current_model_features + [feat]
+            trial_feats = [*current_model_features, feat]
             n_trial_feats = len(trial_feats)
 
             cand_data = _make_manifold_cand_data()
@@ -7031,7 +7065,7 @@ def continuous_vocal_manifold_model_selection(
     if not last_file_path.exists():
         last_file_path = model_selection_dir / f"{prefix}{step_counter - 1}.pkl"
 
-    with open(last_file_path, 'rb') as f:
+    with Path(last_file_path).open('rb') as f:
         step_data = pickle.load(f)
 
     final_res = {
@@ -7209,7 +7243,7 @@ def continuous_vocal_manifold_model_selection(
     # a checkpoint of this rule set (see the gate-rule guard), whose Step-0 file
     # carries both fields.
     step0_path = model_selection_dir / f"{prefix}0.pkl"
-    with open(step0_path, 'rb') as f:
+    with Path(step0_path).open('rb') as f:
         _step0 = pickle.load(f)
     metrics_by_strategy = {
         'Final': {SELECTION_SCORE_KEY: best_current_score},

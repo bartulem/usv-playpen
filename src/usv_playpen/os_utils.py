@@ -15,7 +15,7 @@ import re
 import subprocess
 import time as _time
 from collections.abc import Callable, Iterable, Iterator
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import toml
@@ -308,8 +308,8 @@ def _host_experimenter_list() -> list:
 
 
 def rebase_experimenter_in_paths(obj: object = None,
-                                 experimenter_list: list = None,
-                                 exp_id: str = None) -> object:
+                                 experimenter_list: list | None = None,
+                                 exp_id: str | None = None) -> object:
     """
     Description
     -----------
@@ -497,7 +497,7 @@ QLVM_SQUEAK_MAP = "qlvm_squeak"
 
 # Every map whose decoder a consumer of torus coordinates can load: the USV maps
 # of QLVM_MAPS plus the squeak map (qlvm_map_cell_directory).
-QLVM_DECODER_MAPS = QLVM_MAPS + (QLVM_SQUEAK_MAP,)
+QLVM_DECODER_MAPS = (*QLVM_MAPS, QLVM_SQUEAK_MAP)
 
 # The QLVM category bundle: the content-ridge categories of the regular map, written
 # once by build-qlvm-categories (processing.qlvm_categories) from the regular map's
@@ -830,7 +830,7 @@ def cell_cluster_directory(cell: pathlib.Path, level: str) -> pathlib.Path:
     raise FileNotFoundError(error_message)
 
 
-def derive_spectrogram_model_paths(settings: dict = None) -> dict:
+def derive_spectrogram_model_paths(settings: dict | None = None) -> dict:
     """
     Description
     -----------
@@ -999,7 +999,7 @@ def _on_cluster() -> bool:
         return _ON_CLUSTER_CACHE[0]
     try:
         cluster_root = _host_lab_shares()[0][0]["cluster"]
-        result = os.path.isdir(cluster_root)
+        result = os.path.isdir(cluster_root)  # noqa: PTH112  an empty "cluster" entry must stay False; Path("").is_dir() tests the cwd and is True
     except (RuntimeError, KeyError, IndexError):
         result = False
     _ON_CLUSTER_CACHE.append(result)
@@ -1362,7 +1362,7 @@ def atomic_output_path(final_path: str | pathlib.Path) -> Iterator[pathlib.Path]
         with contextlib.suppress(FileNotFoundError):
             tmp.unlink()
         raise
-    os.replace(tmp, final)
+    tmp.replace(final)
 
 
 def wait_for_subprocesses(
@@ -1370,10 +1370,10 @@ def wait_for_subprocesses(
     max_seconds: float,
     label: str,
     poll_interval_s: float = 1.0,
-    message_output: Optional[Callable] = None,
+    message_output: Callable | None = None,
     raise_on_nonzero: bool = False,
     raise_on_timeout: bool = True,
-) -> list[Optional[int]]:
+) -> list[int | None]:
     """
     Description
     -----------
@@ -1447,26 +1447,23 @@ def wait_for_subprocesses(
                 f"{len(still_running_idx)}/{len(subps_list)} subprocess(es) still running; terminating."
             )
             for i in still_running_idx:
-                try:
+                with contextlib.suppress(OSError):
                     subps_list[i].terminate()
-                except OSError:
-                    pass
             # Brief grace period for terminate() to take effect
             grace_end = _time.monotonic() + 3
             while _time.monotonic() < grace_end and any(p.poll() is None for p in subps_list):
                 _time.sleep(0.25)
             for i in still_running_idx:
                 if subps_list[i].poll() is None:
-                    try:
+                    with contextlib.suppress(OSError):
                         subps_list[i].kill()
-                    except OSError:
-                        pass
             if raise_on_timeout:
                 commands_str = "; ".join(f"#{i}: {subps_list[i].args}" for i in still_running_idx)
-                raise TimeoutError(
+                msg = (
                     f"{label}: {len(still_running_idx)} subprocess(es) did not finish within {max_seconds:.0f} s "
                     f"and were terminated -- {commands_str}."
                 )
+                raise TimeoutError(msg)
             # refresh status after termination
             status = [p.poll() for p in subps_list]
             break
@@ -1477,9 +1474,8 @@ def wait_for_subprocesses(
         failures_str = ", ".join(f"#{i}(rc={s}, command: {subps_list[i].args})" for i, s in failed)
         log(f"[{label}] {len(failed)}/{len(subps_list)} subprocess(es) exited with non-zero status: {failures_str}.")
         if raise_on_nonzero:
-            raise RuntimeError(
-                f"{label}: {len(failed)} subprocess(es) failed — {failures_str}."
-            )
+            msg = f"{label}: {len(failed)} subprocess(es) failed — {failures_str}."
+            raise RuntimeError(msg)
 
     return status
 
@@ -2294,7 +2290,7 @@ def first_match_or_raise(
     root: pathlib.Path,
     pattern: str,
     recursive: bool = False,
-    label: Optional[str] = None,
+    label: str | None = None,
 ) -> pathlib.Path:
     """
     Description
@@ -2336,21 +2332,20 @@ def first_match_or_raise(
 
     root = pathlib.Path(root)
     if not root.exists():
-        raise FileNotFoundError(
-            f"{label or pattern}: search root '{root}' does not exist."
-        )
+        msg = f"{label or pattern}: search root '{root}' does not exist."
+        raise FileNotFoundError(msg)
     matches = sorted(root.rglob(pattern) if recursive else root.glob(pattern))
     kind = "rglob" if recursive else "glob"
     if not matches:
-        raise FileNotFoundError(
-            f"{label or pattern}: no match for {kind} pattern '{pattern}' under '{root}'."
-        )
+        msg = f"{label or pattern}: no match for {kind} pattern '{pattern}' under '{root}'."
+        raise FileNotFoundError(msg)
     if len(matches) > 1:
         matches_str = ", ".join(str(match) for match in matches)
-        raise ValueError(
+        msg = (
             f"{label or pattern}: {len(matches)} matches for {kind} pattern '{pattern}' under '{root}', "
             f"expected exactly one: {matches_str}. Remove or rename the stray file(s)."
         )
+        raise ValueError(msg)
     return matches[0]
 
 
@@ -2388,7 +2383,8 @@ def audio_mmap_name_regex(band: str) -> re.Pattern:
     """
 
     if band not in AUDIO_MMAP_BAND_FOLDERS:
-        raise ValueError(f"Unknown audio band {band!r}; expected one of {sorted(AUDIO_MMAP_BAND_FOLDERS)}.")
+        msg = f"Unknown audio band {band!r}; expected one of {sorted(AUDIO_MMAP_BAND_FOLDERS)}."
+        raise ValueError(msg)
     folder = AUDIO_MMAP_BAND_FOLDERS[band]
     return re.compile(
         rf"^(?P<id>[^_]+)_concatenated_audio_{folder}_(?P<sr>\d+)_(?P<n_samples>\d+)_(?P<n_ch>\d+)_int16\.mmap$"
@@ -2437,15 +2433,18 @@ def find_audio_mmap(root_directory: str | pathlib.Path, band: str) -> pathlib.Pa
     regex = audio_mmap_name_regex(band)
     folder = pathlib.Path(root_directory) / "audio" / AUDIO_MMAP_BAND_FOLDERS[band]
     if not folder.is_dir():
-        raise FileNotFoundError(f"{band} audio memmap: folder '{folder}' does not exist.")
+        msg = f"{band} audio memmap: folder '{folder}' does not exist."
+        raise FileNotFoundError(msg)
     matches = sorted(path for path in folder.iterdir() if path.is_file() and regex.match(path.name))
     if not matches:
-        raise FileNotFoundError(f"{band} audio memmap: no file matching '{regex.pattern}' in '{folder}'.")
+        msg = f"{band} audio memmap: no file matching '{regex.pattern}' in '{folder}'."
+        raise FileNotFoundError(msg)
     if len(matches) > 1:
-        raise RuntimeError(
+        msg = (
             f"{band} audio memmap: {len(matches)} files match in '{folder}' "
             f"({', '.join(path.name for path in matches)}); exactly one is required."
         )
+        raise RuntimeError(msg)
     return matches[0]
 
 
@@ -2486,15 +2485,16 @@ def parse_audio_mmap_name(mmap_path: str | pathlib.Path) -> dict:
                 "n_channels": int(match["n_ch"]),
                 "dtype": "int16",
             }
-    raise ValueError(f"'{name}' is not a concatenated audio memmap name of any band.")
+    msg = f"'{name}' is not a concatenated audio memmap name of any band."
+    raise ValueError(msg)
 
 
 def newest_match_or_raise(
     root: pathlib.Path,
     pattern: str,
-    key: Optional[Callable[[pathlib.Path], float]] = None,
+    key: Callable[[pathlib.Path], float] | None = None,
     recursive: bool = False,
-    label: Optional[str] = None,
+    label: str | None = None,
 ) -> pathlib.Path:
     """
     Description
@@ -2529,9 +2529,8 @@ def newest_match_or_raise(
 
     root = pathlib.Path(root)
     if not root.exists():
-        raise FileNotFoundError(
-            f"{label or pattern}: search root '{root}' does not exist."
-        )
+        msg = f"{label or pattern}: search root '{root}' does not exist."
+        raise FileNotFoundError(msg)
     if key is None:
         def key(p):
             """
@@ -2554,9 +2553,8 @@ def newest_match_or_raise(
     matches = list(root.rglob(pattern) if recursive else root.glob(pattern))
     if not matches:
         kind = "rglob" if recursive else "glob"
-        raise FileNotFoundError(
-            f"{label or pattern}: no match for {kind} pattern '{pattern}' under '{root}'."
-        )
+        msg = f"{label or pattern}: no match for {kind} pattern '{pattern}' under '{root}'."
+        raise FileNotFoundError(msg)
     return max(matches, key=key)
 
 

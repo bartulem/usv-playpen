@@ -16,51 +16,68 @@ classification using both Linear (sklearn) and Non-linear (PyGAM) engines.
 
 from __future__ import annotations
 
-from datetime import datetime
 import json
-import numpy as np
-from pathlib import Path
-from pygam import LogisticGAM, te
 import pickle
 import time
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+from pygam import LogisticGAM, te
 from sklearn.linear_model import LogisticRegressionCV
-from sklearn.metrics import balanced_accuracy_score, log_loss, f1_score, recall_score, roc_auc_score, brier_score_loss
-from sklearn.model_selection import StratifiedShuffleSplit, ShuffleSplit
+from sklearn.metrics import (
+    balanced_accuracy_score,
+    brier_score_loss,
+    f1_score,
+    log_loss,
+    recall_score,
+    roc_auc_score,
+)
+from sklearn.model_selection import ShuffleSplit, StratifiedShuffleSplit
 from tqdm import tqdm
 
-from .load_input_files import load_behavioral_feature_data, find_onset_epochs
-from .load_input_files import is_vocal_signal, onset_target_tag, require_labels_for_vocal_predictors, require_usv_category_column
-from .load_input_files import validate_vocal_class_settings
-from .modeling_metadata import (
-    build_input_metadata, derive_experimental_condition,
-    derive_feature_zoo_full, derive_camera_fps_field, inject_metadata,
-)
-from .load_input_files import _calculate_ibi_threshold
-from .modeling_utils import (
-    prepare_modeling_sessions,
-    seeded_session_holdout,
-    resolve_mouse_roles,
-    select_kinematic_columns,
-    build_vocal_signal_columns,
-    identify_empty_event_sessions,
-    harmonize_session_columns,
-    zscore_features_across_sessions,
-    pool_session_arrays,
-    balance_two_class_arrays,
-    classification_inner_cv_splits,
-    unroll_history_matrix,
-    concat_two_class_with_labels,
-    shuffle_train_test_arrays,
-    bounded_test_proportion,
-    expected_calibration_error,
-    safe_matthews_corrcoef,
-    safe_confusion_matrix,
-    run_predictor_audits,
-    format_split_line,
-    within_group_permutation,
-)
 from ..analyses.compute_behavioral_features import FeatureZoo
 from ..os_utils import atomic_output_path, resolve_modeling_setting
+from .load_input_files import (
+    _calculate_ibi_threshold,
+    find_onset_epochs,
+    is_vocal_signal,
+    load_behavioral_feature_data,
+    onset_target_tag,
+    require_labels_for_vocal_predictors,
+    require_usv_category_column,
+    validate_vocal_class_settings,
+)
+from .modeling_metadata import (
+    build_input_metadata,
+    derive_camera_fps_field,
+    derive_experimental_condition,
+    derive_feature_zoo_full,
+    inject_metadata,
+)
+from .modeling_utils import (
+    balance_two_class_arrays,
+    bounded_test_proportion,
+    build_vocal_signal_columns,
+    classification_inner_cv_splits,
+    concat_two_class_with_labels,
+    expected_calibration_error,
+    format_split_line,
+    harmonize_session_columns,
+    identify_empty_event_sessions,
+    pool_session_arrays,
+    prepare_modeling_sessions,
+    resolve_mouse_roles,
+    run_predictor_audits,
+    safe_confusion_matrix,
+    safe_matthews_corrcoef,
+    seeded_session_holdout,
+    select_kinematic_columns,
+    shuffle_train_test_arrays,
+    unroll_history_matrix,
+    within_group_permutation,
+    zscore_features_across_sessions,
+)
 
 # Expected-Calibration-Error histogram bin count, read from the settings block
 # rather than a bare 10 literal.
@@ -123,11 +140,12 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         if modeling_settings_dict is None:
             settings_path = Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
             try:
-                with open(settings_path, 'r') as settings_json_file:
+                with Path(settings_path).open() as settings_json_file:
                     self.modeling_settings = json.load(settings_json_file)
 
-            except FileNotFoundError:
-                raise FileNotFoundError(f"Settings file not found at {settings_path}")
+            except FileNotFoundError as err:
+                msg = f"Settings file not found at {settings_path}"
+                raise FileNotFoundError(msg) from err
         else:
             self.modeling_settings = modeling_settings_dict
 
@@ -153,18 +171,20 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             self.history_frames = int(np.floor(camera_rate * filter_history_sec))
             print(f"History frames calculated: {self.history_frames} (for {filter_history_sec}s at {camera_rate}fps)")
         except KeyError as e:
-            raise KeyError(f"Setting missing for history_frames calculation: {e}")
+            msg = f"Setting missing for history_frames calculation: {e}"
+            raise KeyError(msg) from e
 
         # Fail fast on a sub-frame history window: a `filter_history` shorter
         # than one camera frame floors to 0 here, which would silently yield
         # (0, 0)-shaped window arrays and degenerate empty downstream results
         # instead of a clear configuration error.
         if self.history_frames < 1:
-            raise ValueError(
+            msg = (
                 f"history_frames computed as {self.history_frames} (< 1) from "
                 f"filter_history={filter_history_sec}s at camera_rate={camera_rate}fps; "
                 f"the history window must span at least one frame."
             )
+            raise ValueError(msg)
 
         FeatureZoo.__init__(self)
 
@@ -365,7 +385,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             predictor_idx=predictor_mouse_idx,
         )
         if not revised_behavioral_predictors:
-            raise ValueError("No features selected.")
+            msg = "No features selected."
+            raise ValueError(msg)
         print(f"Final feature suffixes selected: {revised_behavioral_predictors}")
 
         print("Z-scoring features across sessions...")
@@ -563,7 +584,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             for full_column_name in session_df.columns:
 
                 base_feature = full_column_name.split('.')[-1]
-                if base_feature.isdigit(): continue
+                if base_feature.isdigit():
+                    continue
 
                 # Determine generic key based on prefix
                 if full_column_name.startswith(f"{target_mouse_name}."):
@@ -573,7 +595,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 else:
                     generic_key = base_feature
 
-                if generic_key not in modeling_final_data_dict: modeling_final_data_dict[generic_key] = {}
+                if generic_key not in modeling_final_data_dict:
+                    modeling_final_data_dict[generic_key] = {}
                 if beh_session_id not in modeling_final_data_dict[generic_key]:
                     modeling_final_data_dict[generic_key][beh_session_id] = {}
 
@@ -586,7 +609,9 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 column_data_np = session_df[full_column_name].to_numpy()
                 max_frame_idx = len(column_data_np)
 
-                def _collect_valid_windows(times):
+                def _collect_valid_windows(times, *, session_sampling_rate=session_sampling_rate,
+                                           history_frames=history_frames, max_frame_idx=max_frame_idx,
+                                           column_data_np=column_data_np):
                     """
                     Cut the history window preceding every event time out of the
                     session's feature column. A window spans the `history_frames`
@@ -598,6 +623,17 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     ----------
                     times : np.ndarray
                         Event times in seconds.
+                    session_sampling_rate : float
+                        Camera sampling rate (fps) of the current session; bound at
+                        definition time to the current loop iteration's value.
+                    history_frames : int
+                        History-window length in frames; bound at definition time.
+                    max_frame_idx : int
+                        Number of frames in the session's feature column; bound at
+                        definition time to the current loop iteration's value.
+                    column_data_np : np.ndarray
+                        The session's feature column; bound at definition time to
+                        the current loop iteration's value.
 
                     Returns
                     -------
@@ -613,7 +649,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     valid_starts = starts[valid_mask]
                     valid_ends = ends[valid_mask]
                     out = np.empty((valid_starts.size, history_frames), dtype=column_data_np.dtype)
-                    for row_idx, (s, e) in enumerate(zip(valid_starts, valid_ends)):
+                    for row_idx, (s, e) in enumerate(zip(valid_starts, valid_ends, strict=False)):
                         chunk = column_data_np[s:e].copy()
                         chunk[np.isnan(chunk)] = 0.0
                         out[row_idx, :] = chunk
@@ -630,10 +666,10 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             print("Warning: Final data dictionary is empty.")
             return
 
-        final_covariate_names = sorted(list(modeling_final_data_dict.keys()))
+        final_covariate_names = sorted(modeling_final_data_dict.keys())
         total_covariates = len(final_covariate_names)
         first_feat = final_covariate_names[0]
-        all_sessions = sorted(list(modeling_final_data_dict[first_feat].keys()))
+        all_sessions = sorted(modeling_final_data_dict[first_feat].keys())
 
         alignment_passed = True
         mismatched_sessions = []
@@ -712,7 +748,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             pickle.dump(artifact, f)
         print(f"\n[+] Successfully saved PER-SESSION renamed modeling input data to:\n    {save_path}")
 
-    def create_data_splits(self, feature_data: dict, strategy_override: str = None):
+    def create_data_splits(self, feature_data: dict, strategy_override: str | None = None):
         """
         A generator that yields train/test splits based on the 'split_strategy'.
 
@@ -857,13 +893,14 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                                                 groups_train=np.concatenate((g_pos_bal, g_neg_bal)))
 
         else:
-            raise ValueError(f"Unknown split_strategy: {split_strategy}. Must be 'mixed' or 'session'.")
+            msg = f"Unknown split_strategy: {split_strategy}. Must be 'mixed' or 'session'."
+            raise ValueError(msg)
 
     def _run_model_for_feature_sklearn(self,
                                      feature_name: str,
                                      feature_data: dict,
                                      basis_matrix: np.ndarray,
-                                     held_out_session_ids: list = None
+                                     held_out_session_ids: list | None = None
                                      ) -> tuple[str, dict]:
         """
         Executes a univariate Logistic Regression analysis for a single behavioral or vocal feature.
@@ -1039,8 +1076,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         # and `held_sessions` empty, an exact no-op.
         held_out_session_ids = held_out_session_ids if held_out_session_ids is not None else []
         _held_set = set(held_out_session_ids)
-        dev_sessions = [s for s in feature_data.keys() if s not in _held_set]
-        held_sessions = [s for s in feature_data.keys() if s in _held_set]
+        dev_sessions = [s for s in feature_data if s not in _held_set]
+        held_sessions = [s for s in feature_data if s in _held_set]
         dev_feature_data = {s: feature_data[s] for s in dev_sessions}
         if held_sessions:
             print(
@@ -1337,8 +1374,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
     def _run_model_for_feature_pygam(self,
                                    feature_name: str,
                                    feature_data: dict,
-                                   basis_matrix: np.ndarray,  # NOT USED
-                                   held_out_session_ids: list = None
+                                   basis_matrix: np.ndarray,  # noqa: ARG002  NOT USED; shared engine interface, tests pass basis_matrix= by keyword
+                                   held_out_session_ids: list | None = None
                                    ) -> tuple[str, dict]:
         """
         Runs modeling analysis for a single feature using pygam's LogisticGAM
@@ -1539,8 +1576,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         # `dev_feature_data == feature_data` and `held_sessions` empty, a no-op.
         held_out_session_ids = held_out_session_ids if held_out_session_ids is not None else []
         _held_set = set(held_out_session_ids)
-        dev_sessions = [s for s in feature_data.keys() if s not in _held_set]
-        held_sessions = [s for s in feature_data.keys() if s in _held_set]
+        dev_sessions = [s for s in feature_data if s not in _held_set]
+        held_sessions = [s for s in feature_data if s in _held_set]
         dev_feature_data = {s: feature_data[s] for s in dev_sessions}
         if held_sessions:
             print(

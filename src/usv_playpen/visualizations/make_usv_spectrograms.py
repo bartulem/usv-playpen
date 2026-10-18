@@ -161,7 +161,7 @@ def _open_path_in_default_viewer(path, message_output: Callable | None = None) -
         if sys.platform == "darwin":
             subprocess.run(["open", str(path)], check=False, timeout=60)
         elif os.name == "nt":
-            os.startfile(str(path))  # noqa: S606 -- Windows-only default opener
+            os.startfile(str(path))  # Windows-only default opener
         else:
             subprocess.run(["xdg-open", str(path)], check=False, timeout=60)
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -875,7 +875,7 @@ class USVSpectrogramPlotter:
         cfg = self.visualizations_parameter_dict["make_usv_spectrograms"]
         hop_length = cfg["nfft"] // 4
         canvas_fps = float(sampling_rate) / float(hop_length)
-        canvas_n_bins = max(1, int(round((end_time_sec - start_time_sec) * canvas_fps)))
+        canvas_n_bins = max(1, int(round((end_time_sec - start_time_sec) * canvas_fps)))  # noqa: RUF046  int() kept: round() of a numpy float returns a float under numpy<2
 
         h5_path = resolve_consolidated_h5_path(
             self.visualizations_parameter_dict["shared_resources"]["spectrograms_dir"]
@@ -909,7 +909,7 @@ class USVSpectrogramPlotter:
                 usv_start = float(row["start"])
                 usv_stop = float(row["stop"])
                 n_target = max(
-                    1, int(round((usv_stop - usv_start) * canvas_fps))
+                    1, int(round((usv_stop - usv_start) * canvas_fps))  # noqa: RUF046  int() kept: round() of a numpy float returns a float under numpy<2
                 )
                 spec = sess_specs[spec_idx, :, :].astype(np.float32)
                 valid_cols = max(1, min(int(sess_durations[spec_idx]), n_time_in_spec))
@@ -931,7 +931,7 @@ class USVSpectrogramPlotter:
                 tile_peak = float(spec_resampled.max())
                 if tile_peak > 0.0:
                     spec_resampled = spec_resampled / tile_peak
-                x_start = int(round((usv_start - start_time_sec) * canvas_fps))
+                x_start = int(round((usv_start - start_time_sec) * canvas_fps))  # noqa: RUF046  int() kept: round() of a numpy float returns a float under numpy<2
                 x_end = x_start + spec_resampled.shape[1]
                 x_clip_start = max(0, x_start)
                 x_clip_end = min(canvas_n_bins, x_end)
@@ -1546,7 +1546,7 @@ class USVSpectrogramPlotter:
             if "peak_amp_ch" in seq_df.columns:
                 peak_chs = seq_df["peak_amp_ch"].drop_nulls()
                 if peak_chs.len() > 0:
-                    raw_ch = int(round(float(peak_chs.mode().to_list()[0])))
+                    raw_ch = round(float(peak_chs.mode().to_list()[0]))
             raw_ch = raw_ch if 0 <= raw_ch < channel_num else 0
             data_slice = np.asarray(audio_data[start_signal:end_signal, raw_ch])
             time_vec = np.linspace(
@@ -1774,7 +1774,7 @@ def plot_usv_property_histograms(
         message_output = print
 
     sessions_txt_path = configure_path(sessions_txt_path)
-    with open(sessions_txt_path, "r") as txt_file:
+    with pathlib.Path(sessions_txt_path).open() as txt_file:
         session_roots = [
             configure_path(stripped)
             for stripped in (line.strip() for line in txt_file)
@@ -1786,7 +1786,7 @@ def plot_usv_property_histograms(
     n_sessions_loaded = 0
     n_usvs_total = 0
 
-    columns_to_read = list(set(properties_in_csv + [NOISE_COLUMN]))
+    columns_to_read = list({*properties_in_csv, NOISE_COLUMN})
     for session_root in session_roots:
         try:
             csv_path = first_match_or_raise(
@@ -1802,7 +1802,7 @@ def plot_usv_property_histograms(
             df = pls.read_csv(str(csv_path), columns=columns_to_read)
         except pls.exceptions.ColumnNotFoundError:
             df = pls.read_csv(str(csv_path))
-        except (OSError, IOError) as exc:
+        except OSError as exc:
             message_output(f"[skip] {csv_path}: {exc}")
             continue
         if exclude_noise_usvs:
@@ -1823,7 +1823,7 @@ def plot_usv_property_histograms(
     fig, axes = plt.subplots(
         nrows=1, ncols=len(properties_in_csv), figsize=fig_size, dpi=fig_dpi
     )
-    for ax_idx, (ax, p) in enumerate(zip(axes, properties_in_csv)):
+    for ax_idx, (ax, p) in enumerate(zip(axes, properties_in_csv, strict=False)):
         spec = USV_PROPERTY_DISPLAY[p]
         lo_native, hi_native = spec["bounds_native"]
         factor = spec["display_factor"]
@@ -1958,7 +1958,7 @@ def _count_usvs_per_session(
     """
 
     sessions_txt_path = configure_path(sessions_txt_path)
-    with open(sessions_txt_path, "r") as txt_file:
+    with pathlib.Path(sessions_txt_path).open() as txt_file:
         session_roots = [
             configure_path(stripped)
             for stripped in (line.strip() for line in txt_file)
@@ -1985,7 +1985,7 @@ def _count_usvs_per_session(
                 df = pls.read_csv(str(csv_path))
         except pls.exceptions.ColumnNotFoundError:
             df = pls.read_csv(str(csv_path))
-        except (OSError, IOError) as exc:
+        except OSError as exc:
             message_output(f"[skip] {csv_path}: {exc}")
             continue
         if exclude_noise_usvs:
@@ -2146,7 +2146,7 @@ def plot_session_type_usv_counts(
     ax.minorticks_off()
     ax.tick_params(axis="both", length=0, labelsize=8)
 
-    max_with_error = max(m + s for m, s in zip(means, sems)) if means else 1.0
+    max_with_error = max(m + s for m, s in zip(means, sems, strict=False)) if means else 1.0
     ax.set_xlim(0, max_with_error * 1.15)
     ax.set_xticks(np.linspace(0, max_with_error * 1.15, 4))
 
@@ -2363,12 +2363,11 @@ def plot_session_usv_timeline(
         win_lo, win_hi = float(time_window[0]), float(time_window[1])
         df = df.filter((pls.col("stop") > win_lo) & (pls.col("start") < win_hi))
         x_lo, x_hi = win_lo, win_hi
+    elif df.height > 0:
+        x_lo = 0.0
+        x_hi = float(df["stop"].max())
     else:
-        if df.height > 0:
-            x_lo = 0.0
-            x_hi = float(df["stop"].max())
-        else:
-            x_lo, x_hi = 0.0, 1.0
+        x_lo, x_hi = 0.0, 1.0
 
     fig, ax = plt.subplots(figsize=fig_size, dpi=fig_dpi)
     y_center = 0.0
@@ -2394,7 +2393,7 @@ def plot_session_usv_timeline(
             continue
         starts = sub["start"].to_numpy()
         durations = (sub["stop"] - sub["start"]).to_numpy()
-        x_ranges = list(zip(starts.tolist(), durations.tolist()))
+        x_ranges = list(zip(starts.tolist(), durations.tolist(), strict=True))
         ax.broken_barh(
             x_ranges,
             (y_bottom, rectangle_height),
@@ -2484,7 +2483,7 @@ EMBEDDING_FEATURE_COLS = (
 # explorer, and the vocal-class filters. The cache file is invalidated automatically
 # when these columns are missing -- see schema-check logic in
 # ``build_pooled_embeddings_df``.
-EMBEDDING_EXTRA_COLS = ("emitter", "duration", *VOCAL_FLAG_COLUMNS) + EMBEDDING_FEATURE_COLS
+EMBEDDING_EXTRA_COLS = ("emitter", "duration", *VOCAL_FLAG_COLUMNS, *EMBEDDING_FEATURE_COLS)
 
 
 def _pooled_summaries_fingerprint(
@@ -2594,7 +2593,8 @@ def read_cohort_session_roots(input_files_directory: str, label: str) -> list[st
     input_files_dir = pathlib.Path(configure_path(input_files_directory))
     list_files = sorted(p for p in input_files_dir.glob("*sessions_list.txt") if "playback" not in p.name.lower())
     if not list_files:
-        raise FileNotFoundError(f"{label}: no '*sessions_list.txt' under '{input_files_dir}'.")
+        msg = f"{label}: no '*sessions_list.txt' under '{input_files_dir}'."
+        raise FileNotFoundError(msg)
     roots, seen = [], set()
     for list_file in list_files:
         for line in list_file.read_text().splitlines():
@@ -2820,7 +2820,7 @@ def build_pooled_embeddings_df(
     )
 
     sessions_txt_path = configure_path(sessions_txt_path)
-    with open(sessions_txt_path, "r") as txt_file:
+    with pathlib.Path(sessions_txt_path).open() as txt_file:
         session_roots = [
             configure_path(stripped)
             for stripped in (line.strip() for line in txt_file)
@@ -2873,7 +2873,7 @@ def build_pooled_embeddings_df(
             df = pls.read_csv(str(csv_path), columns=select_cols)
         except pls.exceptions.ColumnNotFoundError:
             df = pls.read_csv(str(csv_path))
-        except (OSError, IOError) as exc:
+        except OSError as exc:
             message_output(f"[skip] {csv_path}: {exc}")
             continue
 
@@ -2931,7 +2931,7 @@ def build_pooled_embeddings_df(
                 # CSV inference reads a flag as Boolean, or as Null in a session whose
                 # column is empty; coerce so every session frame concatenates.
                 df = df.with_columns(pls.col(flag).cast(pls.Utf8).str.to_lowercase().eq("true").alias(flag))
-        for c in ("emitter", "sex", "duration", *VOCAL_FLAG_COLUMNS) + EMBEDDING_FEATURE_COLS:
+        for c in ("emitter", "sex", "duration", *VOCAL_FLAG_COLUMNS, *EMBEDDING_FEATURE_COLS):
             if c in df.columns:
                 keep_cols.append(c)
         frames.append(df.select(keep_cols))
@@ -2957,7 +2957,7 @@ def build_pooled_embeddings_df(
     # feature would force a rebuild on every load. Extending the schema still
     # invalidates an older cache once (it lacks the new column), then this fill
     # keeps it stable.
-    fill_dtypes = {c: pls.Float64 for c in ("duration",) + EMBEDDING_FEATURE_COLS}
+    fill_dtypes = dict.fromkeys(("duration", *EMBEDDING_FEATURE_COLS), pls.Float64)
     fill_dtypes["sex"] = pls.Utf8
     for flag in VOCAL_FLAG_COLUMNS:
         fill_dtypes[flag] = pls.Boolean
@@ -2966,7 +2966,7 @@ def build_pooled_embeddings_df(
     # while the cache validator above still requires it, so a written cache would
     # fail its own check and rebuild on every load. Filling the family with typed
     # nulls keeps the cache valid and the schema stable.
-    fill_dtypes.update({c: pls.Float64 for c in EMBEDDING_COORD_COLS})
+    fill_dtypes.update(dict.fromkeys(EMBEDDING_COORD_COLS, pls.Float64))
     fill_dtypes.update({c: pls.Int64 for c in EMBEDDING_LABEL_COLS if c not in EMBEDDING_OPTIONAL_LABEL_COLS})
     missing_fills = [
         pls.lit(None, dtype=dtype).alias(c)
@@ -3149,7 +3149,7 @@ def _pick_spiral_with_grid(
 
     used: set[int] = set()
     picks: list[int] = []
-    for tx, ty in zip(xs_in_pick, ys_in_pick):
+    for tx, ty in zip(xs_in_pick, ys_in_pick, strict=False):
         dx = pts[:, 0] - tx
         dy = pts[:, 1] - ty
         if periodic:
@@ -3406,7 +3406,7 @@ def _pick_category_samples(
         xs_s, ys_s = xs_d[sel], ys_d[sel]
         used_s: set[int] = set()
         picks_s: list[int] = []
-        for tx, ty in zip(xs_s, ys_s):
+        for tx, ty in zip(xs_s, ys_s, strict=True):
             d2 = (pts[:, 0] - tx) ** 2 + (pts[:, 1] - ty) ** 2
             for kk in np.argsort(d2):
                 kk_int = int(kk)
@@ -3755,7 +3755,7 @@ def plot_embedding_with_category_thumbnails(
             int(k): (float(v[0]), float(v[1])) for k, v in cluster_centers_xy.items()
         }
     elif cluster_centers_json_path is not None:
-        with open(configure_path(cluster_centers_json_path)) as _f:
+        with pathlib.Path(configure_path(cluster_centers_json_path)).open() as _f:
             _prov = json.load(_f)
         # Direct key access: a provenance JSON explicitly handed in via
         # ``cluster_centers_json_path`` is asserted to carry the
@@ -3966,7 +3966,7 @@ def plot_embedding_with_category_thumbnails(
                 continue
             xs = picks[x_col].to_numpy()
             ys = picks[y_col].to_numpy()
-            for k, (px, py) in enumerate(zip(xs, ys), start=1):
+            for k, (px, py) in enumerate(zip(xs, ys, strict=True), start=1):
                 ax_scatter.text(
                     px, py, str(k),
                     fontsize=pick_number_fontsize, fontweight="bold",
@@ -3987,7 +3987,7 @@ def plot_embedding_with_category_thumbnails(
             cluster_id_centres = {
                 int(cat_id): (float(cx), float(cy))
                 for cat_id, (cx, cy) in cluster_centers_resolved.items()
-                if int(cat_id) in set(int(c) for c in categories)
+                if int(cat_id) in {int(c) for c in categories}
             }
         else:
             cluster_id_centres = {}
@@ -4262,8 +4262,7 @@ def plot_embedding_with_category_thumbnails(
                         dur_cache[sess] = grp["durations"][:]
                     d = int(dur_cache[sess][spec_idx])
                     d = max(1, min(d, n_time_max))
-                    if d > max_dur:
-                        max_dur = d
+                    max_dur = max(max_dur, d)
             unstretched_x_max = float(max_dur)
 
         for cat_idx, cat in enumerate(categories):

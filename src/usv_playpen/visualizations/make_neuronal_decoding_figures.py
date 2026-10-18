@@ -82,7 +82,7 @@ def blend(colour: str, weight: float, background: str = COLOR_PAGE) -> str:
 
     front = [int(colour[1 + 2 * k:3 + 2 * k], 16) for k in range(3)]
     back = [int(background[1 + 2 * k:3 + 2 * k], 16) for k in range(3)]
-    return "#" + "".join(f"{round(weight * f + (1 - weight) * b):02x}" for f, b in zip(front, back))
+    return "#" + "".join(f"{round(weight * f + (1 - weight) * b):02x}" for f, b in zip(front, back, strict=False))
 
 
 class NeuronalDecodingFigureMaker:
@@ -230,7 +230,7 @@ class NeuronalDecodingFigureMaker:
 
     @staticmethod
     def _draw_curve(axis, curve: dict, shade: str, style: str, width: float, size: float,
-                    label: str = None) -> None:
+                    label: str | None = None) -> None:
         """
         Description
         -----------
@@ -265,7 +265,7 @@ class NeuronalDecodingFigureMaker:
                   zorder=2, label=label)
         axis.errorbar(curve["rungs"], curve["means"], yerr=curve["halves"], fmt="none",
                       ecolor=shade, elinewidth=width * 0.85, capsize=0, zorder=3)
-        for rung, mean, cleared in zip(curve["rungs"], curve["means"], curve["clears"]):
+        for rung, mean, cleared in zip(curve["rungs"], curve["means"], curve["clears"], strict=False):
             axis.plot(rung, mean, marker="o", markersize=size,
                       markerfacecolor=shade if cleared else COLOR_PAGE,
                       markeredgecolor=COLOR_TRACE, markeredgewidth=0.5, zorder=4)
@@ -331,7 +331,7 @@ class NeuronalDecodingFigureMaker:
                                 PAGE_MARGIN_INCHES["bottom"] / height,
                                 MAIN_PANEL_INCHES[0] / width, MAIN_PANEL_INCHES[1] / height))
 
-        for (mouse, session, usvs), style in zip(focal_sessions, CURVE_STYLES):
+        for (mouse, session, usvs), style in zip(focal_sessions, CURVE_STYLES, strict=False):
             curve = self._curve(session, focal_area, unit_counts)
             span = max(high - low, 1)
             weight = (OPACITY_RANGE[0]

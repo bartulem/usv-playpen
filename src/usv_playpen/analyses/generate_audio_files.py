@@ -19,7 +19,12 @@ import soundfile as sf
 from scipy.io import wavfile
 from tqdm import tqdm
 
-from ..os_utils import find_base_path, find_cluster_path, newest_match_or_raise, resolve_data_root
+from ..os_utils import (
+    find_base_path,
+    find_cluster_path,
+    newest_match_or_raise,
+    resolve_data_root,
+)
 from ..time_utils import is_gui_context, smart_wait
 
 # Maps a playback `context_label` to (context filename token, sex subdirectory / output-name
@@ -166,9 +171,12 @@ class AudioGenerator:
                            'freq_shift_settings_dict', 'message_output'}
         unexpected_kwargs = set(kwargs) - expected_kwargs
         if unexpected_kwargs:
-            raise TypeError(f"{type(self).__name__}() got unexpected keyword argument(s) "
+            msg = (
+                f"{type(self).__name__}() got unexpected keyword argument(s) "
                             f"{', '.join(map(repr, sorted(unexpected_kwargs)))}; expected only "
-                            f"{', '.join(map(repr, sorted(expected_kwargs)))}.")
+                            f"{', '.join(map(repr, sorted(expected_kwargs)))}."
+            )
+            raise TypeError(msg)
         for kw_arg, kw_val in kwargs.items():
             self.__dict__[kw_arg] = kw_val
 
@@ -544,9 +552,9 @@ class AudioGenerator:
             # buffer -> O(N^2) (the source of the docstring's "~18 minutes for 10k USVs").
             replay_chunks = [arr_start_with_ipi.copy()]
 
-            with (open(output_file_dir / f"usv_playback_n={total_usv_number}_{current_time}_spacing.txt",
+            with ((output_file_dir / f"usv_playback_n={total_usv_number}_{current_time}_spacing.txt").open(
                        'w+') as replay_txt_file,
-                  open(output_file_dir / f"usv_playback_n={total_usv_number}_{current_time}_usvids.txt",
+                  (output_file_dir / f"usv_playback_n={total_usv_number}_{current_time}_usvids.txt").open(
                        'w+') as usv_id_txt_file):
                 replay_txt_file.write(f'{ipi_duration_samples} \n')
                 for _ in tqdm(range(total_usv_number)):
@@ -609,7 +617,7 @@ class AudioGenerator:
             message = f"SoX exited with return code {completed.returncode}: {sox_args}"
             raise RuntimeError(message)
 
-    def frequency_shift_audio_segment(self, seq_start: float = None, seq_duration: float = None) -> Path | None:
+    def frequency_shift_audio_segment(self, seq_start: float | None = None, seq_duration: float | None = None) -> Path | None:
         """
         Description
         -----------

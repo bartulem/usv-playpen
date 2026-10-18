@@ -57,7 +57,6 @@ import numpy as np
 import tifffile
 from tqdm import tqdm
 
-
 _SMARTSPIM_CHANNEL_FROM_WAVELENGTH = {488: 'Ex_488_Ch0', 561: 'Ex_561_Ch1'}
 _STAGE_UNIT_UM = 0.1
 
@@ -106,9 +105,8 @@ def _parse_smartspim_metadata(metadata_path: Path) -> dict:
                     'pixel_size_um': float(data[4]),
                     'z_step_um': float(data[5]),
                 }
-    raise ValueError(
-        f"Could not parse pixel size / Z step from {metadata_path}."
-    )
+    msg = f"Could not parse pixel size / Z step from {metadata_path}."
+    raise ValueError(msg)
 
 
 def _enumerate_tile_dirs(channel_dir: Path) -> dict[tuple[int, int], Path]:
@@ -217,7 +215,8 @@ def _compute_tile_layout(
     """
 
     if not tile_positions:
-        raise ValueError("tile_positions is empty.")
+        msg = "tile_positions is empty."
+        raise ValueError(msg)
 
     min_x = min(x for x, _ in tile_positions)
     min_y = min(y for _, y in tile_positions)
@@ -229,8 +228,8 @@ def _compute_tile_layout(
     for x_stage, y_stage in tile_positions:
         x_off_um = (x_stage - min_x) * _STAGE_UNIT_UM
         y_off_um = (y_stage - min_y) * _STAGE_UNIT_UM
-        x_off_px = int(round(x_off_um / pixel_size_um))
-        y_off_px = int(round(y_off_um / pixel_size_um))
+        x_off_px = round(x_off_um / pixel_size_um)
+        y_off_px = round(y_off_um / pixel_size_um)
         layout[(x_stage, y_stage)] = (y_off_px, x_off_px)
         max_y_end = max(max_y_end, y_off_px + height)
         max_x_end = max(max_x_end, x_off_px + width)
@@ -277,9 +276,8 @@ def _make_bevel_weights(
     """
 
     if feather_pixels < 1:
-        raise ValueError(
-            f"feather_pixels must be >= 1, got {feather_pixels}."
-        )
+        msg = f"feather_pixels must be >= 1, got {feather_pixels}."
+        raise ValueError(msg)
     height, width = tile_shape_yx
     rows = np.arange(height, dtype=np.float32)
     cols = np.arange(width, dtype=np.float32)
@@ -315,16 +313,16 @@ def _resolve_channel_dir(raw_dir: Path, wavelength_nm: int) -> Path:
     """
 
     if wavelength_nm not in _SMARTSPIM_CHANNEL_FROM_WAVELENGTH:
-        raise ValueError(
+        msg = (
             f"wavelength_nm must be one of "
             f"{sorted(_SMARTSPIM_CHANNEL_FROM_WAVELENGTH)}, got "
             f"{wavelength_nm!r}."
         )
+        raise ValueError(msg)
     channel_dir = raw_dir / _SMARTSPIM_CHANNEL_FROM_WAVELENGTH[wavelength_nm]
     if not channel_dir.is_dir():
-        raise FileNotFoundError(
-            f"SmartSPIM channel directory not found: {channel_dir}."
-        )
+        msg = f"SmartSPIM channel directory not found: {channel_dir}."
+        raise FileNotFoundError(msg)
     return channel_dir
 
 
@@ -419,30 +417,30 @@ def stitch_smartspim_tiles(
     else:
         wavelengths = tuple(wavelength_nm)
     if not wavelengths:
-        raise ValueError(
-            "wavelength_nm must be a non-empty int or iterable of ints."
-        )
+        msg = "wavelength_nm must be a non-empty int or iterable of ints."
+        raise ValueError(msg)
     for wl in wavelengths:
         if wl not in _SMARTSPIM_CHANNEL_FROM_WAVELENGTH:
-            raise ValueError(
+            msg = (
                 f"wavelength_nm values must each be one of "
                 f"{sorted(_SMARTSPIM_CHANNEL_FROM_WAVELENGTH)}, got {wl!r}."
             )
+            raise ValueError(msg)
 
     output_path_template = str(output_path)
     has_placeholder = '{wavelength_nm}' in output_path_template
     if len(wavelengths) > 1 and not has_placeholder:
-        raise ValueError(
+        msg = (
             "output_path must contain a '{wavelength_nm}' placeholder when "
             "more than one wavelength is requested."
         )
+        raise ValueError(msg)
 
     raw_path = Path(raw_dir)
     metadata_path = raw_path / 'metadata.txt'
     if not metadata_path.is_file():
-        raise FileNotFoundError(
-            f"SmartSPIM metadata.txt not found: {metadata_path}."
-        )
+        msg = f"SmartSPIM metadata.txt not found: {metadata_path}."
+        raise FileNotFoundError(msg)
     meta = _parse_smartspim_metadata(metadata_path)
 
     written: list[Path] = []
@@ -451,39 +449,40 @@ def stitch_smartspim_tiles(
 
         tile_dirs = _enumerate_tile_dirs(channel_dir)
         if not tile_dirs:
-            raise FileNotFoundError(
-                f"No SmartSPIM tile directories found under {channel_dir}."
-            )
+            msg = f"No SmartSPIM tile directories found under {channel_dir}."
+            raise FileNotFoundError(msg)
 
         plane_files_per_tile: dict[tuple[int, int], list[Path]] = {}
         for tile_xy, tile_dir in tile_dirs.items():
             files = _list_plane_files(tile_dir)
             if not files:
-                raise FileNotFoundError(
-                    f"No TIFF planes found in tile directory {tile_dir}."
-                )
+                msg = f"No TIFF planes found in tile directory {tile_dir}."
+                raise FileNotFoundError(msg)
             plane_files_per_tile[tile_xy] = files
 
         plane_counts = {len(v) for v in plane_files_per_tile.values()}
         if len(plane_counts) != 1:
-            raise ValueError(
+            msg = (
                 f"Inconsistent number of Z planes across tiles in "
                 f"{channel_dir}: {sorted(plane_counts)}."
             )
+            raise ValueError(msg)
         n_planes = plane_counts.pop()
 
         first_tile_files = next(iter(plane_files_per_tile.values()))
         first_plane = tifffile.imread(first_tile_files[0])
         if first_plane.ndim != 2:
-            raise ValueError(
+            msg = (
                 f"Expected 2D tile planes, got shape {first_plane.shape} from "
                 f"{first_tile_files[0]}."
             )
+            raise ValueError(msg)
         if not np.issubdtype(first_plane.dtype, np.unsignedinteger):
-            raise ValueError(
+            msg = (
                 f"Expected unsigned integer tile dtype, got "
                 f"{first_plane.dtype}."
             )
+            raise ValueError(msg)
         tile_shape_yx = (int(first_plane.shape[0]), int(first_plane.shape[1]))
         tile_dtype = first_plane.dtype
         dtype_max = int(np.iinfo(tile_dtype).max)
@@ -514,10 +513,11 @@ def stitch_smartspim_tiles(
                 for tile_xy, files in plane_files_per_tile.items():
                     tile_img = tifffile.imread(files[z]).astype(np.float32)
                     if tile_img.shape != tile_shape_yx:
-                        raise ValueError(
+                        msg = (
                             f"Plane shape {tile_img.shape} at {files[z]} does "
                             f"not match reference {tile_shape_yx}."
                         )
+                        raise ValueError(msg)
                     y_off, x_off = layout[tile_xy]
                     y_slice = slice(y_off, y_off + tile_height)
                     x_slice = slice(x_off, x_off + tile_width)

@@ -51,49 +51,49 @@ from __future__ import annotations
 
 import json
 import math
-
-import numpy as np
-from pathlib import Path
 import pickle
 from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import numpy as np
 from scipy.stats import gaussian_kde, wilcoxon
 from sklearn.cluster import KMeans
 from sklearn.model_selection import StratifiedShuffleSplit
-from typing import Any, List, Tuple
 from tqdm import tqdm
 
-from .load_input_files import load_behavioral_feature_data, find_usv_categories
-from .load_input_files import is_vocal_signal, require_labels_for_vocal_predictors
-from .modeling_metadata import (
-    build_input_metadata, derive_experimental_condition,
-    derive_feature_zoo_full, derive_camera_fps_field, inject_metadata,
-    read_reserved_block, RESERVED_METADATA_KEYS,
+from ..analyses.compute_behavioral_features import FeatureZoo
+from ..os_utils import atomic_output_path, resolve_modeling_setting
+from .load_input_files import (
+    _calculate_ibi_threshold,
+    find_usv_categories,
+    is_vocal_signal,
+    load_behavioral_feature_data,
+    require_labels_for_vocal_predictors,
 )
-from .load_input_files import _calculate_ibi_threshold
-from .modeling_utils import (
-    prepare_modeling_sessions,
-    seeded_session_holdout,
-    held_out_session_ids_from_metadata,
-    development_heldout_masks,
-    resolve_mouse_roles,
-    select_kinematic_columns,
-    build_vocal_signal_columns,
-    harmonize_session_columns,
-    zscore_features_across_sessions,
-    run_predictor_audits,
-    format_split_line,
-    manifold_tag_segment,
+from .manifold_metric import (
+    circular_mean,
+    inverse_region_frequency_weights,
+    manifold_prediction_metrics,
+    resolve_manifold_metric,
+    signed_diff,
+    torus_embed,
+    warn_if_no_region_labels,
 )
 from .manifold_torus_regression import resolve_manifold_regressor_cls
-from .modeling_bases_functions import basis_coefficients_to_frames, project_history_onto_basis, resolve_temporal_basis
-from .manifold_metric import (
-    signed_diff,
-    circular_mean,
-    torus_embed,
-    resolve_manifold_metric,
-    manifold_prediction_metrics,
-    inverse_region_frequency_weights,
-    warn_if_no_region_labels,
+from .modeling_bases_functions import (
+    basis_coefficients_to_frames,
+    project_history_onto_basis,
+    resolve_temporal_basis,
+)
+from .modeling_metadata import (
+    RESERVED_METADATA_KEYS,
+    build_input_metadata,
+    derive_camera_fps_field,
+    derive_experimental_condition,
+    derive_feature_zoo_full,
+    inject_metadata,
+    read_reserved_block,
 )
 from .modeling_torus_geodesics import (
     build_torus_geodesic_context,
@@ -102,8 +102,20 @@ from .modeling_torus_geodesics import (
     resolve_geodesic_decoder_source,
     resolve_manifold_column_names,
 )
-from ..analyses.compute_behavioral_features import FeatureZoo
-from ..os_utils import atomic_output_path, resolve_modeling_setting
+from .modeling_utils import (
+    build_vocal_signal_columns,
+    development_heldout_masks,
+    format_split_line,
+    harmonize_session_columns,
+    held_out_session_ids_from_metadata,
+    manifold_tag_segment,
+    prepare_modeling_sessions,
+    resolve_mouse_roles,
+    run_predictor_audits,
+    seeded_session_holdout,
+    select_kinematic_columns,
+    zscore_features_across_sessions,
+)
 
 # Initial spatial-CV session-split matching tolerance (auto-widens at runtime),
 # read from the settings block rather than a bare 0.05 default.
@@ -195,9 +207,8 @@ def compute_inverse_density_weights(Y: np.ndarray,
     max_allowed_weight = np.percentile(raw_weights[fit_rows], clip_percentile)
     clipped_weights = np.clip(raw_weights, a_min=None, a_max=max_allowed_weight)
 
-    normalized_weights = clipped_weights / np.mean(clipped_weights[fit_rows])
+    return clipped_weights / np.mean(clipped_weights[fit_rows])
 
-    return normalized_weights
 
 
 def get_stratified_spatial_splits_stable(groups: np.ndarray,
@@ -212,7 +223,7 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
                                          widen_step: float = 0.02,
                                          widen_every: int = 1000,
                                          metric: str = 'euclidean',
-                                         period: float = 1.0) -> List[Tuple[np.ndarray, np.ndarray]]:
+                                         period: float = 1.0) -> list[tuple[np.ndarray, np.ndarray]]:
     """
     Generates deterministic folds ensuring spatial geographic fairness across the acoustic manifold.
 
@@ -275,7 +286,8 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
         A list of length `n_splits`, where each tuple contains (train_indices, test_indices).
     """
     if split_strategy not in ['session', 'mixed']:
-        raise ValueError(f"Invalid split_strategy: '{split_strategy}'. Must be 'session' or 'mixed'.")
+        msg = f"Invalid split_strategy: '{split_strategy}'. Must be 'session' or 'mixed'."
+        raise ValueError(msg)
 
     # On `metric='torus'` KMeans runs on the canonical 4-D torus
     # embedding `(cos(2pi x/P), sin(2pi x/P), cos(2pi y/P), sin(2pi y/P))`,
@@ -301,11 +313,12 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
     # quietly weaken the contract.
     observed_n_clusters = int(np.unique(proxy_labels).size)
     if observed_n_clusters != n_clusters:
-        raise ValueError(
+        msg = (
             f"K-Means produced {observed_n_clusters} non-empty clusters but "
             f"n_clusters={n_clusters}. The input `Y` may be degenerate "
             f"(too few distinct points, or near-constant)."
         )
+        raise ValueError(msg)
 
     if split_strategy == 'mixed':
         sss = StratifiedShuffleSplit(n_splits=n_splits, test_size=test_prop, random_state=random_seed)
@@ -321,11 +334,12 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
         # error from deep inside the rejection loop below; surface it as a
         # clear precondition instead.
         if not (0 < n_test_sessions < len(unique_sessions)):
-            raise ValueError(
+            msg = (
                 f"test_prop={test_prop} with {len(unique_sessions)} unique sessions yields "
                 f"n_test_sessions={n_test_sessions}; need 0 < n_test_sessions < "
                 f"{len(unique_sessions)} so both train and test sessions are non-empty."
             )
+            raise ValueError(msg)
 
         _, global_counts = np.unique(proxy_labels, return_counts=True)
         global_dist = global_counts / len(proxy_labels)
@@ -382,10 +396,11 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
                 current_tolerance += widen_step
 
             if attempts > max_total_attempts:
-                raise RuntimeError(
+                msg_0 = (
                     f"Failed to find {n_splits} valid spatial splits after {attempts} attempts. "
                     "Rare geographic clusters may be highly isolated in too few sessions."
                 )
+                raise RuntimeError(msg_0)
 
     # Per-fold cluster-coverage invariant. The `'session'` rejection
     # sampler already enforces this via its in-loop gate; the
@@ -400,11 +415,12 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
         tr_n = int(np.unique(proxy_labels[tr_idx]).size)
         te_n = int(np.unique(proxy_labels[te_idx]).size)
         if tr_n != n_clusters or te_n != n_clusters:
-            raise RuntimeError(
+            msg_0 = (
                 f"Fold {i}: train carries {tr_n} clusters, test carries "
                 f"{te_n} clusters — expected {n_clusters} on both sides "
                 f"(strategy='{split_strategy}')."
             )
+            raise RuntimeError(msg_0)
 
     return cv_folds
 
@@ -440,9 +456,11 @@ def _log_spaced_grid(center: float, decades_each_side: int) -> np.ndarray:
         # No tuning: the fixed value itself (0 allowed, e.g. the pinned L2 of a B-spline fit).
         return np.array([float(center)])
     if decades_each_side < 0:
-        raise ValueError(f"decades_each_side must be >= 0, got {decades_each_side}.")
+        msg = f"decades_each_side must be >= 0, got {decades_each_side}."
+        raise ValueError(msg)
     if center <= 0:
-        raise ValueError(f"center must be positive, got {center}.")
+        msg = f"center must be positive, got {center}."
+        raise ValueError(msg)
     offsets = np.arange(-decades_each_side, decades_each_side + 1, dtype=np.float64)
     return float(center) * (10.0 ** offsets)
 
@@ -473,7 +491,7 @@ def _tune_manifold_regularization(X_train: np.ndarray,
                                   metric: str,
                                   period: float,
                                   region_train: np.ndarray = None,
-                                  kappa: float = None) -> tuple:
+                                  kappa: float | None = None) -> tuple:
     """
     Selects `(lambda_smooth, l2_reg)` jointly by inner cross-validation on
     the supplied training fold, with an optional 1-SE rule biased toward
@@ -902,7 +920,7 @@ class ContinuousModelingPipeline(FeatureZoo):
     Inherits the standardized behavioural feature computations of `FeatureZoo`.
     """
 
-    def __init__(self, modeling_settings_dict: dict = None, **kwargs):
+    def __init__(self, modeling_settings_dict: dict | None = None, **kwargs):
         """
         Initializes the ContinuousModelingPipeline class.
 
@@ -931,10 +949,11 @@ class ContinuousModelingPipeline(FeatureZoo):
         if modeling_settings_dict is None:
             settings_path = Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
             try:
-                with open(settings_path, 'r') as f:
+                with Path(settings_path).open() as f:
                     self.modeling_settings = json.load(f)
-            except FileNotFoundError:
-                raise FileNotFoundError(f"Settings file not found at {settings_path}")
+            except FileNotFoundError as err:
+                msg = f"Settings file not found at {settings_path}"
+                raise FileNotFoundError(msg) from err
         else:
             self.modeling_settings = modeling_settings_dict
 
@@ -947,7 +966,8 @@ class ContinuousModelingPipeline(FeatureZoo):
             self.history_frames = int(np.floor(cam_rate * hist_sec))
             print(f"Continuous Pipeline Init: History frames calculated: {self.history_frames} (for {hist_sec}s at {cam_rate}fps)")
         except KeyError as e:
-            raise KeyError(f"Critical setting missing for history calculation: {e}")
+            msg = f"Critical setting missing for history calculation: {e}"
+            raise KeyError(msg) from e
 
         FeatureZoo.__init__(self)
 
@@ -1007,15 +1027,17 @@ class ContinuousModelingPipeline(FeatureZoo):
         manifold_cols = voc_settings['usv_manifold_column_names']
 
         if not isinstance(manifold_cols, (list, tuple)) or len(manifold_cols) < 2:
-            raise ValueError(
+            msg = (
                 "'vocal_features.usv_manifold_column_names' must be a list with at least "
                 f"two entries; got {manifold_cols!r}."
             )
+            raise ValueError(msg)
         if len(manifold_cols) != 2:
-            raise ValueError(
+            msg = (
                 "The continuous manifold pipeline currently assumes a 2-D target (bivariate "
                 f"Gaussian / CNN regression). Received {len(manifold_cols)} columns: {manifold_cols}."
             )
+            raise ValueError(msg)
 
         filter_hist = self.modeling_settings['model_params']['filter_history']
         pred_idx = self.modeling_settings['model_params']['model_predictor_mouse_index']
@@ -1101,7 +1123,8 @@ class ContinuousModelingPipeline(FeatureZoo):
                 all_valid_Y_list.append(valid_targets_arr)
 
         if not all_valid_Y_list:
-            raise ValueError("No valid continuous targets extracted. Check manifold data.")
+            msg = "No valid continuous targets extracted. Check manifold data."
+            raise ValueError(msg)
 
 
         print("Filtering features and injecting vocal history...")
@@ -1134,7 +1157,7 @@ class ContinuousModelingPipeline(FeatureZoo):
                 voc_settings=voc_settings
             )
 
-            current_df = current_df.select(sorted(list(set(cols_to_keep))))
+            current_df = current_df.select(sorted(set(cols_to_keep)))
 
             if new_voc_cols:
                 current_df = current_df.with_columns(new_voc_cols)
@@ -1187,16 +1210,16 @@ class ContinuousModelingPipeline(FeatureZoo):
         _held_out_set = set(held_out_session_ids)
         _kde_fit_rows = np.concatenate([
             np.full(len(continuous_targets_dict[sess_id]['targets']), sess_id not in _held_out_set)
-            for sess_id in continuous_targets_dict.keys()
+            for sess_id in continuous_targets_dict
         ])
         global_weights = compute_inverse_density_weights(
             global_Y_matrix, metric=_kde_metric, period=_kde_period, fit_mask=_kde_fit_rows,
         )
 
         ptr = 0
-        for sess_id in continuous_targets_dict.keys():
-            n_sess_usvs = len(continuous_targets_dict[sess_id]['targets'])
-            continuous_targets_dict[sess_id]['weights'] = global_weights[ptr: ptr + n_sess_usvs]
+        for sess_entry in continuous_targets_dict.values():
+            n_sess_usvs = len(sess_entry['targets'])
+            sess_entry['weights'] = global_weights[ptr: ptr + n_sess_usvs]
             ptr += n_sess_usvs
 
         cohort_condition = derive_experimental_condition(self.modeling_settings)
@@ -1372,7 +1395,7 @@ class ContinuousModelingPipeline(FeatureZoo):
         # `final_data` is guaranteed non-empty here (the early return above
         # handles the empty case), so `feature_names` always has at least one
         # entry and `sample_feat` is always defined.
-        feature_names = sorted(list(final_data.keys()))
+        feature_names = sorted(final_data.keys())
         n_feats = len(feature_names)
         sample_feat = feature_names[0]
 
@@ -1592,7 +1615,7 @@ class ContinuousModelRunner:
 
         print(f"Loading and binning continuous data (bin_size={bin_size}) from: {pkl_path}")
 
-        with open(pkl_path, 'rb') as f:
+        with Path(pkl_path).open('rb') as f:
             raw_data = pickle.load(f)
 
         # Reserved held-out session list (schema-v2+). Threaded onto every
@@ -1610,7 +1633,7 @@ class ContinuousModelRunner:
         # filter, the underscore-prefixed reserved keys
         # (`_input_metadata` etc.) would be treated as feature names and
         # the per-session array indexing below would raise.
-        feature_keys = [k for k in raw_data.keys() if k not in RESERVED_METADATA_KEYS]
+        feature_keys = [k for k in raw_data if k not in RESERVED_METADATA_KEYS]
 
         if feature_filter is None:
             sorted_features = sorted(feature_keys)
@@ -1622,7 +1645,7 @@ class ContinuousModelRunner:
 
         for feat in sorted_features:
             X_list, Y_list, w_list, groups_list, region_list = [], [], [], [], []
-            sessions = sorted(list(raw_data[feat].keys()))
+            sessions = sorted(raw_data[feat].keys())
 
             for sess_id in sessions:
                 X_sess = raw_data[feat][sess_id]['X']
@@ -1647,10 +1670,11 @@ class ContinuousModelRunner:
                     # zero time bins; the empty matrix then fails far downstream
                     # with no clear diagnostic, so reject it at the source.
                     if new_T < 1:
-                        raise ValueError(
+                        msg = (
                             f"bin_size={bin_size} exceeds the history window length T={T} for "
                             f"feature '{feat}', collapsing X to zero time bins."
                         )
+                        raise ValueError(msg)
                     # Keep the MOST RECENT `new_T * bin_size` columns (drop the oldest
                     # `T % bin_size` from the front). Columns are chronological with the
                     # last column = frame onset-1, so truncating the tail instead would
@@ -1919,7 +1943,8 @@ class ContinuousModelRunner:
             pkl_path, bin_size=bin_size, feature_filter=feat_name, basis=temporal_basis,
         )
         if feat_name not in data_blocks:
-            raise KeyError(f"Feature '{feat_name}' not found in {pkl_path}.")
+            msg = f"Feature '{feat_name}' not found in {pkl_path}."
+            raise KeyError(msg)
 
         feat_data = data_blocks[feat_name]
         X = feat_data['X']

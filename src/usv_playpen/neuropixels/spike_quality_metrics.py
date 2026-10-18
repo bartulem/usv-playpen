@@ -956,7 +956,7 @@ class SpikeQualityMetricsExtractor:
             # Round (not truncate) before the integer (lateral, axial) join: int()
             # floors toward zero and would desync the IBL and KS keys when one side
             # stores e.g. 31.9999 and the other 32.0 (matches anatomy_converter).
-            pos = (int(round(entry['lateral'])), int(round(entry['axial'])))
+            pos = (round(entry['lateral']), round(entry['axial']))
             pos_to_xyz[pos] = (
                 float(entry['x']), float(entry['y']), float(entry['z']),
             )
@@ -994,8 +994,8 @@ class SpikeQualityMetricsExtractor:
             valid_channel_mask = np.zeros(chan_inds.size, dtype=bool)
             for channel_idx, channel in enumerate(chan_inds):
                 physical_pos = (
-                    int(round(channel_positions[channel, 0])),
-                    int(round(channel_positions[channel, 1])),
+                    round(channel_positions[channel, 0]),
+                    round(channel_positions[channel, 1]),
                 )
                 # A reference / disconnected site can land in a unit's sparse channel set
                 # yet be absent from the IBL `channel_locations.json` map; drop it from the
@@ -1043,8 +1043,8 @@ class SpikeQualityMetricsExtractor:
             min_distance_index = np.argmin(distances)
             closest_channel_number = chan_inds[min_distance_index]
             closest_physical_pos = (
-                int(round(channel_positions[closest_channel_number, 0])),
-                int(round(channel_positions[closest_channel_number, 1])),
+                round(channel_positions[closest_channel_number, 0]),
+                round(channel_positions[closest_channel_number, 1]),
             )
 
             unit_locations[unit_id] = {

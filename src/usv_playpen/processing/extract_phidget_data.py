@@ -52,8 +52,7 @@ class Gatherer:
             raise ValueError(msg)
 
         if input_parameter_dict is None:
-            with open(
-                pathlib.Path(__file__).parent.parent / "_parameter_settings/processing_settings.json"
+            with (pathlib.Path(__file__).parent.parent / "_parameter_settings/processing_settings.json").open(
             ) as json_file:
                 _settings = json.load(json_file)["extract_phidget_data"]
 
@@ -106,7 +105,8 @@ class Gatherer:
         # picked, and none raises a clear error (was a None.glob crash).
         video_dir = pathlib.Path(self.root_directory) / "video"
         if not video_dir.exists():
-            raise FileNotFoundError(f"Video directory not found: '{video_dir}'.")
+            msg = f"Video directory not found: '{video_dir}'."
+            raise FileNotFoundError(msg)
         extra_data_camera = self.input_parameter_dict["prepare_data_for_analyses"]["extra_data_camera"]
         camera_directories = [
             one_dir
@@ -114,14 +114,14 @@ class Gatherer:
             if one_dir.is_dir() and extra_data_camera in one_dir.name and not one_dir.name.startswith("calibration_")
         ]
         if not camera_directories:
-            raise FileNotFoundError(
-                f"No camera directory containing '{extra_data_camera}' found under '{video_dir}'."
-            )
+            msg = f"No camera directory containing '{extra_data_camera}' found under '{video_dir}'."
+            raise FileNotFoundError(msg)
         if len(camera_directories) > 1:
-            raise ValueError(
+            msg = (
                 f"{len(camera_directories)} recording directories of camera '{extra_data_camera}' under '{video_dir}', "
                 f"expected exactly one: {', '.join(one_dir.name for one_dir in camera_directories)}."
             )
+            raise ValueError(msg)
         sub_directory = camera_directories[0]
 
         # Load raw phidget data. The files are named '<n>.extra_data.json' and
@@ -131,12 +131,11 @@ class Gatherer:
         # set (was an IndexError on phidget_file_list[0]).
         phidget_file_list = sorted(sub_directory.glob("*extra_data*.json"))
         if not phidget_file_list:
-            raise FileNotFoundError(
-                f"No phidget '*extra_data*.json' files found in '{sub_directory}'."
-            )
+            msg = f"No phidget '*extra_data*.json' files found in '{sub_directory}'."
+            raise FileNotFoundError(msg)
         phidget_data = []
         for one_phidget_file in phidget_file_list:
-            with open(one_phidget_file) as phidget_file:
+            with pathlib.Path(one_phidget_file).open() as phidget_file:
                 phidget_data += json.load(phidget_file)
 
         # Sort records by their acquisition timestamp (sensor_time) so the

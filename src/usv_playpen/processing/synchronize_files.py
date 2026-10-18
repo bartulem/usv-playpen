@@ -26,7 +26,9 @@ from imgstore import new_for_filename
 from numba import njit
 from scipy.io import wavfile
 from spikeinterface.extractors import read_binary
-from spikeinterface.extractors.neuropixels_utils import get_neuropixels_sample_shifts_from_probe
+from spikeinterface.extractors.neuropixels_utils import (
+    get_neuropixels_sample_shifts_from_probe,
+)
 from spikeinterface.preprocessing import phase_shift
 
 from ..os_utils import (
@@ -241,8 +243,8 @@ class Synchronizer:
                 'current': {'21241563': {'LED_top': [296, 1234], 'LED_middle': [339, 1244], 'LED_bottom': [383, 1252]},
                             '21372315': {'LED_top': [504, 1267], 'LED_middle': [551, 1268], 'LED_bottom': [599, 1265]}}}
 
-    def __init__(self, root_directory: str = None,
-                 input_parameter_dict: dict = None,
+    def __init__(self, root_directory: str | None = None,
+                 input_parameter_dict: dict | None = None,
                  message_output: Callable | None = None) -> None:
         """
         Description
@@ -270,7 +272,7 @@ class Synchronizer:
             raise ValueError(msg)
 
         if input_parameter_dict is None:
-            with open(pathlib.Path(__file__).parent.parent / '_parameter_settings/processing_settings.json') as json_file:
+            with (pathlib.Path(__file__).parent.parent / '_parameter_settings/processing_settings.json').open() as json_file:
                 _settings = json.load(json_file)['synchronize_files']
 
         self.input_parameter_dict = (
@@ -439,14 +441,12 @@ class Synchronizer:
         calibrated_sr_config.read(pathlib.Path(__file__).parent.parent / '_config/calibrated_sample_rates_imec.ini')
 
         # load info from camera_frame_count_dict
-        with open(
-            first_match_or_raise(
+        with pathlib.Path(first_match_or_raise(
                 root=pathlib.Path(self.root_directory),
                 pattern='*_camera_frame_count_dict.json',
                 recursive=True,
                 label="camera frame count JSON (ephys sync)",
-            ),
-            'r',
+            )).open(
         ) as frame_count_infile:
             camera_frame_count_dict = json.load(frame_count_infile)
             total_frame_number_least = camera_frame_count_dict['total_frame_number_least']
@@ -460,7 +460,7 @@ class Synchronizer:
         for npx_recording in sorted(pathlib.Path(self.root_directory).rglob(f"*{self.input_parameter_dict['validate_ephys_video_sync']['npx_file_type']}.bin")):
 
             # parse metadata file for channel and headstage information
-            with open(npx_recording.parent / (npx_recording.name[:-3] + 'meta')) as meta_data_file:
+            with pathlib.Path(npx_recording.parent / (npx_recording.name[:-3] + 'meta')).open() as meta_data_file:
                 for line in meta_data_file:
                     key, value = line.strip().split('=')
                     if key == 'acqApLfSy':
@@ -487,7 +487,7 @@ class Synchronizer:
                 sync_data = one_recording.reshape((total_probe_ch, one_sample_num), order='F')[-1, :]
 
                 # save sync channel data
-                with atomic_output_path(f'{sync_ch_file}.npy') as tmp_sync_ch_file, open(tmp_sync_ch_file, 'wb') as sync_ch_output_file:
+                with atomic_output_path(f'{sync_ch_file}.npy') as tmp_sync_ch_file, pathlib.Path(tmp_sync_ch_file).open('wb') as sync_ch_output_file:
                     np.save(file=sync_ch_output_file, arr=sync_data)
 
             # optionally de-skew this session's AP binary in place (Neuropixels ADC
@@ -529,7 +529,7 @@ class Synchronizer:
                                f"{', '.join(path.name for path in other_changepoint_files)}; remove or rename them.")
                         raise ValueError(msg)
                     if changepoints_path.is_file():
-                        with open(changepoints_path, 'r') as binary_info_input_file:
+                        with pathlib.Path(changepoints_path).open() as binary_info_input_file:
                             binary_files_info = json.load(binary_info_input_file)
 
                         if recording_file_name[:-7] not in binary_files_info:
@@ -558,7 +558,7 @@ class Synchronizer:
                         binary_files_info[recording_file_name[:-7]]['tracking_start_end'] = [int(tracking_start), int(tracking_end)]
                     binary_files_info[recording_file_name[:-7]]['largest_camera_break_duration'] = int(largest_break_duration)
 
-                    with atomic_output_path(changepoints_path) as tmp_changepoints_file, open(tmp_changepoints_file, 'w') as binary_info_output_file:
+                    with atomic_output_path(changepoints_path) as tmp_changepoints_file, pathlib.Path(tmp_changepoints_file).open('w') as binary_info_output_file:
                         json.dump(binary_files_info, binary_info_output_file, indent=4)
 
                     self.message_output(f"SUCCESS! Tracking start/end sample times saved in {changepoints_path}.")
@@ -621,8 +621,7 @@ class Synchronizer:
 
         if (total_frame_number + largest_break_end_hop) < ttl_break_end_samples.shape[0]:
             return int(ttl_break_end_samples[largest_break_end_hop] + 1), int(ttl_break_end_samples[largest_break_end_hop + total_frame_number] + 1), int(largest_break_duration), ttl_break_end_samples, largest_break_end_hop
-        else:
-            return None, None, int(largest_break_duration), ttl_break_end_samples, largest_break_end_hop
+        return None, None, int(largest_break_duration), ttl_break_end_samples, largest_break_end_hop
 
     @staticmethod
     @njit(parallel=True)
@@ -673,13 +672,12 @@ class Synchronizer:
             else:
                 ipi_durations_ms = (((ipi_end_samples - ipi_start_samples[:-1]) + 1) * 1000 / audio_sr_rate)
                 audio_ipi_start_samples = ipi_start_samples[:-1]
+        elif ipi_start_samples.size == ipi_end_samples.size:
+            ipi_durations_ms = (((ipi_end_samples[1:] - ipi_start_samples[:-1]) + 1) * 1000 / audio_sr_rate)
+            audio_ipi_start_samples = ipi_start_samples[:-1]
         else:
-            if ipi_start_samples.size == ipi_end_samples.size:
-                ipi_durations_ms = (((ipi_end_samples[1:] - ipi_start_samples[:-1]) + 1) * 1000 / audio_sr_rate)
-                audio_ipi_start_samples = ipi_start_samples[:-1]
-            else:
-                ipi_durations_ms = (((ipi_end_samples[1:] - ipi_start_samples) + 1) * 1000 / audio_sr_rate)
-                audio_ipi_start_samples = ipi_start_samples
+            ipi_durations_ms = (((ipi_end_samples[1:] - ipi_start_samples) + 1) * 1000 / audio_sr_rate)
+            audio_ipi_start_samples = ipi_start_samples
 
         return ipi_durations_ms, audio_ipi_start_samples
 
@@ -725,7 +723,7 @@ class Synchronizer:
             frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 
             # scan the first ~1.5 s of frames (1.5x fps) to locate the brightest LED frame
-            max_frame_num = int(round(sync_camera_fps + (sync_camera_fps / 2)))
+            max_frame_num = round(sync_camera_fps + (sync_camera_fps / 2))
             led_px_version = self.input_parameter_dict['find_video_sync_trains']["led_px_version"]
             led_px_dev = self.input_parameter_dict['find_video_sync_trains']["led_px_dev"]
             used_camera = camera_id
@@ -743,8 +741,8 @@ class Synchronizer:
                     min(frame_width, led_dim2 + led_px_dev),
                 )
 
-            peak_intensity = {led_position: -1 for led_position in led_positions}
-            peak_intensity_frame_loc = {led_position: -1 for led_position in led_positions}
+            peak_intensity = dict.fromkeys(led_positions, -1)
+            peak_intensity_frame_loc = dict.fromkeys(led_positions, -1)
 
             # Single sequential pass over the first max_frame_num frames: decode and
             # grayscale-convert each frame ONCE and update every LED's peak tracker,
@@ -755,7 +753,8 @@ class Synchronizer:
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             for frame_num in range(max_frame_num):
                 ret, frame = cap.read()
-                if not ret: continue
+                if not ret:
+                    continue
 
                 frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 for led_position in led_positions:
@@ -884,56 +883,53 @@ class Synchronizer:
                 pos_significant_events, neg_significant_events
             )
 
-            if pos_significant_events.size > 0 and neg_significant_events.size > 0:
-                # check for a reasonable number of ON/OFF events before proceeding
-                if 0 <= (pos_significant_events.size - neg_significant_events.size) < 2 or \
-                        (0 <= np.abs(pos_significant_events.size - neg_significant_events.size) < 2 and threshold_value < 0.35):
+            # check for a reasonable number of ON/OFF events before proceeding
+            if pos_significant_events.size > 0 and neg_significant_events.size > 0 and (0 <= (pos_significant_events.size - neg_significant_events.size) < 2 or \
+                    (0 <= np.abs(pos_significant_events.size - neg_significant_events.size) < 2 and threshold_value < 0.35)):
 
-                    if neg_significant_events.size > pos_significant_events.size:
-                        neg_significant_events = neg_significant_events[1:]
+                if neg_significant_events.size > pos_significant_events.size:
+                    neg_significant_events = neg_significant_events[1:]
 
-                    if pos_significant_events[0] < neg_significant_events[0]:
-                        if pos_significant_events.size == neg_significant_events.size:
-                            ipi_durations_frames = (neg_significant_events - pos_significant_events) - 1
-                            temp_ipi_start_frames = pos_significant_events + 1
-                        else:
-                            ipi_durations_frames = (neg_significant_events - pos_significant_events[:-1]) - 1
-                            temp_ipi_start_frames = pos_significant_events[:-1] + 1
+                if pos_significant_events[0] < neg_significant_events[0]:
+                    if pos_significant_events.size == neg_significant_events.size:
+                        ipi_durations_frames = (neg_significant_events - pos_significant_events) - 1
+                        temp_ipi_start_frames = pos_significant_events + 1
                     else:
-                        if pos_significant_events.size == neg_significant_events.size:
-                            ipi_durations_frames = (neg_significant_events[1:] - pos_significant_events[:-1]) - 1
-                            temp_ipi_start_frames = pos_significant_events[:-1] + 1
-                        else:
-                            if pos_significant_events.size > neg_significant_events.size:
-                                ipi_durations_frames = (neg_significant_events[1:] - pos_significant_events[:neg_significant_events.size - 1]) - 1
-                                temp_ipi_start_frames = pos_significant_events[:neg_significant_events.size - 1] + 1
-                            else:
-                                ipi_durations_frames = (neg_significant_events[1:] - pos_significant_events) - 1
-                                temp_ipi_start_frames = pos_significant_events + 1
+                        ipi_durations_frames = (neg_significant_events - pos_significant_events[:-1]) - 1
+                        temp_ipi_start_frames = pos_significant_events[:-1] + 1
+                elif pos_significant_events.size == neg_significant_events.size:
+                    ipi_durations_frames = (neg_significant_events[1:] - pos_significant_events[:-1]) - 1
+                    temp_ipi_start_frames = pos_significant_events[:-1] + 1
+                elif pos_significant_events.size > neg_significant_events.size:
+                    ipi_durations_frames = (neg_significant_events[1:] - pos_significant_events[:neg_significant_events.size - 1]) - 1
+                    temp_ipi_start_frames = pos_significant_events[:neg_significant_events.size - 1] + 1
+                else:
+                    ipi_durations_frames = (neg_significant_events[1:] - pos_significant_events) - 1
+                    temp_ipi_start_frames = pos_significant_events + 1
 
-                    ipi_durations_ms = np.round(ipi_durations_frames * (1000 / camera_fps))
+                ipi_durations_ms = np.round(ipi_durations_frames * (1000 / camera_fps))
 
-                    # match IPI sequences
-                    if 0 < ipi_durations_ms.shape[0] <= len(arduino_ipi_durations):
-                        subarray_size = ipi_durations_ms.shape[0]
-                        start_indices = np.arange(len(arduino_ipi_durations) - subarray_size + 1)
-                        index_matrix = start_indices[:, np.newaxis] + np.arange(subarray_size)
-                        arduino_ipi_durations_subarrays = arduino_ipi_durations[index_matrix]
+                # match IPI sequences
+                if 0 < ipi_durations_ms.shape[0] <= len(arduino_ipi_durations):
+                    subarray_size = ipi_durations_ms.shape[0]
+                    start_indices = np.arange(len(arduino_ipi_durations) - subarray_size + 1)
+                    index_matrix = start_indices[:, np.newaxis] + np.arange(subarray_size)
+                    arduino_ipi_durations_subarrays = arduino_ipi_durations[index_matrix]
 
-                        result_array = arduino_ipi_durations_subarrays - ipi_durations_ms
-                        tolerance = self.input_parameter_dict['find_video_sync_trains']['millisecond_divergence_tolerance']
-                        all_zero_matches = np.all(np.abs(result_array) <= tolerance, axis=1)
+                    result_array = arduino_ipi_durations_subarrays - ipi_durations_ms
+                    tolerance = self.input_parameter_dict['find_video_sync_trains']['millisecond_divergence_tolerance']
+                    all_zero_matches = np.all(np.abs(result_array) <= tolerance, axis=1)
 
-                        if np.any(all_zero_matches):
-                            # Key by the camera serial (the ``Path`` basename), not the full
-                            # ``Path``: the exact-frame-times consumer globs
-                            # ``video/*.{serial}/metadata.yaml``, which only matches when the key
-                            # is the bare serial string. ``pathlib.Path(...).name`` handles both a
-                            # Path (production) and a bare serial string (the function's str-typed
-                            # signature / tests) without an AttributeError.
-                            sync_sequence_dict = {pathlib.Path(camera_dir).name: np.ravel(arduino_ipi_durations_subarrays[all_zero_matches])}
-                            ipi_start_frames = temp_ipi_start_frames
-                            return sync_sequence_dict, ipi_start_frames, True
+                    if np.any(all_zero_matches):
+                        # Key by the camera serial (the ``Path`` basename), not the full
+                        # ``Path``: the exact-frame-times consumer globs
+                        # ``video/*.{serial}/metadata.yaml``, which only matches when the key
+                        # is the bare serial string. ``pathlib.Path(...).name`` handles both a
+                        # Path (production) and a bare serial string (the function's str-typed
+                        # signature / tests) without an AttributeError.
+                        sync_sequence_dict = {pathlib.Path(camera_dir).name: np.ravel(arduino_ipi_durations_subarrays[all_zero_matches])}
+                        ipi_start_frames = temp_ipi_start_frames
+                        return sync_sequence_dict, ipi_start_frames, True
 
         return None, None, False
 
@@ -975,7 +971,7 @@ class Synchronizer:
         if sync_dir.exists():
             for txt_file in sync_dir.iterdir():
                 if 'CoolTerm' in txt_file.name:
-                    with open(txt_file, 'r') as ipi_txt_file:
+                    with pathlib.Path(txt_file).open() as ipi_txt_file:
                         for line_num, line in enumerate(ipi_txt_file.readlines()):
                             if line_num > 2 and line.strip():
                                 arduino_ipi_durations.append(int(line.strip()))
@@ -983,19 +979,23 @@ class Synchronizer:
         arduino_ipi_durations = np.array(arduino_ipi_durations)
 
         for video_subdir in (pathlib.Path(self.root_directory) / 'video').iterdir():
-            if '_' in video_subdir.name or not video_subdir.is_dir(): continue
+            if '_' in video_subdir.name or not video_subdir.is_dir():
+                continue
 
             sync_cam_idx = 0
             for camera_dir in video_subdir.iterdir():
                 if (camera_dir.name == '.DS_Store' or not camera_dir.is_dir()
-                        or camera_dir.name not in self.input_parameter_dict['find_video_sync_trains']['sync_camera_serial_num']): continue
+                        or camera_dir.name not in self.input_parameter_dict['find_video_sync_trains']['sync_camera_serial_num']):
+                    continue
 
                 video_name_glob = list(camera_dir.glob('*.mp4'))
-                if not video_name_glob: continue
+                if not video_name_glob:
+                    continue
                 video_name = sorted(video_name_glob)[0].name
 
                 if ('calibration' in video_name or video_name.split('-')[0] not in self.input_parameter_dict['find_video_sync_trains']['sync_camera_serial_num']
-                        or self.input_parameter_dict['find_video_sync_trains']['sync_video_extension'] not in video_name): continue
+                        or self.input_parameter_dict['find_video_sync_trains']['sync_video_extension'] not in video_name):
+                    continue
 
                 video_of_interest = str(camera_dir / video_name)
 
@@ -1084,7 +1084,7 @@ class Synchronizer:
             pattern='video/*_camera_frame_count_dict.json',
             label="camera frame count JSON",
         )
-        with open(json_loc, 'r') as camera_count_json_file:
+        with pathlib.Path(json_loc).open() as camera_count_json_file:
             camera_fr_count_dict = json.load(camera_count_json_file)
             total_frame_number = camera_fr_count_dict['total_frame_number_least']
             total_video_time_least = camera_fr_count_dict['total_video_time_least']
@@ -1131,13 +1131,14 @@ class Synchronizer:
                 # with no trailing triggerbox edge, `largest_break_end_hop + total_frame_number`
                 # overruns `triggerbox_bit_changes` and would raise a cryptic IndexError.
                 if largest_break_end_hop + total_frame_number >= triggerbox_bit_changes.shape[0]:
-                    raise ValueError(
+                    msg = (
                         f"NIDQ triggerbox has only {triggerbox_bit_changes.shape[0]} rising edges after the "
                         f"largest break at index {largest_break_end_hop}, but {total_frame_number} video frames "
                         f"were expected. The recording appears to end at/before the last camera frame, so the "
                         f"loopbio end NIDQ sample cannot be located — check the NIDQ triggerbox channel and the "
                         f"expected frame count."
                     )
+                    raise ValueError(msg)
                 loopbio_end_nidq_sample = int(triggerbox_bit_changes[largest_break_end_hop + total_frame_number] + 1)
                 nidq_rec_duration = (loopbio_end_nidq_sample - loopbio_start_nidq_sample) / self.input_parameter_dict['find_audio_sync_trains']['nidq_sr']
                 nidq_video_difference = nidq_rec_duration - total_video_time_least
@@ -1155,17 +1156,16 @@ class Synchronizer:
                     else:
                         nidq_ipi_durations_ms = (((ipi_end_samples - ipi_start_samples[:-1]) + 1) * 1000 / self.input_parameter_dict['find_audio_sync_trains']['nidq_sr'])
                         nidq_ipi_start_samples = ipi_start_samples[:-1]
+                elif ipi_start_samples.size == ipi_end_samples.size:
+                    nidq_ipi_durations_ms = (((ipi_end_samples[1:] - ipi_start_samples[:-1]) + 1) * 1000 / self.input_parameter_dict['find_audio_sync_trains']['nidq_sr'])
+                    nidq_ipi_start_samples = ipi_start_samples[:-1]
                 else:
-                    if ipi_start_samples.size == ipi_end_samples.size:
-                        nidq_ipi_durations_ms = (((ipi_end_samples[1:] - ipi_start_samples[:-1]) + 1) * 1000 / self.input_parameter_dict['find_audio_sync_trains']['nidq_sr'])
-                        nidq_ipi_start_samples = ipi_start_samples[:-1]
-                    else:
-                        nidq_ipi_durations_ms = (((ipi_end_samples[1:] - ipi_start_samples) + 1) * 1000 / self.input_parameter_dict['find_audio_sync_trains']['nidq_sr'])
-                        nidq_ipi_start_samples = ipi_start_samples
+                    nidq_ipi_durations_ms = (((ipi_end_samples[1:] - ipi_start_samples) + 1) * 1000 / self.input_parameter_dict['find_audio_sync_trains']['nidq_sr'])
+                    nidq_ipi_start_samples = ipi_start_samples
 
                 # save NIDQ IPI data
                 nidq_data_arr = np.vstack((nidq_ipi_durations_ms, nidq_ipi_start_samples))
-                with atomic_output_path(nidq_ipi_data_file) as tmp_nidq_ipi_data_file, open(tmp_nidq_ipi_data_file, 'wb') as nidq_ipi_output_file:
+                with atomic_output_path(nidq_ipi_data_file) as tmp_nidq_ipi_data_file, pathlib.Path(tmp_nidq_ipi_data_file).open('wb') as nidq_ipi_output_file:
                     np.save(file=nidq_ipi_output_file, arr=nidq_data_arr)
 
         ipi_discrepancy_dict = {}
@@ -1422,7 +1422,7 @@ class Synchronizer:
                     break
 
         # save start/end video frame information
-        with atomic_output_path(pathlib.Path(self.root_directory) / 'audio' / 'audio_triggerbox_sync_info.json') as tmp_sync_info_file, open(tmp_sync_info_file, 'w') as audio_dict_outfile:
+        with atomic_output_path(pathlib.Path(self.root_directory) / 'audio' / 'audio_triggerbox_sync_info.json') as tmp_sync_info_file, pathlib.Path(tmp_sync_info_file).open('w') as audio_dict_outfile:
             json.dump(start_end_video, audio_dict_outfile, indent=4)
 
         # create new directory for cropped files and HPSS files
@@ -1475,63 +1475,62 @@ class Synchronizer:
                                                   cwd=pathlib.Path(self.root_directory) / 'audio' / 'original',
                                                   shell=False)
                 cut_audio_subprocesses.append(cut_audio_subp)
-            else:
-                if 'm_' in audio_file.name:
-                    m_start_cut_sample = start_end_video['m']['start_first_recorded_frame']
-                    m_cut_duration_samples = start_end_video['m']['duration_samples']
-                    if m_longer:
-                        # adjust outfile name
-                        default_base_name = audio_file.stem
-                        modified_base_name = default_base_name[:2] + base_name_date + default_base_name[2 + len(base_name_date):]
-                        outfile_loc = str(pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video' / f'{modified_base_name}_cropped_to_video.wav')
+            elif 'm_' in audio_file.name:
+                m_start_cut_sample = start_end_video['m']['start_first_recorded_frame']
+                m_cut_duration_samples = start_end_video['m']['duration_samples']
+                if m_longer:
+                    # adjust outfile name
+                    default_base_name = audio_file.stem
+                    modified_base_name = default_base_name[:2] + base_name_date + default_base_name[2 + len(base_name_date):]
+                    outfile_loc = str(pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video' / f'{modified_base_name}_cropped_to_video.wav')
 
-                        # trim and adjust tempo
-                        tempo_adjustment_factor = start_end_video['m']['duration_samples'] / start_end_video['s']['duration_samples']
-                        cut_audio_subp = subprocess.Popen(
-                                                          args=["static_sox", audio_file.name, outfile_loc, "trim", f"{m_start_cut_sample}s", f"{m_cut_duration_samples}s", "tempo", "-s", str(tempo_adjustment_factor)],
-                                                          stdout=subprocess.DEVNULL,
-                                                          stderr=subprocess.STDOUT,
-                                                          cwd=pathlib.Path(self.root_directory) / 'audio' / 'original',
-                                                          shell=False)
-                        cut_audio_subprocesses.append(cut_audio_subp)
+                    # trim and adjust tempo
+                    tempo_adjustment_factor = start_end_video['m']['duration_samples'] / start_end_video['s']['duration_samples']
+                    cut_audio_subp = subprocess.Popen(
+                                                      args=["static_sox", audio_file.name, outfile_loc, "trim", f"{m_start_cut_sample}s", f"{m_cut_duration_samples}s", "tempo", "-s", str(tempo_adjustment_factor)],
+                                                      stdout=subprocess.DEVNULL,
+                                                      stderr=subprocess.STDOUT,
+                                                      cwd=pathlib.Path(self.root_directory) / 'audio' / 'original',
+                                                      shell=False)
+                    cut_audio_subprocesses.append(cut_audio_subp)
 
-                    else:
-                        outfile_loc = str(pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video' / f'{audio_file.stem}_cropped_to_video.wav')
-                        cut_audio_subp = subprocess.Popen(
-                                                          args=["static_sox", audio_file.name, outfile_loc, "trim", f"{m_start_cut_sample}s", f"{m_cut_duration_samples}s"],
-                                                          stdout=subprocess.DEVNULL,
-                                                          stderr=subprocess.STDOUT,
-                                                          cwd=pathlib.Path(self.root_directory) / 'audio' / 'original',
-                                                          shell=False)
-                        cut_audio_subprocesses.append(cut_audio_subp)
                 else:
-                    s_start_cut_sample = start_end_video['s']['start_first_recorded_frame']
-                    s_cut_duration_samples = start_end_video['s']['duration_samples']
-                    if s_longer:
-                        # adjust outfile name
-                        default_base_name = audio_file.stem
-                        modified_base_name = default_base_name[:2] + base_name_date + default_base_name[2 + len(base_name_date):]
-                        outfile_loc = str(pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video' / f'{modified_base_name}_cropped_to_video.wav')
+                    outfile_loc = str(pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video' / f'{audio_file.stem}_cropped_to_video.wav')
+                    cut_audio_subp = subprocess.Popen(
+                                                      args=["static_sox", audio_file.name, outfile_loc, "trim", f"{m_start_cut_sample}s", f"{m_cut_duration_samples}s"],
+                                                      stdout=subprocess.DEVNULL,
+                                                      stderr=subprocess.STDOUT,
+                                                      cwd=pathlib.Path(self.root_directory) / 'audio' / 'original',
+                                                      shell=False)
+                    cut_audio_subprocesses.append(cut_audio_subp)
+            else:
+                s_start_cut_sample = start_end_video['s']['start_first_recorded_frame']
+                s_cut_duration_samples = start_end_video['s']['duration_samples']
+                if s_longer:
+                    # adjust outfile name
+                    default_base_name = audio_file.stem
+                    modified_base_name = default_base_name[:2] + base_name_date + default_base_name[2 + len(base_name_date):]
+                    outfile_loc = str(pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video' / f'{modified_base_name}_cropped_to_video.wav')
 
-                        # trim and adjust tempo
-                        tempo_adjustment_factor = start_end_video['s']['duration_samples'] / start_end_video['m']['duration_samples']
-                        cut_audio_subp = subprocess.Popen(
-                                                          args=["static_sox", audio_file.name, outfile_loc, "trim", f"{s_start_cut_sample}s", f"{s_cut_duration_samples}s", "tempo", "-s", str(tempo_adjustment_factor)],
-                                                          stdout=subprocess.DEVNULL,
-                                                          stderr=subprocess.STDOUT,
-                                                          cwd=pathlib.Path(self.root_directory) / 'audio' / 'original',
-                                                          shell=False)
-                        cut_audio_subprocesses.append(cut_audio_subp)
+                    # trim and adjust tempo
+                    tempo_adjustment_factor = start_end_video['s']['duration_samples'] / start_end_video['m']['duration_samples']
+                    cut_audio_subp = subprocess.Popen(
+                                                      args=["static_sox", audio_file.name, outfile_loc, "trim", f"{s_start_cut_sample}s", f"{s_cut_duration_samples}s", "tempo", "-s", str(tempo_adjustment_factor)],
+                                                      stdout=subprocess.DEVNULL,
+                                                      stderr=subprocess.STDOUT,
+                                                      cwd=pathlib.Path(self.root_directory) / 'audio' / 'original',
+                                                      shell=False)
+                    cut_audio_subprocesses.append(cut_audio_subp)
 
-                    else:
-                        outfile_loc = str(pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video' / f'{audio_file.stem}_cropped_to_video.wav')
-                        cut_audio_subp = subprocess.Popen(
-                                                          args=["static_sox", audio_file.name, outfile_loc, "trim", f"{s_start_cut_sample}s", f"{s_cut_duration_samples}s"],
-                                                          stdout=subprocess.DEVNULL,
-                                                          stderr=subprocess.STDOUT,
-                                                          cwd=pathlib.Path(self.root_directory) / 'audio' / 'original',
-                                                          shell=False)
-                        cut_audio_subprocesses.append(cut_audio_subp)
+                else:
+                    outfile_loc = str(pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video' / f'{audio_file.stem}_cropped_to_video.wav')
+                    cut_audio_subp = subprocess.Popen(
+                                                      args=["static_sox", audio_file.name, outfile_loc, "trim", f"{s_start_cut_sample}s", f"{s_cut_duration_samples}s"],
+                                                      stdout=subprocess.DEVNULL,
+                                                      stderr=subprocess.STDOUT,
+                                                      cwd=pathlib.Path(self.root_directory) / 'audio' / 'original',
+                                                      shell=False)
+                    cut_audio_subprocesses.append(cut_audio_subp)
 
         # 2-hour budget — sox "cut to video" on very long sessions can take a
         # while, but anything beyond this almost certainly means a hang.

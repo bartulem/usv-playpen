@@ -344,7 +344,7 @@ def estimate_line_noise(wav_path: str | pathlib.Path,
     sampling_rate = int(info.samplerate)
     n_frames = int(info.frames)
     decimation = max(1, sampling_rate // 1000)
-    window_length = min(n_frames, int(round(window_s * sampling_rate)))
+    window_length = min(n_frames, round(window_s * sampling_rate))
     window_length -= window_length % decimation
     decimated_rate = sampling_rate / decimation
     n_decimated = window_length // decimation
@@ -366,7 +366,7 @@ def estimate_line_noise(wav_path: str | pathlib.Path,
     main_lobe_hz = 2.0 * decimated_rate / n_decimated
     separation_bins = int(np.ceil(max(min_separation_hz, main_lobe_hz) / bin_hz))
     lobe_bins = max(1, int(np.ceil(main_lobe_hz / bin_hz)))
-    floor_bins = max(3, int(round(floor_window_hz / bin_hz)) | 1)
+    floor_bins = max(3, round(floor_window_hz / bin_hz) | 1)
     tones = []
     for band_index, (low_hz, high_hz) in enumerate(search_bands_hz):
         centre_hz = 0.5 * (low_hz + high_hz)
@@ -516,7 +516,8 @@ class _BroadbandChannelStream:
             self.sound_file.seek(self.read_upto)
             new_samples = self.sound_file.read(end_sample - self.read_upto, dtype="int16")
             if new_samples.shape[0] != end_sample - self.read_upto:
-                raise OSError(f"Short read from '{self.sound_file.name}': expected {end_sample - self.read_upto} samples, got {new_samples.shape[0]}.")
+                msg = f"Short read from '{self.sound_file.name}': expected {end_sample - self.read_upto} samples, got {new_samples.shape[0]}."
+                raise OSError(msg)
             self.buffer = np.concatenate([self.buffer, new_samples])
             self.read_upto = end_sample
         if not self.tone_frequencies_hz:
@@ -727,9 +728,10 @@ def estimate_low_band_variance(wav_paths: list[pathlib.Path],
     layout = parse_audio_mmap_name(mmap_path)
     memmap = np.memmap(mmap_path, dtype=np.int16, mode='r', shape=(layout['n_samples'], layout['n_channels']))
     sampling_rate = layout['sampling_rate']
-    length = int(round(window_s * sampling_rate))
+    length = round(window_s * sampling_rate)
     if layout['n_samples'] < length:
-        raise ValueError(f"{mmap_path} holds {layout['n_samples']} samples, fewer than one {window_s} s window.")
+        msg = f"{mmap_path} holds {layout['n_samples']} samples, fewer than one {window_s} s window."
+        raise ValueError(msg)
     margin = sampling_rate if layout['n_samples'] >= 2 * sampling_rate + length else 0
     starts = np.random.default_rng(seed).integers(margin, layout['n_samples'] - length - margin + 1, size=int(n_windows))
     handles = [sf.SoundFile(str(path)) for path in wav_paths]
@@ -787,18 +789,18 @@ def add_broadband_low_band_variance(root_directory: str | pathlib.Path,
     root = pathlib.Path(configure_path(str(root_directory)))
     valid, reason = validate_broadband_output(root, settings)
     if not valid:
-        raise ValueError(f"{root}: broadband output not complete and current ({reason}); run broadband-filter-audio first.")
+        msg = f"{root}: broadband output not complete and current ({reason}); run broadband-filter-audio first."
+        raise ValueError(msg)
     report_path = root / 'audio' / AUDIO_MMAP_BAND_FOLDERS['broadband'] / BROADBAND_REPORT_NAME
-    with open(report_path, encoding='utf-8') as report_file:
+    with pathlib.Path(report_path).open(encoding='utf-8') as report_file:
         report = json.load(report_file)
     if 'low_band_variance' in report and not force:
         return {'status': 'skipped', 'reason': 'low_band_variance already present'}
     low_band = estimate_low_band_variance(broadband_source_files(root, settings), find_audio_mmap(root, 'broadband'),
                                           settings['low_band_variance_windows'], settings['low_band_variance_window_s'])
     report['low_band_variance'] = low_band
-    with atomic_output_path(report_path) as temporary_report:
-        with open(temporary_report, 'w', encoding='utf-8') as report_file:
-            json.dump(report, report_file, indent=2)
+    with atomic_output_path(report_path) as temporary_report, pathlib.Path(temporary_report).open('w', encoding='utf-8') as report_file:
+        json.dump(report, report_file, indent=2)
     message_output(f"Low-band variance of {len(low_band['per_column'])} columns added to {report_path}.")
     return {'status': 'written', 'reason': 'added', 'per_column': low_band['per_column']}
 
@@ -879,7 +881,7 @@ def validate_broadband_output(root_directory: str | pathlib.Path, settings: dict
     if not report_path.is_file():
         return False, f"missing {BROADBAND_REPORT_NAME}"
     try:
-        with open(report_path, encoding="utf-8") as report_file:
+        with pathlib.Path(report_path).open(encoding="utf-8") as report_file:
             report = json.load(report_file)
     except (OSError, ValueError) as report_error:
         return False, f"unreadable {BROADBAND_REPORT_NAME}: {report_error}"
@@ -926,8 +928,8 @@ class Operator:
     broadband-filtering helpers in this module.
     """
 
-    def __init__(self, root_directory: str | list[str] = None,
-                 input_parameter_dict: dict = None,
+    def __init__(self, root_directory: str | list[str] | None = None,
+                 input_parameter_dict: dict | None = None,
                  message_output: Callable | None = None):
         """
         Description
@@ -956,7 +958,7 @@ class Operator:
             raise ValueError(msg)
 
         if input_parameter_dict is None:
-            with open(pathlib.Path(__file__).parent.parent / '_parameter_settings/processing_settings.json') as json_file:
+            with (pathlib.Path(__file__).parent.parent / '_parameter_settings/processing_settings.json').open() as json_file:
                 _settings = json.load(json_file)
 
         if input_parameter_dict is not None:
@@ -1017,17 +1019,15 @@ class Operator:
                 self.message_output(f"Working on getting spike times from clusters in: {ephys_dir}, started at {datetime.now()}.")
 
                 # load the changepoint .json file
-                with open(
-                    first_match_or_raise(
+                with pathlib.Path(first_match_or_raise(
                         root=ephys_dir,
                         pattern='changepoints_info_*.json',
                         label="ephys changepoints_info JSON",
-                    ),
-                    'r',
+                    )).open(
                 ) as binary_info_input_file:
                     binary_files_info = json.load(binary_info_input_file)
 
-                    for session_key in binary_files_info.keys():
+                    for session_key in binary_files_info:
                         binary_files_info[session_key]['root_directory'] = configure_path(pa=binary_files_info[session_key]['root_directory'])
 
                 # get info about session start
@@ -1036,18 +1036,16 @@ class Operator:
                 frame_least_dict = {}
                 root_dict = {}
                 unit_count_dict = {'noise': 0, 'unsorted': 0}
-                for session_key in binary_files_info.keys():
+                for session_key in binary_files_info:
 
                     unit_count_dict[session_key] = {'good': 0, 'mua': 0}
 
                     # load info from camera_frame_count_dict
-                    with open(
-                        first_match_or_raise(
+                    with pathlib.Path(first_match_or_raise(
                             root=pathlib.Path(binary_files_info[session_key]['root_directory']),
                             pattern='video/*_camera_frame_count_dict.json',
                             label=f"camera frame count JSON for session '{session_key}'",
-                        ),
-                        'r',
+                        )).open(
                     ) as frame_count_infile:
                         camera_frame_info = json.load(frame_count_infile)
                         esr_dict[session_key] = camera_frame_info['median_empirical_camera_sr']
@@ -1120,7 +1118,7 @@ class Operator:
                             spike_events = np.delete(spike_events, duplicate_indices)
 
                         # filter spikes for each session
-                        for session_key in binary_files_info.keys():
+                        for session_key in binary_files_info:
                             session_spikes_sec = ((spike_events[(spike_events >= se_dict[session_key][0]) & (spike_events < se_dict[session_key][1])] - se_dict[session_key][0]) /
                                                   float(calibrated_sr_config['CalibratedHeadStages'][binary_files_info[session_key]['headstage_sn']]))
 
@@ -1135,7 +1133,7 @@ class Operator:
                             if session_spikes_sec.shape[0] > self.input_parameter_dict['get_spike_times']['min_spike_num']:
                                 cluster_id = f"{probe_id}_cl{cluster_info[idx, 'cluster_id']:04d}_ch{cluster_info[idx, 'ch']:03d}_{cluster_info[idx, 'group']}"
                                 cluster_file = pathlib.Path(root_dict[session_key]) / 'ephys' / probe_id / 'cluster_data' / f"{cluster_id}.npy"
-                                with atomic_output_path(cluster_file) as tmp_cluster_file, open(tmp_cluster_file, 'wb') as cluster_output_file:
+                                with atomic_output_path(cluster_file) as tmp_cluster_file, pathlib.Path(tmp_cluster_file).open('wb') as cluster_output_file:
                                     np.save(file=cluster_output_file, arr=session_spikes)
 
                                 unit_count_dict[session_key][cluster_info[idx, 'group']] += 1
@@ -1147,7 +1145,7 @@ class Operator:
                         unit_count_dict['unsorted'] += 1
 
                 self.message_output(f"For {ephys_dir}, there were {unit_count_dict['noise']} noise clusters and {unit_count_dict['unsorted']} unsorted clusters.")
-                for session_key in binary_files_info.keys():
+                for session_key in binary_files_info:
                     self.message_output(f"For {root_dict[session_key]} probe {probe_id}, there were {unit_count_dict[session_key]['good']} good and {unit_count_dict[session_key]['mua']} MUA clusters.")
 
     def concatenate_binary_files(self) -> None:
@@ -1226,7 +1224,7 @@ class Operator:
                             headstage_sn = None
                             spike_glx_sr = None
                             imec_probe_sn = None
-                            with open(one_meta) as meta_data_file:
+                            with pathlib.Path(one_meta).open() as meta_data_file:
                                 for line in meta_data_file:
                                     key, value = line.strip().split("=")
                                     if key == 'acqApLfSy':
@@ -1255,10 +1253,11 @@ class Operator:
                                 if meta_val is None
                             ]
                             if missing_meta_keys:
-                                raise KeyError(
+                                msg = (
                                     f"{one_meta} is missing required meta key(s): "
                                     f"{', '.join(missing_meta_keys)}."
                                 )
+                                raise KeyError(msg)
 
                             binary_file_info_id = one_file.name[:-7]
                             binary_files_info[binary_file_info_id] = {'session_start_end': [np.nan, np.nan],
@@ -1287,15 +1286,15 @@ class Operator:
                                 binary_files_info[binary_file_info_id]['session_start_end'][0] = 0
                                 binary_files_info[binary_file_info_id]['session_start_end'][1] = int(one_recording_length // total_num_channels)
                                 changepoints.append(int(one_recording_length // total_num_channels))
-                                concatenation_command += '{} '.format(one_file)
+                                concatenation_command += f'{one_file} '
                             else:
                                 binary_files_info[binary_file_info_id]['session_start_end'][0] = changepoints[-1]
                                 binary_files_info[binary_file_info_id]['session_start_end'][1] = int(one_recording_length // total_num_channels) + changepoints[-1]
                                 changepoints.append(int(one_recording_length // total_num_channels) + changepoints[-1])
                                 if os.name == 'nt':
-                                    concatenation_command += '+ {} '.format(one_file)
+                                    concatenation_command += f'+ {one_file} '
                                 else:
-                                    concatenation_command += '{} '.format(one_file)
+                                    concatenation_command += f'{one_file} '
 
             # create save directory if one doesn't exist already
             concat_save_path = pathlib.Path(concat_save_dir[probe_idx])
@@ -1310,14 +1309,15 @@ class Operator:
                 # size and duration fields are replaced by the concatenation's totals.
                 src_meta_files = sorted(ephys_probe_dir.glob(f"*{npx_file_type}.meta*"))
                 if not src_meta_files:
-                    raise FileNotFoundError(
+                    msg = (
                         f"source .{npx_file_type}.meta for concatenation: no match for glob pattern "
                         f"'*{npx_file_type}.meta*' under '{ephys_probe_dir}'."
                     )
+                    raise FileNotFoundError(msg)
                 src_meta_file = src_meta_files[0]
-                with open(src_meta_file, 'r', encoding='utf-8') as f_in, \
+                with pathlib.Path(src_meta_file).open(encoding='utf-8') as f_in, \
                         atomic_output_path(concatenated_meta_file) as tmp_meta_file, \
-                        open(tmp_meta_file, 'w', encoding='utf-8') as f_out:
+                        pathlib.Path(tmp_meta_file).open('w', encoding='utf-8') as f_out:
                     for line in f_in:
                         if line.strip().startswith('fileSizeBytes='):
                             f_out.write(f"fileSizeBytes={total_size_bytes}\n")
@@ -1334,15 +1334,15 @@ class Operator:
             # save changepoint information in JSON file
             changepoints_json = concat_save_path / f'changepoints_info_{concat_save_path.name}.json'
             if not changepoints_json.exists():
-                with atomic_output_path(changepoints_json) as tmp_changepoints_json, open(tmp_changepoints_json, 'w') as binary_info_output_file:
+                with atomic_output_path(changepoints_json) as tmp_changepoints_json, pathlib.Path(tmp_changepoints_json).open('w') as binary_info_output_file:
                     json.dump(binary_files_info, binary_info_output_file, indent=4)
             else:
-                with open(changepoints_json, 'r') as existing_json_file:
+                with pathlib.Path(changepoints_json).open() as existing_json_file:
                     changepoint_info_data = json.load(existing_json_file)
 
-                for file_key in binary_files_info.keys():
+                for file_key, file_info in binary_files_info.items():
                     if file_key not in changepoint_info_data:
-                        changepoint_info_data[file_key] = binary_files_info[file_key]
+                        changepoint_info_data[file_key] = file_info
                     else:
                         # The tracking samples' reference, read BEFORE session_start_end is
                         # updated below: with no stored session start (no concatenation has run
@@ -1352,16 +1352,16 @@ class Operator:
                         # by this one's. Adding the offset on every run would shift them again on
                         # each re-run.
                         previous_session_start = changepoint_info_data[file_key]['session_start_end'][0]
-                        new_session_start = binary_files_info[file_key]['session_start_end'][0]
+                        new_session_start = file_info['session_start_end'][0]
                         previous_offset = 0 if (previous_session_start is None or np.isnan(previous_session_start)) else previous_session_start
-                        for component_key in changepoint_info_data[file_key].keys():
-                            if component_key != 'tracking_start_end' and component_key != 'largest_camera_break_duration' and component_key != 'root_directory' and changepoint_info_data[file_key][component_key] != binary_files_info[file_key][component_key]:
-                                changepoint_info_data[file_key][component_key] = binary_files_info[file_key][component_key]
+                        for component_key in changepoint_info_data[file_key]:
+                            if component_key not in {'tracking_start_end', 'largest_camera_break_duration', 'root_directory'} and changepoint_info_data[file_key][component_key] != file_info[component_key]:
+                                changepoint_info_data[file_key][component_key] = file_info[component_key]
                             elif component_key == 'tracking_start_end' and not any(value is None or np.isnan(value) for value in changepoint_info_data[file_key][component_key]):
                                 changepoint_info_data[file_key][component_key][0] = changepoint_info_data[file_key][component_key][0] - previous_offset + new_session_start
                                 changepoint_info_data[file_key][component_key][1] = changepoint_info_data[file_key][component_key][1] - previous_offset + new_session_start
 
-                with atomic_output_path(changepoints_json) as tmp_changepoints_json, open(tmp_changepoints_json, 'w') as binary_info_output_file:
+                with atomic_output_path(changepoints_json) as tmp_changepoints_json, pathlib.Path(tmp_changepoints_json).open('w') as binary_info_output_file:
                     json.dump(changepoint_info_data, binary_info_output_file, indent=4)
 
             smart_wait(app_context_bool=self.app_context_bool, seconds=2)
@@ -1452,10 +1452,11 @@ class Operator:
             (pathlib.Path(self.root_directory) / 'audio' / 'original_mc').glob('m_*.wav')
         )
         if not master_mc_files:
-            raise FileNotFoundError(
+            msg = (
                 f"master multichannel .wav for naming: no 'm_*.wav' files found under "
                 f"'{pathlib.Path(self.root_directory) / 'audio' / 'original_mc'}'."
             )
+            raise FileNotFoundError(msg)
         # A session holds several master multichannel chunks (usually four
         # five-minute WAVs); the single-channel files are named after the EARLIEST
         # one (first in sorted, i.e. timestamp, order), an explicit choice.
@@ -1727,15 +1728,19 @@ class Operator:
 
         wav_paths = broadband_source_files(root, settings)
         if not wav_paths:
-            raise FileNotFoundError(f"No '{settings['source_glob']}' files in '{root / 'audio' / settings['source_dir']}'.")
+            msg = f"No '{settings['source_glob']}' files in '{root / 'audio' / settings['source_dir']}'."
+            raise FileNotFoundError(msg)
         infos = [sf.info(str(path)) for path in wav_paths]
         sampling_rate = int(infos[0].samplerate)
         n_samples = int(infos[0].frames)
         n_channels = len(wav_paths)
         for path, info in zip(wav_paths, infos, strict=True):
             if int(info.samplerate) != sampling_rate or int(info.frames) != n_samples or int(info.channels) != 1 or info.subtype != 'PCM_16':
-                raise ValueError(f"'{path.name}' is {info.channels} ch {info.subtype} at {info.samplerate} Hz with {info.frames} samples; "
-                                 f"every source must be 1 ch PCM_16 at {sampling_rate} Hz with {n_samples} samples.")
+                msg = (
+                    f"'{path.name}' is {info.channels} ch {info.subtype} at {info.samplerate} Hz with {info.frames} samples; "
+                                 f"every source must be 1 ch PCM_16 at {sampling_rate} Hz with {n_samples} samples."
+                )
+                raise ValueError(msg)
 
         output_dir = root / 'audio' / AUDIO_MMAP_BAND_FOLDERS['broadband']
         mmap_name = f"{wav_paths[0].name.split('_')[1]}_concatenated_audio_{AUDIO_MMAP_BAND_FOLDERS['broadband']}_{sampling_rate}_{n_samples}_{n_channels}_int16.mmap"
@@ -1758,11 +1763,12 @@ class Operator:
                                                       cutoff_hz=broadband_highpass_cutoff(settings),
                                                       transition_width_hz=settings['transition_width_hz'],
                                                       stopband_attenuation_db=settings['stopband_attenuation_db'])
-        block_length = int(round(settings['line_noise_block_s'] * sampling_rate))
+        block_length = round(settings['line_noise_block_s'] * sampling_rate)
         if settings['line_noise_smoothing_blocks'] < 1 or settings['line_noise_smoothing_blocks'] % 2 != 1:
-            raise ValueError(f"line_noise_smoothing_blocks must be a positive odd integer, got {settings['line_noise_smoothing_blocks']}.")
+            msg = f"line_noise_smoothing_blocks must be a positive odd integer, got {settings['line_noise_smoothing_blocks']}."
+            raise ValueError(msg)
         half_window = (settings['line_noise_smoothing_blocks'] - 1) // 2
-        chunk_length = max(1, int(round(settings['chunk_s'] * sampling_rate)))
+        chunk_length = max(1, round(settings['chunk_s'] * sampling_rate))
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=settings['n_threads']) as executor:
             channel_tones = list(executor.map(
@@ -1784,7 +1790,7 @@ class Operator:
                        for path, tones in zip(wav_paths, channel_tones, strict=True)]
             try:
                 with atomic_output_path(mmap_path) as temporary_path:
-                    with open(temporary_path, 'wb') as output_file:
+                    with pathlib.Path(temporary_path).open('wb') as output_file:
                         next_report = 0.1
                         for chunk_start in range(0, n_samples, chunk_length):
                             chunk_end = min(n_samples, chunk_start + chunk_length)
@@ -1796,7 +1802,8 @@ class Operator:
                         output_file.flush()
                         os.fsync(output_file.fileno())
                     if temporary_path.stat().st_size != output_bytes:
-                        raise OSError(f"Broadband memmap has {temporary_path.stat().st_size} bytes, expected {output_bytes}.")
+                        msg = f"Broadband memmap has {temporary_path.stat().st_size} bytes, expected {output_bytes}."
+                        raise OSError(msg)
                     # exactly one broadband memmap may exist: drop any older one with another name
                     regex = audio_mmap_name_regex('broadband')
                     for older in output_dir.iterdir():
@@ -1855,9 +1862,8 @@ class Operator:
             'low_band_variance': low_band,
             'settings': broadband_output_settings(settings),
         }
-        with atomic_output_path(output_dir / BROADBAND_REPORT_NAME) as temporary_report:
-            with open(temporary_report, 'w', encoding='utf-8') as report_file:
-                json.dump(report, report_file, indent=2)
+        with atomic_output_path(output_dir / BROADBAND_REPORT_NAME) as temporary_report, pathlib.Path(temporary_report).open('w', encoding='utf-8') as report_file:
+            json.dump(report, report_file, indent=2)
 
         self.message_output(f"Broadband filtering of {root} finished in {runtime_s:.0f} s: {mmap_path}")
         return {'status': 'written', 'reason': reason, 'mmap_path': str(mmap_path), 'runtime_s': runtime_s,
@@ -1896,7 +1902,7 @@ class Operator:
                 if len(all_video_files) > 1:
 
                     # create .txt file with video files to concatenate
-                    with open(current_working_dir / f"file_concatenation_list_{sub_directory.name.split('.')[-1]}.txt", 'w', encoding="utf-8") as concat_txt_file:
+                    with pathlib.Path(current_working_dir / f"file_concatenation_list_{sub_directory.name.split('.')[-1]}.txt").open('w', encoding="utf-8") as concat_txt_file:
                         for file_path in all_video_files:
                             concat_txt_file.write(f"file '{file_path.name}'\n")
 
@@ -2124,7 +2130,7 @@ class Operator:
             camera_frame_count_dict['median_empirical_camera_sr'] = float('nan')
         else:
             camera_frame_count_dict['median_empirical_camera_sr'] = round(number=np.nanmedian(empirical_camera_sr), ndigits=4)
-        with atomic_output_path(video_dir / f'{date_joint}_camera_frame_count_dict.json') as tmp_frame_count_file, open(tmp_frame_count_file, 'w') as frame_count_outfile:
+        with atomic_output_path(video_dir / f'{date_joint}_camera_frame_count_dict.json') as tmp_frame_count_file, pathlib.Path(tmp_frame_count_file).open('w') as frame_count_outfile:
             json.dump(camera_frame_count_dict, frame_count_outfile, indent=4)
 
 
@@ -2157,9 +2163,10 @@ def read_broadband_session_list(sessions_file: str | None = None,
     """
 
     if (sessions_file is None) == (usv_counts_csv is None):
-        raise ValueError("Give exactly one of sessions_file and usv_counts_csv.")
+        msg = "Give exactly one of sessions_file and usv_counts_csv."
+        raise ValueError(msg)
     if sessions_file is not None:
-        with open(sessions_file, encoding='utf-8') as session_list:
+        with pathlib.Path(sessions_file).open(encoding='utf-8') as session_list:
             entries = [line.strip() for line in session_list if line.strip() and not line.strip().startswith('#')]
     else:
         table = pls.read_csv(usv_counts_csv)
@@ -2216,7 +2223,7 @@ def _broadband_filter_session_worker(session_root: str, processing_settings: dic
         None
         """
 
-        with open(log_path, 'a', encoding='utf-8') as log_file:
+        with pathlib.Path(log_path).open('a', encoding='utf-8') as log_file:
             log_file.write(f"{datetime.now().isoformat(timespec='seconds')} [{session_name}] {message}\n")
 
     started = time.perf_counter()
@@ -2289,7 +2296,7 @@ def broadband_filter_sessions(session_roots: list[str],
         for done_index, future in enumerate(concurrent.futures.as_completed(futures), start=1):
             row = future.result()
             write_header = not pathlib.Path(report_csv_path).is_file()
-            with open(report_csv_path, 'a', newline='', encoding='utf-8') as report_file:
+            with pathlib.Path(report_csv_path).open('a', newline='', encoding='utf-8') as report_file:
                 writer = csv.DictWriter(report_file, fieldnames=list(BROADBAND_BATCH_REPORT_COLUMNS))
                 if write_header:
                     writer.writeheader()

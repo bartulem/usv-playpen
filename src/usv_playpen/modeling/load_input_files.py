@@ -42,7 +42,7 @@ from ..os_utils import (
 )
 
 
-def load_behavioral_feature_data(behavior_file_paths: list = None,
+def load_behavioral_feature_data(behavior_file_paths: list | None = None,
                                  csv_sep: str = ',') -> tuple:
     """
     Loads behavior data from a 3D behavioral features .csv file.
@@ -214,34 +214,41 @@ def validate_vocal_class_settings(target_classes: list | None,
 
     if target_classes is not None:
         if not isinstance(target_classes, (list, tuple)) or len(target_classes) == 0:
-            raise ValueError(f"model_params.onset_target_classes must be a non-empty list of {list(VOCAL_CLASSES)}; got {target_classes!r}.")
+            msg = f"model_params.onset_target_classes must be a non-empty list of {list(VOCAL_CLASSES)}; got {target_classes!r}."
+            raise ValueError(msg)
         unknown = [value for value in target_classes if value not in VOCAL_CLASSES]
         if unknown or len(set(target_classes)) != len(target_classes):
-            raise ValueError(f"model_params.onset_target_classes {target_classes!r} must hold distinct classes from {list(VOCAL_CLASSES)}.")
+            msg = f"model_params.onset_target_classes {target_classes!r} must hold distinct classes from {list(VOCAL_CLASSES)}."
+            raise ValueError(msg)
         if prediction_mode in BOUT_PREDICTION_MODES and not set(target_classes) <= set(BOUT_TARGET_CLASSES):
-            raise ValueError(
+            msg = (
                 f"model_params.onset_target_classes {target_classes!r} is not valid for {prediction_mode!r}: bouts are "
                 f"grouped from {list(BOUT_TARGET_CLASSES)} only, because squeaks do not come in bouts and the inter-bout "
                 "threshold is calibrated on USV intervals. Use 'individual' mode for squeak onsets."
             )
+            raise ValueError(msg)
     if predictor_classes is not None:
         if not isinstance(predictor_classes, (list, tuple)) or len(predictor_classes) == 0:
-            raise ValueError(f"vocal_features.vocal_predictor_classes must be a non-empty list of class lists, e.g. [['usv']]; got {predictor_classes!r}.")
+            msg = f"vocal_features.vocal_predictor_classes must be a non-empty list of class lists, e.g. [['usv']]; got {predictor_classes!r}."
+            raise ValueError(msg)
         trace_names = []
         for group in predictor_classes:
             if not isinstance(group, (list, tuple)) or len(group) == 0:
-                raise ValueError(f"vocal_features.vocal_predictor_classes: every entry must be a non-empty list of classes, e.g. ['usv', 'overlap']; got {group!r}.")
+                msg = f"vocal_features.vocal_predictor_classes: every entry must be a non-empty list of classes, e.g. ['usv', 'overlap']; got {group!r}."
+                raise ValueError(msg)
             unknown = [value for value in group if value not in VOCAL_CLASSES]
             if unknown or len(set(group)) != len(group):
-                raise ValueError(f"vocal_features.vocal_predictor_classes entry {group!r} must hold distinct classes from {list(VOCAL_CLASSES)}.")
+                msg = f"vocal_features.vocal_predictor_classes entry {group!r} must hold distinct classes from {list(VOCAL_CLASSES)}."
+                raise ValueError(msg)
             trace_names.append(vocal_trace_name(group))
         duplicated = sorted({name for name in trace_names if trace_names.count(name) > 1})
         if duplicated:
             clashing = [group for group in predictor_classes if vocal_trace_name(group) in duplicated]
-            raise ValueError(
+            msg = (
                 f"vocal_features.vocal_predictor_classes entries {clashing} all give the trace name(s) {duplicated}; "
                 "each entry must give a different trace (see vocal_trace_name)."
             )
+            raise ValueError(msg)
 
 
 def is_vocal_signal(signal_key: str) -> bool:
@@ -369,10 +376,11 @@ def build_vocal_predictor_signals(mouse_usvs: pls.DataFrame,
     if not vocal_output_type:
         return signals
     if vocal_output_type not in ('pooled_binary', 'pooled_rate', 'categories_rate', 'all_rate'):
-        raise ValueError(
+        msg = (
             f"Unknown vocal_features.vocal_predictor_type {vocal_output_type!r}; choose 'pooled_binary', "
             "'pooled_rate', 'categories_rate', 'all_rate' or null."
         )
+        raise ValueError(msg)
     for group in predictor_classes:
         name = vocal_trace_name(group)
         group_usvs = vocal_event_times(mouse_usvs.filter(vocal_class_mask(mouse_usvs, group, source)), group, source)
@@ -765,7 +773,7 @@ def _build_binary_occupancy(event_starts: np.ndarray,
     start_indices = np.clip(start_indices, 0, duration_frames)
     stop_indices = np.clip(stop_indices, 0, duration_frames)
 
-    for s, e in zip(start_indices, stop_indices):
+    for s, e in zip(start_indices, stop_indices, strict=False):
         if e > s:
             trace[s:e] = 1.0
         elif s < duration_frames:
@@ -808,7 +816,7 @@ def _generate_vocal_trace(event_starts: np.ndarray,
                           event_stops: np.ndarray,
                           duration_frames: int,
                           fps: float,
-                          smooth_sd: float = None) -> np.ndarray:
+                          smooth_sd: float | None = None) -> np.ndarray:
     """
     Core utility to convert USV timestamps into a continuous temporal trace.
 
@@ -933,8 +941,9 @@ def _bout_offset_events(starts: np.ndarray,
     """
 
     if negative_scheme not in ('cross_bout', 'within_bout'):
-        raise ValueError(f"Unknown negative_scheme: {negative_scheme}. Must be 'cross_bout' or 'within_bout'.")
-    bouts = [(int(i0), int(i1)) for i0, i1 in zip(bout_start_indices, bout_end_indices)
+        msg = f"Unknown negative_scheme: {negative_scheme}. Must be 'cross_bout' or 'within_bout'."
+        raise ValueError(msg)
+    bouts = [(int(i0), int(i1)) for i0, i1 in zip(bout_start_indices, bout_end_indices, strict=False)
              if (i1 - i0 + 1) >= min_usv_per_bout]
     positives: list[float] = []
     negatives: list[float] = []
@@ -985,29 +994,29 @@ def _bout_offset_events(starts: np.ndarray,
     return np.array(positives), np.array(negatives)
 
 
-def find_onset_epochs(root_directories: list = None,
-                     mouse_ids_dict: dict = None,
-                     camera_fps_dict: dict = None,
-                     features_dict: dict = None,
+def find_onset_epochs(root_directories: list | None = None,
+                     mouse_ids_dict: dict | None = None,
+                     camera_fps_dict: dict | None = None,
+                     features_dict: dict | None = None,
                      csv_sep: str = ',',
-                     proportion_smoothing_sd: int | float = None,
-                     filter_history: int | float = None,
+                     proportion_smoothing_sd: int | float | None = None,
+                     filter_history: int | float | None = None,
                      prediction_mode: str = 'bout_onset',
-                     usv_bout_time: int | float = None,
-                     min_usv_per_bout: int = None,
+                     usv_bout_time: int | float | None = None,
+                     min_usv_per_bout: int | None = None,
                      mixture_model_component_index: int = 0,
                      mixture_model_z_score: float = 2.58,
-                     mixture_model_params: dict = None,
-                     vocal_output_type: str = None,
+                     mixture_model_params: dict | None = None,
+                     vocal_output_type: str | None = None,
                      exclude_noise_usvs: bool = True,
                      category_column: str = 'usv_category',
-                     target_category: int = None,
+                     target_category: int | None = None,
                      target_classes: list | tuple = ('usv',),
                      predictor_classes: list | tuple = (('usv',),),
-                     negative_scheme: str = None,
-                     min_singing_after_negative: int | float = None,
-                     time_since_bout_onset_tolerance: int | float = None,
-                     max_negatives_per_bout: int = None) -> dict:
+                     negative_scheme: str | None = None,
+                     min_singing_after_negative: int | float | None = None,
+                     time_since_bout_onset_tolerance: int | float | None = None,
+                     max_negatives_per_bout: int | None = None) -> dict:
     """
     Loads USV information data from a .csv file and samples epochs based on prediction mode.
     (See 'find_usv_categories' for category-based sampling).
@@ -1197,10 +1206,11 @@ def find_onset_epochs(root_directories: list = None,
         if exclude_noise_usvs:
             usv_summary_data = drop_noise_usvs(usv_summary_data, Path(csv_path).name)[0]
         if any(column not in usv_summary_data.columns for column in VOCAL_FLAG_COLUMNS):
-            raise ValueError(
+            msg = (
                 f"{Path(csv_path).name} has no {list(VOCAL_FLAG_COLUMNS)} columns, so its USVs cannot be told from its "
                 "squeaks for onset_target_classes / vocal_predictor_classes; run detect-usv-squeaks on the session."
             )
+            raise ValueError(msg)
 
         if session_id not in mouse_ids_dict:
             print(f"Warning: No mouse names registered for {session_id}. Skipping.")
@@ -1332,13 +1342,15 @@ def find_onset_epochs(root_directories: list = None,
 
                         # Check size constraint
                         count = idx_end - idx_start + 1
-                        if count < min_usv_per_bout: continue
+                        if count < min_usv_per_bout:
+                            continue
 
                         # Check clean history constraint
                         bout_start_time = starts[idx_start]
 
                         # A. Must be far enough into session
-                        if bout_start_time <= filter_history: continue
+                        if bout_start_time <= filter_history:
+                            continue
 
                         # B. Clean history under the negatives' rule: no vocalization of
                         # this mouse (any class, not only the target classes) and none
@@ -1422,7 +1434,8 @@ def find_onset_epochs(root_directories: list = None,
                     max_negatives_per_bout=max_negatives_per_bout)
 
             else:
-                raise ValueError(f"Unknown prediction_mode: {prediction_mode}. Must be 'bout_onset', 'individual', 'state' or 'bout_offset'.")
+                msg_0 = f"Unknown prediction_mode: {prediction_mode}. Must be 'bout_onset', 'individual', 'state' or 'bout_offset'."
+                raise ValueError(msg_0)
 
             usv_data_dict[session_id][mouse_name]['positive_events'] = np.sort(usv_events_positive)
             usv_data_dict[session_id][mouse_name]['negative_events'] = np.sort(usv_events_negative)
@@ -1430,19 +1443,19 @@ def find_onset_epochs(root_directories: list = None,
     return usv_data_dict
 
 
-def find_usv_categories(root_directories: list = None,
-                        mouse_ids_dict: dict = None,
-                        camera_fps_dict: dict = None,
-                        features_dict: dict = None,
+def find_usv_categories(root_directories: list | None = None,
+                        mouse_ids_dict: dict | None = None,
+                        camera_fps_dict: dict | None = None,
+                        features_dict: dict | None = None,
                         csv_sep: str = ',',
-                        target_category: int = None,
+                        target_category: int | None = None,
                         category_column: str = 'usv_category',
                         filter_history: int | float = 0.0,
-                        vocal_output_type: str = None,
+                        vocal_output_type: str | None = None,
                         predictor_classes: list | tuple = (('usv',),),
                         proportion_smoothing_sd: float = 1.0,
                         exclude_noise_usvs: bool = True,
-                        manifold_column_names: list = None) -> dict:
+                        manifold_column_names: list | None = None) -> dict:
     """
     Parses USV data for either one-vs-rest (binary) or multinomial (all-category) analysis,
     as well as extracting continuous spatial targets (acoustic manifold coordinates) for
@@ -1660,58 +1673,57 @@ def find_usv_categories(root_directories: list = None,
                     }
 
             # Extract continuous targets (user-configured acoustic manifold coordinates)
-            if manifold_column_names:
-                if all(col in mouse_usvs.columns for col in manifold_column_names):
-                    # The squeak map places the squeak of every squeak-bearing segment
-                    # (pure squeaks and overlap segments), so its onsets are the squeaks'
-                    # own (`vocal_event_times` with the class group ("squeak",): every
-                    # squeak-bearing row by its squeak extent, never by the overlap
-                    # segment's USV onset), re-sorted and re-filtered against the history
-                    # period on that onset; every other map places USVs and keeps the
-                    # segment onsets.
-                    if set(manifold_column_names) <= set(SQUEAK_MAP_COLUMNS):
-                        manifold_usvs = vocal_event_times(mouse_usvs, ("squeak",), f"{session_id} ({mouse_name})")
-                        manifold_usvs = manifold_usvs.filter(pls.col('start') > filter_history)
-                    else:
-                        manifold_usvs = mouse_usvs
-                    # A vocalization the embedding could not place (outside the model's
-                    # duration window, no SAM mask, no condition value) has null
-                    # coordinates; it has no manifold target, so it is dropped here,
-                    # together with its onset and labels, before anything downstream
-                    # (the inverse-density KDE, the regressions, the GLM-HMM) sees a NaN.
-                    # A column CSV inference read as text (all-null) casts to NaN too.
-                    manifold_arrays = [
-                        manifold_usvs[col].cast(pls.Float64, strict=False).fill_null(np.nan).to_numpy()
-                        for col in manifold_column_names
-                    ]
-                    manifold_targets = np.column_stack(manifold_arrays)
-                    placed = np.isfinite(manifold_targets).all(axis=1)
-                    n_unplaced = int(np.count_nonzero(~placed))
-                    if n_unplaced > 0:
-                        print(f"  {session_id} ({mouse_name}): dropped {n_unplaced} of {placed.size} vocalizations with "
-                              f"null/NaN manifold coordinates ({', '.join(manifold_column_names)}).")
-                        n_unplaced_total += n_unplaced
-                        n_unplaced_sessions += 1
-                    usv_data_dict[session_id][mouse_name]['continuous_onsets'] = manifold_usvs['start'].to_numpy()[placed]
-                    usv_data_dict[session_id][mouse_name]['continuous_targets'] = manifold_targets[placed]
+            if manifold_column_names and all(col in mouse_usvs.columns for col in manifold_column_names):
+                # The squeak map places the squeak of every squeak-bearing segment
+                # (pure squeaks and overlap segments), so its onsets are the squeaks'
+                # own (`vocal_event_times` with the class group ("squeak",): every
+                # squeak-bearing row by its squeak extent, never by the overlap
+                # segment's USV onset), re-sorted and re-filtered against the history
+                # period on that onset; every other map places USVs and keeps the
+                # segment onsets.
+                if set(manifold_column_names) <= set(SQUEAK_MAP_COLUMNS):
+                    manifold_usvs = vocal_event_times(mouse_usvs, ("squeak",), f"{session_id} ({mouse_name})")
+                    manifold_usvs = manifold_usvs.filter(pls.col('start') > filter_history)
+                else:
+                    manifold_usvs = mouse_usvs
+                # A vocalization the embedding could not place (outside the model's
+                # duration window, no SAM mask, no condition value) has null
+                # coordinates; it has no manifold target, so it is dropped here,
+                # together with its onset and labels, before anything downstream
+                # (the inverse-density KDE, the regressions, the GLM-HMM) sees a NaN.
+                # A column CSV inference read as text (all-null) casts to NaN too.
+                manifold_arrays = [
+                    manifold_usvs[col].cast(pls.Float64, strict=False).fill_null(np.nan).to_numpy()
+                    for col in manifold_column_names
+                ]
+                manifold_targets = np.column_stack(manifold_arrays)
+                placed = np.isfinite(manifold_targets).all(axis=1)
+                n_unplaced = int(np.count_nonzero(~placed))
+                if n_unplaced > 0:
+                    print(f"  {session_id} ({mouse_name}): dropped {n_unplaced} of {placed.size} vocalizations with "
+                          f"null/NaN manifold coordinates ({', '.join(manifold_column_names)}).")
+                    n_unplaced_total += n_unplaced
+                    n_unplaced_sessions += 1
+                usv_data_dict[session_id][mouse_name]['continuous_onsets'] = manifold_usvs['start'].to_numpy()[placed]
+                usv_data_dict[session_id][mouse_name]['continuous_targets'] = manifold_targets[placed]
 
-                    # Per-USV category labels, the acoustic regions of
-                    # downstream region-conditioned analyses (torus macro
-                    # score, equal-region reweighting, model selection, CNN
-                    # saliency, GLM-HMM targets). The label is the regular
-                    # map's qlvm_category (R-1..R-k) for EVERY map -- qlvm and
-                    # the four conditional maps alike: the categories are defined
-                    # on the regular map only (os_utils.QLVM_CATEGORY_MAP) and
-                    # are a property of the vocalization, so a conditional map's vocalizations
-                    # carry the same labels. Stored as a plain numpy array
-                    # aligned 1:1 with continuous_onsets / continuous_targets
-                    # above, only when the column is present in the source CSV;
-                    # an absent label array signals "this USV summary carries
-                    # no categories yet" (assign-qlvm-categories not run).
-                    if QLVM_CATEGORY_COLUMN in manifold_usvs.columns:
-                        usv_data_dict[session_id][mouse_name]['continuous_category'] = (
-                            manifold_usvs[QLVM_CATEGORY_COLUMN].to_numpy()[placed]
-                        )
+                # Per-USV category labels, the acoustic regions of
+                # downstream region-conditioned analyses (torus macro
+                # score, equal-region reweighting, model selection, CNN
+                # saliency, GLM-HMM targets). The label is the regular
+                # map's qlvm_category (R-1..R-k) for EVERY map -- qlvm and
+                # the four conditional maps alike: the categories are defined
+                # on the regular map only (os_utils.QLVM_CATEGORY_MAP) and
+                # are a property of the vocalization, so a conditional map's vocalizations
+                # carry the same labels. Stored as a plain numpy array
+                # aligned 1:1 with continuous_onsets / continuous_targets
+                # above, only when the column is present in the source CSV;
+                # an absent label array signals "this USV summary carries
+                # no categories yet" (assign-qlvm-categories not run).
+                if QLVM_CATEGORY_COLUMN in manifold_usvs.columns:
+                    usv_data_dict[session_id][mouse_name]['continuous_category'] = (
+                        manifold_usvs[QLVM_CATEGORY_COLUMN].to_numpy()[placed]
+                    )
 
     if manifold_column_names:
         print(f"Manifold targets: dropped {n_unplaced_total} vocalizations with null/NaN coordinates in total "
@@ -1775,18 +1787,18 @@ def _calculate_ibi_threshold_ig(mu: float, lam: float, z_score: float) -> float:
     return float(invgauss.ppf(q, mu / lam, scale=lam))
 
 
-def find_variable_length_bouts(root_directories: list = None,
-                               mouse_ids_dict: dict = None,
-                               camera_fps_dict: dict = None,
-                               features_dict: dict = None,
+def find_variable_length_bouts(root_directories: list | None = None,
+                               mouse_ids_dict: dict | None = None,
+                               camera_fps_dict: dict | None = None,
+                               features_dict: dict | None = None,
                                csv_sep: str = ',',
                                mixture_model_component_index: int = 0,
                                mixture_model_z_score: float = 2.58,
-                               mixture_model_params: dict = None,
+                               mixture_model_params: dict | None = None,
                                min_vocalizations: int = 2,
                                filter_history: float = 4.0,
                                proportion_smoothing_sd: float = 1.0,
-                               vocal_output_type: str = None,
+                               vocal_output_type: str | None = None,
                                predictor_classes: list | tuple = (('usv',),),
                                target_classes: list | tuple = ('usv',),
                                exclude_noise_usvs: bool = True,
@@ -2024,11 +2036,13 @@ def find_variable_length_bouts(root_directories: list = None,
 
                 # Metric: USV count (within bout)
                 count = idx_end - idx_start + 1
-                if count < min_vocalizations: continue
+                if count < min_vocalizations:
+                    continue
 
                 # Metric: start time
                 bout_start_time = starts[idx_start]
-                if bout_start_time <= filter_history: continue
+                if bout_start_time <= filter_history:
+                    continue
 
                 # Metric: duration & complexity
                 bout_end_time = stops[idx_end]
@@ -2050,7 +2064,7 @@ def find_variable_length_bouts(root_directories: list = None,
 
     return usv_data_dict
 
-def load_pickle_modeling_data(pickle_file_path: str = None) -> dict:
+def load_pickle_modeling_data(pickle_file_path: str | None = None) -> dict:
     """
     Loads data from a .pickle file.
 
@@ -2065,7 +2079,5 @@ def load_pickle_modeling_data(pickle_file_path: str = None) -> dict:
         Modeling data.
     """
 
-    with open(pickle_file_path, 'rb') as pickle_file:
-        modeling_data = pickle.load(pickle_file)
-
-    return modeling_data
+    with Path(pickle_file_path).open('rb') as pickle_file:
+        return pickle.load(pickle_file)

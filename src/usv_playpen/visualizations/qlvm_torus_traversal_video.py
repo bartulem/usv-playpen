@@ -57,6 +57,7 @@ the shared ``apply_plot_style`` helper; every ``color=`` argument is a hex strin
 
 from __future__ import annotations
 
+import contextlib
 import pathlib
 from collections.abc import Callable
 from datetime import datetime
@@ -64,11 +65,11 @@ from functools import lru_cache
 
 import click
 import h5py
-import matplotlib
-import matplotlib.gridspec as gridspec
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 from click.core import ParameterSource
+from matplotlib import gridspec
 from matplotlib.animation import FFMpegWriter, FuncAnimation, PillowWriter
 from matplotlib.collections import LineCollection
 from matplotlib.colors import to_rgb
@@ -90,7 +91,7 @@ from .plot_style import apply_plot_style
 # The video is rendered off-screen frame by frame, so the non-interactive Agg
 # backend is selected (pyplot allows switching the backend after import as long
 # as no figure is open yet).
-matplotlib.use("Agg")
+mpl.use("Agg")
 
 # Register the bundled Helvetica weights + activate the project mplstyle so all
 # text in the video renders in Helvetica, instead of matplotlib's default font.
@@ -234,8 +235,7 @@ def _smooth_jitter(rng, n, sigma):
     raw = rng.normal(0.0, sigma, size=(n, 2))
     sm = np.stack([np.convolve(raw[:, d], kernel, mode='same') for d in range(2)], axis=1)
     t = np.linspace(0, 1, n)[:, None]
-    sm = sm - (1 - t) * sm[0] - t * sm[-1]
-    return sm
+    return sm - (1 - t) * sm[0] - t * sm[-1]
 
 
 def _curved_path(a, b, n, amplitude):
@@ -353,10 +353,8 @@ def _contour_visible(cs, vis):
     -------
     None
     """
-    try:
+    with contextlib.suppress(AttributeError):
         cs.set_visible(vis)
-    except AttributeError:
-        pass
     if hasattr(cs, 'collections'):
         for coll in cs.collections:
             coll.set_visible(vis)
@@ -719,7 +717,7 @@ class QLVMTorusTraversalVideo:
         # User-tunable accent (highlight) color for the head marker, cluster
         # outline/centre dot, current-tile borders, and the trail colormap.
         accent_color = cfg['accent_color']
-        accent_rgb255 = tuple(int(round(channel * 255)) for channel in to_rgb(accent_color))
+        accent_rgb255 = tuple(round(channel * 255) for channel in to_rgb(accent_color))
 
         # Accent recency colormap for the trajectory trail (newest = accent
         # color, fading to white going back), via the create_colormap helper.
@@ -757,10 +755,13 @@ class QLVMTorusTraversalVideo:
             pooled_coords, pooled_index = pool_latents_from_h5(h5, qlvm_map)
             n_samples = pooled_coords.shape[0]
             if n_samples == 0:
-                raise ValueError(
+                msg = (
                     f"No `qlvm/<session>/{qlvm_map}` coordinates found in the consolidated H5 — "
                     f"build the store with consolidate-spectrogram-store so every session "
                     f"carries the {qlvm_map!r} map's latent coords before rendering."
+                )
+                raise ValueError(
+                    msg
                 )
             self.message_output(f"Pooled {n_samples} {qlvm_map} latents, {K} categories ({bundle['identity']}).")
 
@@ -928,16 +929,19 @@ class QLVMTorusTraversalVideo:
                     dx = r_in * np.cos(ang) / fig_w
                     dy = r_in * np.sin(ang) / fig_h
                     ax = fig.add_axes([ccx + dx - tile_w / 2, ccy + dy - tile_h / 2, tile_w, tile_h])
-                    ax.set_xticks([]); ax.set_yticks([])
+                    ax.set_xticks([])
+                    ax.set_yticks([])
                     ring_axes.append(ax)
 
             ax_center_ring = fig.add_axes([ccx - tile_w / 2, ccy - tile_h / 2, tile_w, tile_h])
-            ax_center_ring.set_xticks([]); ax_center_ring.set_yticks([])
-            ring_all_axes = [ax_center_ring] + ring_axes  # idx 0 = peak
+            ax_center_ring.set_xticks([])
+            ax_center_ring.set_yticks([])
+            ring_all_axes = [ax_center_ring, *ring_axes]  # idx 0 = peak
 
             ax_card = fig.add_axes([0, 0, 1, 1], zorder=50)
             ax_card.set_facecolor(_C_WHITE)
-            ax_card.set_xticks([]); ax_card.set_yticks([])
+            ax_card.set_xticks([])
+            ax_card.set_yticks([])
             for sp in ax_card.spines.values():
                 sp.set_visible(False)
             # Font weight is intentionally left unset so the title card inherits the
@@ -960,9 +964,12 @@ class QLVMTorusTraversalVideo:
             xx = yy = bundle['axis']
             # one outline per category (draw_category_outlines), so every border has the same width
             draw_category_outlines(ax_l, xx, yy, ws_labels, colors=_C_WHITE, linewidths=2.5, zorder=2)
-            ax_l.set_xlim(0, 1); ax_l.set_ylim(0, 1); ax_l.set_aspect('equal')
+            ax_l.set_xlim(0, 1)
+            ax_l.set_ylim(0, 1)
+            ax_l.set_aspect('equal')
             # No axis labels / ticks / ticklabels on the latent map -- just the map.
-            ax_l.set_xticks([]); ax_l.set_yticks([])
+            ax_l.set_xticks([])
+            ax_l.set_yticks([])
 
             cluster_contours = {}
             active_contour_ci = {'value': None}
@@ -1053,7 +1060,8 @@ class QLVMTorusTraversalVideo:
                 im, t (tuple[matplotlib.image.AxesImage, matplotlib.text.Text])
                     The tile's image artist and title artist.
                 """
-                ax.set_xticks([]); ax.set_yticks([])
+                ax.set_xticks([])
+                ax.set_yticks([])
                 _set_border(ax, _C_LIGHTGRAY, 0.5)
                 im = ax.imshow(np.zeros((spec_H, spec_W)), cmap=spec_cmap,
                                origin='lower', aspect='auto', vmin=0, vmax=1)
@@ -1063,12 +1071,14 @@ class QLVMTorusTraversalVideo:
             grid_imgs, grid_titles = [], []
             for ax in ax_grid:
                 im, t = _init_tile(ax, fontsize=8.5)
-                grid_imgs.append(im); grid_titles.append(t)
+                grid_imgs.append(im)
+                grid_titles.append(t)
 
             ring_imgs, ring_titles = [], []
             for ax in ring_all_axes:
                 im, t = _init_tile(ax, fontsize=8.0)
-                ring_imgs.append(im); ring_titles.append(t)
+                ring_imgs.append(im)
+                ring_titles.append(t)
 
             def _draw(im, ax, t, data_idx, title_str, border, border_w):
                 """
@@ -1100,7 +1110,8 @@ class QLVMTorusTraversalVideo:
                 None
                 """
                 if data_idx is None:
-                    im.set_data(BLANK); im.set_clim(0, 1)
+                    im.set_data(BLANK)
+                    im.set_clim(0, 1)
                 else:
                     spec = _get_spec(int(data_idx))
                     im.set_data(spec)

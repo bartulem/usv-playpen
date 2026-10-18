@@ -115,7 +115,7 @@ def behavioral_feature_base(column: str) -> str:
         The feature name without prefix or derivative suffix.
     """
 
-    feature = column.split(".")[-1]
+    feature = column.rsplit(".", maxsplit=1)[-1]
     for suffix in BEHAVIORAL_DERIVATIVE_SUFFIXES:
         if feature.endswith(suffix):
             return feature[: -len(suffix)]
@@ -1057,9 +1057,7 @@ def ibi_bout_onset_block(spike_times: np.ndarray, usv_starts: np.ndarray, runs: 
         # percentile helper is well defined but noisy, and the suite runs warnings as errors, so
         # the aggregates are filled in directly instead.
         if finite.size == 0:
-            entry.update({name: np.nan for name in
-                          ("null_mean", "null_std", "null_p0_5", "null_p2_5", "null_p97_5",
-                           "null_p99_5")})
+            entry.update(dict.fromkeys(("null_mean", "null_std", "null_p0_5", "null_p2_5", "null_p97_5", "null_p99_5"), np.nan))
         else:
             entry.update(_percentiles_block(null))
         if np.isfinite(value) and finite.size:
@@ -1213,13 +1211,10 @@ def _longest_run(mask: np.ndarray, *, circular: bool = False) -> tuple[int, int,
     if mask.size == 0 or not mask.any():
         return -1, -1, 0
     n = int(mask.size)
-    if circular:
-        # Doubled-mask trick: a wrap-around run becomes contiguous in
-        # the concatenation. Cap the length at n so an all-True input
-        # doesn't double-count.
-        m = np.concatenate([mask, mask])
-    else:
-        m = mask
+    # Doubled-mask trick (circular only): a wrap-around run becomes
+    # contiguous in the concatenation. Cap the length at n so an
+    # all-True input doesn't double-count.
+    m = np.concatenate([mask, mask]) if circular else mask
     ext = np.concatenate([[False], m, [False]]).astype(int)
     diffs = np.diff(ext)
     starts = np.where(diffs == 1)[0]
@@ -1799,9 +1794,12 @@ class NeuronalTuning(FeatureZoo):
         expected_kwargs = {'root_directory', 'tuning_parameters_dict', 'message_output'}
         unexpected_kwargs = set(kwargs) - expected_kwargs
         if unexpected_kwargs:
-            raise TypeError(f"{type(self).__name__}() got unexpected keyword argument(s) "
+            msg = (
+                f"{type(self).__name__}() got unexpected keyword argument(s) "
                             f"{', '.join(map(repr, sorted(unexpected_kwargs)))}; expected only "
-                            f"{', '.join(map(repr, sorted(expected_kwargs)))}.")
+                            f"{', '.join(map(repr, sorted(expected_kwargs)))}."
+            )
+            raise TypeError(msg)
         for kw_arg, kw_val in kwargs.items():
             self.__dict__[kw_arg] = kw_val
         self.app_context_bool = is_gui_context()

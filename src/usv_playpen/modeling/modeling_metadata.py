@@ -74,7 +74,7 @@ import hashlib
 import json
 import pickle
 import subprocess
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .. import __version__
@@ -124,7 +124,7 @@ def get_package_version() -> str:
     return str(__version__)
 
 
-def get_git_commit_info(repo_root: str = None) -> dict:
+def get_git_commit_info(repo_root: str | None = None) -> dict:
     """
     Returns a `{'commit': str, 'dirty': bool}` dictionary describing the
     git HEAD of the repo containing this file (or `repo_root` if
@@ -156,13 +156,13 @@ def get_git_commit_info(repo_root: str = None) -> dict:
     try:
         commit = subprocess.run(
             ['git', '-C', repo_root, 'rev-parse', 'HEAD'],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=5, check=False,
         )
         if commit.returncode == 0:
             info['commit'] = commit.stdout.strip()
         status = subprocess.run(
             ['git', '-C', repo_root, 'status', '--porcelain'],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=5, check=False,
         )
         if status.returncode == 0:
             info['dirty'] = bool(status.stdout.strip())
@@ -222,7 +222,7 @@ def compute_settings_sha256(settings_source) -> str:
         return 'unknown'
 
 
-def assert_no_reserved_keys(payload: dict, reserved: tuple = None) -> None:
+def assert_no_reserved_keys(payload: dict, reserved: tuple | None = None) -> None:
     """
     Raises `ValueError` if `payload` contains any of the reserved
     metadata keys. Writers should call this on the data dict *before*
@@ -251,12 +251,13 @@ def assert_no_reserved_keys(payload: dict, reserved: tuple = None) -> None:
 
     if reserved is None:
         reserved = RESERVED_METADATA_KEYS
-    collisions = [k for k in payload.keys() if k in reserved]
+    collisions = [k for k in payload if k in reserved]
     if collisions:
-        raise ValueError(
+        msg = (
             "Refusing to inject metadata: payload already contains "
             f"reserved keys {collisions}. Reserved key set: {reserved}."
         )
+        raise ValueError(msg)
 
 
 def _utcnow_iso() -> str:
@@ -273,7 +274,7 @@ def _utcnow_iso() -> str:
         Current UTC timestamp string.
     """
 
-    return (datetime.now(timezone.utc)
+    return (datetime.now(UTC)
             .replace(microsecond=0)
             .isoformat()
             .replace('+00:00', 'Z'))
@@ -368,8 +369,8 @@ def build_input_metadata(modeling_settings: dict,
                          camera_sampling_rate_hz,
                          ibi_thresholds: dict,
                          analysis_specific: dict,
-                         held_out_session_ids: list = None,
-                         settings_path: str = None) -> dict:
+                         held_out_session_ids: list | None = None,
+                         settings_path: str | None = None) -> dict:
     """
     Builds the Level-1 (`_input_metadata`) provenance block for a
     modeling input pickle.
@@ -504,7 +505,7 @@ def build_input_metadata(modeling_settings: dict,
     git_info = get_git_commit_info()
     settings_source = settings_path if settings_path is not None else modeling_settings
 
-    metadata = {
+    return {
         '_schema_version': SCHEMA_VERSIONS['input'],
 
         # Cohort / experimental scope
@@ -555,7 +556,6 @@ def build_input_metadata(modeling_settings: dict,
         'settings_sha256': compute_settings_sha256(settings_source),
     }
 
-    return metadata
 
 
 def build_run_metadata(modeling_settings: dict,
@@ -563,7 +563,7 @@ def build_run_metadata(modeling_settings: dict,
                        null_strategy: str,
                        n_outer_folds: int,
                        split_strategy: str,
-                       settings_path: str = None) -> dict:
+                       settings_path: str | None = None) -> dict:
     """
     Builds the Level-2 (`_run_metadata`) provenance block for a single
     per-feature univariate fit.
@@ -768,7 +768,7 @@ def build_run_metadata(modeling_settings: dict,
                 'basis_function': basis,
                 'basis_function_params': dict(hp_root['basis_functions'][basis]),
             }
-            if analysis_type == 'onset' or analysis_type == 'category':
+            if analysis_type in {'onset', 'category'}:
                 metadata['sklearn_hyperparameters']['logistic_regression'] = dict(
                     hp_root['classical']['logistic_regression']
                 )
@@ -800,8 +800,8 @@ def build_selection_metadata(modeling_settings: dict,
                              n_anchor_features: int,
                              anchor_feature: str,
                              gam_kwargs: dict,
-                             extra_knobs: dict = None,
-                             settings_path: str = None) -> dict:
+                             extra_knobs: dict | None = None,
+                             settings_path: str | None = None) -> dict:
     """
     Builds the Level-3 (`_run_metadata` for selection artifacts)
     provenance block for a forward-stepwise model-selection run.
@@ -871,7 +871,7 @@ def build_selection_metadata(modeling_settings: dict,
     git_info = get_git_commit_info()
     settings_source = settings_path if settings_path is not None else modeling_settings
 
-    metadata = {
+    return {
         '_schema_version': SCHEMA_VERSIONS['selection'],
         'selection_function': selection_function,
         'selection_metric': selection_metric,
@@ -891,7 +891,6 @@ def build_selection_metadata(modeling_settings: dict,
         'settings_sha256': compute_settings_sha256(settings_source),
     }
 
-    return metadata
 
 
 def build_consolidation_metadata(n_files_merged: int,
@@ -1077,12 +1076,13 @@ def inject_metadata(payload: dict, **metadata_blocks) -> dict:
         key already exists in `payload`.
     """
 
-    for name in metadata_blocks.keys():
+    for name in metadata_blocks:
         if name not in RESERVED_METADATA_KEYS:
-            raise ValueError(
+            msg = (
                 f"Refusing to inject metadata under non-reserved key "
                 f"{name!r}. Permitted names: {RESERVED_METADATA_KEYS}."
             )
+            raise ValueError(msg)
     assert_no_reserved_keys(payload, reserved=tuple(metadata_blocks.keys()))
     out = dict(payload)
     out.update(metadata_blocks)
@@ -1158,7 +1158,7 @@ def derive_camera_fps_field(camera_fr_dict: dict):
 
     if not camera_fr_dict:
         return {}
-    values = set(float(v) for v in camera_fr_dict.values())
+    values = {float(v) for v in camera_fr_dict.values()}
     if len(values) == 1:
         return float(next(iter(values)))
     return {k: float(v) for k, v in camera_fr_dict.items()}
@@ -1320,7 +1320,6 @@ def metadata_blocks_equal(a: dict, b: dict, ignore_keys: tuple = ()) -> bool:
         if isinstance(va, dict) and isinstance(vb, dict):
             if not metadata_blocks_equal(va, vb, ignore_keys=()):
                 return False
-        else:
-            if va != vb:
-                return False
+        elif va != vb:
+            return False
     return True

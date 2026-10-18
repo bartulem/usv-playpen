@@ -101,10 +101,10 @@ def extract_information(experiment_code: str | None = None) -> dict | None:
             "mouse_estrus": [],
         }
 
-        for key in output_dict:
+        for key, key_values in output_dict.items():
             if key != "mouse_number":
                 for item in re.findall(search_patterns_dict[key], experiment_code):
-                    output_dict[key].append(decoding_dict[item])
+                    key_values.append(decoding_dict[item])
             else:
                 # `\d+` captures multi-digit counts (>= 10 animals); a code with
                 # no digit leaves the default 0 rather than raising AttributeError.

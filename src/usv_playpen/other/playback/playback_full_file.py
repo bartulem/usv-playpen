@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import os
+import subprocess
 
 import RPi.GPIO as io
-import subprocess
 
 io.setwarnings(False)
 

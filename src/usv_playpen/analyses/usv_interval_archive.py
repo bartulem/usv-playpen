@@ -52,7 +52,6 @@ from sklearn.mixture import GaussianMixture
 from ..os_utils import atomic_output_path, configure_path
 from .mixture_model_utils import IGMixture, TMixture
 
-
 # Every per-mode table the archive can hold, shared by the writer and the reader so the two cannot
 # drift: the reader once carried its own copy, and tables added to the writer were silently
 # dropped on load. The tied-scale ("peaks plus background") model and its session-corrected
@@ -447,7 +446,7 @@ def read_usv_interval_h5(h5_path: str | Path) -> dict:
         for k, v in f.attrs.items():
             out["attrs"][k] = _decode_attr(v)
 
-        for mode_key in f.keys():
+        for mode_key in f:
             grp = f[mode_key]
             mode_payload: dict = {"attrs": {}}
             for k, v in grp.attrs.items():

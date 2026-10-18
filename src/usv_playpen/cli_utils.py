@@ -12,7 +12,11 @@ from typing import Any
 
 import click
 
-from .os_utils import _host_experimenter, _host_experimenter_list, rebase_experimenter_in_paths
+from .os_utils import (
+    _host_experimenter,
+    _host_experimenter_list,
+    rebase_experimenter_in_paths,
+)
 
 
 class StringTuple(click.ParamType):
@@ -192,8 +196,7 @@ def modify_settings_json_for_cli(
         The modified settings dictionary with the provided parameters.
     """
 
-    with open(
-        pathlib.Path(__file__).parent / f"_parameter_settings/{settings_dict}.json",
+    with (pathlib.Path(__file__).parent / f"_parameter_settings/{settings_dict}.json").open(
         encoding="utf-8",
     ) as input_json_file:
         settings_parameter_dict = json.load(input_json_file)
@@ -210,7 +213,7 @@ def modify_settings_json_for_cli(
             settings_parameter_dict, _host_experimenter_list(), _host_experimenter()
         )
     except (RuntimeError, KeyError) as exc:
-        print(
+        print(  # noqa: T201  CLI warning to stderr; the click layer has no message sink
             f"Warning: could not resolve the host experimenter for path "
             f"re-keying ({type(exc).__name__}); '{settings_dict}.json' paths "
             f"left as shipped.",
@@ -242,7 +245,7 @@ def modify_settings_json_for_cli(
                 else []
             )
             if not sub_paths:
-                print(
+                print(  # noqa: T201  CLI warning to stderr; the click layer has no message sink
                     f"Warning: CLI option '{param_name}' did not match any key in "
                     f"block '{block}' of '{settings_dict}.json'; its value was not applied.",
                     file=sys.stderr,
@@ -253,7 +256,7 @@ def modify_settings_json_for_cli(
 
         matching_paths = find_nested_key_paths(settings_parameter_dict, param_name)
         if not matching_paths:
-            print(
+            print(  # noqa: T201  CLI warning to stderr; the click layer has no message sink
                 f"Warning: CLI option '{param_name}' did not match any key in "
                 f"'{settings_dict}.json'; its value was not applied.",
                 file=sys.stderr,
@@ -261,7 +264,7 @@ def modify_settings_json_for_cli(
             continue
 
         if len(matching_paths) > 1:
-            print(
+            print(  # noqa: T201  CLI warning to stderr; the click layer has no message sink
                 f"Warning: CLI option '{param_name}' is ambiguous in "
                 f"'{settings_dict}.json' — it occurs at {matching_paths}. "
                 f"Applying it to '{matching_paths[0]}'; use the explicit "
@@ -315,40 +318,44 @@ def set_nested_value_by_path(d: dict, path: str, value: Any) -> None:
     """
 
     if not isinstance(path, str) or path == "":
-        raise ValueError("set_nested_value_by_path: 'path' must be a non-empty string.")
+        msg = "set_nested_value_by_path: 'path' must be a non-empty string."
+        raise ValueError(msg)
 
     keys = path.split(".")
     if any(k == "" for k in keys):
-        raise ValueError(
-            f"set_nested_value_by_path: 'path' has empty component(s): {path!r}."
-        )
+        msg = f"set_nested_value_by_path: 'path' has empty component(s): {path!r}."
+        raise ValueError(msg)
 
     current_level = d
     traversed = []
     for key in keys[:-1]:
         if not isinstance(current_level, dict):
-            raise KeyError(
+            msg = (
                 f"set_nested_value_by_path: '{'.'.join(traversed)}' is not a dict "
                 f"in the target dictionary (full path: {path!r})."
             )
+            raise KeyError(msg)
         if key not in current_level:
-            raise KeyError(
+            msg = (
                 f"set_nested_value_by_path: unknown key "
-                f"'{'.'.join(traversed + [key])}' (full path: {path!r})."
+                f"'{'.'.join([*traversed, key])}' (full path: {path!r})."
             )
+            raise KeyError(msg)
         current_level = current_level[key]
         traversed.append(key)
 
     if not isinstance(current_level, dict):
-        raise KeyError(
+        msg = (
             f"set_nested_value_by_path: '{'.'.join(traversed)}' is not a dict "
             f"in the target dictionary (full path: {path!r})."
         )
+        raise KeyError(msg)
     if keys[-1] not in current_level:
-        raise KeyError(
+        msg = (
             f"set_nested_value_by_path: unknown key "
-            f"'{'.'.join(traversed + [keys[-1]])}' (full path: {path!r})."
+            f"'{'.'.join([*traversed, keys[-1]])}' (full path: {path!r})."
         )
+        raise KeyError(msg)
     current_level[keys[-1]] = value
 
 

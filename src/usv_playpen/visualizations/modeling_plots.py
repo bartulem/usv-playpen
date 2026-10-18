@@ -43,21 +43,19 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import pathlib
 import pickle
 import re
 import warnings
 from collections.abc import Callable
 from datetime import datetime
-from typing import Optional
 
 import h5py
-import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 import matplotlib.transforms as mtransforms
 import numpy as np
 import seaborn as sns
+from matplotlib import gridspec
 from matplotlib.collections import LineCollection
 from matplotlib.colors import ListedColormap, Normalize
 from matplotlib.lines import Line2D
@@ -144,7 +142,7 @@ _FIGURE_FORMAT = _VIZ_SETTINGS["figures"]["fig_format"]
 _FIGURE_TIMESTAMP_IN_NAME = _VIZ_SETTINGS["figures"]["timestamp_in_name"]
 
 
-def _figure_filename(stem: str, file_format: str = None) -> str:
+def _figure_filename(stem: str, file_format: str | None = None) -> str:
     """
     Assemble a figure filename ``<stem>[_<timestamp>].<format>``.
 
@@ -180,7 +178,7 @@ def plot_feature_ranking(
         secondary_metric_name: str = "Spearman's Rho",
         ignore_features: list | None = None,
         save_plot: bool = False,
-        output_dir: str = None,
+        output_dir: str | None = None,
         message_output: Callable = print
 ) -> list[plt.Figure] | None:
     """
@@ -235,7 +233,7 @@ def plot_feature_ranking(
     lower_is_better = ['ll', 'residual_deviance', 'msle']
 
     results_path = pathlib.Path(results_file_loc)
-    with open(results_path, 'rb') as f:
+    with pathlib.Path(results_path).open('rb') as f:
         modeling_data = pickle.load(f)
 
     fname_str = results_path.name
@@ -260,7 +258,7 @@ def plot_feature_ranking(
     # for the null-distribution key or iterating feature entries — they
     # are top-level dict keys in the consolidated artifact but are not
     # behavioral features.
-    feature_keys = [k for k in modeling_data.keys() if k not in RESERVED_METADATA_KEYS]
+    feature_keys = [k for k in modeling_data if k not in RESERVED_METADATA_KEYS]
     first_feat = modeling_data[feature_keys[0]]
     if 'shuffled' in first_feat:
         null_key = 'shuffled'
@@ -269,7 +267,8 @@ def plot_feature_ranking(
         null_key = 'null'
         message_output("Detected 'null' key (Category Analysis mode)")
     else:
-        raise KeyError("Could not find 'shuffled' or 'null' key in results dictionary.")
+        msg = "Could not find 'shuffled' or 'null' key in results dictionary."
+        raise KeyError(msg)
 
     message_output(f"Calculating significance based on: {evaluation_metric_name}...")
 
@@ -277,7 +276,7 @@ def plot_feature_ranking(
     n_features = len(valid_features)
     if n_features == 0:
         message_output("No valid features found for significance calculation; nothing to plot.")
-        return
+        return None
     corrected_p_top = (1 - (p_val / n_features)) * 100
     corrected_p_bottom = (p_val / n_features) * 100
 
@@ -396,7 +395,7 @@ def plot_feature_ranking(
 
         if metric_key == 'auc':
             ax.axhline(0.5, ls='--', lw=0.5, color='#202020', zorder=0)
-        elif metric_key == 'explained_deviance' or metric_key == 'd2':
+        elif metric_key in {'explained_deviance', 'd2'}:
             ax.axhline(0.0, ls='--', lw=0.5, color='#202020', zorder=0)
 
         legend_elements = [
@@ -429,7 +428,7 @@ def plot_significant_filters(
         ignore_features: list | None = None,
         p_val: float = 0.01,
         save_plot: bool = False,
-        output_dir: str = None,
+        output_dir: str | None = None,
         message_output: Callable = print
 ) -> list[plt.Figure]:
     """
@@ -482,7 +481,7 @@ def plot_significant_filters(
         ignore_features = []
 
     results_path = pathlib.Path(results_file_loc)
-    with open(results_path, 'rb') as f:
+    with pathlib.Path(results_path).open('rb') as f:
         modeling_data = pickle.load(f)
 
     fname_str = results_path.name
@@ -494,14 +493,15 @@ def plot_significant_filters(
         self_color, other_color = male_color, female_color
 
     # Strip reserved metadata blocks before iterating feature entries.
-    feature_keys = [k for k in modeling_data.keys() if k not in RESERVED_METADATA_KEYS]
+    feature_keys = [k for k in modeling_data if k not in RESERVED_METADATA_KEYS]
     first_feat = modeling_data[feature_keys[0]]
     if 'shuffled' in first_feat:
         null_key = 'shuffled'
     elif 'null' in first_feat:
         null_key = 'null'
     else:
-        raise KeyError("Missing 'shuffled' or 'null' key")
+        msg = "Missing 'shuffled' or 'null' key"
+        raise KeyError(msg)
 
     valid_features = [k for k in feature_keys if k not in ignore_features]
     n_feats = len(valid_features)
@@ -518,7 +518,8 @@ def plot_significant_filters(
         valid_actual = actual_vals[~np.isnan(actual_vals)]
         valid_null = null_vals[~np.isnan(null_vals)]
 
-        if len(valid_actual) == 0 or len(valid_null) == 0: continue
+        if len(valid_actual) == 0 or len(valid_null) == 0:
+            continue
 
         mean_val = np.mean(valid_actual)
         null_lower_thresh = np.percentile(valid_null, p_lower)
@@ -526,9 +527,10 @@ def plot_significant_filters(
 
         is_significant = False
         if metric == 'll':
-            if mean_val < null_lower_thresh: is_significant = True
-        else:
-            if mean_val > null_upper_thresh: is_significant = True
+            if mean_val < null_lower_thresh:
+                is_significant = True
+        elif mean_val > null_upper_thresh:
+            is_significant = True
 
         if not is_significant:
             continue
@@ -536,7 +538,8 @@ def plot_significant_filters(
         try:
             filter_data = modeling_data[feature]['actual']['filter_shapes']
 
-            if np.all(np.isnan(filter_data)): continue
+            if np.all(np.isnan(filter_data)):
+                continue
 
             mean_filter = np.nanmean(filter_data, axis=0)
 
@@ -585,7 +588,8 @@ def plot_significant_filters(
         ax.axhline(0, color=NEUTRAL_COLOR, ls='--', lw=0.5, zorder=0)
 
         if save_plot:
-            if output_dir is None: output_dir = results_path.parent
+            if output_dir is None:
+                output_dir = results_path.parent
             safe_name = feature.replace('.', '_')
             out_name = pathlib.Path(output_dir) / _figure_filename(f"{results_path.stem}_filter_{safe_name}")
             fig.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI, facecolor='#FFFFFF', transparent=False)
@@ -602,7 +606,7 @@ def plot_significant_filters_grid(
         metric: str = 'auc',
         p_val_threshold: float = 0.01,
         save_plot: bool = False,
-        output_dir: str = None,
+        output_dir: str | None = None,
         message_output: Callable = print,
 ) -> plt.Figure | None:
     """
@@ -659,11 +663,11 @@ def plot_significant_filters_grid(
 
     message_output(f"Loading results from: {results_file_loc}")
     try:
-        with open(results_file_loc, 'rb') as f:
+        with pathlib.Path(results_file_loc).open('rb') as f:
             modeling_data = pickle.load(f)
     except FileNotFoundError:
         message_output(f"Error: File not found at {results_file_loc}")
-        return
+        return None
 
     dyadic_color = DYADIC_COLOR
     fname_str = pathlib.Path(results_file_loc).name
@@ -681,7 +685,7 @@ def plot_significant_filters_grid(
 
     message_output(f"--- Processing features for metric: {metric} ---")
 
-    for feature in modeling_data.keys():
+    for feature in modeling_data:
         if feature in RESERVED_METADATA_KEYS:
             continue
         if feature in ignore_features:
@@ -716,7 +720,7 @@ def plot_significant_filters_grid(
 
     if not kept_features:
         message_output("No valid features found. Exiting.")
-        return
+        return None
 
     behavioral_features = np.array(kept_features)
     behavioral_feature_means = np.array(means_list)
@@ -745,7 +749,7 @@ def plot_significant_filters_grid(
 
     if not sig_indices:
         message_output(f"Found 0 significant features (Corrected p < {p_thresh_corrected:.5f}).")
-        return
+        return None
 
     significant_features = behavioral_features[sig_indices]
     significant_feature_means = behavioral_feature_means[sig_indices]
@@ -868,7 +872,8 @@ def plot_significant_filters_grid(
             ax.tick_params(labelbottom=True)
 
     if save_plot:
-        if output_dir is None: output_dir = pathlib.Path(results_file_loc).parent
+        if output_dir is None:
+            output_dir = pathlib.Path(results_file_loc).parent
         out_name = pathlib.Path(output_dir) / _figure_filename(f"{pathlib.Path(results_file_loc).stem}_filter_grid")
         fig_grid.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI, facecolor='#FFFFFF', transparent=False)
         message_output(f"Saved: {out_name.name}")
@@ -884,7 +889,7 @@ def plot_raw_feature_difference(
         subset_fraction: float = 0.05,
         n_bootstraps: int = 1000,
         save_plots: bool = False,
-        output_dir: str = None,
+        output_dir: str | None = None,
         value_sanity_cap: float | None = 90.0,
         message_output: Callable = print
 ) -> tuple[plt.Figure, plt.Figure] | None:
@@ -951,12 +956,12 @@ def plot_raw_feature_difference(
         output_dir = configure_path(str(output_dir))
 
     message_output(f"Loading data from: {pickle_file_path}")
-    with open(pickle_file_path, 'rb') as pickle_file:
+    with pathlib.Path(pickle_file_path).open('rb') as pickle_file:
         modeling_input_data = pickle.load(pickle_file)
 
     if feature_key not in modeling_input_data:
         message_output(f"Error: Feature '{feature_key}' not found in pickle file.")
-        return
+        return None
 
     first_session = next(iter(modeling_input_data[feature_key].values()))
 
@@ -978,12 +983,12 @@ def plot_raw_feature_difference(
 
     else:
         message_output("Error: Could not detect standard array keys (usv_feature_arr or target_feature_arr).")
-        return
+        return None
 
     target_epochs_list = []
     other_epochs_list = []
 
-    for session_key in modeling_input_data[feature_key].keys():
+    for session_key in modeling_input_data[feature_key]:
         sess_data = modeling_input_data[feature_key][session_key]
 
         if key_target in sess_data and key_other in sess_data:
@@ -1003,7 +1008,7 @@ def plot_raw_feature_difference(
     # would raise. Skip the plot for this degenerate feature instead.
     if all_target_epochs.shape[0] == 0 or all_other_epochs.shape[0] == 0:
         message_output(f"  Skipping raw feature difference plot: no epochs for {label_target} or {label_other}.")
-        return
+        return None
     message_output(f"Data Range Check -> Min: {np.nanmin(all_target_epochs):.2f}, Max: {np.nanmax(all_target_epochs):.2f}")
 
     target_subset_size = max(1, int(all_target_epochs.shape[0] * subset_fraction))
@@ -1218,10 +1223,10 @@ def _make_feature_pretty(feature_label_overrides: dict | None,
 
 def plot_model_selection_results(
         selection_results_path: str,
-        metric_secondary: str = None,
+        metric_secondary: str | None = None,
         save_plots: bool = False,
-        output_dir: str = None,
-        feature_label_overrides: dict = None,
+        output_dir: str | None = None,
+        feature_label_overrides: dict | None = None,
         message_output: Callable = print,
 ) -> tuple[plt.Figure, plt.Figure | None] | None:
     """
@@ -1314,7 +1319,7 @@ def plot_model_selection_results(
 
     if not selection_steps:
         message_output(f"No step data found in {selection_results_path}")
-        return
+        return None
 
     if '_male_' in display_name:
         self_color, other_color = male_color, female_color
@@ -1386,17 +1391,20 @@ def plot_model_selection_results(
     for i, data in enumerate(valid_steps_for_plot):
         candidates = (data['candidates'] if 'candidates' in data
                       else data['candidates_summary'] if 'candidates_summary' in data else {})
-        if not candidates: continue
+        if not candidates:
+            continue
 
         best_feat = None
         best_prim_mean = np.inf if is_minimization else -np.inf
 
         for feat, metrics in candidates.items():
-            if primary_metric not in metrics: continue
+            if primary_metric not in metrics:
+                continue
 
             valid_vals = np.array(metrics[primary_metric])
             valid_vals = valid_vals[~np.isnan(valid_vals)]
-            if len(valid_vals) == 0: continue
+            if len(valid_vals) == 0:
+                continue
 
             current_mean = np.mean(valid_vals)
 
@@ -1404,12 +1412,12 @@ def plot_model_selection_results(
                 if current_mean < best_prim_mean:
                     best_prim_mean = current_mean
                     best_feat = feat
-            else:
-                if current_mean > best_prim_mean:
-                    best_prim_mean = current_mean
-                    best_feat = feat
+            elif current_mean > best_prim_mean:
+                best_prim_mean = current_mean
+                best_feat = feat
 
-        if best_feat is None: continue
+        if best_feat is None:
+            continue
 
         winner_data = candidates[best_feat]
 
@@ -1430,7 +1438,7 @@ def plot_model_selection_results(
     n_steps = len(steps_data)
     if n_steps == 0:
         message_output("No valid step data extracted.")
-        return
+        return None
 
     # 3. Summary figure: NLL trajectory (left) + score bars (right)
     # Left panel: horizontal bars per accepted step, growing LEFTWARD
@@ -1501,9 +1509,9 @@ def plot_model_selection_results(
         r = int(h[0:2], 16)
         g = int(h[2:4], 16)
         b = int(h[4:6], 16)
-        r = int(round(r + (255 - r) * factor))
-        g = int(round(g + (255 - g) * factor))
-        b = int(round(b + (255 - b) * factor))
+        r = round(r + (255 - r) * factor)
+        g = round(g + (255 - g) * factor)
+        b = round(b + (255 - b) * factor)
         return f"#{r:02x}{g:02x}{b:02x}"
 
     _pretty = _make_feature_pretty(feature_label_overrides, selection_metadata)
@@ -1719,7 +1727,7 @@ def plot_model_selection_results(
 
     # Bar 2: stacked accepted features.
     _bottom = chance_secondary
-    for d, marginal in zip(steps_data, score_marginals):
+    for d, marginal in zip(steps_data, score_marginals, strict=False):
         seg_color = _category_color(d['feature_name'])
         ax_bars.bar(1, marginal, bottom=_bottom, width=bar_width,
                     color=seg_color, edgecolor='none')
@@ -1835,7 +1843,8 @@ def plot_model_selection_results(
     )
     fig_grid.patch.set_facecolor(BG_COLOR)
 
-    if nrows == 1 and ncols == 1: axes_grid = np.array([axes_grid])
+    if nrows == 1 and ncols == 1:
+        axes_grid = np.array([axes_grid])
     axes_grid = axes_grid.flatten()
 
 
@@ -1954,7 +1963,7 @@ def plot_univariate_multinomial_performance(
         base_cmap: str = 'mako',
         diff_cmap: str = _DIVERGING_CMAP,
         save_plot: bool = False,
-        output_dir: str = None,
+        output_dir: str | None = None,
         message_output: Callable = print
 ) -> tuple[plt.Figure, plt.Figure | None] | None:
     """
@@ -2032,7 +2041,7 @@ def plot_univariate_multinomial_performance(
     MEAN_LINE_COLOR = "#202020"
 
     results_path = pathlib.Path(results_file_loc)
-    with open(results_path, 'rb') as f:
+    with pathlib.Path(results_path).open('rb') as f:
         modeling_data = pickle.load(f)
 
     if '_male_' in results_path.name:
@@ -2043,13 +2052,13 @@ def plot_univariate_multinomial_performance(
         self_color, other_color, self_label, other_label = male_color, female_color, "Self", "Other"
 
     # Strip reserved metadata blocks before iterating feature entries.
-    valid_features = [k for k in modeling_data.keys() if k not in RESERVED_METADATA_KEYS]
+    valid_features = [k for k in modeling_data if k not in RESERVED_METADATA_KEYS]
     n_features = len(valid_features)
     if n_features == 0:
         # A results pickle with only reserved-metadata keys would divide by zero in the
         # Bonferroni correction below; exit cleanly (as the multivariate sibling does).
         message_output("No feature entries found in modeling_data; nothing to plot.")
-        return
+        return None
 
     lower_is_better = ['ll', 'nll', 'log_loss', 'loss', 'mse', 'rmse']
     eval_is_lower_better = evaluation_metric in lower_is_better
@@ -2077,7 +2086,8 @@ def plot_univariate_multinomial_performance(
             # single NaN so the downstream np.mean stays NaN ("no data") without a
             # "Mean of empty slice" RuntimeWarning that would raise under filterwarnings=error.
             actual_sec = np.array([np.nan])
-        if len(actual_eval) == 0 or len(null_eval) == 0: continue
+        if len(actual_eval) == 0 or len(null_eval) == 0:
+            continue
 
         actual_mean = np.mean(actual_eval)
 
@@ -2112,7 +2122,7 @@ def plot_univariate_multinomial_performance(
 
     if not feature_stats:
         message_output("No valid features remaining after parsing.")
-        return
+        return None
 
     # 1. Prepare the two different sort orders
     # Order for the Evaluation Metric (LL)
@@ -2248,7 +2258,8 @@ def plot_univariate_multinomial_performance(
 
             ax.set_title(titles[j], color=TEXT_COLOR, pad=10)
             ax.set_xlabel('Predicted USV Category', color=TEXT_COLOR)
-            if j == 0: ax.set_ylabel('True USV Category', color=TEXT_COLOR)
+            if j == 0:
+                ax.set_ylabel('True USV Category', color=TEXT_COLOR)
             ax.tick_params(axis='both', colors=TEXT_COLOR)
 
         plt.suptitle(f"Categorical Diagnosis: {top_sig_feat['name']}", fontsize=16, y=1.05, color=TEXT_COLOR)
@@ -2271,7 +2282,7 @@ def plot_univariate_multinomial_filters_grid(
         history_window_sec: float = 4.0,
         cmap: str = _DIVERGING_CMAP,
         save_plot: bool = False,
-        output_dir: str = None,
+        output_dir: str | None = None,
         message_output: Callable = print
 ) -> plt.Figure | None:
     """
@@ -2328,7 +2339,7 @@ def plot_univariate_multinomial_filters_grid(
         output_dir = configure_path(str(output_dir))
 
     results_path = pathlib.Path(results_file_loc)
-    with open(results_path, 'rb') as f:
+    with pathlib.Path(results_path).open('rb') as f:
         modeling_data = pickle.load(f)
 
     if '_male_' in results_path.name:
@@ -2339,13 +2350,13 @@ def plot_univariate_multinomial_filters_grid(
         self_color, other_color = male_color, female_color
 
     # Strip reserved metadata blocks before iterating feature entries.
-    valid_features = [k for k in modeling_data.keys() if k not in RESERVED_METADATA_KEYS]
+    valid_features = [k for k in modeling_data if k not in RESERVED_METADATA_KEYS]
     n_features = len(valid_features)
     if n_features == 0:
         # A results pickle with only reserved-metadata keys would divide by zero in the
         # Bonferroni correction below; exit cleanly (as the multivariate sibling does).
         message_output("No feature entries found in modeling_data; nothing to plot.")
-        return
+        return None
 
     lower_is_better = ['ll', 'nll', 'log_loss', 'loss', 'mse', 'rmse']
     eval_is_lower_better = evaluation_metric in lower_is_better
@@ -2363,7 +2374,8 @@ def plot_univariate_multinomial_filters_grid(
 
         actual_eval = actual_eval[~np.isnan(actual_eval)]
         null_eval = null_eval[~np.isnan(null_eval)]
-        if len(actual_eval) == 0 or len(null_eval) == 0: continue
+        if len(actual_eval) == 0 or len(null_eval) == 0:
+            continue
 
         actual_mean = np.mean(actual_eval)
 
@@ -2402,7 +2414,7 @@ def plot_univariate_multinomial_filters_grid(
 
     if not plot_data:
         message_output(f"No significant features found for metric '{evaluation_metric}'. Exiting.")
-        return
+        return None
 
     # sort by metric performance (the best comes first)
     plot_data.sort(key=lambda x: x['mean_eval'], reverse=not eval_is_lower_better)
@@ -2420,7 +2432,8 @@ def plot_univariate_multinomial_filters_grid(
                                   dpi=_FIGURE_DPI, sharex=True, sharey=True)
     fig.patch.set_facecolor('#FFFFFF')
 
-    if nrows == 1 and ncols == 1: axes_grid = np.array([axes_grid])
+    if nrows == 1 and ncols == 1:
+        axes_grid = np.array([axes_grid])
     axes_grid = axes_grid.flatten()
 
     for i, data in enumerate(plot_data):
@@ -2483,9 +2496,9 @@ def plot_multinomial_selection_trajectory(
         metric_secondary: str = 'score',
         secondary_metric_name: str = "Balanced Accuracy",
         save_plot: bool = False,
-        output_dir: str = None,
-        feature_label_overrides: dict = None,
-        secondary_ylim_max: float = None,
+        output_dir: str | None = None,
+        feature_label_overrides: dict | None = None,
+        secondary_ylim_max: float | None = None,
         message_output: Callable = print,
 ) -> plt.Figure | None:
     """
@@ -2582,7 +2595,7 @@ def plot_multinomial_selection_trajectory(
 
     if not selection_steps:
         message_output(f"No multinomial step data found in {selection_results_path}")
-        return
+        return None
 
     # Sex-aware self/other palette inferred from the filename, matching
     # the binary selector's convention.
@@ -2640,7 +2653,7 @@ def plot_multinomial_selection_trajectory(
     ]
     if not accepted_steps:
         message_output(f"No accepted feature steps in {selection_results_path}")
-        return
+        return None
 
     def _fold_mean(folds_metrics: dict, key: str) -> float:
         """
@@ -2782,9 +2795,9 @@ def plot_multinomial_selection_trajectory(
         r = int(h[0:2], 16)
         g = int(h[2:4], 16)
         b = int(h[4:6], 16)
-        r = int(round(r + (255 - r) * factor))
-        g = int(round(g + (255 - g) * factor))
-        b = int(round(b + (255 - b) * factor))
+        r = round(r + (255 - r) * factor)
+        g = round(g + (255 - g) * factor)
+        b = round(b + (255 - b) * factor)
         return f"#{r:02x}{g:02x}{b:02x}"
 
     _pretty = _make_feature_pretty(feature_label_overrides, selection_metadata)
@@ -2936,7 +2949,7 @@ def plot_multinomial_selection_trajectory(
                 color=bar1_color, edgecolor='none')
 
     _bottom = chance_secondary
-    for d, marginal in zip(steps_data, sec_marginals):
+    for d, marginal in zip(steps_data, sec_marginals, strict=False):
         seg_color = _category_color(d['feature_name'])
         ax_bars.bar(1, marginal, bottom=_bottom, width=bar_width,
                     color=seg_color, edgecolor='none')
@@ -3086,7 +3099,7 @@ def plot_multinomial_multivariate_filters(
         history_window_sec: float = 4.0,
         cmap: str = _DIVERGING_CMAP,
         save_plot: bool = False,
-        output_dir: str = None,
+        output_dir: str | None = None,
         message_output: Callable = print
 ) -> plt.Figure | None:
     """
@@ -3185,7 +3198,7 @@ def plot_multinomial_multivariate_filters(
 
     if not selection_steps:
         message_output(f"No step data found in {selection_results_path}")
-        return
+        return None
 
     # Find the last step that actually selected a feature (ignores the final rejection step)
     valid_data = None
@@ -3196,7 +3209,7 @@ def plot_multinomial_multivariate_filters(
 
     if valid_data is None:
         message_output("No valid features were selected in this run.")
-        return
+        return None
 
     # Apply the local rcParams overrides only around the actual render, and restore them in
     # a finally so they never leak into later plots on ANY exit -- normal return OR an
@@ -3279,7 +3292,7 @@ def plot_multinomial_multivariate_filters(
                       vmin=-max_amp, vmax=max_amp, interpolation='nearest')
             if null_band is not None and null_band.shape[1:] == (n_feats, feat_slice.shape[1]):
                 inside = np.abs(feat_slice) <= null_band[:, i, :]
-                fade = np.zeros(inside.shape + (4,))
+                fade = np.zeros((*inside.shape, 4))
                 fade[..., :3] = 1.0
                 fade[..., 3] = np.where(inside, 0.7, 0.0)
                 ax.imshow(fade, aspect='auto', interpolation='nearest')
@@ -3344,8 +3357,8 @@ def plot_multinomial_multivariate_filters(
 def plot_multinomial_selection_diagnosis(
         selection_results_path: str,
         save_plot: bool = False,
-        output_dir: str = None,
-        feature_label_overrides: dict = None,
+        output_dir: str | None = None,
+        feature_label_overrides: dict | None = None,
         message_output: Callable = print,
 ) -> tuple[plt.Figure, plt.Figure] | None:
     """
@@ -3414,7 +3427,7 @@ def plot_multinomial_selection_diagnosis(
     selection_steps, _, selection_metadata = load_selection_results(selection_results_path)
     if not selection_steps:
         message_output(f"No multinomial step data found in {selection_results_path}")
-        return
+        return None
     _pretty = _make_feature_pretty(feature_label_overrides, selection_metadata)
 
     # Final accepted step = last step with a real (non-null) winner;
@@ -3427,7 +3440,7 @@ def plot_multinomial_selection_diagnosis(
             break
     if final_step is None:
         message_output(f"No accepted multivariate step in {selection_results_path}")
-        return
+        return None
 
     winner = final_step['selected_feature']
     cdata = final_step['candidates_summary'][winner]
@@ -3440,7 +3453,7 @@ def plot_multinomial_selection_diagnosis(
     final_features = list(final_step['final_model_features'] or [])
 
     # Pool every valid fold's predictions for the AUC matrix
-    def _concat_finite(key: str) -> Optional[np.ndarray]:
+    def _concat_finite(key: str) -> np.ndarray | None:
         """
         Concatenate one per-fold array field of the final step across the valid
         folds.
@@ -3478,7 +3491,7 @@ def plot_multinomial_selection_diagnosis(
             "No valid (y_true, y_probs) pairs across any fold of "
             f"the final step in {selection_results_path}"
         )
-        return
+        return None
 
     auc_matrix = np.full((K, K), np.nan, dtype=float)
     for i in range(K):
@@ -3516,7 +3529,7 @@ def plot_multinomial_selection_diagnosis(
             "No valid confusion matrices in the final step of "
             f"{selection_results_path}"
         )
-        return
+        return None
     summed_cm = np.sum(summed_cms, axis=0)
     row_sums = summed_cm.sum(axis=1)
     with np.errstate(divide='ignore', invalid='ignore'):
@@ -3672,11 +3685,11 @@ def plot_manifold_selection_trajectory(
         primary_metric_name: str = "R² (spatial, KDE-weighted)",
         metric_secondary: str = 'pearson_y',
         secondary_metric_name: str = "Pearson r (manifold y)",
-        metrics_secondary: list = None,
+        metrics_secondary: list | None = None,
         secondary_as_pct_of_chance: bool = False,
         save_plot: bool = False,
-        output_dir: str = None,
-        feature_label_overrides: dict = None,
+        output_dir: str | None = None,
+        feature_label_overrides: dict | None = None,
         message_output: Callable = print,
 ) -> plt.Figure | None:
     """
@@ -3788,7 +3801,7 @@ def plot_manifold_selection_trajectory(
 
     if not selection_steps:
         message_output(f"No manifold selection step data found in {selection_results_path}")
-        return
+        return None
 
     # Sex-aware palette inferred from the filename, matching the
     # bout-onset / multinomial selectors' convention.
@@ -3891,7 +3904,7 @@ def plot_manifold_selection_trajectory(
     ]
     if not accepted_steps:
         message_output(f"No accepted feature steps in {selection_results_path}")
-        return
+        return None
 
     chance_primary = _chance_value(metric_primary, is_minimization_primary)
     if not np.isfinite(chance_primary):
@@ -3979,10 +3992,12 @@ def plot_manifold_selection_trajectory(
             The lightened colour as a lowercase ``#rrggbb`` string.
         """
         h = hex_color.lstrip('#')
-        r = int(h[0:2], 16); g = int(h[2:4], 16); b = int(h[4:6], 16)
-        r = int(round(r + (255 - r) * factor))
-        g = int(round(g + (255 - g) * factor))
-        b = int(round(b + (255 - b) * factor))
+        r = int(h[0:2], 16)
+        g = int(h[2:4], 16)
+        b = int(h[4:6], 16)
+        r = round(r + (255 - r) * factor)
+        g = round(g + (255 - g) * factor)
+        b = round(b + (255 - b) * factor)
         return f"#{r:02x}{g:02x}{b:02x}"
 
     _pretty = _make_feature_pretty(feature_label_overrides, selection_metadata)
@@ -4132,7 +4147,7 @@ def plot_manifold_selection_trajectory(
     # euclidean MAE ~0.35 vs pullback geodesic ~38).
     _feature_names = [d['feature_name'] for d in steps_data]
     _feature_labels = [_pretty(d['feature_name']) for d in steps_data]
-    for _ax_sec, (_sec_key, _sec_name) in zip(sec_axes, metrics_secondary):
+    for _ax_sec, (_sec_key, _sec_name) in zip(sec_axes, metrics_secondary, strict=False):
         _is_min = _sec_key in lower_is_better_set
         _ch = _chance_value(_sec_key, _is_min)
         if not np.isfinite(_ch):
@@ -4249,7 +4264,7 @@ def _draw_secondary_gain_panel(ax, *, sec_means, chance, is_min, marginals,
            color=(category_color(feature_names[0]) if feature_names else NEUTRAL_COLOR))
     _bottom = 0.0
     _seg_labels = []
-    for _i, (_fname, _flabel, _seg) in enumerate(zip(feature_names, feature_labels, seg_gains)):
+    for _i, (_fname, _flabel, _seg) in enumerate(zip(feature_names, feature_labels, seg_gains, strict=False)):
         _col = category_color(_fname)
         ax.bar(_x_final, _seg, bottom=_bottom, width=bar_width,
                zorder=3 + (len(seg_gains) - _i),
@@ -4365,7 +4380,7 @@ def _extract_manifold_final_bivariate_weights(selection_results_path,
         return None
 
     winner = valid_data['selected_feature']
-    features = list(valid_data['current_features']) + [winner]
+    features = [*list(valid_data['current_features']), winner]
     if features and features[0] == winner and len(features) > 1 and features.count(winner) > 1:
         # Anchor step writes the same feature into both
         # ``current_features`` and ``selected_feature``; drop the
@@ -4541,9 +4556,12 @@ def _resolve_atlas_tiles_and_categories(qlvm_map: str = QLVM_REGULAR_MAP,
     lattice = np.column_stack([grid_x.ravel(), grid_y.ravel()]).astype(np.float32)
     with h5py.File(store_path, 'r') as h5:
         if f'qlvm_models/{qlvm_map}' not in h5:
-            raise ValueError(
+            msg = (
                 f"plot_manifold_filter_atlas: the spectrogram store {store_path} carries no "
                 f"positions of the {qlvm_map!r} map."
+            )
+            raise ValueError(
+                msg
             )
         store_model_id = str(h5[f'qlvm_models/{qlvm_map}'].attrs['model_id'])
         sessions = [str(s) for s in session_ids] if session_ids is not None else sorted(h5['spectrogram'].keys())
@@ -4559,9 +4577,12 @@ def _resolve_atlas_tiles_and_categories(qlvm_map: str = QLVM_REGULAR_MAP,
             owner_session.extend([session_id] * int(embedded.size))
             owner_row.append(embedded)
         if not positions or sum(int(p.shape[0]) for p in positions) == 0:
-            raise ValueError(
+            msg = (
                 f"plot_manifold_filter_atlas: no embedded vocalization of the {qlvm_map!r} map in "
                 f"{store_path} for the run's {len(sessions)} sessions."
+            )
+            raise ValueError(
+                msg
             )
         positions = np.vstack(positions)
         owner_row = np.concatenate(owner_row)
@@ -4576,10 +4597,13 @@ def _resolve_atlas_tiles_and_categories(qlvm_map: str = QLVM_REGULAR_MAP,
         return lattice, tiles, None, store_model_id
     bundle = load_qlvm_category_bundle()
     if bundle['model_id'] != store_model_id:
-        raise ValueError(
+        msg = (
             f"plot_manifold_filter_atlas: the category bundle {bundle['identity']} partitions the torus of "
             f"{bundle['model_id']} (map {bundle['map']!r}), but the store's {qlvm_map!r} positions were "
             f"embedded with {store_model_id}."
+        )
+        raise ValueError(
+            msg
         )
     message_output(f"plot_manifold_filter_atlas: map {qlvm_map!r}, {tiles_note}; categories {bundle['identity']}.")
     return lattice, tiles, bundle, store_model_id
@@ -4587,14 +4611,14 @@ def _resolve_atlas_tiles_and_categories(qlvm_map: str = QLVM_REGULAR_MAP,
 
 def plot_manifold_filter_atlas(
         selection_results_path: str,
-        history_window_sec: float = None,
+        history_window_sec: float | None = None,
         n_time_slices: int = 16,
         display_bins: int = 25,
         smooth_sigma: float = 3.0,
         atlas_grid_n: int = 12,
         save_plot: bool = False,
-        output_dir: str = None,
-        feature_label_overrides: dict = None,
+        output_dir: str | None = None,
+        feature_label_overrides: dict | None = None,
         message_output: Callable = print,
 ) -> plt.Figure | None:
     """
@@ -4708,7 +4732,7 @@ def plot_manifold_filter_atlas(
     extracted = _extract_manifold_final_bivariate_weights(
         selection_results_path, collapse_magnitude=False, message_output=message_output)
     if extracted is None:
-        return
+        return None
     raw_weights, features, n_time_bins, selection_metadata, _ = extracted
     if raw_weights.shape[-1] != 4:
         message_output(
@@ -4716,7 +4740,7 @@ def plot_manifold_filter_atlas(
             f"(sin, cos) embedding filter, metric='torus'); got last dim "
             f"{raw_weights.shape[-1]}. Nothing plotted."
         )
-        return
+        return None
     _pretty = _make_feature_pretty(feature_label_overrides, selection_metadata)
     n_features = len(features)
 
@@ -4859,7 +4883,7 @@ def plot_manifold_filter_atlas(
             ``#rrggbb`` gray whose level runs linearly from 0.12 (``t_norm = 0``)
             to 0.84 (``t_norm = 1``) of full scale.
         """
-        v = int(round((0.12 + 0.72 * t_norm) * 255))
+        v = int(round((0.12 + 0.72 * t_norm) * 255))  # noqa: RUF046  int() kept: round() of a numpy float returns a float under numpy<2
         return f"#{v:02x}{v:02x}{v:02x}"
 
     fig = plt.figure(figsize=(7.6, 6.8), dpi=_FIGURE_DPI)
@@ -4974,7 +4998,7 @@ def plot_manifold_filter_atlas(
     _x0px = ax_film.transData.transform((0, 0))[0]
     _x1px = ax_film.transData.transform((1, 0))[0]
     _nudge = (tick_nudge_mm * fig.dpi / 25.4) / (_x1px - _x0px)
-    _labels = list(range(-int(round(history_window_sec)), 1))
+    _labels = list(range(-int(round(history_window_sec)), 1))  # noqa: RUF046  int() kept: round() of a numpy float returns a float under numpy<2
     _xticks = []
     for _lt in _labels:
         _pos = front_center + _lt * time_tick_step
@@ -5101,12 +5125,13 @@ class DeepResultsVisualizer:
 
         self.message_output = message_output
         results_pkl_path = configure_path(str(results_pkl_path))
-        if not os.path.exists(results_pkl_path):
-            raise FileNotFoundError(f"Results file not found: {results_pkl_path}")
+        if not pathlib.Path(results_pkl_path).exists():
+            msg = f"Results file not found: {results_pkl_path}"
+            raise FileNotFoundError(msg)
 
         self.results_pkl_path = results_pkl_path
 
-        with open(results_pkl_path, 'rb') as f:
+        with pathlib.Path(results_pkl_path).open('rb') as f:
             self.data = pickle.load(f)
 
         self.metadata = self.data['metadata']
@@ -5132,25 +5157,27 @@ class DeepResultsVisualizer:
         if modeling_settings is None:
             settings_path = pathlib.Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
             try:
-                with open(settings_path, 'r') as settings_json_file:
+                with settings_path.open() as settings_json_file:
                     self.modeling_settings = json.load(settings_json_file)
-            except FileNotFoundError:
-                raise FileNotFoundError(f"Settings file not found at {settings_path}")
+            except FileNotFoundError as err:
+                msg = f"Settings file not found at {settings_path}"
+                raise FileNotFoundError(msg) from err
         else:
             self.modeling_settings = modeling_settings
 
         if visualization_settings is None:
             viz_settings_path = pathlib.Path(__file__).resolve().parent.parent / '_parameter_settings/visualizations_settings.json'
             try:
-                with open(viz_settings_path, 'r') as viz_settings_json_file:
+                with viz_settings_path.open() as viz_settings_json_file:
                     self.visualization_settings = json.load(viz_settings_json_file)
-            except FileNotFoundError:
-                raise FileNotFoundError(f"Settings file not found at {viz_settings_path}")
+            except FileNotFoundError as err:
+                msg = f"Settings file not found at {viz_settings_path}"
+                raise FileNotFoundError(msg) from err
         else:
             self.visualization_settings = visualization_settings
 
         # Logic to set the default subject color based on filename
-        fname = os.path.basename(results_pkl_path).lower()
+        fname = pathlib.Path(results_pkl_path).name.lower()
         if 'female' in fname:
             self.default_color = female_color
         elif 'male' in fname:
@@ -5159,7 +5186,7 @@ class DeepResultsVisualizer:
             self.default_color = male_color_secondary
 
     def _handle_save(self, fig: plt.Figure, name: str, save_plot: bool,
-                     output_dir: Optional[str], file_format: str) -> None:
+                     output_dir: str | None, file_format: str) -> None:
         """
         Internal helper to manage figure exports with SVG default and white facecolor.
 
@@ -5195,7 +5222,7 @@ class DeepResultsVisualizer:
         self.message_output(f"[+] Figure saved: {save_path}")
 
     def plot_permutation_test(self,
-                              actual_color: str = None,
+                              actual_color: str | None = None,
                               null_color: str = '#D3D3D3',
                               threshold_color: str = '#000000',
                               title_fontsize: int = 10,
@@ -5203,7 +5230,7 @@ class DeepResultsVisualizer:
                               figsize: tuple = (3, 4),
                               n_bootstraps: int = 1000,
                               save_plot: bool = False,
-                              output_dir: str = None,
+                              output_dir: str | None = None,
                               file_format: str = _FIGURE_FORMAT) -> plt.Figure:
         """
         Plots the bootstrapped permutation test histograms to prove model validity.
@@ -5349,7 +5376,8 @@ class DeepResultsVisualizer:
 
         # Set strict axis limits for A
         pad_actual = (max(actual_dist) - min(actual_dist)) * 0.5
-        if pad_actual == 0: pad_actual = 0.05
+        if pad_actual == 0:
+            pad_actual = 0.05
         ax1.set_xlim(min(actual_dist) - pad_actual, max(actual_dist) + pad_actual)
 
         pad_null = (max(null_dist) - min(null_dist)) * 0.5
@@ -5372,13 +5400,14 @@ class DeepResultsVisualizer:
         # Limits for Skill Score
         ax3.set_xlim(-0.03, 0.03)
         pad_skill = (max(actual_dist_skill) - min(actual_dist_skill)) * 0.5
-        if pad_skill == 0: pad_skill = 0.05
+        if pad_skill == 0:
+            pad_skill = 0.05
         ax4.set_xlim(min(actual_dist_skill) - pad_skill, max(actual_dist_skill) + pad_skill)
 
         # SHARED DECORATION & WRAP-UP
         # Diagonal break marks (//) for both rows
         d_x1, d_x2, d_y = 0.02, 0.01, 0.03
-        kwargs = dict(color=text_color, clip_on=False, lw=1.5)
+        kwargs = {"color": text_color, "clip_on": False, "lw": 1.5}
 
         for l_ax, r_ax in [(ax1, ax2), (ax3, ax4)]:
             l_ax.plot((1 - d_x1, 1 + d_x1), (-d_y, +d_y), transform=l_ax.transAxes, **kwargs)
@@ -5405,7 +5434,7 @@ class DeepResultsVisualizer:
 
         # Combine legends from top row proxy artists
         lines_labels = [ax.get_legend_handles_labels() for ax in [ax1, ax2]]
-        lines, labels = [sum(lol, []) for lol in zip(*lines_labels)]
+        lines, labels = [[item for sublist in lol for item in sublist] for lol in zip(*lines_labels, strict=False)]
         leg = ax2.legend(lines, labels, frameon=False, loc='best', fontsize=label_fontsize - 1)
         for text in leg.get_texts():
             text.set_color(text_color)
@@ -5430,7 +5459,7 @@ class DeepResultsVisualizer:
                                 label_fontsize: int = 8,
                                 figsize: tuple = (4, 6),
                                 save_plot: bool = False,
-                                output_dir: Optional[str] = None,
+                                output_dir: str | None = None,
                                 file_format: str = _FIGURE_FORMAT) -> plt.Figure:
         r"""
         Visualizes Post-Hoc Permutation feature importance with dynamic Signal-to-Noise Ratio (SNR) thresholding.
@@ -5497,7 +5526,7 @@ class DeepResultsVisualizer:
 
         # Significant features get the map; non-significant get the lowest 'glow'
         bar_colors = [mapper(norm(val)) if sig else lowest_color
-                      for val, sig in zip(actual_means, significant_mask)]
+                      for val, sig in zip(actual_means, significant_mask, strict=False)]
 
         # Visualization
         fig, ax = plt.subplots(figsize=figsize, facecolor='#FFFFFF')
@@ -5554,16 +5583,16 @@ class DeepResultsVisualizer:
     def plot_spatial_precision_grid(self,
                                     plot_type: str = 'density',
                                     n_patches: int = 20,
-                                    patch_size: Optional[float] = None,
+                                    patch_size: float | None = None,
                                     min_samples: int = 50,
                                     bg_pt_color: str = '#E0E0E0',
                                     peak_pt_color: str = '#00FFFF',
                                     square_edge_color: str = '#000000',
                                     panel_fontsize: int = 9,
                                     figsize_unit: float = 3.0,
-                                    grid_shape: Optional[tuple] = None,
+                                    grid_shape: tuple | None = None,
                                     save_plot: bool = False,
-                                    output_dir: Optional[str] = None,
+                                    output_dir: str | None = None,
                                     file_format: str = _FIGURE_FORMAT) -> plt.Figure:
         """
         Generates a tiled grid of 'Hero Shot' panels focusing on representative regions across the manifold.
@@ -5789,7 +5818,8 @@ class DeepResultsVisualizer:
             ax.set_xlim(global_x_min, global_x_max)
             ax.set_ylim(global_y_min, global_y_max)
 
-        for i in range(n, len(axes)): fig.delaxes(axes[i])
+        for i in range(n, len(axes)):
+            fig.delaxes(axes[i])
         plt.tight_layout()
 
         # 5. Updated Save Logic
@@ -5811,8 +5841,8 @@ class DeepResultsVisualizer:
     def _plot_spatial_precision_grid_torus(
             self,
             plot_type: str,
-            grid_shape: Optional[tuple],
-            patch_size: Optional[float],
+            grid_shape: tuple | None,
+            patch_size: float | None,
             min_samples: int,
             bg_pt_color: str,
             peak_pt_color: str,
@@ -5820,7 +5850,7 @@ class DeepResultsVisualizer:
             panel_fontsize: int,
             figsize_unit: float,
             save_plot: bool,
-            output_dir: Optional[str],
+            output_dir: str | None,
             file_format: str,
     ) -> plt.Figure:
         """
@@ -5974,11 +6004,14 @@ class DeepResultsVisualizer:
 
             if n_in < min_samples:
                 ax.set_title(f"only {n_in} pts", fontsize=panel_fontsize - 2)
-                ax.set_xlim(0, period); ax.set_ylim(0, period)
+                ax.set_xlim(0, period)
+                ax.set_ylim(0, period)
                 ax.set_aspect('equal')
-                ax.set_xticks([]); ax.set_yticks([])
+                ax.set_xticks([])
+                ax.set_yticks([])
                 for s in ax.spines.values():
-                    s.set_edgecolor('#B0B0B0'); s.set_linewidth(0.4)
+                    s.set_edgecolor('#B0B0B0')
+                    s.set_linewidth(0.4)
                 continue
 
             # Wrap-aware KDE on the prediction subset: fit on the ORIGINAL points (so the
@@ -5993,9 +6026,11 @@ class DeepResultsVisualizer:
                 kde = gaussian_kde(p_subset.T)
             except (np.linalg.LinAlgError, ValueError):
                 ax.set_title(f"n={n_in} (no KDE)", fontsize=panel_fontsize - 2)
-                ax.set_xlim(0, period); ax.set_ylim(0, period)
+                ax.set_xlim(0, period)
+                ax.set_ylim(0, period)
                 ax.set_aspect('equal')
-                ax.set_xticks([]); ax.set_yticks([])
+                ax.set_xticks([])
+                ax.set_yticks([])
                 continue
             zi = np.zeros(grid_pts.shape[1], dtype=float)
             for off in tile_offsets:
@@ -6032,11 +6067,14 @@ class DeepResultsVisualizer:
 
             ax.set_title(rf"$\Delta d$={bias:.2f} ({n_in})",
                          fontsize=panel_fontsize - 2, pad=2)
-            ax.set_xlim(0, period); ax.set_ylim(0, period)
+            ax.set_xlim(0, period)
+            ax.set_ylim(0, period)
             ax.set_aspect('equal')
-            ax.set_xticks([]); ax.set_yticks([])
+            ax.set_xticks([])
+            ax.set_yticks([])
             for s in ax.spines.values():
-                s.set_edgecolor('#B0B0B0'); s.set_linewidth(0.4)
+                s.set_edgecolor('#B0B0B0')
+                s.set_linewidth(0.4)
 
         fig.suptitle(
             f"CNN torus precision grid ({nx}x{ny} patches, "
@@ -6070,7 +6108,7 @@ class DeepResultsVisualizer:
                              label_fontsize: int = 8,
                              figsize: tuple = (12, 5),
                              save_plot: bool = False,
-                             output_dir: Optional[str] = None,
+                             output_dir: str | None = None,
                              file_format: str = _FIGURE_FORMAT) -> plt.Figure:
         """
         Visualizes the spatial distribution of prediction errors and error reduction for the CNN.
@@ -6209,16 +6247,16 @@ class DeepResultsVisualizer:
 
     def plot_regional_saliency_inset(self,
                                      region_key: str,
-                                     category_name: Optional[str] = None,
+                                     category_name: str | None = None,
                                      prediction_plot_type: str = 'contour',
-                                     highlight_color: Optional[str] = None,
+                                     highlight_color: str | None = None,
                                      null_color: str = '#D3D3D3',
                                      cmap: str = _DIVERGING_CMAP,
                                      figsize: tuple = (18, 9),
-                                     radius: Optional[float] = None,
+                                     radius: float | None = None,
                                      smoothing_sigma: float = 60.0,
                                      save_plot: bool = False,
-                                     output_dir: Optional[str] = None,
+                                     output_dir: str | None = None,
                                      file_format: str = _FIGURE_FORMAT) -> plt.Figure | None:
         """
         Visualizes regional manifold dynamics for one pre-computed
@@ -6327,11 +6365,14 @@ class DeepResultsVisualizer:
         # the same circle the saliency runner used to assemble the
         # contrastive map.
         if 'saliency_maps' not in self.data or region_key not in self.data['saliency_maps']:
-            raise NotImplementedError(
+            msg = (
                 f"No pre-computed saliency map stored for region '{region_key}'. "
                 f"Re-compute saliency during training and rerun, or pass a "
                 f"region_key already present in self.data['saliency_maps'] "
                 f"(available: {list((self.data['saliency_maps'] if 'saliency_maps' in self.data else {}).keys())})."
+            )
+            raise NotImplementedError(
+                msg
             )
         sal_entry = self.data['saliency_maps'][region_key]
         centroid = np.asarray(sal_entry['centroid'], dtype=float).reshape(2)
@@ -6368,7 +6409,7 @@ class DeepResultsVisualizer:
 
         if len(r_idx) < 3:
             self.message_output(f"Warning: Region '{region_key}' contains only {len(r_idx)} samples. Skipping.")
-            return
+            return None
 
         # Wrap-aware per-trial error magnitudes for the in-region
         # subset; matches the metric used by the model's loss / R^2.
@@ -6504,9 +6545,9 @@ class DeepResultsVisualizer:
         _h = highlight_color.lstrip('#')
         _r, _g, _b = int(_h[0:2], 16), int(_h[2:4], 16), int(_h[4:6], 16)
         darker_highlight = (
-            f"#{int(round(_r * 0.5)):02x}"
-            f"{int(round(_g * 0.5)):02x}"
-            f"{int(round(_b * 0.5)):02x}"
+            f"#{round(_r * 0.5):02x}"
+            f"{round(_g * 0.5):02x}"
+            f"{round(_b * 0.5):02x}"
         )
         # ``histtype='stepfilled'`` draws a single filled outline
         # rather than one rectangle per bin, so the edgecolor is just
@@ -6787,13 +6828,16 @@ def _require_timescale_payload(payload, timescale_pkl_path: str) -> None:
                 'rho_signal_null_mean', 'rho_signal_null_p0_5', 'rho_signal_null_p99_5')
     missing = [k for k in required if k not in payload]
     if missing:
-        raise ValueError(
+        msg = (
             f"`{timescale_pkl_path}` does not look like a timescale-audit "
             f"pickle (missing keys: {missing}). The timescale audit writes "
             f"its companion artifact alongside the modeling input pickle "
             f"with the suffix `_timescales.pkl` — make sure the path you "
             f"passed ends with that suffix and not, for example, the "
             f"modeling input pickle itself."
+        )
+        raise ValueError(
+            msg
         )
 
 
@@ -6956,7 +7000,7 @@ def _signal_outer_run_marker(rho,
         starts = np.where(d == 1)[0]
         ends = np.where(d == -1)[0] - 1  # inclusive
         return list(zip(starts.tolist(), ends.tolist(),
-                        (ends - starts + 1).tolist()))
+                        (ends - starts + 1).tolist(), strict=True))
 
     candidates = []
     for sign_val, mask in ((+1, above), (-1, below)):
@@ -6965,7 +7009,7 @@ def _signal_outer_run_marker(rho,
                 continue  # entire run sub-floor
             if e > idx_max:
                 continue  # past search window (defensive)
-            if L < min_run_bins:
+            if min_run_bins > L:
                 continue
             candidates.append((s, e, sign_val))
 
@@ -7002,14 +7046,14 @@ def _save_audit_figure(fig, out_dir: str, basename: str, file_format: str = _FIG
         Absolute path of the written file.
     """
 
-    os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, _figure_filename(basename, file_format))
+    pathlib.Path(out_dir).mkdir(parents=True, exist_ok=True)
+    out_path = str(pathlib.Path(out_dir) / _figure_filename(basename, file_format))
     fig.savefig(out_path, format=file_format, bbox_inches='tight')
     return out_path
 
 
 def plot_collinearity_audit(audit_pkl_path: str,
-                            save_dir: str = None,
+                            save_dir: str | None = None,
                             save_plot_bool: bool = True,
                             plot_format: str = _FIGURE_FORMAT,
                             cmap: str = _DIVERGING_CMAP,
@@ -7126,7 +7170,7 @@ def plot_collinearity_audit(audit_pkl_path: str,
     if save_dir is not None:
         save_dir = configure_path(str(save_dir))
 
-    with open(audit_pkl_path, 'rb') as fh:
+    with pathlib.Path(audit_pkl_path).open('rb') as fh:
         payload = pickle.load(fh)
 
     feature_names = list(payload['features'])
@@ -7185,9 +7229,9 @@ def plot_collinearity_audit(audit_pkl_path: str,
     ax1.set_xticklabels(names_ord, rotation=90, fontsize=7,
                         fontweight='bold')
     ax1.set_yticklabels(names_ord, fontsize=7, fontweight='bold')
-    for tick_label, c in zip(ax1.get_xticklabels(), colors_ord):
+    for tick_label, c in zip(ax1.get_xticklabels(), colors_ord, strict=False):
         tick_label.set_color(c)
-    for tick_label, c in zip(ax1.get_yticklabels(), colors_ord):
+    for tick_label, c in zip(ax1.get_yticklabels(), colors_ord, strict=False):
         tick_label.set_color(c)
     ax1.tick_params(axis='both', which='both', length=0)
 
@@ -7235,7 +7279,7 @@ def plot_collinearity_audit(audit_pkl_path: str,
     )
 
     # Right panel: VIF horizontal bars
-    color_by_name = {name: c for name, c in zip(names_ord, colors_ord)}
+    color_by_name = dict(zip(names_ord, colors_ord, strict=False))
     finite_mask = np.isfinite(vif)
     finite_vif = np.where(finite_mask, vif, np.nan)
     # Sort descending by VIF; +inf gets pushed to the top via the
@@ -7271,7 +7315,7 @@ def plot_collinearity_audit(audit_pkl_path: str,
                      zorder=4)
     ax2.set_yticks(y_pos)
     ax2.set_yticklabels(names_sorted, fontsize=8, fontweight='bold')
-    for tick_label, c in zip(ax2.get_yticklabels(), colors_sorted):
+    for tick_label, c in zip(ax2.get_yticklabels(), colors_sorted, strict=False):
         tick_label.set_color(c)
     ax2.tick_params(axis='y', length=0)
 
@@ -7352,8 +7396,8 @@ def plot_collinearity_audit(audit_pkl_path: str,
 
     if save_plot_bool:
         if save_dir is None:
-            save_dir = os.path.dirname(audit_pkl_path)
-        base = os.path.splitext(os.path.basename(audit_pkl_path))[0]
+            save_dir = str(pathlib.Path(audit_pkl_path).parent)
+        base = pathlib.Path(audit_pkl_path).stem
         out_path = _save_audit_figure(fig, save_dir, base,
                                       file_format=plot_format)
         plt.close(fig)
@@ -7500,7 +7544,7 @@ def _compute_timescale_horizons(payload: dict,
 
 
 def plot_timescale_audit(timescale_pkl_path: str,
-                         save_dir: str = None,
+                         save_dir: str | None = None,
                          save_plot_bool: bool = True,
                          plot_format: str = _FIGURE_FORMAT,
                          signal_smooth_window: int = 0,
@@ -7601,7 +7645,7 @@ def plot_timescale_audit(timescale_pkl_path: str,
         closes. `figure` is also None when there is nothing to draw.
     """
 
-    with open(timescale_pkl_path, 'rb') as fh:
+    with pathlib.Path(timescale_pkl_path).open('rb') as fh:
         payload = pickle.load(fh)
     _require_timescale_payload(payload, timescale_pkl_path)
 
@@ -7610,7 +7654,7 @@ def plot_timescale_audit(timescale_pkl_path: str,
     source = payload['source_pickle']
     n_features_total = len(feature_names)
 
-    acf_horizons, xc_horizons, xc_exceeds = _compute_timescale_horizons(
+    acf_horizons, xc_horizons, _xc_exceeds = _compute_timescale_horizons(
         payload, signal_smooth_window=signal_smooth_window
     )
 
@@ -7656,12 +7700,9 @@ def plot_timescale_audit(timescale_pkl_path: str,
     all_horizon_vals = (
         [v for _, v in acf_items] + [v for _, v in xc_items]
     )
-    if all_horizon_vals:
-        x_max_data = float(max(all_horizon_vals))
-    else:
-        x_max_data = 1.0
+    x_max_data = float(max(all_horizon_vals)) if all_horizon_vals else 1.0
     x_max_int = max(int(np.ceil(x_max_data)), 1)
-    shared_xticks = list(range(0, x_max_int + 1))
+    shared_xticks = list(range(x_max_int + 1))
     shared_xticklabels = ['' for _ in shared_xticks]
     shared_xticklabels[0] = '0'
     shared_xticklabels[-1] = str(x_max_int)
@@ -7731,7 +7772,7 @@ def plot_timescale_audit(timescale_pkl_path: str,
         # because the colored labels alone are sufficient.
         ax.set_yticks(y_pos)
         ax.set_yticklabels(names, fontsize=9, fontweight='bold')
-        for tick_label, fname in zip(ax.get_yticklabels(), names):
+        for tick_label, fname in zip(ax.get_yticklabels(), names, strict=False):
             tick_label.set_color(color_by_name[fname])
         ax.tick_params(axis='y', length=0)
 
@@ -7804,8 +7845,8 @@ def plot_timescale_audit(timescale_pkl_path: str,
 
     if save_plot_bool:
         if save_dir is None:
-            save_dir = os.path.dirname(timescale_pkl_path)
-        base = os.path.splitext(os.path.basename(timescale_pkl_path))[0]
+            save_dir = str(pathlib.Path(timescale_pkl_path).parent)
+        base = pathlib.Path(timescale_pkl_path).stem
         out_path = _save_audit_figure(fig, save_dir, base, file_format=plot_format)
         plt.close(fig)
         message_output(f"[plot] timescale figure written: {out_path}")
@@ -7828,7 +7869,7 @@ def plot_timescale_audit(timescale_pkl_path: str,
 
 
 def plot_timescale_audit_per_feature(timescale_pkl_path: str,
-                                     save_dir: str = None,
+                                     save_dir: str | None = None,
                                      save_plot_bool: bool = True,
                                      plot_format: str = _FIGURE_FORMAT,
                                      signal_smooth_window: int = 0,
@@ -7933,7 +7974,7 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
         None when there is nothing to draw.
     """
 
-    with open(timescale_pkl_path, 'rb') as fh:
+    with pathlib.Path(timescale_pkl_path).open('rb') as fh:
         payload = pickle.load(fh)
     _require_timescale_payload(payload, timescale_pkl_path)
 
@@ -8270,8 +8311,8 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
 
     if save_plot_bool:
         if save_dir is None:
-            save_dir = os.path.dirname(timescale_pkl_path)
-        base = os.path.splitext(os.path.basename(timescale_pkl_path))[0]
+            save_dir = str(pathlib.Path(timescale_pkl_path).parent)
+        base = pathlib.Path(timescale_pkl_path).stem
         out_path = _save_audit_figure(fig, save_dir, f"{base}_per-feature",
                                       file_format=plot_format)
         plt.close(fig)
@@ -8371,7 +8412,7 @@ def plot_behavioral_response_forest(
         axis_limits: tuple = ((-15.0, 15.0), (-5.0, 5.0), (-6.0, 6.0), (-2.0, 2.0)),
         duration_sd_factor: float = 2.25,
         save_plot: bool = False,
-        output_dir: str = None,
+        output_dir: str | None = None,
         message_output: Callable = print,
 ) -> plt.Figure:
     """
@@ -8448,7 +8489,7 @@ def plot_behavioral_response_forest(
         is also written to disk first.
     """
 
-    with open(contrast_results_path, 'rb') as handle:
+    with pathlib.Path(contrast_results_path).open('rb') as handle:
         payload = pickle.load(handle)
     features = payload['response_features']
     likelihoods = payload['response_likelihoods']
@@ -8493,7 +8534,7 @@ def plot_behavioral_response_forest(
                         for f in features])
         corrected = _benjamini_hochberg(raw, false_discovery_rate)
         message_output(f"  {term_name}: BH q<{false_discovery_rate} passes "
-              f"{[f for f, flag in zip(features, corrected) if flag] or 'nothing'}")
+              f"{[f for f, flag in zip(features, corrected, strict=False) if flag] or 'nothing'}")
 
         for row, (group_index, group) in enumerate(drawn_groups):
             axis = axes[row][column]
@@ -8526,8 +8567,8 @@ def plot_behavioral_response_forest(
                                   key_entries=key_entries)
 
     if save_plot:
-        out_name = os.path.join(output_dir,
-                                _figure_filename('behavioral_response_forest'))
+        out_name = str(pathlib.Path(output_dir)
+                       / _figure_filename('behavioral_response_forest'))
         fig.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI)
         message_output(f"Figure saved to: {out_name}")
     return fig
@@ -8643,7 +8684,7 @@ def plot_matched_divergence(
         between_block_gap: float = 0.30,
         onset_run_seconds: float = 1.0,
         save_plot: bool = False,
-        output_dir: str = None,
+        output_dir: str | None = None,
         message_output: Callable = print,
 ) -> plt.Figure | None:
     """
@@ -8714,7 +8755,7 @@ def plot_matched_divergence(
         is also written to disk first.
     """
 
-    with open(divergence_results_path, 'rb') as handle:
+    with pathlib.Path(divergence_results_path).open('rb') as handle:
         payload = pickle.load(handle)
     features = payload['features']
     anchor_index = payload['anchor_index']
@@ -8798,8 +8839,8 @@ def plot_matched_divergence(
         run, onset = 0, None
         for index, flag in enumerate(corrected):
             run = run + 1 if flag else 0
-            if run >= int(round(onset_run_seconds * camera_fps)) and onset is None:
-                onset = time_axis[index - int(round(onset_run_seconds * camera_fps)) + 1]
+            if run >= int(round(onset_run_seconds * camera_fps)) and onset is None:  # noqa: RUF046  int() kept: round() of a numpy float returns a float under numpy<2
+                onset = time_axis[index - int(round(onset_run_seconds * camera_fps)) + 1]  # noqa: RUF046  int() kept: round() of a numpy float returns a float under numpy<2
 
         extent = np.nanmax(np.abs(mean[shown])) or 1.0
         normaliser = Normalize(vmin=-extent, vmax=extent)
@@ -8839,11 +8880,11 @@ def plot_matched_divergence(
         ticks = [tick for tick in bottom.get_xticks()
                  if display_seconds[0] <= tick <= display_seconds[1]
                  and abs(tick - time_axis[peak]) > 0.3]
-        positions = sorted(ticks + [float(time_axis[peak])])
+        positions = sorted([*ticks, float(time_axis[peak])])
         bottom.set_xticks(positions)
         bottom.set_xticklabels([f'{value:.1f}' if value == time_axis[peak] else f'{value:g}'
                                 for value in positions])
-        for tick_label, value in zip(bottom.get_xticklabels(), positions):
+        for tick_label, value in zip(bottom.get_xticklabels(), positions, strict=False):
             if value == time_axis[peak]:
                 tick_label.set_color(peak_colour)
 
@@ -8870,7 +8911,7 @@ def plot_matched_divergence(
         fig.add_subplot(grid[3 * spare_block + 1, spare_column]).set_visible(False)
 
     if save_plot:
-        out_name = os.path.join(output_dir, _figure_filename('matched_divergence'))
+        out_name = str(pathlib.Path(output_dir) / _figure_filename('matched_divergence'))
         fig.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI)
         message_output(f"Figure saved to: {out_name}")
     return fig

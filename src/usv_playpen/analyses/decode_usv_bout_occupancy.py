@@ -144,7 +144,7 @@ def bout_occupancy_bins(bin_seconds: float, starts: np.ndarray, stops: np.ndarra
     bout_lo, bout_hi = ibi_bout_extents(starts, stops, ibi_threshold, min_vocalizations)
     spans, labels, mids, positions = [], [], [], []
 
-    for lo_b, hi_b in zip(bout_lo, bout_hi):
+    for lo_b, hi_b in zip(bout_lo, bout_hi, strict=False):
         step = 0
         while lo_b + (step + 1) * bin_seconds <= hi_b + 1e-9:
             lo = lo_b + step * bin_seconds
@@ -202,7 +202,7 @@ def flatten_spans(spans: list) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 
 def count_matrix(flat: tuple, n_bins: int, trains: list, duration_seconds: float,
-                 lag_seconds: float = None) -> np.ndarray:
+                 lag_seconds: float | None = None) -> np.ndarray:
     """
     Description
     -----------
@@ -572,7 +572,7 @@ class BoutOccupancyDecoder:
         folds = np.minimum((mids / bundle["duration_seconds"] * n_folds).astype(int), n_folds - 1)
 
         rosters: dict = {}
-        for unit_id, area in zip(block["unit_id"].to_list(), block["brain_area"].to_list()):
+        for unit_id, area in zip(block["unit_id"].to_list(), block["brain_area"].to_list(), strict=True):
             rosters.setdefault(area, []).append(unit_id)
         floor = int(params["min_units_per_area"])
         requested = params["brain_areas"]
@@ -643,10 +643,10 @@ class BoutOccupancyDecoder:
             # written through a handle because `np.savez_compressed` appends '.npz' to a path
             # that does not already end in it, which would leave the atomic rename with nothing
             # to move
-            with atomic_output_path(out_dir / f"{session_id}_{area}.npz") as tmp_path:
-                with pathlib.Path(tmp_path).open("wb") as archive:
-                    np.savez_compressed(archive, labels=labels, positions=positions,
-                                        ladder=np.asarray(ladder), **observed_all, **null_all)
+            with (atomic_output_path(out_dir / f"{session_id}_{area}.npz") as tmp_path,
+                  pathlib.Path(tmp_path).open("wb") as archive):
+                np.savez_compressed(archive, labels=labels, positions=positions,
+                                    ladder=np.asarray(ladder), **observed_all, **null_all)
 
         with atomic_output_path(out_dir / f"{session_id}_bout_decoding.parquet") as tmp_path:
             pls.DataFrame(rows).write_parquet(tmp_path)

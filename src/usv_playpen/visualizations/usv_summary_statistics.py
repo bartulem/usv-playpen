@@ -767,7 +767,7 @@ def plot_assignment_summary_panel(
         stats_dict[f'{cat}_iqr'] = float(iqr)
         stats_text_lines.append(f"{cat.capitalize()}: {median:.2f} ± {iqr:.2f}")
 
-    bbox_props = dict(boxstyle='round,pad=0.5', facecolor='#202020', alpha=0.6, edgecolor='#808080')
+    bbox_props = {"boxstyle": 'round,pad=0.5', "facecolor": '#202020', "alpha": 0.6, "edgecolor": '#808080'}
     ax_violin.text(0.95, 0.05, "\n".join(stats_text_lines),
                    transform=ax_violin.transAxes, fontsize=9,
                    verticalalignment='bottom', horizontalalignment='right',
@@ -1293,7 +1293,7 @@ def plot_distance_by_assignment_kde_anova(
     fig, ax = plt.subplots(figsize=(10, 6))
     sns.kdeplot(data=df_plot, x='distance', hue='category', palette=colors, fill=True, alpha=0.5, common_norm=False, bw_adjust=1.5, ax=ax)
 
-    bbox_props = dict(boxstyle='round,pad=0.5', facecolor='#FFFFFF', alpha=0.7, edgecolor='#808080')
+    bbox_props = {"boxstyle": 'round,pad=0.5', "facecolor": '#FFFFFF', "alpha": 0.7, "edgecolor": '#808080'}
     ax.text(0.95, 0.98, full_stats_text, transform=ax.transAxes, fontsize=12, verticalalignment='top', horizontalalignment='right', bbox=bbox_props, color='#202020')
 
     ax.set_xlabel('Nose-Nose distance (cm)', fontsize=14)
@@ -1771,7 +1771,7 @@ def plot_category_local_fatigue_heatmap(
         agg_bin = subset.groupby(['category', 'time_bin'])['usv_count'].mean().reset_index()
 
         # 2. Pivot to Heatmap format (Rows = Category, Columns = Time Bin)
-        pivot_df = agg_bin.pivot(index='category', columns='time_bin', values='usv_count')
+        pivot_df = agg_bin.pivot(index='category', columns='time_bin', values='usv_count')  # noqa: PD010  pivot (raise on duplicates) is intended; pivot_table would aggregate
         pivot_df = pivot_df.reindex(columns=range(n_bins), fill_value=0.0).fillna(0.0)
 
         # 3. Apply Gaussian Smoothing (along axis 1: time bins)
@@ -2012,10 +2012,9 @@ def plot_estrous_ratio_scatter(
                 ax.set_ylim(bottom=bottom, top=global_max * 1.5)
             else:
                 ax.set_ylim(top=global_max * 1.5)
-    else:
-        if global_min != float('inf'):
-            padding = (global_max - global_min) * 0.05
-            ax.set_ylim(bottom=max(0, global_min - padding), top=global_max + padding)
+    elif global_min != float('inf'):
+        padding = (global_max - global_min) * 0.05
+        ax.set_ylim(bottom=max(0, global_min - padding), top=global_max + padding)
 
     fig.tight_layout()
     return fig, ax, stats_dict
@@ -2156,7 +2155,7 @@ def plot_estrous_stage_pie_chart(
 
     # Map colors to the specific stages present in the plot
     # (Matches the color to the stage regardless of if some stages are missing)
-    color_map = dict(zip(category_order, slice_colors))
+    color_map = dict(zip(category_order, slice_colors, strict=False))
     current_colors = [color_map[s] for s in plot_stages]
 
     total_sessions = sum(counts)
@@ -2169,7 +2168,7 @@ def plot_estrous_stage_pie_chart(
 
     # startangle=90 puts the first slice at the very top (12 o'clock)
     # counterclock=False ensures subsequent slices move to the right
-    wedges, texts, autotexts = ax.pie(
+    _wedges, _texts, _autotexts = ax.pie(
         counts,
         labels=labels_full,
         autopct='%1.1f%%',
@@ -2374,7 +2373,7 @@ def plot_category_prevalence_and_embedding(
 
     # Column 1: 100% Stacked Proportions Bar Chart
     # Group by category and sex to get counts, fill missing combos with 0
-    cat_sex_counts = df_pd.groupby(['category', 'sex']).size().unstack(fill_value=0)
+    cat_sex_counts = df_pd.groupby(['category', 'sex']).size().unstack(fill_value=0)  # noqa: PD010  unstack of a groupby size is the intended reshape; pivot_table differs
 
     # Ensure all columns exist to prevent KeyErrors if a category is missing entirely
     for col in ['male', 'female', 'unassigned']:
@@ -2386,9 +2385,9 @@ def plot_category_prevalence_and_embedding(
     cat_sex_props = cat_sex_counts.div(cat_totals.replace(0, 1), axis=0) # replace 0 with 1 to avoid div by zero
 
     categories_str = cat_sex_props.index.astype(str)
-    m_props = cat_sex_props['male'].values
-    f_props = cat_sex_props['female'].values
-    u_props = cat_sex_props['unassigned'].values
+    m_props = cat_sex_props['male'].to_numpy()
+    f_props = cat_sex_props['female'].to_numpy()
+    u_props = cat_sex_props['unassigned'].to_numpy()
 
     ax_sum_bar.bar(categories_str, m_props, color=male_color, edgecolor='#202020')
     ax_sum_bar.bar(categories_str, f_props, bottom=m_props, color=female_color, edgecolor='#202020')
@@ -2915,7 +2914,7 @@ def plot_category_polar_kde_grid(
     angle_key = 'mf_angle' if sex_key.lower() == 'male' else 'fm_angle'
 
     # Identify categories
-    categories = sorted([c for c in global_behavior_metrics.keys() if c != 'all_frames'])
+    categories = sorted([c for c in global_behavior_metrics if c != 'all_frames'])
     n_cats = len(categories)
 
     if n_cats == 0:

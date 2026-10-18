@@ -19,7 +19,10 @@ from ..cli_utils import modify_settings_json_for_cli
 from ..send_email import Messenger
 from .make_behavioral_videos import Create3DVideo
 from .make_neuronal_tuning_figures import NeuronalTuningFigureMaker
-from .make_usv_spectrograms import USVSpectrogramPlotter, render_embedding_thumbnails_for_cohort
+from .make_usv_spectrograms import (
+    USVSpectrogramPlotter,
+    render_embedding_thumbnails_for_cohort,
+)
 from .qlvm_torus_traversal_video import QLVMTorusTraversalVideo
 
 
@@ -42,8 +45,8 @@ class Visualizer:
     whole run. It is constructed by the GUI (``usv_playpen_gui.py``).
     """
 
-    def __init__(self, input_parameter_dict: dict = None,
-                 root_directories: list = None,
+    def __init__(self, input_parameter_dict: dict | None = None,
+                 root_directories: list | None = None,
                  message_output: Callable | None = None) -> None:
 
         """
@@ -66,7 +69,7 @@ class Visualizer:
         """
 
         if input_parameter_dict is None or root_directories is None:
-            with open(pathlib.Path(__file__).parent.parent / '_parameter_settings/visualizations_settings.json') as json_file:
+            with (pathlib.Path(__file__).parent.parent / '_parameter_settings/visualizations_settings.json').open() as json_file:
                 _settings = json.load(json_file)
 
         self.root_directories = root_directories if root_directories is not None else _settings['visualize_data']['root_directories']
@@ -156,7 +159,7 @@ class Visualizer:
                 self.message_output(f"Visualizing data in {one_directory} finished at: "
                                     f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}.")
 
-            except (OSError, RuntimeError, TypeError, IndexError, IOError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError) as exc:
+            except (OSError, RuntimeError, TypeError, IndexError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError) as exc:
                 self.message_output(traceback.format_exc())
                 failed_directories.append((one_directory, f"{type(exc).__name__}: {exc}"))
 
@@ -169,7 +172,7 @@ class Visualizer:
                 QLVMTorusTraversalVideo(output_path=None,
                                         input_parameter_dict=self.input_parameter_dict,
                                         message_output=self.message_output).make_video()
-            except (OSError, RuntimeError, TypeError, IndexError, IOError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError) as exc:
+            except (OSError, RuntimeError, TypeError, IndexError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError) as exc:
                 self.message_output(traceback.format_exc())
                 failed_directories.append(("qlvm_torus_traversal_video", f"{type(exc).__name__}: {exc}"))
 
@@ -180,7 +183,7 @@ class Visualizer:
             try:
                 render_embedding_thumbnails_for_cohort(self.input_parameter_dict,
                                                        message_output=self.message_output)
-            except (OSError, RuntimeError, TypeError, IndexError, IOError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError) as exc:
+            except (OSError, RuntimeError, TypeError, IndexError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError) as exc:
                 self.message_output(traceback.format_exc())
                 failed_directories.append(("embedding_thumbnails", f"{type(exc).__name__}: {exc}"))
 

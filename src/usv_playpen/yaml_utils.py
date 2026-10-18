@@ -51,8 +51,7 @@ class SmartDumper(yaml.Dumper):
 
         if is_simple_list:
             return self.represent_sequence('tag:yaml.org,2002:seq', data, flow_style=True)
-        else:
-            return self.represent_sequence('tag:yaml.org,2002:seq', data, flow_style=False)
+        return self.represent_sequence('tag:yaml.org,2002:seq', data, flow_style=False)
 
     def represent_str(self, data):
         """
@@ -139,7 +138,7 @@ def load_session_metadata(root_directory: str, logger: Callable = print) -> tupl
 
     metadata_path = metadata_path_list[0]
     try:
-        with open(metadata_path, 'r') as f:
+        with Path(metadata_path).open() as f:
             return yaml.safe_load(f), metadata_path
     except yaml.YAMLError as e:
         logger(f"Error loading metadata file: {e}")
@@ -570,9 +569,8 @@ def save_session_metadata(data: dict, filepath: Path, logger: Callable = print) 
     """
 
     try:
-        with atomic_output_path(filepath) as tmp_path:
-            with open(tmp_path, 'w') as f:
-                yaml.dump(data, f, Dumper=SmartDumper, default_flow_style=False, sort_keys=False, indent=2)
+        with atomic_output_path(filepath) as tmp_path, Path(tmp_path).open('w') as f:
+            yaml.dump(data, f, Dumper=SmartDumper, default_flow_style=False, sort_keys=False, indent=2)
     except yaml.YAMLError as e:
         logger(f"Error saving metadata file: {e}")
 

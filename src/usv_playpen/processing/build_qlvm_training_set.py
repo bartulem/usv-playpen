@@ -178,7 +178,7 @@ def file_sha256(path: str | pathlib.Path, chunk_bytes: int = 8 * 1024 * 1024) ->
     """
 
     digest = hashlib.sha256()
-    with open(path, "rb") as handle:
+    with pathlib.Path(path).open("rb") as handle:
         for chunk in iter(lambda: handle.read(chunk_bytes), b""):
             digest.update(chunk)
     return digest.hexdigest()
@@ -1085,7 +1085,7 @@ def _apply_simple_resize(spec: np.ndarray, duration: int, target_shape: tuple[in
     # array. Slice in zoomed coordinates so time-upsampling (target wider than the
     # native spec) keeps the whole signal instead of truncating it to the first
     # `duration` columns.
-    signal_length = min(int(round(duration * zoom_factors[1])), target_shape[1])
+    signal_length = min(round(duration * zoom_factors[1]), target_shape[1])
     signal_portion = spec_interp[:, :signal_length]
     left_pad = (target_shape[1] - signal_length) // 2
     right_pad = target_shape[1] - signal_length - left_pad

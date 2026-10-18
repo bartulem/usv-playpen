@@ -43,11 +43,12 @@ from __future__ import annotations
 import pickle
 import time
 import warnings
-import numpy as np
-from numpy.lib.stride_tricks import sliding_window_view
 from datetime import datetime
 from pathlib import Path
-from scipy.stats import spearmanr, rankdata
+
+import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
+from scipy.stats import rankdata, spearmanr
 
 from ..os_utils import atomic_output_path
 
@@ -348,7 +349,7 @@ def audit_predictor_collinearity(processed_beh_dict: dict,
                                  source_pickle: str,
                                  concern_thresh: float = 0.7,
                                  exclude_thresh: float = 0.85,
-                                 input_metadata: dict = None) -> dict:
+                                 input_metadata: dict | None = None) -> dict:
     """
     Computes pairwise predictor correlations and per-feature VIFs on the
     per-event-onset summary matrix and persists the result to disk.
@@ -698,10 +699,10 @@ def audit_predictor_timescales(processed_beh_dict: dict,
                                save_path: str,
                                source_pickle: str,
                                random_seed: int = 0,
-                               input_metadata: dict = None,
+                               input_metadata: dict | None = None,
                                shuffle_range_seconds: tuple = (20.0, 60.0),
-                               event_intervals_per_session: dict = None,
-                               onset_times_per_session: dict = None,
+                               event_intervals_per_session: dict | None = None,
+                               onset_times_per_session: dict | None = None,
                                signal_floor_seconds: float = 0.5,
                                signal_min_run_seconds: float = 0.2) -> dict:
     """
@@ -978,7 +979,7 @@ def audit_predictor_timescales(processed_beh_dict: dict,
     # shuffle_max, never tying shuffle_min to max_lag). Require the shuffle floor
     # to clear the lag window.
     if shuffle_min_frames < max_lag_frames:
-        raise ValueError(
+        msg = (
             f"shuffle_min_frames ({shuffle_min_frames}, {shuffle_min_seconds:.1f}s) "
             f"must be >= max_lag_frames ({max_lag_frames}, {max_lag_seconds:.1f}s): the "
             f"circular-shift signal-correlation null indexes "
@@ -987,6 +988,7 @@ def audit_predictor_timescales(processed_beh_dict: dict,
             f"wrapped (corrupt) null. Increase shuffle_range_seconds[0] or decrease "
             f"max_lag_seconds."
         )
+        raise ValueError(msg)
 
     # ACF + circular-shift null
     # The circular-shift null preserves the autocorrelation structure
@@ -1009,7 +1011,7 @@ def audit_predictor_timescales(processed_beh_dict: dict,
         np.nan, dtype=np.float32,
     )
     acf_t0 = time.monotonic()
-    for s_i, (sess_id, per_feature) in enumerate(session_blocks.items()):
+    for s_i, (_sess_id, per_feature) in enumerate(session_blocks.items()):
         for f_i, fname in enumerate(feature_names):
             if fname not in per_feature:
                 continue
@@ -1112,20 +1114,22 @@ def audit_predictor_timescales(processed_beh_dict: dict,
     # but only for the IBI-percentile reporting (it is the inter-USV
     # gap source, not a `Y` source).
     if onset_times_per_session is None:
-        raise ValueError(
+        msg = (
             "audit_predictor_timescales requires `onset_times_per_session`. "
             "The binary `Y(t) = bout-onset-at-frame-t` trace is built "
             "exclusively from per-session bout-onset arrays "
             "(typically `usv_data_dict[sess][target]['positive_events']` "
             "from the vocal_onsets pipeline in `bout` mode)."
         )
+        raise ValueError(msg)
     if event_intervals_per_session is None:
-        raise ValueError(
+        msg = (
             "audit_predictor_timescales requires `event_intervals_per_session` "
             "for the IBI-percentile report block (per-USV `[start, stop)` "
             "arrays — used to compute inter-USV gaps that are directly "
             "comparable to the mixture-model-derived `ibi_threshold`)."
         )
+        raise ValueError(msg)
     valid_sessions = []
     for sess_id, per_feature in session_blocks.items():
         if sess_id not in onset_times_per_session:
@@ -1248,7 +1252,7 @@ def audit_predictor_timescales(processed_beh_dict: dict,
                 (n_valid, n_shuffles, n_signal_lags), np.nan, dtype=np.float32
             )
 
-            for s_i, (sess_id, n_frames_sess) in enumerate(valid_sessions):
+            for s_i, (sess_id, _n_frames_sess) in enumerate(valid_sessions):
                 per_feature = session_blocks[sess_id]
                 if fname not in per_feature:
                     continue

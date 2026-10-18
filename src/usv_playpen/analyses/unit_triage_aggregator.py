@@ -36,7 +36,6 @@ import pandas as pd
 
 from ..os_utils import atomic_output_path, resolve_data_root
 
-
 # JSON encoder helpers
 
 
@@ -74,7 +73,8 @@ def _to_jsonable(o: Any) -> Any:
         return o.tolist()
     if isinstance(o, pathlib.PurePath):
         return str(o)
-    raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
+    msg = f"Object of type {type(o).__name__} is not JSON serializable"
+    raise TypeError(msg)
 
 
 def _safe_float(x: Any) -> float | None:
@@ -535,13 +535,12 @@ def _emitter_role_map(cluster_data: dict) -> dict:
         for emitter, payload in block.items():
             if block_name == "usv_peth":
                 _take(emitter, payload)
-            else:
-                # cat_feat layer in between — payload is a dict-of-cat-feats
-                if isinstance(payload, dict):
-                    for sub in payload.values():
-                        _take(emitter, sub)
-                        if emitter in out:
-                            break
+            # cat_feat layer in between — payload is a dict-of-cat-feats
+            elif isinstance(payload, dict):
+                for sub in payload.values():
+                    _take(emitter, sub)
+                    if emitter in out:
+                        break
     # usv_property_tuning has an extra layer (per property)
     block = (cluster_data["usv_property_tuning"] if "usv_property_tuning" in cluster_data else None)
     if isinstance(block, dict):
@@ -676,13 +675,13 @@ def flag_one_cluster(
     # (respiratory-tempo) grouping, not the VMI `bout_quiet_seconds` one.
     # Pickles written before the bout-onset statistics existed carry no block, hence the
     # membership checks rather than a lookup that would raise on them.
-    ibi_bout_blocks = ts["usv_ibi_bout_onset"] if "usv_ibi_bout_onset" in ts and ts["usv_ibi_bout_onset"] else {}
+    ibi_bout_blocks = ts["usv_ibi_bout_onset"] if "usv_ibi_bout_onset" in ts and ts["usv_ibi_bout_onset"] else {}  # noqa: RUF019  keys are read directly, never via dict.get
     for emitter, payload in ibi_bout_blocks.items():
         if not isinstance(payload, dict):
             continue
-        if "role" in payload and payload["role"]:
+        if "role" in payload and payload["role"]:  # noqa: RUF019  keys are read directly, never via dict.get
             role = payload["role"]
-        elif emitter in emitter_roles and emitter_roles[emitter]:
+        elif emitter in emitter_roles and emitter_roles[emitter]:  # noqa: RUF019  keys are read directly, never via dict.get
             role = emitter_roles[emitter]
         else:
             role = emitter
@@ -932,8 +931,9 @@ def _parse_unit_id(unit_id: str) -> tuple[int, int, int, str]:
 
     parts = unit_id.split("_")
     if len(parts) != 4:
+        msg = f"unit_id {unit_id!r} does not have 4 underscore-separated tokens"
         raise ValueError(
-            f"unit_id {unit_id!r} does not have 4 underscore-separated tokens"
+            msg
         )
     imec_tok, cl_tok, ch_tok, kslabel = parts
     imec = int(imec_tok.removeprefix("imec"))
@@ -1274,19 +1274,23 @@ def aggregate_units_across_conditions(
             f"{sorted(catalog.loc[catalog['rec_date'] == d, 'mouse_id'].unique())}"
             for d in ambiguous_dates.index
         )
-        raise ValueError(
+        msg = (
             "unit_catalog.csv maps a rec_date to multiple mouse_ids "
             f"(expected one-date-one-mouse): {details}"
+        )
+        raise ValueError(
+            msg
         )
     date_to_mouse: dict[int, str] = rec_date_mouse_grp.first().to_dict()
 
     # 3. Read condition session lists.
     condition_sessions: dict[str, list[str]] = {}
-    for cond, lst_path in condition_to_session_list.items():
-        lst_path = pathlib.Path(lst_path)
+    for cond, lst_path_raw in condition_to_session_list.items():
+        lst_path = pathlib.Path(lst_path_raw)
         if not lst_path.exists():
+            msg = f"session list for condition {cond!r} not found: {lst_path}"
             raise FileNotFoundError(
-                f"session list for condition {cond!r} not found: {lst_path}"
+                msg
             )
         # De-duplicate session basenames (preserve first-seen order): a literal
         # repeat — or two distinct full paths whose basenames collide — would
@@ -1406,11 +1410,14 @@ def aggregate_units_across_conditions(
             f"  - {pkl} (mouse_id={mid!r}, rec_date={rd}, unit_id={uid!r})"
             for mid, rd, uid, pkl in orphan_pkls
         )
-        raise KeyError(
+        msg = (
             f"{len(orphan_pkls)} pkl(s) have no catalog row (refusing to "
             "silently drop units unknown to the catalog); the catalog is the "
             "authoritative scope, so a stale catalog or stray pkl must be "
             f"resolved:\n{details}"
+        )
+        raise KeyError(
+            msg
         )
 
     # 5. Compute per-modality aggregates across the per_session lists.

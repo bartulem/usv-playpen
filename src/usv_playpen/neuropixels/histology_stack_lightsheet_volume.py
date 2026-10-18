@@ -44,14 +44,12 @@ plane-index bookkeeping (e.g. atlas registration). See the
 from __future__ import annotations
 
 import glob
-import os
 from collections.abc import Iterable
 from pathlib import Path
 
 import numpy as np
 import tifffile
 from tqdm import tqdm
-
 
 _LAVISION_CHANNEL_FROM_WAVELENGTH = {488: 'C00', 561: 'C01'}
 
@@ -84,8 +82,8 @@ def _find_lavision_files(tiff_dir: Path, channel_token: str) -> list[Path]:
     pattern = str(tiff_dir / f'*{channel_token}*.ome.tif')
     return sorted(
         Path(p)
-        for p in glob.glob(pattern)
-        if 'Filter' not in os.path.basename(p)
+        for p in glob.glob(pattern)  # noqa: PTH207  glob.glob skips dot-files (e.g. macOS ._ AppleDouble twins) on a leading '*'; Path.glob matches them
+        if 'Filter' not in Path(p).name
     )
 
 
@@ -126,9 +124,8 @@ def _apply_xy_flip(image: np.ndarray, flip: str) -> np.ndarray:
         return image[:, ::-1]
     if flip == 'both':
         return image[::-1, ::-1]
-    raise ValueError(
-        f"xy_flip must be one of {_XY_FLIP_OPTIONS}, got {flip!r}."
-    )
+    msg = f"xy_flip must be one of {_XY_FLIP_OPTIONS}, got {flip!r}."
+    raise ValueError(msg)
 
 
 def stack_lightsheet_volume(
@@ -244,31 +241,31 @@ def stack_lightsheet_volume(
     else:
         wavelengths = tuple(wavelength_nm)
     if not wavelengths:
-        raise ValueError(
-            "wavelength_nm must be a non-empty int or iterable of ints."
-        )
+        msg = "wavelength_nm must be a non-empty int or iterable of ints."
+        raise ValueError(msg)
     for wl in wavelengths:
         if wl not in _LAVISION_CHANNEL_FROM_WAVELENGTH:
-            raise ValueError(
+            msg = (
                 f"wavelength_nm values must each be one of "
                 f"{sorted(_LAVISION_CHANNEL_FROM_WAVELENGTH)}, got {wl!r}."
             )
+            raise ValueError(msg)
 
     # validate xy_flip up front so an invalid value fails before any
     # output directory is created or BigTIFF file is opened (it is
     # otherwise only checked lazily inside _apply_xy_flip, per plane)
     if xy_flip not in _XY_FLIP_OPTIONS:
-        raise ValueError(
-            f"xy_flip must be one of {_XY_FLIP_OPTIONS}, got {xy_flip!r}."
-        )
+        msg = f"xy_flip must be one of {_XY_FLIP_OPTIONS}, got {xy_flip!r}."
+        raise ValueError(msg)
 
     output_path_template = str(output_path)
     has_placeholder = '{wavelength_nm}' in output_path_template
     if len(wavelengths) > 1 and not has_placeholder:
-        raise ValueError(
+        msg = (
             "output_path must contain a '{wavelength_nm}' placeholder when "
             "more than one wavelength is requested."
         )
+        raise ValueError(msg)
 
     raw_path = Path(raw_dir)
     written: list[Path] = []
@@ -276,10 +273,11 @@ def stack_lightsheet_volume(
         channel_token = _LAVISION_CHANNEL_FROM_WAVELENGTH[wl]
         files = _find_lavision_files(raw_path, channel_token)
         if not files:
-            raise FileNotFoundError(
+            msg = (
                 f"No LaVision OME-TIFF files for channel {channel_token} "
                 f"found in {raw_path}."
             )
+            raise FileNotFoundError(msg)
 
         if skip_first:
             original_count = len(files)
@@ -288,11 +286,12 @@ def stack_lightsheet_volume(
             # the only file would leave an empty list and produce a
             # header-only, page-less BigTIFF that is still reported as success
             if not files:
-                raise ValueError(
+                msg = (
                     f"channel {channel_token} has no planes left after "
                     f"skip_first; only {original_count} file(s) found in "
                     f"{raw_path}."
                 )
+                raise ValueError(msg)
 
         if z_flip:
             files = list(reversed(files))

@@ -5,6 +5,7 @@ Generates a summary figure for data preprocessing.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import pathlib
 import wave
@@ -40,7 +41,7 @@ class SummaryPlotter:
     """
 
     def __init__(
-        self, root_directory: str = None, message_output: Callable | None = None
+        self, root_directory: str | None = None, message_output: Callable | None = None
     ) -> None:
         """
         Description
@@ -68,7 +69,7 @@ class SummaryPlotter:
         self.message_output = message_output if message_output is not None else print
 
     def preprocessing_summary(
-        self, ipi_discrepancy_dict: dict = None, phidget_data_dictionary: dict = None
+        self, ipi_discrepancy_dict: dict | None = None, phidget_data_dictionary: dict | None = None
     ) -> None:
         """
         Description
@@ -105,7 +106,7 @@ class SummaryPlotter:
             pattern='video/*_camera_frame_count_dict.json',
             label="camera frame count JSON",
         )
-        with open(json_loc) as camera_count_json_file:
+        with pathlib.Path(json_loc).open() as camera_count_json_file:
             duration_min = json.load(camera_count_json_file)["total_video_time_least"]
 
         # calculate error statistics
@@ -163,11 +164,12 @@ class SummaryPlotter:
         # get audio information
         wav_audio_files = sorted((pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video').glob('*.wav'))
         if not wav_audio_files:
-            raise FileNotFoundError(
+            msg = (
                 f"No .wav files found under "
                 f"'{pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video'}' — "
                 f"expected cropped-to-video audio before preprocessing plot."
             )
+            raise FileNotFoundError(msg)
         # One WAV per channel (24), all of one sampling rate and length, which is
         # all that is read here, so the first in sorted order is the explicit choice.
         with wave.open(str(wav_audio_files[0]), mode="rb") as example_audio_file:
@@ -265,7 +267,7 @@ class SummaryPlotter:
                                 The first two values of ``raw_list``, right-padded
                                 with '-' to a length of exactly 2.
                             """
-                            padded = list(raw_list) + ['-', '-']
+                            padded = [*raw_list, '-', '-']
                             return padded[:2]
 
                         subject_ids = _pad_two([subject['subject_id'] for subject in subjects_list])
@@ -283,7 +285,7 @@ class SummaryPlotter:
                         if experimenter_from_meta:
                             experimenter = experimenter_from_meta
                     else:
-                        for exp_key in user_meta_data.keys():
+                        for exp_key in user_meta_data:
                             if exp_key == "experimenter" and user_meta_data[exp_key] != "":
                                 experimenter = user_meta_data[exp_key]
                             if exp_key == "subject" and user_meta_data[exp_key] != "":
@@ -324,7 +326,7 @@ class SummaryPlotter:
                 counter += 1
 
         # optimize histogram
-        for device_id in plot_statistics_dict:
+        for device_id, device_statistics in plot_statistics_dict.items():
             abs_discrepancies = np.abs(
                 ipi_discrepancy_dict[device_id]["ipi_discrepancy_ms"]
             )
@@ -333,21 +335,21 @@ class SummaryPlotter:
             # Fall back to 0 in that case so the histogram still uses the fixed
             # +/-10.5 ms window selected by the `< 10` branch below.
             if abs_discrepancies.size == 0 or np.all(np.isnan(abs_discrepancies)):
-                plot_statistics_dict[device_id]["most_extreme_value"] = 0
+                device_statistics["most_extreme_value"] = 0
             else:
-                plot_statistics_dict[device_id]["most_extreme_value"] = int(
+                device_statistics["most_extreme_value"] = int(
                     np.round(np.nanmax(abs_discrepancies))
                 )
-            if plot_statistics_dict[device_id]["most_extreme_value"] >= 10:
-                plot_statistics_dict[device_id]["plot_x_min"] = (
-                    -plot_statistics_dict[device_id]["most_extreme_value"] - 1.5
+            if device_statistics["most_extreme_value"] >= 10:
+                device_statistics["plot_x_min"] = (
+                    -device_statistics["most_extreme_value"] - 1.5
                 )
-                plot_statistics_dict[device_id]["plot_x_max"] = (
-                    plot_statistics_dict[device_id]["most_extreme_value"] + 1.5
+                device_statistics["plot_x_max"] = (
+                    device_statistics["most_extreme_value"] + 1.5
                 )
             else:
-                plot_statistics_dict[device_id]["plot_x_min"] = -10.5
-                plot_statistics_dict[device_id]["plot_x_max"] = 10.5
+                device_statistics["plot_x_min"] = -10.5
+                device_statistics["plot_x_max"] = 10.5
 
         if metadata is not None:
             metadata['Environment']['luminance_lux'] = float(med_lux)
@@ -635,7 +637,7 @@ class SummaryPlotter:
                 ax[0, device_num].text(
                     x=0.005,
                     y=0.715,
-                    s=r"$\bf{duration}$: " + f"{int(round(duration_min))} s",
+                    s=r"$\bf{duration}$: " + f"{round(duration_min)} s",
                     verticalalignment="top",
                     transform=ax[0, device_num].transAxes,
                     fontsize=8,
@@ -798,7 +800,7 @@ class SummaryPlotter:
                 )
                 axin1.hist(humidity_clean, color="#8EE5EE")
                 axin1.set_yticks([])
-                try:
+                with contextlib.suppress(ValueError):
                     axin1.set_xticks(
                         [
                             round(humidity_clean.min(), 2),
@@ -806,8 +808,6 @@ class SummaryPlotter:
                             round(humidity_clean.max(), 2),
                         ]
                     )
-                except ValueError:
-                    pass
                 axin1.set_xlabel("humidity (%)")
 
                 axin2 = ax[0, device_num].inset_axes(
@@ -828,7 +828,7 @@ class SummaryPlotter:
                 )
                 axin3.hist(lux_clean, color="#EEB422")
                 axin3.set_yticks([])
-                try:
+                with contextlib.suppress(ValueError):
                     axin3.set_xticks(
                         [
                             round(lux_clean.min(), 2),
@@ -836,8 +836,6 @@ class SummaryPlotter:
                             round(lux_clean.max(), 2),
                         ]
                     )
-                except ValueError:
-                    pass
                 axin3.set_xlabel("illumination (lux)")
 
                 axin4 = ax[0, device_num].inset_axes(
@@ -858,7 +856,7 @@ class SummaryPlotter:
                 )
                 axin5.hist(temperature_clean, color="#FF7F50")
                 axin5.set_yticks([])
-                try:
+                with contextlib.suppress(ValueError):
                     axin5.set_xticks(
                         [
                             round(temperature_clean.min(), 2),
@@ -866,8 +864,6 @@ class SummaryPlotter:
                             round(temperature_clean.max(), 2),
                         ]
                     )
-                except ValueError:
-                    pass
                 axin5.set_xlabel("temperature (°C)")
 
                 axin6 = ax[0, device_num].inset_axes(

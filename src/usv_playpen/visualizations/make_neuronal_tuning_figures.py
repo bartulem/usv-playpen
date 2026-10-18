@@ -531,9 +531,12 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         }
         unexpected_kwargs = set(kwargs) - expected_kwargs
         if unexpected_kwargs:
-            raise TypeError(f"{type(self).__name__}() got unexpected keyword argument(s) "
+            msg = (
+                f"{type(self).__name__}() got unexpected keyword argument(s) "
                             f"{', '.join(map(repr, sorted(unexpected_kwargs)))}; expected only "
-                            f"{', '.join(map(repr, sorted(expected_kwargs)))}.")
+                            f"{', '.join(map(repr, sorted(expected_kwargs)))}."
+            )
+            raise TypeError(msg)
         for kw_arg, kw_val in kwargs.items():
             self.__dict__[kw_arg] = kw_val
         self.app_context_bool = is_gui_context()
@@ -552,14 +555,18 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         # good + somatic scope.
         self.kslabels = frozenset(kwargs["kslabels"]) if "kslabels" in kwargs else frozenset(("good",))
         if not self.kslabels:
+            msg = "kslabels must be a non-empty collection of Kilosort labels."
             raise ValueError(
-                "kslabels must be a non-empty collection of Kilosort labels."
+                msg
             )
         self.somatic_filter = kwargs["somatic_filter"] if "somatic_filter" in kwargs else "somatic"
         if self.somatic_filter not in ("somatic", "non_somatic", "both"):
-            raise ValueError(
+            msg = (
                 "somatic_filter must be one of 'somatic', 'non_somatic', "
                 f"'both'; got {self.somatic_filter!r}."
+            )
+            raise ValueError(
+                msg
             )
         self._segmentation_cache: dict | None = None
         # Memoize the deterministic triage-pickle unpickle and the
@@ -627,7 +634,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         cache_key = str(pathlib.Path(triage_pkl_path))
         if cache_key in self._triage_pickle_cache:
             return self._triage_pickle_cache[cache_key]
-        with open(pathlib.Path(triage_pkl_path), "rb") as fh:
+        with pathlib.Path(triage_pkl_path).open("rb") as fh:
             triage = pickle.load(fh)
         self._triage_pickle_cache[cache_key] = triage
         return triage
@@ -662,7 +669,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         if cache_key in self._catalog_lookup_cache:
             return self._catalog_lookup_cache[cache_key]
         cat_lookup: dict[tuple[str, int, str], dict] = {}
-        with open(pathlib.Path(catalog_csv_path)) as fh:
+        with pathlib.Path(catalog_csv_path).open() as fh:
             for row in csv.DictReader(fh):
                 cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
         self._catalog_lookup_cache[cache_key] = cat_lookup
@@ -880,7 +887,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             try:
                 with pkl_file.open("rb") as fh:
                     cluster_data = pickle.load(fh)
-            except Exception as exc:  # noqa: BLE001 -- collected and re-raised after the loop
+            except Exception as exc:  # collected and re-raised after the loop
                 message_output(f"  neuronal-figs: failed to load {pkl_file.name}: {exc}")
                 failed_clusters.append(f"{pkl_file.name} (load: {type(exc).__name__}: {exc})")
                 continue
@@ -927,7 +934,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                             segmentation=segmentation,
                             save_fig=save_fig,
                         )
-            except Exception as exc:  # noqa: BLE001 -- collected and re-raised after the loop
+            except Exception as exc:  # collected and re-raised after the loop
                 for figure_number in set(plt.get_fignums()) - figures_open_before:
                     plt.close(figure_number)
                 message_output(
@@ -1143,7 +1150,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         )
         panel_xy = [(0, 0), (0, 1), (0, 2), (0, 3), (1, 0), (1, 1), (1, 2)]
 
-        for region, idx in zip(VMI_REGION_ORDER, panel_xy):
+        for region, idx in zip(VMI_REGION_ORDER, panel_xy, strict=False):
             ax = fig.add_subplot(gs[idx])
             units = per_group[region]
             region_color = region_colors[region]
@@ -1201,7 +1208,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 0.03, 0.97,
                 f"N+={n_pos}\nN-={n_neg}\n" + r"$\rho$=" + f"{rho:+.2f}",
                 transform=ax.transAxes, fontsize=8, va="top", ha="left",
-                bbox=dict(boxstyle="round,pad=0.2", fc="#FFFFFF", ec=COLOR_HATCH, alpha=0.85),
+                bbox={"boxstyle": "round,pad=0.2", "fc": "#FFFFFF", "ec": COLOR_HATCH, "alpha": 0.85},
             )
 
         # Aggregate |VMI| ECDF panel in the 8th cell.
@@ -1312,14 +1319,14 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
 
         triage_pkl_path = pathlib.Path(triage_pkl_path)
-        with open(triage_pkl_path, "rb") as fh:
+        with pathlib.Path(triage_pkl_path).open("rb") as fh:
             triage = pickle.load(fh)
 
         if catalog_csv_path is None:
             catalog_csv_path = triage["catalog_path"]
         catalog_csv_path = pathlib.Path(catalog_csv_path)
         cat_lookup: dict[tuple[str, int, str], dict] = {}
-        with open(catalog_csv_path) as fh:
+        with pathlib.Path(catalog_csv_path).open() as fh:
             for row in csv.DictReader(fh):
                 cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
 
@@ -1529,7 +1536,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         )
         panel_xy = [(0, 0), (0, 1), (0, 2), (0, 3), (1, 0), (1, 1), (1, 2)]
 
-        for region, idx in zip(VMI_REGION_ORDER, panel_xy):
+        for region, idx in zip(VMI_REGION_ORDER, panel_xy, strict=False):
             ax = fig.add_subplot(gs[idx])
             units = per_group[region]
             region_color = region_colors[region]
@@ -1618,7 +1625,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 f"same={n_same}\n"
                 f"flip={n_flip}",
                 transform=ax.transAxes, fontsize=8, va="top", ha="left",
-                bbox=dict(boxstyle="round,pad=0.2", fc="#FFFFFF", ec=COLOR_HATCH, alpha=0.85),
+                bbox={"boxstyle": "round,pad=0.2", "fc": "#FFFFFF", "ec": COLOR_HATCH, "alpha": 0.85},
             )
 
             # Size legend inside the PAG panel (largest sample,
@@ -1630,7 +1637,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 x_dot = 0.78
                 y_top = 0.22
                 dy = 0.07
-                for i, (fr_val, sz) in enumerate(zip(fr_ref_values, fr_ref_sizes)):
+                for i, (fr_val, sz) in enumerate(zip(fr_ref_values, fr_ref_sizes, strict=False)):
                     ax.scatter(
                         x_dot, y_top - dy * i,
                         s=sz, c=COLOR_BLACK, edgecolors="none",
@@ -1675,7 +1682,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         ax_r.axhline(0.0, color=COLOR_BLACK, linewidth=0.5)
         ax_r.set_xticks(bar_x)
         ax_r.set_xticklabels(
-            [f"{g}\nN={n}" for g, n in zip(VMI_REGION_ORDER, bar_n)],
+            [f"{g}\nN={n}" for g, n in zip(VMI_REGION_ORDER, bar_n, strict=False)],
             fontsize=8,
         )
         ax_r.set_ylim(-0.2, 1.0)
@@ -1781,14 +1788,14 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
 
         triage_pkl_path = pathlib.Path(triage_pkl_path)
-        with open(triage_pkl_path, "rb") as fh:
+        with pathlib.Path(triage_pkl_path).open("rb") as fh:
             triage = pickle.load(fh)
 
         if catalog_csv_path is None:
             catalog_csv_path = triage["catalog_path"]
         catalog_csv_path = pathlib.Path(catalog_csv_path)
         cat_lookup: dict[tuple[str, int, str], dict] = {}
-        with open(catalog_csv_path) as fh:
+        with pathlib.Path(catalog_csv_path).open() as fh:
             for row in csv.DictReader(fh):
                 cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
 
@@ -1950,7 +1957,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         )
         panel_xy = [(0, 0), (0, 1), (0, 2), (0, 3), (1, 0), (1, 1), (1, 2)]
 
-        for region, idx in zip(VMI_REGION_ORDER, panel_xy):
+        for region, idx in zip(VMI_REGION_ORDER, panel_xy, strict=False):
             ax = fig.add_subplot(gs[idx])
             units = per_group[region]
             region_color = region_colors[region]
@@ -2021,7 +2028,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 f"flicker={n_flicker}\n"
                 f"never={n_never}",
                 transform=ax.transAxes, fontsize=8, va="top", ha="left",
-                bbox=dict(boxstyle="round,pad=0.2", fc="#FFFFFF", ec=COLOR_HATCH, alpha=0.85),
+                bbox={"boxstyle": "round,pad=0.2", "fc": "#FFFFFF", "ec": COLOR_HATCH, "alpha": 0.85},
             )
 
             # Size legend inside the CENT panel — three reference dots
@@ -2041,7 +2048,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                     r"$n_\mathrm{tested}$", fontsize=7, color=COLOR_BLACK,
                     ha="center", va="center", transform=ax.transAxes,
                 )
-                for i, (nt_val, sz) in enumerate(zip(nt_ref_values, nt_ref_sizes)):
+                for i, (nt_val, sz) in enumerate(zip(nt_ref_values, nt_ref_sizes, strict=False)):
                     ax.scatter(
                         x_dot, y_top - dy * i,
                         s=sz, c=COLOR_BLACK, edgecolors="none",
@@ -2099,7 +2106,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         )
         ax_stack.set_xticks(bar_x)
         ax_stack.set_xticklabels(
-            [f"{r}\nN={n}" for r, n in zip(VMI_REGION_ORDER, n_per_region)],
+            [f"{r}\nN={n}" for r, n in zip(VMI_REGION_ORDER, n_per_region, strict=False)],
             fontsize=8,
         )
         ax_stack.set_ylim(0.0, 1.0)
@@ -2203,14 +2210,14 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
 
         triage_pkl_path = pathlib.Path(triage_pkl_path)
-        with open(triage_pkl_path, "rb") as fh:
+        with pathlib.Path(triage_pkl_path).open("rb") as fh:
             triage = pickle.load(fh)
 
         if catalog_csv_path is None:
             catalog_csv_path = triage["catalog_path"]
         catalog_csv_path = pathlib.Path(catalog_csv_path)
         cat_lookup: dict[tuple[str, int, str], dict] = {}
-        with open(catalog_csv_path) as fh:
+        with pathlib.Path(catalog_csv_path).open() as fh:
             for row in csv.DictReader(fh):
                 cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
 
@@ -2333,7 +2340,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         # Read the per-session significance threshold from the same
         # pickle the tally was derived from, for the caption.
-        with open(pathlib.Path(triage_pkl_path), "rb") as fh:
+        with pathlib.Path(triage_pkl_path).open("rb") as fh:
             alpha_disp = float(pickle.load(fh)["thresholds_used"]["vmi_alpha"])
 
         bar_x = np.arange(len(VMI_REGION_ORDER))
@@ -2363,7 +2370,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         both_face_color = "#FFFFFF"
 
         fig, ax = plt.subplots(figsize=(10.0, 5.4), dpi=self._figure_dpi)
-        bar_kwargs = dict(width=0.78, edgecolor=COLOR_BLACK, linewidth=0.4)
+        bar_kwargs = {"width": 0.78, "edgecolor": COLOR_BLACK, "linewidth": 0.4}
 
         # Stack order bottom to top: never-sig, sig+ only, sig− only, sig-both.
         ax.bar(
@@ -2395,7 +2402,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         )
 
         # Annotate sig-both fraction above each bar so it's directly readable.
-        for i, region in enumerate(VMI_REGION_ORDER):
+        for i, _region in enumerate(VMI_REGION_ORDER):
             if n_per_region[i] == 0:
                 continue
             ax.text(
@@ -2406,7 +2413,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         ax.set_xticks(bar_x)
         ax.set_xticklabels(
-            [f"{r}\nN={n}" for r, n in zip(VMI_REGION_ORDER, n_per_region)],
+            [f"{r}\nN={n}" for r, n in zip(VMI_REGION_ORDER, n_per_region, strict=False)],
             fontsize=9,
         )
         ax.set_ylim(0.0, 1.08)
@@ -2502,14 +2509,14 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
 
         triage_pkl_path = pathlib.Path(triage_pkl_path)
-        with open(triage_pkl_path, "rb") as fh:
+        with pathlib.Path(triage_pkl_path).open("rb") as fh:
             triage = pickle.load(fh)
 
         if catalog_csv_path is None:
             catalog_csv_path = triage["catalog_path"]
         catalog_csv_path = pathlib.Path(catalog_csv_path)
         cat_lookup: dict[tuple[str, int, str], dict] = {}
-        with open(catalog_csv_path) as fh:
+        with pathlib.Path(catalog_csv_path).open() as fh:
             for row in csv.DictReader(fh):
                 cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
 
@@ -2667,8 +2674,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         dv_lo, dv_hi = float(loc_dv.min()), float(loc_dv.max())
         ap_pad = 0.04 * (ap_hi - ap_lo)
         dv_pad = 0.04 * (dv_hi - dv_lo)
-        ap_lo -= ap_pad; ap_hi += ap_pad
-        dv_lo -= dv_pad; dv_hi += dv_pad
+        ap_lo -= ap_pad
+        ap_hi += ap_pad
+        dv_lo -= dv_pad
+        dv_hi += dv_pad
 
         # KDE grid shared between the sig+ and sig- panels so the two
         # heatmaps render at identical pixel positions.
@@ -2963,14 +2972,14 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
 
         triage_pkl_path = pathlib.Path(triage_pkl_path)
-        with open(triage_pkl_path, "rb") as fh:
+        with pathlib.Path(triage_pkl_path).open("rb") as fh:
             triage = pickle.load(fh)
 
         if catalog_csv_path is None:
             catalog_csv_path = triage["catalog_path"]
         catalog_csv_path = pathlib.Path(catalog_csv_path)
         cat_lookup: dict[tuple[str, int, str], dict] = {}
-        with open(catalog_csv_path) as fh:
+        with pathlib.Path(catalog_csv_path).open() as fh:
             for row in csv.DictReader(fh):
                 cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
 
@@ -3129,7 +3138,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         # The seven per-region histogram panels auto-scale independently.
 
-        for region, idx in zip(VMI_REGION_ORDER, panel_xy):
+        for region, idx in zip(VMI_REGION_ORDER, panel_xy, strict=False):
             ax = fig.add_subplot(gs[idx])
             buckets = per_group[region]
             region_color = region_colors[region]
@@ -3182,7 +3191,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 0.03, 0.97,
                 f"N+={int(vmi_pos.size)}\nN-={int(vmi_neg.size)}",
                 transform=ax.transAxes, fontsize=8, va="top", ha="left",
-                bbox=dict(boxstyle="round,pad=0.2", fc="#FFFFFF", ec=COLOR_HATCH, alpha=0.85),
+                bbox={"boxstyle": "round,pad=0.2", "fc": "#FFFFFF", "ec": COLOR_HATCH, "alpha": 0.85},
             )
 
         # Aggregate ECDF panel (8th cell): one line per region.
@@ -3317,14 +3326,14 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
 
         triage_pkl_path = pathlib.Path(triage_pkl_path)
-        with open(triage_pkl_path, "rb") as fh:
+        with pathlib.Path(triage_pkl_path).open("rb") as fh:
             triage = pickle.load(fh)
 
         if catalog_csv_path is None:
             catalog_csv_path = triage["catalog_path"]
         catalog_csv_path = pathlib.Path(catalog_csv_path)
         cat_lookup: dict[tuple[str, int, str], dict] = {}
-        with open(catalog_csv_path) as fh:
+        with pathlib.Path(catalog_csv_path).open() as fh:
             for row in csv.DictReader(fh):
                 cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
 
@@ -3332,8 +3341,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         per_group: dict[str, list[dict]] = {g: [] for g in VMI_REGION_ORDER}
 
         if direction not in ("excit", "suppress"):
+            msg = f"direction must be 'excit' or 'suppress'; got {direction!r}"
             raise ValueError(
-                f"direction must be 'excit' or 'suppress'; got {direction!r}"
+                msg
             )
         modality_key = f"usv_peth_self_{direction}"
 
@@ -3363,8 +3373,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             for hi in range(len(vs)):
                 while vs[hi] - vs[lo] > tol_s:
                     lo += 1
-                if hi - lo + 1 > best_k:
-                    best_k = hi - lo + 1
+                best_k = max(best_k, hi - lo + 1)
             return best_k
 
         for u in triage["units"].values():
@@ -3485,8 +3494,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
 
         if direction not in ("excit", "suppress"):
+            msg = f"direction must be 'excit' or 'suppress'; got {direction!r}"
             raise ValueError(
-                f"direction must be 'excit' or 'suppress'; got {direction!r}"
+                msg
             )
         per_group = self._collect_consistent_peth(
             triage_pkl_path=triage_pkl_path,
@@ -3670,9 +3680,12 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
 
         if property_name not in USV_PROPERTY_META:
-            raise ValueError(
+            msg = (
                 f"unknown property_name {property_name!r}; "
                 f"expected one of {tuple(USV_PROPERTY_META)}"
+            )
+            raise ValueError(
+                msg
             )
         if tol is None:
             tol = float(USV_PROPERTY_META[property_name]["tol"])
@@ -3689,8 +3702,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         per_group: dict[str, list[dict]] = {g: [] for g in VMI_REGION_ORDER}
 
         if direction not in ("excit", "suppress"):
+            msg = f"direction must be 'excit' or 'suppress'; got {direction!r}"
             raise ValueError(
-                f"direction must be 'excit' or 'suppress'; got {direction!r}"
+                msg
             )
         modality_key = f"usv_property_self_{property_name}_{direction}"
 
@@ -3719,8 +3733,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             for hi in range(len(vs)):
                 while vs[hi] - vs[lo] > tol:
                     lo += 1
-                if hi - lo + 1 > best_k:
-                    best_k = hi - lo + 1
+                best_k = max(best_k, hi - lo + 1)
             return best_k
 
         for u in triage["units"].values():
@@ -3844,8 +3857,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         display_name = str(meta["display_name"])
 
         if direction not in ("excit", "suppress"):
+            msg = f"direction must be 'excit' or 'suppress'; got {direction!r}"
             raise ValueError(
-                f"direction must be 'excit' or 'suppress'; got {direction!r}"
+                msg
             )
         per_group = self._collect_consistent_property(
             triage_pkl_path=triage_pkl_path,
@@ -3907,7 +3921,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             if unit_label else display_name
         )
 
-        for region, idx in zip(VMI_REGION_ORDER, panel_xy):
+        for region, idx in zip(VMI_REGION_ORDER, panel_xy, strict=False):
             ax = fig.add_subplot(gs[idx])
             units = per_group[region]
             region_color = region_colors[region]
@@ -4103,9 +4117,12 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
 
         if segmentation not in USV_CATEGORY_SEGMENTATIONS:
-            raise ValueError(
+            msg = (
                 f"unknown segmentation {segmentation!r}; "
                 f"expected one of {USV_CATEGORY_SEGMENTATIONS}"
+            )
+            raise ValueError(
+                msg
             )
 
         # Memoize on the full argument tuple: make_all_category_figures renders two
@@ -4120,14 +4137,14 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             return self._category_collection_cache[cache_key]
 
         triage_pkl_path = pathlib.Path(triage_pkl_path)
-        with open(triage_pkl_path, "rb") as fh:
+        with pathlib.Path(triage_pkl_path).open("rb") as fh:
             triage = pickle.load(fh)
 
         if catalog_csv_path is None:
             catalog_csv_path = triage["catalog_path"]
         catalog_csv_path = pathlib.Path(catalog_csv_path)
         cat_lookup: dict[tuple[str, int, str], dict] = {}
-        with open(catalog_csv_path) as fh:
+        with pathlib.Path(catalog_csv_path).open() as fh:
             for row in csv.DictReader(fh):
                 cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
 
@@ -4265,7 +4282,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         panel_xy = [(0, 0), (0, 1), (0, 2), (0, 3), (1, 0), (1, 1), (1, 2)]
 
         # Per-region bar charts.
-        for region, idx in zip(VMI_REGION_ORDER, panel_xy):
+        for region, idx in zip(VMI_REGION_ORDER, panel_xy, strict=False):
             ax = fig.add_subplot(gs[idx])
             units = per_group[region]
             region_color = region_colors[region]
@@ -4318,7 +4335,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         ax_hm.set_xticklabels([str(i + 1) for i in range(n_classes)], fontsize=7)
         ax_hm.set_yticks(np.arange(len(VMI_REGION_ORDER)))
         ax_hm.set_yticklabels(
-            [f"{r} (N={n})" for r, n in zip(VMI_REGION_ORDER, n_per_region)],
+            [f"{r} (N={n})" for r, n in zip(VMI_REGION_ORDER, n_per_region, strict=False)],
             fontsize=7,
         )
         ax_hm.set_xlabel("best_cat", fontsize=9)
@@ -4452,13 +4469,14 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         )
         panel_xy = [(0, 0), (0, 1), (0, 2), (0, 3), (1, 0), (1, 1), (1, 2)]
 
-        for region, idx in zip(VMI_REGION_ORDER, panel_xy):
+        for region, idx in zip(VMI_REGION_ORDER, panel_xy, strict=False):
             ax = fig.add_subplot(gs[idx])
             units = per_group[region]
             region_color = region_colors[region]
             if not units:
                 ax.set_title(f"{region}  (N=0)", fontsize=10)
-                ax.set_xticks([]); ax.set_yticks([])
+                ax.set_xticks([])
+                ax.set_yticks([])
                 continue
             x_all = np.array([u["median_n_sig_categories"] for u in units])
             y_all = np.array([u["median_selectivity"] for u in units])
@@ -4519,7 +4537,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                     "med. $z$", fontsize=7, color=COLOR_BLACK,
                     ha="center", va="center", transform=ax.transAxes,
                 )
-                for i_ref, (z_v, sz) in enumerate(zip(z_ref, s_ref)):
+                for i_ref, (z_v, sz) in enumerate(zip(z_ref, s_ref, strict=False)):
                     ax.scatter(
                         x_dot, y_top - dy * i_ref,
                         s=sz, c=COLOR_BLACK, edgecolors="none",
@@ -4780,7 +4798,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         # Apply the same consistency rule to the pooled dyadic
         # counts; flip the social bucket on the first `(feat,
         # direction)` pair that passes.
-        for (feat, direction), agg in dyadic_pool.items():
+        for (_feat, _direction), agg in dyadic_pool.items():
             if bucket_tuned["social"]:
                 break
             n_sig = agg["n_sig"]
@@ -4972,14 +4990,14 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
 
         triage_pkl_path = pathlib.Path(triage_pkl_path)
-        with open(triage_pkl_path, "rb") as fh:
+        with pathlib.Path(triage_pkl_path).open("rb") as fh:
             triage = pickle.load(fh)
 
         if catalog_csv_path is None:
             catalog_csv_path = triage["catalog_path"]
         catalog_csv_path = pathlib.Path(catalog_csv_path)
         cat_lookup: dict[tuple[str, int, str], dict] = {}
-        with open(catalog_csv_path) as fh:
+        with pathlib.Path(catalog_csv_path).open() as fh:
             for row in csv.DictReader(fh):
                 cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
 
@@ -5112,10 +5130,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         region_colors = self._resolve_region_colors()
         ax.set_yticks(np.arange(n_rows))
         ax.set_yticklabels(
-            [f"{r}\n(n={int(t)})" for r, t in zip(VMI_REGION_ORDER, region_totals)],
+            [f"{r}\n(n={int(t)})" for r, t in zip(VMI_REGION_ORDER, region_totals, strict=False)],
             fontsize=7,
         )
-        for label, region in zip(ax.get_yticklabels(), VMI_REGION_ORDER):
+        for label, region in zip(ax.get_yticklabels(), VMI_REGION_ORDER, strict=False):
             label.set_color(region_colors[region])
         ax.set_xticks(np.arange(n_cols))
         ax.set_xticklabels(
@@ -5220,14 +5238,14 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
 
         triage_pkl_path = pathlib.Path(triage_pkl_path)
-        with open(triage_pkl_path, "rb") as fh:
+        with pathlib.Path(triage_pkl_path).open("rb") as fh:
             triage = pickle.load(fh)
 
         if catalog_csv_path is None:
             catalog_csv_path = triage["catalog_path"]
         catalog_csv_path = pathlib.Path(catalog_csv_path)
         cat_lookup: dict[tuple[str, int, str], dict] = {}
-        with open(catalog_csv_path) as fh:
+        with pathlib.Path(catalog_csv_path).open() as fh:
             for row in csv.DictReader(fh):
                 cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
 
@@ -5341,7 +5359,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         label_positions = ((-1.65, -1.10), (+1.65, -1.10), (0.0, +1.85))
         label_anchors = (("right", "top"), ("left", "top"), ("center", "bottom"))
         for label, pos, anchor, color in zip(
-            set_labels, label_positions, label_anchors, set_colors
+            set_labels, label_positions, label_anchors, set_colors, strict=False
         ):
             ax.text(
                 pos[0], pos[1], label,
@@ -5564,14 +5582,14 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
 
         triage_pkl_path = pathlib.Path(triage_pkl_path)
-        with open(triage_pkl_path, "rb") as fh:
+        with pathlib.Path(triage_pkl_path).open("rb") as fh:
             triage = pickle.load(fh)
 
         if catalog_csv_path is None:
             catalog_csv_path = triage["catalog_path"]
         catalog_csv_path = pathlib.Path(catalog_csv_path)
         cat_lookup: dict[tuple[str, int, str], dict] = {}
-        with open(catalog_csv_path) as fh:
+        with pathlib.Path(catalog_csv_path).open() as fh:
             for row in csv.DictReader(fh):
                 cat_lookup[(row["mouse_id"], int(row["rec_date"]), row["unit_id"])] = row
 
@@ -6035,7 +6053,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                             cbar2.outline.set_visible(True)
                             gs_y += 2
                             if gs_y > 5:
-                                gs_y = 0; gs_x += 1
+                                gs_y = 0
+                                gs_x += 1
                         else:
                             occ_mask = (
                                 feat_payload["occupancy_seconds"] > occ_threshold_setting
@@ -6188,7 +6207,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                             ax2.set_box_aspect(1)
                             gs_y += 2
                             if gs_y > 5:
-                                gs_y = 0; gs_x += 1
+                                gs_y = 0
+                                gs_x += 1
 
                 save_fig(fig, f"behavioral_{offset}_{plot_feature_key}")
 
@@ -6258,7 +6278,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             Human-readable name.
         """
 
-        base = feature_name.split(".")[-1]
+        base = feature_name.rsplit(".", maxsplit=1)[-1]
         if base in self.feature_display_names:
             return self.feature_display_names[base]
         return base.replace("_", " ")
@@ -6365,7 +6385,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         window_lo, window_hi = ax.get_xlim()
         cmap = LinearSegmentedColormap.from_list("bout_ribbon", [colour, "#FFFFFF"])
-        for start, stop in zip(bout_lo, bout_hi):
+        for start, stop in zip(bout_lo, bout_hi, strict=False):
             visible_start, visible_stop = max(start, window_lo), min(stop, window_hi)
             if visible_stop <= visible_start:
                 continue
@@ -6374,7 +6394,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             ax.imshow(ramp[None, :], cmap=cmap, aspect="auto", vmin=0.0, vmax=1.0, zorder=3,
                       extent=(visible_start, max(visible_stop, visible_start + min_width),
                               low, high))
-        for start, stop in zip(unassigned_lo, unassigned_hi):
+        for start, stop in zip(unassigned_lo, unassigned_hi, strict=False):
             if stop >= window_lo and start <= window_hi:
                 ax.add_patch(Rectangle((start, low), max(stop - start, min_width), high - low,
                                        facecolor=COLOR_LIGHT, edgecolor="none", zorder=4))
@@ -6454,7 +6474,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         flat = np.sort(density.ravel())[::-1]
         share = np.cumsum(flat) / flat.sum()
         contour_styles = [(float(q), float(flat[np.searchsorted(share, q)]), style)
-                          for q, style in zip(sorted(bout_cfg["bout_density_levels"]), BOUT_DENSITY_STYLES)]
+                          for q, style in zip(sorted(bout_cfg["bout_density_levels"]), BOUT_DENSITY_STYLES, strict=False)]
 
         ax.imshow(density.T,
                   cmap=LinearSegmentedColormap.from_list("density", ["#FFFFFF", colour]),
@@ -6691,7 +6711,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             # A pickle from before the bout-onset statistics carries no block, and an emitter the
             # analysis skipped has no entry; either way there is nothing to draw.
             bout_blocks = (cluster_data["usv_ibi_bout_onset"]
-                           if "usv_ibi_bout_onset" in cluster_data and cluster_data["usv_ibi_bout_onset"] else {})
+                           if "usv_ibi_bout_onset" in cluster_data and cluster_data["usv_ibi_bout_onset"] else {})  # noqa: RUF019  keys are read directly, never via dict.get
             payload = bout_blocks[emitter] if emitter in bout_blocks else None
             drawable = payload is not None and usv_summary_df is not None
             if drawable:
@@ -6871,7 +6891,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         # A pickle from before the bout-onset statistics carries no block, and an emitter the
         # analysis skipped has no entry; either way there is nothing to draw.
         bout_blocks = (cluster_data["usv_ibi_bout_onset"]
-                       if "usv_ibi_bout_onset" in cluster_data and cluster_data["usv_ibi_bout_onset"] else {})
+                       if "usv_ibi_bout_onset" in cluster_data and cluster_data["usv_ibi_bout_onset"] else {})  # noqa: RUF019  keys are read directly, never via dict.get
         payload = bout_blocks[emitter] if emitter in bout_blocks else None
         if payload is None:
             ax.text(0.5, 0.5, "no bout-onset payload", transform=ax.transAxes, ha="center",
@@ -7122,7 +7142,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         ax_line.tick_params(axis="x", labelsize=11, pad=4.0)
         ax_line.tick_params(axis="y", labelsize=11, pad=0.5)
         ax_line.set_title(
-            self.vocal_titles[prop.split(".")[-1]], fontsize=15, pad=8.0,
+            self.vocal_titles[prop.rsplit(".", maxsplit=1)[-1]], fontsize=15, pad=8.0,
             fontweight="light",
         )
         ax_line.set_box_aspect(1)
@@ -7356,8 +7376,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         unique_grid_labels = np.unique(label_grid)
         value_lut = np.array(
             [
-                cat_to_value[int(l)] if int(l) in cat_to_value else np.nan
-                for l in unique_grid_labels
+                cat_to_value[int(grid_label)] if int(grid_label) in cat_to_value else np.nan
+                for grid_label in unique_grid_labels
             ],
             dtype=float,
         )
@@ -7412,7 +7432,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         # optionally annotate each category region with its category ID, placed at the
         # deepest point of the region's largest contiguous piece (see below).
         if annotate_categories:
-            cluster_cats = set(int(c) for c in np.asarray(categories).tolist())
+            cluster_cats = {int(c) for c in np.asarray(categories).tolist()}
             for cat_label in unique_labels_in_grid:
                 cat_id = int(cat_label)
                 if cat_id not in cluster_cats:

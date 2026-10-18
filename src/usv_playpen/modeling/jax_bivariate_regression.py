@@ -79,28 +79,29 @@ Outputs
 
 from __future__ import annotations
 
+import time
+from functools import partial
+from typing import Any
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
-import time
-from functools import partial
 from scipy.spatial import cKDTree
 from scipy.stats import spearmanr
 from sklearn.base import BaseEstimator, RegressorMixin
-from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
-from typing import Tuple, Any, Optional
+from sklearn.utils.validation import check_array, check_is_fitted, check_X_y
 
 from .manifold_metric import (
+    _validate_metric_period,
+    circular_mean,
+    dcor_prediction_truth,
+    macro_region_mean,
+    macro_von_mises_logscore,
     signed_diff,
     signed_diff_jax,
-    circular_mean,
-    total_dispersion,
     torus_embed,
-    dcor_prediction_truth,
-    macro_von_mises_logscore,
-    macro_region_mean,
-    _validate_metric_period,
+    total_dispersion,
 )
 
 
@@ -615,9 +616,8 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             `_validate_metric_period` rejects `metric` / `period`.
         """
         if smoothness_derivative_order not in (1, 2):
-            raise ValueError(
-                f"smoothness_derivative_order must be 1 or 2; got {smoothness_derivative_order}."
-            )
+            msg = f"smoothness_derivative_order must be 1 or 2; got {smoothness_derivative_order}."
+            raise ValueError(msg)
         _validate_metric_period(metric, period)
         self.n_features = n_features
         self.n_time_bins = n_time_bins
@@ -661,7 +661,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         self._use_lax_loop = bool(_use_lax_loop)
 
     @staticmethod
-    def _initialize_params(n_inputs: int, key: Any) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    def _initialize_params(n_inputs: int, key: Any) -> tuple[jnp.ndarray, jnp.ndarray]:
         """
         Initialises the linear-transformation weights `W` and bias `b`.
 
@@ -694,7 +694,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
     @staticmethod
     @partial(jax.jit, static_argnums=(4, 5, 9, 10))
     def _loss_fn(
-            params: Tuple[jnp.ndarray, jnp.ndarray],
+            params: tuple[jnp.ndarray, jnp.ndarray],
             X: jnp.ndarray,
             Y_true: jnp.ndarray,
             weights: jnp.ndarray,
@@ -809,7 +809,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
 
         return weighted_loss + l2_loss + smooth_loss
 
-    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: Optional[np.ndarray] = None) -> "SmoothBivariateRegression":
+    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray | None = None) -> SmoothBivariateRegression:
         """
         Fits the 2-D regression model using JAX/Optax optimisation.
 
@@ -837,23 +837,26 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
 
         expected_inputs = self.n_features * self.n_time_bins
         if n_inputs != expected_inputs:
-            raise ValueError(
+            msg = (
                 f"Input X has {n_inputs} columns, but init parameters expect "
                 f"n_features({self.n_features}) * n_time_bins({self.n_time_bins}) = {expected_inputs} columns."
             )
+            raise ValueError(msg)
 
         if y.shape[1] != 2:
-            raise ValueError(f"Target y must have exactly 2 columns (manifold X and Y). Found shape {y.shape}.")
+            msg = f"Target y must have exactly 2 columns (manifold X and Y). Found shape {y.shape}."
+            raise ValueError(msg)
 
         if sample_weight is None:
             sample_weight = np.ones(n_samples)
         else:
             sample_weight = check_array(sample_weight, ensure_2d=False)
             if sample_weight.shape[0] != n_samples:
-                raise ValueError(
+                msg = (
                     f"sample_weight has length {sample_weight.shape[0]}, but X has "
                     f"{n_samples} samples; lengths must match."
                 )
+                raise ValueError(msg)
 
         # Guard against a degenerate (all-zero / non-positive-mean) weight
         # vector: dividing by `np.mean + 1e-12` would not raise but would
@@ -862,10 +865,11 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         # `circular_mean` / `total_dispersion` convention in `manifold_metric`,
         # which raise on non-positive weight sums.
         if np.mean(sample_weight) <= 0:
-            raise ValueError(
+            msg = (
                 "sample_weight must have a positive mean; an all-zero / non-positive "
                 "weight vector would silently zero out the data term of the loss."
             )
+            raise ValueError(msg)
 
         # Normalise to unit mean so the loss magnitude is invariant to the
         # caller's weighting convention (raw KDE densities, counts, or
@@ -1082,17 +1086,14 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             # returned index points back into the original (un-embedded)
             # `Y_train_`, so the snapped prediction is automatically in
             # native manifold coordinates.
-            if self.metric == 'torus':
-                query = torus_embed(raw, self.period)
-            else:
-                query = raw
+            query = torus_embed(raw, self.period) if self.metric == 'torus' else raw
             _, idx = self._train_kdtree.query(query, k=1)
             return self.Y_train_[idx]
         return raw
 
-    def evaluate_metrics(self, X: np.ndarray, Y_true: np.ndarray, weights: Optional[np.ndarray] = None,
-                         region_labels: Optional[np.ndarray] = None, min_region_events: int = 1,
-                         *, kappa: Optional[float] = None) -> dict:
+    def evaluate_metrics(self, X: np.ndarray, Y_true: np.ndarray, weights: np.ndarray | None = None,
+                         region_labels: np.ndarray | None = None, min_region_events: int = 1,
+                         *, kappa: float | None = None) -> dict:
         """
         Evaluates the fitted model on test data and returns a metric bundle
         aligned with the univariate runner and the forward-selection routine.
@@ -1235,10 +1236,11 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             # in `euclidean_mae_weighted` and corrupt only that one metric.
             weights = check_array(weights, ensure_2d=False)
             if weights.shape[0] != Y_true.shape[0]:
-                raise ValueError(
+                msg = (
                     f"weights has length {weights.shape[0]}, but Y_true has "
                     f"{Y_true.shape[0]} samples; lengths must match."
                 )
+                raise ValueError(msg)
 
         # Wrap-aware signed differences. On `metric='euclidean'` this is
         # `Y_true - Y_pred` element-wise; on torus each component is

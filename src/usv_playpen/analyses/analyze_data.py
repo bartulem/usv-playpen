@@ -37,8 +37,8 @@ class Analyst:
     ``__init__``.
     """
 
-    def __init__(self, input_parameter_dict: dict = None,
-                 root_directories: list = None,
+    def __init__(self, input_parameter_dict: dict | None = None,
+                 root_directories: list | None = None,
                  message_output: Callable | None = None) -> None:
 
         """
@@ -61,7 +61,7 @@ class Analyst:
         """
 
         if input_parameter_dict is None or root_directories is None:
-            with open(pathlib.Path(__file__).parent.parent / '_parameter_settings/analyses_settings.json') as json_file:
+            with (pathlib.Path(__file__).parent.parent / '_parameter_settings/analyses_settings.json').open() as json_file:
                 _settings = json.load(json_file)
 
         self.root_directories = root_directories if root_directories is not None else _settings['analyze_data']['root_directories']
@@ -184,7 +184,7 @@ class Analyst:
                     self.message_output(f"Analyzing data in {one_directory} finished at: "
                                         f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}.")
 
-                except (OSError, RuntimeError, TypeError, IndexError, IOError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError) as exc:
+                except (OSError, RuntimeError, TypeError, IndexError, EOFError, TimeoutError, NameError, KeyError, ValueError, AttributeError) as exc:
                     self.message_output(traceback.format_exc())
                     failed_directories.append((one_directory, f"{type(exc).__name__}: {exc}"))
         finally:

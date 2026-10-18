@@ -16,9 +16,20 @@ import numpy as np
 import polars as pls
 from tqdm import tqdm
 
-from ..os_utils import AUDIO_MMAP_BAND_FOLDERS, atomic_output_path, configure_path, find_audio_mmap, first_match_or_raise, order_usv_summary_columns
+from ..os_utils import (
+    AUDIO_MMAP_BAND_FOLDERS,
+    atomic_output_path,
+    configure_path,
+    find_audio_mmap,
+    first_match_or_raise,
+    order_usv_summary_columns,
+)
 from ..time_utils import is_gui_context, smart_wait
-from ..yaml_utils import extract_animal_sexes, load_session_metadata, save_session_metadata
+from ..yaml_utils import (
+    extract_animal_sexes,
+    load_session_metadata,
+    save_session_metadata,
+)
 from .assign_vocalizations_utils import (
     are_points_in_conf_set,
     get_arena_dimensions,
@@ -105,9 +116,12 @@ class Vocalocator:
         expected_kwargs = {'root_directory', 'input_parameter_dict', 'message_output'}
         unexpected_kwargs = set(kwargs) - expected_kwargs
         if unexpected_kwargs:
-            raise TypeError(f"{type(self).__name__}() got unexpected keyword argument(s) "
+            msg = (
+                f"{type(self).__name__}() got unexpected keyword argument(s) "
                             f"{', '.join(map(repr, sorted(unexpected_kwargs)))}; expected only "
-                            f"{', '.join(map(repr, sorted(expected_kwargs)))}.")
+                            f"{', '.join(map(repr, sorted(expected_kwargs)))}."
+            )
+            raise TypeError(msg)
         for kw_arg, kw_val in kwargs.items():
             self.__dict__[kw_arg] = kw_val
 
@@ -171,7 +185,7 @@ class Vocalocator:
             recursive=True,
             label="camera frame count JSON",
         )
-        with open(video_frame_count_file_path, 'r') as frame_count_infile:
+        with pathlib.Path(video_frame_count_file_path).open() as frame_count_infile:
             video_frame_rate = json.load(frame_count_infile)['median_empirical_camera_sr']
 
         output_path = pathlib.Path(self.root_directory) / 'audio' / 'sound_localization'
@@ -214,7 +228,7 @@ class Vocalocator:
             onsets_in_video_frames = np.clip(onsets_in_video_frames, 0, tracks.shape[0] - 1)
             track_locations_at_usv_onsets = tracks[onsets_in_video_frames] * 1000
 
-            audio = [to_float(handle[onset:offset, :]) for onset, offset in tqdm(zip(usv_onsets_in_samples, usv_offsets_in_samples),
+            audio = [to_float(handle[onset:offset, :]) for onset, offset in tqdm(zip(usv_onsets_in_samples, usv_offsets_in_samples, strict=True),
                                                                                            total=usv_segments.shape[0])]
             # Derive each segment length from the audio array actually sliced out
             # of the memmap, not from the nominal (offset - onset). A USV whose
@@ -380,7 +394,7 @@ class Vocalocator:
         self.message_output(f"Vocalization count attributed to mouse #2: {mouse_two_vocalizations.sum()}")
         self.message_output(f"Vocalization count attributed to BOTH mice: {two_in_set.sum()}")
 
-        with atomic_output_path(pathlib.Path(self.root_directory) / 'audio' / 'sound_localization' / 'assessment_assn.npy') as tmp_assignment_path, open(tmp_assignment_path, 'wb') as assignment_file:
+        with atomic_output_path(pathlib.Path(self.root_directory) / 'audio' / 'sound_localization' / 'assessment_assn.npy') as tmp_assignment_path, pathlib.Path(tmp_assignment_path).open('wb') as assignment_file:
             np.save(assignment_file, assignments)
 
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
@@ -530,7 +544,7 @@ class Vocalocator:
 
         # get assignment statistics
         unique_values, counts = np.unique(assignments, return_counts=True)
-        value_to_count = dict(zip(unique_values, counts))
+        value_to_count = dict(zip(unique_values, counts, strict=True))
         total = len(assignments)
         unassigned = (value_to_count[-1] if -1 in value_to_count else 0)
         assigned = total - unassigned
