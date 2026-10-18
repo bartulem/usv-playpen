@@ -43,9 +43,10 @@ from .neural_artifacts import write_unit_section
 from .neural_cohort import emitter_usv_counts
 from .neural_design_assembly import (
     assemble_unit_sessions,
+    emitter_names,
     filter_vocalizations,
     load_session_usvs,
-    silent_gap_before_call,
+    silent_gap_before_vocalization,
     spike_labels_at_frames,
     vocal_span_frames,
 )
@@ -107,53 +108,64 @@ def focal_vocal_frames(session: dict, session_id: str, data_root: str, mouse_id:
     """
     Description
     -----------
-    The frames of the focal animal's own calls in one session, with the silent gap preceding each call.
+    The frames of the focal vocalizations in one session, with the silent gap preceding each.
 
-    Every focal call is kept. The clean-pre-history rule that defines quiet anchors is deliberately not
-    applied: it is the right rule for silence, but on a bout of calls it retains almost nothing and what it
-    does retain is systematically bout-initial.
+    "Focal" is ``vocal_settings["vocal_emitter"]``, resolved against the session's track names exactly as
+    the vocal-side assembler resolves it: ``'self'`` is the unit's own animal, ``'partner'`` the other one,
+    and ``'all'`` applies no emitter filter. Reading the same key is what keeps the transfer frames and
+    the vocal decoding's events on the same animal's vocalizations when the key is changed; this used to
+    match the unit's own mouse id unconditionally.
+
+    Every focal vocalization is kept. The clean-pre-history rule that defines quiet anchors is
+    deliberately not applied: it is the right rule for silence, but on a bout it retains almost nothing
+    and what it does retain is systematically bout-initial.
 
     Parameters
     ----------
     session (dict)
-        The session's assembled data.
+        The session's assembled data; ``n_frames`` and ``track_names`` are read.
     session_id (str)
         Session directory basename.
     data_root (str)
         The ``Data`` root.
     mouse_id (str)
-        Focal animal id.
+        The unit's (recorded) animal id.
     fps (float)
         Camera frame rate.
     n_lags (int)
         History length in frames.
+    vocal_settings (dict)
+        The ``vocalization_settings`` block: the exclusion flags (``'analysed'`` scope) and
+        ``vocal_emitter``.
 
     Returns
     -------
     frames (np.ndarray)
         Flattened vocal frame indices.
     pointer (np.ndarray)
-        Per-call offsets into ``frames``.
+        Per-vocalization offsets into ``frames``.
     gaps (np.ndarray)
-        Silent gap preceding each retained call.
+        Silent gap preceding each retained vocalization.
     """
 
-    # Match the emitter label EXACTLY, as the assembler does. Substring matching buys nothing here
+    # Match emitter labels EXACTLY, as the assembler does. Substring matching buys nothing here
     # -- across 77 courtship sessions it never once found a focal animal that equality missed -- and
     # it is fragile, because a bare mouse id is a prefix of the same animal's suffixed form.
     usv_table = filter_vocalizations(load_session_usvs(data_root, session_id), vocal_settings,
                                      "analysed")
-    focal_calls = usv_table.filter(usv_table["emitter"] == mouse_id)
-    if focal_calls.height == 0:
+    focal_names = emitter_names(session["track_names"], mouse_id, vocal_settings["vocal_emitter"])
+    focal_vocalizations = (usv_table.filter(usv_table["emitter"].is_in(focal_names)) if focal_names
+                           else usv_table)
+    if focal_vocalizations.height == 0:
         # The focal animal simply did not vocalize in this session, which is ordinary: it happens in
         # 8 of 77 courtship sessions. Such a session contributes no vocal frames to the transfer,
         # which is the correct answer -- previously it raised IndexError and killed the fold.
         return (np.zeros(0, dtype=np.int64), np.zeros(1, dtype=np.int64), np.zeros(0, dtype=np.float64))
-    order = np.argsort(focal_calls["start"].to_numpy())
-    starts = focal_calls["start"].to_numpy()[order]
-    stops = focal_calls["stop"].to_numpy()[order]
+    order = np.argsort(focal_vocalizations["start"].to_numpy())
+    starts = focal_vocalizations["start"].to_numpy()[order]
+    stops = focal_vocalizations["stop"].to_numpy()[order]
     kept, frames, pointer = vocal_span_frames(starts, stops, fps, session["n_frames"], n_lags)
-    return frames, pointer, silent_gap_before_call(starts, stops)[kept]
+    return frames, pointer, silent_gap_before_vocalization(starts, stops)[kept]
 
 
 def write_fold_artifact(artifact: dict, unit: dict, fold_index: int, output_directory: str,
@@ -242,13 +254,12 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
     message_output(f"[fold {fold_index}] test = {test_id} | pool = {pool_ids}")
 
     # The `self.` role is derived from the unit's own mouse_id, not configured -- see
-    # `build_zscored_feature_frames`. `vocalization_settings.vocal_emitter` is a different question (whose CALLS
-    # count as the recorded animal's) and stays a knob; it is handed to the assembler so the kinematic
-    # encoding's onsets and the vocal decoding's events move together when it is changed.
+    # `build_zscored_feature_frames`. `vocalization_settings.vocal_emitter` is a different question (whose
+    # VOCALIZATIONS count as the recorded animal's) and stays a knob; `focal_vocal_frames` reads it, so the
+    # kinematic encoding's transfer frames and the vocal decoding's events move together when it is changed.
     per_session = assemble_unit_sessions(unit, data_root, settings["kinematic_features"],
                                          encoding["history_pre_seconds"], encoding["clean_post_seconds"],
                                          settings["vocalization_settings"]["clean_against"],
-                                         settings["vocalization_settings"]["vocal_emitter"],
                                          settings["vocalization_settings"])
     fps = per_session[sessions[0]]["fps"]
     # `history_pre_seconds` does THREE jobs at once, deliberately coupled: it is the kinematic
@@ -377,9 +388,9 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
     # other folds' models rather than resting on the choice. It is cheap -- no refit, just the linear
     # predictor and a two-parameter calibration -- and legitimate for every session, because quiet
     # anchors exclude vocal periods by construction, so the model has never seen a vocal frame.
-    # ONLY vocal-eligible sessions are scored. A session in which the male barely called is not
+    # ONLY vocal-eligible sessions are scored. A session in which the male barely vocalized is not
     # impoverished for the QUIET fit -- it has more silence, not less -- so it stays in the rotation
-    # that selects and fits the model. It is excluded here, where the statistic rests on the calls
+    # that selects and fits the model. It is excluded here, where the statistic rests on the USVs
     # themselves and a session with a handful of them contributes a fold whose score is mostly noise.
     # The two session sets come from the cohort builder for exactly this reason.
     vocal_everywhere = []
@@ -556,11 +567,11 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
     feature set must not depend on *i*, so a set common to all sessions can depend on none of them. The
     way out is that the two halves of the kinematic encoding are scored on DISJOINT frames. A quiet anchor admits no USV
     from any emitter in ``[t - history_pre_seconds, t + clean_post_seconds]``, so its entire history is
-    vocalization-free, while vocal frames lie inside focal calls. Fitting and selection touch quiet
+    vocalization-free, while vocal frames lie inside focal USVs. Fitting and selection touch quiet
     anchors only. **No vocal frame from any session enters the model at any stage**, so every vocal frame
     in the unit is held out for the transfer regardless of which sessions were fitted.
 
-    So only the QUIET half needs a reserved session, and the transfer keeps every call the unit produced:
+    So only the QUIET half needs a reserved session, and the transfer keeps every USV the unit produced:
 
         select + fit   quiet anchors of all sessions but one   -> one feature set, one weight vector
         score quiet    the held-out session's quiet anchors
@@ -598,7 +609,6 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
     per_session = assemble_unit_sessions(unit, data_root, settings["kinematic_features"],
                                          encoding["history_pre_seconds"], encoding["clean_post_seconds"],
                                          settings["vocalization_settings"]["clean_against"],
-                                         settings["vocalization_settings"]["vocal_emitter"],
                                          settings["vocalization_settings"])
     fps = per_session[sessions[0]]["fps"]
     n_lags = int(np.floor(encoding["history_pre_seconds"] * fps))
@@ -680,9 +690,9 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
                    f"| p {quiet_p:.4e}{' (at floor)' if quiet_at_floor else ''}")
 
     # Every session's vocal frames are held out -- the model was fitted on quiet anchors only.
-    # ONLY vocal-eligible sessions are scored. A session in which the male barely called is not
+    # ONLY vocal-eligible sessions are scored. A session in which the male barely vocalized is not
     # impoverished for the QUIET fit -- it has more silence, not less -- so it stays in the rotation
-    # that selects and fits the model. It is excluded here, where the statistic rests on the calls
+    # that selects and fits the model. It is excluded here, where the statistic rests on the USVs
     # themselves and a session with a handful of them contributes a fold whose score is mostly noise.
     # The two session sets come from the cohort builder for exactly this reason.
     vocal_results, vocal_frames_by_session = [], {}
@@ -794,13 +804,12 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
             artifact["no_model"] = np.asarray(False)
 
     # The `self.` role is derived from the unit's own mouse_id, not configured -- see
-    # `build_zscored_feature_frames`. `vocalization_settings.vocal_emitter` is a different question (whose CALLS
-    # count as the recorded animal's) and stays a knob; it is handed to the assembler so the kinematic
-    # encoding's onsets and the vocal decoding's events move together when it is changed.
+    # `build_zscored_feature_frames`. `vocalization_settings.vocal_emitter` is a different question (whose
+    # VOCALIZATIONS count as the recorded animal's) and stays a knob; `focal_vocal_frames` reads it, so the
+    # kinematic encoding's transfer frames and the vocal decoding's events move together when it is changed.
     per_session = assemble_unit_sessions(unit, data_root, settings["kinematic_features"],
                                          encoding["history_pre_seconds"], encoding["clean_post_seconds"],
                                          settings["vocalization_settings"]["clean_against"],
-                                         settings["vocalization_settings"]["vocal_emitter"],
                                          settings["vocalization_settings"])
     fps = per_session[sessions[0]]["fps"]
     n_lags = int(np.floor(encoding["history_pre_seconds"] * fps))
@@ -946,7 +955,7 @@ def build_unit_record(unit_id: str, mouse_id: str, rec_date: int, sessions: list
     """
     Description
     -----------
-    The unit's record as every dispatcher sees it: identity, both session sets, and the per-session call
+    The unit's record as every dispatcher sees it: identity, both session sets, and the per-session USV
     counts the vocal gate was applied on.
 
     ONE builder for every dispatcher, and that is load-bearing rather than tidy. Each section write
@@ -956,7 +965,7 @@ def build_unit_record(unit_id: str, mouse_id: str, rec_date: int, sessions: list
     The vocal session set is derived here rather than passed in, so an array task applies the same gate
     the cohort builder does, from the same definition. It governs ONLY what is scored on vocalizations:
     every session stays in the rotation that screens, selects and fits on quiet anchors, because a
-    session the male barely called in has MORE silence, not less.
+    session the male barely vocalized in has MORE silence, not less.
 
     Parameters
     ----------

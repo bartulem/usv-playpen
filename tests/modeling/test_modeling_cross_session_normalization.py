@@ -34,7 +34,6 @@ import pytest
 from usv_playpen.modeling.modeling_cross_session_normalization import (
     zscore_different_sessions_together,
 )
-from usv_playpen.os_utils import resolve_modeling_setting
 
 # These modules pull the JAX / optax stack, whose import emits a one-time
 # DeprecationWarning that the suite's warnings-as-errors would promote.
@@ -100,17 +99,17 @@ def test_shipped_settings_expose_borderline_tunables():
     assert int(diagnostics['ece_n_bins']) >= 2
 
 
-def test_modeling_constants_resolve_from_settings():
-    """The module-level constants that replaced the bare literals are read from
-    the settings file via ``resolve_modeling_setting``, so they must equal the
-    shipped values (guards the wiring end-to-end)."""
+def test_modeling_modules_carry_no_settings_backed_globals():
+    """The selection significance level, the ECE bin count, the session-split
+    tolerance and the selection-gate knobs are read from the RUN's settings dict
+    at each call site, not frozen at import from the packaged JSON (which ignored
+    a non-default settings file); none of the former module globals survives."""
 
-    assert resolve_modeling_setting('model_params', 'selection_p_val') == model_selection._SELECTION_P_VAL
-    assert resolve_modeling_setting('diagnostics', 'ece_n_bins') == model_selection._ECE_N_BINS
-    assert resolve_modeling_setting('diagnostics', 'ece_n_bins') == modeling_utils._ECE_N_BINS
-    assert resolve_modeling_setting(
-        'model_validation', 'session_split_initial_tolerance'
-    ) == jax_neural_network_cnn._SESSION_SPLIT_INITIAL_TOLERANCE
+    for module in (model_selection, modeling_utils, jax_neural_network_cnn):
+        for name in ('_SELECTION_P_VAL', '_ECE_N_BINS', '_SESSION_SPLIT_INITIAL_TOLERANCE',
+                     '_SELECTION_EFFECT_FLOOR', '_SELECTION_N_BOOTSTRAP', '_SELECTION_CI_LEVEL',
+                     '_SIGN_FLIP_EXACT_MAX_FOLDS', '_SIGN_FLIP_MONTE_CARLO_DRAWS'):
+            assert not hasattr(module, name), f"{module.__name__}.{name}"
 
 
 # zscore_different_sessions_together

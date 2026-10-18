@@ -23,6 +23,9 @@ Coverage:
 
 from __future__ import annotations
 
+import json
+import pathlib
+
 import numpy as np
 import pytest
 
@@ -31,6 +34,13 @@ from usv_playpen.modeling.acoustic_manifold_geometry import (
     derive_cluster_geometry,
     usv_in_circle,
 )
+
+_SHIPPED_SETTINGS = (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"
+                     / "_parameter_settings" / "modeling_settings.json")
+with _SHIPPED_SETTINGS.open() as _settings_file:
+    # The shipped KDE grid margin the CNN saliency phase passes to the centre finder.
+    GRID_MARGIN = json.load(_settings_file)["hyperparameters"]["deep_learning"]["cnn_continuous"][
+        "saliency"]["center_grid_margin_fraction"]
 
 # Synthetic-data builders
 
@@ -143,7 +153,7 @@ class TestDeriveClusterCenters:
             Y, labels,
             drop_label=0,
             metric='euclidean',
-            grid_resolution=300,
+            grid_resolution=300, grid_margin_fraction=GRID_MARGIN
         )
 
         assert set(out.keys()) == set(true_centres.keys()), (
@@ -169,7 +179,7 @@ class TestDeriveClusterCenters:
         labels = np.concatenate(label_chunks, axis=0)
 
         out = derive_cluster_centers_empirically(
-            Y, labels, drop_label=None, grid_resolution=300,
+            Y, labels, drop_label=None, grid_resolution=300, grid_margin_fraction=GRID_MARGIN
         )
         assert set(out.keys()) == {0, 1}
 
@@ -184,7 +194,7 @@ class TestDeriveClusterCenters:
         labels = np.concatenate([np.full(400, 7), np.full(5, 8)])
 
         out = derive_cluster_centers_empirically(
-            Y, labels, min_points_per_label=20, grid_resolution=200,
+            Y, labels, min_points_per_label=20, grid_resolution=200, grid_margin_fraction=GRID_MARGIN
         )
         assert 7 in out
         assert 8 not in out
@@ -202,7 +212,7 @@ class TestDeriveClusterCenters:
         labels = np.concatenate([labels, np.full(50, np.nan)])
 
         out = derive_cluster_centers_empirically(
-            Y, labels, drop_label=0, grid_resolution=200,
+            Y, labels, drop_label=0, grid_resolution=200, grid_margin_fraction=GRID_MARGIN
         )
         assert set(out.keys()) == {3.0}
 
@@ -220,7 +230,7 @@ class TestDeriveClusterCenters:
             drop_label=None,
             metric='torus',
             period=period,
-            grid_resolution=400,
+            grid_resolution=400, grid_margin_fraction=GRID_MARGIN
         )
         c_est = out[1]
         # Wrap-aware distance to the true centre at the origin must be
@@ -248,7 +258,7 @@ class TestDeriveClusterCenters:
             metric='torus',
             period=period,
             kde_bandwidth=0.8,
-            grid_resolution=400,
+            grid_resolution=400, grid_margin_fraction=GRID_MARGIN
         )
         c_est = out[1]
         d_axis = np.minimum(c_est % period, period - (c_est % period))
@@ -273,7 +283,7 @@ class TestDeriveClusterCenters:
         for base in (0.5, 0.97):
             Y = np.column_stack([(base + dx) % 1.0, (0.5 + dy) % 1.0])
             centre = derive_cluster_centers_empirically(Y, np.ones(n), metric='torus', period=1.0,
-                                                        grid_resolution=400, max_points_per_label=n)[1.0]
+                                                        grid_resolution=400, max_points_per_label=n, grid_margin_fraction=GRID_MARGIN)[1.0]
             assert 0.0 <= centre[0] < 1.0
             offsets.append(((centre[0] - base + 0.5) % 1.0) - 0.5)
         assert abs(offsets[0] - offsets[1]) < 0.005
@@ -286,7 +296,7 @@ class TestDeriveClusterCenters:
         Y = rng.normal(loc=[0.5, 0.5], scale=0.05, size=(200, 2))
         labels = np.full(200, 1)
         with pytest.raises(ValueError, match='manifold_metric must be one of'):
-            derive_cluster_centers_empirically(Y, labels, metric='spherical')
+            derive_cluster_centers_empirically(Y, labels, metric='spherical', grid_margin_fraction=GRID_MARGIN)
 
 
 # derive_cluster_geometry

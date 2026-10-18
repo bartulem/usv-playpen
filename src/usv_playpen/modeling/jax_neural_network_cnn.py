@@ -57,7 +57,7 @@ import jax
 import jax.numpy as jnp
 import optax
 
-from ..os_utils import atomic_output_path, resolve_modeling_setting
+from ..os_utils import atomic_output_path
 from .acoustic_manifold_geometry import (
     derive_cluster_centers_empirically,
     derive_cluster_geometry,
@@ -78,11 +78,6 @@ from .modeling_utils import (
     development_heldout_masks,
     held_out_session_ids_from_metadata,
 )
-
-# Initial spatial-CV session-split matching tolerance, read from the settings
-# block (it auto-widens at runtime; this is the starting value) rather than a
-# bare 0.05 default.
-_SESSION_SPLIT_INITIAL_TOLERANCE = resolve_modeling_setting('model_validation', 'session_split_initial_tolerance')
 
 
 class HashableDict(dict):
@@ -960,11 +955,11 @@ class NeuralContinuousCNNRunner:
     def get_stratified_spatial_splits_stable(self, groups: np.ndarray,
                                              Y: np.ndarray,
                                              split_strategy: str = 'session',
-                                             n_clusters: int = 15,
-                                             test_prop: float = 0.2,
-                                             n_splits: int = 100,
-                                             tolerance: float = _SESSION_SPLIT_INITIAL_TOLERANCE,
-                                             random_seed: int = 0) -> list[tuple[np.ndarray, np.ndarray]]:
+                                             *,
+                                             n_clusters: int,
+                                             test_prop: float,
+                                             n_splits: int,
+                                             random_seed: int) -> list[tuple[np.ndarray, np.ndarray]]:
         """
         Thin delegator to the canonical splitter in
         `modeling_usv_manifold_position.get_stratified_spatial_splits_stable`.
@@ -976,7 +971,11 @@ class NeuralContinuousCNNRunner:
         keeps a single source of truth for fold construction so any
         future fix propagates to both pipelines automatically. The
         method-on-self surface is preserved for backwards compatibility
-        with existing call sites.
+        with existing call sites. The rejection sampler's starting tolerance
+        and widening schedule are read from this runner's
+        ``model_validation`` settings block (``session_split_initial_tolerance``,
+        ``session_split_max_attempts``, ``session_split_widen_step``,
+        ``session_split_widen_every``).
 
         Parameters
         ----------
@@ -987,18 +986,18 @@ class NeuralContinuousCNNRunner:
         split_strategy : str, default 'session'
             `'session'` (whole-session holdout) or `'mixed'` (epoch-level
             stratified shuffling).
-        n_clusters : int, default 15
-            Number of K-means proxy clusters.
-        test_prop : float, default 0.2
+        n_clusters : int
+            Number of K-means proxy clusters (keyword-only; the runner passes
+            ``model_validation.spatial_cluster_num``).
+        test_prop : float
             Test-fold proportion (sessions for `'session'`, samples for
-            `'mixed'`).
-        n_splits : int, default 100
-            Number of independent fold iterations.
-        tolerance : float, default 0.05
-            Initial spatial-distribution tolerance for the rejection
-            sampler (only consulted when `split_strategy='session'`).
-        random_seed : int, default 0
-            Fixed seed for K-means and the per-iteration shuffle.
+            `'mixed'`); keyword-only, the runner passes
+            ``model_validation.cv_validation_proportion``.
+        n_splits : int
+            Number of independent fold iterations (keyword-only).
+        random_seed : int
+            Fixed seed for K-means and the per-iteration shuffle
+            (keyword-only; the runner passes ``model_validation.random_seed``).
 
         Returns
         -------
@@ -1014,8 +1013,11 @@ class NeuralContinuousCNNRunner:
             split_strategy=split_strategy,
             test_prop=test_prop,
             n_splits=n_splits,
-            tolerance=tolerance,
+            tolerance=self.modeling_settings['model_validation']['session_split_initial_tolerance'],
             random_seed=random_seed,
+            max_total_attempts=self.modeling_settings['model_validation']['session_split_max_attempts'],
+            widen_step=self.modeling_settings['model_validation']['session_split_widen_step'],
+            widen_every=self.modeling_settings['model_validation']['session_split_widen_every'],
             metric=self.manifold_metric,
             period=self.manifold_period,
         )
@@ -1582,6 +1584,11 @@ class NeuralContinuousCNNRunner:
             preflight_centres = derive_cluster_centers_empirically(
                 np.asarray(Y),
                 np.asarray(preflight_labels),
+                min_points_per_label=saliency_cfg['center_min_points_per_label'],
+                max_points_per_label=saliency_cfg['center_max_points_per_label'],
+                grid_resolution=saliency_cfg['center_grid_resolution'],
+                grid_margin_fraction=saliency_cfg['center_grid_margin_fraction'],
+                rng_seed=saliency_cfg['center_rng_seed'],
                 metric=self.manifold_metric,
                 period=self.manifold_period,
             )
@@ -2013,7 +2020,8 @@ class NeuralContinuousCNNRunner:
             # from THIS fold's training split only (Y_tr_base) so the held-out test
             # coordinates do not leak into the prediction bounding box.
             Y_center = jnp.array((np.max(Y_tr_base, 0) + np.min(Y_tr_base, 0)) / 2.0)
-            Y_scale = jnp.array((np.max(Y_tr_base, 0) - np.min(Y_tr_base, 0)) / 2.0 * 1.1)
+            Y_scale = jnp.array((np.max(Y_tr_base, 0) - np.min(Y_tr_base, 0)) / 2.0
+                                * self.hp['prediction_head_scale_margin'])
 
             fold_results = {'fold_idx': fold, 'test_indices': test_idx, 'Y_true': Y_te}
 
@@ -2068,7 +2076,8 @@ class NeuralContinuousCNNRunner:
                     # its state by one full grid-balanced sample before the first
                     # epoch's own `get_grid_balanced_indices(..., rng=rng)` draw.
                     sizing_rng = np.random.default_rng(self.random_seed + fold)
-                    steps_per_epoch = len(get_grid_balanced_indices(Y_tr, self.hp['grid_size'], self.hp['samples_per_cell'], rng=sizing_rng)) // self.hp['batch_size']
+                    steps_per_epoch = len(get_grid_balanced_indices(Y_tr, self.hp['grid_size'], self.hp['samples_per_cell'],
+                                                       alpha=self.hp['grid_balance_alpha'], rng=sizing_rng)) // self.hp['batch_size']
 
                 lr_schedule = build_lr_schedule(self.hp['learning_rate'], self.hp['epochs'], steps_per_epoch, self.hp['warmup_fraction']) if self.hp['use_scheduler'] else self.hp['learning_rate']
 
@@ -2151,7 +2160,8 @@ class NeuralContinuousCNNRunner:
                         # Draw a full epoch of samples using true continuous probabilities
                         b_idx = rng.choice(len(Y_tr), size=len(Y_tr), p=p_weights, replace=True)
                     else:
-                        b_idx = get_grid_balanced_indices(Y_tr, self.hp['grid_size'], self.hp['samples_per_cell'], rng=rng)
+                        b_idx = get_grid_balanced_indices(Y_tr, self.hp['grid_size'], self.hp['samples_per_cell'],
+                                                       alpha=self.hp['grid_balance_alpha'], rng=rng)
                         rng.shuffle(b_idx)
 
                     for b in range(len(b_idx) // self.hp['batch_size']):
@@ -2177,7 +2187,7 @@ class NeuralContinuousCNNRunner:
                         )
                         params, opt_state = _apply_update(params, opt_state, grads)
 
-                    if epoch % 5 == 0:
+                    if epoch % self.hp['early_stopping_eval_every_epochs'] == 0:
                         # Early stopping watches the inner VALIDATION sessions only.
                         Y_pred_val = evaluate_batched(params, state, jnp.array(X_val), Y_center, Y_scale)
                         err = float(jnp.mean(jnp.sqrt(jnp.sum(signed_diff_jax(
@@ -2185,7 +2195,7 @@ class NeuralContinuousCNNRunner:
                             metric=self.manifold_metric, period=self.manifold_period,
                         ) ** 2, axis=-1))))
 
-                        if err < best_err - 0.001:
+                        if err < best_err - self.hp['early_stopping_min_delta']:
                             best_err = err
                             # JAX arrays are immutable, so a shallow dict copy is
                             # sufficient to snapshot the best weights / BN state;
@@ -2344,9 +2354,10 @@ class NeuralContinuousCNNRunner:
             importance_stds[feat_name] = sigma
             feature_snrs[feat_name] = snr
 
-            # Apply the strict SNR > 3 threshold defined in the Methods
-            sig_flag = "*" if snr > 3.0 else ""
-            if snr > 3.0:
+            # Apply the strict SNR threshold defined in the Methods
+            # (`importance_snr_threshold`, shipped 3.0).
+            sig_flag = "*" if snr > self.hp['importance_snr_threshold'] else ""
+            if snr > self.hp['importance_snr_threshold']:
                 significant_features.append(feat_name)
 
             print(f"   [{feat_name:<25}] Delta Err: {mu:+.4f} (±{sigma:.4f}) | SNR: {snr:.2f} {sig_flag}")
@@ -2411,6 +2422,11 @@ class NeuralContinuousCNNRunner:
             centres = derive_cluster_centers_empirically(
                 np.asarray(Y),
                 labels_all_np,
+                min_points_per_label=saliency_cfg['center_min_points_per_label'],
+                max_points_per_label=saliency_cfg['center_max_points_per_label'],
+                grid_resolution=saliency_cfg['center_grid_resolution'],
+                grid_margin_fraction=saliency_cfg['center_grid_margin_fraction'],
+                rng_seed=saliency_cfg['center_rng_seed'],
                 metric=self.manifold_metric,
                 period=self.manifold_period,
             )
@@ -2438,6 +2454,11 @@ class NeuralContinuousCNNRunner:
                 'segmentation': segmentation,
                 'alpha': float(saliency_cfg['alpha']),
                 'radius_mode': str(saliency_cfg['radius_mode']),
+                'center_min_points_per_label': int(saliency_cfg['center_min_points_per_label']),
+                'center_max_points_per_label': int(saliency_cfg['center_max_points_per_label']),
+                'center_grid_resolution': int(saliency_cfg['center_grid_resolution']),
+                'center_grid_margin_fraction': float(saliency_cfg['center_grid_margin_fraction']),
+                'center_rng_seed': int(saliency_cfg['center_rng_seed']),
                 'metric': self.manifold_metric,
                 'period': float(self.manifold_period),
                 'clusters': {

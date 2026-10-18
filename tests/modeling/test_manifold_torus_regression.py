@@ -401,7 +401,7 @@ def test_evaluate_metrics_bundle_inherited():
     n_inputs = n_features * n_time_bins
     X, Y = _make_wrapped_torus_2d(n_samples=220, n_inputs=n_inputs)
     model = SmoothTorusManifoldRegression(**_torus_kwargs(n_features, n_time_bins)).fit(X, Y)
-    metrics = model.evaluate_metrics(X, Y)
+    metrics = model.evaluate_metrics(X, Y, min_region_events=1)
     for key in ('r2_spatial', 'euclidean_mae', 'mahalanobis_mae',
                 'mae_x', 'mae_y', 'pearson_x', 'pearson_y',
                 'spearman_x', 'spearman_y'):
@@ -418,9 +418,9 @@ def test_evaluate_metrics_honors_frozen_kappa():
     n_features, n_time_bins = 1, 4
     X, Y = _make_wrapped_torus_2d(n_samples=260, n_inputs=n_features * n_time_bins)
     model = SmoothTorusManifoldRegression(**_torus_kwargs(n_features, n_time_bins)).fit(X, Y)
-    refit = model.evaluate_metrics(X, Y)['vm_logscore']
-    frozen_a = model.evaluate_metrics(X, Y, kappa=2.5)['vm_logscore']
-    frozen_b = model.evaluate_metrics(X, Y, kappa=0.5)['vm_logscore']
+    refit = model.evaluate_metrics(X, Y, min_region_events=1)['vm_logscore']
+    frozen_a = model.evaluate_metrics(X, Y, kappa=2.5, min_region_events=1)['vm_logscore']
+    frozen_b = model.evaluate_metrics(X, Y, kappa=0.5, min_region_events=1)['vm_logscore']
     assert np.isfinite(frozen_a)
     assert np.isfinite(frozen_b)
     assert frozen_a != pytest.approx(refit)
@@ -444,8 +444,8 @@ def test_wound_recovery_beats_coordinate_model():
     torus = SmoothTorusManifoldRegression(**kw).fit(X[tr], Y[tr])
     coord = SmoothBivariateRegression(**kw_coord).fit(X[tr], Y[tr])
 
-    r2_torus = torus.evaluate_metrics(X[te], Y[te])['r2_spatial']
-    r2_coord = coord.evaluate_metrics(X[te], Y[te])['r2_spatial']
+    r2_torus = torus.evaluate_metrics(X[te], Y[te], min_region_events=1)['r2_spatial']
+    r2_coord = coord.evaluate_metrics(X[te], Y[te], min_region_events=1)['r2_spatial']
 
     assert r2_torus > 0.85, f"embedding ridge should recover the wound target, got {r2_torus:.3f}"
     assert r2_coord < 0.2, f"coordinate model should be wound-blind (no signal), got {r2_coord:.3f}"

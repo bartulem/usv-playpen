@@ -150,6 +150,7 @@ def lag_basis(n_lags: int, temporal_basis: dict) -> np.ndarray | None:
     temporal_basis (dict)
         The ``kinematic_encoding.temporal_basis`` settings block: ``type`` ("none" or "bspline"),
         ``n_splines``, ``spline_order``, ``l2_lag_alpha``, ``lambda_ridge``, ``lambda_smooth``,
+        ``lambda_group``, ``smoothness_order`` (the last four read by the solver, not here),
         ``spike_end_correction`` ("none" or "drop_outside_and_rescale").
 
     Returns
@@ -350,9 +351,10 @@ def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices:
         else:
             basis_settings = encoding_settings["temporal_basis"]
             solver = GroupElasticNetGLM(
-                n_features=n_groups, n_time_bins=basis.shape[1], family="bernoulli", lambda_group=0.0,
+                n_features=n_groups, n_time_bins=basis.shape[1], family="bernoulli",
+                lambda_group=basis_settings["lambda_group"],
                 lambda_smooth=basis_settings["lambda_smooth"], lambda_ridge=basis_settings["lambda_ridge"],
-                smoothness_order=2, debias_refit=False, max_iter=encoding_settings["solver"]["max_iter"],
+                smoothness_order=basis_settings["smoothness_order"], debias_refit=False, max_iter=encoding_settings["solver"]["max_iter"],
                 tol=encoding_settings["solver"]["tol"])
         solver.fit(x, labels_all, offset=offsets_all + session_offsets)
         return solver
@@ -396,14 +398,14 @@ def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices:
                 previous = deltas.copy()
                 for k in range(1, n_sessions):
                     rows = owner == k
-                    for _step in range(25):
+                    for _step in range(settings_block["newton_max_steps"]):
                         p = 1.0 / (1.0 + np.exp(-(eta[rows] + deltas[k])))
                         hessian = float(np.sum(p * (1.0 - p)))
                         if hessian <= 0.0:
                             break
                         step = float(np.sum(labels_all[rows] - p)) / hessian
                         deltas[k] += step
-                        if abs(step) < 1e-10:
+                        if abs(step) < settings_block["newton_step_tolerance"]:
                             break
                 solver = solve(deltas[owner], design, len(columns))
                 if np.max(np.abs(deltas - previous)) < settings_block["tolerance"]:

@@ -264,9 +264,11 @@ class TestFilterBand:
                 "solver": {"max_iter": 300, "tol": 1e-6},
                 "subsampling_correction": "log_prior_offset",
                 "calibration": {"scheme": "crossfit", "n_blocks": 5},
-                "session_intercepts": {"compute": True, "indicator_scale": 10.0, "max_sweeps": 30, "tolerance": 1e-4},
+                "session_intercepts": {"compute": True, "indicator_scale": 10.0, "max_sweeps": 30, "tolerance": 1e-4,
+                                       "newton_max_steps": 25, "newton_step_tolerance": 1e-10},
                 "temporal_basis": {"type": "none", "n_splines": 8, "spline_order": 3, "l2_lag_alpha": 100.0,
-                                   "lambda_ridge": 0.1, "lambda_smooth": 0.0, "spike_end_correction": "none"}}
+                                   "lambda_ridge": 0.1, "lambda_smooth": 0.0, "lambda_group": 0.0,
+                                   "smoothness_order": 2, "spike_end_correction": "none"}}
 
     def test_block_resampling_keeps_the_count_and_the_ordering(self):
         """A block resample keeps the anchor count, stays sorted and draws only real anchors, so the
@@ -719,7 +721,8 @@ class TestTemporalBasis:
             A complete ``temporal_basis`` block with 8 cubic splines.
         """
         return {"type": kind, "n_splines": 8, "spline_order": 3, "l2_lag_alpha": alpha,
-                "lambda_ridge": 0.1, "lambda_smooth": 0.0, "spike_end_correction": correction}
+                "lambda_ridge": 0.1, "lambda_smooth": 0.0, "lambda_group": 0.0, "smoothness_order": 2,
+                "spike_end_correction": correction}
 
     @classmethod
     def _encoding(cls, kind):
@@ -742,7 +745,8 @@ class TestTemporalBasis:
                 "smoothness_order": 1, "negatives_per_positive": 10, "max_train_total": 6000,
                 "solver": {"max_iter": 3000, "tol": 1e-6}, "subsampling_correction": "log_prior_offset",
                 "calibration": {"scheme": "crossfit", "n_blocks": 5},
-                "session_intercepts": {"compute": True, "indicator_scale": 10.0, "max_sweeps": 30, "tolerance": 1e-4},
+                "session_intercepts": {"compute": True, "indicator_scale": 10.0, "max_sweeps": 30, "tolerance": 1e-4,
+                                       "newton_max_steps": 25, "newton_step_tolerance": 1e-10},
                 "temporal_basis": cls._basis_settings(kind)}
 
     @classmethod
@@ -889,7 +893,8 @@ class TestTemporalBasis:
         for name, compute in (("shared", False), ("per_session", True)):
             encoding = self._encoding("bspline")
             encoding["session_intercepts"] = {"compute": compute, "indicator_scale": 10.0, "max_sweeps": 30,
-                                          "tolerance": 1e-4}
+                                          "tolerance": 1e-4, "newton_max_steps": 25,
+                                          "newton_step_tolerance": 1e-10}
             model, _ = fit_quiet_model(sessions, ["a", "b"], [0], self.N_LAGS, np.random.default_rng(0),
                                        encoding, message_output=lambda *_a: None)
             summed[name] = float(model.coef_.sum())
@@ -904,7 +909,8 @@ class TestTemporalBasis:
         for name, compute in (("shared", False), ("per_session", True)):
             encoding = self._encoding("none")
             encoding["session_intercepts"] = {"compute": compute, "indicator_scale": 10.0, "max_sweeps": 30,
-                                              "tolerance": 1e-4}
+                                              "tolerance": 1e-4, "newton_max_steps": 25,
+                                              "newton_step_tolerance": 1e-10}
             model, _ = fit_quiet_model(sessions, ["a", "b"], [0], self.N_LAGS, np.random.default_rng(0),
                                        encoding, message_output=lambda *_a: None)
             summed[name] = float(np.asarray(model.coef_).sum())
@@ -919,7 +925,7 @@ class TestTemporalBasis:
         assert block["type"] == "bspline"
         assert block["spike_end_correction"] == "drop_outside_and_rescale"
         assert set(block) == {"type", "n_splines", "spline_order", "l2_lag_alpha", "lambda_ridge", "lambda_smooth",
-                              "spike_end_correction"}
+                              "lambda_group", "smoothness_order", "spike_end_correction"}
 
     def test_the_shipped_scoring_is_cross_fitted(self):
         """Ruled 2026-10-17: every frozen-model score is calibrated on blocks that exclude the scored block."""
@@ -933,4 +939,5 @@ class TestTemporalBasis:
         with (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"
               / "_parameter_settings" / "neural_modeling_settings.json").open() as handle:
             block = json.load(handle)["kinematic_encoding"]["session_intercepts"]
-        assert block == {"compute": True, "indicator_scale": 10.0, "max_sweeps": 30, "tolerance": 1e-4}
+        assert block == {"compute": True, "indicator_scale": 10.0, "max_sweeps": 30, "tolerance": 1e-4,
+                                       "newton_max_steps": 25, "newton_step_tolerance": 1e-10}

@@ -832,7 +832,7 @@ def per_event_geodesic_error(y_pred: np.ndarray, y_true: np.ndarray,
 def geodesic_mae_columns(y_pred: np.ndarray, y_true: np.ndarray,
                          ctx: TorusGeodesicContext, *,
                          region_labels: np.ndarray = None,
-                         min_region_events: int = 1) -> dict:
+                         min_region_events: int) -> dict:
     """
     The geodesic prediction-error metrics as a metric-bundle fragment.
 
@@ -859,6 +859,8 @@ def geodesic_mae_columns(y_pred: np.ndarray, y_true: np.ndarray,
         macro columns; ``None`` makes them equal to the pooled columns.
     min_region_events : int
         Minimum finite events a region must contribute to the macro average.
+        Keyword-only, no default: production passes
+        ``vocal_features.usv_manifold_min_region_events``.
 
     Returns
     -------
@@ -871,7 +873,8 @@ def geodesic_mae_columns(y_pred: np.ndarray, y_true: np.ndarray,
     for method in ('density_geodesic', 'pullback_geodesic'):
         distances = np.asarray(
             per_event_geodesic_error(y_pred, y_true, ctx, method=method), dtype=np.float64)
-        columns[f'{method}_mae'] = macro_region_mean(distances, None)
+        # Pooled (no region labels): the floor is inert, passed only to complete the call.
+        columns[f'{method}_mae'] = macro_region_mean(distances, None, min_region_events=min_region_events)
         columns[f'{method}_mae_macro'] = macro_region_mean(
             distances, region_labels, min_region_events=min_region_events)
     return columns

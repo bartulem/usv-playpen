@@ -28,7 +28,9 @@ SETTINGS = {"category_surface": {"ridge_selection": {"mode": "count_normalized_f
                                  "amplitude_calibration": {"enabled": True,
                                                            "mode": "train_tuned_inner_loso",
                                                            "alpha_grid": [0.1, 0.25, 0.5, 1.0]},
-                                 "category_column": "qlvm_category"}}
+                                 "category_column": "qlvm_category",
+                                 "min_train_events": 20,
+                                 "min_test_events": 5}}
 
 
 def _synthetic(n_sessions=3, per_session=200, n_categories=4, strength=3.0, seed=0):

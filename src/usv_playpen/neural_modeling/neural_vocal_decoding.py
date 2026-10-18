@@ -1,11 +1,11 @@
 """
 @author: bartulem
-Vocalization identity: does a unit's firing around a call's onset carry information about WHICH call it is?
+Vocalization identity: does a unit's firing around a USV's onset carry information about WHICH USV it is?
 
-The target is the upcoming call's position on the QLVM torus, and the decoder is a Bayesian inversion of
+The target is the upcoming USV's position on the QLVM torus, and the decoder is a Bayesian inversion of
 a per-unit Poisson tuning surface: fit ``lambda(x)`` on the training sessions' events, then for a
 held-out event invert it against an occupancy prior to get a posterior density over the torus, and read
-that density at the call's true position. The statistic is the GAIN -- how much better that posterior is
+that density at the USV's true position. The statistic is the GAIN -- how much better that posterior is
 than the prior alone -- in nats per event, which is a cross-validated estimate of mutual information.
 
 Bayesian inversion rather than a regression from count to position because it composes: the same
@@ -42,16 +42,14 @@ from scipy.special import gammaln
 
 from ..modeling.manifold_metric import signed_diff
 from ..modeling.modeling_torus_geodesics import torus_grid as flat_torus_grid
-from .deviance_metrics import finite_mean
+from .deviance_metrics import finite_mean, finite_min
 
 #: The tuning bases the decoder implements. Fourier k=2 is the ruled default; the local
 #: bump basis is retained because its per-unit gain is a persisted robustness descriptor.
 TUNING_BASES = frozenset({"fourier", "bumps"})
 
-PERIOD = 1.0
 
-
-def wrapped_square_distance(points: np.ndarray, nodes: np.ndarray) -> np.ndarray:
+def wrapped_square_distance(points: np.ndarray, nodes: np.ndarray, period: float) -> np.ndarray:
     """
     Description
     -----------
@@ -71,6 +69,8 @@ def wrapped_square_distance(points: np.ndarray, nodes: np.ndarray) -> np.ndarray
         ``(n_points, 2)`` positions.
     nodes (np.ndarray)
         ``(n_nodes, 2)`` positions.
+    period (float)
+        Per-axis wrap period of the torus (``vocalization_settings.torus_period``).
 
     Returns
     -------
@@ -80,11 +80,11 @@ def wrapped_square_distance(points: np.ndarray, nodes: np.ndarray) -> np.ndarray
 
     difference = signed_diff(np.asarray(points, dtype=np.float64)[:, None, :],
                              np.asarray(nodes, dtype=np.float64)[None, :, :],
-                             metric="torus", period=PERIOD)
+                             metric="torus", period=period)
     return np.sum(difference ** 2, axis=-1)
 
 
-def fourier_basis(positions: np.ndarray, k_max: int) -> np.ndarray:
+def fourier_basis(positions: np.ndarray, k_max: int, period: float) -> np.ndarray:
     """
     Description
     -----------
@@ -100,6 +100,8 @@ def fourier_basis(positions: np.ndarray, k_max: int) -> np.ndarray:
         ``(n_events, 2)`` torus positions.
     k_max (int)
         Highest harmonic.
+    period (float)
+        Per-axis wrap period of the torus.
 
     Returns
     -------
@@ -107,8 +109,8 @@ def fourier_basis(positions: np.ndarray, k_max: int) -> np.ndarray:
         ``(n_events, 4 * k_max + 4)`` design.
     """
 
-    x = 2.0 * np.pi * positions[:, 0] / PERIOD
-    y = 2.0 * np.pi * positions[:, 1] / PERIOD
+    x = 2.0 * np.pi * positions[:, 0] / period
+    y = 2.0 * np.pi * positions[:, 1] / period
     columns = []
     for k in range(1, k_max + 1):
         columns += [np.sin(k * x), np.cos(k * x), np.sin(k * y), np.cos(k * y)]
@@ -117,7 +119,7 @@ def fourier_basis(positions: np.ndarray, k_max: int) -> np.ndarray:
 
 
 def bump_nodes(train_positions: np.ndarray, grid_n: int, sigma: float,
-               min_occupancy: float) -> np.ndarray:
+               min_occupancy: float, period: float) -> np.ndarray:
     """
     Description
     -----------
@@ -137,6 +139,8 @@ def bump_nodes(train_positions: np.ndarray, grid_n: int, sigma: float,
         Bump width, also the occupancy kernel width.
     min_occupancy (float)
         Smallest kernel-weighted event count a node must carry.
+    period (float)
+        Per-axis wrap period of the torus.
 
     Returns
     -------
@@ -144,12 +148,13 @@ def bump_nodes(train_positions: np.ndarray, grid_n: int, sigma: float,
         ``(n_kept, 2)`` surviving node centres.
     """
 
-    nodes, _cell_area = torus_grid(grid_n)
-    occupancy = np.exp(-wrapped_square_distance(train_positions, nodes) / (2.0 * sigma ** 2)).sum(axis=0)
+    nodes, _cell_area = torus_grid(grid_n, period)
+    occupancy = np.exp(-wrapped_square_distance(train_positions, nodes, period)
+                       / (2.0 * sigma ** 2)).sum(axis=0)
     return nodes[occupancy >= min_occupancy]
 
 
-def bump_basis(positions: np.ndarray, nodes: np.ndarray, sigma: float) -> np.ndarray:
+def bump_basis(positions: np.ndarray, nodes: np.ndarray, sigma: float, period: float) -> np.ndarray:
     """
     Description
     -----------
@@ -166,6 +171,8 @@ def bump_basis(positions: np.ndarray, nodes: np.ndarray, sigma: float) -> np.nda
         ``(n_nodes, 2)`` centres.
     sigma (float)
         Bump width.
+    period (float)
+        Per-axis wrap period of the torus.
 
     Returns
     -------
@@ -173,18 +180,18 @@ def bump_basis(positions: np.ndarray, nodes: np.ndarray, sigma: float) -> np.nda
         ``(n_events, n_nodes)`` design.
     """
 
-    return np.exp(-wrapped_square_distance(positions, nodes) / (2.0 * sigma ** 2))
+    return np.exp(-wrapped_square_distance(positions, nodes, period) / (2.0 * sigma ** 2))
 
 
 def torus_occupancy(train_positions: np.ndarray, grid_positions: np.ndarray,
-                    bandwidth: float) -> np.ndarray:
+                    bandwidth: float, period: float) -> np.ndarray:
     """
     Description
     -----------
     Wrapped-Gaussian kernel occupancy of the training events over a grid.
 
     This is the decoder's prior and also its mask. Note the occupancy is a KDE-WEIGHTED sum, so a cell
-    can clear a threshold of 1.0 while containing no training call at all -- two calls one bandwidth away
+    can clear a threshold of 1.0 while containing no training USV at all -- two USVs one bandwidth away
     sum to 1.21. That is a real property of the mask and is reported rather than presented as a
     conservative count.
 
@@ -196,6 +203,8 @@ def torus_occupancy(train_positions: np.ndarray, grid_positions: np.ndarray,
         ``(n_cells, 2)`` grid cell centres.
     bandwidth (float)
         Kernel bandwidth.
+    period (float)
+        Per-axis wrap period of the torus.
 
     Returns
     -------
@@ -203,11 +212,11 @@ def torus_occupancy(train_positions: np.ndarray, grid_positions: np.ndarray,
         ``(n_cells,)`` weighted counts.
     """
 
-    return np.exp(-wrapped_square_distance(grid_positions, train_positions)
+    return np.exp(-wrapped_square_distance(grid_positions, train_positions, period)
                   / (2.0 * bandwidth ** 2)).sum(axis=1)
 
 
-def torus_grid(grid_n: int) -> tuple[np.ndarray, float]:
+def torus_grid(grid_n: int, period: float) -> tuple[np.ndarray, float]:
     """
     Description
     -----------
@@ -221,6 +230,8 @@ def torus_grid(grid_n: int) -> tuple[np.ndarray, float]:
     ----------
     grid_n (int)
         Cells per dimension.
+    period (float)
+        Per-axis wrap period of the torus.
 
     Returns
     -------
@@ -230,7 +241,7 @@ def torus_grid(grid_n: int) -> tuple[np.ndarray, float]:
         Area of one cell.
     """
 
-    return flat_torus_grid(grid_n, period=PERIOD), (PERIOD / grid_n) ** 2
+    return flat_torus_grid(grid_n, period=period), (period / grid_n) ** 2
 
 
 def poisson_tuning_fit(basis: np.ndarray, counts: np.ndarray, ridge: float, n_steps: int,
@@ -326,7 +337,8 @@ def session_exposure_offsets(counts: np.ndarray, session_index: np.ndarray) -> n
     return offsets
 
 
-def decoding_context(positions: np.ndarray, session_index: np.ndarray, settings: dict) -> list:
+def decoding_context(positions: np.ndarray, session_index: np.ndarray, settings: dict,
+                     period: float) -> list:
     """
     Description
     -----------
@@ -348,7 +360,7 @@ def decoding_context(positions: np.ndarray, session_index: np.ndarray, settings:
     inner scoring reuses this fold's prior instead of rebuilding a KDE per draw.
 
     The occupancy mask is a DECODE-TIME GATE, not a display convention: it stops the posterior placing
-    mass where no training call ever occurred. Events whose true position falls in a masked cell are
+    mass where no training USV ever occurred. Events whose true position falls in a masked cell are
     excluded and counted, never silently scored.
 
     Parameters
@@ -359,6 +371,10 @@ def decoding_context(positions: np.ndarray, session_index: np.ndarray, settings:
         Session id per event.
     settings (dict)
         The ``vocal_decoding`` block; ``tuning_surface`` supplies grid, bandwidth, basis and mask knobs.
+    period (float)
+        Per-axis wrap period of the torus, ``vocalization_settings.torus_period`` -- the one value every
+        analysis of the manifold reads. It is stored on each fold (``period``) so the scorer wraps and
+        decodes with the same period the geometry was built with.
 
     Returns
     -------
@@ -375,7 +391,7 @@ def decoding_context(positions: np.ndarray, session_index: np.ndarray, settings:
         msg = (f"tuning_basis must be one of {sorted(TUNING_BASES)}; got "
                f"{surface['tuning_basis']!r}.")
         raise ValueError(msg)
-    grid_positions, cell_area = torus_grid(surface["grid_n"])
+    grid_positions, cell_area = torus_grid(surface["grid_n"], period)
     grid_n = surface["grid_n"]
     sessions = np.unique(session_index)
     if sessions.size < 2:
@@ -385,8 +401,8 @@ def decoding_context(positions: np.ndarray, session_index: np.ndarray, settings:
         raise ValueError(msg)
     rows_by_session = {int(s): np.flatnonzero(session_index == s) for s in sessions}
 
-    ix = np.clip(np.floor(positions[:, 0] / PERIOD * grid_n), 0, grid_n - 1).astype(int)
-    iy = np.clip(np.floor(positions[:, 1] / PERIOD * grid_n), 0, grid_n - 1).astype(int)
+    ix = np.clip(np.floor(positions[:, 0] / period * grid_n), 0, grid_n - 1).astype(int)
+    iy = np.clip(np.floor(positions[:, 1] / period * grid_n), 0, grid_n - 1).astype(int)
     truth_cell = ix * grid_n + iy
 
     folds = []
@@ -397,15 +413,15 @@ def decoding_context(positions: np.ndarray, session_index: np.ndarray, settings:
         train_positions = positions[train_rows]
 
         if surface["tuning_basis"] == "fourier":
-            event_basis = fourier_basis(positions, surface["fourier_k"])
-            grid_basis = fourier_basis(grid_positions, surface["fourier_k"])
+            event_basis = fourier_basis(positions, surface["fourier_k"], period)
+            grid_basis = fourier_basis(grid_positions, surface["fourier_k"], period)
         else:
             nodes = bump_nodes(train_positions, surface["bump_grid_n"], surface["bump_sigma"],
-                               surface["min_basis_occupancy"])
-            event_basis = bump_basis(positions, nodes, surface["bump_sigma"])
-            grid_basis = bump_basis(grid_positions, nodes, surface["bump_sigma"])
+                               surface["min_basis_occupancy"], period)
+            event_basis = bump_basis(positions, nodes, surface["bump_sigma"], period)
+            grid_basis = bump_basis(grid_positions, nodes, surface["bump_sigma"], period)
 
-        occupancy = torus_occupancy(train_positions, grid_positions, surface["kde_bandwidth"])
+        occupancy = torus_occupancy(train_positions, grid_positions, surface["kde_bandwidth"], period)
         prior = occupancy / (occupancy.sum() * cell_area)
         mask = occupancy >= surface["decode_grid_min_occupancy"]
         # A mask that excludes the whole grid leaves nothing to normalise. It cannot arise from the
@@ -429,9 +445,47 @@ def decoding_context(positions: np.ndarray, session_index: np.ndarray, settings:
                       "log_prior": np.log(np.clip(masked_prior, 1e-300, None)),
                       "masked_prior": masked_prior, "mask": mask,
                       "truth_cell": truth_cell, "cell_area": cell_area,
-                      "grid_positions": grid_positions,
+                      "grid_positions": grid_positions, "period": float(period),
                       "inner_splits": inner_splits})
     return folds
+
+
+def surface_rate(beta: np.ndarray, fold: dict, alpha: float, scored_counts: np.ndarray) -> np.ndarray:
+    """
+    Description
+    -----------
+    The calibrated tuning surface's expected count in every grid cell for one scored session: the
+    surface SHAPE centred on its occupancy-prior-weighted mean and scaled by ``alpha``, plus the LEVEL
+    read from the scored session's own mean count.
+
+    This is the single definition of the predicted rate. :func:`score_events` builds the posterior from
+    it, and the overdispersion diagnostic reads each event's expected count off it at the event's own
+    cell, so the diagnostic measures the dispersion of the very rates the decoder used.
+
+    Parameters
+    ----------
+    beta (np.ndarray)
+        Fitted surface coefficients, intercept last.
+    fold (dict)
+        From :func:`decoding_context`.
+    alpha (float)
+        Amplitude scaling of the surface shape; ``>= 0``.
+    scored_counts (np.ndarray)
+        Spike counts of the events being scored; their mean sets the level.
+
+    Returns
+    -------
+    rate (np.ndarray)
+        ``(n_cells,)`` expected count per grid cell.
+    """
+
+    shape = fold["grid_basis"] @ beta[:-1]
+    # the shape is centred on the fold's OCCUPANCY prior whichever prior the posterior uses: the centre
+    # is a property of the surface (it fixes what `alpha` scales), not of what is being conditioned on
+    weights = fold["masked_prior"] * fold["cell_area"]
+    centre = float(np.sum(shape * weights) / max(float(np.sum(weights)), 1e-12))
+    level = np.log(max(float(np.mean(scored_counts)), 1e-3))
+    return np.exp(np.clip(alpha * (shape - centre) + level, -10.0, 5.0))
 
 
 def score_events(beta: np.ndarray, rows: np.ndarray, counts: np.ndarray, fold: dict,
@@ -444,7 +498,7 @@ def score_events(beta: np.ndarray, rows: np.ndarray, counts: np.ndarray, fold: d
 
     THE PRIOR IS THE ONE PLACE THIS FUNCTION CAN BE CONDITIONED. By default every event in the fold
     shares the fold's occupancy prior, and the gain is the vocalization-identity statistic: what the
-    neuron adds over where calls generally sit. Given ``log_prior_events`` -- one log-density per event,
+    neuron adds over where USVs generally sit. Given ``log_prior_events`` -- one log-density per event,
     here a von Mises around the behaviour control's prediction for that event -- the same posterior is
     formed against THAT prior and the gain becomes what the neuron adds beyond behaviour. Nothing
     else changes: surface, amplitude, exposure, mask and grid are identical, which is what makes the
@@ -494,15 +548,8 @@ def score_events(beta: np.ndarray, rows: np.ndarray, counts: np.ndarray, fold: d
         ``(gains, detail)`` pair.
     """
 
-    shape = fold["grid_basis"] @ beta[:-1]
-    # the shape is centred on the fold's OCCUPANCY prior whichever prior the posterior uses: the centre
-    # is a property of the surface (it fixes what `alpha` scales), not of what is being conditioned on
-    weights = fold["masked_prior"] * fold["cell_area"]
-    centre = float(np.sum(shape * weights) / max(float(np.sum(weights)), 1e-12))
-
     scored_counts = counts[rows]
-    level = np.log(max(float(scored_counts.mean()), 1e-3))
-    rate = np.exp(np.clip(alpha * (shape - centre) + level, -10.0, 5.0))
+    rate = surface_rate(beta, fold, alpha, scored_counts)
     log_rate = np.log(np.clip(rate, 1e-12, None))
 
     loglik = (scored_counts[:, None] * log_rate[None, :] - rate[None, :]
@@ -530,15 +577,16 @@ def score_events(beta: np.ndarray, rows: np.ndarray, counts: np.ndarray, fold: d
     # Everything below is read off the posterior that has ALREADY been built, so it is free here and
     # ruinous anywhere else -- this function runs inside every permutation draw, which is why the
     # detail is opt-in and taken only on the observed pass.
+    period = fold["period"]
     mass = density * fold["cell_area"]
-    angles = 2.0 * np.pi * fold["grid_positions"] / PERIOD
+    angles = 2.0 * np.pi * fold["grid_positions"] / period
     decoded = np.empty((scored_counts.size, 2), dtype=np.float64)
     for dimension in range(2):
         cosine = mass @ np.cos(angles[:, dimension])
         sine = mass @ np.sin(angles[:, dimension])
-        decoded[:, dimension] = np.mod(np.arctan2(sine, cosine) / (2.0 * np.pi) * PERIOD, PERIOD)
+        decoded[:, dimension] = np.mod(np.arctan2(sine, cosine) / (2.0 * np.pi) * period, period)
     truth = fold["grid_positions"][cells]
-    error = np.sqrt(np.sum(signed_diff(decoded, truth, metric="torus", period=PERIOD) ** 2, axis=1))
+    error = np.sqrt(np.sum(signed_diff(decoded, truth, metric="torus", period=period) ** 2, axis=1))
     entropy = -np.sum(mass * np.log(np.clip(mass, 1e-300, None)), axis=1)
     error[outside] = np.nan
     entropy[outside] = np.nan
@@ -640,7 +688,7 @@ def decode_gain(counts: np.ndarray, folds: list, settings: dict,
     the observed value it gives the null too.
 
     The gain is the effect size, not merely a test statistic -- it is how much this unit contributes to
-    decoding a given call. A pass requires it to be positive AND the permutation p to be small, because a
+    decoding a given USV. A pass requires it to be positive AND the permutation p to be small, because a
     statistic that gains significance by tightening its null rather than by predicting better does not
     qualify.
 
@@ -662,15 +710,17 @@ def decode_gain(counts: np.ndarray, folds: list, settings: dict,
         One ``(n_events, n_cells)`` per-event log prior per fold, in the folds' order and in the
         UNPERMUTED event order, or None for each fold's occupancy prior. A prior row belongs to its
         event's POSITION, so under a permutation draw it is reordered exactly as the positions are
-        and the conditioning it carries stays attached to the right call; only the neuron's pairing
+        and the conditioning it carries stays attached to the right USV; only the neuron's pairing
         moves. This is how the nested statistic shares this function, and its null, with identity.
 
     Returns
     -------
     result (dict)
-        ``gain``, ``gain_uncalibrated`` (alpha fixed at 1), ``nats_per_spike``, ``n_masked``,
-        ``n_folds_positive``, ``min_leave_one_fold_out`` (the worst pooled mean with any one fold
-        dropped -- positive means no single session carries the result), ``per_fold`` (held-out
+        ``gain``, ``gain_uncalibrated`` (alpha fixed at 1), ``nats_per_spike`` (summed finite gain over
+        the spikes of those same events), ``n_masked``, ``n_folds_positive``,
+        ``min_leave_one_fold_out`` (the worst pooled mean with any one fold dropped, over the folds
+        whose left-out mean is finite -- ``np.nanmin`` semantics; positive means no single session
+        carries the result), ``per_fold`` (held-out
         session, gain, n events, alpha, ridge, n masked, and the fitted surface COEFFICIENTS, so a
         figure or a population decode can be rebuilt without refitting), and ``alphas`` / ``ridges``.
     """
@@ -730,9 +780,12 @@ def decode_gain(counts: np.ndarray, folds: list, settings: dict,
             decode_error[test_rows] = fold_detail["decode_error"]
             posterior_entropy[test_rows] = fold_detail["posterior_entropy"]
             # the fitted surface's Pearson dispersion on the held-out counts: a diagnostic on whether
-            # the Poisson likelihood is defensible for THIS unit, which nothing else reports
-            rate = np.exp(np.clip(alpha * (fold["grid_basis"] @ beta[:-1]), -10.0, 5.0))
-            expected = float(np.mean(rate)) * np.ones(test_rows.size)
+            # the Poisson likelihood is defensible for THIS unit, which nothing else reports. Each
+            # event's expected count is the calibrated rate the decoder scored it with -- the same
+            # centred shape, alpha and session level -- read at the event's own cell, so an untuned
+            # Poisson unit gives ~1. (It used to compare every count with the grid average of the
+            # uncentred, level-free surface, which reported var + (mean - 1)^2 for such a unit.)
+            expected = surface_rate(beta, fold, alpha, counts[test_rows])[truth_cell[test_rows]]
             dispersion.append(float(np.mean((counts[test_rows] - expected) ** 2
                                             / np.clip(expected, 1e-9, None))))
         else:
@@ -747,8 +800,12 @@ def decode_gain(counts: np.ndarray, folds: list, settings: dict,
                          "coefficients": beta,
                          "gain": finite_mean(calibrated[test_rows])})
 
-    total_spikes = float(counts.sum())
     gain = finite_mean(calibrated)
+    # Nats per spike over the SCORED events only: the summed gain of the events with a finite gain
+    # divided by the spikes those same events carry. Multiplying the mean gain over finite events by
+    # the count of ALL events mis-scaled it whenever events were masked.
+    scored = np.isfinite(calibrated)
+    scored_spikes = float(counts[scored].sum())
 
     # The pooled mean is a summary of n fold values, and the failure it can hide is one session
     # carrying the whole result. Dropping each fold in turn and taking the WORST pooled mean answers
@@ -760,10 +817,11 @@ def decode_gain(counts: np.ndarray, folds: list, settings: dict,
 
     return {"gain": gain,
             "gain_uncalibrated": finite_mean(uncalibrated),
-            "nats_per_spike": gain * counts.size / total_spikes if total_spikes > 0 else float("nan"),
+            "nats_per_spike": (float(calibrated[scored].sum()) / scored_spikes if scored_spikes > 0
+                               else float("nan")),
             "n_masked": n_masked,
             "n_folds_positive": int(sum(1 for f in per_fold if f["gain"] > 0)),
-            "min_leave_one_fold_out": float(np.min(dropped)) if dropped else float("nan"),
+            "min_leave_one_fold_out": finite_min(dropped),
             "per_fold": per_fold,
             "alphas": [f["alpha"] for f in per_fold],
             "ridges": [f["ridge"] for f in per_fold],
@@ -776,7 +834,7 @@ def decode_gain(counts: np.ndarray, folds: list, settings: dict,
 
 
 def bump_basis_gain(counts: np.ndarray, positions: np.ndarray, session_index: np.ndarray,
-                    settings: dict) -> float:
+                    settings: dict, period: float) -> float:
     """
     Description
     -----------
@@ -808,6 +866,8 @@ def bump_basis_gain(counts: np.ndarray, positions: np.ndarray, session_index: np
     settings (dict)
         The ``vocal_decoding`` block. Its ``tuning_surface.tuning_basis`` is overridden locally; the
         caller's dict is not mutated.
+    period (float)
+        Per-axis wrap period of the torus.
 
     Returns
     -------
@@ -815,11 +875,11 @@ def bump_basis_gain(counts: np.ndarray, positions: np.ndarray, session_index: np
         Pooled event-weighted gain in nats per event under the bump basis, or NaN if it cannot be fit.
     """
 
-    return float(basis_context(positions, session_index, settings, "bumps")[1](counts)["gain"])
+    return float(basis_context(positions, session_index, settings, "bumps", period)[1](counts)["gain"])
 
 
 def basis_context(positions: np.ndarray, session_index: np.ndarray, settings: dict,
-                  basis: str) -> tuple:
+                  basis: str, period: float) -> tuple:
     """
     Description
     -----------
@@ -847,6 +907,8 @@ def basis_context(positions: np.ndarray, session_index: np.ndarray, settings: di
         The ``vocal_decoding`` block.
     basis (str)
         One of :data:`TUNING_BASES`.
+    period (float)
+        Per-axis wrap period of the torus.
 
     Returns
     -------
@@ -860,7 +922,7 @@ def basis_context(positions: np.ndarray, session_index: np.ndarray, settings: di
         raise ValueError(msg)
     local = copy.deepcopy(settings)
     local["tuning_surface"]["tuning_basis"] = basis
-    folds = decoding_context(positions, session_index, local)
+    folds = decoding_context(positions, session_index, local, period)
 
     def score(counts: np.ndarray, permutation: np.ndarray = None,
               with_detail: bool = False) -> dict:
@@ -908,7 +970,7 @@ def left_tail_anti_alignment(null: np.ndarray, observed: float) -> dict:
 
 
 def flagged_descriptors(counts: np.ndarray, positions: np.ndarray, session_index: np.ndarray,
-                        settings: dict, observed_gain: float, null: np.ndarray) -> dict:
+                        settings: dict, period: float, observed_gain: float, null: np.ndarray) -> dict:
     """
     Description
     -----------
@@ -927,6 +989,8 @@ def flagged_descriptors(counts: np.ndarray, positions: np.ndarray, session_index
         Session slot per event.
     settings (dict)
         The ``vocal_decoding`` block.
+    period (float)
+        Per-axis wrap period of the torus.
     observed_gain (float)
         The observed Fourier-basis gain.
     null (np.ndarray)
@@ -942,7 +1006,7 @@ def flagged_descriptors(counts: np.ndarray, positions: np.ndarray, session_index
 
     out: dict = {}
     if settings["tuning_surface"]["record_bump_basis_gain"]:
-        out["bump_basis_gain"] = bump_basis_gain(counts, positions, session_index, settings)
+        out["bump_basis_gain"] = bump_basis_gain(counts, positions, session_index, settings, period)
     if settings["discrimination_null"]["record_left_tail_anti_alignment"]:
         out.update(left_tail_anti_alignment(null, observed_gain))
     return out

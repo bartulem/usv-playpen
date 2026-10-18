@@ -120,6 +120,9 @@ cross-validation and held-out-test settings live in their own
         "selection_effect_floor": 0.1,
         "selection_n_bootstrap": 1000,
         "selection_ci_level": 0.99,
+        "selection_min_fold_events": 30,
+        "selection_sign_flip_exact_max_folds": 22,
+        "selection_sign_flip_monte_carlo_draws": 1048576,
         "filter_null_permutations": 20,
         "usv_bout_time": 2,
         "usv_per_bout_floor": 2,
@@ -135,7 +138,9 @@ cross-validation and held-out-test settings live in their own
 * **model_target_vocal_type** — onset target mode, one of ``'bout_onset'`` (clustered bout onsets, both positive and negative pre-event windows kept clean), ``'individual'`` (per-USV onsets), ``'state'`` (the session is sampled on a regular ``filter_history``-spaced time grid and each sample labelled vocal / silent by whether a vocalization of the ``onset_target_classes`` occupies it, with no clean-history requirement), or ``'bout_offset'`` (the END of a bout against an interior USV of a bout that continued; configured by the ``bout_offset`` block, see :ref:`Bout offsets <modeling-bout-offsets>`); used only by ``VocalOnsetModelingPipeline``.
 * **model_target_variable** — for ``BoutParameterPipeline``, which per-bout quantity to regress: ``'bout_durations'`` (first-to-last-USV span, seconds), ``'mean_mask_complexity'`` (per-USV mean spectrogram-mask complexity), or ``'total_mask_complexity'`` (summed over the bout). The model-selection dispatcher (``main_model_selection_dispatcher``) reads it from here for the ``params`` selection; it is not a command-line flag.
 * **selection_p_val** — the significance level gating whether a candidate feature is admitted during forward-stepwise model selection (default ``0.01``); on the acoustic-manifold target it is the Benjamini–Hochberg FDR ``q`` used to screen candidates. The model-selection dispatcher passes this value to every selector; it is not a command-line flag.
-* **selection_effect_floor** / **selection_n_bootstrap** / **selection_ci_level** — the acoustic-manifold selection's **fold-grain acceptance gate** (``continuous_vocal_manifold_model_selection``): a feature is kept only when its per-fold paired score margin over the shuffle null (the macro von Mises log-likelihood on the torus, the wrap-aware distance correlation on euclidean) is consistently positive across CV folds. ``selection_effect_floor`` is the relative effect floor a screened feature must clear — a fraction of the top surviving driver's margin (default ``0.1`` = 10%); ``selection_n_bootstrap`` is the number of fold bootstrap resamples (default ``1000``); ``selection_ci_level`` is the bootstrap confidence level whose lower bound must exceed ``0`` for an anchor / forward step to be accepted (default ``0.99``). The screen's p-value is not a bootstrap: it is an exact one-sided sign-flip permutation test over the folds, ``p = (1 + k) / (1 + B)`` over the ``B = 2**manifold_n_cv_folds - 1`` non-identity sign patterns (every pattern enumerated; ``k`` counts those whose margin sum ties or beats the observed one), so it is never ``0`` and its floor is ``1 / 2**manifold_n_cv_folds`` (``9.5e-7`` at the shipped 20 folds, below the Benjamini–Hochberg rank-1 threshold ``q / m``); above 22 usable folds a seeded Monte-Carlo set of ``2**20`` patterns replaces the enumeration. These three apply to the manifold gate only; the onset / category / bout-parameter selections use ``selection_p_val`` alone.
+* **selection_effect_floor** / **selection_n_bootstrap** / **selection_ci_level** — the acoustic-manifold selection's **fold-grain acceptance gate** (``continuous_vocal_manifold_model_selection``): a feature is kept only when its per-fold paired score margin over the shuffle null (the macro von Mises log-likelihood on the torus, the wrap-aware distance correlation on euclidean) is consistently positive across CV folds. ``selection_effect_floor`` is the relative effect floor a screened feature must clear — a fraction of the top surviving driver's margin (default ``0.1`` = 10%); ``selection_n_bootstrap`` is the number of fold bootstrap resamples (default ``1000``); ``selection_ci_level`` is the bootstrap confidence level whose lower bound must exceed ``0`` for an anchor / forward step to be accepted (default ``0.99``). The screen's p-value is not a bootstrap: it is an exact one-sided sign-flip permutation test over the folds, ``p = (1 + k) / (1 + B)`` over the ``B = 2**manifold_n_cv_folds - 1`` non-identity sign patterns (every pattern enumerated; ``k`` counts those whose margin sum ties or beats the observed one), so it is never ``0`` and its floor is ``1 / 2**manifold_n_cv_folds`` (``9.5e-7`` at the shipped 20 folds, below the Benjamini–Hochberg rank-1 threshold ``q / m``); above ``selection_sign_flip_exact_max_folds`` usable folds a seeded Monte-Carlo set of ``selection_sign_flip_monte_carlo_draws`` patterns replaces the enumeration. These apply to the manifold gate only; the onset / category / bout-parameter selections use ``selection_p_val`` alone. All of the gate's knobs are read from the run's own settings file at call time.
+* **selection_min_fold_events** — the manifold gate scores a fold only when its test set holds at least this many events (default ``30``); a sparser fold is dropped from the paired margin, since too few points give an unstable per-fold score (and an unstable per-fold ``kappa`` when the concentration is not frozen).
+* **selection_sign_flip_exact_max_folds** / **selection_sign_flip_monte_carlo_draws** — how the gate's sign-flip p-value is computed: up to ``selection_sign_flip_exact_max_folds`` usable folds (default ``22``) every one of the ``2**n`` sign patterns is enumerated, so the test is exact (``2**22`` sums are ~32 MB of float64, a fraction of a second); above it a seeded Monte-Carlo set of ``selection_sign_flip_monte_carlo_draws`` patterns (default ``1048576`` = ``2**20``) is drawn instead and the p-value floor becomes ``1 / (1 + draws)``. The shipped ``manifold_n_cv_folds`` (20) is always enumerated exactly, so the draw count matters only for a run configured with more than 22 folds.
 * **filter_null_permutations** — the torus and multinomial (QLVM category) model selections refit the final feature set on the development sessions this many times with the target permuted within each session (positions with their weights and regions on the torus, category labels for the multinomial model) and store the permuted filters with the held-out block (``heldout['null_weights']``). The filter figures draw each filter against that no-signal band: part of a filter's weight at the two ends of the history window appears without any signal (the residual end weight of the lag basis), so only weight above the band reads as a real effect. ``0`` stores none (the figures then draw no band); no band is stored when the held-out reserve is disabled.
 * **usv_bout_time** — duration (seconds) of the post-onset silence window that defines the **negative (No-USV) events** in ``'bout_onset'`` and ``'individual'`` modes: a candidate silent-epoch onset is kept only if no USV (from any source) starts within ``[t_onset, t_onset + usv_bout_time)`` after it.
 * **usv_per_bout_floor** — the minimum number of USVs a positive bout must contain (``'bout_onset'`` mode).
@@ -157,7 +162,9 @@ cross-validation and held-out-test settings live in their own
         "session_split_initial_tolerance": 0.05,
         "session_split_max_attempts": 50000,
         "session_split_widen_step": 0.02,
-        "session_split_widen_every": 1000
+        "session_split_widen_every": 1000,
+        "stratification_max_bins": 10,
+        "stratification_min_events_per_bin": 20
     }
 
 * **held_out_test_proportion** — the fraction of sessions carved off **once** as a final held-out test set that is excluded from every CV fold and the whole feature-selection search, then scored only by the refit final model — an honest last-look estimate untouched by selection. ``0`` disables the carve-out (the entire dataset enters CV); default ``0.1``.
@@ -168,7 +175,8 @@ cross-validation and held-out-test settings live in their own
 * **random_seed** — seeds every stochastic step (splits, permutations, initialisation) for reproducibility.
 * **spatial_cluster_num** — the number of spatial clusters used to build the spatial-CV folds for the continuous manifold target.
 * **session_split_initial_tolerance** — the starting class-balance tolerance for the ``'session'`` strategy's held-out-set search, before it begins widening (default ``0.05``).
-* **session_split_max_attempts** / **session_split_widen_step** / **session_split_widen_every** — tuning for the ``'session'`` strategy's search for balanced held-out session sets (max attempts, plus how much / how often the balance tolerance is relaxed).
+* **session_split_max_attempts** / **session_split_widen_step** / **session_split_widen_every** — tuning for the ``'session'`` strategy's search for balanced held-out session sets (max attempts, plus how much / how often the balance tolerance is relaxed). These four, like ``session_split_initial_tolerance``, are passed from the run's settings to every splitter (outer folds, the inner-CV tuners and the CNN); none of the splitters carries a default of its own.
+* **stratification_max_bins** / **stratification_min_events_per_bin** — the continuous bout-parameter target is stratified across folds by cutting it into quantile bins: at most ``stratification_max_bins`` bins (default ``10``), and in ``BoutParameterPipeline`` no more than one bin per ``stratification_min_events_per_bin`` events (default ``20``), so every stratum holds enough events to be split; the bout-parameter selection caps its bins at ``stratification_max_bins`` with one bin per ``n_cv_folds`` events. Two bins is the structural floor (a single stratum stratifies nothing).
 
 **kinematic_features** — which behavioral predictors enter the feature zoo.
 
@@ -211,9 +219,15 @@ cross-validation and held-out-test settings live in their own
         "usv_manifold_column_names": ["qlvm1", "qlvm2"],
         "usv_manifold_metric": "torus",
         "usv_manifold_period": 1.0,
+        "usv_manifold_weight_clip_percentile": 95.0,
         "usv_manifold_min_region_events": 20,
         "usv_manifold_selection_score": "macro",
         "freeze_selection_kappa": true,
+        "usv_manifold_dcor": {
+            "n_subsample": 2500,
+            "n_repeats": 3,
+            "n_repeats_fold_gate": 1
+        },
         "usv_manifold_geodesic_metrics": {
             "compute": true,
             "grid_n_per_dim": 40,
@@ -233,9 +247,11 @@ cross-validation and held-out-test settings live in their own
 * **usv_manifold_column_names** — the two catalog columns giving the 2-D manifold position (the ``ContinuousModelingPipeline`` target). USVs the embedding could not place have null coordinates; they are dropped at extraction (with the count printed per session and in total), so the inverse-density KDE, the regressions and the GLM-HMM never see a NaN position. The squeak map (``['qlvm_squeak1', 'qlvm_squeak2']``) places the squeak of every squeak-bearing segment, so its onsets are the squeaks' own (``squeak_start``, also for an overlap segment, whose USV begins earlier; a summary without the column raises); every other map keeps the segment onsets. The columns' map prefix also names the run: the manifold analysis tag is ``manifold_<map>`` (``['qlvm1', 'qlvm2']`` -> ``manifold_qlvm``, ``['qlvm_duration1', 'qlvm_duration2']`` -> ``manifold_qlvm_duration``; ``modeling_utils.manifold_tag_segment``) whether or not a category column is set, and it carries into the modeling input pickle (``modeling_manifold_<map>_<cohort>_<ts>.pkl``), the univariate results, the model-selection step files (``model_selection_continuous_manifold_<map>_<condition>_<split>_step_*.pkl``, named from the input pickle's ``analysis_tag``) and the consolidated artifact (``model_selection_final_<sex>_<condition>_manifold_<map>_<split>_<ts>.pkl``). Results written before this naming carry ``manifold_qlvm_category`` (the category column, the same for every map); they are read as before, and the consolidator never appends the category column to a ``manifold_<map>`` tag.
 * **usv_manifold_metric** — ``'euclidean'`` (plane) or ``'torus'`` (wrap-aware) distance on the manifold.
 * **usv_manifold_period** — the wrap period for the ``'torus'`` metric.
+* **usv_manifold_weight_clip_percentile** — the percentile at which the per-USV inverse-density KDE weights of the manifold extraction are capped (default ``95.0``, taken over the development rows), so a single isolated USV in an almost empty corner of the manifold cannot dominate the weighted loss; the weights are then rescaled to a development-row mean of 1. The value is recorded in ``_input_metadata.analysis_specific.manifold_weight_clip_percentile``.
 * **usv_manifold_min_region_events** — the minimum number of labelled events an acoustic region (a QLVM category) must contain to enter the **macro** (region-balanced) von Mises average and the region-weighted MAE; sparser regions are dropped from those balanced statistics so a single under-sampled corner cannot dominate them (default ``20``). Ignored on euclidean and when no region labels are present. Without region labels (``usv_category_column_name`` ``null``, or a pickle extracted without them) the torus ``'macro'`` score falls back to the pooled score and the equal-region fit reweighting to uniform weights; the univariate and selection runs print a ``WARNING`` saying so, rather than substituting silently.
 * **usv_manifold_selection_score** — on the ``'torus'`` metric, which von Mises log-score the forward selection ranks on: ``'macro'`` (default) uses the region-balanced ``vm_logscore``, ``'micro'`` uses the event-weighted ``vm_logscore_pooled`` twin. Both are always logged per candidate, so this only changes which column drives the greedy ranking and the acceptance gate — the candidate pool, the region-reweighted fit, and every other reported metric are identical — making a macro-vs-micro selection comparison a one-key flip. Ignored on euclidean (which always ranks on ``dcor_xy``); an absent key resolves to ``'macro'``.
 * **freeze_selection_kappa** — on a torus manifold run, ``true`` fits the von Mises concentration ``kappa`` once on the development set and reuses it for every score (the univariate screen, baseline, fitted candidates, held-out, and the acceptance-gate bootstrap), so every margin sits on one dispersion scale and a fold predicted worse than the marginal scores below the flat-torus density instead of being clamped to it; ``true`` is shipped. ``false`` refits ``kappa`` per scored prediction set (see the *Frozen von Mises concentration* note below). Ignored on euclidean.
+* **usv_manifold_dcor** — the subsampling of the wrap-aware distance correlation ``dcor_xy``, the euclidean manifold selection score (unused on the torus, which scores with the von Mises log-likelihood). Distance correlation is ``O(n²)`` in memory and time, so each evaluation averages ``n_repeats`` random subsamples of ``n_subsample`` events (defaults ``3`` and ``2500``: a 2500-point distance matrix holds ~6.25e6 entries, small enough to stay fast and large enough for a stable estimate on production folds); the per-fold selection-gate score uses ``n_repeats_fold_gate`` (default ``1``), because a single fold's events sit under the subsample cap, so extra repeats would recompute the identical full-sample value.
 * **usv_manifold_geodesic_metrics** — the analysis-only *reference-map* geometry for the two torus **geodesic** prediction-error columns (``density_geodesic_mae``, ``pullback_geodesic_mae``), reported per fold alongside the flat-torus MAE on the ``'torus'`` metric (both ``NaN`` on euclidean). ``compute`` toggles the whole block; ``grid_n_per_dim`` sets the resolution of the regular torus grid the all-pairs geodesic distance matrices are precomputed on once (``40`` → a 40×40 node lattice, so per-event errors are cheap snap-to-grid look-ups); ``graph_k`` is the number of wrap-aware nearest neighbours per node in the k-NN graph the shortest paths run over; ``density_exponent`` is the inverse-aggregate-posterior-density exponent ``α`` weighting the density-ratio geodesic (``0`` recovers the flat graph metric, larger values push paths harder through dense regions); ``pullback_metric`` switches the decoder-Jacobian pullback geodesic on: the frozen decoder whose Jacobian defines the pullback metric ``G = JᵀJ`` is not a setting but the production cell of the map the manifold coordinates come from, ``os_utils.qlvm_map_cell_directory(<map>)`` with ``<map>`` the map prefix of the input pickle's recorded ``usv_manifold_column_names`` (``_input_metadata.analysis_specific``; a pickle without that record falls back to the current setting): ``qlvm1`` / ``qlvm2`` -> the regular cell ``.../spectrograms/qlvm/qlvm``, ``qlvm_duration`` / ``qlvm_entropy`` / ``qlvm_bandwidth`` / ``qlvm_loudness`` -> their cells ``.../spectrograms/qlvm/<map>`` (``QLVM_PRODUCTION_MODEL_CELLS`` under ``QLVM_MODEL_PACKAGE_ROOT``), ``qlvm_squeak1`` / ``qlvm_squeak2`` -> the squeak cell ``QLVM_SQUEAK_PRODUCTION_CELL`` under ``QLVM_SQUEAK_PACKAGE_ROOT``; each is read without torch from its ``checkpoint.tar``. A pullback metric of one map's coordinates under another map's decoder would measure distances on a torus the coordinates do not live on. Manifold columns that name no QLVM map with ``pullback_metric`` ``true`` are a settings error. The cell comes from the code constants so the CLI / GUI re-keying of experimenter folders in the settings can never point it at another folder; a ``decoder_model_cell_directory`` (or the retired ``decoder_weights_npz_path``) key left in older settings is ignored. ``pullback_condition_quantile`` (in ``[0, 1]``, default ``0.5``) fixes the conditioning value of a conditional map's decoder, which decodes a torus position *and* a per-USV conditioning value ``c`` (duration, spectral entropy, bandwidth or loudness): every grid node is decoded at the same ``c``, that quantile of the cell's training corpus's conditioning distribution (read from the cell's ``condition_bins.npz`` bin edges and per-bin training counts, linear inside a bin, then decoded by the cell's own ``condition.decode`` rule: clamped for ``'exact'``, snapped to the decode grid for ``'grid'``; ``processing.qlvm_latents.condition_quantile_value``), so ``G`` is one Riemannian metric of the torus. ``0.5`` measures distances as decoded-spectrogram change for the corpus median USV (production medians: duration ``c`` 0.244, entropy 0.595, bandwidth 0.245, loudness 0.545); the value depends only on the cell, not on which USVs a run holds. The regular and squeak decoders take no conditioning value and ignore it. ``pullback_metric`` ``false`` (or an unreadable decoder) degrades ``pullback_geodesic_mae`` to ``NaN`` and the run proceeds.
 
 **diagnostics** — the predictor-collinearity and predictor-timescale audits (rendered in :ref:`Predictor diagnostics <modeling-diagnostics>`).
@@ -249,6 +265,7 @@ cross-validation and held-out-test settings live in their own
         "timescale_audit": false,
         "binary_decision_threshold": 0.5,
         "ece_n_bins": 10,
+        "summary_star_alpha": 0.01,
         "timescale_max_lag_seconds": 10.0,
         "timescale_n_shuffles": 1000,
         "timescale_shuffle_range": [20, 60],
@@ -259,7 +276,8 @@ cross-validation and held-out-test settings live in their own
 * **collinearity_audit** / **timescale_audit** — enable each audit during extraction.
 * **collinearity_concern_threshold** / **collinearity_exclude_threshold** — Pearson ``|ρ|`` cutoffs for the collinearity audit: pairs above the concern threshold (default ``0.7``) are flagged for review, pairs above the exclude threshold (default ``0.85``) are treated as effectively redundant.
 * **binary_decision_threshold** — probability cutoff for turning a predicted probability into a 0/1 label (a positive label is assigned when ``p >= threshold``); shared by every binary onset / category selector and pipeline.
-* **ece_n_bins** — histogram bin count for the Expected Calibration Error diagnostic (default ``10``), shared by every calibration computation (the one adaptive site scales its own bin count to the sample size).
+* **ece_n_bins** — histogram bin count for the Expected Calibration Error diagnostic (default ``10``), shared by every calibration computation (the one adaptive site scales its own bin count to the sample size). It is read from the run's settings at every call site (including the multinomial inner-CV tuner's ``'ece'`` score).
+* **summary_star_alpha** — the console-only significance marker of the manifold univariate runner's end-of-run summary: a metric is starred ``***`` when its one-sided Wilcoxon signed-rank test over folds against the shuffle null (or the empirical-density draw) gives ``p`` below this level (default ``0.01``). It prints only; no stored result depends on it.
 * **timescale_max_lag_seconds** — maximum lag examined for the ACF (autocorrelation function) / cross-correlation horizons.
 * **timescale_n_shuffles** / **timescale_shuffle_range** — number of circular-shift surrogates and the ``(min, max)`` shift range (seconds) for the null envelope.
 * **timescale_signal_floor_seconds** / **timescale_signal_min_run_seconds** — thresholds for calling a horizon significant (minimum above-null run length).
@@ -301,13 +319,18 @@ continuous manifold target, consumed by ``NeuralContinuousCNNRunner`` (see
         "bn_eps": 1e-5,
         "grid_size": 25,
         "samples_per_cell": 40,
+        "grid_balance_alpha": 0.5,
+        "prediction_head_scale_margin": 1.1,
         "use_scheduler": true,
         "patience": 12,
         "null_patience": 3,
+        "early_stopping_eval_every_epochs": 5,
+        "early_stopping_min_delta": 0.001,
         "validation_session_fraction": 0.15,
         "warp_range": 0.1,
         "n_folds": 10,
         "permutation_iterations": 10,
+        "importance_snr_threshold": 3.0,
         "use_kinematic_masking": true,
         "masking_prob": 0.15,
         "masking_length_frames": 60,
@@ -316,7 +339,12 @@ continuous manifold target, consumed by ``NeuralContinuousCNNRunner`` (see
             "enable": true,
             "segmentation": "category",
             "alpha": 0.5,
-            "radius_mode": "adaptive"
+            "radius_mode": "adaptive",
+            "center_min_points_per_label": 20,
+            "center_max_points_per_label": 30000,
+            "center_grid_resolution": 200,
+            "center_grid_margin_fraction": 0.05,
+            "center_rng_seed": 0
         }
     }
 
@@ -332,14 +360,17 @@ continuous manifold target, consumed by ``NeuralContinuousCNNRunner`` (see
 * **se_reduction** / **se_activation** — the squeeze-and-excitation channel attention of every block: bottleneck width ``channels // se_reduction`` and gate (``'sigmoid'``, anything else a hard sigmoid).
 * **hidden_dim** / **act_func** — the dense head's width and activation (``'relu'``, anything else GELU).
 * **bn_momentum** / **bn_eps** — the batch-normalisation running-statistics momentum and numerical floor.
-* **grid_size** / **samples_per_cell** — the grid-balanced sampler used when ``use_kde_weights`` is ``false`` (it then also sizes the steps per epoch): the manifold is tiled ``grid_size × grid_size`` and every populated cell contributes a density-scaled draw around ``samples_per_cell`` rows, so the dense core cannot monopolise the batches.
-* **patience** / **null_patience** — early-stopping patience in epochs on the validation error, for the ``actual`` model and for the label-shuffled ``null`` model (which converges to nothing and is stopped sooner).
+* **grid_size** / **samples_per_cell** / **grid_balance_alpha** — the grid-balanced sampler used when ``use_kde_weights`` is ``false`` (it then also sizes the steps per epoch): the manifold is tiled ``grid_size × grid_size`` and every populated cell contributes ``ceil(samples_per_cell · count^alpha / samples_per_cell^alpha)`` rows (at least one), with ``alpha = grid_balance_alpha`` (default ``0.5``): ``0`` gives every populated cell the same quota (perfect grid balance), ``1`` draws in proportion to occupancy (no balancing), and ``0.5`` sits between, so the dense core cannot monopolise the batches without the rare cells being copied hundreds of times.
+* **prediction_head_scale_margin** — the network's ``tanh`` output head is scaled to each fold's training-target half-range times this margin (default ``1.1``), so the bounded head can reach the edge of the training support with 10% to spare instead of saturating exactly at the most extreme training USV.
+* **patience** / **null_patience** — early-stopping patience on the validation error, counted in validation checks (one every ``early_stopping_eval_every_epochs`` epochs), for the ``actual`` model and for the label-shuffled ``null`` model (which converges to nothing and is stopped sooner).
+* **early_stopping_eval_every_epochs** / **early_stopping_min_delta** — the validation error is computed every ``early_stopping_eval_every_epochs`` epochs (default ``5``), and a check counts as an improvement (resetting the patience counter and snapshotting the best weights) only when the error falls by more than ``early_stopping_min_delta`` (default ``0.001``, in manifold units) below the best so far, so a numerically negligible improvement cannot keep a plateaued run alive.
 * **validation_session_fraction** — the share of each fold's training sessions (at least one, drawn with a seed derived from ``random_seed``) whose training events are held back to choose the early-stopping epoch and the best weights; the network is fit on the rest, and the test fold is scored exactly once with the chosen weights, so its error is not optimistic. The best CV fold (whose weights are applied to the held-out block) is likewise chosen on the validation error. A fold with fewer than two training sessions raises.
 * **warp_range** — temporal-warping augmentation: every sequence in a batch is stretched by a factor drawn uniformly from ``[1 - warp_range, 1 + warp_range]`` (centre-anchored).
 * **n_folds** / **permutation_iterations** — the number of spatial-CV folds, and the permutation repeats per feature in the permutation-importance phase.
+* **importance_snr_threshold** — a feature is listed as significant by the permutation-importance phase when the mean error increase its permutation causes, divided by the standard deviation over the ``permutation_iterations`` repeats, exceeds this signal-to-noise ratio (default ``3.0``, the threshold defined in the Methods).
 * **use_kinematic_masking** / **masking_prob** / **masking_length_frames** — 1-D cutout augmentation: with probability ``masking_prob`` each feature channel of a sequence has a contiguous ``masking_length_frames`` chunk zeroed (the z-score mean), so the network cannot lean on a single dominant feature.
 * **use_hybrid_flatten** — ``true`` concatenates a global-average-pooled channel vector to the flattened final feature map before the dense head, so time-invariant averages reach the head beside the strictly-timed motifs.
-* **saliency** — the regional-saliency phase. ``enable`` toggles it; it is shipped ``true`` with ``segmentation`` ``'category'`` (the only value): the segmentation groups USVs by their QLVM category, which the modeling pickle carries when it was extracted from summaries holding ``qlvm_category`` (the regular map's categories, the label of every map, the conditional ones included). A pickle without the requested labels stops the run in the saliency pre-flight check, before Phase 1 (a ``RuntimeError`` saying the labels are unavailable); set ``enable`` to ``false`` for such a pickle. ``alpha`` scales each category's inclusion circle (radius ``alpha × d_nn / 2``, ``d_nn`` the distance to the nearest other category centre, so circles never overlap for ``alpha <= 1``) and ``radius_mode`` is ``'adaptive'`` (one radius per category from its own ``d_nn``) or ``'uniform'`` (one shared radius from the tightest pair).
+* **saliency** — the regional-saliency phase. ``enable`` toggles it; it is shipped ``true`` with ``segmentation`` ``'category'`` (the only value): the segmentation groups USVs by their QLVM category, which the modeling pickle carries when it was extracted from summaries holding ``qlvm_category`` (the regular map's categories, the label of every map, the conditional ones included). A pickle without the requested labels stops the run in the saliency pre-flight check, before Phase 1 (a ``RuntimeError`` saying the labels are unavailable); set ``enable`` to ``false`` for such a pickle. ``alpha`` scales each category's inclusion circle (radius ``alpha × d_nn / 2``, ``d_nn`` the distance to the nearest other category centre, so circles never overlap for ``alpha <= 1``) and ``radius_mode`` is ``'adaptive'`` (one radius per category from its own ``d_nn``) or ``'uniform'`` (one shared radius from the tightest pair). Each category centre is the highest-density point of a 2-D Gaussian KDE of that category's USVs, evaluated on a square grid of ``center_grid_resolution`` points per axis (default ``200``) laid over the category's data range padded on every side by ``center_grid_margin_fraction`` (default ``0.05``) of the larger axis range (on a torus the padded grid is clipped to the period, so the margin acts on a euclidean manifold); a category with fewer than ``center_min_points_per_label`` USVs (default ``20``) gets no centre (too few for a stable density mode), and a category with more than ``center_max_points_per_label`` (default ``30000``) is subsampled to that many with the generator seeded by ``center_rng_seed`` (default ``0``) to bound the KDE cost. The five values are stored with the derived geometry (``cluster_geometry``).
 
 **hyperparameters.linear_models** — the two JAX linear models,
 ``manifold_regression`` (continuous manifold position: the Huber coordinate
@@ -576,6 +607,7 @@ are back-projected onto the frame axis for the stored ``filter_shapes``.
         "n_em_iters": 100,
         "n_lbfgs": 500,
         "n_restarts": 5,
+        "n_kappa_rounds": 3,
         "em_tol": 0.0001,
         "transition_pseudocount": 1.0,
         "lambda_smooth": 100.0,
@@ -583,7 +615,16 @@ are back-projected onto the frame axis for the stored ``filter_shapes``.
         "l2_reg": 0.1,
         "multinomial_target": "category",
         "focal_gamma": 0.0,
-        "multinomial_max_iter": 2000
+        "multinomial_max_iter": 2000,
+        "emission_smoothness_derivative_order": 2,
+        "emission_huber_delta": 1.0,
+        "emission_learning_rate": 0.001,
+        "manifold_max_iter": 5000,
+        "emission_tol": 0.0001,
+        "emission_random_state": 0,
+        "init_kmeans_n_init": 3,
+        "init_self_transition": 0.8,
+        "init_bias_sd": 0.3
     }
 
 * **emission_type** — the per-state observation model: ``'manifold'`` (behaviour → 2-D acoustic-manifold position, von Mises density) or ``'multinomial'`` (behaviour → discrete USV category, categorical density).
@@ -594,6 +635,7 @@ are back-projected onto the frame axis for the stored ``filter_shapes``.
 * **n_em_iters** — maximum Baum-Welch EM iterations per restart (``'static'`` engine only).
 * **n_lbfgs** — L-BFGS iterations per restart for the ``'input_driven'`` direct-marginal engines.
 * **n_restarts** — number of random-initialisation restarts; the best by training log-likelihood is kept, so the reserved held-out sessions are scored once and never shape the fitted model.
+* **n_kappa_rounds** — the input-driven manifold engine alternates L-BFGS on the regressors and transitions (at a frozen von Mises concentration) with a responsibility-weighted global concentration MLE; this is the number of such alternations per restart (default ``3``). The alternation is what keeps the concentration from collapsing to the uniform torus density.
 * **em_tol** — relative EM convergence tolerance (``'static'`` engine only).
 * **transition_pseudocount** — Laplace pseudocount smoothing the static transition and initial-state expected counts (``'static'`` engine only).
 * **lambda_smooth** / **l2_reg** — the temporal-smoothness and ridge penalties on each state's *static-engine* emission GLM.
@@ -601,6 +643,10 @@ are back-projected onto the frame axis for the stored ``filter_shapes``.
 * **multinomial_target** — the categorical label column read as the target when ``emission_type='multinomial'`` (``'category'``, the QLVM category packet); events whose label is NaN are dropped.
 * **focal_gamma** — focal-loss focusing parameter of the static multinomial emission (``0.0`` = plain cross-entropy).
 * **multinomial_max_iter** — optimiser iterations for the static multinomial emission's per-state classifier.
+* **emission_smoothness_derivative_order** / **emission_huber_delta** / **emission_learning_rate** / **manifold_max_iter** / **emission_tol** / **emission_random_state** — the optimiser of each state's *static-engine* emission: the finite-difference order of the temporal-smoothness penalty (default ``2``, the curvature penalty), the Huber transition point of the manifold emission's residual loss (default ``1.0``, manifold units), the initial Adam step size (default ``0.001``, cosine-decayed to zero), the manifold emission's step cap (default ``5000``; the multinomial emission's is ``multinomial_max_iter``), the parameter-change convergence tolerance (default ``0.0001``) and the weight-initialisation seed (default ``0``). The values are those the emission regressors used before they became settings, and all six are recorded in the result's ``metadata``. On a torus manifold the emission regressor is fitted in closed form, so the Huber, step-size, step-cap and tolerance keys act only on a euclidean manifold.
+* **init_kmeans_n_init** — the number of k-means initialisations (the best by inertia is kept) behind the structured initial state responsibilities of every static-engine EM restart (default ``3``); the k-means runs on the targets, one-hot encoded for a categorical target.
+* **init_self_transition** — the diagonal of the static engine's initial transition matrix (default ``0.8``, so states start persistent over a bout); the remaining ``0.2`` is split evenly over the other states. It must lie in ``(0, 1)``; EM re-estimates the matrix from the first iteration on.
+* **init_bias_sd** — the standard deviation of the normal draw that initialises the input-driven engines' transition biases and the categorical emission's biases at every restart (default ``0.3``).
 
 **bout_offset** — the settings of the ``'bout_offset'`` target of ``VocalOnsetModelingPipeline``
 (see :ref:`Bout offsets <modeling-bout-offsets>`); read only when ``model_params.model_target_vocal_type``
@@ -640,6 +686,8 @@ is ``'bout_offset'``.
         "covariate_transform": "yeo_johnson",
         "covariate_features": "both",
         "duration_n_bins": 3,
+        "report_alpha": 0.05,
+        "per_session_min_events_per_arm": 3,
         "matched_divergence": {
             "pre_seconds": 4.0,
             "post_clean_seconds": 4.0,
@@ -663,6 +711,8 @@ is ``'bout_offset'``.
 * **covariate_transform** — how the stored (pooled z-scored) covariates enter the contrast's design, applied at **fit time** (read from the settings, not from the artifact, so an artifact written before the key existed is still valid input): ``'yeo_johnson'`` (shipped) fits one Yeo-Johnson power parameter per covariate by maximum likelihood on its native-scale values and re-standardises; ``'derived'`` applies the response's own support rule (``log`` for a non-negative covariate, identity for a signed one); ``'normal_scores'`` replaces each covariate by the Gaussian quantile of its rank; ``'linear'`` uses the stored z-scores as they are. The non-linear options exist because the response is measured to be linear in the dominant covariate's *rank* and strongly concave in its value, a misfit an order of magnitude larger than the effect under test.
 * **covariate_features** — which animal's pre-anchor kinematics adjust the contrast, also a fit-time choice: ``'self'`` (the responder's), ``'partner'`` (the vocalizer's) or ``'both'`` (shipped). The dyadic columns stay in under every choice.
 * **duration_n_bins** — the number of quantile bands bout duration is cut into; each band is interacted with the vocal indicator so every band gets its own step against silence (``3`` = terciles). Bands rather than a slope because duration is heavily skewed (median ``0.43`` s with a long tail).
+* **report_alpha** — the console label of each contrast term: ``SIG`` when its cluster-robust p-value is below this level (default ``0.05``), ``ns`` otherwise. It labels the printed line only; the stored result keeps every p-value.
+* **per_session_min_events_per_arm** — the unadjusted per-session effect (vocal minus silent mean, on the log scale for a positive feature) is computed for a session only when it holds at least this many usable rows in each arm (default ``3``), so a session with one or two rows on a side cannot contribute an arbitrary difference to the between-session spread.
 * **matched_divergence** — the design-based companion analysis, ``MatchedDivergencePipeline.extract_and_save_matched_divergence`` (see :ref:`Matched divergence <modeling-matched-divergence>`), which holds pre-anchor state fixed by matching instead of by covariate adjustment. Every duration is in seconds. ``pre_seconds`` — a candidate silent anchor must lie at least this long after the last vocalization of **any** animal; ``post_clean_seconds`` — no vocalization of any animal may start (or still be ongoing) within this long after an anchor, vocal and silent alike (the bout offsets that fail it are dropped); ``window_seconds`` / ``pre_window_seconds`` — the stored per-anchor curve spans ``[-pre_window_seconds, +window_seconds]`` around the anchor; ``baseline_start_seconds`` / ``baseline_end_seconds`` — the matching window is the mean over ``[-baseline_start_seconds, -baseline_end_seconds]`` before the anchor (``start`` must exceed ``end``); it ends ``0.5`` s *before* the anchor because these features are slow (``tau(1/e)`` 0.35–0.54 s), so a window reaching the anchor would already contain the divergence under way; ``silence_grid_seconds`` — spacing of the grid the candidate silent anchors are drawn from (in every one of these silence tests, segments flagged as noise are not vocalizations and are ignored when ``vocal_features.exclude_noise_usvs`` is ``true``); ``match_caliper_sd`` — every silent anchor whose baseline lies within this many pooled standard deviations of a vocal anchor's is averaged into that anchor's control curve (a vocal anchor has a median of 82 eligible controls).
 
 .. _modeling-extract:
@@ -792,7 +842,7 @@ pipeline:
 * **BoutParameterPipeline** — ``X`` = the bout-onset feature windows, ``y`` = the per-bout regression target (selected by ``model_target_variable``), ``groups`` = the session grouping. ``analysis_specific``: ``target_variable``.
 * **VocalCategoryModelingPipeline** — ``target_feature_arr`` = windows for the chosen target category, ``other_feature_arr`` = windows for the pooled "other". ``analysis_specific``: ``target_category``.
 * **MultinomialModelingPipeline** — ``X`` = per-USV feature windows, ``y`` = each USV's category label. ``analysis_specific``: ``categories_kept``, ``class_counts``, ``usv_category_number`` (C, the number of classes the cohort actually holds, which the model is fit with), ``usv_category_column_name``, ``bundle_category_number`` (k, the number of categories of the QLVM category bundle, ``os_utils.load_qlvm_category_bundle``, R-1 … R-k; ``null`` when the label column is not ``qlvm_category``) and ``bundle_categories_missing`` (the bundle labels with no USVs in the cohort, ``[]`` when C = k). When C < k the extraction prints a warning naming the missing categories (e.g. ``missing: R-4``); the model is still fit with the C observed classes.
-* **ContinuousModelingPipeline** — ``X`` = per-USV feature windows, ``Y`` = the 2-D acoustic-manifold position target, ``w`` = inverse-density KDE weights (always present); ``category`` (each USV's QLVM category, the regular map's ``qlvm_category`` whatever map the manifold columns come from — the categories are defined on the regular map and label the USV; also the acoustic region of the torus macro score, the equal-region reweighting and model selection) is added when the summaries carry that column. ``analysis_specific``: ``usv_manifold_column_names``.
+* **ContinuousModelingPipeline** — ``X`` = per-USV feature windows, ``Y`` = the 2-D acoustic-manifold position target, ``w`` = inverse-density KDE weights (always present); ``category`` (each USV's QLVM category, the regular map's ``qlvm_category`` whatever map the manifold columns come from — the categories are defined on the regular map and label the USV; also the acoustic region of the torus macro score, the equal-region reweighting and model selection) is added when the summaries carry that column. ``analysis_specific``: ``usv_manifold_column_names``, ``manifold_metric``, ``manifold_period``, ``manifold_weight_clip_percentile`` (the ``w`` cap, ``vocal_features.usv_manifold_weight_clip_percentile``) and ``usv_category_column_name``.
 
 .. note::
 
@@ -1596,6 +1646,433 @@ holds, per feature, the stacked vocal and control curves (``pairs``), their
 sessions and control counts, the anchors rejected for lacking an eligible control,
 the pooled scaling, the ``parameters`` block it was built with and the camera frame
 rate; ``plot_matched_divergence`` draws it.
+
+.. _modeling-neural-settings:
+
+Neural modeling settings
+------------------------
+The single-unit PAG analyses (``usv_playpen.neural_modeling``: the kinematic
+encoding, the quiet-to-vocal transfer, the vocal gating, the vocal-occurrence and
+vocalization-identity decodings, the nested vocal-manifold position decoding and
+the cohort behaviour control) read one settings file,
+``_parameter_settings/neural_modeling_settings.json``. The dispatchers
+(``main_neural_encoding_dispatcher``, ``main_neural_vocal_dispatcher``,
+``main_behaviour_control_dispatcher``) take ``--settings`` to point at another copy
+(default: the shipped file). Every key is read strictly (a missing key raises
+``KeyError``); keys that name a design alternative (``selection_method``,
+``calibration_grain``, ``vm_score_mode`` and the like) accept only the value the
+code implements and raise on any other, so a declared alternative can never run as
+the default in disguise. All durations are in seconds, all frame counts in
+tracking frames (150 fps), and all torus coordinates in units of the period.
+
+**data** — which sessions and units the run draws on.
+
+.. code-block:: json
+
+    "data": {
+        "session_list_files": ["/mnt/falkner/Bartul/modeling/input_files/ephys_courtship_intact_partners_sessions_list.txt", "/mnt/falkner/Bartul/modeling/input_files/ephys_courtship_mute_female_sessions_list.txt"],
+        "behaviour_selection_result_path": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_selection_ephys_newmap.pkl",
+        "brain_areas": ["PAG"],
+        "area_mode": "include",
+        "pool_areas": false,
+        "quality": ["good"],
+        "somatic": "somatic"
+    }
+
+* **session_list_files** — text files listing one session directory per line; the union is the courtship cohort (the intact-partner and the mute-female ephys lists are shipped).
+* **behaviour_selection_result_path** — the pickle the behaviour-control feature selection (``main_behaviour_control_dispatcher --stage select``) writes and the nested decoding reads back to check its frozen ``reduced_model_features`` against.
+* **brain_areas** / **area_mode** — the unit catalog's ``brain_area`` filter: ``'include'`` keeps the listed areas, ``'exclude'`` drops them, ``'all'`` ignores the list.
+* **pool_areas** — declared but read by no current code (areas are not pooled or split anywhere).
+* **quality** — the allowed ``cluster_group`` labels of the unit catalog (``["good"]``).
+* **somatic** — ``'somatic'``, ``'non_somatic'`` or ``'both'``: which units pass the catalog's somatic waveform classification.
+
+**data_roots** — where the run reads its inputs.
+
+.. code-block:: json
+
+    "data_roots": {
+        "ephys_root": "/mnt/falkner/Bartul/EPHYS",
+        "catalog_path": "/mnt/falkner/Bartul/EPHYS/unit_catalog.csv",
+        "data_root": "/mnt/falkner/Bartul/Data"
+    }
+
+* **ephys_root** — the EPHYS tree; declared for completeness, the neural modeling code itself reads none of it (the anatomy and catalog tools take it from the analyses settings).
+* **catalog_path** — the unit catalog (``unit_catalog.csv``) the cohort is selected from and the recorded animal of each session is resolved from.
+* **data_root** — the session data tree (tracking, USV summaries, spikes). The encoding and vocal dispatchers take it on the command line instead (``--data-root``, required); the behaviour control reads it from here.
+
+**data_sufficiency** — how much data a unit must carry to be analysed. A unit failing the vocal floors is kept and flagged, not dropped, so the denominators the fractions are reported against do not shrink silently.
+
+.. code-block:: json
+
+    "data_sufficiency": {
+        "min_courtship_sessions": 2,
+        "min_emitter_usvs_per_session": 20,
+        "min_vocal_sessions": 2,
+        "min_decoding_spikes": 50,
+        "single_session_inner_split_blocks": 5
+    }
+
+* **min_courtship_sessions** — courtship sessions a unit must appear in (``2``: the leave-one-session-out rotation needs at least two).
+* **min_emitter_usvs_per_session** — focal USVs a session needs before any vocalization-scored analysis (or the behaviour-control cohort) may use it (``20``).
+* **min_vocal_sessions** — vocal-eligible sessions a unit needs for the vocal-side leave-one-session-out rotation (``2``).
+* **min_decoding_spikes** — total spikes across the scored events below which the category decoding reports the unit as not decodable (``50``).
+* **single_session_inner_split_blocks** — when a held-out fold leaves a single training session, the inner split falls back to this many contiguous blocks within that session (``5``).
+
+**kinematic_features** — the behavioural feature zoo, with exactly the meaning of the modeling block of the same name (see the ``kinematic_features`` bullets of *Modeling settings* above); the neural design assembly reuses the modeling column selection and pooled z-scoring, so the features match the behavioural models exactly.
+
+.. code-block:: json
+
+    "kinematic_features": {
+        "egocentric": ["speed", "neck_elevation", "allo_roll", "allo_pitch", "ego_yaw", "back_pitch", "back_yaw", "tail_curvature"],
+        "dyadic_pose": ["head-head", "allo_yaw-head", "head-allo_yaw", "allo_pitch-head", "head-allo_pitch"],
+        "dyadic_engagement": [],
+        "dyadic_pose_symmetric": false,
+        "include_1st_derivatives": false,
+        "include_2nd_derivatives": false,
+        "abs_features": ["allo_roll", "allo_yaw-nose", "nose-allo_yaw", "allo_yaw-head", "head-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw"],
+        "smooth_abs_features": {
+            "ego_yaw": 1.0,
+            "back_yaw": 0.5
+        }
+    }
+
+* **egocentric** / **dyadic_pose** / **dyadic_engagement** / **dyadic_pose_symmetric** / **include_1st_derivatives** / **include_2nd_derivatives** / **abs_features** / **smooth_abs_features** — as in the modeling block (``smooth_abs_features`` maps a feature to its smoothing ``ε`` in the feature's own units).
+
+**vocalization_settings** — which vocalizations count, whose, and the window spikes are counted in.
+
+.. code-block:: json
+
+    "vocalization_settings": {
+        "vocal_emitter": "self",
+        "clean_against": "all",
+        "exclude_noise": true,
+        "exclude_squeaks": true,
+        "squeaks_block_quiet": true,
+        "spike_window": {
+            "pre_offset_seconds": 0.05,
+            "width_seconds": 0.1
+        },
+        "torus_period": 1.0
+    }
+
+* **vocal_emitter** — whose USVs are the analysed vocalizations: ``'self'`` (the recorded animal's own), ``'partner'`` or ``'all'`` (no emitter filter). One key drives every analysis -- the vocal decoding's events, the kinematic encoding's transfer frames, the gating's vocal frames and the behaviour control's training rows -- so moving to the partner moves them together.
+* **clean_against** — whose vocalizations make a frame unclean (non-quiet): ``'all'`` (shipped: a quiet frame is one in which the animal was not even hearing a vocalization), ``'self'`` or ``'partner'``.
+* **exclude_noise** — drop the segments ``detect-usv-noise`` flagged as noise everywhere, including from the quiet guard (a microphone artefact must not veto a silent frame).
+* **exclude_squeaks** — drop squeak-bearing segments from the analysed vocalization set (a squeak is out of distribution for the USV map).
+* **squeaks_block_quiet** — whether a squeak still makes the surrounding frames non-quiet even when excluded from the analysed set (``true``: quiet means the animal made no sound of any kind). Measured exposure (2026-09-30): 3.5% noise and 7.3% squeaks across the behavioural courtship sessions, 0.8–1.5% of focal USVs on the ephys days.
+* **spike_window** — the per-event spike count window: it opens ``pre_offset_seconds`` (``0.05``) before the USV onset and spans ``width_seconds`` (``0.1``), so it covers the pre-motor lead and the start of the USV.
+* **torus_period** — the QLVM manifold's wrap period, shared by every analysis (a property of the manifold, so it lives here once rather than in each block). The vocalization-identity decoder and the nested decoding both read it from here.
+
+**kinematic_encoding** — the quiet-period kinematic encoding model (per-frame Bernoulli spike GLM of the behavioural history) and its transfer into vocal periods.
+
+.. code-block:: json
+
+    "kinematic_encoding": {
+        "history_pre_seconds": 4.0,
+        "clean_post_seconds": 2.0,
+        "bin_resize_factor": 1,
+        "smoothness_order": 1,
+        "include_spike_history": false,
+        "spike_history_window_seconds": 0.1,
+        "filter_band": {
+            "compute": true,
+            "n_resamples": 10
+        },
+        "subsample_negatives": true,
+        "negatives_per_positive": 10,
+        "calibration": {
+            "scheme": "crossfit",
+            "n_blocks": 5
+        },
+        "session_intercepts": {
+            "compute": true,
+            "indicator_scale": 10.0,
+            "max_sweeps": 30,
+            "tolerance": 0.0001,
+            "newton_max_steps": 25,
+            "newton_step_tolerance": 1e-10
+        },
+        "significance_model": {
+            "lambda_group": 0.0,
+            "lambda_smooth": 1000.0,
+            "lambda_ridge": 0.01
+        },
+        "feature_selection": {
+            "screen_alpha": 0.01,
+            "selection_method": "forward_d2",
+            "acceptance_rule": "paired_1se",
+            "screen_require_positive_slope": true
+        },
+        "solver": {
+            "max_iter": 5000,
+            "tol": 1e-6,
+            "calibration_steps": 30,
+            "null_calibration_bins": 2000
+        },
+        "transfer": {
+            "calibration_grain": "pooled_across_folds",
+            "d2_reference_rate": "scored_frames",
+            "universe": "bout_window",
+            "pre_bout_seconds": 4.0,
+            "inter_bout_threshold_seconds": 0.1155,
+            "grain": "count",
+            "bin_seconds": 0.1
+        },
+        "subsampling_correction": "log_prior_offset",
+        "temporal_basis": {
+            "type": "bspline",
+            "n_splines": 20,
+            "spline_order": 3,
+            "l2_lag_alpha": 100.0,
+            "lambda_ridge": 0.1,
+            "lambda_smooth": 0.0,
+            "lambda_group": 0.0,
+            "smoothness_order": 2,
+            "spike_end_correction": "drop_outside_and_rescale"
+        },
+        "max_train_total": 70000,
+        "chunk_rows": 4000
+    }
+
+* **history_pre_seconds** — the kinematic history length (``4.0`` → 600 lags at 150 fps). It also defines a quiet frame (no vocalization within this long before it) and the minimum gap of the single-session inner split, deliberately coupled so a quiet anchor's whole history is vocalization-free.
+* **clean_post_seconds** — a quiet frame must also have no vocalization within this long after it (``2.0``).
+* **bin_resize_factor** / **include_spike_history** / **spike_history_window_seconds** / **subsample_negatives** — declared but read by no current code (the model runs at the tracking frame rate, without spike history, and always subsamples the negatives by ``negatives_per_positive``).
+* **smoothness_order** — finite-difference order of the temporal-smoothness penalty on the raw per-frame lag path (``1``: first differences, the GLM-HMM tradition); used only when ``temporal_basis.type`` is ``'none'``.
+* **filter_band** — ``compute`` toggles the per-lag spread band of the representative filters; ``n_resamples`` is the number of refits it is built from (``10``).
+* **negatives_per_positive** — non-spike frames kept per spike frame in each training session (``10``); the subsampling is undone exactly by the ``subsampling_correction`` offset.
+* **calibration** — how a frozen model is turned into a score: ``scheme`` ``'crossfit'`` calibrates on blocks that exclude the scored block (``n_blocks`` contiguous blocks, ``5``), so no score is calibrated on its own frames.
+* **session_intercepts** — per-session baselines, so a session that fires faster cannot be explained by whichever feature also differs in it. ``compute`` toggles them; on the spline path the session indicators enter as one column group scaled by ``indicator_scale`` (``10.0``, so the uniform ridge reaches them at 1/100 of its strength — effectively unpenalised); on the raw per-frame path they are backfitted: ``max_sweeps`` (``30``) alternations of a filter refit and a per-session Newton update of the baselines, stopped when the baselines move less than ``tolerance`` (``1e-4``). Each per-session Newton solve takes at most ``newton_max_steps`` (``25``) steps and stops once a step is below ``newton_step_tolerance`` (``1e-10``); it is a one-dimensional convex solve, so these only bound it.
+* **significance_model** — the penalties of the raw per-frame-lag fit: ``lambda_group`` (group lasso, ``0.0`` = no sparsity), ``lambda_smooth`` (``1000.0``) and ``lambda_ridge`` (``0.01``).
+* **feature_selection** — features are screened one at a time against the circular-shift null at a Bonferroni bar of ``screen_alpha / n_features`` (``0.01``), optionally requiring a positive calibration slope (``screen_require_positive_slope``), then added by ``selection_method`` ``'forward_d2'`` (forward selection on held-out explained deviance) under ``acceptance_rule`` ``'paired_1se'`` (a step is accepted when its paired gain exceeds one paired standard error). Both names accept only the implemented value.
+* **solver** — ``max_iter`` (``5000``) and ``tol`` (``1e-6``) of the FISTA group-elastic-net solver; ``calibration_steps`` (``30``) Newton iterations of each two-parameter calibration refit; ``null_calibration_bins`` (``2000``) equal-count predictor bins for the binned calibration of the null draws (``0`` runs the exact path; the responses are exact either way).
+* **transfer** — the frozen quiet model scored on vocal periods. ``calibration_grain`` ``'pooled_across_folds'`` concatenates the held-out predictions and calibrates once (averaging per-fold scores let a small fold dominate); ``d2_reference_rate`` ``'scored_frames'`` scores explained deviance against the vocal frames' own rate; ``universe`` ``'bout_window'`` scores each bout from ``pre_bout_seconds`` (``4.0``) before its first USV to its end, bouts being split where the inter-USV gap reaches ``inter_bout_threshold_seconds`` (``0.1155``); ``grain`` ``'count'`` scores spike counts in ``bin_seconds`` (``0.1``) bins rather than per frame.
+* **subsampling_correction** — ``'log_prior_offset'``: the negative subsampling is corrected by a ``log`` sampling-rate offset in the linear predictor (the only implemented value).
+* **temporal_basis** — the lag basis of the shipped fit: ``type`` ``'bspline'`` (``'none'`` keeps the raw per-frame lags) with ``n_splines`` (``20``) cubic (``spline_order`` ``3``) B-splines over the 600 lags; ``l2_lag_alpha`` (``100.0``) makes the ridge grow with a spline's distance from the spike, each column's penalty scaled by ``1 + l2_lag_alpha · f²`` with ``f`` its centre's lag as a fraction of the window, so the far end of the history is shrunk hardest; ``lambda_ridge`` (``0.1``) and ``lambda_smooth`` (``0.0``) are the coefficient ridge and the smoothness penalty across neighbouring splines; ``lambda_group`` (``0.0``) is the group-lasso strength of the basis-path fit (off: the basis path does no feature sparsity); ``smoothness_order`` (``2``) is the finite-difference order of that spline-coefficient smoothness penalty (inert while ``lambda_smooth`` is ``0``); ``spike_end_correction`` ``'drop_outside_and_rescale'`` repairs what a uniform coefficient ridge does at the spike end of the basis (``'none'`` leaves it).
+* **max_train_total** — cap on the training rows of one fit across sessions (``70000``, split evenly per session), which bounds memory and time.
+* **chunk_rows** — rows per block when the lagged design is scored in chunks (``4000``); a memory bound only.
+
+**vocal_gating** — is a unit's vocal response gated on a behavioural feature (a feature × vocalization interaction in a contemporaneous logistic model, quiet frames guard-banded and the peri-vocal zone dropped)?
+
+.. code-block:: json
+
+    "vocal_gating": {
+        "vocal_window": "during_vocalization",
+        "require_vocal_tuning": true,
+        "vocal_tuning_alpha": 0.01,
+        "ridge_frac": 0.02,
+        "max_quiet_frames_per_session": 12000,
+        "quiet_zeros_per_spike": 40,
+        "min_vocal_spikes": null,
+        "min_feature_iqr_vocal": null,
+        "require_interaction_gt_vocal": true,
+        "interaction_gt_vocal_alpha": 0.01,
+        "feature_main_alpha": 0.01,
+        "content_gating_compute": false,
+        "gating_screen_n_shuffles": 2000,
+        "screen_alpha": 0.01,
+        "sign_ridge_frac": 0.1,
+        "borderline_sigma_flag": 5.0,
+        "solver": {
+            "irls_n_steps": 30,
+            "calibration_steps": 40
+        }
+    }
+
+* **vocal_window** — ``'during_vocalization'``: the vocal frames are every frame inside a focal USV (the only implemented value).
+* **require_vocal_tuning** / **vocal_tuning_alpha** — only units whose vocal-occurrence or vocalization-identity test passes at ``vocal_tuning_alpha`` (``0.01``) are gated.
+* **ridge_frac** — the ridge of the gating fits scales with the training rows (``ridge_frac × n_train``, ``0.02``); a fixed small ridge is ~1000× too weak at ~50k rows.
+* **max_quiet_frames_per_session** / **quiet_zeros_per_spike** — the quiet frames entering the fit: at most ``12000`` per session, and non-spike quiet frames subsampled to ``40`` per spike. The quiet-only rows of the feature main effect (every quiet spike frame plus ``quiet_zeros_per_spike`` zeros each) are redrawn inside every circular-shift draw from that draw's shifted spike labels, by the same rule as the observed rows, so each draw has the observed class balance.
+* **min_vocal_spikes** / **min_feature_iqr_vocal** — optional identifiability floors (spikes inside vocal frames; the feature's interquartile range during vocalization); ``null`` disables them.
+* **require_interaction_gt_vocal** / **interaction_gt_vocal_alpha** — a gate must also exceed the plain vocal effect, tested at ``0.01``.
+* **feature_main_alpha** — the level at which the feature's quiet-only main effect is reported as present (``0.01``; it labels ``GATE+silentME`` and gates nothing).
+* **content_gating_compute** — the feature × torus-position branch; deferred, so only ``false`` is implemented.
+* **gating_screen_n_shuffles** / **screen_alpha** — the gating screen's circular-shift draws (``2000``) and its Bonferroni level (``screen_alpha / n_features``, ``0.01``); a draw count whose ``1 / (n + 1)`` floor cannot clear that bar raises. Each tested unit carries one p for the cohort correction: the smallest per-feature conjunction p (``max(p_interaction, p_interaction_gt_vocal)``, or ``p_interaction`` alone when ``require_interaction_gt_vocal`` is false) times the number of features tested, capped at 1 (``p_unit``). Every tested unit carries it, survivor or not; only a unit with no tested feature has a NaN ``p_unit``, so the cohort Benjamini–Hochberg runs over all tested units.
+* **sign_ridge_frac** — the interaction's SIGN is read from a strongly ridged fit (``sign_ridge_frac × n``, ``0.1``) while its magnitude comes from the deviance, since an unridged interaction coefficient quasi-separates.
+* **borderline_sigma_flag** — a passing gate whose margin over its bar is under this many null standard deviations (``5.0``) is flagged ``borderline``.
+* **solver** — ``irls_n_steps`` (``30``) Newton/IRLS iterations of each logistic fit and ``calibration_steps`` (``40``) of each calibration refit.
+
+**vocal_decoding** — the vocal-occurrence axis (does the unit fire before a USV?) and the vocalization-identity axis (does its count say WHICH USV, as a torus position or a category?).
+
+.. code-block:: json
+
+    "vocal_decoding": {
+        "require_clean_prevocal_bool": true,
+        "usv_manifold_column_names": ["qlvm1", "qlvm2"],
+        "max_quiet_tiles_per_session": 5000,
+        "vocal_occurrence": {
+            "ridge_frac": 0.02,
+            "sigma_floor": 0.05,
+            "solver": {
+                "irls_n_steps": 30,
+                "calibration_steps": 40
+            }
+        },
+        "geodesic_metrics": {
+            "compute": true,
+            "grid_n_per_dim": 40,
+            "graph_k": 8,
+            "density_exponent": 1.0,
+            "decoder_weights_npz_path": "/mnt/falkner/Bartul/spectrograms/qlvm/qmc_decoder_weights.npz"
+        },
+        "tuning_surface": {
+            "tuning_basis": "fourier",
+            "fourier_k": 2,
+            "bump_grid_n": 10,
+            "bump_sigma": 0.1,
+            "min_basis_occupancy": 5.0,
+            "decode_grid_min_occupancy": 1.0,
+            "grid_n": 60,
+            "kde_bandwidth": 0.03,
+            "likelihood_family": "poisson",
+            "session_rate_offsets": true,
+            "solver": {
+                "irls_n_steps": 50
+            },
+            "ridge_selection": {
+                "mode": "count_normalized_fixed",
+                "ridge_frac": 0.02
+            },
+            "amplitude_calibration": {
+                "enabled": true,
+                "mode": "train_tuned_inner_loso",
+                "alpha_grid": [0.1, 0.25, 0.5, 0.75, 1.0, 1.5],
+                "alpha_min": 0.0
+            },
+            "record_bump_basis_gain": true
+        },
+        "category_surface": {
+            "ridge_selection": {
+                "mode": "count_normalized_fixed",
+                "ridge_frac": 0.02
+            },
+            "amplitude_calibration": {
+                "enabled": true,
+                "mode": "train_tuned_inner_loso",
+                "alpha_grid": [0.1, 0.25, 0.5, 0.75, 1.0, 1.5]
+            },
+            "category_column": "qlvm_category",
+            "min_train_events": 20,
+            "min_test_events": 5
+        },
+        "targets": ["manifold_position"],
+        "discrimination_null": {
+            "method": "within_session_position_permutation",
+            "n_permutations": 1000,
+            "sided": "one_sided_upper",
+            "pass_rule": "gain_gt_zero_and_exact_p",
+            "record_left_tail_anti_alignment": true,
+            "n_permutations_category_grain": 5000
+        },
+        "record_overdispersion_index": true
+    }
+
+* **require_clean_prevocal_bool** — drop an event when another vocalization intrudes on its pre-vocal window.
+* **usv_manifold_column_names** — the summary columns holding a USV's torus position (``['qlvm1', 'qlvm2']``, the regular map).
+* **max_quiet_tiles_per_session** — cap on the quiet tiles that serve as the vocal-occurrence negatives (``5000`` per session).
+* **vocal_occurrence** — ``ridge_frac`` (``0.02``, scaled by the training count), ``sigma_floor`` (``0.05``, a floor on the standard deviation that z-scores the count column, so a unit silent in quiet cannot produce an exploding column) and the ``solver`` steps (``irls_n_steps`` ``30``, ``calibration_steps`` ``40``).
+* **geodesic_metrics** — declared but read by no current neural code (``compute``, ``grid_n_per_dim``, ``graph_k``, ``density_exponent``, ``decoder_weights_npz_path``).
+* **tuning_surface** — the Poisson tuning surface over the torus: ``tuning_basis`` ``'fourier'`` with ``fourier_k`` (``2``) harmonics per axis, or a local ``'bump'`` basis of ``bump_grid_n`` (``10``) nodes per axis of width ``bump_sigma`` (``0.1``) kept where the kernel-weighted training occupancy reaches ``min_basis_occupancy`` (``5.0``) events; decoding runs on a grid of ``grid_n`` (``60``) cells per axis restricted to cells whose training occupancy (KDE of bandwidth ``kde_bandwidth``, ``0.03``) reaches ``decode_grid_min_occupancy`` (``1.0``); ``likelihood_family`` ``'poisson'`` (the only implemented value); ``session_rate_offsets`` adds per-session rate offsets; ``solver.irls_n_steps`` (``50``); ``ridge_selection``: ``mode`` ``'count_normalized_fixed'`` (the only implemented value; the ridge is ``ridge_frac`` × the training spike count, ``ridge_frac`` ``0.02``); ``amplitude_calibration``: when ``enabled``, a likelihood-sharpening amplitude is tuned over ``alpha_grid`` by inner leave-one-session-out on the training sessions (``mode`` ``'train_tuned_inner_loso'``, the only implemented value; ``alpha_min`` ``0.0`` is the smallest grid value allowed), and when disabled the amplitude is 1; ``record_bump_basis_gain`` also records the bump-basis gain beside the Fourier one.
+* **category_surface** — the same decoder over the QLVM categories: ``ridge_selection``, ``amplitude_calibration`` as above; ``category_column`` is declared but not read; ``min_train_events`` (``20``) / ``min_test_events`` (``5``) — an outer or inner split with fewer training or test events than these is skipped, too few for a stable per-category rate or a meaningful held-out score.
+* **targets** — declared but read by no current code (the position target is always decoded).
+* **discrimination_null** — the exact within-session permutation null of the identity axis: ``n_permutations`` (``1000``) draws; ``record_left_tail_anti_alignment`` records the left-tail statistics; ``method``, ``sided``, ``pass_rule`` and ``n_permutations_category_grain`` are declared but read by no current code.
+* **record_overdispersion_index** — record the count overdispersion index with each decoding: the mean Pearson dispersion ``(count − expected)² / expected`` of the held-out events, where an event's expected count is the calibrated surface rate the decoder scored it with (the centred surface shape times the tuned amplitude, at the held-out session's mean-count level) read at the event's own grid cell, so an untuned Poisson unit gives about ``1``. The decoding also stores ``nats_per_spike`` (the summed finite per-event gain divided by the spikes of those same events) and ``min_leave_one_fold_out`` (the smallest pooled gain with one fold left out, over the folds whose left-out gain is finite).
+
+**nested_vocal_manifold_position_decoding** — does the neuron add information about a USV's torus position beyond the cohort behaviour control? A REDUCED model (behaviour alone) and a FULL model (behaviour plus the neuron's count) are fitted by the same torus regressor and compared on the held-out macro von Mises log-score.
+
+.. code-block:: json
+
+    "nested_vocal_manifold_position_decoding": {
+        "behaviour_control": "rich",
+        "reduced_model_features": ["head-head", "allo_yaw-head", "allo_pitch-head", "self.speed"],
+        "behaviour_control_model_path": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_model_ephys_cohort.pkl",
+        "vm_score_mode": "macro",
+        "region_label_column": "qlvm_category",
+        "min_region_events": 20,
+        "lambda_smooth": 1.0,
+        "l2_reg": 0.01,
+        "smoothness_derivative_order": 1,
+        "huber_delta": 1.0,
+        "learning_rate": 0.001,
+        "max_iter": 5000,
+        "tol": 0.0001,
+        "random_state": 0,
+        "behaviour_control_n_lags": 600,
+        "sigma_floor": 0.05,
+        "prevocal_window_n_bins": 1,
+        "rate_transform": "none",
+        "rate_basis": "linear",
+        "statistic": "posterior",
+        "behaviour_prior": {
+            "form": "von_mises",
+            "concentration": "train_tuned_inner_loso",
+            "kappa_grid": [0.0, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0]
+        },
+        "discrimination_null": {
+            "method": "within_session_pair_permutation",
+            "n_permutations": 1000,
+            "sided": "one_sided_upper"
+        }
+    }
+
+* **behaviour_control** — ``'rich'``: the full 4 s behaviour window (the only implemented value).
+* **reduced_model_features** — the frozen behaviour-control feature list; asserted against the selection result file, so a re-run of the selection cannot silently redefine the behaviour the neuron is measured against.
+* **behaviour_control_model_path** — the cohort-fitted behaviour-control artifact (``main_behaviour_control_dispatcher --stage fit``); the decoding refuses an artifact that disagrees with these settings. The control is fitted on exactly the vocalization rows the per-unit analysis scores: the ``'analysed'`` set of ``vocalization_settings`` (noise and squeak rows removed) restricted to ``vocal_emitter`` (``'all'`` applies no emitter filter), with a vocalization dropped when one from the ``'guard'`` set intrudes on its ``spike_window.pre_offset_seconds`` pre-window. Every behaviour history, at fit and at application, ends at the frame before onset (``round(start × fps) − 1``). An artifact fitted before 2026-10-18 was trained on the unfiltered summary with histories one frame earlier than the unit side used, and must be refitted. The artifact's counts are stored as ``n_vocalizations`` (top level and per day); an older artifact's ``n_calls`` is read under that name.
+* **vm_score_mode** — ``'macro'``: the region-balanced von Mises score (the only implemented value).
+* **region_label_column** / **min_region_events** — the acoustic-region labels of the macro score (``qlvm_category``) and the minimum events a region needs to enter it (``20``).
+* **lambda_smooth** / **l2_reg** / **smoothness_derivative_order** — the torus regressor's temporal smoothness (behaviour blocks only, ``1.0``), uniform ridge (``0.01``) and finite-difference order (``1``).
+* **huber_delta** / **learning_rate** / **max_iter** / **tol** / **random_state** — the regressor's optimiser: Huber transition point (``1.0``, torus units), initial Adam step size (``0.001``, cosine-decayed to zero), step cap (``5000``), parameter-change convergence tolerance (``1e-4``) and initialisation seed (``0``). These are the values the regressor used before they became settings; the shipped torus regressor is fitted in closed form, where the optimiser keys are inert.
+* **behaviour_control_n_lags** — history length of the behaviour design, in tracking frames (``600`` = 4 s at 150 fps), used by ``main_behaviour_control_dispatcher`` for both stages; the fitted artifact records it, and the per-unit decoding reads it from there.
+* **sigma_floor** — floor on the standard deviation z-scoring the neuron's count column (``0.05``), the same guard as the vocal-occurrence axis.
+* **prevocal_window_n_bins** / **rate_transform** / **rate_basis** / **statistic** — the neuron enters as ONE z-scored pre-vocal count (``1`` bin, no transform, a linear column) and the tested statistic is the posterior form (``'posterior'``); each accepts only that value.
+* **behaviour_prior** — the von Mises behaviour prior of the posterior statistic: ``form`` ``'von_mises'``; ``concentration`` ``'train_tuned_inner_loso'`` picks it from ``kappa_grid`` by inner leave-one-session-out on the training sessions (``'train_residuals'`` fits it on the training residuals).
+* **discrimination_null** — the within-session pair permutation null: ``method`` ``'within_session_pair_permutation'`` (the only implemented value), ``n_permutations`` (``1000``); ``sided`` is declared but not read.
+
+**null** — the circular-shift null shared by the kinematic encoding, the transfer, the gating and the vocal-occurrence axis (the spike train is shifted, preserving its rate and burstiness while destroying its alignment with behaviour).
+
+.. code-block:: json
+
+    "null": {
+        "n_shuffles": 1000,
+        "shuffle_guard_seconds": 20.0,
+        "shuffle_seed": 0,
+        "screen_n_shuffles": 2000
+    }
+
+* **n_shuffles** — base number of shift draws (``1000``); the empirical p-value floors at ``1 / (n + 1)`` and escalation adds draws where the cohort's Benjamini–Hochberg bar requires them.
+* **shuffle_guard_seconds** — the shift lag is drawn from ``[guard, duration - guard]`` (``20.0``): the full wrap minus a band where the shifted train is nearly back in register (the statistic's decorrelation lag was measured at 2.2 s).
+* **shuffle_seed** — base seed of every shift draw; each test derives its own stream from it.
+* **screen_n_shuffles** — draws of the feature screen (``2000``), whose Bonferroni bar ``screen_alpha / n_features`` needs a floor below it.
+
+**significance** — cohort-level multiplicity control.
+
+.. code-block:: json
+
+    "significance": {
+        "pvalue_method": "empirical_escalated",
+        "fdr_method": "bh",
+        "fdr_q": 0.01,
+        "escalation_ladder": [],
+        "report_bh_floor_requirement": true
+    }
+
+* **fdr_q** — the Benjamini–Hochberg false-discovery rate over the cohort (``0.01``).
+* **escalation_ladder** — draw counts to escalate floor-tied p-values through (accumulating, not restarting); ``[]`` runs the base count only. Each rung counts FINITE draws only, as only finite draws enter the p-value.
+* **pvalue_method** / **fdr_method** / **report_bh_floor_requirement** — declared but read by no current code (p-values are always empirical with escalation and the correction is always Benjamini–Hochberg).
+
+**robustness** — planned robustness checks; every key is declared but read by no current code.
+
+.. code-block:: json
+
+    "robustness": {
+        "decode_raw_acoustics": true,
+        "raw_acoustic_features": ["duration", "mean_freq_hz", "peak_freq_hz", "freq_bandwidth_hz"],
+        "time_in_session_nuisance": false,
+        "shift_range_check": false
+    }
+
+* **decode_raw_acoustics** / **raw_acoustic_features** — decode the raw acoustic features listed instead of the torus position.
+* **time_in_session_nuisance** — add time-in-session as a nuisance covariate.
+* **shift_range_check** — repeat the null with a restricted shift range.
 
 Notebook
 --------

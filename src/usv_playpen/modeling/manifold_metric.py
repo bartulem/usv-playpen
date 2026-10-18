@@ -338,11 +338,14 @@ def dcor_prediction_truth(Y_pred: np.ndarray, Y_true: np.ndarray, *,
         Subsample size per repeat (capped at ``n``). The default ``2500``
         keeps each ``O(n^2)`` distance matrix at ~6.25e6 entries -- small
         enough to stay fast, large enough that the dCor estimate is stable
-        across draws on the production test folds.
+        across draws on the production test folds. Production callers pass
+        ``vocal_features.usv_manifold_dcor.n_subsample`` (equal to this default).
     n_rep (int)
         Number of independent subsamples to average. The default ``3``
         averages out most of the subsample-draw variance at negligible
-        extra cost.
+        extra cost. Production callers pass
+        ``vocal_features.usv_manifold_dcor.n_repeats`` (equal to this default),
+        or ``n_repeats_fold_gate`` (1) for the per-fold selection-gate score.
     random_state (int)
         Seed for the deterministic subsample draws (reproducibility).
 
@@ -560,7 +563,7 @@ def _log_i0(kappa: float) -> float:
 def macro_von_mises_logscore(Y_pred: np.ndarray, Y_true: np.ndarray,
                              region_labels: np.ndarray = None, *,
                              metric: str, period: float,
-                             min_region_events: int = 1,
+                             min_region_events: int,
                              kappa: float | None = None) -> float:
     """
     Macro (per-region) product-von-Mises log-likelihood of manifold predictions.
@@ -602,7 +605,7 @@ def macro_von_mises_logscore(Y_pred: np.ndarray, Y_true: np.ndarray,
         Per-axis wrap period.
     min_region_events : int
         Minimum labelled events a region must contribute to enter the macro
-        average. Ignored when ``region_labels`` is ``None``.
+        average. Ignored when ``region_labels`` is ``None``. Keyword-only, no default: production passes ``vocal_features.usv_manifold_min_region_events``.
     kappa : float, optional
         Pre-fit global concentration to reuse (e.g. a stable kappa fit once on
         pooled residuals across sessions). When ``None`` it is fit here from the
@@ -739,7 +742,7 @@ def inverse_region_frequency_weights(region_labels: np.ndarray) -> np.ndarray:
 
 
 def macro_region_mean(values: np.ndarray, region_labels: np.ndarray = None, *,
-                      min_region_events: int = 1) -> float:
+                      min_region_events: int) -> float:
     """
     Region-balanced (macro) mean of a per-event quantity.
 
@@ -765,6 +768,7 @@ def macro_region_mean(values: np.ndarray, region_labels: np.ndarray = None, *,
         Mises score.
     min_region_events : int
         Minimum finite events a region must contribute to enter the average.
+        Keyword-only, no default: production passes ``vocal_features.usv_manifold_min_region_events``.
 
     Returns
     -------
@@ -796,8 +800,10 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
                                 train_cov_inv: np.ndarray = None,
                                 random_state: int = 0,
                                 region_labels: np.ndarray = None,
-                                min_region_events: int = 1,
-                                kappa: float | None = None) -> dict:
+                                min_region_events: int,
+                                kappa: float | None = None,
+                                dcor_n_sub: int = 2500,
+                                dcor_n_rep: int = 3) -> dict:
     """
     Description
     -----------
@@ -848,7 +854,7 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
     min_region_events (int)
         Minimum labelled events a region must contribute to enter the torus
         macro average. Ignored on euclidean and when ``region_labels`` is
-        ``None``.
+        ``None``. Keyword-only, no default: production passes ``vocal_features.usv_manifold_min_region_events``.
     kappa (float)
         Pre-fit global von Mises concentration to reuse for BOTH ``vm_logscore``
         keys (torus only). ``None`` (default) preserves the historical behaviour
@@ -856,6 +862,15 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
         baseline scored on the SAME dispersion scale as the fitted strategies and
         the gate, so their margins are a proper scoring rule. Ignored on
         euclidean (the vM branch is never entered).
+    dcor_n_sub (int)
+        Subsample size per repeat of the euclidean ``dcor_xy``
+        (:func:`dcor_prediction_truth`); production passes
+        ``vocal_features.usv_manifold_dcor.n_subsample`` (the default equals the
+        shipped value). Ignored on the torus.
+    dcor_n_rep (int)
+        Number of subsample repeats averaged for ``dcor_xy``; production passes
+        ``vocal_features.usv_manifold_dcor.n_repeats`` (the default equals the
+        shipped value). Ignored on the torus.
 
     Returns
     -------
@@ -975,7 +990,8 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
         dcor_xy = float('nan')
     else:
         dcor_xy = dcor_prediction_truth(
-            Y_pred, Y_true, metric=metric, period=period, random_state=random_state,
+            Y_pred, Y_true, metric=metric, period=period,
+            n_sub=dcor_n_sub, n_rep=dcor_n_rep, random_state=random_state,
         )
         vm_logscore = float('nan')
         vm_logscore_pooled = float('nan')

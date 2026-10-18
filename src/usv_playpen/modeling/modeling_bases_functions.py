@@ -13,6 +13,10 @@ import numpy as np
 import scipy.interpolate as si
 from pygam.utils import b_spline_basis
 
+#: Full width at half maximum of a Gaussian in units of its standard deviation, ``2 sqrt(2 ln 2)``
+#: (about 2.3548), computed rather than written as a rounded literal: ``sigma = FWHM / this``.
+FWHM_PER_SIGMA = 2.0 * np.sqrt(2.0 * np.log(2.0))
+
 
 def laplacian_pyramid(width: int, levels: int, step: float, fwhm: float, normalize: bool = True) -> np.ndarray:
     """
@@ -31,7 +35,9 @@ def laplacian_pyramid(width: int, levels: int, step: float, fwhm: float, normali
     step : float
         Spacing between levels (e.g., 1.0 for regular, 0.5 for half-levels).
     fwhm : float
-        Full width at half-max for the Gaussians at the finest level (Level 1).
+        Full width at half-max for the Gaussians at the finest level (Level 1), in frames. Each
+        level's Gaussian standard deviation is ``2**(level - 1) * fwhm / FWHM_PER_SIGMA`` with the
+        exact conversion ``FWHM_PER_SIGMA = 2 sqrt(2 ln 2)``.
     normalize : bool, optional
         If True, normalizes each basis vector to unit L2 norm. Defaults to True.
 
@@ -51,7 +57,7 @@ def laplacian_pyramid(width: int, levels: int, step: float, fwhm: float, normali
 
         if len(cens):
             cens = np.floor((width - (np.max(cens) - np.min(cens) + 1)) / 2 + cens) + 1
-            gwidth = lvl_minus_1 / 2.35 * fwhm
+            gwidth = lvl_minus_1 / FWHM_PER_SIGMA * fwhm
             for jj in range(1, len(cens)):
                 v = np.exp(-(rg - cens[jj]) ** 2 / (2 * gwidth ** 2))
                 if normalize:

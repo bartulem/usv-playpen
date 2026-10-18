@@ -16,9 +16,12 @@ import json
 import pathlib
 import pickle
 
+import h5py
 import numpy as np
+import polars as pls
 import pytest
 
+from usv_playpen.neural_modeling import behaviour_control_model as control_module
 from usv_playpen.neural_modeling.behaviour_control_model import (
     EMBEDDING_COLUMNS,
     apply_behaviour_control,
@@ -26,8 +29,13 @@ from usv_playpen.neural_modeling.behaviour_control_model import (
     feature_columns,
     load_control_model,
     paired_gain,
+    session_vocalization_design,
     torus_embedding,
+    upgrade_legacy_counts,
     write_control_model,
+)
+from usv_playpen.neural_modeling.neural_design_assembly import (
+    onset_history_anchor_frames,
 )
 from usv_playpen.neural_modeling.neural_nested_decoding import reduced_model_features
 
@@ -259,3 +267,136 @@ class TestReducedModelFeaturesRepoint:
         settings["nested_vocal_manifold_position_decoding"]["reduced_model_features"] = ["other.speed"]
         with pytest.raises(ValueError, match="behaviour selection drift"):
             reduced_model_features(settings)
+
+
+class TestSessionVocalizationDesign:
+    """The control trains on EXACTLY the rows the per-unit analysis scores: the analysed vocalization set
+    of the configured emitter, guarded against intrusions by the guard set, with every history ending at
+    the frame before onset -- the frame the nested decoding builds the unit-side histories at."""
+
+    SESSION, FPS, N_FRAMES = "20250101_000000", 10.0, 2000
+
+    def _write(self, root: pathlib.Path, usvs: list) -> None:
+        """
+        Description
+        -----------
+        Write a session's tracking-H5 header (``male``/``female`` tracks) and a USV summary carrying the
+        torus-position, region and classifier columns the control reads.
+
+        Parameters
+        ----------
+        root (pathlib.Path)
+            The data root.
+        usvs (list[tuple])
+            ``(start, stop, emitter, noise, squeak)`` per row.
+
+        Returns
+        -------
+        None
+            The files are written to disk.
+        """
+        video_dir = root / self.SESSION / "video" / f"{self.SESSION}_cam"
+        video_dir.mkdir(parents=True)
+        with h5py.File(video_dir / f"{self.SESSION}_points3d_translated_rotated_metric.h5", "w") as handle:
+            handle["tracks"] = np.zeros((self.N_FRAMES, 2, 15, 3), dtype=np.float64)
+            handle["recording_frame_rate"] = self.FPS
+            handle.create_dataset("track_names", data=np.array([b"male", b"female"], dtype="S6"))
+        audio_dir = root / self.SESSION / "audio"
+        audio_dir.mkdir(parents=True)
+        pls.DataFrame({"usv_id": list(range(len(usvs))),
+                       "start": [row[0] for row in usvs], "stop": [row[1] for row in usvs],
+                       "emitter": [row[2] for row in usvs],
+                       "qlvm1": [0.2] * len(usvs), "qlvm2": [0.4] * len(usvs),
+                       "qlvm_category": [1.0] * len(usvs),
+                       "noise": [row[3] for row in usvs], "squeak": [row[4] for row in usvs],
+                       }).write_csv(audio_dir / f"{self.SESSION}_usv_summary.csv")
+
+    def _design(self, monkeypatch, tmp_path, settings: dict, emitter: str) -> dict:
+        """
+        Description
+        -----------
+        Run ``session_vocalization_design`` on the synthetic session with a one-feature kinematic series
+        equal to the frame index, so a design column reveals the frame it was read at.
+
+        Parameters
+        ----------
+        monkeypatch (pytest.MonkeyPatch)
+            Patches the kinematic loader.
+        tmp_path (pathlib.Path)
+            The data root.
+        settings (dict)
+            The shipped settings, adjusted in place for the synthetic session.
+        emitter (str)
+            ``vocalization_settings.vocal_emitter``.
+
+        Returns
+        -------
+        block (dict)
+            As ``session_vocalization_design`` returns it.
+        """
+        self._write(tmp_path, [(50.0, 50.1, "male", False, False),
+                               (60.0, 60.1, "male", True, False),     # noise: never a vocalization
+                               (70.0, 70.1, "male", False, True),     # squeak: a different vocal type
+                               (80.0, 80.1, "female", False, False),
+                               (99.97, 99.99, "male", True, False),   # noise just before 100 s
+                               (100.0, 100.1, "male", False, False)])
+        settings["data_roots"]["data_root"] = str(tmp_path)
+        settings["data_sufficiency"]["min_emitter_usvs_per_session"] = 1
+        settings["vocalization_settings"]["vocal_emitter"] = emitter
+        frames = pls.DataFrame({"f": np.arange(self.N_FRAMES, dtype=np.float64)})
+        monkeypatch.setattr(control_module, "build_zscored_feature_frames",
+                            lambda **_kwargs: ({self.SESSION: frames}, {self.SESSION: self.FPS}, {}, {}))
+        return session_vocalization_design(str(tmp_path / self.SESSION), settings, 5)
+
+    def test_noise_and_squeak_rows_are_not_trained_on(self, monkeypatch, tmp_path, settings: dict) -> None:
+        """
+        Repro basis: the control read the raw summary, so a noise row and a squeak row became training
+        rows, and a noise row vetoed the vocalization after it as an "intrusion". It now keeps exactly
+        the analysed set (no noise, no squeaks), guarded by the guard set (no noise).
+        """
+        block = self._design(monkeypatch, tmp_path, settings, "self")
+        np.testing.assert_allclose(block["vocalization_start"], [50.0, 100.0])
+        assert block["n_kept"] == 2
+
+    def test_vocal_emitter_all_trains_on_every_emitter(self, monkeypatch, tmp_path, settings: dict) -> None:
+        """``'all'`` means no emitter filter; it used to index the empty name list and raise."""
+        block = self._design(monkeypatch, tmp_path, settings, "all")
+        np.testing.assert_allclose(block["vocalization_start"], [50.0, 80.0, 100.0])
+
+    def test_the_history_ends_at_the_frame_the_nested_decoding_applies_it_at(
+            self, monkeypatch, tmp_path, settings: dict) -> None:
+        """The fit anchors are ``onset_history_anchor_frames`` -- the frame before onset -- the same frames
+        ``nested_design`` builds the unit-side histories at."""
+        block = self._design(monkeypatch, tmp_path, settings, "self")
+        expected = onset_history_anchor_frames(block["vocalization_start"], self.FPS)
+        np.testing.assert_array_equal(expected, [499, 999])
+        np.testing.assert_allclose(block["design"][:, -1], expected)
+
+
+class TestLegacyCountKeys:
+    """The stored count was renamed from ``n_calls`` to ``n_vocalizations``; older artifacts still read."""
+
+    def test_an_old_artifact_is_read_under_the_new_names(self, settings: dict, artifact: dict,
+                                                       tmp_path) -> None:
+        """A control written before the rename (``n_calls`` at the top level and per day) loads with
+        ``n_vocalizations`` in both places and no ``n_calls`` left."""
+        old = {**artifact, "n_calls": 120, "per_day": {"20250919": {"n_calls": 120, "behaviour": -3.4,
+                                                                     "no_behaviour": -3.5}}}
+        path = tmp_path / "control.pkl"
+        write_control_model(old, str(path))
+        settings["nested_vocal_manifold_position_decoding"]["behaviour_control_model_path"] = str(path)
+        settings["nested_vocal_manifold_position_decoding"]["reduced_model_features"] = list(
+            artifact["features"])
+        loaded = load_control_model(settings)
+        assert loaded["n_vocalizations"] == 120
+        assert loaded["per_day"]["20250919"]["n_vocalizations"] == 120
+        assert "n_calls" not in loaded
+        assert "n_calls" not in loaded["per_day"]["20250919"]
+
+    def test_a_current_record_passes_through_unchanged_and_unmutated(self) -> None:
+        """A record already on the new names is returned equal, and the input is never mutated."""
+        record = {"n_vocalizations": 5, "per_day": {"d": {"n_vocalizations": 5}}}
+        assert upgrade_legacy_counts(record) == record
+        legacy = {"n_calls": 7}
+        upgrade_legacy_counts(legacy)
+        assert legacy == {"n_calls": 7}

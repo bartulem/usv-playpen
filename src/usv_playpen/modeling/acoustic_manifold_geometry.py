@@ -59,6 +59,7 @@ def derive_cluster_centers_empirically(Y: np.ndarray,
                                        min_points_per_label: int = 20,
                                        max_points_per_label: int = 30000,
                                        grid_resolution: int = 200,
+                                       grid_margin_fraction: float,
                                        kde_bandwidth: float | str | None = None,
                                        metric: str = 'euclidean',
                                        period: float = 1.0,
@@ -103,6 +104,14 @@ def derive_cluster_centers_empirically(Y: np.ndarray,
         Resolution of the regular grid the KDE is evaluated on, per
         axis. The returned centre is the grid point of maximum density,
         so the quantisation floor on the centre is `range / grid_resolution`.
+    grid_margin_fraction : float
+        Margin added on every side of the per-label data range before the
+        grid is laid, as a fraction of the larger of the two axis ranges
+        (no default; the CNN saliency phase passes
+        `saliency.center_grid_margin_fraction`, shipped 0.05). On a torus the
+        padded grid is clipped to `[0, period)`, so the margin matters on
+        euclidean manifolds, where it lets a mode at the edge of the cloud
+        be found off the outermost point.
     kde_bandwidth : float or str or None, default None
         Forwarded to `scipy.stats.gaussian_kde`'s `bw_method`. `None`
         selects Scott's rule; a float fixes the bandwidth factor (e.g.
@@ -165,7 +174,7 @@ def derive_cluster_centers_empirically(Y: np.ndarray,
         # are fixed by the full cloud.
         pmin = pts_full.min(axis=0)
         pmax = pts_full.max(axis=0)
-        margin = 0.05 * (pmax - pmin).max()
+        margin = grid_margin_fraction * (pmax - pmin).max()
 
         pts = pts_full
         if n_total > max_points_per_label:

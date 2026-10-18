@@ -103,7 +103,7 @@ from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import confusion_matrix, matthews_corrcoef
 from sklearn.model_selection import GroupKFold, StratifiedGroupKFold
 
-from ..os_utils import configure_path, resolve_modeling_setting
+from ..os_utils import configure_path
 from .load_input_files import (
     _calculate_ibi_threshold,
     is_pooled_vocal_signal,
@@ -114,10 +114,6 @@ from .modeling_collinearity_audit import (
     audit_predictor_timescales,
 )
 from .modeling_cross_session_normalization import zscore_different_sessions_together
-
-# Expected-Calibration-Error histogram bin count, read from the settings block
-# rather than a bare 10 default.
-_ECE_N_BINS = resolve_modeling_setting('diagnostics', 'ece_n_bins')
 
 
 def prepare_modeling_sessions(modeling_settings: dict) -> list:
@@ -1473,7 +1469,8 @@ def brier_score_multi(y_true: np.ndarray,
 def expected_calibration_error(y_true: np.ndarray,
                                y_pred: np.ndarray,
                                y_proba: np.ndarray,
-                               n_bins: int = _ECE_N_BINS) -> float:
+                               *,
+                               n_bins: int) -> float:
     """
     Computes the top-label Expected Calibration Error (ECE).
 
@@ -1505,8 +1502,9 @@ def expected_calibration_error(y_true: np.ndarray,
     y_proba : np.ndarray
         Predicted class probabilities of shape (N, K). The top-class
         confidence is taken as `np.max(y_proba, axis=1)`.
-    n_bins : int, optional
-        Number of equal-width confidence bins. Defaults to `10`.
+    n_bins : int
+        Number of equal-width confidence bins. Keyword-only, no default:
+        callers pass `diagnostics.ece_n_bins` from the run's settings.
 
     Returns
     -------

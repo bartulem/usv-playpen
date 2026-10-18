@@ -150,7 +150,7 @@ class TestFitPredictEvaluate:
         assert model.coef_.shape == (X.shape[1], 2)
         raw = model.predict(X, snap=False)
         assert np.mean(np.linalg.norm(raw - y, axis=1)) < 0.05
-        metrics = model.evaluate_metrics(X, y)
+        metrics = model.evaluate_metrics(X, y, min_region_events=1)
         assert metrics['r2_spatial'] > 0.95
         assert metrics['euclidean_mae_raw'] < 0.05
 
@@ -180,7 +180,7 @@ class TestFitPredictEvaluate:
 
         X, y = _make_linear_2d()
         model = SmoothBivariateRegression(**_fit_kwargs(X.shape[1])).fit(X, y)
-        metrics = model.evaluate_metrics(X, y)
+        metrics = model.evaluate_metrics(X, y, min_region_events=1)
         for key in ('r2_spatial', 'euclidean_mae', 'euclidean_rmse',
                     'mahalanobis_mae', 'mae_x', 'mae_y',
                     'pearson_x', 'pearson_y', 'spearman_x', 'spearman_y',
@@ -228,7 +228,7 @@ class TestSampleWeightAndVerbose:
         X, y = _make_linear_2d()
         model = SmoothBivariateRegression(**_fit_kwargs(X.shape[1])).fit(X, y)
         weights = np.linspace(0.5, 2.0, X.shape[0])
-        metrics = model.evaluate_metrics(X, y, weights=weights)
+        metrics = model.evaluate_metrics(X, y, weights=weights, min_region_events=1)
         assert np.isfinite(metrics['euclidean_mae_weighted'])
 
     def test_verbose_prints_and_converges(self, capsys):
@@ -327,7 +327,7 @@ class TestTorusMetric:
         train_rows = {tuple(np.round(r, 9)) for r in y}
         for row in snapped:
             assert tuple(np.round(row, 9)) in train_rows
-        metrics = model.evaluate_metrics(X, y)
+        metrics = model.evaluate_metrics(X, y, min_region_events=1)
         assert np.isfinite(metrics['r2_spatial'])
         assert np.isfinite(metrics['mahalanobis_mae'])
         assert metrics['euclidean_mae'] >= 0.0
@@ -369,7 +369,7 @@ class TestDegenerateMetrics:
         model.coef_ = np.zeros_like(model.coef_)
         model.intercept_ = np.zeros_like(model.intercept_)
         model._train_kdtree = None
-        metrics = model.evaluate_metrics(X, y)
+        metrics = model.evaluate_metrics(X, y, min_region_events=1)
         assert np.isnan(metrics['pearson_x'])
         assert np.isnan(metrics['pearson_y'])
         assert np.isnan(metrics['spearman_x'])
@@ -382,7 +382,7 @@ class TestDegenerateMetrics:
         X, y = _make_linear_2d()
         model = SmoothBivariateRegression(**_fit_kwargs(X.shape[1])).fit(X, y)
         model.train_cov_inv_ = None
-        metrics = model.evaluate_metrics(X, y)
+        metrics = model.evaluate_metrics(X, y, min_region_events=1)
         assert np.isnan(metrics['mahalanobis_mae'])
 
     def test_no_kdtree_evaluate_uses_raw(self):
@@ -392,7 +392,7 @@ class TestDegenerateMetrics:
         X, y = _make_linear_2d()
         model = SmoothBivariateRegression(**_fit_kwargs(X.shape[1])).fit(X, y)
         model._train_kdtree = None
-        metrics = model.evaluate_metrics(X, y)
+        metrics = model.evaluate_metrics(X, y, min_region_events=1)
         # On a clean linear target the raw prediction is accurate.
         assert metrics['euclidean_mae'] < 0.1
 
@@ -492,7 +492,7 @@ class TestDegenerateMetrics:
         monkeypatch.setattr(biv, "spearmanr", _raise_value_error)
         X, y = _make_linear_2d()
         model = SmoothBivariateRegression(**_fit_kwargs(X.shape[1])).fit(X, y)
-        metrics = model.evaluate_metrics(X, y)
+        metrics = model.evaluate_metrics(X, y, min_region_events=1)
         assert np.isnan(metrics['spearman_x'])
         assert np.isnan(metrics['spearman_y'])
         assert np.isfinite(metrics['pearson_x'])

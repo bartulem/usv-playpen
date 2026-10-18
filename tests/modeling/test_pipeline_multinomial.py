@@ -780,7 +780,7 @@ class TestMultinomialSplitters:
 
         cv_folds, tolerances = get_stratified_group_splits_stable(
             groups=groups, y=y, n_categories=3, split_strategy='mixed',
-            test_prop=0.3, n_splits=3, random_seed=0,
+            test_prop=0.3, n_splits=3, random_seed=0, tolerance=0.05, max_total_attempts=50000, widen_step=0.02, widen_every=1000
         )
         assert len(cv_folds) == 3
         assert tolerances == [0.0, 0.0, 0.0]
@@ -801,7 +801,7 @@ class TestMultinomialSplitters:
         with pytest.raises(ValueError, match="distinct classes"):
             get_stratified_group_splits_stable(
                 groups=groups, y=y, n_categories=3, split_strategy='mixed',
-                test_prop=0.3, n_splits=2, random_seed=0,
+                test_prop=0.3, n_splits=2, random_seed=0, tolerance=0.05, max_total_attempts=50000, widen_step=0.02, widen_every=1000
             )
 
     def test_session_strategy_keeps_sessions_disjoint(self):
@@ -827,7 +827,7 @@ class TestMultinomialSplitters:
 
         cv_folds, tolerances = get_stratified_group_splits_stable(
             groups=groups, y=y, n_categories=3, split_strategy='session',
-            test_prop=0.5, n_splits=2, random_seed=0, tolerance=0.5,
+            test_prop=0.5, n_splits=2, random_seed=0, tolerance=0.5, max_total_attempts=50000, widen_step=0.02, widen_every=1000
         )
         assert len(cv_folds) == 2
         assert len(tolerances) == 2
@@ -837,7 +837,7 @@ class TestMultinomialSplitters:
         with pytest.raises(ValueError, match="distinct test sets"):
             get_stratified_group_splits_stable(
                 groups=groups, y=y, n_categories=3, split_strategy='session',
-                test_prop=1 / 6, n_splits=7, random_seed=0, tolerance=0.5,
+                test_prop=1 / 6, n_splits=7, random_seed=0, tolerance=0.5, max_total_attempts=50000, widen_step=0.02, widen_every=1000
             )
         for tr_idx, te_idx in cv_folds:
             tr_sessions = set(groups[tr_idx].tolist())
@@ -854,7 +854,7 @@ class TestMultinomialSplitters:
         with pytest.raises(ValueError, match="split_strategy"):
             get_stratified_group_splits_stable(
                 groups=groups, y=y, n_categories=3, split_strategy='bogus',
-                test_prop=0.3, n_splits=1, random_seed=0,
+                test_prop=0.3, n_splits=1, random_seed=0, tolerance=0.05, max_total_attempts=50000, widen_step=0.02, widen_every=1000
             )
 
 
@@ -1051,7 +1051,7 @@ class TestMultinomialUnivariateRunner:
             random_state=0,
             verbose=False,
             use_lax_loop=False,
-            regressor_cls=SmoothMultinomialLogisticRegression,
+            regressor_cls=SmoothMultinomialLogisticRegression, ece_n_bins=10
         )
 
         assert best_lam_sm in lambda_grid.tolist()
@@ -1588,7 +1588,7 @@ class TestMultinomialTunerBranches:
                 random_state=0,
                 verbose=False,
                 use_lax_loop=False,
-                regressor_cls=SmoothMultinomialLogisticRegression,
+                regressor_cls=SmoothMultinomialLogisticRegression, ece_n_bins=10
             )
 
     def test_degenerate_fold_returns_grid_centre_and_empty_audit(self):
@@ -1622,7 +1622,7 @@ class TestMultinomialTunerBranches:
             random_state=0,
             verbose=False,
             use_lax_loop=False,
-            regressor_cls=SmoothMultinomialLogisticRegression,
+            regressor_cls=SmoothMultinomialLogisticRegression, ece_n_bins=10
         )
         assert best_lam == 1.0          # median of the 3-point lambda grid
         assert best_l2 == 0.01          # median of the 3-point l2 grid
@@ -1673,7 +1673,7 @@ class TestMultinomialTunerBranches:
             random_state=0,
             verbose=False,
             use_lax_loop=False,
-            regressor_cls=SmoothMultinomialLogisticRegression,
+            regressor_cls=SmoothMultinomialLogisticRegression, ece_n_bins=10
         )
         assert best_lam in lambda_grid.tolist()
         assert best_l2 in l2_grid.tolist()
@@ -1756,7 +1756,7 @@ class TestMultinomialTunerBranches:
             random_state=0,
             verbose=True,   # also lights up the verbose exception-print branch
             use_lax_loop=False,
-            regressor_cls=_AlwaysRaises,
+            regressor_cls=_AlwaysRaises, ece_n_bins=10
         )
         assert best_lam == 1.0          # median of the 3-point lambda grid
         assert best_l2 == 0.1           # median of the 2-point l2 grid -> index 1

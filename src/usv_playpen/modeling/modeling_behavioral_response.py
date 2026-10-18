@@ -2803,7 +2803,7 @@ def behavioral_response_contrast(input_pickle_path: str | Path,
                 'Contrast', feature=f'{feature} | {term_name}',
                 metrics={'beta': term['coefficient'], 'se': term['std_error'],
                          'p': term['p_value']},
-                decision='SIG' if term['p_value'] < 0.05 else 'ns',
+                decision='SIG' if term['p_value'] < response_settings['report_alpha'] else 'ns',
             ))
 
         # SECONDARY: the same design on the arithmetic mean, so the stronger
@@ -2846,7 +2846,8 @@ def behavioral_response_contrast(input_pickle_path: str | Path,
             usable_rows = np.isfinite(column) if signed_response else np.isfinite(column) & (column > 0.0)
             treated = in_session & (is_vocal > 0.0) & usable_rows
             control_rows = in_session & (is_vocal == 0.0) & usable_rows
-            if treated.sum() >= 3 and control_rows.sum() >= 3:
+            if (treated.sum() >= response_settings['per_session_min_events_per_arm']
+                    and control_rows.sum() >= response_settings['per_session_min_events_per_arm']):
                 if signed_response:
                     per_session.append(float(np.mean(column[treated]) - np.mean(column[control_rows])))
                 else:

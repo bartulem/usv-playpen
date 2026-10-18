@@ -231,7 +231,7 @@ def score_fold(estimator, session: dict, feature_indices: list, vocal_frames: np
     feature_indices (list)
         Columns the model was fitted on.
     vocal_frames (np.ndarray)
-        Frames of the focal animal's calls in this session.
+        Frames of the focal animal's USVs in this session.
     n_lags (int)
         History length in frames.
     base_rate (float)
@@ -396,7 +396,7 @@ def leave_one_session_out_scores(eta: np.ndarray, labels: np.ndarray, session_in
 
     This RE-POOLS rather than reading the per-session scores reported beside it, and the distinction is
     the whole point. A per-session score fits its own slope and intercept on one session's vocal frames
-    alone -- the fragile construction pooling exists to avoid, and the one that on a 372-call session
+    alone -- the fragile construction pooling exists to avoid, and the one that on a 372-USV session
     produced a null whose mean (+0.0170) exceeded its own observed value (+0.0040). Dropping a session
     and recalibrating on the rest keeps the shared slope estimated on everything that remains, so a thin
     session's instability never becomes its own estimate.

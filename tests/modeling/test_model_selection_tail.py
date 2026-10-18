@@ -1543,6 +1543,9 @@ class TestMultinomialAndManifoldAborts:
                                       split_strategy='mixed', split_num=2)
         rng = np.random.default_rng(0)
         n_sessions, per_session = 4, 50
+        # The stored univariate folds are leave-one-session-out, so the selection's fold count
+        # must match them (the screen refuses a univariate run with a different fold count).
+        settings['model_validation']['manifold_n_cv_folds'] = n_sessions
         session_ids = [f's{i}' for i in range(n_sessions)]
         event_to_session = np.repeat(np.arange(n_sessions), per_session)
         truth = rng.random((n_sessions * per_session, 2))

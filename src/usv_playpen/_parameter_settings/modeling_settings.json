@@ -19,6 +19,9 @@
     "selection_effect_floor": 0.1,
     "selection_n_bootstrap": 1000,
     "selection_ci_level": 0.99,
+    "selection_min_fold_events": 30,
+    "selection_sign_flip_exact_max_folds": 22,
+    "selection_sign_flip_monte_carlo_draws": 1048576,
     "filter_null_permutations": 20,
     "usv_bout_time": 2,
     "usv_per_bout_floor": 2,
@@ -37,7 +40,9 @@
     "session_split_initial_tolerance": 0.05,
     "session_split_max_attempts": 50000,
     "session_split_widen_step": 0.02,
-    "session_split_widen_every": 1000
+    "session_split_widen_every": 1000,
+    "stratification_max_bins": 10,
+    "stratification_min_events_per_bin": 20
   },
 
   "kinematic_features": {
@@ -87,9 +92,15 @@
     "usv_manifold_column_names": ["qlvm1", "qlvm2"],
     "usv_manifold_metric": "torus",
     "usv_manifold_period": 1.0,
+    "usv_manifold_weight_clip_percentile": 95.0,
     "usv_manifold_min_region_events": 20,
     "usv_manifold_selection_score": "macro",
     "freeze_selection_kappa": true,
+    "usv_manifold_dcor": {
+      "n_subsample": 2500,
+      "n_repeats": 3,
+      "n_repeats_fold_gate": 1
+    },
     "usv_manifold_geodesic_metrics": {
       "compute": true,
       "grid_n_per_dim": 40,
@@ -107,6 +118,7 @@
     "timescale_audit": false,
     "binary_decision_threshold": 0.5,
     "ece_n_bins": 10,
+    "summary_star_alpha": 0.01,
     "timescale_max_lag_seconds": 10.0,
     "timescale_n_shuffles": 1000,
     "timescale_shuffle_range": [20, 60],
@@ -151,13 +163,18 @@
         "bn_eps": 1e-5,
         "grid_size": 25,
         "samples_per_cell": 40,
+        "grid_balance_alpha": 0.5,
+        "prediction_head_scale_margin": 1.1,
         "use_scheduler": true,
         "patience": 12,
         "null_patience": 3,
+        "early_stopping_eval_every_epochs": 5,
+        "early_stopping_min_delta": 0.001,
         "validation_session_fraction": 0.15,
         "warp_range": 0.1,
         "n_folds": 10,
         "permutation_iterations": 10,
+        "importance_snr_threshold": 3.0,
         "use_kinematic_masking": true,
         "masking_prob": 0.15,
         "masking_length_frames": 60,
@@ -166,7 +183,12 @@
           "enable": true,
           "segmentation": "category",
           "alpha": 0.5,
-          "radius_mode": "adaptive"
+          "radius_mode": "adaptive",
+          "center_min_points_per_label": 20,
+          "center_max_points_per_label": 30000,
+          "center_grid_resolution": 200,
+          "center_grid_margin_fraction": 0.05,
+          "center_rng_seed": 0
         }
       }
     },
@@ -288,6 +310,7 @@
     "n_em_iters": 100,
     "n_lbfgs": 500,
     "n_restarts": 5,
+    "n_kappa_rounds": 3,
     "em_tol": 0.0001,
     "transition_pseudocount": 1.0,
     "lambda_smooth": 100.0,
@@ -295,7 +318,16 @@
     "l2_reg": 0.1,
     "multinomial_target": "category",
     "focal_gamma": 0.0,
-    "multinomial_max_iter": 2000
+    "multinomial_max_iter": 2000,
+    "emission_smoothness_derivative_order": 2,
+    "emission_huber_delta": 1.0,
+    "emission_learning_rate": 0.001,
+    "manifold_max_iter": 5000,
+    "emission_tol": 0.0001,
+    "emission_random_state": 0,
+    "init_kmeans_n_init": 3,
+    "init_self_transition": 0.8,
+    "init_bias_sd": 0.3
   },
   "bout_offset": {
     "filter_history": 1.0,
@@ -325,6 +357,8 @@
     "covariate_transform": "yeo_johnson",
     "covariate_features": "both",
     "duration_n_bins": 3,
+    "report_alpha": 0.05,
+    "per_session_min_events_per_arm": 3,
     "matched_divergence": {
       "pre_seconds": 4.0,
       "post_clean_seconds": 4.0,

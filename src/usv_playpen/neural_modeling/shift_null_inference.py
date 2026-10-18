@@ -164,7 +164,9 @@ def escalated_empirical_pvalue(observed: float, draw_more, ladder: list, initial
     draw_more (Callable)
         ``draw_more(n) -> np.ndarray`` returning ``n`` FRESH null scores.
     ladder (list)
-        Ascending target draw counts, e.g. ``[10000, 100000, 1000000]``.
+        Ascending target counts of FINITE draws, e.g. ``[10000, 100000, 1000000]``; NaN draws are kept in
+        the returned null for auditing but count toward no target. Each rung tops up once, by the
+        shortfall in finite draws.
     initial_null (np.ndarray)
         Null scores already in hand.
     message_output (Callable)
@@ -183,10 +185,14 @@ def escalated_empirical_pvalue(observed: float, draw_more, ladder: list, initial
     null = np.asarray(initial_null, dtype=np.float64)
     p_value, at_floor = empirical_pvalue(null, observed)
     for target in ladder:
-        if not at_floor or target <= null.size:
+        # Only FINITE draws count toward a rung's target, as only finite draws enter the p-value: a NaN
+        # draw (a degenerate refit) is dropped from p by `empirical_pvalue`, so counting it here would
+        # stop the ladder short of the draws the floor needs.
+        n_finite = int(np.isfinite(null).sum())
+        if not at_floor or target <= n_finite:
             break
-        message_output(f"      escalating {null.size} -> {target} draws (p at the {p_value:.3e} floor)")
-        null = np.concatenate([null, np.asarray(draw_more(target - null.size), dtype=np.float64)])
+        message_output(f"      escalating {n_finite} -> {target} finite draws (p at the {p_value:.3e} floor)")
+        null = np.concatenate([null, np.asarray(draw_more(target - n_finite), dtype=np.float64)])
         p_value, at_floor = empirical_pvalue(null, observed)
     return p_value, at_floor, null
 

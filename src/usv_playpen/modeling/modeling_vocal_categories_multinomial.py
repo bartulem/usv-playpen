@@ -44,7 +44,6 @@ from ..os_utils import (
     QLVM_CATEGORY_COLUMN,
     atomic_output_path,
     load_qlvm_category_bundle,
-    resolve_modeling_setting,
 )
 from .jax_multinomial_logistic_regression import SmoothMultinomialLogisticRegression
 from .load_input_files import (
@@ -87,25 +86,20 @@ from .modeling_utils import (
     zscore_features_across_sessions,
 )
 
-# Initial spatial-CV session-split matching tolerance (auto-widens at runtime)
-# and the Expected-Calibration-Error histogram bin count, read from the settings
-# blocks rather than bare 0.05 / 10 literals.
-_SESSION_SPLIT_INITIAL_TOLERANCE = resolve_modeling_setting('model_validation', 'session_split_initial_tolerance')
-_ECE_N_BINS = resolve_modeling_setting('diagnostics', 'ece_n_bins')
-
 
 def get_stratified_group_splits_stable(
         groups: np.ndarray,
         y: np.ndarray,
         n_categories: int,
         split_strategy: str = 'session',
-        test_prop: float = 0.2,
-        n_splits: int = 100,
-        tolerance: float = _SESSION_SPLIT_INITIAL_TOLERANCE,
-        random_seed: int = 0,
-        max_total_attempts: int = 50000,
-        widen_step: float = 0.02,
-        widen_every: int = 1000
+        *,
+        test_prop: float,
+        n_splits: int,
+        tolerance: float,
+        random_seed: int,
+        max_total_attempts: int,
+        widen_step: float,
+        widen_every: int
 ) -> tuple:
     """
     Generates `n_splits` independent train/test index pairs and records the
@@ -138,15 +132,18 @@ def get_stratified_group_splits_stable(
         Array of USV category labels.
     split_strategy : {'session', 'mixed'}, default='session'
         Splitting rule (see above).
-    test_prop : float, default=0.2
+    test_prop : float
         Proportion of sessions ('session') or samples ('mixed') routed to test.
-    n_splits : int, default=100
-        Number of independent folds to return.
-    tolerance : float, default=0.05
+        Keyword-only, no default (callers pass
+        `model_validation.cv_validation_proportion`).
+    n_splits : int
+        Number of independent folds to return (keyword-only).
+    tolerance : float
         Initial allowable max per-class distribution deviation between the
-        test fold and the global data (only used by 'session').
-    random_seed : int, default=0
-        Seed for reproducibility.
+        test fold and the global data (only used by 'session'). Keyword-only,
+        no default: callers pass `model_validation.session_split_initial_tolerance`.
+    random_seed : int
+        Seed for reproducibility (keyword-only).
     n_categories : int
         Theoretical number of USV categories the multinomial model has
         a class slot for. The extraction pipeline auto-derives this
@@ -157,13 +154,16 @@ def get_stratified_group_splits_stable(
         there. Required — no default — so callers cannot silently
         inherit a stale literal if the project's category cardinality
         ever changes.
-    max_total_attempts : int, default=50000
-        Hard ceiling on rejection-sampling attempts before raising.
-    widen_step : float, default=0.02
+    max_total_attempts : int
+        Hard ceiling on rejection-sampling attempts before raising
+        (keyword-only; `model_validation.session_split_max_attempts`).
+    widen_step : float
         Amount by which `tolerance` is increased each time the sampler fails
-        to accept a fold for `widen_every` consecutive attempts.
-    widen_every : int, default=1000
-        Number of failed attempts between successive tolerance widenings.
+        to accept a fold for `widen_every` consecutive attempts
+        (keyword-only; `model_validation.session_split_widen_step`).
+    widen_every : int
+        Number of failed attempts between successive tolerance widenings
+        (keyword-only; `model_validation.session_split_widen_every`).
 
     Returns
     -------
@@ -427,7 +427,8 @@ def _tune_multinomial_regularization(X_train: np.ndarray,
                                      random_state: int,
                                      verbose: bool,
                                      use_lax_loop: bool,
-                                     regressor_cls) -> tuple:
+                                     regressor_cls,
+                                     ece_n_bins: int) -> tuple:
     """
     Selects `(lambda_smooth, l2_reg)` jointly for a multinomial logistic
     fit by stratified inner cross-validation on the supplied training
@@ -521,6 +522,9 @@ def _tune_multinomial_regularization(X_train: np.ndarray,
         Whether the inner fits run their optimiser as one compiled loop.
     regressor_cls : type
         The multinomial regressor class to fit (injected for testing).
+    ece_n_bins : int
+        Confidence-bin count of the `'ece'` inner-CV score
+        (`diagnostics.ece_n_bins`); unused by the other scoring metrics.
 
     Returns
     -------
@@ -598,7 +602,7 @@ def _tune_multinomial_regularization(X_train: np.ndarray,
         balanced accuracy (`'score'`), macro F1 (`'f1'`), macro recall
         (`'recall'`), Matthews correlation (`'mcc'`), log-loss on probabilities
         clipped to [1e-15, 1 - 1e-15] (`'ll'`), multiclass Brier score
-        (`'brier'`) or expected calibration error with `_ECE_N_BINS` bins
+        (`'brier'`) or expected calibration error with `ece_n_bins` bins
         (`'ece'`).
 
         Parameters
@@ -643,7 +647,7 @@ def _tune_multinomial_regularization(X_train: np.ndarray,
             if inner_cv_scoring_metric == 'brier':
                 return float(brier_score_multi(y_true_, y_proba_, model_classes_))
             if inner_cv_scoring_metric == 'ece':
-                return float(expected_calibration_error(y_true_, y_pred_, y_proba_, n_bins=_ECE_N_BINS))
+                return float(expected_calibration_error(y_true_, y_pred_, y_proba_, n_bins=ece_n_bins))
         except (ValueError, RuntimeError):
             return float('nan')
         return float('nan')
@@ -1403,7 +1407,8 @@ class MultinomialModelRunner:
 
     @staticmethod
     def load_univariate_data_blocks(pkl_path: str,
-                                    bin_size: int = 10,
+                                    *,
+                                    bin_size: int,
                                     feature_filter=None,
                                     basis: np.ndarray | None = None) -> dict:
         """
@@ -1429,9 +1434,11 @@ class MultinomialModelRunner:
         pkl_path : str
             The full path to the .pkl file containing the extracted (X, y)
             dictionaries from the MultinomialModelingPipeline.
-        bin_size : int, optional
+        bin_size : int
             The resizing factor for temporal downsampling. A value of 10
-            means every 10 frames are averaged into 1 bin. Default is 10.
+            means every 10 frames are averaged into 1 bin. Keyword-only, no
+            default: the runner passes
+            `hyperparameters.linear_models.multinomial_logistic.bin_resizing_factor`.
         feature_filter : iterable of str or str, optional
             If provided, only bin and return the listed features. The HPC
             dispatcher runs one feature per process, so paying the binning
@@ -1707,6 +1714,7 @@ class MultinomialModelRunner:
             n_splits=n_splits,
             random_seed=base_seed,
             n_categories=n_categories_total,
+            tolerance=self.modeling_settings['model_validation']['session_split_initial_tolerance'],
             max_total_attempts=self.modeling_settings['model_validation']['session_split_max_attempts'],
             widen_step=self.modeling_settings['model_validation']['session_split_widen_step'],
             widen_every=self.modeling_settings['model_validation']['session_split_widen_every']
@@ -1919,6 +1927,7 @@ class MultinomialModelRunner:
                             # the user `use_lax_loop` setting.
                             use_lax_loop=False,
                             regressor_cls=SmoothMultinomialLogisticRegression,
+                            ece_n_bins=self.modeling_settings['diagnostics']['ece_n_bins'],
                         )
                         fold_tuned_flag = True
                     else:
@@ -1993,7 +2002,7 @@ class MultinomialModelRunner:
                     f_brier = np.nan
                     print(f"[warn] fold diagnostic metric could not be recorded: {e}")
                 try:
-                    f_ece = expected_calibration_error(y_test, predictions, probs_canonical, n_bins=_ECE_N_BINS)
+                    f_ece = expected_calibration_error(y_test, predictions, probs_canonical, n_bins=self.modeling_settings['diagnostics']['ece_n_bins'])
                 except Exception as e:
                     f_ece = np.nan
                     print(f"[warn] fold diagnostic metric could not be recorded: {e}")
@@ -2135,6 +2144,7 @@ class MultinomialModelRunner:
                             verbose=hp['verbose'],
                             use_lax_loop=False,
                             regressor_cls=SmoothMultinomialLogisticRegression,
+                            ece_n_bins=self.modeling_settings['diagnostics']['ece_n_bins'],
                         )
                         held_tuned_flag = True
                     else:
@@ -2194,7 +2204,7 @@ class MultinomialModelRunner:
                     h_brier = np.nan
                     print(f"[warn] held-out diagnostic metric could not be recorded: {e}")
                 try:
-                    h_ece = expected_calibration_error(y_held, predictions, probs_canonical, n_bins=_ECE_N_BINS)
+                    h_ece = expected_calibration_error(y_held, predictions, probs_canonical, n_bins=self.modeling_settings['diagnostics']['ece_n_bins'])
                 except Exception as e:
                     h_ece = np.nan
                     print(f"[warn] held-out diagnostic metric could not be recorded: {e}")

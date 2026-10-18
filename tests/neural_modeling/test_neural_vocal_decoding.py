@@ -17,12 +17,12 @@ import pathlib
 import numpy as np
 import pytest
 
+import usv_playpen.neural_modeling.neural_vocal_decoding as vocal_decoding_module
 from usv_playpen.neural_modeling.neural_significance import (
     permutation_null,
     within_session_permutation,
 )
 from usv_playpen.neural_modeling.neural_vocal_decoding import (
-    PERIOD,
     TUNING_BASES,
     basis_context,
     bump_basis,
@@ -43,6 +43,9 @@ from usv_playpen.neural_modeling.neural_vocal_decoding import (
 
 SETTINGS_PATH = (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"
                  / "_parameter_settings" / "neural_modeling_settings.json")
+with SETTINGS_PATH.open() as _settings_file:
+    # The shipped torus period (`vocalization_settings.torus_period`) the dispatcher threads in.
+    PERIOD = json.load(_settings_file)["vocalization_settings"]["torus_period"]
 
 
 def _settings(**surface_overrides) -> dict:
@@ -140,18 +143,18 @@ class TestTorusGeometry:
     """Wrapped distances and the decoding grid on the unit torus."""
     def test_distance_wraps(self):
         """Points at 0.98 and 0.02 must be 0.04 apart, not 0.96, so the decoder treats the seam as continuous."""
-        near_edges = wrapped_square_distance(np.array([[0.98, 0.5]]), np.array([[0.02, 0.5]]))
+        near_edges = wrapped_square_distance(np.array([[0.98, 0.5]]), np.array([[0.02, 0.5]]), PERIOD)
         assert near_edges[0, 0] == pytest.approx(0.04 ** 2)
 
     def test_distance_is_zero_to_itself(self):
         """Every point must be at zero distance from itself, the basic metric property the KDE relies on."""
         points = np.random.default_rng(0).random((5, 2))
-        assert np.allclose(np.diag(wrapped_square_distance(points, points)), 0.0)
+        assert np.allclose(np.diag(wrapped_square_distance(points, points, PERIOD)), 0.0)
 
     def test_grid_cells_tile_the_torus(self):
         """A 24 x 24 grid must have 576 cells whose areas sum to the torus area, so grid integrals of the
         posterior are correctly normalised."""
-        grid, area = torus_grid(24)
+        grid, area = torus_grid(24, PERIOD)
         assert grid.shape == (576, 2)
         assert area * 576 == pytest.approx(PERIOD ** 2)
 
@@ -161,18 +164,18 @@ class TestBases:
     """The Fourier and occupancy-gated bump tuning bases."""
     def test_fourier_is_periodic_across_the_seam(self):
         """A seam in the basis would put an artificial discontinuity in every fitted surface."""
-        left = fourier_basis(np.array([[0.0, 0.3]]), 2)
-        right = fourier_basis(np.array([[1.0, 0.3]]), 2)
+        left = fourier_basis(np.array([[0.0, 0.3]]), 2, PERIOD)
+        right = fourier_basis(np.array([[1.0, 0.3]]), 2, PERIOD)
         assert np.allclose(left, right, atol=1e-12)
 
     def test_fourier_width_matches_k(self):
         """At ``k = 2`` the Fourier basis must have 12 columns, the width the stored coefficients assume."""
-        assert fourier_basis(np.random.default_rng(0).random((4, 2)), 2).shape == (4, 12)
+        assert fourier_basis(np.random.default_rng(0).random((4, 2)), 2, PERIOD).shape == (4, 12)
 
     def test_bump_nodes_are_gated_by_occupancy(self):
         """Events confined to one corner must not license nodes on the far side of the torus."""
         corner = np.random.default_rng(0).random((300, 2)) * 0.2
-        kept = bump_nodes(corner, 10, 0.1, 5.0)
+        kept = bump_nodes(corner, 10, 0.1, 5.0, PERIOD)
         assert kept.shape[0] < 100
         # gating is on the TORUS, so nodes near 0.95 survive by wrapping round to events near 0.05;
         # what must be excluded is the genuinely far side, around 0.5
@@ -182,7 +185,7 @@ class TestBases:
     def test_bump_basis_peaks_at_its_node(self):
         """A bump must equal 1.0 at its own node and be near zero far away, so each column is a local feature."""
         nodes = np.array([[0.5, 0.5]])
-        values = bump_basis(np.array([[0.5, 0.5], [0.9, 0.9]]), nodes, 0.1)
+        values = bump_basis(np.array([[0.5, 0.5], [0.9, 0.9]]), nodes, 0.1, PERIOD)
         assert values[0, 0] == pytest.approx(1.0)
         assert values[1, 0] < 0.05
 
@@ -194,7 +197,7 @@ class TestPoissonFit:
         """On 4,000 events from a known cosine surface the fitted rate must correlate above 0.9 with the truth,
         so the fit recovers the surface it is given."""
         counts, positions, _sessions = _tuned_unit(n_sessions=1, per_session=4000, depth=1.0)
-        basis = fourier_basis(positions, 2)
+        basis = fourier_basis(positions, 2, PERIOD)
         beta = poisson_tuning_fit(basis, counts, ridge=1.0, n_steps=50)
         predicted = np.exp(basis @ beta[:-1] + beta[-1])
 
@@ -204,7 +207,7 @@ class TestPoissonFit:
     def test_the_intercept_is_unpenalized(self):
         """A heavy ridge must flatten the surface onto the mean rate, not shrink the rate itself."""
         counts, positions, _sessions = _tuned_unit(n_sessions=1, per_session=1500)
-        basis = fourier_basis(positions, 2)
+        basis = fourier_basis(positions, 2, PERIOD)
         beta = poisson_tuning_fit(basis, counts, ridge=1e8, n_steps=50)
 
         assert np.abs(beta[:-1]).max() < 1e-3
@@ -217,8 +220,8 @@ class TestOccupancyAndMask:
     def test_occupancy_is_kde_weighted_not_a_cell_count(self):
         """Stated because the mask admits cells holding ZERO training USVs -- two USVs a bandwidth
         away sum above 1.0 -- and that is a property to report, not to present as conservative."""
-        grid, _area = torus_grid(24)
-        occupancy = torus_occupancy(np.array([[0.5, 0.5], [0.52, 0.5]]), grid, 0.10)
+        grid, _area = torus_grid(24, PERIOD)
+        occupancy = torus_occupancy(np.array([[0.5, 0.5], [0.52, 0.5]]), grid, 0.10, PERIOD)
         empty_cell = np.argmin(np.sum((grid - np.array([0.55, 0.5])) ** 2, axis=1))
 
         assert occupancy[empty_cell] > 1.0
@@ -226,9 +229,9 @@ class TestOccupancyAndMask:
     def test_masked_events_are_excluded_and_counted(self):
         """Events far from any training USV are dropped rather than scored against an invented prior."""
         counts, positions, sessions = _tuned_unit()
-        loose = decoding_context(positions, sessions, SETTINGS)
+        loose = decoding_context(positions, sessions, SETTINGS, PERIOD)
         strict = decoding_context(positions, sessions,
-                                  _settings(decode_grid_min_occupancy=20.0))
+                                  _settings(decode_grid_min_occupancy=20.0), PERIOD)
 
 
         n_loose = decode_gain(counts, loose, SETTINGS)["n_masked"]
@@ -246,9 +249,9 @@ class TestDecodeGain:
         tuned = _tuned_unit(depth=1.4, seed=0, tuned=True)
         flat = _tuned_unit(depth=1.4, seed=0, tuned=False)
 
-        tuned_gain = decode_gain(tuned[0], decoding_context(tuned[1], tuned[2], SETTINGS),
+        tuned_gain = decode_gain(tuned[0], decoding_context(tuned[1], tuned[2], SETTINGS, PERIOD),
                                  SETTINGS)["gain"]
-        flat_gain = decode_gain(flat[0], decoding_context(flat[1], flat[2], SETTINGS),
+        flat_gain = decode_gain(flat[0], decoding_context(flat[1], flat[2], SETTINGS, PERIOD),
                                 SETTINGS)["gain"]
 
         assert tuned_gain > 0.05
@@ -259,7 +262,7 @@ class TestDecodeGain:
         """With the shape switched off the posterior IS the prior, so the gain must vanish. This is what
         makes `alpha >= 0` a guarantee that a reversed map can be ignored but never inverted."""
         counts, positions, sessions = _tuned_unit()
-        folds = decoding_context(positions, sessions, SETTINGS)
+        folds = decoding_context(positions, sessions, SETTINGS, PERIOD)
         gain = decode_gain(counts, folds, _fixed_alpha(0.0))["gain"]
 
         assert abs(gain) < 1e-9
@@ -268,7 +271,7 @@ class TestDecodeGain:
         """End-to-end with the real null: the same counts against re-paired positions must score about
         zero, which is what the exact permutation is for."""
         counts, positions, sessions = _tuned_unit(depth=1.4)
-        folds = decoding_context(positions, sessions, SETTINGS)
+        folds = decoding_context(positions, sessions, SETTINGS, PERIOD)
         observed = decode_gain(counts, folds, SETTINGS)["gain"]
 
         def statistic(permutation):
@@ -338,9 +341,9 @@ class TestSessionExposureOffsets:
         sessions = np.repeat(np.arange(3), 400)
         counts = generator.poisson(np.array([0.3, 1.0, 6.0])[sessions]).astype(float)
 
-        basis = fourier_basis(positions, 2)
-        grid, _area = torus_grid(24)
-        grid_basis = fourier_basis(grid, 2)
+        basis = fourier_basis(positions, 2, PERIOD)
+        grid, _area = torus_grid(24, PERIOD)
+        grid_basis = fourier_basis(grid, 2, PERIOD)
         ridge = 0.02 * counts.sum()
 
         def modulation_depth(beta):
@@ -379,7 +382,7 @@ class TestAmplitudeCalibration:
         prior-weighted mean first, so the exposure term keeps setting the level -- without the centring
         alpha would rescale the offset too and fight the term it is meant to complement."""
         counts, positions, sessions = _tuned_unit(depth=1.2)
-        folds = decoding_context(positions, sessions, SETTINGS)
+        folds = decoding_context(positions, sessions, SETTINGS, PERIOD)
         fold = folds[0]
         beta = poisson_tuning_fit(fold["event_basis"][fold["train_rows"]],
                                   counts[fold["train_rows"]], 0.02 * counts.sum(), 50,
@@ -400,7 +403,7 @@ class TestAmplitudeCalibration:
         """At ``alpha = 0`` every held-out event's gain must be zero, so the amplitude really switches the
         surface off."""
         counts, positions, sessions = _tuned_unit()
-        folds = decoding_context(positions, sessions, SETTINGS)
+        folds = decoding_context(positions, sessions, SETTINGS, PERIOD)
         fold = folds[0]
         beta = poisson_tuning_fit(fold["event_basis"][fold["train_rows"]],
                                   counts[fold["train_rows"]], 1.0, 50)
@@ -411,7 +414,7 @@ class TestAmplitudeCalibration:
         """Alpha is a per-unit descriptor whose values carry meaning -- passers land at 0.75-1.5 and
         null units rail to the floor -- so it is kept per fold, not averaged away."""
         counts, positions, sessions = _tuned_unit(depth=1.4)
-        result = decode_gain(counts, decoding_context(positions, sessions, SETTINGS), SETTINGS)
+        result = decode_gain(counts, decoding_context(positions, sessions, SETTINGS, PERIOD), SETTINGS)
         assert len(result["alphas"]) == 3
         assert len(result["ridges"]) == 3
         assert all(a in SETTINGS["tuning_surface"]["amplitude_calibration"]["alpha_grid"]
@@ -429,7 +432,7 @@ class TestConfigurationGuards:
         settings = _settings()
         settings["tuning_surface"]["likelihood_family"] = "gaussian"
         with pytest.raises(ValueError, match="Poisson"):
-            decode_gain(counts, decoding_context(positions, sessions, SETTINGS), settings)
+            decode_gain(counts, decoding_context(positions, sessions, SETTINGS, PERIOD), settings)
 
     def test_a_different_ridge_mode_is_refused(self):
         """A ridge-selection mode the decoder does not implement must raise ``ValueError`` naming the ridge."""
@@ -437,7 +440,7 @@ class TestConfigurationGuards:
         settings = _settings()
         settings["tuning_surface"]["ridge_selection"]["mode"] = "nested_inner_loso"
         with pytest.raises(ValueError, match="ridge"):
-            decode_gain(counts, decoding_context(positions, sessions, SETTINGS), settings)
+            decode_gain(counts, decoding_context(positions, sessions, SETTINGS, PERIOD), settings)
 
     def test_an_alpha_grid_below_alpha_min_is_refused(self):
         """`alpha >= 0` is what stops the decoder inverting a reversed map instead of declining to use
@@ -446,7 +449,7 @@ class TestConfigurationGuards:
         settings = _settings()
         settings["tuning_surface"]["amplitude_calibration"]["alpha_grid"] = [-0.5, 1.0]
         with pytest.raises(ValueError, match="alpha_min"):
-            decode_gain(counts, decoding_context(positions, sessions, SETTINGS), settings)
+            decode_gain(counts, decoding_context(positions, sessions, SETTINGS, PERIOD), settings)
 
     def test_a_different_calibration_mode_is_refused(self):
         """An amplitude-calibration mode other than inner LOSO must raise ``ValueError`` instead of being ignored."""
@@ -454,12 +457,12 @@ class TestConfigurationGuards:
         settings = _settings()
         settings["tuning_surface"]["amplitude_calibration"]["mode"] = "held_out_mle"
         with pytest.raises(ValueError, match="inner LOSO"):
-            decode_gain(counts, decoding_context(positions, sessions, SETTINGS), settings)
+            decode_gain(counts, decoding_context(positions, sessions, SETTINGS, PERIOD), settings)
 
     def test_session_rate_offsets_can_be_switched_off(self):
         """The switch has to change the answer, or it is decoration."""
         counts, positions, sessions = _tuned_unit(depth=1.4)
-        folds = decoding_context(positions, sessions, SETTINGS)
+        folds = decoding_context(positions, sessions, SETTINGS, PERIOD)
         off = _settings()
         off["tuning_surface"]["session_rate_offsets"] = False
         assert decode_gain(counts, folds, SETTINGS)["gain"] != decode_gain(counts, folds, off)["gain"]
@@ -473,7 +476,7 @@ class TestSaveRoster:
         """Each of the three per-fold records must carry exactly the stored keys and the 13 surface coefficients,
         so a figure or population decode can be rebuilt without refitting."""
         counts, positions, sessions = _tuned_unit(depth=1.4)
-        result = decode_gain(counts, decoding_context(positions, sessions, SETTINGS), SETTINGS)
+        result = decode_gain(counts, decoding_context(positions, sessions, SETTINGS, PERIOD), SETTINGS)
         assert len(result["per_fold"]) == 3
         for entry in result["per_fold"]:
             assert set(entry) == {"held_out", "n_events", "alpha", "ridge", "n_masked",
@@ -486,7 +489,7 @@ class TestSaveRoster:
         """For a strongly tuned unit all three folds must be positive and the leave-one-fold-out minimum positive
         and no larger than the pooled gain, so no one session carries the result."""
         counts, positions, sessions = _tuned_unit(depth=1.4)
-        result = decode_gain(counts, decoding_context(positions, sessions, SETTINGS), SETTINGS)
+        result = decode_gain(counts, decoding_context(positions, sessions, SETTINGS, PERIOD), SETTINGS)
         assert result["n_folds_positive"] == 3
         assert result["min_leave_one_fold_out"] > 0.0
         # dropping the STRONGEST fold gives the smallest pooled mean, so the minimum sits at or
@@ -497,8 +500,44 @@ class TestSaveRoster:
         """Per-fold masked counts must sum to the total masked count, so the two stored numbers cannot disagree."""
         counts, positions, sessions = _tuned_unit()
         strict = _settings(decode_grid_min_occupancy=20.0)
-        result = decode_gain(counts, decoding_context(positions, sessions, strict), strict)
+        result = decode_gain(counts, decoding_context(positions, sessions, strict, PERIOD), strict)
         assert sum(f["n_masked"] for f in result["per_fold"]) == result["n_masked"]
+
+    def test_nats_per_spike_is_scored_gain_over_the_spikes_of_those_events(self):
+        """
+        Repro basis: with events masked, nats per spike is the summed finite gain divided by the spikes
+        of the SAME events. It used to multiply the mean finite gain by the count of ALL events, which
+        mis-scaled it (-0.00405 against the correct -0.00450 with 491 events masked).
+        """
+        counts, positions, sessions = _tuned_unit(seed=3)
+        strict = _settings(decode_grid_min_occupancy=20.0)
+        result = decode_gain(counts, decoding_context(positions, sessions, strict, PERIOD), strict,
+                             with_detail=True)
+        scored = np.isfinite(result["per_event_gain"])
+        assert 0 < result["n_masked"] < counts.size
+        expected = result["per_event_gain"][scored].sum() / counts[scored].sum()
+        assert result["nats_per_spike"] == pytest.approx(expected, rel=1e-12)
+
+    def test_the_leave_one_fold_out_minimum_skips_a_fold_whose_remainder_is_nan(self, monkeypatch):
+        """A single NaN left-out mean (every remaining event masked) is skipped -- ``np.nanmin``
+        semantics -- instead of turning the whole descriptor NaN as ``np.min`` did."""
+        counts, positions, sessions = _tuned_unit(depth=1.4)
+        folds = decoding_context(positions, sessions, SETTINGS, PERIOD)
+        real_finite_mean = vocal_decoding_module.finite_mean
+        calls_seen = []
+
+        def nan_for_the_first_dropped_fold(values):
+            """Returns NaN for the first leave-one-fold-out mean and the real mean otherwise."""
+            values = np.asarray(values)
+            if values.size == counts.size - folds[0]["test_rows"].size and not calls_seen:
+                calls_seen.append(True)
+                return float("nan")
+            return real_finite_mean(values)
+
+        monkeypatch.setattr(vocal_decoding_module, "finite_mean", nan_for_the_first_dropped_fold)
+        result = decode_gain(counts, folds, SETTINGS)
+        assert calls_seen
+        assert np.isfinite(result["min_leave_one_fold_out"])
 
 
 class TestFlaggedDescriptors:
@@ -509,7 +548,7 @@ class TestFlaggedDescriptors:
         """The overdispersion index must be present when its flag is on, absent when off, and near 1 for Poisson
         counts, so the flag is honoured and the value is a real measurement."""
         counts, positions, sessions = _tuned_unit(seed=5)
-        folds = decoding_context(positions, sessions, SETTINGS)
+        folds = decoding_context(positions, sessions, SETTINGS, PERIOD)
         on = decode_gain(counts, folds, SETTINGS, with_detail=True)
         off_settings = _settings()
         off_settings["record_overdispersion_index"] = False
@@ -519,13 +558,29 @@ class TestFlaggedDescriptors:
         # and it is a real measurement, not a placeholder: Poisson counts sit near 1
         assert 0.2 < on["overdispersion_index"] < 5.0
 
+    def test_an_untuned_poisson_unit_has_overdispersion_one(self):
+        """
+        Repro basis: an untuned Poisson unit with mean 5 must give a Pearson dispersion of ~1. The index
+        used to compare each count with the grid average of the uncentred, level-free surface, and
+        reported 20.17 -- var + (mean - 1)^2 -- for exactly this unit. Each event's expected count is
+        now the calibrated rate the decoder scored it with.
+        """
+        rng = np.random.default_rng(1)
+        n_events = 600
+        positions = rng.uniform(0.0, PERIOD, (n_events, 2))
+        sessions = np.repeat([0, 1, 2], n_events // 3)
+        counts = rng.poisson(5.0, n_events).astype(float)
+        result = decode_gain(counts, decoding_context(positions, sessions, SETTINGS, PERIOD), SETTINGS,
+                             with_detail=True)
+        assert result["overdispersion_index"] == pytest.approx(1.0, abs=0.15)
+
     def test_the_bump_gain_is_a_genuine_refit_under_the_local_basis(self):
         """Not a rescoring of the Fourier surface -- the basis is chosen when the context is built, so
         a bump gain equal to the Fourier gain would mean the override never took."""
         counts, positions, sessions = _tuned_unit(seed=6)
-        fourier = decode_gain(counts, decoding_context(positions, sessions, SETTINGS),
+        fourier = decode_gain(counts, decoding_context(positions, sessions, SETTINGS, PERIOD),
                               SETTINGS)["gain"]
-        bump = bump_basis_gain(counts, positions, sessions, SETTINGS)
+        bump = bump_basis_gain(counts, positions, sessions, SETTINGS, PERIOD)
         assert np.isfinite(bump)
         assert bump != fourier
         # both bases should find a strongly tuned unit
@@ -537,7 +592,7 @@ class TestFlaggedDescriptors:
         switch the basis of every later decode."""
         counts, positions, sessions = _tuned_unit(seed=7)
         settings = _settings()
-        bump_basis_gain(counts, positions, sessions, settings)
+        bump_basis_gain(counts, positions, sessions, settings, PERIOD)
         assert settings["tuning_surface"]["tuning_basis"] == "fourier"
 
     def test_anti_alignment_reads_the_left_tail_not_the_right(self):
@@ -557,14 +612,14 @@ class TestFlaggedDescriptors:
         each flag controls exactly its own descriptor."""
         counts, positions, sessions = _tuned_unit(seed=8)
         null = np.linspace(-0.01, 0.01, 51)
-        both = flagged_descriptors(counts, positions, sessions, SETTINGS, 0.05, null)
+        both = flagged_descriptors(counts, positions, sessions, SETTINGS, PERIOD, 0.05, null)
         assert "bump_basis_gain" in both
         assert "p_left" in both
 
         off = _settings()
         off["tuning_surface"]["record_bump_basis_gain"] = False
         off["discrimination_null"]["record_left_tail_anti_alignment"] = False
-        neither = flagged_descriptors(counts, positions, sessions, off, 0.05, null)
+        neither = flagged_descriptors(counts, positions, sessions, off, PERIOD, 0.05, null)
         assert neither == {}
 
     def test_the_shipped_settings_turn_all_three_on(self):
@@ -586,13 +641,13 @@ class TestTuningBasisIsAFirstClassOption:
         for bad in ("banana", "FOURIER", "Bumps", ""):
             with pytest.raises(ValueError, match="tuning_basis must be one of"):
                 decoding_context(np.array([[0.1, 0.2], [0.3, 0.4]]), np.array([0, 0]),
-                                 _settings(tuning_basis=bad))
+                                 _settings(tuning_basis=bad), PERIOD)
 
     def test_both_shipped_bases_are_accepted(self):
         """Every basis in ``TUNING_BASES`` must build three folds and score a finite gain, so both options run."""
         counts, positions, sessions = _tuned_unit(seed=11)
         for basis in sorted(TUNING_BASES):
-            folds, score = basis_context(positions, sessions, SETTINGS, basis)
+            folds, score = basis_context(positions, sessions, SETTINGS, basis, PERIOD)
             assert len(folds) == 3
             assert np.isfinite(score(counts)["gain"])
 
@@ -600,13 +655,13 @@ class TestTuningBasisIsAFirstClassOption:
         """``basis_context`` must raise ``ValueError`` for an unknown basis rather than default to one."""
         _counts, positions, sessions = _tuned_unit(seed=12)
         with pytest.raises(ValueError, match="basis must be one of"):
-            basis_context(positions, sessions, SETTINGS, "gaussian")
+            basis_context(positions, sessions, SETTINGS, "gaussian", PERIOD)
 
     def test_the_scorer_reuses_its_folds_so_a_null_can_be_driven_on_either_basis(self):
         """A permutation null must reuse ONE context across draws; rebuilding the KDE per draw is what
         makes an exact null unaffordable. This is what lets the bump basis be tested, not just ranked."""
         counts, positions, sessions = _tuned_unit(seed=13)
-        folds, score = basis_context(positions, sessions, SETTINGS, "bumps")
+        folds, score = basis_context(positions, sessions, SETTINGS, "bumps", PERIOD)
         observed = score(counts)["gain"]
         rng = np.random.default_rng(0)
         null = np.array([score(counts, within_session_permutation(sessions, rng))["gain"]
@@ -619,5 +674,5 @@ class TestTuningBasisIsAFirstClassOption:
         """Building a bump context must leave the caller's ``tuning_basis`` at ``"fourier"``."""
         _counts, positions, sessions = _tuned_unit(seed=14)
         settings = _settings()
-        basis_context(positions, sessions, settings, "bumps")
+        basis_context(positions, sessions, settings, "bumps", PERIOD)
         assert settings["tuning_surface"]["tuning_basis"] == "fourier"

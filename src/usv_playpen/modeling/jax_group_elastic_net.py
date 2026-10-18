@@ -242,9 +242,17 @@ def _power_iter_curvature(x_design: np.ndarray, sample_weight: np.ndarray, n_ite
     Description
     -----------
     Power-iterate the largest eigenvalue of the sample-weighted, mean-normalised Gram matrix
-    ``(1/sum_w) Xᵀ diag(w) X`` via matrix-vector products (no dense Gram formed). Multiplied by the
-    family curvature bound this gives the data-term gradient's Lipschitz constant, so a fixed FISTA step
-    ``1/L`` is provably safe (for Bernoulli, whose curvature is globally ≤ 0.25).
+    ``(1/sum_w) X̃ᵀ diag(w) X̃`` of the design AUGMENTED with the intercept column, ``X̃ = [X, 1]``,
+    via matrix-vector products (neither the dense Gram nor the augmented design is formed).
+    Multiplied by the family curvature bound this gives the Lipschitz constant of the data-term
+    gradient in the JOINT ``(w, b)`` that FISTA steps, so a fixed step ``1/L`` is provably safe (for
+    Bernoulli, whose curvature is globally ≤ 0.25).
+
+    The intercept column is load-bearing. On its own it contributes an eigenvalue of 1 (weight
+    0.25 after the Bernoulli bound); bounding only ``X`` left it out, and on a small-scale design
+    (lag-averaged spline columns with no smoothness penalty) the used step was more than three
+    times the safe one, so FISTA oscillated, never met the tolerance and returned an intercept
+    and objective far from the optimum.
 
     Parameters
     ----------
@@ -258,16 +266,19 @@ def _power_iter_curvature(x_design: np.ndarray, sample_weight: np.ndarray, n_ite
     Returns
     -------
     lambda_max (float)
-        Estimated largest eigenvalue of the weighted mean-normalised Gram.
+        Estimated largest eigenvalue of the weighted mean-normalised Gram of ``[X, 1]``.
     """
 
     xs = np.asarray(x_design)
     ws = np.asarray(sample_weight)
     total = float(np.sum(ws))
-    v = np.ones(xs.shape[1]) / np.sqrt(xs.shape[1])
+    n_inputs = xs.shape[1]
+    # The last entry of `v` is the intercept coordinate: `[X, 1] @ v = X @ v[:-1] + v[-1]`.
+    v = np.ones(n_inputs + 1) / np.sqrt(n_inputs + 1)
     lambda_max = 0.0
     for _ in range(n_iter):
-        mv = (xs.T @ (ws * (xs @ v))) / total
+        weighted = ws * (xs @ v[:-1] + v[-1])
+        mv = np.concatenate([xs.T @ weighted, [np.sum(weighted)]]) / total
         lambda_max = float(np.linalg.norm(mv))
         v = mv / (lambda_max + 1e-12)
     return lambda_max
@@ -365,22 +376,32 @@ class GroupElasticNetGLM:
         ``'bernoulli'`` (default; per-frame 0/1 point process) or ``'poisson'`` (counts).
     lambda_group (float)
         Group-lasso strength (feature sparsity). ``0.0`` disables sparsity (pure smooth fit).
+        Keyword-only, no default: callers pass the settings value
+        (``kinematic_encoding.significance_model.lambda_group`` or
+        ``kinematic_encoding.temporal_basis.lambda_group``).
     lambda_smooth (float)
-        Temporal-smoothness penalty strength.
+        Temporal-smoothness penalty strength. Keyword-only, no default (settings value).
     lambda_ridge (float)
-        Ridge penalty strength.
+        Ridge penalty strength. Keyword-only, no default (settings value).
     smoothness_order (int)
-        Finite-difference order of the smoothness penalty (1 or 2). Default 2.
+        Finite-difference order of the smoothness penalty (1 or 2). Keyword-only, no default:
+        callers pass ``kinematic_encoding.smoothness_order`` (per-frame lags) or
+        ``kinematic_encoding.temporal_basis.smoothness_order`` (spline coefficients).
     debias_refit (bool)
         If True, relaxed-lasso refit of the selected groups with ``lambda_group=0``. Default True.
     max_iter (int)
-        Maximum FISTA iterations. Default 5000.
+        Maximum FISTA iterations. Keyword-only, no default: callers pass
+        ``kinematic_encoding.solver.max_iter``.
     tol (float)
-        Relative parameter-change convergence tolerance. Default 1e-6.
+        Relative parameter-change convergence tolerance. Keyword-only, no default: callers pass
+        ``kinematic_encoding.solver.tol``.
     backtrack_factor (float)
-        Line-search step-shrink factor (>1). Default 2.0.
+        Line-search step-shrink factor (>1). Default 2.0. Kept as a solver constant: it only sets
+        how fast the backtracking search shrinks the step, not the optimum the convex objective
+        converges to.
     lipschitz_init (float)
-        Initial inverse step (Lipschitz estimate) for backtracking. Default 1.0.
+        Initial inverse step (Lipschitz estimate) for backtracking. Default 1.0. Kept as a solver
+        constant for the same reason as ``backtrack_factor``.
 
     Returns
     -------
@@ -392,13 +413,14 @@ class GroupElasticNetGLM:
             n_features: int,
             n_time_bins: int,
             family: str = "bernoulli",
-            lambda_group: float = 1.0,
-            lambda_smooth: float = 1.0,
-            lambda_ridge: float = 0.01,
-            smoothness_order: int = 2,
+            *,
+            lambda_group: float,
+            lambda_smooth: float,
+            lambda_ridge: float,
+            smoothness_order: int,
             debias_refit: bool = True,
-            max_iter: int = 5000,
-            tol: float = 1e-6,
+            max_iter: int,
+            tol: float,
             backtrack_factor: float = 2.0,
             lipschitz_init: float = 1.0,
     ) -> None:
@@ -464,7 +486,8 @@ class GroupElasticNetGLM:
 
         # Fast path: fixed-step FISTA fully inside `jax.lax.while_loop` (no per-iteration host syncs).
         # Bernoulli curvature is globally <= 0.25, so a Lipschitz-based fixed step is provably safe and
-        # convergence is guaranteed. Poisson curvature is unbounded, so it keeps the backtracking host loop.
+        # convergence is guaranteed. The curvature is that of the design WITH its intercept column (see
+        # `_power_iter_curvature`), since FISTA steps the weights and the bias together. Poisson curvature is unbounded, so it keeps the backtracking host loop.
         if self.family == "bernoulli":
             curvature = _power_iter_curvature(np.asarray(x_design), np.asarray(sample_weight))
             # The smoothness term is 0.5 * lam * ||D_k W||^2, whose gradient has Lipschitz constant

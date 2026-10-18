@@ -1092,8 +1092,9 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         return raw
 
     def evaluate_metrics(self, X: np.ndarray, Y_true: np.ndarray, weights: np.ndarray | None = None,
-                         region_labels: np.ndarray | None = None, min_region_events: int = 1,
-                         *, kappa: float | None = None) -> dict:
+                         region_labels: np.ndarray | None = None,
+                         *, min_region_events: int, kappa: float | None = None,
+                         dcor_n_sub: int = 2500, dcor_n_rep: int = 3) -> dict:
         """
         Evaluates the fitted model on test data and returns a metric bundle
         aligned with the univariate runner and the forward-selection routine.
@@ -1190,10 +1191,11 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             QLVM category) used for the torus macro von Mises `dcor_xy`; `None`
             (default) yields the pooled single-region score. Ignored on
             Euclidean.
-        min_region_events : int, optional
+        min_region_events : int, keyword-only
             Minimum labelled events a region must contribute to enter the torus
-            macro average. Ignored on Euclidean and when `region_labels` is
-            `None`.
+            macro average (and the region-balanced `euclidean_mae_macro`).
+            Ignored when `region_labels` is `None`. No default: production
+            passes `vocal_features.usv_manifold_min_region_events`.
         kappa : float, optional, keyword-only
             Pre-fit global von Mises concentration to reuse for both
             `vm_logscore` keys (torus only). `None` (default) preserves the
@@ -1202,6 +1204,14 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             gate, so their paired margins are a proper scoring rule instead of a
             mix of per-fold-refit concentrations. Ignored on Euclidean (the vM
             branch is never entered).
+        dcor_n_sub : int, default 2500, keyword-only
+            Subsample size per repeat of the euclidean `dcor_xy`; production
+            passes `vocal_features.usv_manifold_dcor.n_subsample` (equal to this
+            default). Ignored on the torus.
+        dcor_n_rep : int, default 3, keyword-only
+            Number of subsample repeats averaged for `dcor_xy`; production passes
+            `vocal_features.usv_manifold_dcor.n_repeats` (equal to this default).
+            Ignored on the torus.
 
         Returns
         -------
@@ -1395,6 +1405,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         else:
             dcor_xy = dcor_prediction_truth(
                 Y_pred, Y_true, metric=self.metric, period=self.period,
+                n_sub=dcor_n_sub, n_rep=dcor_n_rep,
                 random_state=self.random_state,
             )
             vm_logscore = float('nan')

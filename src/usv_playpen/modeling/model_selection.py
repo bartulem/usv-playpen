@@ -37,7 +37,7 @@ from sklearn.model_selection import (
     StratifiedShuffleSplit,
 )
 
-from ..os_utils import atomic_output_path, resolve_modeling_setting
+from ..os_utils import atomic_output_path
 from .jax_multinomial_logistic_regression import SmoothMultinomialLogisticRegression
 from .load_input_files import load_pickle_modeling_data, onset_target_tag
 from .manifold_metric import (
@@ -109,28 +109,6 @@ from .modeling_vocal_categories_multinomial import (
 )
 from .modeling_vocal_onsets import VocalOnsetModelingPipeline
 
-# Forward-selection significance level and the Expected-Calibration-Error
-# histogram bin count, read from the settings blocks rather than bare 0.01 / 10
-# literals so a single shipped value drives every selector / calibration call.
-_SELECTION_P_VAL = resolve_modeling_setting('model_params', 'selection_p_val')
-_ECE_N_BINS = resolve_modeling_setting('diagnostics', 'ece_n_bins')
-# Fold-grain manifold selection gate (behaviour -> acoustic-manifold position).
-# The screen recomputes a per-FOLD paired score margin (actual - shuffle-null; macro von
-# Mises log-lik on the torus, distance correlation on euclidean) and tests it with an exact
-# sign-flip permutation over the folds (BH-FDR across features); a feature is kept only if
-# the margin is consistently > 0 across folds AND is at least
-# `_SELECTION_EFFECT_FLOOR` of the top surviving driver's margin (a relative floor that
-# ports across manifolds and kills trivial-but-consistent passes).
-_SELECTION_EFFECT_FLOOR = resolve_modeling_setting('model_params', 'selection_effect_floor')
-_SELECTION_N_BOOTSTRAP = resolve_modeling_setting('model_params', 'selection_n_bootstrap')
-_SELECTION_CI_LEVEL = resolve_modeling_setting('model_params', 'selection_ci_level')
-# The fold-margin p-value is an exact one-sided sign-flip permutation test over the folds.
-# Up to this many folds every one of the 2**n sign patterns is enumerated (2**22 sums are
-# ~32 MB of float64, a fraction of a second); above it a seeded Monte-Carlo subset of
-# `_SIGN_FLIP_MONTE_CARLO_DRAWS` patterns is drawn instead. These bound the computation
-# only; they are not analysis settings (the shipped `manifold_n_cv_folds` is enumerated exactly).
-_SIGN_FLIP_EXACT_MAX_FOLDS = 22
-_SIGN_FLIP_MONTE_CARLO_DRAWS = 2 ** 20
 # Human-readable names of the manifold Step-0 strategies (console lines and the run log).
 _STEP0_GATE_LABELS = {
     'null_model_intercept': 'intercept-only (training-fold circular mean)',
@@ -490,7 +468,8 @@ def _write_empty_selection(last_file: Path,
           f"heldout=None in {last_file}; no final or held-out refit was run.")
 
 
-def _sign_flip_p_value(margins: np.ndarray, *, random_state: int) -> float:
+def _sign_flip_p_value(margins: np.ndarray, *, random_state: int, exact_max_folds: int,
+                       monte_carlo_draws: int) -> float:
     """
     Description
     -----------
@@ -505,9 +484,10 @@ def _sign_flip_p_value(margins: np.ndarray, *, random_state: int) -> float:
     ``B = 2**n - 1`` non-identity patterns with a sum at least the observed one gives
     the usual ``p = (1 + k) / (1 + B)``; its floor is ``1 / 2**n`` (``9.54e-07`` at 20
     folds), reached when no other pattern ties or beats the observed sum. Up to
-    ``_SIGN_FLIP_EXACT_MAX_FOLDS`` folds all patterns are enumerated (the test is
-    exact); above it ``B = _SIGN_FLIP_MONTE_CARLO_DRAWS`` random patterns are drawn
-    with ``random_state`` and the same ``(1 + k) / (1 + B)`` form is returned.
+    ``exact_max_folds`` folds all patterns are enumerated (the test is exact; 2**22
+    sums are ~32 MB of float64, a fraction of a second); above it
+    ``B = monte_carlo_draws`` random patterns are drawn with ``random_state`` and the
+    same ``(1 + k) / (1 + B)`` form is returned.
 
     The pattern sums are built by doubling: starting from ``[0]``, each margin ``m``
     turns the current sums ``S`` into ``[S + m, S - m]``, so index 0 is the identity
@@ -522,6 +502,12 @@ def _sign_flip_p_value(margins: np.ndarray, *, random_state: int) -> float:
         ``(n,)`` finite per-fold paired margins (``n >= 1``).
     random_state (int)
         Seed for the Monte-Carlo branch (unused when the patterns are enumerated).
+    exact_max_folds (int)
+        Largest fold count whose sign patterns are enumerated exactly
+        (``model_params.selection_sign_flip_exact_max_folds``).
+    monte_carlo_draws (int)
+        Number of random sign patterns drawn above ``exact_max_folds``
+        (``model_params.selection_sign_flip_monte_carlo_draws``).
 
     Returns
     -------
@@ -531,7 +517,7 @@ def _sign_flip_p_value(margins: np.ndarray, *, random_state: int) -> float:
     margins = np.asarray(margins, dtype=np.float64).ravel()
     n_folds = margins.size
     tolerance = 1e-12 * max(1.0, float(np.sum(np.abs(margins))))
-    if n_folds <= _SIGN_FLIP_EXACT_MAX_FOLDS:
+    if n_folds <= exact_max_folds:
         pattern_sums = np.zeros(1, dtype=np.float64)
         for margin in margins:
             pattern_sums = np.concatenate((pattern_sums + margin, pattern_sums - margin))
@@ -540,14 +526,14 @@ def _sign_flip_p_value(margins: np.ndarray, *, random_state: int) -> float:
     observed = float(np.sum(margins))
     rng = np.random.default_rng(random_state)
     n_at_least = 0
-    remaining = _SIGN_FLIP_MONTE_CARLO_DRAWS
+    remaining = monte_carlo_draws
     chunk_size = 2 ** 14
     while remaining > 0:
         n_draw = min(chunk_size, remaining)
         signs = rng.integers(0, 2, size=(n_draw, n_folds)) * 2.0 - 1.0
         n_at_least += int(np.count_nonzero(signs @ margins >= observed - tolerance))
         remaining -= n_draw
-    return (1.0 + n_at_least) / (1.0 + _SIGN_FLIP_MONTE_CARLO_DRAWS)
+    return (1.0 + n_at_least) / (1.0 + monte_carlo_draws)
 
 
 def _fold_paired_margin_bootstrap(
@@ -560,8 +546,12 @@ def _fold_paired_margin_bootstrap(
         ci_level: float,
         random_state: int,
         event_to_region: np.ndarray = None,
-        min_region_events: int = 1,
-        min_fold_events: int = 30,
+        min_region_events: int,
+        min_fold_events: int,
+        sign_flip_exact_max_folds: int,
+        sign_flip_monte_carlo_draws: int,
+        dcor_n_sub: int,
+        dcor_n_rep: int,
         kappa: float | None = None) -> dict:
     """
     Description
@@ -617,7 +607,7 @@ def _fold_paired_margin_bootstrap(
     random_state (int)
         Seed for the deterministic fold bootstrap (and for the sign-flip
         test's Monte-Carlo branch, used only above
-        ``_SIGN_FLIP_EXACT_MAX_FOLDS`` usable folds).
+        ``sign_flip_exact_max_folds`` usable folds).
     event_to_region (np.ndarray)
         Per-event acoustic-region (QLVM category) label, aligned to the same
         full-event index space as each fold's ``test_indices``. Required for the
@@ -626,11 +616,24 @@ def _fold_paired_margin_bootstrap(
         pooled ``vm_logscore_pooled``). Ignored on euclidean.
     min_region_events (int)
         Minimum events a region must contribute within a fold to enter that
-        fold's torus macro average. Ignored on euclidean and when
-        ``event_to_region`` is ``None`` (pooled scoring has a single region).
+        fold's torus macro average (``vocal_features.usv_manifold_min_region_events``).
+        Ignored on euclidean and when ``event_to_region`` is ``None`` (pooled
+        scoring has a single region).
     min_fold_events (int)
         Folds contributing fewer than this many test events are skipped (too few
-        points for a stable per-fold score).
+        points for a stable per-fold score); ``model_params.selection_min_fold_events``.
+    sign_flip_exact_max_folds (int)
+        Largest usable-fold count whose sign patterns are enumerated exactly
+        (``model_params.selection_sign_flip_exact_max_folds``).
+    sign_flip_monte_carlo_draws (int)
+        Random sign patterns drawn above that count
+        (``model_params.selection_sign_flip_monte_carlo_draws``).
+    dcor_n_sub (int)
+        Subsample size per repeat of the euclidean per-fold distance correlation
+        (``vocal_features.usv_manifold_dcor.n_subsample``); unused on the torus.
+    dcor_n_rep (int)
+        Subsample repeats averaged per fold by that score
+        (``vocal_features.usv_manifold_dcor.n_repeats_fold_gate``); unused on the torus.
     kappa (float)
         Pre-fit global von Mises concentration to reuse for every fold's torus
         score (see the ``kappa`` note in the "Why fold-grain" paragraph). ``None``
@@ -667,7 +670,7 @@ def _fold_paired_margin_bootstrap(
         ``min_region_events`` and the regions of ``event_to_region`` at the
         fold's test indices, or pooled scoring when ``event_to_region`` is
         ``None``) or, on euclidean, the wrap-aware distance correlation
-        (:func:`dcor_prediction_truth`, ``n_rep=1``). A fold with fewer than
+        (:func:`dcor_prediction_truth`, ``dcor_n_sub`` / ``dcor_n_rep``). A fold with fewer than
         ``min_fold_events`` test predictions scores NaN.
 
         Parameters
@@ -706,11 +709,11 @@ def _fold_paired_margin_bootstrap(
                 score = dcor_prediction_truth(
                     y_pred_xy, y_true,
                     metric=metric, period=period,
-                    # A single fold's events are well under the default subsample
-                    # cap, so no subsampling occurs and the repeat averaging
-                    # (`n_rep`) would only recompute the identical full-sample
-                    # dcor -- fix it at 1 to avoid that waste.
-                    n_rep=1,
+                    # A single fold's events are well under the subsample cap, so
+                    # no subsampling occurs and repeat averaging would only
+                    # recompute the identical full-sample dcor -- the shipped
+                    # fold-gate repeat count is 1 to avoid that waste.
+                    n_sub=dcor_n_sub, n_rep=dcor_n_rep,
                 )
             scores.append(score)
         return np.asarray(scores, dtype=float)
@@ -745,7 +748,9 @@ def _fold_paired_margin_bootstrap(
         'ci_low': float(ci_low),
         'ci_high': float(ci_high),
         # One-sided exact sign-flip permutation p over the folds (floor 1 / 2**n).
-        'p_value': _sign_flip_p_value(margins, random_state=random_state),
+        'p_value': _sign_flip_p_value(margins, random_state=random_state,
+                                      exact_max_folds=sign_flip_exact_max_folds,
+                                      monte_carlo_draws=sign_flip_monte_carlo_draws),
         'n_folds': int(margins.size),
     }
 
@@ -1022,7 +1027,8 @@ def vocal_onset_model_selection(univariate_results_path: str,
                                output_directory: str,
                                settings_path: str | None = None,
                                use_top_rank_as_anchor: bool = False,
-                               p_val: float = _SELECTION_P_VAL) -> None:
+                               *,
+                               p_val: float) -> None:
     """
     Performs Forward Stepwise Selection to identify the "minimal sufficient set"
     of behavioral features that predict vocal (bout) onset.
@@ -1076,7 +1082,8 @@ def vocal_onset_model_selection(univariate_results_path: str,
     use_top_rank_as_anchor : bool, default False
         If True, initializes the search by forcing the highest-ranked univariate
         feature as the baseline model.
-    p_val : float, default the ``model_params.selection_p_val`` setting
+    p_val : float
+        Keyword-only, no default: the dispatcher passes ``model_params.selection_p_val``.
         The alpha level used for significance screening against shuffled controls.
 
     Returns
@@ -1450,7 +1457,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
                 metrics['brier'].append(float(brier_score_loss(y_te_fold.astype(int), y_proba_mean)))
                 try:
                     y_proba_2d = np.column_stack([1.0 - y_proba_mean, y_proba_mean])
-                    metrics['ece'].append(expected_calibration_error(y_te_fold.astype(int), y_pred_mean, y_proba_2d, n_bins=_ECE_N_BINS))
+                    metrics['ece'].append(expected_calibration_error(y_te_fold.astype(int), y_pred_mean, y_proba_2d, n_bins=settings['diagnostics']['ece_n_bins']))
                 except Exception:
                     metrics['ece'].append(np.nan)
                 metrics['mcc'].append(safe_matthews_corrcoef(y_te_fold.astype(int), y_pred_mean))
@@ -1630,7 +1637,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
                     metrics['brier'].append(float(brier_score_loss(y_te_fold.astype(int), y_proba_mean)))
                     try:
                         y_proba_2d = np.column_stack([1.0 - y_proba_mean, y_proba_mean])
-                        metrics['ece'].append(expected_calibration_error(y_te_fold.astype(int), y_pred_mean, y_proba_2d, n_bins=_ECE_N_BINS))
+                        metrics['ece'].append(expected_calibration_error(y_te_fold.astype(int), y_pred_mean, y_proba_2d, n_bins=settings['diagnostics']['ece_n_bins']))
                     except Exception:
                         metrics['ece'].append(np.nan)
                     metrics['mcc'].append(safe_matthews_corrcoef(y_te_fold.astype(int), y_pred_mean))
@@ -2557,7 +2564,7 @@ def vocal_category_model_selection(
                 metrics['brier'].append(float(brier_score_loss(y_te, y_proba)))
                 try:
                     y_proba_2d = np.column_stack([1.0 - y_proba, y_proba])
-                    metrics['ece'].append(expected_calibration_error(y_te, y_pred, y_proba_2d, n_bins=_ECE_N_BINS))
+                    metrics['ece'].append(expected_calibration_error(y_te, y_pred, y_proba_2d, n_bins=settings['diagnostics']['ece_n_bins']))
                 except Exception:
                     metrics['ece'].append(np.nan)
                 metrics['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
@@ -2744,7 +2751,7 @@ def vocal_category_model_selection(
                     metrics['brier'].append(float(brier_score_loss(y_te, y_proba)))
                     try:
                         y_proba_2d = np.column_stack([1.0 - y_proba, y_proba])
-                        metrics['ece'].append(expected_calibration_error(y_te, y_pred, y_proba_2d, n_bins=_ECE_N_BINS))
+                        metrics['ece'].append(expected_calibration_error(y_te, y_pred, y_proba_2d, n_bins=settings['diagnostics']['ece_n_bins']))
                     except Exception:
                         metrics['ece'].append(np.nan)
                     metrics['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
@@ -3043,7 +3050,8 @@ def bout_parameter_model_selection(
         settings_path: str | None = None,
         target_variable: str = 'bout_durations',
         use_top_rank_as_anchor: bool = False,
-        p_val: float = _SELECTION_P_VAL
+        *,
+        p_val: float
 ) -> None:
     """
     Performs forward stepwise selection for continuous bout parameter regression.
@@ -3126,7 +3134,8 @@ def bout_parameter_model_selection(
         The name of the target variable to pull from the input data.
     use_top_rank_as_anchor : bool, default False
         If True, starts the search with the #1 ranked univariate feature.
-    p_val : float, default 0.01
+    p_val : float
+        Keyword-only, no default: the dispatcher passes ``model_params.selection_p_val``.
         The alpha level used for significance screening against shuffled controls.
 
     Returns
@@ -3304,7 +3313,9 @@ def bout_parameter_model_selection(
         raise ValueError(msg)
 
     # 3. Target Quantile Binning for Stratification
-    n_bins = max(2, min(10, len(y_global) // n_splits))
+    # At most `model_validation.stratification_max_bins` quantile strata; 2 is the
+    # structural floor (one stratum would not stratify anything).
+    n_bins = max(2, min(settings['model_validation']['stratification_max_bins'], len(y_global) // n_splits))
     bins = np.unique(np.percentile(y_global, np.linspace(0, 100, n_bins + 1)))
     if len(bins) < 2:
         # Right-skewed targets with many tied values can collapse every
@@ -3981,7 +3992,8 @@ def multinomial_vocal_category_model_selection(
         output_directory: str,
         settings_path: str | None = None,
         use_top_rank_as_anchor: bool = False,
-        p_val: float = _SELECTION_P_VAL
+        *,
+        p_val: float
 ) -> None:
     """
     Performs forward stepwise selection for multinomial USV category prediction.
@@ -4092,7 +4104,8 @@ def multinomial_vocal_category_model_selection(
     use_top_rank_as_anchor : bool, default False
         If True, initializes the search by forcing the highest-ranked univariate
         feature as the baseline model.
-    p_val : float, default 0.01
+    p_val : float
+        Keyword-only, no default: the dispatcher passes ``model_params.selection_p_val``.
         The alpha level used for significance screening against shuffled controls.
 
     Returns
@@ -4282,6 +4295,7 @@ def multinomial_vocal_category_model_selection(
         n_splits=n_splits,
         random_seed=random_seed,
         n_categories=int(_input_md['analysis_specific']['usv_category_number']),
+        tolerance=settings['model_validation']['session_split_initial_tolerance'],
         max_total_attempts=settings['model_validation']['session_split_max_attempts'],
         widen_step=settings['model_validation']['session_split_widen_step'],
         widen_every=settings['model_validation']['session_split_widen_every'],
@@ -4444,6 +4458,7 @@ def multinomial_vocal_category_model_selection(
             # graphs. The outer-fit call sites still honour `use_lax_loop_mn`.
             use_lax_loop=False,
             regressor_cls=SmoothMultinomialLogisticRegression,
+            ece_n_bins=settings['diagnostics']['ece_n_bins'],
         )
         return lam_sm_win, lam_l2_win, grid_audit_, True
 
@@ -4648,7 +4663,7 @@ def multinomial_vocal_category_model_selection(
             except Exception:
                 f_met['brier'].append(np.nan)
             try:
-                f_met['ece'].append(expected_calibration_error(y_te, y_pred, probs_canonical, n_bins=_ECE_N_BINS))
+                f_met['ece'].append(expected_calibration_error(y_te, y_pred, probs_canonical, n_bins=settings['diagnostics']['ece_n_bins']))
             except Exception:
                 f_met['ece'].append(np.nan)
             f_met['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
@@ -4775,7 +4790,7 @@ def multinomial_vocal_category_model_selection(
                 except Exception:
                     f_met['brier'].append(np.nan)
                 try:
-                    f_met['ece'].append(expected_calibration_error(y_te, y_pred, probs_canonical, n_bins=_ECE_N_BINS))
+                    f_met['ece'].append(expected_calibration_error(y_te, y_pred, probs_canonical, n_bins=settings['diagnostics']['ece_n_bins']))
                 except Exception:
                     f_met['ece'].append(np.nan)
                 f_met['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
@@ -5028,7 +5043,7 @@ def multinomial_vocal_category_model_selection(
                     except Exception:
                         f_met['brier'].append(np.nan)
                     try:
-                        f_met['ece'].append(expected_calibration_error(y_te, y_pred, probs_canonical, n_bins=_ECE_N_BINS))
+                        f_met['ece'].append(expected_calibration_error(y_te, y_pred, probs_canonical, n_bins=settings['diagnostics']['ece_n_bins']))
                     except Exception:
                         f_met['ece'].append(np.nan)
                     f_met['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
@@ -5329,7 +5344,7 @@ def multinomial_vocal_category_model_selection(
         except Exception:
             h_brier = np.nan
         try:
-            h_ece = expected_calibration_error(y_held, y_pred, probs_canonical, n_bins=_ECE_N_BINS)
+            h_ece = expected_calibration_error(y_held, y_pred, probs_canonical, n_bins=settings['diagnostics']['ece_n_bins'])
         except Exception:
             h_ece = np.nan
         h_mcc = safe_matthews_corrcoef(y_held, y_pred)
@@ -5400,7 +5415,8 @@ def continuous_vocal_manifold_model_selection(
         output_directory: str,
         settings_path: str | None = None,
         use_top_rank_as_anchor: bool = False,
-        p_val: float = _SELECTION_P_VAL
+        *,
+        p_val: float
 ) -> None:
     """
     Performs forward stepwise selection for continuous manifold-position
@@ -5525,7 +5541,8 @@ def continuous_vocal_manifold_model_selection(
     use_top_rank_as_anchor : bool, default False
         If True, initialises the search by forcing the single highest-ranked
         screened feature (largest fold-mean paired margin) as Step 1.
-    p_val : float, default 0.01
+    p_val : float
+        Keyword-only, no default: the dispatcher passes ``model_params.selection_p_val``.
         The Benjamini-Hochberg false-discovery rate `q` of the screen's
         one-sided sign-flip permutation p-values.
 
@@ -5578,6 +5595,21 @@ def continuous_vocal_manifold_model_selection(
     # loaded just before the screen, which needs its per-event regions and the
     # development events' marginal dispersion (see below).
     _min_region_events = settings['vocal_features']['usv_manifold_min_region_events']
+    # Fold-grain selection-gate knobs (bootstrap CI, sign-flip p-value, per-fold
+    # event floor and the euclidean distance-correlation subsampling), read from
+    # this run's settings so a non-default settings file drives every gate.
+    _selection_effect_floor = settings['model_params']['selection_effect_floor']
+    _gate_kwargs = {
+        'n_bootstrap': settings['model_params']['selection_n_bootstrap'],
+        'ci_level': settings['model_params']['selection_ci_level'],
+        'min_fold_events': settings['model_params']['selection_min_fold_events'],
+        'sign_flip_exact_max_folds': settings['model_params']['selection_sign_flip_exact_max_folds'],
+        'sign_flip_monte_carlo_draws': settings['model_params']['selection_sign_flip_monte_carlo_draws'],
+        'dcor_n_sub': settings['vocal_features']['usv_manifold_dcor']['n_subsample'],
+        'dcor_n_rep': settings['vocal_features']['usv_manifold_dcor']['n_repeats_fold_gate'],
+    }
+    _dcor_n_sub = settings['vocal_features']['usv_manifold_dcor']['n_subsample']
+    _dcor_n_rep = settings['vocal_features']['usv_manifold_dcor']['n_repeats']
 
     # Geometry-conditional selection score, carried under the reused numeric key
     # `dcor_xy` (schema stability) but with geometry-dependent CONTENTS:
@@ -5628,7 +5660,7 @@ def continuous_vocal_manifold_model_selection(
     # correlation on euclidean) and tests it over the folds with an exact sign-flip
     # permutation (the CI is a fold bootstrap): a feature is kept only
     # if its per-fold margin is consistently > 0 across folds (BH-FDR corrected)
-    # AND is at least `_SELECTION_EFFECT_FLOOR` of the top surviving driver's
+    # AND is at least `model_params.selection_effect_floor` of the top surviving driver's
     # margin (a relative effect floor that kills trivial-but-consistent passes
     # and ports across manifolds). Fold-grain -- not session-grain -- is used
     # because the macro average equal-weights acoustic regions, which is only
@@ -5680,9 +5712,30 @@ def continuous_vocal_manifold_model_selection(
         )
         raise ValueError(msg)
 
+    # Fold-count guard: the screen re-tests the univariate stage's STORED per-fold predictions
+    # with a sign-flip permutation whose floor is 1 / 2**n_folds, and the greedy stage below
+    # re-splits the same events into `manifold_n_cv_folds` folds. A univariate pickle written
+    # with a different fold count (an older 10-fold run) would be screened silently on a
+    # different fold layout, so it is refused here, naming both counts.
+    _expected_n_folds = int(settings['model_validation']['manifold_n_cv_folds'])
+    _stored_fold_counts = {}
+    for _feat_name, _payload in univariate_data.items():
+        _results = _payload[1] if isinstance(_payload, tuple) and len(_payload) == 2 else _payload
+        if _has_pred_keys(_results):
+            _stored_fold_counts[_feat_name] = len(_results['actual']['folds']['test_indices'])
+    _mismatched_folds = {_f: _n for _f, _n in _stored_fold_counts.items() if _n != _expected_n_folds}
+    if _mismatched_folds:
+        msg = (
+            f"The univariate results were fitted with a different number of outer folds than "
+            f"model_validation.manifold_n_cv_folds = {_expected_n_folds}: "
+            f"{dict(sorted(_mismatched_folds.items()))}. Re-run the univariate stage with the "
+            f"current settings (or point the selection at settings with the matching fold count)."
+        )
+        raise ValueError(msg)
+
     print(f"Screening {num_features} features (fold-grain paired score margin "
           f"[torus: {SELECTION_SCORE_KEY} von Mises log-lik; euclidean: dcor], "
-          f"BH-FDR q={p_val:.2g}, effect floor={_SELECTION_EFFECT_FLOOR:.2g} x top driver)...")
+          f"BH-FDR q={p_val:.2g}, effect floor={_selection_effect_floor:.2g} x top driver)...")
 
     _screen_seed = settings['model_validation']['random_seed']
 
@@ -5742,8 +5795,7 @@ def continuous_vocal_manifold_model_selection(
             results[SCREEN_BASELINE_STRATEGY]['folds'],
             metric=_selection_manifold_metric,
             period=_selection_manifold_period,
-            n_bootstrap=_SELECTION_N_BOOTSTRAP,
-            ci_level=_SELECTION_CI_LEVEL,
+            **_gate_kwargs,
             random_state=_screen_seed,
             # Torus: the selection score's averaging and the frozen kappa (see
             # above); euclidean: both None (dcor needs neither).
@@ -5777,7 +5829,7 @@ def continuous_vocal_manifold_model_selection(
     _sig_margins = [r['mean_margin'] for r in screen_rows
                     if r['feature'] in bh_significant and r['mean_margin'] > 0]
     _top_margin = max(_sig_margins) if _sig_margins else 0.0
-    _effect_floor = _SELECTION_EFFECT_FLOOR * _top_margin
+    _effect_floor = _selection_effect_floor * _top_margin
 
     # PASS 2: keep BH-significant features whose margin clears the effect floor.
     for r in screen_rows:
@@ -5814,7 +5866,7 @@ def continuous_vocal_manifold_model_selection(
         return
 
     print(f"Identified {len(ranked_features)} significant candidates "
-          f"(effect floor {_effect_floor:.4f} = {_SELECTION_EFFECT_FLOOR:.2g} x top margin "
+          f"(effect floor {_effect_floor:.4f} = {_selection_effect_floor:.2g} x top margin "
           f"{_top_margin:.4f}). Top: {ranked_features[0]}")
 
     # Load the raw input pickle only NOW, after the screen has confirmed there is
@@ -6054,6 +6106,7 @@ def continuous_vocal_manifold_model_selection(
         n_splits=n_splits,
         split_strategy=split_strategy,
         random_seed=random_seed,
+        tolerance=settings['model_validation']['session_split_initial_tolerance'],
         max_total_attempts=settings['model_validation']['session_split_max_attempts'],
         widen_step=settings['model_validation']['session_split_widen_step'],
         widen_every=settings['model_validation']['session_split_widen_every'],
@@ -6324,8 +6377,11 @@ def continuous_vocal_manifold_model_selection(
     # plus the reported chance floor.
     #   - Gate baseline. On the TORUS it is a training-fold INTERCEPT-ONLY predictor: every
     #     test event of a fold is predicted at the circular mean of that fold's TRAINING
-    #     targets (weighted by the same KDE spatial weights the candidates are fitted with,
-    #     i.e. what the candidates' own estimator returns with no feature), scored on the
+    #     targets (weighted exactly as the candidates are fitted: the KDE spatial weights
+    #     times the equal-region `inverse_region_frequency_weights`, i.e. what the
+    #     candidates' own estimator returns with no feature; weighting it by the KDE weights
+    #     alone gave a pure-noise feature a non-zero margin, because a candidate's fit tends
+    #     to the region-reweighted mean as its coefficients go to zero), scored on the
     #     fold's test events by the same `manifold_prediction_metrics` bundle, and gated by
     #     the same per-fold macro von Mises margin (frozen kappa) as every candidate. A model
     #     carrying no behavioural information therefore ties it (margin 0, CI not above 0)
@@ -6398,8 +6454,15 @@ def continuous_vocal_manifold_model_selection(
             # every wrap-aware term reduces to the ordinary plane distance, on
             # `metric='torus'` to the shortest-wrap geodesic.
             w_cov = w_tr / (np.sum(w_tr) + 1e-12)
+            # The intercept-only centre carries the candidates' own fit weights: on the torus
+            # the KDE weights times the equal-region reweighting (euclidean: the KDE weights).
+            if manifold_metric == 'torus':
+                w_mu = w_tr * inverse_region_frequency_weights(region_global[tr_idx])
+            else:
+                w_mu = w_tr
             mu = circular_mean(
-                Y_tr, metric=manifold_metric, period=manifold_period, weights=w_cov
+                Y_tr, metric=manifold_metric, period=manifold_period,
+                weights=w_mu / (np.sum(w_mu) + 1e-12)
             )
             diff_tr = signed_diff(
                 Y_tr, mu[None, :], metric=manifold_metric, period=manifold_period
@@ -6421,7 +6484,7 @@ def continuous_vocal_manifold_model_selection(
                     metric=manifold_metric, period=manifold_period,
                     train_cov_inv=cov_inv, random_state=random_seed + fold_idx,
                     region_labels=region_global[te_idx], min_region_events=_min_region_events,
-                    kappa=kappa_frozen,
+                    kappa=kappa_frozen, dcor_n_sub=_dcor_n_sub, dcor_n_rep=_dcor_n_rep,
                 )
                 bundle.update(geodesic_mae_columns(
                     y_pred_xy, Y_te, geodesic_ctx,
@@ -6680,6 +6743,13 @@ def continuous_vocal_manifold_model_selection(
             regressor_cls=manifold_regressor_cls,
             metric=manifold_metric,
             period=manifold_period,
+            split_tolerance=settings['model_validation']['session_split_initial_tolerance'],
+            split_max_attempts=settings['model_validation']['session_split_max_attempts'],
+            split_widen_step=settings['model_validation']['session_split_widen_step'],
+            split_widen_every=settings['model_validation']['session_split_widen_every'],
+            dcor_n_sub=_dcor_n_sub,
+            dcor_n_rep=_dcor_n_rep,
+            min_region_events=_min_region_events,
             region_train=region_tr_,
             kappa=kappa_frozen,
         )
@@ -6733,7 +6803,7 @@ def continuous_vocal_manifold_model_selection(
                 metrics = model.evaluate_metrics(
                     X_te, Y_te, weights=w_te,
                     region_labels=region_te, min_region_events=_min_region_events,
-                    kappa=kappa_frozen,
+                    kappa=kappa_frozen, dcor_n_sub=_dcor_n_sub, dcor_n_rep=_dcor_n_rep,
                 )
                 y_pred_xy = model.predict(X_te, snap=True).astype(np.float32)
                 metrics.update(geodesic_mae_columns(
@@ -6802,7 +6872,7 @@ def continuous_vocal_manifold_model_selection(
             anchor_improvement = _fold_paired_margin_bootstrap(
                 cand_data['folds'], current_model_folds,
                 metric=_selection_manifold_metric, period=_selection_manifold_period,
-                n_bootstrap=_SELECTION_N_BOOTSTRAP, ci_level=_SELECTION_CI_LEVEL,
+                **_gate_kwargs,
                 random_state=random_seed,
                 event_to_region=event_to_region, min_region_events=_min_region_events,
                 kappa=kappa_frozen,
@@ -6935,7 +7005,7 @@ def continuous_vocal_manifold_model_selection(
                     metrics = model.evaluate_metrics(
                         X_te_stacked, Y_te, weights=w_te,
                         region_labels=region_te, min_region_events=_min_region_events,
-                        kappa=kappa_frozen,
+                        kappa=kappa_frozen, dcor_n_sub=_dcor_n_sub, dcor_n_rep=_dcor_n_rep,
                     )
                     y_pred_xy = model.predict(X_te_stacked, snap=True).astype(np.float32)
                     metrics.update(geodesic_mae_columns(
@@ -7020,7 +7090,7 @@ def continuous_vocal_manifold_model_selection(
             step_improvement = _fold_paired_margin_bootstrap(
                 best_cand_folds, current_model_folds,
                 metric=_selection_manifold_metric, period=_selection_manifold_period,
-                n_bootstrap=_SELECTION_N_BOOTSTRAP, ci_level=_SELECTION_CI_LEVEL,
+                **_gate_kwargs,
                 random_state=random_seed,
                 event_to_region=event_to_region, min_region_events=_min_region_events,
                 kappa=kappa_frozen,
@@ -7133,7 +7203,7 @@ def continuous_vocal_manifold_model_selection(
             held_metrics = held_model.evaluate_metrics(
                 X_held, Y_held, weights=w_held,
                 region_labels=region_held, min_region_events=_min_region_events,
-                kappa=kappa_frozen,
+                kappa=kappa_frozen, dcor_n_sub=_dcor_n_sub, dcor_n_rep=_dcor_n_rep,
             )
             held_pred_xy = held_model.predict(X_held, snap=True).astype(np.float32)
             held_metrics.update(geodesic_mae_columns(
@@ -7193,8 +7263,11 @@ def continuous_vocal_manifold_model_selection(
             # held-out block -- the intercept-only circular mean on the torus, the
             # empirical-density draw on euclidean (see Step 0).
             w_cov = w_dev / (np.sum(w_dev) + 1e-12)
+            # Same weighting as the Step-0 gate baseline: `w_dev_fit` is the KDE weights times
+            # the equal-region reweighting on the torus (euclidean: the KDE weights).
             mu = circular_mean(
-                Y_dev, metric=manifold_metric, period=manifold_period, weights=w_cov
+                Y_dev, metric=manifold_metric, period=manifold_period,
+                weights=w_dev_fit / (np.sum(w_dev_fit) + 1e-12)
             )
             diff_dev = signed_diff(
                 Y_dev, mu[None, :], metric=manifold_metric, period=manifold_period
@@ -7212,7 +7285,7 @@ def continuous_vocal_manifold_model_selection(
                 metric=manifold_metric, period=manifold_period,
                 train_cov_inv=cov_inv, random_state=held_seed,
                 region_labels=region_held, min_region_events=_min_region_events,
-                kappa=kappa_frozen,
+                kappa=kappa_frozen, dcor_n_sub=_dcor_n_sub, dcor_n_rep=_dcor_n_rep,
             )
             held_bundle.update(geodesic_mae_columns(
                 held_pred_xy, Y_held, geodesic_ctx,

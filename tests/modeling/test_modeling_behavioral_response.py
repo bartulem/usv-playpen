@@ -945,7 +945,7 @@ class TestFitContrast:
 
 
 class TestDeepSilenceAnchors:
-    """The second control: stretches where he has not called for a long while."""
+    """The second control: stretches where he has not vocalized for a long while."""
 
     @staticmethod
     def _bouts() -> tuple[np.ndarray, np.ndarray]:

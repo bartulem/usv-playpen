@@ -6,7 +6,7 @@ position decoding, then vocal gating.
 The kinematic encoding is a fold ARRAY -- one job per held-out session, combined afterwards -- and has
 its own dispatcher. These analyses are not: each is a single held-out computation per unit whose cost
 sits in its null, and they must run in ORDER. Vocal occurrence and vocalization identity score the same
-call-grain event set, the nested decoding scores that set again with behaviour conditioned on, and vocal
+USV-grain event set, the nested decoding scores that set again with behaviour conditioned on, and vocal
 gating runs only on a unit whose occurrence or identity shows tuning, so it needs both p-values first.
 
 ONE JOB PER UNIT, for a second reason. Every analysis writes its section into the unit's single result
@@ -264,7 +264,7 @@ def posterior_nested_null_chunk(start: int, n_draws: int) -> np.ndarray:
 
     A draw re-pairs the events' positions -- and the priors built on them -- against the counts within
     each session, seeded ``seed + start + draw`` exactly as the identity chunk seeds its draws. The
-    behaviour control is never broken, because what it predicts for a call stays with that call's true
+    behaviour control is never broken, because what it predicts for a USV stays with that USV's true
     position; only the neuron's pairing moves. The priors are read from the installed state and never
     rebuilt, since nothing a draw changes enters them.
 
@@ -531,7 +531,7 @@ def nested_decoding_payload(scores: dict, session_ids: list, null: np.ndarray, p
     at_floor (bool)
         Whether ``p_value`` sits at its resolution floor.
     no_behaviour (float)
-        The pooled score of the no-behaviour model on the same calls; see ``no_behaviour_predictions``.
+        The pooled score of the no-behaviour model on the same USVs; see ``no_behaviour_predictions``.
     behaviour_control (dict)
         Which cohort control produced the reduced model -- its features, the day held out of its fit,
         and the settings hash it was fitted under. Without this an added score cannot be traced to the
@@ -626,7 +626,7 @@ def run_vocal_occurrence(unit: dict, events: dict, settings: dict, data_root: st
     """
     Description
     -----------
-    Vocal occurrence for one unit: does its count distinguish the window around a call's onset from
+    Vocal occurrence for one unit: does its count distinguish the window around a USV's onset from
     silence, in a way that transfers across sessions? Written as its own section.
 
     The statistic is the leave-one-session-out transfer logistic, tested against circular shifts of the
@@ -672,10 +672,10 @@ def run_vocal_occurrence(unit: dict, events: dict, settings: dict, data_root: st
                                                              settings["significance"]["escalation_ladder"],
                                                              null, message_output)
     # SENSITIVITY, kept beside the discrimination. The statistic and the AUROC both average over every
-    # window, so a unit that fires on only part of its calls scores lower -- but neither says which of the
-    # two it is, and two units at the same score can be "fires weakly on nearly every call" or "fires hard
+    # window, so a unit that fires on only part of its USVs scores lower -- but neither says which of the
+    # two it is, and two units at the same score can be "fires weakly on nearly every USV" or "fires hard
     # on half of them". These two fractions separate them, and cost nothing: on the pilot units they run
-    # from 44% of calls with a spike (a unit nearly silent otherwise) to 94%.
+    # from 44% of USVs with a spike (a unit nearly silent otherwise) to 94%.
     vocal_rows = windows["labels"] > 0.5
     occurrence.update({"null": null, "p": p_value, "at_floor": at_floor, "n_shuffles": int(null.size),
                        "z": null_z(occurrence["nats_per_window"], null),
@@ -698,7 +698,7 @@ def run_vocalization_identity(unit: dict, events: dict, settings: dict, output_d
     """
     Description
     -----------
-    Vocalization identity for one unit: does its count carry information about WHICH call it is, as a
+    Vocalization identity for one unit: does its count carry information about WHICH USV it is, as a
     position on the vocal manifold? Written as its own section.
 
     The statistic is the held-out prior-corrected decode gain, tested against the exact within-session
@@ -726,7 +726,8 @@ def run_vocalization_identity(unit: dict, events: dict, settings: dict, output_d
     """
 
     decoding = settings["vocal_decoding"]
-    folds = decoding_context(events["positions"], events["session_index"], decoding)
+    period = settings["vocalization_settings"]["torus_period"]
+    folds = decoding_context(events["positions"], events["session_index"], decoding, period)
     identity = decode_gain(events["counts"], folds, decoding, with_detail=True)
     state = {"counts": events["counts"], "folds": folds, "decoding": decoding,
              "session_index": events["session_index"], "seed": int(settings["null"]["shuffle_seed"])}
@@ -737,7 +738,7 @@ def run_vocalization_identity(unit: dict, events: dict, settings: dict, output_d
                                                              settings["significance"]["escalation_ladder"],
                                                              null, message_output)
     identity.update(flagged_descriptors(events["counts"], events["positions"], events["session_index"],
-                                        decoding, identity["gain"], null))
+                                        decoding, period, identity["gain"], null))
     identity = vocalization_identity_payload(identity, null, p_value, at_floor, events)
     message_output(f"  VOCALIZATION IDENTITY  gain {identity['gain']:+.5f} | z {identity['z']:+.1f} "
                    f"| p {p_value:.4e}{' (at floor)' if at_floor else ''} | {null.size:,} draws")
@@ -755,7 +756,7 @@ def run_nested_vocal_manifold_position_decoding(unit: dict, events: dict, settin
     information beyond the behaviour control?
 
     What is tested is whether the neuron beats the BEHAVIOUR MODEL, which is only worth claiming when that
-    model predicts -- so its held-out improvement over a no-behaviour model on the same calls is stored beside
+    model predicts -- so its held-out improvement over a no-behaviour model on the same USVs is stored beside
     the result (ruled 2026-09-15). The kinematic data are released before the pool starts, so the largest
     arrays are never held while workers are alive.
 
@@ -764,7 +765,7 @@ def run_nested_vocal_manifold_position_decoding(unit: dict, events: dict, settin
     unit (dict)
         The unit record.
     events (dict)
-        Output of ``assemble_unit_vocal_events`` -- the same calls the vocalization-identity decoding
+        Output of ``assemble_unit_vocal_events`` -- the same USVs the vocalization-identity decoding
         scores.
     settings (dict)
         Full neural-modeling settings.
@@ -788,15 +789,14 @@ def run_nested_vocal_manifold_position_decoding(unit: dict, events: dict, settin
     per_session = assemble_unit_sessions(unit, data_root, settings["kinematic_features"],
                                          encoding["history_pre_seconds"], encoding["clean_post_seconds"],
                                          settings["vocalization_settings"]["clean_against"],
-                                         settings["vocalization_settings"]["vocal_emitter"],
                                          settings["vocalization_settings"])
     fps = per_session[unit["courtship_sessions"][0]]["fps"]
     history_lags = int(np.floor(encoding["history_pre_seconds"] * fps))
     reduced = reduced_model_features(settings)
     design = nested_design(events, per_session, reduced, history_lags, nested["sigma_floor"])
     # The behaviour control is FITTED AT COHORT SCALE and carried in as its prediction. Refitting it
-    # here is the failure it exists to fix: this unit has ~2,000 calls against the thousands of columns
-    # the raw block carries, and such a control scores BELOW a constant fitted on the same calls. As
+    # here is the failure it exists to fix: this unit has ~2,000 USVs against the thousands of columns
+    # the raw block carries, and such a control scores BELOW a constant fitted on the same USVs. As
     # four columns the behaviour information comes from the whole cohort and only four coefficients are
     # estimated on the unit. `n_lags` changes with the block, which is why the swap returns both.
     control = load_control_model(settings)
@@ -817,7 +817,8 @@ def run_nested_vocal_manifold_position_decoding(unit: dict, events: dict, settin
     # on every shared event.
     decoding = settings["vocal_decoding"]
     counts = np.asarray(events["counts"], dtype=np.float64)[design["kept"]]
-    folds = decoding_context(design["positions"], design["session_index"], decoding)
+    folds = decoding_context(design["positions"], design["session_index"], decoding,
+                             settings["vocalization_settings"]["torus_period"])
     kappas, priors = behaviour_priors(folds, design["behaviour_control"]["predicted_positions"],
                                       design["positions"], nested)
     posterior = posterior_nested_gain(counts, folds, decoding, priors, kappas, with_detail=True)
@@ -901,7 +902,6 @@ def run_vocal_gating(unit: dict, settings: dict, data_root: str, output_director
     per_session = assemble_unit_sessions(unit, data_root, settings["kinematic_features"],
                                          encoding["history_pre_seconds"], encoding["clean_post_seconds"],
                                          settings["vocalization_settings"]["clean_against"],
-                                         settings["vocalization_settings"]["vocal_emitter"],
                                          settings["vocalization_settings"])
     seed = int(settings["null"]["shuffle_seed"])
     universe = gating_universe(unit, data_root, per_session, gating, settings["vocalization_settings"],
@@ -995,7 +995,7 @@ def run_vocal(unit: dict, settings: dict, data_root: str, output_directory: str,
     -----------
     Run the requested vocal analyses for one unit, in order.
 
-    The call-grain event set is assembled ONCE and shared by every analysis that scores calls, so vocal
+    The USV-grain event set is assembled ONCE and shared by every analysis that scores USVs, so vocal
     occurrence, vocalization identity and the nested decoding all see exactly the same events. Vocal
     gating needs the vocal-occurrence and vocalization-identity p-values: it uses the ones computed in
     this job, reads any it did not compute from the unit's result file, and refuses to run if one is in

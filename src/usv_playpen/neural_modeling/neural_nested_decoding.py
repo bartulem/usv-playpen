@@ -3,7 +3,7 @@
 Nested vocal-manifold position decoding: does a neuron carry vocal output type BEYOND the behaviour that
 predicts it?
 
-Two nested models of the same target, the upcoming call's position on the QLVM torus, differing in
+Two nested models of the same target, the upcoming USV's position on the QLVM torus, differing in
 exactly the neuron:
 
     reduced:  behaviour
@@ -48,8 +48,8 @@ the control mildly suboptimal for the test (its first-selected feature, `self.ne
 the micro score), which biases the test toward passing: the wrong direction for a positive result.
 
 The neuron enters as a spike COUNT, not 600 lags of binary train. A 4 s spike history spans ~20 prior
-calls at the 195 ms median inter-USV interval, so it is largely the neuron's RESPONSES to earlier
-calls -- and since calls within a bout correlate in type, the test would pass on bout structure. The
+USVs at the 195 ms median inter-USV interval, so it is largely the neuron's RESPONSES to earlier
+USVs -- and since USVs within a bout correlate in type, the test would pass on bout structure. The
 behaviour block has the same 4 s window and the same bout structure, and that is accepted there
 because behaviour is the CONTROL: a longer window makes it stronger and the test harder. The neuron
 is the TESTED predictor, so its window is kept short.
@@ -70,8 +70,8 @@ from ..modeling.manifold_metric import (
     signed_diff,
 )
 from ..modeling.manifold_torus_regression import SmoothTorusManifoldRegression
-from .deviance_metrics import finite_mean
-from .neural_design_assembly import lagged_design
+from .deviance_metrics import finite_mean, finite_min
+from .neural_design_assembly import lagged_design, onset_history_anchor_frames
 from .neural_vocal_decoding import decode_gain
 from .neural_vocal_occurrence import counts_in_windows
 from .shift_null_inference import shift_range_seconds
@@ -122,6 +122,22 @@ class NestedTorusRegression(SmoothTorusManifoldRegression):
         1 or 2; passed through to the parent's operator so the boundary handling matches P1 exactly.
     period (float)
         Torus period per axis.
+    huber_delta (float)
+        Huber transition point of the parent's residual loss, in torus units; production passes
+        ``nested_vocal_manifold_position_decoding.huber_delta``. The default equals the shipped value.
+    learning_rate (float)
+        Initial Adam step size of the parent's optimiser (cosine-decayed to zero over ``max_iter``);
+        production passes ``nested_vocal_manifold_position_decoding.learning_rate``. The default equals the
+        shipped value.
+    max_iter (int)
+        Optimiser step cap; production passes ``nested_vocal_manifold_position_decoding.max_iter``. The
+        default equals the shipped value.
+    tol (float)
+        Convergence tolerance on the parameter-change norm; production passes
+        ``nested_vocal_manifold_position_decoding.tol``. The default equals the shipped value.
+    random_state (int)
+        Seed of the weight initialisation; production passes
+        ``nested_vocal_manifold_position_decoding.random_state``. The default equals the shipped value.
 
     Returns
     -------
@@ -138,11 +154,17 @@ class NestedTorusRegression(SmoothTorusManifoldRegression):
             l2_reg: float = 0.01,
             smoothness_derivative_order: int = 1,
             period: float = 1.0,
+            huber_delta: float = 1.0,
+            learning_rate: float = 1e-3,
+            max_iter: int = 5000,
+            tol: float = 1e-4,
+            random_state: int = 0,
     ):
         total_columns = int(n_behaviour_features) * int(n_lags) + int(n_neural_columns)
         super().__init__(n_features=1, n_time_bins=total_columns, lambda_smooth=lambda_smooth,
                          l2_reg=l2_reg, smoothness_derivative_order=smoothness_derivative_order,
-                         metric="torus", period=period)
+                         huber_delta=huber_delta, learning_rate=learning_rate, max_iter=max_iter,
+                         tol=tol, random_state=random_state, metric="torus", period=period)
         self.n_behaviour_features = int(n_behaviour_features)
         self.n_lags = int(n_lags)
         self.n_neural_columns = int(n_neural_columns)
@@ -193,7 +215,7 @@ def reduced_model_features(settings: dict, require_selection_file: bool = True) 
     same "check rather than assume" the emitter and dyad resolutions use.
 
     WHAT MAY BE ADOPTED FROM A BEHAVIOURAL SELECTION, AND WHAT MAY NOT. Its FITTED MAP does not
-    transfer to the ephys preparation -- measured at -0.00113 over 41,087 calls -- while the same
+    transfer to the ephys preparation -- measured at -0.00113 over 41,087 USVs -- while the same
     estimator refitted in domain predicts perfectly well. That is a statement about COEFFICIENTS, not
     about which features to use, so a behavioural selection's feature set is read here while the
     control itself is always refitted in domain by ``fit_control_models``. An externally chosen set is
@@ -239,7 +261,7 @@ def reduced_model_features(settings: dict, require_selection_file: bool = True) 
         # A behavioural-modelling selection, whose FEATURE SET may be adopted while its COEFFICIENTS
         # may not. Only the names are taken here; the control is still fitted in domain by
         # `fit_control_models`, which is the guard that matters -- the fitted map is what failed to
-        # transfer (-0.00113 over 41,087 calls), not the choice of features. Adopting an external set
+        # transfer (-0.00113 over 41,087 USVs), not the choice of features. Adopting an external set
         # also removes selection optimism outright instead of bounding it, since those features were
         # never chosen on the preparation the claim is made about.
         selected = list(selection["steps"][-1]["current_features"])
@@ -265,17 +287,17 @@ def nested_design(events: dict, per_session: dict, feature_names: list, n_lags: 
     -----------
     Build the nested decoding's design: each event's 4 s behavioural history, plus the neuron as ONE column.
 
-    Rows are CALLS, not frames. Each behavioural feature contributes ``n_lags`` columns -- its history
-    ending at the call's onset frame -- so a row is one call with ``len(feature_names) * n_lags``
+    Rows are USVs, not frames. Each behavioural feature contributes ``n_lags`` columns -- its history
+    ending at the USV's onset frame -- so a row is one USV with ``len(feature_names) * n_lags``
     behaviour columns followed by a single neural column. The common misstatement to avoid is that
-    "every predictor is summarised to one value per call": the behaviour block is NOT summarised, it
+    "every predictor is summarised to one value per USV": the behaviour block is NOT summarised, it
     is 600 columns per feature. What differs between predictors is how many columns each contributes.
 
     **The neuron is a z-scored spike COUNT, not 600 lags of binary train.** The symmetric alternative
-    was considered and rejected: a 4 s spike history spans about twenty prior calls at the 195 ms
-    median inter-USV interval, so it is largely the neuron's RESPONSES to earlier calls, and since
-    calls within a bout correlate in type the model would predict this call's position from previous
-    calls' positions via the neuron -- the test would pass on bout structure. The behaviour block has
+    was considered and rejected: a 4 s spike history spans about twenty prior USVs at the 195 ms
+    median inter-USV interval, so it is largely the neuron's RESPONSES to earlier USVs, and since
+    USVs within a bout correlate in type the model would predict this USV's position from previous
+    USVs' positions via the neuron -- the test would pass on bout structure. The behaviour block has
     the same 4 s window and the same bout structure and is accepted there because behaviour is the
     CONTROL, where a longer window makes the test harder. Within the 50 ms window a count rather than
     per-frame binary, because 50 ms at 150 fps is 7.5 frames (so per-frame needs the window rounded or
@@ -290,7 +312,7 @@ def nested_design(events: dict, per_session: dict, feature_names: list, n_lags: 
     allows.)
 
     **Events without a full history are DROPPED, and that is why the vocal decoding and the nested
-    decoding see different event counts.** A call in a session's first 4 s is perfectly usable for the vocal
+    decoding see different event counts.** A USV in a session's first 4 s is perfectly usable for the vocal
     decoding, whose spike count
     needs no history, and unusable here. Both counts are returned so the difference is reported rather
     than discovered.
@@ -298,7 +320,7 @@ def nested_design(events: dict, per_session: dict, feature_names: list, n_lags: 
     Parameters
     ----------
     events (dict)
-        From ``assemble_unit_vocal_events``: ``call_start``, ``session_index``, ``counts``,
+        From ``assemble_unit_vocal_events``: ``vocalization_start``, ``session_index``, ``counts``,
         ``positions``, ``region_labels``, ``session_ids``.
     per_session (dict)
         From ``assemble_unit_sessions``: per session ``feature_time_series``, ``feature_names``,
@@ -340,7 +362,8 @@ def nested_design(events: dict, per_session: dict, feature_names: list, n_lags: 
         series = np.asarray(session["feature_time_series"], dtype=np.float64)[:, columns]
 
         rows = np.flatnonzero(events["session_index"] == slot)
-        frames = np.rint(events["call_start"][rows] * session["fps"]).astype(np.int64)
+        # The frame before onset, the convention the cohort behaviour control is fitted at.
+        frames = onset_history_anchor_frames(events["vocalization_start"][rows], session["fps"])
         usable = (frames >= n_lags - 1) & (frames < session["n_frames"])
         kept_rows, kept_frames = rows[usable], frames[usable]
 
@@ -375,11 +398,11 @@ def behaviour_prior_log_density(fold: dict, predicted_positions: np.ndarray, pos
     Description
     -----------
     Behaviour as a PRIOR over the torus grid: for each event, the fold's occupancy prior MULTIPLIED by
-    the von Mises evidence the behaviour control supplies for that call, with a concentration measured
+    the von Mises evidence the behaviour control supplies for that USV, with a concentration measured
     on the training events alone.
 
     This is how the nested statistic conditions on behaviour without asking the neuron to compete for a
-    point. The regression form forced every model to answer "where exactly", one point per call, and a
+    point. The regression form forced every model to answer "where exactly", one point per USV, and a
     neuron whose knowledge is "probably this region" cannot help with that -- measured on cl0401, whose
     counts run 3.4 to 5.7 across regions and decode +0.049 nats/event categorically, yet add nothing to
     a point. A prior can be reweighted without being moved, so the same knowledge is worth nats here.
@@ -390,7 +413,7 @@ def behaviour_prior_log_density(fold: dict, predicted_positions: np.ndarray, pos
     ``p(x)`` the conditioned prior is ``p(x | x_hat) ~ occupancy(x) * vM(x; x_hat, kappa)``. The first
     draft used the von Mises ALONE, the flat-prior special case, and on cl0401 that scored 0.22 nats
     WORSE at the truth than identity's occupancy prior -- not because behaviour misled, but because the
-    prior had forgotten where calls live. A neuron is then credited for restoring that, which inflates
+    prior had forgotten where USVs live. A neuron is then credited for restoring that, which inflates
     ``added``. In the product form a control that knows nothing (``kappa`` to 0) reduces to the
     occupancy prior, the ladder's first step goes to zero rather than -0.22, and a control that knows
     something sharpens the base rate instead of replacing it.
@@ -405,7 +428,7 @@ def behaviour_prior_log_density(fold: dict, predicted_positions: np.ndarray, pos
     held-out criterion can tell a control that knows nothing from one that knows something. Either
     way the evidence is only as sharp as behaviour has earned on data the scored session never sees.
     The occupancy term already carries the fold's mask, so the product can put no mass where no
-    training call ever sat; renormalising over the masked grid absorbs ``log I0(kappa)`` and no second
+    training USV ever sat; renormalising over the masked grid absorbs ``log I0(kappa)`` and no second
     copy of the density formula is needed.
 
     Parameters
@@ -734,7 +757,9 @@ def _fit_predict(behaviour: np.ndarray, neural: np.ndarray, positions: np.ndarra
         n_neural_columns=0 if neural is None else neural.shape[1],
         lambda_smooth=settings["lambda_smooth"], l2_reg=settings["l2_reg"],
         smoothness_derivative_order=settings["smoothness_derivative_order"],
-        period=settings["torus_period"])
+        period=settings["torus_period"], huber_delta=settings["huber_delta"],
+        learning_rate=settings["learning_rate"], max_iter=settings["max_iter"], tol=settings["tol"],
+        random_state=settings["random_state"])
     estimator.fit(design[train], positions[train], sample_weight=weights[train])
     return estimator.predict(design[test], snap=False)
 
@@ -788,7 +813,7 @@ def shifted_neural_column(design: dict, window_edges: np.ndarray, spikes: dict, 
 
     The shift is the right null here because the question is purely the neuron's contribution. It
     preserves the unit's rate, bursting and slow drift -- so the null column looks like a real spike
-    train in every respect except its alignment to the calls -- while behaviour and position keep
+    train in every respect except its alignment to the USVs -- while behaviour and position keep
     their real relationship, which a target permutation would destroy along with the thing being
     conditioned on.
 
@@ -930,7 +955,7 @@ def nested_scores(design: dict, settings: dict, n_lags: int,
             "reduced": reduced_score,
             "full": full_score,
             "per_fold": per_fold,
-            "min_leave_one_fold_out": float(np.min(dropped)) if dropped else float("nan"),
+            "min_leave_one_fold_out": finite_min(dropped),
             "n_events": int(positions.shape[0]),
             "n_regions_scored": int(np.sum(counts >= settings["min_region_events"]))}
 
@@ -954,14 +979,14 @@ def pooled_macro_score(predictions: np.ndarray, positions: np.ndarray, regions: 
     positions (np.ndarray)
         ``(n, 2)`` true torus positions.
     regions (np.ndarray)
-        ``(n,)`` acoustic region label per call.
+        ``(n,)`` acoustic region label per USV.
     settings (dict)
         From :func:`nested_settings`.
 
     Returns
     -------
     score (float)
-        Mean log-likelihood per call, macro over regions; NaN when no region clears the minimum.
+        Mean log-likelihood per USV, macro over regions; NaN when no region clears the minimum.
     """
 
     return float(macro_von_mises_logscore(predictions, positions, regions, metric="torus",
@@ -985,17 +1010,17 @@ def no_behaviour_predictions(design: dict, settings: dict, n_lags: int) -> np.nd
 
     MEASURED 2026-09-22, and the condition FAILS for the behaviour model as it is built above: the per-unit
     refit scores BELOW this baseline on both example recording days (-0.0090 and -0.0062). Five features over
-    six hundred lags is three thousand columns, and a unit carries about two thousand calls; P1's own data
+    six hundred lags is three thousand columns, and a unit carries about two thousand USVs; P1's own data
     cut to that size reproduces the failure exactly (median +0.00000 over eight draws against +0.06356 on all
-    of it), so the shortfall is the call count and not the ephys sessions. A behaviour model fitted on the
-    ephys cohort and held out by recording day DOES predict (+0.042 pooled over 41,087 calls), and the fix is
+    of it), so the shortfall is the USV count and not the ephys sessions. A behaviour model fitted on the
+    ephys cohort and held out by recording day DOES predict (+0.042 pooled over 41,087 USVs), and the fix is
     to carry that model in as its predicted position rather than to refit its columns here. An earlier
     docstring quoted "about +0.04" for both days; that figure came from a script whose constant was fitted on
-    P1's calls and applied to ephys ones, which is a baseline at the wrong centre.
+    P1's USVs and applied to ephys ones, which is a baseline at the wrong centre.
 
-    No null is attached, deliberately. The behaviour features' ability to predict call position was already
-    tested when they were selected, against a within-session permutation of call positions on independent
-    animals. What remains per unit is only whether that carries over to these animals and calls, and the
+    No null is attached, deliberately. The behaviour features' ability to predict USV position was already
+    tested when they were selected, against a within-session permutation of USV positions on independent
+    animals. What remains per unit is only whether that carries over to these animals and USVs, and the
     held-out improvement shows that directly.
 
     Parameters

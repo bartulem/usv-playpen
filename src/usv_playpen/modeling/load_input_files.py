@@ -1450,7 +1450,8 @@ def find_usv_categories(root_directories: list | None = None,
                         csv_sep: str = ',',
                         target_category: int | None = None,
                         category_column: str = 'usv_category',
-                        filter_history: int | float = 0.0,
+                        *,
+                        filter_history: int | float,
                         vocal_output_type: str | None = None,
                         predictor_classes: list | tuple = (('usv',),),
                         proportion_smoothing_sd: float = 1.0,
@@ -1495,8 +1496,9 @@ def find_usv_categories(root_directories: list | None = None,
         optional: None returns the manifold targets with empty
         'events_by_category' / 'category_streams'; a column that is set must
         still exist in every summary.
-    filter_history : float, optional
+    filter_history : float
         Minimum time (seconds) from the start of the session. Discards USVs before this.
+        Keyword-only, no default: callers pass `model_params.filter_history`.
     vocal_output_type : str, optional, default=None
         Controls the type of vocal predictors generated in 'continuous_vocal_signals':
         one trace per entry of `predictor_classes`, named ``<name>`` by

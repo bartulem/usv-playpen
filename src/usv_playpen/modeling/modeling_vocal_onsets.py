@@ -37,7 +37,7 @@ from sklearn.model_selection import ShuffleSplit, StratifiedShuffleSplit
 from tqdm import tqdm
 
 from ..analyses.compute_behavioral_features import FeatureZoo
-from ..os_utils import atomic_output_path, resolve_modeling_setting
+from ..os_utils import atomic_output_path
 from .load_input_files import (
     _calculate_ibi_threshold,
     find_onset_epochs,
@@ -78,10 +78,6 @@ from .modeling_utils import (
     within_group_permutation,
     zscore_features_across_sessions,
 )
-
-# Expected-Calibration-Error histogram bin count, read from the settings block
-# rather than a bare 10 literal.
-_ECE_N_BINS = resolve_modeling_setting('diagnostics', 'ece_n_bins')
 
 
 class VocalOnsetModelingPipeline(FeatureZoo):
@@ -1152,7 +1148,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     results['actual']['brier'][split_idx] = float(brier_score_loss(y_test, y_proba_actual))
                     try:
                         y_proba_2d = np.column_stack([1.0 - y_proba_actual, y_proba_actual])
-                        results['actual']['ece'][split_idx] = expected_calibration_error(y_test, y_pred_actual, y_proba_2d, n_bins=_ECE_N_BINS)
+                        results['actual']['ece'][split_idx] = expected_calibration_error(y_test, y_pred_actual, y_proba_2d, n_bins=self.modeling_settings['diagnostics']['ece_n_bins'])
                     except Exception as e:
                         print(f"[warn] fold diagnostic metric could not be recorded: {e}")
 
@@ -1215,7 +1211,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     results['null']['brier'][split_idx] = float(brier_score_loss(y_test, y_proba_shuffled))
                     try:
                         y_proba_2d = np.column_stack([1.0 - y_proba_shuffled, y_proba_shuffled])
-                        results['null']['ece'][split_idx] = expected_calibration_error(y_test, y_pred_shuffled, y_proba_2d, n_bins=_ECE_N_BINS)
+                        results['null']['ece'][split_idx] = expected_calibration_error(y_test, y_pred_shuffled, y_proba_2d, n_bins=self.modeling_settings['diagnostics']['ece_n_bins'])
                     except Exception as e:
                         print(f"[warn] fold diagnostic metric could not be recorded: {e}")
 
@@ -1355,7 +1351,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                             rec['brier'] = float(brier_score_loss(y_test_held, y_proba))
                             try:
                                 y_proba_2d = np.column_stack([1.0 - y_proba, y_proba])
-                                rec['ece'] = expected_calibration_error(y_test_held, y_pred, y_proba_2d, n_bins=_ECE_N_BINS)
+                                rec['ece'] = expected_calibration_error(y_test_held, y_pred, y_proba_2d, n_bins=self.modeling_settings['diagnostics']['ece_n_bins'])
                             except Exception as e:
                                 print(f"[warn] held-out diagnostic metric could not be recorded: {e}")
                     except Exception as e:
@@ -1645,7 +1641,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                         results['actual']['brier'][split_idx] = float(brier_score_loss(y_test_int, y_proba_mean_epoch))
                         try:
                             y_proba_2d = np.column_stack([1.0 - y_proba_mean_epoch, y_proba_mean_epoch])
-                            results['actual']['ece'][split_idx] = expected_calibration_error(y_test_int, y_pred_mean_epoch, y_proba_2d, n_bins=_ECE_N_BINS)
+                            results['actual']['ece'][split_idx] = expected_calibration_error(y_test_int, y_pred_mean_epoch, y_proba_2d, n_bins=self.modeling_settings['diagnostics']['ece_n_bins'])
                         except Exception as e:
                             print(f"[warn] fold diagnostic metric could not be recorded: {e}")
 
@@ -1719,7 +1715,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                         results['null']['brier'][split_idx] = float(brier_score_loss(y_test_int, y_proba_shuffled_mean))
                         try:
                             y_proba_2d = np.column_stack([1.0 - y_proba_shuffled_mean, y_proba_shuffled_mean])
-                            results['null']['ece'][split_idx] = expected_calibration_error(y_test_int, y_pred_shuffled_mean, y_proba_2d, n_bins=_ECE_N_BINS)
+                            results['null']['ece'][split_idx] = expected_calibration_error(y_test_int, y_pred_shuffled_mean, y_proba_2d, n_bins=self.modeling_settings['diagnostics']['ece_n_bins'])
                         except Exception as e:
                             print(f"[warn] fold diagnostic metric could not be recorded: {e}")
 
@@ -1853,7 +1849,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                             rec['brier'] = float(brier_score_loss(y_test_int, y_proba_mean))
                             try:
                                 y_proba_2d = np.column_stack([1.0 - y_proba_mean, y_proba_mean])
-                                rec['ece'] = expected_calibration_error(y_test_int, y_pred_mean, y_proba_2d, n_bins=_ECE_N_BINS)
+                                rec['ece'] = expected_calibration_error(y_test_int, y_pred_mean, y_proba_2d, n_bins=self.modeling_settings['diagnostics']['ece_n_bins'])
                             except Exception as e:
                                 print(f"[warn] held-out diagnostic metric could not be recorded: {e}")
                     except Exception as e:

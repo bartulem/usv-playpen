@@ -36,6 +36,9 @@ with warnings.catch_warnings():
     from usv_playpen.modeling.manifold_torus_regression import (
         SmoothTorusManifoldRegression,
     )
+    from usv_playpen.neural_modeling.neural_design_assembly import (
+        onset_history_anchor_frames,
+    )
     from usv_playpen.neural_modeling.neural_nested_decoding import (
         NestedTorusRegression,
         behaviour_prior_log_density,
@@ -56,7 +59,6 @@ with warnings.catch_warnings():
         within_session_permutation,
     )
     from usv_playpen.neural_modeling.neural_vocal_decoding import (
-        PERIOD,
         decode_gain,
         decoding_context,
     )
@@ -66,6 +68,9 @@ with warnings.catch_warnings():
 
 SETTINGS_PATH = (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"
                  / "_parameter_settings" / "neural_modeling_settings.json")
+with SETTINGS_PATH.open() as _settings_file:
+    # The shipped torus period every analysis of the manifold reads.
+    PERIOD = json.load(_settings_file)["vocalization_settings"]["torus_period"]
 
 
 def _settings() -> dict:
@@ -391,12 +396,12 @@ class TestNestedDesign:
         Returns
         -------
         events (dict)
-            ``call_start``, ``session_index``, ``counts``, ``positions``, ``region_labels`` and
+            ``vocalization_start``, ``session_index``, ``counts``, ``positions``, ``region_labels`` and
             ``session_ids``.
         """
         starts = np.concatenate([np.arange(n_per_session) * 1.0 + first_frame / 10.0
                                  for _ in range(n_sessions)])
-        return {"call_start": starts,
+        return {"vocalization_start": starts,
                 "session_index": np.repeat(np.arange(n_sessions), n_per_session),
                 "counts": np.tile(np.arange(n_per_session, dtype=float), n_sessions),
                 "positions": np.tile(np.linspace(0.0, 0.9, n_per_session)[:, None], (n_sessions, 2)),
@@ -464,15 +469,18 @@ class TestNestedDesign:
             block = design["behaviour"][:, f * self.N_LAGS:(f + 1) * self.N_LAGS]
             assert np.all((block >= f * 1000) & (block < (f + 1) * 1000))
 
-    def test_the_history_ends_at_the_onset_frame(self):
+    def test_the_history_ends_at_the_frame_before_onset(self):
         """`lagged_design` lays each window oldest-to-newest, so the LAST column of a feature's block
-        is that feature's value AT the onset frame."""
+        is that feature's value at the window's end -- the frame BEFORE the onset frame, the convention
+        the cohort behaviour control is fitted at. It used to end AT the onset frame, one frame later
+        than every history the control's coefficients were estimated on."""
         names = ["a"]
         events = self._events(n_sessions=1)
         per_session = self._per_session(events["session_ids"], names)
         design = nested_design(events, per_session, names, self.N_LAGS, 0.05)
-        frames = np.rint(events["call_start"] * 10.0).astype(int)
+        frames = np.rint(events["vocalization_start"] * 10.0).astype(int) - 1
         np.testing.assert_allclose(design["behaviour"][:, self.N_LAGS - 1], frames)
+        np.testing.assert_array_equal(frames, onset_history_anchor_frames(events["vocalization_start"], 10.0))
 
     def test_events_without_a_full_history_are_dropped_and_counted(self):
         """A USV in a session's first 4 s is usable for the vocal decoding and not for the nested
@@ -480,7 +488,7 @@ class TestNestedDesign:
         recorded so the difference is reported rather than discovered."""
         names = ["a"]
         events = self._events(n_sessions=1, first_frame=0)
-        events["call_start"] = np.array([0.0, 0.1, 0.2, 1.0, 2.0, 3.0])   # first few lack history
+        events["vocalization_start"] = np.array([0.0, 0.1, 0.2, 1.0, 2.0, 3.0])   # first few lack history
         per_session = self._per_session(events["session_ids"], names)
         design = nested_design(events, per_session, names, self.N_LAGS, 0.05)
         book = design["per_session"]["s0"]
@@ -494,7 +502,7 @@ class TestNestedDesign:
         stay paired with the right rows after short-history drops."""
         names = ["a"]
         events = self._events(n_sessions=1, first_frame=0)
-        events["call_start"] = np.array([0.0, 0.1, 1.0, 2.0, 3.0, 4.0])
+        events["vocalization_start"] = np.array([0.0, 0.1, 1.0, 2.0, 3.0, 4.0])
         design = nested_design(events, self._per_session(events["session_ids"], names),
                                names, self.N_LAGS, 0.05)
         np.testing.assert_allclose(design["positions"], events["positions"][design["kept"]])
@@ -839,10 +847,28 @@ class TestSettingsAreNotHardCoded:
         assert "torus_period" in settings["vocalization_settings"]
         assert "torus_period" not in settings["nested_vocal_manifold_position_decoding"]
 
-    def test_the_vocal_and_nested_decodings_agree_on_the_period(self):
-        """The vocal decoding keeps a module constant for it -- threading a parameter through ten call sites in
-        validated code is churn for a value that is 1.0 everywhere -- so this pins them together."""
-        assert _settings()["vocalization_settings"]["torus_period"] == PERIOD
+    def test_the_vocal_decoding_reads_the_period_it_is_given(self):
+        """The vocal decoding takes the period as an argument (it used to keep a module constant), so
+        a non-unit period reaches the grid, the stored folds and the decoded positions."""
+        rng = np.random.default_rng(0)
+        positions = rng.random((60, 2)) * 2.0
+        sessions = np.repeat(np.arange(3), 20)
+        decoding = _decoding()
+        folds = decoding_context(positions, sessions, decoding, 2.0)
+        grid_n = decoding["tuning_surface"]["grid_n"]
+        assert all(fold["period"] == 2.0 for fold in folds)
+        assert folds[0]["cell_area"] == pytest.approx((2.0 / grid_n) ** 2)
+        assert folds[0]["grid_positions"].max() < 2.0
+        assert folds[0]["grid_positions"].max() > 1.0
+
+    def test_both_decodings_receive_the_shared_period_from_settings(self):
+        """Every decoding_context call in the dispatcher hands it `vocalization_settings.torus_period`,
+        the same key the nested decoding's block carries, so the two cannot disagree on the period."""
+        source = (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen" / "neural_modeling"
+                  / "main_neural_vocal_dispatcher.py").read_text()
+        n_contexts = source.count("decoding_context(")
+        assert n_contexts >= 2
+        assert source.count('settings["vocalization_settings"]["torus_period"]') >= n_contexts
 
     def test_the_sigma_floor_is_a_setting_not_a_default(self):
         """The vocal-occurrence axis takes it as a required parameter from settings; the nested decoding hard-coded the
@@ -982,7 +1008,7 @@ class TestPosteriorNested:
         """
         counts, positions, predicted, sessions = self._unit(seed=seed, neuron=neuron,
                                                             control_noise=control_noise)
-        folds = decoding_context(positions, sessions, self.DECODING)
+        folds = decoding_context(positions, sessions, self.DECODING, PERIOD)
         kappas, priors = behaviour_priors(folds, predicted, positions, self.NESTED)
         result = posterior_nested_gain(counts, folds, self.DECODING, priors, kappas,
                                        permutation=permutation)
@@ -1118,7 +1144,7 @@ class TestPosteriorNested:
         truth's own spread, so the fitted kappa is well above zero and the prior it builds scores
         BELOW the occupancy prior at the truth -- measured on cl0401 at -0.10 nats/event."""
         positions, predicted, sessions = self._shrunk_control()
-        folds = decoding_context(positions, sessions, self.DECODING)
+        folds = decoding_context(positions, sessions, self.DECODING, PERIOD)
         nested = copy.deepcopy(self.NESTED)
         nested["behaviour_prior"]["concentration"] = "train_residuals"
         kappas, priors = behaviour_priors(folds, predicted, positions, nested)
@@ -1133,7 +1159,7 @@ class TestPosteriorNested:
         so a tilt toward the centre re-sharpens the BASE RATE and legitimately earns a kappa of 0.5
         here; at the shipped bandwidth (selected by held-out likelihood) cl0401 tuned to 0."""
         positions, predicted, sessions = self._shrunk_control()
-        folds = decoding_context(positions, sessions, self.DECODING)
+        folds = decoding_context(positions, sessions, self.DECODING, PERIOD)
         nested = copy.deepcopy(self.NESTED)
         nested["behaviour_prior"]["concentration"] = "train_tuned_inner_loso"
         tuned_kappas, tuned_priors = behaviour_priors(folds, predicted, positions, nested)
@@ -1154,7 +1180,7 @@ class TestPosteriorNested:
         positions = (0.5 + rng.vonmises(0.0, 0.3, size=(n, 2)) / (2.0 * np.pi)) % 1.0
         predicted = rng.random((n, 2))
         sessions = np.repeat(np.arange(3), 240)
-        folds = decoding_context(positions, sessions, self.DECODING)
+        folds = decoding_context(positions, sessions, self.DECODING, PERIOD)
         nested = copy.deepcopy(self.NESTED)
         nested["behaviour_prior"]["concentration"] = "train_tuned_inner_loso"
         kappas, _priors = behaviour_priors(folds, predicted, positions, nested)
@@ -1164,7 +1190,7 @@ class TestPosteriorNested:
         """An accurate control earns a positive tuned kappa on every fold, so tuning does not collapse
         every prior to occupancy."""
         _counts, positions, predicted, sessions = self._unit(control_noise=0.05)
-        folds = decoding_context(positions, sessions, self.DECODING)
+        folds = decoding_context(positions, sessions, self.DECODING, PERIOD)
         nested = copy.deepcopy(self.NESTED)
         nested["behaviour_prior"]["concentration"] = "train_tuned_inner_loso"
         kappas, _priors = behaviour_priors(folds, predicted, positions, nested)

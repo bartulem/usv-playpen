@@ -21,6 +21,7 @@ import polars as pls
 import pytest
 
 from usv_playpen.neural_modeling import neural_vocal_gating as gating_module
+from usv_playpen.neural_modeling.neural_significance import benjamini_hochberg
 from usv_playpen.neural_modeling.neural_vocal_gating import (
     check_settings,
     feature_gating_statistic,
@@ -331,10 +332,18 @@ class TestImplementedOptions:
         check_settings(_gating())
 
     def test_the_vocal_window_names_what_it_means(self):
-        """`start_stop` named the MECHANISM -- it reads the start and stop columns. `during_call`
-        names the meaning. The nameable alternative is a fixed peri-onset window, rejected because
-        gating asks about VOCALIZING rather than peri-vocalizing."""
-        assert _gating()["vocal_window"] == "during_call"
+        """`start_stop` named the MECHANISM -- it reads the start and stop columns.
+        `during_vocalization` names the meaning. The nameable alternative is a fixed peri-onset window,
+        rejected because gating asks about VOCALIZING rather than peri-vocalizing."""
+        assert _gating()["vocal_window"] == "during_vocalization"
+
+    def test_the_retired_window_name_is_refused(self):
+        """The value was renamed to ``during_vocalization``; the retired spelling is refused rather than
+        silently accepted, so a stale settings file fails loudly."""
+        settings = _gating()
+        settings["vocal_window"] = "during_" + "call"
+        with pytest.raises(ValueError, match="is not implemented"):
+            check_settings(settings)
 
     def test_a_peri_onset_vocal_window_is_refused(self):
         """The rejected peri-onset window must raise rather than be silently treated as the
@@ -558,6 +567,16 @@ class TestTheUniverse:
                                    _gating(), VOCAL_SETTINGS)
         assert universe["vocal"].sum() == 0
 
+    def test_vocal_emitter_all_counts_every_emitter_instead_of_raising(self, monkeypatch):
+        """``vocal_emitter = 'all'`` resolves to no emitter filter; it used to index the empty list
+        ``emitter_names`` returns for it and raise IndexError."""
+        self._patch(monkeypatch, [(10.0, 10.5, "female"), (20.0, 20.5, "male")])
+        universe = gating_universe(self._unit(), "/data",
+                                   self._per_session(["s0", "s1"], np.arange(3000, 3100), [1005]),
+                                   _gating(), {**VOCAL_SETTINGS, "vocal_emitter": "all"})
+        assert universe["per_session"]["s0"]["n_focal_vocalizations"] == 2
+        assert universe["vocal"].sum() == 2 * 2 * 50
+
     def test_the_quiet_cap_is_honoured(self, monkeypatch):
         """``max_quiet_frames_per_session`` limits the quiet rows in the FIT only; every quiet frame is
         still scored, which is what keeps the cap from setting the effect size."""
@@ -599,7 +618,7 @@ class TestTheUniverse:
         assert book["n_vocal_frames"] == 50
         assert book["n_quiet_frames_available"] == 500
         assert book["n_peri_vocal_frames_excluded"] == self.N_FRAMES - 50 - 500
-        assert book["n_focal_calls"] == 1
+        assert book["n_focal_vocalizations"] == 1
 
 
 class TestTheNull:
@@ -626,7 +645,8 @@ class TestTheNull:
         Returns
         -------
         universe (dict)
-            Row arrays, their quiet subsets, per-session spike frames, frame counts and rates.
+            Row arrays, their quiet subsets (the observed subsample and every quiet row), per-session
+            spike frames, frame counts and rates.
         """
         rng = np.random.default_rng(seed)
         per = n // n_sessions
@@ -642,6 +662,9 @@ class TestTheNull:
                 "spikes_quiet": (rng.random(int(quiet_rows.sum())) < 0.2).astype(float),
                 "session_quiet": index[quiet_rows],
                 "frames_quiet": frames[quiet_rows].astype(np.int64),
+                "features_quiet_all": feature[quiet_rows][:, None],
+                "session_quiet_all": index[quiet_rows],
+                "frames_quiet_all": frames[quiet_rows].astype(np.int64),
                 "spike_frames": {s: np.sort(rng.choice(per * 3, 400, replace=False))
                                  for s in range(n_sessions)},
                 "n_frames": dict.fromkeys(range(n_sessions), per * 3),
@@ -682,6 +705,100 @@ class TestTheNull:
         null = gating_null(self._universe(seed=3), 0, _gating(), 1.0, 40, seed=0)
         spread = np.std(null["interaction"])
         assert abs(np.mean(null["interaction"])) < 5.0 * spread
+
+
+class TestTheQuietOnlyNullRedrawsItsRows:
+    """The quiet-only null must choose its rows from each draw's SHIFTED labels -- every shifted spike
+    frame plus ``quiet_zeros_per_spike`` zeros each -- exactly as the observed rows are chosen from the
+    real labels. Relabelling the OBSERVED rows (chosen around the real spikes) gave the null the base
+    rate as its positive fraction (0.0067 against the observed 0.024 at 1 Hz), and the quiet p came out
+    too conservative (median 0.79 on null units)."""
+
+    FPS, N_FRAMES, N_SESSIONS = 150.0, 9000, 3
+
+    def _null_unit(self, monkeypatch, seed, rate_hz):
+        """
+        Description
+        -----------
+        Build a gating universe through ``gating_universe`` for a unit with NO feature dependence: a
+        slow feature, Bernoulli spikes at ``rate_hz``, and 40 focal USVs of 0.1 s per session; every
+        non-vocal frame is a quiet anchor.
+
+        Parameters
+        ----------
+        monkeypatch (pytest.MonkeyPatch)
+            The test's monkeypatch fixture (patches the session timebase and the USV loader).
+        seed (int)
+            Seed for the feature, the spikes and the USV placement.
+        rate_hz (float)
+            Firing rate of the unit.
+
+        Returns
+        -------
+        universe (dict)
+            As ``gating_universe`` returns it.
+        settings (dict)
+            The shipped ``vocal_gating`` block with a small fit cap, for speed.
+        """
+        rng = np.random.default_rng(seed)
+        onsets = np.sort(rng.choice(np.arange(10, self.N_FRAMES / self.FPS - 1.0, 0.5), 40, replace=False))
+        usvs = pls.DataFrame({"start": onsets, "stop": onsets + 0.1, "emitter": ["male"] * onsets.size,
+                              "noise": [False] * onsets.size, "squeak": [False] * onsets.size})
+        monkeypatch.setattr(gating_module, "session_timebase",
+                            lambda _root, _sid: (["male", "female"], self.FPS, self.N_FRAMES))
+        monkeypatch.setattr(gating_module, "load_session_usvs", lambda _root, _sid: usvs)
+        vocal = np.zeros(self.N_FRAMES, dtype=bool)
+        for onset in onsets:
+            vocal[int(np.floor(onset * self.FPS)):int(np.ceil((onset + 0.1) * self.FPS))] = True
+        per_session = {}
+        for slot in range(self.N_SESSIONS):
+            feature = np.convolve(rng.normal(size=self.N_FRAMES + 300), np.ones(300) / np.sqrt(300),
+                                  "valid")[:self.N_FRAMES]
+            per_session[f"s{slot}"] = {
+                "feature_time_series": feature[:, None], "feature_names": ["f0"], "fps": self.FPS,
+                "n_frames": self.N_FRAMES, "quiet": np.flatnonzero(~vocal).astype(np.int64),
+                "spike_frames": np.flatnonzero(rng.random(self.N_FRAMES) < rate_hz / self.FPS)}
+        settings = _gating()
+        settings["max_quiet_frames_per_session"] = 1500
+        unit = {"mouse_id": "male", "vocal_sessions": list(per_session)}
+        return gating_universe(unit, "/data", per_session, settings, VOCAL_SETTINGS, seed=seed), settings
+
+    def test_every_draw_keeps_the_observed_class_balance(self, monkeypatch):
+        """Each null draw's quiet-only rows carry the observed positive fraction ~1 / (1 + zeros per
+        spike), not the base rate a relabelling of the observed rows gave."""
+        universe, settings = self._null_unit(monkeypatch, seed=0, rate_hz=1.0)
+        balance = 1.0 / (1.0 + settings["quiet_zeros_per_spike"])
+        assert universe["spikes_quiet"].mean() == pytest.approx(balance, rel=0.05)
+        seen = []
+        real_statistic = gating_module.feature_gating_statistic
+
+        def recording_statistic(feature_vocal, feature_quiet, vocal, spikes_universe, spikes_quiet,
+                                *args, **kwargs):
+            """Records each draw's quiet-only positive fraction, then runs the real statistic."""
+            seen.append(float(np.mean(spikes_quiet)))
+            return real_statistic(feature_vocal, feature_quiet, vocal, spikes_universe, spikes_quiet,
+                                  *args, **kwargs)
+
+        monkeypatch.setattr(gating_module, "feature_gating_statistic", recording_statistic)
+        gating_null(universe, 0, settings, 20.0, 5, seed=1)
+        assert len(seen) == 5
+        np.testing.assert_allclose(seen, balance, rtol=0.1)
+
+    def test_the_quiet_main_effect_p_is_calibrated_at_one_hz(self, monkeypatch):
+        """On units with no feature dependence the quiet-only main-effect p is uniform: its median
+        over simulated null units sits near 0.5 (it was 0.78 before the redraw)."""
+        n_draws, p_values = 19, []
+        for seed in range(24):
+            universe, settings = self._null_unit(monkeypatch, seed=seed, rate_hz=1.0)
+            observed = feature_gating_statistic(
+                universe["features"][:, 0], universe["features_quiet"][:, 0], universe["vocal"],
+                universe["spikes"], universe["spikes_quiet"], universe["session_index"],
+                universe["session_quiet"], settings, universe["fit_rows"])
+            null = gating_null(universe, 0, settings, 20.0, n_draws, seed=1000 * seed)
+            p_values.append((1.0 + np.sum(null["feature_main"] >= observed["feature_main"])) / (1.0 + n_draws))
+        # 24 units x 19 draws: the median of a calibrated p sits near 0.5 with a standard error of
+        # about 0.06 (measured 0.65 here, 0.56 at 40 x 30); the relabelled-rows null gave 0.78.
+        assert 0.35 < float(np.median(p_values)) < 0.72
 
 
 class TestTheAlphasAreSettings:
@@ -752,22 +869,51 @@ class TestTheUnitPvalue:
         per_feature = self._verdicts([("a", "GATE", 40.0, 5.0e-4, 3.0e-3)])
         assert gating_unit_pvalue(per_feature, _gating())["p_unit"] == pytest.approx(3.0e-3)
 
-    def test_it_comes_from_the_strongest_surviving_feature(self):
-        """The unit p is taken from the survivor with the largest sigma margin, and that feature is
-        named."""
+    def test_it_is_the_bonferroni_adjusted_best_feature(self):
+        """The unit p is the smallest feature conjunction p times the number of features tested, and
+        that feature is named."""
         per_feature = self._verdicts([("weak", "GATE", 6.0, 5.0e-4, 9.0e-3),
                                       ("strong", "GATE", 72.0, 5.0e-4, 5.0e-4)])
         result = gating_unit_pvalue(per_feature, _gating())
         assert result["feature"] == "strong"
-        assert result["p_unit"] == pytest.approx(5.0e-4)
+        assert result["p_unit"] == pytest.approx(2 * 5.0e-4)
 
-    def test_a_unit_with_no_survivor_returns_nan_not_one(self):
-        """NaN keeps it out of the correction's denominator rather than entering as a
-        non-rejection."""
-        per_feature = self._verdicts([("a", "int<vocal", 40.0, 5.0e-4, 1.0)])
+    def test_the_adjusted_p_is_capped_at_one(self):
+        """``n_features * min p`` is capped at 1, so the adjusted value is still a p-value."""
+        per_feature = self._verdicts([(f"f{i}", "ns", 0.0, 0.4, 0.4) for i in range(19)])
+        assert gating_unit_pvalue(per_feature, _gating())["p_unit"] == 1.0
+
+    def test_a_tested_unit_with_no_survivor_carries_its_real_p(self):
+        """A tested unit without a surviving feature enters the cohort correction with its real
+        adjusted p; it used to return NaN, which kept it out of BH's denominator."""
+        per_feature = self._verdicts([("a", "int<vocal", 40.0, 5.0e-4, 1.0),
+                                      ("b", "ns", 1.0, 0.3, 0.2)])
         result = gating_unit_pvalue(per_feature, _gating())
+        assert result["p_unit"] == pytest.approx(min(1.0, 2 * 0.3))
+        assert result["feature"] == "b"
+        assert result["label"] == "ns"
+
+    def test_only_an_untested_unit_is_nan(self):
+        """NaN is reserved for a unit with no tested feature -- the one case BH must leave out."""
+        result = gating_unit_pvalue({}, _gating())
         assert np.isnan(result["p_unit"])
         assert result["feature"] is None
+
+    def test_a_lone_survivor_is_not_rejected_against_ninety_nine_tested_non_survivors(self):
+        """
+        Repro basis: one unit at p = 4e-4 among 100 TESTED units. With the 99 non-survivors entering
+        as NaN, BH ran over the survivor alone and rejected it at q = 0.01; with their real adjusted
+        p-values in the denominator (m = 100, rank-1 bar 1e-4) it is not rejected.
+        """
+        survivor = gating_unit_pvalue(self._verdicts([("a", "GATE", 50.0, 4.0e-4, 4.0e-4)]), _gating())
+        non_survivors = [gating_unit_pvalue(self._verdicts([(f"f{i}", "ns", 1.0, 0.05 + 0.009 * unit, 0.5)
+                                                            for i in range(19)]), _gating())
+                         for unit in range(99)]
+        p_values = np.array([survivor["p_unit"]] + [result["p_unit"] for result in non_survivors])
+        assert np.all(np.isfinite(p_values))
+        rejected, _threshold, n_rejected = benjamini_hochberg(p_values, 0.01)
+        assert n_rejected == 0
+        assert not rejected[0]
 
     def test_the_floor_is_flagged_because_strong_units_all_tie_there(self):
         """At 2,000 shuffles a strong feature sits at exactly 1/2001, which is the point -- it is what

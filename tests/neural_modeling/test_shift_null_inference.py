@@ -167,3 +167,38 @@ class TestEscalationLadder:
         assert null.size == 1000
         assert not at_floor
         assert 0.3 < p_value < 0.7
+
+    def test_nan_draws_do_not_count_toward_a_rung_target(self):
+        """NaN draws are dropped from the p-value, so they must not count toward the ladder's draw
+        target either: with 100 NaN draws in hand, reaching 10,000 FINITE draws takes a top-up of
+        9,100, and the p floors at 1 / 10,001, not at 1 / 9,901."""
+        generator = np.random.default_rng(6)
+        calls = []
+
+        def draw_more(count):
+            """
+            Description
+            -----------
+            Records the requested top-up size and returns that many standard-normal null draws.
+
+            Parameters
+            ----------
+            count (int)
+                Number of extra null draws the ladder requests.
+
+            Returns
+            -------
+            draws (np.ndarray)
+                ``count`` draws from the enclosing generator.
+            """
+            calls.append(count)
+            return generator.normal(size=count)
+
+        initial = np.concatenate([generator.normal(size=900), np.full(100, np.nan)])
+        p_value, at_floor, null = escalated_empirical_pvalue(
+            9.0, draw_more, [10_000], initial, message_output=lambda _m: None)
+
+        assert calls == [9_100]
+        assert int(np.isfinite(null).sum()) == 10_000
+        assert p_value == pytest.approx(1.0 / 10_001.0)
+        assert at_floor

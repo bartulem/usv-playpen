@@ -227,7 +227,10 @@ def _build_session_sequences(raw_data: dict, emission_features: list,
 
 def _manifold_emission_factory(n_features: int, n_time_bins: int, *,
                                metric: str, period: float,
-                               lambda_smooth: float, l2_reg: float):
+                               lambda_smooth: float, l2_reg: float,
+                               smoothness_derivative_order: int, huber_delta: float,
+                               learning_rate: float, max_iter: int, tol: float,
+                               random_state: int):
     """
     Description
     -----------
@@ -248,6 +251,22 @@ def _manifold_emission_factory(n_features: int, n_time_bins: int, *,
         Temporal-smoothness penalty for each state's regressor.
     l2_reg (float)
         Ridge penalty for each state's regressor.
+    smoothness_derivative_order (int)
+        Finite-difference order (1 or 2) of each state's temporal-smoothness
+        penalty (``glm_hmm.emission_smoothness_derivative_order``).
+    huber_delta (float)
+        Huber transition point of each state's residual loss, in manifold units
+        (``glm_hmm.emission_huber_delta``).
+    learning_rate (float)
+        Initial Adam step size of each state's regressor
+        (``glm_hmm.emission_learning_rate``).
+    max_iter (int)
+        Optimiser step cap of each state's regressor (``glm_hmm.manifold_max_iter``).
+    tol (float)
+        Convergence tolerance of each state's regressor (``glm_hmm.emission_tol``).
+    random_state (int)
+        Seed of each state's regressor initialisation
+        (``glm_hmm.emission_random_state``).
 
     Returns
     -------
@@ -257,6 +276,9 @@ def _manifold_emission_factory(n_features: int, n_time_bins: int, *,
     emission_cls = resolve_emission_cls('manifold')
     regressor_kwargs = {'n_features': n_features, 'n_time_bins': n_time_bins,
                             'lambda_smooth': lambda_smooth, 'l2_reg': l2_reg,
+                            'smoothness_derivative_order': smoothness_derivative_order,
+                            'huber_delta': huber_delta, 'learning_rate': learning_rate,
+                            'max_iter': max_iter, 'tol': tol, 'random_state': random_state,
                             'metric': metric, 'period': period}
     return lambda: emission_cls(regressor_kwargs)
 
@@ -264,6 +286,8 @@ def _manifold_emission_factory(n_features: int, n_time_bins: int, *,
 def _multinomial_emission_factory(n_features: int, n_time_bins: int, *,
                                   lambda_smooth: float, l2_reg: float,
                                   focal_gamma: float, max_iter: int,
+                                  smoothness_derivative_order: int, learning_rate: float,
+                                  tol: float, random_state: int,
                                   class_labels: np.ndarray):
     """
     Description
@@ -285,6 +309,17 @@ def _multinomial_emission_factory(n_features: int, n_time_bins: int, *,
         Focal-loss focusing parameter (``0.0`` = plain cross-entropy).
     max_iter (int)
         Optimiser iterations for each state's classifier.
+    smoothness_derivative_order (int)
+        Finite-difference order (1 or 2) of each state's temporal-smoothness
+        penalty (``glm_hmm.emission_smoothness_derivative_order``).
+    learning_rate (float)
+        Initial Adam step size of each state's classifier
+        (``glm_hmm.emission_learning_rate``).
+    tol (float)
+        Convergence tolerance of each state's classifier (``glm_hmm.emission_tol``).
+    random_state (int)
+        Seed of each state's classifier initialisation
+        (``glm_hmm.emission_random_state``).
     class_labels (np.ndarray)
         The full label set (every development and reserved session), fixed before
         cross-validation so a test fold carrying a category its training folds lack
@@ -298,7 +333,10 @@ def _multinomial_emission_factory(n_features: int, n_time_bins: int, *,
     emission_cls = resolve_emission_cls('multinomial')
     classifier_kwargs = {'n_features': n_features, 'n_time_bins': n_time_bins,
                              'lambda_smooth': lambda_smooth, 'l2_reg': l2_reg,
-                             'focal_gamma': focal_gamma, 'max_iter': max_iter}
+                             'focal_gamma': focal_gamma, 'max_iter': max_iter,
+                             'smoothness_derivative_order': smoothness_derivative_order,
+                             'learning_rate': learning_rate, 'tol': tol,
+                             'random_state': random_state}
     return lambda: emission_cls(classifier_kwargs, class_labels=class_labels)
 
 
@@ -382,11 +420,21 @@ def run_glm_hmm_state_selection(input_data_path: str, settings_path: str,
     n_em_iters = int(glm_hmm_settings['n_em_iters'])
     n_lbfgs = int(glm_hmm_settings['n_lbfgs'])
     n_restarts = int(glm_hmm_settings['n_restarts'])
+    # Initialisation heuristics: k-means starts behind the EM restarts' initial responsibilities,
+    # the initial self-transition of the static chain, and the sd of the input-driven bias draws.
+    init_kmeans_n_init = int(glm_hmm_settings['init_kmeans_n_init'])
+    init_self_transition = float(glm_hmm_settings['init_self_transition'])
+    init_bias_sd = float(glm_hmm_settings['init_bias_sd'])
     em_tol = float(glm_hmm_settings['em_tol'])
     transition_pseudocount = float(glm_hmm_settings['transition_pseudocount'])
     lambda_smooth = float(glm_hmm_settings['lambda_smooth'])
     input_driven_lambda_smooth = float(glm_hmm_settings['input_driven_lambda_smooth'])
     l2_reg = float(glm_hmm_settings['l2_reg'])
+    n_kappa_rounds = int(glm_hmm_settings['n_kappa_rounds'])
+    emission_smoothness_order = int(glm_hmm_settings['emission_smoothness_derivative_order'])
+    emission_learning_rate = float(glm_hmm_settings['emission_learning_rate'])
+    emission_tol = float(glm_hmm_settings['emission_tol'])
+    emission_random_state = int(glm_hmm_settings['emission_random_state'])
     random_seed = int(settings['model_validation']['random_seed'])
 
     with Path(input_data_path).open('rb') as input_file:
@@ -485,6 +533,11 @@ def run_glm_hmm_state_selection(input_data_path: str, settings_path: str,
         factory = _manifold_emission_factory(
             len(emission_features), n_time_bins,
             metric=metric, period=period, lambda_smooth=lambda_smooth, l2_reg=l2_reg,
+            smoothness_derivative_order=emission_smoothness_order,
+            huber_delta=float(glm_hmm_settings['emission_huber_delta']),
+            learning_rate=emission_learning_rate,
+            max_iter=int(glm_hmm_settings['manifold_max_iter']),
+            tol=emission_tol, random_state=emission_random_state,
         )
     else:
         # The label set is fixed from every session BEFORE cross-validation: a CV test
@@ -495,6 +548,9 @@ def run_glm_hmm_state_selection(input_data_path: str, settings_path: str,
             lambda_smooth=lambda_smooth, l2_reg=l2_reg,
             focal_gamma=float(glm_hmm_settings['focal_gamma']),
             max_iter=int(glm_hmm_settings['multinomial_max_iter']),
+            smoothness_derivative_order=emission_smoothness_order,
+            learning_rate=emission_learning_rate, tol=emission_tol,
+            random_state=emission_random_state,
             class_labels=np.unique(np.concatenate([np.asarray(target) for _, target in dev_xy + held_xy])),
         )
 
@@ -524,18 +580,20 @@ def run_glm_hmm_state_selection(input_data_path: str, settings_path: str,
                     n_states=n_states, n_features=len(emission_features),
                     n_time_bins=n_time_bins, period=float(period),
                     lambda_smooth=input_driven_lambda_smooth, n_restarts=n_restarts,
-                    n_lbfgs=n_lbfgs, random_state=random_seed)
+                    n_lbfgs=n_lbfgs, init_bias_sd=init_bias_sd, random_state=random_seed,
+                    n_kappa_rounds=n_kappa_rounds)
             else:
                 model = InputDrivenGLMHMM(
                     n_states=n_states, n_features=len(emission_features),
                     n_time_bins=n_time_bins, n_classes=n_classes,
                     lambda_smooth=input_driven_lambda_smooth, n_restarts=n_restarts,
-                    n_lbfgs=n_lbfgs, random_state=random_seed)
+                    n_lbfgs=n_lbfgs, init_bias_sd=init_bias_sd, random_state=random_seed)
             return model.fit(train_sequences)
         model = GLMHMM(
             n_states=n_states, emission_factory=factory, n_em_iters=n_em_iters,
             n_restarts=n_restarts, tol=em_tol,
-            transition_pseudocount=transition_pseudocount, random_state=random_seed)
+            transition_pseudocount=transition_pseudocount, kmeans_n_init=init_kmeans_n_init,
+            initial_self_transition=init_self_transition, random_state=random_seed)
         return model.fit(train_sequences)
 
     print(f"GLM-HMM state selection | emission={emission_descriptor} | "
@@ -642,6 +700,13 @@ def run_glm_hmm_state_selection(input_data_path: str, settings_path: str,
             'n_em_iters': n_em_iters,
             'n_lbfgs': n_lbfgs,
             'n_restarts': n_restarts,
+            'n_kappa_rounds': n_kappa_rounds,
+            'emission_smoothness_derivative_order': emission_smoothness_order,
+            'emission_huber_delta': float(glm_hmm_settings['emission_huber_delta']),
+            'emission_learning_rate': emission_learning_rate,
+            'manifold_max_iter': int(glm_hmm_settings['manifold_max_iter']),
+            'emission_tol': emission_tol,
+            'emission_random_state': emission_random_state,
             'n_classes': n_classes,
             'class_labels': None if class_labels is None else class_labels.tolist(),
             'n_dev_sessions': len(dev_xy),

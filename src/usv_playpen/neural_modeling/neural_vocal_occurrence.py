@@ -13,7 +13,7 @@ relationship must carry over.
 Three numerical choices are locked because each was arrived at the hard way.
 
 The slope is SHARED and the intercepts are per-session. A per-session slope quasi-separates and diverges
-on small sessions -- one 361-call session sent it to 1e8 and wrecked the pooled score -- while
+on small sessions -- one 361-USV session sent it to 1e8 and wrecked the pooled score -- while
 per-session intercepts are needed to absorb rate drift between sessions.
 
 The predictor is standardized PER SESSION. An intercept shifts the linear predictor but cannot rescale
@@ -75,38 +75,38 @@ def counts_in_windows(spike_seconds: np.ndarray, left_edges: np.ndarray, width: 
             - np.searchsorted(times, left, side="left")).astype(np.float64)
 
 
-def quiet_tile_edges(call_starts: np.ndarray, call_stops: np.ndarray, duration: float, width: float,
-                     history_pre_seconds: float, clean_post_seconds: float) -> np.ndarray:
+def quiet_tile_edges(vocalization_starts: np.ndarray, vocalization_stops: np.ndarray, duration: float,
+                     width: float, history_pre_seconds: float, clean_post_seconds: float) -> np.ndarray:
     """
     Description
     -----------
-    Left edges of non-overlapping quiet tiles, tiled through the gaps between guard-banded calls.
+    Left edges of non-overlapping quiet tiles, tiled through the gaps between guard-banded USVs.
 
-    The guard band is the kinematic encoding's quiet definition -- a call forbids
-    ``[start - clean_post, stop + history_pre]`` -- applied to calls from EVERY emitter, so a tile is
+    The guard band is the kinematic encoding's quiet definition -- a USV forbids
+    ``[start - clean_post, stop + history_pre]`` -- applied to USVs from EVERY emitter, so a tile is
     silent of the partner as well as the focal animal. Sharing the definition matters twice over: one
     code path across the kinematic encoding, the vocal-occurrence negatives and the vocal-decoding baselines, and a forward guard that
-    makes the negative class "no call for seconds" rather than merely "not during a call".
+    makes the negative class "no USV for seconds" rather than merely "not during a USV".
 
     Tiles are contiguous and non-overlapping within each gap, so no spike is counted twice, and a gap
     shorter than one tile contributes nothing rather than a partial window of a different width.
 
     Parameters
     ----------
-    call_starts (np.ndarray)
-        Call onsets in seconds, ALL emitters.
-    call_stops (np.ndarray)
-        Call offsets in seconds, ALL emitters.
+    vocalization_starts (np.ndarray)
+        Vocalization onsets in seconds, ALL emitters.
+    vocalization_stops (np.ndarray)
+        Vocalization offsets in seconds, ALL emitters.
     duration (float)
         Session duration in seconds.
     width (float)
         Tile width, which must equal the prevocal window width or the counts are not comparable.
     history_pre_seconds (float)
-        Guard after each call's stop. The same number is the kinematic filter's length, which is why
+        Guard after each USV's stop. The same number is the kinematic filter's length, which is why
         it appears here: a quiet window shorter than the predictor history would admit a vocalization
         into the history of a frame called silent.
     clean_post_seconds (float)
-        Guard before each call's start.
+        Guard before each USV's start.
 
     Returns
     -------
@@ -114,8 +114,8 @@ def quiet_tile_edges(call_starts: np.ndarray, call_stops: np.ndarray, duration: 
         Tile start times in seconds.
     """
 
-    starts = np.asarray(call_starts, dtype=np.float64) - clean_post_seconds
-    stops = np.asarray(call_stops, dtype=np.float64) + history_pre_seconds
+    starts = np.asarray(vocalization_starts, dtype=np.float64) - clean_post_seconds
+    stops = np.asarray(vocalization_stops, dtype=np.float64) + history_pre_seconds
     if starts.size == 0:
         n_tiles = int(np.floor(duration / width))
         return width * np.arange(max(n_tiles, 0), dtype=np.float64)

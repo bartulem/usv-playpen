@@ -43,10 +43,11 @@ with warnings.catch_warnings():
         _build_manifold_settings,
         _build_signal_continuous_pickle,
     )
-    from usv_playpen.modeling.manifold_metric import circular_mean
+    from usv_playpen.modeling.manifold_metric import (
+        circular_mean,
+        inverse_region_frequency_weights,
+    )
     from usv_playpen.modeling.model_selection import (
-        _SIGN_FLIP_EXACT_MAX_FOLDS,
-        _SIGN_FLIP_MONTE_CARLO_DRAWS,
         _fold_paired_margin_bootstrap,
         _frozen_selection_kappa,
         _sign_flip_p_value,
@@ -58,6 +59,13 @@ with warnings.catch_warnings():
     )
 
 SHIPPED_SETTINGS = Path(model_selection_module.__file__).resolve().parent.parent / '_parameter_settings' / 'modeling_settings.json'
+with SHIPPED_SETTINGS.open() as _shipped_settings_file:
+    _SHIPPED_MODEL_PARAMS = json.load(_shipped_settings_file)['model_params']
+# The shipped sign-flip enumeration cap and Monte-Carlo draw count the selection gate reads.
+_SIGN_FLIP_EXACT_MAX_FOLDS = _SHIPPED_MODEL_PARAMS['selection_sign_flip_exact_max_folds']
+_SIGN_FLIP_MONTE_CARLO_DRAWS = _SHIPPED_MODEL_PARAMS['selection_sign_flip_monte_carlo_draws']
+_SIGN_FLIP_KWARGS = {'exact_max_folds': _SIGN_FLIP_EXACT_MAX_FOLDS,
+                     'monte_carlo_draws': _SIGN_FLIP_MONTE_CARLO_DRAWS}
 
 
 def _fold_dicts_from_scores(actual_scores: np.ndarray, null_scores: np.ndarray, scores: dict) -> tuple[dict, dict]:
@@ -105,25 +113,25 @@ class TestSignFlipPValue:
         n_at_least = sum(
             float(np.dot(signs, margins)) >= float(margins.sum()) - 1e-12
             for signs in itertools.product((1.0, -1.0), repeat=margins.size))
-        assert _sign_flip_p_value(margins, random_state=0) == pytest.approx(n_at_least / 2 ** margins.size)
+        assert _sign_flip_p_value(margins, random_state=0, **_SIGN_FLIP_KWARGS) == pytest.approx(n_at_least / 2 ** margins.size)
 
     def test_floor_at_twenty_folds(self):
         """Twenty positive margins reach the exact floor 1 / 2**20 (never 0)."""
-        p_value = _sign_flip_p_value(np.linspace(0.1, 2.0, 20), random_state=0)
+        p_value = _sign_flip_p_value(np.linspace(0.1, 2.0, 20), random_state=0, **_SIGN_FLIP_KWARGS)
         assert p_value == 1.0 / 2 ** 20
         assert p_value < 0.01 / 19
 
     def test_ties_with_zero_margins_count(self):
         """A zero margin flips to itself, so its two patterns tie the observed sum."""
-        assert _sign_flip_p_value(np.array([0.0, 1.0, 2.0]), random_state=0) == pytest.approx(2.0 / 8.0)
-        assert _sign_flip_p_value(np.zeros(5), random_state=0) == 1.0
+        assert _sign_flip_p_value(np.array([0.0, 1.0, 2.0]), random_state=0, **_SIGN_FLIP_KWARGS) == pytest.approx(2.0 / 8.0)
+        assert _sign_flip_p_value(np.zeros(5), random_state=0, **_SIGN_FLIP_KWARGS) == 1.0
 
     def test_monte_carlo_branch_above_the_exact_cap(self):
         """Above the enumeration cap the seeded Monte-Carlo set gives (1 + k) / (1 + B), floor 1 / (1 + B)."""
         margins = np.ones(_SIGN_FLIP_EXACT_MAX_FOLDS + 2)
-        p_value = _sign_flip_p_value(margins, random_state=0)
+        p_value = _sign_flip_p_value(margins, random_state=0, **_SIGN_FLIP_KWARGS)
         assert 1.0 / (1.0 + _SIGN_FLIP_MONTE_CARLO_DRAWS) <= p_value <= 3.0 / (1.0 + _SIGN_FLIP_MONTE_CARLO_DRAWS)
-        assert p_value == _sign_flip_p_value(margins, random_state=0)
+        assert p_value == _sign_flip_p_value(margins, random_state=0, **_SIGN_FLIP_KWARGS)
 
     def test_fold_margin_p_is_calibrated_under_the_null(self, monkeypatch):
         """
@@ -140,7 +148,7 @@ class TestSignFlipPValue:
         for rep in range(n_rep):
             actual, null = _fold_dicts_from_scores(rng.normal(0.0, 1.0, n_folds), np.zeros(n_folds), scores)
             result = _fold_paired_margin_bootstrap(actual, null, metric='euclidean', period=1.0,
-                                                   n_bootstrap=50, ci_level=0.99, random_state=rep)
+                                                   n_bootstrap=50, ci_level=0.99, random_state=rep, min_region_events=1, min_fold_events=30, sign_flip_exact_max_folds=22, sign_flip_monte_carlo_draws=2**20, dcor_n_sub=2500, dcor_n_rep=1)
             p_values[rep] = result['p_value']
             scores.clear()
         assert 0.035 <= float(np.mean(p_values <= 0.05)) <= 0.065
@@ -187,7 +195,9 @@ class TestStepZeroGateBaseline:
                 bundle['y_true'].append(Y[test_idx])
                 bundle['y_pred_xy'].append(y_pred)
         kwargs = {'metric': 'torus', 'period': period, 'n_bootstrap': 1000, 'ci_level': 0.99, 'random_state': 0,
-                      'event_to_region': regions, 'min_region_events': 1, 'kappa': kappa}
+                      'event_to_region': regions, 'min_region_events': 1, 'kappa': kappa,
+                      'min_fold_events': 30, 'sign_flip_exact_max_folds': 22,
+                      'sign_flip_monte_carlo_draws': 2**20, 'dcor_n_sub': 2500, 'dcor_n_rep': 1}
         versus_intercept = _fold_paired_margin_bootstrap(intercept, intercept, **kwargs)
         versus_draw = _fold_paired_margin_bootstrap(intercept, draw, **kwargs)
         assert versus_intercept['mean_margin'] == 0.0
@@ -297,3 +307,106 @@ class TestStepZeroGateBaseline:
             fold_pred = np.asarray(raw_fold_pred)
             assert np.all(fold_pred == fold_pred[0])
             np.testing.assert_array_equal(fold_pred, np.asarray(stored_pred))
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    def test_pure_noise_anchor_ties_the_region_reweighted_intercept(self, tmp_path, monkeypatch):
+        """
+        Repro basis: with imbalanced acoustic regions (70% of the USVs in one region, 30% in
+        another, at well-separated torus positions) and a target carrying NO behavioural
+        information, the candidates are fitted with the KDE weights times the equal-region
+        reweighting, so as their coefficients shrink they predict the REGION-REWEIGHTED circular
+        mean. The Step-0 intercept baseline used to be the KDE-weighted mean alone, which gave
+        the pure-noise anchor a large positive margin and accepted it. Built with the same
+        weighting, the anchor ties the baseline (margin ~0) and is rejected, and every stored
+        Step-0 intercept prediction sits at the region-reweighted training-fold mean.
+        """
+        settings, _save_dir = _build_manifold_settings(
+            tmp_path, split_strategy='session', split_num=10, test_proportion=0.3,
+        )
+        settings['vocal_features']['usv_manifold_metric'] = 'torus'
+        settings['vocal_features']['usv_manifold_min_region_events'] = 5
+        settings['hyperparameters']['linear_models']['manifold_regression']['bin_resizing_factor'] = 1
+        feature_names = ['self.speed', 'other.speed', 'self.neck_elevation']
+        session_ids = [f'session_{i}' for i in range(25)]
+        n_per_session = 120
+        input_md = {
+            'analysis_type': 'continuous',
+            'analysis_tag': 'manifold_qlvm_category',
+            'session_ids': session_ids,
+            'n_events_per_session': dict.fromkeys(session_ids, n_per_session),
+            'analysis_specific': {
+                'usv_category_column_name': 'qlvm_category',
+                'manifold_metric': 'torus',
+                'manifold_period': 1.0,
+            },
+        }
+        signal_pkl = _build_signal_continuous_pickle(
+            save_path=tmp_path / 'manifold_signal_input.pkl', feature_names=feature_names,
+            session_ids=session_ids, history_frames=HISTORY_FRAMES, input_metadata=input_md,
+            n_per_session=n_per_session, target_kind='wound_torus',
+        )
+        runner = ContinuousModelRunner(ContinuousModelingPipeline(modeling_settings_dict=settings))
+        combined = {feature: runner.run_univariate_training(str(signal_pkl), feature) for feature in feature_names}
+        combined['_input_metadata'] = input_md
+        combined_path = tmp_path / 'univariate_combined.pkl'
+        with combined_path.open('wb') as fh:
+            pickle.dump(combined, fh)
+
+        # A behaviour-free target in two imbalanced, well-separated regions, with region labels.
+        with signal_pkl.open('rb') as fh:
+            artifact = pickle.load(fh)
+        target_rng = np.random.default_rng(11)
+        for sess_id in session_ids:
+            region = (target_rng.random(n_per_session) < 0.3).astype(np.float32)
+            centre = np.where(region[:, None] == 1.0, 0.6, 0.2)
+            y_free = np.mod(centre + 0.05 * target_rng.standard_normal((n_per_session, 2)), 1.0).astype(np.float32)
+            for feature in feature_names:
+                artifact[feature][sess_id]['Y'] = y_free
+                artifact[feature][sess_id]['category'] = region
+        free_pkl = tmp_path / 'manifold_free_input.pkl'
+        with free_pkl.open('wb') as fh:
+            pickle.dump(artifact, fh)
+
+        settings_json = tmp_path / 'settings.json'
+        settings_json.write_text(json.dumps(settings))
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+
+        gate_results = []
+        original_bootstrap = model_selection_module._fold_paired_margin_bootstrap
+
+        def recording_bootstrap(*args, **kwargs):
+            """Runs the real gate and records its result dict."""
+            result = original_bootstrap(*args, **kwargs)
+            gate_results.append(result)
+            return result
+
+        monkeypatch.setattr(model_selection_module, '_fold_paired_margin_bootstrap', recording_bootstrap)
+        continuous_vocal_manifold_model_selection(
+            univariate_results_path=str(combined_path), input_data_path=str(free_pkl),
+            output_directory=str(ms_dir), settings_path=str(settings_json),
+            use_top_rank_as_anchor=True, p_val=0.5,
+        )
+
+        step_pkls = sorted(ms_dir.glob('model_selection_continuous_manifold_*_step_*.pkl'),
+                           key=lambda path: int(path.stem.rsplit('_', 1)[1]))
+        steps = []
+        for path in step_pkls:
+            with path.open('rb') as fh:
+                steps.append(pickle.load(fh))
+        # The anchor gate is the first gate after the per-feature screen: margin ~0, rejected.
+        anchor_gate = gate_results[len(feature_names)]
+        assert abs(anchor_gate['mean_margin']) < 0.05
+        assert not anchor_gate['ci_low'] > 0.0
+        assert steps[-1]['final_model_features'] == []
+
+        # Every stored Step-0 intercept prediction is the region-reweighted training-fold mean.
+        y_all = np.vstack([artifact[feature_names[0]][sess]['Y'] for sess in sorted(session_ids)]).astype(np.float64)
+        regions_all = np.concatenate([artifact[feature_names[0]][sess]['category'] for sess in sorted(session_ids)])
+        intercept_folds = steps[0]['candidates_summary']['null_model_intercept']['folds']
+        all_test = np.concatenate([np.asarray(test_idx) for test_idx in intercept_folds['test_indices']])
+        for test_idx, stored_pred in zip(intercept_folds['test_indices'], intercept_folds['y_pred_xy'], strict=True):
+            train_idx = np.setdiff1d(all_test, np.asarray(test_idx))
+            weights = inverse_region_frequency_weights(regions_all[train_idx])
+            expected = circular_mean(y_all[train_idx], metric='torus', period=1.0, weights=weights / weights.sum())
+            np.testing.assert_allclose(np.asarray(stored_pred, dtype=np.float64)[0], expected, atol=1e-4)

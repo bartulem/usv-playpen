@@ -649,9 +649,13 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
         num_iterations = self.modeling_settings['model_validation']['n_cv_folds']
         test_prop = self.modeling_settings['model_validation']['cv_validation_proportion']
+        # The seed comes from the settings alone; a missing (null) seed is refused rather than
+        # silently replaced, since a replaced seed reproduces a different split than the one asked for.
         base_seed = self.modeling_settings['model_validation']['random_seed']
-        if base_seed is None:
-            base_seed = 0
+        if not isinstance(base_seed, int) or isinstance(base_seed, bool):
+            msg = (f"model_validation.random_seed must be an integer; got {base_seed!r}. Set it in the "
+                   f"modeling settings.")
+            raise ValueError(msg)
 
         # 2. Safety checks
         if test_prop <= 0 or test_prop >= 1:
@@ -660,7 +664,11 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
         # 3. Stratification binning (discretize continuous Y)
         try:
-            n_bins = max(2, min(10, n_samples // 20))
+            # At most `stratification_max_bins` quantile strata, each holding at least
+            # `stratification_min_events_per_bin` events; 2 is the structural floor (one
+            # stratum would not stratify anything).
+            n_bins = max(2, min(self.modeling_settings['model_validation']['stratification_max_bins'],
+                                n_samples // self.modeling_settings['model_validation']['stratification_min_events_per_bin']))
             bins = np.percentile(y, np.linspace(0, 100, n_bins + 1))
             y_binned = np.digitize(y, bins[1:-1])
         except (ValueError, IndexError):

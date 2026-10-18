@@ -40,6 +40,7 @@ import pytest
 # The modeling import chain pulls optax -> a one-time JAX DeprecationWarning.
 with warnings.catch_warnings():
     warnings.simplefilter('ignore', DeprecationWarning)
+    import usv_playpen.modeling.glm_hmm as glm_hmm_module
     from usv_playpen.modeling.glm_hmm import (
         GLMHMM,
         GaussianEmission,
@@ -66,6 +67,12 @@ with warnings.catch_warnings():
 
 REPO_SETTINGS = pathlib.Path(__file__).resolve().parents[2] / \
     "src" / "usv_playpen" / "_parameter_settings" / "modeling_settings.json"
+with REPO_SETTINGS.open() as _settings_file:
+    _SHIPPED_GLM_HMM = json.load(_settings_file)["glm_hmm"]
+# The shipped initialisation heuristics every direct model construction passes.
+KMEANS_N_INIT = _SHIPPED_GLM_HMM["init_kmeans_n_init"]
+SELF_TRANSITION = _SHIPPED_GLM_HMM["init_self_transition"]
+INIT_BIAS_SD = _SHIPPED_GLM_HMM["init_bias_sd"]
 
 
 def _simulate_markov_states(n_seqs, seq_len, transition, rng):
@@ -140,7 +147,7 @@ def test_von_mises_logpdf_per_point_mean_matches_pooled_macro():
     kappa = _fit_von_mises_kappa(
         signed_diff(y_true, y_pred, metric='torus', period=1.0) * (2 * np.pi))
     per_point = von_mises_logpdf_per_point(y_pred, y_true, metric='torus', period=1.0, kappa=kappa)
-    pooled = macro_von_mises_logscore(y_pred, y_true, None, metric='torus', period=1.0, kappa=kappa)
+    pooled = macro_von_mises_logscore(y_pred, y_true, None, metric='torus', period=1.0, kappa=kappa, min_region_events=1)
     assert per_point.shape == (200,)
     assert np.isclose(per_point.mean(), pooled, rtol=1e-9, atol=1e-9)
 
@@ -176,7 +183,7 @@ def test_gaussian_hmm_recovers_states_and_transitions():
         sequences.append((X, y))
 
     model = GLMHMM(n_states=2, emission_factory=lambda: GaussianEmission(n_targets=2),
-                   n_em_iters=100, n_restarts=4, tol=1e-5, random_state=0)
+                   n_em_iters=100, n_restarts=4, tol=1e-5, random_state=0, kmeans_n_init=KMEANS_N_INIT, initial_self_transition=SELF_TRANSITION)
     model.fit(sequences)
 
     fit_means = np.array([em.mean_ for em in model.emissions_])
@@ -197,6 +204,30 @@ def test_gaussian_hmm_recovers_states_and_transitions():
     assert np.allclose(fit_A, transition, atol=0.15)
 
 
+def test_glmhmm_initialisation_knobs_come_from_the_caller(monkeypatch):
+    """The k-means start count and the initial self-transition are settings, not literals: the
+    k-means behind every restart receives the passed ``n_init``, and a self-transition outside
+    (0, 1) is refused at construction."""
+    seen = []
+    original_kmeans = glm_hmm_module.KMeans
+
+    def recording_kmeans(*args, **kwargs):
+        """Records the ``n_init`` the initialiser asks for, then builds the real k-means."""
+        seen.append(kwargs["n_init"])
+        return original_kmeans(*args, **kwargs)
+
+    monkeypatch.setattr(glm_hmm_module, "KMeans", recording_kmeans)
+    rng = np.random.default_rng(3)
+    sequences = [(np.zeros((40, 1)), rng.standard_normal((40, 2))) for _ in range(3)]
+    GLMHMM(n_states=2, emission_factory=lambda: GaussianEmission(n_targets=2), n_em_iters=2,
+           n_restarts=2, random_state=0, kmeans_n_init=7,
+           initial_self_transition=SELF_TRANSITION).fit(sequences)
+    assert seen == [7, 7]
+    with pytest.raises(ValueError, match="initial_self_transition"):
+        GLMHMM(n_states=2, emission_factory=lambda: GaussianEmission(n_targets=2),
+               kmeans_n_init=KMEANS_N_INIT, initial_self_transition=1.0)
+
+
 def test_bic_prefers_true_state_count_over_one():
     """BIC (lower better) favours K=2 over K=1 on 2-state data."""
     rng = np.random.default_rng(3)
@@ -211,7 +242,7 @@ def test_bic_prefers_true_state_count_over_one():
     bics = {}
     for k in (1, 2):
         m = GLMHMM(k, lambda: GaussianEmission(n_targets=2),
-                   n_em_iters=80, n_restarts=3, random_state=0).fit(sequences)
+                   n_em_iters=80, n_restarts=3, random_state=0, kmeans_n_init=KMEANS_N_INIT, initial_self_transition=SELF_TRANSITION).fit(sequences)
         bics[k] = m.bic(sequences)
     assert bics[2] < bics[1]
 
@@ -240,7 +271,7 @@ def test_manifold_emission_separates_two_torus_states():
     reg_kwargs = {'n_features': n_features, 'n_time_bins': n_time_bins,
                       'lambda_smooth': 1.0, 'l2_reg': 1.0, 'metric': 'torus', 'period': 1.0}
     model = GLMHMM(n_states=2, emission_factory=lambda: ManifoldEmission(reg_kwargs),
-                   n_em_iters=40, n_restarts=3, tol=1e-4, random_state=0)
+                   n_em_iters=40, n_restarts=3, tol=1e-4, random_state=0, kmeans_n_init=KMEANS_N_INIT, initial_self_transition=SELF_TRANSITION)
     model.fit(sequences)
 
     # Each state has a positive concentration and a distinct mean position.
@@ -302,7 +333,7 @@ def test_multinomial_emission_recovers_two_states():
     clf_kwargs = {'n_features': n_features, 'n_time_bins': n_time_bins,
                       'lambda_smooth': 1.0, 'l2_reg': 0.1, 'focal_gamma': 0.0, 'max_iter': 200}
     model = GLMHMM(n_states=2, emission_factory=lambda: MultinomialEmission(clf_kwargs),
-                   n_em_iters=40, n_restarts=3, tol=1e-4, random_state=0)
+                   n_em_iters=40, n_restarts=3, tol=1e-4, random_state=0, kmeans_n_init=KMEANS_N_INIT, initial_self_transition=SELF_TRANSITION)
     model.fit(sequences)
 
     # Each state's classifier saw the full label set (consistent columns).
@@ -660,7 +691,7 @@ def test_input_driven_glmhmm_recovers_states_without_collapse():
         rng, n_features, n_time_bins, n_classes, n_seqs=10, seq_len=70)
     model = InputDrivenGLMHMM(n_states=2, n_features=n_features, n_time_bins=n_time_bins,
                               n_classes=n_classes, lambda_smooth=0.05, n_restarts=2,
-                              n_lbfgs=200, random_state=0).fit(sequences)
+                              n_lbfgs=200, random_state=0, init_bias_sd=INIT_BIAS_SD).fit(sequences)
     # Both states are actually used -- the failure the direct-marginal fit fixes is a
     # collapse to one state (an all-zero occupancy on the other).
     decoded = np.concatenate([model.viterbi(X, y) for X, y in sequences])
@@ -679,7 +710,7 @@ def test_input_driven_glmhmm_reference_coding_shapes_and_heldout_selection():
     model = InputDrivenGLMHMM(n_states=n_states, n_features=n_features,
                               n_time_bins=n_time_bins, n_classes=n_classes,
                               lambda_smooth=0.05, n_restarts=2, n_lbfgs=150,
-                              random_state=0)
+                              random_state=0, init_bias_sd=INIT_BIAS_SD)
     model.fit(sequences[:6], held_out_sequences=sequences[6:])
     design_width = n_features * n_time_bins
     params = model.params_
@@ -705,14 +736,14 @@ def test_input_driven_glmhmm_bic_prefers_true_state_count_over_one():
         model = InputDrivenGLMHMM(n_states=k, n_features=n_features,
                                   n_time_bins=n_time_bins, n_classes=n_classes,
                                   lambda_smooth=0.05, n_restarts=2, n_lbfgs=150,
-                                  random_state=0).fit(sequences)
+                                  random_state=0, init_bias_sd=INIT_BIAS_SD).fit(sequences)
         bics[k] = model.bic(sequences)
     assert bics[2] < bics[1]
 
 
 def test_input_driven_glmhmm_fit_requires_sequences():
     """An empty sequence list is rejected with a clear error."""
-    model = InputDrivenGLMHMM(n_states=2, n_features=2, n_time_bins=2, n_classes=2)
+    model = InputDrivenGLMHMM(n_states=2, n_features=2, n_time_bins=2, n_classes=2, lambda_smooth=0.05, random_state=0, n_restarts=4, n_lbfgs=600, init_bias_sd=INIT_BIAS_SD)
     with pytest.raises(ValueError, match="at least one sequence"):
         model.fit([])
 
@@ -737,7 +768,7 @@ def test_glmhmm_input_driven_em_machinery_runs():
         n_states=2, emission_factory=lambda: MultinomialEmission(clf_kwargs),
         n_em_iters=20, n_restarts=1, tol=1e-4, random_state=0,
         transition_mode='input_driven',
-        transition_factory=lambda: SmoothMultinomialLogisticRegression(**trans_kwargs))
+        transition_factory=lambda: SmoothMultinomialLogisticRegression(**trans_kwargs), kmeans_n_init=KMEANS_N_INIT, initial_self_transition=SELF_TRANSITION)
     model.fit(sequences)
     assert model.transition_glms_ is not None
     # Per-timestep transition tensor is a stack of valid distributions.
@@ -752,7 +783,7 @@ def test_glmhmm_input_driven_requires_transition_factory():
     """Selecting input-driven transitions without a factory fails loudly at construction."""
     with pytest.raises(ValueError, match="requires a transition_factory"):
         GLMHMM(n_states=2, emission_factory=lambda: GaussianEmission(n_targets=1),
-               transition_mode='input_driven')
+               transition_mode='input_driven', kmeans_n_init=KMEANS_N_INIT, initial_self_transition=SELF_TRANSITION)
 
 
 def _simulate_input_driven_torus(rng, n_features, n_time_bins, n_seqs, seq_len):
@@ -802,7 +833,7 @@ def test_input_driven_manifold_glmhmm_recovers_torus_states_without_collapse():
     model = InputDrivenManifoldGLMHMM(n_states=2, n_features=n_features,
                                       n_time_bins=n_time_bins, period=1.0,
                                       lambda_smooth=0.05, n_restarts=2, n_lbfgs=250,
-                                      random_state=0).fit(sequences)
+                                      random_state=0, n_kappa_rounds=3, init_bias_sd=INIT_BIAS_SD).fit(sequences)
     decoded = np.concatenate([model.viterbi(X, y) for X, y in sequences])
     assert (np.bincount(decoded, minlength=2) / decoded.size).min() > 0.1
     # Each state has a positive von Mises concentration.
@@ -819,7 +850,7 @@ def test_input_driven_manifold_glmhmm_shapes_and_bic():
     model = InputDrivenManifoldGLMHMM(n_states=n_states, n_features=n_features,
                                       n_time_bins=n_time_bins, period=1.0,
                                       lambda_smooth=0.05, n_restarts=2, n_lbfgs=150,
-                                      random_state=0)
+                                      random_state=0, n_kappa_rounds=3, init_bias_sd=INIT_BIAS_SD)
     model.fit(sequences[:4], held_out_sequences=sequences[4:])
     design_width = n_features * n_time_bins
     params = model.params_
@@ -843,7 +874,7 @@ def test_input_driven_manifold_glmhmm_kappa_mode_validation_and_global_mle():
     collapse to the uniform torus density (kappa -> 0)."""
     with pytest.raises(ValueError, match="kappa_mode"):
         InputDrivenManifoldGLMHMM(n_states=2, n_features=2, n_time_bins=3,
-                                  kappa_mode='bogus')
+                                  kappa_mode='bogus', n_kappa_rounds=3, lambda_smooth=0.05, random_state=0, n_restarts=4, n_lbfgs=600, init_bias_sd=INIT_BIAS_SD)
     rng = np.random.default_rng(41)
     n_features, n_time_bins = 2, 3
     sequences, _ = _simulate_input_driven_torus(
@@ -851,7 +882,7 @@ def test_input_driven_manifold_glmhmm_kappa_mode_validation_and_global_mle():
     model = InputDrivenManifoldGLMHMM(n_states=2, n_features=n_features,
                                       n_time_bins=n_time_bins, period=1.0,
                                       lambda_smooth=0.05, n_restarts=2, n_lbfgs=200,
-                                      random_state=0, kappa_mode='global_mle').fit(sequences)
+                                      random_state=0, kappa_mode='global_mle', n_kappa_rounds=3, init_bias_sd=INIT_BIAS_SD).fit(sequences)
     kappa = np.exp(np.asarray(model.params_['log_kappa']))
     assert np.all(np.isfinite(kappa))
     assert np.all(kappa > 0.5)          # well clear of the uniform-density collapse
@@ -870,7 +901,8 @@ def test_input_driven_manifold_glmhmm_region_reweighting_changes_the_fit():
     weighted = [(X, y, np.where(np.arange(len(y)) >= len(y) // 2, 4.0, 1.0).astype(np.float32))
                 for X, y in sequences]
     shared = {'n_states': 2, 'n_features': n_features, 'n_time_bins': n_time_bins, 'period': 1.0,
-                  'lambda_smooth': 0.05, 'n_restarts': 2, 'n_lbfgs': 200, 'random_state': 0}
+                  'lambda_smooth': 0.05, 'n_restarts': 2, 'n_lbfgs': 200, 'random_state': 0,
+                  'n_kappa_rounds': 3, 'init_bias_sd': INIT_BIAS_SD}
     unweighted_model = InputDrivenManifoldGLMHMM(**shared).fit(sequences)
     weighted_model = InputDrivenManifoldGLMHMM(**shared).fit(weighted)
     assert not np.allclose(np.asarray(unweighted_model.params_['W_emit']),
@@ -887,7 +919,7 @@ def test_input_driven_manifold_glmhmm_macro_score_finite_and_region_gated():
     model = InputDrivenManifoldGLMHMM(n_states=2, n_features=n_features,
                                       n_time_bins=n_time_bins, period=1.0,
                                       lambda_smooth=0.05, n_restarts=2, n_lbfgs=200,
-                                      random_state=0).fit(sequences)
+                                      random_state=0, n_kappa_rounds=3, init_bias_sd=INIT_BIAS_SD).fit(sequences)
     # Two category regions, split by the first torus axis (near each true state).
     region_labels = [np.where(y[:, 0] < 0.5, 0.0, 1.0) for _, y in sequences]
     score = model.macro_score(sequences, region_labels, min_region_events=1)
@@ -1060,7 +1092,7 @@ def test_stored_em_loglik_is_that_of_the_final_parameters_when_em_does_not_conve
         sequences.append((np.zeros((200, 1)), y))
     for n_em_iters in (1, 2):
         model = GLMHMM(2, lambda: GaussianEmission(n_targets=2), n_em_iters=n_em_iters,
-                       n_restarts=1, tol=1e-12).fit(sequences)
+                       n_restarts=1, tol=1e-12, kmeans_n_init=KMEANS_N_INIT, initial_self_transition=SELF_TRANSITION).fit(sequences)
         assert not model.converged_
         assert model.log_likelihood_ == pytest.approx(model.log_likelihood(sequences), rel=1e-12)
 
@@ -1131,7 +1163,7 @@ def test_bic_counts_exactly_the_free_parameters_by_hand():
     sequences = [(rng.normal(size=(n, design_width)).astype(np.float32), rng.integers(0, n_classes, n))
                  for n in (40, 25, 60)]
     categorical = InputDrivenGLMHMM(n_states, n_features, n_time_bins, n_classes,
-                                    n_restarts=1, n_lbfgs=30).fit(sequences)
+                                    n_restarts=1, n_lbfgs=30, lambda_smooth=0.05, random_state=0, init_bias_sd=INIT_BIAS_SD).fit(sequences)
     assert int(sum(np.asarray(v).size for v in categorical.params_.values())) == 138
     assert categorical.n_params == 110
     n_obs = sum(len(y) for _, y in sequences)
@@ -1141,16 +1173,16 @@ def test_bic_counts_exactly_the_free_parameters_by_hand():
     torus_sequences = [(rng.normal(size=(n, design_width)).astype(np.float32),
                         rng.random((n, 2)).astype(np.float32)) for n in (40, 25)]
     shared_kappa = InputDrivenManifoldGLMHMM(n_states, n_features, n_time_bins, n_restarts=1,
-                                             n_lbfgs=20, n_kappa_rounds=1).fit(torus_sequences)
+                                             n_lbfgs=20, n_kappa_rounds=1, lambda_smooth=0.05, random_state=0, init_bias_sd=INIT_BIAS_SD).fit(torus_sequences)
     assert shared_kappa.n_params == 111
     free_kappa = InputDrivenManifoldGLMHMM(n_states, n_features, n_time_bins, n_restarts=1,
-                                           n_lbfgs=20, kappa_mode='free').fit(torus_sequences)
+                                           n_lbfgs=20, kappa_mode='free', n_kappa_rounds=3, lambda_smooth=0.05, random_state=0, init_bias_sd=INIT_BIAS_SD).fit(torus_sequences)
     assert free_kappa.n_params == 113
 
     X = rng.standard_normal((80, 4))
     y = (X[:, 0] > 0).astype(int)
     clf_kwargs = {'n_features': 2, 'n_time_bins': 2, 'lambda_smooth': 1.0, 'l2_reg': 0.1, 'max_iter': 30}
-    static = GLMHMM(2, lambda: MultinomialEmission(clf_kwargs), n_em_iters=2, n_restarts=1).fit(
+    static = GLMHMM(2, lambda: MultinomialEmission(clf_kwargs), n_em_iters=2, n_restarts=1, kmeans_n_init=KMEANS_N_INIT, initial_self_transition=SELF_TRANSITION).fit(
         [(X[:40], y[:40]), (X[40:], y[40:])])
     assert all(emission.n_params == 5 for emission in static.emissions_)
     assert static.n_params == 13

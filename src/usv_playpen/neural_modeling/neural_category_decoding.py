@@ -8,7 +8,7 @@ folds, same currency -- held-out gain in nats per event over the prior -- and th
 within-session permutation null, so a unit's categorical and continuous statistics are directly
 comparable and can be drawn against ONE set of permutations.
 
-What differs is the target. Continuous decoding asks where on the torus a call sits and needs a basis
+What differs is the target. Continuous decoding asks where on the torus a USV sits and needs a basis
 expansion over a grid, an occupancy mask and a kernel prior. A category is one of a handful of discrete
 labels, so the encoding model is one Poisson rate per category and the prior is their training
 frequency. There is no grid, no mask and no bandwidth, which removes three knobs and the events those
@@ -88,7 +88,7 @@ def category_codes(labels: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarr
     Parameters
     ----------
     labels (np.ndarray)
-        Raw per-event category labels; non-finite entries mark an unlabelled call.
+        Raw per-event category labels; non-finite entries mark an unlabelled USV.
 
     Returns
     -------
@@ -269,7 +269,8 @@ def tuned_category_amplitude(counts: np.ndarray, labels: np.ndarray, fold: dict,
     fold (dict)
         One entry of ``category_context``.
     settings (dict)
-        The ``vocal_decoding`` block.
+        The ``vocal_decoding`` block; reads ``category_surface`` (ridge, amplitude calibration and the
+        ``min_train_events`` / ``min_test_events`` floors below which a split is skipped).
 
     Returns
     -------
@@ -286,7 +287,8 @@ def tuned_category_amplitude(counts: np.ndarray, labels: np.ndarray, fold: dict,
     for alpha in grid:
         scores = []
         for train_rows, test_rows in fold["inner_splits"]:
-            if train_rows.size < 20 or test_rows.size < 5:
+            if (train_rows.size < surface["min_train_events"]
+                    or test_rows.size < surface["min_test_events"]):
                 continue
             prior = np.maximum(np.bincount(labels[train_rows],
                                            minlength=fold["n_categories"]).astype(np.float64), 0.5)
@@ -324,7 +326,8 @@ def category_gain(counts: np.ndarray, labels: np.ndarray, folds: list, settings:
     folds (list)
         Output of ``category_context``.
     settings (dict)
-        The ``vocal_decoding`` block.
+        The ``vocal_decoding`` block; reads ``category_surface`` (ridge, amplitude calibration and the
+        ``min_train_events`` / ``min_test_events`` floors below which a split is skipped).
     permutation (np.ndarray)
         Row order applied to the counts; ``None`` scores the observed pairing.
     with_detail (bool)
@@ -346,7 +349,7 @@ def category_gain(counts: np.ndarray, labels: np.ndarray, folds: list, settings:
 
     for fold in folds:
         train_rows, test_rows = fold["train_rows"], fold["test_rows"]
-        if train_rows.size < 20 or test_rows.size < 5:
+        if train_rows.size < surface["min_train_events"] or test_rows.size < surface["min_test_events"]:
             continue
         ridge = ridge_frac * float(scored[train_rows].sum())
         alpha = tuned_category_amplitude(scored, labels, fold, settings)

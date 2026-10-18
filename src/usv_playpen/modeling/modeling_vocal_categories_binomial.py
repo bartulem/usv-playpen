@@ -48,7 +48,7 @@ from sklearn.model_selection import ShuffleSplit, StratifiedShuffleSplit
 from tqdm import tqdm
 
 from ..analyses.compute_behavioral_features import FeatureZoo
-from ..os_utils import atomic_output_path, resolve_modeling_setting
+from ..os_utils import atomic_output_path
 from .load_input_files import (
     CATEGORY_VOCAL_INFIX,
     VOCAL_TRACE_NAMES,
@@ -87,10 +87,6 @@ from .modeling_utils import (
     within_group_permutation,
     zscore_features_across_sessions,
 )
-
-# Expected-Calibration-Error histogram bin count, read from the settings block
-# rather than a bare 10 literal.
-_ECE_N_BINS = resolve_modeling_setting('diagnostics', 'ece_n_bins')
 
 
 def _collect_category_windows(times: np.ndarray,
@@ -1052,7 +1048,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                         results[strat]['f1'][split_idx] = f1_score(y_te, y_pred, average='binary', zero_division=0.0)
                         results[strat]['brier'][split_idx] = float(brier_score_loss(y_te, y_prob))
                         try:
-                            results[strat]['ece'][split_idx] = expected_calibration_error(y_te, y_pred, y_proba_2d, n_bins=_ECE_N_BINS)
+                            results[strat]['ece'][split_idx] = expected_calibration_error(y_te, y_pred, y_proba_2d, n_bins=self.modeling_settings['diagnostics']['ece_n_bins'])
                         except Exception as e:
                             print(f"[warn] ECE (calibration) metric could not be recorded: {e}")
                         results[strat]['mcc'][split_idx] = safe_matthews_corrcoef(y_te, y_pred)
@@ -1225,7 +1221,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                             rec['f1'] = f1_score(y_test_held, y_pred, average='binary', zero_division=0.0)
                             rec['brier'] = float(brier_score_loss(y_test_held, y_prob))
                             try:
-                                rec['ece'] = expected_calibration_error(y_test_held, y_pred, y_proba_2d, n_bins=_ECE_N_BINS)
+                                rec['ece'] = expected_calibration_error(y_test_held, y_pred, y_proba_2d, n_bins=self.modeling_settings['diagnostics']['ece_n_bins'])
                             except Exception as e:
                                 print(f"[warn] held-out ECE (calibration) metric could not be recorded: {e}")
                             rec['mcc'] = safe_matthews_corrcoef(y_test_held, y_pred)

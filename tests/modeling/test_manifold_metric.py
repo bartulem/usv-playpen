@@ -531,7 +531,7 @@ class TestManifoldPredictionMetrics:
         rng = np.random.default_rng(0)
         Y = rng.random((200, 2))
         Yp = rng.random((200, 2))
-        bundle = manifold_prediction_metrics(Y, Yp, metric='euclidean', period=1.0)
+        bundle = manifold_prediction_metrics(Y, Yp, metric='euclidean', period=1.0, min_region_events=1)
         assert set(bundle) == self._KEYS
         assert bundle['euclidean_mae_raw'] == bundle['euclidean_mae']
 
@@ -544,13 +544,13 @@ class TestManifoldPredictionMetrics:
 
         rng = np.random.default_rng(1)
         Y = rng.random((300, 2))
-        bundle = manifold_prediction_metrics(Y, Y.copy(), metric='torus', period=1.0)
+        bundle = manifold_prediction_metrics(Y, Y.copy(), metric='torus', period=1.0, min_region_events=1)
         assert bundle['r2_spatial'] == pytest.approx(1.0, abs=1e-9)
         assert bundle['euclidean_mae'] == pytest.approx(0.0, abs=1e-9)
         assert bundle['pearson_x'] == pytest.approx(1.0, abs=1e-9)
         assert np.isnan(bundle['dcor_xy'])          # dcor is not computed on the torus
         shuffled = Y[rng.permutation(len(Y))]
-        vm_shuffled = manifold_prediction_metrics(Y, shuffled, metric='torus', period=1.0)['vm_logscore']
+        vm_shuffled = manifold_prediction_metrics(Y, shuffled, metric='torus', period=1.0, min_region_events=1)['vm_logscore']
         assert np.isfinite(bundle['vm_logscore'])
         assert bundle['vm_logscore'] > vm_shuffled
 
@@ -563,10 +563,10 @@ class TestManifoldPredictionMetrics:
         rng = np.random.default_rng(2)
         Y = rng.random((200, 2))
         Yp = rng.random((200, 2))
-        euc = manifold_prediction_metrics(Y, Yp, metric='euclidean', period=1.0)
+        euc = manifold_prediction_metrics(Y, Yp, metric='euclidean', period=1.0, min_region_events=1)
         assert np.isfinite(euc['dcor_xy'])
         assert np.isnan(euc['vm_logscore'])
-        tor = manifold_prediction_metrics(Y, Yp, metric='torus', period=1.0)
+        tor = manifold_prediction_metrics(Y, Yp, metric='torus', period=1.0, min_region_events=1)
         assert np.isfinite(tor['vm_logscore'])
         assert np.isnan(tor['dcor_xy'])
 
@@ -583,17 +583,17 @@ class TestManifoldPredictionMetrics:
         Y = rng.random((400, 2))
         Yp = (Y + 0.05 * rng.standard_normal((400, 2))) % 1.0
         k = 3.0
-        expected = macro_von_mises_logscore(Yp, Y, None, metric='torus', period=1.0, kappa=k)
-        bundle = manifold_prediction_metrics(Y, Yp, metric='torus', period=1.0, kappa=k)
+        expected = macro_von_mises_logscore(Yp, Y, None, metric='torus', period=1.0, kappa=k, min_region_events=1)
+        bundle = manifold_prediction_metrics(Y, Yp, metric='torus', period=1.0, kappa=k, min_region_events=1)
         # With no region labels both macro and pooled reduce to the same pooled
         # score, computed at the FROZEN kappa (not a per-call refit).
         assert bundle['vm_logscore'] == pytest.approx(expected)
         assert bundle['vm_logscore_pooled'] == pytest.approx(expected)
         # A different frozen kappa moves the score -> it is genuinely forwarded.
-        other = manifold_prediction_metrics(Y, Yp, metric='torus', period=1.0, kappa=0.5)
+        other = manifold_prediction_metrics(Y, Yp, metric='torus', period=1.0, kappa=0.5, min_region_events=1)
         assert other['vm_logscore'] != pytest.approx(bundle['vm_logscore'])
         # The default self-refits kappa from the residuals -> a different value.
-        refit = manifold_prediction_metrics(Y, Yp, metric='torus', period=1.0)['vm_logscore']
+        refit = manifold_prediction_metrics(Y, Yp, metric='torus', period=1.0, min_region_events=1)['vm_logscore']
         assert refit != pytest.approx(bundle['vm_logscore'])
 
     def test_vm_logscore_pooled_is_micro_twin_of_macro(self):
@@ -625,7 +625,7 @@ class TestManifoldPredictionMetrics:
         macro = manifold_prediction_metrics(
             Y, Yp, metric='torus', period=1.0,
             region_labels=regions, min_region_events=1)
-        nolabel = manifold_prediction_metrics(Y, Yp, metric='torus', period=1.0)
+        nolabel = manifold_prediction_metrics(Y, Yp, metric='torus', period=1.0, min_region_events=1)
 
         # (b) the pooled twin matches the label-free macro (which IS pooled),
         #     whether or not region labels were passed to the macro call.
@@ -637,7 +637,7 @@ class TestManifoldPredictionMetrics:
         assert macro['vm_logscore'] > macro['vm_logscore_pooled']
 
         # (a) both NaN on euclidean, like `vm_logscore`.
-        euc = manifold_prediction_metrics(Y, Yp, metric='euclidean', period=1.0)
+        euc = manifold_prediction_metrics(Y, Yp, metric='euclidean', period=1.0, min_region_events=1)
         assert np.isnan(euc['vm_logscore'])
         assert np.isnan(euc['vm_logscore_pooled'])
 
@@ -650,7 +650,7 @@ class TestManifoldPredictionMetrics:
         rng = np.random.default_rng(3)
         Y = rng.random((400, 2))
         draw = Y[rng.choice(len(Y), size=len(Y), replace=True)]
-        bundle = manifold_prediction_metrics(Y, draw, metric='torus', period=1.0)
+        bundle = manifold_prediction_metrics(Y, draw, metric='torus', period=1.0, min_region_events=1)
         for key in ('pearson_x', 'pearson_y', 'spearman_x', 'spearman_y', 'vm_logscore'):
             assert np.isfinite(bundle[key])
 
@@ -662,11 +662,11 @@ class TestManifoldPredictionMetrics:
         Y = rng.random((100, 2))
         Yp = rng.random((100, 2))
         assert np.isnan(
-            manifold_prediction_metrics(Y, Yp, metric='euclidean', period=1.0)['mahalanobis_mae']
+            manifold_prediction_metrics(Y, Yp, metric='euclidean', period=1.0, min_region_events=1)['mahalanobis_mae']
         )
         assert np.isfinite(
             manifold_prediction_metrics(
-                Y, Yp, metric='euclidean', period=1.0, train_cov_inv=np.eye(2),
+                Y, Yp, metric='euclidean', period=1.0, train_cov_inv=np.eye(2), min_region_events=1
             )['mahalanobis_mae']
         )
 
@@ -769,8 +769,8 @@ class TestMacroVonMisesLogscore:
         Y = rng.random((400, 2))
         good = (Y + rng.normal(0, 0.01, Y.shape)) % 1.0
         poor = (Y + rng.normal(0, 0.2, Y.shape)) % 1.0
-        s_good = macro_von_mises_logscore(good, Y, None, metric='torus', period=1.0)
-        s_poor = macro_von_mises_logscore(poor, Y, None, metric='torus', period=1.0)
+        s_good = macro_von_mises_logscore(good, Y, None, metric='torus', period=1.0, min_region_events=1)
+        s_poor = macro_von_mises_logscore(poor, Y, None, metric='torus', period=1.0, min_region_events=1)
         assert np.isfinite(s_good)
         assert np.isfinite(s_poor)
         assert s_good > s_poor
@@ -781,9 +781,9 @@ class TestMacroVonMisesLogscore:
         rng = np.random.default_rng(3)
         Y = rng.random((300, 2))
         Yp = (Y + rng.normal(0, 0.05, Y.shape)) % 1.0
-        pooled = macro_von_mises_logscore(Yp, Y, None, metric='torus', period=1.0)
+        pooled = macro_von_mises_logscore(Yp, Y, None, metric='torus', period=1.0, min_region_events=1)
         all_nan = macro_von_mises_logscore(
-            Yp, Y, np.full(len(Y), np.nan), metric='torus', period=1.0)
+            Yp, Y, np.full(len(Y), np.nan), metric='torus', period=1.0, min_region_events=1)
         assert pooled == pytest.approx(all_nan, abs=1e-9)
 
     def test_macro_drops_regions_below_floor(self):
@@ -803,7 +803,7 @@ class TestMacroVonMisesLogscore:
         macro = macro_von_mises_logscore(
             Yp, Y, labels, metric='torus', period=1.0, min_region_events=50, kappa=kappa)
         region0_only = macro_von_mises_logscore(
-            Yp[5:], Y[5:], None, metric='torus', period=1.0, kappa=kappa)
+            Yp[5:], Y[5:], None, metric='torus', period=1.0, kappa=kappa, min_region_events=1)
         assert macro == pytest.approx(region0_only, abs=1e-9)
 
     def test_kappa_reuse(self):
@@ -814,8 +814,8 @@ class TestMacroVonMisesLogscore:
         Yp = (Y + rng.normal(0, 0.05, Y.shape)) % 1.0
         r = signed_diff(Y, Yp, metric='torus', period=1.0) * (2 * np.pi)
         kappa = _fit_von_mises_kappa(r.ravel())
-        auto = macro_von_mises_logscore(Yp, Y, None, metric='torus', period=1.0)
-        reused = macro_von_mises_logscore(Yp, Y, None, metric='torus', period=1.0, kappa=kappa)
+        auto = macro_von_mises_logscore(Yp, Y, None, metric='torus', period=1.0, min_region_events=1)
+        reused = macro_von_mises_logscore(Yp, Y, None, metric='torus', period=1.0, kappa=kappa, min_region_events=1)
         assert auto == pytest.approx(reused, abs=1e-9)
 
 
@@ -881,9 +881,9 @@ class TestRegionLabelFallbackIsLoud:
         y_true = rng.random((40, 2))
         y_pred = (y_true + 0.05 * rng.standard_normal((40, 2))) % 1.0
         no_labels = np.full(40, np.nan)
-        first = macro_von_mises_logscore(y_pred, y_true, no_labels, metric='torus', period=1.0)
-        second = macro_von_mises_logscore(y_pred, y_true, no_labels, metric='torus', period=1.0)
-        pooled = macro_von_mises_logscore(y_pred, y_true, None, metric='torus', period=1.0)
+        first = macro_von_mises_logscore(y_pred, y_true, no_labels, metric='torus', period=1.0, min_region_events=1)
+        second = macro_von_mises_logscore(y_pred, y_true, no_labels, metric='torus', period=1.0, min_region_events=1)
+        pooled = macro_von_mises_logscore(y_pred, y_true, None, metric='torus', period=1.0, min_region_events=1)
         assert first == pytest.approx(pooled)
         assert second == pytest.approx(pooled)
         printed = capsys.readouterr().out
@@ -901,7 +901,7 @@ class TestMacroRegionMean:
 
         values = np.array([1.0, 1.0, 1.0, 1.0, 5.0])
         labels = np.array([0.0, 0.0, 0.0, 0.0, 1.0])
-        assert macro_region_mean(values, labels) == pytest.approx(3.0)
+        assert macro_region_mean(values, labels, min_region_events=1) == pytest.approx(3.0)
         assert np.mean(values) == pytest.approx(1.8)
 
     def test_pooled_fallbacks(self):
@@ -909,9 +909,9 @@ class TestMacroRegionMean:
         finite values; no finite value at all yields NaN."""
 
         values = np.array([1.0, 3.0, np.nan])
-        assert macro_region_mean(values, None) == pytest.approx(2.0)
-        assert macro_region_mean(values, np.full(3, np.nan)) == pytest.approx(2.0)
-        assert np.isnan(macro_region_mean(np.full(3, np.nan), None))
+        assert macro_region_mean(values, None, min_region_events=1) == pytest.approx(2.0)
+        assert macro_region_mean(values, np.full(3, np.nan), min_region_events=1) == pytest.approx(2.0)
+        assert np.isnan(macro_region_mean(np.full(3, np.nan), None, min_region_events=1))
 
     def test_min_region_events_and_unlabelled_rows(self):
         """A region below `min_region_events` (counting finite values only) is
@@ -920,7 +920,7 @@ class TestMacroRegionMean:
 
         values = np.array([1.0, 1.0, 9.0, np.nan, 100.0])
         labels = np.array([0.0, 0.0, 1.0, 1.0, np.nan])
-        assert macro_region_mean(values, labels) == pytest.approx(5.0)
+        assert macro_region_mean(values, labels, min_region_events=1) == pytest.approx(5.0)
         assert macro_region_mean(values, labels, min_region_events=2) == pytest.approx(1.0)
         assert np.isnan(macro_region_mean(values, labels, min_region_events=3))
 
@@ -936,12 +936,12 @@ class TestMacroRegionMean:
         Yp[50:] = (Yp[50:] + 0.4) % 1.0
         dist = np.sqrt((signed_diff(Y, Yp, metric='torus', period=1.0) ** 2).sum(axis=1))
         labelled = manifold_prediction_metrics(
-            Y, Yp, metric='torus', period=1.0, region_labels=labels)
+            Y, Yp, metric='torus', period=1.0, region_labels=labels, min_region_events=1)
         assert labelled['euclidean_mae_macro'] == pytest.approx(
             np.mean([dist[labels == 0].mean(), dist[labels == 1].mean()]))
         assert labelled['euclidean_mae'] == pytest.approx(dist.mean())
         assert labelled['euclidean_mae_macro'] > labelled['euclidean_mae']
-        unlabelled = manifold_prediction_metrics(Y, Yp, metric='torus', period=1.0)
+        unlabelled = manifold_prediction_metrics(Y, Yp, metric='torus', period=1.0, min_region_events=1)
         assert unlabelled['euclidean_mae_macro'] == pytest.approx(unlabelled['euclidean_mae'])
 
 
@@ -964,7 +964,7 @@ class TestKnownAnswers:
         expected = vonmises.logpdf(residual, kappa).sum(axis=1)
         got = von_mises_logpdf_per_point(pred, truth, kappa=kappa, metric='torus', period=period)
         np.testing.assert_allclose(got, expected, rtol=1e-10, atol=1e-10)
-        pooled = macro_von_mises_logscore(pred, truth, None, metric='torus', period=period, kappa=kappa)
+        pooled = macro_von_mises_logscore(pred, truth, None, metric='torus', period=period, kappa=kappa, min_region_events=1)
         assert pooled == pytest.approx(float(expected.mean()), rel=1e-12)
 
     def test_macro_score_is_the_mean_of_qualifying_region_means(self):
@@ -1030,10 +1030,10 @@ class TestKnownAnswers:
         cov_inv = np.array([[2.0, 0.3], [0.3, 0.5]])
         residual = pred - truth
         expected = float(np.mean(np.sqrt(np.einsum('ij,jk,ik->i', residual, cov_inv, residual))))
-        bundle = manifold_prediction_metrics(truth, pred, None, metric='euclidean', period=1.0, train_cov_inv=cov_inv)
+        bundle = manifold_prediction_metrics(truth, pred, None, metric='euclidean', period=1.0, train_cov_inv=cov_inv, min_region_events=1)
         assert bundle['mahalanobis_mae'] == pytest.approx(expected, rel=1e-10)
         flat = manifold_prediction_metrics(np.ones((10, 2)), np.ones((10, 2)) + 0.1, None,
-                                           metric='euclidean', period=1.0)
+                                           metric='euclidean', period=1.0, min_region_events=1)
         assert flat['r2_spatial'] == 0.0
 
     @pytest.mark.filterwarnings("ignore:An input array is constant:scipy.stats.ConstantInputWarning")
@@ -1047,10 +1047,10 @@ class TestKnownAnswers:
         noise = 0.3 * rng.normal(size=(500, 2))
         expected = 1.0 - np.sum(noise ** 2) / np.sum((base - base.mean(0)) ** 2)
         shifted = manifold_prediction_metrics(base + 1e8, base + 1e8 + noise, None,
-                                              metric='euclidean', period=1.0)
+                                              metric='euclidean', period=1.0, min_region_events=1)
         assert shifted['r2_spatial'] == pytest.approx(expected, abs=1e-4)
         flat = manifold_prediction_metrics(np.full((10, 2), 0.1), np.full((10, 2), 0.2), None,
-                                           metric='euclidean', period=1.0)
+                                           metric='euclidean', period=1.0, min_region_events=1)
         assert flat['r2_spatial'] == 0.0
 
     def test_distance_correlation_known_values(self):

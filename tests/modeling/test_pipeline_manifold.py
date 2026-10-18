@@ -1577,6 +1577,46 @@ class TestManifoldModelSelection:
             )
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    def test_selection_refuses_a_univariate_run_with_a_different_fold_count(self, tmp_path):
+        """
+        The screen re-tests the univariate stage's stored per-fold predictions and the greedy
+        stage re-splits into `manifold_n_cv_folds` folds, so a univariate pickle written with a
+        different fold count (an older 10-fold run against today's 20) must raise, naming both
+        counts, instead of being screened silently on a different fold layout. It raises before
+        the input pickle is touched.
+        """
+
+        settings, _ = _build_manifold_settings(
+            tmp_path, split_strategy='mixed', split_num=2,
+        )
+        expected_folds = settings['model_validation']['manifold_n_cv_folds']
+        stale_folds = expected_folds // 2
+        fold_block = {'test_indices': [np.arange(3)] * stale_folds,
+                      'y_pred_xy': [np.zeros((3, 2))] * stale_folds,
+                      'y_true': [np.zeros((3, 2))] * stale_folds}
+        ranking = {
+            'self.speed': {'actual': {'folds': dict(fold_block)}, 'null': {'folds': dict(fold_block)}},
+            '_input_metadata': {'analysis_specific': {'manifold_metric': 'euclidean'}},
+        }
+        ranking_pkl = tmp_path / 'univariate_combined.pkl'
+        with ranking_pkl.open('wb') as fh:
+            pickle.dump(ranking, fh)
+        settings_json = tmp_path / 'settings.json'
+        settings_json.write_text(json.dumps(settings))
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+
+        with pytest.raises(ValueError, match=f"manifold_n_cv_folds = {expected_folds}.*'self.speed': {stale_folds}"):
+            continuous_vocal_manifold_model_selection(
+                univariate_results_path=str(ranking_pkl),
+                input_data_path=str(tmp_path / 'does_not_need_to_exist.pkl'),
+                output_directory=str(ms_dir),
+                settings_path=str(settings_json),
+                use_top_rank_as_anchor=True,
+                p_val=0.05,
+            )
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_selection_torus_resume_metric_mismatch_restarts_fresh(self, tmp_path, capsys):
         """
         Resuming a checkpoint scored on a different selection metric (the
@@ -1915,7 +1955,7 @@ class TestSpatialSplitter:
         with pytest.raises(ValueError, match="Invalid split_strategy"):
             get_stratified_spatial_splits_stable(
                 groups=np.zeros(len(Y), dtype=int), Y=Y, n_clusters=3,
-                split_strategy='bogus', test_prop=0.3, n_splits=1, random_seed=0,
+                split_strategy='bogus', test_prop=0.3, n_splits=1, random_seed=0, max_total_attempts=50000, widen_step=0.02, widen_every=1000, tolerance=0.05
             )
 
     @pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
@@ -1930,7 +1970,7 @@ class TestSpatialSplitter:
         with pytest.raises(ValueError, match="non-empty clusters"):
             get_stratified_spatial_splits_stable(
                 groups=np.zeros(20, dtype=int), Y=Y, n_clusters=4,
-                split_strategy='mixed', test_prop=0.3, n_splits=1, random_seed=0,
+                split_strategy='mixed', test_prop=0.3, n_splits=1, random_seed=0, max_total_attempts=50000, widen_step=0.02, widen_every=1000, tolerance=0.05
             )
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
@@ -1947,7 +1987,7 @@ class TestSpatialSplitter:
         folds = get_stratified_spatial_splits_stable(
             groups=groups, Y=Y, n_clusters=3, split_strategy='mixed',
             test_prop=0.3, n_splits=2, random_seed=0,
-            metric='torus', period=100.0,
+            metric='torus', period=100.0, max_total_attempts=50000, widen_step=0.02, widen_every=1000, tolerance=0.05
         )
         assert len(folds) == 2
         for tr_idx, te_idx in folds:
@@ -1974,7 +2014,7 @@ class TestSpatialSplitter:
 
         folds = get_stratified_spatial_splits_stable(
             groups=groups, Y=Y, n_clusters=3, split_strategy='session',
-            test_prop=0.5, n_splits=2, random_seed=0, tolerance=0.5,
+            test_prop=0.5, n_splits=2, random_seed=0, tolerance=0.5, max_total_attempts=50000, widen_step=0.02, widen_every=1000
         )
         assert len(folds) == 2
         for tr_idx, te_idx in folds:
@@ -1998,14 +2038,14 @@ class TestSpatialSplitter:
         # 4 sessions, 1 test session per fold -> exactly 4 distinct test sets
         folds = get_stratified_spatial_splits_stable(
             groups=groups, Y=Y, n_clusters=3, split_strategy='session',
-            test_prop=0.25, n_splits=4, random_seed=0, tolerance=0.9,
+            test_prop=0.25, n_splits=4, random_seed=0, tolerance=0.9, max_total_attempts=50000, widen_step=0.02, widen_every=1000
         )
         test_sets = [frozenset(groups[te_idx].tolist()) for _tr_idx, te_idx in folds]
         assert len(set(test_sets)) == 4
         with pytest.raises(ValueError, match="distinct test sets"):
             get_stratified_spatial_splits_stable(
                 groups=groups, Y=Y, n_clusters=3, split_strategy='session',
-                test_prop=0.25, n_splits=5, random_seed=0, tolerance=0.9,
+                test_prop=0.25, n_splits=5, random_seed=0, tolerance=0.9, max_total_attempts=50000, widen_step=0.02, widen_every=1000
             )
 
     def test_session_strategy_raises_when_unsatisfiable(self):
@@ -2093,7 +2133,7 @@ class TestManifoldTuner:
             use_lax_loop=False,
             regressor_cls=SmoothBivariateRegression,
             metric='euclidean',
-            period=1.0,
+            period=1.0, split_tolerance=0.05, split_max_attempts=50000, split_widen_step=0.02, split_widen_every=1000, dcor_n_sub=2500, dcor_n_rep=3, min_region_events=1
         )
         assert best_lam == 1.0
         assert best_l2 == 0.01
@@ -2162,7 +2202,7 @@ class TestManifoldTuner:
             use_lax_loop=False,
             regressor_cls=_AlwaysRaises,
             metric='euclidean',
-            period=1.0,
+            period=1.0, split_tolerance=0.05, split_max_attempts=50000, split_widen_step=0.02, split_widen_every=1000, dcor_n_sub=2500, dcor_n_rep=3, min_region_events=1
         )
         assert best_lam == 1.0
         assert best_l2 == 0.1
@@ -2244,7 +2284,7 @@ class TestManifoldTuner:
             use_lax_loop=False,
             regressor_cls=_FixedScore,
             metric='euclidean',
-            period=1.0,
+            period=1.0, split_tolerance=0.05, split_max_attempts=50000, split_widen_step=0.02, split_widen_every=1000, dcor_n_sub=2500, dcor_n_rep=3, min_region_events=1
         )
         assert best_lam == 10.0          # smoothest in-band pair
         assert audit['one_se_applied'] is True
@@ -2297,6 +2337,8 @@ class TestManifoldTuner:
             'learning_rate': 0.05, 'inner_max_iter': 5, 'tol': 0.01, 'random_state': 0,
             'verbose': False, 'use_lax_loop': False, 'regressor_cls': _L2Score,
             'metric': 'euclidean', 'period': 1.0,
+            'split_tolerance': 0.05, 'split_max_attempts': 50000, 'split_widen_step': 0.02,
+            'split_widen_every': 1000, 'dcor_n_sub': 2500, 'dcor_n_rep': 3, 'min_region_events': 1,
         }
         # Multi-point l2 grid whose argmax rails to the upper edge -> warning fires.
         _lam, best_l2, _audit = _tune_manifold_regularization(
@@ -2375,7 +2417,7 @@ class TestManifoldTuner:
             smoothness_derivative_order=1, huber_delta=1.0, learning_rate=0.05,
             inner_max_iter=5, tol=0.01, random_state=0,
             verbose=False, use_lax_loop=False, regressor_cls=_FixedScore,
-            metric='euclidean', period=1.0,
+            metric='euclidean', period=1.0, split_tolerance=0.05, split_max_attempts=50000, split_widen_step=0.02, split_widen_every=1000, dcor_n_sub=2500, dcor_n_rep=3, min_region_events=1
         )
         assert best_lam == 1.0           # raw argmax
         assert audit['one_se_applied'] is False
@@ -2441,7 +2483,7 @@ class TestManifoldTuner:
             smoothness_derivative_order=1, huber_delta=1.0, learning_rate=0.05,
             inner_max_iter=5, tol=0.01, random_state=0,
             verbose=False, use_lax_loop=False, regressor_cls=_FixedScore,
-            metric='euclidean', period=1.0,
+            metric='euclidean', period=1.0, split_tolerance=0.05, split_max_attempts=50000, split_widen_step=0.02, split_widen_every=1000, dcor_n_sub=2500, dcor_n_rep=3, min_region_events=1
         )
         assert best_lam == 10.0          # smoothest in the lower-is-better band
         assert audit['one_se_applied'] is True

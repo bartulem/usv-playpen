@@ -94,7 +94,8 @@ class TestCleanWindowMask:
         assert clean_window_mask(np.array([1.0]), np.array([]), np.array([]), 0.05).tolist() == [True]
 
 
-VOCAL_SETTINGS = {"exclude_noise": True, "exclude_squeaks": True, "squeaks_block_quiet": True}
+VOCAL_SETTINGS = {"vocal_emitter": "self", "exclude_noise": True, "exclude_squeaks": True,
+                  "squeaks_block_quiet": True}
 
 
 def _write_session(root: pathlib.Path, session_id: str, unit_id: str, *, n_frames: int,
@@ -251,7 +252,21 @@ class TestAssembleUnitVocalEvents:
         assert events["positions"].shape == (2, 2)
         assert events["positions"][:, 0].tolist() == [0.10, 0.50]
         assert events["session_index"].tolist() == [0, 0]
-        assert events["per_session"]["20250101_000000"]["n_focal_calls"] == 2
+        assert events["per_session"]["20250101_000000"]["n_focal_vocalizations"] == 2
+
+    def test_vocal_emitter_all_decodes_every_emitter_instead_of_raising(self, tmp_path):
+        """``vocal_emitter = 'all'`` is no emitter filter, as in ``assemble_unit_sessions``; it used to
+        index the empty list ``emitter_names`` returns for it and raise IndexError."""
+        usvs = [(100.0, 100.1, "male", 0.10, 0.20),
+                (200.0, 200.1, "female", 0.30, 0.40),
+                (300.0, 300.1, "male", 0.50, 0.60)]
+        unit = self._build(tmp_path, usvs=usvs, spike_seconds=np.array([99.98, 299.97]))
+        settings = self._settings()
+        settings["vocalization_settings"]["vocal_emitter"] = "all"
+        events = assemble_unit_vocal_events(unit, str(tmp_path), settings, 0.05, 0.05)
+        assert events["positions"][:, 0].tolist() == [0.10, 0.30, 0.50]
+        np.testing.assert_allclose(events["vocalization_start"], [100.0, 200.0, 300.0])
+        assert events["per_session"]["20250101_000000"]["n_focal_vocalizations"] == 3
 
     def test_counts_come_from_the_window_before_onset(self, tmp_path):
         """Spike counts are read from [onset - pre_offset, onset - pre_offset + width), so a spike just
@@ -477,7 +492,8 @@ class TestSettingsInvariants:
         assert set(settings["nested_vocal_manifold_position_decoding"]) == {
             "behaviour_control", "reduced_model_features", "behaviour_control_model_path",
             "vm_score_mode", "region_label_column", "min_region_events", "lambda_smooth", "l2_reg",
-            "smoothness_derivative_order", "sigma_floor", "prevocal_window_n_bins", "rate_transform",
+            "smoothness_derivative_order", "huber_delta", "learning_rate", "max_iter", "tol", "random_state",
+            "behaviour_control_n_lags", "sigma_floor", "prevocal_window_n_bins", "rate_transform",
             "rate_basis", "statistic", "discrimination_null", "behaviour_prior"}
 
     def test_the_nested_decoding_matches_p1_where_it_must(self):
@@ -565,7 +581,7 @@ class TestFocalVocalFrames:
         _write_session(tmp_path, "20250101_000000", self.UNIT, n_frames=150000, frame_rate=150.0,
                        usvs=[(100.0, 100.1, "female", 0.1, 0.2)],   # partner only
                        spike_seconds=np.array([99.98]))
-        session = {"n_frames": 150000}
+        session = {"n_frames": 150000, "track_names": ["male", "female"]}
         frames, pointer, gaps = focal_vocal_frames(session, "20250101_000000", str(tmp_path),
                                                    "male", 150.0, 600, VOCAL_SETTINGS)
         assert frames.size == 0
@@ -579,11 +595,27 @@ class TestFocalVocalFrames:
                        usvs=[(100.0, 100.1, "147366_1", 0.1, 0.2),
                               (200.0, 200.1, "147366", 0.3, 0.4)],
                        spike_seconds=np.array([99.98]))
-        session = {"n_frames": 150000}
+        session = {"n_frames": 150000, "track_names": ["147366", "147366_1"]}
         frames, _pointer, gaps = focal_vocal_frames(session, "20250101_000000", str(tmp_path),
                                                     "147366", 150.0, 600, VOCAL_SETTINGS)
         assert gaps.size == 1                     # only the exact-match USV, not the "147366_1" one
         assert frames.min() >= int(200.0 * 150.0)
+
+    @pytest.mark.parametrize(("emitter", "expected_starts"), [("self", [100.0]), ("partner", [200.0]),
+                                                              ("all", [100.0, 200.0])])
+    def test_the_transfer_frames_follow_vocal_emitter(self, tmp_path, emitter, expected_starts):
+        """The transfer frames read ``vocalization_settings.vocal_emitter`` exactly as the vocal-side
+        assembler does, so pointing it at the partner (or at every emitter) moves the transfer and the
+        vocal decoding together; they used to match the unit's own mouse unconditionally."""
+        _write_session(tmp_path, "20250101_000000", self.UNIT, n_frames=150000, frame_rate=150.0,
+                       usvs=[(100.0, 100.1, "male", 0.1, 0.2), (200.0, 200.1, "female", 0.3, 0.4)],
+                       spike_seconds=np.array([99.98]))
+        session = {"n_frames": 150000, "track_names": ["male", "female"]}
+        frames, pointer, gaps = focal_vocal_frames(session, "20250101_000000", str(tmp_path), "male",
+                                                   150.0, 600, {**VOCAL_SETTINGS, "vocal_emitter": emitter})
+        assert gaps.size == len(expected_starts)
+        span_starts = frames[pointer[:-1]]
+        np.testing.assert_array_equal(span_starts, [int(start * 150.0) for start in expected_starts])
 
 
 class TestQuietSideKeepsEverySession:
@@ -629,7 +661,7 @@ class TestQuietSideKeepsEverySession:
         unit = {"unit_id": self.UNIT, "mouse_id": "male",
                 "courtship_sessions": ["s_rich", "s_thin"],
                 "vocal_sessions": ["s_rich"]}
-        assemble_unit_sessions(unit, "/data", {}, 4.0, 2.0, "all", "self", VOCAL_SETTINGS)
+        assemble_unit_sessions(unit, "/data", {}, 4.0, 2.0, "all", VOCAL_SETTINGS)
 
         assert seen["dirs"] == ["/data/s_rich", "/data/s_thin"]
         assert "/data/s_thin" in seen["dirs"]        # the thin session is FITTED on, not dropped
@@ -717,23 +749,21 @@ class TestOneQuietDefinition:
         definition."""
         assert "clean_against" in inspect.signature(assemble_unit_sessions).parameters
 
-    def test_the_kinematic_assembler_takes_vocal_emitter(self):
-        """Same failure mode one key over: the kinematic side resolved the onset emitter from the
-        unit's mouse_id directly, so pointing `vocalization_settings.vocal_emitter` at the partner would have moved
-        the vocal decoding's events while leaving the kinematic encoding's onsets on the recorded animal."""
-        assert "vocal_emitter" in inspect.signature(assemble_unit_sessions).parameters
+    def test_the_kinematic_assembler_carries_no_dead_onset_set(self):
+        """The assembler used to build USV-onset anchors (and take ``vocal_emitter`` for them) that no
+        analysis read; the kinematic encoding's vocal frames come from ``focal_vocal_frames``, which
+        reads ``vocal_emitter`` itself. The dead set and its argument are gone."""
+        assert "vocal_emitter" not in inspect.signature(assemble_unit_sessions).parameters
 
     def test_the_dispatcher_passes_the_same_setting_to_both_sides(self):
         """Every ``assemble_unit_sessions`` site in the dispatcher must forward the shared
-        ``clean_against`` and ``vocal_emitter`` values, so the kinematic side cannot drift from the
-        vocal side through a hard-coded argument."""
+        ``clean_against`` value, so the kinematic side cannot drift from the vocal side through a
+        hard-coded argument."""
         source = (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"
                   / "neural_modeling" / "main_neural_encoding_dispatcher.py").read_text()
         # every assemble_unit_sessions call site must hand it the shared anchors values
         assert source.count("assemble_unit_sessions(") == source.count(
             'settings["vocalization_settings"]["clean_against"]')
-        assert source.count('settings["vocalization_settings"]["vocal_emitter"]') >= source.count(
-            "assemble_unit_sessions(")
 
 
 class TestVocalSessionScope:

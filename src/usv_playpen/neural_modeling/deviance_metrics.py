@@ -55,6 +55,33 @@ def finite_mean(values: np.ndarray) -> float:
     return float(finite.mean()) if finite.size else float("nan")
 
 
+def finite_min(values) -> float:
+    """
+    Description
+    -----------
+    Minimum of the finite entries, or NaN when there are none -- ``np.nanmin`` semantics without its
+    all-NaN warning (see :func:`finite_mean` for why the warning matters).
+
+    The decoders' ``min_leave_one_fold_out`` is read through here: a single fold whose left-out pooled
+    mean is NaN (every remaining event masked) is skipped rather than turning the whole descriptor NaN,
+    which ``np.min`` did.
+
+    Parameters
+    ----------
+    values (array-like)
+        Values that may contain NaN.
+
+    Returns
+    -------
+    minimum (float)
+        Minimum over the finite entries, or NaN.
+    """
+
+    finite = np.asarray(values, dtype=np.float64)
+    finite = finite[np.isfinite(finite)]
+    return float(finite.min()) if finite.size else float("nan")
+
+
 def bernoulli_deviance(eta: np.ndarray, y: np.ndarray) -> float:
     """
     Description

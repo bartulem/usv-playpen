@@ -114,7 +114,7 @@ class TestExpectedCalibrationError:
         y_true = np.array([0, 1, 0, 1])
         y_pred = y_true.copy()
         proba = np.eye(2)[y_true]
-        assert expected_calibration_error(y_true, y_pred, proba) == pytest.approx(0.0)
+        assert expected_calibration_error(y_true, y_pred, proba, n_bins=10) == pytest.approx(0.0)
 
     def test_overconfident_wrong_is_positive(self):
         """High-confidence but always-wrong predictions are badly
@@ -123,13 +123,13 @@ class TestExpectedCalibrationError:
         y_true = np.array([0, 0, 0, 0])
         y_pred = np.array([1, 1, 1, 1])
         proba = np.tile([0.0, 1.0], (4, 1))
-        assert expected_calibration_error(y_true, y_pred, proba) == pytest.approx(1.0)
+        assert expected_calibration_error(y_true, y_pred, proba, n_bins=10) == pytest.approx(1.0)
 
     def test_non_2d_proba_raises(self):
         """A 1-D probability array is rejected with ``ValueError``."""
 
         with pytest.raises(ValueError, match=r'requires y_proba of shape \(N, K\)'):
-            expected_calibration_error(np.array([0]), np.array([0]), np.array([1.0]))
+            expected_calibration_error(np.array([0]), np.array([0]), np.array([1.0]), n_bins=10)
 
 
 class TestSafeMatthews:
@@ -2281,7 +2281,7 @@ class TestThirdMutationRoundKnownAnswers:
         proba = np.column_stack([1.0 - conf, conf])
         y_pred = np.ones(4, dtype=int)
         y_true = np.array([1, 0, 1, 0])
-        assert expected_calibration_error(y_true, y_pred, proba) == pytest.approx(0.0875, abs=1e-12)
+        assert expected_calibration_error(y_true, y_pred, proba, n_bins=10) == pytest.approx(0.0875, abs=1e-12)
 
     def test_ece_bin_edges_are_right_closed(self):
         """A confidence exactly on an inner bin edge belongs only to the bin it closes; one
@@ -2292,10 +2292,10 @@ class TestThirdMutationRoundKnownAnswers:
         edges = np.linspace(0.0, 1.0, 11)
         on_edge = edges[6]
         proba = np.array([[1.0 - on_edge, on_edge], [0.3, 0.7]])
-        val = expected_calibration_error(np.array([1, 0]), np.array([1, 1]), proba)
+        val = expected_calibration_error(np.array([1, 0]), np.array([1, 1]), proba, n_bins=10)
         assert val == pytest.approx(0.5 * (1.0 - on_edge) + 0.5 * 0.7, abs=1e-12)
         above = edges[6] + 5e-10
-        val = expected_calibration_error(np.array([1]), np.array([1]), np.array([[1.0 - above, above]]))
+        val = expected_calibration_error(np.array([1]), np.array([1]), np.array([[1.0 - above, above]]), n_bins=10)
         assert val == pytest.approx(1.0 - above, abs=1e-12)
 
     def test_ece_top_bin_tolerance(self):
@@ -2304,15 +2304,15 @@ class TestThirdMutationRoundKnownAnswers:
         at 1 + 1e-6 is unbinned but still counts in N, so ECE = (1 + 1e-9) / 2."""
 
         proba = np.array([[0.0, 1.0 + 1e-9], [0.0, 1.0 + 1e-6]])
-        val = expected_calibration_error(np.array([0, 0]), np.array([1, 1]), proba)
+        val = expected_calibration_error(np.array([0, 0]), np.array([1, 1]), proba, n_bins=10)
         assert val == pytest.approx((1.0 + 1e-9) / 2.0, rel=1e-12, abs=0.0)
-        val = expected_calibration_error(np.array([1]), np.array([1]), np.array([[0.0, 1.0]]))
+        val = expected_calibration_error(np.array([1]), np.array([1]), np.array([[0.0, 1.0]]), n_bins=10)
         assert val == pytest.approx(0.0, abs=1e-12)
 
     def test_ece_empty_input_is_nan(self):
         """No samples -> NaN (the documented empty-input return)."""
 
-        assert np.isnan(expected_calibration_error(np.array([]), np.array([]), np.empty((0, 2))))
+        assert np.isnan(expected_calibration_error(np.array([]), np.array([]), np.empty((0, 2)), n_bins=10))
 
     def test_safe_metric_nan_paths(self):
         """Inputs the libraries reject (mismatched lengths) give NaN from MCC, Pearson and

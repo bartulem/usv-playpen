@@ -5,8 +5,8 @@ Is a unit's vocal response GATED on a specific behavioural feature?
 The question this exists to answer is one the base taxonomy cannot: a unit that fires to the animal's
 own courtship USVs but is SILENT to its solo USVs is socially gated, not vocal-motor, and every
 courtship vocalization is socially embedded, so nothing in a courtship-only analysis separates the
-two. The calibration unit is `imec0_cl0633_ch278_good`: ~8.8 Hz during its own courtship calls
-against 0.05 Hz over 966 male-alone calls. This sub-analysis finds that WITHIN courtship, with no
+two. The calibration unit is `imec0_cl0633_ch278_good`: ~8.8 Hz during its own courtship USVs
+against 0.05 Hz over 966 male-alone USVs. This sub-analysis finds that WITHIN courtship, with no
 lone-male control, by asking whether within-courtship variation in a feature scales the response --
 solo silence then being the same gate at its limit, with no partner present.
 
@@ -65,14 +65,14 @@ from .shift_null_inference import sample_circular_shift, shifted_spike_frames
 
 #: The only value implemented for each option `vocal_gating` names.
 #:
-#: ``vocal_window`` is ``"during_call"`` -- every frame of the call. The nameable alternative is a
+#: ``vocal_window`` is ``"during_vocalization"`` -- every frame of the vocalization. The nameable alternative is a
 #: fixed ``"peri_onset"`` window, and the plan rejects it: gating asks about VOCALIZING, not
-#: peri-vocalizing, so the whole call is the right span even though on the calibration unit it
+#: peri-vocalizing, so the whole USV is the right span even though on the calibration unit it
 #: captures only ~35% of the spikes. ``content_gating_compute`` stays false because the content
 #: branch (feature x torus position, a 4-df group) is DEFERRED and must be gated on a vocalization-identity pass --
 #: run blind on a non-tuned unit it produces false positives.
 IMPLEMENTED_OPTIONS = {
-    "vocal_window": ("during_call",),
+    "vocal_window": ("during_vocalization",),
     "content_gating_compute": (False,),
 }
 
@@ -117,8 +117,8 @@ def should_run_gating(vocal_occurrence_significant: bool, vocalization_identity_
     or vocalization-identity tuning. A unit with no vocal tuning at all has nothing for a gate to modulate, and the screen is
     19 features x 2,000 shuffles, so skipping them is the saving that keeps gating negligible against
     the rest of the pipeline. Note the two are measured on OVERLAPPING but not identical frames: since
-    2026-09-11 the vocal-decoding window straddles onset and covers the call's first 50 ms, while gating spans
-    the WHOLE call -- so a unit responding only late in long calls could in principle be skipped. That
+    2026-09-11 the vocal-decoding window straddles onset and covers the USV's first 50 ms, while gating spans
+    the WHOLE USV -- so a unit responding only late in long USVs could in principle be skipped. That
     is the accepted cost of the filter.
 
     IDENTIFIABILITY (``min_vocal_spikes``, ``min_feature_iqr_vocal``): a feature with no spread DURING
@@ -563,6 +563,43 @@ def gating_survivors(per_feature: dict, feature_values_vocal: dict) -> dict:
             "max_abs_correlation": strongest if correlations else float("nan")}
 
 
+def quiet_subsample_rows(quiet_labels: np.ndarray, zeros_per_spike: int, rng) -> np.ndarray:
+    """
+    Description
+    -----------
+    The quiet-only rows the feature main effect is fitted on: EVERY quiet frame carrying a spike, plus
+    ``zeros_per_spike`` spike-free quiet frames per spike drawn without replacement (all of them when
+    fewer exist; at least ``zeros_per_spike`` when there is no spike at all).
+
+    This is the ONE subsampling rule, used for the observed fit and inside every null draw. A null that
+    relabelled the OBSERVED rows from a shifted train would keep the rows chosen around the real spikes
+    -- which a shifted spike rarely lands on -- so its positive fraction fell to the base rate (0.0067
+    against the observed 0.024 at 1 Hz) and the quiet p came out too conservative (median 0.79 on null
+    units). Redrawing from the shifted labels gives every draw the same class balance as the observed fit.
+
+    Parameters
+    ----------
+    quiet_labels (np.ndarray)
+        Binary spike label per quiet frame of one session.
+    zeros_per_spike (int)
+        Spike-free rows kept per spike (``vocal_gating.quiet_zeros_per_spike``).
+    rng (np.random.Generator)
+        Generator for the zero draw.
+
+    Returns
+    -------
+    rows (np.ndarray)
+        Sorted indices into ``quiet_labels``.
+    """
+
+    positives = np.flatnonzero(quiet_labels > 0)
+    negatives = np.flatnonzero(quiet_labels == 0)
+    keep_zeros = min(negatives.size, zeros_per_spike * max(positives.size, 1))
+    if negatives.size > keep_zeros:
+        negatives = np.sort(rng.choice(negatives, keep_zeros, replace=False))
+    return np.sort(np.concatenate([positives, negatives]))
+
+
 def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dict,
                     vocal_settings: dict, seed: int = 0) -> dict:
     """
@@ -595,7 +632,7 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
     Parameters
     ----------
     unit (dict)
-        Cohort record; ``vocal_sessions`` are used, since gating needs calls.
+        Cohort record; ``vocal_sessions`` are used, since gating needs USVs.
     data_root (str)
         The ``Data`` root.
     per_session (dict)
@@ -612,8 +649,9 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
     universe (dict)
         ``features`` / ``vocal`` / ``spikes`` / ``session_index`` / ``frames`` over the
         vocal-plus-quiet rows (the FRAMES are carried so the null can relabel at fixed positions);
-        ``features_quiet`` / ``spikes_quiet`` / ``session_quiet`` over the quiet-only rows;
-        ``feature_names``; and ``per_session`` counts including how many frames each category
+        ``features_quiet`` / ``spikes_quiet`` / ``session_quiet`` / ``frames_quiet`` over the observed
+        quiet-only subsample; ``frames_quiet_all`` / ``features_quiet_all`` / ``session_quiet_all`` over
+        EVERY quiet frame, from which the null redraws its own subsample; ``feature_names``; and ``per_session`` counts including how many frames each category
         contributed and how many spikes fell in each.
     """
 
@@ -625,6 +663,7 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
     feature_parts, vocal_parts, spike_parts, index_parts = [], [], [], []
     frame_parts, quiet_frame_parts, fit_parts = [], [], []
     quiet_feature_parts, quiet_spike_parts, quiet_index_parts = [], [], []
+    quiet_all_frame_parts, quiet_all_feature_parts, quiet_all_index_parts = [], [], []
     bookkeeping: dict = {}
     feature_names = None
 
@@ -641,12 +680,12 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
         track_names, fps, n_frames = session_timebase(data_root, session_id)
         usv = filter_vocalizations(load_session_usvs(data_root, session_id), vocal_settings,
                                    "analysed")
-        focal_name = emitter_names(track_names, unit["mouse_id"],
-                                   vocal_settings["vocal_emitter"])[0]
-        focal = usv.filter(usv["emitter"] == focal_name)
+        # 'all' resolves to an EMPTY list, meaning no emitter filter (as everywhere else).
+        focal_names = emitter_names(track_names, unit["mouse_id"], vocal_settings["vocal_emitter"])
+        focal = usv.filter(usv["emitter"].is_in(focal_names)) if focal_names else usv
         starts = focal["start"].to_numpy().astype(np.float64)
         stops = focal["stop"].to_numpy().astype(np.float64)
-        # n_lags of 1: gating needs no history, so a call is usable wherever it lies in the session.
+        # n_lags of 1: gating needs no history, so a USV is usable wherever it lies in the session.
         # The helper returns (kept mask, flat frames, span pointer) -- the flat frames are the middle
         # element, and gating wants every frame of every span, so the pointer is not needed here.
         _kept, vocal_frames, _pointer = vocal_span_frames(starts, stops, fps, n_frames, 1)
@@ -669,12 +708,7 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
             universe_fit[vocal_frames.size + dropped] = False
 
         # quiet-only: a rare-event logistic, so the ZERO count is what needs bounding
-        positives = np.flatnonzero(quiet_labels > 0)
-        negatives = np.flatnonzero(quiet_labels == 0)
-        keep_zeros = min(negatives.size, zeros_per_spike * max(positives.size, 1))
-        if negatives.size > keep_zeros:
-            negatives = np.sort(rng.choice(negatives, keep_zeros, replace=False))
-        quiet_rows = np.sort(np.concatenate([positives, negatives]))
+        quiet_rows = quiet_subsample_rows(quiet_labels, zeros_per_spike, rng)
 
         frame_parts.append(universe_frames)
         quiet_frame_parts.append(quiet_frames[quiet_rows])
@@ -686,6 +720,9 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
         quiet_feature_parts.append(series[quiet_frames[quiet_rows]])
         quiet_spike_parts.append(quiet_labels[quiet_rows])
         quiet_index_parts.append(np.full(quiet_rows.size, slot))
+        quiet_all_frame_parts.append(quiet_frames)
+        quiet_all_feature_parts.append(series[quiet_frames])
+        quiet_all_index_parts.append(np.full(quiet_frames.size, slot))
 
         bookkeeping[session_id] = {
             "n_vocal_frames": int(vocal_frames.size),
@@ -694,7 +731,7 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
             "n_peri_vocal_frames_excluded": int(n_frames - vocal_frames.size - quiet_frames.size),
             "n_vocal_spikes": int(vocal_labels.sum()),
             "n_quiet_spikes": int(quiet_labels.sum()),
-            "n_focal_calls": int(starts.size)}
+            "n_focal_vocalizations": int(starts.size)}
 
     def stack(parts: list) -> np.ndarray:
         """Concatenate, tolerating a unit that contributed no rows at all."""
@@ -721,6 +758,11 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
             "features_quiet": rows(quiet_feature_parts, width),
             "spikes_quiet": stack(quiet_spike_parts),
             "session_quiet": stack(quiet_index_parts).astype(np.int64),
+            # EVERY quiet frame, so the null can redo the quiet-only subsample from each draw's
+            # shifted labels exactly as the observed rows were chosen from the real ones.
+            "frames_quiet_all": stack(quiet_all_frame_parts).astype(np.int64),
+            "features_quiet_all": rows(quiet_all_feature_parts, width),
+            "session_quiet_all": stack(quiet_all_index_parts).astype(np.int64),
             "feature_names": feature_names or [],
             "per_session": bookkeeping}
 
@@ -732,9 +774,12 @@ def gating_null(universe: dict, feature_index: int, settings: dict, guard_second
     -----------
     The circular-shift null for one feature, driving all three statistics from the SAME draws.
 
-    Per draw the spike train of each session is circularly shifted and BOTH frame sets are relabelled
-    at their fixed positions -- the features, the vocal indicator and the frame membership never move,
-    only which frames carry a spike. The shift preserves the unit's rate, bursting and slow drift, so
+    Per draw the spike train of each session is circularly shifted. The vocal-plus-quiet universe is
+    relabelled at its fixed positions -- the features, the vocal indicator and the frame membership never
+    move, only which frames carry a spike. The quiet-only rows are instead REDRAWN from the shifted
+    labels by :func:`quiet_subsample_rows` (every shifted spike frame plus ``quiet_zeros_per_spike``
+    zeros each), exactly as the observed rows were drawn from the real labels, so each draw's
+    rare-event logistic has the observed fit's class balance. The shift preserves the unit's rate, bursting and slow drift, so
     a null train looks like a real one in every respect except its alignment to behaviour and to
     vocalization, which is exactly what the interaction is meant to measure.
 
@@ -756,7 +801,7 @@ def gating_null(universe: dict, feature_index: int, settings: dict, guard_second
     feature_index (int)
         Which column of ``features`` to test.
     settings (dict)
-        The ``vocal_gating`` block.
+        The ``vocal_gating`` block; ``quiet_zeros_per_spike`` sets the quiet-only redraw.
     guard_seconds (float)
         Guard band at each end of the shift range.
     n_draws (int)
@@ -772,29 +817,39 @@ def gating_null(universe: dict, feature_index: int, settings: dict, guard_second
     """
 
     feature = universe["features"][:, feature_index]
-    feature_quiet = universe["features_quiet"][:, feature_index]
+    feature_quiet_all = universe["features_quiet_all"][:, feature_index]
     vocal = universe["vocal"]
-    frames, frames_quiet = universe["frames"], universe["frames_quiet"]
-    index, index_quiet = universe["session_index"], universe["session_quiet"]
+    frames, frames_quiet_all = universe["frames"], universe["frames_quiet_all"]
+    index, index_quiet_all = universe["session_index"], universe["session_quiet_all"]
+    zeros_per_spike = settings["quiet_zeros_per_spike"]
 
     values = {key: np.empty(n_draws, dtype=np.float64)
               for key in ("interaction", "vocal_main", "feature_main", "difference")}
     for draw in range(n_draws):
         rng = np.random.default_rng(seed + draw)
         spikes = np.empty(frames.size, dtype=np.float64)
-        spikes_quiet = np.empty(frames_quiet.size, dtype=np.float64)
+        quiet_feature_parts, quiet_spike_parts, quiet_index_parts = [], [], []
         for slot, train in universe["spike_frames"].items():
             n_frames, fps = universe["n_frames"][slot], universe["fps"][slot]
             shift = sample_circular_shift(rng, n_frames, fps, guard_seconds)
             shifted = shifted_spike_frames(train, shift, fps, n_frames)
             occupancy = np.zeros(n_frames, dtype=bool)
             occupancy[np.clip(shifted, 0, n_frames - 1)] = True
-            mask, mask_quiet = index == slot, index_quiet == slot
+            mask = index == slot
             spikes[mask] = occupancy[frames[mask]]
-            spikes_quiet[mask_quiet] = occupancy[frames_quiet[mask_quiet]]
+            # The quiet-only rows are REDRAWN from this draw's shifted labels -- every shifted spike
+            # frame plus `zeros_per_spike` zeros each -- by the rule that chose the observed rows.
+            session_quiet = np.flatnonzero(index_quiet_all == slot)
+            quiet_labels = occupancy[frames_quiet_all[session_quiet]].astype(np.float64)
+            chosen = session_quiet[quiet_subsample_rows(quiet_labels, zeros_per_spike, rng)]
+            quiet_feature_parts.append(feature_quiet_all[chosen])
+            quiet_spike_parts.append(occupancy[frames_quiet_all[chosen]].astype(np.float64))
+            quiet_index_parts.append(index_quiet_all[chosen])
 
-        drawn = feature_gating_statistic(feature, feature_quiet, vocal, spikes, spikes_quiet,
-                                         index, index_quiet, settings, universe["fit_rows"])
+        drawn = feature_gating_statistic(feature, np.concatenate(quiet_feature_parts), vocal, spikes,
+                                         np.concatenate(quiet_spike_parts), index,
+                                         np.concatenate(quiet_index_parts), settings,
+                                         universe["fit_rows"])
         values["interaction"][draw] = drawn["interaction"]
         values["vocal_main"][draw] = drawn["vocal_main"]
         values["feature_main"][draw] = drawn["feature_main"]
@@ -806,46 +861,63 @@ def gating_unit_pvalue(per_feature: dict, settings: dict) -> dict:
     """
     Description
     -----------
-    The ONE p-value per unit that a cohort BH-FDR can correct, and the feature it came from.
+    The ONE p-value per TESTED unit that the cohort BH-FDR corrects, and the feature it came from.
 
-    The verdict returns three p-values per FEATURE, and a cohort correction needs one per UNIT. The
-    plan specifies the conjunction ``max(p_delta, p_{delta > beta_V})`` of the best feature -- a max,
-    because both conditions must hold, so the weaker one decides, exactly as the intersection-union test does
-    across the analyses it combines.
+    The verdict returns three p-values per FEATURE, and a cohort correction needs one per UNIT. Each
+    feature's p is the conjunction ``max(p_delta, p_{delta > beta_V})`` -- a max, because both conditions
+    must hold, so the weaker one decides, exactly as the intersection-union test does across the analyses
+    it combines (``p_delta`` alone when ``require_interaction_gt_vocal`` is off). The unit p is the
+    within-unit Bonferroni adjustment of the best of them:
 
-    "Best" needs defining now that forward selection is gone: it is the surviving feature with the
-    largest sigma margin, which :func:`gating_survivors` already orders. A unit with no survivor has
-    no gated feature to correct and returns NaN, which keeps it out of the correction's denominator
-    rather than entering it as a non-rejection.
+        p_unit = min(1, n_features * min_f p_f)
+
+    with ``n_features`` the number of features TESTED for this unit. That is the same correction the
+    per-feature screen applies (a feature survives at ``p_delta <= screen_alpha / n_features``), stated as
+    an adjusted p so it can enter a cohort correction.
+
+    EVERY tested unit carries its real p, survivor or not. A unit with no surviving feature used to
+    return NaN, which kept it out of BH's denominator: BH then ran over the survivors alone -- already
+    below ``0.01 / 19`` -- and rejected all of them, so the cohort FDR did nothing. NaN is now reserved for
+    a unit that could not be tested (no feature tested), and BH (``neural_significance.benjamini_hochberg``,
+    whose semantics are unchanged: NaN is an untested unit and stays out of ``m``) runs over every
+    tested unit.
+
+    The reported feature is the one with the smallest conjunction p (ties broken by the larger sigma
+    margin), and ``label`` is that feature's verdict label.
 
     **Expect ties at the floor, and report the floor requirement alongside.** At the ruled 2,000
-    shuffles a strong feature sits at exactly 1/2001 = 5.0e-4 -- which is the point, since that is
-    what clears the Bonferroni bar -- so every strongly gated unit carries the SAME p. BH over ties
-    behaves discretely: a unit at the floor is only rejectable once ``k >= m / (q * (n + 1))``.
+    shuffles a strong feature sits at exactly 1/2001 = 5.0e-4, so its unit p is ``n_features / 2001``
+    and every strongly gated unit with the same feature count carries the SAME p. BH over ties behaves
+    discretely; ``at_floor`` flags them.
 
     Parameters
     ----------
     per_feature (dict)
-        ``{feature: verdict dict}`` from :func:`gating_verdict`.
+        ``{feature: verdict dict}`` from :func:`gating_verdict`, for the features TESTED.
     settings (dict)
         The ``vocal_gating`` block.
 
     Returns
     -------
     result (dict)
-        ``p_unit``, ``feature`` (the one it came from, or None), ``label``, and ``at_floor``.
+        ``p_unit`` (NaN only when no feature was tested), ``feature`` (or None), ``label`` and
+        ``at_floor`` (the best conjunction p sits at the shuffle floor ``1 / (n + 1)``).
     """
 
-    survivors = [name for name, verdict in per_feature.items()
-                 if verdict["label"] in ("GATE", "GATE+silentME")]
-    if not survivors:
-        return {"p_unit": float("nan"), "feature": None, "label": "ns", "at_floor": False}
+    if not per_feature:
+        return {"p_unit": float("nan"), "feature": None, "label": "not_testable", "at_floor": False}
 
-    best = max(survivors, key=lambda name: per_feature[name]["sigma_margin"])
-    verdict = per_feature[best]
-    p_unit = max(verdict["p_interaction"], verdict["p_interaction_gt_vocal"])
+    def conjunction(verdict: dict) -> float:
+        """The feature's conjunction p: the weaker of the two conditions that must both hold."""
+        if settings["require_interaction_gt_vocal"]:
+            return float(max(verdict["p_interaction"], verdict["p_interaction_gt_vocal"]))
+        return float(verdict["p_interaction"])
+
+    best = min(per_feature, key=lambda name: (conjunction(per_feature[name]),
+                                              -per_feature[name]["sigma_margin"]))
+    best_p = conjunction(per_feature[best])
     floor = 1.0 / (float(settings["gating_screen_n_shuffles"]) + 1.0)
-    return {"p_unit": float(p_unit),
+    return {"p_unit": float(min(1.0, len(per_feature) * best_p)),
             "feature": best,
-            "label": verdict["label"],
-            "at_floor": bool(np.isclose(p_unit, floor))}
+            "label": per_feature[best]["label"],
+            "at_floor": bool(np.isclose(best_p, floor))}

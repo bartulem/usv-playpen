@@ -99,7 +99,7 @@ def _logsumexp(a: np.ndarray, axis: int) -> np.ndarray:
     return np.squeeze(result, axis=axis)
 
 
-def _kmeans_init_responsibilities(y_all: np.ndarray, n_states: int, seed: int) -> np.ndarray:
+def _kmeans_init_responsibilities(y_all: np.ndarray, n_states: int, seed: int, n_init: int) -> np.ndarray:
     """
     Description
     -----------
@@ -125,6 +125,9 @@ def _kmeans_init_responsibilities(y_all: np.ndarray, n_states: int, seed: int) -
         Number of latent states / clusters.
     seed (int)
         Deterministic k-means seed (varied per EM restart).
+    n_init (int)
+        Number of k-means initialisations, the best (lowest inertia) of which is kept
+        (``glm_hmm.init_kmeans_n_init``).
 
     Returns
     -------
@@ -151,7 +154,7 @@ def _kmeans_init_responsibilities(y_all: np.ndarray, n_states: int, seed: int) -
         features[np.arange(y_arr.shape[0]), np.searchsorted(classes, y_arr)] = 1.0
     else:
         features = y_arr.astype(np.float64)
-    labels = KMeans(n_clusters=n_states, n_init=3, random_state=seed).fit_predict(features)
+    labels = KMeans(n_clusters=n_states, n_init=n_init, random_state=seed).fit_predict(features)
     responsibilities = np.full((y_arr.shape[0], n_states), 1e-3, dtype=np.float64)
     responsibilities[np.arange(y_arr.shape[0]), labels] = 1.0
     responsibilities /= responsibilities.sum(axis=1, keepdims=True)
@@ -750,8 +753,8 @@ class GLMHMM:
     def __init__(self, n_states: int, emission_factory,
                  *, n_em_iters: int = 100, n_restarts: int = 5, tol: float = 1e-4,
                  transition_pseudocount: float = 1.0, transition_mode: str = 'static',
-                 transition_factory=None, random_state: int = 0,
-                 verbose: bool = False) -> None:
+                 transition_factory=None, kmeans_n_init: int, initial_self_transition: float,
+                 random_state: int = 0, verbose: bool = False) -> None:
         """
         Description
         -----------
@@ -783,6 +786,14 @@ class GLMHMM:
             Zero-argument callable returning a fresh per-"from"-state transition
             classifier; required (``ValueError`` otherwise) when
             ``transition_mode='input_driven'``, ignored in ``'static'`` mode.
+        kmeans_n_init (int)
+            Number of k-means initialisations behind the structured initial
+            responsibilities of every restart; no default -- the production caller
+            passes ``glm_hmm.init_kmeans_n_init``.
+        initial_self_transition (float)
+            Diagonal of the initial transition matrix, in ``(0, 1)``; the off-diagonal
+            mass ``1 - initial_self_transition`` is split evenly over the other states.
+            No default -- the production caller passes ``glm_hmm.init_self_transition``.
         random_state (int)
             Seed for the restart / initialisation randomness; defaults to 0.
         verbose (bool)
@@ -798,6 +809,12 @@ class GLMHMM:
         self.n_restarts = int(n_restarts)
         self.tol = float(tol)
         self.transition_pseudocount = float(transition_pseudocount)
+        self.kmeans_n_init = int(kmeans_n_init)
+        self.initial_self_transition = float(initial_self_transition)
+        if not 0.0 < self.initial_self_transition < 1.0:
+            message = (f"initial_self_transition must lie in (0, 1); got "
+                       f"{self.initial_self_transition!r}.")
+            raise ValueError(message)
         # Transition dynamics. ``'static'`` (default) keeps the classic stationary
         # ``K x K`` matrix ``log_A_``. ``'input_driven'`` makes the transition into
         # each timestep a per-"from"-state multinomial-logistic GLM of the same
@@ -1074,7 +1091,7 @@ class GLMHMM:
         # (a random per-sample init collapses to one state for weakly-separated
         # emissions); the restart seed varies the k-means start.
         resp0 = _kmeans_init_responsibilities(
-            y_all, self.n_states, int(rng.integers(0, 2 ** 31 - 1)))
+            y_all, self.n_states, int(rng.integers(0, 2 ** 31 - 1)), self.kmeans_n_init)
         emissions = []
         for k in range(self.n_states):
             emissions.append(self.emission_factory().fit(X_all, y_all, resp0[:, k]))
@@ -1082,7 +1099,7 @@ class GLMHMM:
         # Mild, non-degenerate initial chain: near-uniform initial state, a
         # self-transition-favouring transition matrix (states persist over a bout).
         self.log_pi_ = np.log(np.full(self.n_states, 1.0 / self.n_states))
-        stay = 0.8
+        stay = self.initial_self_transition
         A0 = np.full((self.n_states, self.n_states), (1.0 - stay) / max(self.n_states - 1, 1))
         np.fill_diagonal(A0, stay)
         self.log_A_ = np.log(A0)
@@ -1698,8 +1715,9 @@ class InputDrivenGLMHMM:
     """
 
     def __init__(self, n_states: int, n_features: int, n_time_bins: int, n_classes: int,
-                 *, lambda_smooth: float = 0.05, n_restarts: int = 4,
-                 n_lbfgs: int = 600, random_state: int = 0, verbose: bool = False) -> None:
+                 *, lambda_smooth: float, n_restarts: int,
+                 n_lbfgs: int, init_bias_sd: float, random_state: int,
+                 verbose: bool = False) -> None:
         """
         Description
         -----------
@@ -1717,13 +1735,21 @@ class InputDrivenGLMHMM:
         n_classes (int)
             Number of emission categories ``C``.
         lambda_smooth (float)
-            First-difference temporal-smoothness coefficient; defaults to 0.05.
+            First-difference temporal-smoothness coefficient; no default -- the
+            production caller passes ``glm_hmm.input_driven_lambda_smooth``.
         n_restarts (int)
-            Number of random-init restarts; defaults to 4.
+            Number of random-init restarts; no default -- the production caller
+            passes ``glm_hmm.n_restarts``.
         n_lbfgs (int)
-            L-BFGS iterations per restart; defaults to 600.
+            L-BFGS iterations per restart; no default -- the production caller
+            passes ``glm_hmm.n_lbfgs``.
+        init_bias_sd (float)
+            Standard deviation of the normal draw initialising the transition biases
+            (and, for the categorical emission, the emission biases) of every restart;
+            no default -- the production caller passes ``glm_hmm.init_bias_sd``.
         random_state (int)
-            Base seed for the filter initialisation; defaults to 0.
+            Base seed for the filter initialisation; no default -- the production
+            caller passes ``model_validation.random_seed``.
         verbose (bool)
             Print per-restart diagnostics when True; defaults to False.
 
@@ -1738,6 +1764,7 @@ class InputDrivenGLMHMM:
         self.lambda_smooth = float(lambda_smooth)
         self.n_restarts = int(n_restarts)
         self.n_lbfgs = int(n_lbfgs)
+        self.init_bias_sd = float(init_bias_sd)
         self.random_state = int(random_state)
         self.verbose = bool(verbose)
         self.params_ = None
@@ -1763,7 +1790,7 @@ class InputDrivenGLMHMM:
         params (dict)
             float32 JAX arrays ``log_pi`` ``(K,)`` (zeros, a uniform initial state),
             ``W_emit`` ``(K, D, C - 1)``, ``b_emit`` ``(K, C - 1)`` and ``b_trans``
-            ``(K, K)`` (normal, sd 0.3), and ``W_trans`` ``(K, D, K)``.
+            ``(K, K)`` (normal, sd ``init_bias_sd``), and ``W_trans`` ``(K, D, K)``.
         """
         rng = np.random.default_rng(seed)
         design_width = self.n_features * self.n_time_bins
@@ -1799,8 +1826,8 @@ class InputDrivenGLMHMM:
             [structured((n_states,)) for _ in range(n_classes - 1)], axis=-1)
         W_trans = np.stack(
             [structured((n_states,)) for _ in range(n_states)], axis=-1)
-        b_emit = rng.normal(0, 0.3, (n_states, n_classes - 1))
-        b_trans = rng.normal(0, 0.3, (n_states, n_states))
+        b_emit = rng.normal(0, self.init_bias_sd, (n_states, n_classes - 1))
+        b_trans = rng.normal(0, self.init_bias_sd, (n_states, n_states))
         return {
             'log_pi': jnp.zeros((n_states,), dtype=jnp.float32),
             'W_emit': jnp.asarray(W_emit, dtype=jnp.float32),
@@ -2598,9 +2625,9 @@ class InputDrivenManifoldGLMHMM:
     """
 
     def __init__(self, n_states: int, n_features: int, n_time_bins: int,
-                 *, period: float = 1.0, lambda_smooth: float = 0.05, n_restarts: int = 4,
-                 n_lbfgs: int = 600, random_state: int = 0, verbose: bool = False,
-                 kappa_mode: str = 'global_mle', n_kappa_rounds: int = 3) -> None:
+                 *, period: float = 1.0, lambda_smooth: float, n_restarts: int,
+                 n_lbfgs: int, init_bias_sd: float, random_state: int, verbose: bool = False,
+                 kappa_mode: str = 'global_mle', n_kappa_rounds: int) -> None:
         """
         Description
         -----------
@@ -2619,14 +2646,21 @@ class InputDrivenManifoldGLMHMM:
         period (float)
             Torus wrap period per axis; defaults to 1.0.
         lambda_smooth (float)
-            First-difference temporal-smoothness coefficient; defaults to 0.05.
+            First-difference temporal-smoothness coefficient; no default -- the
+            production caller passes ``glm_hmm.input_driven_lambda_smooth``.
         n_restarts (int)
-            Number of random-init restarts; defaults to 4.
+            Number of random-init restarts; no default -- the production caller
+            passes ``glm_hmm.n_restarts``.
         n_lbfgs (int)
-            L-BFGS iterations per restart (per round in ``'global_mle'`` mode);
-            defaults to 600.
+            L-BFGS iterations per restart (per round in ``'global_mle'`` mode); no
+            default -- the production caller passes ``glm_hmm.n_lbfgs``.
+        init_bias_sd (float)
+            Standard deviation of the normal draw initialising the transition biases
+            (and, for the categorical emission, the emission biases) of every restart;
+            no default -- the production caller passes ``glm_hmm.init_bias_sd``.
         random_state (int)
-            Base seed for the filter initialisation; defaults to 0.
+            Base seed for the filter initialisation; no default -- the production
+            caller passes ``model_validation.random_seed``.
         verbose (bool)
             Print per-restart diagnostics when True; defaults to False.
         kappa_mode (str)
@@ -2636,7 +2670,8 @@ class InputDrivenManifoldGLMHMM:
             L-BFGS. Any other value raises ``ValueError``.
         n_kappa_rounds (int)
             Number of L-BFGS / concentration-MLE alternations per restart in
-            ``'global_mle'`` mode; defaults to 3.
+            ``'global_mle'`` mode; no default -- the production caller passes
+            ``glm_hmm.n_kappa_rounds``.
 
         Returns
         -------
@@ -2649,6 +2684,7 @@ class InputDrivenManifoldGLMHMM:
         self.lambda_smooth = float(lambda_smooth)
         self.n_restarts = int(n_restarts)
         self.n_lbfgs = int(n_lbfgs)
+        self.init_bias_sd = float(init_bias_sd)
         self.random_state = int(random_state)
         self.verbose = bool(verbose)
         # 'global_mle' (default) alternates L-BFGS on the regressors/transitions with a
@@ -2684,7 +2720,7 @@ class InputDrivenManifoldGLMHMM:
             float32 JAX arrays ``log_pi`` ``(K,)`` (zeros), ``W_emit`` ``(K, D, 2)``,
             ``b_emit`` ``(K, 2)`` (uniform on ``[0, 2 pi)``), ``log_kappa`` ``(K,)``
             (all ``log 2``), ``W_trans`` ``(K, D, K)`` and ``b_trans`` ``(K, K)``
-            (normal, sd 0.3).
+            (normal, sd ``init_bias_sd``).
         """
         rng = np.random.default_rng(seed)
         design_width = self.n_features * self.n_time_bins
@@ -2719,7 +2755,7 @@ class InputDrivenManifoldGLMHMM:
         W_emit = np.stack([structured((n_states,)) for _ in range(_IDM_TARGETS)], axis=-1)
         W_trans = np.stack([structured((n_states,)) for _ in range(n_states)], axis=-1)
         b_emit = rng.uniform(0, 2.0 * np.pi, (n_states, _IDM_TARGETS))
-        b_trans = rng.normal(0, 0.3, (n_states, n_states))
+        b_trans = rng.normal(0, self.init_bias_sd, (n_states, n_states))
         return {
             'log_pi': jnp.zeros((n_states,), dtype=jnp.float32),
             'W_emit': jnp.asarray(W_emit, dtype=jnp.float32),
@@ -2912,7 +2948,7 @@ class InputDrivenManifoldGLMHMM:
         return self._forward_ll(self.params_, sequences)
 
     def macro_score(self, sequences: list, region_labels: list,
-                    min_region_events: int = 1) -> float:
+                    *, min_region_events: int) -> float:
         """
         Description
         -----------
@@ -2937,7 +2973,8 @@ class InputDrivenManifoldGLMHMM:
             Per-sequence ``(T,)`` QLVM category labels aligned to each sequence's events
             (NaN marks an unlabelled event).
         min_region_events (int)
-            Minimum labelled events for a region to enter the macro average.
+            Minimum labelled events for a region to enter the macro average; keyword-only,
+            no default (``vocal_features.usv_manifold_min_region_events`` in a production run).
 
         Returns
         -------

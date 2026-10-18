@@ -3,10 +3,10 @@
 The nested decoding's behaviour control, fitted once at COHORT scale instead of once per unit.
 
 WHY THIS EXISTS. The control used to be refitted inside every unit: five features over six hundred lags
-is three thousand columns, against a unit's ~2,000 calls. Measured 2026-09-22, that control scored BELOW
-a constant fitted on the same calls, so the added score it produced was the neuron measured against
-nothing. The shortfall is the call count and not the recordings -- P1's own data cut to that size
-reproduces it exactly -- and a model fitted on the whole ephys cohort predicts call position perfectly
+is three thousand columns, against a unit's ~2,000 USVs. Measured 2026-09-22, that control scored BELOW
+a constant fitted on the same USVs, so the added score it produced was the neuron measured against
+nothing. The shortfall is the USV count and not the recordings -- P1's own data cut to that size
+reproduces it exactly -- and a model fitted on the whole ephys cohort predicts USV position perfectly
 well. So the control is estimated once, here, and carried into each unit as its PREDICTION.
 
 TWO STAGES, sharing one assembly because the assembly is the expensive half.
@@ -19,7 +19,7 @@ day holdout does not hold out the animal -- and holding out the animal would be 
 sees spikes, and units are single-date, so its training set cannot carry information about the neuron
 under test. It is a nuisance model: ``added = full - reduced`` uses the same prediction on both sides, so
 a stronger control only SHRINKS the added score, and a weaker one makes the claim easier to pass. What
-the day holdout buys is the one thing needed -- the unit's own calls stay out of the training set, so the
+the day holdout buys is the one thing needed -- the unit's own USVs stay out of the training set, so the
 reduced score is genuinely held out.
 
 THE TORUS COLUMNS COME FROM THE DATA TREE, read through ``load_session_usvs`` so this model and the
@@ -42,8 +42,10 @@ from ..modeling.modeling_metadata import compute_settings_sha256
 from .neural_design_assembly import (
     build_zscored_feature_frames,
     emitter_names,
+    filter_vocalizations,
     lagged_design,
     load_session_usvs,
+    onset_history_anchor_frames,
     session_timebase,
     worker_process_context,
 )
@@ -107,19 +109,37 @@ def control_estimator(n_features: int, n_lags: int, settings: dict) -> NestedTor
         n_behaviour_features=n_features, n_lags=n_lags, n_neural_columns=0,
         lambda_smooth=nested["lambda_smooth"], l2_reg=nested["l2_reg"],
         smoothness_derivative_order=nested["smoothness_derivative_order"],
-        period=nested["torus_period"])
+        period=nested["torus_period"], huber_delta=nested["huber_delta"],
+        learning_rate=nested["learning_rate"], max_iter=nested["max_iter"], tol=nested["tol"],
+        random_state=nested["random_state"])
 
 
-def session_call_design(session_directory: str, settings: dict, n_lags: int) -> dict:
+def session_vocalization_design(session_directory: str, settings: dict, n_lags: int) -> dict:
     """
     Description
     -----------
-    One session's calls, their acoustic regions, and the kinematic history behind each.
+    One session's vocalizations, their acoustic regions, and the kinematic history behind each.
 
-    The calls kept are the ones the vocal decoding would see: the recorded animal's own, dropped when
-    another call intrudes on the pre-window, when the torus position or region label is missing, or when
-    the history a prediction needs runs off the start of the session. The history window ENDS at the
-    frame before onset, so it is strictly pre-onset.
+    The vocalizations kept are EXACTLY the rows the per-unit analysis scores, so the control is trained
+    on the population it is later applied to. Two filters, with the two scopes the unit side uses:
+
+    - the analysed set is ``filter_vocalizations(usv, vocalization_settings, "analysed")`` restricted to
+      ``vocalization_settings.vocal_emitter`` (``'self'``, ``'partner'``, or ``'all'`` for no emitter
+      filter) -- noise rows are never vocalizations and squeaks are a different vocal type with their
+      own coordinates, so neither is a training row;
+    - the intrusion guard is ``filter_vocalizations(usv, vocalization_settings, "guard")`` over every
+      emitter -- noise never intrudes, and a squeak intrudes when ``squeaks_block_quiet`` says it does.
+
+    A vocalization is then dropped when another one from the guard set intrudes on its pre-window
+    (``vocalization_settings.spike_window.pre_offset_seconds``), when its torus position or region
+    label is missing, or when the history a prediction needs runs off the start of the session. The
+    history window ENDS at the frame before onset (``onset_history_anchor_frames``), so it is strictly
+    pre-onset, and the nested decoding builds the unit-side histories it applies the control to at that
+    same frame.
+
+    Before 2026-10-18 this read the raw summary, so the control was trained on noise and squeak rows the
+    unit side never scores, and its anchors sat one frame earlier than the unit-side histories. A
+    control fitted before that date must be refitted.
 
     Parameters
     ----------
@@ -134,14 +154,15 @@ def session_call_design(session_directory: str, settings: dict, n_lags: int) -> 
     -------
     block (dict)
         ``session_id``, ``design``, ``positions``, ``regions``, ``feature_names``, ``n_kept`` and
-        ``call_start``; or ``session_id`` and ``reason`` when the session contributes nothing.
+        ``vocalization_start``; or ``session_id`` and ``reason`` when the session contributes nothing.
     """
 
     session_id = pathlib.Path(session_directory).name
     data_root = settings["data_roots"]["data_root"]
     position_columns = settings["vocal_decoding"]["usv_manifold_column_names"]
     region_column = settings["nested_vocal_manifold_position_decoding"]["region_label_column"]
-    window = settings["vocalization_settings"]["spike_window"]
+    vocal_settings = settings["vocalization_settings"]
+    window = vocal_settings["spike_window"]
     minimum = settings["data_sufficiency"]["min_emitter_usvs_per_session"]
 
     track_names, _frame_rate, _n_frames = session_timebase(data_root, session_id)
@@ -165,13 +186,16 @@ def session_call_design(session_directory: str, settings: dict, n_lags: int) -> 
                f"columns.")
         raise KeyError(msg)
 
-    focal_name = emitter_names(track_names, recorded,
-                               settings["vocalization_settings"]["vocal_emitter"])[0]
-    all_starts = usv["start"].to_numpy().astype(np.float64)
-    all_stops = usv["stop"].to_numpy().astype(np.float64)
-    focal = usv.filter(usv["emitter"] == focal_name)
+    # The same two scopes the unit side uses: the guard (every emitter) decides intrusion, the
+    # analysed set restricted to the configured emitter is what is trained on.
+    guard = filter_vocalizations(usv, vocal_settings, "guard")
+    all_starts = guard["start"].to_numpy().astype(np.float64)
+    all_stops = guard["stop"].to_numpy().astype(np.float64)
+    analysed = filter_vocalizations(usv, vocal_settings, "analysed")
+    focal_names = emitter_names(track_names, recorded, vocal_settings["vocal_emitter"])
+    focal = analysed.filter(analysed["emitter"].is_in(focal_names)) if focal_names else analysed
     if focal.height < minimum:
-        return {"session_id": session_id, "reason": f"{focal.height} emitter calls"}
+        return {"session_id": session_id, "reason": f"{focal.height} emitter vocalizations"}
 
     starts = focal["start"].to_numpy().astype(np.float64)
     positions = focal.select(position_columns).to_numpy().astype(np.float64)
@@ -183,21 +207,21 @@ def session_call_design(session_directory: str, settings: dict, n_lags: int) -> 
     frame_df = frames[session_id]
     feature_series = np.nan_to_num(frame_df.to_numpy().astype(np.float64), nan=0.0)
 
-    anchors = np.round(starts * camera[session_id]).astype(int) - 1
+    anchors = onset_history_anchor_frames(starts, camera[session_id])
     window_open = starts - window["pre_offset_seconds"]
     intrudes = np.array([bool(np.any((all_stops > open_at) & (all_starts < start)))
                          for open_at, start in zip(window_open, starts, strict=True)])
     keep = ((~intrudes) & np.isfinite(positions).all(axis=1) & np.isfinite(regions)
             & (anchors >= n_lags - 1) & (anchors < feature_series.shape[0]))
     if not np.any(keep):
-        return {"session_id": session_id, "reason": "no call survives the filters"}
+        return {"session_id": session_id, "reason": "no vocalization survives the filters"}
 
     rows = np.flatnonzero(keep)
     return {"session_id": session_id,
             "design": lagged_design(feature_series, anchors[rows], n_lags).astype(np.float32),
             "positions": positions[rows], "regions": regions[rows],
             "feature_names": list(frame_df.columns), "n_kept": int(rows.size),
-            "call_start": starts[rows]}
+            "vocalization_start": starts[rows]}
 
 
 def assemble_cohort(session_directories: list, settings: dict, n_lags: int,
@@ -205,7 +229,7 @@ def assemble_cohort(session_directories: list, settings: dict, n_lags: int,
     """
     Description
     -----------
-    Every listed session's calls and histories, stacked, with the recording day recorded per call.
+    Every listed session's USVs and histories, stacked, with the recording day recorded per USV.
 
     Parameters
     ----------
@@ -234,7 +258,7 @@ def assemble_cohort(session_directories: list, settings: dict, n_lags: int,
             else:
                 blocks.append(block)
     if not blocks:
-        msg = "no session contributed calls; the cohort control cannot be fitted."
+        msg = "no session contributed USVs; the cohort control cannot be fitted."
         raise ValueError(msg)
 
     feature_names = blocks[0]["feature_names"]
@@ -267,11 +291,11 @@ def _assemble_one(arguments: tuple) -> dict:
     Returns
     -------
     block (dict)
-        As :func:`session_call_design`.
+        As :func:`session_vocalization_design`.
     """
 
     session_directory, settings, n_lags = arguments
-    return session_call_design(session_directory, settings, n_lags)
+    return session_vocalization_design(session_directory, settings, n_lags)
 
 
 def held_out_by_day(design: np.ndarray, positions: np.ndarray, regions: np.ndarray,
@@ -279,7 +303,7 @@ def held_out_by_day(design: np.ndarray, positions: np.ndarray, regions: np.ndarr
     """
     Description
     -----------
-    Predicted positions for every call, each day predicted by a model fitted on the other days.
+    Predicted positions for every USV, each day predicted by a model fitted on the other days.
 
     Parameters
     ----------
@@ -288,9 +312,9 @@ def held_out_by_day(design: np.ndarray, positions: np.ndarray, regions: np.ndarr
     positions (np.ndarray)
         ``(n, 2)`` true torus positions.
     regions (np.ndarray)
-        Acoustic region label per call.
+        Acoustic region label per USV.
     days (np.ndarray)
-        Recording day per call.
+        Recording day per USV.
     settings (dict)
         The whole neural-modelling settings dict.
     n_lags (int)
@@ -319,7 +343,7 @@ def pooled_macro(predicted: np.ndarray, positions: np.ndarray, regions: np.ndarr
     """
     Description
     -----------
-    The nested decoding's own macro von Mises log-score, pooled over the given calls.
+    The nested decoding's own macro von Mises log-score, pooled over the given USVs.
 
     Parameters
     ----------
@@ -328,7 +352,7 @@ def pooled_macro(predicted: np.ndarray, positions: np.ndarray, regions: np.ndarr
     positions (np.ndarray)
         True torus positions.
     regions (np.ndarray)
-        Acoustic region label per call.
+        Acoustic region label per USV.
     settings (dict)
         The whole neural-modelling settings dict.
 
@@ -393,7 +417,7 @@ def fit_control_models(cohort: dict, feature_names: list, settings: dict, n_lags
     for held_out in np.unique(days):
         rows = np.flatnonzero(days == held_out)
         per_day[str(held_out)] = {
-            "n_calls": int(rows.size),
+            "n_vocalizations": int(rows.size),
             "behaviour": pooled_macro(predicted[rows], positions[rows], regions[rows], settings),
             "no_behaviour": pooled_macro(no_behaviour[rows], positions[rows], regions[rows],
                                          settings)}
@@ -401,7 +425,7 @@ def fit_control_models(cohort: dict, feature_names: list, settings: dict, n_lags
     return {"features": list(feature_names), "n_lags": int(n_lags), "coefficients": coefficients,
             "held_out_score": pooled_macro(predicted, positions, regions, settings),
             "no_behaviour_score": pooled_macro(no_behaviour, positions, regions, settings),
-            "per_day": per_day, "n_calls": int(positions.shape[0]),
+            "per_day": per_day, "n_vocalizations": int(positions.shape[0]),
             "session_ids": list(cohort["session_ids"]), "skipped": dict(cohort["skipped"]),
             "settings_sha256": compute_settings_sha256(settings)}
 
@@ -459,6 +483,44 @@ def write_control_model(artifact: dict, path: str) -> None:
         pickle.dump(artifact, handle)
 
 
+def upgrade_legacy_counts(record: dict) -> dict:
+    """
+    Description
+    -----------
+    Map an artifact written before the vocalization renames onto the current key names.
+
+    The control artifact and the selection pickle stored their counts as ``n_calls`` (top level and, in
+    the control artifact, inside every ``per_day`` entry) until 2026-10-18; they are ``n_vocalizations``
+    now. Every reader goes through here, so an older artifact is read under the new names instead of
+    raising a ``KeyError``, and a record that already carries the new names passes through unchanged.
+    The input is not mutated.
+
+    Parameters
+    ----------
+    record (dict)
+        A control artifact (:func:`fit_control_models`) or selection result
+        (:func:`select_control_features`), old or new.
+
+    Returns
+    -------
+    upgraded (dict)
+        A shallow copy with every ``n_calls`` renamed to ``n_vocalizations``.
+    """
+
+    upgraded = dict(record)
+    if "n_calls" in upgraded:
+        upgraded["n_vocalizations"] = upgraded.pop("n_calls")
+    if "per_day" in upgraded:
+        per_day = {}
+        for day, stored_scores in upgraded["per_day"].items():
+            scores = dict(stored_scores)
+            if "n_calls" in scores:
+                scores["n_vocalizations"] = scores.pop("n_calls")
+            per_day[day] = scores
+        upgraded["per_day"] = per_day
+    return upgraded
+
+
 def load_control_model(settings: dict) -> dict:
     """
     Description
@@ -477,7 +539,8 @@ def load_control_model(settings: dict) -> dict:
     Returns
     -------
     artifact (dict)
-        As written by :func:`fit_control_models`.
+        As written by :func:`fit_control_models`, with legacy ``n_calls`` keys read as
+        ``n_vocalizations`` (:func:`upgrade_legacy_counts`).
     """
 
     path = pathlib.Path(
@@ -487,7 +550,7 @@ def load_control_model(settings: dict) -> dict:
                f"dispatcher before running the nested decoding.")
         raise FileNotFoundError(msg)
     with path.open("rb") as handle:
-        artifact = pickle.load(handle)
+        artifact = upgrade_legacy_counts(pickle.load(handle))
 
     frozen = list(settings["nested_vocal_manifold_position_decoding"]["reduced_model_features"])
     if list(artifact["features"]) != frozen:
@@ -502,7 +565,7 @@ def control_predictions(artifact: dict, held_out_day: str, design: np.ndarray,
     """
     Description
     -----------
-    Predicted torus positions for a unit's calls, from the fold that did NOT see that unit's day.
+    Predicted torus positions for a unit's USVs, from the fold that did NOT see that unit's day.
 
     Parameters
     ----------
@@ -511,7 +574,7 @@ def control_predictions(artifact: dict, held_out_day: str, design: np.ndarray,
     held_out_day (str)
         The unit's recording date, as the eight-character day key.
     design (np.ndarray)
-        ``(n, n_features * n_lags)`` histories for the unit's calls, in the artifact's feature order.
+        ``(n, n_features * n_lags)`` histories for the unit's USVs, in the artifact's feature order.
     settings (dict)
         The whole neural-modelling settings dict.
 
@@ -690,7 +753,7 @@ def select_control_features(cohort: dict, settings: dict, n_lags: int, n_workers
     return {"selected_features": selected, "per_step": per_step, "rejected": rejected,
             "pooled_score": pooled_score, "no_behaviour_score": no_behaviour_score,
             "external_reference": reference, "days": sorted({str(day) for day in days}),
-            "n_calls": int(positions.shape[0]), "session_ids": list(cohort["session_ids"]),
+            "n_vocalizations": int(positions.shape[0]), "session_ids": list(cohort["session_ids"]),
             "skipped": dict(cohort["skipped"]), "settings_sha256": compute_settings_sha256(settings)}
 
 
@@ -707,7 +770,7 @@ def apply_behaviour_control(design: dict, artifact: dict, held_out_day: str,
 
     The nesting is unchanged -- reduced is behaviour, full is behaviour plus the neuron's one column --
     and so is the statistic. What changes is the representation. The raw block is five hundred to three
-    thousand columns refit on the unit's own ~2,000 calls, which is the failure this control exists to
+    thousand columns refit on the unit's own ~2,000 USVs, which is the failure this control exists to
     fix; carrying the control in raw would reintroduce it. As four columns, the behaviour information
     comes from the whole cohort while only four coefficients are estimated on the unit.
 

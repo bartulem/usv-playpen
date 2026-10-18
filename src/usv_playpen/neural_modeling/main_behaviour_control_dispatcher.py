@@ -34,8 +34,6 @@ from .behaviour_control_model import (
 )
 from .neural_nested_decoding import reduced_model_features
 
-N_LAGS = 600
-
 
 def load_settings(path: str | None) -> dict:
     """
@@ -117,6 +115,9 @@ def main(message_output=print) -> None:
     arguments = parser.parse_args()
 
     settings = load_settings(arguments.settings)
+    # History length of the behaviour design, in tracking frames (600 = 4 s at 150 fps); recorded in the
+    # artifact, so the per-unit nested decoding reads it back from there rather than from settings.
+    n_lags = int(settings["nested_vocal_manifold_position_decoding"]["behaviour_control_n_lags"])
     # Resolve the feature set BEFORE assembling anything. Both stages need it and the assembly costs
     # minutes, so a missing or drifted selection artifact must fail in a second rather than after it.
     # The select stage tolerates a missing file -- it is about to write one -- and uses whatever is
@@ -130,10 +131,10 @@ def main(message_output=print) -> None:
           flush=True)
 
     started = time.time()
-    cohort = assemble_cohort(directories, settings, N_LAGS, arguments.n_workers)
+    cohort = assemble_cohort(directories, settings, n_lags, arguments.n_workers)
     for session_id, reason in cohort["skipped"].items():
         message_output(f"  skipped {session_id}: {reason}", flush=True)
-    message_output(f"{len(cohort['session_ids'])} sessions, {cohort['positions'].shape[0]:,} calls, "
+    message_output(f"{len(cohort['session_ids'])} sessions, {cohort['positions'].shape[0]:,} USVs, "
           f"{len(cohort['feature_names'])} features ({time.time() - started:.0f} s)", flush=True)
 
     if arguments.stage == "select":
@@ -143,7 +144,7 @@ def main(message_output=print) -> None:
         # The frozen list is scored alongside as an INDEPENDENT reference: the selection sees every
         # day, including days units are later scored on, and the gap between the two bounds that
         # optimism.
-        selection = select_control_features(cohort, settings, N_LAGS, arguments.n_workers,
+        selection = select_control_features(cohort, settings, n_lags, arguments.n_workers,
                                             str(cache), external_reference=features)
         destination = pathlib.Path(arguments.output if arguments.output is not None
                                    else settings["data"]["behaviour_selection_result_path"])
@@ -169,7 +170,7 @@ def main(message_output=print) -> None:
               "before fitting; the change must be deliberate.", flush=True)
         return
 
-    artifact = fit_control_models(cohort, features, settings, N_LAGS)
+    artifact = fit_control_models(cohort, features, settings, n_lags)
     destination = (arguments.output if arguments.output is not None
                    else settings["nested_vocal_manifold_position_decoding"]
                    ["behaviour_control_model_path"])
@@ -180,7 +181,7 @@ def main(message_output=print) -> None:
           f"{artifact['no_behaviour_score']:+.5f}   difference "
           f"{artifact['held_out_score'] - artifact['no_behaviour_score']:+.5f}", flush=True)
     for day, scores in sorted(artifact["per_day"].items()):
-        message_output(f"    {day}  n={scores['n_calls']:>6,}  "
+        message_output(f"    {day}  n={scores['n_vocalizations']:>6,}  "
               f"{scores['behaviour'] - scores['no_behaviour']:+.5f}", flush=True)
     message_output(f"  -> {destination}", flush=True)
 

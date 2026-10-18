@@ -30,6 +30,7 @@ from pygam import LinearGAM
 from pygam import s as spline_term
 
 from usv_playpen.modeling.modeling_bases_functions import (
+    FWHM_PER_SIGMA,
     _ff,
     _invnl,
     _nlin,
@@ -208,6 +209,24 @@ class TestLaplacianPyramid:
         B = laplacian_pyramid(width=64, levels=4, step=1.0, fwhm=1.0, normalize=True)
         col_norms = np.linalg.norm(B, axis=0)
         np.testing.assert_allclose(col_norms, np.ones_like(col_norms), atol=1e-9)
+
+    def test_each_gaussian_has_exactly_the_requested_fwhm(self):
+        """The FWHM -> sigma conversion is the exact ``2 sqrt(2 ln 2)``, not the rounded 2.35: at the
+        finest level (width factor 0.5) a 4-frame ``fwhm`` gives a 2-frame full width, so an
+        unnormalised Gaussian is EXACTLY half its peak one frame either side of its centre (the
+        rounded constant put it at 0.5014)."""
+
+        np.testing.assert_allclose(FWHM_PER_SIGMA, 2.0 * np.sqrt(2.0 * np.log(2.0)), rtol=1e-15)
+        B = laplacian_pyramid(width=64, levels=1, step=1.0, fwhm=4.0, normalize=False)
+        n_checked = 0
+        for column in B.T:
+            centre = int(np.argmax(column))
+            # only Gaussians centred on an interior frame (an edge centre sits outside the window)
+            if column[centre] == pytest.approx(1.0, abs=1e-12) and 0 < centre < column.size - 1:
+                assert column[centre - 1] == pytest.approx(0.5, abs=1e-12)
+                assert column[centre + 1] == pytest.approx(0.5, abs=1e-12)
+                n_checked += 1
+        assert n_checked > 10
 
 
 def _jax_block(basis_type: str, bin_resizing_factor: int = 1) -> dict:

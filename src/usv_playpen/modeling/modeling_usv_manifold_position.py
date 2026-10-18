@@ -63,7 +63,7 @@ from sklearn.model_selection import StratifiedShuffleSplit
 from tqdm import tqdm
 
 from ..analyses.compute_behavioral_features import FeatureZoo
-from ..os_utils import atomic_output_path, resolve_modeling_setting
+from ..os_utils import atomic_output_path
 from .load_input_files import (
     _calculate_ibi_threshold,
     find_usv_categories,
@@ -117,10 +117,6 @@ from .modeling_utils import (
     zscore_features_across_sessions,
 )
 
-# Initial spatial-CV session-split matching tolerance (auto-widens at runtime),
-# read from the settings block rather than a bare 0.05 default.
-_SESSION_SPLIT_INITIAL_TOLERANCE = resolve_modeling_setting('model_validation', 'session_split_initial_tolerance')
-
 
 def compute_inverse_density_weights(Y: np.ndarray,
                                     clip_percentile: float = 95.0,
@@ -156,7 +152,9 @@ def compute_inverse_density_weights(Y: np.ndarray,
         Array of shape (N, 2) containing continuous manifold coordinates.
     clip_percentile : float, default 95.0
         The percentile at which to cap maximum weights, preventing single extreme
-        outliers from mathematically dominating the loss landscape.
+        outliers from mathematically dominating the loss landscape. The extraction
+        passes ``vocal_features.usv_manifold_weight_clip_percentile``; the default
+        equals the shipped value.
     epsilon : float, default 1e-5
         Small constant added to the denominator to prevent division by zero.
     metric : str, default 'euclidean'
@@ -215,13 +213,14 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
                                          Y: np.ndarray,
                                          n_clusters: int,
                                          split_strategy: str = 'session',
-                                         test_prop: float = 0.2,
-                                         n_splits: int = 100,
-                                         tolerance: float = _SESSION_SPLIT_INITIAL_TOLERANCE,
-                                         random_seed: int = 0,
-                                         max_total_attempts: int = 50000,
-                                         widen_step: float = 0.02,
-                                         widen_every: int = 1000,
+                                         *,
+                                         test_prop: float,
+                                         n_splits: int,
+                                         tolerance: float,
+                                         random_seed: int,
+                                         max_total_attempts: int,
+                                         widen_step: float,
+                                         widen_every: int,
                                          metric: str = 'euclidean',
                                          period: float = 1.0) -> list[tuple[np.ndarray, np.ndarray]]:
     """
@@ -249,25 +248,32 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
         (typically `settings['model_validation']['spatial_cluster_num']`).
         Required — no default — so callers cannot silently inherit a
         stale literal if the project's cluster cardinality changes.
-    test_prop : float, default 0.2
+    test_prop : float
         Proportion of the dataset (or sessions) to assign to the test set.
-    n_splits : int, default 100
-        Number of independent fold iterations to generate.
-    tolerance : float, default 0.05
+        Keyword-only, no default (callers pass
+        `model_validation.cv_validation_proportion` or a derived inner value).
+    n_splits : int
+        Number of independent fold iterations to generate (keyword-only).
+    tolerance : float
         (For 'session' strategy only). Initial allowable difference in spatial
         distribution between the global data and the generated test splits.
-    random_seed : int, default 0
-        Fixed seed for absolute reproducibility.
-    max_total_attempts : int, default 50000
+        Keyword-only, no default: callers pass
+        `model_validation.session_split_initial_tolerance`.
+    random_seed : int
+        Fixed seed for absolute reproducibility (keyword-only).
+    max_total_attempts : int
         (For 'session' strategy only). Hard ceiling on rejection-sampling
-        attempts before raising `RuntimeError`.
-    widen_step : float, default 0.02
+        attempts before raising `RuntimeError`. Keyword-only, no default:
+        callers pass `model_validation.session_split_max_attempts`.
+    widen_step : float
         (For 'session' strategy only). Amount by which `tolerance` is
         increased each time the sampler fails to accept a fold for
-        `widen_every` consecutive attempts.
-    widen_every : int, default 1000
+        `widen_every` consecutive attempts. Keyword-only, no default:
+        callers pass `model_validation.session_split_widen_step`.
+    widen_every : int
         (For 'session' strategy only). Number of failed attempts between
-        successive tolerance widenings.
+        successive tolerance widenings. Keyword-only, no default: callers
+        pass `model_validation.session_split_widen_every`.
     metric : str, default 'euclidean'
         Manifold geometry used to define the K-Means proxy clusters.
         `'euclidean'` runs flat-space K-Means directly on `Y` (legacy
@@ -490,6 +496,13 @@ def _tune_manifold_regularization(X_train: np.ndarray,
                                   regressor_cls,
                                   metric: str,
                                   period: float,
+                                  split_tolerance: float,
+                                  split_max_attempts: int,
+                                  split_widen_step: float,
+                                  split_widen_every: int,
+                                  dcor_n_sub: int,
+                                  dcor_n_rep: int,
+                                  min_region_events: int,
                                   region_train: np.ndarray = None,
                                   kappa: float | None = None) -> tuple:
     """
@@ -584,6 +597,28 @@ def _tune_manifold_regularization(X_train: np.ndarray,
     period : float
         Per-axis wrap period used by the torus geometry; forwarded to the
         inner splitter and inner fits, ignored when `metric='euclidean'`.
+    split_tolerance : float
+        Starting spatial-distribution tolerance of the inner session splitter
+        (`model_validation.session_split_initial_tolerance`).
+    split_max_attempts : int
+        Rejection-sampling attempt ceiling of the inner splitter
+        (`model_validation.session_split_max_attempts`).
+    split_widen_step : float
+        Tolerance increment of the inner splitter
+        (`model_validation.session_split_widen_step`).
+    split_widen_every : int
+        Failed attempts between inner-splitter widenings
+        (`model_validation.session_split_widen_every`).
+    dcor_n_sub : int
+        Subsample size per repeat of the euclidean inner-CV distance-correlation
+        score (`vocal_features.usv_manifold_dcor.n_subsample`); unused on the torus.
+    dcor_n_rep : int
+        Number of subsample repeats averaged by that score
+        (`vocal_features.usv_manifold_dcor.n_repeats`); unused on the torus.
+    min_region_events : int
+        Per-region event floor forwarded to the inner `evaluate_metrics`
+        (`vocal_features.usv_manifold_min_region_events`); the inner scoring is
+        pooled (no region labels), so it only completes the call.
     region_train : np.ndarray, optional
         Per-row acoustic-region labels (aligned to `X_train`) for equal-region
         fit reweighting of the inner-training rows on the torus, mirroring the
@@ -689,6 +724,10 @@ def _tune_manifold_regularization(X_train: np.ndarray,
         # than generalization to new sessions supports.
         split_strategy='session',
         random_seed=random_state + 7919,
+        tolerance=split_tolerance,
+        max_total_attempts=split_max_attempts,
+        widen_step=split_widen_step,
+        widen_every=split_widen_every,
         metric=metric,
         period=period,
     )
@@ -747,7 +786,8 @@ def _tune_manifold_regularization(X_train: np.ndarray,
                         continue
                     metrics = model.evaluate_metrics(
                         X_train[in_va], Y_train[in_va], weights=w_train[in_va],
-                        kappa=kappa,
+                        min_region_events=min_region_events,
+                        kappa=kappa, dcor_n_sub=dcor_n_sub, dcor_n_rep=dcor_n_rep,
                     )
                     fold_scores.append(metrics[inner_cv_scoring_metric])
                 except Exception as exc:
@@ -1213,7 +1253,9 @@ class ContinuousModelingPipeline(FeatureZoo):
             for sess_id in continuous_targets_dict
         ])
         global_weights = compute_inverse_density_weights(
-            global_Y_matrix, metric=_kde_metric, period=_kde_period, fit_mask=_kde_fit_rows,
+            global_Y_matrix,
+            clip_percentile=float(voc_settings['usv_manifold_weight_clip_percentile']),
+            metric=_kde_metric, period=_kde_period, fit_mask=_kde_fit_rows,
         )
 
         ptr = 0
@@ -1301,6 +1343,8 @@ class ContinuousModelingPipeline(FeatureZoo):
                 'usv_manifold_column_names': list(manifold_cols),
                 'manifold_metric': str(voc_settings['usv_manifold_metric']),
                 'manifold_period': float(voc_settings['usv_manifold_period']),
+                # The inverse-density weight cap the per-USV weights were built with.
+                'manifold_weight_clip_percentile': float(voc_settings['usv_manifold_weight_clip_percentile']),
                 # Pins the USV category column (e.g. `qlvm_category`)
                 # the manifold targets were derived
                 # from so the selector can route per-step filenames +
@@ -1959,6 +2003,12 @@ class ContinuousModelRunner:
         # average). Read once here; ignored on euclidean and by the pooled
         # (inner-CV) objective.
         min_region_events = self.modeling_settings['vocal_features']['usv_manifold_min_region_events']
+        # Subsample size / repeat count of the euclidean distance-correlation score
+        # (unused on the torus, where the selection score is the von Mises logscore).
+        dcor_n_sub = self.modeling_settings['vocal_features']['usv_manifold_dcor']['n_subsample']
+        dcor_n_rep = self.modeling_settings['vocal_features']['usv_manifold_dcor']['n_repeats']
+        split_settings = self.modeling_settings['model_validation']
+        summary_star_alpha = self.modeling_settings['diagnostics']['summary_star_alpha']
 
         # Reserve the held-out sessions from every fold, the inner-CV tuning, and
         # the null baselines. Folds are generated over the DEVELOPMENT sessions
@@ -2045,6 +2095,7 @@ class ContinuousModelRunner:
             n_splits=n_splits,
             split_strategy=split_strategy,
             random_seed=random_seed,
+            tolerance=split_settings['session_split_initial_tolerance'],
             max_total_attempts=self.modeling_settings['model_validation']['session_split_max_attempts'],
             widen_step=self.modeling_settings['model_validation']['session_split_widen_step'],
             widen_every=self.modeling_settings['model_validation']['session_split_widen_every'],
@@ -2263,6 +2314,7 @@ class ContinuousModelRunner:
                         metric=manifold_metric, period=manifold_period,
                         train_cov_inv=cov_inv, random_state=random_seed + fold_idx,
                         region_labels=region_test, min_region_events=min_region_events,
+                        dcor_n_sub=dcor_n_sub, dcor_n_rep=dcor_n_rep,
                     )
 
                     fold_weights, fold_intercepts = None, None
@@ -2324,6 +2376,13 @@ class ContinuousModelRunner:
                             regressor_cls=regressor_cls,
                             metric=manifold_metric,
                             period=manifold_period,
+                            split_tolerance=split_settings['session_split_initial_tolerance'],
+                            split_max_attempts=split_settings['session_split_max_attempts'],
+                            split_widen_step=split_settings['session_split_widen_step'],
+                            split_widen_every=split_settings['session_split_widen_every'],
+                            dcor_n_sub=dcor_n_sub,
+                            dcor_n_rep=dcor_n_rep,
+                            min_region_events=min_region_events,
                             region_train=region_train,
                         )
                         fold_tuned_flag = True
@@ -2360,6 +2419,7 @@ class ContinuousModelRunner:
                     metrics = model.evaluate_metrics(
                         X_test, Y_test, weights=w_test,
                         region_labels=region_test, min_region_events=min_region_events,
+                        dcor_n_sub=dcor_n_sub, dcor_n_rep=dcor_n_rep,
                     )
 
                     y_pred_xy = model.predict(X_test, snap=True).astype(np.float32)
@@ -2462,6 +2522,7 @@ class ContinuousModelRunner:
                     metric=manifold_metric, period=manifold_period,
                     train_cov_inv=cov_inv, random_state=held_seed,
                     region_labels=region_held, min_region_events=min_region_events,
+                    dcor_n_sub=dcor_n_sub, dcor_n_rep=dcor_n_rep,
                 )
                 h_weights, h_intercepts = None, None
                 h_basis_coefficients = None
@@ -2503,6 +2564,13 @@ class ContinuousModelRunner:
                         regressor_cls=regressor_cls,
                         metric=manifold_metric,
                         period=manifold_period,
+                        split_tolerance=split_settings['session_split_initial_tolerance'],
+                        split_max_attempts=split_settings['session_split_max_attempts'],
+                        split_widen_step=split_settings['session_split_widen_step'],
+                        split_widen_every=split_settings['session_split_widen_every'],
+                        dcor_n_sub=dcor_n_sub,
+                        dcor_n_rep=dcor_n_rep,
+                        min_region_events=min_region_events,
                         region_train=region_dev,
                     )
                     h_tuned_flag = True
@@ -2539,6 +2607,7 @@ class ContinuousModelRunner:
                 metrics_h = model_h.evaluate_metrics(
                     Xh_test, Yh_test, weights=wh_test,
                     region_labels=region_held, min_region_events=min_region_events,
+                    dcor_n_sub=dcor_n_sub, dcor_n_rep=dcor_n_rep,
                 )
                 yh_pred_xy = model_h.predict(Xh_test, snap=True).astype(np.float32)
                 h_weights = model_h.coef_
@@ -2661,8 +2730,9 @@ class ContinuousModelRunner:
             except ValueError:
                 p_mf = 1.0
 
-            sig_null = "***" if p_null < 0.01 else "   "
-            sig_mf = "***" if p_mf < 0.01 else "   "
+            # Console-only significance marker (`diagnostics.summary_star_alpha`).
+            sig_null = "***" if p_null < summary_star_alpha else "   "
+            sig_mf = "***" if p_mf < summary_star_alpha else "   "
 
             print(
                 f"{metric:<22} | Act: {act_m:>7.4f} | Null: {null_m:>7.4f} "

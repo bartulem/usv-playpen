@@ -24,7 +24,9 @@ Coverage:
 
 from __future__ import annotations
 
+import json
 import warnings
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -37,12 +39,17 @@ with warnings.catch_warnings():
     warnings.simplefilter('ignore', DeprecationWarning)
     from usv_playpen.modeling.manifold_metric import macro_von_mises_logscore
     from usv_playpen.modeling.model_selection import (
-        _SELECTION_CI_LEVEL,
-        _SELECTION_EFFECT_FLOOR,
-        _SELECTION_N_BOOTSTRAP,
         _fold_paired_margin_bootstrap,
         _frozen_selection_kappa,
     )
+
+# The selection-gate knobs as shipped (read from the settings file the run reads).
+with (Path(__file__).resolve().parents[2] / 'src' / 'usv_playpen' / '_parameter_settings'
+      / 'modeling_settings.json').open() as _settings_file:
+    _SHIPPED_MODEL_PARAMS = json.load(_settings_file)['model_params']
+_SELECTION_EFFECT_FLOOR = _SHIPPED_MODEL_PARAMS['selection_effect_floor']
+_SELECTION_N_BOOTSTRAP = _SHIPPED_MODEL_PARAMS['selection_n_bootstrap']
+_SELECTION_CI_LEVEL = _SHIPPED_MODEL_PARAMS['selection_ci_level']
 
 
 def _folds_from_predictions(n_folds, n_per_fold, prediction_fn, seed):
@@ -124,7 +131,7 @@ def test_fold_bootstrap_accepts_a_real_predictor():
     null = _paired_null(actual, seed=100)
     result = _fold_paired_margin_bootstrap(
         actual, null,
-        metric='torus', period=1.0, n_bootstrap=1000, ci_level=0.95, random_state=0,
+        metric='torus', period=1.0, n_bootstrap=1000, ci_level=0.95, random_state=0, min_region_events=1, min_fold_events=30, sign_flip_exact_max_folds=22, sign_flip_monte_carlo_draws=2**20, dcor_n_sub=2500, dcor_n_rep=1
     )
     assert result['n_folds'] == 8
     assert result['mean_margin'] > 0.0
@@ -146,20 +153,20 @@ def test_fold_bootstrap_honors_frozen_kappa():
     k = 2.5
     res = _fold_paired_margin_bootstrap(
         actual, null, metric='torus', period=1.0,
-        n_bootstrap=200, ci_level=0.95, random_state=0, kappa=k,
+        n_bootstrap=200, ci_level=0.95, random_state=0, kappa=k, min_region_events=1, min_fold_events=30, sign_flip_exact_max_folds=22, sign_flip_monte_carlo_draws=2**20, dcor_n_sub=2500, dcor_n_rep=1
     )
     # Manual per-fold paired margin at the SAME frozen kappa (pooled: no regions
     # passed, so `_fold_scores` scores `macro_von_mises_logscore(..., None)`).
     expected = float(np.mean([
-        macro_von_mises_logscore(ap, at, None, metric='torus', period=1.0, kappa=k)
-        - macro_von_mises_logscore(npred, at, None, metric='torus', period=1.0, kappa=k)
+        macro_von_mises_logscore(ap, at, None, metric='torus', period=1.0, kappa=k, min_region_events=1)
+        - macro_von_mises_logscore(npred, at, None, metric='torus', period=1.0, kappa=k, min_region_events=1)
         for ap, npred, at in zip(actual['y_pred_xy'], null['y_pred_xy'], actual['y_true'], strict=True)
     ]))
     assert res['mean_margin'] == pytest.approx(expected)
     # A different frozen kappa moves the margin.
     res2 = _fold_paired_margin_bootstrap(
         actual, null, metric='torus', period=1.0,
-        n_bootstrap=200, ci_level=0.95, random_state=0, kappa=0.5,
+        n_bootstrap=200, ci_level=0.95, random_state=0, kappa=0.5, min_region_events=1, min_fold_events=30, sign_flip_exact_max_folds=22, sign_flip_monte_carlo_draws=2**20, dcor_n_sub=2500, dcor_n_rep=1
     )
     assert res2['mean_margin'] != pytest.approx(res['mean_margin'])
 
@@ -172,7 +179,7 @@ def test_fold_bootstrap_rejects_a_null_predictor():
     null = _paired_null(actual, seed=2)
     result = _fold_paired_margin_bootstrap(
         actual, null,
-        metric='torus', period=1.0, n_bootstrap=1000, ci_level=0.95, random_state=0,
+        metric='torus', period=1.0, n_bootstrap=1000, ci_level=0.95, random_state=0, min_region_events=1, min_fold_events=30, sign_flip_exact_max_folds=22, sign_flip_monte_carlo_draws=2**20, dcor_n_sub=2500, dcor_n_rep=1
     )
     assert result['ci_low'] <= 0.0 <= result['ci_high']
     assert result['p_value'] > 0.05
@@ -187,7 +194,7 @@ def test_fold_bootstrap_degenerate_input_returns_non_significant():
             'y_pred_xy': actual['y_pred_xy']}
     result = _fold_paired_margin_bootstrap(
         actual, null,
-        metric='torus', period=1.0, n_bootstrap=100, ci_level=0.95, random_state=0,
+        metric='torus', period=1.0, n_bootstrap=100, ci_level=0.95, random_state=0, min_region_events=1, min_fold_events=30, sign_flip_exact_max_folds=22, sign_flip_monte_carlo_draws=2**20, dcor_n_sub=2500, dcor_n_rep=1
     )
     assert result['n_folds'] < 2
     assert np.isnan(result['mean_margin'])
@@ -213,7 +220,7 @@ def test_fold_bootstrap_macro_uses_region_labels():
     result = _fold_paired_margin_bootstrap(
         actual, null,
         metric='torus', period=1.0, n_bootstrap=1000, ci_level=0.95, random_state=0,
-        event_to_region=event_to_region, min_region_events=20,
+        event_to_region=event_to_region, min_region_events=20, min_fold_events=30, sign_flip_exact_max_folds=22, sign_flip_monte_carlo_draws=2**20, dcor_n_sub=2500, dcor_n_rep=1
     )
     assert result['n_folds'] == n_folds
     assert result['ci_low'] > 0.0
@@ -240,7 +247,7 @@ def test_fold_bootstrap_skips_folds_below_min_events():
     result = _fold_paired_margin_bootstrap(
         big, null,
         metric='torus', period=1.0, n_bootstrap=500, ci_level=0.95, random_state=0,
-        min_fold_events=30,
+        min_fold_events=30, min_region_events=1, sign_flip_exact_max_folds=22, sign_flip_monte_carlo_draws=2**20, dcor_n_sub=2500, dcor_n_rep=1
     )
     assert result['n_folds'] == 6
 
@@ -265,8 +272,8 @@ def test_frozen_kappa_scores_worse_than_marginal_below_the_flat_floor():
     # Predictions half a period away from where the USVs are: worse than the marginal.
     y_bad = (y_true + 0.5 + rng.normal(0.0, 0.05, (n, 2))) % 1.0
     floor = -np.log(4.0 * np.pi ** 2)
-    self_fit = macro_von_mises_logscore(y_bad, y_true, None, metric='torus', period=1.0)
-    frozen = macro_von_mises_logscore(y_bad, y_true, None, metric='torus', period=1.0, kappa=kappa)
+    self_fit = macro_von_mises_logscore(y_bad, y_true, None, metric='torus', period=1.0, min_region_events=1)
+    frozen = macro_von_mises_logscore(y_bad, y_true, None, metric='torus', period=1.0, kappa=kappa, min_region_events=1)
     assert abs(self_fit - floor) < 1e-9
     assert frozen < floor - 0.1
 
@@ -286,7 +293,7 @@ def test_fold_bootstrap_no_signal_acceptance_stays_at_its_measured_rate():
         null = _paired_null(actual, seed=20_000 + 10 * replicate)
         result = _fold_paired_margin_bootstrap(
             actual, null, metric='torus', period=1.0, n_bootstrap=500,
-            ci_level=_SELECTION_CI_LEVEL, random_state=replicate, kappa=1.0,
+            ci_level=_SELECTION_CI_LEVEL, random_state=replicate, kappa=1.0, min_region_events=1, min_fold_events=30, sign_flip_exact_max_folds=22, sign_flip_monte_carlo_draws=2**20, dcor_n_sub=2500, dcor_n_rep=1
         )
         accepted += int(result['ci_low'] > 0.0)
         margins.append(result['mean_margin'])

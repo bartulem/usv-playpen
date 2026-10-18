@@ -868,6 +868,8 @@ def _minimal_bout_pipeline(
             'cv_validation_proportion': test_proportion,
             'random_seed': random_seed,
             'held_out_test_proportion': 0.0,
+            'stratification_max_bins': 10,
+            'stratification_min_events_per_bin': 20,
         },
         'hyperparameters': {
             'classical': {
@@ -1006,17 +1008,32 @@ class TestCreateDataSplitsBranches:
         with pytest.raises(ValueError, match="Unknown split strategy"):
             list(pipeline.create_data_splits(feature_data))
 
-    @pytest.mark.filterwarnings("ignore::sklearn.exceptions.UndefinedMetricWarning")
-    def test_none_seed_falls_back_on_session_strategy(self):
+    def test_a_null_seed_is_refused_not_replaced(self):
         """
-        A ``None`` ``random_seed`` exercises the ``base_seed = 42`` fallback while
-        the 'session' strategy routes through the per-iteration
-        ``StratifiedGroupKFold`` construction and yields at least one
-        train/test fold on a multi-session input.
+        A ``None`` ``random_seed`` used to be replaced silently by 0, which reproduces a split
+        nobody asked for. The seed now comes from the settings alone, so a null seed raises.
         """
 
         pipeline = _minimal_bout_pipeline(
             split_strategy='session', random_seed=None, split_num=2,
+            test_proportion=0.5,
+        )
+        feature_data = _bout_feature_data(
+            pipeline.history_frames, n_per_session=20, n_sessions=6,
+        )
+        with pytest.raises(ValueError, match="random_seed must be an integer"):
+            list(pipeline.create_data_splits(feature_data))
+
+    @pytest.mark.filterwarnings("ignore::sklearn.exceptions.UndefinedMetricWarning")
+    def test_session_strategy_yields_folds_with_their_training_sessions(self):
+        """
+        The 'session' strategy routes through the per-iteration ``StratifiedGroupKFold``
+        construction and yields at least one train/test fold on a multi-session input, with
+        the training rows' sessions alongside.
+        """
+
+        pipeline = _minimal_bout_pipeline(
+            split_strategy='session', random_seed=0, split_num=2,
             test_proportion=0.5,
         )
         feature_data = _bout_feature_data(

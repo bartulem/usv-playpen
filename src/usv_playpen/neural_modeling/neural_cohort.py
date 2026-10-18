@@ -13,16 +13,16 @@ same-day replicate blocks and the cross-validation is within-day by construction
 TWO SESSION SETS COME BACK PER UNIT, AND THE DIFFERENCE IS THE POINT.
 
 ``courtship_sessions`` is every courtship session the cluster was recorded in. ``vocal_sessions`` is
-the subset carrying at least ``min_emitter_usvs_per_session`` calls from the emitter
+the subset carrying at least ``min_emitter_usvs_per_session`` USVs from the emitter
 ``vocalization_settings.vocal_emitter`` names -- the recorded animal by default.
 
 They differ because the analyses need different things from a session. The kinematic encoding is fitted on
-QUIET anchors, and a session in which the male barely called is not impoverished for that purpose --
+QUIET anchors, and a session in which the male barely vocalized is not impoverished for that purpose --
 it has MORE silence, not less. Everything scored on vocalizations is the opposite: a session with two
-calls contributes a leave-one-session-out fold whose statistic rests on two events.
+USVs contributes a leave-one-session-out fold whose statistic rests on two events.
 
-That is not a hypothetical. Across the 73 courtship sessions the median is ~508 focal calls but the
-minimum is 2, and two sessions with 2 calls apiece are recorded alongside 116 and 67 cohort units.
+That is not a hypothetical. Across the 73 courtship sessions the median is ~508 focal USVs but the
+minimum is 2, and two sessions with 2 USVs apiece are recorded alongside 116 and 67 cohort units.
 Measured on a pilot unit by subsampling one session and refitting 12 times, the fold's decode gain
 holds a standard deviation of 0.019 at 200 events and 0.130 at 2 -- a sevenfold spread, ranging from
 strongly anti-aligned to five times the true effect. The exact permutation null degrades in the same
@@ -33,7 +33,7 @@ started, against 2.8e-7 at n = 10.
 The threshold is 20 (user-ruled 2026-09-08). It sits past the measured variance knee -- the fold-gain
 spread halves between 10 and 20 and then stops improving -- clears the permutation floor with a
 factor of two in hand, and costs almost nothing: the sessions it removes are the ones with no data in
-them, so 99.8% of units and 99.9% of all focal calls survive. Ten and twenty select the IDENTICAL
+them, so 99.8% of units and 99.9% of all focal USVs survive. Ten and twenty select the IDENTICAL
 cohort, there being a gap in the distribution between them, which is the property to want in a number
 that is about to be frozen.
 
@@ -159,7 +159,7 @@ def emitter_usv_counts(session_ids, data_root: str, mouse_by_session: dict,
 
     This is a property of the SESSION, not of any unit, so it is computed once and shared across the
     whole cohort rather than recomputed per unit. The recorded animal is resolved by NAME from the
-    session's ``track_names``, the same mechanism the design assembler uses, and calls are matched on
+    session's ``track_names``, the same mechanism the design assembler uses, and USVs are matched on
     the emitter label exactly.
 
     A session whose tracking or summary file is missing counts as zero rather than raising: cohort
@@ -175,7 +175,7 @@ def emitter_usv_counts(session_ids, data_root: str, mouse_by_session: dict,
     mouse_by_session (dict)
         ``{session_id: mouse_id}`` from :func:`recorded_mouse_by_session`.
     vocal_emitter (str)
-        Whose calls are the events: ``'self'`` | ``'partner'`` | ``'all'``.
+        Whose USVs are the events: ``'self'`` | ``'partner'`` | ``'all'``.
 
     Returns
     -------
@@ -187,7 +187,7 @@ def emitter_usv_counts(session_ids, data_root: str, mouse_by_session: dict,
     for session_id in sorted(session_ids):
         try:
             track_names, _frame_rate, _n_frames = session_timebase(data_root, session_id)
-            # The gate decides which sessions are vocal-ELIGIBLE, so it must count the calls the
+            # The gate decides which sessions are vocal-ELIGIBLE, so it must count the USVs the
             # analyses will actually score -- counting noise and squeaks would admit a session on
             # the strength of events no analysis ever sees.
             usv = filter_vocalizations(load_session_usvs(data_root, session_id), vocal_settings,
@@ -220,7 +220,7 @@ def select_cohort(
 
     Unit-level filters (area, quality, somatic) run first, then the unit must appear in at least
     ``min_courtship_sessions`` courtship sessions. ``vocal_sessions`` is then the subset of those carrying at
-    least ``min_emitter_usvs_per_session`` calls from the selected emitter, and ``vocal_testable`` records whether enough of
+    least ``min_emitter_usvs_per_session`` USVs from the selected emitter, and ``vocal_testable`` records whether enough of
     them survive for a leave-one-session-out rotation on the vocal side.
 
     A unit that fails the vocal floor is KEPT, not dropped: it still has its kinematic encoding to be tested,
@@ -246,7 +246,7 @@ def select_cohort(
     emitter_counts (dict)
         ``{session_id: n_usvs}`` from :func:`emitter_usv_counts`.
     min_emitter_usvs_per_session (int)
-        Focal calls a session needs before anything scored on vocalizations may use it.
+        Focal USVs a session needs before anything scored on vocalizations may use it.
     min_vocal_sessions (int)
         Vocal-eligible sessions needed for the vocal-side rotation.
 
@@ -304,7 +304,7 @@ def build_cohort_manifest(settings: dict) -> list[dict]:
     Description
     -----------
     Build the cohort manifest from a settings dictionary, resolving the session lists and counting
-    the focal calls per session on the way.
+    the focal USVs per session on the way.
 
     Parameters
     ----------

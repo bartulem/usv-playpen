@@ -203,7 +203,7 @@ def write_unit_section(output_directory: str, unit: dict, section: str, payload:
     artifact = read_unit_artifact(output_directory, unit["unit_uid"])
     artifact[section] = payload
     # The cohort record IS the identity: unit_uid, mouse, area, quality, both session sets and the
-    # per-session focal-call counts the vocal gate was applied on.
+    # per-session focal-USV counts the vocal gate was applied on.
     artifact["identity"] = dict(unit)
     artifact["provenance"] = build_provenance(settings)
 

@@ -104,7 +104,7 @@ class TestParallelNullsAreExact:
         counts = generator.poisson(np.exp(1.4 * shape - 1.4 * shape.max() + np.log(3.0))).astype(float)
         decoding = copy.deepcopy(_settings()["vocal_decoding"])
         decoding["tuning_surface"].update({"grid_n": 24, "kde_bandwidth": 0.10})
-        folds = decoding_context(positions, sessions, decoding)
+        folds = decoding_context(positions, sessions, decoding, _settings()["vocalization_settings"]["torus_period"])
 
         serial = permutation_null(lambda permutation: decode_gain(counts, folds, decoding, permutation)["gain"],
                                   sessions, 5, 11)
