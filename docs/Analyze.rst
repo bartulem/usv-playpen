@@ -146,6 +146,8 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 * **spatial_hist_min_val** : lower edge (cm) of the 2-D spatial-occupancy histogram
 * **spatial_hist_max_val** : upper edge (cm) of the 2-D spatial-occupancy histogram
 * **spatial_hist_num_bins** : number of bins per axis for the 2-D spatial-occupancy histogram
+* **back_angles_optimizer_seed** : seed of the random generator that draws the Nelder-Mead starting point (two angles uniform in (-π/4, π/4)) used to find the canonical back frame for back pitch / yaw; fixed (``0``) so the back angles are bit-exactly reproducible across runs
+* **sei_speed_percentile** : percentile (0-100) of each observer's speed trace used as the speed normaliser ``v_max`` of the Social Engagement Index (SEI); ``99`` so a handful of extreme-speed frames cannot compress every other frame's speed term
 
 .. code-block:: json
 
@@ -173,7 +175,9 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "feature_hist_num_bins": 36,
         "spatial_hist_min_val": -32,
         "spatial_hist_max_val": 32,
-        "spatial_hist_num_bins": 196
+        "spatial_hist_num_bins": 196,
+        "back_angles_optimizer_seed": 0,
+        "sei_speed_percentile": 99
   }
 
 Compute neuronal tuning curves
@@ -216,6 +220,8 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 * **peth_window_seconds** : ``[start, stop]`` of the PETH window relative to each USV's onset (in s); default ``[-2, 0.5]``. Bins before onset honour the two cleanliness rules below; a bin after onset is kept only while it ends before the next USV's onset (any emitter, squeak and overlap segments included), so the post-onset PETH covers the USV itself and the silence after it, never a following USV
 * **peth_bin_seconds** : PETH bin width (in s)
 * **bout_quiet_seconds** : inter-bout silence required to define a new bout (in s)
+* **ramp_anchor_near_seconds** / **ramp_anchor_far_seconds** : the two PETH bins (in s, relative to USV onset) whose rates give ``triage_stats.usv_peth[emitter].ramp_index = (rate(near) - rate(far)) / (rate(near) + rate(far))``; default ``-0.1`` (just before onset) and ``-1.5`` (inside the default 2 s pre-onset window, well before it). The ramp index is NaN when ``peth_window_seconds`` does not span both anchors
+* **vmi_wilcoxon_exact_max_n** : largest number of valid per-bout ``(FR_baseline, FR_USV)`` pairs for which the VMI's Wilcoxon signed-rank p-value uses scipy's exact null distribution; above it the normal approximation is used (default ``25``)
 * **ibi_bout_onset** : per-unit statistics around the onset of IBI bouts, the respiratory-tempo grouping (not the ``bout_quiet_seconds`` one; each silence is measured from the latest stop of every earlier USV, so a USV nested inside a longer one does not split a bout, and a bout ends at the latest stop of its USVs), stored as ``usv_ibi_bout_onset`` in the pkl and in ``triage_stats``. Each statistic is referenced to the unit's own session rate, never to a pre-onset baseline (the window before an onset is occupied by the previous bout on roughly half of all bouts), and gets a circular-shift null and a two-sided empirical p:
 
   * **ibi_z_score** / **ibi_component_index** : the inter-bout threshold, as the emitter sex's inter-syllable mixture component at this many standard deviations (the construction ``decode_usv_bout_occupancy`` and ``build-naturalistic-usv-repository`` use; 115.5 ms for the male at 2.58)
@@ -253,6 +259,9 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "peth_window_seconds": [-2, 0.5],
         "peth_bin_seconds": 0.05,
         "bout_quiet_seconds": 2.0,
+        "ramp_anchor_near_seconds": -0.1,
+        "ramp_anchor_far_seconds": -1.5,
+        "vmi_wilcoxon_exact_max_n": 25,
         "ibi_bout_onset": {
             "ibi_z_score": 2.58,
             "ibi_component_index": 0,
@@ -291,7 +300,7 @@ Each per-cluster pkl also carries a ``triage_stats`` block — a flat collection
 * ``spatial[offset_key][feature_key]`` — 2D place-cell diagnostics for location: ``info_rate_bps`` (Skaggs information rate), ``sparsity``, ``coherence`` (Pearson correlation between each bin and the mean of its 8 neighbors), plus the unshuffled peak rate and its grid coordinates. The 2D spatial map is computed without shuffles, so peak Z is not defined; this block reports the rate / occupancy diagnostics instead.
 * ``vmi[emitter]`` — Vocalization Modulation Index. For each emitter side: ``vmi`` in ``[-1, 1]``, paired Wilcoxon (the Wilcoxon signed-rank test) ``wilcoxon_statistic`` / ``wilcoxon_pvalue`` over the per-bout ``(FR_baseline, FR_USV)`` pairs, plus ``n_bouts``, ``fr_baseline_per_bout`` and ``fr_usv_per_bout`` arrays. ``VMI = (FR_USV − FR_baseline) / (FR_USV + FR_baseline)``, where the bouts are grouped from the side's own anchors (pure USVs only when ``exclude_squeaks_self`` / ``exclude_squeaks_partner`` is set for that side, as for the PETH and tuning anchors; the IBI bouts of ``ibi_bout_onset`` likewise), ``FR_baseline`` is the mean firing rate in the ``bout_quiet_seconds``-wide window before each bout and ``FR_USV`` is the mean over USVs in each bout of (spikes during USV) / (USV duration). Bouts whose baseline window starts before ``t = 0`` are NaN-baselined.
 * ``usv_property_tuning[emitter][prop]`` — the same per-direction divergence-segment (run) analysis as the 1D behavioral axes above (``n_bins``, ``max_run``, ``run_start_idx`` / ``run_end_idx``, ``peak_idx``, ``peak_abs_z``, ``peak_signed_z``, ``selectivity``, ``monotonicity``, plus ``excit`` / ``suppress`` run segments).
-* ``usv_peth[emitter]`` — a spike peri-event time histogram (PETH) around USV onset: ``peak_abs_z``, ``peak_signed_z``, ``peak_idx`` / ``peak_t``, ``ramp_index`` (a two-point pre-USV shape descriptor), and ``excit`` / ``suppress`` run segments.
+* ``usv_peth[emitter]`` — a spike peri-event time histogram (PETH) around USV onset: ``peak_abs_z``, ``peak_signed_z``, ``peak_idx`` / ``peak_t``, ``ramp_index`` (a two-point pre-USV shape descriptor between ``ramp_anchor_far_seconds`` and ``ramp_anchor_near_seconds``), and ``excit`` / ``suppress`` run segments.
 * ``usv_category_peth[emitter][cat_feat]`` — a per-category PETH: ``best_cat``, ``best_abs_z``, ``best_signed_z``, ``best_t_idx`` / ``best_t``, ``best_excit`` / ``best_suppress``, and ``per_category``.
 * ``usv_ibi_bout_onset[emitter]`` — the ``ibi_bout_onset`` statistics (``onset_gain``, ``peak_latency``, ``pre_onset_gain``, ``first_over_later``, ``fraction_first_above``), each with its ``observed`` value, shuffle percentiles and ``p_two_sided``, plus ``n_bouts`` and ``ibi_threshold_seconds``. The aggregator labels a unit ``ibi_bout_onset_<role>_<excit|suppress>`` and ``ibi_bout_first_usv_<role>_<first|later>``, significant when ``p_two_sided`` is at most ``ibi_bout_alpha`` and the unit has at least ``ibi_bout_min_bouts`` bouts (``detect_interesting_tuning_neurons``).
 * ``usv_category_tuning[emitter][cat_feat]`` — categorical (no run analysis): ``peak_abs_z``, ``peak_signed_z``, ``best_cat``, ``n_sig_categories`` (count of categories outside the [p0.5, p99.5] shuffle band), ``selectivity``.
@@ -347,6 +356,7 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 * **fs_compand_transfer** : SoX ``compand`` transfer-function argument string applied during the volume-adjustment pass (attack/decay + dB transfer points)
 * **fs_noise_reduction_std_threshold** : ``noisereduce`` stationary noise-reduction threshold (in noise standard deviations)
 * **fs_sinc_upper_cutoff_hz** : upper cutoff (Hz) of the SoX ``sinc`` low-pass, scaled by the octave shift, applied to non-filtered source audio
+* **fs_sox_timeout_s** : upper bound (in s) on each SoX pass of the frequency shift (``600``); the segments are presentation clips of seconds to minutes, which SoX processes in well under a second per minute of audio, so a pass that runs this long has hung (e.g. waiting on a broken pipe) and is stopped with an error rather than blocking the run
 
 .. code-block:: json
 
@@ -361,7 +371,8 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "fs_volume_adjustment": true,
         "fs_compand_transfer": "0.3,1 6:-70,-60,-20 -5 -90 0.2",
         "fs_noise_reduction_std_threshold": 3,
-        "fs_sinc_upper_cutoff_hz": 25000
+        "fs_sinc_upper_cutoff_hz": 25000,
+        "fs_sox_timeout_s": 600
     }
 
 Create artificial playback .WAV
@@ -472,7 +483,7 @@ From ``context_label`` the generator opens the **newest** matching repository H5
 * draw a random **intact bout** and append its USVs in their natural emission order, separated by their real within-bout **inter-USV intervals (IUI)** of silence
 * between bouts (not before the first), insert the drawn bout's real preceding **inter-sequence interval (ISI)** of silence — a session-first bout (no recorded pause) uses a sampled real ISI — **clipped to** ``max_isi_seconds`` so no single pause is huge
 
-It keeps adding whole bouts, skipping any that (with the lead-out) would overrun the target, until the remaining time is too small; it then writes a fixed ``edge_silence_seconds`` lead-out silence. The within-bout and between-bout gaps are genuine recorded values (no interval model); a negative within-bout gap (two overlapping USVs, possible in a repository that keeps both animals' USVs unattributed) is played as no silence. Because the file is built of whole bouts framed by the fixed edge silences, it is **up to** ``total_acceptable_naturalistic_playback_time`` seconds — opening and closing on the edge silence and ending on a complete bout — rather than exactly that length.
+It keeps adding whole bouts, skipping any that (with the lead-out) would overrun the target, until ``max_consecutive_bout_skips`` draws in a row have failed to fit (the remaining time is too small); it then writes a fixed ``edge_silence_seconds`` lead-out silence. The within-bout and between-bout gaps are genuine recorded values (no interval model); a negative within-bout gap (two overlapping USVs, possible in a repository that keeps both animals' USVs unattributed) is played as no silence. Because the file is built of whole bouts framed by the fixed edge silences, it is **up to** ``total_acceptable_naturalistic_playback_time`` seconds — opening and closing on the edge silence and ending on a complete bout — rather than exactly that length.
 
 The three files are written into the ``naturalistic_usv_playback_dir`` directory configured under the shared ``data_roots`` block. The analysis creates: [1] the WAV file, [2] a *spacing* text file with the sample count of each chunk in order, and [3] a *usvids* text file with the identity of each chunk — ``<session>_usv<row>`` for a vocalization (so you can trace it back to the source session and USV), or ``ISI`` / ``IUI`` for a silence gap:
 
@@ -484,7 +495,7 @@ The three files are written into the ``naturalistic_usv_playback_dir`` directory
     ├── **female_usv_playback_1080s_20250506_190808_usvids.txt**
     ...
 
-Every setting below is exposed in the GUI's *Create naturalistic playback .WAV* block: ``context_label`` is a dropdown (populated only with contexts that have a built repository); ``total_acceptable_naturalistic_playback_time``, ``num_naturalistic_usv_files`` and ``playback_seed`` are text fields; ``complexity_enabled`` is a Yes/No dropdown; and ``complexity_mask_threshold``, ``complexity_start_fraction``, ``complexity_end_fraction`` and ``complexity_bandwidth`` are sliders that grey out while complexity is disabled. The same values can equally be edited directly in *analyses_settings.json*:
+Every setting below is exposed in the GUI's *Create naturalistic playback .WAV* block: ``context_label`` is a dropdown (populated only with contexts that have a built repository); ``total_acceptable_naturalistic_playback_time``, ``num_naturalistic_usv_files`` and ``playback_seed`` are text fields; ``complexity_enabled`` is a Yes/No dropdown; and ``complexity_mask_threshold``, ``complexity_start_fraction``, ``complexity_end_fraction`` and ``complexity_bandwidth`` are sliders that grey out while complexity is disabled; ``edge_silence_seconds``, ``max_isi_seconds`` and ``max_consecutive_bout_skips`` are edited in the JSON only. The same values can equally be edited directly in *analyses_settings.json*:
 
 * **num_naturalistic_usv_files** : number of naturalistic playback files to create in one run (with a fixed ``playback_seed`` the files differ from one another but the whole set is reproducible)
 * **context_label** : which repository to play back — one of ``courtship_male``, ``courtship_female``, ``lone_male``, ``lone_female``, ``same_sex_male``, ``same_sex_female``, ``mixed``. It selects the sex subdirectory and context token, and the playback always opens the **newest** matching build in that directory (no explicit file path); the chosen sex also prefixes the output filenames
@@ -495,6 +506,7 @@ Every setting below is exposed in the GUI's *Create naturalistic playback .WAV* 
 * **complexity_bandwidth** : the width (standard deviation, in complex-fraction units) of the Gaussian that weights each bout by how far its own complex-fraction sits from the current target. **Smaller** (e.g. ``0.05``) steers tightly to the target but from a narrow pool of bouts (more repetition); **larger** (e.g. ``0.5``) keeps more variety but tracks the target more loosely. The default ``0.15`` is a moderate middle
 * **edge_silence_seconds** : fixed silence written at the very start and very end of the file (s), so it opens and closes on a short, constant gap rather than a variable (or truncated) real pause. Default ``1.0``
 * **max_isi_seconds** : each inserted inter-bout pause (ISI) is clipped to at most this many seconds, so a single unusually long recorded gap cannot drop a giant silence into the file. Default ``12.6`` (a typical courtship inter-bout gap)
+* **max_consecutive_bout_skips** : how many bout draws in a row may fail to fit the remaining time (with the lead-out) before the file is closed. Default ``100``: once that many random draws have all overrun, no bout in the repository is likely to fit, so the loop stops rather than drawing forever
 * **playback_seed** : RNG seed for the bout draws; ``null`` draws a fresh random stimulus every run (non-reproducible), an integer reproduces the exact same file(s)
 
 .. code-block:: json
@@ -510,6 +522,7 @@ Every setting below is exposed in the GUI's *Create naturalistic playback .WAV* 
         "complexity_bandwidth": 0.15,
         "edge_silence_seconds": 1.0,
         "max_isi_seconds": 12.6,
+        "max_consecutive_bout_skips": 100,
         "playback_seed": null
     }
 

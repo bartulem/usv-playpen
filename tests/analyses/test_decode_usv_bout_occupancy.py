@@ -298,9 +298,9 @@ def test_bout_onset_statistics_recover_a_built_in_onset_response() -> None:
 
 def test_blend_fades_toward_the_page_without_an_alpha_channel() -> None:
     """Full weight returns the colour, zero weight returns the page."""
-    assert blend("#677470", 1.0) == "#677470"
-    assert blend("#677470", 0.0) == "#ffffff"
-    assert blend("#000000", 0.5) == "#808080"
+    assert blend("#677470", 1.0, "#ffffff") == "#677470"
+    assert blend("#677470", 0.0, "#ffffff") == "#ffffff"
+    assert blend("#000000", 0.5, "#ffffff") == "#808080"
 
 
 def test_decoding_figure_refuses_rather_than_drawing(tmp_path: pathlib.Path) -> None:

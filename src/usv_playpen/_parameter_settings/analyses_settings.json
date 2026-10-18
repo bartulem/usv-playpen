@@ -32,7 +32,9 @@
     "feature_hist_num_bins": 36,
     "spatial_hist_min_val": -32,
     "spatial_hist_max_val": 32,
-    "spatial_hist_num_bins": 196
+    "spatial_hist_num_bins": 196,
+    "back_angles_optimizer_seed": 0,
+    "sei_speed_percentile": 99
   },
   "compute_inter_usv_interval_distributions": {
     "session_lists": [
@@ -58,6 +60,7 @@
       "female": 30
     },
     "plot_log_xlims": [-5.0, 5.0],
+    "inter_bout_z_score": 2.58,
     "model_class": "t",
     "bootstrap_lrt_B": 1000,
     "bootstrap_lrt_n_subsample": 10000,
@@ -85,6 +88,30 @@
     "tied_n_init": 4,
     "tied_n_init_boot": 2,
     "design_bootstrap": 2000,
+    "design_bootstrap_iid_cap": 400,
+    "em_max_iter": 300,
+    "em_tol": 0.00001,
+    "tied_em_max_iter": 500,
+    "tied_em_tol": 0.000001,
+    "split_delta": 0.5,
+    "mode_grid_size_gauss": 4096,
+    "mode_span_scales_gauss": 4.0,
+    "mode_grid_size_t": 16384,
+    "mode_span_scales_t": 6.0,
+    "cv_t_n_init_offset": 2,
+    "em_init_kmeans_n_init": 10,
+    "em_init_start_nu": 10.0,
+    "em_init_background_start_nu": 5.0,
+    "em_init_min_start_weight": 0.001,
+    "em_init_restart_quantile_range": [0.02, 0.98],
+    "em_init_peak_variance_fraction": 0.05,
+    "em_init_seeded_peak_quantile_range": [0.15, 0.9],
+    "em_init_seeded_background_quantile_range": [0.4, 0.97],
+    "em_init_random_peak_quantile_range": [0.05, 0.95],
+    "em_init_random_background_quantile_range": [0.35, 0.98],
+    "em_init_seed_histogram_bins": 512,
+    "em_init_seed_smoothing_sigma": 3.0,
+    "em_init_seed_smoothing_half_width": 8,
     "fit_serial_dependence": true,
     "serial_dependence_n_knots": 6,
     "serial_dependence_corner_widths": [0.05, 0.15, 0.3],
@@ -93,6 +120,7 @@
     "serial_dependence_bend_bounds_ms": [30.0, 600.0],
     "serial_dependence_grid_percentiles": [1.0, 99.0],
     "serial_dependence_max_iter": 20000,
+    "serial_dependence_n_grid": 200,
     "fit_tied_model": true
   },
   "send_email": {
@@ -120,6 +148,7 @@
     "complexity_bandwidth": 0.15,
     "edge_silence_seconds": 1.0,
     "max_isi_seconds": 12.6,
+    "max_consecutive_bout_skips": 100,
     "playback_seed": null
   },
   "build_naturalistic_usv_repository": {
@@ -157,7 +186,8 @@
     "fs_volume_adjustment": true,
     "fs_compand_transfer": "0.3,1 6:-70,-60,-20 -5 -90 0.2",
     "fs_noise_reduction_std_threshold": 3,
-    "fs_sinc_upper_cutoff_hz": 25000
+    "fs_sinc_upper_cutoff_hz": 25000,
+    "fs_sox_timeout_s": 600
   },
   "calculate_neuronal_tuning_curves": {
     "temporal_offsets": [0],
@@ -170,6 +200,9 @@
     "peth_window_seconds": [-2, 0.5],
     "peth_bin_seconds": 0.05,
     "bout_quiet_seconds": 2.0,
+    "ramp_anchor_near_seconds": -0.1,
+    "ramp_anchor_far_seconds": -1.5,
+    "vmi_wilcoxon_exact_max_n": 25,
     "ibi_bout_onset": {
       "ibi_z_score": 2.58,
       "ibi_component_index": 0,
@@ -311,6 +344,7 @@
     "n_shuffles": 1000,
     "n_permutations": 1000,
     "per_session_n_shuffles": 500,
+    "per_session_min_trials": 2,
     "n_amplitude_bins": 5,
     "min_bin_trials": 15,
     "min_shift_s": 20.0,

@@ -50,6 +50,8 @@ Conventions
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pls
@@ -61,6 +63,102 @@ from scipy.stats import t as t_dist
 from sklearn.cluster import KMeans
 from sklearn.mixture import GaussianMixture
 from sklearn.model_selection import KFold
+
+
+@dataclass(frozen=True)
+class EMInitialisation:
+    """
+    Description
+    -----------
+    The starting-point heuristics of the custom EM fitters
+    (:func:`fit_log_t_mixture`, :func:`fit_log_ig_mixture`,
+    :func:`fit_tied_scale_t_mixture` and everything that forwards to them:
+    the split ladders, the cross-validated likelihoods and both parametric
+    bootstrap likelihood-ratio tests, observed and replicate fits alike).
+
+    The field defaults equal the shipped settings of
+    ``analyses_settings.json -> compute_inter_usv_interval_distributions``
+    (the ``em_init_*`` keys) so direct library use reproduces the production
+    fits; the interval analysis builds this object from those keys and passes
+    it explicitly to every fit, so production never relies on the defaults.
+    The Gaussian family is not covered: sklearn's ``GaussianMixture`` owns its
+    own initialisation.
+
+    Parameters
+    ----------
+    kmeans_n_init (int)
+        ``n_init`` of the KMeans clustering that seeds restart 0 of the
+        Student-t and inverse-Gaussian fitters (settings
+        ``em_init_kmeans_n_init``); defaults to 10.
+    start_nu (float)
+        Starting degrees of freedom of every Student-t component in
+        :func:`fit_log_t_mixture` and of every PEAK component in
+        :func:`fit_tied_scale_t_mixture` (settings ``em_init_start_nu``);
+        defaults to 10.0.
+    background_start_nu (float)
+        Starting degrees of freedom of every BACKGROUND component in
+        :func:`fit_tied_scale_t_mixture`, heavier-tailed than the peaks so the
+        background starts out carrying the tail (settings
+        ``em_init_background_start_nu``); defaults to 5.0.
+    min_start_weight (float)
+        Floor applied to the KMeans / quantile cluster proportions before they
+        are renormalised into the starting weights of the Student-t and
+        inverse-Gaussian fitters, so an empty starting cluster cannot begin at
+        weight zero (settings ``em_init_min_start_weight``); defaults to 0.001.
+    restart_quantile_range (tuple)
+        ``(low, high)`` probability range from which the random restarts
+        (restart >= 1) of the Student-t and inverse-Gaussian fitters draw their
+        component-centre quantiles (settings ``em_init_restart_quantile_range``);
+        defaults to (0.02, 0.98).
+    peak_variance_fraction (float)
+        Starting variance of every tied-scale peak component, as a fraction of
+        the total log-space variance (floored at ``reg_covar``); background
+        components start at the total variance (settings
+        ``em_init_peak_variance_fraction``); defaults to 0.05.
+    seeded_peak_quantile_range (tuple)
+        ``(low, high)`` range of the evenly spaced quantiles that place the
+        tied-scale peaks in the deterministic restart 0 when the smoothed
+        histogram has fewer local maxima than peaks (settings
+        ``em_init_seeded_peak_quantile_range``); defaults to (0.15, 0.9).
+    seeded_background_quantile_range (tuple)
+        ``(low, high)`` range of the evenly spaced quantiles that place the
+        tied-scale background components in restart 0 (settings
+        ``em_init_seeded_background_quantile_range``); defaults to (0.4, 0.97).
+    random_peak_quantile_range (tuple)
+        ``(low, high)`` probability range from which the tied-scale random
+        restarts draw their peak quantiles (settings
+        ``em_init_random_peak_quantile_range``); defaults to (0.05, 0.95).
+    random_background_quantile_range (tuple)
+        ``(low, high)`` probability range from which the tied-scale random
+        restarts draw their background quantiles (settings
+        ``em_init_random_background_quantile_range``); defaults to (0.35, 0.98).
+    seed_histogram_bins (int)
+        Number of bins of the log-space histogram whose smoothed local maxima
+        seed the tied-scale peaks in restart 0 (settings
+        ``em_init_seed_histogram_bins``); defaults to 512.
+    seed_smoothing_sigma (float)
+        Standard deviation, in histogram bins, of the Gaussian kernel that
+        smooths that histogram (settings ``em_init_seed_smoothing_sigma``);
+        defaults to 3.0.
+    seed_smoothing_half_width (int)
+        Half-width, in histogram bins, of that kernel, which spans
+        ``-seed_smoothing_half_width .. +seed_smoothing_half_width`` (settings
+        ``em_init_seed_smoothing_half_width``); defaults to 8.
+    """
+
+    kmeans_n_init: int = 10
+    start_nu: float = 10.0
+    background_start_nu: float = 5.0
+    min_start_weight: float = 1e-3
+    restart_quantile_range: tuple = (0.02, 0.98)
+    peak_variance_fraction: float = 0.05
+    seeded_peak_quantile_range: tuple = (0.15, 0.9)
+    seeded_background_quantile_range: tuple = (0.4, 0.97)
+    random_peak_quantile_range: tuple = (0.05, 0.95)
+    random_background_quantile_range: tuple = (0.35, 0.98)
+    seed_histogram_bins: int = 512
+    seed_smoothing_sigma: float = 3.0
+    seed_smoothing_half_width: int = 8
 
 
 def fit_log_gmm(
@@ -130,10 +228,12 @@ def fit_log_gmm(
 def plot_gmm_fit(
     model: GaussianMixture,
     x: np.ndarray,
-    figsize: tuple = (5, 5),
-    bins: int = 100,
+    figsize: tuple,
+    bins: int,
+    density_grid_points: int,
+    bin_mean_grid_points: int,
     xlims: tuple | None = None,
-    color: str = 'steelblue',
+    color: str = '#4682B4',
     edge_color: str = '#202020',
     histtype: str = 'stepfilled',
     show_components: bool = False,
@@ -161,14 +261,27 @@ def plot_gmm_fit(
     x (np.ndarray)
         A (n_samples,) shape ndarray of log-space samples.
     figsize (tuple)
-        Matplotlib figure size; defaults to (5, 5).
+        Matplotlib figure size, in inches. Required: the interval figures pass
+        ``visualizations_settings.json -> usv_interval_figures.best_fit.figsize``
+        (shipped [5, 5]).
     bins (int)
-        Number of histogram bins; defaults to 100.
+        Number of histogram bins. Required: the interval figures pass the
+        per-sex ``bins_per_sex`` of the interval settings block.
+    density_grid_points (int)
+        Number of points of the grid the point-wise mixture density (and the
+        optional per-component curves) is evaluated on. Required: the interval
+        figures pass ``usv_interval_figures.best_fit.density_grid_points``
+        (shipped 500).
+    bin_mean_grid_points (int)
+        Number of points of the denser grid the bin-averaged curve is
+        smoothed on when ``density_as_bin_means`` is True. Required: the
+        interval figures pass ``usv_interval_figures.best_fit.bin_mean_grid_points``
+        (shipped 4000).
     xlims (tuple)
         Optional (low, high) bounds in log-space for both the histogram
         cut and the density grid; defaults to None.
     color (str)
-        Histogram fill colour; defaults to 'steelblue'.
+        Histogram fill colour; defaults to '#4682B4' (matplotlib's steelblue).
     edge_color (str)
         Histogram edge colour; defaults to '#202020'.
     histtype (str)
@@ -199,7 +312,7 @@ def plot_gmm_fit(
     else:
         val_min, val_max = x.min(), x.max()
 
-    xx = np.linspace(val_min, val_max, 500).reshape(-1, 1)
+    xx = np.linspace(val_min, val_max, density_grid_points).reshape(-1, 1)
     logprob = model.score_samples(xx)
     pdf = np.exp(logprob)
 
@@ -218,7 +331,7 @@ def plot_gmm_fit(
         # x is what a bar centred on x would show.
         bin_width = float(bin_edges[1] - bin_edges[0])
         pad = bin_width / 2.0
-        dense_grid = np.linspace(val_min - pad, val_max + pad, 4000)
+        dense_grid = np.linspace(val_min - pad, val_max + pad, bin_mean_grid_points)
         dense_pdf = np.exp(model.score_samples(dense_grid.reshape(-1, 1)))
         window = max(1, int(round(bin_width / (dense_grid[1] - dense_grid[0]))))  # noqa: RUF046  int() kept: round() of a numpy float returns a float under numpy<2
         kernel = np.ones(window, dtype=float) / window
@@ -612,6 +725,7 @@ def gmm_modes(
     max_iter: int = 300,
     dedup_eps: float = 1e-3,
     grid_size: int = 4096,
+    span_scales: float = 4.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Description
@@ -623,7 +737,7 @@ def gmm_modes(
 
     * 1D (``gmm.means_.shape[1] == 1``): the mixture density is
       evaluated on a dense grid spanning
-      ``[mu_min - 4 * sigma_max, mu_max + 4 * sigma_max]`` and local
+      ``[mu_min - span_scales * sigma_max, mu_max + span_scales * sigma_max]`` and local
       maxima are detected as interior peaks (a point at least as high as
       its left neighbour and strictly higher than its right one, so the
       two equal centre points of a symmetric grid around a single
@@ -661,7 +775,12 @@ def gmm_modes(
         Euclidean distance below which two modes are merged; defaults
         to 1e-3.
     grid_size (int)
-        Number of grid points used in the 1D branch; defaults to 4096.
+        Number of grid points used in the 1D branch; defaults to 4096 (the
+        shipped ``compute_inter_usv_interval_distributions -> mode_grid_size_gauss``).
+    span_scales (float)
+        Number of component standard deviations the 1D grid extends past the
+        extreme component means; defaults to 4.0 (the shipped
+        ``compute_inter_usv_interval_distributions -> mode_span_scales_gauss``).
 
     Returns
     -------
@@ -679,8 +798,8 @@ def gmm_modes(
         # 1D grid + local-max detection + Newton polish
         mu = M.flatten()
         sd = np.sqrt(Sig.flatten())
-        lo = float(mu.min() - 4.0 * sd.max())
-        hi = float(mu.max() + 4.0 * sd.max())
+        lo = float(mu.min() - span_scales * sd.max())
+        hi = float(mu.max() + span_scales * sd.max())
         grid = np.linspace(lo, hi, grid_size).reshape(-1, 1)
         log_p = gmm.score_samples(grid)
 
@@ -788,6 +907,8 @@ def gmm_modes(
 def report_gmm_stats(
     gmm: GaussianMixture,
     mixture_model_order: np.ndarray,
+    mode_grid_size: int = 4096,
+    mode_span_scales: float = 4.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Description
@@ -812,6 +933,12 @@ def report_gmm_stats(
     mixture_model_order (np.ndarray)
         Sort indices over components (typically from
         :func:`fit_log_gmm`).
+    mode_grid_size (int)
+        ``grid_size`` forwarded to :func:`gmm_modes`; defaults to 4096 (the
+        shipped ``mode_grid_size_gauss``, which the interval analysis passes).
+    mode_span_scales (float)
+        ``span_scales`` forwarded to :func:`gmm_modes`; defaults to 4.0 (the
+        shipped ``mode_span_scales_gauss``, which the interval analysis passes).
 
     Returns
     -------
@@ -829,7 +956,8 @@ def report_gmm_stats(
 
     means = gmm.means_.flatten()[mixture_model_order]
     sds   = np.sqrt(gmm.covariances_.flatten())[mixture_model_order]
-    modes_arr, densities_arr = gmm_modes(gmm)
+    modes_arr, densities_arr = gmm_modes(gmm, grid_size=mode_grid_size,
+                                         span_scales=mode_span_scales)
     if modes_arr.shape[0] == 0:
         return means, sds, np.empty((0,)), np.empty((0,))
     modes = modes_arr.flatten()
@@ -1427,6 +1555,7 @@ def fit_log_t_mixture(
     x_is_log: bool = False,
     init_params: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None,
     min_component_log_mean: float | None = None,
+    em_init: EMInitialisation | None = None,
 ) -> tuple[TMixture, np.ndarray]:
     """
     Description
@@ -1484,6 +1613,10 @@ def fit_log_t_mixture(
         likelihood, so the fit cannot buy score by describing a region
         the instrument controls rather than the animal. Defaults to
         None, which imposes no bound.
+    em_init (EMInitialisation or None)
+        Starting-point heuristics of the EM restarts (see
+        :class:`EMInitialisation`); defaults to None, which uses
+        ``EMInitialisation()`` (the shipped ``em_init_*`` values).
 
     Returns
     -------
@@ -1494,6 +1627,8 @@ def fit_log_t_mixture(
         analog of :func:`fit_log_gmm`'s ``mixture_model_order``).
     """
 
+    if em_init is None:
+        em_init = EMInitialisation()
     _x = np.asarray(x, dtype=float)
     log_x = _x if x_is_log else np.log(_x)
     N = log_x.size
@@ -1510,23 +1645,25 @@ def fit_log_t_mixture(
             w, mu, sigma2, nu = (np.asarray(p, dtype=float).ravel().copy() for p in init_params)
             sigma2 = np.maximum(sigma2, reg_covar)
         elif ii == 0:
-            km = KMeans(n_clusters=n_components, random_state=seed, n_init=10).fit(log_x.reshape(-1, 1))
+            km = KMeans(n_clusters=n_components, random_state=seed,
+                        n_init=em_init.kmeans_n_init).fit(log_x.reshape(-1, 1))
             labels = km.labels_
             mu = km.cluster_centers_.flatten()
             sigma2 = np.array([max(np.var(log_x[labels == k]) if np.any(labels == k) else np.var(log_x), reg_covar) for k in range(n_components)])
-            nu = np.full(n_components, 10.0)
+            nu = np.full(n_components, em_init.start_nu)
             w = np.array([np.mean(labels == k) for k in range(n_components)])
-            w = np.where(w < 1e-3, 1e-3, w)
+            w = np.where(w < em_init.min_start_weight, em_init.min_start_weight, w)
             w = w / w.sum()
         else:
             rng_init = np.random.default_rng((seed, ii))
-            qs = np.sort(rng_init.uniform(0.02, 0.98, size=n_components))
+            qs = np.sort(rng_init.uniform(em_init.restart_quantile_range[0],
+                                          em_init.restart_quantile_range[1], size=n_components))
             mu = np.quantile(log_x, qs)
             labels = np.argmin(np.abs(log_x[:, None] - mu[None, :]), axis=1)
             sigma2 = np.array([max(np.var(log_x[labels == k]) if np.any(labels == k) else np.var(log_x), reg_covar) for k in range(n_components)])
-            nu = np.full(n_components, 10.0)
+            nu = np.full(n_components, em_init.start_nu)
             w = np.array([np.mean(labels == k) for k in range(n_components)])
-            w = np.where(w < 1e-3, 1e-3, w)
+            w = np.where(w < em_init.min_start_weight, em_init.min_start_weight, w)
             w = w / w.sum()
 
         prev_ll = -np.inf
@@ -1603,6 +1740,9 @@ def fit_nested_by_splitting(
     seed: int = 0,
     reg_covar: float = 1e-4,
     split_delta: float = 0.5,
+    max_iter: int = 300,
+    tol: float = 1e-5,
+    em_init: EMInitialisation | None = None,
 ) -> tuple[TMixture, float]:
     """
     Description
@@ -1642,7 +1782,17 @@ def fit_nested_by_splitting(
         Component variance floor; defaults to 1e-4.
     split_delta (float)
         Separation of a split pair, in units of the parent component's
-        standard deviation; defaults to 0.5.
+        standard deviation; defaults to 0.5 (the shipped ``split_delta``).
+    max_iter (int)
+        EM iteration cap forwarded to every :func:`fit_log_t_mixture` call;
+        defaults to 300 (the shipped ``em_max_iter``).
+    tol (float)
+        EM convergence tolerance forwarded to every :func:`fit_log_t_mixture`
+        call; defaults to 1e-5 (the shipped ``em_tol``).
+    em_init (EMInitialisation or None)
+        Starting-point heuristics forwarded to every fit (see
+        :class:`EMInitialisation`); defaults to None, which uses
+        ``EMInitialisation()`` (the shipped ``em_init_*`` values).
 
     Returns
     -------
@@ -1659,7 +1809,8 @@ def fit_nested_by_splitting(
     n_alt = weights.size + 1
 
     best_model, _ = fit_log_t_mixture(log_x, n_alt, seed=seed, n_init=n_init,
-                                      reg_covar=reg_covar, x_is_log=True)
+                                      max_iter=max_iter, tol=tol,
+                                      reg_covar=reg_covar, x_is_log=True, em_init=em_init)
     best_ll = float(np.sum(best_model.score_samples(log_x.reshape(-1, 1))))
 
     for index in range(weights.size):
@@ -1673,8 +1824,9 @@ def fit_nested_by_splitting(
                 np.concatenate([np.delete(nus, index), [nus[index]] * 2]),
             )
             candidate, _ = fit_log_t_mixture(log_x, n_alt, seed=seed, n_init=0,
+                                             max_iter=max_iter, tol=tol,
                                              reg_covar=reg_covar, x_is_log=True,
-                                             init_params=start)
+                                             init_params=start, em_init=em_init)
             candidate_ll = float(np.sum(candidate.score_samples(log_x.reshape(-1, 1))))
             if candidate_ll > best_ll:
                 best_model, best_ll = candidate, candidate_ll
@@ -1692,6 +1844,7 @@ def fit_tied_scale_t_mixture(
     tol: float = 1e-6,
     reg_covar: float = 1e-4,
     init_params: tuple | None = None,
+    em_init: EMInitialisation | None = None,
 ) -> tuple[TMixture, float, float]:
     """
     Description
@@ -1756,6 +1909,10 @@ def fit_tied_scale_t_mixture(
         them) makes the attained likelihood at least that of the start, which is
         what keeps a nested comparison from returning a negative ratio.
         Defaults to None.
+    em_init (EMInitialisation or None)
+        Starting-point heuristics of the EM restarts (see
+        :class:`EMInitialisation`); defaults to None, which uses
+        ``EMInitialisation()`` (the shipped ``em_init_*`` values).
 
     Returns
     -------
@@ -1772,6 +1929,8 @@ def fit_tied_scale_t_mixture(
                f"component, got n_peak={n_peak}, n_background={n_background}.")
         raise ValueError(msg)
 
+    if em_init is None:
+        em_init = EMInitialisation()
     log_x = np.asarray(log_x, dtype=float).ravel()
     n_components = n_peak + n_background
     peaks = np.arange(n_peak)
@@ -1797,11 +1956,14 @@ def fit_tied_scale_t_mixture(
             # stacked at 55 and 70 ms, 166 nats short of the optimum. Seeding from the
             # smoothed histogram's maxima puts a peak component where a peak actually is,
             # which is the one thing a location-spreading heuristic cannot guarantee.
-            peak_quantiles = np.linspace(0.15, 0.9, n_peak)
+            peak_quantiles = np.linspace(em_init.seeded_peak_quantile_range[0],
+                                         em_init.seeded_peak_quantile_range[1], n_peak)
             seeds_log = np.quantile(log_x, peak_quantiles)
-            counts, edges = np.histogram(log_x, bins=512)
+            counts, edges = np.histogram(log_x, bins=em_init.seed_histogram_bins)
             centers = 0.5 * (edges[:-1] + edges[1:])
-            kernel = np.exp(-0.5 * (np.arange(-8, 9) / 3.0) ** 2)
+            half_width = em_init.seed_smoothing_half_width
+            kernel = np.exp(-0.5 * (np.arange(-half_width, half_width + 1)
+                                    / em_init.seed_smoothing_sigma) ** 2)
             smoothed = np.convolve(counts.astype(float), kernel / kernel.sum(), mode="same")
             maxima = np.flatnonzero((smoothed[1:-1] > smoothed[:-2])
                                     & (smoothed[1:-1] > smoothed[2:])) + 1
@@ -1812,25 +1974,34 @@ def fit_tied_scale_t_mixture(
                 found = np.sort(centers[chosen])
                 seeds_log[:found.size] = found
             mu = np.concatenate([seeds_log,
-                                 np.quantile(log_x, np.linspace(0.4, 0.97, n_background))])
+                                 np.quantile(log_x, np.linspace(em_init.seeded_background_quantile_range[0],
+                                                                em_init.seeded_background_quantile_range[1],
+                                                                n_background))])
             total_variance = float(np.var(log_x))
-            sigma2 = np.concatenate([np.full(n_peak, max(total_variance * 0.05, reg_covar)),
+            sigma2 = np.concatenate([np.full(n_peak, max(total_variance * em_init.peak_variance_fraction,
+                                                         reg_covar)),
                                      np.full(n_background, total_variance)])
-            nu = np.concatenate([np.full(n_peak, 10.0), np.full(n_background, 5.0)])
+            nu = np.concatenate([np.full(n_peak, em_init.start_nu),
+                                 np.full(n_background, em_init.background_start_nu)])
             w = np.full(n_components, 1.0 / n_components)
         else:
             rng_init = np.random.default_rng((seed, restart))
             # Peaks start inside the body of the distribution and background wide, so the
             # two roles are distinguishable from the outset; left to discover the split
             # unaided, EM frequently converges with every component playing the same role.
-            peak_quantiles = np.sort(rng_init.uniform(0.05, 0.95, size=n_peak))
-            background_quantiles = np.sort(rng_init.uniform(0.35, 0.98, size=n_background))
+            peak_quantiles = np.sort(rng_init.uniform(em_init.random_peak_quantile_range[0],
+                                                      em_init.random_peak_quantile_range[1], size=n_peak))
+            background_quantiles = np.sort(rng_init.uniform(em_init.random_background_quantile_range[0],
+                                                            em_init.random_background_quantile_range[1],
+                                                            size=n_background))
             mu = np.concatenate([np.quantile(log_x, peak_quantiles),
                                  np.quantile(log_x, background_quantiles)])
             total_variance = float(np.var(log_x))
-            sigma2 = np.concatenate([np.full(n_peak, max(total_variance * 0.05, reg_covar)),
+            sigma2 = np.concatenate([np.full(n_peak, max(total_variance * em_init.peak_variance_fraction,
+                                                         reg_covar)),
                                      np.full(n_background, total_variance)])
-            nu = np.concatenate([np.full(n_peak, 10.0), np.full(n_background, 5.0)])
+            nu = np.concatenate([np.full(n_peak, em_init.start_nu),
+                                 np.full(n_background, em_init.background_start_nu)])
             w = np.full(n_components, 1.0 / n_components)
 
         prev_ll = -np.inf
@@ -1894,6 +2065,9 @@ def fit_tied_nested_by_splitting(
     n_init: int = 6,
     reg_covar: float = 1e-4,
     split_delta: float = 0.5,
+    max_iter: int = 500,
+    tol: float = 1e-6,
+    em_init: EMInitialisation | None = None,
 ) -> tuple[TMixture, float, float]:
     """
     Description
@@ -1931,7 +2105,18 @@ def fit_tied_nested_by_splitting(
         Lower bound on any component variance; defaults to 1e-4.
     split_delta (float)
         Offset applied to the duplicated peak, in units of the shared scale;
-        defaults to 0.5.
+        defaults to 0.5 (the shipped ``split_delta``).
+    max_iter (int)
+        EM iteration cap forwarded to every :func:`fit_tied_scale_t_mixture`
+        call; defaults to 500 (the shipped ``tied_em_max_iter``).
+    tol (float)
+        EM convergence tolerance forwarded to every
+        :func:`fit_tied_scale_t_mixture` call; defaults to 1e-6 (the shipped
+        ``tied_em_tol``).
+    em_init (EMInitialisation or None)
+        Starting-point heuristics forwarded to every fit (see
+        :class:`EMInitialisation`); defaults to None, which uses
+        ``EMInitialisation()`` (the shipped ``em_init_*`` values).
 
     Returns
     -------
@@ -1952,7 +2137,8 @@ def fit_tied_nested_by_splitting(
     sigma = np.sqrt(shared)
 
     best = fit_tied_scale_t_mixture(log_x, n_peak + 1, n_background, seed=seed, n_init=n_init,
-                                    reg_covar=reg_covar)
+                                    max_iter=max_iter, tol=tol, reg_covar=reg_covar,
+                                    em_init=em_init)
     for candidate in range(n_peak):
         for offset in (0.0, split_delta):
             half = weights[candidate] / 2.0
@@ -1969,7 +2155,9 @@ def fit_tied_nested_by_splitting(
                      np.concatenate([np.full(n_peak + 1, shared), variances[n_peak:]]),
                      np.concatenate([new_nus, nus[n_peak:]]))
             attempt = fit_tied_scale_t_mixture(log_x, n_peak + 1, n_background, seed=seed,
-                                               n_init=0, reg_covar=reg_covar, init_params=start)
+                                               n_init=0, max_iter=max_iter, tol=tol,
+                                               reg_covar=reg_covar, init_params=start,
+                                               em_init=em_init)
             if attempt[1] > best[1]:
                 best = attempt
     return best
@@ -2045,6 +2233,9 @@ def t_mixture_cv_neg_loglik(
     n_folds: int = 5,
     n_init: int = 3,
     reg_covar: float = 1e-4,
+    max_iter: int = 300,
+    tol: float = 1e-5,
+    em_init: EMInitialisation | None = None,
 ) -> float:
     """
     Description
@@ -2078,6 +2269,16 @@ def t_mixture_cv_neg_loglik(
         EM noise).
     reg_covar (float)
         Component variance floor, defaults to 1e-4.
+    max_iter (int)
+        EM iteration cap of each fold's fit; defaults to 300 (the shipped
+        ``em_max_iter``).
+    tol (float)
+        EM convergence tolerance of each fold's fit; defaults to 1e-5 (the
+        shipped ``em_tol``).
+    em_init (EMInitialisation or None)
+        Starting-point heuristics forwarded to every fit (see
+        :class:`EMInitialisation`); defaults to None, which uses
+        ``EMInitialisation()`` (the shipped ``em_init_*`` values).
 
     Returns
     -------
@@ -2107,7 +2308,10 @@ def t_mixture_cv_neg_loglik(
             n_components=n_components,
             seed=seed,
             n_init=n_init,
+            max_iter=max_iter,
+            tol=tol,
             reg_covar=reg_covar,
+            em_init=em_init,
         )
         total_loglik += float(np.sum(model.score_samples(x_test)))
 
@@ -2217,10 +2421,12 @@ def t_mixture_modes(
         to 1e-3 (~0.1% in seconds, well below any biological scale).
     grid_size (int)
         Number of grid points used for peak detection; defaults to
-        16384.
+        16384 (the shipped ``compute_inter_usv_interval_distributions ->
+        mode_grid_size_t``, which the interval analysis passes).
     span_scales (float)
         Number of component scales the grid extends past the extreme
-        component locations; defaults to 6.0.
+        component locations; defaults to 6.0 (the shipped
+        ``mode_span_scales_t``, which the interval analysis passes).
 
     Returns
     -------
@@ -2747,6 +2953,7 @@ def fit_log_ig_mixture(
     tol: float = 1e-5,
     reg_covar: float = 1e-4,
     x_is_log: bool = False,
+    em_init: EMInitialisation | None = None,
 ) -> tuple[IGMixture, np.ndarray]:
     """
     Description
@@ -2790,6 +2997,11 @@ def fit_log_ig_mixture(
         intervals); they are exponentiated back to linear time (log values
         clipped to [-700, 700] first) for the IG fit, while the KMeans
         initialisation uses them directly. Defaults to False.
+    em_init (EMInitialisation or None)
+        Starting-point heuristics of the EM restarts (see
+        :class:`EMInitialisation`); defaults to None, which uses
+        ``EMInitialisation()`` (the shipped ``em_init_*`` values). Only ``kmeans_n_init``,
+        ``min_start_weight`` and ``restart_quantile_range`` apply here.
 
     Returns
     -------
@@ -2801,6 +3013,8 @@ def fit_log_ig_mixture(
         ``mixture_model_order``).
     """
 
+    if em_init is None:
+        em_init = EMInitialisation()
     x = np.asarray(x, dtype=float).ravel()
     log_x = x if x_is_log else np.log(x)
     if x_is_log:
@@ -2817,11 +3031,13 @@ def fit_log_ig_mixture(
         # are one restart in disguise -- quantile draws restore genuine
         # multi-start diversity (deterministic per (seed, ii)).
         if ii == 0:
-            km = KMeans(n_clusters=n_components, random_state=seed, n_init=10).fit(log_x.reshape(-1, 1))
+            km = KMeans(n_clusters=n_components, random_state=seed,
+                        n_init=em_init.kmeans_n_init).fit(log_x.reshape(-1, 1))
             labels = km.labels_
         else:
             rng_init = np.random.default_rng((seed, ii))
-            qs = np.sort(rng_init.uniform(0.02, 0.98, size=n_components))
+            qs = np.sort(rng_init.uniform(em_init.restart_quantile_range[0],
+                                          em_init.restart_quantile_range[1], size=n_components))
             centers = np.quantile(log_x, qs)
             labels = np.argmin(np.abs(log_x[:, None] - centers[None, :]), axis=1)
         mu = np.empty(n_components)
@@ -2833,7 +3049,7 @@ def fit_log_ig_mixture(
             mu[k] = m
             lam[k] = min(m ** 3 / v, 1.0 / reg_covar)
         w = np.array([np.mean(labels == k) for k in range(n_components)])
-        w = np.where(w < 1e-3, 1e-3, w)
+        w = np.where(w < em_init.min_start_weight, em_init.min_start_weight, w)
         w = w / w.sum()
 
         prev_ll = -np.inf
@@ -2915,6 +3131,9 @@ def ig_mixture_cv_neg_loglik(
     n_folds: int = 5,
     n_init: int = 3,
     reg_covar: float = 1e-4,
+    max_iter: int = 300,
+    tol: float = 1e-5,
+    em_init: EMInitialisation | None = None,
 ) -> float:
     """
     Description
@@ -2939,6 +3158,16 @@ def ig_mixture_cv_neg_loglik(
         EM restarts per fold; defaults to 3.
     reg_covar (float)
         Forwarded to :func:`fit_log_ig_mixture`.
+    max_iter (int)
+        EM iteration cap forwarded to :func:`fit_log_ig_mixture`; defaults to
+        300 (the shipped ``em_max_iter``).
+    tol (float)
+        EM convergence tolerance forwarded to :func:`fit_log_ig_mixture`;
+        defaults to 1e-5 (the shipped ``em_tol``).
+    em_init (EMInitialisation or None)
+        Starting-point heuristics forwarded to every fit (see
+        :class:`EMInitialisation`); defaults to None, which uses
+        ``EMInitialisation()`` (the shipped ``em_init_*`` values).
 
     Returns
     -------
@@ -2952,7 +3181,8 @@ def ig_mixture_cv_neg_loglik(
     for fold_idx, (train_idx, test_idx) in enumerate(kf.split(x)):
         model, _ = fit_log_ig_mixture(
             x[train_idx], n_components=n_components,
-            seed=seed + fold_idx, n_init=n_init, reg_covar=reg_covar,
+            seed=seed + fold_idx, n_init=n_init, max_iter=max_iter, tol=tol,
+            reg_covar=reg_covar, em_init=em_init,
         )
         total_heldout_ll += float(np.sum(model.score_samples(np.log(x[test_idx]))))
     return -2.0 * total_heldout_ll
@@ -3424,6 +3654,10 @@ def _bootstrap_lrt_replicate(
     N_sub: int,
     n_init_boot: int,
     reg_covar: float,
+    em_max_iter: int,
+    em_tol: float,
+    split_delta: float,
+    em_init: EMInitialisation,
 ) -> float:
     """
     Description
@@ -3457,6 +3691,19 @@ def _bootstrap_lrt_replicate(
         EM restarts per replicate fit.
     reg_covar (float)
         Forwarded to the fitter.
+    em_max_iter (int)
+        EM iteration cap forwarded to the Student-t / inverse-Gaussian fitters
+        (and to :func:`fit_nested_by_splitting`); unused by the Gaussian fitter,
+        whose EM is sklearn's.
+    em_tol (float)
+        EM convergence tolerance, forwarded like ``em_max_iter``.
+    split_delta (float)
+        Split separation forwarded to :func:`fit_nested_by_splitting` (Student-t
+        family only).
+    em_init (EMInitialisation)
+        Starting-point heuristics forwarded to the Student-t / inverse-Gaussian
+        fitters (and to :func:`fit_nested_by_splitting`); unused by the Gaussian
+        fitter, whose initialisation is sklearn's.
 
     Returns
     -------
@@ -3477,19 +3724,27 @@ def _bootstrap_lrt_replicate(
         # under-converged fit that produced 28.9% negative replicates on the male e2s pool, and
         # the split-initialised alternative then reports that deficit as if it were a component.
         m_null_b, _ = fit_fn(log_x_b, K_null, seed=seed + b, n_init=n_init_boot,
-                             reg_covar=reg_covar, x_is_log=True,
+                             max_iter=em_max_iter, tol=em_tol,
+                             reg_covar=reg_covar, x_is_log=True, em_init=em_init,
                              init_params=(np.asarray(model_null_obs.weights_).ravel(),
                                           np.asarray(model_null_obs.means_).ravel(),
                                           np.asarray(model_null_obs.covariances_).ravel(),
                                           np.asarray(model_null_obs.nus_).ravel()))
         _, ll_alt_b = fit_nested_by_splitting(log_x_b, m_null_b, n_init=n_init_boot,
-                                              seed=seed + b, reg_covar=reg_covar)
+                                              seed=seed + b, reg_covar=reg_covar,
+                                              split_delta=split_delta,
+                                              max_iter=em_max_iter, tol=em_tol,
+                                              em_init=em_init)
         ll_null_b = float(np.sum(m_null_b.score_samples(log_x_b.reshape(-1, 1))))
         return 2.0 * (ll_alt_b - ll_null_b)
+    # sklearn's GaussianMixture owns its EM stopping rule and initialisation, so only
+    # the IG fitter takes the EM iteration cap, tolerance and starting heuristics.
+    em_kwargs = ({} if fit_fn is fit_log_gmm
+                 else {"max_iter": em_max_iter, "tol": em_tol, "em_init": em_init})
     m_null_b, _ = fit_fn(log_x_b, K_null, seed=seed + b, n_init=n_init_boot,
-                         reg_covar=reg_covar, x_is_log=True)
+                         reg_covar=reg_covar, x_is_log=True, **em_kwargs)
     m_alt_b, _ = fit_fn(log_x_b, K_alt, seed=seed + b, n_init=n_init_boot,
-                        reg_covar=reg_covar, x_is_log=True)
+                        reg_covar=reg_covar, x_is_log=True, **em_kwargs)
     return _lr_statistic(m_null_b, m_alt_b, log_x_b)
 
 
@@ -3508,6 +3763,11 @@ def bootstrap_lrt(
     message_output=None,
     session_labels: np.ndarray | None = None,
     n_design_bootstrap: int = 2000,
+    design_bootstrap_iid_cap: int = 400,
+    em_max_iter: int = 300,
+    em_tol: float = 1e-5,
+    split_delta: float = 0.5,
+    em_init: EMInitialisation | None = None,
 ) -> dict:
     """
     Description
@@ -3593,6 +3853,25 @@ def bootstrap_lrt(
     n_design_bootstrap (int)
         Session-resampling replicates for the design effect; defaults
         to 2000.
+    design_bootstrap_iid_cap (int)
+        Upper bound on the interval-level (iid) resamples of the design
+        effect, which uses ``min(n_design_bootstrap, design_bootstrap_iid_cap)``;
+        defaults to 400 (the shipped ``design_bootstrap_iid_cap``).
+    em_max_iter (int)
+        EM iteration cap of every Student-t / inverse-Gaussian fit (observed and
+        replicate); defaults to 300 (the shipped ``em_max_iter``). The Gaussian
+        family uses sklearn's own stopping rule.
+    em_tol (float)
+        EM convergence tolerance, applied like ``em_max_iter``; defaults to 1e-5
+        (the shipped ``em_tol``).
+    split_delta (float)
+        Split separation of every :func:`fit_nested_by_splitting` call (Student-t
+        family); defaults to 0.5 (the shipped ``split_delta``).
+    em_init (EMInitialisation or None)
+        Starting-point heuristics of every Student-t / inverse-Gaussian fit,
+        observed and replicate (see :class:`EMInitialisation`); defaults to None,
+        which uses ``EMInitialisation()`` (the shipped ``em_init_*`` values). The
+        Gaussian family uses sklearn's own initialisation.
 
     Returns
     -------
@@ -3645,17 +3924,28 @@ def bootstrap_lrt(
     if fit_fn is fit_log_t_mixture:
         ladder_start = min(int(K_null), 2)
         m_null_obs, _ = fit_fn(log_x, ladder_start, seed=seed, n_init=n_init_obs,
-                               reg_covar=reg_covar, x_is_log=True)
+                               max_iter=em_max_iter, tol=em_tol,
+                               reg_covar=reg_covar, x_is_log=True, em_init=em_init)
         ll_null_obs = float(np.sum(m_null_obs.score_samples(log_x.reshape(-1, 1))))
         for _ in range(K_null - ladder_start):
             m_null_obs, ll_null_obs = fit_nested_by_splitting(
-                log_x, m_null_obs, n_init=n_init_obs, seed=seed, reg_covar=reg_covar)
+                log_x, m_null_obs, n_init=n_init_obs, seed=seed, reg_covar=reg_covar,
+                split_delta=split_delta, max_iter=em_max_iter, tol=em_tol,
+                em_init=em_init)
         m_alt_obs, ll_alt_obs = fit_nested_by_splitting(
-            log_x, m_null_obs, n_init=n_init_obs, seed=seed, reg_covar=reg_covar)
+            log_x, m_null_obs, n_init=n_init_obs, seed=seed, reg_covar=reg_covar,
+            split_delta=split_delta, max_iter=em_max_iter, tol=em_tol,
+            em_init=em_init)
         lr_obs = 2.0 * (ll_alt_obs - ll_null_obs)
     else:
-        m_null_obs, _ = fit_fn(intervals_sub, K_null, seed=seed, n_init=n_init_obs, reg_covar=reg_covar)
-        m_alt_obs, _ = fit_fn(intervals_sub, K_alt, seed=seed, n_init=n_init_obs, reg_covar=reg_covar)
+        # sklearn's GaussianMixture owns its EM stopping rule and initialisation, so
+        # only the IG fitter takes the EM iteration cap, tolerance and starting heuristics.
+        em_kwargs = ({} if fit_fn is fit_log_gmm
+                     else {"max_iter": em_max_iter, "tol": em_tol, "em_init": em_init})
+        m_null_obs, _ = fit_fn(intervals_sub, K_null, seed=seed, n_init=n_init_obs, reg_covar=reg_covar,
+                               **em_kwargs)
+        m_alt_obs, _ = fit_fn(intervals_sub, K_alt, seed=seed, n_init=n_init_obs, reg_covar=reg_covar,
+                              **em_kwargs)
         lr_obs = _lr_statistic(m_null_obs, m_alt_obs, log_x)
     # A materially negative observed LR is impossible for correctly optimized
     # nested mixtures (K_alt can always emulate K_null): it means the
@@ -3676,7 +3966,7 @@ def bootstrap_lrt(
         delta = m_alt_obs.score_samples(log_x_2d) - m_null_obs.score_samples(log_x_2d)
         correction = _session_corrected_statistic(
             lr_obs, delta, session_labels, np.asarray(intervals_sec).size, chosen,
-            n_design_bootstrap, seed, "bootstrap_lrt")
+            n_design_bootstrap, seed, "bootstrap_lrt", design_bootstrap_iid_cap)
 
     # Bootstrap null distribution. Both paths run the SAME replicate function,
     # _bootstrap_lrt_replicate, with a per-replicate RNG seeded by (seed, b), so n_jobs only
@@ -3688,7 +3978,8 @@ def bootstrap_lrt(
     if n_jobs == 1:
         for b in range(B):
             lr_null[b] = _bootstrap_lrt_replicate(
-                b, seed, m_null_obs, fit_fn, K_null, K_alt, N_sub, n_init_boot, reg_covar)
+                b, seed, m_null_obs, fit_fn, K_null, K_alt, N_sub, n_init_boot, reg_covar,
+                em_max_iter, em_tol, split_delta, em_init)
             if message_output is not None and (b + 1) % 10 == 0:
                 message_output(f"      bootstrap [{b + 1}/{B}]")
     else:
@@ -3697,6 +3988,7 @@ def bootstrap_lrt(
         lr_list = Parallel(n_jobs=n_jobs)(
             delayed(_bootstrap_lrt_replicate)(
                 b, seed, m_null_obs, fit_fn, K_null, K_alt, N_sub, n_init_boot, reg_covar,
+                em_max_iter, em_tol, split_delta, em_init,
             )
             for b in range(B)
         )
@@ -3728,6 +4020,10 @@ def _tied_peak_lrt_replicate(
     n_init: int,
     reg_covar: float,
     seed: int,
+    max_iter: int,
+    tol: float,
+    split_delta: float,
+    em_init: EMInitialisation,
 ) -> float:
     """
     Description
@@ -3756,6 +4052,14 @@ def _tied_peak_lrt_replicate(
         Component variance floor.
     seed (int)
         Seed for the draw and the fits.
+    max_iter (int)
+        EM iteration cap of both tied-scale fits.
+    tol (float)
+        EM convergence tolerance of both tied-scale fits.
+    split_delta (float)
+        Split separation of the split-initialised alternative.
+    em_init (EMInitialisation)
+        Starting-point heuristics of both tied-scale fits.
 
     Returns
     -------
@@ -3770,11 +4074,12 @@ def _tied_peak_lrt_replicate(
              np.asarray(model.covariances_, dtype=float).ravel(),
              np.asarray(model.nus_, dtype=float).ravel())
     null_model, null_ll, _ = fit_tied_scale_t_mixture(
-        log_draw, n_peak, n_background, seed=seed, n_init=n_init, reg_covar=reg_covar,
-        init_params=start)
+        log_draw, n_peak, n_background, seed=seed, n_init=n_init, max_iter=max_iter, tol=tol,
+        reg_covar=reg_covar, init_params=start, em_init=em_init)
     _, alt_ll, _ = fit_tied_nested_by_splitting(
         log_draw, null_model, n_peak, n_background, seed=seed, n_init=n_init,
-        reg_covar=reg_covar)
+        reg_covar=reg_covar, split_delta=split_delta, max_iter=max_iter, tol=tol,
+        em_init=em_init)
     return 2.0 * (alt_ll - null_ll)
 
 
@@ -3783,6 +4088,7 @@ def _session_design_effect(
     session_index: np.ndarray,
     n_bootstrap: int,
     seed: int,
+    iid_cap: int,
 ) -> tuple[float, float, float]:
     """
     Description
@@ -3810,9 +4116,12 @@ def _session_design_effect(
     session_index (np.ndarray)
         A (n_samples,) ndarray of integer session codes in ``0 .. n_sessions - 1``.
     n_bootstrap (int)
-        Session-resampling replicates; the iid comparison uses ``min(n_bootstrap, 400)``.
+        Session-resampling replicates; the iid comparison uses ``min(n_bootstrap, iid_cap)``.
     seed (int)
         Seed for both resamplings.
+    iid_cap (int)
+        Upper bound on the interval-level (iid) resamples; the shipped
+        ``design_bootstrap_iid_cap`` is 400.
 
     Returns
     -------
@@ -3836,7 +4145,7 @@ def _session_design_effect(
     rng = np.random.default_rng(seed)
     draws = rng.integers(0, n_sessions, size=(int(n_bootstrap), n_sessions))
     clustered_se = float(np.std(2.0 * per_session[draws].sum(axis=1), ddof=1))
-    interval_draws = rng.integers(0, delta.size, size=(min(int(n_bootstrap), 400), delta.size))
+    interval_draws = rng.integers(0, delta.size, size=(min(int(n_bootstrap), int(iid_cap)), delta.size))
     independent_se = float(np.std(2.0 * centred[interval_draws].sum(axis=1), ddof=1))
     if independent_se <= 0.0:
         return np.nan, clustered_se, independent_se
@@ -3852,6 +4161,7 @@ def _session_corrected_statistic(
     n_design_bootstrap: int,
     seed: int,
     caller: str,
+    design_bootstrap_iid_cap: int,
 ) -> dict:
     """
     Description
@@ -3882,6 +4192,9 @@ def _session_corrected_statistic(
         Seed for the session resampling.
     caller (str)
         Name of the calling test, for the error message.
+    design_bootstrap_iid_cap (int)
+        Upper bound on the interval-level (iid) resamples of the design effect,
+        forwarded to :func:`_session_design_effect`.
 
     Returns
     -------
@@ -3901,7 +4214,7 @@ def _session_corrected_statistic(
         raise ValueError(msg)
     _, session_index = np.unique(labels[chosen], return_inverse=True)
     raw_design_effect, clustered_se, independent_se = _session_design_effect(
-        delta, session_index, n_design_bootstrap, seed)
+        delta, session_index, n_design_bootstrap, seed, design_bootstrap_iid_cap)
     # Floored at one so the correction can only shrink the statistic. A design effect
     # below one would mean negative within-session correlation; in practice it is
     # estimation noise from resampling too few sessions -- on a 4-session pool the
@@ -3934,6 +4247,11 @@ def tied_peak_bootstrap_lrt(
     session_labels: np.ndarray | None = None,
     n_design_bootstrap: int = 2000,
     null_start: TMixture | None = None,
+    design_bootstrap_iid_cap: int = 400,
+    max_iter: int = 500,
+    tol: float = 1e-6,
+    split_delta: float = 0.5,
+    em_init: EMInitialisation | None = None,
 ) -> dict:
     """
     Description
@@ -4000,6 +4318,23 @@ def tied_peak_bootstrap_lrt(
         the truth, and a scratch null that stops short inflates the statistic: on the male
         end-to-start pool the scratch 3-peak null sat 2.13 nats below the laddered one, which
         moved the 3v4 statistic from 1.61 to 12.10. Defaults to None (scratch restarts only).
+    design_bootstrap_iid_cap (int)
+        Upper bound on the interval-level (iid) resamples of the design effect, which uses
+        ``min(n_design_bootstrap, design_bootstrap_iid_cap)``; defaults to 400 (the shipped
+        ``design_bootstrap_iid_cap``).
+    max_iter (int)
+        EM iteration cap of every tied-scale fit (observed and replicate); defaults to 500
+        (the shipped ``tied_em_max_iter``).
+    tol (float)
+        EM convergence tolerance of every tied-scale fit; defaults to 1e-6 (the shipped
+        ``tied_em_tol``).
+    split_delta (float)
+        Split separation of every split-initialised alternative; defaults to 0.5 (the
+        shipped ``split_delta``).
+    em_init (EMInitialisation or None)
+        Starting-point heuristics of every tied-scale fit, observed and replicate (see
+        :class:`EMInitialisation`); defaults to None, which uses ``EMInitialisation()``
+        (the shipped ``em_init_*`` values).
 
     Returns
     -------
@@ -4034,11 +4369,12 @@ def tied_peak_bootstrap_lrt(
     # With a null_start the warm start is one more restart beside the scratch ones and the
     # best-scoring fit wins, i.e. the better of the scratch and the laddered null is kept.
     null_model, null_ll, shared_scale = fit_tied_scale_t_mixture(
-        log_sub, n_peak_null, n_background, seed=seed, n_init=n_init_obs, reg_covar=reg_covar,
-        **null_start_kwargs)
+        log_sub, n_peak_null, n_background, seed=seed, n_init=n_init_obs, max_iter=max_iter,
+        tol=tol, reg_covar=reg_covar, em_init=em_init, **null_start_kwargs)
     alt_model, alt_ll, _ = fit_tied_nested_by_splitting(
         log_sub, null_model, n_peak_null, n_background, seed=seed, n_init=n_init_obs,
-        reg_covar=reg_covar)
+        reg_covar=reg_covar, split_delta=split_delta, max_iter=max_iter, tol=tol,
+        em_init=em_init)
     lr_obs = 2.0 * (alt_ll - null_ll)
 
     correction: dict = {}
@@ -4046,11 +4382,12 @@ def tied_peak_bootstrap_lrt(
         delta = (alt_model.score_samples(log_sub) - null_model.score_samples(log_sub))
         correction = _session_corrected_statistic(
             lr_obs, delta, session_labels, values.size, chosen, n_design_bootstrap, seed,
-            "tied_peak_bootstrap_lrt")
+            "tied_peak_bootstrap_lrt", design_bootstrap_iid_cap)
 
     replicates = Parallel(n_jobs=n_jobs)(
         delayed(_tied_peak_lrt_replicate)(null_model, subsample.size, n_peak_null,
-                                          n_background, n_init_boot, reg_covar, seed + 1 + b)
+                                          n_background, n_init_boot, reg_covar, seed + 1 + b,
+                                          max_iter, tol, split_delta, em_init)
         for b in range(int(B))
     )
     lr_null = np.asarray(replicates, dtype=float)

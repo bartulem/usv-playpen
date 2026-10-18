@@ -31,11 +31,6 @@ from ..time_utils import is_gui_context, smart_wait
 # prefix). Mirrors the build-side _CONTEXT_LABELS in build_naturalistic_usv_repository; the
 # generator opens the newest ``naturalistic_usv_repository_<token>_*.h5`` under
 # ``<naturalistic_usv_repository_dir>/<sex>/``.
-# Upper bound (seconds) on one SoX pass over a frequency-shifted segment. The segments are
-# presentation clips of seconds to minutes, which SoX processes in well under a second per
-# minute of audio, so a pass that runs this long has hung (e.g. waiting on a broken pipe).
-_SOX_TIMEOUT_S = 600
-
 _PLAYBACK_CONTEXTS = {
     "courtship_male":   ("courtship", "male"),
     "courtship_female": ("courtship", "female"),
@@ -209,7 +204,8 @@ class AudioGenerator:
             inter-sequence interval (ISI) of silence -- a session-first bout (``NaN``) uses
             a sampled real ISI -- clipped to ``max_isi_seconds`` so no single pause is huge
         (4) it keeps adding whole bouts, skipping any that (with the lead-out) would overrun
-            the target, until the remaining time is too small; it then writes a fixed
+            the target, until ``max_consecutive_bout_skips`` draws in a row have failed to
+            fit (the remaining time is too small); it then writes a fixed
             ``edge_silence_seconds`` lead-out silence. The file is therefore built of whole
             bouts and is *up to* ``total_acceptable_naturalistic_playback_time``, opening and
             closing on the fixed edge silence
@@ -271,6 +267,7 @@ class AudioGenerator:
         complexity_bandwidth = settings['complexity_bandwidth']
         edge_silence_seconds = settings['edge_silence_seconds']
         max_isi_seconds = settings['max_isi_seconds']
+        max_consecutive_bout_skips = settings['max_consecutive_bout_skips']
 
         output_file_dir = resolve_data_root('naturalistic_usv_playback_dir')
         output_file_dir.mkdir(parents=True, exist_ok=True)
@@ -341,9 +338,10 @@ class AudioGenerator:
                     total_playback_time_created += edge_silence_seconds
 
                     first_bout = True
-                    # stop once many consecutive draws no longer fit the remaining time
+                    # stop once `max_consecutive_bout_skips` consecutive draws no longer
+                    # fit the remaining time
                     consecutive_skips = 0
-                    while consecutive_skips < 100:
+                    while consecutive_skips < max_consecutive_bout_skips:
                         # draw a bout: uniform by default, or steered toward the scheduled
                         # target complexity (a linear ramp across the file position) when
                         # complexity_enabled -- bouts whose complex-fraction is near the
@@ -575,7 +573,7 @@ class AudioGenerator:
 
         self.message_output(f"Creating USV playback file(s) ended at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
 
-    def _run_sox(self, sox_args: str, cwd: Path) -> None:
+    def _run_sox(self, sox_args: str, cwd: Path, *, timeout_s: float) -> None:
         """
         Description
         -----------
@@ -583,7 +581,7 @@ class AudioGenerator:
         command used to be started with ``subprocess.Popen(...).wait()``, which had no
         timeout and discarded the return code, so a failed SoX pass went unnoticed and
         the next step read a missing or stale intermediate WAV. Here the command runs
-        with a timeout of ``_SOX_TIMEOUT_S`` seconds (``subprocess.TimeoutExpired``
+        with a timeout of ``timeout_s`` seconds (``subprocess.TimeoutExpired``
         propagates) and a non-zero exit raises.
 
         Parameters
@@ -593,6 +591,12 @@ class AudioGenerator:
             the shell when ``self.shell_usage_bool`` is True.
         cwd (pathlib.Path)
             Working directory of the command.
+        timeout_s (float)
+            Upper bound, in seconds, on this SoX pass (settings ``fs_sox_timeout_s``,
+            shipped 600). The segments are presentation clips of seconds to minutes,
+            which SoX processes in well under a second per minute of audio, so a pass
+            that runs this long has hung (e.g. waiting on a broken pipe). Keyword-only
+            and required.
 
         Returns
         -------
@@ -603,7 +607,7 @@ class AudioGenerator:
         RuntimeError
             If SoX exits with a non-zero return code.
         subprocess.TimeoutExpired
-            If SoX runs longer than ``_SOX_TIMEOUT_S`` seconds.
+            If SoX runs longer than ``timeout_s`` seconds.
         """
 
         completed = subprocess.run(args=sox_args,
@@ -611,7 +615,7 @@ class AudioGenerator:
                                    stdout=subprocess.DEVNULL,
                                    stderr=subprocess.STDOUT,
                                    shell=self.shell_usage_bool,
-                                   timeout=_SOX_TIMEOUT_S,
+                                   timeout=timeout_s,
                                    check=False)
         if completed.returncode != 0:
             message = f"SoX exited with return code {completed.returncode}: {sox_args}"
@@ -678,6 +682,7 @@ class AudioGenerator:
         compand_transfer = self.freq_shift_settings_dict['fs_compand_transfer']
         noise_reduction_std_threshold = self.freq_shift_settings_dict['fs_noise_reduction_std_threshold']
         sinc_upper_cutoff_hz = self.freq_shift_settings_dict['fs_sinc_upper_cutoff_hz']
+        sox_timeout_s = self.freq_shift_settings_dict['fs_sox_timeout_s']
 
         audio_file_loc = list((Path(self.root_directory) / 'audio' / audio_dir).glob(f"*{device_id}_*_ch{channel_id:02d}_*.wav"))
 
@@ -711,7 +716,7 @@ class AudioGenerator:
 
         # perform volume adjustment with SoX (if needed)
         if volume_adjustment:
-            self._run_sox(sox_args=f'''{self.command_addition}static_sox {temp_resampled_file} {temp_audible_file} compand {compand_transfer}''', cwd=output_dir)
+            self._run_sox(sox_args=f'''{self.command_addition}static_sox {temp_resampled_file} {temp_audible_file} compand {compand_transfer}''', cwd=output_dir, timeout_s=sox_timeout_s)
 
             processed_audio, _ = librosa.load(temp_audible_file, sr=new_sr)
         else:
@@ -726,9 +731,9 @@ class AudioGenerator:
 
         if 'filtered' not in audio_dir:
             upper_cutoff_freq = int(np.ceil(sinc_upper_cutoff_hz / (2 ** abs(octave_shift))))
-            self._run_sox(sox_args=f'''{self.command_addition}static_sox {temp_denoised_file} {final_output_file} sinc {upper_cutoff_freq}-0 tempo -s {tempo_adjustment_factor}''', cwd=output_dir)
+            self._run_sox(sox_args=f'''{self.command_addition}static_sox {temp_denoised_file} {final_output_file} sinc {upper_cutoff_freq}-0 tempo -s {tempo_adjustment_factor}''', cwd=output_dir, timeout_s=sox_timeout_s)
         else:
-            self._run_sox(sox_args=f'''{self.command_addition}static_sox {temp_denoised_file} {final_output_file} tempo -s {tempo_adjustment_factor}''', cwd=output_dir)
+            self._run_sox(sox_args=f'''{self.command_addition}static_sox {temp_denoised_file} {final_output_file} tempo -s {tempo_adjustment_factor}''', cwd=output_dir, timeout_s=sox_timeout_s)
 
         temp_resampled_file.unlink()
         if volume_adjustment:

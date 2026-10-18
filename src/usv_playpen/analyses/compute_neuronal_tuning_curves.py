@@ -1565,13 +1565,18 @@ def _spatial_coherence(rate_2d: np.ndarray) -> float:
     return r if np.isfinite(r) else float("nan")
 
 
-def _ramp_index(rate: np.ndarray, bin_centers_s: np.ndarray) -> float:
+def _ramp_index(rate: np.ndarray, bin_centers_s: np.ndarray, *,
+                near_anchor_s: float, far_anchor_s: float) -> float:
     """
     Description
     -----------
     Two-point ramp shape descriptor for a pre-USV PETH:
 
-      `ramp = (rate(t≈-0.1) - rate(t≈-1.5)) / (rate(t≈-0.1) + rate(t≈-1.5))`
+      `ramp = (rate(t≈near) - rate(t≈far)) / (rate(t≈near) + rate(t≈far))`
+
+    with the shipped anchors ``near = -0.1 s`` and ``far = -1.5 s``
+    (``calculate_neuronal_tuning_curves -> ramp_anchor_near_seconds`` /
+    ``ramp_anchor_far_seconds``).
 
     Returns NaN if either anchor bin is non-finite or the sum is 0.
     Independent of any shuffle test — purely a shape metric.
@@ -1583,12 +1588,21 @@ def _ramp_index(rate: np.ndarray, bin_centers_s: np.ndarray) -> float:
     bin_centers_s (np.ndarray, shape (n_bins,))
         Bin centers relative to USV onset (s); negative values
         precede the anchor.
+    near_anchor_s (float)
+        Time of the near-onset anchor bin relative to USV onset, in seconds
+        (settings ``ramp_anchor_near_seconds``, shipped -0.1). Keyword-only
+        and required.
+    far_anchor_s (float)
+        Time of the far anchor bin relative to USV onset, in seconds
+        (settings ``ramp_anchor_far_seconds``, shipped -1.5). Keyword-only and
+        required.
 
     Returns
     -------
     ramp (float)
-        Two-point ramp index in [-1, 1], or NaN if either anchor bin
-        is non-finite or `rate(-0.1) + rate(-1.5) == 0`.
+        Two-point ramp index in [-1, 1], or NaN if the PETH window does not
+        span both anchors, either anchor bin is non-finite or
+        `rate(near) + rate(far) == 0`.
     """
 
     rate = np.asarray(rate, dtype=float).ravel()
@@ -1599,10 +1613,10 @@ def _ramp_index(rate: np.ndarray, bin_centers_s: np.ndarray) -> float:
     # PETH window does not actually span them — otherwise argmin would clamp
     # to an edge bin and silently compute the ramp over the wrong interval.
     lo, hi = float(centers.min()), float(centers.max())
-    if not (lo <= -1.5 <= hi and lo <= -0.1 <= hi):
+    if not (lo <= far_anchor_s <= hi and lo <= near_anchor_s <= hi):
         return float("nan")
-    near_idx = int(np.argmin(np.abs(centers - (-0.1))))
-    far_idx = int(np.argmin(np.abs(centers - (-1.5))))
+    near_idx = int(np.argmin(np.abs(centers - near_anchor_s)))
+    far_idx = int(np.argmin(np.abs(centers - far_anchor_s)))
     rn = rate[near_idx]
     rf = rate[far_idx]
     if not (np.isfinite(rn) and np.isfinite(rf)):
@@ -2907,15 +2921,17 @@ class NeuronalTuning(FeatureZoo):
             vocal blocks plus `triage_stats["vmi"]` (added by
             `_compute_one_cluster_vocal` before this method is invoked).
         params (dict)
-            `calculate_neuronal_tuning_curves` settings block (currently
-            unused here; reserved for future thresholds).
+            `calculate_neuronal_tuning_curves` settings block; supplies
+            `ramp_anchor_near_seconds` / `ramp_anchor_far_seconds`, the two
+            anchors of the PETH ramp index.
 
         Returns
         -------
         None
         """
 
-        del params  # unused (reserved)
+        ramp_near_s = float(params["ramp_anchor_near_seconds"])
+        ramp_far_s = float(params["ramp_anchor_far_seconds"])
         partial.setdefault("triage_stats", {})
         ts = partial["triage_stats"]
         ts.setdefault("usv_peth", {})
@@ -2959,7 +2975,8 @@ class NeuronalTuning(FeatureZoo):
                     float(bin_centers_s[peak_idx])
                     if peak_idx >= 0 else float("nan")
                 ),
-                "ramp_index": _ramp_index(rate, bin_centers_s),
+                "ramp_index": _ramp_index(rate, bin_centers_s, near_anchor_s=ramp_near_s,
+                                          far_anchor_s=ramp_far_s),
                 "excit": runs["excit"],
                 "suppress": runs["suppress"],
             }
@@ -3181,6 +3198,8 @@ class NeuronalTuning(FeatureZoo):
         em_stops: np.ndarray,
         em_durations: np.ndarray,
         bout_quiet_s: float,
+        *,
+        wilcoxon_exact_max_n: int,
     ) -> dict:
         """
         Description
@@ -3224,6 +3243,11 @@ class NeuronalTuning(FeatureZoo):
             window length (one parameter for both, since the 2-s clean
             baseline pre-bout is guaranteed by construction once a new
             bout starts).
+        wilcoxon_exact_max_n (int)
+            Largest number of valid (baseline, USV) pairs for which the
+            Wilcoxon p-value is computed with scipy's exact distribution;
+            above it the normal approximation is used (settings
+            `vmi_wilcoxon_exact_max_n`, shipped 25). Keyword-only and required.
 
         Returns
         -------
@@ -3309,7 +3333,7 @@ class NeuronalTuning(FeatureZoo):
             fr_baseline_per_bout[valid], fr_usv_per_bout[valid]
         ):
             try:
-                method = "exact" if n_valid <= 25 else "approx"
+                method = "exact" if n_valid <= wilcoxon_exact_max_n else "approx"
                 wtest = stats.wilcoxon(
                     fr_baseline_per_bout[valid],
                     fr_usv_per_bout[valid],
@@ -3602,6 +3626,7 @@ class NeuronalTuning(FeatureZoo):
                 em_stops=em_stops,
                 em_durations=em_durations,
                 bout_quiet_s=bout_quiet_s,
+                wilcoxon_exact_max_n=int(params["vmi_wilcoxon_exact_max_n"]),
             )
             vmi_payload["role"] = role
             vmi_payload["sex"] = sex_label

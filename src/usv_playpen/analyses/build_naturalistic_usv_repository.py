@@ -535,7 +535,7 @@ class NaturalisticUsvRepositoryBuilder:
                     n_time = int(spec_params['num_time_bins'])
                     masks, masks_len = build_session_masks(h5_file, session_id, selected_rows, n_freq, n_time)
                     row_to_pos = {int(r): i for i, r in enumerate(selected_rows)}
-            except (OSError, KeyError, ValueError) as session_error:
+            except (OSError, KeyError, ValueError, pls.exceptions.PolarsError) as session_error:
                 self.message_output(f"Skipping {root.name}: {session_error}")
                 skipped_sessions.append(root.name)
                 continue

@@ -226,6 +226,8 @@ def calculate_sei(
         idx_tti: int = 3,
         idx_head: int = 5,
         v_max: float | None = None,
+        *,
+        speed_percentile: float,
 ) -> np.ndarray:
     """
     Description
@@ -299,7 +301,13 @@ def calculate_sei(
     idx_head (int, optional)
         Index for the observer's Head/Pivot (default 5).
     v_max (float, optional)
-        Normalization factor for speed. Defaults to the 99th percentile of speed_arr.
+        Normalization factor for speed. When None (the production path), it is the
+        ``speed_percentile``-th percentile of ``speed_arr``.
+    speed_percentile (float)
+        Percentile (0-100) of ``speed_arr`` used as ``v_max`` when ``v_max`` is None;
+        read from ``compute_behavioral_features -> sei_speed_percentile`` (shipped 99,
+        so a handful of extreme-speed frames cannot compress every other frame's
+        speed term). Keyword-only and required.
 
     Returns
     -------
@@ -338,7 +346,7 @@ def calculate_sei(
         cos_theta = np.clip(cos_theta, -1.0, 1.0)
 
         if v_max is None:
-            v_max = np.nanpercentile(speed_arr, 99)
+            v_max = np.nanpercentile(speed_arr, speed_percentile)
         v_norm = np.clip(speed_arr / (v_max + 1e-6), 0, 1)
 
         # Unbounded sharpening: tolerable here because `cos` plateaus
@@ -969,7 +977,7 @@ def get_euler_ang(rot_matrix: np.ndarray) -> np.ndarray:
     return desired_euler_angles
 
 
-def get_back_angles(back_directions: np.ndarray) -> np.ndarray:
+def get_back_angles(back_directions: np.ndarray, *, optimizer_seed: int) -> np.ndarray:
     """
     Description
     -----------
@@ -983,6 +991,12 @@ def get_back_angles(back_directions: np.ndarray) -> np.ndarray:
     back_directions (np.ndarray)
         A (n_frames, 3) shape ndarray of back direction data
         Array of back direction data.
+    optimizer_seed (int)
+        Seed of the local numpy generator that draws the Nelder-Mead initial guess
+        (two angles uniform in (-pi/4, pi/4)); read from
+        ``compute_behavioral_features -> back_angles_optimizer_seed`` (shipped 0) so the
+        canonical back frame is bit-exactly reproducible across runs. Keyword-only and
+        required.
 
     Returns
     -------
@@ -1088,7 +1102,7 @@ def get_back_angles(back_directions: np.ndarray) -> np.ndarray:
 
     # use a locally seeded RNG so the Nelder-Mead initial guess is bit-exactly
     # reproducible across runs while keeping a non-trivial start in (-pi/4, pi/4)
-    _rng = np.random.default_rng(seed=0)
+    _rng = np.random.default_rng(seed=optimizer_seed)
     res = minimize(
         distance_to_x_axis,
         x0=np.array(
@@ -1591,7 +1605,11 @@ class FeatureZoo:
         called by `save_behavioral_features_to_file` after the
         distributions are computed; calling it directly is also
         supported for ad-hoc replotting from a precomputed
-        `feature_dict`.
+        `feature_dict`. Each page's layout (``panels_per_row`` panels per row,
+        ``figure_width_inches`` wide, ``row_height_inches`` per row) and the figure's own
+        resolution (``figure_dpi``) are read from
+        `visualizations_settings.json` -> `behavioral_feature_distributions`;
+        the PDF pages are saved at `figures.dpi`.
 
         Parameters
         ----------
@@ -1690,6 +1708,10 @@ class FeatureZoo:
             pdf_dpi = int(
                 self.visualizations_parameter_dict["figures"]["dpi"]
             )
+            # Figure size and the figure's own resolution come from
+            # visualizations_settings.json -> behavioral_feature_distributions.
+            distribution_figure_settings = self.visualizations_parameter_dict["behavioral_feature_distributions"]
+            panels_per_row = distribution_figure_settings["panels_per_row"]
             with PdfPages(plot_file_name) as pdf_fig:
                 for plot_feature_key, plot_feature_list in plot_features.items():
                     if "social" in plot_feature_key:
@@ -1707,13 +1729,16 @@ class FeatureZoo:
                         warnings.simplefilter(action="ignore")
 
                         row_num = int(
-                            np.ceil((len(plot_feature_list)) / 6)
+                            np.ceil((len(plot_feature_list)) / panels_per_row)
                         )
                         fig = plt.figure(
-                            figsize=(6.4, float(row_num)), dpi=600, tight_layout=True
+                            figsize=(distribution_figure_settings["figure_width_inches"],
+                                     float(row_num) * distribution_figure_settings["row_height_inches"]),
+                            dpi=distribution_figure_settings["figure_dpi"],
+                            tight_layout=True,
                         )
                         fig.suptitle(t=f"{plot_feature_key}", fontsize=8)
-                        gs = gridspec.GridSpec(nrows=row_num, ncols=6)
+                        gs = gridspec.GridSpec(nrows=row_num, ncols=panels_per_row)
 
                         gs_x = 0
                         gs_y = 0
@@ -1770,7 +1795,7 @@ class FeatureZoo:
                                 cbar.outline.set_visible(True)
 
                                 gs_y += 1
-                                if gs_y > 5:
+                                if gs_y > panels_per_row - 1:
                                     gs_y = 0
                                     gs_x += 1
                             else:
@@ -1839,7 +1864,7 @@ class FeatureZoo:
                                 ax.set_box_aspect(1)
 
                                 gs_y += 1
-                                if gs_y > 5:
+                                if gs_y > panels_per_row - 1:
                                     gs_y = 0
                                     gs_x += 1
 
@@ -2189,7 +2214,8 @@ class FeatureZoo:
                 "bij,bj->bi", back_root_inv, inv_normalized_back_vector
             )
 
-            global_back_angles[mouse_num, :, :] = get_back_angles(back_directions)
+            global_back_angles[mouse_num, :, :] = get_back_angles(back_directions,
+                                                                     optimizer_seed=self.behavioral_parameters_dict["back_angles_optimizer_seed"])
 
             (
                 global_back_angles_1st_der[mouse_num, :, :],
@@ -2804,7 +2830,8 @@ class FeatureZoo:
                                                                 observed_node_idx=node_idx["Nose"],
                                                                 idx_nose=node_idx["Nose"],
                                                                 idx_tti=node_idx["TTI"],
-                                                                idx_head=node_idx["Head"])
+                                                                idx_head=node_idx["Head"],
+                                                                speed_percentile=self.behavioral_parameters_dict["sei_speed_percentile"])
 
                 # mouse1-mouse2 anogenital SEI
                 social_engagement_indices[:, 1] = calculate_sei(tracks=mouse_data,
@@ -2814,7 +2841,8 @@ class FeatureZoo:
                                                                 observed_node_idx=node_idx["TTI"],
                                                                 idx_nose=node_idx["Nose"],
                                                                 idx_tti=node_idx["TTI"],
-                                                                idx_head=node_idx["Head"])
+                                                                idx_head=node_idx["Head"],
+                                                                speed_percentile=self.behavioral_parameters_dict["sei_speed_percentile"])
 
                 # mouse2-mouse1 orofacial SEI
                 social_engagement_indices[:, 2] = calculate_sei(tracks=mouse_data,
@@ -2824,7 +2852,8 @@ class FeatureZoo:
                                                                 observed_node_idx=node_idx["Nose"],
                                                                 idx_nose=node_idx["Nose"],
                                                                 idx_tti=node_idx["TTI"],
-                                                                idx_head=node_idx["Head"])
+                                                                idx_head=node_idx["Head"],
+                                                                speed_percentile=self.behavioral_parameters_dict["sei_speed_percentile"])
 
                 # mouse2-mouse1 anogenital SEI
                 social_engagement_indices[:, 3] = calculate_sei(tracks=mouse_data,
@@ -2834,7 +2863,8 @@ class FeatureZoo:
                                                                 observed_node_idx=node_idx["TTI"],
                                                                 idx_nose=node_idx["Nose"],
                                                                 idx_tti=node_idx["TTI"],
-                                                                idx_head=node_idx["Head"])
+                                                                idx_head=node_idx["Head"],
+                                                                speed_percentile=self.behavioral_parameters_dict["sei_speed_percentile"])
 
                 # compute derivatives for SEI
                 social_engagement_indices_1st_der, social_engagement_indices_2nd_der = calculate_derivatives(

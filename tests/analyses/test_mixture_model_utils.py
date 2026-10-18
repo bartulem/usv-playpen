@@ -53,6 +53,7 @@ from matplotlib.patches import Polygon, Rectangle
 
 from usv_playpen.analyses import mixture_model_utils
 from usv_playpen.analyses.mixture_model_utils import (
+    EMInitialisation,
     IGMixture,
     TMixture,
     _alpha,
@@ -675,7 +676,7 @@ def test_plot_gmm_fit_bin_means_are_below_the_point_wise_apex():
 
     # both draw modes render without disturbing the axes contract
     for as_bin_means in (False, True):
-        fig, ax = plot_gmm_fit(model=model, x=x, bins=40,
+        fig, ax = plot_gmm_fit(model=model, x=x, figsize=(5, 5), density_grid_points=500, bin_mean_grid_points=4000, bins=40,
                                density_as_bin_means=as_bin_means)
         assert ax.get_ylabel() == "Density"
         plt.close(fig)
@@ -701,7 +702,7 @@ def test_plot_gmm_fit_bin_means_conserve_probability_mass():
     exact = float(np.trapezoid(np.exp(model.score_samples(grid.reshape(-1, 1))), grid))
     assert float(np.sum(bin_means * widths)) == pytest.approx(exact, rel=1e-3)
 
-    fig, _ = plot_gmm_fit(model=model, x=x, bins=30, density_as_bin_means=True)
+    fig, _ = plot_gmm_fit(model=model, x=x, figsize=(5, 5), density_grid_points=500, bin_mean_grid_points=4000, bins=30, density_as_bin_means=True)
     plt.close(fig)
 
 
@@ -942,7 +943,7 @@ def test_session_design_effect_is_one_for_independent_data():
     rng = np.random.default_rng(8)
     delta = rng.normal(0.0, 1.0, 12000)
     session_index = np.repeat(np.arange(120), 100)
-    design_effect, _, _ = _session_design_effect(delta, session_index, n_bootstrap=1500, seed=0)
+    design_effect, _, _ = _session_design_effect(delta, session_index, n_bootstrap=1500, seed=0, iid_cap=400)
 
     assert design_effect == pytest.approx(1.0, abs=0.2)
 
@@ -961,7 +962,7 @@ def test_session_design_effect_is_one_for_independent_data_with_a_mean_and_unequ
     estimates = []
     for rep in range(5):
         delta = rng.normal(0.005, 0.02, size=session_index.size)
-        design_effect, _, _ = _session_design_effect(delta, session_index, n_bootstrap=1500, seed=rep)
+        design_effect, _, _ = _session_design_effect(delta, session_index, n_bootstrap=1500, seed=rep, iid_cap=400)
         estimates.append(design_effect)
 
     assert float(np.mean(estimates)) == pytest.approx(1.0, abs=0.25)
@@ -978,7 +979,7 @@ def test_session_design_effect_grows_with_session_level_shifts():
     delta = np.repeat(offsets, per_session) + rng.normal(0.0, 1.0, n_sessions * per_session)
     session_index = np.repeat(np.arange(n_sessions), per_session)
     design_effect, clustered_se, independent_se = _session_design_effect(
-        delta, session_index, n_bootstrap=1500, seed=0)
+        delta, session_index, n_bootstrap=1500, seed=0, iid_cap=400)
 
     assert clustered_se > independent_se
     assert 25.0 < design_effect < 80.0
@@ -1603,7 +1604,8 @@ def test_t_mixture_cv_neg_loglik_matches_a_manual_kfold(monkeypatch):
     expected = 0.0
     for (train_idx, test_idx), (x_train, kwargs, model) in zip(folds, calls, strict=True):
         np.testing.assert_allclose(x_train, np.exp(log_x[train_idx]), rtol=1e-12)
-        assert kwargs == {"n_components": 2, "seed": 7, "n_init": 1, "reg_covar": 2e-3}
+        assert kwargs == {"n_components": 2, "seed": 7, "n_init": 1, "max_iter": 300, "tol": 1e-5,
+                          "reg_covar": 2e-3, "em_init": None}
         expected += float(np.sum(model.score_samples(log_x[test_idx])))
     assert out == pytest.approx(-2.0 * expected, rel=1e-12)
 
@@ -1895,7 +1897,8 @@ def test_fit_tied_nested_by_splitting_builds_every_split_start_and_keeps_the_bes
 
     assert best == (("fit", 2), -30.0, 0.1)
     assert len(calls) == 5
-    assert calls[0] == (3, 1, {"seed": 3, "n_init": 2, "reg_covar": 2e-3})
+    assert calls[0] == (3, 1, {"seed": 3, "n_init": 2, "max_iter": 500, "tol": 1e-6, "reg_covar": 2e-3,
+                               "em_init": None})
     shared = 0.045
     sigma = np.sqrt(shared)
     expected = []
@@ -1965,7 +1968,8 @@ def test_tied_peak_lrt_replicate_draws_warm_starts_and_returns_twice_the_gain(mo
 
     monkeypatch.setattr(mixture_model_utils, "fit_tied_scale_t_mixture", fake_tied)
     monkeypatch.setattr(mixture_model_utils, "fit_tied_nested_by_splitting", fake_nested)
-    lr = _tied_peak_lrt_replicate(model, 50, 1, 1, 3, 2e-3, 17)
+    em_init = EMInitialisation()
+    lr = _tied_peak_lrt_replicate(model, 50, 1, 1, 3, 2e-3, 17, 500, 1e-6, 0.5, em_init)
 
     assert lr == pytest.approx(19.0, abs=1e-12)
     expected_draw = _sample_from_mixture(model, 50, np.random.default_rng(17))
@@ -1973,6 +1977,7 @@ def test_tied_peak_lrt_replicate_draws_warm_starts_and_returns_twice_the_gain(mo
     np.testing.assert_array_equal(draw, expected_draw)
     assert (n_peak, n_background) == (1, 1)
     assert (kwargs["seed"], kwargs["n_init"], kwargs["reg_covar"]) == (17, 3, 2e-3)
+    assert kwargs["em_init"] is em_init
     start = kwargs["init_params"]
     np.testing.assert_array_equal(start[0], [0.6, 0.4])
     np.testing.assert_array_equal(start[1], [-2.5, 0.0])
@@ -1982,7 +1987,8 @@ def test_tied_peak_lrt_replicate_draws_warm_starts_and_returns_twice_the_gain(mo
     np.testing.assert_array_equal(alt_draw, expected_draw)
     assert alt_null is null_fit
     assert (alt_peak, alt_background) == (1, 1)
-    assert alt_kwargs == {"seed": 17, "n_init": 3, "reg_covar": 2e-3}
+    assert alt_kwargs == {"seed": 17, "n_init": 3, "reg_covar": 2e-3, "split_delta": 0.5,
+                          "max_iter": 500, "tol": 1e-6, "em_init": em_init}
 
 
 def _t_patch_tied_lrt(monkeypatch, record, lr_values, null_scores, alt_scores):
@@ -2021,7 +2027,8 @@ def _t_patch_tied_lrt(monkeypatch, record, lr_values, null_scores, alt_scores):
         record["alt"] = (base, n_peak, n_background, dict(kwargs))
         return alt_model, -118.0, 0.2
 
-    def fake_replicate(model, n_draw, n_peak, n_background, n_init, reg_covar, seed):
+    def fake_replicate(model, n_draw, n_peak, n_background, n_init, reg_covar, seed,
+                       _max_iter, _tol, _split_delta, _em_init):
         """Records one replicate's arguments and returns its scripted statistic."""
         record["replicates"].append((model, n_draw, n_peak, n_background, n_init, reg_covar, seed))
         return lr_values[len(record["replicates"]) - 1]
@@ -2051,10 +2058,13 @@ def test_tied_peak_bootstrap_lrt_plumbing_and_summary_without_sessions(monkeypat
 
     log_sub, n_peak, n_background, kwargs = record["null"]
     np.testing.assert_allclose(log_sub, np.log(pool), rtol=1e-12)
-    assert (n_peak, n_background, kwargs) == (2, 1, {"seed": 5, "n_init": 3, "reg_covar": 2e-3})
+    assert (n_peak, n_background, kwargs) == (2, 1, {"seed": 5, "n_init": 3, "max_iter": 500,
+                                                     "tol": 1e-6, "reg_covar": 2e-3, "em_init": None})
     base, alt_peak, alt_background, alt_kwargs = record["alt"]
     assert base is null_model
-    assert (alt_peak, alt_background, alt_kwargs) == (2, 1, {"seed": 5, "n_init": 3, "reg_covar": 2e-3})
+    assert (alt_peak, alt_background, alt_kwargs) == (2, 1, {"seed": 5, "n_init": 3, "reg_covar": 2e-3,
+                                                             "split_delta": 0.5, "max_iter": 500,
+                                                             "tol": 1e-6, "em_init": None})
     assert [r[6] for r in record["replicates"]] == [6, 7, 8, 9, 10]
     for model, n_draw, rp, rb, n_init, reg_covar, _ in record["replicates"]:
         assert model is null_model
@@ -2155,7 +2165,7 @@ def test_tied_peak_bootstrap_lrt_session_correction_uses_the_observed_delta(monk
     result = tied_peak_bootstrap_lrt(pool, 1, 1, B=5, n_subsample=1000, seed=5,
                                      session_labels=labels, n_design_bootstrap=50)
     expected = _session_corrected_statistic(4.0, alt_scores - null_scores, labels, 40,
-                                            np.arange(40), 50, 5, "tied_peak_bootstrap_lrt")
+                                            np.arange(40), 50, 5, "tied_peak_bootstrap_lrt", 400)
 
     for key in ("design_effect_raw", "design_effect", "clustered_se", "independent_se",
                 "effective_n", "lr_corrected"):
@@ -2182,7 +2192,7 @@ def test_tied_peak_bootstrap_lrt_design_effect_follows_the_seed(monkeypatch):
     result = tied_peak_bootstrap_lrt(pool, 1, 1, B=2, n_subsample=1000, seed=9,
                                      session_labels=labels, n_design_bootstrap=60)
     expected = _session_corrected_statistic(4.0, alt_scores - null_scores, labels, 60,
-                                            np.arange(60), 60, 9, "tied_peak_bootstrap_lrt")
+                                            np.arange(60), 60, 9, "tied_peak_bootstrap_lrt", 400)
 
     assert result["design_effect_raw"] == pytest.approx(expected["design_effect_raw"], rel=1e-12)
     assert result["clustered_se"] == pytest.approx(expected["clustered_se"], rel=1e-12)
@@ -3323,7 +3333,7 @@ def test_report_gmm_stats_handles_an_empty_mode_set(monkeypatch):
     """
     gmm = _g_make_gmm([0.0, 1.0], [1.0, 1.0], [0.5, 0.5])
     monkeypatch.setattr(mixture_model_utils, "gmm_modes",
-                        lambda _model: (np.empty((0, 1)), np.empty((0,))))
+                        lambda _model, **_kwargs: (np.empty((0, 1)), np.empty((0,))))
 
     out_means, out_sds, modes, dens = report_gmm_stats(gmm, np.array([0, 1]))
 
@@ -3808,7 +3818,8 @@ def test_ig_mixture_cv_neg_loglik_matches_a_hand_built_shuffled_kfold(monkeypatc
     assert len(recorded) == 3
     for fold_idx, ((args, kwargs), (train_idx, _)) in enumerate(zip(recorded, splits, strict=True)):
         np.testing.assert_array_equal(args[0], x[train_idx])
-        assert kwargs == {"n_components": 2, "seed": 5 + fold_idx, "n_init": 1, "reg_covar": 1e-3}
+        assert kwargs == {"n_components": 2, "seed": 5 + fold_idx, "n_init": 1, "max_iter": 300,
+                          "tol": 1e-5, "reg_covar": 1e-3, "em_init": None}
 
 
 _C_MISSING = "missing"
@@ -3921,7 +3932,8 @@ class _CFakeFitter:
         self.requests = []
 
     def __call__(self, x, n_components, seed=_C_MISSING, n_init=_C_MISSING,
-                 reg_covar=_C_MISSING, x_is_log=_C_MISSING, init_params=_C_MISSING):
+                 reg_covar=_C_MISSING, x_is_log=_C_MISSING, init_params=_C_MISSING,
+                 max_iter=_C_MISSING, tol=_C_MISSING, em_init=_C_MISSING):
         """
         Records the request and returns a fake fitted model.
 
@@ -3931,7 +3943,7 @@ class _CFakeFitter:
             The data handed to the fitter.
         n_components (int)
             Requested component count.
-        seed, n_init, reg_covar, x_is_log, init_params
+        seed, n_init, reg_covar, x_is_log, init_params, max_iter, tol, em_init
             Fitter keywords; ``'missing'`` when not passed.
 
         Returns
@@ -3951,6 +3963,9 @@ class _CFakeFitter:
             "reg_covar": reg_covar,
             "x_is_log": x_is_log,
             "init_params": init_params,
+            "max_iter": max_iter,
+            "tol": tol,
+            "em_init": em_init,
             "model": model,
         })
         return model, None
@@ -3987,7 +4002,8 @@ class _CFakeSplitter:
         self.requests = []
 
     def __call__(self, log_x, base_model, n_init=_C_MISSING, seed=_C_MISSING,
-                 reg_covar=_C_MISSING):
+                 reg_covar=_C_MISSING, split_delta=_C_MISSING, max_iter=_C_MISSING,
+                 tol=_C_MISSING, em_init=_C_MISSING):
         """
         Records the request and returns the split model and its log-likelihood.
 
@@ -3997,7 +4013,7 @@ class _CFakeSplitter:
             Log-space data.
         base_model (_CFakeModel)
             The model being split.
-        n_init, seed, reg_covar
+        n_init, seed, reg_covar, split_delta, max_iter, tol, em_init
             Keywords; ``'missing'`` when not passed.
 
         Returns
@@ -4011,7 +4027,8 @@ class _CFakeSplitter:
                             self.level_fn(base_model.n_components + 1, seed))
         self.requests.append({"log_x": np.array(log_x, dtype=float, copy=True),
                            "base": base_model, "n_init": n_init, "seed": seed,
-                           "reg_covar": reg_covar, "model": model})
+                           "reg_covar": reg_covar, "split_delta": split_delta,
+                           "max_iter": max_iter, "tol": tol, "em_init": em_init, "model": model})
         return model, float(np.sum(model.score_samples(np.asarray(log_x).reshape(-1, 1))))
 
 
@@ -4511,7 +4528,7 @@ def test_session_design_effect_matches_a_hand_derivation():
     rng = np.random.default_rng(21)
     session_index = np.repeat(np.arange(5), [6, 14, 9, 20, 11])
     delta = rng.normal(0.0, 0.01, session_index.size) + 0.02 * session_index
-    result = _session_design_effect(delta, session_index, 500, 4)
+    result = _session_design_effect(delta, session_index, 500, 4, 400)
     expected = _c_design_effect_by_hand(delta, session_index, 500, 4)
 
     assert result[2] < 1.0
@@ -4524,7 +4541,7 @@ def test_session_design_effect_is_nan_when_differences_are_constant():
     the ratio is undefined and must be reported as NaN rather than divided.
     """
     design_effect, _, independent_se = _session_design_effect(
-        np.full(30, 0.5), np.repeat(np.arange(3), 10), 50, 0)
+        np.full(30, 0.5), np.repeat(np.arange(3), 10), 50, 0, 400)
 
     assert independent_se == 0.0
     assert np.isnan(design_effect)
@@ -4577,8 +4594,8 @@ def test_session_corrected_statistic_divides_by_an_unfloored_design_effect():
     ``n / design_effect`` and the corrected statistic ``lr / design_effect``.
     """
     delta, labels, chosen, session_index = _c_corrected_inputs(3)
-    raw, clustered_se, independent_se = _session_design_effect(delta, session_index, 300, 6)
-    out = _session_corrected_statistic(12.0, delta, labels, labels.size, chosen, 300, 6, "caller")
+    raw, clustered_se, independent_se = _session_design_effect(delta, session_index, 300, 6, 400)
+    out = _session_corrected_statistic(12.0, delta, labels, labels.size, chosen, 300, 6, "caller", 400)
 
     assert 1.0 < raw < 2.0
     assert out["design_effect_raw"] == raw
@@ -4595,7 +4612,7 @@ def test_session_corrected_statistic_floors_the_design_effect_at_one():
     the statistic and the effective sample size untouched (not NaN).
     """
     delta, labels, chosen, _session_index = _c_corrected_inputs(8)
-    out = _session_corrected_statistic(12.0, delta, labels, labels.size, chosen, 300, 0, "caller")
+    out = _session_corrected_statistic(12.0, delta, labels, labels.size, chosen, 300, 0, "caller", 400)
 
     assert out["design_effect_raw"] < 1.0
     assert out["design_effect"] == 1.0
@@ -4751,7 +4768,8 @@ def test_bootstrap_lrt_session_correction_receives_its_own_fits(monkeypatch):
     """
     recorded = {}
 
-    def _spy(lr_obs, delta, _session_labels, n_values, chosen, n_design_bootstrap, seed, caller):
+    def _spy(lr_obs, delta, _session_labels, n_values, chosen, n_design_bootstrap, seed, caller,
+             _design_bootstrap_iid_cap):
         """Records the correction arguments and returns a canned correction."""
         recorded.update(lr_obs=lr_obs, delta=np.array(delta), n_values=n_values,
                         chosen=np.array(chosen), n_design_bootstrap=n_design_bootstrap,
@@ -4896,7 +4914,8 @@ def test_bootstrap_lrt_replicate_gauss_path_arguments_and_statistic():
     """
     fitter = _CFakeFitter(lambda n_components, _seed, _x_is_log: -1.0 if n_components == 1 else -0.5)
     model_null = _CFakeModel(1, -1.0)
-    lr = _bootstrap_lrt_replicate(3, 5, model_null, fitter, 1, 2, 20, 2, 1e-3)
+    lr = _bootstrap_lrt_replicate(3, 5, model_null, fitter, 1, 2, 20, 2, 1e-3, 300, 1e-5, 0.5,
+                                  EMInitialisation())
     expected_draws = _sample_from_mixture(model_null, 20, np.random.default_rng((5, 3)))
 
     assert lr == 20.0
@@ -4917,18 +4936,21 @@ def test_bootstrap_lrt_replicate_t_path_starts_null_at_truth_and_splits(monkeypa
     fitter = _CFakeFitter(lambda _n_components, _seed, _x_is_log: -1.0)
     splitter_requests = []
 
-    def _splitter(log_x, base_model, n_init=_C_MISSING, seed=_C_MISSING, reg_covar=_C_MISSING):
+    def _splitter(log_x, base_model, n_init=_C_MISSING, seed=_C_MISSING, reg_covar=_C_MISSING,
+                  split_delta=_C_MISSING, max_iter=_C_MISSING, tol=_C_MISSING, em_init=_C_MISSING):
         """Records the split request and returns a fixed log-likelihood of -10."""
         splitter_requests.append({"log_x": np.array(log_x), "base": base_model, "n_init": n_init,
-                               "seed": seed, "reg_covar": reg_covar})
+                               "seed": seed, "reg_covar": reg_covar, "split_delta": split_delta,
+                               "max_iter": max_iter, "tol": tol, "em_init": em_init})
         return None, -10.0
 
     monkeypatch.setattr(mixture_model_utils, "fit_log_t_mixture", fitter)
     monkeypatch.setattr(mixture_model_utils, "fit_nested_by_splitting", _splitter)
     model_null = TMixture(weights=[0.4, 0.6], means=[-1.0, 1.0], covariances=[0.09, 0.25], nus=[4.0, 12.0])
 
+    em_init = EMInitialisation()
     lr = _bootstrap_lrt_replicate(3, 5, model_null, mixture_model_utils.fit_log_t_mixture,
-                                  2, 3, 20, 2, 1e-3)
+                                  2, 3, 20, 2, 1e-3, 300, 1e-5, 0.5, em_init)
     expected_draws = _sample_from_mixture(model_null, 20, np.random.default_rng((5, 3)))
 
     assert lr == 20.0
@@ -4943,6 +4965,8 @@ def test_bootstrap_lrt_replicate_t_path_starts_null_at_truth_and_splits(monkeypa
     assert split["base"] is request["model"]
     np.testing.assert_array_equal(split["log_x"], expected_draws)
     assert (split["n_init"], split["seed"], split["reg_covar"]) == (2, 8, 1e-3)
+    assert request["em_init"] is em_init
+    assert split["em_init"] is em_init
 
 
 def test_fit_nested_by_splitting_tries_every_split_and_keeps_the_first_best(monkeypatch):
@@ -4960,12 +4984,13 @@ def test_fit_nested_by_splitting_tries_every_split_and_keeps_the_first_best(monk
     requests = []
 
     def _fitter(x, n_components, seed=_C_MISSING, n_init=_C_MISSING, reg_covar=_C_MISSING,
-                x_is_log=_C_MISSING, init_params=_C_MISSING):
+                x_is_log=_C_MISSING, init_params=_C_MISSING, max_iter=_C_MISSING, tol=_C_MISSING,
+                em_init=_C_MISSING):
         """Returns a fake whose summed log-likelihood is the next scripted value."""
         model = _CFakeModel(n_components, lls[len(requests)] / n_points)
         requests.append({"x": np.array(x), "K": n_components, "seed": seed, "n_init": n_init,
                       "reg_covar": reg_covar, "x_is_log": x_is_log, "init_params": init_params,
-                      "model": model})
+                      "max_iter": max_iter, "tol": tol, "em_init": em_init, "model": model})
         return model, None
 
     monkeypatch.setattr(mixture_model_utils, "fit_log_t_mixture", _fitter)
@@ -4973,6 +4998,8 @@ def test_fit_nested_by_splitting_tries_every_split_and_keeps_the_first_best(monk
     log_x = np.linspace(-2.0, 3.0, n_points)
 
     model, ll = fit_nested_by_splitting(log_x, base, n_init=3, seed=4, reg_covar=1e-3, split_delta=0.5)
+    # Every fit (random restart and split start alike) receives the caller's em_init.
+    assert all(request["em_init"] is None for request in requests)
 
     assert model is requests[2]["model"]
     assert ll == -16.0
@@ -5040,7 +5067,7 @@ def test_plot_gmm_fit_histogram_is_the_density_of_the_windowed_data():
     gmm, x = _c_plot_model()
     xlims = (-1.5, 1.8)
     x = np.concatenate([x, [xlims[0], xlims[1], -3.0, 4.0]])
-    fig, ax = plot_gmm_fit(gmm, x, figsize=(4, 3), bins=25, xlims=xlims, color="#3366aa",
+    fig, ax = plot_gmm_fit(gmm, x, figsize=(4, 3), density_grid_points=500, bin_mean_grid_points=4000, bins=25, xlims=xlims, color="#3366aa",
                            edge_color="#aa2200", histtype="bar")
     kept = x[(x >= xlims[0]) & (x <= xlims[1])]
     heights, edges = np.histogram(kept, bins=25, density=True)
@@ -5062,7 +5089,7 @@ def test_plot_gmm_fit_default_histogram_is_one_filled_step_polygon():
     filled polygon spanning the data range, in the requested fill colour.
     """
     gmm, x = _c_plot_model()
-    fig, ax = plot_gmm_fit(gmm, x, bins=20, color="#4682b4", legend=False)
+    fig, ax = plot_gmm_fit(gmm, x, figsize=(5, 5), density_grid_points=500, bin_mean_grid_points=4000, bins=20, color="#4682b4", legend=False)
 
     assert len(ax.patches) == 1
     assert isinstance(ax.patches[0], Polygon)
@@ -5083,7 +5110,7 @@ def test_plot_gmm_fit_point_wise_curve_and_components():
     """
     gmm, x = _c_plot_model()
     xlims = (-2.0, 2.5)
-    fig, ax = plot_gmm_fit(gmm, x, bins=30, xlims=xlims, show_components=True)
+    fig, ax = plot_gmm_fit(gmm, x, figsize=(5, 5), density_grid_points=500, bin_mean_grid_points=4000, bins=30, xlims=xlims, show_components=True)
     lines = ax.get_lines()
     grid = np.linspace(xlims[0], xlims[1], 500)
 
@@ -5117,7 +5144,7 @@ def test_plot_gmm_fit_bin_mean_curve_is_the_density_averaged_over_one_bin():
     gmm, x = _c_plot_model()
     xlims = (-1.8, 2.2)
     bins = 8
-    fig, ax = plot_gmm_fit(gmm, x, bins=bins, xlims=xlims, density_as_bin_means=True)
+    fig, ax = plot_gmm_fit(gmm, x, figsize=(5, 5), density_grid_points=500, bin_mean_grid_points=4000, bins=bins, xlims=xlims, density_as_bin_means=True)
     line = ax.get_lines()[0]
     gx = np.ravel(line.get_xdata())
     gy = np.ravel(line.get_ydata())

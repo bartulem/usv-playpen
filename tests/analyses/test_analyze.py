@@ -1342,28 +1342,28 @@ def test_ramp_index_up_returns_positive():
     rate = np.zeros(41)
     rate[centers >= -0.2] = 5.0
     rate[centers <= -1.0] = 1.0
-    assert _ramp_index(rate, centers) == pytest.approx((5 - 1) / (5 + 1), abs=1e-3)
+    assert _ramp_index(rate, centers, near_anchor_s=-0.1, far_anchor_s=-1.5) == pytest.approx((5 - 1) / (5 + 1), abs=1e-3)
 
 
 def test_ramp_index_equal_endpoints_returns_zero():
     """A flat PETH has ramp index 0."""
     centers = np.linspace(-2, 0, 41)
     rate = np.full(41, 3.0)
-    assert _ramp_index(rate, centers) == 0.0
+    assert _ramp_index(rate, centers, near_anchor_s=-0.1, far_anchor_s=-1.5) == 0.0
 
 
 def test_ramp_index_both_zero_returns_nan():
     """Zero rate at both ends gives NaN, since the normalised difference is 0 / 0."""
     centers = np.linspace(-2, 0, 41)
     rate = np.zeros(41)
-    assert math.isnan(_ramp_index(rate, centers))
+    assert math.isnan(_ramp_index(rate, centers, near_anchor_s=-0.1, far_anchor_s=-1.5))
 
 
 def test_ramp_index_nan_endpoints_returns_nan():
     """An all-NaN PETH gives a NaN ramp index."""
     centers = np.linspace(-2, 0, 41)
     rate = np.full(41, np.nan)
-    assert math.isnan(_ramp_index(rate, centers))
+    assert math.isnan(_ramp_index(rate, centers, near_anchor_s=-0.1, far_anchor_s=-1.5))
 
 
 # _detect_bouts
@@ -1425,7 +1425,7 @@ def test_detect_bouts_mixed():
 def test_vmi_empty_returns_all_nan():
     """An emitter with no USVs gives NaN VMI and zero bouts instead of raising."""
     out = NeuronalTuning._compute_vmi_for_emitter(
-        np.array([0.0]), np.empty(0), np.empty(0), np.empty(0), 2.0
+        np.array([0.0]), np.empty(0), np.empty(0), np.empty(0), 2.0, wilcoxon_exact_max_n=25
     )
     assert math.isnan(out["vmi"])
     assert out["n_bouts"] == 0
@@ -1438,7 +1438,7 @@ def test_vmi_pure_excitation_returns_one():
     em_stops = np.array([5.3])
     em_dur = em_stops - em_starts
     out = NeuronalTuning._compute_vmi_for_emitter(
-        sp, em_starts, em_stops, em_dur, 2.0
+        sp, em_starts, em_stops, em_dur, 2.0, wilcoxon_exact_max_n=25
     )
     assert out["vmi"] == pytest.approx(1.0)
 
@@ -1450,7 +1450,7 @@ def test_vmi_pure_suppression_returns_minus_one():
     em_stops = np.array([5.5])
     em_dur = em_stops - em_starts
     out = NeuronalTuning._compute_vmi_for_emitter(
-        sp, em_starts, em_stops, em_dur, 2.0
+        sp, em_starts, em_stops, em_dur, 2.0, wilcoxon_exact_max_n=25
     )
     assert out["vmi"] == pytest.approx(-1.0)
 
@@ -1463,7 +1463,7 @@ def test_vmi_baseline_pre_recording_is_nan():
     em_stops = np.array([1.0])
     em_dur = em_stops - em_starts
     out = NeuronalTuning._compute_vmi_for_emitter(
-        sp, em_starts, em_stops, em_dur, 2.0
+        sp, em_starts, em_stops, em_dur, 2.0, wilcoxon_exact_max_n=25
     )
     assert math.isnan(out["fr_baseline"])
 
@@ -1476,7 +1476,7 @@ def test_vmi_equal_pairs_wilcoxon_nan():
     em_stops = np.array([6.0, 11.0, 16.0, 21.0])
     em_dur = em_stops - em_starts
     out = NeuronalTuning._compute_vmi_for_emitter(
-        sp, em_starts, em_stops, em_dur, 2.0
+        sp, em_starts, em_stops, em_dur, 2.0, wilcoxon_exact_max_n=25
     )
     assert math.isnan(out["wilcoxon_pvalue"])
 
@@ -1489,7 +1489,7 @@ def test_vmi_n_bouts_matches_detector():
     em_stops = np.array([5.4, 5.7, 6.0, 20.5])
     em_dur = em_stops - em_starts
     out = NeuronalTuning._compute_vmi_for_emitter(
-        np.array([5.05]), em_starts, em_stops, em_dur, 2.0
+        np.array([5.05]), em_starts, em_stops, em_dur, 2.0, wilcoxon_exact_max_n=25
     )
     assert out["n_bouts"] == 2
 
@@ -2151,6 +2151,9 @@ def _make_neuronal_tuning(root, *, n_shuffles=5, smoothing_sd=0.0):
             "peth_window_seconds": [-2.0, 0.0],
             "peth_bin_seconds": 0.05,
             "bout_quiet_seconds": 2.0,
+            "ramp_anchor_near_seconds": -0.1,
+            "ramp_anchor_far_seconds": -1.5,
+            "vmi_wilcoxon_exact_max_n": 25,
             "ibi_bout_onset": {
                 "ibi_z_score": 2.58,
                 "ibi_component_index": 0,
@@ -3418,7 +3421,7 @@ def test_plot_gmm_fit_returns_figure_and_axes():
     gmm = GaussianMixture(n_components=1, covariance_type="full",
                           random_state=0).fit(log_x)
     # Signature: plot_gmm_fit(model, x, ...)
-    fig, ax = plot_gmm_fit(gmm, log_x.ravel(), bins=20)
+    fig, ax = plot_gmm_fit(gmm, log_x.ravel(), figsize=(5, 5), density_grid_points=500, bin_mean_grid_points=4000, bins=20)
     assert fig is not None
     assert ax is not None
 
@@ -3431,7 +3434,7 @@ def test_plot_gmm_fit_with_xlims_filters_data():
     log_x = rng.normal(0.0, 1.0, 200)
     gmm = GaussianMixture(n_components=2, covariance_type="full",
                           random_state=0).fit(log_x.reshape(-1, 1))
-    fig, _ax = plot_gmm_fit(gmm, log_x, bins=10,
+    fig, _ax = plot_gmm_fit(gmm, log_x, figsize=(5, 5), density_grid_points=500, bin_mean_grid_points=4000, bins=10,
                             xlims=(-1.0, 1.0), show_components=True)
     assert isinstance(fig, Figure)
 
@@ -3642,6 +3645,8 @@ def test_feature_zoo_save_behavioral_features_end_to_end(tmp_path, mocker):
             "spatial_hist_min_val": -32,
             "spatial_hist_max_val": 32,
             "spatial_hist_num_bins": 196,
+            "back_angles_optimizer_seed": 0,
+            "sei_speed_percentile": 99,
         },
         message_output=lambda *_a, **_kw: None,
     )
@@ -3730,6 +3735,8 @@ def test_feature_zoo_save_behavioral_features_single_mouse_skips_social(tmp_path
             "spatial_hist_min_val": -32,
             "spatial_hist_max_val": 32,
             "spatial_hist_num_bins": 196,
+            "back_angles_optimizer_seed": 0,
+            "sei_speed_percentile": 99,
         },
         message_output=lambda *_a, **_kw: None,
     )
@@ -3773,7 +3780,7 @@ def test_calculate_sei_returns_high_score_when_aligned_and_close():
     sei = calculate_sei(
         tracks, speeds,
         observer_idx=0, observed_idx=1, observed_node_idx=0,
-        v_max=0.1,
+        v_max=0.1, speed_percentile=99,
     )
     assert sei.shape == (1,)
     # Aligned + moderate distance → engagement should be substantially positive
@@ -3793,7 +3800,7 @@ def test_calculate_sei_returns_negative_when_target_is_behind():
 
     sei = calculate_sei(tracks, np.array([0.05]),
                         observer_idx=0, observed_idx=1, observed_node_idx=0,
-                        v_max=0.1)
+                        v_max=0.1, speed_percentile=99)
     assert sei[0] < 0
 
 
@@ -3901,7 +3908,7 @@ def test_get_back_angles_zero_when_back_along_x_axis():
     Nelder-Mead alignment finds zero rotation, the residual pitch/yaw should
     be ~0 (numerical noise only). Output is in DEGREES per the source."""
     back = np.array([[1.0, 0.0, 0.0]])
-    out = get_back_angles(back)
+    out = get_back_angles(back, optimizer_seed=0)
     assert out.shape == (1, 2)
     np.testing.assert_allclose(out[0], [0.0, 0.0], atol=1e-3)
 
@@ -3911,7 +3918,7 @@ def test_get_back_angles_returns_finite_for_tilted_back():
     parses to finite degree values without NaN/inf — that's the contract."""
     angle = np.pi / 4
     back = np.array([[np.cos(angle), 0.0, np.sin(angle)]])
-    out = get_back_angles(back)
+    out = get_back_angles(back, optimizer_seed=0)
     assert out.shape == (1, 2)
     assert np.all(np.isfinite(out))
 
@@ -3923,7 +3930,7 @@ def test_get_back_angles_handles_multi_frame_input():
         [0.866, 0.5, 0.0],
         [0.5, 0.866, 0.0],
     ])
-    out = get_back_angles(back)
+    out = get_back_angles(back, optimizer_seed=0)
     assert out.shape == (3, 2)
     assert np.all(np.isfinite(out))
 
@@ -4100,12 +4107,12 @@ def test_ramp_index_edges():
     anchor, and NaN when rate and centre lengths differ."""
     centers = np.linspace(-2.0, 0.0, 40)
     rate = np.linspace(1.0, 2.0, 40)
-    assert np.isfinite(_ramp_index(rate, centers))
+    assert np.isfinite(_ramp_index(rate, centers, near_anchor_s=-0.1, far_anchor_s=-1.5))
     # window not spanning the -1.5 anchor -> NaN (coverage guard)
     narrow = np.linspace(-1.0, 0.0, 20)
-    assert np.isnan(_ramp_index(np.ones(20), narrow))
+    assert np.isnan(_ramp_index(np.ones(20), narrow, near_anchor_s=-0.1, far_anchor_s=-1.5))
     # size mismatch -> NaN
-    assert np.isnan(_ramp_index(np.ones(5), centers))
+    assert np.isnan(_ramp_index(np.ones(5), centers, near_anchor_s=-0.1, far_anchor_s=-1.5))
 
 
 def test_circular_shift_spike_times_modulo_wrap():

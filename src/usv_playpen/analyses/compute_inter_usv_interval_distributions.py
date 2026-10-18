@@ -52,6 +52,7 @@ from ._usv_io import (
     load_and_filter_usv_data,
 )
 from .mixture_model_utils import (
+    EMInitialisation,
     bootstrap_lrt,
     fit_log_gmm,
     fit_log_ig_mixture,
@@ -388,6 +389,46 @@ def compute_session_usv_intervals(
     return out
 
 
+def build_em_initialisation(interval_settings: dict) -> EMInitialisation:
+    """
+    Description
+    -----------
+    Builds the EM starting-point heuristics of the interval analysis from its
+    settings block, reading every ``em_init_*`` key directly (a missing key
+    raises), so the object the analysis passes to each Student-t,
+    inverse-Gaussian and tied-scale fit carries exactly the configured values.
+
+    Parameters
+    ----------
+    interval_settings (dict)
+        The ``analyses_settings.json -> compute_inter_usv_interval_distributions``
+        block (or a dict with the same ``em_init_*`` keys).
+
+    Returns
+    -------
+    em_init (mixture_model_utils.EMInitialisation)
+        The starting-point heuristics: KMeans restarts, starting degrees of
+        freedom, starting-weight floor, restart quantile ranges, peak variance
+        fraction and the histogram that seeds the tied-scale peaks.
+    """
+
+    return EMInitialisation(
+        kmeans_n_init=interval_settings['em_init_kmeans_n_init'],
+        start_nu=interval_settings['em_init_start_nu'],
+        background_start_nu=interval_settings['em_init_background_start_nu'],
+        min_start_weight=interval_settings['em_init_min_start_weight'],
+        restart_quantile_range=tuple(interval_settings['em_init_restart_quantile_range']),
+        peak_variance_fraction=interval_settings['em_init_peak_variance_fraction'],
+        seeded_peak_quantile_range=tuple(interval_settings['em_init_seeded_peak_quantile_range']),
+        seeded_background_quantile_range=tuple(interval_settings['em_init_seeded_background_quantile_range']),
+        random_peak_quantile_range=tuple(interval_settings['em_init_random_peak_quantile_range']),
+        random_background_quantile_range=tuple(interval_settings['em_init_random_background_quantile_range']),
+        seed_histogram_bins=interval_settings['em_init_seed_histogram_bins'],
+        seed_smoothing_sigma=interval_settings['em_init_seed_smoothing_sigma'],
+        seed_smoothing_half_width=interval_settings['em_init_seed_smoothing_half_width'],
+    )
+
+
 def fit_mixture_model_sweep(
     intervals_by_key: dict[str, np.ndarray],
     n_components_min: int,
@@ -395,12 +436,22 @@ def fit_mixture_model_sweep(
     n_repeats: int,
     max_modes_reported: int,
     random_seed_base: int,
-    tau: float = 0.5,
-    cv_n_folds: int = 5,
-    cv_n_init: int = 5,
-    mixture_model_n_init: int = 10,
-    mixture_model_reg_covar: float = 1e-4,
-    model_class: str = "gauss",
+    *,
+    tau: float,
+    cv_n_folds: int,
+    cv_n_init: int,
+    mixture_model_n_init: int,
+    mixture_model_reg_covar: float,
+    model_class: str,
+    em_max_iter: int,
+    em_tol: float,
+    split_delta: float,
+    mode_grid_size_gauss: int,
+    mode_span_scales_gauss: float,
+    mode_grid_size_t: int,
+    mode_span_scales_t: float,
+    cv_t_n_init_offset: int,
+    em_init: EMInitialisation,
 ) -> pls.DataFrame:
     """
     Description
@@ -442,20 +493,53 @@ def fit_mixture_model_sweep(
     random_seed_base (int)
         Base seed; rep ``r`` uses ``random_seed_base + r``.
     tau (float)
-        Posterior threshold for inter-component boundaries; defaults
-        to 0.5.
+        Posterior threshold for inter-component boundaries (settings
+        ``tau``, shipped 0.5). Keyword-only, like every parameter below.
     cv_n_folds (int)
         K-fold splits for the cross-validated negative log-likelihood
-        column.
+        column (settings ``cv_n_folds``).
     cv_n_init (int)
-        EM restarts per CV fold.
+        EM restarts per CV fold (settings ``cv_n_init``).
     mixture_model_n_init (int)
-        EM restarts for each in-sample fit.
+        EM restarts for each in-sample fit (settings ``mixture_model_n_init``).
     mixture_model_reg_covar (float)
-        Variance floor passed to the EM solver.
+        Variance floor passed to the EM solver (settings
+        ``mixture_model_reg_covar``).
     model_class (str)
-        ``'gauss'`` (sklearn ``GaussianMixture``) or ``'t'``
-        (:class:`mixture_model_utils.TMixture`).
+        ``'gauss'`` (sklearn ``GaussianMixture``), ``'t'``
+        (:class:`mixture_model_utils.TMixture`) or ``'ig'``
+        (:class:`mixture_model_utils.IGMixture`) (settings ``model_class``).
+    em_max_iter (int)
+        EM iteration cap of every Student-t / inverse-Gaussian fit, in-sample
+        and cross-validated (settings ``em_max_iter``, shipped 300). The
+        Gaussian family uses sklearn's own stopping rule.
+    em_tol (float)
+        EM convergence tolerance of the same fits (settings ``em_tol``,
+        shipped 1e-5).
+    split_delta (float)
+        Split separation of the Student-t ladder's split-initialised fits, in
+        parent standard deviations (settings ``split_delta``, shipped 0.5).
+    mode_grid_size_gauss (int)
+        Grid points of the Gaussian-mixture mode search (settings
+        ``mode_grid_size_gauss``, shipped 4096).
+    mode_span_scales_gauss (float)
+        Component standard deviations the Gaussian mode grid extends past the
+        extreme means (settings ``mode_span_scales_gauss``, shipped 4.0).
+    mode_grid_size_t (int)
+        Grid points of the Student-t mixture mode search (settings
+        ``mode_grid_size_t``, shipped 16384).
+    mode_span_scales_t (float)
+        Component scales the Student-t mode grid extends past the extreme
+        locations (settings ``mode_span_scales_t``, shipped 6.0).
+    cv_t_n_init_offset (int)
+        Restarts trimmed from ``cv_n_init`` for each Student-t CV fold, whose EM
+        is heavier: the fold fits use ``max(1, cv_n_init - cv_t_n_init_offset)``
+        restarts (settings ``cv_t_n_init_offset``, shipped 2). The floor of one
+        keeps at least one restart.
+    em_init (mixture_model_utils.EMInitialisation)
+        Starting-point heuristics of every Student-t / inverse-Gaussian fit,
+        in-sample, laddered and cross-validated (built from the settings
+        ``em_init_*`` keys).
 
     Returns
     -------
@@ -513,6 +597,9 @@ def fit_mixture_model_sweep(
                     n_folds=cv_n_folds,
                     n_init=cv_n_init,
                     reg_covar=mixture_model_reg_covar,
+                    max_iter=em_max_iter,
+                    tol=em_tol,
+                    em_init=em_init,
                 )
             else:  # t-mixture
                 cv_val = t_mixture_cv_neg_loglik(
@@ -520,8 +607,11 @@ def fit_mixture_model_sweep(
                     n_components=n_components,
                     seed=random_seed_base,
                     n_folds=cv_n_folds,
-                    n_init=max(1, cv_n_init - 2),  # t-mix EM is heavier; trim per-fold inits
+                    n_init=max(1, cv_n_init - cv_t_n_init_offset),  # t-mix EM is heavier; trim per-fold inits
                     reg_covar=mixture_model_reg_covar,
+                    max_iter=em_max_iter,
+                    tol=em_tol,
+                    em_init=em_init,
                 )
             cv_per_key_n[key][n_components] = cv_val
 
@@ -573,14 +663,17 @@ def fit_mixture_model_sweep(
                         iui, n_components=n_components, seed=seed,
                         n_init=mixture_model_n_init, reg_covar=mixture_model_reg_covar,
                     )
-                    logmeans, logsds, modes_log, densities = report_gmm_stats(model, model_order)
+                    logmeans, logsds, modes_log, densities = report_gmm_stats(
+                        model, model_order, mode_grid_size=mode_grid_size_gauss,
+                        mode_span_scales=mode_span_scales_gauss)
                     weights = model.weights_.flatten()[model_order]
                     nus = np.full(n_components, np.nan, dtype=float)  # not applicable for gauss
                     icl = gmm_icl(model, log_iui)
                 elif model_class == "ig":
                     model, model_order = fit_log_ig_mixture(
                         iui, n_components=n_components, seed=seed,
-                        n_init=mixture_model_n_init, reg_covar=mixture_model_reg_covar,
+                        n_init=mixture_model_n_init, max_iter=em_max_iter, tol=em_tol,
+                        reg_covar=mixture_model_reg_covar, em_init=em_init,
                     )
                     logmeans, lambdas, weights, modes_log, densities = report_ig_mixture_stats(model, model_order)
                     logsds = np.full(n_components, np.nan, dtype=float)  # no log-sd for IG
@@ -590,12 +683,15 @@ def fit_mixture_model_sweep(
                     if ladder_model is None:
                         model, model_order = fit_log_t_mixture(
                             iui, n_components=n_components, seed=seed,
-                            n_init=mixture_model_n_init, reg_covar=mixture_model_reg_covar,
+                            n_init=mixture_model_n_init, max_iter=em_max_iter, tol=em_tol,
+                            reg_covar=mixture_model_reg_covar, em_init=em_init,
                         )
                     else:
                         model, _ = fit_nested_by_splitting(
                             log_iui.ravel(), ladder_model, n_init=mixture_model_n_init,
                             seed=seed, reg_covar=mixture_model_reg_covar,
+                            split_delta=split_delta, max_iter=em_max_iter, tol=em_tol,
+                            em_init=em_init,
                         )
                         model_order = np.argsort(np.asarray(model.means_, dtype=float).ravel())
                     ladder_model = model
@@ -608,7 +704,8 @@ def fit_mixture_model_sweep(
                     # which reported structure the density does not have -- male e2s
                     # K=6 lists components at 23 ms and 63 ms but the density has a
                     # single maximum at 63 ms and no local maximum below it.
-                    modes_arr, densities_arr = t_mixture_modes(model)
+                    modes_arr, densities_arr = t_mixture_modes(
+                        model, grid_size=mode_grid_size_t, span_scales=mode_span_scales_t)
                     mode_order = np.argsort(modes_arr)
                     modes_log = modes_arr[mode_order]
                     densities = densities_arr[mode_order]
@@ -990,7 +1087,8 @@ def fit_serial_dependence(
     max_iter: int,
     seed: int,
     n_jobs: int,
-    n_grid: int = 200,
+    *,
+    n_grid: int,
 ) -> tuple[pls.DataFrame, pls.DataFrame, pls.DataFrame]:
     """
     Description
@@ -1048,7 +1146,9 @@ def fit_serial_dependence(
     n_jobs (int)
         Parallel workers for the replicates.
     n_grid (int)
-        Grid points; defaults to 200.
+        Grid points the curves are evaluated on, between the ``grid_percentiles``
+        (settings ``serial_dependence_n_grid``, shipped 200). Keyword-only and
+        required.
 
     Returns
     -------
@@ -1147,6 +1247,14 @@ def fit_tied_peak_ladder_and_lrt(
     seed: int,
     n_jobs: int,
     message,
+    *,
+    design_bootstrap_iid_cap: int,
+    em_max_iter: int,
+    em_tol: float,
+    split_delta: float,
+    mode_grid_size: int,
+    mode_span_scales: float,
+    em_init: EMInitialisation,
 ) -> tuple[pls.DataFrame, pls.DataFrame, pls.DataFrame, pls.DataFrame, int, float]:
     """
     Description
@@ -1207,6 +1315,28 @@ def fit_tied_peak_ladder_and_lrt(
         Parallel workers for the replicates.
     message (callable)
         Logging callable.
+    design_bootstrap_iid_cap (int)
+        Upper bound on the interval-level (iid) resamples of each design effect
+        (settings ``design_bootstrap_iid_cap``, shipped 400). Keyword-only, like
+        every parameter below.
+    em_max_iter (int)
+        EM iteration cap of every tied-scale fit, ladder and test (settings
+        ``tied_em_max_iter``, shipped 500).
+    em_tol (float)
+        EM convergence tolerance of every tied-scale fit (settings
+        ``tied_em_tol``, shipped 1e-6).
+    split_delta (float)
+        Split separation of every split-initialised fit, in units of the shared
+        peak scale (settings ``split_delta``, shipped 0.5).
+    mode_grid_size (int)
+        Grid points of the density-mode search of each ladder fit (settings
+        ``mode_grid_size_t``, shipped 16384).
+    mode_span_scales (float)
+        Component scales the mode grid extends past the extreme locations
+        (settings ``mode_span_scales_t``, shipped 6.0).
+    em_init (mixture_model_utils.EMInitialisation)
+        Starting-point heuristics of every tied-scale fit, ladder, observed test
+        and bootstrap replicate (built from the settings ``em_init_*`` keys).
 
     Returns
     -------
@@ -1232,11 +1362,13 @@ def fit_tied_peak_ladder_and_lrt(
     for n_peak in range(min(peak_grid), max(peak_grid) + 2):
         if model is None:
             model, log_likelihood, shared = fit_tied_scale_t_mixture(
-                log_values, n_peak, n_background, seed=seed, n_init=n_init, reg_covar=reg_covar)
+                log_values, n_peak, n_background, seed=seed, n_init=n_init,
+                max_iter=em_max_iter, tol=em_tol, reg_covar=reg_covar, em_init=em_init)
         else:
             model, log_likelihood, shared = fit_tied_nested_by_splitting(
                 log_values, model, n_peak - 1, n_background, seed=seed, n_init=n_init,
-                reg_covar=reg_covar)
+                reg_covar=reg_covar, split_delta=split_delta, max_iter=em_max_iter, tol=em_tol,
+                em_init=em_init)
         n_parameters = tied_scale_n_parameters(n_peak, n_background)
         bic = n_parameters * np.log(values.size) - 2.0 * log_likelihood
         means = np.asarray(model.means_, dtype=float).ravel()
@@ -1260,7 +1392,8 @@ def fit_tied_peak_ladder_and_lrt(
                 "bic": float(bic),
                 "shared_peak_scale": float(shared),
             })
-        modes_log, densities = t_mixture_modes(model)
+        modes_log, densities = t_mixture_modes(model, grid_size=mode_grid_size,
+                                               span_scales=mode_span_scales)
         order = np.argsort(modes_log)
         for rank, index in enumerate(order):
             mode_rows.append({
@@ -1290,7 +1423,9 @@ def fit_tied_peak_ladder_and_lrt(
             intervals_sec=values, n_peak_null=n_peak, n_background=n_background, B=B,
             n_subsample=n_subsample, n_init_obs=n_init, n_init_boot=n_init_boot,
             reg_covar=reg_covar, seed=seed, n_jobs=n_jobs, session_labels=session_labels,
-            n_design_bootstrap=n_design_bootstrap, null_start=null_start)
+            n_design_bootstrap=n_design_bootstrap, null_start=null_start,
+            design_bootstrap_iid_cap=design_bootstrap_iid_cap, max_iter=em_max_iter,
+            tol=em_tol, split_delta=split_delta, em_init=em_init)
         previous_rung = (n_peak, result["alt_model"])
         threshold = float(np.percentile(result["lr_null"], 100.0 * (1.0 - alpha_effective)))
         rejected = bool(result["p_value_corrected"] < alpha_effective)
@@ -1577,6 +1712,20 @@ class InterUSVIntervalCalculator:
         tied_n_init = cfg['tied_n_init']
         tied_n_init_boot = cfg['tied_n_init_boot']
         design_bootstrap = cfg['design_bootstrap']
+        design_bootstrap_iid_cap = cfg['design_bootstrap_iid_cap']
+        em_max_iter = cfg['em_max_iter']
+        em_tol = cfg['em_tol']
+        tied_em_max_iter = cfg['tied_em_max_iter']
+        tied_em_tol = cfg['tied_em_tol']
+        split_delta = cfg['split_delta']
+        mode_grid_size_gauss = cfg['mode_grid_size_gauss']
+        mode_span_scales_gauss = cfg['mode_span_scales_gauss']
+        mode_grid_size_t = cfg['mode_grid_size_t']
+        mode_span_scales_t = cfg['mode_span_scales_t']
+        cv_t_n_init_offset = cfg['cv_t_n_init_offset']
+        # Starting-point heuristics of the custom EM fitters, passed explicitly to every
+        # Student-t / inverse-Gaussian / tied-scale fit below (bootstrap replicates included).
+        em_init = build_em_initialisation(cfg)
         # Serial dependence of consecutive intervals, fitted on every fitted pool: a median
         # spline and a bent median line of log(next) on log(current), with session-bootstrap
         # bands; the bent line's bend estimates the bout boundary from serial dependence alone.
@@ -1588,6 +1737,7 @@ class InterUSVIntervalCalculator:
         serial_dependence_bend_bounds_ms = tuple(cfg['serial_dependence_bend_bounds_ms'])
         serial_dependence_grid_percentiles = tuple(cfg['serial_dependence_grid_percentiles'])
         serial_dependence_max_iter = cfg['serial_dependence_max_iter']
+        serial_dependence_n_grid = cfg['serial_dependence_n_grid']
 
         if model_class not in ('gauss', 't', 'ig'):
             msg = f"compute_inter_usv_interval_distributions: model_class must be 'gauss', 't' or 'ig', got {model_class!r}."
@@ -1733,7 +1883,7 @@ class InterUSVIntervalCalculator:
                         bend_bounds_ms=serial_dependence_bend_bounds_ms,
                         grid_percentiles=serial_dependence_grid_percentiles,
                         max_iter=serial_dependence_max_iter, seed=random_seed_base,
-                        n_jobs=bootstrap_lrt_n_jobs,
+                        n_jobs=bootstrap_lrt_n_jobs, n_grid=serial_dependence_n_grid,
                     )
                     pool_tables["serial_dependence_curves"].append(curves)
                     pool_tables["serial_dependence_fit"].append(sd_fit)
@@ -1763,6 +1913,10 @@ class InterUSVIntervalCalculator:
                         bonferroni=bootstrap_lrt_bonferroni,
                         n_design_bootstrap=design_bootstrap, seed=random_seed_base,
                         n_jobs=bootstrap_lrt_n_jobs, message=message,
+                        design_bootstrap_iid_cap=design_bootstrap_iid_cap,
+                        em_max_iter=tied_em_max_iter, em_tol=tied_em_tol,
+                        split_delta=split_delta, mode_grid_size=mode_grid_size_t,
+                        mode_span_scales=mode_span_scales_t, em_init=em_init,
                     )
                     pool_tables["tied_fits"].append(fits)
                     pool_tables["tied_modes"].append(modes)
@@ -1813,6 +1967,15 @@ class InterUSVIntervalCalculator:
                         mixture_model_n_init=mixture_model_n_init,
                         mixture_model_reg_covar=mixture_model_reg_covar,
                         model_class=model_class,
+                        em_max_iter=em_max_iter,
+                        em_tol=em_tol,
+                        split_delta=split_delta,
+                        mode_grid_size_gauss=mode_grid_size_gauss,
+                        mode_span_scales_gauss=mode_span_scales_gauss,
+                        mode_grid_size_t=mode_grid_size_t,
+                        mode_span_scales_t=mode_span_scales_t,
+                        cv_t_n_init_offset=cv_t_n_init_offset,
+                        em_init=em_init,
                     )
                     lrt_rows: list[dict] = []
                     lrt_null_rows: list[dict] = []
@@ -1829,6 +1992,9 @@ class InterUSVIntervalCalculator:
                                 n_jobs=bootstrap_lrt_n_jobs,
                                 session_labels=pool_sessions[fit_keys[sex]],
                                 n_design_bootstrap=design_bootstrap,
+                                design_bootstrap_iid_cap=design_bootstrap_iid_cap,
+                                em_max_iter=em_max_iter, em_tol=em_tol,
+                                split_delta=split_delta, em_init=em_init,
                             )
                             pair_results[(K_n, K_n + 1)] = res
                             message(
@@ -1894,6 +2060,30 @@ class InterUSVIntervalCalculator:
             "tied_n_init": int(tied_n_init),
             "tied_n_init_boot": int(tied_n_init_boot),
             "design_bootstrap": int(design_bootstrap),
+            "design_bootstrap_iid_cap": int(design_bootstrap_iid_cap),
+            "em_max_iter": int(em_max_iter),
+            "em_tol": float(em_tol),
+            "tied_em_max_iter": int(tied_em_max_iter),
+            "tied_em_tol": float(tied_em_tol),
+            "split_delta": float(split_delta),
+            "mode_grid_size_gauss": int(mode_grid_size_gauss),
+            "mode_span_scales_gauss": float(mode_span_scales_gauss),
+            "mode_grid_size_t": int(mode_grid_size_t),
+            "mode_span_scales_t": float(mode_span_scales_t),
+            "cv_t_n_init_offset": int(cv_t_n_init_offset),
+            "em_init_kmeans_n_init": int(em_init.kmeans_n_init),
+            "em_init_start_nu": float(em_init.start_nu),
+            "em_init_background_start_nu": float(em_init.background_start_nu),
+            "em_init_min_start_weight": float(em_init.min_start_weight),
+            "em_init_restart_quantile_range": [float(v) for v in em_init.restart_quantile_range],
+            "em_init_peak_variance_fraction": float(em_init.peak_variance_fraction),
+            "em_init_seeded_peak_quantile_range": [float(v) for v in em_init.seeded_peak_quantile_range],
+            "em_init_seeded_background_quantile_range": [float(v) for v in em_init.seeded_background_quantile_range],
+            "em_init_random_peak_quantile_range": [float(v) for v in em_init.random_peak_quantile_range],
+            "em_init_random_background_quantile_range": [float(v) for v in em_init.random_background_quantile_range],
+            "em_init_seed_histogram_bins": int(em_init.seed_histogram_bins),
+            "em_init_seed_smoothing_sigma": float(em_init.seed_smoothing_sigma),
+            "em_init_seed_smoothing_half_width": int(em_init.seed_smoothing_half_width),
             "fit_serial_dependence": bool(fit_serial_dependence_bool),
             "serial_dependence_n_knots": int(serial_dependence_n_knots),
             "serial_dependence_corner_widths": [float(w) for w in serial_dependence_corner_widths],
@@ -1902,6 +2092,7 @@ class InterUSVIntervalCalculator:
             "serial_dependence_bend_bounds_ms": [float(v) for v in serial_dependence_bend_bounds_ms],
             "serial_dependence_grid_percentiles": [float(v) for v in serial_dependence_grid_percentiles],
             "serial_dependence_max_iter": int(serial_dependence_max_iter),
+            "serial_dependence_n_grid": int(serial_dependence_n_grid),
             "fit_mixture_model": bool(fit_mixture_model),
             "n_components_min": int(n_components_min),
             "n_components_max": int(n_components_max),

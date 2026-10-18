@@ -494,6 +494,29 @@ def test_build_skips_session_without_noise_column(tmp_path):
     assert not (repo_out / "male").exists() or not list((repo_out / "male").glob("*.h5"))
 
 
+
+def test_build_skips_a_session_whose_summary_polars_cannot_read(tmp_path):
+    """A summary missing a column the builder selects makes polars raise its own error
+    family (not KeyError/ValueError); that session is skipped and logged, and the build
+    carries on instead of stopping on one bad session."""
+
+    session_root = tmp_path / "session_root"
+    _write_fake_session(session_root, starts=[0.01, 0.05, 0.09], stops=[0.03, 0.07, 0.11])
+    summary_path = session_root / "audio" / "20230101_120000_usv_summary.csv"
+    pls.read_csv(str(summary_path)).drop("stop").write_csv(str(summary_path))
+    repo_out = tmp_path / "repo"
+    messages = []
+    NaturalisticUsvRepositoryBuilder(
+        root_directories=[str(session_root)],
+        input_parameter_dict={
+            "build_naturalistic_usv_repository": _build_cfg("same_sex_male"),
+            "data_roots": {"naturalistic_usv_repository_dir": str(repo_out)},
+        },
+        message_output=lambda *m, **_k: messages.append(" ".join(str(x) for x in m)),
+    ).build()
+
+    assert any("skipping session_root" in m.lower() for m in messages)
+
 @pytest.mark.usefixtures("_patched_env")
 def test_build_skips_session_whose_summary_the_h5_does_not_match(tmp_path):
     """Summary rows index the spectrogram H5 rows (durations, masks) and are stored as usv_row,

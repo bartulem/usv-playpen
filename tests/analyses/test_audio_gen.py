@@ -80,6 +80,7 @@ def _fs_settings(audio_dir: str = "original",
         "fs_compand_transfer": "0.3,1 6:-70,-60,-20 -5 -90 0.2",
         "fs_noise_reduction_std_threshold": 3,
         "fs_sinc_upper_cutoff_hz": 25000,
+        "fs_sox_timeout_s": 600,
     }
 
 
@@ -483,6 +484,7 @@ def _run_naturalistic_playback(tmp_path, mocker, *, seed, exp_id, context_label=
             "complexity_bandwidth": 0.2,
             "edge_silence_seconds": 0.1,
             "max_isi_seconds": 100.0,
+            "max_consecutive_bout_skips": 100,
             "playback_seed": seed,
         },
         message_output=lambda *_a, **_kw: None,

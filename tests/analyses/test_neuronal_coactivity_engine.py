@@ -1416,7 +1416,7 @@ def test_per_session_group_metrics_filters_deltas_and_null():
         "group_a_df": pls.DataFrame({"start": [1.0]}),          # < min_trials
         "group_b_df": pls.DataFrame({"start": [2.0, 3.0]}),
     })
-    rows = engine.per_session_group_metrics(sessions, window_s=1.0)
+    rows = engine.per_session_group_metrics(sessions, window_s=1.0, min_trials=2)
     assert [row["session_id"] for row in rows] == ["s0", "s1"]   # sparse session dropped
     for row in rows:
         assert row["n_a"] == 5
@@ -1428,8 +1428,8 @@ def test_per_session_group_metrics_filters_deltas_and_null():
             assert observed == expected or (np.isnan(observed) and np.isnan(expected))
         assert "null" not in row
 
-    a = engine.per_session_group_metrics(sessions, window_s=1.0, n_shuffles=16, seed=7)
-    b = engine.per_session_group_metrics(sessions, window_s=1.0, n_shuffles=16, seed=7)
+    a = engine.per_session_group_metrics(sessions, window_s=1.0, min_trials=2, n_shuffles=16, seed=7)
+    b = engine.per_session_group_metrics(sessions, window_s=1.0, min_trials=2, n_shuffles=16, seed=7)
     np.testing.assert_array_equal(a[0]["null"]["pop_corr"], b[0]["null"]["pop_corr"])
 
 
@@ -1447,7 +1447,7 @@ def test_run_group_comparison_keys_and_reproducibility():
 
     sessions = _group_sessions()
     kwargs = {"window_s": 1.0, "bootstrap_n": 6, "n_boot": 32, "n_shuffles": 16, "n_permutations": 32,
-              "subsample_fraction": 0.8}
+              "subsample_fraction": 0.8, "per_session_min_trials": 2}
     out = engine.run_group_comparison(sessions, seed=1, **kwargs)
     assert set(out) == {
         "pooled_a", "pooled_b", "boot_a", "boot_b", "perm",

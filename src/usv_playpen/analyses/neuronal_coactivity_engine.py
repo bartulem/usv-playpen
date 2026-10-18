@@ -1449,7 +1449,7 @@ def per_session_group_metrics(
     sessions: list[dict[str, Any]],
     window_s: float,
     *,
-    min_trials: int = 2,
+    min_trials: int,
     n_shuffles: int | None = None,
     min_shift_s: float = 20.0,
     max_shift_s: float = 60.0,
@@ -1477,8 +1477,9 @@ def per_session_group_metrics(
     window_s : float
         Post-onset spike-count window (seconds).
     min_trials : int
-        Minimum trials required in EACH group for a session to be kept (default 2;
-        below it a metric is undefined).
+        Keyword-only, required. Minimum trials required in EACH group for a session to
+        be kept; read from ``neuronal_coactivity -> per_session_min_trials`` (shipped 2,
+        the floor below which a metric is undefined).
     n_shuffles : int | None
         If set, number of circular shuffles for the per-session null; ``None`` skips
         the null (only observed metrics + deltas).
@@ -1543,6 +1544,7 @@ def run_group_comparison(
     max_shift_s: float = 60.0,
     seed: int | None = None,
     subsample_fraction: float,
+    per_session_min_trials: int,
 ) -> dict[str, Any]:
     """
     Description
@@ -1591,6 +1593,10 @@ def run_group_comparison(
     subsample_fraction : float
         Keyword-only, required. See :func:`compare_groups`; read from
         ``neuronal_coactivity -> bootstrap_subsample_fraction``.
+    per_session_min_trials : int
+        Keyword-only, required. ``min_trials`` of the per-session breakdown
+        (:func:`per_session_group_metrics`); read from
+        ``neuronal_coactivity -> per_session_min_trials``.
 
     Returns
     -------
@@ -1625,7 +1631,7 @@ def run_group_comparison(
         window_s=window_s, min_shift_s=min_shift_s, max_shift_s=max_shift_s,
         n_shuffles=n_shuffles, seed=None if seed is None else seed + 6,
     )
-    per_session = per_session_group_metrics(sessions, window_s)
+    per_session = per_session_group_metrics(sessions, window_s, min_trials=per_session_min_trials)
     return {
         "pooled_a": pooled_a,
         "pooled_b": pooled_b,

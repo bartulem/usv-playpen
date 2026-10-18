@@ -20,6 +20,7 @@ and filtering).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import h5py
@@ -38,12 +39,18 @@ from usv_playpen.analyses._usv_io import (
 )
 from usv_playpen.analyses.compute_inter_usv_interval_distributions import (
     InterUSVIntervalCalculator,
+    build_em_initialisation,
     compute_session_usv_intervals,
     fit_mixture_model_sweep,
     fit_tied_peak_ladder_and_lrt,
 )
 from usv_playpen.analyses.usv_interval_archive import _h5_to_polars, _polars_to_h5
 from usv_playpen.yaml_utils import extract_animal_sexes as yaml_extract_animal_sexes
+
+# The EM starting-point heuristics the analysis builds from the shipped interval settings,
+# passed to the fit functions exactly as the analysis passes them.
+with (Path(iui_mod.__file__).parent.parent / "_parameter_settings" / "analyses_settings.json").open() as _settings_file:
+    _EM_INIT = build_em_initialisation(json.load(_settings_file)["compute_inter_usv_interval_distributions"])
 
 
 def test_polars_h5_roundtrip_nullable_int_and_bool(tmp_path):
@@ -117,6 +124,30 @@ def _make_settings(tmp_path, fit_mixture_model=False, fit_tied_model=False, fit_
             "tied_n_init": 1,
             "tied_n_init_boot": 1,
             "design_bootstrap": 10,
+            "design_bootstrap_iid_cap": 400,
+            "em_max_iter": 300,
+            "em_tol": 1e-5,
+            "tied_em_max_iter": 500,
+            "tied_em_tol": 1e-6,
+            "split_delta": 0.5,
+            "mode_grid_size_gauss": 4096,
+            "mode_span_scales_gauss": 4.0,
+            "mode_grid_size_t": 16384,
+            "mode_span_scales_t": 6.0,
+            "cv_t_n_init_offset": 2,
+            "em_init_kmeans_n_init": 10,
+            "em_init_start_nu": 10.0,
+            "em_init_background_start_nu": 5.0,
+            "em_init_min_start_weight": 0.001,
+            "em_init_restart_quantile_range": [0.02, 0.98],
+            "em_init_peak_variance_fraction": 0.05,
+            "em_init_seeded_peak_quantile_range": [0.15, 0.9],
+            "em_init_seeded_background_quantile_range": [0.4, 0.97],
+            "em_init_random_peak_quantile_range": [0.05, 0.95],
+            "em_init_random_background_quantile_range": [0.35, 0.98],
+            "em_init_seed_histogram_bins": 512,
+            "em_init_seed_smoothing_sigma": 3.0,
+            "em_init_seed_smoothing_half_width": 8,
             "fit_serial_dependence": fit_serial_dependence,
             "serial_dependence_n_knots": 4,
             "serial_dependence_corner_widths": [0.05, 0.15],
@@ -125,6 +156,7 @@ def _make_settings(tmp_path, fit_mixture_model=False, fit_tied_model=False, fit_
             "serial_dependence_bend_bounds_ms": [30.0, 600.0],
             "serial_dependence_grid_percentiles": [1.0, 99.0],
             "serial_dependence_max_iter": 1000,
+            "serial_dependence_n_grid": 200,
         }
     }
 
@@ -687,6 +719,8 @@ def test_fit_tied_peak_ladder_and_lrt_tables_and_selection():
         values=values, session_labels=labels, pool_identity=identity, peak_grid=[1, 2],
         n_background=1, n_init=1, n_init_boot=1, reg_covar=1e-4, B=19, n_subsample=300,
         alpha=0.01, bonferroni=True, n_design_bootstrap=50, seed=0, n_jobs=1,
+        design_bootstrap_iid_cap=400, em_max_iter=500, em_tol=1e-6,
+        split_delta=0.5, mode_grid_size=16384, mode_span_scales=6.0, em_init=_EM_INIT,
         message=messages.append)
 
     assert sorted(fits["n_peak"].unique().to_list()) == [1, 2, 3]
@@ -740,6 +774,8 @@ def test_fit_tied_peak_ladder_and_lrt_ladders_each_rung_null_from_the_previous_a
         values=values, session_labels=labels, pool_identity={"sex": "male"}, peak_grid=[1, 2, 4],
         n_background=1, n_init=1, n_init_boot=1, reg_covar=1e-4, B=2, n_subsample=300,
         alpha=0.05, bonferroni=False, n_design_bootstrap=10, seed=0, n_jobs=1,
+        design_bootstrap_iid_cap=400, em_max_iter=500, em_tol=1e-6,
+        split_delta=0.5, mode_grid_size=16384, mode_span_scales=6.0, em_init=_EM_INIT,
         message=lambda _m: None)
 
     assert [n for n, _ in starts] == [1, 2, 4]
@@ -761,6 +797,8 @@ def test_fit_tied_peak_ladder_and_lrt_without_bonferroni_keeps_alpha():
         values=values, session_labels=labels, pool_identity={"sex": "female"}, peak_grid=[1],
         n_background=1, n_init=1, n_init_boot=1, reg_covar=1e-4, B=9, n_subsample=200,
         alpha=0.05, bonferroni=False, n_design_bootstrap=20, seed=3, n_jobs=1,
+        design_bootstrap_iid_cap=400, em_max_iter=500, em_tol=1e-6,
+        split_delta=0.5, mode_grid_size=16384, mode_span_scales=6.0, em_init=_EM_INIT,
         message=lambda _m: None)
 
     assert alpha_eff == pytest.approx(0.05)
@@ -788,7 +826,10 @@ def test_fit_mixture_model_sweep_model_class_branches(model_class):
     table = fit_mixture_model_sweep(
         intervals_by_key={"male": values, "female": values[:4]}, n_components_min=1,
         n_components_max=2, n_repeats=1, max_modes_reported=2, random_seed_base=0,
-        cv_n_folds=5, cv_n_init=1, mixture_model_n_init=1, model_class=model_class)
+        cv_n_folds=5, cv_n_init=1, mixture_model_n_init=1, model_class=model_class,
+        tau=0.5, mixture_model_reg_covar=1e-4, em_max_iter=300, em_tol=1e-5, split_delta=0.5,
+        mode_grid_size_gauss=4096, mode_span_scales_gauss=4.0, mode_grid_size_t=16384,
+        mode_span_scales_t=6.0, cv_t_n_init_offset=2, em_init=_EM_INIT)
 
     male = table.filter(pls.col("sex") == "male")
     assert male.height == 2
@@ -816,7 +857,10 @@ def test_fit_mixture_model_sweep_ig_median_is_the_component_median():
     table = fit_mixture_model_sweep(
         intervals_by_key={"male": values}, n_components_min=1, n_components_max=2, n_repeats=1,
         max_modes_reported=2, random_seed_base=0, cv_n_folds=5, cv_n_init=1,
-        mixture_model_n_init=1, model_class="ig")
+        mixture_model_n_init=1, model_class="ig",
+        tau=0.5, mixture_model_reg_covar=1e-4, em_max_iter=300, em_tol=1e-5, split_delta=0.5,
+        mode_grid_size_gauss=4096, mode_span_scales_gauss=4.0, mode_grid_size_t=16384,
+        mode_span_scales_t=6.0, cv_t_n_init_offset=2, em_init=_EM_INIT)
 
     for row in table.iter_rows(named=True):
         for k in range(1, row["n_comp"] + 1):
@@ -832,7 +876,11 @@ def test_fit_mixture_model_sweep_rejects_unknown_model_class():
     with pytest.raises(ValueError, match="model_class"):
         fit_mixture_model_sweep(intervals_by_key={"male": np.array([0.1, 0.2])}, n_components_min=1,
                                 n_components_max=2, n_repeats=1, max_modes_reported=1,
-                                random_seed_base=0, model_class="lognormal")
+                                random_seed_base=0, model_class="lognormal",
+                                cv_n_folds=5, cv_n_init=1, mixture_model_n_init=1,
+                                tau=0.5, mixture_model_reg_covar=1e-4, em_max_iter=300, em_tol=1e-5, split_delta=0.5,
+                                mode_grid_size_gauss=4096, mode_span_scales_gauss=4.0, mode_grid_size_t=16384,
+                                mode_span_scales_t=6.0, cv_t_n_init_offset=2, em_init=_EM_INIT)
 
 
 def test_compute_session_usv_intervals_rejects_unknown_adjacency():
