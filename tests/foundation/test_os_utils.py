@@ -464,6 +464,25 @@ def test_atomic_output_path_publishes_only_on_clean_exit(tmp_path):
     assert list(tmp_path.glob(".data.txt.tmp*")) == []
 
 
+
+def test_atomic_output_path_keeps_the_mode_and_writes_through_a_symlink(tmp_path):
+    """Replacing a group-writable settings file must not tighten it to the umask default,
+    and a symlinked destination must stay a symlink with its target rewritten."""
+    final = tmp_path / "settings.json"
+    final.write_text("old")
+    final.chmod(0o664)
+    with os_utils.atomic_output_path(final) as tmp:
+        tmp.write_text("new")
+    assert final.read_text() == "new"
+    assert final.stat().st_mode & 0o777 == 0o664
+
+    link = tmp_path / "link.json"
+    link.symlink_to(final)
+    with os_utils.atomic_output_path(link) as tmp:
+        tmp.write_text("through the link")
+    assert link.is_symlink()
+    assert final.read_text() == "through the link"
+
 def _write_then_crash(final):
     """
     Description

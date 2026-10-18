@@ -626,7 +626,7 @@ class Synchronizer:
     @staticmethod
     @njit(parallel=True)
     def find_ipi_intervals(sound_array: np.ndarray,
-                           audio_sr_rate: int = 250000) -> tuple:
+                           audio_sr_rate: int) -> tuple:
 
         """
         Description
@@ -639,7 +639,7 @@ class Synchronizer:
         sound_array (np.ndarray)
             Sound data array.
         audio_sr_rate (int)
-            Sampling rate of audio device; defaults to 250 kHz.
+            Sampling rate of the audio device (Hz), read from the WAV file by the caller.
 
         Returns
         -------
@@ -885,7 +885,7 @@ class Synchronizer:
 
             # check for a reasonable number of ON/OFF events before proceeding
             if pos_significant_events.size > 0 and neg_significant_events.size > 0 and (0 <= (pos_significant_events.size - neg_significant_events.size) < 2 or \
-                    (0 <= np.abs(pos_significant_events.size - neg_significant_events.size) < 2 and threshold_value < 0.35)):
+                    (0 <= np.abs(pos_significant_events.size - neg_significant_events.size) < 2 and threshold_value < sync_cfg['unpaired_off_event_threshold_ceiling'])):
 
                 if neg_significant_events.size > pos_significant_events.size:
                     neg_significant_events = neg_significant_events[1:]
@@ -1532,11 +1532,12 @@ class Synchronizer:
                                                       shell=False)
                     cut_audio_subprocesses.append(cut_audio_subp)
 
-        # 2-hour budget — sox "cut to video" on very long sessions can take a
-        # while, but anything beyond this almost certainly means a hang.
+        # Budget from crop_wav_files_to_video.subprocess_timeout_hours (2 h shipped) —
+        # sox "cut to video" on very long sessions can take a while, but anything
+        # beyond this almost certainly means a hang.
         wait_for_subprocesses(
             subps=cut_audio_subprocesses,
-            max_seconds=2 * 60 * 60,
+            max_seconds=self.input_parameter_dict['crop_wav_files_to_video']['subprocess_timeout_hours'] * 60 * 60,
             label="audio cut-to-video",
             poll_interval_s=5,
             message_output=self.message_output,

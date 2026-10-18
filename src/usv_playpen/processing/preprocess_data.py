@@ -282,6 +282,7 @@ class Stylist:
                                                             message_output=self.message_output).find_audio_sync_trains()
 
                         SummaryPlotter(root_directory=one_directory,
+                                       input_parameter_dict=self.input_parameter_dict,
                                        message_output=self.message_output).preprocessing_summary(ipi_discrepancy_dict=ipi_discrepancy_dict,
                                                                                                  phidget_data_dictionary=phidget_data_dictionary)
 
@@ -635,6 +636,7 @@ def crop_wav_files_to_video_cli(ctx, root_directory, **kwargs) -> None:
 @click.option('--intensity-thresh-step', 'relative_intensity_threshold_step', type=float, default=None, required=False, help='Step of the relative intensity threshold sweep.')
 @click.option('--min-led-event-frames', 'min_led_event_frames', type=int, default=None, required=False, help='Shortest LED on/off event (in frames) kept; shorter ones are glitches.')
 @click.option('--ms-tolerance', 'millisecond_divergence_tolerance', type=int, default=None, required=False, help='Divergence tolerance (in ms).')
+@click.option('--unpaired-off-event-threshold-ceiling', 'unpaired_off_event_threshold_ceiling', type=float, default=None, required=False, help='Sweep thresholds below this also accept one more LED OFF than ON event (the first OFF is then dropped).')
 @click.pass_context
 def av_sync_check_cli(ctx, root_directory, **kwargs) -> None:
     """
@@ -686,6 +688,7 @@ def av_sync_check_cli(ctx, root_directory, **kwargs) -> None:
 
     SummaryPlotter(
         root_directory=root_directory,
+        input_parameter_dict=processing_settings_dict,
     ).preprocessing_summary(
         ipi_discrepancy_dict=ipi_discrepancy_dict,
         phidget_data_dictionary=phidget_data_dictionary
@@ -1273,6 +1276,7 @@ def translate_rotate_metric_cli(ctx, root_directory, **kwargs) -> None:
 @click.option('--confidence-thresh', 'segment_confidence_threshold', type=float, default=None, required=False, help='Confidence threshold for segment detection.')
 @click.option('--min-len', 'segment_minlen', type=float, default=None, required=False, help='Minimum length for a detected segment (s).')
 @click.option('--fill-gap', 'segment_fillgap', type=float, default=None, required=False, help='Gap duration to fill between segments (s).')
+@click.option('--subprocess-timeout-hours', 'subprocess_timeout_hours', type=float, default=None, required=False, help='Hours one per-file DAS inference subprocess may run before it is killed as hung.')
 @click.pass_context
 def das_command_line_inference_cli(ctx, root_directory, **kwargs):
     """
@@ -1337,6 +1341,12 @@ def das_command_line_inference_cli(ctx, root_directory, **kwargs):
 @click.option('--seam-repair-raw-stop-tolerance-s', 'seam_repair_raw_stop_tolerance_s', type=float, default=None, required=False, help='Seam repair: maximum distance (s) between a merged stop and a raw ladder-gap stop for corroboration.')
 @click.option('--seam-repair-snippet-margin-s', 'seam_repair_snippet_margin_s', type=float, default=None, required=False, help='Seam repair: audio margin (s) excised around each flagged pair for re-detection.')
 @click.option('--seam-repair-max-boundary-shift-s', 'seam_repair_max_boundary_shift_s', type=float, default=None, required=False, help='Seam repair: maximum outward correction (s) permitted per USV edge.')
+@click.option('--seam-repair-subprocess-timeout-hours', 'seam_repair_subprocess_timeout_hours', type=float, default=None, required=False, help='Seam repair: hours the snippet re-detection subprocess may run before it is killed as hung.')
+@click.option('--noise-histogram-bins', 'noise_histogram_bins', type=int, default=None, required=False, help='Bins over [-1, 1] of the correlation / coherence histograms in the noise-rejection figure.')
+@click.option('--noise-histogram-figure-size', 'noise_histogram_figure_size', nargs=2, type=float, default=None, required=False, help='Width and height (in) of the noise-rejection figure, e.g. --noise-histogram-figure-size 24 4.')
+@click.option('--noise-histogram-face-color', 'noise_histogram_face_color', type=str, default=None, required=False, help='Hex fill colour of the noise-rejection histograms.')
+@click.option('--noise-histogram-edge-color', 'noise_histogram_edge_color', type=str, default=None, required=False, help='Hex edge colour of the noise-rejection histograms.')
+@click.option('--noise-histogram-cutoff-line-color', 'noise_histogram_cutoff_line_color', type=str, default=None, required=False, help='Hex colour of the cutoff lines in the noise-rejection figure.')
 @click.pass_context
 def summarize_das_findings_cli(ctx, root_directory, **kwargs):
     """
@@ -1362,6 +1372,7 @@ def summarize_das_findings_cli(ctx, root_directory, **kwargs):
 
     processing_settings_dict = modify_settings_json_for_cli(
         ctx=ctx,
+        parameters_lists=['noise_histogram_figure_size'],
         provided_params=provided_params,
         settings_dict='processing_settings',
         block='usv_inference.FindMouseVocalizations.summarize_das_findings'

@@ -467,7 +467,7 @@ class ConvertTo3D:
 
         wait_for_subprocesses(
             subps=conversion_subprocesses,
-            max_seconds=3 * 60 * 60,
+            max_seconds=self.input_parameter_dict['sleap_file_conversion']['subprocess_timeout_hours'] * 60 * 60,
             label=".slp→.analysis.h5 conversion",
             poll_interval_s=1,
             message_output=self.message_output,

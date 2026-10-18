@@ -30,9 +30,10 @@ class SummaryPlotter:
     Draws the one-page summary figure of a session's first preprocessing stage:
     session details, the phidget measurements (illumination, humidity,
     temperature) and the audio/video synchronization error statistics. It holds
-    ``root_directory`` and ``message_output``; ``root_directory`` is required
-    (the processing settings hold no session root), and None raises a
-    ``ValueError``.
+    ``root_directory``, the ``preprocessing_plot.SummaryPlotter.preprocessing_summary``
+    settings block (figure size and colours) and ``message_output``;
+    ``root_directory`` is required (the processing settings hold no session
+    root), and None raises a ``ValueError``.
 
     The entry method is ``preprocessing_summary``, which takes the per-device
     IPI discrepancy dictionary and the phidget data dictionary and saves the
@@ -41,7 +42,10 @@ class SummaryPlotter:
     """
 
     def __init__(
-        self, root_directory: str | None = None, message_output: Callable | None = None
+        self,
+        root_directory: str | None = None,
+        input_parameter_dict: dict | None = None,
+        message_output: Callable | None = None,
     ) -> None:
         """
         Description
@@ -52,6 +56,14 @@ class SummaryPlotter:
         ----------
         root_directory (str)
             Session root directory; required (None raises a ValueError).
+        input_parameter_dict (dict | None)
+            Processing parameters; defaults to None, in which case the shipped
+            ``processing_settings.json`` is read. Either way the
+            ``['preprocessing_plot']['SummaryPlotter']['preprocessing_summary']``
+            block supplies ``figure_size``, ``discrepancy_face_color``,
+            ``discrepancy_edge_color``, ``zero_line_color``, ``median_color``,
+            ``mean_color``, ``humidity_color``, ``illumination_color`` and
+            ``temperature_color``.
         message_output (Callable | None)
             Logging/message callback used to surface progress and warnings;
             defaults to None, in which case the built-in ``print`` is used.
@@ -65,7 +77,13 @@ class SummaryPlotter:
             msg = "SummaryPlotter needs a root_directory (the session root); the processing settings hold none."
             raise ValueError(msg)
 
+        if input_parameter_dict is None:
+            with (pathlib.Path(__file__).parent.parent / "_parameter_settings/processing_settings.json").open(
+            ) as json_file:
+                input_parameter_dict = json.load(json_file)
+
         self.root_directory = root_directory
+        self.input_parameter_dict = input_parameter_dict["preprocessing_plot"]["SummaryPlotter"]["preprocessing_summary"]
         self.message_output = message_output if message_output is not None else print
 
     def preprocessing_summary(
@@ -135,7 +153,9 @@ class SummaryPlotter:
                 np.nanstd(ipi_discrepancy_dict[device_id]["ipi_discrepancy_ms"])
                 / np.sqrt(sem_n)
             )
-            plot_statistics_dict[device_id]["low_ci"] = plot_statistics_dict[device_id][
+            # 2.58 is the two-sided 99% normal quantile (a mathematical constant, not a
+            # setting): the figure labels this interval "99% CI".
+            plot_statistics_dict[device_id]["low_ci"] =plot_statistics_dict[device_id][
                 "error_mean"
             ] - (2.58 * plot_statistics_dict[device_id]["error_sem"])
             plot_statistics_dict[device_id]["high_ci"] = plot_statistics_dict[
@@ -360,10 +380,11 @@ class SummaryPlotter:
         # squeeze=False keeps ax a 2D (2, ncols) array even when there is a
         # single device; without it matplotlib collapses to shape (2,) and the
         # ax[row, device_num] accesses below raise IndexError.
+        style = self.input_parameter_dict
         fig, ax = plt.subplots(
             nrows=2,
             ncols=len(plot_statistics_dict.keys()),
-            figsize=(12.8, 9.6),
+            figsize=tuple(style["figure_size"]),
             squeeze=False,
         )
         for device_num, device_id in enumerate(plot_statistics_dict.keys()):
@@ -375,8 +396,8 @@ class SummaryPlotter:
                     1,
                 ),
                 histtype="stepfilled",
-                color="#BBD5E826",
-                edgecolor="#00000040",
+                color=style["discrepancy_face_color"],
+                edgecolor=style["discrepancy_edge_color"],
             )
 
             ax[0, device_num].set_xlim(
@@ -384,18 +405,18 @@ class SummaryPlotter:
                 plot_statistics_dict[device_id]["plot_x_max"],
             )
 
-            ax[0, device_num].axvline(x=0, ls="-.", lw=1.2, c="#202020")
+            ax[0, device_num].axvline(x=0, ls="-.", lw=1.2, c=style["zero_line_color"])
             ax[0, device_num].axvline(
                 x=plot_statistics_dict[device_id]["error_median"],
                 ls="-",
                 lw=1.4,
-                c="#FF6347",
+                c=style["median_color"],
             )
             ax[0, device_num].axvline(
                 x=plot_statistics_dict[device_id]["error_mean"],
                 ls="-",
                 lw=1.4,
-                c="#00C78C",
+                c=style["mean_color"],
             )
 
             ax[0, device_num].set_xlabel(
@@ -412,7 +433,7 @@ class SummaryPlotter:
                 verticalalignment="top",
                 transform=ax[0, device_num].transAxes,
                 fontsize=6,
-                color="#FF6347",
+                color=style["median_color"],
             )
             ax[0, device_num].text(
                 x=0.775,
@@ -422,7 +443,7 @@ class SummaryPlotter:
                 verticalalignment="top",
                 transform=ax[0, device_num].transAxes,
                 fontsize=6,
-                color="#00C78C",
+                color=style["mean_color"],
             )
             ax[0, device_num].text(
                 x=0.775,
@@ -445,8 +466,8 @@ class SummaryPlotter:
             ax[1, device_num].scatter(
                 ipi_discrepancy_dict[device_id]["video_ipi_start_frames"],
                 ipi_discrepancy_dict[device_id]["ipi_discrepancy_ms"],
-                color="#BBD5E826",
-                edgecolor="#00000040",
+                color=style["discrepancy_face_color"],
+                edgecolor=style["discrepancy_edge_color"],
                 s=12,
             )
             ax[1, device_num].set_xlabel("Camera frame number")
@@ -463,8 +484,8 @@ class SummaryPlotter:
                 axin_nidq_.scatter(
                     ipi_discrepancy_dict[device_id]["nidq_ipi_start_samples"],
                     ipi_discrepancy_dict[device_id]["nidq_ipi_discrepancy_ms"],
-                    color="#BBD5E826",
-                    edgecolor="#00000040",
+                    color=style["discrepancy_face_color"],
+                    edgecolor=style["discrepancy_edge_color"],
                     s=4,
                 )
                 axin_nidq_.tick_params(axis="both", labelsize=3)
@@ -719,7 +740,7 @@ class SummaryPlotter:
                     verticalalignment="top",
                     transform=ax[0, device_num].transAxes,
                     fontsize=12,
-                    color="#8EE5EE",
+                    color=style["humidity_color"],
                 )
                 ax[0, device_num].text(
                     x=0.625,
@@ -743,7 +764,7 @@ class SummaryPlotter:
                     verticalalignment="top",
                     transform=ax[0, device_num].transAxes,
                     fontsize=12,
-                    color="#EEB422",
+                    color=style["illumination_color"],
                 )
                 ax[0, device_num].text(
                     x=0.625,
@@ -767,7 +788,7 @@ class SummaryPlotter:
                     verticalalignment="top",
                     transform=ax[0, device_num].transAxes,
                     fontsize=12,
-                    color="#FF7F50",
+                    color=style["temperature_color"],
                 )
                 ax[0, device_num].text(
                     x=0.625,
@@ -798,7 +819,7 @@ class SummaryPlotter:
                 axin1 = ax[0, device_num].inset_axes(
                     [0.05, 0.8, 0.15, 0.15], transform=ax[0, device_num].transAxes
                 )
-                axin1.hist(humidity_clean, color="#8EE5EE")
+                axin1.hist(humidity_clean, color=style["humidity_color"])
                 axin1.set_yticks([])
                 with contextlib.suppress(ValueError):
                     axin1.set_xticks(
@@ -814,7 +835,7 @@ class SummaryPlotter:
                     [0.225, 0.8, 0.15, 0.15], transform=ax[0, device_num].transAxes
                 )
                 axin2.plot(
-                    humidity_clean, ls="-", lw=0.3, color="#8EE5EE"
+                    humidity_clean, ls="-", lw=0.3, color=style["humidity_color"]
                 )
                 axin2.set_xticks([])
                 axin2.set_yticks([])
@@ -826,7 +847,7 @@ class SummaryPlotter:
                 axin3 = ax[0, device_num].inset_axes(
                     [0.05, 0.5, 0.15, 0.15], transform=ax[0, device_num].transAxes
                 )
-                axin3.hist(lux_clean, color="#EEB422")
+                axin3.hist(lux_clean, color=style["illumination_color"])
                 axin3.set_yticks([])
                 with contextlib.suppress(ValueError):
                     axin3.set_xticks(
@@ -842,7 +863,7 @@ class SummaryPlotter:
                     [0.225, 0.5, 0.15, 0.15], transform=ax[0, device_num].transAxes
                 )
                 axin4.plot(
-                    lux_clean, ls="-", lw=0.3, color="#EEB422"
+                    lux_clean, ls="-", lw=0.3, color=style["illumination_color"]
                 )
                 axin4.set_xticks([])
                 axin4.set_yticks([])
@@ -854,7 +875,7 @@ class SummaryPlotter:
                 axin5 = ax[0, device_num].inset_axes(
                     [0.05, 0.2, 0.15, 0.15], transform=ax[0, device_num].transAxes
                 )
-                axin5.hist(temperature_clean, color="#FF7F50")
+                axin5.hist(temperature_clean, color=style["temperature_color"])
                 axin5.set_yticks([])
                 with contextlib.suppress(ValueError):
                     axin5.set_xticks(
@@ -873,7 +894,7 @@ class SummaryPlotter:
                     temperature_clean,
                     ls="-",
                     lw=0.3,
-                    color="#FF7F50",
+                    color=style["temperature_color"],
                 )
                 axin6.set_xticks([])
                 axin6.set_yticks([])

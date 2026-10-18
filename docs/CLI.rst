@@ -173,6 +173,7 @@ Process
                          [--intensity-thresh FLOAT] [--intensity-thresh-floor FLOAT]
                          [--intensity-thresh-step FLOAT] [--min-led-event-frames INTEGER]
                          [--ms-tolerance INTEGER]
+                         [--unpaired-off-event-threshold-ceiling FLOAT]
 
     required arguments:
       --root-directory      Session root directory path.
@@ -199,6 +200,8 @@ Process
       --min-led-event-frames
                             Shortest LED on/off event (in frames) kept; shorter ones are glitches.
       --ms-tolerance        Divergence tolerance (in ms).
+      --unpaired-off-event-threshold-ceiling
+                            Sweep thresholds below this also accept one more LED OFF than ON event (the first OFF is then dropped).
 
 ``ev-sync-check``
 ``ev-sync-check`` is the command-line interface for validating ephys-video synchronization.
@@ -436,6 +439,7 @@ Process
     usage: das-infer [-h] --root-directory PATH [--env-name TEXT] [--model-dir PATH]
                      [--model-name TEXT] [--output-type {csv,hdf5}]
                      [--confidence-thresh FLOAT] [--min-len FLOAT] [--fill-gap FLOAT]
+                     [--subprocess-timeout-hours FLOAT]
 
     required arguments:
       --root-directory      Session root directory path.
@@ -449,6 +453,8 @@ Process
       --confidence-thresh   Confidence threshold for segment detection.
       --min-len             Minimum length for a detected segment (s).
       --fill-gap            Gap duration to fill between segments (s).
+      --subprocess-timeout-hours
+                            Hours one per-file DAS inference subprocess may run before it is killed as hung.
 
 ``das-summarize``
 ``das-summarize`` is the command-line interface for summarizing DAS inference findings.
@@ -479,6 +485,12 @@ Process
                          [--seam-repair-raw-stop-tolerance-s FLOAT]
                          [--seam-repair-snippet-margin-s FLOAT]
                          [--seam-repair-max-boundary-shift-s FLOAT]
+                         [--seam-repair-subprocess-timeout-hours FLOAT]
+                         [--noise-histogram-bins INTEGER]
+                         [--noise-histogram-figure-size FLOAT FLOAT]
+                         [--noise-histogram-face-color TEXT]
+                         [--noise-histogram-edge-color TEXT]
+                         [--noise-histogram-cutoff-line-color TEXT]
 
     required arguments:
       --root-directory      Session root directory path.
@@ -531,6 +543,18 @@ Process
                             Seam repair: audio margin (s) excised around each flagged pair for re-detection.
       --seam-repair-max-boundary-shift-s
                             Seam repair: maximum outward correction (s) permitted per USV edge.
+      --seam-repair-subprocess-timeout-hours
+                            Seam repair: hours the snippet re-detection subprocess may run before it is killed as hung.
+      --noise-histogram-bins
+                            Bins over [-1, 1] of the correlation / coherence histograms in the noise-rejection figure.
+      --noise-histogram-figure-size
+                            Width and height (in) of the noise-rejection figure, e.g. --noise-histogram-figure-size 24 4.
+      --noise-histogram-face-color
+                            Hex fill colour of the noise-rejection histograms.
+      --noise-histogram-edge-color
+                            Hex edge colour of the noise-rejection histograms.
+      --noise-histogram-cutoff-line-color
+                            Hex colour of the cutoff lines in the noise-rejection figure.
 
 ``detect-usv-noise``
 ``detect-usv-noise`` flags the USV segments of a session that hold no vocalization at all and merges two columns into ``usv_summary.csv``: ``noise`` (true / false in every row; true excludes the segment) and ``noise_probability`` (the ensemble's probability in every row, so an analysis can separate confident noise from the uncertain band, or re-threshold, without re-running). The decision comes from the model bundle, not from an option: ``noise`` is true for confident noise and for the uncertain band (``noise_probability`` >= 0.14), whose confident decisions reach a held-out precision of 0.944 and recall of 0.955 (0.9% of segments uncertain; see *Produce noise labels* in :doc:`Process`). The step prints these numbers on every run. The input spectrogram is rebuilt from the session's broadband memmap ``audio/broadband_filtered`` (30-120 kHz and 3-30 kHz, absolute dB) over a window that extends ~100 ms either side of the segment and is then cropped back to it; run it after ``das-summarize``, which rewrites the summary without these columns, and before ``detect-usv-squeaks``. A GPU is used when present but is not required (about 64 s against 90 s on the CPU for a 424-USV session).
@@ -723,6 +747,7 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
                             [--hop-length INTEGER]
                             [--window TEXT] [--offset FLOAT]
                             [--normalize | --no-normalize]
+                            [--top-db FLOAT]
 
     required arguments:
       --root-directory      Session root directory path.
@@ -739,6 +764,7 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
       --offset              Symmetric padding in seconds added to each USV before/after its start/stop bounds when slicing the audio.
       --normalize / --no-normalize
                             Whether to min-max normalize each averaged spectrogram to [0, 1].
+      --top-db              Dynamic range (dB below each channel spectrogram's peak) kept by librosa.power_to_db; the QLVM and mask models were trained on 80.
 
 ``generate-usv-masks``
 ``generate-usv-masks`` segments each USV with the box-prompt detector → SAM2 path (default ``detector=yolo``; ``cc`` connected-component fallback) and writes the instance masks back into the SAME spectrogram H5 under a ``mask/<session>`` group (``segmentations`` (M, 128, 128) bool, ``spectrogram_index`` (M,) int). Requires a pretrained SAM2 checkpoint and trained YOLO weights configured in settings (a missing path raises a clear error). GPU recommended.

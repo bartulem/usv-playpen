@@ -16,12 +16,6 @@ from tqdm import tqdm
 
 from ..os_utils import atomic_output_path
 
-# Fixed seed for the Monte-Carlo angle-PDF estimation so that the sound-
-# localization angle marginals -- and therefore the vocalization-to-mouse
-# assignment that consumes them -- are reproducible across runs. A single fixed
-# seed is used by design (every vocalization shares the same MC draw).
-_ANGLE_PDF_SEED = 0
-
 
 def softplus(x):
     """
@@ -344,9 +338,10 @@ def compute_covs_6d(raw_outputs: np.ndarray, arena_dims: np.ndarray) -> np.ndarr
 def estimate_angle_pdf(
     pred_6d_mean: np.ndarray,
     pred_6d_cov: np.ndarray,
-    n_samples: int = 1000,
-    theta_bins: np.ndarray | None = None,
-    seed: int | None = None,
+    *,
+    n_samples: int,
+    theta_bins: np.ndarray,
+    seed: int | None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Description
@@ -360,9 +355,11 @@ def estimate_angle_pdf(
     pred_6d_cov (np.ndarray)
         Covariance matrix of the 6d Gaussian distribution. Shape: (6, 6)
     n_samples (int)
-        Number of samples to draw from the Gaussian distribution.
+        Number of samples to draw from the Gaussian distribution; production
+        passes ``assign_vocalizations.n_samples`` from the processing settings.
     theta_bins (np.ndarray)
-        Bins for the angle histogram. If None, defaults to 46 bins from -pi to pi.
+        Bin edges for the angle histogram; production passes
+        ``np.linspace(-pi, pi, assign_vocalizations.n_angle_bins)``.
     seed (int | None)
         Optional seed for the Monte-Carlo draw; `None` uses a fresh default-RNG
         state (non-reproducible). Passing a fixed seed makes the estimated angle
@@ -373,9 +370,6 @@ def estimate_angle_pdf(
     (tuple[np.ndarray, np.ndarray])
         Tuple containing the angle bins and the estimated PDF.
     """
-
-    if theta_bins is None:
-        theta_bins = np.linspace(-np.pi, np.pi, 46, endpoint=True)
 
     rng = np.random.default_rng(seed)
     gaussian_rv = rng.multivariate_normal(
@@ -493,14 +487,14 @@ def convert_from_arb(
 def get_conf_sets_6d(
     raw_output: np.ndarray,
     arena_dims_mm: np.ndarray,
-    temperature: float = 1.0,
+    temperature: float,
     return_pdf: bool = False,
     *,
-    grid_resolution: tuple[int, int] = (100, 100),
-    n_angle_bins: int = 46,
-    n_samples: int = 500,
-    confidence_level: float = 0.95,
-    angle_pdf_seed: int = _ANGLE_PDF_SEED,
+    grid_resolution: tuple[int, int],
+    n_angle_bins: int,
+    n_samples: int,
+    confidence_level: float,
+    angle_pdf_seed: int,
 ) -> tuple:
     """
     Description
@@ -514,21 +508,28 @@ def get_conf_sets_6d(
     arena_dims_mm (np.ndarray)
         A (2,) shape ndarray containing the X and Y dimensions of the arena.
     temperature (float)
-        Temperature parameter for scaling.
+        Temperature parameter for scaling (``assign_vocalizations.temperature``).
     return_pdf (bool)
         Whether to return PDFs or not.
     grid_resolution (tuple[int, int])
         Spatial ``(x_res, y_res)`` grid the PDF is sampled on; MUST match the
         grid used by :func:`are_points_in_conf_set` (the confidence-set lookup),
-        so both are supplied from the same settings value. Defaults to (100, 100).
+        so both are supplied from the same settings value
+        (``assign_vocalizations.grid_resolution``).
     n_angle_bins (int)
-        Number of angular histogram bin edges from -pi to pi. Defaults to 46.
+        Number of angular histogram bin edges from -pi to pi
+        (``assign_vocalizations.n_angle_bins``).
     n_samples (int)
-        Monte-Carlo sample count for the per-vocalization angle PDF. Defaults to 500.
+        Monte-Carlo sample count for the per-vocalization angle PDF
+        (``assign_vocalizations.n_samples``).
     confidence_level (float)
-        Confidence level (in [0, 1]) for the extracted confidence sets. Defaults to 0.95.
+        Confidence level (in [0, 1]) for the extracted confidence sets
+        (``assign_vocalizations.confidence_level``).
     angle_pdf_seed (int)
-        RNG seed for the reproducible angle-PDF sampling. Defaults to ``_ANGLE_PDF_SEED``.
+        RNG seed for the reproducible angle-PDF sampling
+        (``assign_vocalizations.angle_pdf_seed``). A single fixed seed is used by
+        design (every vocalization shares the same Monte-Carlo draw), so the
+        angle marginals and the assignment that consumes them are reproducible.
 
     Returns
     -------
@@ -547,7 +548,7 @@ def get_conf_sets_6d(
         Description
         -----------
         Per-vocalization worker that builds the joint spatial/angular PDF
-        from a 6D mean and covariance, then extracts 95% confidence sets
+        from a 6D mean and covariance, then extracts ``confidence_level`` confidence sets
         with and without the angular marginal.
 
         Parameters
@@ -601,8 +602,8 @@ def are_points_in_conf_set(
     points: np.ndarray,
     arena_dims: np.ndarray,
     *,
-    grid_resolution: tuple[int, int] = (100, 100),
-    n_angle_bins: int = 46,
+    grid_resolution: tuple[int, int],
+    n_angle_bins: int,
 ) -> np.ndarray:
     """
     Description
@@ -621,10 +622,11 @@ def are_points_in_conf_set(
     grid_resolution (tuple[int, int])
         Spatial ``(x_res, y_res)`` grid the confidence sets were sampled on;
         MUST match the ``grid_resolution`` passed to :func:`get_conf_sets_6d`,
-        so both are supplied from the same settings value. Defaults to (100, 100).
+        so both are supplied from the same settings value
+        (``assign_vocalizations.grid_resolution``).
     n_angle_bins (int)
-        Number of angular histogram bin edges (must match :func:`get_conf_sets_6d`).
-        Defaults to 46.
+        Number of angular histogram bin edges (must match :func:`get_conf_sets_6d`;
+        ``assign_vocalizations.n_angle_bins``).
 
     Returns
     -------

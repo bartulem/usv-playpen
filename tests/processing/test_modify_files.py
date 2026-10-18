@@ -26,7 +26,9 @@ fast and deterministic on tiny inputs.
 Coverage: ``concatenate_audio_files`` (memmap write, fewer-than-two skip),
 ``concatenate_binary_files`` (outputs, chained / merged / extended
 changepoints, the concatenated tracking clock on rerun, failed-rewrite
-atomicity, the non-zero return warning), ``split_clusters_to_sessions``
+atomicity, the non-zero return warning), ``concatenate_video_files`` (stale
+output excluded and replaced, ``-y`` overwrite, a single video promoted, an
+empty folder skipped), ``split_clusters_to_sessions``
 (duplicate-spike removal, failed-save atomicity), ``rectify_video_fps``
 (copy path and calibration handling), the broadband helpers (high-pass cutoff
 and design, unit phasors, line-noise estimation, low-band variance and its
@@ -781,6 +783,175 @@ def _patch_imgstore(mocker, total_frame_num, esr_frame_times, has_dropped=False)
     return mock_store
 
 
+def _patch_concat_ffmpeg(mocker, written_bytes):
+    """
+    Description
+    -----------
+    Stand in for the ffmpeg concat-demuxer runs of ``concatenate_video_files``:
+    ``subprocess.Popen`` records each invocation (argv + working directory) and
+    ``wait_for_subprocesses`` writes ``written_bytes`` to every requested output
+    file, the way a successful ffmpeg run would, and reports a zero exit code.
+
+    Parameters
+    ----------
+    mocker (pytest_mock.MockerFixture)
+        Patches ``smart_wait``, ``subprocess.Popen`` and ``wait_for_subprocesses``
+        in ``usv_playpen.processing.modify_files``.
+    written_bytes (bytes)
+        Content written to each concatenated output file.
+
+    Returns
+    -------
+    invocations (list of dict)
+        One ``{'args': list, 'cwd': pathlib.Path}`` entry per ffmpeg invocation,
+        filled as the method under test runs.
+    """
+
+    invocations = []
+
+    def _fake_popen(**kwargs):
+        """Record the ffmpeg argv and working directory of one invocation."""
+        invocations.append({'args': kwargs['args'], 'cwd': pathlib.Path(kwargs['cwd'])})
+        return mocker.MagicMock(returncode=0)
+
+    def _fake_wait(**kwargs):
+        """Write each invocation's output file (the last argv entry) and report success."""
+        for invocation in invocations:
+            (invocation['cwd'] / invocation['args'][-1]).write_bytes(written_bytes)
+        return [0] * len(kwargs['subps'])
+
+    mocker.patch("usv_playpen.processing.modify_files.smart_wait")
+    mocker.patch("usv_playpen.processing.modify_files.subprocess.Popen", side_effect=_fake_popen)
+    mocker.patch("usv_playpen.processing.modify_files.wait_for_subprocesses", side_effect=_fake_wait)
+    return invocations
+
+
+def test_concatenate_video_files_replaces_stale_output(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    Regression: a concatenated file left in the camera folder by a crashed run
+    used to be globbed into its own ffmpeg input list, and because ffmpeg ran
+    without ``-y`` it refused to overwrite ("Not overwriting - exiting") yet
+    exited 0, so the OLD file was moved out and published as the session video.
+
+    The stale file must be excluded from the concat list and removed (with a
+    logged message), ffmpeg must run with ``-y``, and the published file must be
+    the freshly concatenated one.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        Stubs ffmpeg via ``_patch_concat_ffmpeg``.
+
+    Returns
+    -------
+    None
+    """
+
+    concat = processing_settings['modify_files']['Operator']['concatenate_video_files']
+    serial = "21372315"
+    concat['concatenate_camera_serial_num'] = [serial]
+    concat_name = concat['concatenated_video_name']
+    vid_ext = concat['concatenate_video_extension']
+
+    cam_dir = tmp_path / "video" / f"20250101_120000.{serial}"
+    cam_dir.mkdir(parents=True)
+    (cam_dir / f"000000.{vid_ext}").write_bytes(b"chunk0")
+    (cam_dir / f"000001.{vid_ext}").write_bytes(b"chunk1")
+    (cam_dir / f"{concat_name}_{serial}.{vid_ext}").write_bytes(b"stale")
+
+    invocations = _patch_concat_ffmpeg(mocker, written_bytes=b"fresh")
+    list_contents = []
+    original_unlink = pathlib.Path.unlink
+
+    def _capture_list_then_unlink(self, *args, **kwargs):
+        """Record the concat list's lines just before the method deletes it."""
+        if self.name.startswith("file_concatenation_list_"):
+            list_contents.extend(self.read_text(encoding="utf-8").splitlines())
+        return original_unlink(self, *args, **kwargs)
+
+    mocker.patch.object(pathlib.Path, "unlink", _capture_list_then_unlink)
+
+    messages = []
+    _make_operator(str(tmp_path), processing_settings, messages).concatenate_video_files()
+
+    assert len(invocations) == 1
+    assert "-y" in invocations[0]['args']
+    assert list_contents == [f"file '000000.{vid_ext}'", f"file '000001.{vid_ext}'"]
+    published = tmp_path / "video" / f"{concat_name}_{serial}.{vid_ext}"
+    assert published.read_bytes() == b"fresh"
+    assert not (cam_dir / f"{concat_name}_{serial}.{vid_ext}").exists()
+    assert any("stale" in message.lower() for message in messages)
+
+
+def test_concatenate_video_files_promotes_single_video_and_skips_empty_folder(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    Regression: the copy-back loop used to delete the concat list and move the
+    concatenated file of EVERY camera folder, but both exist only for folders
+    with more than one video chunk, so a folder with one video (or none) raised
+    FileNotFoundError after the other cameras had already been concatenated.
+
+    A folder with two chunks is concatenated and published; the single-video
+    folder's video is COPIED (byte-identical, no ffmpeg run, no concat list) to
+    ``<concatenated_video_name>_<serial>`` in ``video/`` with a logged message,
+    and the raw recording stays in its camera folder: re-encoding later deletes
+    that ``<concatenated_video_name>_<serial>`` file as a disposable intermediate,
+    so a move would have destroyed the only copy of the recording. The empty
+    folder is skipped with a logged message.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        Stubs ffmpeg via ``_patch_concat_ffmpeg``.
+
+    Returns
+    -------
+    None
+    """
+
+    concat = processing_settings['modify_files']['Operator']['concatenate_video_files']
+    multi_serial, single_serial, empty_serial = "21372315", "21372316", "21369048"
+    concat['concatenate_camera_serial_num'] = [multi_serial, single_serial, empty_serial]
+    concat_name = concat['concatenated_video_name']
+    vid_ext = concat['concatenate_video_extension']
+
+    video_dir = tmp_path / "video"
+    multi_dir = video_dir / f"20250101_120000.{multi_serial}"
+    single_dir = video_dir / f"20250101_120000.{single_serial}"
+    empty_dir = video_dir / f"20250101_120000.{empty_serial}"
+    for cam_dir in (multi_dir, single_dir, empty_dir):
+        cam_dir.mkdir(parents=True)
+    (multi_dir / f"000000.{vid_ext}").write_bytes(b"chunk0")
+    (multi_dir / f"000001.{vid_ext}").write_bytes(b"chunk1")
+    (single_dir / f"000000.{vid_ext}").write_bytes(b"only")
+
+    invocations = _patch_concat_ffmpeg(mocker, written_bytes=b"fresh")
+
+    messages = []
+    _make_operator(str(tmp_path), processing_settings, messages).concatenate_video_files()
+
+    assert [invocation['cwd'] for invocation in invocations] == [multi_dir]
+    assert (video_dir / f"{concat_name}_{multi_serial}.{vid_ext}").read_bytes() == b"fresh"
+    assert not (multi_dir / f"file_concatenation_list_{multi_serial}.txt").exists()
+    assert (video_dir / f"{concat_name}_{single_serial}.{vid_ext}").read_bytes() == b"only"
+    assert (single_dir / f"000000.{vid_ext}").read_bytes() == b"only"
+    assert list(single_dir.glob("file_concatenation_list_*")) == []
+    assert sum("the original stays in its folder" in message for message in messages) == 1
+    assert not (video_dir / f"{concat_name}_{empty_serial}.{vid_ext}").exists()
+    assert sum("skipped" in message for message in messages) == 1
+
+
 def test_rectify_video_fps_no_concat_copies_and_handles_calibration(tmp_path, processing_settings, mocker):
     """
     Description
@@ -1230,7 +1401,7 @@ def test_estimate_low_band_variance_recovers_the_removed_band(tmp_path):
         sf.write(str(hpss / name), np.clip(low + high + noise[:, column], -32768, 32767).astype(np.int16), sr, subtype="PCM_16")
         channels.append((name, np.clip(high + noise[:, column], -32768, 32767).astype(np.int16)))
     mmap_path = write_broadband_audio(tmp_path, channels, sr)
-    estimate = estimate_low_band_variance([hpss / name for name in names], mmap_path, n_windows=12, window_s=0.2)
+    estimate = estimate_low_band_variance([hpss / name for name in names], mmap_path, n_windows=12, window_s=0.2, seed=0)
     assert estimate['windows'] == 12
     assert estimate['unit'] == "(int16 / 32768)^2"
     for value, amplitude in zip(estimate['per_column'], low_amplitudes, strict=True):

@@ -217,8 +217,8 @@ class ExperimentController:
                 encoding='utf-8'
             )
 
-            max_wait_seconds = 20
-            poll_interval_seconds = 5
+            max_wait_seconds = self.exp_settings_dict['timeouts']['ethernet_up_max_wait_s']
+            poll_interval_seconds = self.exp_settings_dict['timeouts']['ethernet_up_poll_interval_s']
             num_attempts = max(1, max_wait_seconds // poll_interval_seconds)
 
             for attempt in range(num_attempts):
@@ -244,9 +244,10 @@ class ExperimentController:
                 raise RuntimeError(msg)
 
     def verify_avisoft_is_recording(self,
-                                    warmup_s: int = 3,
-                                    poll_interval_s: int = 3,
-                                    max_wait_s: int = 12) -> bool:
+                                    *,
+                                    warmup_s: int,
+                                    poll_interval_s: int,
+                                    max_wait_s: int) -> bool:
         """
         Description
         -----------
@@ -274,11 +275,14 @@ class ExperimentController:
         Parameters
         ----------
         warmup_s (int)
-            Seconds to wait after Avisoft launch before the first size snapshot.
+            Seconds to wait after Avisoft launch before the first size snapshot
+            (``timeouts.avisoft_warmup_s`` in the recording settings).
         poll_interval_s (int)
-            Seconds between successive polls of the .wav files.
+            Seconds between successive polls of the .wav files
+            (``timeouts.avisoft_poll_interval_s``).
         max_wait_s (int)
-            Total budget, in seconds, for the verification window after warmup.
+            Total budget, in seconds, for the verification window after warmup
+            (``timeouts.avisoft_max_wait_s``).
 
         Returns
         -------
@@ -497,7 +501,7 @@ class ExperimentController:
         # Mount only the drives the current user needs
         for drive_letter, unc_path in drives_to_mount.items():
 
-            max_retries = 3
+            max_retries = self.exp_settings_dict['timeouts']['drive_mount_max_retries']
             mounted_successfully = False
 
             for attempt in range(1, max_retries + 1):
@@ -544,7 +548,7 @@ class ExperimentController:
                 try:
                     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                         future = executor.submit(lambda dl: pathlib.Path(f"{dl}\\").is_dir(), drive_letter)
-                        is_accessible = future.result(timeout=10)
+                        is_accessible = future.result(timeout=self.exp_settings_dict['timeouts']['drive_verify_timeout_s'])
 
                     if is_accessible:
                         self.message_output(f"[**Local mount check**] '{drive_letter}' has been successfully mounted and verified.")
@@ -644,7 +648,7 @@ class ExperimentController:
             # working connection.
             client.connect(
                 hostname=hostname, port=port, username=username,
-                password=password, timeout=10,
+                password=password, timeout=self.exp_settings_dict['timeouts']['ssh_connect_timeout_s'],
                 disabled_algorithms={"pubkeys": ["ssh-rsa"]},
             )
 
@@ -1171,7 +1175,10 @@ class ExperimentController:
                 # 'tasklist STATUS eq Not Responding' heuristic, which tracked
                 # only UI-thread responsiveness and missed audio-thread / USB
                 # freezes as well as modal-dialog hangs.
-                if not self.verify_avisoft_is_recording():
+                if not self.verify_avisoft_is_recording(
+                        warmup_s=self.exp_settings_dict['timeouts']['avisoft_warmup_s'],
+                        poll_interval_s=self.exp_settings_dict['timeouts']['avisoft_poll_interval_s'],
+                        max_wait_s=self.exp_settings_dict['timeouts']['avisoft_max_wait_s']):
                     subprocess.Popen(['powershell', '-Command', "Stop-Process -Name 'CoolTerm' -Force -ErrorAction SilentlyContinue"]).wait()
                     subprocess.Popen(['powershell', '-Command', f"Stop-Process -Name '{avisoft_recorder_program_name}' -Force -ErrorAction SilentlyContinue"]).wait()
                     self.message_output("Aborted experiment: Avisoft Recorder did not produce audio bytes after launch.")
@@ -1463,7 +1470,7 @@ class ExperimentController:
                     (subp, ch_dir, prefixed_name, pathlib.Path(log_file.name))
                 )
 
-            # 15-minute overall budget. Per-file budget is already
+            # Overall budget from timeouts.audio_move_timeout_min (15 shipped). Per-file budget is already
             # ~10 min via /R:60 /W:10; with all robocopies running in
             # parallel the slowest one bounds the wall clock. 15 min
             # gives a safety margin over the per-file budget without
@@ -1471,7 +1478,7 @@ class ExperimentController:
             # forever.
             return_codes = wait_for_subprocesses(
                 subps=[t[0] for t in audio_copy_subps],
-                max_seconds=15 * 60,
+                max_seconds=self.exp_settings_dict['timeouts']['audio_move_timeout_min'] * 60,
                 label="audio file move",
                 poll_interval_s=1,
                 message_output=lambda _msg: None,
@@ -1593,7 +1600,7 @@ class ExperimentController:
                 ]
                 backup_return_codes = wait_for_subprocesses(
                     subps=[t[0] for t in backup_subps],
-                    max_seconds=2 * 60 * 60,
+                    max_seconds=self.exp_settings_dict['timeouts']['backup_mirror_timeout_hours'] * 60 * 60,
                     label="backup mirror",
                     poll_interval_s=1,
                     message_output=self.message_output,

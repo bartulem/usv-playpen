@@ -57,7 +57,7 @@ _DAS_ANNOTATION_FILE_RE = re.compile(r"^([ms])_.*_(ch\d{2})_.*annotations\.csv$"
 
 def _remerge_from_consensus(merged: list, min_duration_s: float, span_factor: float,
                             max_dissenting_channels: int, min_agreeing_channels: int,
-                            max_depth: int, min_gap_s: float = 0.0, _depth: int = 0) -> tuple:
+                            max_depth: int, *, min_gap_s: float, _depth: int = 0) -> tuple:
     """
     Description
     -----------
@@ -116,9 +116,10 @@ def _remerge_from_consensus(merged: list, min_duration_s: float, span_factor: fl
         against their own median longest-segment while ``_depth < max_depth``; at the
         cap the sub-intervals are kept as they are.
     min_gap_s (float)
-        Default 0.0. Smallest gap (s) a consensus cut may leave between adjacent sub-intervals;
+        Smallest gap (s) a consensus cut may leave between adjacent sub-intervals;
         pieces separated by less are fused back together (stop extended,
         ``chs_detected`` and ``segments`` combined). 0 disables the fusion.
+        Production passes ``summarize_das_findings.consensus_remerge_min_gap_s``.
     _depth (int)
         Default 0. Current recursion depth; internal, callers leave it at 0.
 
@@ -571,12 +572,13 @@ class FindMouseVocalizations:
             )
 
             # DAS inference on a long recording can take hours on CPU, so the
-            # per-file budget is generous. A 12 h ceiling still catches a
+            # per-file budget is generous. The subprocess_timeout_hours ceiling
+            # (12 h shipped) still catches a
             # genuinely hung process (GPU lost, file-descriptor deadlock)
             # rather than letting it sit indefinitely.
             wait_for_subprocesses(
                 subps=[inference_subp],
-                max_seconds=12 * 60 * 60,
+                max_seconds=self.input_parameter_dict["das_command_line_inference"]["subprocess_timeout_hours"] * 60 * 60,
                 label=f"DAS inference on {pathlib.Path(one_file).name}",
                 poll_interval_s=5,
                 message_output=self.message_output,
@@ -781,7 +783,7 @@ class FindMouseVocalizations:
                             merge_params["consensus_remerge_rescue_dissenting_channels"],
                             merge_params["consensus_remerge_min_agreeing_channels"],
                             merge_params["consensus_remerge_max_depth"],
-                            merge_params["consensus_remerge_min_gap_s"],
+                            min_gap_s=merge_params["consensus_remerge_min_gap_s"],
                         )
                         rescued.extend(retry)
                     if len(rescued) != len(merged):
@@ -1017,34 +1019,37 @@ class FindMouseVocalizations:
                 )
 
                 if n_usv > 1:
-                    fig, ax = plt.subplots(nrows=1, ncols=2, figsize=(24, 4), dpi=300)
+                    noise_histogram_params = self.input_parameter_dict["summarize_das_findings"]
+                    # dpi=300 only sets the on-screen canvas; the saved file's dpi comes from
+                    # the visualization settings through save_figure below.
+                    fig, ax = plt.subplots(nrows=1, ncols=2, figsize=tuple(noise_histogram_params["noise_histogram_figure_size"]), dpi=300)
                     # Correlations/coherences live in [-1, 1]; a fixed range keeps
                     # the figure comparable across sessions and avoids degenerate
                     # bin edges when every value is (near-)identical.
                     ax[0].hist(
                         x=mean_signal_correlations[~np.isnan(mean_signal_correlations)],
-                        bins=20,
+                        bins=noise_histogram_params["noise_histogram_bins"],
                         range=(-1.0, 1.0),
                         histtype="stepfilled",
-                        color="#BBD5E8",
-                        edgecolor="#202020",
+                        color=noise_histogram_params["noise_histogram_face_color"],
+                        edgecolor=noise_histogram_params["noise_histogram_edge_color"],
                         alpha=0.5,
                     )
                     ax[0].set_xlabel("Mean signal/spectral correlation")
                     ax[0].set_ylabel("Number of putative USVs")
-                    ax[0].axvline(x=noise_corr_cutoff, ls="-.", lw=1.2, c="#202020")
+                    ax[0].axvline(x=noise_corr_cutoff, ls="-.", lw=1.2, c=noise_histogram_params["noise_histogram_cutoff_line_color"])
                     ax[1].hist(
                         x=spatial_coherences[~np.isnan(spatial_coherences)],
-                        bins=20,
+                        bins=noise_histogram_params["noise_histogram_bins"],
                         range=(-1.0, 1.0),
                         histtype="stepfilled",
-                        color="#BBD5E8",
-                        edgecolor="#202020",
+                        color=noise_histogram_params["noise_histogram_face_color"],
+                        edgecolor=noise_histogram_params["noise_histogram_edge_color"],
                         alpha=0.5,
                     )
                     ax[1].set_xlabel(f"Spatial coherence (top-{coherence_channel_count} channels)")
                     ax[1].set_ylabel("Number of putative USVs")
-                    ax[1].axvline(x=coherence_cutoff, ls="-.", lw=1.2, c="#202020")
+                    ax[1].axvline(x=coherence_cutoff, ls="-.", lw=1.2, c=noise_histogram_params["noise_histogram_cutoff_line_color"])
                     # The figure's format and dpi come from the visualization settings: the
                     # step's own when it was given them, else the shipped file.
                     if hasattr(self, "visualizations_parameter_dict"):
@@ -1349,11 +1354,13 @@ class FindMouseVocalizations:
             shell=False,
         )
         # Snippets are sub-second, so even hundreds finish in minutes on CPU;
-        # a 4 h ceiling only catches a genuinely hung process.
+        # the seam_repair_subprocess_timeout_hours ceiling (4 h shipped) only
+        # catches a genuinely hung process.
         wait_for_subprocesses(
             subps=[snippet_subp],
-            max_seconds=4 * 60 * 60,
+            max_seconds=repair_params["seam_repair_subprocess_timeout_hours"] * 60 * 60,
             label=f"DAS seam-repair snippet inference ({len(flagged)} snippets)",
+            message_output=self.message_output,
             raise_on_nonzero=True,
             raise_on_timeout=True,
         )

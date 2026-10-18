@@ -16,6 +16,18 @@ video_session_duration = 20
 disable_ethernet = true
 ethernet_network = "Ethernet 5"
 
+[timeouts]
+ethernet_up_max_wait_s = 20
+ethernet_up_poll_interval_s = 5
+avisoft_warmup_s = 3
+avisoft_poll_interval_s = 3
+avisoft_max_wait_s = 12
+drive_mount_max_retries = 3
+drive_verify_timeout_s = 10
+ssh_connect_timeout_s = 10
+audio_move_timeout_min = 15
+backup_mirror_timeout_hours = 2
+
 [[lab_shares]]
 name = "falkner"
 windows = "F"

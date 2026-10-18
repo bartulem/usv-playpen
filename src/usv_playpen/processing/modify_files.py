@@ -684,7 +684,7 @@ def estimate_low_band_variance(wav_paths: list[pathlib.Path],
                                mmap_path: str | pathlib.Path,
                                n_windows: int,
                                window_s: float,
-                               seed: int = 0) -> dict:
+                               seed: int) -> dict:
     """
     Description
     -----------
@@ -716,7 +716,8 @@ def estimate_low_band_variance(wav_paths: list[pathlib.Path],
     window_s (float)
         Window length (s).
     seed (int)
-        Seed of the window positions.
+        Seed of the window positions (``low_band_variance_seed`` of the
+        ``broadband_filter_audio`` settings block).
 
     Returns
     -------
@@ -797,7 +798,8 @@ def add_broadband_low_band_variance(root_directory: str | pathlib.Path,
     if 'low_band_variance' in report and not force:
         return {'status': 'skipped', 'reason': 'low_band_variance already present'}
     low_band = estimate_low_band_variance(broadband_source_files(root, settings), find_audio_mmap(root, 'broadband'),
-                                          settings['low_band_variance_windows'], settings['low_band_variance_window_s'])
+                                          settings['low_band_variance_windows'], settings['low_band_variance_window_s'],
+                                          settings['low_band_variance_seed'])
     report['low_band_variance'] = low_band
     with atomic_output_path(report_path) as temporary_report, pathlib.Path(temporary_report).open('w', encoding='utf-8') as report_file:
         json.dump(report, report_file, indent=2)
@@ -1430,7 +1432,7 @@ class Operator:
 
             wait_for_subprocesses(
                 subps=separate_ch_subprocesses,
-                max_seconds=2 * 60 * 60,
+                max_seconds=self.input_parameter_dict['multichannel_to_channel_audio']['subprocess_timeout_hours'] * 60 * 60,
                 label="multichannel channel-separation",
                 poll_interval_s=5,
                 message_output=self.message_output,
@@ -1479,7 +1481,7 @@ class Operator:
 
         wait_for_subprocesses(
             subps=separation_subprocesses,
-            max_seconds=2 * 60 * 60,
+            max_seconds=self.input_parameter_dict['multichannel_to_channel_audio']['subprocess_timeout_hours'] * 60 * 60,
             label="master/slave single-channel concatenation",
             poll_interval_s=5,
             message_output=self.message_output,
@@ -1607,7 +1609,7 @@ class Operator:
 
             wait_for_subprocesses(
                 subps=filter_subprocesses,
-                max_seconds=2 * 60 * 60,
+                max_seconds=self.input_parameter_dict['filter_audio_files']['subprocess_timeout_hours'] * 60 * 60,
                 label="audio band-pass filtering",
                 poll_interval_s=5,
                 message_output=self.message_output,
@@ -1823,7 +1825,8 @@ class Operator:
             finally:
                 for stream in streams:
                     stream.close()
-            low_band = estimate_low_band_variance(wav_paths, mmap_path, settings['low_band_variance_windows'], settings['low_band_variance_window_s'])
+            low_band = estimate_low_band_variance(wav_paths, mmap_path, settings['low_band_variance_windows'], settings['low_band_variance_window_s'],
+                                                  settings['low_band_variance_seed'])
 
         runtime_s = round(time.perf_counter() - started, 2)
         try:
@@ -1875,19 +1878,52 @@ class Operator:
         -----------
         This method concatenates video files via ffmpeg.
 
+        For every non-calibration camera folder in the session's ``video``
+        directory whose serial number is listed in ``concatenate_camera_serial_num``,
+        the method gathers the folder's video chunks (``*.<concatenate_video_extension>``,
+        sorted by name), writes them to ``file_concatenation_list_<serial>.txt``
+        and runs ffmpeg's concat demuxer into ``<concatenated_video_name>_<serial>``.
+        The concatenated output is never part of its own input list: a file of
+        that name already sitting in the camera folder (the leftover of a run that
+        crashed after ffmpeg wrote it, but before it was moved out) is excluded
+        from the chunk list and deleted, with a logged message, before ffmpeg
+        starts, and ffmpeg itself is run with ``-y`` so it can never refuse to
+        overwrite and silently leave an old file to be published.
+
+        Only folders that actually hold more than one video chunk are
+        concatenated. A folder with exactly one video has that video COPIED
+        instead (never moved): the copy goes, unchanged, to the same place and
+        name the concatenation would produce (``<concatenated_video_name>_<serial>``
+        in the session's ``video`` directory), with a logged message, so later
+        steps (e.g. re-encoding with ``conduct_concat=True``) treat it like any
+        concatenated recording. The raw recording stays in its camera folder next
+        to the imgstore metadata that indexes it, because re-encoding deletes the
+        ``<concatenated_video_name>_<serial>`` file afterwards as a disposable
+        intermediate (``rectify_video_fps.delete_old_file``). A folder with no
+        video is skipped with a logged message.
+
+        After all ffmpeg processes finish, each concatenated folder's list file
+        is deleted and its concatenated file is moved one level up, into the
+        session's ``video`` directory; single videos are copied at the same
+        point.
+
         Parameters
         ----------
 
         Returns
         -------
         concatenated_temp (.mp4 file)
-            Concatenated video file.
+            Concatenated video file, one per camera folder with at least one
+            video (a copy of the single video for a one-video folder), saved in
+            the session's ``video`` directory.
         """
 
         self.message_output(f"Video concatenation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=2)
 
         subprocesses = []
+        concatenated_dirs = []
+        promoted_videos = []
 
         for sub_directory in (pathlib.Path(self.root_directory) / 'video').iterdir():
             if 'calibration' not in sub_directory.name \
@@ -1897,7 +1933,15 @@ class Operator:
 
                 vid_name = f"{self.input_parameter_dict['concatenate_video_files']['concatenated_video_name']}_{sub_directory.name.split('.')[-1]}"
                 vid_extension = self.input_parameter_dict['concatenate_video_files']['concatenate_video_extension']
-                all_video_files = sorted(current_working_dir.glob(f'*.{vid_extension}'))
+                concat_output_path = current_working_dir / f"{vid_name}.{vid_extension}"
+
+                # the concatenated output must never be one of its own inputs: a stale
+                # copy left in the camera folder by a crashed run is excluded and removed
+                all_video_files = sorted(file_path for file_path in current_working_dir.glob(f'*.{vid_extension}')
+                                         if file_path.name != concat_output_path.name)
+                if concat_output_path.is_file():
+                    concat_output_path.unlink()
+                    self.message_output(f"Removed a stale concatenated video {concat_output_path} left by an earlier run; it will be rebuilt from the {len(all_video_files)} video chunk(s) in {current_working_dir}.")
 
                 if len(all_video_files) > 1:
 
@@ -1907,17 +1951,22 @@ class Operator:
                             concat_txt_file.write(f"file '{file_path.name}'\n")
 
                     # concatenate videos
-                    one_subprocess = subprocess.Popen(args=["ffmpeg", "-loglevel", "warning", "-f", "concat", "-i", f"file_concatenation_list_{sub_directory.name.split('.')[-1]}.txt", "-c", "copy", f"{vid_name}.{vid_extension}"],
+                    one_subprocess = subprocess.Popen(args=["ffmpeg", "-loglevel", "warning", "-y", "-f", "concat", "-i", f"file_concatenation_list_{sub_directory.name.split('.')[-1]}.txt", "-c", "copy", f"{vid_name}.{vid_extension}"],
                                                       stdout=subprocess.DEVNULL,
                                                       stderr=subprocess.STDOUT,
                                                       cwd=current_working_dir,
                                                       shell=False)
 
                     subprocesses.append(one_subprocess)
+                    concatenated_dirs.append(current_working_dir)
+                elif len(all_video_files) == 1:
+                    promoted_videos.append((all_video_files[0], pathlib.Path(self.root_directory) / 'video' / concat_output_path.name))
+                else:
+                    self.message_output(f"Video concatenation skipped for {current_working_dir}: it holds no video files.")
 
         wait_for_subprocesses(
             subps=subprocesses,
-            max_seconds=3 * 60 * 60,
+            max_seconds=self.input_parameter_dict['concatenate_video_files']['subprocess_timeout_hours'] * 60 * 60,
             label="video concatenation",
             poll_interval_s=5,
             message_output=self.message_output,
@@ -1925,18 +1974,23 @@ class Operator:
             raise_on_timeout=True,
         )
 
-        #  copy files over to video directory
-        for sub_directory in (pathlib.Path(self.root_directory) / 'video').iterdir():
-            if 'calibration' not in sub_directory.name \
-                    and sub_directory.name.split('.')[-1] in self.input_parameter_dict['concatenate_video_files']['concatenate_camera_serial_num']:
-                current_working_dir = sub_directory
-                cam_serial = sub_directory.name.split('.')[-1]
-                concat_name = self.input_parameter_dict['concatenate_video_files']['concatenated_video_name']
-                vid_ext = self.input_parameter_dict['concatenate_video_files']['concatenate_video_extension']
+        #  copy files over to video directory (only folders that were concatenated)
+        for current_working_dir in concatenated_dirs:
+            cam_serial = current_working_dir.name.split('.')[-1]
+            concat_name = self.input_parameter_dict['concatenate_video_files']['concatenated_video_name']
+            vid_ext = self.input_parameter_dict['concatenate_video_files']['concatenate_video_extension']
 
-                (current_working_dir / f"file_concatenation_list_{cam_serial}.txt").unlink()
-                shutil.move(src=current_working_dir / f"{concat_name}_{cam_serial}.{vid_ext}",
-                            dst=pathlib.Path(self.root_directory) / 'video' / f"{concat_name}_{cam_serial}.{vid_ext}")
+            (current_working_dir / f"file_concatenation_list_{cam_serial}.txt").unlink()
+            shutil.move(src=current_working_dir / f"{concat_name}_{cam_serial}.{vid_ext}",
+                        dst=pathlib.Path(self.root_directory) / 'video' / f"{concat_name}_{cam_serial}.{vid_ext}")
+
+        # A folder with exactly one video has it COPIED (never moved) into place as the
+        # concatenated file. The copy is what re-encoding consumes and later deletes as a
+        # disposable intermediate (`rectify_video_fps.delete_old_file`); the raw recording
+        # stays in its camera folder next to the imgstore metadata that indexes it.
+        for single_video_path, promoted_path in promoted_videos:
+            shutil.copy2(src=single_video_path, dst=promoted_path)
+            self.message_output(f"Video {single_video_path} is the only video in its folder, so it was copied unchanged to {promoted_path} in place of a concatenation; the original stays in its folder.")
 
     def rectify_video_fps(self, conduct_concat: bool = True) -> None:
         """
@@ -2055,7 +2109,7 @@ class Operator:
 
         wait_for_subprocesses(
             subps=fsp_subprocesses,
-            max_seconds=6 * 60 * 60,
+            max_seconds=self.input_parameter_dict['rectify_video_fps']['subprocess_timeout_hours'] * 60 * 60,
             label="video re-encoding (fps/crf)",
             poll_interval_s=5,
             message_output=self.message_output,

@@ -235,6 +235,30 @@ The file-destination directories above are derived from the ``[[lab_shares]]`` t
 
 The first ``[[lab_shares]]`` entry is the default returned by ``find_base_path``. To remap a drive or mount point, edit the relevant token here.
 
+The ``[timeouts]`` table of the same file (not in the GUI) holds the time budgets and retry counts of the recording PC's health checks and file transfers:
+
+* **ethernet_up_max_wait_s** / **ethernet_up_poll_interval_s** : after re-enabling the Ethernet adapter, how long (s) to wait for it to report *Up* and how often (s) to poll it (20 / 5); past the budget the recording stops
+* **avisoft_warmup_s** / **avisoft_poll_interval_s** / **avisoft_max_wait_s** : the Avisoft health check after launch waits this long (s) for the first .wav files, then polls them at this interval (s) for byte growth within this budget (s) (3 / 3 / 12); a channel directory without growth aborts the recording
+* **drive_mount_max_retries** : attempts at mapping each CUP drive on Windows before the failure is reported (3)
+* **drive_verify_timeout_s** : how long (s) a freshly mapped drive may take to answer a directory check before the attempt counts as failed (10)
+* **ssh_connect_timeout_s** : SSH connection timeout (s) of the mount check on the Motif PCs (10)
+* **audio_move_timeout_min** : overall budget (min) of the parallel robocopy moves of the audio files to the file server (15: a safety margin over each file's own ~10 min robocopy retry budget, short enough that a wedged transfer cannot hold the GUI)
+* **backup_mirror_timeout_hours** : budget (h) of the robocopy mirrors to the backup destinations (2)
+
+.. code-block:: toml
+
+    [timeouts]
+    ethernet_up_max_wait_s = 20
+    ethernet_up_poll_interval_s = 5
+    avisoft_warmup_s = 3
+    avisoft_poll_interval_s = 3
+    avisoft_max_wait_s = 12
+    drive_mount_max_retries = 3
+    drive_verify_timeout_s = 10
+    ssh_connect_timeout_s = 10
+    audio_move_timeout_min = 15
+    backup_mirror_timeout_hours = 2
+
 In the example below, one would be doing a 20 minute audio and video recording without calibration. When ready, click *Next*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/recording_step_1.png

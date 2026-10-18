@@ -856,7 +856,8 @@ def usv_summary_exclusions(
     exclude_squeaks: bool,
     exclude_noise: bool,
     reference_squeak_rows: np.ndarray | None = None,
-    squeak_exclusion_source: str = "summary",
+    *,
+    squeak_exclusion_source: str,
 ) -> np.ndarray:
     """
     Description
@@ -897,7 +898,8 @@ def usv_summary_exclusions(
         instead of (``"reference"``) or on top of (``"union"``) the summary's
         ``squeak``; None with ``"summary"``.
     squeak_exclusion_source (str)
-        ``"summary"``, ``"reference"`` or ``"union"`` (see above).
+        ``"summary"``, ``"reference"`` or ``"union"`` (see above); production
+        passes ``build_qlvm_training_set.squeak_exclusion_source``.
 
     Returns
     -------
@@ -1577,7 +1579,8 @@ class QLVMTrainingSetBuilder:
                 else:
                     reference_rows = reference_strict_squeak_rows(reference_index, session_id, durations.size)
                 excluded = usv_summary_exclusions(
-                    root_directory, durations.size, exclude_squeaks, exclude_noise, reference_rows, squeak_exclusion_source,
+                    root_directory, durations.size, exclude_squeaks, exclude_noise, reference_rows,
+                    squeak_exclusion_source=squeak_exclusion_source,
                 )
             if table_exclusions is not None and session_id in table_exclusions:
                 table_rows = table_exclusions[session_id]

@@ -38,6 +38,7 @@ _SPEC_PARAMS = {
     "window": "blackmanharris",
     "offset": 0.0,
     "normalize": True,
+    "top_db": 80.0,
 }
 
 
@@ -75,7 +76,7 @@ def test_compute_usv_spectrogram_shape_and_range():
     sr = 250000
     rng = np.random.default_rng(1)
     segment = rng.integers(-8000, 8000, size=(12500, 4), dtype=np.int16).astype(np.float64)
-    spec, n_time = compute_usv_spectrogram(segment, sr, _SPEC_PARAMS, normalize=True)
+    spec, n_time = compute_usv_spectrogram(segment, sr, _SPEC_PARAMS, normalize=True, top_db=80.0)
     assert spec is not None
     assert spec.shape == (128, 128)
     assert spec.min() >= 0.0
@@ -98,23 +99,24 @@ def test_compute_usv_spectrogram_channel_variance_offsets_steer_the_weights():
     np.testing.assert_allclose(steered, first_only, atol=1e-3)
     assert np.abs(plain - first_only).max() > 0.5
     with pytest.raises(ValueError, match="channel_variance_offsets"):
-        compute_usv_spectrogram(audio, sr, params, channel_variance_offsets=np.array([1.0]))
+        compute_usv_spectrogram(audio, sr, params, normalize=False, top_db=None, channel_variance_offsets=np.array([1.0]))
 
 
 def test_compute_usv_spectrogram_too_short_returns_none():
     """A segment shorter than nperseg on every channel yields no spectrogram."""
     segment = np.zeros((100, 4), dtype=np.float64)
-    spec, n_time = compute_usv_spectrogram(segment, 250000, _SPEC_PARAMS)
+    spec, n_time = compute_usv_spectrogram(segment, 250000, _SPEC_PARAMS, normalize=True, top_db=80.0)
     assert spec is None
     assert n_time == 0
 
 
-def test_compute_usv_spectrogram_defaults_reproduce_the_legacy_qlvm_path():
-    """The new db_ref / top_db keywords default to ref=np.max and librosa's 80 dB clamp,
-    so an unchanged call returns exactly what the explicit legacy arguments return."""
+def test_compute_usv_spectrogram_shipped_top_db_reproduces_the_legacy_qlvm_path():
+    """db_ref defaults to ref=np.max and the shipped generate_spectrograms.top_db is librosa's
+    80 dB clamp, so the settings-driven call returns exactly what the explicit legacy arguments
+    return."""
     rng = np.random.default_rng(2)
     segment = rng.integers(-8000, 8000, size=(12500, 4), dtype=np.int16).astype(np.float64)
-    default_spec, default_n = compute_usv_spectrogram(segment, 250000, _SPEC_PARAMS, normalize=False)
+    default_spec, default_n = compute_usv_spectrogram(segment, 250000, _SPEC_PARAMS, normalize=False, top_db=_SPEC_PARAMS["top_db"])
     legacy_spec, legacy_n = compute_usv_spectrogram(
         segment, 250000, _SPEC_PARAMS, normalize=False, db_ref=None, top_db=80.0
     )

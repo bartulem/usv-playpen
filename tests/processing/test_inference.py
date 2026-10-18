@@ -1534,10 +1534,10 @@ def test_are_points_in_conf_set_angle_binning():
 
     conf = np.zeros((1, 100, 100, 45), dtype=bool)
     conf[0, y_idx, x_idx, a_idx] = True
-    assert bool(are_points_in_conf_set(conf, points, arena)[0]) is True
+    assert bool(are_points_in_conf_set(conf, points, arena, grid_resolution=(100, 100), n_angle_bins=46)[0]) is True
 
     conf[0, y_idx, x_idx, a_idx] = False
-    assert bool(are_points_in_conf_set(conf, points, arena)[0]) is False
+    assert bool(are_points_in_conf_set(conf, points, arena, grid_resolution=(100, 100), n_angle_bins=46)[0]) is False
 
 
 def test_are_points_in_conf_set_honors_grid_resolution():
@@ -1834,6 +1834,45 @@ def test_seam_repair_corrects_flagged_pair_and_preserves_columns(
     assert not snippet_dir.exists()
 
 
+def test_seam_repair_routes_subprocess_messages_to_message_output(
+    processing_settings, tmp_path, mocker
+):
+    """Regression: the seam-repair ``wait_for_subprocesses`` wait did not pass
+    ``message_output``, so its progress / failure lines went to the built-in
+    print() instead of the GUI / CLI logger. The wait must receive the
+    instance's own ``message_output``."""
+    _make_seam_repair_fixture(tmp_path, with_ladder=True)
+    wait_kwargs: list[dict] = []
+
+    def _fake_wait(**kwargs):
+        """Record the wait's keyword arguments and report a zero exit code
+        (no snippet annotations are written, so every pair is ``no_change``)."""
+        wait_kwargs.append(kwargs)
+        return [0]
+
+    mocker.patch("usv_playpen.processing.das_inference.smart_wait")
+    mocker.patch(
+        "usv_playpen.processing.das_inference.subprocess.Popen",
+        return_value=MagicMock(returncode=0),
+    )
+    mocker.patch(
+        "usv_playpen.processing.das_inference.wait_for_subprocesses",
+        side_effect=_fake_wait,
+    )
+
+    msgs: list = []
+    fmv = FindMouseVocalizations(
+        root_directory=str(tmp_path),
+        input_parameter_dict=processing_settings,
+        message_output=msgs.append,
+    )
+    fmv.repair_seam_snapped_boundaries()
+
+    assert len(wait_kwargs) == 1
+    assert "message_output" in wait_kwargs[0]
+    assert wait_kwargs[0]["message_output"] is fmv.message_output
+
+
 def test_seam_repair_no_ladder_is_a_noop_without_subprocess(
     processing_settings, tmp_path, mocker
 ):
@@ -1924,7 +1963,8 @@ def test_consensus_remerge_recovers_usvs_masked_by_one_channel():
 
     corrected, n_split = _remerge_from_consensus(
         merged, min_duration_s=0.25, span_factor=2.0,
-        max_dissenting_channels=2, min_agreeing_channels=3, max_depth=4
+        max_dissenting_channels=2, min_agreeing_channels=3, max_depth=4,
+        min_gap_s=0.0,
     )
     assert n_split == 1
     assert len(corrected) == 4
@@ -1939,7 +1979,8 @@ def test_consensus_remerge_leaves_agreed_long_intervals_alone():
     merged = _greedy_merge_segments(sorted(segments, key=lambda seg: seg[0]))
     corrected, n_split = _remerge_from_consensus(
         merged, min_duration_s=0.25, span_factor=2.0,
-        max_dissenting_channels=2, min_agreeing_channels=3, max_depth=4
+        max_dissenting_channels=2, min_agreeing_channels=3, max_depth=4,
+        min_gap_s=0.0,
     )
     assert n_split == 0
     assert len(corrected) == 1
@@ -1953,7 +1994,8 @@ def test_consensus_remerge_ignores_short_intervals():
     merged = _greedy_merge_segments(sorted(segments, key=lambda seg: seg[0]))
     corrected, n_split = _remerge_from_consensus(
         merged, min_duration_s=0.25, span_factor=2.0,
-        max_dissenting_channels=2, min_agreeing_channels=3, max_depth=4
+        max_dissenting_channels=2, min_agreeing_channels=3, max_depth=4,
+        min_gap_s=0.0,
     )
     assert n_split == 0
     assert len(corrected) == 1
@@ -1965,7 +2007,8 @@ def test_consensus_remerge_needs_enough_agreeing_channels():
     merged = _greedy_merge_segments(sorted(segments, key=lambda seg: seg[0]))
     corrected, n_split = _remerge_from_consensus(
         merged, min_duration_s=0.25, span_factor=2.0,
-        max_dissenting_channels=2, min_agreeing_channels=3, max_depth=4
+        max_dissenting_channels=2, min_agreeing_channels=3, max_depth=4,
+        min_gap_s=0.0,
     )
     assert n_split == 0
     assert len(corrected) == 1
@@ -2052,7 +2095,7 @@ def test_consensus_remerge_preserves_the_outer_boundaries():
     merged = _greedy_merge_segments(segments)
     union_start, union_stop = merged[0]['start'], merged[0]['stop']
 
-    corrected, n_split = _remerge_from_consensus(merged, 0.08, 2.0, 2, 3, max_depth=4)
+    corrected, n_split = _remerge_from_consensus(merged, 0.08, 2.0, 2, 3, max_depth=4, min_gap_s=0.0)
     assert n_split >= 1
     assert corrected[0]['start'] == pytest.approx(union_start)
     assert corrected[-1]['stop'] == pytest.approx(union_stop)

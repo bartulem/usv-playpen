@@ -12,6 +12,7 @@ import os
 import pathlib
 import platform
 import re
+import shutil
 import subprocess
 import time as _time
 from collections.abc import Callable, Iterable, Iterator
@@ -1355,6 +1356,9 @@ def atomic_output_path(final_path: str | pathlib.Path) -> Iterator[pathlib.Path]
     """
 
     final = pathlib.Path(final_path)
+    # A symlinked destination is written through to its target, so the link survives.
+    if final.is_symlink():
+        final = final.resolve()
     tmp = final.with_name(f".{final.name}.tmp-{os.getpid()}")
     try:
         yield tmp
@@ -1362,6 +1366,10 @@ def atomic_output_path(final_path: str | pathlib.Path) -> Iterator[pathlib.Path]
         with contextlib.suppress(FileNotFoundError):
             tmp.unlink()
         raise
+    # Keep the permission bits of the file being replaced (a fresh temp file gets the
+    # umask default, which would silently tighten a group-writable settings file).
+    if final.exists():
+        shutil.copymode(final, tmp)
     tmp.replace(final)
 
 

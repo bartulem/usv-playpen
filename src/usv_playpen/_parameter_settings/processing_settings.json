@@ -34,6 +34,9 @@
   "credentials_directory": "",
   "anipose_operations": {
     "ConvertTo3D": {
+      "sleap_file_conversion": {
+        "subprocess_timeout_hours": 3
+      },
       "conduct_anipose_calibration": {
         "board_provided_bool": false,
         "board_xy": [8, 11],
@@ -91,6 +94,9 @@
         "remove_duplicate_spikes": true,
         "duplicate_censored_period_ms": 0.3
       },
+      "multichannel_to_channel_audio": {
+        "subprocess_timeout_hours": 2
+      },
       "concatenate_audio_files": {
         "concatenate_audio_format": "wav",
         "concat_dirs": ["hpss_filtered"]
@@ -104,7 +110,8 @@
       "filter_audio_files": {
         "filter_audio_format": "wav",
         "filter_dirs": ["hpss"],
-        "filter_freq_bounds": [0, 30000]
+        "filter_freq_bounds": [0, 30000],
+        "subprocess_timeout_hours": 2
       },
       "broadband_filter_audio": {
         "source_dir": "hpss",
@@ -129,7 +136,8 @@
         "chunk_s": 10.0,
         "n_threads": 4,
         "low_band_variance_windows": 25,
-        "low_band_variance_window_s": 0.25
+        "low_band_variance_window_s": 0.25,
+        "low_band_variance_seed": 0
       },
       "concatenate_video_files": {
         "concatenate_camera_serial_num": [
@@ -140,7 +148,8 @@
           "21241563"
         ],
         "concatenate_video_extension": "mp4",
-        "concatenated_video_name": "concatenated_temp"
+        "concatenated_video_name": "concatenated_temp",
+        "subprocess_timeout_hours": 3
       },
       "rectify_video_fps": {
         "encode_camera_serial_num": [
@@ -154,7 +163,8 @@
         "encode_video_extension": "mp4",
         "constant_rate_factor": 16,
         "encoding_preset": "veryfast",
-        "delete_old_file": true
+        "delete_old_file": true,
+        "subprocess_timeout_hours": 6
       }
     }
   },
@@ -172,7 +182,17 @@
   },
   "preprocessing_plot": {
     "SummaryPlotter": {
-      "preprocessing_summary": {}
+      "preprocessing_summary": {
+        "figure_size": [12.8, 9.6],
+        "discrepancy_face_color": "#BBD5E826",
+        "discrepancy_edge_color": "#00000040",
+        "zero_line_color": "#202020",
+        "median_color": "#FF6347",
+        "mean_color": "#00C78C",
+        "humidity_color": "#8EE5EE",
+        "illumination_color": "#EEB422",
+        "temperature_color": "#FF7F50"
+      }
     }
   },
   "send_email": {
@@ -216,11 +236,13 @@
         "relative_intensity_threshold_floor": 0.2,
         "relative_intensity_threshold_step": 0.01,
         "min_led_event_frames": 35,
-        "millisecond_divergence_tolerance": 12
+        "millisecond_divergence_tolerance": 12,
+        "unpaired_off_event_threshold_ceiling": 0.35
       },
       "crop_wav_files_to_video": {
         "device_receiving_input": "both",
-        "triggerbox_ch_receiving_input": 4
+        "triggerbox_ch_receiving_input": 4,
+        "subprocess_timeout_hours": 2
       }
     }
   },
@@ -233,7 +255,8 @@
         "output_file_type": "csv",
         "segment_confidence_threshold": 0.5,
         "segment_minlen": 0.015,
-        "segment_fillgap": 0.015
+        "segment_fillgap": 0.015,
+        "subprocess_timeout_hours": 12
       },
       "summarize_das_findings": {
         "filter_putative_noise_bool": true,
@@ -260,7 +283,13 @@
         "seam_repair_width_tolerance_above_ms": 1.0,
         "seam_repair_raw_stop_tolerance_s": 0.01,
         "seam_repair_snippet_margin_s": 0.05,
-        "seam_repair_max_boundary_shift_s": 0.034
+        "seam_repair_max_boundary_shift_s": 0.034,
+        "seam_repair_subprocess_timeout_hours": 4,
+        "noise_histogram_bins": 20,
+        "noise_histogram_figure_size": [24, 4],
+        "noise_histogram_face_color": "#BBD5E8",
+        "noise_histogram_edge_color": "#202020",
+        "noise_histogram_cutoff_line_color": "#202020"
       }
     }
   },
@@ -289,7 +318,8 @@
     "hop_length": 512,
     "window": "blackmanharris",
     "offset": 0.0,
-    "normalize": true
+    "normalize": true,
+    "top_db": 80.0
   },
   "generate_masks": {
     "method": "boxprompt",

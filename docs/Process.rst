@@ -501,11 +501,12 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file also contai
 
 * **concatenate_camera_serial_num** / **encode_camera_serial_num** : serial numbers of cameras used in the recording (for concatenation / re-encoding, respectively)
 * **concatenate_video_extension** / **encode_video_extension** : video type (usually "mp4")
-* **concatenated_video_name** : name of the concatenated video file
+* **concatenated_video_name** : name of the concatenated video file; concatenation writes *<concatenated_video_name>_<serial>* inside each camera folder that holds more than one video chunk and then moves it up into the session's *video* directory. A file of that name already in the camera folder (left behind by a crashed run) is never treated as a chunk: it is deleted, with a logged message, and rebuilt, and ffmpeg always overwrites its output. A camera folder with exactly one video has that video copied instead (never moved): the copy goes, unchanged, to the same *<concatenated_video_name>_<serial>* file in the *video* directory (logged), so re-encoding treats it like any concatenated recording, while the raw recording stays in its camera folder next to the imgstore metadata that indexes it (re-encoding deletes the *<concatenated_video_name>_<serial>* file afterwards as a disposable intermediate, so moving the only copy would lose it); a camera folder with no video is skipped with a logged message
 * **conversion_target_file** : name of the concatenated video file as target for re-encoding
 * **constant_rate_factor** : FFMPEG constant rate factor for re-encoding
 * **encoding_preset** : FFMPEG encoding preset for re-encoding
 * **delete_old_file** : whether to delete the concatenated file after re-encoding
+* **subprocess_timeout_hours** : hours the ffmpeg subprocesses of each step may run, all cameras together, before they are killed as hung and the step stops (3 for concatenation, 6 for re-encoding: generous for multi-hour sessions, while still catching a wedged ffmpeg)
 
 .. code-block:: json
 
@@ -518,7 +519,8 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file also contai
           "21241563"
         ],
         "concatenate_video_extension": "mp4",
-        "concatenated_video_name": "concatenated_temp"
+        "concatenated_video_name": "concatenated_temp",
+        "subprocess_timeout_hours": 3
       },
       "rectify_video_fps": {
         "encode_camera_serial_num": [
@@ -532,7 +534,8 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file also contai
         "encode_video_extension": "mp4",
         "constant_rate_factor": 16,
         "encoding_preset": "veryfast",
-        "delete_old_file": true
+        "delete_old_file": true,
+        "subprocess_timeout_hours": 6
       }
 
 Prepare SLEAP cluster job
@@ -623,6 +626,16 @@ This step shouldn’t take longer than two minutes to run; the directory structu
     │       │    │   ├── 21241563-20250430145035.mp4
     │       │    │   ├── 21241563-20250430145035.slp
     │       ...
+
+The */usv-playpen/_parameter_settings/processing_settings.json* file contains a section not modifiable in the GUI, but it can be modified manually:
+
+* **subprocess_timeout_hours** : hours the parallel SLP-to-H5 conversion subprocesses may run, all views together, before they are killed as hung and the step stops (3; the conversion itself takes minutes)
+
+.. code-block:: json
+
+    "sleap_file_conversion": {
+        "subprocess_timeout_hours": 3
+      }
 
 
 Run AP triangulation & Re-coordinate
@@ -879,12 +892,18 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
 
 * **device_receiving_input** : USGH device receiving Loopbio Triggerbox input (if using SYNC mode, this should be "m")
 * **triggerbox_ch_receiving_input** : microphone channel receiving Loopbio Triggerbox input
+* **subprocess_timeout_hours** (*Crop AUDIO (to VIDEO)*, not in the GUI) : hours the sox "cut to video" subprocesses may run before they are killed as hung and the step stops (2; long sessions take a while, anything beyond this almost certainly means a hang)
+* **multichannel_to_channel_audio.subprocess_timeout_hours** (*Convert to single-ch files*, not in the GUI) : hours each batch of sox channel-separation subprocesses (one per multichannel file, then the per-channel concatenation) may run before it is killed as hung and the step stops (2)
 
 .. code-block:: json
 
+    "multichannel_to_channel_audio": {
+        "subprocess_timeout_hours": 2
+      },
     "crop_wav_files_to_video": {
         "device_receiving_input": "both",
-        "triggerbox_ch_receiving_input": 4
+        "triggerbox_ch_receiving_input": 4,
+        "subprocess_timeout_hours": 2
       }
 
 Run HPSS
@@ -999,6 +1018,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
 * **filter_audio_format** : audio file format (usually "wav")
 * **filter_dirs** : list of directories to be filtered (usually "hpss")
 * **filter_freq_bounds** : band filtered out, as [low, high] in Hz (usually [0, 30000], i.e. a 30 kHz high-pass)
+* **subprocess_timeout_hours** : hours the sox filtering subprocesses of one directory may run, all channels together, before they are killed as hung and the step stops (2)
 
 .. code-block:: json
 
@@ -1010,7 +1030,8 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
         "filter_freq_bounds": [
           0,
           30000
-        ]
+        ],
+        "subprocess_timeout_hours": 2
     }
 
 The *Ultrasonic MEMMAP* step takes its parameters from the adjacent ``concatenate_audio_files`` block (set in the settings file only; the GUI shows just the step's toggle):
@@ -1068,6 +1089,7 @@ The step takes its parameters from the ``broadband_filter_audio`` block of */usv
 * **chunk_s** : length of the processing chunks (s); does not change the result
 * **n_threads** : threads the channels of a chunk are spread over; does not change the result
 * **low_band_variance_windows** / **low_band_variance_window_s** : number and length (s) of the random windows the per-column *low-band variance* is estimated from (default 25 windows of 0.25 s). The audio classifiers (*Produce noise labels*, *Produce squeak labels*, the squeak QLVM embedding and the squeak spectrogram store) average the channels with weights equal to each channel's **full-band** audio variance, which is what their models were trained on; 88 % of that variance lies below the 2 kHz high-pass, so the broadband audio alone gives different weights, and the noise model's recall falls from 0.99 to 0.73 on it (retraining on the broadband audio does not recover the separation). Since full-band variance = low-band variance + high-band variance and the high band is the broadband audio, the report stores each column's typical low-band variance (the median over the random windows of the source wav's variance minus the broadband column's), and the classifiers add it to a window's broadband variance, which reproduces the full-band weights (Spearman 0.997); through this path the noise model keeps its precision and recall (0.988 / 0.993 on 1,118 labelled segments, scores r 0.984 with the wav input) at a cost of about 11 more real vocalizations per 10,000 segments, 9 of them from the tone removal alone, and the vocal-class and squeak QLVM outputs agree with the wav input at 99.98 % or better. Reports written before this field existed get it from ``add-broadband-low-band-variance`` (a few seconds of audio per session; the memmap is not rewritten), and a classifier refuses a report without it.
+* **low_band_variance_seed** : seed of the random window positions the low-band variance is estimated from (0), recorded in the report as ``seed``; it keeps the estimate reproducible run to run (independent draws of the windows agree at Spearman 0.997, values within about 5 %)
 
 .. code-block:: json
 
@@ -1089,7 +1111,8 @@ The step takes its parameters from the ``broadband_filter_audio`` block of */usv
         "chunk_s": 10.0,
         "n_threads": 4,
         "low_band_variance_windows": 25,
-        "low_band_variance_window_s": 0.25
+        "low_band_variance_window_s": 0.25,
+        "low_band_variance_seed": 0
     }
 
 Run DAS inference
@@ -1143,6 +1166,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
 * **segment_confidence_threshold** : confidence threshold for segmenting vocalizations
 * **segment_minlen** : minimum length of segments to be considered vocalizations
 * **segment_fillgap** : maximum gap between segments to be joined into a single vocalization
+* **subprocess_timeout_hours** : hours one per-file DAS inference subprocess may run before it is killed as hung and the step stops (12; inference on a long recording can take hours on CPU, so the budget is generous, but a lost GPU or a deadlock is still caught; settings / CLI only)
 
 .. code-block:: json
 
@@ -1153,7 +1177,8 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
         "output_file_type": "csv",
         "segment_confidence_threshold": 0.5,
         "segment_minlen": 0.015,
-        "segment_fillgap": 0.015
+        "segment_fillgap": 0.015,
+        "subprocess_timeout_hours": 12
       },
 
 Curate DAS outputs
@@ -1285,6 +1310,11 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
 * **seam_repair_raw_stop_tolerance_s** : maximum distance (in s) between a merged pair's stop and a raw ladder-gap stop for the pair to count as corroborated
 * **seam_repair_snippet_margin_s** : audio margin (in s) excised around each flagged pair for re-detection
 * **seam_repair_max_boundary_shift_s** : maximum outward correction (in s) permitted per USV edge; mechanistically one legacy stride
+* **seam_repair_subprocess_timeout_hours** : hours the seam-repair snippet re-detection subprocess may run before it is killed as hung (4; snippets are sub-second, so even hundreds finish in minutes on CPU); its progress, failure and timeout messages are reported through the same GUI / CLI log as the rest of the step
+* **noise_histogram_bins** : number of bins over [-1, 1] of the two histograms (detected-channel correlation, spatial coherence) in the *<session>_usv_signal_correlation_histogram* figure the noise rejection saves under *audio* (20)
+* **noise_histogram_figure_size** : width and height of that figure (in inches; [24, 4]); its file format and dpi come from the visualization settings
+* **noise_histogram_face_color** / **noise_histogram_edge_color** : hex fill and edge colours of the two histograms (``#BBD5E8`` / ``#202020``)
+* **noise_histogram_cutoff_line_color** : hex colour of the dash-dotted lines marking ``noise_corr_cutoff_min`` and ``coherence_cutoff_min`` (``#202020``)
 
 .. code-block:: json
 
@@ -1313,7 +1343,13 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
         "seam_repair_width_tolerance_above_ms": 1.0,
         "seam_repair_raw_stop_tolerance_s": 0.01,
         "seam_repair_snippet_margin_s": 0.05,
-        "seam_repair_max_boundary_shift_s": 0.034
+        "seam_repair_max_boundary_shift_s": 0.034,
+        "seam_repair_subprocess_timeout_hours": 4,
+        "noise_histogram_bins": 20,
+        "noise_histogram_figure_size": [24, 4],
+        "noise_histogram_face_color": "#BBD5E8",
+        "noise_histogram_edge_color": "#202020",
+        "noise_histogram_cutoff_line_color": "#202020"
      }
 
 Produce noise labels
@@ -1743,6 +1779,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains th
 * **window** : STFT window function
 * **offset** : time padding added before each USV onset and after each offset (seconds)
 * **normalize** : whether to min-max normalize each spectrogram to [0, 1]
+* **top_db** : dynamic range kept by the dB conversion (``librosa.power_to_db``): each channel spectrogram is clipped at this many dB below its own peak before the channels are averaged (80.0, librosa's own default). Part of the input the QLVM and mask models were trained on, so a different value feeds them spectrograms they have not seen
 
 .. code-block:: json
 
@@ -1755,7 +1792,8 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains th
         "hop_length": 512,
         "window": "blackmanharris",
         "offset": 0.0,
-        "normalize": true
+        "normalize": true,
+        "top_db": 80.0
       }
 
 *Generate masks* (``generate_masks``):
@@ -2308,6 +2346,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
 * **relative_intensity_threshold_floor** / **relative_intensity_threshold_step** : the threshold is swept down from ``relative_intensity_threshold`` to this floor in these steps, stopping at the first threshold that yields the Arduino IPI sequence (0.2 and 0.01)
 * **min_led_event_frames** : LED on / off events shorter than this many frames are discarded as glitches (35)
 * **millisecond_divergence_tolerance** : maximal deviation of IPI onsets (in ms) between video detections and ground truth
+* **unpaired_off_event_threshold_ceiling** : at sweep thresholds below this value an event train with one more OFF than ON event is also accepted (its first OFF, which precedes the first ON, is dropped); above it the ON and OFF counts must pair up (0.35; not in the GUI)
 
 .. code-block:: json
 
@@ -2338,5 +2377,32 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
         "relative_intensity_threshold_floor": 0.2,
         "relative_intensity_threshold_step": 0.01,
         "min_led_event_frames": 35,
-        "millisecond_divergence_tolerance": 12
+        "millisecond_divergence_tolerance": 12,
+        "unpaired_off_event_threshold_ceiling": 0.35
+   }
+
+The look of the *summary* figure is set in a section not modifiable in the GUI, but it can be modified manually (the figure's file format and dpi come from the visualization settings):
+
+* **figure_size** : width and height of the figure (in inches; [12.8, 9.6])
+* **discrepancy_face_color** / **discrepancy_edge_color** : hex fill and edge colours (with alpha) of the A-V IPI discrepancy histograms and scatter plots, and of the NIDQ-V inset (``#BBD5E826`` / ``#00000040``)
+* **zero_line_color** : hex colour of the zero-discrepancy line (``#202020``)
+* **median_color** / **mean_color** : hex colours of the median and mean discrepancy lines and their labels (``#FF6347`` / ``#00C78C``)
+* **humidity_color** / **illumination_color** / **temperature_color** : hex colours of the phidget humidity, illumination and temperature panels (``#8EE5EE`` / ``#EEB422`` / ``#FF7F50``)
+
+.. code-block:: json
+
+   "preprocessing_plot": {
+    "SummaryPlotter": {
+      "preprocessing_summary": {
+        "figure_size": [12.8, 9.6],
+        "discrepancy_face_color": "#BBD5E826",
+        "discrepancy_edge_color": "#00000040",
+        "zero_line_color": "#202020",
+        "median_color": "#FF6347",
+        "mean_color": "#00C78C",
+        "humidity_color": "#8EE5EE",
+        "illumination_color": "#EEB422",
+        "temperature_color": "#FF7F50"
+      }
+    }
    }

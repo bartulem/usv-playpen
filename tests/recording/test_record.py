@@ -50,6 +50,18 @@ def default_exp_settings():
 
     return {
         'ethernet_network': 'Ethernet 4',
+        'timeouts': {
+            'ethernet_up_max_wait_s': 20,
+            'ethernet_up_poll_interval_s': 5,
+            'avisoft_warmup_s': 3,
+            'avisoft_poll_interval_s': 3,
+            'avisoft_max_wait_s': 12,
+            'drive_mount_max_retries': 3,
+            'drive_verify_timeout_s': 10,
+            'ssh_connect_timeout_s': 10,
+            'audio_move_timeout_min': 15,
+            'backup_mirror_timeout_hours': 2,
+        },
         'credentials_directory': '/fake/credentials',
         'avisoft_basedirectory': 'C:\\Avisoft\\',
         'coolterm_basedirectory': 'C:\\CoolTerm',
@@ -640,7 +652,7 @@ def test_verify_avisoft_returns_true_with_no_channels(mocker, controller):
     controller.exp_settings_dict['audio']['general'] = {'total': 0}
     controller.exp_settings_dict['audio']['used_mics'] = []
     mocker.patch('usv_playpen.recording.behavioral_experiments.smart_wait')
-    assert controller.verify_avisoft_is_recording() is True
+    assert controller.verify_avisoft_is_recording(warmup_s=3, poll_interval_s=3, max_wait_s=12) is True
 
 
 def test_verify_avisoft_detects_new_file(mocker, controller, avisoft_dir_factory):

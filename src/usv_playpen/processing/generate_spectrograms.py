@@ -51,9 +51,10 @@ def compute_usv_spectrogram(
     audio_segment_channels: np.ndarray,
     sampling_rate: int,
     spec_params: dict,
-    normalize: bool = True,
+    *,
+    normalize: bool,
+    top_db: float | None,
     db_ref: float | None = None,
-    top_db: float | None = 80.0,
     channel_variance_offsets: np.ndarray | None = None,
 ) -> tuple[np.ndarray | None, int]:
     """
@@ -88,7 +89,8 @@ def compute_usv_spectrogram(
         (no ``fix_length`` padding or truncation), which the squeak detector
         needs to see vocalizations longer than the model window.
     normalize (bool)
-        Whether to min-max normalize the averaged spectrogram. Defaults to True.
+        Whether to min-max normalize the averaged spectrogram
+        (``generate_spectrograms.normalize`` on the QLVM path).
     db_ref (float | None)
         Power reference for ``librosa.power_to_db``. None (the default) keeps the
         per-segment ``ref=np.max`` the QLVM spectrograms were built with, which
@@ -96,10 +98,10 @@ def compute_usv_spectrogram(
         uses 1.0) makes the dB scale absolute, so quiet and loud vocalizations stay
         distinguishable across segments and sessions.
     top_db (float | None)
-        Per-array clamp passed to ``librosa.power_to_db``. 80.0 (the default) is
-        librosa's own default and therefore reproduces the existing QLVM
-        spectrograms exactly; it is amplitude-dependent, so an absolute-dB run
-        must pass None.
+        Per-array clamp passed to ``librosa.power_to_db``. The QLVM path passes
+        ``generate_spectrograms.top_db`` (80.0 shipped, librosa's own default,
+        which reproduces the existing QLVM spectrograms exactly); it is
+        amplitude-dependent, so an absolute-dB run must pass None.
     channel_variance_offsets (np.ndarray | None)
         One value per channel of ``audio_segment_channels`` added to that
         channel's variance before weighting (the same units as the variance of
@@ -572,6 +574,7 @@ class SpectrogramGenerator:
                     sampling_rate=audio_sampling_rate,
                     spec_params=spec_params,
                     normalize=normalize,
+                    top_db=spec_params['top_db'],
                 )
             if spectrogram is None:
                 computed_specs[usv_idx] = blank_spec
@@ -644,6 +647,7 @@ class SpectrogramGenerator:
 @click.option('--window', 'window', type=str, default=None, required=False, help='STFT window function name passed to librosa.stft (e.g. blackmanharris).')
 @click.option('--offset', 'offset', type=float, default=None, required=False, help='Symmetric padding in seconds added to each USV before/after its start/stop bounds when slicing the audio.')
 @click.option('--normalize/--no-normalize', 'normalize', default=None, required=False, help='Whether to min-max normalize each averaged spectrogram to [0, 1].')
+@click.option('--top-db', 'top_db', type=float, default=None, required=False, help='Dynamic range (dB below each channel spectrogram\'s peak) kept by librosa.power_to_db; the QLVM and mask models were trained on 80.')
 @click.pass_context
 def generate_spectrograms_cli(ctx, root_directory, **kwargs) -> None:
     """

@@ -2291,13 +2291,13 @@ def test_eval_pdf_with_angle_handles_singular_covariance():
 
 
 def test_estimate_angle_pdf_returns_normalized_histogram():
-    """The default angle histogram has 45 bins and sums to 1."""
+    """The shipped 46-edge angle histogram has 45 bins and sums to 1."""
     rng = np.random.default_rng(0)
     mean_6d = rng.normal(size=(6,))
     A = rng.normal(size=(6, 6))
     cov_6d = A @ A.T + np.eye(6)
 
-    bins, pdf = estimate_angle_pdf(mean_6d, cov_6d, n_samples=500)
+    bins, pdf = estimate_angle_pdf(mean_6d, cov_6d, n_samples=500, theta_bins=np.linspace(-np.pi, np.pi, 46, endpoint=True), seed=None)
     assert bins.shape == (46,)
     assert pdf.shape == (45,)
     assert pdf.sum() == pytest.approx(1.0)
@@ -2308,7 +2308,7 @@ def test_estimate_angle_pdf_custom_theta_bins():
     custom = np.linspace(-np.pi, np.pi, 11, endpoint=True)
     mean_6d = np.zeros(6)
     cov_6d = np.eye(6)
-    bins, pdf = estimate_angle_pdf(mean_6d, cov_6d, n_samples=200, theta_bins=custom)
+    bins, pdf = estimate_angle_pdf(mean_6d, cov_6d, n_samples=200, theta_bins=custom, seed=None)
     assert bins is custom
     assert pdf.shape == (10,)
 
@@ -2316,15 +2316,15 @@ def test_estimate_angle_pdf_custom_theta_bins():
 def test_estimate_angle_pdf_seed_is_reproducible_and_varies():
     """A fixed seed makes the Monte-Carlo angle PDF (and the assignment that
     consumes it) reproducible; a different seed yields a different estimate;
-    the default seed=None stays non-reproducible."""
+    seed=None stays non-reproducible."""
     rng = np.random.default_rng(0)
     mean_6d = rng.normal(size=(6,))
     A = rng.normal(size=(6, 6))
     cov_6d = A @ A.T + np.eye(6)
 
-    _, pdf_a = estimate_angle_pdf(mean_6d, cov_6d, n_samples=500, seed=0)
-    _, pdf_b = estimate_angle_pdf(mean_6d, cov_6d, n_samples=500, seed=0)
-    _, pdf_c = estimate_angle_pdf(mean_6d, cov_6d, n_samples=500, seed=1)
+    _, pdf_a = estimate_angle_pdf(mean_6d, cov_6d, n_samples=500, theta_bins=np.linspace(-np.pi, np.pi, 46, endpoint=True), seed=0)
+    _, pdf_b = estimate_angle_pdf(mean_6d, cov_6d, n_samples=500, theta_bins=np.linspace(-np.pi, np.pi, 46, endpoint=True), seed=0)
+    _, pdf_c = estimate_angle_pdf(mean_6d, cov_6d, n_samples=500, theta_bins=np.linspace(-np.pi, np.pi, 46, endpoint=True), seed=1)
 
     assert np.array_equal(pdf_a, pdf_b)
     assert not np.array_equal(pdf_a, pdf_c)
@@ -2339,7 +2339,7 @@ def test_are_points_in_conf_set_3d_branch():
 
     arena_dims = np.array([200.0, 200.0])
     points = np.zeros((n, 2, 3))
-    in_set = are_points_in_conf_set(confidence_sets, points, arena_dims)
+    in_set = are_points_in_conf_set(confidence_sets, points, arena_dims, grid_resolution=(100, 100), n_angle_bins=46)
     assert in_set.dtype == bool
     assert in_set.shape == (n,)
 
@@ -2350,7 +2350,7 @@ def test_are_points_in_conf_set_invalid_shape_raises():
     points = np.zeros((2, 2, 3))
     arena_dims = np.array([100.0, 100.0])
     with pytest.raises(ValueError, match="Invalid confidence set shape"):
-        are_points_in_conf_set(confidence_sets, points, arena_dims)
+        are_points_in_conf_set(confidence_sets, points, arena_dims, grid_resolution=(100, 100), n_angle_bins=46)
 
 
 def test_load_usv_segments_returns_start_stop_array(tmp_path):
@@ -2593,6 +2593,7 @@ def _make_rectify_operator(root_dir: Path, serials: list[str], message_output) -
                 'encode_video_extension': 'mp4',
                 'conversion_target_file': 'concatenated_video',
                 'delete_old_file': False,
+                'subprocess_timeout_hours': 6,
             },
         }},
         'synchronize_files': {'Synchronizer': {}},
