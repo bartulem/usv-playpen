@@ -535,6 +535,9 @@ class GroupElasticNetGLM:
             fz, (gw, gz_b) = f_val_grad(z_w, z_b)
 
             # Backtracking line search on the Lipschitz constant (proximal-gradient majorisation).
+            # Reaching the cap means no tried step satisfied the decrease test; that last candidate is
+            # REJECTED (never applied) and the fit ends unconverged at the current weights.
+            step_accepted = False
             while True:
                 step = 1.0 / lipschitz
                 cand_w = _group_soft_threshold_jit(z_w - step * gw, lam_group * step, nf, nt) \
@@ -546,10 +549,13 @@ class GroupElasticNetGLM:
                 inner = jnp.sum(gw * dw_vec) + gz_b * db_vec
                 quad = 0.5 * lipschitz * (jnp.sum(dw_vec ** 2) + db_vec ** 2)
                 if float(f_cand) <= float(fz + inner + quad) + 1e-12:
+                    step_accepted = True
                     break
                 lipschitz *= self.backtrack_factor
                 if lipschitz > 1e12:
                     break
+            if not step_accepted:
+                break
 
             w_new, b_new = cand_w, cand_b
             t_new = 0.5 * (1.0 + np.sqrt(1.0 + 4.0 * t_cur ** 2))
@@ -726,8 +732,10 @@ class GroupElasticNetGLM:
         """
         Description
         -----------
-        Sample-weighted mean negative log-likelihood (log-loss) on held-out data — the proper
-        scoring rule used as the claim-1 metric (Bernoulli NLL at bin=1, Poisson NLL otherwise).
+        Sample-weighted mean negative log-likelihood (log-loss) on held-out data, a proper
+        scoring rule (Bernoulli NLL at bin=1, Poisson NLL otherwise). Runs inside
+        :func:`double_precision`, like ``fit``, so the float64 casts take and the score is
+        computed in double precision whether or not x64 is enabled globally.
 
         Parameters
         ----------
@@ -746,9 +754,10 @@ class GroupElasticNetGLM:
             Weighted mean per-sample NLL.
         """
 
-        eta = jnp.asarray(self.predict_eta(x_design, offset=offset))
-        nll = _family_nll_per_sample(eta, jnp.asarray(y, dtype=jnp.float64), self.family)
-        if sample_weight is None:
-            return float(jnp.mean(nll))
-        w = jnp.asarray(sample_weight, dtype=jnp.float64)
-        return float(jnp.sum(w * nll) / jnp.sum(w))
+        with double_precision():
+            eta = jnp.asarray(self.predict_eta(x_design, offset=offset), dtype=jnp.float64)
+            nll = _family_nll_per_sample(eta, jnp.asarray(y, dtype=jnp.float64), self.family)
+            if sample_weight is None:
+                return float(jnp.mean(nll))
+            w = jnp.asarray(sample_weight, dtype=jnp.float64)
+            return float(jnp.sum(w * nll) / jnp.sum(w))
