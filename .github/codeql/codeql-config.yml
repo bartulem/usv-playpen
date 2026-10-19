@@ -1,0 +1,14 @@
+name: usv-playpen CodeQL config
+
+# Runs the default query suite with one rule removed.
+#
+# py/clear-text-logging-sensitive-data flags every print of an output path
+# whose filename carries the cohort label (e.g. male_mute_partner), because
+# CodeQL's name heuristic treats anything derived from 'sex' as private
+# personal data. The label describes an experimental condition, not a
+# person, and the alerts reopen whenever the printing lines move, since
+# alerts are keyed partly by location (18 earlier alerts were dismissed as
+# false positives before this exclusion).
+query-filters:
+  - exclude:
+      id: py/clear-text-logging-sensitive-data

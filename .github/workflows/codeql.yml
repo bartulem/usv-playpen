@@ -1,0 +1,52 @@
+name: CodeQL
+
+# Advanced-setup replacement for GitHub's CodeQL default setup, with the
+# same languages, query suite and weekly schedule. It exists only so the
+# analysis can read .github/codeql/codeql-config.yml, which excludes one
+# rule that fires false positives on cohort-labelled output paths.
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "17 4 * * 1"
+
+# Least-privilege GITHUB_TOKEN: the analysis reads the repo and uploads
+# results to code scanning (security-events: write).
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language:
+          - actions
+          - python
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:${{ matrix.language }}
