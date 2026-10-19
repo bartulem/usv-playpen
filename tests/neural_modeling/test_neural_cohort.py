@@ -7,19 +7,30 @@ out. The property that matters is the asymmetry: a session in which the recorded
 stays available to the kinematic encoding, which is fitted on silence and is if anything better off, and
 is withheld from everything scored on the vocalizations themselves, where it would contribute a fold resting
 on a handful of events.
+
+Also covered with hand-countable synthetic data: the session-to-mouse map read off the catalog, the
+per-session focal USV counts (analysed-set filtering, emitter resolution by name, and a missing file
+counting as zero), every unit-level filter's rejection path, and the end-to-end manifest built from a
+settings dict pointing at a synthetic data tree.
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import pathlib
 
+import h5py
+import numpy as np
 import polars as pls
 import pytest
 
 from usv_playpen.neural_modeling.neural_cohort import (
     _area_pass,
+    build_cohort_manifest,
+    emitter_usv_counts,
     load_courtship_session_ids,
+    recorded_mouse_by_session,
     select_cohort,
     summarize_cohort,
 )
@@ -216,3 +227,317 @@ class TestShippedSettings:
         with SETTINGS_PATH.open() as handle:
             settings = json.load(handle)
         assert "filter_band_n_folds" not in settings["kinematic_encoding"]
+
+
+class TestUnitFilters:
+
+    """Each unit-level filter's rejection path, checked against the four-unit catalog by hand."""
+    def test_an_unknown_somatic_mode_fails_loudly(self, tmp_path):
+        """
+        Description
+        -----------
+        A somatic mode outside ``'somatic' | 'non_somatic' | 'both'`` must raise ``ValueError`` naming the
+        argument before any unit is read, rather than silently passing or failing every unit.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Directory the synthetic catalog is written to.
+
+        Returns
+        -------
+        None
+        """
+        with pytest.raises(ValueError, match="somatic must be"):
+            _select(tmp_path, somatic="mostly")
+
+    def test_non_somatic_keeps_only_the_non_somatic_good_unit(self, tmp_path):
+        """
+        Description
+        -----------
+        Of the four units, three are somatic and one (``cl0004``, good) is not, so ``'non_somatic'`` must keep
+        exactly ``cl0004`` and ``'both'`` must keep both somatic good units plus ``cl0004`` (the MUA unit
+        still fails quality).
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Directory the synthetic catalog is written to.
+
+        Returns
+        -------
+        None
+        """
+        assert [u["unit_id"] for u in _select(tmp_path, somatic="non_somatic")] == ["imec0_cl0004_ch004_good"]
+        both = {u["unit_id"] for u in _select(tmp_path, somatic="both")}
+        assert both == {"imec0_cl0001_ch001_good", "imec0_cl0002_ch002_good", "imec0_cl0004_ch004_good"}
+
+    def test_a_failing_area_drops_every_unit(self, tmp_path):
+        """
+        Description
+        -----------
+        Every unit is in PAG, so ``'exclude'`` on PAG must drop all of them and ``'include'`` on another
+        area must too, while ``'all'`` keeps the same two good somatic units as the default.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Directory the synthetic catalog is written to.
+
+        Returns
+        -------
+        None
+        """
+        assert _select(tmp_path, area_mode="exclude") == []
+        assert _select(tmp_path, brain_areas=["VTA"]) == []
+        assert len(_select(tmp_path, area_mode="all", brain_areas=[])) == 2
+
+    def test_a_unit_short_of_courtship_sessions_is_dropped(self, tmp_path):
+        """
+        Description
+        -----------
+        Only ``cl0001`` was recorded in three courtship sessions (the others in two), so a floor of three must
+        keep exactly ``cl0001``; and with the courtship set narrowed to ``s_rich`` alone, a floor of two must
+        keep no unit at all, since sessions outside the courtship set do not count.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Directory the synthetic catalog is written to.
+
+        Returns
+        -------
+        None
+        """
+        assert [u["unit_id"] for u in _select(tmp_path, min_courtship_sessions=3)] == ["imec0_cl0001_ch001_good"]
+        assert _select(tmp_path, courtship_session_ids={"s_rich"}) == []
+
+
+class TestRecordedMouseBySession:
+
+    """The session-to-mouse map is read off the catalog."""
+    def test_every_listed_session_maps_to_its_mouse(self, tmp_path):
+        """
+        Description
+        -----------
+        Two mice: ``m1`` units list ``s1``/``s2`` (one unit lists ``s2`` again), an ``m2`` unit lists ``s3``,
+        and a fourth unit has an EMPTY ``rec_sessions`` cell (read as null). The map must be exactly
+        ``{s1: m1, s2: m1, s3: m2}``, the empty cell contributing nothing; a numeric mouse id (``7``) must
+        come back as the string ``"7"``.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Directory the catalog is written to.
+
+        Returns
+        -------
+        None
+        """
+        path = tmp_path / "unit_catalog.csv"
+        pls.DataFrame({
+            "mouse_id": ["m1", "m1", "m2", "m2", "7"],
+            "rec_sessions": ["['s1', 's2']", "['s2']", "['s3']", None, "['s4']"],
+        }).write_csv(path)
+        assert recorded_mouse_by_session(str(path)) == {"s1": "m1", "s2": "m1", "s3": "m2", "s4": "7"}
+
+
+SETTINGS_VOCAL = {"exclude_noise": True, "exclude_squeaks": True, "squeaks_block_quiet": True}
+
+# Synthetic session ids start with a digit like the real ones: the tracking-file glob is digit-led
+# (``[0-9]*``), so a basename starting with a letter is never found.
+SESSION_A = "20250101_100000"
+SESSION_B = "20250102_100000"
+SESSION_EMPTY = "20250103_100000"
+SESSION_MISSING = "20250104_100000"
+SESSION_NEVER = "20250105_100000"
+SESSION_ORPHAN = "20250106_100000"
+
+
+def _write_session(root: pathlib.Path, session_id: str, track_names: list, usvs: list | None) -> None:
+    """
+    Description
+    -----------
+    Write a synthetic session: the tracking-H5 header (``track_names``, a frame rate and a tiny ``tracks``
+    array) and, unless ``usvs`` is None, a USV summary with ``start``/``stop``/``emitter``/``noise``/``squeak``
+    columns.
+
+    Parameters
+    ----------
+    root (pathlib.Path)
+        The data root.
+    session_id (str)
+        Session directory basename.
+    track_names (list[str])
+        The session's ``track_names``.
+    usvs (list[tuple] | None)
+        ``(emitter, noise, squeak)`` per USV row, or None to write no summary at all.
+
+    Returns
+    -------
+    None
+        The files are written to disk.
+    """
+    video_dir = root / session_id / "video" / f"{session_id}_cam"
+    video_dir.mkdir(parents=True)
+    with h5py.File(video_dir / f"{session_id}_points3d_translated_rotated_metric.h5", "w") as handle:
+        handle["tracks"] = np.zeros((10, len(track_names), 3, 3), dtype=np.float64)
+        handle["recording_frame_rate"] = 150.0
+        handle.create_dataset("track_names", data=np.array([name.encode() for name in track_names], dtype="S8"))
+    if usvs is None:
+        return
+    audio_dir = root / session_id / "audio"
+    audio_dir.mkdir(parents=True)
+    pls.DataFrame({"start": [float(i) for i in range(len(usvs))],
+                   "stop": [float(i) + 0.05 for i in range(len(usvs))],
+                   "emitter": pls.Series([row[0] for row in usvs], dtype=pls.String),
+                   "noise": pls.Series([row[1] for row in usvs], dtype=pls.Boolean),
+                   "squeak": pls.Series([row[2] for row in usvs], dtype=pls.Boolean),
+                   }).write_csv(audio_dir / f"{session_id}_usv_summary.csv")
+
+
+def _write_tree(root: pathlib.Path) -> None:
+    """
+    Description
+    -----------
+    Write four synthetic sessions with hand-countable USVs, the recorded animal always ``m1``:
+
+    - ``SESSION_A``: 3 clean ``m1`` rows, 1 ``m1`` noise row, 1 ``m1`` squeak row, 2 clean ``f1`` rows
+      (self 3, partner 2, all 5 after the analysed-set filter);
+    - ``SESSION_B``: 1 clean ``m1`` row and 1 clean ``f1`` row (self 1, partner 1, all 2), with the
+      RECORDED animal in track slot 1, so a slot assumption would swap the self/partner counts;
+    - ``SESSION_EMPTY``: a summary with no rows (0 for every emitter);
+    - ``SESSION_MISSING``: tracking but no summary (counted as 0, not raised).
+
+    Parameters
+    ----------
+    root (pathlib.Path)
+        The data root.
+
+    Returns
+    -------
+    None
+        The files are written to disk.
+    """
+    _write_session(root, SESSION_A, ["m1", "f1"],
+                   [("m1", False, False), ("m1", False, False), ("m1", False, False), ("m1", True, False),
+                    ("m1", False, True), ("f1", False, False), ("f1", False, False)])
+    _write_session(root, SESSION_B, ["f1", "m1"], [("m1", False, False), ("f1", False, False)])
+    _write_session(root, SESSION_EMPTY, ["m1", "f1"], [])
+    _write_session(root, SESSION_MISSING, ["m1", "f1"], None)
+
+
+class TestEmitterUsvCounts:
+
+    """Per-session focal counts match a hand count on a tiny synthetic tree."""
+    @pytest.mark.parametrize(("vocal_emitter", "expected"), [
+        ("self", {SESSION_A: 3, SESSION_B: 1, SESSION_EMPTY: 0, SESSION_MISSING: 0}),
+        ("partner", {SESSION_A: 2, SESSION_B: 1, SESSION_EMPTY: 0, SESSION_MISSING: 0}),
+        ("all", {SESSION_A: 5, SESSION_B: 2, SESSION_EMPTY: 0, SESSION_MISSING: 0}),
+    ])
+    def test_counts_match_the_hand_count(self, tmp_path, vocal_emitter, expected):
+        """
+        Description
+        -----------
+        The counts must be the analysed-set rows (noise and squeak dropped) from the emitter the spec names,
+        with the recorded animal resolved by NAME from the session-to-mouse map (``SESSION_B`` stores it in
+        track slot 1), an empty summary counting 0 and a session without a summary counting 0 instead of
+        raising. The returned keys must be every requested session, whatever order they were passed in.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            The synthetic data root.
+        vocal_emitter (str)
+            ``'self'`` | ``'partner'`` | ``'all'``.
+        expected (dict)
+            The hand count per session.
+
+        Returns
+        -------
+        None
+        """
+        _write_tree(tmp_path)
+        mouse = dict.fromkeys((SESSION_A, SESSION_B, SESSION_EMPTY, SESSION_MISSING), "m1")
+        counts = emitter_usv_counts({SESSION_B, SESSION_MISSING, SESSION_A, SESSION_EMPTY}, str(tmp_path),
+                                    mouse, vocal_emitter, SETTINGS_VOCAL)
+        assert counts == expected
+
+    def test_a_session_without_tracking_counts_zero(self, tmp_path):
+        """
+        Description
+        -----------
+        A session listed but never processed (no directory at all) must count zero rather than abort the
+        manifest, and must not need an entry in the session-to-mouse map (the lookup happens only after the
+        files are found).
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            The (empty) data root.
+
+        Returns
+        -------
+        None
+        """
+        assert emitter_usv_counts([SESSION_NEVER], str(tmp_path), {}, "self", SETTINGS_VOCAL) == {SESSION_NEVER: 0}
+
+
+class TestBuildCohortManifest:
+
+    """The end-to-end manifest from a settings dict pointing at a synthetic tree."""
+    def test_the_manifest_holds_exactly_the_expected_units_and_sessions(self, tmp_path):
+        """
+        Description
+        -----------
+        The two session lists name ``SESSION_A`` (first list) and ``SESSION_B`` (second list, twice, with a
+        blank line) plus ``SESSION_ORPHAN``, which no catalog unit lists and which therefore has no recorded
+        mouse and must not be counted. The catalog holds ``u1`` (good, somatic, PAG; A and B), ``u2`` (good,
+        somatic, PAG; A only -- short of two courtship sessions), ``u3`` (MUA; A and B) and ``u4`` (VTA; A
+        and B). With the vocal floor overridden in a deep copy to 2 USVs per session, the manifest must be
+        exactly ``u1``, with both courtship sessions, the hand counts ``{A: 3, B: 1}`` (B's recorded male sits
+        in track slot 1), only A vocal-eligible, and therefore not vocal-testable at two vocal sessions.
+        The shipped settings dict itself must be left untouched.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Root for the synthetic data tree, session lists and catalog.
+
+        Returns
+        -------
+        None
+        """
+        data_root = tmp_path / "Data"
+        _write_tree(data_root)
+        (tmp_path / "intact.txt").write_text(f"{data_root / SESSION_A}\n{data_root / SESSION_ORPHAN}\n")
+        (tmp_path / "mute.txt").write_text(f"{data_root / SESSION_B}\n\n{data_root / SESSION_B}\n")
+        catalog = tmp_path / "unit_catalog.csv"
+        both = f"['{SESSION_A}', '{SESSION_B}']"
+        pls.DataFrame({
+            "mouse_id": ["m1", "m1", "m1", "m1"],
+            "rec_date": [20250101] * 4,
+            "unit_id": ["u1", "u2", "u3", "u4"],
+            "brain_area": ["PAG", "PAG", "PAG", "VTA"],
+            "cluster_group": ["good", "good", "mua", "good"],
+            "somatic": [True, True, True, True],
+            "rec_sessions": [both, f"['{SESSION_A}']", both, both],
+        }).write_csv(catalog)
+        with SETTINGS_PATH.open() as handle:
+            shipped = json.load(handle)
+        settings = copy.deepcopy(shipped)
+        settings["data"]["session_list_files"] = [str(tmp_path / "intact.txt"), str(tmp_path / "mute.txt")]
+        settings["data_roots"]["catalog_path"] = str(catalog)
+        settings["data_roots"]["data_root"] = str(data_root)
+        settings["data_sufficiency"]["min_emitter_usvs_per_session"] = 2
+        settings["vocalization_settings"]["vocal_emitter"] = "self"
+
+        manifest = build_cohort_manifest(settings)
+        assert [unit["unit_uid"] for unit in manifest] == ["m1_20250101_u1"]
+        unit = manifest[0]
+        assert unit["courtship_sessions"] == [SESSION_A, SESSION_B]
+        assert unit["emitter_usvs_per_session"] == {SESSION_A: 3, SESSION_B: 1}
+        assert unit["vocal_sessions"] == [SESSION_A]
+        assert unit["vocal_testable"] is False
+        assert unit["rec_date"] == 20250101
+        assert shipped["data_sufficiency"]["min_emitter_usvs_per_session"] == 20

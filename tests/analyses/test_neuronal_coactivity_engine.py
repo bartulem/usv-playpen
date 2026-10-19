@@ -923,7 +923,7 @@ def _write_session_dir(
         train = np.arange(n_neural_samples, dtype=np.float64) + float(idx)
         np.save(session_dir / f"{stem}.npy", train.reshape(1, -1))
 
-    track_path = session_dir / "mouse_translated_rotated_metric.h5"
+    track_path = session_dir / "20230101000000_translated_rotated_metric.h5"
     with h5py.File(name=track_path, mode="w") as track_file:
         track_file.create_dataset(
             "track_names",
@@ -1061,7 +1061,7 @@ def test_load_animal_sessions_strips_track_names_and_logs_unattributed_sessions(
     catalog = {(animal_id, "20240101", "u_a_good"): {"cluster_group": "good", "somatic": "True", "brain_area": "PAG"}}
     session = tmp_path / "20240101_run0"
     _write_session_dir(session, unit_stems=["u_a_good"])
-    with h5py.File(name=session / "mouse_translated_rotated_metric.h5", mode="r+") as track_file:
+    with h5py.File(name=session / "20230101000000_translated_rotated_metric.h5", mode="r+") as track_file:
         del track_file["track_names"]
         track_file.create_dataset("track_names", data=np.array([b" mouse_focal", b"mouse_other "]))
     load_kwargs = {

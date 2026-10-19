@@ -1957,7 +1957,7 @@ class FeatureZoo:
 
         tracked_file_loc = first_match_or_raise(
             root=pathlib.Path(self.root_directory) / 'video',
-            pattern='[!speaker]*_points3d_translated_rotated_metric.h5',
+            pattern='[0-9]*_points3d_translated_rotated_metric.h5',
             recursive=True,
             label="translated/rotated mouse points3d .h5",
         )

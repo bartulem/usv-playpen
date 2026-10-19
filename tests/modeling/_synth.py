@@ -15,10 +15,10 @@ The three artifacts the pipeline expects are:
         the per-frame behavioral feature table (polars-readable CSV). Column
         names follow the project's ``{mouse_id}.{base_feature}`` convention for
         egocentric features and ``{m1}-{m2}.{feat}`` for dyadic features.
-      - ``<session>/video/**/[!speaker]*_points3d_translated_rotated_metric.h5``
+      - ``<session>/video/**/[0-9]*_points3d_translated_rotated_metric.h5``
         an HDF5 track file (named with a numeric date-stamp prefix, mirroring
-        the real ``YYYYMMDDhhmmss_...`` convention, so it clears the loader's
-        ``[!speaker]`` exclusion class) carrying two datasets the loader reads:
+        the real ``YYYYMMDDhhmmss_...`` convention, which the loader's digit-led
+        glob requires) carrying two datasets the loader reads:
         ``recording_frame_rate`` (scalar float) and ``track_names`` (list of
         byte-strings, index 0 == male, index 1 == female by convention).
       - ``<session>/audio/**/*_usv_summary.csv`` the USV summary table with at
@@ -62,9 +62,8 @@ _SETTINGS_JSON = (
 )
 
 # Numeric date-stamp file prefix mirroring the lab's real ``YYYYMMDDhhmmss_...``
-# naming. The loaders' track-file glob uses the ``[!speaker]`` exclusion class,
-# which (as a single-character negated set) would reject any basename starting
-# with one of s/p/e/a/k/r — a digit prefix sidesteps that entirely.
+# naming. The loaders' track-file glob is digit-led (``[0-9]*``), so the mouse
+# track is found and the ``speaker_*`` track of a playback session is not.
 _FILE_PREFIX = '20240101120000'
 
 
@@ -187,9 +186,8 @@ def build_track_h5(
     -----------
     Writes the HDF5 track-metadata file the loader reads to learn the camera
     frame-rate and the per-session mouse track names. The filename matches the
-    loader glob ``video/**/[!speaker]*_points3d_translated_rotated_metric.h5``
-    (the leading ``[!speaker]`` exclusion class means the basename must not
-    start with the literal ``speaker``).
+    loader glob ``video/**/[0-9]*_points3d_translated_rotated_metric.h5``
+    (the basename must start with a digit, like the real session timestamp).
 
     Parameters
     ----------

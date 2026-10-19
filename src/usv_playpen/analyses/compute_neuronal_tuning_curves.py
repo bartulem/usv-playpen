@@ -1712,7 +1712,7 @@ def load_vocal_inputs(root_directory: str | pathlib.Path) -> dict | None:
     try:
         h5_path = first_match_or_raise(
             root=root,
-            pattern="[!speaker]*_points3d_translated_rotated_metric.h5*",
+            pattern="[0-9]*_points3d_translated_rotated_metric.h5*",
             recursive=True,
             label="translated/rotated mouse points3d .h5",
         )
@@ -2017,7 +2017,7 @@ class NeuronalTuning(FeatureZoo):
         try:
             mouse_data_h5 = first_match_or_raise(
                 root=root,
-                pattern="[!speaker]*_points3d_translated_rotated_metric.h5*",
+                pattern="[0-9]*_points3d_translated_rotated_metric.h5*",
                 recursive=True,
                 label="translated/rotated mouse points3d .h5",
             )

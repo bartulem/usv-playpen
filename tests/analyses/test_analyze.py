@@ -2031,7 +2031,7 @@ def _make_synthetic_session(tmp_path, *, n_frames=1500, n_usvs=120, fps=150.0):
     df_beh.write_csv(beh_csv)
 
     # Tracking H5
-    h5_path = root / "video" / "vid1" / "vid1_points3d_translated_rotated_metric.h5"
+    h5_path = root / "video" / "vid1" / "20230101000000_points3d_translated_rotated_metric.h5"
     with h5py.File(h5_path, "w") as f:
         f.create_dataset("track_names", data=np.array([b"m1"]))
         f.create_dataset("recording_frame_rate", data=np.float64(fps))
@@ -3628,7 +3628,7 @@ def test_feature_zoo_save_behavioral_features_end_to_end(tmp_path, mocker):
 
     video_dir = tmp_path / "video" / "vid1"
     video_dir.mkdir(parents=True)
-    h5_path = video_dir / "vid1_points3d_translated_rotated_metric.h5"
+    h5_path = video_dir / "20230101000000_points3d_translated_rotated_metric.h5"
     n_frames = 240
     _build_behavioral_tracking_h5(h5_path, n_frames=n_frames)
 
@@ -3653,8 +3653,8 @@ def test_feature_zoo_save_behavioral_features_end_to_end(tmp_path, mocker):
 
     fz.save_behavioral_features_to_file()
 
-    csv_path = video_dir / "vid1_points3d_translated_rotated_metric_behavioral_features.csv"
-    pdf_path = video_dir / "vid1_points3d_translated_rotated_metric_behavioral_features_histograms.pdf"
+    csv_path = video_dir / "20230101000000_points3d_translated_rotated_metric_behavioral_features.csv"
+    pdf_path = video_dir / "20230101000000_points3d_translated_rotated_metric_behavioral_features_histograms.pdf"
     assert csv_path.exists(), "behavioral features CSV not written"
     assert pdf_path.exists(), "feature-distribution histogram PDF not written"
     assert pdf_path.stat().st_size > 10_000, "histogram PDF suspiciously small"
@@ -3702,7 +3702,7 @@ def test_feature_zoo_save_behavioral_features_single_mouse_skips_social(tmp_path
 
     video_dir = tmp_path / "video" / "vid1"
     video_dir.mkdir(parents=True)
-    h5_path = video_dir / "vid1_points3d_translated_rotated_metric.h5"
+    h5_path = video_dir / "20230101000000_points3d_translated_rotated_metric.h5"
     n_frames = 200
 
     rng = np.random.default_rng(1)
@@ -3743,7 +3743,7 @@ def test_feature_zoo_save_behavioral_features_single_mouse_skips_social(tmp_path
 
     fz.save_behavioral_features_to_file()
 
-    csv_path = video_dir / "vid1_points3d_translated_rotated_metric_behavioral_features.csv"
+    csv_path = video_dir / "20230101000000_points3d_translated_rotated_metric_behavioral_features.csv"
     assert csv_path.exists()
     df = pls.read_csv(csv_path)
     assert "m1.speed" in df.columns

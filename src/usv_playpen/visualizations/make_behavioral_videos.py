@@ -410,9 +410,9 @@ def load_arena_tracks(arena_directory: str) -> tuple[pathlib.Path, np.ndarray, l
 
     h5_file_arena = first_match_or_raise(
         root=pathlib.Path(arena_directory) / 'video',
-        # `[!speaker]` skips the speaker track a USV-playback session keeps beside the
+        # `[0-9]` (the mouse track is named by its session timestamp) skips the `speaker_*` track a USV-playback session keeps beside the
         # main track, so a playback session given as the arena directory resolves to one file
-        pattern='[!speaker]*_points3d_translated_rotated_metric.h5',
+        pattern='[0-9]*_points3d_translated_rotated_metric.h5',
         recursive=True,
         label="arena points3d .h5",
     )
@@ -1527,7 +1527,7 @@ class Create3DVideo:
         arena_file_directory, arena_tracks, arena_node_names = load_arena_tracks(self.arena_directory)
         h5_file_mouse = first_match_or_raise(
             root=pathlib.Path(self.root_directory) / 'video',
-            pattern='[!speaker]*_points3d_translated_rotated_metric.h5',
+            pattern='[0-9]*_points3d_translated_rotated_metric.h5',
             recursive=True,
             label="translated/rotated mouse points3d .h5",
         )

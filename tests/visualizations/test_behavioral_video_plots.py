@@ -683,7 +683,7 @@ def test_visualize_in_video_static_render(tmp_path, mocker):
         np.zeros((1, 1, len(_VIS_ARENA_NODES), 3)), _VIS_ARENA_NODES,
     )
     _write_tracks_h5(
-        root / "video" / "sess" / "mouse_points3d_translated_rotated_metric.h5",
+        root / "video" / "sess" / "20230101000000_points3d_translated_rotated_metric.h5",
         rng.uniform(-0.2, 0.2, size=(n_frames, 2, len(_VIS_MOUSE_NODES), 3)),
         _VIS_MOUSE_NODES, track_names=["m1", "m2"],
         exp_code="BCL2FSmFSm", frame_rate=fr,
@@ -817,7 +817,7 @@ def test_visualize_in_video_animate_path(tmp_path, mocker):
         np.zeros((1, 1, len(_VIS_ARENA_NODES), 3)), _VIS_ARENA_NODES,
     )
     _write_tracks_h5(
-        root / "video" / "sess" / "mouse_points3d_translated_rotated_metric.h5",
+        root / "video" / "sess" / "20230101000000_points3d_translated_rotated_metric.h5",
         rng.uniform(-0.2, 0.2, size=(n_frames, 2, len(_VIS_MOUSE_NODES), 3)),
         _VIS_MOUSE_NODES, track_names=["m1", "m2"],
         exp_code="BCL2FSmFSm", frame_rate=fr,
@@ -886,7 +886,7 @@ def _build_animate_maker(tmp_path, msgs=None, **mbv_extra):
         np.zeros((1, 1, len(_VIS_ARENA_NODES), 3)), _VIS_ARENA_NODES,
     )
     _write_tracks_h5(
-        root / "video" / "sess" / "mouse_points3d_translated_rotated_metric.h5",
+        root / "video" / "sess" / "20230101000000_points3d_translated_rotated_metric.h5",
         rng.uniform(-0.2, 0.2, size=(n_frames, 2, len(_VIS_MOUSE_NODES), 3)),
         _VIS_MOUSE_NODES, track_names=["m1", "m2"],
         exp_code="BCL2FSmFSm", frame_rate=fr,

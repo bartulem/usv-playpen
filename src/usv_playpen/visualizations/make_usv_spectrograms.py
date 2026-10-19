@@ -2164,8 +2164,8 @@ def _read_session_track_names(session_root: str) -> list[str]:
 
     tracking_file = first_match_or_raise(
         root=pathlib.Path(session_root) / "video",
-        # `[!speaker]` skips the speaker track a USV-playback session keeps beside the mouse track
-        pattern="[!speaker]*_points3d_translated_rotated_metric.h5",
+        # `[0-9]` (the mouse track is named by its session timestamp) skips the `speaker_*` track a USV-playback session keeps beside the mouse track
+        pattern="[0-9]*_points3d_translated_rotated_metric.h5",
         recursive=True,
         label="3D tracking h5",
     )

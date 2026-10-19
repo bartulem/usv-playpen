@@ -1144,8 +1144,8 @@ def load_animal_sessions(
     sessions_data = []
     for session_name in chosen_session_names:
         directory = data_root / session_name
-        # `[!speaker]` skips the speaker track a USV-playback session keeps beside the mouse track
-        tracking_file = first_match_or_raise(root=directory, pattern="[!speaker]*_translated_rotated_metric.h5",
+        # `[0-9]` (the mouse track is named by its session timestamp) skips the `speaker_*` track a USV-playback session keeps beside the mouse track
+        tracking_file = first_match_or_raise(root=directory, pattern="[0-9]*_translated_rotated_metric.h5",
                                              recursive=True, label="tracking H5")
         with h5py.File(name=tracking_file, mode="r") as track_file:
             # Stripped like every other track-name reader: some track H5 files carry stray

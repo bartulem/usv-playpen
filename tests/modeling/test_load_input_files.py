@@ -409,10 +409,10 @@ class TestLoadBehavioralFeatureData:
         video_dir = sess / 'video'
         video_dir.mkdir(parents=True)
 
-        features_csv = video_dir / 'x_points3d_translated_rotated_metric_behavioral_features.csv'
+        features_csv = video_dir / '20230101000000_points3d_translated_rotated_metric_behavioral_features.csv'
         pls.DataFrame({'speed': [0.1, 0.2, 0.3], 'angle': [1.0, 2.0, 3.0]}).write_csv(file=features_csv)
 
-        track_h5 = video_dir / 'x_points3d_translated_rotated_metric.h5'
+        track_h5 = video_dir / '20230101000000_points3d_translated_rotated_metric.h5'
         with h5py.File(name=track_h5, mode='w') as h5f:
             h5f['recording_frame_rate'] = 150.0
             h5f['track_names'] = np.array([b'male', b'female'])
@@ -2199,9 +2199,9 @@ def _write_behavior_session(session_root, with_features: bool, with_track: bool,
     video_dir.mkdir(parents=True)
     if with_features:
         pls.DataFrame({'speed': [0.1, 0.2, 0.3], 'angle': [1.0, 2.0, 3.0]}).write_csv(
-            file=video_dir / 'x_points3d_translated_rotated_metric_behavioral_features.csv', separator=csv_sep)
+            file=video_dir / '20230101000000_points3d_translated_rotated_metric_behavioral_features.csv', separator=csv_sep)
     if with_track:
-        with h5py.File(name=video_dir / 'x_points3d_translated_rotated_metric.h5', mode='w') as h5f:
+        with h5py.File(name=video_dir / '20230101000000_points3d_translated_rotated_metric.h5', mode='w') as h5f:
             h5f['recording_frame_rate'] = 150.0
             h5f['track_names'] = np.array([b'male', b'female'])
 

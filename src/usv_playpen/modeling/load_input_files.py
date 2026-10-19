@@ -67,7 +67,7 @@ def load_behavioral_feature_data(behavior_file_paths: list | None = None,
         beh_root = Path(behavior_file_path)
         sess_id = beh_root.name
         features_csv_file_path = next((beh_root / 'video').glob('**/*_points3d_translated_rotated_metric_behavioral_features.csv'), None)
-        track_file_path = next((beh_root / 'video').glob('**/[!speaker]*_points3d_translated_rotated_metric.h5'), None)
+        track_file_path = next((beh_root / 'video').glob('**/[0-9]*_points3d_translated_rotated_metric.h5'), None)
         # Guard against missing input files (glob found no match) before passing
         # the path to h5py/polars, mirroring the `csv_path is None` skip in the
         # sibling USV loaders. Passing None to h5py.File/pls.read_csv would raise

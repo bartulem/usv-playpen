@@ -850,7 +850,7 @@ def session_timebase(data_root: str, session_id: str) -> tuple[list[str], float,
     """
 
     video_dir = Path(configure_path(data_root)) / session_id / "video"
-    track_path = next(video_dir.glob("**/[!speaker]*_points3d_translated_rotated_metric.h5"), None)
+    track_path = next(video_dir.glob("**/[0-9]*_points3d_translated_rotated_metric.h5"), None)
     if track_path is None:
         msg = f"tracking file not found under {video_dir}"
         raise FileNotFoundError(msg)

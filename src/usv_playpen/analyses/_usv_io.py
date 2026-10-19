@@ -113,8 +113,8 @@ def extract_session_metadata(session_root: str) -> dict[str, Any]:
     """
 
     session_path = Path(session_root)
-    # `[!speaker]` skips the speaker track a USV-playback session keeps beside the mouse track
-    tracking_file = unique_match_or_none(list(session_path.glob('**/[!speaker]*_points3d_translated_rotated_metric.h5')),
+    # `[0-9]` (the mouse track is named by its session timestamp) skips the `speaker_*` track a USV-playback session keeps beside the mouse track
+    tracking_file = unique_match_or_none(list(session_path.glob('**/[0-9]*_points3d_translated_rotated_metric.h5')),
                                          label=f"3D tracking file in {session_root}")
 
     if tracking_file is None:

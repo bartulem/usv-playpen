@@ -267,7 +267,7 @@ def load_session_poses(root_directory: pathlib.Path, visualizations_parameter_di
     ``subject_id`` matches the track name), never from the order of the tracks or of the sexes
     in the experimental code. A track the metadata cannot resolve raises.
     """
-    h5_path = first_match_or_raise(root=root_directory / 'video', pattern='[!speaker]*_points3d_translated_rotated_metric.h5',
+    h5_path = first_match_or_raise(root=root_directory / 'video', pattern='[0-9]*_points3d_translated_rotated_metric.h5',
                                    recursive=True, label='translated/rotated mouse points3d .h5')
     with h5py.File(h5_path, 'r') as h5_file:
         tracks = np.array(h5_file['tracks'])
