@@ -601,7 +601,9 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
     Returns
     -------
     result (dict)
-        The unit's single-model result, also written as ``<unit_id>_single.npz``.
+        The unit's single-model result, also written as the ``kinematic_encoding`` section of the
+        unit file (``write_unit_section``), including when no model is found (``no_model`` True,
+        quiet p 1.0, transfer p NaN).
     """
 
     encoding = settings["kinematic_encoding"]
@@ -642,8 +644,15 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
                                       gap_frames)
         if len(blocks) < 2:
             message_output(f"    NO MODEL: {fit_ids[0]} yields {len(blocks)} usable quiet blocks")
-            return {"unit_id": unit["unit_id"], "no_model": True, "quiet_p": 1.0,
-                    "transfer_p": np.nan}
+            # WRITTEN, not merely returned, for the same reason as in `combine`: an untuned unit must
+            # appear in the cohort table with quiet p 1.0, never as a silent missing value.
+            result = {"unit_id": unit["unit_id"], "no_model": True, "quiet_p": 1.0, "transfer_p": np.nan,
+                      "held_out": held_out, "fit_sessions": fit_ids, "spike_counts": spike_counts,
+                      "sparsest_session": sparsest, "inner_split": "blocks", "screen": None,
+                      "n_lags": n_lags, "fps": fps}
+            written = write_unit_section(output_directory, unit, "kinematic_encoding", result, settings)
+            message_output(f"    wrote {written.name} [kinematic_encoding, single-split, no model]")
+            return result
         inner_sessions = {**per_session, **blocks}
         inner_ids = list(blocks)
         message_output(f"    one fit session: inner split is {len(blocks)} contiguous quiet blocks "
@@ -656,7 +665,14 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
     message_output(f"    survivors: {len(survivors)}/{len(feature_names)}")
     if not survivors:
         message_output("    NO MODEL: nothing survived the screen")
-        return {"unit_id": unit["unit_id"], "no_model": True, "quiet_p": 1.0, "transfer_p": np.nan}
+        # WRITTEN, as in `combine`, with the screen table, which shows which features came close.
+        result = {"unit_id": unit["unit_id"], "no_model": True, "quiet_p": 1.0, "transfer_p": np.nan,
+                  "held_out": held_out, "fit_sessions": fit_ids, "spike_counts": spike_counts,
+                  "sparsest_session": sparsest, "inner_split": "blocks" if len(fit_ids) == 1 else "sessions",
+                  "screen": screen_rows, "n_lags": n_lags, "fps": fps}
+        written = write_unit_section(output_directory, unit, "kinematic_encoding", result, settings)
+        message_output(f"    wrote {written.name} [kinematic_encoding, single-split, no model]")
+        return result
 
     selected, path = forward_select(inner_sessions, inner_ids, survivors, n_lags, rng, settings,
                                     feature_names, message_output)

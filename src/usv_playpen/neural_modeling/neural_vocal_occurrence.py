@@ -309,7 +309,7 @@ def vocal_occurrence_shift_null(occurrence_windows: dict, spike_seconds: dict, d
     from one sequential generator, which cannot be split across workers or topped up by the escalation
     ladder without changing earlier draws. With per-draw seeds, draws ``[start, start + n_draws)`` are the
     same values however the range is partitioned -- the same convention as ``permutation_null`` and the nested
-    decoding's ``null_draw_factory``.
+    decoding's ``posterior_nested_null_chunk``.
 
     Parameters
     ----------

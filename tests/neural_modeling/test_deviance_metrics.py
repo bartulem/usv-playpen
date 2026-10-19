@@ -13,6 +13,13 @@ scores positive with a positive scale and an unrelated one near zero; a reversed
 negative scale that the verdict reads; the batched null path agrees with the scalar one exactly at
 ``n_bins = 0`` and within tolerance when binned; the router refuses an unknown scheme and reproduces the
 in-sample rule when asked for it.
+
+The guards and cores, against known answers: one Newton step from zero equals the closed-form step
+(logistic) or the damped step (Poisson), and a singular Hessian stops the solver at its current
+coefficients; every scorer's degenerate-input guard (flat predictor, one class, nothing to explain, a
+training split that leaves a group without events or non-events) returns NaN as documented; with zero
+Newton steps the batched, binned and batched cross-fitted scorers return the closed-form score of the
+zero calibration; and both routers send every scheme, family and group count to the scorer they name.
 """
 
 from __future__ import annotations
@@ -28,9 +35,14 @@ from usv_playpen.neural_modeling.deviance_metrics import (
     calibrated_explained_deviance,
     contiguous_blocks,
     crossfitted_explained_deviance,
+    encoding_metrics,
     frozen_model_null_scores,
     frozen_model_score,
     intercept_only_deviance,
+    newton_logistic,
+    newton_poisson,
+    pooled_calibrated_explained_deviance,
+    pooled_poisson_explained_deviance,
 )
 
 
@@ -294,3 +306,526 @@ class TestCrossfittedScoring:
         assert in_sample == calibrated_explained_deviance(x, y, 40)
         crossfit = frozen_model_score(x, y, group, 40, "bernoulli", 1.0, CROSSFIT)
         assert crossfit == crossfitted_explained_deviance(x, y, group, 5, "bernoulli", 40)
+
+
+class TestNewtonCores:
+    """The two Newton solvers: one exact step from zero, and the singular-Hessian stop."""
+
+    def test_one_logistic_step_is_the_closed_form_newton_step_from_zero(self):
+        """
+        Description
+        -----------
+        From ``beta = 0`` every fitted mean is 0.5 and every weight 0.25, so a single
+        unpenalised Newton step is ``(0.25 X'X)^-1 X'(y - 0.5)`` exactly; with
+        ``n_steps = 1`` the loop runs out after that step and returns it.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        rng = np.random.default_rng(0)
+        x = np.column_stack([rng.normal(size=50), np.ones(50)])
+        y = (rng.random(50) < 0.3).astype(float)
+        expected = np.linalg.solve(0.25 * x.T @ x, x.T @ (y - 0.5))
+        np.testing.assert_allclose(
+            newton_logistic(x, y, np.zeros(2), 1), expected, rtol=1e-12
+        )
+
+    def test_a_singular_logistic_hessian_stops_at_the_current_coefficients(self):
+        """
+        Description
+        -----------
+        An all-zero design column with no ridge makes the Hessian exactly singular; the
+        solver must stop rather than raise, returning the coefficients it had (zeros).
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        x = np.column_stack([np.ones(6), np.zeros(6)])
+        y = np.array([0.0, 1.0, 0.0, 1.0, 1.0, 0.0])
+        np.testing.assert_array_equal(
+            newton_logistic(x, y, np.zeros(2), 10), [0.0, 0.0]
+        )
+
+    @pytest.mark.parametrize(
+        ("counts", "expected"),
+        [
+            (np.array([0.0, 1.0, 2.0, 5.0]), 1.0),
+            (np.array([10.0, 10.0, 10.0, 10.0]), 2.0),
+        ],
+    )
+    def test_one_poisson_step_is_the_damped_newton_step_from_zero(
+        self, counts, expected
+    ):
+        """
+        Description
+        -----------
+        For an intercept-only Poisson fit from ``beta = 0`` every mean is 1, so the Newton
+        step is ``sum(counts - 1) / n``: 1.0 for counts ``{0, 1, 2, 5}`` (taken whole) and
+        9.0 for four tens, which the damping caps at a largest change of 2.
+
+        Parameters
+        ----------
+        counts (np.ndarray)
+            The four observed counts.
+        expected (float)
+            The intercept after one damped step.
+
+        Returns
+        -------
+        None
+        """
+        beta = newton_poisson(np.ones((4, 1)), counts, np.zeros(1), 1)
+        assert beta[0] == pytest.approx(expected, rel=1e-9)
+
+    def test_a_singular_poisson_hessian_stops_at_the_current_coefficients(self):
+        """
+        Description
+        -----------
+        Two identical columns of magnitude 1e4 swamp the 1e-12 jitter, so the Hessian is
+        exactly singular in float64; the solver must stop and return zeros, not raise.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        x = np.full((10, 2), 1e4)
+        np.testing.assert_array_equal(
+            newton_poisson(x, np.arange(10.0), np.zeros(2), 10), [0.0, 0.0]
+        )
+
+
+class TestDegenerateInputsReturnNan:
+    """Every scorer's documented guard: no spread, no events or nothing to explain gives NaN."""
+
+    def test_auroc_with_one_class_is_nan(self):
+        """
+        Description
+        -----------
+        With only positives (or only negatives) there is no pair to rank, so the AUROC is
+        undefined and must come back NaN.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        assert np.isnan(area_under_roc(np.array([0.1, 0.5, 0.9]), np.ones(3)))
+        assert np.isnan(area_under_roc(np.array([0.1, 0.5, 0.9]), np.zeros(3)))
+
+    def test_pooled_poisson_with_nothing_to_explain_is_nan(self):
+        """
+        Description
+        -----------
+        A count of exactly one in every bin is fitted perfectly by the intercept (the
+        Newton start ``mu = 1`` is already the optimum), so the baseline deviance is zero
+        and the explained fraction must be NaN, with the gain left at zero.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        x = np.random.default_rng(0).normal(size=40)
+        score, slope = pooled_poisson_explained_deviance(
+            x, np.ones(40), np.zeros(40, dtype=np.int64), 40, 1.0
+        )
+        assert np.isnan(score)
+        assert slope == 0.0
+
+    def test_pooled_calibrated_with_a_flat_predictor_is_nan(self):
+        """
+        Description
+        -----------
+        A constant predictor has no spread to standardise, so the pooled calibrated score
+        and slope must both be NaN.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        y = np.array([0.0, 1.0] * 10)
+        score, slope = pooled_calibrated_explained_deviance(
+            np.full(20, 0.3), y, np.repeat([0, 1], 10), 40
+        )
+        assert np.isnan(score)
+        assert np.isnan(slope)
+
+    @pytest.mark.parametrize(
+        ("eta", "labels", "spike_rate"),
+        [
+            (np.full(5, 1.0), np.array([0.0, 1.0, 0.0, 1.0, 1.0]), 0.6),
+            (np.linspace(-1.0, 1.0, 5), np.zeros(5), 0.0),
+            (np.zeros(0), np.zeros(0), np.nan),
+        ],
+    )
+    def test_encoding_metrics_degenerate_roster(self, eta, labels, spike_rate):
+        """
+        Description
+        -----------
+        A flat predictor, a spike-free response or an empty scoring set returns the full
+        roster with every model statistic NaN, while the bookkeeping (``spike_rate``,
+        ``n_frames``, ``n_spikes``) still reports what was there.
+
+        Parameters
+        ----------
+        eta (np.ndarray)
+            The frozen predictor.
+        labels (np.ndarray)
+            The 0/1 labels.
+        spike_rate (float)
+            The expected reported spike rate (NaN for an empty set).
+
+        Returns
+        -------
+        None
+        """
+        metrics = encoding_metrics(eta, labels, 30)
+        for key in (
+            "deviance_explained",
+            "calibration_slope",
+            "calibration_intercept",
+            "log_loss",
+            "llr_per_spike",
+            "brier",
+            "auroc",
+        ):
+            assert np.isnan(metrics[key])
+        np.testing.assert_equal(metrics["spike_rate"], spike_rate)
+        assert metrics["n_frames"] == labels.size
+        assert metrics["n_spikes"] == int(labels.sum())
+
+    def test_every_scorer_returns_nan_on_an_empty_scoring_set_without_warning(self):
+        """
+        Description
+        -----------
+        An empty scoring set must trip each scorer's own degenerate-input guard silently:
+        the predictor spread is taken only when there is something to take it over, so
+        numpy's 'Degrees of freedom <= 0' warning (an error under the suite's filter) never
+        fires. The scalar scorers return ``(nan, nan)`` and the batched ones one NaN per
+        draw (three draws here).
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        empty = np.zeros(0)
+        empty_index = np.zeros(0, dtype=np.int64)
+        empty_draws = np.zeros((0, 3))
+        scalar_results = (
+            pooled_poisson_explained_deviance(empty, empty, empty_index, 30, 1.0),
+            calibrated_explained_deviance(empty, empty, 30),
+            pooled_calibrated_explained_deviance(empty, empty, empty_index, 30),
+            crossfitted_explained_deviance(empty, empty, empty_index, 2, "bernoulli", 30),
+        )
+        for score, slope in scalar_results:
+            assert np.isnan(score)
+            assert np.isnan(slope)
+        batched_results = (
+            batched_calibrated_explained_deviance(empty, empty_draws, 30),
+            binned_calibrated_explained_deviance(empty, empty_draws, 30, 10),
+            batched_crossfitted_explained_deviance(empty, empty_draws, 2, 30, 10),
+        )
+        for scores in batched_results:
+            assert scores.shape == (3,)
+            assert np.all(np.isnan(scores))
+
+    def test_batched_and_binned_with_a_flat_predictor_are_all_nan(self):
+        """
+        Description
+        -----------
+        A constant predictor leaves every draw undefined in the three batched scorers, so
+        each returns one NaN per draw rather than raising.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        _eta, labels = _draw(n_frames=200, n_draws=4)
+        flat = np.full(200, 0.7)
+        for scores in (
+            batched_calibrated_explained_deviance(flat, labels, 30),
+            binned_calibrated_explained_deviance(flat, labels, 30, 20),
+            batched_crossfitted_explained_deviance(flat, labels, 5, 30, 0),
+        ):
+            assert scores.shape == (4,)
+            assert np.all(np.isnan(scores))
+
+    def test_batched_and_binned_with_only_degenerate_draws_are_all_nan(self):
+        """
+        Description
+        -----------
+        When every draw is all-zero or all-one, no draw is solvable, the Newton loop stops
+        at once, and every score must be NaN.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        eta = np.random.default_rng(1).normal(size=200)
+        labels = np.column_stack([np.zeros(200), np.ones(200), np.zeros(200)])
+        for scores in (
+            batched_calibrated_explained_deviance(eta, labels, 30),
+            binned_calibrated_explained_deviance(eta, labels, 30, 20),
+            batched_crossfitted_explained_deviance(eta, labels, 5, 30, 0),
+        ):
+            assert np.all(np.isnan(scores))
+
+    def test_crossfit_with_a_flat_predictor_is_nan(self):
+        """
+        Description
+        -----------
+        The scalar cross-fitted scorer returns NaN for both outputs when the predictor
+        has no spread.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        y = np.array([0.0, 1.0] * 50)
+        score, slope = crossfitted_explained_deviance(
+            np.ones(100), y, np.zeros(100, dtype=np.int64), 5, "bernoulli", 30
+        )
+        assert np.isnan(score)
+        assert np.isnan(slope)
+
+    @pytest.mark.parametrize("missing", ["events", "non_events"])
+    def test_crossfit_with_a_group_degenerate_in_a_training_split_is_nan(self, missing):
+        """
+        Description
+        -----------
+        Group 1's events (or its non-events) all sit in its first contiguous block, so the
+        training rows used to score that block leave group 1 with no events (or no
+        non-events) to estimate its intercept from; the score must then be NaN, as the
+        docstring states, rather than an extrapolated intercept.
+
+        Parameters
+        ----------
+        missing (str)
+            ``'events'`` to confine group 1's spikes to one block, ``'non_events'`` to
+            confine its silences.
+
+        Returns
+        -------
+        None
+        """
+        rng = np.random.default_rng(2)
+        x = rng.normal(size=200)
+        y = np.r_[(rng.random(100) < 0.3).astype(float), np.zeros(100)]
+        group = np.repeat([0, 1], 100)
+        y[100:120] = 1.0
+        if missing == "non_events":
+            y[100:] = 1.0 - y[100:]
+        score, slope = crossfitted_explained_deviance(x, y, group, 2, "bernoulli", 30)
+        assert np.isnan(score)
+        assert np.isnan(slope)
+
+    def test_crossfit_poisson_with_nothing_to_explain_is_nan(self):
+        """
+        Description
+        -----------
+        Counts of exactly one everywhere are matched by the cross-fitted intercept, whose
+        log-likelihood then equals the saturated one; the denominator is zero, so the
+        score must be NaN while the mean scale (zero) is still reported.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        x = np.random.default_rng(3).normal(size=40)
+        score, slope = crossfitted_explained_deviance(
+            x, np.ones(40), np.zeros(40, dtype=np.int64), 4, "poisson", 40
+        )
+        assert np.isnan(score)
+        assert slope == 0.0
+
+
+class TestZeroNewtonSteps:
+    """With no Newton steps the calibration stays at zero, which has a closed-form score."""
+
+    def test_batched_and_binned_score_the_zero_model(self):
+        """
+        Description
+        -----------
+        With ``n_steps = 0`` the slope and intercept stay at zero, so every fitted
+        probability is 0.5 and the model deviance is ``2 n log 2``; the score must be
+        ``1 - 2 n log 2 / D0`` with ``D0`` the deviance of the draw's own rate, for the
+        exact and the binned path alike (the binned path is exact at a zero slope).
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        eta, labels = _draw(n_frames=500, n_draws=3, rate=0.2, seed=4)
+        rate = labels.mean(axis=0)
+        baseline = -2.0 * 500 * (rate * np.log(rate) + (1.0 - rate) * np.log1p(-rate))
+        expected = 1.0 - 2.0 * 500 * np.log(2.0) / baseline
+        np.testing.assert_allclose(
+            batched_calibrated_explained_deviance(eta, labels, 0), expected, rtol=1e-12
+        )
+        np.testing.assert_allclose(
+            binned_calibrated_explained_deviance(eta, labels, 0, 50),
+            expected,
+            rtol=1e-12,
+        )
+
+    def test_batched_crossfit_scores_the_zero_model_against_the_crossfitted_rate(self):
+        """
+        Description
+        -----------
+        With ``n_steps = 0`` each block is scored at probability 0.5 (log-likelihood
+        ``-n_test log 2``) against the reference at the training rows' rate; the score
+        must equal that closed form summed over the five contiguous blocks.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        eta, labels = _draw(n_frames=500, n_draws=3, rate=0.2, seed=5)
+        blocks = contiguous_blocks(np.zeros(500, dtype=np.int64), 5)
+        ll_model = np.zeros(3)
+        ll_reference = np.zeros(3)
+        for block in range(5):
+            test = blocks == block
+            train_rate = labels[~test].mean(axis=0)
+            intercept = np.log(train_rate / (1.0 - train_rate))
+            ll_model -= test.sum() * np.log(2.0)
+            ll_reference += intercept * labels[test].sum(
+                axis=0
+            ) - test.sum() * np.logaddexp(0.0, intercept)
+        expected = (ll_model - ll_reference) / (-ll_reference)
+        np.testing.assert_allclose(
+            batched_crossfitted_explained_deviance(eta, labels, 5, 0, 0),
+            expected,
+            rtol=1e-10,
+        )
+
+
+class TestSchemeRouting:
+    """The two routers dispatch every scheme/family/group combination to the right scorer."""
+
+    def test_in_sample_poisson_routes_to_the_pooled_poisson_scorer(self):
+        """
+        Description
+        -----------
+        ``in_sample`` with the Poisson family must return exactly what
+        ``pooled_poisson_explained_deviance`` returns for the same inputs.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        x, y, group = TestCrossfittedScoring._planted(
+            7, 0.8, family="poisson", n_groups=2
+        )
+        routed = frozen_model_score(
+            x, y, group, 40, "poisson", 2.0, {"scheme": "in_sample", "n_blocks": 5}
+        )
+        assert routed == pooled_poisson_explained_deviance(x, y, group, 40, 2.0)
+
+    def test_in_sample_bernoulli_over_several_groups_routes_to_the_pooled_scorer(self):
+        """
+        Description
+        -----------
+        ``in_sample`` Bernoulli over more than one group must use per-group intercepts,
+        i.e. return exactly ``pooled_calibrated_explained_deviance``.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        x, y, group = TestCrossfittedScoring._planted(8, 0.8, n_groups=2)
+        routed = frozen_model_score(
+            x, y, group, 40, "bernoulli", 1.0, {"scheme": "in_sample", "n_blocks": 5}
+        )
+        assert routed == pooled_calibrated_explained_deviance(x, y, group, 40)
+
+    def test_the_null_router_dispatches_each_scheme(self):
+        """
+        Description
+        -----------
+        ``frozen_model_null_scores`` must return exactly the batched cross-fitted scores
+        under ``crossfit``, and under ``in_sample`` the binned scores when ``n_bins > 0``
+        and the exact batched scores when ``n_bins = 0``.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        eta, labels = _draw(n_frames=1000, n_draws=5, seed=6)
+        in_sample = {"scheme": "in_sample", "n_blocks": 5}
+        np.testing.assert_array_equal(
+            frozen_model_null_scores(eta, labels, 30, 0, CROSSFIT),
+            batched_crossfitted_explained_deviance(eta, labels, 5, 30, 0),
+        )
+        np.testing.assert_array_equal(
+            frozen_model_null_scores(eta, labels, 30, 100, in_sample),
+            binned_calibrated_explained_deviance(eta, labels, 30, 100),
+        )
+        np.testing.assert_array_equal(
+            frozen_model_null_scores(eta, labels, 30, 0, in_sample),
+            batched_calibrated_explained_deviance(eta, labels, 30),
+        )

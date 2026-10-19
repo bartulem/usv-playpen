@@ -327,7 +327,7 @@ def pooled_poisson_explained_deviance(x: np.ndarray, counts: np.ndarray, session
         The shared gain on standardized ``x``.
     """
 
-    spread = float(np.std(x))
+    spread = float(np.std(x)) if np.size(x) else 0.0
     if spread < 1e-12 or counts.size == 0 or counts.sum() == 0:
         return np.nan, np.nan
     standardized = (x - np.mean(x)) / spread
@@ -406,7 +406,7 @@ def calibrated_explained_deviance(eta: np.ndarray, y: np.ndarray, n_steps: int) 
         negative means the relationship learned on training data points the wrong way on these frames.
     """
 
-    spread = float(np.std(eta))
+    spread = float(np.std(eta)) if np.size(eta) else 0.0
     if spread < 1e-12 or y.size == 0 or y.min() == y.max():
         return np.nan, np.nan
     standardized = (eta - np.mean(eta)) / spread
@@ -456,7 +456,7 @@ def batched_calibrated_explained_deviance(eta: np.ndarray, labels: np.ndarray,
         Calibrated explained deviance per draw, shape ``(n_draws,)``, ``nan`` where undefined.
     """
 
-    spread = float(np.std(eta))
+    spread = float(np.std(eta)) if np.size(eta) else 0.0
     n_draws = labels.shape[1]
     if spread < 1e-12 or eta.size == 0 or n_draws == 0:
         return np.full(n_draws, np.nan, dtype=np.float64)
@@ -566,7 +566,7 @@ def binned_calibrated_explained_deviance(eta: np.ndarray, labels: np.ndarray, n_
         Calibrated explained deviance per draw, shape ``(n_draws,)``, ``nan`` where undefined.
     """
 
-    spread = float(np.std(eta))
+    spread = float(np.std(eta)) if np.size(eta) else 0.0
     n_draws = labels.shape[1]
     if spread < 1e-12 or eta.size == 0 or n_draws == 0:
         return np.full(n_draws, np.nan, dtype=np.float64)
@@ -669,7 +669,7 @@ def pooled_calibrated_explained_deviance(eta: np.ndarray, y: np.ndarray, session
         The shared calibration slope on standardized ``eta``.
     """
 
-    spread = float(np.std(eta))
+    spread = float(np.std(eta)) if np.size(eta) else 0.0
     if spread < 1e-12 or y.size == 0 or y.min() == y.max():
         return np.nan, np.nan
     standardized = (eta - np.mean(eta)) / spread
@@ -762,7 +762,7 @@ def encoding_metrics(eta: np.ndarray, y: np.ndarray, n_steps: int) -> dict:
 
     labels = np.asarray(y, dtype=np.float64)
     n_spikes = float(labels.sum())
-    spread = float(np.std(eta))
+    spread = float(np.std(eta)) if np.size(eta) else 0.0
     if spread < 1e-12 or labels.size == 0 or labels.min() == labels.max():
         return {"deviance_explained": np.nan, "calibration_slope": np.nan,
                 "calibration_intercept": np.nan, "log_loss": np.nan, "llr_per_spike": np.nan,
@@ -875,7 +875,7 @@ def crossfitted_explained_deviance(x: np.ndarray, y: np.ndarray, group_index: np
         Mean over blocks of the cross-fitted scale on the standardised predictor.
     """
 
-    spread = float(np.std(x))
+    spread = float(np.std(x)) if np.size(x) else 0.0
     if spread < 1e-12 or y.size == 0 or float(np.sum(y)) == 0.0 or (family == "bernoulli" and y.min() == y.max()):
         return np.nan, np.nan
     standardized = (x - np.mean(x)) / spread
@@ -946,7 +946,7 @@ def batched_crossfitted_explained_deviance(eta: np.ndarray, labels: np.ndarray, 
         Cross-fitted explained deviance per draw, ``nan`` where a block's training rows are degenerate.
     """
 
-    spread = float(np.std(eta))
+    spread = float(np.std(eta)) if np.size(eta) else 0.0
     n_draws = labels.shape[1]
     if spread < 1e-12 or eta.size == 0 or n_draws == 0:
         return np.full(n_draws, np.nan, dtype=np.float64)

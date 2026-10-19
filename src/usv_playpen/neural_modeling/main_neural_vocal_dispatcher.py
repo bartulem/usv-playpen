@@ -60,7 +60,6 @@ from .neural_nested_decoding import (
     posterior_nested_gain,
     reduced_model_features,
     reduced_predictions,
-    shifted_neural_column,
 )
 from .neural_significance import within_session_permutation
 from .neural_vocal_decoding import decode_gain, decoding_context, flagged_descriptors
@@ -356,41 +355,6 @@ def posterior_nested_payload(posterior: dict, regression: dict, no_behaviour: fl
             "behaviour_control": {"features": list(behaviour_control["features"]),
                                   "held_out_day": behaviour_control["held_out_day"],
                                   "settings_sha256": behaviour_control["settings_sha256"]}}
-
-
-def nested_decoding_null_chunk(start: int, n_draws: int) -> np.ndarray:
-    """
-    Description
-    -----------
-    Nested vocal-manifold position decoding null draws ``[start, start + n_draws)``, seeded ``seed + draw``
-    exactly as the package's serial ``null_draw_factory`` seeds them, so the two agree value for value.
-
-    Only the neural column changes between draws; the behaviour block and the reduced model's held-out
-    predictions are fixed and reused.
-
-    Parameters
-    ----------
-    start (int)
-        Global index of the first draw.
-    n_draws (int)
-        How many draws.
-
-    Returns
-    -------
-    null (np.ndarray)
-        Added ``vm_logscore`` under a circularly shifted neural column.
-    """
-
-    state = _WORKER
-    values = np.empty(int(n_draws), dtype=np.float64)
-    for draw in range(int(n_draws)):
-        column = shifted_neural_column(state["design"], state["window_edges"], state["spike_seconds"],
-                                       state["durations"], state["width"],
-                                       np.random.default_rng(state["seed"] + start + draw),
-                                       state["guard_seconds"], state["sigma_floor"])
-        values[draw] = nested_scores(state["design"], state["settings"], state["n_lags"], neural=column,
-                                     reduced_predicted=state["reduced_predicted"])["added"]
-    return values
 
 
 def vocal_gating_feature_job(feature_index: int) -> tuple:
