@@ -835,7 +835,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         try:
             tracked_file_loc = first_match_or_raise(
                 root=root,
-                pattern="[!speaker]*_points3d_translated_rotated_metric.h5",
+                pattern="[0-9]*_points3d_translated_rotated_metric.h5",
                 recursive=True,
                 label="translated/rotated mouse points3d .h5",
             )
@@ -1650,8 +1650,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         bar_n = [r_summary[g]["n"] for g in VMI_REGION_ORDER]
         bar_colors = [region_colors[g] for g in VMI_REGION_ORDER]
 
-        err_lower = np.where(np.isnan(bar_vals - bar_lo), 0, bar_vals - bar_lo)
-        err_upper = np.where(np.isnan(bar_hi - bar_vals), 0, bar_hi - bar_vals)
+        # Clipped at 0: a percentile bootstrap interval can exclude its own point estimate, and a
+        # negative error length makes matplotlib raise and lose the whole figure.
+        err_lower = np.clip(np.where(np.isnan(bar_vals - bar_lo), 0, bar_vals - bar_lo), 0.0, None)
+        err_upper = np.clip(np.where(np.isnan(bar_hi - bar_vals), 0, bar_hi - bar_vals), 0.0, None)
 
         ax_r.bar(
             bar_x, bar_vals,
@@ -6317,13 +6319,11 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        The USV ribbon under a rate trace: bouts as fading bars, unassigned USVs as flat ones.
+        The USV ribbon under a rate trace: bouts as solid bars in the emitter's colour, unassigned
+        USVs as bars in their own colour.
 
-        A bout's bar runs from the emitter's colour at its onset to the page at its end, and the
-        ramp is laid on the bout's TRUE duration before clipping, so a bout running past the
-        drawn window stays saturated rather than reading as finished. Unassigned USVs are the
-        same kind of event on the same clock, so they share the ribbon in their own colour
-        instead of being dropped.
+        Each bout's bar is clipped at the drawn window. Unassigned USVs are the same kind of event
+        on the same clock, so they share the ribbon in their own colour instead of being dropped.
 
         Parameters
         ----------
@@ -6334,7 +6334,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         unassigned_lo, unassigned_hi (np.ndarray)
             Extents of USVs no emitter was credited with.
         colour (str)
-            Hex colour the bout gradient starts from.
+            Hex colour of the bout bars.
         low, high (float)
             Vertical extent of the ribbon, in data coordinates.
         unassigned_color (str)
@@ -6349,16 +6349,12 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
 
         window_lo, window_hi = ax.get_xlim()
-        cmap = LinearSegmentedColormap.from_list("bout_ribbon", [colour, "#FFFFFF"])
         for start, stop in zip(bout_lo, bout_hi, strict=False):
             visible_start, visible_stop = max(start, window_lo), min(stop, window_hi)
             if visible_stop <= visible_start:
                 continue
-            span = max(stop - start, min_width)
-            ramp = np.linspace((visible_start - start) / span, (visible_stop - start) / span, 128)
-            ax.imshow(ramp[None, :], cmap=cmap, aspect="auto", vmin=0.0, vmax=1.0, zorder=3,
-                      extent=(visible_start, max(visible_stop, visible_start + min_width),
-                              low, high))
+            ax.add_patch(Rectangle((visible_start, low), max(visible_stop - visible_start, min_width), high - low,
+                                   facecolor=colour, edgecolor="none", zorder=3))
         for start, stop in zip(unassigned_lo, unassigned_hi, strict=False):
             if stop >= window_lo and start <= window_hi:
                 ax.add_patch(Rectangle((start, low), max(stop - start, min_width), high - low,
@@ -6828,17 +6824,16 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        The bout-onset-aligned raster: one row per IBI bout, sorted by duration so the gradients
+        The bout-onset-aligned raster: one row per IBI bout, sorted by duration so the bout blocks
         form a fan, with the across-bout mean firing rate and its standard error on a twinned
         right-hand axis.
 
-        Three choices here were each arrived at by being wrong first. EVERY bout overlapping a
+        Two choices here were each arrived at by being wrong first. EVERY bout overlapping a
         row's window is shaded, not only the triggering one: a previous bout ends inside the
         pre-window on about half of all rows and the next one starts inside the post-window on
         about as many, so shading only the trigger leaves white meaning "silence" on some rows
-        and "unmarked bout time" on others. Each gradient is laid on its bout's TRUE duration and
-        then clipped at the window edge, so a bout running past the edge stays saturated instead
-        of fading to white and reading as ended. And every bout's rate is smoothed BEFORE the
+        and "unmarked bout time" on others. Each bout is a solid block in the emitter's colour,
+        clipped at the window edge. And every bout's rate is smoothed BEFORE the
         average, so the error band describes the smoothed quantity drawn rather than raw bins
         where a bout holds zero or one spike and the spread is enormous.
 
@@ -6879,7 +6874,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         spike_times = self._cluster_spike_times(cluster_data)
         colour = self._sex_color(payload["sex"])
-        cmap = LinearSegmentedColormap.from_list("bout_row", [colour, "#FFFFFF"])
         window_lo, window_hi = self.visualizations_parameter_dict["neuronal_tuning_figures"]["bout_trigger_window_seconds"]
         order = np.argsort(bout_hi - bout_lo)
         sorted_lo = bout_lo[order]
@@ -6891,12 +6885,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 visible_stop = min(bout_hi[other], anchor + window_hi)
                 if visible_stop <= visible_start:
                     continue
-                span = bout_hi[other] - bout_lo[other]
-                ramp = np.linspace((visible_start - bout_lo[other]) / span,
-                                   (visible_stop - bout_lo[other]) / span, 128)
-                ax.imshow(ramp[None, :], cmap=cmap, aspect="auto", vmin=0.0, vmax=1.0, zorder=1,
-                          extent=(visible_start - anchor, visible_stop - anchor,
-                                  row - 0.5, row + 0.5))
+                ax.add_patch(Rectangle((visible_start - anchor, row - 0.5), visible_stop - visible_start, 1.0,
+                                       facecolor=colour, edgecolor="none", zorder=1))
             in_window = spike_times[(spike_times >= anchor + window_lo)
                                     & (spike_times <= anchor + window_hi)] - anchor
             if in_window.size:

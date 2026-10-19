@@ -48,6 +48,8 @@ import matplotlib as mpl
 mpl.use("Agg")
 import h5py
 import matplotlib.collections
+import matplotlib.colors
+import matplotlib.patches
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pls
@@ -133,9 +135,9 @@ def _build_synthetic_figure_session(
     df_beh.write_csv(root / "video" / "vid1" / "vid1_behavioral_features.csv")
 
     if tracking_h5_at_session_root:
-        h5_path = root / "vid1_points3d_translated_rotated_metric.h5"
+        h5_path = root / "20230101000000_points3d_translated_rotated_metric.h5"
     else:
-        h5_path = root / "video" / "vid1" / "vid1_points3d_translated_rotated_metric.h5"
+        h5_path = root / "video" / "vid1" / "20230101000000_points3d_translated_rotated_metric.h5"
     with h5py.File(h5_path, "w") as f:
         f.create_dataset("track_names", data=np.array([b"m1"]))
         f.create_dataset("recording_frame_rate", data=np.float64(fps))
@@ -1821,6 +1823,47 @@ def test_vmi_cross_condition_stability_figure_writes_png(triage_fixture):
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 @pytest.mark.filterwarnings("ignore::UserWarning")
+def test_vmi_stability_figure_renders_when_the_interval_excludes_the_estimate(triage_fixture):
+    """
+    Description
+    -----------
+    A percentile bootstrap interval can exclude its own point estimate. With the
+    per-region unit minimum lowered to 3 so the fixture's regions are scored, setting
+    both bootstrap quantiles to 0 makes every region's interval collapse onto its smallest
+    bootstrap r, which lies below the point estimate, so the upper error length
+    ``hi - r`` is negative. The error bars are clipped at 0, so the figure must still be
+    written instead of matplotlib raising on a negative error.
+
+    Parameters
+    ----------
+    triage_fixture (tuple)
+        `(maker, triage_path, catalog_path, out_dir)`.
+
+    Returns
+    -------
+    None
+    """
+
+    maker, triage_path, _catalog_path, out_dir = triage_fixture
+    maker.visualizations_parameter_dict = {
+        **maker.visualizations_parameter_dict,
+        "neuronal_tuning_figures": {
+            **maker.visualizations_parameter_dict["neuronal_tuning_figures"],
+            "vmi_bootstrap_n": 50,
+            "vmi_bootstrap_quantiles": [0.0, 0.0],
+            "stability_min_units": 3,
+        },
+    }
+    out_path = maker.make_vmi_cross_condition_stability_figure(
+        triage_pkl_path=triage_path,
+        out_dir=out_dir,
+        fig_format="png",
+    )
+    _assert_figure_written(out_path, out_dir)
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
 def test_vmi_magnitude_consistency_figure_writes_png(triage_fixture):
     """
     Description
@@ -3194,3 +3237,503 @@ def test_figure_maker_requires_the_figures_dpi_and_seed(tmp_path):
     with pytest.raises(KeyError, match="seed"):
         NeuronalTuningFigureMaker(root_directory=str(tmp_path), visualizations_parameter_dict=viz,
                                   message_output=lambda *_a: None)
+
+
+def _capture_saved_figure(monkeypatch, captured: dict) -> None:
+    """
+    Description
+    -----------
+    Replace the module's `save_figure` with a stand-in that hands the figure to the test
+    instead of writing it, so the artists the settings drove can be inspected before the
+    figure method closes the figure. The stand-in stores the figure under `captured["fig"]`
+    and the requested stem under `captured["stem"]`, and returns a placeholder path.
+
+    Parameters
+    ----------
+    monkeypatch (pytest.MonkeyPatch)
+        Replaces `make_neuronal_tuning_figures.save_figure`.
+    captured (dict)
+        Receives the `fig` and `stem` the figure method saved.
+
+    Returns
+    -------
+    None
+    """
+
+    def _fake_save_figure(fig, stem, **_kwargs):
+        """
+        Description
+        -----------
+        Record the figure and its stem instead of writing a file.
+
+        Parameters
+        ----------
+        fig (matplotlib.figure.Figure)
+            Figure the method would save.
+        stem (str)
+            File stem the method requested.
+        **_kwargs (dict)
+            The settings and the output directory / format overrides (unused).
+
+        Returns
+        -------
+        out_path (pathlib.Path)
+            A placeholder path named after the stem.
+        """
+
+        captured["fig"] = fig
+        captured["stem"] = stem
+        return pathlib.Path(f"{stem}.png")
+
+    monkeypatch.setattr(tuning_figures, "save_figure", _fake_save_figure)
+
+
+def test_unreadable_cluster_pickle_fails_the_run_naming_the_load_error(tmp_path, monkeypatch):
+    """
+    Description
+    -----------
+    A per-cluster pickle that cannot be loaded is reported, collected, and the run raises a
+    RuntimeError after the loop naming the cluster file and the load error type, instead of
+    the failure disappearing into a log line while the run reports success.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest-provided per-test temp directory.
+    monkeypatch (pytest.MonkeyPatch)
+        Replaces the segmentation loader and the wait helper.
+
+    Returns
+    -------
+    None
+    """
+
+    tuning_dir = tmp_path / "ephys" / "tuning_curves"
+    tuning_dir.mkdir(parents=True)
+    (tuning_dir / "imec0_cl0007_tuning_curves_data.pkl").write_bytes(b"not a pickle")
+    messages: list[str] = []
+    maker = NeuronalTuningFigureMaker(
+        root_directory=str(tmp_path),
+        visualizations_parameter_dict=_make_visualizations_parameters(),
+        message_output=messages.append,
+    )
+    monkeypatch.setattr(NeuronalTuningFigureMaker, "_load_segmentation", lambda _self: {})
+    monkeypatch.setattr(tuning_figures, "smart_wait", lambda **_kwargs: None)
+    with pytest.raises(RuntimeError, match=r"failed for 1 of 1 clusters.*imec0_cl0007_tuning_curves_data\.pkl \(load: UnpicklingError"):
+        maker.make_neuronal_tuning_figures()
+    assert sum("failed to load imec0_cl0007_tuning_curves_data.pkl" in message for message in messages) == 1
+    assert not list(tuning_dir.glob("*_neuronal_tuning.*"))
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_vmi_stability_bootstrap_interval_uses_the_configured_quantiles(tmp_path, monkeypatch):
+    """
+    Description
+    -----------
+    The per-region bootstrap interval of the cross-condition correlation panel is read at the
+    `vmi_bootstrap_quantiles` of the `neuronal_tuning_figures` settings: the quantile call
+    receives exactly the configured pair, the errorbar drawn on the region's bar spans exactly
+    the two quantiles it returned, and a region below `stability_min_units` gets no bar.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest-provided per-test temp directory.
+    monkeypatch (pytest.MonkeyPatch)
+        Replaces the collector, `save_figure` and `np.nanquantile` (recorded, not changed).
+
+    Returns
+    -------
+    None
+    """
+
+    rng = np.random.default_rng(3)
+    vmi_a = rng.uniform(-0.8, 0.8, 12)
+    vmi_b = 0.6 * vmi_a + rng.normal(0.0, 0.2, 12)
+    per_group = {region: [] for region in tuning_figures.VMI_REGION_ORDER}
+    per_group["PAG"] = [{"vmi_a": float(a), "vmi_b": float(b), "sig_a": bool(k % 2), "sig_b": bool(k % 3),
+                         "fr_baseline_median": 1.0 + k} for k, (a, b) in enumerate(zip(vmi_a, vmi_b, strict=True))]
+    per_group["MRN"] = per_group["PAG"][:2]
+    maker = _aggregate_maker(tmp_path)
+    maker.visualizations_parameter_dict = {
+        **maker.visualizations_parameter_dict,
+        "neuronal_tuning_figures": {
+            **maker.visualizations_parameter_dict["neuronal_tuning_figures"],
+            "vmi_bootstrap_n": 200,
+            "stability_min_units": 5,
+            "vmi_bootstrap_quantiles": [0.1, 0.9],
+        },
+    }
+    monkeypatch.setattr(maker, "_collect_vmi_per_condition_medians", lambda **_kwargs: per_group)
+    quantile_calls: list[tuple] = []
+    original_nanquantile = np.nanquantile
+
+    def _recording_nanquantile(values, q, *args, **kwargs):
+        """
+        Description
+        -----------
+        Forward to `np.nanquantile` and record the requested quantiles and the result.
+
+        Parameters
+        ----------
+        values (np.ndarray)
+            Values to take quantiles of.
+        q (array-like)
+            Requested quantiles.
+        *args, **kwargs
+            Forwarded unchanged.
+
+        Returns
+        -------
+        result (np.ndarray)
+            The quantiles `np.nanquantile` returns.
+        """
+
+        result = original_nanquantile(values, q, *args, **kwargs)
+        quantile_calls.append((q, np.asarray(result, dtype=float)))
+        return result
+
+    monkeypatch.setattr(np, "nanquantile", _recording_nanquantile)
+    captured: dict = {}
+    _capture_saved_figure(monkeypatch, captured)
+    maker.make_vmi_cross_condition_stability_figure(triage_pkl_path=tmp_path / "unused.pkl")
+    monkeypatch.setattr(np, "nanquantile", original_nanquantile)
+
+    assert captured["stem"] == "vmi_cross_condition_stability"
+    assert len(quantile_calls) == 1
+    requested, (lo, hi) = quantile_calls[0]
+    assert list(requested) == [0.1, 0.9]
+    ax_r = next(ax for ax in captured["fig"].axes if ax.get_title() == "cross-condition VMI correlation")
+    segments = next(c for c in ax_r.collections if isinstance(c, matplotlib.collections.LineCollection)).get_segments()
+    pag_index = tuning_figures.VMI_REGION_ORDER.index("PAG")
+    assert segments[pag_index][0][1] == pytest.approx(lo)
+    assert segments[pag_index][1][1] == pytest.approx(hi)
+    mrn_index = tuning_figures.VMI_REGION_ORDER.index("MRN")
+    assert np.isnan(ax_r.patches[mrn_index].get_height())
+    assert [label.get_text() for label in ax_r.get_xticklabels()][mrn_index] == "MRN\nN=2"
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_peth_timing_axes_without_units_span_the_configured_peth_window(tmp_path, monkeypatch):
+    """
+    Description
+    -----------
+    With no consistent unit in any region, the shared time axis of the PETH-timing figure is
+    exactly the `peth_window_seconds` of the shipped analyses settings padded by 2 % on each
+    side (nothing widens it), and the peak-z axis falls back to [0, 1] padded by 5 %.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest-provided per-test temp directory.
+    monkeypatch (pytest.MonkeyPatch)
+        Replaces the consistency collector and `save_figure`.
+
+    Returns
+    -------
+    None
+    """
+
+    with (pathlib.Path(tuning_figures.__file__).resolve().parent.parent / "_parameter_settings"
+          / "analyses_settings.json").open(encoding="utf-8") as settings_file:
+        window_lo, window_hi = json.load(settings_file)["calculate_neuronal_tuning_curves"]["peth_window_seconds"]
+    maker = _aggregate_maker(tmp_path)
+    monkeypatch.setattr(maker, "_collect_consistent_peth",
+                        lambda **_kwargs: {region: [] for region in tuning_figures.VMI_REGION_ORDER})
+    captured: dict = {}
+    _capture_saved_figure(monkeypatch, captured)
+    maker.make_peth_timing_distribution_figure(triage_pkl_path=tmp_path / "unused.pkl", direction="suppress")
+
+    assert captured["stem"] == "peth_suppress_timing_distribution"
+    pad = 0.02 * (window_hi - window_lo)
+    axes = captured["fig"].axes
+    assert len(axes) == 2 * len(tuning_figures.VMI_REGION_ORDER)
+    for ax in axes:
+        assert ax.get_xlim() == pytest.approx((window_lo - pad, window_hi + pad))
+    assert axes[1].get_ylim() == pytest.approx((-0.05, 1.05))
+    assert axes[0].get_title() == "PAG  (N=0)"
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_render_behavioral_pages_skips_excluded_features_and_titles_unknown_pairs_plainly():
+    """
+    Description
+    -----------
+    A feature listed in `PLOT_EXCLUDED_BEHAVIORAL_FEATURES` gets no panel, and a directional
+    SEI feature whose pair names an animal absent from the session's mouse list is titled by
+    its plain display name (no direction arrow) instead of failing the page.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    excluded = tuning_figures.PLOT_EXCLUDED_BEHAVIORAL_FEATURES[0]
+    cluster_data = {
+        "beh_offset=0s": {
+            "m1.speed":            _beh_1d_payload(),
+            "m1-m3.orofacial-sei": _beh_1d_payload(),
+            f"m1-m2.{excluded}":   _beh_1d_payload(),
+        },
+        "behavioral_metadata": {"behavioral_min_occupancy_seconds": 0.1},
+    }
+    maker = NeuronalTuningFigureMaker(
+        root_directory="/tmp",
+        visualizations_parameter_dict=_make_aggregate_visualizations_parameters(),
+        message_output=lambda *_args, **_kwargs: None,
+    )
+    titles: dict[str, list[str]] = {}
+
+    def _save_fig(fig, label: str) -> None:
+        """
+        Description
+        -----------
+        Record every non-empty axis title on the page under its label, then close it.
+
+        Parameters
+        ----------
+        fig (matplotlib.figure.Figure)
+            Rendered page.
+        label (str)
+            Page label.
+
+        Returns
+        -------
+        None
+        """
+
+        titles[label] = [ax.get_title() for ax in fig.axes if ax.get_title()]
+        plt.close(fig)
+
+    maker._render_behavioral_pages(cluster_data=cluster_data, mouse_id_list=["m1", "m2"],
+                                   mouse_colors=["#9AC0CD", "#8CA252"], save_fig=_save_fig)
+    social_titles = next(page_titles for label, page_titles in titles.items() if label.endswith("social"))
+    assert social_titles == [maker._feature_title("orofacial-sei")]
+    assert "rightarrow" not in social_titles[0]
+    all_titles = [title for page_titles in titles.values() for title in page_titles]
+    assert maker._feature_title(excluded) not in all_titles
+
+
+def test_feature_title_falls_back_to_the_opened_out_name():
+    """
+    Description
+    -----------
+    A feature the display-name map carries is titled by its display name whatever its role
+    prefix, and a feature the map does not carry is titled by its own name with underscores
+    replaced by spaces.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    maker = _make_figure_maker()
+    known = next(iter(maker.feature_display_names))
+    assert maker._feature_title(f"self.{known}") == maker.feature_display_names[known]
+    assert "brand_new_feature" not in maker.feature_display_names
+    assert maker._feature_title("other.brand_new_feature") == "brand new feature"
+
+
+def test_cluster_spike_times_searches_the_rendered_then_the_recorded_root(tmp_path, monkeypatch):
+    """
+    Description
+    -----------
+    `_cluster_spike_times` returns no spikes for a payload without a cluster id; skips a root
+    whose search raises OSError and falls through to the recorded session root, returning that
+    file's sorted row-0 spike times; and returns no spikes when neither root holds the file.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest-provided per-test temp directory.
+    monkeypatch (pytest.MonkeyPatch)
+        Makes the search under the rendered root raise OSError.
+
+    Returns
+    -------
+    None
+    """
+
+    rendered_root = tmp_path / "rendered"
+    rendered_root.mkdir()
+    recorded_root = tmp_path / "recorded"
+    cluster_dir = recorded_root / "ephys" / "imec1" / "cluster_data"
+    cluster_dir.mkdir(parents=True)
+    np.save(cluster_dir / "imec1_cl0042.npy", np.vstack([[3.0, 1.0, 2.0], [0.0, 0.0, 0.0]]))
+    maker = NeuronalTuningFigureMaker(root_directory=str(rendered_root),
+                                      visualizations_parameter_dict=_make_visualizations_parameters(),
+                                      message_output=lambda *_args, **_kwargs: None)
+
+    empty = maker._cluster_spike_times({"usv_metadata": {"cluster_id": "", "session_root": str(recorded_root)}})
+    assert empty.size == 0
+    assert empty.dtype == float
+
+    original_rglob = pathlib.Path.rglob
+
+    def _rglob_refusing_rendered_root(self, pattern):
+        """
+        Description
+        -----------
+        Raise PermissionError when searching the rendered root, search normally elsewhere.
+
+        Parameters
+        ----------
+        self (pathlib.Path)
+            Directory being searched.
+        pattern (str)
+            Glob pattern.
+
+        Returns
+        -------
+        matches (generator)
+            The normal `rglob` matches outside the rendered root.
+        """
+
+        if self == rendered_root:
+            msg = "permission denied"
+            raise PermissionError(msg)
+        return original_rglob(self, pattern)
+
+    monkeypatch.setattr(pathlib.Path, "rglob", _rglob_refusing_rendered_root)
+    found = maker._cluster_spike_times({"usv_metadata": {"cluster_id": "imec1_cl0042",
+                                                         "session_root": str(recorded_root)}})
+    monkeypatch.setattr(pathlib.Path, "rglob", original_rglob)
+    np.testing.assert_array_equal(found, [1.0, 2.0, 3.0])
+
+    missing = maker._cluster_spike_times({"usv_metadata": {"cluster_id": "imec1_cl0099", "session_root": None}})
+    assert missing.size == 0
+
+
+def test_first_vs_later_skips_single_usv_bouts_and_refuses_too_many_levels():
+    """
+    Description
+    -----------
+    Single-USV bouts have no later USVs and are left out of the first-versus-later scatter, so
+    two multi-USV bouts among many single ones still read "too few multi-USV bouts"; and more
+    `bout_density_levels` than there are contour line styles is a configuration error that
+    raises ValueError naming the setting.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    rng = np.random.default_rng(5)
+    usv_starts = np.sort(rng.uniform(0.0, 300.0, 90))
+    spike_times = np.sort(rng.uniform(0.0, 300.0, 3000))
+    cfg = {"response_window_seconds": 0.2, "response_kernel_seconds": 0.05}
+    bout_cfg = {"bout_density_grid": 30, "bout_density_levels": [0.5],
+                "ink_color": "#1F1F1F", "dash_color": "#888888"}
+    singles = [np.array([k]) for k in range(10, 40)]
+    fig, ax = plt.subplots()
+    NeuronalTuningFigureMaker._draw_first_vs_later(ax, spike_times, usv_starts,
+                                                   [np.arange(0, 3), np.arange(3, 6), *singles],
+                                                   cfg, "#9AC0CD", bout_cfg)
+    assert [t.get_text() for t in ax.texts] == ["too few multi-USV bouts"]
+    assert ax.texts[0].get_color() == "#888888"
+    plt.close(fig)
+
+    too_many = {**bout_cfg, "bout_density_levels": [0.25, 0.5, 0.75, 0.9]}
+    runs = [np.arange(3 * k, 3 * k + 3) for k in range(30)]
+    fig, ax = plt.subplots()
+    with pytest.raises(ValueError, match=r"bout_density_levels holds 4 levels; at most 3"):
+        NeuronalTuningFigureMaker._draw_first_vs_later(ax, spike_times, usv_starts, runs, cfg,
+                                                       "#9AC0CD", too_many)
+    plt.close(fig)
+
+
+def test_bout_raster_without_spikes_draws_bouts_over_the_configured_window(tmp_path):
+    """
+    Description
+    -----------
+    When the unit's spike file cannot be found the bout-triggered raster still draws every
+    bout's block but no spike rows, over the `bout_trigger_window_seconds` x-range the
+    settings give (here a non-default window). Every bout block is a solid rectangle in the
+    emitter's colour (no colour ramp, so no images), one row tall and inside the window.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest-provided per-test temp directory.
+
+    Returns
+    -------
+    None
+    """
+
+    maker, cluster_data, usv_summary_df = _bout_onset_figure_inputs(tmp_path)
+    (tmp_path / "ephys" / "imec0" / "cluster_data" / "imec0_cl0001.npy").unlink()
+    maker.visualizations_parameter_dict = {
+        **maker.visualizations_parameter_dict,
+        "neuronal_tuning_figures": {
+            **maker.visualizations_parameter_dict["neuronal_tuning_figures"],
+            "bout_trigger_window_seconds": [-0.5, 1.5],
+        },
+    }
+    figure = Figure(figsize=(16, 9))
+    ax = figure.add_subplot(_bout_page_grid(figure)[0, 0])
+    maker._draw_bout_raster(ax=ax, emitter="m1", usv_summary_df=usv_summary_df, cluster_data=cluster_data)
+    assert not any(isinstance(c, matplotlib.collections.EventCollection) for c in ax.collections)
+    assert not ax.images
+    blocks = [patch for patch in ax.patches if isinstance(patch, matplotlib.patches.Rectangle)]
+    assert blocks
+    emitter_rgba = matplotlib.colors.to_rgba(maker._sex_color(cluster_data["usv_ibi_bout_onset"]["m1"]["sex"]))
+    for block in blocks:
+        assert block.get_facecolor() == pytest.approx(emitter_rgba)
+        assert block.get_height() == pytest.approx(1.0)
+        assert block.get_x() >= -0.5 - 1e-9
+        assert block.get_x() + block.get_width() <= 1.5 + 1e-9
+    assert ax.get_xlim() == pytest.approx((-0.5, 1.5))
+    assert ax.get_ylim() == pytest.approx((-0.5, 18.5))
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_watershed_label_sits_in_the_largest_piece_of_a_split_category():
+    """
+    Description
+    -----------
+    A category split into two pieces (as one that wraps the embedding boundary is in the
+    unwrapped view) carries its ID label inside its larger piece, held inside the frame by the
+    `qlvm_label_inset` share of the span, at the `qlvm_category_label_fontsize` and in the
+    `ink_color` of the settings.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    maker = _make_figure_maker()
+    settings = maker.visualizations_parameter_dict["neuronal_tuning_figures"]
+    side = 40
+    xx, yy = np.meshgrid(np.linspace(0.0, 1.0, side), np.linspace(0.0, 1.0, side))
+    label_grid = np.full((side, side), 2, dtype=int)
+    label_grid[:, :4] = 1
+    label_grid[:, 20:] = 1
+    seg = {"label_grid": label_grid, "xx": xx, "yy": yy, "bounds": (0.0, 1.0, 0.0, 1.0)}
+    fig, ax = plt.subplots()
+    maker._draw_categorical_watershed(ax=ax, seg=seg, categories=[1, 2], values=np.array([2.0, 4.0]),
+                                      cbar_label="rate", fig=fig, cmap="inferno", annotate_categories=True)
+    labels = {text.get_text(): text for text in ax.texts}
+    plt.close(fig)
+    assert set(labels) == {"1", "2"}
+    label_x, label_y = labels["1"].get_position()
+    assert xx[0, 20] <= label_x <= 1.0 - settings["qlvm_label_inset"]
+    assert settings["qlvm_label_inset"] <= label_y <= 1.0 - settings["qlvm_label_inset"]
+    assert labels["1"].get_fontsize() == settings["qlvm_category_label_fontsize"]
+    assert labels["1"].get_color() == settings["ink_color"]
