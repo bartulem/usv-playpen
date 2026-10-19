@@ -303,6 +303,37 @@ class TestBasisMatrix:
                                           output_dir=str(out_on))
         assert (out_on / 'basis_verification.png').exists()
 
+    def test_bspline_underdetermined_short_history_raises(self, tmp_path):
+        """
+        Description
+        -----------
+        At a history of 3 frames with the shipped degree-3 B-spline config,
+        ``max(0, w - degree) = 0`` so every truncated knot lands on frame 0;
+        after de-duplication only one distinct knot remains, fewer than the
+        ``degree + 1 = 4`` that ``splrep`` needs. The B-spline branch raises
+        a ``ValueError`` that states the history length, the degree, the
+        distinct-knot count and the required minimum, and no verification
+        plot is written.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Per-test scratch directory for the settings and plot output.
+
+        Returns
+        -------
+        None
+        """
+
+        settings = _settings(tmp_path, model_engine='sklearn')
+        settings['model_params']['model_basis_function'] = 'bspline'
+        settings['hyperparameters']['basis_functions']['bspline']['degree'] = 3
+        out_dir = tmp_path / 'basis_short'
+        out_dir.mkdir()
+        with pytest.raises(ValueError, match=r"history_frames=3 and degree=3: only 1 distinct knot\(s\) remain.*at least degree \+ 1 = 4"):
+            uni.get_basis_matrix_standardized(settings, history_frames=3, output_dir=str(out_dir))
+        assert not (out_dir / 'basis_verification.png').exists()
+
 
 # dispatch_univariate_job
 
@@ -555,6 +586,38 @@ class TestDispatchUnivariate:
         mocker.patch.object(uni, 'get_basis_matrix_standardized', return_value=np.eye(4))
         uni.dispatch_univariate_job(_uni_args('onset', 0, inp, out_dir))
         assert 'FATAL ERROR' in capsys.readouterr().out
+        assert not list(out_dir.glob('univariate_*.pkl'))
+
+    def test_unrouted_analysis_type_saves_nothing_and_returns_one(self, tmp_path, mocker, capsys):
+        """
+        Description
+        -----------
+        An ``analysis_type`` that matches none of the five routes leaves
+        ``results`` unset. The dispatcher must report that the analysis
+        produced no results, return exit code 1, and write no per-feature
+        pickle rather than serialising an empty artifact.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Per-test scratch directory for the input pickle and outputs.
+        mocker (pytest_mock.MockerFixture)
+            Patches the dispatcher's ``json.load`` with the synthetic settings.
+        capsys (pytest.CaptureFixture)
+            Captures the printed FATAL line.
+
+        Returns
+        -------
+        None
+        """
+
+        settings = _settings(tmp_path, model_engine='sklearn')
+        mocker.patch.object(uni.json, 'load', return_value=settings)
+        inp = _input_pickle(tmp_path, ['self.speed'])
+        out_dir = tmp_path / 'out'
+        rc = uni.dispatch_univariate_job(_uni_args('unrouted', 0, inp, out_dir))
+        assert rc == 1
+        assert "FATAL: Analysis for self.speed produced no results; nothing was saved." in capsys.readouterr().out
         assert not list(out_dir.glob('univariate_*.pkl'))
 
 

@@ -824,3 +824,174 @@ class TestComputeCentroidSaliencyDirect:
         assert sal.shape == (n_take, n_feats, n_bins)
         assert sal.dtype == np.float32
         assert np.isfinite(sal).all()
+
+
+def _raise_file_not_found(*_a, **_k):
+    """
+    Description
+    -----------
+    Stands in for ``pathlib.Path.open`` and always raises
+    ``FileNotFoundError``, simulating a package install whose shipped
+    ``modeling_settings.json`` is missing.
+
+    Parameters
+    ----------
+    *_a, **_k
+        Ignored arguments of the patched method.
+
+    Returns
+    -------
+    None
+        Never returns; always raises ``FileNotFoundError``.
+    """
+
+    msg = "simulated missing settings file"
+    raise FileNotFoundError(msg)
+
+
+class TestRunnerFailFastGuards:
+    """Fail-fast guards of the CNN runner's constructor and training loop."""
+
+    def test_init_missing_shipped_settings_raises(self, monkeypatch):
+        """
+        Description
+        -----------
+        With ``modeling_settings=None`` the runner reads the shipped
+        ``modeling_settings.json``; when it cannot be opened the constructor
+        raises a ``FileNotFoundError`` naming the settings path, chained to
+        the original error.
+
+        Parameters
+        ----------
+        monkeypatch (pytest.MonkeyPatch)
+            Temporarily replaces ``pathlib.Path.open``.
+
+        Returns
+        -------
+        None
+        """
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, 'open', _raise_file_not_found)
+            with pytest.raises(FileNotFoundError, match=r"Settings file not found at .*modeling_settings\.json") as excinfo:
+                NeuralContinuousCNNRunner(modeling_settings=None)
+        assert isinstance(excinfo.value.__cause__, FileNotFoundError)
+        assert str(excinfo.value.__cause__) == "simulated missing settings file"
+
+    def test_zero_epochs_raises_before_training(self, tmp_path):
+        """
+        Description
+        -----------
+        ``epochs = 0`` would leave every fold without a trained snapshot. The
+        runner raises a ``ValueError`` quoting the configured value before
+        any fold is trained, and writes no deep-storage pickle.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Per-test scratch directory for the input pickle and outputs.
+
+        Returns
+        -------
+        None
+        """
+
+        save_dir = tmp_path / 'out'
+        input_pkl = _build_cnn_input_pickle(
+            save_path=tmp_path / 'manifold_input.pkl',
+            feature_names=FEATURE_NAMES,
+            session_ids=[f'session_{i}' for i in range(N_SESSIONS)],
+            history_frames=HISTORY_FRAMES,
+            n_per_session=N_PER_SESSION,
+        )
+        settings = _build_cnn_settings(save_dir, input_pkl)
+        settings['hyperparameters']['deep_learning']['cnn_continuous']['epochs'] = 0
+        runner = NeuralContinuousCNNRunner(modeling_settings=settings)
+        data_blocks = runner.load_multivariate_data_blocks(pkl_path=str(input_pkl))
+        with pytest.raises(ValueError, match=r"cnn_continuous\.epochs must be >= 1; got 0\."):
+            runner.run_cnn_training(data_blocks=data_blocks)
+        assert not list(save_dir.glob('cnn_manifold_integrated_predictions_*.pkl'))
+
+    def test_fold_with_a_single_training_session_raises(self, tmp_path):
+        """
+        Description
+        -----------
+        Under the session split with two sessions and a 0.5 test proportion,
+        each fold trains on exactly one session, leaving none to hold out
+        for early stopping. The runner raises a ``ValueError`` stating that
+        fold 1 has 1 training session and that at least two are needed.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Per-test scratch directory for the input pickle and outputs.
+
+        Returns
+        -------
+        None
+        """
+
+        save_dir = tmp_path / 'out'
+        input_pkl = _build_cnn_input_pickle(
+            save_path=tmp_path / 'manifold_input.pkl',
+            feature_names=FEATURE_NAMES,
+            session_ids=[f'session_{i}' for i in range(N_SESSIONS)],
+            history_frames=HISTORY_FRAMES,
+            n_per_session=N_PER_SESSION,
+        )
+        settings = _build_cnn_settings(save_dir, input_pkl, split_strategy='session', cv_validation_proportion=0.5)
+        settings['hyperparameters']['deep_learning']['cnn_continuous']['saliency']['enable'] = False
+        runner = NeuralContinuousCNNRunner(modeling_settings=settings)
+        data_blocks = runner.load_multivariate_data_blocks(pkl_path=str(input_pkl))
+        with pytest.raises(ValueError, match=r"Fold 1 has 1 training session\(s\); the CNN needs at least two"):
+            runner.run_cnn_training(data_blocks=data_blocks)
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    def test_non_finite_validation_error_in_every_epoch_raises(self, tmp_path):
+        """
+        Description
+        -----------
+        With all-NaN behavioural histories every forward pass returns NaN,
+        so no evaluation epoch yields a finite validation error and no
+        snapshot is ever taken. Evaluating only every second epoch (epochs
+        0 and 2 of 3) the runner must raise a ``RuntimeError`` naming the
+        first fold and the first trained strategy ('null'; the model-free
+        prior trains no network) and stating that the network diverged,
+        instead of scoring the test fold with an unset model.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Per-test scratch directory for the input pickle and outputs.
+
+        Returns
+        -------
+        None
+        """
+
+        save_dir = tmp_path / 'out'
+        save_path = tmp_path / 'manifold_input.pkl'
+        session_ids = [f'session_{i}' for i in range(4)]
+        _build_cnn_input_pickle(
+            save_path=save_path,
+            feature_names=FEATURE_NAMES,
+            session_ids=session_ids,
+            history_frames=HISTORY_FRAMES,
+            n_per_session=N_PER_SESSION,
+        )
+        with save_path.open('rb') as fh:
+            artifact = pickle.load(fh)
+        for feature in FEATURE_NAMES:
+            for sess in session_ids:
+                artifact[feature][sess]['X'] = np.full_like(artifact[feature][sess]['X'], np.nan)
+        with save_path.open('wb') as fh:
+            pickle.dump(artifact, fh)
+        settings = _build_cnn_settings(save_dir, save_path)
+        hp = settings['hyperparameters']['deep_learning']['cnn_continuous']
+        hp['saliency']['enable'] = False
+        hp['epochs'] = 3
+        hp['early_stopping_eval_every_epochs'] = 2
+        runner = NeuralContinuousCNNRunner(modeling_settings=settings)
+        data_blocks = runner.load_multivariate_data_blocks(pkl_path=str(save_path))
+        with pytest.raises(RuntimeError, match=r"Fold 1 \[null\]: no finite validation error in any evaluation epoch; the network diverged\."):
+            runner.run_cnn_training(data_blocks=data_blocks)

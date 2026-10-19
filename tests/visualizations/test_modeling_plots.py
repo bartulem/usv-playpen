@@ -3076,3 +3076,312 @@ def test_modeling_plots_has_no_plt_show_and_no_print():
     assert not [c for c in calls if isinstance(c.func, ast.Attribute) and c.func.attr == 'show'
                 and isinstance(c.func.value, ast.Name) and c.func.value.id == 'plt']
     assert not [c for c in calls if isinstance(c.func, ast.Name) and c.func.id == 'print']
+
+
+@pytest.mark.filterwarnings("ignore:FigureCanvasAgg is non-interactive:UserWarning")
+@pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
+def test_model_selection_filter_grid_failure_closes_both_figures_and_reraises(tmp_path):
+    """
+    Description
+    -----------
+    A feature whose filter cannot be drawn (here: one fold's filter has a different
+    length, so the folds cannot be stacked) is reported by name, both the trajectory and
+    the filter-grid figures are closed, and the error propagates instead of leaving an
+    empty panel behind a finished run.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest-provided per-test temp directory.
+
+    Returns
+    -------
+    None
+    """
+
+    pkl = _write_selection_pickle(tmp_path, np.random.default_rng(17))
+    with pathlib.Path(pkl).open('rb') as fh:
+        payload = pickle.load(fh)
+    payload['steps'][1]['filter_shapes'][1]['other.speed'] = np.zeros(5)
+    with pathlib.Path(pkl).open('wb') as fh:
+        pickle.dump(payload, fh)
+    messages: list[str] = []
+    open_before = set(plt.get_fignums())
+    with pytest.raises(ValueError, match="dimensions"):
+        plot_model_selection_results(selection_results_path=pkl, save_plots=False,
+                                     message_output=messages.append)
+    assert "Error plotting feature other.speed" in "\n".join(messages)
+    assert set(plt.get_fignums()) == open_before
+
+
+@pytest.mark.filterwarnings("ignore:FigureCanvasAgg is non-interactive:UserWarning")
+@pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
+def test_multinomial_trajectory_minimised_metric_prints_signed_deltas(tmp_path):
+    """
+    Description
+    -----------
+    With a minimised primary metric (negative log-likelihood) each accepted step is
+    annotated with its fold-mean value and the raw signed change from the previous
+    value (from the ``log(K)`` chance level for the first step), so a reduction prints as
+    a negative delta, and the primary axis is inverted so better sits to the right.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest-provided per-test temp directory.
+
+    Returns
+    -------
+    None
+    """
+
+    pkl = _write_multinomial_selection_pickle(tmp_path, np.random.default_rng(47), n_classes=3)
+    with pathlib.Path(pkl).open('rb') as fh:
+        steps = pickle.load(fh)['steps']
+    first = float(np.mean(steps[0]['candidates_summary']['self.speed']['folds']['metrics']['ll']))
+    second = float(np.mean(steps[1]['candidates_summary']['other.speed']['folds']['metrics']['ll']))
+    fig = plot_multinomial_selection_trajectory(selection_results_path=pkl, metric_primary='ll',
+                                                metric_secondary='score', save_plot=False)
+    ax_traj = next(ax for ax in fig.axes if any("Δ" in t.get_text() for t in ax.texts))
+    labels = [t.get_text() for t in ax_traj.texts if "Δ" in t.get_text()]
+    assert labels[:2] == [f"{first:.3f}  (Δ {first - np.log(3):+.3f})",
+                          f"{second:.3f}  (Δ {second - first:+.3f})"]
+    assert ax_traj.xaxis_inverted()
+    assert ax_traj.get_xlim()[0] == pytest.approx(np.log(3) + 0.015 * np.log(3))
+
+
+def test_atlas_columns_fall_back_to_the_regular_map_without_the_record():
+    """
+    Description
+    -----------
+    An artifact whose ``analysis_specific`` block exists but records no
+    ``usv_manifold_column_names`` is read as a run on the regular map (its two columns),
+    and the fallback is reported; with the record present its columns are returned as is.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    messages: list[str] = []
+    columns = modeling_plots._atlas_manifold_columns(
+        {'_input_metadata': {'analysis_specific': {'history_seconds': 4.0}}}, message_output=messages.append)
+    regular = modeling_plots.QLVM_REGULAR_MAP
+    assert columns == [f"{regular}1", f"{regular}2"]
+    assert len(messages) == 1
+    assert "records no usv_manifold_column_names" in messages[0]
+    recorded = modeling_plots._atlas_manifold_columns(
+        {'_input_metadata': {'analysis_specific': {'usv_manifold_column_names': ('qlvm_duration1', 'qlvm_duration2')}}},
+        message_output=messages.append)
+    assert recorded == ['qlvm_duration1', 'qlvm_duration2']
+    assert len(messages) == 1
+
+
+def test_atlas_tiles_refuse_sessions_absent_from_the_store(tmp_path, monkeypatch):
+    """
+    Description
+    -----------
+    When none of the run's sessions has embedded vocalizations in the spectrogram store,
+    the atlas refuses with a ValueError naming the map and the number of sessions instead
+    of tiling from nothing.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest-provided per-test temp directory.
+    monkeypatch (pytest.MonkeyPatch)
+        Points the module at a fake spectrogram store.
+
+    Returns
+    -------
+    None
+    """
+
+    rng = np.random.default_rng(81)
+    monkeypatch.setattr(modeling_plots, "SPECTROGRAMS_DIRECTORY", str(_write_fake_spectrogram_store(tmp_path, rng)))
+    with pytest.raises(ValueError, match=r"no embedded vocalization of the 'qlvm' map in .* for the run's 2 sessions"):
+        _resolve_atlas_tiles_and_categories("qlvm", ["ghost1", "ghost2"], 2)
+
+
+@pytest.mark.filterwarnings("ignore:FigureCanvasAgg is non-interactive:UserWarning")
+@pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
+@pytest.mark.filterwarnings("ignore:Glyph:UserWarning")
+@pytest.mark.parametrize(("prediction_plot_type", "note"), [('contour', 'no density contour'),
+                                                            ('density', 'no density map')])
+def test_regional_saliency_singular_region_draws_its_points(tmp_path, prediction_plot_type, note):
+    """
+    Description
+    -----------
+    When the in-region predictions are collinear their density estimate is singular; the
+    manifold-context panel reports that and scatters the in-region predicted points in
+    the highlight colour instead of failing the figure.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest-provided per-test temp directory.
+    prediction_plot_type (str)
+        The density overlay whose fallback is under test.
+    note (str)
+        Text the fallback message carries.
+
+    Returns
+    -------
+    None
+    """
+
+    pkl = _write_cnn_results_pickle(tmp_path, np.random.default_rng(73))
+    with pathlib.Path(pkl).open('rb') as fh:
+        data = pickle.load(fh)
+    fold = data['cross_validation'][data['feature_importance']['best_fold_idx']]
+    fold['Y_pred_actual'][:, 1] = fold['Y_pred_actual'][:, 0]
+    with pathlib.Path(pkl).open('wb') as fh:
+        pickle.dump(data, fh)
+    messages: list[str] = []
+    viz = DeepResultsVisualizer(results_pkl_path=pkl, modeling_settings={}, visualization_settings=None,
+                                message_output=messages.append)
+    fig = viz.plot_regional_saliency_inset(region_key='region_0', prediction_plot_type=prediction_plot_type,
+                                           highlight_color='#123456', save_plot=False)
+    assert any(f"Region 'region_0': {note}" in message for message in messages)
+    in_region = np.linalg.norm(fold['Y_true'], axis=1) <= 8.0
+    scatter = next(c for c in fig.axes[0].collections if len(c.get_offsets()) == int(in_region.sum()))
+    np.testing.assert_allclose(scatter.get_offsets(), fold['Y_pred_actual'][in_region])
+    np.testing.assert_allclose(scatter.get_facecolors()[0][:3], mpl.colors.to_rgb('#123456'))
+
+
+def test_timescale_audit_without_saving_returns_the_open_figure(tmp_path):
+    """
+    Description
+    -----------
+    With ``save_plot_bool=False`` the cohort timescale summary writes nothing, reports an
+    empty figure path, and returns the drawn figure for the caller to show and close.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest-provided per-test temp directory.
+
+    Returns
+    -------
+    None
+    """
+
+    pkl = _write_timescale_pickle(tmp_path, np.random.default_rng(37))
+    result = plot_timescale_audit(timescale_pkl_path=pkl, save_plot_bool=False)
+    assert isinstance(result['figure'], plt.Figure)
+    assert result['figure'].number in plt.get_fignums()
+    assert result['figure_path'] == ''
+    assert not list(tmp_path.glob(f"*.{_FIGURE_FORMAT}"))
+
+
+@pytest.mark.filterwarnings("ignore:FigureCanvasAgg is non-interactive:UserWarning")
+@pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
+def test_per_feature_signal_label_alignment_near_zero_and_at_the_window_edge(tmp_path):
+    """
+    Description
+    -----------
+    The cross-correlation lag label is right-aligned at its marker when the horizon sits
+    near zero lag, and left-aligned with a trailing ``+`` when the excursion runs to the
+    left edge of the window (the horizon exceeds the configured history).
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest-provided per-test temp directory.
+
+    Returns
+    -------
+    None
+    """
+
+    pkl = _write_timescale_pickle(tmp_path, np.random.default_rng(7))
+    with pathlib.Path(pkl).open('rb') as fh:
+        payload = pickle.load(fh)
+    lags = payload['signal_lags_seconds']
+    rho = np.zeros_like(payload['rho_signal'])
+    rho[:2, (lags >= -0.65) & (lags <= -0.1)] = 0.30
+    rho[2:, lags <= -1.0] = 0.30
+    payload['rho_signal'] = rho
+    with pathlib.Path(pkl).open('wb') as fh:
+        pickle.dump(payload, fh)
+
+    plt.close('all')
+    plot_timescale_audit_per_feature(timescale_pkl_path=pkl, save_plot_bool=False)
+    fig = plt.gcf()
+    labels = [text for ax in fig.axes if ax.get_xlim()[0] < 0 for text in ax.texts
+              if text.get_text().endswith((' s', ' s+'))]
+    near_zero = [text for text in labels if text.get_horizontalalignment() == 'right']
+    at_edge = [text for text in labels if text.get_horizontalalignment() == 'left']
+    assert len(near_zero) == 2
+    assert len(at_edge) == 2
+    for text in near_zero:
+        assert -0.72 < text.xy[0] < -0.16
+        assert not text.get_text().endswith('+')
+    for text in at_edge:
+        assert text.xy[0] == pytest.approx(lags[0])
+        assert text.get_text() == f"{lags[0]:.2f} s+"
+
+
+def test_benjamini_hochberg_rejects_nothing_without_finite_p_values():
+    """
+    Description
+    -----------
+    With no finite p-value the step-up has nothing to test, so it returns an all-False
+    mask of the input's shape rather than failing on an empty sort.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    rejected = _benjamini_hochberg(np.array([np.nan, np.nan, np.inf]), 0.05)
+    assert rejected.dtype == bool
+    assert rejected.tolist() == [False, False, False]
+
+
+@pytest.mark.filterwarnings("ignore:FigureCanvasAgg is non-interactive:UserWarning")
+def test_matched_divergence_wraps_into_blocks_with_the_configured_gap(tmp_path, monkeypatch):
+    """
+    Description
+    -----------
+    With more features than ``panel_columns`` the matched-divergence panels wrap into
+    blocks of two rows separated by a ``between_block_gap`` spacer row, the unused slots
+    of the last block are hidden, and with ``save_plot=False`` nothing is written.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest-provided per-test temp directory.
+    monkeypatch (pytest.MonkeyPatch)
+        Replaces the module's visualizations settings.
+
+    Returns
+    -------
+    None
+    """
+
+    path = _divergence_artifact(tmp_path)
+    with pathlib.Path(path).open('rb') as handle:
+        artifact = pickle.load(handle)
+    artifact['features'].append('neck_elevation')
+    for key in ('pairs', 'pair_sessions', 'pair_control_counts', 'caliper_rejected', 'pooled_scaling'):
+        artifact[key]['neck_elevation'] = copy.deepcopy(artifact[key]['speed'])
+    with pathlib.Path(path).open('wb') as handle:
+        pickle.dump(artifact, handle)
+    monkeypatch.setattr(modeling_plots, "_VIZ_SETTINGS", _settings_with(
+        {"matched_divergence": {"panel_columns": 2, "between_block_gap": 0.45, "display_seconds": [-0.5, 0.5]}}))
+    fig = plot_matched_divergence(divergence_results_path=path, save_plot=False, message_output=lambda *_a: None)
+    grid = fig.axes[0].get_subplotspec().get_gridspec()
+    assert grid.get_geometry() == (5, 2)
+    assert list(grid.get_height_ratios()) == [1.0, 1.0, 0.45, 1.0, 1.0]
+    hidden = [ax for ax in fig.axes if not ax.get_visible()]
+    assert len(hidden) == 2
+    assert {ax.get_subplotspec().colspan.start for ax in hidden} == {1}
+    assert {ax.get_subplotspec().rowspan.start for ax in hidden} == {3, 4}
+    assert not list(tmp_path.glob(f'matched_divergence*.{_FIGURE_FORMAT}'))

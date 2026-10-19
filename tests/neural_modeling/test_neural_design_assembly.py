@@ -12,10 +12,19 @@ the analysis window's own width so the two counts are comparable.
 Also guards the settings invariants the assembler reads: the analysis windows must agree with the
 baseline width, and the neural copy of ``kinematic_features`` must still equal the behavioural one, since
 the nested decoding's "beyond behaviour" means "beyond exactly what P1 fits".
+
+The kinematic half is covered against known answers on synthetic files: the quiet-anchor rasteriser at
+the recording edges, the loaders' missing-file errors, the pooled role-named z-scoring (zero mean and
+unit SD over the pooled rows, exact values from the pooled formula, ``self``/``other`` following the
+recorded mouse, skipped sessions without track names, and the slot and column-set guards), and the
+per-session assembly (quiet frames, spike frames and imputed feature rows lined up exactly, under both
+``clean_against`` settings). The vocal-event assembler's uncapped tile path is checked against the
+tiler it wraps.
 """
 
 from __future__ import annotations
 
+import copy
 import inspect
 import json
 import pathlib
@@ -26,6 +35,7 @@ import numpy as np
 import polars as pls
 import pytest
 
+from usv_playpen.modeling.modeling_utils import harmonize_session_columns
 from usv_playpen.neural_modeling.main_neural_encoding_dispatcher import (
     filter_vocalizations,
     focal_vocal_frames,
@@ -36,9 +46,15 @@ from usv_playpen.neural_modeling.neural_design_assembly import (
     build_zscored_feature_frames,
     clean_window_mask,
     emitter_names,
+    load_session_usvs,
+    load_unit_spike_frames,
+    quiet_anchor_frames,
     session_timebase,
 )
-from usv_playpen.neural_modeling.neural_vocal_occurrence import counts_in_windows
+from usv_playpen.neural_modeling.neural_vocal_occurrence import (
+    counts_in_windows,
+    quiet_tile_edges,
+)
 
 SETTINGS_DIR = pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen" / "_parameter_settings"
 
@@ -356,6 +372,48 @@ class TestAssembleUnitVocalEvents:
         unit = self._build(tmp_path, usvs=usvs, spike_seconds=np.array([99.98]))
         events = assemble_unit_vocal_events(unit, str(tmp_path), self._settings(), 0.05, 0.05)
         assert events["per_session"]["20250101_000000"]["n_baseline_tiles"] == 20
+
+    def test_without_a_cap_every_quiet_tile_is_kept(self, tmp_path):
+        """
+        Description
+        -----------
+        With ``max_quiet_tiles_per_session = None`` no subsampling happens: the negatives
+        must be exactly the tiles ``quiet_tile_edges`` lays over the session for the
+        settings' guard band, in the same order, far more than the 20 the capped test keeps.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Root the session tree is written under.
+
+        Returns
+        -------
+        None
+        """
+        usvs = [(100.0, 100.1, "male", 0.10, 0.20)]
+        unit = self._build(
+            tmp_path, usvs=usvs, spike_seconds=np.array([99.98]), n_frames=30000
+        )
+        settings = self._settings()
+        settings["vocal_decoding"]["max_quiet_tiles_per_session"] = None
+        events = assemble_unit_vocal_events(unit, str(tmp_path), settings, 0.05, 0.05)
+        expected = quiet_tile_edges(
+            np.array([100.0]),
+            np.array([100.1]),
+            200.0,
+            0.05,
+            settings["kinematic_encoding"]["history_pre_seconds"],
+            settings["kinematic_encoding"]["clean_post_seconds"],
+        )
+        n_events = int(events["counts"].size)
+        assert expected.size > 20
+        assert (
+            events["per_session"]["20250101_000000"]["n_baseline_tiles"]
+            == expected.size
+        )
+        np.testing.assert_array_equal(
+            events["occurrence_windows"]["edges"][n_events:], expected
+        )
 
     def test_a_legacy_position_column_name_fails_loudly(self, tmp_path):
         """The columns were renamed repo-wide; a loader that silently harmonised them would hide
@@ -853,3 +911,664 @@ class TestVocalizationFilter:
         covariate read the table in its stored order."""
         table = pls.DataFrame({"start": [5.0, 1.0, 9.0], "noise": [False] * 3, "squeak": [False] * 3})
         assert filter_vocalizations(table, VOCAL_SETTINGS, "analysed")["start"].to_list() == [5.0, 1.0, 9.0]
+
+
+class TestQuietAnchorEdgeCases:
+    """Boundary behaviour of the quiet-anchor rasteriser."""
+
+    def test_a_usv_past_the_recording_forbids_nothing(self):
+        """
+        Description
+        -----------
+        A USV whose forbidden span starts after the last frame clips to an empty span and
+        must veto no frame; with ``clean_post_seconds = 0`` there is no tail trim either,
+        so the anchors are every frame with a full 1 s history: ``10 .. 99`` at 10 fps.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        frames = quiet_anchor_frames(
+            np.array([50.0]), np.array([51.0]), 100, 10.0, 1.0, 0.0
+        )
+        np.testing.assert_array_equal(frames, np.arange(10, 100))
+
+    def test_a_post_buffer_trims_the_recording_tail(self):
+        """
+        Description
+        -----------
+        The same session with a 0.5 s post-buffer loses its last five frames, whose
+        forward window runs past the end of the recording and so is not fully observed.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        frames = quiet_anchor_frames(
+            np.array([50.0]), np.array([51.0]), 100, 10.0, 1.0, 0.5
+        )
+        np.testing.assert_array_equal(frames, np.arange(10, 95))
+
+
+class TestMissingInputFiles:
+    """The per-session loaders fail loudly when their file is absent."""
+
+    def test_a_missing_spike_file_raises(self, tmp_path):
+        """
+        Description
+        -----------
+        A unit with no ``cluster_data`` file in the session must raise
+        ``FileNotFoundError`` naming the path, never return an empty train that would read
+        as a silent unit.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Root the (empty) session tree is created under.
+
+        Returns
+        -------
+        None
+        """
+        (tmp_path / "20250101_000000" / "ephys" / "imec0" / "cluster_data").mkdir(
+            parents=True
+        )
+        with pytest.raises(FileNotFoundError, match="spike file not found"):
+            load_unit_spike_frames(
+                str(tmp_path), "20250101_000000", "imec0_cl0001_ch001_good"
+            )
+
+    def test_a_missing_usv_summary_raises(self, tmp_path):
+        """
+        Description
+        -----------
+        A session with no ``usv_summary`` CSV must raise ``FileNotFoundError`` rather than
+        be treated as a session without vocalizations, which would make every frame quiet.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Root the (empty) session tree is created under.
+
+        Returns
+        -------
+        None
+        """
+        (tmp_path / "20250101_000000" / "audio").mkdir(parents=True)
+        with pytest.raises(FileNotFoundError, match="usv_summary not found"):
+            load_session_usvs(str(tmp_path), "20250101_000000")
+
+
+def _write_behaviour(root: pathlib.Path, session_id: str, frame: pls.DataFrame) -> None:
+    """
+    Description
+    -----------
+    Write a session's behavioural-features CSV next to the tracking H5 that
+    ``_write_session`` created, under the file name the behavioural loader globs for.
+
+    Parameters
+    ----------
+    root (pathlib.Path)
+        Directory holding the session folder.
+    session_id (str)
+        Session folder name.
+    frame (pls.DataFrame)
+        The per-frame feature table to write.
+
+    Returns
+    -------
+    None
+        The CSV is written to disk.
+    """
+    video_dir = root / session_id / "video" / f"{session_id}_cam"
+    frame.write_csv(
+        video_dir
+        / f"{session_id}_points3d_translated_rotated_metric_behavioral_features.csv"
+    )
+
+
+def _behaviour_frame(seed: int, n_frames: int) -> pls.DataFrame:
+    """
+    Description
+    -----------
+    A synthetic behavioural-features table for a ``male``/``female`` dyad: both animals'
+    ``speed``, the dyadic ``head-head`` angle, and one column (``male.nose_x``) that is in
+    no kinematic bucket and so must not survive column selection. All values sit inside
+    the physical bounds the z-scoring clips to.
+
+    Parameters
+    ----------
+    seed (int)
+        Seed for the feature values.
+    n_frames (int)
+        Number of rows.
+
+    Returns
+    -------
+    frame (pls.DataFrame)
+        The table, columns ``male.speed``, ``female.speed``, ``male-female.head-head``,
+        ``male.nose_x``.
+    """
+    rng = np.random.default_rng(seed)
+    return pls.DataFrame(
+        {
+            "male.speed": rng.uniform(0.0, 40.0, n_frames),
+            "female.speed": rng.uniform(5.0, 50.0, n_frames),
+            "male-female.head-head": rng.uniform(0.0, 80.0, n_frames),
+            "male.nose_x": rng.normal(size=n_frames),
+        }
+    )
+
+
+class TestBuildZscoredFeatureFrames:
+    """The pooled, role-named z-scored feature frames, built from synthetic files on disk."""
+
+    SESSIONS: ClassVar[list[str]] = ["20250101_000000", "20250101_010000"]
+    N_FRAMES = 200
+
+    def _sessions(self, tmp_path) -> dict:
+        """
+        Description
+        -----------
+        Write two synthetic sessions (tracking H5 with ``male``/``female`` track names at
+        10 fps, behavioural features, an empty-ish USV summary and a spike file), with one
+        out-of-range ``male.speed`` value (60 against the 0-54 bound) at row 3 of the
+        first session.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Root the session trees are written under.
+
+        Returns
+        -------
+        frames (dict)
+            The raw behavioural table written for each session, keyed by session id.
+        """
+        frames = {}
+        for slot, session_id in enumerate(self.SESSIONS):
+            _write_session(
+                tmp_path,
+                session_id,
+                "imec0_cl0001_ch001_good",
+                n_frames=self.N_FRAMES,
+                frame_rate=10.0,
+                usvs=[(5.0, 5.25, "male", 0.1, 0.2)],
+                spike_seconds=np.array([1.0]),
+            )
+            frame = _behaviour_frame(slot, self.N_FRAMES)
+            if slot == 0:
+                frame = frame.with_columns(
+                    pls.when(pls.int_range(pls.len()) == 3)
+                    .then(60.0)
+                    .otherwise(pls.col("male.speed"))
+                    .alias("male.speed")
+                )
+            _write_behaviour(tmp_path, session_id, frame)
+            frames[session_id] = frame
+        return frames
+
+    @staticmethod
+    def _pooled(frames: dict, columns: list[str], upper: float) -> tuple[float, float]:
+        """
+        Description
+        -----------
+        The pooled mean and standard deviation (``ddof = 1``, float32 values, as the
+        z-scoring computes them) of the given raw columns over every session, after
+        dropping values above the physical bound.
+
+        Parameters
+        ----------
+        frames (dict)
+            Raw behavioural tables keyed by session id.
+        columns (list[str])
+            The columns sharing one feature suffix.
+        upper (float)
+            Physical upper bound; larger values are excluded, as the clip nulls them.
+
+        Returns
+        -------
+        mean (float)
+            Pooled mean.
+        std (float)
+            Pooled sample standard deviation.
+        """
+        pooled = np.concatenate(
+            [
+                frame[column].to_numpy()
+                for frame in frames.values()
+                for column in columns
+            ]
+        ).astype(np.float32)
+        pooled = pooled[pooled <= upper].astype(np.float64)
+        return float(pooled.mean()), float(pooled.std(ddof=1))
+
+    def test_every_feature_has_zero_mean_and_unit_sd_over_the_pooled_rows(
+        self, tmp_path
+    ):
+        """
+        Description
+        -----------
+        The ruler is pooled over ALL sessions and over both role columns sharing a suffix
+        (``self.speed`` with ``other.speed``), so over those pooled non-null values each
+        feature must have mean 0 and sample SD 1, while the unselected column is gone and
+        the out-of-range value is null.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Root the session trees are written under.
+
+        Returns
+        -------
+        None
+        """
+        self._sessions(tmp_path)
+        settings = _load_settings()
+        feats, camera_fr, names, suffixes = build_zscored_feature_frames(
+            [str(tmp_path / s) for s in self.SESSIONS],
+            settings["kinematic_features"],
+            "male",
+        )
+        assert sorted(feats) == self.SESSIONS
+        assert suffixes == ["head-head", "speed"]
+        assert camera_fr == dict.fromkeys(self.SESSIONS, 10.0)
+        assert names == {s: ["male", "female"] for s in self.SESSIONS}
+        for frame in feats.values():
+            assert frame.columns == ["head-head", "other.speed", "self.speed"]
+        assert feats[self.SESSIONS[0]]["self.speed"][3] is None
+
+        for columns in (["head-head"], ["self.speed", "other.speed"]):
+            pooled = np.concatenate(
+                [
+                    frame[column].drop_nulls().to_numpy()
+                    for frame in feats.values()
+                    for column in columns
+                ]
+            )
+            assert pooled.mean() == pytest.approx(0.0, abs=1e-6)
+            assert pooled.std(ddof=1) == pytest.approx(1.0, abs=1e-6)
+
+    def test_values_follow_the_pooled_formula_with_roles_from_the_recorded_mouse(
+        self, tmp_path
+    ):
+        """
+        Description
+        -----------
+        With the FEMALE as the recorded animal, ``self.speed`` must be her raw speed and
+        ``other.speed`` the male's, each z-scored with the speed statistics pooled over
+        both animals and both sessions; ``head-head`` uses its own pooled statistics.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Root the session trees are written under.
+
+        Returns
+        -------
+        None
+        """
+        frames = self._sessions(tmp_path)
+        settings = _load_settings()
+        feats, _camera_fr, _names, _suffixes = build_zscored_feature_frames(
+            [str(tmp_path / s) for s in self.SESSIONS],
+            settings["kinematic_features"],
+            "female",
+        )
+        speed_mean, speed_std = self._pooled(
+            frames, ["male.speed", "female.speed"], 54.0
+        )
+        angle_mean, angle_std = self._pooled(frames, ["male-female.head-head"], 90.0)
+        for session_id in self.SESSIONS:
+            raw, zscored = frames[session_id], feats[session_id]
+            np.testing.assert_allclose(
+                zscored["self.speed"].to_numpy(),
+                (raw["female.speed"].to_numpy() - speed_mean) / speed_std,
+                atol=1e-5,
+            )
+            other = zscored["other.speed"].to_numpy().astype(np.float64)
+            expected_other = (raw["male.speed"].to_numpy() - speed_mean) / speed_std
+            expected_other[raw["male.speed"].to_numpy() > 54.0] = np.nan
+            np.testing.assert_allclose(other, expected_other, atol=1e-5)
+            np.testing.assert_allclose(
+                zscored["head-head"].to_numpy(),
+                (raw["male-female.head-head"].to_numpy() - angle_mean) / angle_std,
+                atol=1e-5,
+            )
+
+    def test_a_session_without_track_names_is_skipped(self, monkeypatch):
+        """
+        Description
+        -----------
+        A session the loader returned features for but no track names cannot have its
+        ``self``/``other`` roles resolved, so it is left out of the output rather than
+        guessed at; the remaining session is still z-scored (one row each side of the
+        mean gives exactly -0.7071 and +0.7071).
+
+        Parameters
+        ----------
+        monkeypatch (pytest.MonkeyPatch)
+            Replaces the behavioural loader.
+
+        Returns
+        -------
+        None
+        """
+
+        def _loader(**_kwargs):
+            """
+            Description
+            -----------
+            Stand-in for ``load_behavioral_feature_data`` returning two sessions' features
+            but track names for ``s1`` only.
+
+            Parameters
+            ----------
+            **_kwargs (dict)
+                Ignored loader arguments.
+
+            Returns
+            -------
+            loaded (tuple[dict, dict, dict])
+                Feature frames, frame rates and track names keyed by session.
+            """
+            frame = pls.DataFrame(
+                {"male.speed": [1.0, 3.0], "female.speed": [2.0, 2.0]}
+            )
+            return (
+                {"s1": frame, "s2": frame.clone()},
+                {"s1": 10.0, "s2": 10.0},
+                {"s1": ["male", "female"]},
+            )
+
+        monkeypatch.setattr(
+            "usv_playpen.neural_modeling.neural_design_assembly.load_behavioral_feature_data",
+            _loader,
+        )
+        feats, _camera_fr, _names, _suffixes = build_zscored_feature_frames(
+            ["/data/s1", "/data/s2"], _load_settings()["kinematic_features"], "male"
+        )
+        assert list(feats) == ["s1"]
+        # pooled speed values {1, 3, 2, 2}: mean 2, sample SD sqrt(2/3)
+        np.testing.assert_allclose(
+            feats["s1"]["self.speed"].to_numpy(),
+            np.array([-1.0, 1.0]) / np.sqrt(2.0 / 3.0),
+            rtol=1e-6,
+        )
+
+    def test_a_recorded_mouse_in_different_slots_raises(self, monkeypatch):
+        """
+        Description
+        -----------
+        The column harmonisation takes one pair of slot indices, so a recorded animal at
+        slot 0 in one session and slot 1 in another must raise ``ValueError`` rather than
+        silently harmonise with whichever session came last.
+
+        Parameters
+        ----------
+        monkeypatch (pytest.MonkeyPatch)
+            Replaces the behavioural loader.
+
+        Returns
+        -------
+        None
+        """
+
+        def _loader(**_kwargs):
+            """
+            Description
+            -----------
+            Stand-in for ``load_behavioral_feature_data`` whose second session lists the
+            two animals in the opposite track order.
+
+            Parameters
+            ----------
+            **_kwargs (dict)
+                Ignored loader arguments.
+
+            Returns
+            -------
+            loaded (tuple[dict, dict, dict])
+                Feature frames, frame rates and track names keyed by session.
+            """
+            frame = pls.DataFrame({"male.speed": [1.0], "female.speed": [2.0]})
+            return (
+                {"s1": frame, "s2": frame.clone()},
+                {"s1": 10.0, "s2": 10.0},
+                {"s1": ["male", "female"], "s2": ["female", "male"]},
+            )
+
+        monkeypatch.setattr(
+            "usv_playpen.neural_modeling.neural_design_assembly.load_behavioral_feature_data",
+            _loader,
+        )
+        with pytest.raises(ValueError, match="different track slot"):
+            build_zscored_feature_frames(
+                ["/data/s1", "/data/s2"], _load_settings()["kinematic_features"], "male"
+            )
+
+    def test_a_canonical_column_mismatch_raises(self, monkeypatch, tmp_path):
+        """
+        Description
+        -----------
+        After canonicalisation every session must carry the same column set, because the
+        design is read by POSITION across sessions; if a session ends up missing a column
+        (forced here by dropping ``female.speed`` from the second session after
+        harmonisation), the assembler must raise rather than misalign features.
+
+        Parameters
+        ----------
+        monkeypatch (pytest.MonkeyPatch)
+            Wraps the column harmonisation.
+        tmp_path (pathlib.Path)
+            Root the session trees are written under.
+
+        Returns
+        -------
+        None
+        """
+        self._sessions(tmp_path)
+
+        def _drop_one(**kwargs):
+            """
+            Description
+            -----------
+            Run the real ``harmonize_session_columns`` and then drop ``female.speed`` from
+            the second session, producing the inconsistent column sets the guard exists for.
+
+            Parameters
+            ----------
+            **kwargs (dict)
+                Forwarded to ``harmonize_session_columns``.
+
+            Returns
+            -------
+            harmonised (tuple[dict, list])
+                The per-session frames and the suffix list.
+            """
+            processed, suffixes = harmonize_session_columns(**kwargs)
+            processed[self.SESSIONS[1]] = processed[self.SESSIONS[1]].drop(
+                "female.speed"
+            )
+            return processed, suffixes
+
+        monkeypatch.setattr(
+            "usv_playpen.neural_modeling.neural_design_assembly.harmonize_session_columns",
+            _drop_one,
+        )
+        with pytest.raises(ValueError, match="differs from the reference"):
+            build_zscored_feature_frames(
+                [str(tmp_path / s) for s in self.SESSIONS],
+                _load_settings()["kinematic_features"],
+                "male",
+            )
+
+
+class TestAssembleUnitSessions:
+    """The per-session arrays the kinematic encoder is fitted on, from synthetic files."""
+
+    UNIT = "imec0_cl0001_ch001_good"
+    SESSIONS: ClassVar[list[str]] = ["20250101_000000", "20250101_010000"]
+
+    def _unit(self, tmp_path) -> tuple[dict, dict]:
+        """
+        Description
+        -----------
+        Write two complete sessions (200 frames at 10 fps) and a third courtship session
+        with no behavioural-features file. Each complete session holds a male USV at
+        ``[5.0, 5.25]`` s, a female USV at ``[12.0, 12.5]`` s and a male NOISE row at
+        ``[16.0, 16.25]`` s, and spikes at 1.0, 2.6 and 7.3 s. Row 3 of the first session's
+        ``male.speed`` is out of range.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Root the session trees are written under.
+
+        Returns
+        -------
+        unit (dict)
+            Cohort-style record listing all three sessions as courtship sessions.
+        frames (dict)
+            The raw behavioural table written for each complete session.
+        """
+        usvs = [
+            (5.0, 5.25, "male", 0.1, 0.2),
+            (12.0, 12.5, "female", 0.3, 0.4),
+            (16.0, 16.25, "male", 0.5, 0.6, True),
+        ]
+        frames = {}
+        for slot, session_id in enumerate([*self.SESSIONS, "20250101_020000"]):
+            _write_session(
+                tmp_path,
+                session_id,
+                self.UNIT,
+                n_frames=200,
+                frame_rate=10.0,
+                usvs=usvs,
+                spike_seconds=np.array([1.0, 2.6, 7.3]),
+            )
+            if slot < len(self.SESSIONS):
+                frame = _behaviour_frame(slot, 200)
+                if slot == 0:
+                    frame = frame.with_columns(
+                        pls.when(pls.int_range(pls.len()) == 3)
+                        .then(60.0)
+                        .otherwise(pls.col("male.speed"))
+                        .alias("male.speed")
+                    )
+                _write_behaviour(tmp_path, session_id, frame)
+                frames[session_id] = frame
+        unit = {
+            "unit_id": self.UNIT,
+            "mouse_id": "male",
+            "courtship_sessions": [*self.SESSIONS, "20250101_020000"],
+            "vocal_sessions": list(self.SESSIONS),
+        }
+        return unit, frames
+
+    def test_rows_units_and_quiet_frames_line_up(self, tmp_path):
+        """
+        Description
+        -----------
+        Under ``clean_against = 'all'`` with a 1 s history and a 0.5 s post-buffer, the
+        male USV forbids frames 45-62, the female USV 115-134 and the recording edges
+        0-9 and 195-199, while the noise row forbids nothing; spike frames are
+        ``round(seconds * fps)``; the feature time series is the pooled z-score with the
+        out-of-range frame imputed to 0; and the session without behavioural features is
+        absent.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Root the session trees are written under.
+
+        Returns
+        -------
+        None
+        """
+        unit, frames = self._unit(tmp_path)
+        settings = _load_settings()
+        per_session = assemble_unit_sessions(
+            unit,
+            str(tmp_path),
+            settings["kinematic_features"],
+            1.0,
+            0.5,
+            "all",
+            copy.deepcopy(settings["vocalization_settings"]),
+        )
+        assert sorted(per_session) == self.SESSIONS
+        speed = np.concatenate(
+            [
+                frame[c].to_numpy()
+                for frame in frames.values()
+                for c in ("male.speed", "female.speed")
+            ]
+        ).astype(np.float32)
+        speed = speed[speed <= 54.0].astype(np.float64)
+        expected_quiet = np.r_[
+            np.arange(10, 45), np.arange(63, 115), np.arange(135, 195)
+        ]
+        for session_id in self.SESSIONS:
+            session = per_session[session_id]
+            assert session["feature_names"] == [
+                "head-head",
+                "other.speed",
+                "self.speed",
+            ]
+            assert session["fps"] == 10.0
+            assert session["n_frames"] == 200
+            assert session["feature_time_series"].shape == (200, 3)
+            assert session["track_names"] == ["male", "female"]
+            np.testing.assert_array_equal(session["spike_frames"], [10, 26, 73])
+            np.testing.assert_array_equal(session["quiet"], expected_quiet)
+            expected_self = (
+                frames[session_id]["male.speed"].to_numpy() - speed.mean()
+            ) / speed.std(ddof=1)
+            if session_id == self.SESSIONS[0]:
+                expected_self[3] = 0.0
+            np.testing.assert_allclose(
+                session["feature_time_series"][:, 2], expected_self, atol=1e-5
+            )
+
+    def test_clean_against_self_ignores_the_partner_usv(self, tmp_path):
+        """
+        Description
+        -----------
+        Under ``clean_against = 'self'`` only the recorded male's own USV makes frames
+        unclean, so the female USV's frames 115-134 become quiet again.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Root the session trees are written under.
+
+        Returns
+        -------
+        None
+        """
+        unit, _frames = self._unit(tmp_path)
+        settings = _load_settings()
+        per_session = assemble_unit_sessions(
+            unit,
+            str(tmp_path),
+            settings["kinematic_features"],
+            1.0,
+            0.5,
+            "self",
+            copy.deepcopy(settings["vocalization_settings"]),
+        )
+        expected_quiet = np.r_[np.arange(10, 45), np.arange(63, 195)]
+        for session_id in self.SESSIONS:
+            np.testing.assert_array_equal(
+                per_session[session_id]["quiet"], expected_quiet
+            )

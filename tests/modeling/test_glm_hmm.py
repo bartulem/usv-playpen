@@ -1186,3 +1186,219 @@ def test_bic_counts_exactly_the_free_parameters_by_hand():
         [(X[:40], y[:40]), (X[40:], y[40:])])
     assert all(emission.n_params == 5 for emission in static.emissions_)
     assert static.n_params == 13
+
+
+def test_read_selected_features_directory_without_selection_files_raises(tmp_path):
+    """
+    Description
+    -----------
+    A directory that holds neither a consolidated selection artifact nor any
+    ``*_step_*.pkl`` file is not a manifold model-selection output. The reader
+    raises a ``ValueError`` that names the directory and the expected file
+    pattern instead of failing with an ``IndexError`` on an empty step list.
+    An unrelated pickle in the directory does not count as a step file.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest temporary directory used as the (selection-free) directory.
+
+    Returns
+    -------
+    None
+    """
+    _write_model_selection_file(tmp_path / 'not_a_selection.pkl', ['neck'])
+    with pytest.raises(ValueError, match=r"No '\*_step_\*\.pkl' selection files") as excinfo:
+        _read_selected_features(str(tmp_path))
+    assert str(tmp_path) in str(excinfo.value)
+
+
+def test_session_sequences_skip_a_session_whose_labels_are_all_nan():
+    """
+    Description
+    -----------
+    With ``drop_nan_target=True`` (the multinomial emission) a session whose
+    every label is NaN has no usable event and is skipped entirely, while a
+    session with partial NaN labels keeps only its labelled rows (cast to
+    int64) together with the matching design rows.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
+    """
+    rng = np.random.default_rng(3)
+    x_all_nan = rng.random((4, 5))
+    x_partial = rng.random((5, 5))
+    raw = {'self.speed': {
+        's0': {'X': x_all_nan, 'category': np.full(4, np.nan)},
+        's1': {'X': x_partial, 'category': np.array([1.0, np.nan, 2.0, np.nan, 0.0])},
+    }}
+    sequences = _build_session_sequences(raw, ['self.speed'], ['s0', 's1'], 'category', True, 3)
+    assert [session_id for session_id, _, _ in sequences] == ['s1']
+    _, x_seq, target_seq = sequences[0]
+    assert target_seq.dtype == np.int64
+    np.testing.assert_array_equal(target_seq, [1, 2, 0])
+    np.testing.assert_array_equal(x_seq, x_partial[[0, 2, 4]][:, -3:])
+
+
+def test_glm_hmm_pipeline_legacy_pickle_without_metadata_uses_settings_geometry(tmp_path):
+    """
+    Description
+    -----------
+    A legacy input pickle with no ``_input_metadata`` block is read as an empty
+    metadata block: there is no reserved held-out set (all six sessions are
+    development sessions) and the manifold geometry falls back to the
+    settings' ``vocal_features`` (here a period of 2.0, which differs from the
+    1.0 a metadata block would have carried, so the fallback is observable).
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest temporary directory for the pickle, settings and outputs.
+
+    Returns
+    -------
+    None
+    """
+    rng = np.random.default_rng(11)
+    feature_names = ['featA']
+    input_pkl = tmp_path / 'manifold_input.pkl'
+    _write_synthetic_manifold_pickle(input_pkl, feature_names, 3, rng)
+    with pathlib.Path(input_pkl).open('rb') as handle:
+        raw = pickle.load(handle)
+    del raw['_input_metadata']
+    with pathlib.Path(input_pkl).open('wb') as handle:
+        pickle.dump(raw, handle)
+    settings_json = tmp_path / 'settings.json'
+    _write_glm_hmm_settings(settings_json)
+    settings = json.loads(settings_json.read_text())
+    settings['glm_hmm']['n_states_max'] = 2
+    settings['vocal_features']['usv_manifold_metric'] = 'torus'
+    settings['vocal_features']['usv_manifold_period'] = 2.0
+    settings_json.write_text(json.dumps(settings))
+    selection_pkl = tmp_path / 'model_selection_final.pkl'
+    _write_model_selection_file(selection_pkl, feature_names)
+
+    results = run_glm_hmm_state_selection(
+        input_data_path=str(input_pkl), settings_path=str(settings_json),
+        output_directory=str(tmp_path / 'glm_hmm_out'), model_selection_path=str(selection_pkl))
+
+    assert results['metadata']['manifold_metric'] == 'torus'
+    assert results['metadata']['manifold_period'] == 2.0
+    assert results['metadata']['n_dev_sessions'] == 6
+    assert results['metadata']['n_held_out_sessions'] == 0
+    assert results['metadata']['held_out_session_ids'] == []
+    assert set(results['state_paths']) == {f"s{i}" for i in range(6)}
+
+
+def test_glm_hmm_pipeline_rejects_no_development_sequences(tmp_path):
+    """
+    Description
+    -----------
+    When every development session's multinomial label is NaN, the per-session
+    sequence builder skips them all; the pipeline then raises a ``ValueError``
+    naming the emission features instead of indexing an empty sequence list.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest temporary directory for the pickle, settings and outputs.
+
+    Returns
+    -------
+    None
+    """
+    rng = np.random.default_rng(12)
+    feature_names = ['featA']
+    input_pkl = tmp_path / 'manifold_input.pkl'
+    session_ids = _write_synthetic_manifold_pickle(input_pkl, feature_names, 3, rng)
+    with pathlib.Path(input_pkl).open('rb') as handle:
+        raw = pickle.load(handle)
+    for session_id in session_ids:
+        raw['featA'][session_id]['category'][:] = np.nan
+    with pathlib.Path(input_pkl).open('wb') as handle:
+        pickle.dump(raw, handle)
+    settings_json = tmp_path / 'settings.json'
+    _write_glm_hmm_settings(settings_json)
+    settings = json.loads(settings_json.read_text())
+    settings['glm_hmm']['emission_type'] = 'multinomial'
+    settings_json.write_text(json.dumps(settings))
+    selection_pkl = tmp_path / 'model_selection_final.pkl'
+    _write_model_selection_file(selection_pkl, feature_names)
+
+    with pytest.raises(ValueError, match=r"no usable development sequences for emission_features=\['featA'\]"):
+        run_glm_hmm_state_selection(
+            input_data_path=str(input_pkl), settings_path=str(settings_json),
+            output_directory=str(tmp_path / 'glm_hmm_out'), model_selection_path=str(selection_pkl))
+
+
+def test_glm_hmm_pipeline_rejects_fewer_than_two_development_sessions(tmp_path):
+    """
+    Description
+    -----------
+    Cross-validated K selection needs at least two development sessions (one
+    per fold). With five of the six sessions reserved as held out, only one
+    development session remains and the pipeline raises a ``ValueError``
+    stating the number of development sessions it got.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest temporary directory for the pickle, settings and outputs.
+
+    Returns
+    -------
+    None
+    """
+    rng = np.random.default_rng(13)
+    feature_names = ['featA']
+    input_pkl = tmp_path / 'manifold_input.pkl'
+    _write_synthetic_manifold_pickle(input_pkl, feature_names, 3, rng)
+    with pathlib.Path(input_pkl).open('rb') as handle:
+        raw = pickle.load(handle)
+    raw['_input_metadata']['held_out_session_ids'] = ['s1', 's2', 's3', 's4', 's5']
+    with pathlib.Path(input_pkl).open('wb') as handle:
+        pickle.dump(raw, handle)
+    settings_json = tmp_path / 'settings.json'
+    _write_glm_hmm_settings(settings_json)
+    selection_pkl = tmp_path / 'model_selection_final.pkl'
+    _write_model_selection_file(selection_pkl, feature_names)
+
+    with pytest.raises(ValueError, match="needs at least 2 development sessions for cross-validation; got 1"):
+        run_glm_hmm_state_selection(
+            input_data_path=str(input_pkl), settings_path=str(settings_json),
+            output_directory=str(tmp_path / 'glm_hmm_out'), model_selection_path=str(selection_pkl))
+
+
+def test_session_sequences_skip_a_session_whose_manifold_positions_are_all_nan(capsys):
+    """
+    Description
+    -----------
+    With ``drop_nan_target=False`` (the manifold emission) a session in which
+    no event carries a finite 2-D position is skipped entirely (its NaN rows
+    still count towards the printed drop total), while a fully placed session
+    is passed through unchanged.
+
+    Parameters
+    ----------
+    capsys (pytest.CaptureFixture)
+        Captures the printed NaN-drop summary.
+
+    Returns
+    -------
+    None
+    """
+    rng = np.random.default_rng(4)
+    y_placed = rng.random((5, 2))
+    raw = {'self.speed': {
+        's0': {'X': rng.random((3, 5)), 'Y': np.full((3, 2), np.nan)},
+        's1': {'X': rng.random((5, 5)), 'Y': y_placed},
+    }}
+    sequences = _build_session_sequences(raw, ['self.speed'], ['s0', 's1'], 'Y', False, 3)
+    assert [session_id for session_id, _, _ in sequences] == ['s1']
+    np.testing.assert_array_equal(sequences[0][2], y_placed)
+    assert 'dropped 3 events with NaN manifold positions' in capsys.readouterr().out

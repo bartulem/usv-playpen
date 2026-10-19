@@ -2608,3 +2608,356 @@ class TestContinuousRunnerExtra:
         anchor = sorted(blocks.keys())[0]
         assert blocks[anchor]['Y'].shape[1] == 2
         assert blocks[anchor]['X'].shape[0] == blocks[anchor]['Y'].shape[0]
+
+
+def _raise_file_not_found(*_a, **_k):
+    """
+    Description
+    -----------
+    Stands in for ``pathlib.Path.open`` (or any loader) and always raises
+    ``FileNotFoundError``, simulating a package install whose shipped
+    ``modeling_settings.json`` is missing.
+
+    Parameters
+    ----------
+    *_a, **_k
+        Ignored arguments of the patched callable.
+
+    Returns
+    -------
+    None
+        Never returns; always raises ``FileNotFoundError``.
+    """
+
+    msg = "simulated missing file"
+    raise FileNotFoundError(msg)
+
+
+class TestManifoldReleaseGuards:
+    """Guards and branches of the manifold weights, splitter, extraction, loader and held-out refit."""
+
+    def test_inverse_density_weights_empty_fit_mask_raises(self):
+        """
+        Description
+        -----------
+        A ``fit_mask`` that selects no row leaves nothing to estimate the
+        density from; the helper raises a ``ValueError`` saying so instead of
+        fitting a KDE on an empty set.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+
+        Y = np.random.default_rng(0).uniform(0.0, 1.0, (10, 2))
+        with pytest.raises(ValueError, match="fit_mask selects no row to estimate the density from"):
+            compute_inverse_density_weights(Y, fit_mask=np.zeros(10, dtype=bool))
+
+    def test_session_strategy_zero_test_sessions_raises(self):
+        """
+        Description
+        -----------
+        With four sessions and ``test_prop=0.1``, ``int(4 * 0.1)`` truncates
+        the test-session count to 0. The splitter raises a ``ValueError``
+        reporting ``n_test_sessions=0`` and the session count rather than
+        failing inside the rejection loop on an empty concatenation.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+
+        Y, cluster_id = _spatial_blob(n_clusters=3, per_cluster=12)
+        groups = np.arange(len(Y)) % 4
+        assert cluster_id.size == len(Y)
+        with pytest.raises(ValueError, match=r"test_prop=0\.1 with 4 unique sessions yields n_test_sessions=0; need 0 < n_test_sessions < 4"):
+            get_stratified_spatial_splits_stable(
+                groups=groups, Y=Y, n_clusters=3, split_strategy='session',
+                test_prop=0.1, n_splits=1, random_seed=0, max_total_attempts=100,
+                widen_step=0.02, widen_every=1000, tolerance=0.05,
+            )
+
+    def test_mixed_strategy_fold_missing_a_cluster_raises(self):
+        """
+        Description
+        -----------
+        Two dense blobs of 100 points and a far-away 2-point blob give
+        K-Means three clusters, but at a 10 % test proportion
+        ``StratifiedShuffleSplit`` puts both rare-cluster points on the
+        training side. The per-fold coverage re-check must raise a
+        ``RuntimeError`` reporting that fold 0's test side carries 2 of the
+        expected 3 clusters.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+
+        rng = np.random.default_rng(0)
+        Y = np.concatenate([
+            rng.normal(0.0, 0.1, (100, 2)),
+            rng.normal(5.0, 0.1, (100, 2)),
+            np.array([[50.0, 50.0], [50.1, 50.0]]),
+        ])
+        with pytest.raises(RuntimeError, match=r"Fold 0: train carries 3 clusters, test carries 2 clusters .* expected 3 .*strategy='mixed'"):
+            get_stratified_spatial_splits_stable(
+                groups=np.arange(len(Y)), Y=Y, n_clusters=3, split_strategy='mixed',
+                test_prop=0.1, n_splits=2, random_seed=0, max_total_attempts=100,
+                widen_step=0.02, widen_every=1000, tolerance=0.05,
+            )
+
+    def test_init_missing_shipped_settings_raises(self, monkeypatch):
+        """
+        Description
+        -----------
+        Constructing with ``modeling_settings_dict=None`` reads the shipped
+        ``modeling_settings.json``; when that file cannot be opened the
+        constructor raises a ``FileNotFoundError`` naming the settings path,
+        chained to the original error.
+
+        Parameters
+        ----------
+        monkeypatch (pytest.MonkeyPatch)
+            Temporarily replaces ``pathlib.Path.open``.
+
+        Returns
+        -------
+        None
+        """
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, 'open', _raise_file_not_found)
+            with pytest.raises(FileNotFoundError, match=r"Settings file not found at .*modeling_settings\.json") as excinfo:
+                ContinuousModelingPipeline(modeling_settings_dict=None)
+        assert isinstance(excinfo.value.__cause__, FileNotFoundError)
+        assert str(excinfo.value.__cause__) == "simulated missing file"
+
+    def test_extraction_without_any_usv_targets_raises(self, tmp_path, monkeypatch):
+        """
+        Description
+        -----------
+        When the USV loader returns no session packet at all, no continuous
+        target can be extracted; the extraction raises a ``ValueError``
+        ("No valid continuous targets extracted") and writes no pickle,
+        instead of failing later on an empty concatenation.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Per-test scratch directory for the synthetic tree and outputs.
+        monkeypatch (pytest.MonkeyPatch)
+            Replaces the module's ``find_usv_categories`` with an empty result.
+
+        Returns
+        -------
+        None
+        """
+
+        settings, save_dir = _build_manifold_settings(tmp_path)
+        monkeypatch.setattr(manifold_module, 'find_usv_categories', lambda **_k: {})
+        with pytest.raises(ValueError, match=r"No valid continuous targets extracted\. Check manifold data\."):
+            ContinuousModelingPipeline(modeling_settings_dict=settings).extract_and_save_continuous_data()
+        assert list(save_dir.glob('modeling_manifold_*.pkl')) == []
+
+    def test_load_blocks_bin_size_larger_than_history_raises(self, tmp_path):
+        """
+        Description
+        -----------
+        A ``bin_size`` larger than the history window would floor-divide to
+        zero time bins; the loader raises a ``ValueError`` naming the bin
+        size, the window length and the feature.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Per-test scratch directory for the synthetic input pickle.
+
+        Returns
+        -------
+        None
+        """
+
+        session_ids = [f'session_{i}' for i in range(4)]
+        input_md = {
+            'analysis_type': 'continuous', 'analysis_tag': 'manifold_qlvm_category',
+            'session_ids': session_ids, 'held_out_session_ids': [],
+            'n_events_per_session': dict.fromkeys(session_ids, 20),
+            'analysis_specific': {'usv_category_column_name': 'qlvm_category',
+                                  'manifold_metric': 'euclidean', 'manifold_period': 1.0},
+        }
+        input_pkl = _build_signal_continuous_pickle(
+            save_path=tmp_path / 'input.pkl', feature_names=['self.speed'], session_ids=session_ids,
+            history_frames=HISTORY_FRAMES, input_metadata=input_md, n_per_session=20,
+        )
+        too_big = HISTORY_FRAMES + 1
+        with pytest.raises(ValueError, match=rf"bin_size={too_big} exceeds the history window length T={HISTORY_FRAMES} for feature 'self\.speed'"):
+            ContinuousModelRunner.load_univariate_data_blocks(str(input_pkl), bin_size=too_big, feature_filter=None)
+
+    def test_geodesic_context_unavailable_decoder_disables_pullback_only(self, tmp_path, monkeypatch, capsys):
+        """
+        Description
+        -----------
+        A decoder cell that cannot be loaded (here ``OSError``) disables only
+        the pullback column: the geodesic reference map is still built, with
+        ``decode_fn=None``, and the runner prints that the decoder is
+        unavailable. The returned context is the one the builder produced.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Per-test scratch directory for the settings tree.
+        monkeypatch (pytest.MonkeyPatch)
+            Replaces the decoder resolution, the decoder loader and the
+            geometry builder in the manifold module.
+        capsys (pytest.CaptureFixture)
+            Captures the printed decoder-unavailable notice.
+
+        Returns
+        -------
+        None
+        """
+
+        settings, _ = _build_manifold_settings(tmp_path)
+        settings['vocal_features']['usv_manifold_geodesic_metrics']['compute'] = True
+        runner = ContinuousModelRunner(ContinuousModelingPipeline(modeling_settings_dict=settings))
+        seen = {}
+        sentinel = object()
+
+        def _record_build(Y, decode_fn, **kwargs):
+            """
+            Description
+            -----------
+            Stands in for ``build_torus_geodesic_context``: records the
+            decoder it was handed and the grid size, and returns a sentinel.
+
+            Parameters
+            ----------
+            Y (np.ndarray)
+                The reference positions.
+            decode_fn (callable | None)
+                The decoder passed by the runner.
+            **kwargs
+                Remaining geometry keyword arguments.
+
+            Returns
+            -------
+            sentinel (object)
+                The marker object standing in for a geodesic context.
+            """
+
+            seen['decode_fn'] = decode_fn
+            seen['n_rows'] = Y.shape[0]
+            seen['period'] = kwargs['period']
+            return sentinel
+
+        def _raise_os_error(*_a, **_k):
+            """
+            Description
+            -----------
+            Stands in for ``make_qlvm_decode_fn_from_source`` and raises
+            ``OSError``, as an unreadable decoder cell would.
+
+            Parameters
+            ----------
+            *_a, **_k
+                Ignored arguments.
+
+            Returns
+            -------
+            None
+                Never returns; always raises ``OSError``.
+            """
+
+            msg = "decoder cell unreadable"
+            raise OSError(msg)
+
+        monkeypatch.setattr(manifold_module, 'resolve_geodesic_decoder_source', lambda *_a, **_k: 'decoder-source')
+        monkeypatch.setattr(manifold_module, 'make_qlvm_decode_fn_from_source', _raise_os_error)
+        monkeypatch.setattr(manifold_module, 'build_torus_geodesic_context', _record_build)
+        Y = np.random.default_rng(0).random((50, 2))
+        assert runner._resolve_geodesic_context('x.pkl', Y, 'torus', 1.0, None) is sentinel
+        assert seen == {'decode_fn': None, 'n_rows': 50, 'period': 1.0}
+        printed = capsys.readouterr().out
+        assert "[geodesic] decoder unavailable (decoder cell unreadable); pullback_geodesic_mae -> NaN" in printed
+        assert "pullback=off" in printed
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    def test_holdout_refit_with_tuning_and_bspline_basis(self, tmp_path):
+        """
+        Description
+        -----------
+        With a reserved held-out session, inner-CV tuning on and a B-spline
+        temporal basis, the held-out refit of the 'actual' and 'null'
+        strategies must (i) tune on the full development set: the flag is
+        set and the selected ``(lambda_smooth, l2_reg)`` pair is one of the
+        scored grid pairs of the audit, and (ii) store the raw spline
+        coefficients alongside frame-axis filters that the coefficients
+        reproduce through the basis. The model-free null stays untuned and
+        stores no coefficients.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Per-test scratch directory for the settings and input pickle.
+
+        Returns
+        -------
+        None
+        """
+
+        settings, _ = _build_manifold_settings(
+            tmp_path, split_strategy='mixed', split_num=2, test_proportion=0.3,
+        )
+        hp = settings['hyperparameters']['linear_models']['manifold_regression']
+        hp['temporal_basis'] = {
+            'type': 'bspline', 'n_splines': 8, 'spline_order': 3, 'lambda_smooth_fixed': 0.6,
+            'l2_reg_fixed': 1e-3, 'l2_lag_alpha': 0, 'lambda_smooth_decades_each_side': 1}
+        hp['bin_resizing_factor'] = 1
+        hp['tune_regularization_bool'] = True
+        tune_params = hp['tune_regularization_params']
+        tune_params['lambda_smooth_decades_each_side'] = 1
+        tune_params['l2_reg_decades_each_side'] = 0
+        tune_params['inner_cv_folds'] = 2
+        tune_params['inner_max_iter'] = 20
+        session_ids = [f'session_{i}' for i in range(6)]
+        input_md = {
+            'analysis_type': 'continuous', 'analysis_tag': 'manifold_qlvm_category',
+            'session_ids': session_ids, 'held_out_session_ids': [session_ids[-1]],
+            'n_events_per_session': dict.fromkeys(session_ids, 40),
+            'analysis_specific': {'usv_category_column_name': 'qlvm_category',
+                                  'manifold_metric': 'euclidean', 'manifold_period': 1.0},
+        }
+        input_pkl = _build_signal_continuous_pickle(
+            save_path=tmp_path / 'input.pkl', feature_names=['self.speed', 'other.speed'],
+            session_ids=session_ids, history_frames=HISTORY_FRAMES, input_metadata=input_md,
+            n_per_session=40,
+        )
+        results = ContinuousModelRunner(ContinuousModelingPipeline(modeling_settings_dict=settings)
+                                        ).run_univariate_training(str(input_pkl), 'self.speed')
+
+        basis = gam_bspline_basis(HISTORY_FRAMES, 8, 3) / HISTORY_FRAMES
+        for strategy in ('actual', 'null'):
+            heldout = results[strategy]['heldout']
+            assert heldout['n_held_out_sessions'] == 1
+            assert heldout['hyperparams_tuned'] is True
+            selected_pair = (heldout['selected_lambda_smooth'], heldout['selected_l2_reg'])
+            assert selected_pair in heldout['hyperparam_grid_audit']['grid_scores']
+            weights = np.asarray(heldout['weights'])
+            coefficients = np.asarray(heldout['basis_coefficients'])
+            assert weights.shape[0] == HISTORY_FRAMES
+            assert coefficients.shape == (8, weights.shape[1])
+            np.testing.assert_allclose(basis @ coefficients, weights, rtol=1e-5, atol=1e-9)
+        assert results['null_model_free']['heldout']['basis_coefficients'] is None
+        assert results['null_model_free']['heldout']['hyperparams_tuned'] is False

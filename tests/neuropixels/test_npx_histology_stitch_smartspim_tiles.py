@@ -335,3 +335,127 @@ def test_stitch_smartspim_tiles_rejects_non_unsigned_tiles(tmp_path):
             )
     with pytest.raises(ValueError, match="unsigned integer tile dtype"):
         stitch_smartspim_tiles(root, tmp_path / "o.tif", wavelength_nm=488, feather_pixels=1)
+
+
+def test_stitch_smartspim_tiles_no_tile_dirs_raises(tmp_path):
+    """
+    Description
+    -----------
+    A channel directory that exists but holds no ``{X}/{X}_{Y}`` tile
+    directories has nothing to stitch and raises ``FileNotFoundError``
+    naming the channel directory.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        pytest-provided temporary directory.
+
+    Returns
+    -------
+    None
+    """
+
+    root = tmp_path / "acq"
+    (root / "Ex_488_Ch0").mkdir(parents=True)
+    (root / "metadata.txt").write_text("Obj\ta\tb\tc\td\te\nv0\tv1\tv2\tv3\t1.0\t2.0\n")
+    with pytest.raises(
+        FileNotFoundError,
+        match=r"No SmartSPIM tile directories found under .*Ex_488_Ch0",
+    ):
+        stitch_smartspim_tiles(
+            root, tmp_path / "o.tif", wavelength_nm=488, feather_pixels=1
+        )
+    assert not (tmp_path / "o.tif").exists()
+
+
+def test_stitch_smartspim_tiles_empty_tile_dir_raises(tmp_path):
+    """
+    Description
+    -----------
+    A tile directory without any TIFF planes raises
+    ``FileNotFoundError`` naming that tile directory, before any output
+    is written.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        pytest-provided temporary directory.
+
+    Returns
+    -------
+    None
+    """
+
+    root = _make_smartspim_tree(tmp_path)
+    for name in ("000000.tiff", "000100.tiff"):
+        (root / "Ex_488_Ch0" / "20" / "20_0" / name).unlink()
+    with pytest.raises(
+        FileNotFoundError, match=r"No TIFF planes found in tile directory .*20_0"
+    ):
+        stitch_smartspim_tiles(
+            root, tmp_path / "o.tif", wavelength_nm=488, feather_pixels=1
+        )
+    assert not (tmp_path / "o.tif").exists()
+
+
+def test_stitch_smartspim_tiles_rejects_non_2d_planes(tmp_path):
+    """
+    Description
+    -----------
+    SmartSPIM tile planes must be 2D; a 3D (multi-sample) plane in the
+    reference tile raises ``ValueError`` reporting the offending shape.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        pytest-provided temporary directory.
+
+    Returns
+    -------
+    None
+    """
+
+    root = _make_smartspim_tree(tmp_path)
+    for tile in (("0", "0_0"), ("20", "20_0")):
+        for name in ("000000.tiff", "000100.tiff"):
+            tifffile.imwrite(
+                root / "Ex_488_Ch0" / tile[0] / tile[1] / name,
+                np.zeros((2, 4, 4), dtype=np.uint16),
+            )
+    with pytest.raises(
+        ValueError, match=r"Expected 2D tile planes, got shape \(2, 4, 4\)"
+    ):
+        stitch_smartspim_tiles(
+            root, tmp_path / "o.tif", wavelength_nm=488, feather_pixels=1
+        )
+
+
+def test_stitch_smartspim_tiles_plane_shape_mismatch_raises(tmp_path):
+    """
+    Description
+    -----------
+    Every plane must match the reference (first) plane's shape; a later
+    plane of tile B saved as 4x5 instead of 4x4 raises ``ValueError``
+    reporting both the mismatching and the reference shapes.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        pytest-provided temporary directory.
+
+    Returns
+    -------
+    None
+    """
+
+    root = _make_smartspim_tree(tmp_path)
+    tifffile.imwrite(
+        root / "Ex_488_Ch0" / "20" / "20_0" / "000100.tiff",
+        np.zeros((4, 5), dtype=np.uint16),
+    )
+    with pytest.raises(
+        ValueError, match=r"Plane shape \(4, 5\) .* does not match reference \(4, 4\)"
+    ):
+        stitch_smartspim_tiles(
+            root, tmp_path / "o.tif", wavelength_nm=488, feather_pixels=1
+        )

@@ -24,6 +24,7 @@ function and CLI.
 
 from __future__ import annotations
 
+import io
 import json
 import pathlib
 import pickle
@@ -1678,3 +1679,597 @@ def test_condition_quantile_value_places_sizes_by_their_group_ids():
     no_ids = {key: value for key, value in bins.items() if key != "group_ids"}
     with pytest.raises(ValueError, match="group_ids"):
         ql.condition_quantile_value(no_ids, "exact", 0.5)
+
+
+class _NonStoragePersistentIdPickler(pickle.Pickler):
+    """
+    Description
+    -----------
+    A pickler that writes one marked object as a persistent id whose kind is
+    ``"module"`` rather than torch's ``"storage"``, so a test can hand
+    :class:`qlvm_latents._TorchCheckpointUnpickler` a persistent id it must
+    refuse.
+
+    Parameters
+    ----------
+    file (io.BytesIO)
+        The buffer the pickle is written to.
+    marker (object)
+        The object written as the foreign persistent id.
+
+    Returns
+    -------
+    None
+    """
+
+    def __init__(self, file, marker):
+        """
+        Description
+        -----------
+        Stores the marker object next to the standard pickler state.
+
+        Parameters
+        ----------
+        file (io.BytesIO)
+            The buffer the pickle is written to.
+        marker (object)
+            The object written as the foreign persistent id.
+
+        Returns
+        -------
+        None
+        """
+        super().__init__(file)
+        self.marker = marker
+
+    def persistent_id(self, obj):
+        """
+        Description
+        -----------
+        Returns a five-field persistent id of kind ``"module"`` for the marker
+        object and None (pickle normally) for everything else.
+
+        Parameters
+        ----------
+        obj (object)
+            The object being pickled.
+
+        Returns
+        -------
+        pid (tuple | None)
+            ``("module", None, "0", "cpu", 1)`` for the marker, else None.
+        """
+        if obj is self.marker:
+            return ("module", None, "0", "cpu", 1)
+        return None
+
+
+def _write_torch_like_zip(path, pickled, byteorder):
+    """
+    Description
+    -----------
+    Writes a zip laid out like a torch checkpoint: ``checkpoint/data.pkl``
+    holding ``pickled`` and, unless ``byteorder`` is None, a
+    ``checkpoint/byteorder`` record.
+
+    Parameters
+    ----------
+    path (pathlib.Path)
+        Destination of the zip.
+    pickled (bytes)
+        The ``data.pkl`` payload.
+    byteorder (str | None)
+        Content of the ``byteorder`` record, or None to leave it out.
+
+    Returns
+    -------
+    None
+    """
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("checkpoint/data.pkl", pickled)
+        if byteorder is not None:
+            archive.writestr("checkpoint/byteorder", byteorder)
+
+
+def test_read_torch_checkpoint_refuses_non_checkpoint_and_big_endian_zips(tmp_path):
+    """
+    Description
+    -----------
+    ``read_torch_checkpoint`` only reads torch zip checkpoints: a zip with no
+    ``data.pkl`` record (and one with two) is refused with a ValueError that
+    lists the ``data.pkl`` records it found, and a checkpoint whose
+    ``byteorder`` record says ``big`` is refused as big-endian. A
+    ``little`` checkpoint of the same payload reads back the pickled value.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        pytest-provided temporary directory.
+
+    Returns
+    -------
+    None
+    """
+    no_pickle = tmp_path / "empty.tar"
+    with zipfile.ZipFile(no_pickle, "w") as archive:
+        archive.writestr("checkpoint/version", "3")
+    with pytest.raises(
+        ValueError, match=r"is not a torch zip checkpoint \(data.pkl records: \[\]\)"
+    ):
+        ql.read_torch_checkpoint(no_pickle)
+
+    two_pickles = tmp_path / "two.tar"
+    with zipfile.ZipFile(two_pickles, "w") as archive:
+        archive.writestr("a/data.pkl", pickle.dumps(1))
+        archive.writestr("b/data.pkl", pickle.dumps(2))
+    with pytest.raises(
+        ValueError, match=r"data.pkl records: \['a/data.pkl', 'b/data.pkl'\]"
+    ):
+        ql.read_torch_checkpoint(two_pickles)
+
+    big = tmp_path / "big.tar"
+    _write_torch_like_zip(big, pickle.dumps({"run info": [1.0]}), "big")
+    with pytest.raises(
+        ValueError,
+        match="was saved big-endian; only little-endian checkpoints are supported",
+    ):
+        ql.read_torch_checkpoint(big)
+
+    little = tmp_path / "little.tar"
+    _write_torch_like_zip(little, pickle.dumps({"run info": [1.0]}), "little")
+    assert ql.read_torch_checkpoint(little) == {"run info": [1.0]}
+
+
+def test_read_torch_checkpoint_refuses_non_storage_persistent_ids(tmp_path):
+    """
+    Description
+    -----------
+    A persistent id is only ever a tensor storage in a torch checkpoint; one
+    of any other kind (here ``"module"``) is refused with an
+    ``UnpicklingError`` naming the kind, instead of being resolved.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        pytest-provided temporary directory.
+
+    Returns
+    -------
+    None
+    """
+    marker = object()
+    buffer = io.BytesIO()
+    _NonStoragePersistentIdPickler(buffer, marker).dump({"model": marker})
+    path = tmp_path / "checkpoint.tar"
+    _write_torch_like_zip(path, buffer.getvalue(), "little")
+    with pytest.raises(
+        pickle.UnpicklingError,
+        match=r"persistent id of kind 'module'; only 'storage' is supported",
+    ):
+        ql.read_torch_checkpoint(path)
+
+
+def test_load_model_cell_refuses_a_non_fibonacci_embedding_lattice(tmp_path):
+    """
+    Description
+    -----------
+    ``load_model_cell`` builds only Fibonacci embedding lattices; a cell whose
+    ``training_contract.json`` records any other ``embedding_lattice_type``
+    is refused with a ValueError naming the recorded type, before the
+    checkpoint is read (the cell here holds no checkpoint at all).
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        pytest-provided temporary directory.
+
+    Returns
+    -------
+    None
+    """
+    cell = tmp_path / "pkg" / "phase_test" / "cell_korobov"
+    cell.mkdir(parents=True)
+    contract = _matching_contract(_contract_cfg(), embedding_lattice_type="korobov")
+    (cell / "training_contract.json").write_text(json.dumps(contract))
+    with pytest.raises(
+        ValueError,
+        match=r"embedding_lattice_type is 'korobov'; only 'fibonacci' package embeddings are supported",
+    ):
+        ql.load_model_cell(str(cell))
+
+
+def test_compute_condition_values_refuses_an_unknown_condition():
+    """
+    Description
+    -----------
+    A condition name outside ``CONDITION_NAMES`` has no definition, so
+    ``compute_condition_values`` raises a ValueError naming it and listing
+    every supported name.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
+    """
+    with pytest.raises(
+        ValueError,
+        match=r"unknown condition 'pitch' \(expected duration\|mean_freq\|bandwidth\|loudness\|spectral_entropy\)",
+    ):
+        ql.compute_condition_values({"name": "pitch"}, np.array([10, 20]), None)
+
+
+def test_condition_quantile_value_refuses_unplaceable_group_ids_and_empty_tables():
+    """
+    Description
+    -----------
+    ``condition_quantile_value`` refuses tables it cannot turn into a
+    distribution: ``group_ids`` naming a bin outside the edges (id 4 of 4
+    bins), ``group_ids`` of a different length than ``group_sizes``, a single
+    edge (no bins, so no rows) and bins that all hold zero rows. Each error
+    states the counts involved.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
+    """
+    bins = _phase11_bins("bandwidth", 0.0, 1.0, 0.01)
+    bins["edges"] = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
+    bins["group_sizes"] = np.array([30, 10])
+    bins["group_ids"] = np.array([0, 4])
+    with pytest.raises(
+        ValueError, match=r"2 group_ids \[0, 4\] for 2 group_sizes over 4 bins"
+    ):
+        ql.condition_quantile_value(bins, "exact", 0.5)
+    bins["group_ids"] = np.array([0, 1, 2])
+    with pytest.raises(
+        ValueError, match=r"3 group_ids \[0, 1, 2\] for 2 group_sizes over 4 bins"
+    ):
+        ql.condition_quantile_value(bins, "exact", 0.5)
+
+    with pytest.raises(ValueError, match=r"1 edges for 0 bins \(total 0.0 rows\)"):
+        ql.condition_quantile_value({"edges": np.array([0.5])}, None, 0.5)
+    with pytest.raises(ValueError, match=r"3 edges for 2 bins \(total 0.0 rows\)"):
+        ql.condition_quantile_value(
+            {"edges": np.array([0.0, 0.5, 1.0]), "group_sizes": np.array([0, 0])},
+            "exact",
+            0.5,
+        )
+
+
+def test_enforce_training_contract_names_bad_normalization_and_floor():
+    """
+    Description
+    -----------
+    A contract whose ``input_normalization`` is neither ``none`` nor
+    ``minmax`` or whose ``floor`` falls outside ``[0, 1)`` cannot be
+    reproduced at inference; both are reported together in one ValueError
+    (a floor of exactly 1.0 and a negative floor are each out of range),
+    while a floor of 0.0 passes.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
+    """
+    cfg = _contract_cfg()
+    params = {"0.weight": np.zeros((2, 4)), "1.weight": np.zeros((2, 2))}
+    with pytest.raises(ValueError, match="training contract") as excinfo:
+        ql.enforce_training_contract(
+            _matching_contract(cfg, input_normalization="zscore", floor=1.0),
+            cfg,
+            params,
+        )
+    message = str(excinfo.value)
+    assert (
+        "input_normalization: expected 'none' or 'minmax', trained 'zscore'" in message
+    )
+    assert "floor: expected null or a value in [0, 1), trained 1.0" in message
+    with pytest.raises(
+        ValueError, match=r"floor: expected null or a value in \[0, 1\), trained -0.1"
+    ):
+        ql.enforce_training_contract(_matching_contract(cfg, floor=-0.1), cfg, params)
+    assert (
+        ql.enforce_training_contract(_matching_contract(cfg, floor=0.0), cfg, params)
+        == 128.0
+    )
+
+
+def test_load_package_baseline_reads_digests_and_refuses_bad_tables(tmp_path):
+    """
+    Description
+    -----------
+    ``load_package_baseline`` maps each session to its lowercased SHA-256;
+    a package root without ``SESSION_H5_BASELINE.tsv`` raises
+    FileNotFoundError, and a baseline without a ``sha256`` column raises a
+    ValueError naming the missing column and the columns it has.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        pytest-provided temporary directory.
+
+    Returns
+    -------
+    None
+    """
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    with pytest.raises(
+        FileNotFoundError,
+        match=r"no SESSION_H5_BASELINE.tsv in it or in its corpus/ folder",
+    ):
+        ql.load_package_baseline(package_root)
+
+    baseline = package_root / ql.PACKAGE_BASELINE_NAME
+    baseline.write_text(
+        "session\th5_rows\tsha256\n20230119_155302\t3\tABCDEF\n20230120_101010\t5\t0123ab\n"
+    )
+    assert ql.load_package_baseline(package_root) == {
+        "20230119_155302": "abcdef",
+        "20230120_101010": "0123ab",
+    }
+
+    baseline.write_text("session\th5_rows\n20230119_155302\t3\n")
+    with pytest.raises(
+        ValueError,
+        match=r"has no \['sha256'\] column\(s\); its columns are \['session', 'h5_rows'\]",
+    ):
+        ql.load_package_baseline(package_root)
+
+
+def test_load_package_session_rows_refuses_misaligned_cell_files(tmp_path):
+    """
+    Description
+    -----------
+    ``recon_mse_breakdown.npz`` and ``posterior_cache.npz`` must describe the
+    same corpus rows; a posterior cache with 2 rows against a breakdown of 3
+    is refused with a ValueError stating both counts.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        pytest-provided temporary directory.
+
+    Returns
+    -------
+    None
+    """
+    cell = tmp_path / "cell"
+    cell.mkdir()
+    np.savez(
+        cell / "recon_mse_breakdown.npz",
+        spec_id=np.array(
+            ["20230119_155302_0", "20230119_155302_1", "20230119_155302_2"]
+        ),
+        durations=np.array([64.0, 64.0, 64.0], dtype=np.float32),
+        mask_counts=np.array([1.0, 1.0, 1.0], dtype=np.float32),
+    )
+    np.savez(
+        cell / "posterior_cache.npz", torus_weighted=np.zeros((2, 4), dtype=np.float32)
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"posterior_cache.npz holds 2 rows but recon_mse_breakdown.npz 3",
+    ):
+        ql.load_package_session_rows(str(cell), "20230119_155302")
+
+
+def _package_rows_recorder(rows, reads):
+    """
+    Description
+    -----------
+    Builds the ``package_rows`` callable for :func:`qlvm_latents.package_route_verdict`
+    that appends to ``reads`` on every invocation, so a test can check whether
+    the cell's rows were read at all.
+
+    Parameters
+    ----------
+    rows (dict[str, np.ndarray])
+        What the callable returns.
+    reads (list)
+        Appended to (with None) on each invocation.
+
+    Returns
+    -------
+    package_rows (Callable[[], dict[str, np.ndarray]])
+        The recording callable.
+    """
+
+    def _package_rows():
+        """
+        Description
+        -----------
+        Records the read and returns the fixed rows.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        rows (dict[str, np.ndarray])
+            The fixed rows.
+        """
+        reads.append(None)
+        return rows
+
+    return _package_rows
+
+
+def test_package_route_verdict_falls_back_on_row_count_and_row_range():
+    """
+    Description
+    -----------
+    With the session in the baseline and its SHA-256 matching,
+    ``package_route_verdict`` still infers when (a) ``usv_summary.csv`` and
+    the H5 differ in row count (the cell's rows are then never read), (b) the
+    cell holds no row of the session, or (c) the cell names an H5 row past
+    the end of the H5; (b) and (c) hand back the rows they read.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
+    """
+    baseline = {"20230119_155302": "abc"}
+    h5_durations = np.array([64, 0, 64], dtype=np.int64)
+    h5_mask_counts = np.array([1, 0, 1], dtype=np.int64)
+    in_range = {
+        "row": np.array([0, 2], dtype=np.int64),
+        "durations": np.array([64.0, 64.0]),
+        "mask_counts": np.array([1.0, 1.0]),
+        "coords": np.zeros((2, 2)),
+    }
+
+    reads = []
+    assert ql.package_route_verdict(
+        "20230119_155302",
+        baseline,
+        lambda: "abc",
+        2,
+        h5_durations,
+        h5_mask_counts,
+        _package_rows_recorder(in_range, reads),
+    ) == (False, "inference (usv_summary.csv has 2 rows, the spectrogram H5 3)", None)
+    assert reads == []
+
+    empty = {key: value[:0] for key, value in in_range.items()}
+    use_package, reason, rows = ql.package_route_verdict(
+        "20230119_155302",
+        baseline,
+        lambda: "abc",
+        3,
+        h5_durations,
+        h5_mask_counts,
+        _package_rows_recorder(empty, reads),
+    )
+    assert (use_package, reason) == (
+        False,
+        "inference (the package cell holds no rows of this session)",
+    )
+    assert rows is empty
+
+    past_end = {**in_range, "row": np.array([0, 3], dtype=np.int64)}
+    use_package, reason, rows = ql.package_route_verdict(
+        "20230119_155302",
+        baseline,
+        lambda: "abc",
+        3,
+        h5_durations,
+        h5_mask_counts,
+        _package_rows_recorder(past_end, reads),
+    )
+    assert (use_package, reason) == (
+        False,
+        "inference (the package names H5 row 3, the H5 has 3 rows)",
+    )
+    assert rows is past_end
+    assert len(reads) == 2
+
+    use_package, reason, rows = ql.package_route_verdict(
+        "20230119_155302",
+        baseline,
+        lambda: "abc",
+        3,
+        h5_durations,
+        h5_mask_counts,
+        _package_rows_recorder(in_range, reads),
+    )
+    assert use_package is True
+    assert rows is in_range
+
+
+def test_infer_and_merge_refuses_model_cells_that_are_not_a_mapping(tmp_path, mocker):
+    """
+    Description
+    -----------
+    ``model_cells`` must map column prefixes to cell directories; a list of
+    pairs is refused with a ValueError naming the type it got, and the
+    summary is left untouched.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        pytest-provided temporary directory.
+    mocker (pytest_mock.MockerFixture)
+        Patches ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+    rng = np.random.default_rng(41)
+    root, session_id, cfg = _make_inference_session(tmp_path, rng)
+    cfg["model_cells"] = [["qlvm", str(tmp_path / "cell")]]
+    summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
+    before = summary_path.read_bytes()
+    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
+    with pytest.raises(
+        ValueError,
+        match=r"model_cells must be an object of column prefix -> model cell directory, got list",
+    ):
+        ql.QLVMLatentInference(
+            root_directory=str(root),
+            input_parameter_dict={"infer_qlvm_latents": cfg},
+            message_output=lambda *_a, **_kw: None,
+        ).infer_and_merge()
+    assert summary_path.read_bytes() == before
+
+
+def test_model_cells_unbounded_cell_embeds_every_positive_duration(tmp_path, mocker):
+    """
+    Description
+    -----------
+    A cell whose contract records ``length_threshold`` null (a training set
+    with no duration bound) embeds every USV with a positive duration: a
+    500-bin USV, which a 100-bin cell would leave null, gets coordinates,
+    the zero-duration placeholder stays null, and no "outside the training
+    set" message is logged.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        pytest-provided temporary directory.
+    mocker (pytest_mock.MockerFixture)
+        Patches ``smart_wait`` and ``embed_data``.
+
+    Returns
+    -------
+    None
+    """
+    rng = np.random.default_rng(42)
+    root, session_id, cfg = _make_inference_session(tmp_path, rng)
+    _set_session_durations(root, session_id, [500, 0, 64])
+    fine_grid, coarse_grid = _model_cell_grids(0)
+    cfg["model_cells"]["qlvm"] = str(
+        _make_model_cell(
+            tmp_path,
+            rng,
+            masking_type="none",
+            floor=0.2,
+            fine_grid=fine_grid,
+            coarse_grid=coarse_grid,
+            contract_overrides={"length_threshold": None},
+        )
+    )
+
+    embedded, messages = _run_model_cells(root, cfg, mocker)
+
+    assert embedded == [2]
+    assert not any("outside the training set" in message for message in messages)
+    df = pls.read_csv(root / "audio" / f"{session_id}_usv_summary.csv")
+    assert df["qlvm1"].to_list() == [0.5, None, 0.5]
+    assert df["qlvm2"].to_list() == [0.5, None, 0.5]

@@ -2155,3 +2155,139 @@ def test_consensus_remerge_will_not_cut_at_a_gap_the_segmenter_could_not_make():
     assert len(floored) == 1, "a 5 ms gap is finer than the segmenter's own resolution"
     assert floored[0]['start'] == pytest.approx(merged[0]['start'])
     assert floored[0]['stop'] == pytest.approx(merged[0]['stop'])
+
+
+def _make_minimal_vocalocator_session(tmp_path, processing_settings):
+    """
+    Description
+    -----------
+    Lays out the smallest session tree both ``run_vocalocator`` and
+    ``run_vocalocator_ssl`` need to reach their subprocess invocations: a
+    3D track H5 (two track names) under ``video/``, a one-row USV summary
+    CSV under ``audio/``, and a model directory holding exactly one
+    ``calibration.npz``, which ``vocalocator.vcl_model_directory`` is
+    pointed at.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        The session root directory.
+    processing_settings : dict
+        The processing settings; ``vocalocator.vcl_model_directory`` is
+        rewritten in place.
+
+    Returns
+    -------
+    model_dir : pathlib.Path
+        The model directory the settings now point at.
+    """
+    audio_dir = tmp_path / "audio"
+    (audio_dir / "sound_localization").mkdir(parents=True)
+    video_dir = tmp_path / "video"
+    video_dir.mkdir()
+    with h5py.File(
+        video_dir / "20230207213549_points3d_translated_rotated_metric.h5", "w"
+    ) as f:
+        f.create_dataset("track_names", data=np.array([b"M", b"F"]))
+    pls.DataFrame({"usv_id": ["x"]}).write_csv(audio_dir / "x_usv_summary.csv")
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    np.savez(model_dir / "calibration.npz", x=np.array([0.0]))
+    processing_settings["vocalocator"]["vcl_model_directory"] = str(model_dir)
+    return model_dir
+
+
+def test_run_vocalocator_assess_timeout_raises_runtime_error(
+    tmp_path, processing_settings, mocker
+):
+    """
+    Description
+    -----------
+    A ``vocalocator.assess`` subprocess that overruns the
+    ``vocalocator.subprocess_timeout_hours`` budget stops
+    ``run_vocalocator`` with a RuntimeError that names the budget in
+    whole seconds and the killed command, chained from the
+    ``TimeoutExpired``. The budget passed to ``subprocess.run`` is the
+    setting converted to seconds (0.25 h -> 900 s), and no assessment
+    output is read afterwards.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        The session root directory.
+    processing_settings : dict
+        The shipped processing settings.
+    mocker : pytest_mock.MockerFixture
+        Patches ``subprocess.run`` and ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+    _make_minimal_vocalocator_session(tmp_path, processing_settings)
+    processing_settings["vocalocator"]["subprocess_timeout_hours"] = 0.25
+    mocker.patch("usv_playpen.processing.assign_vocalizations.smart_wait")
+    sub_run = mocker.patch(
+        "usv_playpen.processing.assign_vocalizations.subprocess.run",
+        side_effect=subprocess.TimeoutExpired(
+            cmd=["conda", "run", "vocalocator.assess"], timeout=900.0
+        ),
+    )
+    voc = _make_vocalocator(tmp_path, processing_settings)
+    with pytest.raises(
+        RuntimeError,
+        match=r"^The vocalocator subprocess did not finish within 900 s and was killed: conda run vocalocator\.assess\.$",
+    ) as excinfo:
+        voc.run_vocalocator()
+    assert isinstance(excinfo.value.__cause__, subprocess.TimeoutExpired)
+    assert sub_run.call_count == 1
+    assert sub_run.call_args.kwargs["timeout"] == 900.0
+    assess_args = sub_run.call_args.kwargs["args"]
+    assert assess_args[assess_args.index("-m") + 1] == "vocalocator.assess"
+    assert not (
+        tmp_path / "audio" / "sound_localization" / "assessment_assn.npy"
+    ).exists()
+
+
+def test_run_vocalocator_ssl_failed_subprocess_raises_runtime_error(
+    tmp_path, processing_settings, mocker
+):
+    """
+    Description
+    -----------
+    A ``vocalocatorssl`` subprocess that exits non-zero
+    (``CalledProcessError``) stops ``run_vocalocator_ssl`` with a
+    RuntimeError naming the exit code and the failed command, chained
+    from the ``CalledProcessError``; the assignment subprocess never runs
+    and the USV summary CSV keeps its original columns (no ``emitter``).
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        The session root directory.
+    processing_settings : dict
+        The shipped processing settings.
+    mocker : pytest_mock.MockerFixture
+        Patches ``subprocess.run`` and ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+    _make_minimal_vocalocator_session(tmp_path, processing_settings)
+    mocker.patch("usv_playpen.processing.assign_vocalizations.smart_wait")
+    sub_run = mocker.patch(
+        "usv_playpen.processing.assign_vocalizations.subprocess.run",
+        side_effect=subprocess.CalledProcessError(
+            returncode=3, cmd=["conda", "run", "vocalocatorssl"]
+        ),
+    )
+    voc = _make_vocalocator(tmp_path, processing_settings)
+    with pytest.raises(
+        RuntimeError,
+        match=r"^The vocalocator-ssl subprocess failed \(exit code 3\): conda run vocalocatorssl\.$",
+    ) as excinfo:
+        voc.run_vocalocator_ssl()
+    assert isinstance(excinfo.value.__cause__, subprocess.CalledProcessError)
+    assert sub_run.call_count == 1
+    assert pls.read_csv(tmp_path / "audio" / "x_usv_summary.csv").columns == ["usv_id"]

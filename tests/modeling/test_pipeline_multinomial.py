@@ -2078,3 +2078,283 @@ def test_multinomial_extraction_without_labels_fails_before_loading(tmp_path, mo
         MultinomialModelingPipeline(modeling_settings_dict=settings).extract_and_save_multinomial_input_data()
     assert 'vocal_features.usv_category_column_name' in str(excinfo.value)
     prepare.assert_not_called()
+
+
+def _raise_file_not_found(*_a, **_k):
+    """
+    Description
+    -----------
+    Stands in for ``pathlib.Path.open`` and always raises
+    ``FileNotFoundError``, simulating a package install whose shipped
+    ``modeling_settings.json`` is missing.
+
+    Parameters
+    ----------
+    *_a, **_k
+        Ignored arguments of the patched method.
+
+    Returns
+    -------
+    None
+        Never returns; always raises ``FileNotFoundError``.
+    """
+
+    msg = "simulated missing settings file"
+    raise FileNotFoundError(msg)
+
+
+class TestMultinomialReleaseGuards:
+    """Guards and branches of the multinomial splitter, loader, constructor and held-out refit."""
+
+    def test_session_strategy_single_session_raises(self):
+        """
+        Description
+        -----------
+        Cross-session splitting with every row in one session cannot form a
+        held-out test session. The splitter raises a ``ValueError`` that
+        names the number of unique sessions (1) instead of entering the
+        rejection-sampling loop.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+
+        y = np.repeat([0, 1, 2], 10)
+        groups = np.zeros(y.size, dtype=int)
+        with pytest.raises(ValueError, match=r"at least 2 sessions, but only 1 unique session\(s\)"):
+            get_stratified_group_splits_stable(
+                groups=groups, y=y, n_categories=3, split_strategy='session',
+                test_prop=0.5, n_splits=1, random_seed=0, tolerance=0.5,
+                max_total_attempts=100, widen_step=0.02, widen_every=1000,
+            )
+
+    def test_session_strategy_rejects_repeated_test_sets(self):
+        """
+        Description
+        -----------
+        With three sessions, one test session per fold and three folds
+        requested, the random session permutations inevitably re-draw an
+        already-used test session. Those draws must be rejected, so the three
+        accepted folds hold out three DIFFERENT sessions (each session is the
+        test set exactly once) and every fold's tolerance is the initial one
+        (the tolerance is wide enough that only repetition rejects a draw).
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+
+        groups = np.repeat([0, 1, 2], 30)
+        y = np.tile(np.repeat([0, 1, 2], 10), 3)
+        cv_folds, tolerances = get_stratified_group_splits_stable(
+            groups=groups, y=y, n_categories=3, split_strategy='session',
+            test_prop=1.0 / 3.0, n_splits=3, random_seed=0, tolerance=1.0,
+            max_total_attempts=1000, widen_step=0.0, widen_every=1000,
+        )
+        test_sessions = sorted(int(np.unique(groups[te_idx])[0]) for _tr_idx, te_idx in cv_folds)
+        assert test_sessions == [0, 1, 2]
+        assert tolerances == [1.0, 1.0, 1.0]
+
+    def test_mixed_strategy_fold_missing_a_class_raises(self):
+        """
+        Description
+        -----------
+        A rare class with only two rows (against 100 rows each for the other
+        two classes) at a 10 % test proportion is allocated entirely to the
+        training side by ``StratifiedShuffleSplit``. The per-fold coverage
+        re-check must catch this and raise a ``RuntimeError`` reporting that
+        fold 0's test side carries 2 of the expected 3 classes.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+
+        y = np.repeat([0, 1, 2], [100, 100, 2])
+        groups = np.arange(y.size)
+        with pytest.raises(RuntimeError, match=r"Fold 0: train carries 3 classes, test carries 2 classes .* expected 3 .*strategy='mixed'"):
+            get_stratified_group_splits_stable(
+                groups=groups, y=y, n_categories=3, split_strategy='mixed',
+                test_prop=0.1, n_splits=2, random_seed=0, tolerance=0.05,
+                max_total_attempts=100, widen_step=0.02, widen_every=1000,
+            )
+
+    def test_init_missing_shipped_settings_raises(self, monkeypatch):
+        """
+        Description
+        -----------
+        Constructing with ``modeling_settings_dict=None`` reads the shipped
+        ``modeling_settings.json``; when that file cannot be opened the
+        constructor raises a ``FileNotFoundError`` whose message names the
+        settings path and whose cause is the original error.
+
+        Parameters
+        ----------
+        monkeypatch (pytest.MonkeyPatch)
+            Temporarily replaces ``pathlib.Path.open``.
+
+        Returns
+        -------
+        None
+        """
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, 'open', _raise_file_not_found)
+            with pytest.raises(FileNotFoundError, match=r"Settings file not found at .*modeling_settings\.json") as excinfo:
+                MultinomialModelingPipeline(modeling_settings_dict=None)
+        assert isinstance(excinfo.value.__cause__, FileNotFoundError)
+        assert str(excinfo.value.__cause__) == "simulated missing settings file"
+
+    def test_load_blocks_bin_size_larger_than_history_raises(self, tmp_path):
+        """
+        Description
+        -----------
+        A ``bin_size`` larger than the history window floor-divides to zero
+        time bins; the loader raises a ``ValueError`` naming the bin size,
+        the history length and the feature instead of emitting an
+        ``(N, 0)`` design matrix.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Per-test scratch directory for the synthetic input pickle.
+
+        Returns
+        -------
+        None
+        """
+
+        input_pkl = str(build_multinomial_input_pickle(
+            save_path=tmp_path / 'modeling_multinomial_input.pkl',
+            feature_names=['self.speed'],
+            session_ids=[f'session_{i}' for i in range(N_SESSIONS)],
+            history_frames=HISTORY_FRAMES,
+            n_categories=N_CATEGORIES,
+            n_per_class_per_session=5,
+        ))
+        too_big = HISTORY_FRAMES + 1
+        with pytest.raises(ValueError, match=rf"bin_size={too_big} exceeds history length {HISTORY_FRAMES} for feature self\.speed"):
+            MultinomialModelRunner.load_univariate_data_blocks(input_pkl, bin_size=too_big, feature_filter=None)
+
+    @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
+    @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    def test_extraction_non_qlvm_label_column_records_no_bundle(self, tmp_path, monkeypatch):
+        """
+        Description
+        -----------
+        A label column other than the QLVM category column has no category
+        bundle: the extraction must not load one (the loader is replaced by
+        a function that fails the test if reached) and must record
+        ``bundle_category_number = None`` and an empty
+        ``bundle_categories_missing`` beside the observed class count.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Per-test scratch directory for the synthetic tree and outputs.
+        monkeypatch (pytest.MonkeyPatch)
+            Replaces the module's ``load_qlvm_category_bundle``.
+
+        Returns
+        -------
+        None
+        """
+
+        settings, save_dir = _build_extraction_settings(tmp_path)
+        for csv_path in (tmp_path / 'sessions').rglob('*_usv_summary.csv'):
+            frame = pls.read_csv(csv_path).rename({'qlvm_category': 'custom_category'})
+            frame.write_csv(file=csv_path)
+        settings['vocal_features']['usv_category_column_name'] = 'custom_category'
+        monkeypatch.setattr(
+            'usv_playpen.modeling.modeling_vocal_categories_multinomial.load_qlvm_category_bundle',
+            _raise_file_not_found,
+        )
+        MultinomialModelingPipeline(modeling_settings_dict=settings).extract_and_save_multinomial_input_data()
+        with next(save_dir.glob('modeling_multinomial_*.pkl')).open('rb') as fh:
+            spec = pickle.load(fh)['_input_metadata']['analysis_specific']
+        assert spec['usv_category_column_name'] == 'custom_category'
+        assert spec['bundle_category_number'] is None
+        assert spec['bundle_categories_missing'] == []
+        assert spec['usv_category_number'] == N_CATEGORIES
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    @pytest.mark.filterwarnings("ignore::UserWarning")
+    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
+    def test_holdout_refit_with_tuning_and_bspline_basis(self, tmp_path):
+        """
+        Description
+        -----------
+        With a reserved held-out session, inner-CV tuning switched on and a
+        B-spline temporal basis, the held-out refit of the 'actual' and
+        'null' strategies must (i) tune its regularisation on the full
+        development set (``hyperparams_tuned`` is True, the selected
+        smoothness is a value of the tuning grid and the grid audit is
+        populated) and (ii) store both the raw spline coefficients and the
+        frame-axis filters, with the coefficients reproducing the filters
+        through the basis. The model-free null keeps no weights.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Per-test scratch directory for the settings and input pickle.
+
+        Returns
+        -------
+        None
+        """
+
+        settings, _ = _build_extraction_settings(
+            tmp_path, model_engine='sklearn', split_strategy='mixed', split_num=2,
+            test_proportion=0.4,
+        )
+        block = settings['hyperparameters']['linear_models']['multinomial_logistic']
+        block['temporal_basis'] = {'type': 'bspline', 'n_splines': 8, 'spline_order': 3,
+                                   'lambda_smooth_fixed': 0.6, 'l2_reg_fixed': 0.0, 'l2_lag_alpha': 0, 'lambda_smooth_decades_each_side': 1}
+        block['tune_regularization_bool'] = True
+        block['bin_resizing_factor'] = 1
+        session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
+        input_pkl = build_multinomial_input_pickle(
+            save_path=tmp_path / 'modeling_multinomial_input.pkl',
+            feature_names=['self.speed', 'other.speed'],
+            session_ids=session_ids,
+            history_frames=HISTORY_FRAMES,
+            n_categories=N_CATEGORIES,
+            n_per_class_per_session=18,
+        )
+        with input_pkl.open('rb') as fh:
+            artifact = pickle.load(fh)
+        artifact['_input_metadata']['held_out_session_ids'] = [session_ids[-1]]
+        with input_pkl.open('wb') as fh:
+            pickle.dump(artifact, fh)
+
+        runner = MultinomialModelRunner(pipeline_instance=MultinomialModelingPipeline(modeling_settings_dict=settings))
+        _, results = runner.run_univariate_training(pkl_path=str(input_pkl), feat_name='self.speed')
+
+        basis = gam_bspline_basis(HISTORY_FRAMES, 8, 3) / HISTORY_FRAMES
+        lambda_grid = 0.6 * np.array([0.1, 1.0, 10.0])
+        for strategy in ('actual', 'null'):
+            heldout = results[strategy]['heldout']
+            assert heldout['hyperparams_tuned'] is True
+            assert np.isclose(lambda_grid, heldout['selected_lambda_smooth']).any()
+            assert heldout['hyperparam_grid_audit']['grid_scores']
+            weights = np.asarray(heldout['weights'])
+            coefficients = np.asarray(heldout['basis_coefficients'])
+            assert weights.shape == (N_CATEGORIES, HISTORY_FRAMES)
+            assert coefficients.shape == (N_CATEGORIES, 8)
+            np.testing.assert_allclose(coefficients @ basis.T, weights, rtol=1e-5, atol=1e-9)
+        assert results['null_model_free']['heldout']['basis_coefficients'] is None
+        assert results['null_model_free']['heldout']['hyperparams_tuned'] is False

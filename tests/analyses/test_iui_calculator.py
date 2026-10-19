@@ -42,7 +42,9 @@ from usv_playpen.analyses.compute_inter_usv_interval_distributions import (
     build_em_initialisation,
     compute_session_usv_intervals,
     fit_mixture_model_sweep,
+    fit_serial_dependence,
     fit_tied_peak_ladder_and_lrt,
+    validate_interval_pools,
 )
 from usv_playpen.analyses.usv_interval_archive import _h5_to_polars, _polars_to_h5
 from usv_playpen.yaml_utils import extract_animal_sexes as yaml_extract_animal_sexes
@@ -1163,3 +1165,420 @@ def test_load_and_filter_usv_data_raises_on_two_summaries(tmp_path):
     stale.write_text((tmp_path / "audio" / f"{tmp_path.name}_usv_summary.csv").read_text())
     with pytest.raises(ValueError, match="Expected one USV summary CSV"):
         load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, vocal_class="usv")
+
+
+def test_soft_minimum_rounds_the_broken_stick_corner():
+    """
+    Description
+    -----------
+    ``_soft_minimum(x, c, w) = c - w * log(1 + exp((c - x) / w))`` equals ``x`` well below
+    the bend, ``c`` well above it, and ``c - w * log(2)`` exactly at it; it never exceeds
+    the hard minimum ``min(x, c)``.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
+    """
+
+    x = np.array([-10.0, -2.0, 0.0, 10.0])
+    z = iui_mod._soft_minimum(x, 0.0, 0.05)
+    np.testing.assert_allclose(z, [-10.0, -2.0, -0.05 * np.log(2.0), 0.0], atol=1e-12)
+    assert np.all(z <= np.minimum(x, 0.0))
+
+
+def test_median_regression_recovers_a_line_and_flags_the_iteration_cap():
+    """
+    Description
+    -----------
+    ``_median_regression`` fits the conditional median: on a line ``y = 1 + 2 x`` with
+    symmetric Laplace noise plus a few gross upward outliers (which would pull a mean
+    regression up) it recovers intercept 1 and slope 2, reports the sum of absolute
+    residuals at those coefficients, and reports convergence; capped at one iteration it
+    reports that the solver stopped short.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
+    """
+
+    rng = np.random.default_rng(0)
+    x = rng.uniform(0.0, 1.0, 400)
+    y = 1.0 + 2.0 * x + rng.laplace(0.0, 0.05, 400)
+    y[:20] += 5.0
+    design = np.column_stack([np.ones_like(x), x])
+    beta, loss, converged = iui_mod._median_regression(design, y, 1000)
+    np.testing.assert_allclose(beta, [1.0, 2.0], atol=0.05)
+    assert loss == pytest.approx(float(np.abs(y - design @ beta).sum()))
+    assert converged is True
+    _beta, _loss, converged_capped = iui_mod._median_regression(design, y, 1)
+    assert converged_capped is False
+
+
+def _bent_line_pairs(n_sessions=6, per_session=150, seed=0):
+    """
+    Description
+    -----------
+    Draws consecutive-interval pairs whose log next interval follows a bent median line:
+    ``log next = a + 0.8 * softmin(log current, log 0.15 s; 0.05) + Laplace(0, 0.05)``,
+    with ``a`` set so the flat level above the bend is 100 ms. Current intervals are
+    log-uniform between 20 ms and 1 s, split evenly over ``n_sessions`` sessions.
+
+    Parameters
+    ----------
+    n_sessions (int)
+        Number of sessions.
+    per_session (int)
+        Pairs per session.
+    seed (int)
+        Seed of the generator.
+
+    Returns
+    -------
+    current (np.ndarray)
+        Current intervals, in seconds.
+    following (np.ndarray)
+        Next intervals, in seconds.
+    sessions (np.ndarray)
+        The session of each pair.
+    """
+
+    rng = np.random.default_rng(seed)
+    n = n_sessions * per_session
+    x = rng.uniform(np.log(0.02), np.log(1.0), n)
+    bend, slope = np.log(0.15), 0.8
+    intercept = np.log(0.1) - slope * bend
+    y = intercept + slope * iui_mod._soft_minimum(x, bend, 0.05) + rng.laplace(0.0, 0.05, n)
+    sessions = np.repeat(np.arange(n_sessions), per_session).astype(str)
+    return np.exp(x), np.exp(y), sessions
+
+
+def test_fit_serial_dependence_recovers_the_bend_slope_and_flat_level():
+    """
+    Description
+    -----------
+    Runs the real serial-dependence fit on pairs drawn from a known bent median line (bend
+    150 ms, slope 0.8 below it, flat at 100 ms above it) and checks its three tables: the
+    bend, slope and flat level are recovered, the bend lies inside its bootstrap interval,
+    the curves table has ``n_grid`` rows spanning the grid percentiles (taken on the log
+    current interval) with the bands
+    bracketing the fitted curves, the per-width objectives are keyed ``loss_w_0p05`` /
+    ``loss_w_0p15`` with the chosen width the smaller one, the bends table has one row per
+    replicate, and the pool identity is stamped on every row.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
+    """
+
+    current, following, sessions = _bent_line_pairs()
+    identity = {"sex": "male", "vocal_class": "usv", "adjacency": "filtered"}
+    curves, fit, bends = fit_serial_dependence(
+        current=current, following=following, pair_sessions=sessions, pool_identity=identity,
+        n_knots=4, corner_widths=[0.05, 0.15], n_bootstrap=8, level=90.0,
+        bend_bounds_ms=(30.0, 600.0), grid_percentiles=(5.0, 95.0), max_iter=1000, seed=0,
+        n_jobs=1, n_grid=25)
+
+    row = fit.row(0, named=True)
+    assert fit.height == 1
+    assert row["n_pairs"] == 900
+    assert row["n_sessions"] == 6
+    assert row["n_knots"] == 4
+    assert row["n_bootstrap"] == 8
+    assert row["level"] == 90.0
+    assert row["bend_ms"] == pytest.approx(150.0, rel=0.05)
+    assert row["slope"] == pytest.approx(0.8, abs=0.05)
+    assert row["flat_level_ms"] == pytest.approx(100.0, rel=0.05)
+    assert row["bend_low_ms"] <= row["bend_high_ms"]
+    assert row["corner_width"] == (0.05 if row["loss_w_0p05"] <= row["loss_w_0p15"] else 0.15)
+    assert 0 <= row["spline_not_converged"] <= 8
+    assert 0 <= row["bent_not_converged"] <= 8
+
+    assert curves.height == 25
+    np.testing.assert_allclose(
+        curves["current_ms"].to_numpy()[[0, -1]], 1e3 * np.exp(np.percentile(np.log(current), [5.0, 95.0])),
+        rtol=1e-9)
+    assert np.all(np.diff(curves["current_ms"].to_numpy()) > 0)
+    assert (curves["spline_low_ms"] <= curves["spline_high_ms"]).all()
+    assert (curves["bent_low_ms"] <= curves["bent_high_ms"]).all()
+    # far above the bend the bent line sits at its flat level
+    assert curves["bent_ms"][-1] == pytest.approx(row["flat_level_ms"], rel=0.02)
+
+    assert bends.height == 8
+    assert bends["b"].to_list() == list(range(8))
+    assert ((bends["bend_ms"] >= 30.0 - 1e-6) & (bends["bend_ms"] <= 600.0 + 1e-6)).all()
+    for table in (curves, fit, bends):
+        for key, value in identity.items():
+            assert (table[key] == value).all()
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_fit_tied_peak_ladder_and_lrt_every_rung_rejected_selects_past_the_grid(monkeypatch):
+    """
+    Description
+    -----------
+    When every rung of the step-up test rejects its null, no peak count in the grid is
+    kept and the selection is one past the grid's maximum (here grid ``[1, 2]`` -> 3); the
+    selection message reports it. The rung test is replaced by a stand-in that always
+    rejects.
+
+    Parameters
+    ----------
+    monkeypatch (pytest.MonkeyPatch)
+        Replaces ``tied_peak_bootstrap_lrt``.
+
+    Returns
+    -------
+    None
+    """
+
+    values, labels = _two_peak_intervals()
+
+    def always_reject(**kwargs):
+        """
+        Description
+        -----------
+        Stands in for ``tied_peak_bootstrap_lrt``: returns a rung result whose corrected
+        p-value is 0, so the rung rejects at any alpha.
+
+        Parameters
+        ----------
+        **kwargs (dict)
+            Keyword arguments the ladder passes (ignored).
+
+        Returns
+        -------
+        result (dict)
+            A scripted rung result.
+        """
+        del kwargs
+        return {"lr_obs": 50.0, "design_effect": 1.0, "design_effect_raw": 1.0, "effective_n": 10.0,
+                "lr_corrected": 50.0, "null_p95": 2.0, "p_value": 0.0, "p_value_corrected": 0.0,
+                "negative_fraction": 0.0, "B": 2, "n_subsample": 10, "lr_null": np.zeros(2),
+                "alt_model": None}
+
+    monkeypatch.setattr(iui_mod, "tied_peak_bootstrap_lrt", always_reject)
+    messages: list[str] = []
+    _fits, _modes, lrt, _null, selected, alpha_eff = fit_tied_peak_ladder_and_lrt(
+        values=values, session_labels=labels, pool_identity={"sex": "male"}, peak_grid=[1, 2],
+        n_background=1, n_init=1, n_init_boot=1, reg_covar=1e-4, B=2, n_subsample=300,
+        alpha=0.05, bonferroni=True, n_design_bootstrap=10, seed=0, n_jobs=1,
+        design_bootstrap_iid_cap=400, em_max_iter=500, em_tol=1e-6,
+        split_delta=0.5, mode_grid_size=16384, mode_span_scales=6.0, em_init=_EM_INIT,
+        message=messages.append)
+
+    assert selected == 3
+    assert alpha_eff == pytest.approx(0.025)
+    assert lrt["rejected"].to_list() == [True, True]
+    assert any("3 peak(s) + 1 background" in m for m in messages)
+
+
+@pytest.mark.parametrize(("spec", "match"), [
+    ({"sex": "unknown", "vocal_class": "usv", "adjacency": "filtered", "fit": False},
+     r"sex must be 'male' or 'female', got 'unknown' in \('unknown', 'usv', 'filtered'\)"),
+    ({"sex": "male", "vocal_class": "usv", "adjacency": "loose", "fit": False},
+     r"adjacency must be 'filtered' or 'strict', got 'loose' in \('male', 'usv', 'loose'\)"),
+])
+def test_validate_interval_pools_rejects_unknown_sex_and_adjacency(spec, match):
+    """
+    Description
+    -----------
+    A pool naming a sex other than ``male`` / ``female`` or an adjacency rule other than
+    ``filtered`` / ``strict`` is refused with a ValueError naming the bad value and the
+    pool identity; a valid pool of the same shape passes.
+
+    Parameters
+    ----------
+    spec (dict)
+        The invalid pool declaration.
+    match (str)
+        Regular expression the error message must match.
+
+    Returns
+    -------
+    None
+    """
+
+    with pytest.raises(ValueError, match=match):
+        validate_interval_pools([spec], fit_tied_model=True, fit_mixture_model=False)
+    assert validate_interval_pools(
+        [{"sex": "female", "vocal_class": "squeak", "adjacency": "strict", "fit": False}],
+        fit_tied_model=True, fit_mixture_model=False) is None
+
+
+def test_save_iui_skips_sessions_without_intervals_and_empty_pools(tmp_path, mocker, monkeypatch):
+    """
+    Description
+    -----------
+    A session whose interval computation returns nothing (an empty payload) contributes to
+    no pool, and a session whose payload holds no intervals for a pool's sex contributes no
+    rows to it; both are skipped without error. Here one of three sessions yields nothing,
+    one yields only male intervals, so the male pool holds 3 + 2 intervals from two
+    sessions and the female pool only the 2 intervals of the session that has them.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        pytest-provided temporary directory.
+    mocker (pytest_mock.MockerFixture)
+        Patches ``write_ivi_h5``.
+    monkeypatch (pytest.MonkeyPatch)
+        Replaces the session resolution and the per-session interval computation.
+
+    Returns
+    -------
+    None
+    """
+
+    list_file = tmp_path / "sessions.txt"
+    list_file.write_text("/dummy/session\n")
+    settings = _make_settings(tmp_path)
+    settings["compute_inter_usv_interval_distributions"]["session_lists"] = [str(list_file)]
+    full_root = str(tmp_path / "20260101_120000")
+    male_only_root = str(tmp_path / "20260102_120000")
+    empty_root = str(tmp_path / "20260103_120000")
+    monkeypatch.setattr(iui_mod, "_read_session_lists",
+                        lambda _lists, _msg: [full_root, male_only_root, empty_root])
+    monkeypatch.setattr(iui_mod, "_session_source_map", lambda _lists: {})
+
+    def fake_compute(session_root, interval_type, exclude_noise_usvs, vocal_class=None,
+                     adjacency="filtered"):
+        """
+        Description
+        -----------
+        Stands in for ``compute_session_usv_intervals``: the full session has three male
+        and two female intervals, the male-only session two male intervals and no female
+        ones, and the empty session returns an empty payload.
+
+        Parameters
+        ----------
+        session_root (str)
+            Session root selecting the payload.
+        interval_type (str)
+            Echoed back.
+        exclude_noise_usvs (bool)
+            Noise filter flag (ignored).
+        vocal_class (str | None)
+            Vocal-class filter (ignored).
+        adjacency (str)
+            Adjacency rule (ignored).
+
+        Returns
+        -------
+        payload (dict)
+            The synthetic interval payload, or ``{}`` for the empty session.
+        """
+        del exclude_noise_usvs, vocal_class, adjacency
+        if session_root == empty_root:
+            return {}
+        female = np.array([0.3, 0.4]) if session_root == full_root else np.array([], dtype=float)
+        male = np.array([0.5, 0.7, 0.9]) if session_root == full_root else np.array([0.2, 0.6])
+        return {
+            "male": male, "female": female,
+            "n_dropped_male": 0, "n_dropped_female": 0,
+            "emitter_male": np.array(["M"] * male.size, dtype=object),
+            "emitter_female": np.array(["F"] * female.size, dtype=object),
+            "chain_male": np.ones(male.size, dtype=np.int64),
+            "chain_female": np.ones(female.size, dtype=np.int64),
+            "animal_sex": {"M": "male", "F": "female"},
+            "interval_type": interval_type,
+        }
+
+    monkeypatch.setattr(iui_mod, "compute_session_usv_intervals", fake_compute)
+    write_mock = mocker.patch.object(iui_mod, "write_ivi_h5",
+                                     return_value=Path(tmp_path / "out" / "stub.h5"))
+    monkeypatch.setattr(iui_mod, "git_sha_for_provenance", lambda _p: "stub")
+
+    InterUSVIntervalCalculator(input_parameter_dict=settings,
+                               message_output=lambda *_a, **_kw: None
+                               ).save_inter_usv_interval_distributions_to_file()
+
+    per_mode = write_mock.call_args.kwargs["per_mode"]
+    for mode in per_mode.values():
+        intervals = mode["intervals"]
+        male = intervals.filter(pls.col("sex") == "male")
+        female = intervals.filter(pls.col("sex") == "female")
+        assert male.height == 5
+        assert sorted(male["session_id"].unique().to_list()) == ["20260101_120000", "20260102_120000"]
+        assert female.height == 2
+        assert female["session_id"].unique().to_list() == ["20260101_120000"]
+    assert write_mock.call_args.kwargs["analysis_attrs"]["session_roots"] == [full_root, male_only_root]
+
+
+def test_save_iui_small_pools_skip_the_tied_fit_and_the_sweep(tmp_path, mocker, monkeypatch):
+    """
+    Description
+    -----------
+    A fitted pool with fewer intervals than ``min_intervals_for_fitting`` is archived for
+    description only: the tied ladder is not run (a message says so), the pool is not
+    marked fitted and no tied tables or selection attributes are written. With
+    ``fit_mixture_model`` on, a fitted pool of fewer than 2 intervals leaves the sweep and
+    its LRT tables empty (None).
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        pytest-provided temporary directory.
+    mocker (pytest_mock.MockerFixture)
+        Patches ``write_ivi_h5`` and the sweep / tied fit to detect calls.
+    monkeypatch (pytest.MonkeyPatch)
+        Replaces the session resolution and the per-session interval computation.
+
+    Returns
+    -------
+    None
+    """
+
+    list_file = tmp_path / "sessions.txt"
+    list_file.write_text("/dummy/session\n")
+    settings = _make_settings(tmp_path, fit_mixture_model=True, fit_tied_model=True)
+    block = settings["compute_inter_usv_interval_distributions"]
+    block["session_lists"] = [str(list_file)]
+    block["min_intervals_for_fitting"] = 10
+    sess_root = str(tmp_path / "20260101_120000")
+    monkeypatch.setattr(iui_mod, "_read_session_lists", lambda _lists, _msg: [sess_root])
+    monkeypatch.setattr(iui_mod, "_session_source_map", lambda _lists: {sess_root: "groupA"})
+    monkeypatch.setattr(iui_mod, "compute_session_usv_intervals", lambda **kwargs: {
+        "male": np.array([0.5]), "female": np.array([0.3, 0.4]),
+        "n_dropped_male": 0, "n_dropped_female": 0,
+        "emitter_male": np.array(["M"], dtype=object),
+        "emitter_female": np.array(["F", "F"], dtype=object),
+        "chain_male": np.ones(1, dtype=np.int64), "chain_female": np.ones(2, dtype=np.int64),
+        "animal_sex": {"M": "male", "F": "female"}, "interval_type": kwargs["interval_type"],
+    })
+    tied_mock = mocker.patch.object(iui_mod, "fit_tied_peak_ladder_and_lrt")
+    sweep_mock = mocker.patch.object(iui_mod, "fit_mixture_model_sweep")
+    write_mock = mocker.patch.object(iui_mod, "write_ivi_h5",
+                                     return_value=Path(tmp_path / "out" / "stub.h5"))
+    monkeypatch.setattr(iui_mod, "git_sha_for_provenance", lambda _p: "stub")
+    messages: list[str] = []
+
+    InterUSVIntervalCalculator(input_parameter_dict=settings,
+                               message_output=messages.append
+                               ).save_inter_usv_interval_distributions_to_file()
+
+    assert tied_mock.call_count == 0
+    assert sweep_mock.call_count == 0
+    assert sum("below min_intervals_for_fitting (10); archived for description only." in m
+               for m in messages) == 2
+    for mode in write_mock.call_args.kwargs["per_mode"].values():
+        assert mode["tied_fits"] is None
+        assert mode["peak_lrt"] is None
+        assert "selected_n_peak_male_usv" not in mode["attrs"]
+        assert mode["mixture_model_fits"] is None
+        assert mode["bootstrap_lrt"] is None
+        assert mode["bootstrap_lrt_null"] is None
+        fitted = dict(zip(mode["pool_summary"]["sex"], mode["pool_summary"]["fitted"], strict=True))
+        assert fitted == {"male": False, "female": False}

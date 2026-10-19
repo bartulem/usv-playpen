@@ -398,3 +398,43 @@ class TestCnnArchitecture:
             params = {k: params[k] - lr * grads[k] for k in params}
         loss_after = float(loss_fn(params))
         assert loss_after < loss_before
+
+
+class TestInceptionKeyBudget:
+    """The inception block's PRNG-key budget guard in ``init_cnn_params_and_state``."""
+
+    def test_too_many_inception_kernels_raises_and_the_largest_legal_count_initialises(self):
+        """
+        Description
+        -----------
+        ``init_cnn_params_and_state`` splits 60 PRNG keys; the inception
+        depthwise keys start at offset 40 and are followed by the pointwise
+        and shortcut keys, which must stay clear of the two dense-head keys
+        (indices 58 and 59). With 16 kernels the shortcut key is index 57,
+        the largest legal layout: initialisation succeeds and every kernel
+        gets its own depthwise weight of the right width. With 17 kernels
+        the shortcut key would be index 58, so a ``ValueError`` naming the
+        kernel count and the colliding key range is raised.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+
+        hp = _load_cnn_hp()
+        hp['use_inception_kernels'] = True
+        hp['inception_kernel_sizes'] = [3] * 16
+        params, _state = init_cnn_params_and_state(jax.random.PRNGKey(0), 4, 32, hp)
+        assert sorted(k for k in params if k.startswith('b0_dw_w_')) == sorted(f'b0_dw_w_{j}' for j in range(16))
+        assert params['b0_dw_w_15'].shape == (4, 1, 3)
+        assert params['b0_pw_w'].shape[1] == 4 * 16
+        # Distinct keys -> distinct (independently seeded) depthwise kernels.
+        assert not np.array_equal(np.asarray(params['b0_dw_w_0']), np.asarray(params['b0_dw_w_1']))
+
+        hp['inception_kernel_sizes'] = [3] * 17
+        with pytest.raises(ValueError, match=r"Too many inception kernels \(17\) for the reserved PRNG-key budget: keys 40\.\.58 would collide with the dense-head keys in the 60 split keys"):
+            init_cnn_params_and_state(jax.random.PRNGKey(0), 4, 32, hp)

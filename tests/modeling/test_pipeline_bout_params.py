@@ -76,6 +76,7 @@ from pathlib import Path
 
 import matplotlib as mpl
 import numpy as np
+import polars as pls
 import pytest
 
 # Headless backend forced before the univariate dispatcher import pulls pyplot.
@@ -1512,3 +1513,228 @@ class TestPerFeatureHeldOut:
             assert 'forced held-out refit failure' in res['heldout'][branch]['heldout_fit_error']
             assert np.isnan(res['heldout'][branch]['explained_deviance'])
         assert np.isfinite(res['actual']['explained_deviance']).any()
+
+
+def _raise_gamma_deviance_failure(*_a, **_k):
+    """
+    Description
+    -----------
+    Stands in for ``mean_gamma_deviance`` and always raises, so the
+    held-out deviance-metric ``except`` handlers of both bout-parameter
+    runners are driven while their model fits succeed.
+
+    Parameters
+    ----------
+    *_a, **_k
+        Ignored arguments of the patched function.
+
+    Returns
+    -------
+    None
+        Never returns; always raises ``ValueError``.
+    """
+
+    msg = "forced held-out deviance failure"
+    raise ValueError(msg)
+
+
+class TestHistoryWindowGuard:
+    """The bout-parameter history window must span at least one camera frame."""
+
+    def test_sub_frame_filter_history_raises(self):
+        """
+        Description
+        -----------
+        With ``model_target_vocal_type = 'bout_offset'`` the parent onset
+        pipeline sizes (and validates) its window from the ``bout_offset``
+        block's own ``filter_history`` (0.5 s here, a valid 30 frames), but
+        this pipeline recomputes the window from ``model_params.filter_history``.
+        A ``model_params.filter_history`` shorter than one camera frame
+        (0.01 s at 60 fps floors to 0 frames) therefore passes the parent's
+        guard and must be caught by this pipeline's own guard, which raises a
+        ``ValueError`` stating the computed frame count, the filter history
+        and the camera rate.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+
+        pipeline = _minimal_bout_pipeline()
+        settings = pipeline.modeling_settings
+        settings['model_params']['model_target_vocal_type'] = 'bout_offset'
+        settings['bout_offset'] = {'filter_history': FILTER_HISTORY}
+        settings['model_params']['filter_history'] = 0.01
+        with pytest.raises(ValueError, match=r"history_frames computed as 0 \(< 1\) from filter_history=0\.01s at camera_rate=60\.0fps"):
+            BoutParameterPipeline(modeling_settings_dict=settings)
+
+
+class TestExtractionSkipsUnusableSessionsAndColumns:
+    """The extraction loop skips sessions without target bouts and digit-suffixed columns."""
+
+    @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
+    def test_session_without_target_bouts_and_digit_column_are_skipped(self, tmp_path, monkeypatch):
+        """
+        Description
+        -----------
+        The real extraction is run with ``run_predictor_audits`` wrapped so
+        that, right before the epoch-extraction loop, (i) the target mouse's
+        bout record is removed from one session and (ii) a column whose last
+        dotted token is a digit (``'<target>.7'``) is added to another
+        session. The written pickle must contain no rows from the session
+        without target bouts (its id is absent from every feature's
+        ``groups``), must carry no ``'7'`` feature built from the
+        digit-suffixed column, and must still hold rows for the other
+        sessions.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Pytest temporary directory for the synthetic tree and outputs.
+        monkeypatch (pytest.MonkeyPatch)
+            Wraps the module's ``run_predictor_audits``.
+
+        Returns
+        -------
+        None
+        """
+
+        settings, save_dir = _build_settings(
+            tmp_path, model_engine='sklearn', vocal_predictor_type='categories_rate'
+        )
+        pipeline = BoutParameterPipeline(modeling_settings_dict=settings)
+        real_audits = bout_params_module.run_predictor_audits
+        dropped = {}
+
+        def _mutating_audits(**kwargs):
+            """
+            Description
+            -----------
+            Runs the real predictor audits, then mutates the shared session
+            dictionaries in place: drops the target mouse's bouts from the
+            first session and appends a digit-suffixed column to the second.
+
+            Parameters
+            ----------
+            **kwargs
+                The keyword arguments the pipeline passes to
+                ``run_predictor_audits``.
+
+            Returns
+            -------
+            None
+            """
+
+            real_audits(**kwargs)
+            session_ids = sorted(kwargs['processed_beh_dict'])
+            first_session, second_session = session_ids[0], session_ids[1]
+            target_name = kwargs['mouse_names_dict'][first_session][kwargs['target_idx']]
+            del kwargs['usv_data_dict'][first_session][target_name]
+            dropped['session'] = first_session
+            second_target = kwargs['mouse_names_dict'][second_session][kwargs['target_idx']]
+            beh = kwargs['processed_beh_dict']
+            beh[second_session] = beh[second_session].with_columns(pls.lit(1.0).alias(f"{second_target}.7"))
+
+        monkeypatch.setattr(bout_params_module, 'run_predictor_audits', _mutating_audits)
+        pipeline.extract_and_save_modeling_input_data()
+
+        pkls = list(save_dir.glob('modeling_bout_durations_*.pkl'))
+        assert len(pkls) == 1
+        with pkls[0].open('rb') as fh:
+            artifact = pickle.load(fh)
+        feature_keys = [k for k in artifact if not k.startswith('_')]
+        assert '7' not in feature_keys
+        assert 'self.7' not in feature_keys
+        for feat in feature_keys:
+            groups = set(artifact[feat]['groups'].tolist())
+            assert dropped['session'] not in groups
+            assert len(groups) == N_SESSIONS - 1
+
+
+class TestHeldOutDevianceMetricFailure:
+    """A failing held-out deviance metric is recorded explicitly, not left as a silent NaN."""
+
+    @pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
+    @pytest.mark.filterwarnings("ignore:invalid value encountered:RuntimeWarning")
+    @pytest.mark.filterwarnings("ignore:An input array is constant:scipy.stats.ConstantInputWarning")
+    def test_sklearn_heldout_metric_failure_is_flagged(self, monkeypatch):
+        """
+        Description
+        -----------
+        With ``mean_gamma_deviance`` forced to raise, the sklearn runner's
+        held-out refits succeed but the held-out deviance metric fails. Both
+        held-out records ('actual' and 'null') must carry
+        ``heldout_fit_failed=True``, an error string of the form
+        ``'deviance metric: ValueError: <message>'`` and a NaN explained /
+        residual deviance, while the correlation metrics computed after the
+        failure are still finite and the refit time is recorded.
+
+        Parameters
+        ----------
+        monkeypatch (pytest.MonkeyPatch)
+            Replaces the module's ``mean_gamma_deviance``.
+
+        Returns
+        -------
+        None
+        """
+
+        pipeline = _minimal_bout_pipeline(split_strategy='mixed', split_num=2)
+        feature_data = _bout_feature_data(pipeline.history_frames, n_sessions=4)
+        basis = np.eye(pipeline.history_frames, 3, dtype=float)
+        monkeypatch.setattr(bout_params_module, 'mean_gamma_deviance', _raise_gamma_deviance_failure)
+        _fn, res = pipeline._run_model_for_feature_sklearn(
+            'self.speed', feature_data, basis, held_out_session_ids=['session_3'],
+        )
+        for branch in ('actual', 'null'):
+            record = res['heldout'][branch]
+            assert record['heldout_fit_failed'] is True
+            assert record['heldout_fit_error'] == "deviance metric: ValueError: forced held-out deviance failure"
+            assert np.isnan(record['explained_deviance'])
+            assert np.isnan(record['residual_deviance'])
+            assert np.isfinite(record['fit_time'])
+            assert np.isfinite(record['mae'])
+
+    @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
+    @pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
+    @pytest.mark.filterwarnings("ignore:invalid value encountered:RuntimeWarning")
+    @pytest.mark.filterwarnings("ignore:An input array is constant:scipy.stats.ConstantInputWarning")
+    def test_pygam_heldout_metric_failure_is_flagged(self, monkeypatch):
+        """
+        Description
+        -----------
+        The pyGAM counterpart: with ``mean_gamma_deviance`` forced to raise,
+        the Gamma-GAM held-out refits succeed but the held-out deviance
+        metric fails. Both held-out records must carry
+        ``heldout_fit_failed=True``, the ``'deviance metric: ValueError: ...'``
+        error string and NaN explained / residual deviance, with the refit
+        time and the post-failure error metrics still recorded.
+
+        Parameters
+        ----------
+        monkeypatch (pytest.MonkeyPatch)
+            Replaces the module's ``mean_gamma_deviance``.
+
+        Returns
+        -------
+        None
+        """
+
+        pipeline = _minimal_bout_pipeline(split_strategy='mixed', split_num=2)
+        feature_data = _bout_feature_data(pipeline.history_frames, n_sessions=4)
+        monkeypatch.setattr(bout_params_module, 'mean_gamma_deviance', _raise_gamma_deviance_failure)
+        _fn, res = pipeline._run_model_for_feature_pygam(
+            'self.speed', feature_data, None, held_out_session_ids=['session_3'],
+        )
+        for branch in ('actual', 'null'):
+            record = res['heldout'][branch]
+            assert record['heldout_fit_failed'] is True
+            assert record['heldout_fit_error'] == "deviance metric: ValueError: forced held-out deviance failure"
+            assert np.isnan(record['explained_deviance'])
+            assert np.isnan(record['residual_deviance'])
+            assert np.isfinite(record['fit_time'])
+            assert np.isfinite(record['mae'])
