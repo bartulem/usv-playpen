@@ -451,54 +451,6 @@ def vocalization_identity_payload(identity: dict, null: np.ndarray, p_value: flo
                                    for slot, session_id in enumerate(events["session_ids"])}}
 
 
-def nested_decoding_payload(scores: dict, session_ids: list, null: np.ndarray, p_value: float, at_floor: bool,
-                            no_behaviour: float, behaviour_control: dict) -> dict:
-    """
-    Description
-    -----------
-    The point-regression nested section. The per-unit run writes :func:`posterior_nested_payload`
-    instead; this form is not used by the dispatcher.
-
-    The held-out session is recorded by name rather than by slot.
-
-    Parameters
-    ----------
-    scores (dict)
-        ``nested_scores`` on the observed neural column.
-    session_ids (list)
-        The events' sessions, indexed by slot.
-    null (np.ndarray)
-        The null distribution of ``added``.
-    p_value (float)
-        Empirical p.
-    at_floor (bool)
-        Whether ``p_value`` sits at its resolution floor.
-    no_behaviour (float)
-        The pooled score of the no-behaviour model on the same USVs; see ``no_behaviour_predictions``.
-    behaviour_control (dict)
-        Which cohort control produced the reduced model: its features, the day held out of its fit,
-        and the settings hash it was fitted under.
-
-    Returns
-    -------
-    payload (dict)
-        The section.
-    """
-
-    return {"added": scores["added"], "reduced": scores["reduced"], "full": scores["full"],
-            "n_events": scores["n_events"], "n_regions_scored": scores["n_regions_scored"],
-            "min_leave_one_fold_out": scores["min_leave_one_fold_out"],
-            "per_fold": [{"held_out_session": session_ids[int(fold["held_out"])],
-                          "n_events": fold["n_events"], "added": fold["added"]}
-                         for fold in scores["per_fold"]],
-            "null": null, "p": p_value, "at_floor": at_floor, "z": null_z(scores["added"], null),
-            "n_draws": int(null.size), "no_behaviour": no_behaviour,
-            "behaviour_over_no_behaviour": scores["reduced"] - no_behaviour,
-            "behaviour_control": {"features": list(behaviour_control["features"]),
-                                  "held_out_day": behaviour_control["held_out_day"],
-                                  "settings_sha256": behaviour_control["settings_sha256"]}}
-
-
 def vocal_gating_payload(feature_names: list, observed: dict, nulls: dict, verdicts: dict, unit_p: dict,
                    reasons: dict, n_draws: int) -> dict:
     """

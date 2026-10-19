@@ -135,28 +135,6 @@ class TestTheWrittenSections:
     """The written sections name held-out sessions, carry the behaviour control's identity, and store no
     gating decisions."""
 
-    def test_the_nested_decoding_names_the_held_out_session_rather_than_its_slot(self):
-        """Each per-fold record must carry the held-out session's name in place of its slot index, plus the
-        behaviour model's gain over no behaviour and the identity of the behaviour control, so a stored score
-        can be traced to the data and control that produced it."""
-        scores = {"added": 0.01, "reduced": -3.70, "full": -3.69, "n_events": 30, "n_regions_scored": 7,
-                  "min_leave_one_fold_out": 0.005,
-                  "per_fold": [{"held_out": 1, "n_events": 10, "added": 0.02},
-                               {"held_out": 0, "n_events": 20, "added": 0.00}]}
-        control = {"features": ["nose-nose", "other.speed"], "held_out_day": "20250919",
-                   "settings_sha256": "abc123"}
-        payload = vocal.nested_decoding_payload(scores, ["s_a", "s_b"], np.zeros(10), 0.09, False,
-                                                -3.74, control)
-        assert [fold["held_out_session"] for fold in payload["per_fold"]] == ["s_b", "s_a"]
-        assert "held_out" not in payload["per_fold"][0]
-        # the behaviour model's own improvement over no behaviour, stored so the cohort step can judge it
-        assert payload["behaviour_over_no_behaviour"] == pytest.approx(-3.70 - -3.74)
-        # WHICH control produced the reduced model. It is an external artifact now, not a refit, so an
-        # added score that cannot be traced to the control that made it is not reproducible.
-        assert payload["behaviour_control"]["held_out_day"] == "20250919"
-        assert payload["behaviour_control"]["features"] == ["nose-nose", "other.speed"]
-        assert payload["behaviour_control"]["settings_sha256"] == "abc123"
-
     def test_vocal_gating_writes_statistics_and_p_values_but_no_decisions(self, tmp_path):
         """Vocal gating's label, the borderline flag and the unit's best label are uncorrected by construction; the
         artifact writer refuses them, so the payload must not carry them at any depth."""

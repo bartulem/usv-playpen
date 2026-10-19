@@ -38,8 +38,6 @@ from ..modeling.manifold_torus_regression import SmoothTorusManifoldRegression
 from .deviance_metrics import finite_mean, finite_min
 from .neural_design_assembly import lagged_design, onset_history_anchor_frames
 from .neural_vocal_decoding import decode_gain
-from .neural_vocal_occurrence import counts_in_windows
-from .shift_null_inference import shift_range_seconds
 
 
 class NestedTorusRegression(SmoothTorusManifoldRegression):
@@ -339,7 +337,7 @@ def behaviour_prior_log_density(fold: dict, predicted_positions: np.ndarray, pos
 
     prior = settings["behaviour_prior"]
     if prior["form"] != "von_mises":
-        msg = f"behaviour_prior.form must be 'von_mises'; got {prior['form']!r}. Ruled, not missing."
+        msg = f"behaviour_prior.form must be 'von_mises'; got {prior['form']!r}. No other form is supported."
         raise ValueError(msg)
     scale = 2.0 * np.pi / period
 
@@ -384,7 +382,7 @@ def behaviour_prior_log_density(fold: dict, predicted_positions: np.ndarray, pos
                     best, kappa = score, candidate
     else:
         msg = (f"behaviour_prior.concentration must be 'train_residuals' or "
-               f"'train_tuned_inner_loso'; got {prior['concentration']!r}. Ruled, not missing.")
+               f"'train_tuned_inner_loso'; got {prior['concentration']!r}. No other option is supported.")
         raise ValueError(msg)
     return kappa, tilted(kappa)
 
@@ -565,15 +563,14 @@ def check_settings(settings: dict) -> None:
         if value not in allowed:
             others = ", ".join(repr(a) for a in allowed)
             msg = (f"nested_vocal_manifold_position_decoding.{key} = {value!r} is not implemented; this module supports "
-                   f"{others}. This is a ruled decision, not a missing feature -- see the plan.")
+                   f"{others}.")
             raise ValueError(msg)
     for (outer, inner), allowed in IMPLEMENTED_NESTED_OPTIONS.items():
         value = settings[outer][inner]
         if value not in allowed:
             others = ", ".join(repr(a) for a in allowed)
             msg = (f"nested_vocal_manifold_position_decoding.{outer}.{inner} = {value!r} is not "
-                   f"implemented; this module supports {others}. This is a ruled decision, not a "
-                   f"missing feature -- see the plan.")
+                   f"implemented; this module supports {others}.")
             raise ValueError(msg)
 
 
@@ -660,56 +657,6 @@ def reduced_predictions(design: dict, settings: dict, n_lags: int) -> np.ndarray
         predicted[test] = _fit_predict(design["behaviour"], None, positions, weights, train, test,
                                        n_lags, n_features, settings)
     return predicted
-
-
-def shifted_neural_column(design: dict, window_edges: np.ndarray, spikes: dict, durations: dict,
-                          width: float, rng, guard_seconds: float,
-                          sigma_floor: float) -> np.ndarray:
-    """
-    Description
-    -----------
-    A neural column recounted from a circularly shifted spike train, z-scored per session as the
-    observed column is.
-
-    Not used by the shipped null, which is the within-session pair permutation of
-    ``posterior_nested_null_chunk``.
-
-    Parameters
-    ----------
-    design (dict)
-        From :func:`nested_design`; its ``session_index`` assigns events to sessions.
-    window_edges (np.ndarray)
-        Left edge (seconds) of each event's spike window, aligned with the design's rows.
-    spikes (dict)
-        ``{session slot: sorted spike times in seconds}``.
-    durations (dict)
-        ``{session slot: session duration in seconds}``, the circular wrap length.
-    width (float)
-        Window width in seconds.
-    rng (np.random.Generator)
-        Draw source.
-    guard_seconds (float)
-        Guard band at each end of the shift range; lags near 0 or T leave the train near register.
-    sigma_floor (float)
-        Floor on the per-session count SD.
-
-    Returns
-    -------
-    column (np.ndarray)
-        ``(n_events, 1)`` z-scored shifted count per event.
-    """
-
-    session_index = design["session_index"]
-    column = np.empty((session_index.size, 1), dtype=np.float64)
-    for slot in sorted({int(s) for s in session_index}):
-        mask = session_index == slot
-        duration = durations[slot]
-        low, high = shift_range_seconds(duration, guard_seconds)
-        shifted = np.sort((spikes[slot] + rng.uniform(low, high)) % duration)
-        counts = counts_in_windows(shifted, window_edges[mask], width).astype(np.float64)
-        spread = max(float(counts.std()), sigma_floor)
-        column[mask, 0] = (counts - float(counts.mean())) / spread
-    return column
 
 
 def nested_scores(design: dict, settings: dict, n_lags: int,
@@ -871,41 +818,3 @@ def no_behaviour_predictions(design: dict, settings: dict, n_lags: int) -> np.nd
         train = np.flatnonzero(session_index != held_out)
         predicted[test] = _fit_predict(blank, None, positions, weights, train, test, n_lags, n_features, settings)
     return predicted
-
-
-def _score_block(design: dict, settings: dict, n_lags: int) -> float:
-    """
-    Description
-    -----------
-    Pooled macro score of a behaviour-only design, over the same folds ``nested_scores`` uses.
-
-    Not called by the shipped pipeline.
-
-    Parameters
-    ----------
-    design (dict)
-        From :func:`nested_design`, with a zero-width neural block.
-    settings (dict)
-        The ``nested_vocal_manifold_position_decoding`` block.
-    n_lags (int)
-        History length in frames.
-
-    Returns
-    -------
-    score (float)
-        Pooled macro von Mises log-likelihood.
-    """
-
-    positions, regions = design["positions"], design["region_labels"]
-    session_index = design["session_index"]
-    weights = inverse_region_frequency_weights(regions)
-    n_features = len(design["feature_names"])
-    predicted = np.full_like(positions, np.nan)
-    for held_out in sorted({int(s) for s in session_index}):
-        test = np.flatnonzero(session_index == held_out)
-        train = np.flatnonzero(session_index != held_out)
-        predicted[test] = _fit_predict(design["behaviour"], None, positions, weights, train, test,
-                                       n_lags, n_features, settings)
-    return float(macro_von_mises_logscore(predicted, positions, regions, metric="torus",
-                                          period=settings["torus_period"],
-                                          min_region_events=settings["min_region_events"]))

@@ -89,8 +89,8 @@ def build_provenance(settings: dict) -> dict:
 
     git = get_git_commit_info()
     return {"settings_sha256": compute_settings_sha256(settings),
-            "git_commit": git.get("commit") if isinstance(git, dict) else None,
-            "git_dirty": git.get("dirty") if isinstance(git, dict) else None,
+            "git_commit": git["commit"],
+            "git_dirty": git["dirty"],
             "package_version": get_package_version()}
 
 

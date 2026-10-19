@@ -52,7 +52,6 @@ with warnings.catch_warnings():
         posterior_nested_gain,
         reduced_model_features,
         reduced_predictions,
-        shifted_neural_column,
     )
     from usv_playpen.neural_modeling.neural_significance import (
         within_session_permutation,
@@ -671,8 +670,7 @@ class TestNestedScores:
 
 
 class TestTheNull:
-    """Circular shift of the SPIKE TRAIN -- behaviour and position keep their real relationship, and
-    only the neuron is decoupled in time."""
+    """The null moves only the neural side, so the behaviour-only reduced fit is shared by every draw."""
 
     SETTINGS: ClassVar[dict] = _nested(min_region_events=2)
 
@@ -686,78 +684,6 @@ class TestTheNull:
                                reduced_predicted=reduced_predictions(design, self.SETTINGS, 3))
         assert reused["added"] == fresh["added"]
         assert reused["reduced"] == fresh["reduced"]
-
-    @staticmethod
-    def _train(n_sessions=2, rate=40.0, duration=600.0, seed=0):
-        """
-        Description
-        -----------
-        Build uniform random spike trains per session with their durations.
-
-        Parameters
-        ----------
-        n_sessions (int)
-            Number of sessions; defaults to 2.
-        rate (float)
-            Scales the spike count (``rate * duration / 10`` spikes); defaults to 40.0.
-        duration (float)
-            Session duration in seconds; defaults to 600.0.
-        seed (int)
-            Seed for ``np.random.default_rng``; defaults to 0.
-
-        Returns
-        -------
-        trains (tuple[dict, dict])
-            ``({session: sorted spike seconds}, {session: duration})``.
-        """
-        rng = np.random.default_rng(seed)
-        return {s: np.sort(rng.uniform(0, duration, int(rate * duration / 10)))
-                for s in range(n_sessions)}, dict.fromkeys(range(n_sessions), duration)
-
-    def test_a_shifted_column_is_z_scored_per_session_like_the_observed_one(self):
-        """The null column has one row per event and is centred within each session, matching the
-        observed column's normalisation so the null compares like with like."""
-        design = TestNestedScores._design(n_sessions=2, n_per_session=60, seed=9)
-        spikes, durations = self._train()
-        edges = np.linspace(30.0, 550.0, design["positions"].shape[0])
-        column = shifted_neural_column(design, edges, spikes, durations, 0.05,
-                                       np.random.default_rng(0), 20.0, 0.05)
-        assert column.shape == (design["positions"].shape[0], 1)
-        for slot in (0, 1):
-            block = column[design["session_index"] == slot, 0]
-            assert abs(block.mean()) < 1e-9
-
-    def test_different_draws_give_different_columns(self):
-        """A null whose draws repeat is not a null."""
-        design = TestNestedScores._design(n_sessions=2, n_per_session=60, seed=10)
-        spikes, durations = self._train()
-        edges = np.linspace(30.0, 550.0, design["positions"].shape[0])
-        first = shifted_neural_column(design, edges, spikes, durations, 0.05,
-                                      np.random.default_rng(1), 20.0, 0.05)
-        second = shifted_neural_column(design, edges, spikes, durations, 0.05,
-                                       np.random.default_rng(2), 20.0, 0.05)
-        assert not np.allclose(first, second)
-
-    def test_the_same_seed_reproduces_a_draw(self):
-        """A fixed generator seed reproduces the shifted column exactly."""
-        design = TestNestedScores._design(n_sessions=2, n_per_session=60, seed=11)
-        spikes, durations = self._train()
-        edges = np.linspace(30.0, 550.0, design["positions"].shape[0])
-        args = (design, edges, spikes, durations, 0.05)
-        np.testing.assert_allclose(
-            shifted_neural_column(*args, np.random.default_rng(7), 20.0, 0.05),
-            shifted_neural_column(*args, np.random.default_rng(7), 20.0, 0.05))
-
-    def test_counts_are_RECOUNTED_from_the_shifted_train_not_reordered(self):
-        """A reordering would preserve the exact multiset of counts, testing something narrower than
-        'this neuron, decoupled in time'. Recounting can change the multiset."""
-        design = TestNestedScores._design(n_sessions=2, n_per_session=60, seed=12)
-        spikes, durations = self._train(rate=8.0)
-        edges = np.linspace(30.0, 550.0, design["positions"].shape[0])
-        draws = [np.sort(shifted_neural_column(design, edges, spikes, durations, 0.5,
-                                               np.random.default_rng(s), 20.0, 0.05).ravel())
-                 for s in range(6)]
-        assert any(not np.allclose(draws[0], other) for other in draws[1:])
 
 
 class TestSettingsAreNotHardCoded:
@@ -813,9 +739,8 @@ class TestSettingsAreNotHardCoded:
     def test_the_sigma_floor_is_a_setting_not_a_default(self):
         """The vocal-occurrence axis takes it as a required parameter from settings; the nested decoding hard-coded the
         same constant as a default argument, which is how the two could have drifted apart."""
-        for function in (nested_design, shifted_neural_column):
-            parameter = inspect.signature(function).parameters["sigma_floor"]
-            assert parameter.default is inspect.Parameter.empty
+        parameter = inspect.signature(nested_design).parameters["sigma_floor"]
+        assert parameter.default is inspect.Parameter.empty
         assert _settings()["nested_vocal_manifold_position_decoding"]["sigma_floor"] == 0.05
 
     def test_the_dead_bins_knob_is_gone(self):
