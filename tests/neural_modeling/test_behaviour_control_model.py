@@ -32,13 +32,17 @@ import numpy as np
 import polars as pls
 import pytest
 
-from usv_playpen.modeling.manifold_metric import inverse_region_frequency_weights
+from usv_playpen.modeling.manifold_metric import (
+    inverse_region_frequency_weights,
+    macro_von_mises_logscore,
+)
 from usv_playpen.modeling.modeling_metadata import compute_settings_sha256
 from usv_playpen.neural_modeling import behaviour_control_model as control_module
 from usv_playpen.neural_modeling.behaviour_control_model import (
     EMBEDDING_COLUMNS,
     apply_behaviour_control,
     assemble_cohort,
+    control_estimator,
     control_predictions,
     feature_columns,
     fit_control_models,
@@ -288,6 +292,68 @@ def circular_error(predicted: np.ndarray, truth: np.ndarray) -> np.ndarray:
     return np.minimum(difference, 1.0 - difference).max(axis=1)
 
 
+def two_region_cohort(seed: int) -> dict:
+    """
+    Description
+    -----------
+    The planted synthetic cohort with TWO acoustic regions of unequal size and unequal predictability, so
+    that every place a region label is consumed (the inverse-region-frequency fit weights and the macro
+    score's equal-weight average over regions) changes the answer if the labels are dropped.
+
+    Each of the four days carries 80 USVs: the first 55 are region 1 and the last 25 region 2, so both
+    regions clear ``min_region_events`` (20) inside every day while region 1 outnumbers region 2 by more
+    than two to one (the fit weights are therefore not uniform). Region 2's first torus coordinate gets
+    extra noise of sd 0.08 on top of the planted map, so the two regions are predicted with different
+    accuracy and the macro (equal-weight) score differs from the pooled (per-USV) score.
+
+    Parameters
+    ----------
+    seed (int)
+        Seed of both the base cohort and the extra region-2 noise.
+
+    Returns
+    -------
+    cohort (dict)
+        As :func:`synthetic_cohort` with ``per_day=80``, its ``regions`` replaced by the two labels and
+        its region-2 positions perturbed.
+    """
+    cohort = synthetic_cohort(seed=seed, planted=True, per_day=80)
+    generator = np.random.default_rng(seed + 100)
+    regions = np.tile(np.r_[np.ones(55), np.full(25, 2.0)], len(SYNTHETIC_DAYS))
+    positions = cohort["positions"].copy()
+    rare = regions == 2.0
+    positions[rare, 0] = (positions[rare, 0] + generator.normal(0.0, 0.08, int(rare.sum()))) % 1.0
+    cohort["regions"] = regions
+    cohort["positions"] = positions
+    return cohort
+
+
+def macro_reference(predicted: np.ndarray, positions: np.ndarray, regions: np.ndarray | None) -> float:
+    """
+    Description
+    -----------
+    The macro von Mises log-score computed straight from ``manifold_metric`` with the shipped torus
+    period (1.0) and minimum region size (20), independently of the module's ``pooled_macro`` wrapper,
+    so a test can state the score a correctly wired call must produce.
+
+    Parameters
+    ----------
+    predicted (np.ndarray)
+        ``(n, 2)`` predicted torus positions.
+    positions (np.ndarray)
+        ``(n, 2)`` true torus positions.
+    regions (np.ndarray | None)
+        Region label per USV, or None for the single-region (pooled per-USV) score.
+
+    Returns
+    -------
+    score (float)
+        The macro (or, with ``regions=None``, pooled) von Mises log-score.
+    """
+    return float(macro_von_mises_logscore(predicted, positions, regions, metric="torus", period=1.0,
+                                          min_region_events=20))
+
+
 
 class TestTorusEmbedding:
     """The predicted POSITION has to become a predictor without a discontinuity at the wrap."""
@@ -305,6 +371,27 @@ class TestTorusEmbedding:
         near_wrap = torus_embedding(np.array([[0.99, 0.5], [0.01, 0.5]]))
         far_apart = torus_embedding(np.array([[0.25, 0.5], [0.75, 0.5]]))
         assert np.linalg.norm(near_wrap[0] - near_wrap[1]) < np.linalg.norm(far_apart[0] - far_apart[1])
+
+    def test_known_coordinates_map_to_known_angles(self) -> None:
+        """
+        Description
+        -----------
+        A coordinate ``c`` on the unit period is the angle ``2 * pi * c``, so (0.25, 0.0) must embed as
+        ``(cos 90deg, sin 90deg, cos 0, sin 0) = (0, 1, 1, 0)`` and (0.5, 0.125) as
+        ``(-1, 0, cos 45deg, sin 45deg)``. The unit-norm and wrap tests above hold for ANY angle map, so
+        only exact values pin the scaling.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        embedded = torus_embedding(np.array([[0.25, 0.0], [0.5, 0.125]]))
+        half = np.sqrt(0.5)
+        np.testing.assert_allclose(embedded, [[0.0, 1.0, 1.0, 0.0], [-1.0, 0.0, half, half]], atol=1e-12)
 
 
 class TestPairedGain:
@@ -360,6 +447,34 @@ class TestPairedGain:
         assert gain == pytest.approx(0.2)
         assert error == 0.0
 
+    def test_the_error_is_the_sample_standard_error_of_the_paired_differences(self) -> None:
+        """
+        Description
+        -----------
+        Known answers for the standard error ``std(d, ddof=1) / sqrt(n)`` of the paired differences ``d``.
+        With two finite days the differences are (0.1, 0.3): mean 0.2, sample sd ``sqrt(0.02)``, standard
+        error exactly 0.1 -- two days already have a defined sample sd, so the error must NOT fall back to
+        the one-day 0.0. With four days the differences are (0.1, 0.2, 0.3, 0.6): mean 0.3, squared
+        deviations summing to 0.14, so the standard error is ``sqrt(0.14 / 3) / 2``. Either a population
+        sd (``ddof=0``), a multiplied rather than divided ``sqrt(n)``, or a moved one-day cut-off gives a
+        different number.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        gain, error = paired_gain(np.array([-3.4, -3.1]), np.array([-3.5, -3.4]))
+        assert gain == pytest.approx(0.2)
+        assert error == pytest.approx(0.1)
+        incumbent = np.array([-3.5, -3.6, -3.4, -3.7])
+        gain, error = paired_gain(incumbent + np.array([0.1, 0.2, 0.3, 0.6]), incumbent)
+        assert gain == pytest.approx(0.3)
+        assert error == pytest.approx(np.sqrt(0.14 / 3.0) / 2.0)
+
 
 class TestFeatureColumns:
     """Column selection has to honour the ASKED order, not the design's."""
@@ -374,6 +489,78 @@ class TestFeatureColumns:
         select the wrong columns."""
         with pytest.raises(KeyError, match="not in the assembled design"):
             feature_columns(["a", "b"], ["z"], 3)
+
+
+class TestControlEstimator:
+    """The cohort control must carry the run's OWN penalties and period, not the estimator's defaults."""
+
+    def test_the_settings_penalties_and_period_reach_the_estimator(self, settings: dict) -> None:
+        """
+        Description
+        -----------
+        The shipped ``lambda_smooth`` (1.0), ``l2_reg`` (0.01), ``smoothness_derivative_order`` (1) and
+        torus period (1.0) all coincide with ``NestedTorusRegression``'s constructor defaults, so a value
+        that never reaches the estimator is invisible under the shipped settings. Here every one is set
+        off its default (3.0, 0.2, 2 and 2.0), and the estimator must report exactly those, must be a
+        REDUCED model (no neural columns), and must be shaped as one "feature" of
+        ``n_features * n_lags`` bins (three features at four lags: 12) for the parent's column check.
+        These four are the arguments the closed-form solve actually consumes, so they set the fitted
+        coefficients.
+
+        Parameters
+        ----------
+        settings (dict)
+            The shipped settings, adjusted off the estimator defaults.
+
+        Returns
+        -------
+        None
+        """
+        block = settings["nested_vocal_manifold_position_decoding"]
+        block["lambda_smooth"] = 3.0
+        block["l2_reg"] = 0.2
+        block["smoothness_derivative_order"] = 2
+        settings["vocalization_settings"]["torus_period"] = 2.0
+        model = control_estimator(3, 4, settings)
+        assert model.lambda_smooth == 3.0
+        assert model.l2_reg == 0.2
+        assert model.smoothness_derivative_order == 2
+        assert model.period == 2.0
+        assert model.n_neural_columns == 0
+        assert model.n_behaviour_features == 3
+        assert model.n_lags == 4
+        assert model.n_time_bins == 12
+
+
+class TestPooledMacro:
+    """The control is scored by the nested decoding's MACRO statistic, which needs the region labels."""
+
+    def test_the_score_is_the_region_macro_not_the_pooled_mean(self, settings: dict) -> None:
+        """
+        Description
+        -----------
+        On the two-region cohort, with region 2 predicted worse than region 1 and outnumbered by it, the
+        macro score (equal weight per region) sits below the pooled per-USV mean. ``pooled_macro`` must
+        return the macro value computed directly from ``macro_von_mises_logscore`` with the region labels,
+        and the guard checks the two statistics really are apart here, so the test can tell them apart.
+
+        Parameters
+        ----------
+        settings (dict)
+            The shipped settings (period 1.0, ``min_region_events`` 20).
+
+        Returns
+        -------
+        None
+        """
+        cohort = two_region_cohort(seed=3)
+        predicted = held_out_by_day(cohort["design"], cohort["positions"], cohort["regions"], cohort["days"],
+                                    settings, SYNTHETIC_N_LAGS)
+        macro = macro_reference(predicted, cohort["positions"], cohort["regions"])
+        pooled = macro_reference(predicted, cohort["positions"], None)
+        assert abs(macro - pooled) > 0.05, "the regions must differ, or the test proves nothing"
+        assert pooled_macro(predicted, cohort["positions"], cohort["regions"], settings) == pytest.approx(
+            macro, abs=1e-12)
 
 
 class TestApplyBehaviourControl:
@@ -391,6 +578,39 @@ class TestApplyBehaviourControl:
         assert controlled["feature_names"] == list(EMBEDDING_COLUMNS)
         assert controlled["behaviour_control"]["held_out_day"] == "20250919"
         assert controlled["behaviour_control"]["settings_sha256"] == "abc123"
+
+    def test_the_provenance_record_carries_what_the_dispatcher_reads(self, settings: dict,
+                                                                     artifact: dict) -> None:
+        """
+        Description
+        -----------
+        The dispatcher reads ``behaviour_control["features"]`` into every banked result and
+        ``behaviour_control["predicted_positions"]`` to tune the behaviour prior, so the record must hold
+        exactly those keys (plus the held-out day and settings hash): the control's features in order, and
+        the predicted positions that ``control_predictions`` gives for the same block and day, which are
+        also the positions the four embedding columns encode.
+
+        Parameters
+        ----------
+        settings (dict)
+            The shipped settings.
+        artifact (dict)
+            The two-feature, five-lag control fixture.
+
+        Returns
+        -------
+        None
+        """
+        generator = np.random.default_rng(5)
+        design = {"behaviour": generator.normal(size=(12, 10)), "feature_names": ["nose-nose", "other.speed"],
+                  "neural": np.zeros((12, 1))}
+        controlled, _n_lags = apply_behaviour_control(design, artifact, "20250919", settings)
+        record = controlled["behaviour_control"]
+        assert set(record) == {"features", "held_out_day", "predicted_positions", "settings_sha256"}
+        assert record["features"] == ["nose-nose", "other.speed"]
+        expected = control_predictions(artifact, "20250919", design["behaviour"], settings)
+        np.testing.assert_array_equal(record["predicted_positions"], expected)
+        np.testing.assert_allclose(controlled["behaviour"], torus_embedding(expected))
 
     def test_the_original_design_is_not_mutated(self, settings: dict, artifact: dict) -> None:
         """The caller keeps the raw block; an in-place swap would corrupt anything else holding it."""
@@ -454,6 +674,34 @@ class TestLoadControlModel:
         settings["nested_vocal_manifold_position_decoding"]["reduced_model_features"] = list(
             artifact["features"])
         assert load_control_model(settings)["features"] == artifact["features"]
+
+    def test_the_control_is_written_into_a_directory_that_does_not_exist_yet(self, artifact: dict,
+                                                                              tmp_path) -> None:
+        """
+        Description
+        -----------
+        The artifact's destination sits several directory levels below anything that exists, as a fresh
+        results tree does; writing must create every missing parent and the pickle must load back equal
+        to what was written.
+
+        Parameters
+        ----------
+        artifact (dict)
+            The two-feature control fixture.
+        tmp_path (pathlib.Path)
+            Root under which the missing directories are created.
+
+        Returns
+        -------
+        None
+        """
+        path = tmp_path / "results" / "behaviour" / "control.pkl"
+        write_control_model(artifact, str(path))
+        with path.open("rb") as handle:
+            loaded = pickle.load(handle)
+        assert loaded["features"] == artifact["features"]
+        np.testing.assert_array_equal(loaded["coefficients"]["20250919"]["coef"],
+                                      artifact["coefficients"]["20250919"]["coef"])
 
     def test_a_missing_control_names_the_dispatcher(self, settings: dict, tmp_path) -> None:
         """A missing control file must raise ``FileNotFoundError`` naming the behaviour-control dispatcher, so the
@@ -528,7 +776,7 @@ class TestSessionVocalizationDesign:
 
     SESSION, FPS, N_FRAMES = "20250101_000000", 10.0, 2000
 
-    def _write(self, root: pathlib.Path, usvs: list) -> None:
+    def _write(self, root: pathlib.Path, usvs: list, first_coordinates: list | None = None) -> None:
         """
         Description
         -----------
@@ -541,6 +789,8 @@ class TestSessionVocalizationDesign:
             The data root.
         usvs (list[tuple])
             ``(start, stop, emitter, noise, squeak)`` per row.
+        first_coordinates (list | None)
+            The ``qlvm1`` value per row (NaN marks a missing position); None writes 0.2 on every row.
 
         Returns
         -------
@@ -558,7 +808,8 @@ class TestSessionVocalizationDesign:
         pls.DataFrame({"usv_id": list(range(len(usvs))),
                        "start": [row[0] for row in usvs], "stop": [row[1] for row in usvs],
                        "emitter": [row[2] for row in usvs],
-                       "qlvm1": [0.2] * len(usvs), "qlvm2": [0.4] * len(usvs),
+                       "qlvm1": [0.2] * len(usvs) if first_coordinates is None else first_coordinates,
+                       "qlvm2": [0.4] * len(usvs),
                        "qlvm_category": [1.0] * len(usvs),
                        "noise": [row[3] for row in usvs], "squeak": [row[4] for row in usvs],
                        }).write_csv(audio_dir / f"{self.SESSION}_usv_summary.csv")
@@ -623,6 +874,98 @@ class TestSessionVocalizationDesign:
         expected = onset_history_anchor_frames(block["vocalization_start"], self.FPS)
         np.testing.assert_array_equal(expected, [499, 999])
         np.testing.assert_allclose(block["design"][:, -1], expected)
+
+    def test_every_filter_boundary_and_the_returned_block(self, monkeypatch, tmp_path, settings: dict) -> None:
+        """
+        Description
+        -----------
+        One session built so that each filter decides exactly one row at its boundary. The recorded male
+        emits six analysed vocalizations and the per-session minimum is set to exactly six, so the session
+        must be kept (the minimum is inclusive). With ``n_lags = 500`` at 10 fps and a kinematic series of
+        1,000 frames (the frame index, with frame 10 missing):
+
+        - 49.90 s (anchor 498): one frame short of a full history -- dropped;
+        - 50.00 s (anchor 499 = ``n_lags - 1``): exactly a full history -- KEPT;
+        - 60.00 s: its ``qlvm1`` is missing -- dropped, and ONLY that row;
+        - 70.12 s: a female vocalization (70.00-70.10 s) overlaps its 0.05 s pre-window [70.07, 70.12) --
+          dropped as intruded;
+        - 90.00 s (anchor 899): a female vocalization ENDS exactly at its window opening (89.95 s), which
+          touches but does not overlap the window -- KEPT;
+        - 100.10 s (anchor 1000 = the series length): its history would end past the session -- dropped.
+
+        The kinematic loader must be asked for exactly this session, the configured kinematic features and
+        the recorded animal (the first track). The returned block must carry exactly the documented keys:
+        the session id, a float32 design whose last column is each kept anchor and whose frame-10 column is
+        0 (a missing kinematic sample is filled with zero), the kept positions and regions, the feature
+        names, the count and the onsets.
+
+        Parameters
+        ----------
+        monkeypatch (pytest.MonkeyPatch)
+            Patches the kinematic loader with a strict fake.
+        tmp_path (pathlib.Path)
+            The data root.
+        settings (dict)
+            The shipped settings, adjusted for the synthetic session.
+
+        Returns
+        -------
+        None
+        """
+        nan = float("nan")
+        rows = [(49.9, 49.92, "male", False, False, 0.2), (50.0, 50.1, "male", False, False, 0.3),
+                (60.0, 60.1, "male", False, False, nan), (70.0, 70.1, "female", False, False, 0.2),
+                (70.12, 70.2, "male", False, False, 0.2), (89.9, 89.95, "female", False, False, 0.2),
+                (90.0, 90.1, "male", False, False, 0.6), (100.1, 100.2, "male", False, False, 0.2)]
+        self._write(tmp_path, [row[:5] for row in rows], first_coordinates=[row[5] for row in rows])
+        settings["data_roots"]["data_root"] = str(tmp_path)
+        settings["data_sufficiency"]["min_emitter_usvs_per_session"] = 6
+        settings["vocalization_settings"]["vocal_emitter"] = "self"
+        series = np.arange(1000, dtype=np.float64)
+        series[10] = np.nan
+        frames = pls.DataFrame({"f": series})
+        session_directory = str(tmp_path / self.SESSION)
+
+        def strict_loader(*, session_dirs: list, kinematic_features: object, recorded_mouse_id: str) -> tuple:
+            """
+            Description
+            -----------
+            Keyword-only stand-in for ``build_zscored_feature_frames`` that checks what it is asked for and
+            returns the one-feature frame-index series.
+
+            Parameters
+            ----------
+            session_dirs (list)
+                Must be exactly ``[session_directory]``.
+            kinematic_features (object)
+                Must be the settings' ``kinematic_features`` block.
+            recorded_mouse_id (str)
+                Must be ``"male"``, the first track.
+
+            Returns
+            -------
+            loaded (tuple)
+                ``(frames, camera_fps, names, suffixes)`` keyed by the session id.
+            """
+            assert session_dirs == [session_directory]
+            assert kinematic_features == settings["kinematic_features"]
+            assert recorded_mouse_id == "male"
+            return {self.SESSION: frames}, {self.SESSION: self.FPS}, {}, {}
+
+        monkeypatch.setattr(control_module, "build_zscored_feature_frames", strict_loader)
+        block = session_vocalization_design(session_directory, settings, 500)
+        assert set(block) == {"session_id", "design", "positions", "regions", "feature_names", "n_kept",
+                              "vocalization_start"}
+        assert block["session_id"] == self.SESSION
+        np.testing.assert_allclose(block["vocalization_start"], [50.0, 90.0])
+        assert block["n_kept"] == 2
+        assert block["design"].dtype == np.float32
+        assert block["design"].shape == (2, 500)
+        np.testing.assert_array_equal(block["design"][:, -1], [499.0, 899.0])
+        assert block["design"][0, 10] == 0.0
+        np.testing.assert_allclose(block["positions"], [[0.3, 0.4], [0.6, 0.4]])
+        np.testing.assert_array_equal(block["regions"], [1.0, 1.0])
+        assert block["feature_names"] == ["f"]
 
     def _write_tracking_only(self, root: pathlib.Path, track_names: list) -> None:
         """
@@ -1113,6 +1456,120 @@ class TestFitControlModels:
             assert rescored == pytest.approx(artifact["per_day"][day]["behaviour"], abs=1e-9)
 
 
+    def test_each_fold_is_the_weighted_fit_on_the_other_days_and_scored_by_region(self,
+                                                                               settings: dict) -> None:
+        """
+        Description
+        -----------
+        On the two-region cohort, every stored fold must equal -- to numerical precision -- a control
+        fitted on the OTHER three days with the cohort-wide inverse-region-frequency weights restricted to
+        those days. A fold fitted on its own day, or fitted unweighted, gives different coefficients
+        (region 1 outnumbers region 2 by 55 to 25 per day, so the weights are far from uniform). The scores
+        must be the region MACRO: each day's behaviour score is the macro score of that fold's predictions
+        on that day, each day's no-behaviour score the macro score of the all-zero-design held-out
+        predictions, and the two pooled scores the macro over every USV, all computed with the region
+        labels directly from ``macro_von_mises_logscore``. The guard confirms the pooled-per-USV score
+        differs here, so a dropped label is detectable.
+
+        Parameters
+        ----------
+        settings (dict)
+            The shipped settings.
+
+        Returns
+        -------
+        None
+        """
+        cohort = two_region_cohort(seed=4)
+        positions, regions, days = cohort["positions"], cohort["regions"], cohort["days"]
+        artifact = fit_control_models(cohort, ["signal"], settings, SYNTHETIC_N_LAGS)
+        design = cohort["design"][:, 0:SYNTHETIC_N_LAGS].astype(np.float64)
+        weights = inverse_region_frequency_weights(regions)
+        assert np.unique(weights).size == 2
+        predicted = np.full_like(positions, np.nan)
+        for day in SYNTHETIC_DAYS:
+            train, test = days != day, days == day
+            reference = control_estimator(1, SYNTHETIC_N_LAGS, settings)
+            reference.fit(design[train], positions[train], sample_weight=weights[train])
+            np.testing.assert_allclose(artifact["coefficients"][day]["coef"], reference.coef_, rtol=1e-10,
+                                       atol=1e-12)
+            np.testing.assert_allclose(artifact["coefficients"][day]["intercept"], reference.intercept_,
+                                       rtol=1e-10, atol=1e-12)
+            predicted[test] = reference.predict(design[test], snap=False)
+        blank = held_out_by_day(np.zeros_like(design), positions, regions, days, settings, SYNTHETIC_N_LAGS)
+        for day in SYNTHETIC_DAYS:
+            rows = days == day
+            assert artifact["per_day"][day]["behaviour"] == pytest.approx(
+                macro_reference(predicted[rows], positions[rows], regions[rows]), abs=1e-9)
+            assert artifact["per_day"][day]["no_behaviour"] == pytest.approx(
+                macro_reference(blank[rows], positions[rows], regions[rows]), abs=1e-9)
+        assert artifact["held_out_score"] == pytest.approx(macro_reference(predicted, positions, regions), abs=1e-9)
+        assert artifact["no_behaviour_score"] == pytest.approx(macro_reference(blank, positions, regions), abs=1e-9)
+        assert abs(macro_reference(predicted, positions, None) - artifact["held_out_score"]) > 0.05
+        assert abs(macro_reference(blank, positions, None) - artifact["no_behaviour_score"]) > 0.05
+
+
+class StubbedScores:
+    """
+    Description
+    -----------
+    A lookup that stands in for ``_score_candidate`` so the forward selection's ranking and acceptance
+    rule can be driven with EXACT per-day scores.
+
+    The real scorer fits and scores a model; its numbers are never round, so the boundaries of the
+    acceptance rule (a gain less error of exactly zero, a gain above one nat) cannot be hit with it. This
+    stub returns, for each candidate tuple, the per-day scores it was given; an unlisted candidate raises
+    ``KeyError`` so an unexpected selection path fails loudly.
+
+    Parameters
+    ----------
+    table (dict)
+        ``{candidate_tuple: per_day_scores}``.
+
+    Returns
+    -------
+    stub (StubbedScores)
+        A callable with ``_score_candidate``'s signature.
+    """
+
+    def __init__(self, table: dict) -> None:
+        """
+        Description
+        -----------
+        Store the candidate-to-scores table.
+
+        Parameters
+        ----------
+        table (dict)
+            ``{candidate_tuple: per_day_scores}``.
+
+        Returns
+        -------
+        None
+        """
+        self.table = table
+
+    def __call__(self, arguments: tuple) -> tuple:
+        """
+        Description
+        -----------
+        Return the candidate, its tabled per-day scores, and their mean as the pooled score.
+
+        Parameters
+        ----------
+        arguments (tuple)
+            ``_score_candidate``'s argument tuple; only its last element (the candidate) is read.
+
+        Returns
+        -------
+        result (tuple)
+            ``(candidate, per_day, pooled)``.
+        """
+        candidate = arguments[-1]
+        per_day = np.asarray(self.table[candidate], dtype=np.float64)
+        return candidate, per_day, float(per_day.mean())
+
+
 class TestSelectControlFeatures:
     """Forward selection must find a planted feature and refuse to invent one from noise."""
 
@@ -1278,6 +1735,192 @@ class TestSelectControlFeatures:
         assert selection["rejected"] is None
         assert selection["pooled_score"] == selection["per_step"][0]["pooled"]
         assert serial_pools.requested_workers == [1]
+
+
+    @staticmethod
+    def _stubbed_selection(monkeypatch, settings: dict, canonical: list, table: dict) -> dict:
+        """
+        Description
+        -----------
+        Run ``select_control_features`` with every model fit replaced, so the per-day scores are EXACTLY
+        those tabled: the no-behaviour baseline is 0.0 on every day (``held_out_by_day`` returns zeros
+        and ``pooled_macro`` returns 0.0), and each candidate's per-day scores come from
+        :class:`StubbedScores`. The paired gain of a candidate is therefore the mean of its tabled scores
+        and its error their sample standard error.
+
+        Parameters
+        ----------
+        monkeypatch (pytest.MonkeyPatch)
+            Patches the scorer, the baseline and the score wrapper on the module under test.
+        settings (dict)
+            The shipped settings (only hashed).
+        canonical (list)
+            The cohort's feature names, in canonical order.
+        table (dict)
+            ``{candidate_tuple: per_day_scores}`` over four days.
+
+        Returns
+        -------
+        selection (dict)
+            As ``select_control_features`` returns it.
+        """
+        monkeypatch.setattr(control_module, "_score_candidate", StubbedScores(table))
+        monkeypatch.setattr(control_module, "held_out_by_day",
+                            lambda _blank, positions, *_rest: np.zeros_like(positions))
+        monkeypatch.setattr(control_module, "pooled_macro", lambda *_args: 0.0)
+        n_rows = 4 * len(SYNTHETIC_DAYS)
+        cohort = {"design": np.zeros((n_rows, len(canonical) * SYNTHETIC_N_LAGS), dtype=np.float32),
+                  "positions": np.full((n_rows, 2), 0.5), "regions": np.ones(n_rows),
+                  "days": np.repeat(SYNTHETIC_DAYS, 4), "feature_names": list(canonical),
+                  "session_ids": ["s"], "skipped": {}}
+        return select_control_features(cohort, settings, SYNTHETIC_N_LAGS, 1, "unused.npy")
+
+    @pytest.mark.usefixtures("serial_pools")
+    def test_the_largest_gain_leads_not_the_smallest_error(self, monkeypatch, settings: dict) -> None:
+        """
+        Description
+        -----------
+        Two candidates both clear the rule at the first step: ``a`` gains 0.5 with a tiny error, ``b``
+        gains only 0.3 with a large error. Ranking is by GAIN, so ``a`` must be taken first; ``b`` is then
+        offered on top of ``a`` and scores exactly as ``a`` did (zero paired gain), so it is rejected.
+
+        Parameters
+        ----------
+        monkeypatch (pytest.MonkeyPatch)
+            Patches the scorers.
+        settings (dict)
+            The shipped settings.
+
+        Returns
+        -------
+        None
+        """
+        a_scores = [0.5, 0.51, 0.49, 0.5]
+        selection = self._stubbed_selection(monkeypatch, settings, ["a", "b"], {
+            ("a",): a_scores, ("b",): [0.1, 0.5, 0.1, 0.5], ("a", "b"): a_scores})
+        assert [step["feature"] for step in selection["per_step"]] == ["a"]
+        assert selection["per_step"][0]["paired_gain"] == pytest.approx(0.5)
+        assert selection["rejected"]["feature"] == "b"
+        assert selection["rejected"]["paired_gain"] == pytest.approx(0.0)
+
+    @pytest.mark.parametrize(("per_day", "accepted"), [
+        pytest.param([0.0, 0.0, 0.0, 0.0], False, id="gain_less_error_exactly_zero"),
+        pytest.param([-0.1, 0.1, -0.2, 0.1], False, id="negative_gain_inside_its_error"),
+        pytest.param([0.5, 0.5, 0.5, 0.5], True, id="half_a_nat_with_no_spread"),
+    ])
+    @pytest.mark.usefixtures("serial_pools")
+    def test_the_acceptance_boundary(self, monkeypatch, settings: dict, per_day: list, accepted: bool) -> None:
+        """
+        Description
+        -----------
+        The rule accepts a candidate only when its paired gain LESS its own standard error is strictly
+        above zero. Three exact cases for a lone feature against a 0.0 baseline: a gain of 0 with error 0
+        sits ON the boundary and must be rejected; a gain of -0.025 whose error (about 0.066) exceeds its
+        magnitude must be rejected (adding the error instead of subtracting it would accept it); a gain of
+        0.5 with no spread must be accepted (the bar is zero, not one nat).
+
+        Parameters
+        ----------
+        monkeypatch (pytest.MonkeyPatch)
+            Patches the scorers.
+        settings (dict)
+            The shipped settings.
+        per_day (list)
+            The lone candidate's per-day scores.
+        accepted (bool)
+            Whether the rule must accept it.
+
+        Returns
+        -------
+        None
+        """
+        selection = self._stubbed_selection(monkeypatch, settings, ["a"], {("a",): per_day})
+        assert selection["selected_features"] == (["a"] if accepted else [])
+        assert (selection["rejected"] is None) == accepted
+
+    @pytest.mark.usefixtures("serial_pools")
+    def test_the_baseline_and_gains_are_region_macro_scores(self, tmp_path, settings: dict) -> None:
+        """
+        Description
+        -----------
+        On the two-region cohort the no-behaviour score, each day's incumbent score and each candidate's
+        per-day and pooled scores must all be REGION MACRO scores. The expected values are rebuilt
+        independently: the all-zero-design and ``signal``-only held-out predictions from
+        ``held_out_by_day``, scored per day and pooled with the region labels straight from
+        ``macro_von_mises_logscore``. The first accepted step must be ``signal`` with exactly that paired
+        gain and pooled score, and the reported no-behaviour score must be the macro one; scoring without
+        the labels would shift every one of them (the guard confirms by how much).
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Where the design ``.npy`` is written.
+        settings (dict)
+            The shipped settings.
+
+        Returns
+        -------
+        None
+        """
+        cohort = two_region_cohort(seed=5)
+        positions, regions, days = cohort["positions"], cohort["regions"], cohort["days"]
+        design_path = tmp_path / "design.npy"
+        np.save(design_path, cohort["design"])
+        selection = select_control_features(cohort, settings, SYNTHETIC_N_LAGS, 1, str(design_path))
+
+        blank = held_out_by_day(np.zeros_like(cohort["design"][:, :SYNTHETIC_N_LAGS]), positions, regions,
+                                days, settings, SYNTHETIC_N_LAGS)
+        signal = held_out_by_day(cohort["design"][:, :SYNTHETIC_N_LAGS], positions, regions, days, settings,
+                                 SYNTHETIC_N_LAGS)
+        incumbent = np.array([macro_reference(blank[days == day], positions[days == day], regions[days == day])
+                              for day in SYNTHETIC_DAYS])
+        candidate = np.array([macro_reference(signal[days == day], positions[days == day], regions[days == day])
+                              for day in SYNTHETIC_DAYS])
+        expected_gain, expected_error = paired_gain(candidate, incumbent)
+        assert selection["no_behaviour_score"] == pytest.approx(macro_reference(blank, positions, regions),
+                                                                abs=1e-9)
+        first = selection["per_step"][0]
+        assert first["feature"] == "signal"
+        assert first["paired_gain"] == pytest.approx(expected_gain, abs=1e-9)
+        assert first["standard_error"] == pytest.approx(expected_error, abs=1e-9)
+        assert first["pooled"] == pytest.approx(macro_reference(signal, positions, regions), abs=1e-9)
+        assert abs(macro_reference(blank, positions, None) - selection["no_behaviour_score"]) > 0.05
+
+    def test_a_candidate_is_scored_from_the_mapped_design_by_region(self, tmp_path, settings: dict) -> None:
+        """
+        Description
+        -----------
+        The worker body maps the stored design, takes the candidate's columns, fits and predicts held out
+        by day, and scores. Its per-day and pooled scores for ``("noise_a", "signal")`` must equal the
+        region macro scores of ``held_out_by_day`` on the same columns, and it must hand back the candidate
+        it was given, unchanged.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Where the design ``.npy`` is written.
+        settings (dict)
+            The shipped settings.
+
+        Returns
+        -------
+        None
+        """
+        cohort = two_region_cohort(seed=6)
+        positions, regions, days = cohort["positions"], cohort["regions"], cohort["days"]
+        design_path = tmp_path / "design.npy"
+        np.save(design_path, cohort["design"])
+        columns = feature_columns(cohort["feature_names"], ["noise_a", "signal"], SYNTHETIC_N_LAGS)
+        candidate, per_day, pooled = control_module._score_candidate(
+            (str(design_path), columns, positions, regions, days, settings, SYNTHETIC_N_LAGS, 2,
+             ("noise_a", "signal")))
+        predicted = held_out_by_day(cohort["design"][:, columns], positions, regions, days, settings,
+                                    SYNTHETIC_N_LAGS)
+        assert candidate == ("noise_a", "signal")
+        np.testing.assert_allclose(per_day, [macro_reference(predicted[days == day], positions[days == day],
+                                                             regions[days == day]) for day in SYNTHETIC_DAYS],
+                                   atol=1e-9)
+        assert pooled == pytest.approx(macro_reference(predicted, positions, regions), abs=1e-9)
 
 
 class TestAssembleCohort:
