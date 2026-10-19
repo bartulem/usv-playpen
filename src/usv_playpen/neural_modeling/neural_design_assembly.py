@@ -2,36 +2,17 @@
 @author: bartulem
 Turning a unit's sessions into the per-frame design the encoding models are fitted on.
 
-The module has two halves. The first loads a unit's sessions and builds the pooled, z-scored predictor
-time series, leaning on the behavioural pipeline's own loaders and column utilities rather than
-reimplementing them, so the neural features are the same features P1 uses. The second is deterministic
-frame bookkeeping: which frames count as silence, which frames a vocalization occupies, what the lagged
-predictor looks like at a frame, and whether the unit spiked there. The modelling itself lives elsewhere;
-this module only decides what gets modelled.
+Loads a unit's sessions, builds the pooled z-scored predictor time series with the behavioural
+pipeline's own loaders and column utilities, and does the frame bookkeeping the models are fitted on:
 
-Two definitions carry most of the weight and are worth stating precisely, because the asymmetry between
-them is deliberate rather than accidental.
+- quiet anchors     — frames with no vocalization from any emitter (per ``clean_against``) from
+                      ``history_pre_seconds`` before to ``clean_post_seconds`` after;
+- vocal frames      — frames inside the recorded animal's own USVs, with no cleanliness condition;
+- per-USV events    — one row per analysed USV with its torus position, acoustic region, silent gap
+                      and the unit's spike count in the peri-onset window, plus quiet tiles of the same
+                      width as the negative class.
 
-A QUIET anchor is a frame with no vocalization from ANY emitter in the window running from
-``history_pre_seconds`` before it to ``clean_post_seconds`` after it. Cleanliness is judged against every
-animal, not just the focal one, because the point is that nothing was audible.
-
-A VOCAL frame is a frame inside a FOCAL animal's own USV, and no cleanliness condition is applied to it at
-all. Applying the quiet rule to vocal events would be the wrong instrument: it is the right rule for
-silence, where quiet IS the definition, but on a bout of USVs it retained 77 of 2,437 focal USVs and every
-survivor was bout-initial, which is a crippling loss of power and a systematic selection bias at the same
-time. Every focal USV is kept instead, with the silent gap to the previous one recorded as a covariate so
-bout structure stays checkable after the fact rather than being filtered for up front.
-
-The consequence is that a session divides into three parts, not two: quiet anchors, focal vocal frames, and
-a substantial remainder belonging to neither -- the guard bands, and every frame inside a non-focal
-animal's USV. On one three-session day that split was 63.1% quiet, 6.4% vocal, 30.5% neither.
-
-The decoding analyses work at a third grain, which the last section of this module supplies. There the
-observation is a USV rather than a frame: one row per focal vocalization, carrying its position on the
-acoustic torus and the unit's spike count in a short window before onset. The quiet definition is reused
-unchanged for the negative class, tiled at the window's own width so the two counts are comparable, which
-is what lets one guard band serve the kinematic encoding, the vocal-occurrence axis and the vocalization-identity baselines alike.
+The modelling itself lives elsewhere; this module only decides what gets modelled.
 """
 
 from __future__ import annotations
@@ -69,20 +50,10 @@ def worker_process_context() -> multiprocessing.context.BaseContext:
     The multiprocessing context for a pool of numerical workers, with every worker's BLAS held to ONE
     thread -- so that ``n_workers`` bounds the cores a pool takes, which on its own it does not.
 
-    A process pool limits the number of WORKERS, not the number of threads. Each worker that imports
-    numpy receives a BLAS thread pool sized to the whole machine, so ``n_workers`` workers claim
-    ``n_workers x nproc`` threads and the box oversubscribes by that factor. MEASURED 2026-10-12: six
-    gating workers at 65 threads and ~480% CPU each took 29 of 32 cores, starved six concurrent
-    encoding folds from ~350% to ~100% CPU, drove the load average past 200, and ran twelve times over
-    the gating stage's measured budget -- thrashing rather than progressing. With single-threaded
-    workers ``n_workers`` means what it says, and the parallelism lives where it was intended, across
-    workers rather than inside each one.
-
-    The variables are set in THIS process's environment, which spawned children inherit and read when
-    their BLAS initialises; ``setdefault`` so an explicit value already in the shell wins. The context
-    is SPAWN rather than fork for the same reason: a forked child shares the parent's already-initialised
-    BLAS pool and ignores the variables, while a spawned one starts its runtimes afresh under them. The
-    parent's own threading is left alone -- numpy is long imported by the time any pool is built.
+    Each worker that imports numpy otherwise receives a BLAS pool sized to the whole machine, so the
+    pool oversubscribes by a factor of ``n_workers``. The variables are set with ``setdefault`` in this
+    process's environment, so an explicit shell value wins; the context is spawn rather than fork
+    because a forked child inherits the parent's already-initialised BLAS pool.
 
     Parameters
     ----------
@@ -161,10 +132,8 @@ def vocal_span_frames(starts_seconds: np.ndarray, stops_seconds: np.ndarray, fps
     all carry a full in-bounds predictor history. Spans are ragged, so they come back flattened with an
     offset pointer rather than padded.
 
-    The rounding is nudged before it is applied. ``stop * fps`` lands on values like 220.00000000000003, and
-    a bare ceiling then adds a frame the USV never occupied -- which inflates every span whose edge is
-    representable-adjacent, and inflates it worst for the longest USVs. A tolerance of one part in a
-    billion removes that without affecting any genuine boundary.
+    The rounding carries a 1e-9 tolerance, so a floating-point overshoot such as
+    ``220.00000000000003`` does not add a frame the USV never occupied.
 
     Parameters
     ----------
@@ -210,9 +179,8 @@ def silent_gap_before_vocalization(starts_seconds: np.ndarray, stops_seconds: np
     Silent gap in seconds from the previous focal vocalization's offset to each vocalization's onset, with
     infinity for the first one.
 
-    Recorded per event so that bout structure remains checkable after the fact. It is deliberately left
-    CONTINUOUS rather than thresholded into bout-initial and mid-bout, since any threshold would be an
-    invented constant; a binary can be derived later from the gaps if one is ever justified.
+    Kept continuous rather than thresholded into bout-initial and mid-bout, so bout structure stays
+    checkable after the fact.
 
     Parameters
     ----------
@@ -240,11 +208,8 @@ def onset_history_anchor_frames(starts_seconds: np.ndarray, fps: float) -> np.nd
     The frame each vocalization's behaviour history ENDS at: the frame before the onset frame,
     ``rint(start * fps) - 1``, so the lagged window built at it is strictly pre-onset.
 
-    One convention serves both halves of the behaviour control. The cohort control is FITTED on
-    histories ending here and its prediction is APPLIED to a unit's histories built by the nested
-    decoding; the two used to round the same onset to different frames (the fit at the frame before
-    onset, the application at the onset frame itself), so every applied history was shifted one frame
-    later than the histories the coefficients were estimated on.
+    The same convention is used where the cohort behaviour control is fitted and where its
+    prediction is applied by the nested decoding.
 
     Parameters
     ----------
@@ -270,11 +235,8 @@ def spike_labels_at_frames(spike_frames: np.ndarray, anchor_frames: np.ndarray,
     -----------
     Binary spike labels at the requested frames.
 
-    Binarization is exact rather than approximate at this bin width: the tracking rate gives frames of about
-    6.7 ms, where the refractory period caps a frame at one spike, so Bernoulli is the true likelihood and
-    nothing is discarded. That stops being true the moment the bin is widened -- over a 200 ms window a fast
-    unit emits a dozen spikes and collapsing them to a single bit is data destruction, not a modelling
-    convenience.
+    At the tracking rate a frame lasts about 6.7 ms, so the refractory period caps it at one spike and
+    the binary label loses nothing. Wider bins are modelled as counts instead.
 
     Parameters
     ----------
@@ -305,10 +267,8 @@ def lagged_design(feature_time_series: np.ndarray, anchor_frames: np.ndarray,
     The lagged predictor at each anchor frame: every feature's preceding ``n_lags`` samples, laid out as one
     row per anchor.
 
-    Built with a sliding window view rather than an explicit loop over lags, so the whole history is a
-    stride trick over the original array and no per-lag copy is made. ``sliding_window_view(column,
-    n_lags)[i]`` is ``column[i : i + n_lags]``, so the window ENDING at frame ``t`` begins at index
-    ``t - n_lags + 1``.
+    Built with a sliding window view, so no per-lag copy is made. The window ending at frame ``t``
+    begins at index ``t - n_lags + 1``.
 
     Parameters
     ----------
@@ -342,19 +302,12 @@ def subsample_quiet_anchors(quiet_frames: np.ndarray, spike_frames: np.ndarray, 
     Class-balanced, memory-bounded subsampling of quiet anchors, with the log-prior offset correction that
     keeps the fit calibrated afterwards.
 
-    All of the minority class is kept and the majority is subsampled to ``negatives_per_positive`` times its
-    size. For the usual rare-firing unit that reduces to keeping every spike frame and thinning the zeros,
-    but stating it by minority class rather than by label means a high-firing unit, where the zeros are
-    scarcer, is handled correctly instead of backwards.
-
-    Subsampling shifts the log-odds by the log ratio of the two keep-fractions. That constant comes back as
-    a per-sample OFFSET to be added during the fit, so the learned intercept is already on the
-    true-population scale and prediction on un-subsampled data, where the offset is zero, is calibrated. The
-    fit itself then runs unweighted, which is the efficient case-control estimator.
-
-    ``max_total`` scales both classes down together when even the balanced design would be too large; the
-    offset absorbs that too. Without it a six-session unit at a high firing rate builds a design of tens of
-    gigabytes and is killed.
+    The minority class is kept whole and the majority subsampled to ``negatives_per_positive`` times
+    its size, so a high-firing unit, where the zeros are scarcer, is handled correctly too. Subsampling
+    shifts the log-odds by the log ratio of the two keep-fractions; that constant is returned as a
+    per-sample offset to add during the fit, so the intercept stays on the population scale
+   . ``max_total`` scales both classes down together to bound memory, and the offset
+    absorbs that too.
 
     Parameters
     ----------
@@ -489,23 +442,10 @@ def filter_vocalizations(usv_df: pls.DataFrame, vocal_settings: dict, scope: str
     -----------
     Drop the rows of a USV summary that the settings say are not vocalizations of the analysed kind.
 
-    Two categories are removed, for different reasons, and they do NOT have the same scope.
-
-    ``noise`` is not a vocalization at all -- the classifier's positive class is "no vocalization" --
-    so a noise row is removed EVERYWHERE, including from the guard that decides which frames count as
-    quiet. Leaving it in the guard would let a microphone artefact veto a genuinely silent frame.
-
-    ``squeak`` is a real sound the animal made, but a different TYPE with its own model and its own
-    ``qlvm_squeak*`` coordinates, so a squeak pushed through the base encoder is out of distribution
-    and does not belong in the analysed USV set. Whether it should still make surrounding frames
-    non-quiet is a separate question, because there it is acting as evidence the animal vocalized
-    rather than as a point on the manifold. ``squeaks_block_quiet`` decides that, and shipping true
-    means "quiet" keeps its stronger reading: the animal made no sound of any kind.
-
-    Measured exposure (2026-09-30): 3.5% noise and 7.3% squeaks across the 176 behavioural courtship
-    sessions, 10.6% together; far less on the ephys days, 0.8-1.5% of focal USVs on 20250919. On the
-    behavioural corpus the unfiltered base map's densest cell sat INSIDE the squeak cluster, so the
-    density panel was reporting squeaks as the repertoire's mode.
+    ``noise`` is not a vocalization, so it is removed at both scopes, including from the guard that
+    decides which frames count as quiet. ``squeak`` is a real sound of a different type, outside the
+    analysed USV set; whether it still makes surrounding frames non-quiet is set by
+    ``squeaks_block_quiet`` (shipped true, so "quiet" means no sound of any kind).
 
     Parameters
     ----------
@@ -535,8 +475,7 @@ def filter_vocalizations(usv_df: pls.DataFrame, vocal_settings: dict, scope: str
     wanted = ([("noise", drop_noise)] if drop_noise else []) + ([("squeak", drop_squeaks)]
                                                                 if drop_squeaks else [])
     for column, _flag in wanted:
-        # Fail loudly: a summary predating the classifier would otherwise be silently unfiltered,
-        # and an unfiltered run is indistinguishable from a filtered one in the numbers it writes.
+        # Fail loudly: a summary predating the classifier would otherwise pass unfiltered.
         if column not in usv_df.columns:
             msg = (f"vocalization_settings asks to exclude '{column}' but the usv_summary has no such "
                    f"column. Available: {usv_df.columns}.")
@@ -554,17 +493,9 @@ def emitter_names(track_names: list, recorded_mouse_id: str, spec: str) -> list:
     -----------
     Resolve an emitter SPEC to the mouse-id strings it names.
 
-    The vocabulary is semantic rather than positional -- ``'self'`` (the recorded, probe-bearing
-    animal), ``'partner'`` (the other one), ``'all'`` (every emitter). A slot index would say
-    "whatever happens to be in position 0", which is a different question and one that needs a separate
-    assertion to be safe; resolving the recorded animal by LOOKUP from the unit's own ``mouse_id`` is
-    the same principle that removed the configured predictor-slot index. ``'self'`` and ``'partner'``
-    also match the feature naming this assembler produces (``self.speed``, ``other.speed``), so one
-    vocabulary describes both the kinematics and the USVs.
-
-    ``'all'`` returns an empty list meaning NO FILTER, deliberately: a session's USV table can carry
-    rows whose emitter was never assigned, and a USV nobody was credited with is still a USV the
-    animal heard. Restricting "all" to the two track names would silently let those through.
+    ``'self'`` is the recorded, probe-bearing animal, resolved by name from the unit's ``mouse_id``;
+    ``'partner'`` is every other track name; ``'all'`` returns an empty list meaning no filter, so USVs
+    with no assigned emitter are included too.
 
     Parameters
     ----------
@@ -603,10 +534,11 @@ def build_zscored_feature_frames(
     """
     Description
     -----------
-    Build the P1-identical z-scored behavioural feature time series for the given sessions by reusing the
+    Build the z-scored behavioural feature time series for the given sessions with the behavioural
     modeling chain: ``load_behavioral_feature_data`` -> per-session ``select_kinematic_columns`` ->
-    ``harmonize_session_columns`` -> ``zscore_features_across_sessions``. NO vocal-signal columns are added
-    (the kinematic encoding uses kinematics only). The z-scoring pools across all supplied sessions (the all-frames ruler).
+    ``harmonize_session_columns`` -> ``zscore_features_across_sessions``. No vocal-signal columns are
+    added. The z-scoring pools all supplied sessions, and columns are renamed to ``self.``/``other.``
+    in one canonical order so position-indexed access is consistent across sessions.
 
     Parameters
     ----------
@@ -615,8 +547,8 @@ def build_zscored_feature_frames(
     kinematic_features (dict)
         The kinematic-features schema (egocentric / dyadic_pose / abs_features / ...).
     recorded_mouse_id (str)
-        The unit's own animal. It becomes ``self.``; the remaining track name becomes ``other.``. Resolved
-        by NAME and EXCLUSION, never by slot -- see the dyad assertion in the body.
+        The unit's own animal. It becomes ``self.``; the remaining track name becomes ``other.``.
+        Resolved by name and exclusion, never by slot; each session must hold exactly two tracks.
     csv_sep (str)
         CSV separator.
 
@@ -637,20 +569,10 @@ def build_zscored_feature_frames(
     for sess_id, session_df in beh_dict.items():
         if sess_id not in mouse_names_dict:
             continue
-        # The `self.` role is not a setting: we model the RECORDED animal's spikes, so `self.` must be
-        # its kinematics, and which track slot it occupies is a lookup in that session's own
-        # `track_names`. A configured index could disagree with the data -- pointing it at the partner
-        # would silently analyse the wrong animal and build an entirely different feature set -- and it
-        # would assume the slot is identical in every session, which nothing guarantees.
+        # `self.` is the recorded animal by name and `other.` its partner by exclusion. The downstream
+        # `resolve_mouse_roles` derives the partner as `abs(idx - 1)`, which holds only in a dyad, so
+        # the dyad is asserted here.
         names = mouse_names_dict[sess_id]
-        # `self.` is resolved by NAME and `other.` by EXCLUSION -- the same rule `emitter_names` applies
-        # on the vocal side, so ONE definition of self/partner serves both the kinematics and the USVs.
-        # This matters because the P1 utility downstream, `resolve_mouse_roles`, takes an INDEX and
-        # derives the other animal as `abs(idx - 1)`: a two-slot flip that is the partner only in a
-        # DYAD. A third track would send it to an arbitrary animal with no error at all, so the dyad it
-        # assumes is ASSERTED here rather than trusted. Measured over the cohort's 73 courtship
-        # sessions: `track_names` has length 2 in 73 of 73, recorded animal at slot 0 in 73 of 73 --
-        # the assumption holds, which is exactly why it would go unnoticed if it ever stopped holding.
         partner_names = emitter_names(names, recorded_mouse_id, "partner")
         if len(partner_names) != 1:
             msg = (f"{sess_id}: expected exactly one partner for recorded mouse {recorded_mouse_id!r}, "
@@ -664,10 +586,8 @@ def build_zscored_feature_frames(
         session_predictor, session_target, p_name, t_name = resolve_mouse_roles(
             modeling_settings=session_settings, mouse_names_dict=mouse_names_dict, session_id=sess_id,
         )
-        # The column harmonisation downstream takes ONE pair of indices, so a unit whose animal sits in
-        # different slots across its sessions cannot be handled by it. Measured 73/73 at slot 0 in this
-        # cohort, so this is an assumption that holds -- and it fails loudly rather than silently using
-        # whichever session happened to be last if it ever stops holding.
+        # The column harmonisation takes one pair of indices, so the animal must sit in the same slot
+        # in every session of the unit.
         if predictor_idx is not None and (session_predictor, session_target) != (predictor_idx, target_idx):
             msg = (f"{sess_id}: {recorded_mouse_id!r} sits in a different track slot than in the "
                    f"unit's other sessions; the column harmonisation cannot mix slots.")
@@ -684,8 +604,7 @@ def build_zscored_feature_frames(
         processed_beh_dict=processed, mouse_names_dict=mouse_names_dict,
         target_idx=target_idx, predictor_idx=predictor_idx,
     )
-    # `FeatureZoo.feature_boundaries` is the canonical physical-range dict P1's pipelines use to clip
-    # out-of-range values before pooled z-scoring — reuse it so the neural features match P1 exactly.
+    # Clip to the same physical ranges as the behavioural models before pooled z-scoring.
     processed = zscore_features_across_sessions(
         processed_beh_dict=processed, suffixes=suffixes,
         feature_bounds=FeatureZoo.feature_boundaries,
@@ -693,22 +612,13 @@ def build_zscored_feature_frames(
         smooth_abs_features=kinematic_features["smooth_abs_features"],
     )
 
-    # Canonicalise columns to ROLE-based names in a single fixed order across sessions.
-    # `harmonize_session_columns` leaves ego columns prefixed with the raw mouse id (e.g.
-    # `181316_0.speed` for self, `{partner_id}.speed` for the other animal). Because the partner id
-    # differs between sessions AND the column order is not enforced, `df.to_numpy()` is NOT
-    # position-consistent across sessions: the same array column index points at a different feature in
-    # different sessions. Any cross-session position-indexed use (design assembly, LOSO) would then read
-    # the wrong feature -- a silent, catastrophic bug. Here each session's ego columns are re-prefixed to
-    # the generic `self.`/`other.` roles (dyadic suffix-only columns are left unchanged), then every
-    # session is reindexed to one canonical, sorted column order. After this, a single `names` list is
-    # valid for every session and by-name and by-position access agree.
+    # Rename ego columns from raw mouse ids to `self.`/`other.` and reindex every session to one sorted
+    # column order: the partner id differs between sessions, so without this the same array column
+    # would point at different features in different sessions.
     canonical: dict = {}
     canonical_names: list[str] | None = None
     for sess_id, df in processed.items():
-        # Same derivation as above: the recorded animal is `self.`, its partner `other.` -- by name and
-        # by exclusion, not by slot. The dyad guard in the first loop has already run for every session
-        # that reached here, so the single-element index is safe.
+        # The dyad guard above has run for every session here, so the single partner index is safe.
         names = mouse_names_dict[sess_id]
         t_name = recorded_mouse_id
         p_name = emitter_names(names, recorded_mouse_id, "partner")[0]
@@ -747,8 +657,9 @@ def assemble_unit_sessions(
     -----------
     Assemble, for every session of a cohort unit, the arrays the encoder needs: the pooled-z-scored
     per-frame feature time series (NaNs imputed to 0), the integer spike-frame train, the quiet anchor
-    frames and the session's track names (which the transfer resolves its emitter against). Features are z-scored across ALL the unit's sessions together (one ruler); the
-    unit's sessions are same-day blocks with the same mice, so feature columns align across them.
+    frames and the session's track names (which the transfer resolves its emitter against). Features
+    are z-scored across all the unit's sessions together; they are same-day blocks with the same mice,
+    so feature columns align across them.
 
     Parameters
     ----------
@@ -763,9 +674,9 @@ def assemble_unit_sessions(
     clean_post_seconds (float)
         Quiet-anchor post-buffer.
     clean_against (str)
-        Whose USVs make a frame unclean: ``'all'`` | ``'self'`` | ``'partner'``. MUST match what the vocal-side
-        assembler is given -- the plan requires ONE quiet definition across the kinematic
-        encoding, the vocal-occurrence negatives and the vocal-decoding baselines, and two code paths that can disagree is how that breaks.
+        Whose USVs make a frame unclean: ``'all'`` | ``'self'`` | ``'partner'``. Must match what the
+        vocal-side assembler is given, so one quiet definition serves the kinematic encoding and the
+        vocal-decoding negatives.
     vocal_settings (dict)
         The ``vocalization_settings`` block; its exclusion flags decide which summary rows the quiet
         guard counts (``filter_vocalizations`` at ``'guard'`` scope).
@@ -794,17 +705,13 @@ def assemble_unit_sessions(
         n_frames = feature_ts.shape[0]
 
         _spk_sec, spike_frames = load_unit_spike_frames(data_root, session_id, unit["unit_id"])
-        # The guard decides which frames are QUIET and may keep squeaks (the animal did vocalize);
-        # noise rows are never vocalizations and are dropped from it.
+        # The guard keeps squeaks when `squeaks_block_quiet` is set; noise is always dropped.
         usv = filter_vocalizations(load_session_usvs(data_root, session_id), vocal_settings, "guard")
         starts = usv["start"].to_numpy()
         stops = usv["stop"].to_numpy()
 
-        # `clean_against` decides WHOSE USVs make a frame unclean. Under the default every emitter
-        # counts, so a quiet frame is one in which the animal was not even HEARING a USV -- PAG sits
-        # in a vocal-auditory circuit, and an auditory response folded into a "quiet" frame would be
-        # fitted as kinematic tuning. Measured cost of that strictness: 0-10% of quiet frames, and
-        # exactly zero in sessions where the partner never vocalized.
+        # `clean_against` decides whose USVs make a frame unclean; by default every emitter, so an
+        # auditory response is not fitted as kinematic tuning.
         guard_starts, guard_stops = starts, stops
         guard_names = emitter_names(names[session_id], unit["mouse_id"], clean_against)
         if guard_names:
@@ -828,13 +735,9 @@ def session_timebase(data_root: str, session_id: str) -> tuple[list[str], float,
     Read a session's tracking-H5 HEADER only: the mouse track names, the camera frame rate and the frame
     count.
 
-    The decoding analyses need the emitter mapping and the session duration but no kinematics at all, while
-    the behavioural loader that normally supplies them reads a whole feature table per session on the way.
-    Three small dataset reads cost a file handle instead, which is the difference between a cheap event
-    assembler and one that pays the encoding pipeline's price for information it discards.
-
-    Track-name order is the convention the whole project uses: index 0 is the recorded, probe-bearing
-    animal, index 1 its partner.
+    The decoding analyses need the track names and the session duration but no kinematics, so only
+    three small datasets are read. Callers resolve the recorded animal in ``track_names`` by name
+    (``emitter_names``), not by slot.
 
     Parameters
     ----------
@@ -868,15 +771,9 @@ def clean_window_mask(onsets: np.ndarray, all_starts: np.ndarray, all_stops: np.
     -----------
     Mark the focal USVs whose pre-onset window holds no part of any other vocalization.
 
-    A USV is kept when no span from ANY emitter overlaps ``(onset - pre_offset, onset)``. Its own span
-    begins exactly at ``onset``, so a USV never excludes itself, and a partner's USV counts against it
-    just as a preceding focal USV does -- the predictor is meant to measure this USV's preamble, not the
-    tail of whatever came before it.
-
-    The filter is nearly free at the shipped 50 ms offset and ruinous much beyond it. Measured across all
-    73 courtship sessions (56,170 intervals), the silent gap to the previous USV's OFFSET is under 50 ms
-    for 3.7% of USVs but under 100 ms for 55.5%, so widening the window does not buy power, it spends
-    most of the events and biases the survivors toward bout-initial USVs.
+    A USV is kept when no span from any emitter in the guard set overlaps
+    ``(onset - pre_offset, onset)``. Its own span begins exactly at ``onset``, so a USV never excludes
+    itself. Short gaps are common, so the window is kept narrow.
 
     Parameters
     ----------
@@ -915,29 +812,13 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
     -----------
     Assemble, across a unit's sessions, the USV-grain arrays both vocal-decoding axes -- occurrence and identity -- are computed from.
 
-    Two event sets come back, and they are deliberately built from one definition each rather than two.
-
-    Whose USVs count as contamination is ``vocalization_settings.clean_against``: every emitter by default, so that a
-    quiet window means the animal could not even hear its partner, or one named mouse. The same answer
-    governs the quiet tiles and the prevocal filter, because they are asking the same question.
-    The positives are the unit's focal USVs -- optionally clean-prevocal filtered -- each carrying its
-    torus position and the unit's spike count in ``[onset - pre_offset, onset - pre_offset + width)``.
-    The negatives are quiet tiles under the kinematic encoding's quiet definition: stretches with no USV from any emitter in the guard band,
-    tiled at the window's own width so a tile count and a prevocal count measure the same thing. Sharing
-    the quiet definition with the kinematic encoding is what keeps one guard band serving three purposes, and
-    its four-second FORWARD arm is what makes the timing contrast "a USV in 50 ms" against "no USV for
-    seconds" rather than merely "not during a USV".
-
-    Both axes are handed the SAME positive events. That is not tidiness: the vocal-occurrence and vocalization-identity verdicts cross
-    into a 2x2, and a cell of that table means nothing if the two axes were scored on different USVs.
-
-    Tiles are laid at the baseline width and then re-centred on the analysis window, so a wider window
-    keeps its tiles concentric with the narrow ones instead of walking forward through the gap. The shift
-    is at most tens of milliseconds against a four-second guard, so a re-centred tile is still deep inside
-    silence.
-
-    USVs whose torus position is missing are dropped and COUNTED rather than passed on as NaN, since a
-    NaN position would silently poison a prior, a basis and a truth cell alike.
+    Two event sets come back. The positives are the unit's analysed emitter USVs (optionally
+    clean-prevocal filtered), each with its torus position and the unit's spike count in
+    ``[onset - pre_offset, onset - pre_offset + width)``, a peri-onset window under the shipped
+    settings. The negatives are disjoint quiet tiles of the same width under the quiet-anchor
+    definition, capped per session at ``max_quiet_tiles_per_session``. Whose USVs count as
+    contamination is ``vocalization_settings.clean_against`` for both. Both decoding axes receive the
+    same positive events. USVs with a missing torus position are dropped and counted.
 
     Parameters
     ----------
@@ -982,20 +863,14 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
     tile_counts_parts, tile_edge_parts, tile_index_parts = [], [], []
     per_session: dict = {}
 
-    # VOCAL sessions, not every courtship session: both vocal-decoding axes score on the USVs themselves,
-    # and a session with a handful of them contributes a leave-one-session-out fold whose statistic
-    # rests on those few events. The kinematic encoding keeps such a session, since it needs silence.
+    # Vocal sessions only.
     for slot, session_id in enumerate(unit["vocal_sessions"]):
         track_names, frame_rate, n_frames = session_timebase(data_root, session_id)
         duration = n_frames / frame_rate
-        # The emitter is resolved by NAME from the unit's own `mouse_id`, never by track slot, so a
-        # session whose track order differs cannot silently hand back the partner's USVs;
-        # `emitter_names` raises if the unit's animal is not in this session at all, and returns an
-        # EMPTY list for 'all', which means no emitter filter.
+        # Resolved by name from the unit's `mouse_id`; an empty list for 'all' means no filter.
         focal_names = emitter_names(track_names, unit["mouse_id"], vocal_emitter)
 
-        # `counts_in_windows` bisects, so an unsorted train would return wrong counts with no error.
-        # The files on disk are ordered, but that is a property of the writer, not a guarantee here.
+        # `counts_in_windows` bisects, so the train must be sorted.
         spike_seconds, _spike_frames = load_unit_spike_frames(data_root, session_id, unit["unit_id"])
         spike_seconds = np.sort(spike_seconds)
 
@@ -1006,9 +881,7 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
                    f"Available columns: {usv.columns}.")
             raise KeyError(msg)
 
-        # `clean_against` decides WHOSE USVs make a window unclean: every emitter (the default, so
-        # that "quiet" means the animal could not even hear a partner) or one named mouse. It governs
-        # the tile guard and the prevocal filter alike, so one definition serves both.
+        # `clean_against` governs the tile guard and the prevocal filter alike.
         guard_names = emitter_names(track_names, unit["mouse_id"], clean_against)
         guard_table = filter_vocalizations(usv, settings["vocalization_settings"], "guard")
         guard = guard_table if not guard_names else guard_table.filter(
@@ -1021,19 +894,13 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
         focal_stops = focal["stop"].to_numpy().astype(np.float64)
         focal_positions = focal.select(position_columns).to_numpy().astype(np.float64)
 
-        # The acoustic-region label rides along with the events rather than being re-read later,
-        # because the nested decoding's macro score averages within region and MUST do so over exactly the
-        # events the vocal decoding scored -- a second read could filter differently and silently compare
-        # two event sets. NaN where the summary carries no such column: the vocal decoding never needs it,
-        # and the nested decoding
-        # raises for itself rather than making a summary without supercategories unusable here.
+        # The region label is carried with the events so the nested decoding's macro score uses
+        # exactly the events scored here; NaN where the summary has no such column.
         focal_regions = (focal[region_column].to_numpy().astype(np.float64)
                          if region_column in focal.columns
                          else np.full(focal_starts.size, np.nan))
 
-        # The gap covariate is `start[i] - stop[i-1]`, so it means nothing unless the rows are in
-        # temporal order. Every summary on disk is, but an out-of-order one would produce negative
-        # gaps rather than an error, and the covariate would quietly stop describing bout structure.
+        # The gap covariate `start[i] - stop[i-1]` needs rows in temporal order.
         if focal_starts.size > 1 and np.any(np.diff(focal_starts) < 0):
             msg = f"{session_id}: usv_summary rows are not ordered by start time."
             raise ValueError(msg)
@@ -1048,10 +915,7 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
         window_edges = focal_starts[keep] - pre_offset
         event_counts = counts_in_windows(spike_seconds, window_edges, width)
 
-        # Tiles are laid at the ANALYSIS window's own width -- a tile count and a spike-window count
-        # must be the same width or they are not comparable. One window is analysed per run
-        # (`vocalization_settings.spike_window`), so there is no second width to re-centre a lattice against, and
-        # the tiles are disjoint rather than an overlapping lattice.
+        # Disjoint tiles at the analysis window's own width, so tile and event counts are comparable.
         tile_edges = quiet_tile_edges(all_starts, all_stops, duration, width,
                                       history_pre_seconds, clean_post_seconds)
         if tiles_cap is not None and tile_edges.size > tiles_cap:
@@ -1101,9 +965,8 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
             "counts": np.concatenate([counts, tile_counts]),
             "labels": np.concatenate([np.ones(counts.size), np.zeros(tile_counts.size)]),
             "session_index": np.concatenate([session_index, tile_index]),
-            # The circular-shift null recounts BOTH classes from the shifted train, so it needs the
-            # window EDGES, not merely the counts taken from the real one. Returning them aligned
-            # with `counts` makes the null a per-session recount rather than an event-set rebuild.
+            # The circular-shift null recounts both classes from the shifted train, so it needs the
+            # window edges, aligned with `counts`.
             "edges": np.concatenate([window_edges, tile_edges]),
             "width": width,
         },

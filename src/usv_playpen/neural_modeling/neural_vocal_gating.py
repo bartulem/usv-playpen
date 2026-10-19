@@ -1,51 +1,25 @@
 """
 @author: bartulem
-Is a unit's vocal response GATED on a specific behavioural feature?
+Vocal gating: is a unit's vocal response scaled by a specific behavioural feature?
 
-The question this exists to answer is one the base taxonomy cannot: a unit that fires to the animal's
-own courtship USVs but is SILENT to its solo USVs is socially gated, not vocal-motor, and every
-courtship vocalization is socially embedded, so nothing in a courtship-only analysis separates the
-two. The calibration unit is `imec0_cl0633_ch278_good`: ~8.8 Hz during its own courtship USVs
-against 0.05 Hz over 966 male-alone USVs. This sub-analysis finds that WITHIN courtship, with no
-lone-male control, by asking whether within-courtship variation in a feature scales the response --
-solo silence then being the same gate at its limit, with no partner present.
-
-Per feature, contemporaneously, with NO history filter (gating asks whether the CURRENT context
-scales the response, which neither needs nor uses the kinematic encoding's 600 lags):
+A unit that fires during the animal's own courtship USVs but not during solo USVs is socially gated
+rather than vocal-motor, and a courtship-only analysis cannot separate the two directly. This
+sub-analysis asks instead whether within-courtship variation in a feature scales the vocal response.
+Per feature, contemporaneously and with no history filter:
 
     logit P(spike_t) = b0 + beta_V * V(t) + alpha_f * S_f(t) + delta_f * (S_f(t) * V(t))
 
-so the quiet slope is ``alpha_f``, the vocal slope is ``alpha_f + delta_f``, and ``delta_f`` -- the
-vocal-specific modulation -- is the gate.
+so the quiet slope is ``alpha_f``, the vocal slope is ``alpha_f + delta_f``, and ``delta_f`` is the
+gate.
 
-THREE FRAME CATEGORIES, AND THE MODEL USES TWO. Vocal frames are strictly inside a focal USV. Quiet
-frames are guard-banded by the kinematic encoding's quiet definition: no USV from any emitter within
-`history_pre_seconds` before or `clean_post_seconds` after. **Everything between -- the peri-vocal
-zone -- is DROPPED from the universe entirely**, and that is load-bearing rather than tidy: the
-peri-vocal bout ramp holds MOST of the firing (on cl0633, 58% of spikes against 35% vocal and 7%
-quiet), so defining "non-vocal" as merely "not inside a USV" sweeps those frames into quiet and
-MANUFACTURES a feature main effect. That happened, and it cost a day.
-
-EACH EFFECT IS MEASURED IN THE RIGHT FRAME SET AND OVER THE RIGHT BASE. Both errors below happened
-and both flatter the result:
-
-- ``alpha_f``, the feature main effect, is fitted AND evaluated on the guard-banded QUIET frames
-  ONLY. Read from the joint model on the full universe it is dominated by vocal-frame reshuffling,
-  because the alpha column also moves predictions where ~5x more spikes live -- that produced a
-  spurious "+219, 21.6 sigma main effect" where the clean quiet-only test gives -38, null, -5 sigma.
-- ``beta_V`` is scored over ``[S_f]`` at FULL strength, with the interaction NOT in its base.
-  Marginality runs one way: V does not require the interaction, the interaction requires V. Putting
-  the interaction in beta_V's base shrank it 410 -> 85 and inflated the delta/beta ratio to a fake 11x.
-- ``delta_f`` is scored over ``[S_f + V]``. It is identified purely from vocal frames, since the
-  product is identically zero on quiet, so no quiet contamination is possible.
-
-FIVE NUMERICAL REQUIREMENTS, every one of which is a failure that occurred. Held-out DEVIANCE, never
-the raw coefficient, which quasi-separates and diverges to 1e5-1e6. Ridge scaling with n
-(``ridge_frac * n_train``) -- a fixed small ridge is ~1000x too weak at ~50k rows. NO importance
-weights: logistic slopes are consistent under outcome-dependent sampling, and weights inflate the
-effective n and destabilise the interaction. LOSO, never a random split, which leaks across
-autocorrelation and sessions. And the gating SIGN read from a strongly-ridged (finite) fit while the
-MAGNITUDE comes from the deviance.
+Frames are vocal (inside a focal USV) or quiet (the kinematic encoding's guard-banded anchors); the
+peri-vocal frames in between are excluded. ``alpha_f`` is fitted and scored on quiet frames only;
+``beta_V`` is scored over the feature alone, without the interaction in its base; ``delta_f`` is
+scored over feature plus vocal indicator. Every effect is a held-out (leave-one-session-out) added
+deviance with a ridge proportional to the training row count, fitted on a quiet subsample and scored
+on every row; the sign of ``delta_f`` comes from a strongly ridged fit. Significance is an empirical
+p against a circular-shift null (:func:`gating_null`), and :func:`gating_unit_pvalue` reduces a unit's
+features to one p for the cohort correction.
 """
 
 from __future__ import annotations
@@ -63,14 +37,8 @@ from .neural_design_assembly import (
 )
 from .shift_null_inference import sample_circular_shift, shifted_spike_frames
 
-#: The only value implemented for each option `vocal_gating` names.
-#:
-#: ``vocal_window`` is ``"during_vocalization"`` -- every frame of the vocalization. The nameable alternative is a
-#: fixed ``"peri_onset"`` window, and the plan rejects it: gating asks about VOCALIZING, not
-#: peri-vocalizing, so the whole USV is the right span even though on the calibration unit it
-#: captures only ~35% of the spikes. ``content_gating_compute`` stays false because the content
-#: branch (feature x torus position, a 4-df group) is DEFERRED and must be gated on a vocalization-identity pass --
-#: run blind on a non-tuned unit it produces false positives.
+#: The only value implemented for each option `vocal_gating` names. ``vocal_window`` is every frame of
+#: the vocalization; ``content_gating_compute`` (feature x torus position) is not implemented.
 IMPLEMENTED_OPTIONS = {
     "vocal_window": ("during_vocalization",),
     "content_gating_compute": (False,),
@@ -87,9 +55,6 @@ def check_settings(settings: dict) -> None:
     ----------
     settings (dict)
         The ``vocal_gating`` block.
-    fit_rows (np.ndarray)
-        Boolean mask of universe rows the two universe-scored terms are FITTED on; every row is scored
-        regardless. ``None`` fits on everything.
 
     Returns
     -------
@@ -110,23 +75,15 @@ def should_run_gating(vocal_occurrence_significant: bool, vocalization_identity_
     -----------
     Whether this unit gets the gating test, and if not, why not.
 
-    Two independent reasons to skip, and they mean different things -- which is why they are reported
-    separately rather than collapsed into one boolean.
+    Two reasons to skip are reported separately:
 
-    ACTIVATION (``require_vocal_tuning``, user-ruled 2026-09-11): run only on units with vocal-occurrence
-    or vocalization-identity tuning. A unit with no vocal tuning at all has nothing for a gate to modulate, and the screen is
-    19 features x 2,000 shuffles, so skipping them is the saving that keeps gating negligible against
-    the rest of the pipeline. Note the two are measured on OVERLAPPING but not identical frames: since
-    2026-09-11 the vocal-decoding window straddles onset and covers the USV's first 50 ms, while gating spans
-    the WHOLE USV -- so a unit responding only late in long USVs could in principle be skipped. That
-    is the accepted cost of the filter.
-
-    IDENTIFIABILITY (``min_vocal_spikes``, ``min_feature_iqr_vocal``): a feature with no spread DURING
-    vocal frames leaves ``delta_f`` unidentifiable, and a unit with too few vocal spikes leaves it
-    unestimable. Either way the verdict must read ``not_testable`` -- which says "we could not test
-    this" -- and NOT ``ns``, which says "we tested it and found nothing". Collapsing the two would
-    quietly convert missing power into evidence of absence. Both gates default to null (off), matching
-    every other ``min_*`` in this project: the quantities are recorded regardless.
+    - ``no_vocal_tuning`` (``require_vocal_tuning``): the unit has neither vocal-occurrence nor
+      vocalization-identity tuning, so there is no vocal response for a gate to modulate. Those tests
+      use a 100 ms peri-onset window while gating spans the whole USV, so a unit responding only late in
+      long USVs can be skipped.
+    - ``not_testable`` (``min_vocal_spikes``, ``min_feature_iqr_vocal``): too few vocal spikes, or too
+      little feature spread during vocal frames, to identify ``delta_f``. This is kept distinct from
+      ``ns`` so missing power is never read as absence. Both thresholds may be null (off).
 
     Parameters
     ----------
@@ -164,26 +121,14 @@ def loso_added_deviance(full: np.ndarray, base: np.ndarray, spikes: np.ndarray,
     -----------
     Held-out added deviance of a FULL design over a nested BASE design, summed across sessions.
 
-    Per fold the slopes of both models are fitted on the training sessions and then FROZEN, and only
-    the per-session baseline rate -- the intercept -- is recalibrated on the held-out session. That
-    recalibration is what makes the statistic about the RELATIONSHIP rather than the level: a unit may
-    sit at a different baseline rate in the held-out session, but its predictor-to-probability slope
-    has to carry over unchanged for the effect to count.
+    Per fold the slopes of both models are fitted on the training sessions and frozen, and only the
+    intercept is recalibrated on the held-out session, so the statistic tests the relationship rather
+    than the level. Deviance is used rather than the coefficient, which can quasi-separate, and the
+    ridge scales with the training row count.
 
-    Deviance rather than the coefficient, because the coefficient quasi-separates: on the calibration
-    unit the raw interaction term diverged to 1e5-1e6 while the held-out deviance stayed finite and
-    interpretable. The ridge scales with the training row count for the same reason -- at ~50k rows a
-    fixed small ridge is about a thousand times too weak to restrain it.
-
-    ``fit_rows`` subsamples the rows the models are FITTED on while every row is still SCORED, and the
-    ridge is taken from the full training count rather than the subsample's. That combination is what
-    makes the quiet subsample a computational device instead of part of the statistic. Fitting and
-    scoring on the same capped set does not: measured on the calibration unit, the interaction over the
-    vocal main effect then runs 5.63 at a 2,000-frame cap to 1.12 at 24,000, with no value to converge
-    on, because a vocalization indicator explains more deviance the more silence it is shown while the
-    interaction column is identically zero on quiet rows. Scoring everything and pinning the ridge, the
-    same ratios read 2.69, 1.85, 1.47, 1.37, 1.32 against 1.33 uncapped -- an approximation that tightens
-    as the cap rises, which a cap can legitimately be.
+    ``fit_rows`` subsamples the rows the models are fitted on while every row is still scored, and the
+    ridge is taken from the full training count rather than the subsample's, so the quiet cap changes
+    only how well the statistic is estimated, not what it measures.
 
     Parameters
     ----------
@@ -235,20 +180,16 @@ def loso_added_deviance(full: np.ndarray, base: np.ndarray, spikes: np.ndarray,
                 # an intercept-only base: nothing is frozen, the held-out rate IS the model
                 offset = np.zeros(test.size, dtype=np.float64)
             else:
-                # The solver fits no intercept of its own, so one is prepended here -- without it the
-                # fit is forced through zero and, at a base rate near logit -2, the slopes distort
-                # wildly to compensate (it drove the vocal main effect NEGATIVE on a synthetic whose
-                # vocal drive was strongly positive). It is left UNPENALISED: ridging an intercept
-                # pulls the predicted rate toward one half, which is a bias, not regularisation.
+                # The solver fits no intercept of its own, so an unpenalised one is prepended; without
+                # it the slopes distort to compensate for the base rate.
                 with_intercept = np.hstack([np.ones((design.shape[0], 1)), design])
                 ridge_vector = np.concatenate([[0.0], np.full(design.shape[1], ridge)])
                 coefficients = newton_logistic(with_intercept[train], spikes[train], ridge_vector,
                                                irls_steps)
-                # Only the SLOPES are carried to the held-out session; its intercept is refitted, so
-                # the statistic tests the relationship rather than the level.
+                # Only the slopes are carried to the held-out session; its intercept is refitted.
                 offset = design[test] @ coefficients[1:]
-            # Recalibrated on the held-out session's FIT rows rather than on everything it is scored on,
-            # so the scored set's composition cannot decide how much of an effect the intercept absorbs.
+            # Recalibrated on the held-out session's fit rows, so the scored set's composition cannot
+            # decide how much of an effect the intercept absorbs.
             if design.shape[1] == 0:
                 calibration_offset = np.zeros(calibration_rows.size, dtype=np.float64)
             else:
@@ -260,8 +201,7 @@ def loso_added_deviance(full: np.ndarray, base: np.ndarray, spikes: np.ndarray,
         per_fold.append({"held_out": held_out, "added": added, "n_test": int(test.size)})
         total += added
         # What there was to explain in this fold: a constant at the held-out rate, calibrated the same
-        # way. Dividing by it turns an absolute deviance into the same fraction the encoding reports as
-        # D2, which is the only way the two analyses' magnitudes can be read against each other.
+        # way, so a term divided by it is on the same scale as the encoding's D2.
         flat = calibrate_intercept(np.zeros(calibration_rows.size, dtype=np.float64),
                                    spikes[calibration_rows], calibration_steps)
         baseline += bernoulli_deviance(np.full(test.size, flat), spikes[test])
@@ -273,12 +213,8 @@ def gating_terms(feature: np.ndarray, vocal: np.ndarray) -> dict:
     """
     Description
     -----------
-    The design blocks each of the three effects is scored over, built once so no caller can pair an
-    effect with the wrong base.
-
-    The bases are not interchangeable and getting them wrong flatters the result in both directions --
-    see the module docstring for the two measured failures. This function exists so the pairing is
-    stated once, in code, rather than reconstructed at each call site.
+    The ``(full, base)`` design pair each effect is scored over, built in one place so no caller can
+    pair an effect with the wrong base.
 
     Parameters
     ----------
@@ -290,7 +226,8 @@ def gating_terms(feature: np.ndarray, vocal: np.ndarray) -> dict:
     Returns
     -------
     blocks (dict)
-        For each of ``feature_main``, ``vocal_main`` and ``interaction``, a ``(full, base)`` pair.
+        For each of ``feature_main``, ``vocal_main``, ``interaction`` and ``additive``, a
+        ``(full, base)`` pair.
     """
 
     column = np.asarray(feature, dtype=np.float64)[:, None]
@@ -298,15 +235,13 @@ def gating_terms(feature: np.ndarray, vocal: np.ndarray) -> dict:
     product = column * indicator
     empty = np.empty((column.shape[0], 0), dtype=np.float64)
     return {
-        # scored on QUIET rows only by the caller -- the base is an intercept alone
+        # scored on quiet rows only by the caller; the base is an intercept alone
         "feature_main": (column, empty),
-        # V at FULL strength: the interaction is deliberately NOT in this base
+        # V at full strength: the interaction is not in this base
         "vocal_main": (np.hstack([column, indicator]), column),
-        # the gate: the product over feature AND vocal main effects
+        # the gate: the product over the feature and vocal main effects
         "interaction": (np.hstack([column, indicator, product]), np.hstack([column, indicator])),
-        # the ADDITIVE model entire, over an intercept alone. This is what the interaction is weighed
-        # against: the question the sub-analysis asks is whether a feature and vocalizing combine by
-        # ADDING or by MULTIPLYING, so the two halves of that comparison both have to be measured.
+        # the additive model over an intercept alone, the comparison the interaction is weighed against
         "additive": (np.hstack([column, indicator]), empty),
     }
 
@@ -319,12 +254,11 @@ def feature_gating_statistic(feature_vocal: np.ndarray, feature_quiet: np.ndarra
     """
     Description
     -----------
-    The three effects for ONE feature, each on its own frame set and over its own base.
+    The effects for one feature, each on its own frame set and over its own base.
 
-    ``alpha_f`` runs on the QUIET rows alone; ``beta_V`` and ``delta_f`` run on the vocal-plus-quiet
-    universe. Keeping the two row sets as separate arguments is deliberate -- it makes it impossible to
-    score the feature main effect on the full universe by accident, which is the mistake that produced
-    a spurious 21.6 sigma main effect where the correct test gives -5 sigma.
+    ``alpha_f`` runs on the quiet rows alone; ``beta_V`` and ``delta_f`` run on the vocal-plus-quiet
+    universe. The two row sets are separate arguments so the feature main effect cannot be scored on
+    the full universe by accident.
 
     Parameters
     ----------
@@ -340,14 +274,17 @@ def feature_gating_statistic(feature_vocal: np.ndarray, feature_quiet: np.ndarra
         Session slot for the two row sets.
     settings (dict)
         The ``vocal_gating`` block.
+    fit_rows (np.ndarray)
+        Boolean mask of universe rows the universe-scored terms are fitted on; every row is scored
+        regardless. ``None`` fits on everything.
 
     Returns
     -------
     statistic (dict)
         ``feature_main``, ``vocal_main``, ``interaction`` and ``additive`` (each an added deviance),
-        the difference ``interaction_minus_vocal``, ``gating_sign``, and ``baseline`` -- the intercept-only
-        deviance of the scored rows, which turns any of the terms into a fraction of what there was to
-        explain and so onto the same scale as the kinematic encoding's D2.
+        the difference ``interaction_minus_vocal``, ``gating_sign``, ``baseline`` and ``quiet_baseline``
+        (the intercept-only deviances of the universe and quiet rows, which put any term on the scale of
+        the kinematic encoding's D2), and ``per_fold``.
     """
 
     solver = settings["solver"]
@@ -366,8 +303,8 @@ def feature_gating_statistic(feature_vocal: np.ndarray, feature_quiet: np.ndarra
     additive = loso_added_deviance(*blocks["additive"], spikes_universe, session_universe,
                                    ridge, steps, calibration, fit_rows)
 
-    # The SIGN comes from a strongly-ridged fit and the MAGNITUDE from the deviance: an unridged
-    # interaction coefficient quasi-separates and its sign is then read off a diverged number.
+    # The sign comes from a strongly ridged fit and the magnitude from the deviance, since an unridged
+    # interaction coefficient can quasi-separate.
     full, _base = blocks["interaction"]
     with_intercept = np.hstack([np.ones((full.shape[0], 1)), full])
     heavy = np.concatenate([[0.0], np.full(full.shape[1],
@@ -390,25 +327,19 @@ def gating_verdict(observed: dict, interaction_null: np.ndarray, difference_null
     """
     Description
     -----------
-    The gating label, from three conditions that must ALL hold.
+    The gating label for one feature, from three conditions.
 
-    (i) ``delta_f`` significant: no null draw reaches the observed interaction. At the ruled 2,000
-    shuffles that empirical p is 1/2001 = 5.0e-4, which clears the within-unit Bonferroni bar of
-    ``0.01 / n_features`` = 5.3e-4 -- and this is why the gating screen overrides the shared 1,000:
-    significance here is read PURELY empirically, because at 100 shuffles a GPD extrapolated ~3 sigma
-    borderline features into false positives, and an empirical p floors at 1/(n+1).
+    (i) ``delta_f`` significant: its empirical p clears the within-unit Bonferroni bar
+    ``screen_alpha / n_features`` (:func:`settings_bonferroni_bar`).
 
-    (ii) ``alpha_f`` present at an UNCORRECTED p <= 0.01, deliberately generous toward DETECTING a
-    main effect, so that the clean ``GATE`` label is reserved for convincingly-absent mains and a unit
-    with a main effect is labelled rather than quietly promoted.
+    (ii) ``delta_f > beta_V`` by a paired null: the difference is scored against shuffled differences
+    from the same draws for both terms (``interaction_gt_vocal_alpha``), when
+    ``require_interaction_gt_vocal`` is on.
 
-    (iii) ``delta_f > beta_V`` by a PAIRED null -- the difference must beat 99% of paired shuffled
-    differences, using the same draws for both terms. A raw point comparison is not enough; that is
-    what the superseded pilot did. This is the condition that separates a socially-gated unit, whose
-    response IS the gated part, from a vocal-motor unit with mild modulation: on the calibration unit
-    it isolated exactly 1 of 19 features.
+    (iii) ``alpha_f`` present at an uncorrected ``feature_main_alpha``, deliberately generous, so the
+    clean ``GATE`` label is reserved for convincingly absent main effects.
 
-    A significant ``beta_V`` is expected and fine -- the screen runs only on vocal-responsive units.
+    A significant ``beta_V`` is expected, since the screen runs only on vocal-responsive units.
 
     Parameters
     ----------
@@ -443,11 +374,7 @@ def gating_verdict(observed: dict, interaction_null: np.ndarray, difference_null
 
     bonferroni = settings_bonferroni_bar(settings, n_features)
     interaction_ok = p_interaction <= bonferroni
-    # Three SEPARATE alphas, not one shared constant. The plan reasons about them independently --
-    # the feature-main bar is deliberately GENEROUS toward detecting a main effect, so the clean
-    # `GATE` label is reserved for convincingly-absent mains -- and none of them is the FDR level:
-    # `significance.fdr_q` is also 0.01, and conflating a cohort FDR level with an uncorrected
-    # within-unit alpha is exactly the confusion the plan warns against.
+    # Three separate within-unit alphas, none of which is the cohort FDR level `significance.fdr_q`.
     difference_ok = ((p_difference <= settings["interaction_gt_vocal_alpha"])
                      if settings["require_interaction_gt_vocal"] else True)
     main_present = p_main <= settings["feature_main_alpha"]
@@ -476,11 +403,9 @@ def settings_bonferroni_bar(settings: dict, n_features: int) -> float:
     -----------
     The within-unit Bonferroni bar, and a check that the shuffle count can actually reach it.
 
-    The per-feature screen IS the within-unit correction, so the bar is
-    ``screen_alpha / n_features``. An
-    empirical p cannot fall below ``1 / (n_shuffles + 1)``, so a shuffle count too small to reach the
-    bar would make every feature unpassable no matter how strong -- silently, since nothing else in the
-    pipeline would complain.
+    The per-feature screen is the within-unit correction, so the bar is ``screen_alpha / n_features``.
+    An empirical p cannot fall below ``1 / (n_shuffles + 1)``, so a shuffle count too small to reach the
+    bar raises instead of making every feature silently unpassable.
 
     Parameters
     ----------
@@ -510,20 +435,11 @@ def gating_survivors(per_feature: dict, feature_values_vocal: dict) -> dict:
     """
     Description
     -----------
-    The features that passed, with the pairwise correlations that say how much they are one story.
+    The features that passed, with their pairwise correlations.
 
-    RULED 2026-09-11 (user): report ALL survivors rather than forward-selecting a minimal set. The
-    plan had specified greedy forward selection by LOSO gain, and the argument against it is the same
-    one that removed group-lasso from the kinematic encoding: under collinearity a greedy search is knife-edge, and
-    which of several correlated posture proxies it keeps is unstable rather than meaningful. Since
-    this project's standing position is that FEATURE IDENTITY IS DESCRIPTION and not result, a stable
-    description beats an unstable selection.
-
-    So the collinearity is reported instead of resolved. A unit gated on four features that correlate
-    at 0.9 is one story told four ways; a unit gated on two that correlate at 0.1 is two stories. The
-    reader can see which without the pipeline having committed to an answer -- and the correlations
-    are measured DURING VOCAL FRAMES, since that is where ``delta_f`` is identified and therefore the
-    only place their collinearity can confound it.
+    All survivors are reported rather than a forward-selected subset, since under collinearity which
+    of several correlated features a greedy search keeps is unstable. The correlations are measured
+    during vocal frames, where ``delta_f`` is identified.
 
     Parameters
     ----------
@@ -567,15 +483,12 @@ def quiet_subsample_rows(quiet_labels: np.ndarray, zeros_per_spike: int, rng) ->
     """
     Description
     -----------
-    The quiet-only rows the feature main effect is fitted on: EVERY quiet frame carrying a spike, plus
+    The quiet-only rows the feature main effect is fitted on: every quiet frame carrying a spike, plus
     ``zeros_per_spike`` spike-free quiet frames per spike drawn without replacement (all of them when
     fewer exist; at least ``zeros_per_spike`` when there is no spike at all).
 
-    This is the ONE subsampling rule, used for the observed fit and inside every null draw. A null that
-    relabelled the OBSERVED rows from a shifted train would keep the rows chosen around the real spikes
-    -- which a shifted spike rarely lands on -- so its positive fraction fell to the base rate (0.0067
-    against the observed 0.024 at 1 Hz) and the quiet p came out too conservative (median 0.79 on null
-    units). Redrawing from the shifted labels gives every draw the same class balance as the observed fit.
+    The same rule is applied to the observed labels and to every null draw's shifted labels, so each
+    draw has the observed fit's class balance.
 
     Parameters
     ----------
@@ -605,29 +518,16 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
     """
     Description
     -----------
-    The two frame sets gating runs on, with the peri-vocal zone DROPPED from both.
+    The two frame sets gating runs on, with the peri-vocal frames excluded from both.
 
-    Three categories exist and the model uses two. VOCAL frames sit strictly inside a focal USV.
-    QUIET frames are the kinematic encoding's guard-banded anchors -- no USV from any emitter within
-    ``history_pre_seconds`` before or ``clean_post_seconds`` after -- which is why this reuses the
-    anchors the kinematic assembler already built rather than defining quiet a second way. Everything
-    between is PERI-VOCAL and is discarded.
+    Vocal frames sit inside a focal USV. Quiet frames are the kinematic encoding's guard-banded anchors
+    (no USV from any emitter within ``history_pre_seconds`` before or ``clean_post_seconds`` after).
+    Frames in neither set are peri-vocal and are never assembled, so they cannot enter the quiet class.
 
-    **That discard is the single most consequential line here.** The peri-vocal bout ramp holds most
-    of the firing -- on the calibration unit 58% of spikes, against 35% vocal and 7% quiet -- so
-    treating "not inside a USV" as quiet sweeps those frames into the quiet class and manufactures a
-    feature main effect out of nothing. It happened, and it cost a day.
-
-    TWO SUBSAMPLES, for two different universes and two different reasons. The vocal-plus-quiet
-    universe caps quiet at ``max_quiet_frames_per_session`` so the fit is not swamped by the ~64% of
-    the session that is quiet. The quiet-ONLY universe, where ``alpha_f`` is measured, instead keeps
-    ``quiet_zeros_per_spike`` zeros per quiet spike, because there the question is a rare-event
-    logistic and the class balance is what needs bounding. Neither carries importance weights:
-    logistic slopes are consistent under outcome-dependent sampling, and weights inflate the
-    effective n and destabilise the interaction.
-
-    Features are INSTANTANEOUS -- the value at the frame, no lags. Gating asks whether the CURRENT
-    context scales the response, which neither needs nor uses the kinematic encoding's 600-lag history.
+    Two subsamples, neither with importance weights: the vocal-plus-quiet universe marks at most
+    ``max_quiet_frames_per_session`` quiet frames per session for fitting (every frame is still
+    scored), and the quiet-only rows keep ``quiet_zeros_per_spike`` zeros per quiet spike
+    (:func:`quiet_subsample_rows`). Features are instantaneous, the value at the frame with no lags.
 
     Parameters
     ----------
@@ -647,12 +547,13 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
     Returns
     -------
     universe (dict)
-        ``features`` / ``vocal`` / ``spikes`` / ``session_index`` / ``frames`` over the
-        vocal-plus-quiet rows (the FRAMES are carried so the null can relabel at fixed positions);
+        ``features`` / ``vocal`` / ``spikes`` / ``session_index`` / ``frames`` / ``fit_rows`` over the
+        vocal-plus-quiet rows (the frames are carried so the null can relabel at fixed positions);
         ``features_quiet`` / ``spikes_quiet`` / ``session_quiet`` / ``frames_quiet`` over the observed
         quiet-only subsample; ``frames_quiet_all`` / ``features_quiet_all`` / ``session_quiet_all`` over
-        EVERY quiet frame, from which the null redraws its own subsample; ``feature_names``; and ``per_session`` counts including how many frames each category
-        contributed and how many spikes fell in each.
+        every quiet frame, from which the null redraws its own subsample; ``spike_frames``, ``n_frames``
+        and ``fps`` per session slot; ``feature_names``; and ``per_session`` counts of frames and spikes
+        per category.
     """
 
     check_settings(settings)
@@ -680,25 +581,22 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
         track_names, fps, n_frames = session_timebase(data_root, session_id)
         usv = filter_vocalizations(load_session_usvs(data_root, session_id), vocal_settings,
                                    "analysed")
-        # 'all' resolves to an EMPTY list, meaning no emitter filter (as everywhere else).
+        # 'all' resolves to an empty list, meaning no emitter filter.
         focal_names = emitter_names(track_names, unit["mouse_id"], vocal_settings["vocal_emitter"])
         focal = usv.filter(usv["emitter"].is_in(focal_names)) if focal_names else usv
         starts = focal["start"].to_numpy().astype(np.float64)
         stops = focal["stop"].to_numpy().astype(np.float64)
-        # n_lags of 1: gating needs no history, so a USV is usable wherever it lies in the session.
-        # The helper returns (kept mask, flat frames, span pointer) -- the flat frames are the middle
-        # element, and gating wants every frame of every span, so the pointer is not needed here.
+        # n_lags of 1: gating needs no history. Only the flat frames of every span are used.
         _kept, vocal_frames, _pointer = vocal_span_frames(starts, stops, fps, n_frames, 1)
         quiet_frames = np.asarray(session["quiet"], dtype=np.int64)
         spike_frames = np.asarray(session["spike_frames"], dtype=np.int64)
 
-        # PERI-VOCAL is whatever is in neither set; it is never assembled, which is the point.
+        # Peri-vocal frames are in neither set and are never assembled.
         vocal_labels = spike_labels_at_frames(spike_frames, vocal_frames, n_frames)
         quiet_labels = spike_labels_at_frames(spike_frames, quiet_frames, n_frames)
 
-        # The universe keeps EVERY quiet frame; the cap marks which of them the fit may use. Capping the
-        # universe itself would change what the statistic measures rather than how well it is estimated --
-        # see `loso_added_deviance`.
+        # The universe keeps every quiet frame; the cap marks which of them the fit may use (see
+        # `loso_added_deviance`).
         universe_frames = np.concatenate([vocal_frames, quiet_frames])
         universe_vocal = np.concatenate([np.ones(vocal_frames.size), np.zeros(quiet_frames.size)])
         universe_labels = np.concatenate([vocal_labels, quiet_labels])
@@ -707,7 +605,7 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
             dropped = rng.choice(quiet_frames.size, quiet_frames.size - cap, replace=False)
             universe_fit[vocal_frames.size + dropped] = False
 
-        # quiet-only: a rare-event logistic, so the ZERO count is what needs bounding
+        # quiet-only: a rare-event logistic, so the zero count is bounded
         quiet_rows = quiet_subsample_rows(quiet_labels, zeros_per_spike, rng)
 
         frame_parts.append(universe_frames)
@@ -758,8 +656,7 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
             "features_quiet": rows(quiet_feature_parts, width),
             "spikes_quiet": stack(quiet_spike_parts),
             "session_quiet": stack(quiet_index_parts).astype(np.int64),
-            # EVERY quiet frame, so the null can redo the quiet-only subsample from each draw's
-            # shifted labels exactly as the observed rows were chosen from the real ones.
+            # every quiet frame, so the null can redraw the quiet-only subsample from shifted labels
             "frames_quiet_all": stack(quiet_all_frame_parts).astype(np.int64),
             "features_quiet_all": rows(quiet_all_feature_parts, width),
             "session_quiet_all": stack(quiet_all_index_parts).astype(np.int64),
@@ -772,27 +669,12 @@ def gating_null(universe: dict, feature_index: int, settings: dict, guard_second
     """
     Description
     -----------
-    The circular-shift null for one feature, driving all three statistics from the SAME draws.
+    The circular-shift null for one feature, driving every statistic from the same draws.
 
-    Per draw the spike train of each session is circularly shifted. The vocal-plus-quiet universe is
-    relabelled at its fixed positions -- the features, the vocal indicator and the frame membership never
-    move, only which frames carry a spike. The quiet-only rows are instead REDRAWN from the shifted
-    labels by :func:`quiet_subsample_rows` (every shifted spike frame plus ``quiet_zeros_per_spike``
-    zeros each), exactly as the observed rows were drawn from the real labels, so each draw's
-    rare-event logistic has the observed fit's class balance. The shift preserves the unit's rate, bursting and slow drift, so
-    a null train looks like a real one in every respect except its alignment to behaviour and to
-    vocalization, which is exactly what the interaction is meant to measure.
-
-    **The three statistics are recomputed together, not separately, and the paired difference is what
-    makes the delta > beta_V condition a test rather than a comparison.** Scoring the difference
-    against its own paired null -- the same shifted train behind both terms on every draw -- is the
-    correction the superseded pilot lacked: it compared the two point estimates directly, which says
-    nothing about whether the gap could have arisen by chance.
-
-    Significance here is read PURELY empirically. At 100 shuffles a GPD extrapolated ~3 sigma
-    borderline features into false positives (tail_curvature, allo_roll), and an empirical p floors at
-    1/(n+1), which is why the ruled count is 2,000: it puts the floor at 5.0e-4, just under the
-    within-unit Bonferroni bar of 0.01/19 = 5.3e-4.
+    Per draw each session's spike train is circularly shifted. The vocal-plus-quiet
+    universe is relabelled at its fixed positions; the quiet-only rows are redrawn from the shifted
+    labels by :func:`quiet_subsample_rows`, as the observed rows were. Because all statistics come from
+    the same draw, ``difference`` is a paired null for the ``delta_f > beta_V`` condition.
 
     Parameters
     ----------
@@ -813,7 +695,7 @@ def gating_null(universe: dict, feature_index: int, settings: dict, guard_second
     -------
     null (dict)
         ``interaction``, ``vocal_main``, ``feature_main`` and ``difference`` -- four arrays of
-        ``n_draws`` values, aligned draw by draw so the difference is genuinely paired.
+        ``n_draws`` values, aligned draw by draw so the difference is paired.
     """
 
     feature = universe["features"][:, feature_index]
@@ -837,8 +719,7 @@ def gating_null(universe: dict, feature_index: int, settings: dict, guard_second
             occupancy[np.clip(shifted, 0, n_frames - 1)] = True
             mask = index == slot
             spikes[mask] = occupancy[frames[mask]]
-            # The quiet-only rows are REDRAWN from this draw's shifted labels -- every shifted spike
-            # frame plus `zeros_per_spike` zeros each -- by the rule that chose the observed rows.
+            # Redraw the quiet-only rows from this draw's shifted labels, by the observed rule.
             session_quiet = np.flatnonzero(index_quiet_all == slot)
             quiet_labels = occupancy[frames_quiet_all[session_quiet]].astype(np.float64)
             chosen = session_quiet[quiet_subsample_rows(quiet_labels, zeros_per_spike, rng)]
@@ -861,34 +742,18 @@ def gating_unit_pvalue(per_feature: dict, settings: dict) -> dict:
     """
     Description
     -----------
-    The ONE p-value per TESTED unit that the cohort BH-FDR corrects, and the feature it came from.
+    The one p-value per tested unit that the cohort correction uses, and the feature it came from.
 
-    The verdict returns three p-values per FEATURE, and a cohort correction needs one per UNIT. Each
-    feature's p is the conjunction ``max(p_delta, p_{delta > beta_V})`` -- a max, because both conditions
-    must hold, so the weaker one decides, exactly as the intersection-union test does across the analyses
-    it combines (``p_delta`` alone when ``require_interaction_gt_vocal`` is off). The unit p is the
-    within-unit Bonferroni adjustment of the best of them:
+    Each feature's p is the conjunction ``max(p_delta, p_{delta > beta_V})``, since both conditions must
+    hold (``p_delta`` alone when ``require_interaction_gt_vocal`` is off). The unit p is the within-unit
+    Bonferroni adjustment of the best of them:
 
         p_unit = min(1, n_features * min_f p_f)
 
-    with ``n_features`` the number of features TESTED for this unit. That is the same correction the
-    per-feature screen applies (a feature survives at ``p_delta <= screen_alpha / n_features``), stated as
-    an adjusted p so it can enter a cohort correction.
-
-    EVERY tested unit carries its real p, survivor or not. A unit with no surviving feature used to
-    return NaN, which kept it out of BH's denominator: BH then ran over the survivors alone -- already
-    below ``0.01 / 19`` -- and rejected all of them, so the cohort FDR did nothing. NaN is now reserved for
-    a unit that could not be tested (no feature tested), and BH (``neural_significance.benjamini_hochberg``,
-    whose semantics are unchanged: NaN is an untested unit and stays out of ``m``) runs over every
-    tested unit.
-
-    The reported feature is the one with the smallest conjunction p (ties broken by the larger sigma
-    margin), and ``label`` is that feature's verdict label.
-
-    **Expect ties at the floor, and report the floor requirement alongside.** At the ruled 2,000
-    shuffles a strong feature sits at exactly 1/2001 = 5.0e-4, so its unit p is ``n_features / 2001``
-    and every strongly gated unit with the same feature count carries the SAME p. BH over ties behaves
-    discretely; ``at_floor`` flags them.
+    with ``n_features`` the number of features tested for this unit. Every tested unit carries its p,
+    survivor or not, so it enters the cohort correction's denominator; NaN marks a unit with no feature
+    tested. The reported feature is the one with the smallest conjunction p (ties broken by the larger
+    sigma margin). Strongly gated units sit at the shuffle floor and tie; ``at_floor`` flags them.
 
     Parameters
     ----------

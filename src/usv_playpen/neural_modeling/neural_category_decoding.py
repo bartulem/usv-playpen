@@ -1,37 +1,25 @@
 """
 @author: bartulem
+Categorical decoding: does the peri-onset spike count say which acoustic category is emitted?
 
-Does the peri-onset spike count say WHICH acoustic CATEGORY is emitted?
+The categorical version of ``neural_vocal_decoding``. It uses the same events, spike window,
+leave-one-session-out folds, gain statistic (held-out nats per event over the prior) and exact
+within-session permutation null, so the categorical and continuous statistics are directly
+comparable. The encoding model is one Poisson rate per category, shrunk toward the unit's pooled
+rate, with the training-fold category frequencies as the prior; the amplitude calibration is tuned
+by inner leave-one-session-out as in the continuous decoder.
 
-The categorical twin of ``neural_vocal_decoding``. Same events, same window, same leave-one-session-out
-folds, same currency -- held-out gain in nats per event over the prior -- and the same exact
-within-session permutation null, so a unit's categorical and continuous statistics are directly
-comparable and can be drawn against ONE set of permutations.
-
-What differs is the target. Continuous decoding asks where on the torus a USV sits and needs a basis
-expansion over a grid, an occupancy mask and a kernel prior. A category is one of a handful of discrete
-labels, so the encoding model is one Poisson rate per category and the prior is their training
-frequency. There is no grid, no mask and no bandwidth, which removes three knobs and the events those
-knobs would have discarded.
-
-The amplitude calibration is KEPT, and measurement rather than symmetry is the reason. A fitted rate
-profile can carry into a held-out session at the wrong modulation depth exactly as a fitted surface
-can, and on 1,231 units it bought 7 points of pass rate at p < 0.05 (29.1% against 21.9%), with each
-arm scored against its own null and alpha re-tuned inside every draw. Its grid is floored at 0.1 for
-the reason the continuous decoder floors it: allowing zero lets the inner loop switch the neuron off,
-and a wider grid downward REDUCES the positive-gain count by overfitting the held-in fold.
+Exports :func:`category_codes`, :func:`category_context`, :func:`category_gain`,
+:func:`category_rates`, :func:`category_posterior`, :func:`tuned_category_amplitude` and
+:func:`decoding_spike_sufficiency`. The per-unit vocal dispatcher does not yet run this module.
 """
 from __future__ import annotations
 
 import numpy as np
 from scipy.special import gammaln, logsumexp
 
-# A session in which the unit never fired would send its exposure to zero, and `0 * log(0)` is NaN
-# rather than the limit the maths gives -- with no spikes the count cannot discriminate, so the
-# posterior IS the prior and the gain is exactly zero. The continuous decoder floors its own
-# per-session offsets at the same value for the same reason; this module lacked the guard, and on the
-# first cohort pass it cost 48 of 1,231 units a NaN, every one of them near-silent (median 17 spikes
-# across ~1,548 events).
+# Floor on a session's mean count: a session with no spikes would otherwise give `0 * log(0)` = NaN
+# where the correct limit is a posterior equal to the prior (zero gain).
 MEAN_COUNT_FLOOR = 1e-3
 
 
@@ -41,16 +29,9 @@ def decoding_spike_sufficiency(counts: np.ndarray, settings: dict) -> dict:
     -----------
     Is a unit firing enough across its scored events for a decode to mean anything?
 
-    The permutation null handles a near-silent unit correctly on its own -- its null is correspondingly
-    wide, so it does not become significant -- but every analysis that reads the GAIN rather than the
-    p-value inherits the instability. Measured over 1,231 units: below 50 spikes the gain's standard
-    deviation is 0.029 against 0.014 above it, and a unit with under 25 spikes returned a gain of 0.70,
-    more than three times the strongest genuinely tuned unit in the cohort. Those magnitudes come from
-    almost no data and contaminate both tails.
-
-    The count is returned whether or not a threshold is set, and a unit below the threshold is FLAGGED
-    rather than dropped: its statistic becomes NaN with a stated reason, so the cohort denominator stays
-    visible instead of quietly shrinking.
+    The permutation null already protects the p-value of a near-silent unit, but its gain is unstable,
+    so analyses reading the gain need a floor. The count is returned whether or not a threshold is set,
+    and a unit below it is flagged rather than dropped, so the cohort denominator stays visible.
 
     Parameters
     ----------
@@ -81,9 +62,8 @@ def category_codes(labels: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarr
     -----------
     Map raw category labels onto contiguous codes, dropping events with no label.
 
-    The labels come off the USV table and need neither be zero-based nor gap-free, while every array
-    downstream indexes by code. Doing this once, here, is what stops a missing category silently
-    shifting every index after it.
+    The raw labels need be neither zero-based nor gap-free, while every array downstream indexes by
+    code.
 
     Parameters
     ----------
@@ -114,11 +94,9 @@ def category_rates(counts: np.ndarray, codes: np.ndarray, n_categories: int,
     -----------
     One Poisson rate per category, shrunk toward the unit's pooled rate.
 
-    The ridge scales with the training fold's total spike count, which is the convention the continuous
-    decoder uses and for the same reason: the penalty competes against a data term whose Fisher weight
-    IS that count, so a normalised rule means the same thing for every unit, window and day. A category
-    the training fold never contains falls back to the pooled rate rather than to zero, which would make
-    its log-likelihood negative infinity for any event that lands there.
+    The ridge is passed in as a multiple of the training fold's spike count, as in the continuous
+    decoder. A category absent from the training fold falls back to the pooled rate, since a zero rate
+    would give its events a log-likelihood of negative infinity.
 
     Parameters
     ----------
@@ -153,14 +131,10 @@ def category_posterior(counts: np.ndarray, rates: np.ndarray, prior: np.ndarray,
     -----------
     Posterior over categories for each event, from its spike count.
 
-    ``alpha`` scales each category's log-rate DEVIATION from the unit's mean log-rate, so it tempers the
-    profile's depth without moving its overall level or its ordering: at 0 every category shares one
-    rate and the posterior collapses to the prior, at 1 the training fit is used as is. It can therefore
-    decline to use a neuron but can never invert a profile, which is the property that makes the
-    calibration one-sided in the same way the continuous decoder's is.
-
-    ``exposure`` carries the held-out session's own mean count, the discrete analogue of the per-session
-    rate offsets: it corrects the LEVEL that session drifted to, while alpha corrects the DEPTH.
+    ``alpha`` scales each category's log-rate deviation from the unit's mean log-rate, tempering the
+    profile's depth without changing its level or ordering (0 collapses the posterior to the prior, 1
+    uses the training fit as is). ``exposure`` rescales to the held-out session's own mean count,
+    correcting its level.
 
     Parameters
     ----------
@@ -196,13 +170,8 @@ def category_context(labels: np.ndarray, session_index: np.ndarray) -> list:
     -----------
     Precompute the leave-one-session-out folds, with everything that does not depend on spike counts.
 
-    The priors and the inner splits are functions of the labels and the session structure alone, so they
-    are identical for the observed fit and for every permutation draw. Building them once is what keeps
-    an exact permutation null affordable.
-
-    The prior is built from the fold's TRAINING labels only. A permutation re-pairs counts with event
-    identity and nothing else, so the label distribution an event is scored against must not move with
-    the draw.
+    The priors (from the fold's training labels only) and the inner splits depend on the labels and
+    sessions alone, so they are shared by the observed fit and every permutation draw.
 
     Parameters
     ----------
@@ -228,8 +197,7 @@ def category_context(labels: np.ndarray, session_index: np.ndarray) -> list:
     for held_out in sessions:
         train_sessions = [int(s) for s in sessions if s != held_out]
         train_rows = np.concatenate([rows_by_session[s] for s in train_sessions])
-        # A category absent from the training fold still needs non-zero prior mass, or an event of that
-        # category in the held-out session scores at negative infinity and the fold's mean is destroyed.
+        # A category absent from the training fold still needs non-zero prior mass.
         prior = np.maximum(np.bincount(labels[train_rows], minlength=n_categories).astype(np.float64),
                            0.5)
         inner_splits = []
@@ -252,13 +220,9 @@ def tuned_category_amplitude(counts: np.ndarray, labels: np.ndarray, fold: dict,
     -----------
     Choose the amplitude calibration on the TRAINING sessions, by inner leave-one-session-out.
 
-    No held-out information enters, and the identical search runs inside every permutation draw, so the
-    extra fitted parameter cannot buy the observed value an advantage the null does not also get.
-
-    A fold whose training pool is a single session has no inner rotation to search, and the calibration
-    then falls back to 1.0 rather than being tuned. That is a real limitation, not a silent one: the
-    continuous decoder has the same floor, and on two-session units it is what made the uncalibrated
-    profile carry straight through and drove the gain systematically negative.
+    The same search runs inside every permutation draw, so the extra parameter gives the observed
+    value no advantage over the null. A fold with a single training session has no inner rotation and
+    falls back to 1.0.
 
     Parameters
     ----------
@@ -312,10 +276,9 @@ def category_gain(counts: np.ndarray, labels: np.ndarray, folds: list, settings:
     -----------
     The frozen categorical statistic: mean held-out decode gain in nats per event.
 
-    ``permutation`` re-pairs counts with events and is how the exact null is drawn. It permutes the
-    COUNTS, leaving labels, priors and folds untouched, so the only thing destroyed is the pairing under
-    test. The same permutation array can be handed to the continuous decoder, which is what lets both
-    targets share one set of draws and be compared against identical shuffles.
+    ``permutation`` reorders the counts, leaving labels, priors and folds untouched, and is how the
+    exact null is drawn; the same array can be handed to the continuous decoder so both targets share
+    one set of draws.
 
     Parameters
     ----------

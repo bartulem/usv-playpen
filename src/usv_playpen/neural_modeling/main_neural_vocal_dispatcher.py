@@ -3,32 +3,17 @@
 The vocal analyses for one unit, in one job: vocal occurrence, vocalization identity, nested vocal-manifold
 position decoding, then vocal gating.
 
-The kinematic encoding is a fold ARRAY -- one job per held-out session, combined afterwards -- and has
-its own dispatcher. These analyses are not: each is a single held-out computation per unit whose cost
-sits in its null, and they must run in ORDER. Vocal occurrence and vocalization identity score the same
-USV-grain event set, the nested decoding scores that set again with behaviour conditioned on, and vocal
-gating runs only on a unit whose occurrence or identity shows tuning, so it needs both p-values first.
+Each analysis is a single held-out computation per unit whose cost sits in its null, and they run in
+order: occurrence and identity score the same USV-grain event set, the nested decoding scores that set
+again with behaviour as the prior, and gating runs only on a unit whose occurrence or identity p-value
+shows tuning. Running them in one job also keeps their read-modify-write section writes from
+overlapping; the kinematic-encoding combine step for the same unit must not run at the same time.
 
-ONE JOB PER UNIT, for a second reason. Every analysis writes its section into the unit's single result
-file by read-modify-write, so two jobs writing the same unit at once would silently lose one of them.
-Running the vocal analyses in one job makes that impossible among them. It is still possible between this
-job and the kinematic-encoding combine step for the SAME unit, which must therefore not overlap with it.
+Each section stores observed statistics, p-values and full nulls, and no decisions. Every null draw is
+seeded by its global index, so draws split across spawned worker processes match a serial run.
+Workers are spawned rather than forked because the parent has already run JAX.
 
-STORAGE follows two rulings of 2026-09-14. Only what a figure or the cohort step cannot rebuild
-cheaply is kept: observed statistics, p-values and full nulls, and anything needing a refit or a
-selection; quantities that rebuild in seconds are left out. And no decisions: vocal gating's per-feature
-label, borderline flag and survivor list apply thresholds one unit at a time, so they are uncorrected by
-construction. They are computed and printed here for eyes on a single unit, and the artifact writer
-refuses them.
-
-NULLS ARE PARALLEL AND EXACT. Every null in the package seeds each draw by its own global index, so draws
-can be split across worker processes and come back identical to a serial run, and the escalation ladder
-tops a null up without repeating a draw. Workers are SPAWNED rather than forked: the parent has run JAX
-before any pool starts, and forking a process with live threads can deadlock the child.
-
-The vocal-occurrence and nested-decoding nulls both shift the unit's spike trains from the same base seed,
-so draw ``d`` of one uses the same shifts as draw ``d`` of the other. Each p-value is valid on its own;
-the two nulls are simply draw-paired rather than independent.
+Exports :func:`run_vocal` and one ``run_*`` function per analysis, plus the command-line entry point.
 """
 
 from __future__ import annotations
@@ -81,8 +66,7 @@ from .shift_null_inference import escalated_empirical_pvalue
 VOCAL_STEPS = ("vocal_occurrence", "vocalization_identity", "nested_vocal_manifold_position_decoding",
                "vocal_gating")
 
-# State handed to each worker ONCE, by the pool initializer, rather than pickled with every task: the
-# nested decoding's design alone is tens of megabytes.
+# State handed to each worker once, by the pool initializer, rather than pickled with every task.
 _WORKER: dict = {}
 
 
@@ -110,10 +94,10 @@ def spawn_pool(n_workers: int, state: dict) -> ProcessPoolExecutor:
     """
     Description
     -----------
-    A pool of SPAWNED workers, each initialised with ``state``.
+    A pool of spawned workers, each initialised with ``state``.
 
     Spawned, not forked: the parent has already run JAX, and forking a process with live threads can
-    deadlock the child. A spawned worker re-imports the package instead, about a second each.
+    deadlock the child.
 
     Parameters
     ----------
@@ -136,13 +120,12 @@ def parallel_draw_more(pool: ProcessPoolExecutor, chunk_function, n_workers: int
     """
     Description
     -----------
-    A ``draw_more(n)`` for the escalation ladder that splits draws across a pool and keeps counting.
+    A ``draw_more(n)`` that splits draws across a pool and keeps counting.
 
-    Draws are handed out as contiguous index ranges and reassembled in order, and a chunk function seeds
-    each draw by its GLOBAL index -- so the values are identical to a serial run however the range is
-    partitioned. The counter persists across calls, so each escalation continues from where the last
-    stopped instead of repeating draws already taken. About four chunks per worker is a scheduling
-    choice only; it cannot change a value.
+    Draws are handed out as contiguous index ranges and reassembled in order; a chunk function seeds
+    each draw by its global index, so the values match a serial run however the range is split. The
+    counter persists across invocations, so a further request (an escalation step, when the ladder is not
+    empty) continues where the last one stopped.
 
     Parameters
     ----------
@@ -258,14 +241,11 @@ def posterior_nested_null_chunk(start: int, n_draws: int) -> np.ndarray:
     """
     Description
     -----------
-    One worker's share of the posterior nested statistic's null: identity's exact within-session
-    permutation, extended so the behaviour prior travels with its position.
+    One worker's share of the nested statistic's null: the exact within-session permutation, with the
+    behaviour prior travelling with its position.
 
-    A draw re-pairs the events' positions -- and the priors built on them -- against the counts within
-    each session, seeded ``seed + start + draw`` exactly as the identity chunk seeds its draws. The
-    behaviour control is never broken, because what it predicts for a USV stays with that USV's true
-    position; only the neuron's pairing moves. The priors are read from the installed state and never
-    rebuilt, since nothing a draw changes enters them.
+    A draw re-pairs positions, and the priors built on them, against the counts within each session,
+    seeded ``seed + start + draw`` as in the identity chunk; only the neuron's pairing moves.
 
     Parameters
     ----------
@@ -296,8 +276,8 @@ def posterior_nested_payload(posterior: dict, regression: dict, no_behaviour: fl
     """
     Description
     -----------
-    The nested section: the posterior statistic with its null, the ladder, the fine-position
-    regression as a descriptor, and the control's provenance -- metrics and p-values only, no verdict.
+    The nested section: the posterior statistic with its null and p-value, the point-regression form
+    as a descriptor, and the control's provenance. Metrics and p-values only, no verdict.
 
     Parameters
     ----------
@@ -312,7 +292,7 @@ def posterior_nested_payload(posterior: dict, regression: dict, no_behaviour: fl
     null (np.ndarray)
         The permutation null of ``added``.
     p_value, at_floor (float, bool)
-        From the escalated empirical test.
+        From the empirical test.
     behaviour_control (dict)
         From ``apply_behaviour_control``: the control's features, held-out day and settings hash.
 
@@ -341,8 +321,7 @@ def posterior_nested_payload(posterior: dict, regression: dict, no_behaviour: fl
             "kappas": posterior["kappas"], **detail,
             "null": null, "p": p_value, "at_floor": at_floor, "z": null_z(posterior["added"], null),
             "n_permutations": int(null.size),
-            # the point-regression form, a FINE-POSITION descriptor: observed only, no null, never a
-            # route to passing
+            # the point-regression form: a fine-position descriptor, observed only, with no null
             "point_regression": {"added": regression["added"], "reduced": regression["reduced"],
                                  "full": regression["full"], "no_behaviour": no_behaviour,
                                  "behaviour_over_no_behaviour": regression["reduced"] - no_behaviour,
@@ -363,8 +342,8 @@ def vocal_gating_feature_job(feature_index: int) -> tuple:
     -----------
     One feature's gating statistic and its null, in a worker.
 
-    Each feature's draws use seeds ``seed + feature_index * n_draws + draw``, so no two features share a
-    shift within the screen's fixed draw count.
+    Each feature's draws use seeds ``seed + feature_index * n_draws + draw``, so no two features share
+    a shift.
 
     Parameters
     ----------
@@ -450,7 +429,7 @@ def vocalization_identity_payload(identity: dict, null: np.ndarray, p_value: flo
     identity (dict)
         ``decode_gain(..., with_detail=True)``, updated with the flagged descriptors.
     null (np.ndarray)
-        The permutation null, escalated.
+        The permutation null.
     p_value (float)
         Empirical p.
     at_floor (bool)
@@ -477,10 +456,10 @@ def nested_decoding_payload(scores: dict, session_ids: list, null: np.ndarray, p
     """
     Description
     -----------
-    The nested vocal-manifold position decoding section as written (roster ruled 2026-09-14).
+    The point-regression nested section. The per-unit run writes :func:`posterior_nested_payload`
+    instead; this form is not used by the dispatcher.
 
-    The held-out session is recorded by NAME. ``nested_scores`` records it as the session's slot, which
-    a figure would otherwise have to map back through an event set it no longer has.
+    The held-out session is recorded by name rather than by slot.
 
     Parameters
     ----------
@@ -489,7 +468,7 @@ def nested_decoding_payload(scores: dict, session_ids: list, null: np.ndarray, p
     session_ids (list)
         The events' sessions, indexed by slot.
     null (np.ndarray)
-        The circular-shift null, escalated.
+        The null distribution of ``added``.
     p_value (float)
         Empirical p.
     at_floor (bool)
@@ -497,9 +476,8 @@ def nested_decoding_payload(scores: dict, session_ids: list, null: np.ndarray, p
     no_behaviour (float)
         The pooled score of the no-behaviour model on the same USVs; see ``no_behaviour_predictions``.
     behaviour_control (dict)
-        Which cohort control produced the reduced model -- its features, the day held out of its fit,
-        and the settings hash it was fitted under. Without this an added score cannot be traced to the
-        control that made it, and the control is now an external artifact rather than a refit.
+        Which cohort control produced the reduced model: its features, the day held out of its fit,
+        and the settings hash it was fitted under.
 
     Returns
     -------
@@ -526,12 +504,10 @@ def vocal_gating_payload(feature_names: list, observed: dict, nulls: dict, verdi
     """
     Description
     -----------
-    The gating section as written (roster ruled 2026-09-14): statistics, nulls and p-values, and NO
-    decisions.
+    The gating section as written: statistics, nulls and p-values, and no decisions.
 
-    The per-feature label, the borderline flag and the unit's best label are deliberately dropped here --
-    the verdicts are consulted only for their p-values and sigma margin. Features that could not be
-    tested carry their reason instead.
+    The per-feature label, the borderline flag and the unit's best label are dropped; the verdicts
+    are read only for their p-values and sigma margin. Untested features carry their reason.
 
     Parameters
     ----------
@@ -566,9 +542,8 @@ def vocal_gating_payload(feature_names: list, observed: dict, nulls: dict, verdi
                              "feature_main": statistic["feature_main"],
                              "vocal_main": statistic["vocal_main"],
                              "interaction": statistic["interaction"],
-                             # The additive model entire, and what there was to explain: the comparison
-                             # the sub-analysis is for is additive against multiplicative, and dividing
-                             # either by the baseline puts it on the encoding's D2 scale.
+                             # the additive model and the baseline, so either can be put on the
+                             # encoding's D2 scale
                              "additive": statistic["additive"],
                              "baseline": statistic["baseline"],
                              "quiet_baseline": statistic["quiet_baseline"],
@@ -593,8 +568,8 @@ def run_vocal_occurrence(unit: dict, events: dict, settings: dict, data_root: st
     Vocal occurrence for one unit: does its count distinguish the window around a USV's onset from
     silence, in a way that transfers across sessions? Written as its own section.
 
-    The statistic is the leave-one-session-out transfer logistic, tested against circular shifts of the
-    spike train that recount both classes, escalated along the shared ladder.
+    The statistic is the leave-one-session-out transfer logistic, tested against circular shifts of
+    the spike train that recount both classes.
 
     Parameters
     ----------
@@ -635,11 +610,8 @@ def run_vocal_occurrence(unit: dict, events: dict, settings: dict, data_root: st
         p_value, at_floor, null = escalated_empirical_pvalue(occurrence["nats_per_window"], draw_more,
                                                              settings["significance"]["escalation_ladder"],
                                                              null, message_output)
-    # SENSITIVITY, kept beside the discrimination. The statistic and the AUROC both average over every
-    # window, so a unit that fires on only part of its USVs scores lower -- but neither says which of the
-    # two it is, and two units at the same score can be "fires weakly on nearly every USV" or "fires hard
-    # on half of them". These two fractions separate them, and cost nothing: on the pilot units they run
-    # from 44% of USVs with a spike (a unit nearly silent otherwise) to 94%.
+    # Sensitivity beside the discrimination: whether a unit fires weakly on most USVs or strongly on
+    # a few, which the averaged statistic and AUROC cannot tell apart.
     vocal_rows = windows["labels"] > 0.5
     occurrence.update({"null": null, "p": p_value, "at_floor": at_floor, "n_shuffles": int(null.size),
                        "z": null_z(occurrence["nats_per_window"], null),
@@ -662,11 +634,11 @@ def run_vocalization_identity(unit: dict, events: dict, settings: dict, output_d
     """
     Description
     -----------
-    Vocalization identity for one unit: does its count carry information about WHICH USV it is, as a
+    Vocalization identity for one unit: does its count carry information about which USV it is, as a
     position on the vocal manifold? Written as its own section.
 
     The statistic is the held-out prior-corrected decode gain, tested against the exact within-session
-    position permutation, escalated along the shared ladder.
+    position permutation.
 
     Parameters
     ----------
@@ -719,10 +691,9 @@ def run_nested_vocal_manifold_position_decoding(unit: dict, events: dict, settin
     Nested vocal-manifold position decoding for one unit: does the neuron add vocalization-identity
     information beyond the behaviour control?
 
-    What is tested is whether the neuron beats the BEHAVIOUR MODEL, which is only worth claiming when that
-    model predicts -- so its held-out improvement over a no-behaviour model on the same USVs is stored beside
-    the result (ruled 2026-09-15). The kinematic data are released before the pool starts, so the largest
-    arrays are never held while workers are alive.
+    The behaviour control's own held-out improvement over a no-behaviour model on the same USVs is
+    stored beside the result, since beating the control only matters where it predicts.
+    The kinematic data are released before the pool starts.
 
     Parameters
     ----------
@@ -758,27 +729,20 @@ def run_nested_vocal_manifold_position_decoding(unit: dict, events: dict, settin
     history_lags = int(np.floor(encoding["history_pre_seconds"] * fps))
     reduced = reduced_model_features(settings)
     design = nested_design(events, per_session, reduced, history_lags, nested["sigma_floor"])
-    # The behaviour control is FITTED AT COHORT SCALE and carried in as its prediction. Refitting it
-    # here is the failure it exists to fix: this unit has ~2,000 USVs against the thousands of columns
-    # the raw block carries, and such a control scores BELOW a constant fitted on the same USVs. As
-    # four columns the behaviour information comes from the whole cohort and only four coefficients are
-    # estimated on the unit. `n_lags` changes with the block, which is why the swap returns both.
+    # The behaviour control is fitted at cohort scale and enters as its prediction.
+    # `n_lags` changes with the block, which is why the swap returns both.
     control = load_control_model(settings)
     design, n_lags = apply_behaviour_control(design, control, str(unit["rec_date"]), settings)
     del per_session
 
-    # The point-regression form, kept as a FINE-POSITION descriptor: observed only, no null. It is
-    # structurally blind to coarse tuning -- a neuron whose counts separate regions can reweight a
-    # distribution but cannot move a predicted point without spreading it -- so it never decides.
+    # The point-regression form: a fine-position descriptor, observed only, with no null.
     reduced_predicted = reduced_predictions(design, nested, n_lags)
     regression = nested_scores(design, nested, n_lags, reduced_predicted=reduced_predicted)
     no_behaviour = pooled_macro_score(no_behaviour_predictions(design, nested, n_lags), design["positions"],
                                       design["region_labels"], nested)
 
-    # THE STATISTIC: identity's decoder with behaviour as the prior, on the same kept events -- the
-    # ones with a full kinematic history, which the control's prediction needs. Counts, positions and
-    # sessions are the kept rows of the vocal-decoding event set, so `folds` here and identity's agree
-    # on every shared event.
+    # The statistic: identity's decoder with behaviour as the prior, on the kept events (those with a
+    # full kinematic history).
     decoding = settings["vocal_decoding"]
     counts = np.asarray(events["counts"], dtype=np.float64)[design["kept"]]
     folds = decoding_context(design["positions"], design["session_index"], decoding,
@@ -815,13 +779,11 @@ def run_vocal_gating(unit: dict, settings: dict, data_root: str, output_director
     Vocal gating for one unit: every feature's feature x vocalization interaction, with its
     null, written without the per-feature decisions.
 
-    Whether to run at all is decided first, from the vocal-occurrence and vocalization-identity p-values. With both identifiability gates switched off
-    (their shipped default) the counts ``should_run_gating`` would check cannot change its answer, so an
-    untuned unit is skipped WITHOUT assembling its kinematics. With either gate on, the universe is
-    built first so identifiability can be checked before tuning, which is the order the plan requires:
-    a unit both untestable and untuned reports the stronger fact.
-
-    The Bonferroni family for the printed labels and the unit-level p is the features actually tested.
+    Whether to run is decided first, from the vocal-occurrence and vocalization-identity p-values.
+    With both identifiability gates off (the shipped default) an untuned unit is skipped without
+    assembling its kinematics; with either gate on, the universe is built first so identifiability
+    is checked before tuning. The Bonferroni family for the printed labels and the unit-level p is
+    the features actually tested.
 
     Parameters
     ----------
@@ -922,14 +884,8 @@ def check_tuning_threshold_is_reachable(alpha: float, null_sizes: dict) -> None:
     Refuse a vocal-gating threshold that the p-values it reads can never clear.
 
     An empirical p-value cannot fall below ``1 / (n_draws + 1)``. If that floor is not below
-    ``vocal_gating.vocal_tuning_alpha``, no unit can ever count as tuned, and vocal gating is skipped for
-    EVERY unit with the reason ``no_vocal_tuning`` -- a statement about the draw count masquerading as one
-    about the unit. Found on a 20-draw smoke run of a strongly tuned unit, whose p-values sat at their
-    1/21 floor of 0.048 against a threshold of 0.01. The fewest draws that can clear ``alpha`` is
-    ``floor(1 / alpha)``: 100 at the shipped 0.01.
-
-    The same kind of guard vocal gating already applies to its own shuffle count against its Bonferroni
-    bar.
+    ``vocal_gating.vocal_tuning_alpha``, every unit would be skipped as ``no_vocal_tuning``. The fewest
+    draws that can clear ``alpha`` is ``floor(1 / alpha)``: 100 at the shipped 0.01.
 
     Parameters
     ----------
@@ -959,11 +915,10 @@ def run_vocal(unit: dict, settings: dict, data_root: str, output_directory: str,
     -----------
     Run the requested vocal analyses for one unit, in order.
 
-    The USV-grain event set is assembled ONCE and shared by every analysis that scores USVs, so vocal
-    occurrence, vocalization identity and the nested decoding all see exactly the same events. Vocal
-    gating needs the vocal-occurrence and vocalization-identity p-values: it uses the ones computed in
-    this job, reads any it did not compute from the unit's result file, and refuses to run if one is in
-    neither place -- or if either was computed from too few draws ever to clear the activation threshold.
+    The USV-grain event set is assembled once and shared by occurrence, identity and the nested
+    decoding. Vocal gating uses the occurrence and identity p-values computed in this job, or reads
+    them from the unit's result file, and refuses to run if one is missing or was computed from too
+    few draws to clear the activation threshold. Categorical decoding is not run here.
 
     Parameters
     ----------

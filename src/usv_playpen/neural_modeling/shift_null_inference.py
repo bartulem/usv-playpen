@@ -1,48 +1,19 @@
 """
 @author: bartulem
-Circular-shift nulls and tail-extrapolated p-values for the neural encoding tests.
+Circular-shift nulls and empirical p-values for the neural encoding tests.
 
-The null throughout is a circular shift of the unit's spike train: it preserves firing rate, burstiness and
-slow within-session drift while destroying the alignment between spikes and behaviour. Two properties of
-this project make the details matter more than usual.
+The null is a circular shift of the unit's spike train, which keeps its firing rate, burstiness and
+slow drift and destroys only its alignment with behaviour and vocalizations. Lags are drawn from the
+full wrap minus a guard band, and held-out models are frozen across draws rather than refitted.
 
-The shift range is the full wrap minus a guard band, not a narrow window. Every shift beyond the
-decorrelation time is individually a valid draw, which was never the issue. But the null distribution is
-estimated from the draws, and two shifts closer together than the statistic's decorrelation lag give
-near-identical statistics. Since the predictor is built from a 4 s history of slow behavioural variables,
-that lag is at least 4 s and plausibly tens of seconds, so a fixed 40 s window carried only about ten
-effectively independent draws regardless of how many were taken. That capped the usable p at roughly
-1 / (N_eff + 1), around 0.09, left a two-parameter tail fit about two points to work with, and gave the
-null spread a relative error near 22% that every reported z divides by. Over a 1,200 s session the full
-range yields roughly 290 draws at identical runtime.
-
-Models are frozen rather than refitted per draw. This is legitimate because every statistic here is
-held-out: the model was fitted on other sessions and never saw the train being shuffled, so conditioning on
-it is valid. Under the null hypothesis the fitted filter is itself arbitrary, and the question each draw
-asks, given this filter is its alignment with the spike train better than chance, is the right one for a
-held-out score. It is also what makes a thousand draws cost seconds instead of days.
-
-P-values are empirical with escalation, never tail-extrapolated. The number of draws is set by the bar the
-test in question has to clear, not by a global constant: a screen judged against a Bonferroni threshold of
-alpha / n_features needs a floor below that, while a p-value entering Benjamini-Hochberg over a
-2,525-unit cohort needs far more. Since an empirical permutation p floors at 1 / (n + 1), the answer is
-more draws rather than a fitted tail.
-
-Escalation climbs a ladder and accumulates rather than restarting, and it is driven by the COHORT, not by
-the unit. BH rejects the k-th smallest p when p_(k) <= k * q / m, so a p-value on the floor is rejectable
-once k reaches m / (q * (n + 1)) -- 252 units at a thousand draws, 25 at ten thousand, 3 at a hundred
-thousand. Which rung is needed therefore depends on how many units are tied at the floor, which is only
-knowable after the whole cohort has run. The shape is: run everything at the base count, count the
-floor-tied, compute the requirement with :func:`bh_floor_requirement`, and draw more only where it still
-binds. Measured cost of the top rung, at the sizes the kinematic encoding uses: about fifteen minutes per unit.
-
-Escalation is only meaningful for a POOLED statistic, and that is a measured constraint rather than a
-stylistic one. The null statistic is smooth in the shift lag: its autocorrelation is 0.997 at a lag
-difference of 0.1 s and reaches 1/e only at 2.2 s. A single session therefore carries about 528 effectively
-independent shifts out of 174,000 possible frame lags, so a per-session statistic floors near 1/529 and no
-number of draws improves it. Pooling shifts every session independently, giving a joint space of
-528^n_sessions -- about 1.5e8 for three sessions -- against which a hundred thousand draws are all
-effectively distinct.
+- `shift_range_seconds`         — the lag range ``(guard, duration - guard)``.
+- `sample_circular_shift`       — one lag drawn uniformly over that range.
+- `shifted_spike_frames`        — a spike-frame train shifted and wrapped modulo the session length.
+- `empirical_pvalue`            — the one-sided empirical p and whether it sits on its floor.
+- `escalated_empirical_pvalue`  — tops a floored p up with more draws along a ladder; the shipped
+                                   ladder is empty, so no p is escalated by default.
+- `bh_floor_requirement`        — how many floor-tied units Benjamini-Hochberg needs before it can
+                                   reject any of them.
 """
 
 from __future__ import annotations
@@ -57,9 +28,7 @@ def shift_range_seconds(duration: float, guard_seconds: float) -> tuple[float, f
     The circular-shift lag range ``(guard, duration - guard)``, the full wrap-around minus a symmetric guard
     band. This is the one definition every shift null in the project draws from.
 
-    The guard excludes lags where the wrapped train is nearly back in register. Large lags cross slow
-    within-session rate drift, which per-session intercept recalibration absorbs, so the effect is to
-    inflate null variance slightly, which is conservative, rather than to bias it.
+    The guard excludes lags at which the wrapped train is nearly back in register.
 
     Parameters
     ----------
@@ -141,21 +110,10 @@ def escalated_empirical_pvalue(observed: float, draw_more, ladder: list, initial
     -----------
     Resolve an empirical p that has bottomed out, by drawing more shuffles rather than extrapolating.
 
-    An empirical p cannot go below ``1 / (n + 1)``, so a unit whose observed value beats every draw is
-    reported at that floor and nothing distinguishes it from a unit a thousand times more extreme. At
-    1,000 draws the floor is 9.99e-4, while BH across a 2,525-unit cohort needs about 2e-5 for the
-    top-ranked unit -- so the floor, not the data, would decide the cohort.
-
-    The escalation is by DECADE and it ACCUMULATES: a run that floors at 1,000 draws is topped up to
-    10,000, then to 100,000, then to 1,000,000, keeping the draws already taken rather than discarding
-    them. Accumulating is valid here because the draws are exchangeable and the decision to continue
-    depends only on whether the floor was reached, never on where the observed value sits among the new
-    draws. It stops as soon as the p lifts off the floor, so only genuinely extreme units pay for the
-    deep ladder.
-
-    Resolution is bought with draws and never with a parametric tail. A GPD fit was used earlier and is
-    dropped project-wide: it silently fell back to the floor when the observed exceeded its fitted
-    support, and in the gating pilot it extrapolated 3-sigma borderline features into false positives.
+    An empirical p cannot go below ``1 / (n + 1)``, so a unit that beats every draw is indistinguishable
+    from one far more extreme. Each rung of the ladder tops the null up to its target count, keeping the
+    draws already taken; this is valid because the decision to continue depends only on whether the
+    floor was reached. It stops as soon as the p lifts off the floor. No parametric tail is fitted.
 
     Parameters
     ----------
@@ -185,9 +143,7 @@ def escalated_empirical_pvalue(observed: float, draw_more, ladder: list, initial
     null = np.asarray(initial_null, dtype=np.float64)
     p_value, at_floor = empirical_pvalue(null, observed)
     for target in ladder:
-        # Only FINITE draws count toward a rung's target, as only finite draws enter the p-value: a NaN
-        # draw (a degenerate refit) is dropped from p by `empirical_pvalue`, so counting it here would
-        # stop the ladder short of the draws the floor needs.
+        # Only finite draws count toward a rung's target, as only they enter the p-value.
         n_finite = int(np.isfinite(null).sum())
         if not at_floor or target <= n_finite:
             break
@@ -204,10 +160,8 @@ def bh_floor_requirement(n_tests: int, fdr_q: float, n_shuffles: int) -> float:
     reject any of them.
 
     BH rejects the k-th smallest p-value when ``p_(k) <= k * q / m``, while an empirical permutation p
-    cannot fall below ``1 / (n + 1)``. A unit sitting on that floor is therefore only rejectable once
-    ``k >= m / (q * (n + 1))``. Reporting this per run makes the constraint visible instead of leaving a
-    whole cohort silently unrejectable: for 2,525 units at q = 0.01 with 1,000 shuffles it takes 253
-    floor-tied units before any of them passes.
+    cannot fall below ``1 / (n + 1)``, so a floor-tied unit is rejectable only once
+    ``k >= m / (q * (n + 1))``.
 
     Parameters
     ----------
@@ -234,10 +188,7 @@ def empirical_pvalue(null_values: np.ndarray, observed: float) -> tuple[float, b
     The empirical one-sided permutation p-value ``(exceedances + 1) / (draws + 1)``, plus whether it is
     sitting on the floor and therefore a candidate for escalation.
 
-    No parametric tail is fitted. The alternative -- extrapolating a Generalized Pareto beyond the largest
-    observed draw -- buys resolution at the cost of a distributional assumption about a region where, by
-    construction, there is no data. Since the frozen nulls are cheap, taking more draws is both simpler and
-    assumption-free.
+    No parametric tail is fitted beyond the largest draw.
 
     Parameters
     ----------

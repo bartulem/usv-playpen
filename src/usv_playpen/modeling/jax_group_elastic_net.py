@@ -2,8 +2,7 @@
 @author: bartulem
 Group-elastic-net + temporal-smoothness GLM solver (Bernoulli / Poisson) via FISTA.
 
-SCRATCHPAD PROTOTYPE for the P2 claim-1 backend (`neural_modeling.jax_group_elastic_net`).
-Validated by the companion synthetic gate before promotion into the subpackage.
+The solver behind the neural kinematic-encoding fits (`neural_modeling.kinematic_encoding`).
 
 The estimator learns a weight vector `w` of shape `(n_features * n_time_bins,)` and a
 scalar bias `b`; the linear predictor is `eta = X @ w + b + offset`, mapped to a rate by
@@ -28,15 +27,12 @@ one group. The caller (the lagged-design assembler) must emit columns in this or
 
 Subsampling correction
 ----------------------
-Negative subsampling is handled at the GLM level by two standard, non-controversial hooks the
-caller supplies: per-sample `sample_weight` (importance weights) and/or a per-sample `offset`
-(added to `eta`). The exact subsampling-correction convention (importance weights vs a
-log-prior intercept offset) is a PIPELINE decision, deferred to claim-1 wiring — the solver
-just honours whatever weights/offset it is given.
+Negative subsampling is handled through two hooks the caller supplies: per-sample `sample_weight`
+(importance weights) and a per-sample `offset` added to `eta`. The neural pipeline passes the
+case-control log-prior offset and no weights; the solver honours whatever it is given.
 
-Precision note (prototype): jax x64 is enabled here for convergence-test stability; the
-promoted version must confirm the precision policy against the rest of `modeling/` (which
-runs float32).
+Precision: the solver runs in float64 inside a scoped x64 block, so the rest of `modeling/` stays
+float32.
 """
 
 from __future__ import annotations

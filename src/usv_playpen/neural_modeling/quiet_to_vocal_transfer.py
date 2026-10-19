@@ -1,37 +1,16 @@
 """
 @author: bartulem
-Carrying a model fitted on silence into vocal periods, and asking whether it still predicts.
+Quiet-to-vocal transfer: score a kinematic model fitted on silence on the vocal frames it never saw.
 
-The model is frozen: no refitting, no re-selection. It was fitted on the pool's quiet anchors and is scored
-on the held-out session's vocal frames, which it has never seen -- quiet anchors exclude every vocal period
-by construction, so the model has in fact never seen a vocal frame from any session at all.
+The selected model is frozen (no refitting, no re-selection) and evaluated on each held-out session's
+transfer frames, either the USV spans or the bout window around them. Under the count grain the frames
+are cut into fixed-width bins and scored as spike counts. Every fold's held-out predictions are pooled
+into one calibration (a shared slope, per-session intercepts) and tested against a circular-shift null
+in which each session is shifted independently. A leave-one-session-out minimum is reported as a
+descriptor.
 
-Scoring is POOLED across folds rather than averaged over them, and that is not a cosmetic choice. Averaging
-per-fold scores lets an unequal fold dominate: on a three-session unit whose folds carried 1,045, 962 and
-372 events, fitting two calibration parameters against a shuffled train on the smallest fold overfitted so
-badly that its null mean exceeded its own observed value and its spread swamped the average. Concatenating
-the held-out predictions and calibrating once dropped the null mean from +0.0081 to +0.0019 and the null
-spread from 0.0086 to 0.0028, moving the same data from p = 0.065 to p = 9.9e-06. Nothing about the
-predictions changed; only how they were counted.
-
-Pooling is also what makes the null resolvable. The null statistic is smooth in the shift lag -- its
-autocorrelation is 0.997 at a lag difference of 0.1 s and reaches 1/e only at 2.2 s -- so a single session
-carries about 528 effectively independent shifts and a per-fold p-value floors near 1/529 no matter how
-many draws are taken. Pooling shifts every session independently, giving a joint space of
-528^n_sessions, against which far more draws are genuinely distinct.
-
-Pooling does hide something, and that is what the leave-one-session-out descriptor is for: a pooled
-number cannot say whether one session carries it. The per-session scores reported alongside do not answer
-that either, because each fits its own two calibration parameters on one session's frames -- the fragile
-construction pooling exists to avoid. Dropping a session and recalibrating on the rest asks the question in
-the well-conditioned way, at the cost of one two-parameter refit per session, and is what the vocalization-identity
-and nested decoding analyses already record. It is a descriptor and gates nothing; consistency is not a
-criterion any test here applies.
-
-The gate is discrimination, not level: whether the model tells a frame with a spike from one without,
-scored against the vocal frames' own rate. Whether the unit simply fires faster during vocalization is
-recorded as a descriptor and gates nothing, because a model can predict the rate change perfectly while
-ordering frames at chance.
+Exports: ``transfer_frames``, ``bin_frame_matrix``, ``counts_per_frame``, ``bin_width_frames``,
+``score_fold``, ``pooled_transfer_null``, ``leave_one_session_out_scores`` and ``combine_folds``.
 """
 
 from __future__ import annotations
@@ -65,22 +44,12 @@ def transfer_frames(span_frames: np.ndarray, pointer: np.ndarray, fps: float, n_
     """
     Description
     -----------
-    The frames the transfer is scored on: the USVs' own spans, or the BOUT WINDOW around them.
+    The frames the transfer is scored on: the USVs' own spans, or the bout window around them.
 
-    ``"usv_span"`` is the original universe -- every frame inside one of the recorded animal's USVs,
-    ~6 % of a session, where these units sit at 0.25-0.6 spikes per 6.7 ms frame and the partner is
-    always close. ``"bout_window"`` (ruled 2026-10-14) takes every bout -- consecutive USVs closer than
-    ``inter_bout_threshold_seconds``, single-USV bouts included -- and scores ``[bout start -
-    pre_bout_seconds, bout end]``, the union over bouts. Two exclusions are load-bearing: frames without a
-    full history (the session's first ``n_lags`` frames), and every QUIET ANCHOR, because a frame two to
-    four seconds before an isolated bout is quiet by the quiet rule's two-second forward look and would
-    otherwise be both a fitting frame and a scoring frame.
-
-    Measured on the nine 20250919 units: four times the frames, base rates 0.14-0.24 instead of
-    0.25-0.41, the two passers 2x stronger, two distance+speed units from nothing to the floor, the
-    pure-speed units positive in every session, the known-flat unit still null; on 20250927, four of five
-    span-failures to the floor and nothing backwards. The window's cost is definitional and is to be
-    stated: "live during vocal episodes including their run-up", not "inside the sounds".
+    ``"usv_span"`` keeps every frame inside one of the recorded animal's USVs. ``"bout_window"`` groups
+    the USVs into bouts (consecutive USVs closer than ``inter_bout_threshold_seconds``, single-USV bouts
+    included) and keeps the union of ``[bout start - pre_bout_seconds, bout end]``. Frames without a full
+    history and every quiet anchor are removed, so no frame is both fitted and scored.
 
     Parameters
     ----------
@@ -215,12 +184,10 @@ def score_fold(estimator, session: dict, feature_indices: list, vocal_frames: np
     """
     Description
     -----------
-    Score one fold's frozen model on its held-out session's vocal frames, returning the raw held-out
-    predictions so they can be pooled later rather than collapsed now.
+    Score one fold's frozen model on its held-out session's transfer frames, returning the raw held-out
+    predictions so they can be pooled later.
 
-    The per-fold score is computed too, but only as a diagnostic. It is the quantity that misbehaves on
-    small folds, and keeping it visible next to the pooled result is what makes that visible rather than
-    mysterious.
+    The per-fold score is a diagnostic only; the tested score is the pooled one (:func:`combine_folds`).
 
     Parameters
     ----------
@@ -231,7 +198,7 @@ def score_fold(estimator, session: dict, feature_indices: list, vocal_frames: np
     feature_indices (list)
         Columns the model was fitted on.
     vocal_frames (np.ndarray)
-        Frames of the focal animal's USVs in this session.
+        Transfer frames of this session, as :func:`transfer_frames` returns them.
     n_lags (int)
         History length in frames.
     base_rate (float)
@@ -291,10 +258,9 @@ def pooled_transfer_null(fold_results: list, per_session: dict, session_ids: lis
     -----------
     Null distribution of the pooled transfer score.
 
-    Each draw shifts every session's spike train independently, relabels that session's vocal frames, and
-    re-scores the pooled, still-frozen predictions. Shifting the sessions independently is what gives the
-    joint draw space its size; shifting them together would collapse it back to one session's worth of
-    resolution.
+    Each draw shifts every session's spike train independently, relabels that session's transfer frames
+    (or recounts its bins), and re-scores the pooled, still-frozen predictions. Independent shifts give
+    the joint draw space its size.
 
     Parameters
     ----------
@@ -317,6 +283,8 @@ def pooled_transfer_null(fold_results: list, per_session: dict, session_ids: lis
     transfer_settings (dict)
         The ``kinematic_encoding.transfer`` settings block; under the count grain each draw recounts
         the spikes per bin of the shifted train and re-scores the Poisson pooled calibration.
+    calibration (dict)
+        The ``kinematic_encoding.calibration`` settings block, passed to the scorer.
 
     Returns
     -------
@@ -351,12 +319,9 @@ def pooled_transfer_null(fold_results: list, per_session: dict, session_ids: lis
     session_index = np.concatenate([np.full(result["labels"].size, index)
                                     for index, result in enumerate(fold_results)])
 
-    # Draws are processed in CHUNKS. The previous version built an (n_shuffles, n_frames) label matrix
-    # per session and concatenated them, which is fine at the 1,000 draws it was written for and fatal
-    # once the escalation ladder asks for more: at 69,174 pooled vocal frames that is 55 GB at 100,000
-    # draws and 498 GB at 1,000,000. It exhausted host RAM and took the desktop down with it. The chunk
-    # is sized by a memory budget, and each session keeps ONE generator across chunks so the sequence of
-    # shifts is exactly what an unchunked run would have drawn.
+    # Draws are processed in chunks sized by a memory budget, since a full (n_shuffles, n_frames) label
+    # matrix grows without bound with the draw count. Each session keeps one generator across chunks,
+    # so the shifts are exactly those an unchunked run would draw.
     total_frames = max(int(eta.size), 1)
     chunk = int(max(1, min(n_shuffles, _POOLED_BLOCK_BYTES // (total_frames * 8))))
     generators = [np.random.default_rng(seed + index) for index in range(len(session_ids))]
@@ -391,32 +356,19 @@ def leave_one_session_out_scores(eta: np.ndarray, labels: np.ndarray, session_in
     """
     Description
     -----------
-    Re-pool the transfer with each session dropped in turn, so it is visible whether any one of them
-    carries the result.
+    Re-pool the transfer with each session dropped in turn, to show whether any one session carries
+    the result.
 
-    This RE-POOLS rather than reading the per-session scores reported beside it, and the distinction is
-    the whole point. A per-session score fits its own slope and intercept on one session's vocal frames
-    alone -- the fragile construction pooling exists to avoid, and the one that on a 372-USV session
-    produced a null whose mean (+0.0170) exceeded its own observed value (+0.0040). Dropping a session
-    and recalibrating on the rest keeps the shared slope estimated on everything that remains, so a thin
-    session's instability never becomes its own estimate.
-
-    The slope travels with each drop because the transfer's sign condition is read off it: a drop that flips
-    the sign says something a score alone cannot.
-
-    Nothing is refitted -- the held-out predictions are already in hand, so each drop costs one
-    two-parameter calibration, measured at about 10 ms on a six-session unit's 34,000 frames.
-
-    This is the kinematic encoding's analogue of ``min_leave_one_fold_out`` on the decoding analyses, where the
-    partition is folds rather than sessions. Like those, it is a DESCRIPTOR and gates nothing:
-    consistency is deliberately not a criterion any test in this analysis applies.
+    Each drop recalibrates on the remaining sessions, keeping the shared slope estimated on everything
+    that remains, rather than scoring sessions alone. Nothing is refitted. The slope is returned with
+    each score because the transfer's sign condition is read off it. A descriptor; it gates nothing.
 
     Parameters
     ----------
     eta (np.ndarray)
         Held-out linear predictor, concatenated across sessions.
     labels (np.ndarray)
-        0/1 spike labels at the same frames.
+        0/1 spike labels at the same frames, or spike counts per bin under the count grain.
     session_index (np.ndarray)
         Integer session index per frame, indexing into ``session_ids``.
     session_ids (list)
@@ -451,12 +403,9 @@ def combine_folds(fold_results: list, per_session: dict, session_ids: list,
     -----------
     Pool every fold's held-out predictions into one transfer result, with its null and p-value.
 
-    One shared calibration slope is fitted across all folds, with a separate intercept per session, because
-    the sessions are not on a common scale -- per-fold transfer slopes of +0.36, +0.59 and +0.16 on one unit
-    -- while the slope, the quantity the test is about, is estimated on everything at once.
-
-    When the p-value lands on the empirical floor the caller is told so, since resolving it further is a
-    matter of more draws rather than a different statistic.
+    One shared calibration slope is fitted across all folds, with a separate intercept per session, so
+    the slope is estimated on every fold at once while sessions keep their own level.
+    A p-value on the empirical floor is flagged as such.
 
     Parameters
     ----------
@@ -476,13 +425,13 @@ def combine_folds(fold_results: list, per_session: dict, session_ids: list,
     Returns
     -------
     result (dict)
-        ``score``, ``slope``, ``p``, ``at_floor``, ``n_frames``, ``null``, the leave-one-session-out
-        descriptors ``leave_one_session_out`` and ``min_leave_one_session_out``, and the per-fold
-        diagnostics under ``folds``.
+        ``score``, ``slope``, ``p``, ``at_floor``, ``n_frames``, ``n_bins``, ``bin_width_frames``,
+        ``grain``, ``universe``, ``null``, the leave-one-session-out descriptors
+        ``leave_one_session_out`` and ``min_leave_one_session_out``, and the per-fold diagnostics under
+        ``folds``.
     """
 
-    # Both of these name what this function DOES, and neither was read. A run could have declared
-    # fold-averaged scoring in its settings, been reported as such, and pooled all along.
+    # These settings name what this function does; reject any other value rather than ignore it.
     transfer_settings = settings["kinematic_encoding"]["transfer"]
     if transfer_settings["calibration_grain"] != "pooled_across_folds":
         msg = (f"the transfer fits ONE calibration -- a shared slope with per-session intercepts -- "

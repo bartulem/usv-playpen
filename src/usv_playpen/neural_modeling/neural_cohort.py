@@ -2,43 +2,27 @@
 @author: bartulem
 Cohort selection: which units, and which of their sessions, each analysis is allowed to use.
 
-Builds the per-unit manifest the pipelines iterate over, from the canonical sources rather than
-reinventions -- ``unit_catalog.csv`` for unit properties, and the session-list ``.txt`` files for the
-courtship session set.
+Builds the per-unit manifest the pipelines iterate over, from ``unit_catalog.csv`` for unit
+properties and the session-list ``.txt`` files for the courtship session set.
 
 A unit is kept when its area, quality and somatic flag pass and it appears in at least
-``min_courtship_sessions`` courtship sessions. A ``unit_uid`` is single-``rec_date``, so its "sessions" are
-same-day replicate blocks and the cross-validation is within-day by construction.
+``min_courtship_sessions`` courtship sessions. Each kept unit carries two session sets:
 
-TWO SESSION SETS COME BACK PER UNIT, AND THE DIFFERENCE IS THE POINT.
+- ``courtship_sessions`` — every courtship session the unit was recorded in, used by the kinematic
+  encoding, which is fitted on silence.
+- ``vocal_sessions``     — the subset with at least ``min_emitter_usvs_per_session`` analysed USVs
+  (noise and squeaks excluded) from the emitter ``vocalization_settings.vocal_emitter`` names, used
+  by everything scored on vocalizations.
 
-``courtship_sessions`` is every courtship session the cluster was recorded in. ``vocal_sessions`` is
-the subset carrying at least ``min_emitter_usvs_per_session`` USVs from the emitter
-``vocalization_settings.vocal_emitter`` names -- the recorded animal by default.
+A ``unit_uid`` is single-``rec_date``, so its sessions are same-day blocks and every
+leave-one-session-out rotation is within-day.
 
-They differ because the analyses need different things from a session. The kinematic encoding is fitted on
-QUIET anchors, and a session in which the male barely vocalized is not impoverished for that purpose --
-it has MORE silence, not less. Everything scored on vocalizations is the opposite: a session with two
-USVs contributes a leave-one-session-out fold whose statistic rests on two events.
-
-That is not a hypothetical. Across the 73 courtship sessions the median is ~508 focal USVs but the
-minimum is 2, and two sessions with 2 USVs apiece are recorded alongside 116 and 67 cohort units.
-Measured on a pilot unit by subsampling one session and refitting 12 times, the fold's decode gain
-holds a standard deviation of 0.019 at 200 events and 0.130 at 2 -- a sevenfold spread, ranging from
-strongly anti-aligned to five times the true effect. The exact permutation null degrades in the same
-place for a sharper reason: a within-session permutation of n events has n! orderings and the
-identity is one of them, so at n = 2 half of all "null" draws leave that session exactly where it
-started, against 2.8e-7 at n = 10.
-
-The threshold is 20 (user-ruled 2026-09-08). It sits past the measured variance knee -- the fold-gain
-spread halves between 10 and 20 and then stops improving -- clears the permutation floor with a
-factor of two in hand, and costs almost nothing: the sessions it removes are the ones with no data in
-them, so 99.8% of units and 99.9% of all focal USVs survive. Ten and twenty select the IDENTICAL
-cohort, there being a gap in the distribution between them, which is the property to want in a number
-that is about to be frozen.
-
-The count is deliberately the RAW focal total rather than the cleaned or torus-positioned one, so
-that cohort membership does not move when an analysis window or an embedding is changed.
+- `load_courtship_session_ids`  — session IDs from the session-list files.
+- `recorded_mouse_by_session`   — the recorded mouse per session, from the catalog.
+- `emitter_usv_counts`          — analysed emitter USVs per session.
+- `select_cohort`               — the unit filters and both session sets.
+- `build_cohort_manifest`       — the whole manifest from a settings dict.
+- `summarize_cohort`            — counts to print before a cohort run.
 """
 
 from __future__ import annotations
@@ -64,8 +48,7 @@ def load_courtship_session_ids(session_list_files: list[str]) -> set[str]:
     Read the session-list ``.txt`` files and return the set of courtship session IDs (the session
     directory basenames), resolving each stored path through ``configure_path``.
 
-    Mirrors the modeling pipeline's ``prepare_modeling_sessions`` but unions over MULTIPLE lists,
-    since the cohort spans the intact-partner and mute-female conditions by default.
+    Unions over several lists, since the cohort spans the intact-partner and mute-female conditions.
 
     Parameters
     ----------
@@ -126,10 +109,8 @@ def recorded_mouse_by_session(catalog_path: str) -> dict:
     -----------
     Which mouse each session was recorded from, read off the catalog rather than assumed.
 
-    Every unit in a session belongs to the same animal, so the mapping is well defined -- and taking
-    it from the catalog avoids the slot assumption that "the recorded animal is track_names[0]". That
-    assumption holds in this cohort (73 of 73 session-mouse pairs) but it is a property of the
-    recordings, not a guarantee, and it is the kind of thing that fails silently.
+    Every unit in a session belongs to the same animal, so the mapping is well defined, and reading it
+    from the catalog avoids assuming the recorded animal's track slot.
 
     Parameters
     ----------
@@ -157,14 +138,10 @@ def emitter_usv_counts(session_ids, data_root: str, mouse_by_session: dict,
     -----------
     Count the recorded animal's own vocalizations in each session.
 
-    This is a property of the SESSION, not of any unit, so it is computed once and shared across the
-    whole cohort rather than recomputed per unit. The recorded animal is resolved by NAME from the
-    session's ``track_names``, the same mechanism the design assembler uses, and USVs are matched on
-    the emitter label exactly.
-
-    A session whose tracking or summary file is missing counts as zero rather than raising: cohort
-    building sees every listed session, including ones that were never processed, and a missing file
-    is a reason to exclude a session from vocal analyses rather than to abort the manifest.
+    Computed once per session and shared across the cohort. The recorded animal is resolved by name
+    from the session's ``track_names``, and only analysed USVs (noise and squeaks excluded) are
+    counted, so a session cannot qualify on events no analysis scores. A session whose tracking or
+    summary file is missing counts as zero rather than raising.
 
     Parameters
     ----------
@@ -176,6 +153,8 @@ def emitter_usv_counts(session_ids, data_root: str, mouse_by_session: dict,
         ``{session_id: mouse_id}`` from :func:`recorded_mouse_by_session`.
     vocal_emitter (str)
         Whose USVs are the events: ``'self'`` | ``'partner'`` | ``'all'``.
+    vocal_settings (dict)
+        The ``vocalization_settings`` block, which defines the analysed USVs.
 
     Returns
     -------
@@ -187,9 +166,7 @@ def emitter_usv_counts(session_ids, data_root: str, mouse_by_session: dict,
     for session_id in sorted(session_ids):
         try:
             track_names, _frame_rate, _n_frames = session_timebase(data_root, session_id)
-            # The gate decides which sessions are vocal-ELIGIBLE, so it must count the USVs the
-            # analyses will actually score -- counting noise and squeaks would admit a session on
-            # the strength of events no analysis ever sees.
+            # Count only the USVs the analyses score (noise and squeaks excluded).
             usv = filter_vocalizations(load_session_usvs(data_root, session_id), vocal_settings,
                                        "analysed")
         except FileNotFoundError:
@@ -223,9 +200,8 @@ def select_cohort(
     least ``min_emitter_usvs_per_session`` USVs from the selected emitter, and ``vocal_testable`` records whether enough of
     them survive for a leave-one-session-out rotation on the vocal side.
 
-    A unit that fails the vocal floor is KEPT, not dropped: it still has its kinematic encoding to be tested,
-    and dropping it here would silently shrink the denominator the transformation fraction is reported
-    against. The flag says what it can be asked, and the counts say why.
+    A unit that fails the vocal floor is kept, flagged ``vocal_testable = False``, so it can still be
+    tested for kinematic encoding and every cohort fraction keeps the same denominator.
 
     Parameters
     ----------
@@ -319,8 +295,7 @@ def build_cohort_manifest(settings: dict) -> list[dict]:
         The manifest, one record per unit.
     """
 
-    # `data` says WHICH data the run draws on, `data_sufficiency` says HOW MUCH of it a unit must
-    # carry to be analysed. They are read together here because the manifest is where the two meet.
+    # `data` says which data the run draws on, `data_sufficiency` how much of it a unit must carry.
     data_settings = settings["data"]
     sufficiency = settings["data_sufficiency"]
     session_ids = load_courtship_session_ids(data_settings["session_list_files"])
@@ -351,8 +326,7 @@ def summarize_cohort(cohort: list[dict]) -> dict:
     Counts worth printing before a cohort run: how many units there are, how many can be asked the
     vocal questions, and how much the session gate actually removed.
 
-    Reported rather than merely applied, because a gate whose effect is not stated is a silent
-    change to the denominator every fraction in the paper is quoted against.
+    Reported so that the effect of the session floor on the cohort denominator is visible.
 
     Parameters
     ----------

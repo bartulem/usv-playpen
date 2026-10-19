@@ -1,33 +1,21 @@
 """
 @author: bartulem
-The nested decoding's behaviour control, fitted once at COHORT scale instead of once per unit.
+The nested decoding's behaviour control, fitted once on the whole cohort rather than per unit.
 
-WHY THIS EXISTS. The control used to be refitted inside every unit: five features over six hundred lags
-is three thousand columns, against a unit's ~2,000 USVs. Measured 2026-09-22, that control scored BELOW
-a constant fitted on the same USVs, so the added score it produced was the neuron measured against
-nothing. The shortfall is the USV count and not the recordings -- P1's own data cut to that size
-reproduces it exactly -- and a model fitted on the whole ephys cohort predicts USV position perfectly
-well. So the control is estimated once, here, and carried into each unit as its PREDICTION.
+A per-unit control (several features over 600 lags) has thousands of columns against a unit's few
+thousand USVs and cannot be estimated, so the control is fitted once on the cohort's USVs and enters
+each unit as its predicted torus position.
 
-TWO STAGES, sharing one assembly because the assembly is the expensive half.
-``select_control_features`` runs forward selection over the full kinematic set; ``fit_control_models``
-fits the chosen features once per held-out recording day. Both write an artifact that the per-unit run
-READS and checks, never recomputes.
+Two stages share one assembly (:func:`assemble_cohort`):
 
-HELD OUT BY DAY, and the reason is narrower than it looks. The cohort spans more days than animals, so a
-day holdout does not hold out the animal -- and holding out the animal would be WRONG. This model never
-sees spikes, and units are single-date, so its training set cannot carry information about the neuron
-under test. It is a nuisance model: ``added = full - reduced`` uses the same prediction on both sides, so
-a stronger control only SHRINKS the added score, and a weaker one makes the claim easier to pass. What
-the day holdout buys is the one thing needed -- the unit's own USVs stay out of the training set, so the
-reduced score is genuinely held out.
+- :func:`select_control_features` -- forward selection over the kinematic set, held out by recording
+  day, with a paired one-standard-error acceptance rule;
+- :func:`fit_control_models` -- fits the selected features once per held-out recording day.
 
-THE TORUS COLUMNS COME FROM THE DATA TREE, read through ``load_session_usvs`` so this model and the
-analyses it serves see ONE source. They did once live under a separate ``data_roots.vocal_summary_root``,
-because the ``Data`` tree summaries carried no QLVM columns; those summaries now carry ``qlvm1`` /
-``qlvm2`` and the category labels, so that key is gone. The second copy is how this control silently
-went unfitted -- the columns were renamed in the live tree while the copy kept the old
-``qlvm_dim1`` / ``qlvm_dim2`` names, and every session was skipped for lacking the configured columns.
+Both write an artifact that the per-unit run reads and checks (:func:`load_control_model`) and never
+recomputes. :func:`apply_behaviour_control` swaps a unit's raw behaviour block for the four
+sine/cosine columns of the control's prediction from the fold that did not see the unit's day. Torus
+positions and region labels are read from the ``Data`` tree summaries through ``load_session_usvs``.
 """
 
 from __future__ import annotations
@@ -120,8 +108,8 @@ def session_vocalization_design(session_directory: str, settings: dict, n_lags: 
     -----------
     One session's vocalizations, their acoustic regions, and the kinematic history behind each.
 
-    The vocalizations kept are EXACTLY the rows the per-unit analysis scores, so the control is trained
-    on the population it is later applied to. Two filters, with the two scopes the unit side uses:
+    The vocalizations kept are the rows the per-unit analysis scores, so the control is trained on the
+    population it is later applied to. Two filters, with the two scopes the unit side uses:
 
     - the analysed set is ``filter_vocalizations(usv, vocalization_settings, "analysed")`` restricted to
       ``vocalization_settings.vocal_emitter`` (``'self'``, ``'partner'``, or ``'all'`` for no emitter
@@ -133,13 +121,8 @@ def session_vocalization_design(session_directory: str, settings: dict, n_lags: 
     A vocalization is then dropped when another one from the guard set intrudes on its pre-window
     (``vocalization_settings.spike_window.pre_offset_seconds``), when its torus position or region
     label is missing, or when the history a prediction needs runs off the start of the session. The
-    history window ENDS at the frame before onset (``onset_history_anchor_frames``), so it is strictly
-    pre-onset, and the nested decoding builds the unit-side histories it applies the control to at that
-    same frame.
-
-    Before 2026-10-18 this read the raw summary, so the control was trained on noise and squeak rows the
-    unit side never scores, and its anchors sat one frame earlier than the unit-side histories. A
-    control fitted before that date must be refitted.
+    history window ends at the frame before onset (``onset_history_anchor_frames``), the same anchor the
+    nested decoding uses for the unit-side histories.
 
     Parameters
     ----------
@@ -174,10 +157,8 @@ def session_vocalization_design(session_directory: str, settings: dict, n_lags: 
         usv = load_session_usvs(data_root, session_id)
     except FileNotFoundError as error:
         return {"session_id": session_id, "reason": str(error)}
-    # A session with no summary at all is a property of that session, so it is skipped. A summary
-    # missing the CONFIGURED columns is not: it hits every session alike, and skipping it quietly is
-    # exactly how this control came to be unfitted while the position columns were renamed under it.
-    # It therefore raises, naming the two settings that have to agree with the summary.
+    # A session with no summary is skipped. A summary missing the configured columns affects every
+    # session alike, so it raises instead of being skipped silently.
     absent = [column for column in (*position_columns, region_column) if column not in usv.columns]
     if absent:
         msg = (f"{session_id}: usv_summary lacks {absent}. Reconcile "
@@ -374,9 +355,8 @@ def fit_control_models(cohort: dict, feature_names: list, settings: dict, n_lags
     -----------
     Fit the control once per held-out recording day and return the artifact payload.
 
-    Only ``coef_`` and ``intercept_`` are kept: those are all ``predict`` consumes, so the artifact
-    survives any change to the estimator class that leaves its linear form alone. Pickling fitted
-    objects would tie every banked result to one version of that class.
+    Only ``coef_`` and ``intercept_`` are kept, since those are all ``predict`` consumes; the artifact
+    therefore does not depend on the estimator class's pickled form.
 
     Parameters
     ----------
@@ -487,13 +467,11 @@ def upgrade_legacy_counts(record: dict) -> dict:
     """
     Description
     -----------
-    Map an artifact written before the vocalization renames onto the current key names.
+    Read an artifact that stores its counts under the legacy key ``n_calls`` under the current name.
 
-    The control artifact and the selection pickle stored their counts as ``n_calls`` (top level and, in
-    the control artifact, inside every ``per_day`` entry) until 2026-10-18; they are ``n_vocalizations``
-    now. Every reader goes through here, so an older artifact is read under the new names instead of
-    raising a ``KeyError``, and a record that already carries the new names passes through unchanged.
-    The input is not mutated.
+    Renames ``n_calls`` to ``n_vocalizations`` at the top level and inside every ``per_day`` entry. A
+    record that already carries the current names passes through unchanged, and the input is not
+    mutated.
 
     Parameters
     ----------
@@ -525,11 +503,10 @@ def load_control_model(settings: dict) -> dict:
     """
     Description
     -----------
-    Read the fitted control and CHECK it against the run it is about to serve.
+    Read the fitted control and check its features against the settings it is about to serve.
 
-    A control silently out of step with its settings would change every added score without changing a
-    single reported configuration value, which is the failure mode this check exists for. The features
-    are checked too, since those are the behaviour the neuron is measured AGAINST.
+    A control out of step with the settings would change every added score without changing any
+    reported configuration value, so a feature mismatch raises.
 
     Parameters
     ----------
@@ -565,7 +542,7 @@ def control_predictions(artifact: dict, held_out_day: str, design: np.ndarray,
     """
     Description
     -----------
-    Predicted torus positions for a unit's USVs, from the fold that did NOT see that unit's day.
+    Predicted torus positions for a unit's USVs, from the fold that did not see that unit's day.
 
     Parameters
     ----------
@@ -599,14 +576,10 @@ def paired_gain(candidate: np.ndarray, incumbent: np.ndarray) -> tuple:
     """
     Description
     -----------
-    The PAIRED per-day improvement of a candidate over the incumbent, and its own standard error.
+    The paired per-day improvement of a candidate over the incumbent, and its standard error.
 
-    Pairing is load-bearing and its absence is a defect this project has now found TWICE. Recording days
-    differ enormously in absolute score -- roughly -3.42 to -3.67 -- so the standard error of the raw
-    scores measures how much DAYS differ, not how reliably the candidate improves on them. A per-step
-    gain is an order of magnitude smaller than that between-day spread, so comparing the two rejects
-    every feature after the first, and the selected model then scores WORSE than an unselected one.
-    Differencing within day removes the day effect, which is what the acceptance rule is testing.
+    Days differ far more in absolute score than a candidate improves on them, so the standard error is
+    taken over the within-day differences, which removes the day effect.
 
     Parameters
     ----------
@@ -634,11 +607,10 @@ def _score_candidate(arguments: tuple) -> tuple:
     """
     Description
     -----------
-    Held-out-by-day scores of one candidate feature set, reading the design by MEMORY MAP.
+    Held-out-by-day scores of one candidate feature set, reading the design by memory map.
 
-    The design runs to gigabytes, so it is neither pickled to each task nor inherited through a fork --
-    the first is prohibitive and the second silently fails wherever processes are spawned rather than
-    forked. Mapping the file costs nothing and behaves the same on every platform.
+    The design runs to gigabytes, so workers map the ``.npy`` file instead of receiving a pickled copy;
+    this behaves the same whether processes are spawned or forked.
 
     Parameters
     ----------
@@ -675,14 +647,12 @@ def select_control_features(cohort: dict, settings: dict, n_lags: int, n_workers
     -----------
     Forward selection of the control's features on the cohort, held out by recording day.
 
-    Greedy by held-out macro score, accepting a candidate only when its PAIRED gain less that gain's own
-    standard error still clears zero, and stopping at the first rejection -- the codebase's rule, with
-    the pairing it is supposed to have.
+    Greedy by held-out macro score: a candidate is accepted only when its paired gain minus that gain's
+    standard error is above zero (:func:`paired_gain`), and selection stops at the first rejection.
 
     An ``external_reference`` feature set is scored under the identical setup and recorded beside the
-    result. That is not decoration: the selection sees every day, including the days units are later
-    scored on, so it carries some optimism. A feature set chosen ELSEWHERE cannot, and the gap between
-    the two BOUNDS the optimism instead of leaving it to be argued about.
+    result. The selection sees every day, so it carries some optimism; a feature set chosen elsewhere
+    does not, and the gap between the two bounds that optimism.
 
     Parameters
     ----------
@@ -765,19 +735,13 @@ def apply_behaviour_control(design: dict, artifact: dict, held_out_day: str,
     """
     Description
     -----------
-    Replace a unit's raw behaviour block with the cohort control's PREDICTION, and say what n_lags the
-    result must now be scored at.
+    Replace a unit's raw behaviour block with the cohort control's prediction, and return the lag count
+    the result must be scored at.
 
-    The nesting is unchanged -- reduced is behaviour, full is behaviour plus the neuron's one column --
-    and so is the statistic. What changes is the representation. The raw block is five hundred to three
-    thousand columns refit on the unit's own ~2,000 USVs, which is the failure this control exists to
-    fix; carrying the control in raw would reintroduce it. As four columns, the behaviour information
-    comes from the whole cohort while only four coefficients are estimated on the unit.
-
-    It returns the lag count with the design ON PURPOSE. Every scorer takes ``n_lags`` separately and
-    derives the design's shape from it, so a caller that swapped the block and forgot to switch to one
-    lag would be describing a different matrix. The estimator would raise on the column count rather
-    than fit something wrong, but pairing the two here means it cannot come up.
+    The nesting is unchanged (reduced is behaviour, full is behaviour plus the neuron's column); only
+    the representation changes, to the four sine/cosine columns of the predicted position, so only four
+    behaviour coefficients are estimated on the unit. The lag count (always 1) is returned
+    with the design because every scorer derives the design's shape from ``n_lags``.
 
     Parameters
     ----------

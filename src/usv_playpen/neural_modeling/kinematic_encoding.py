@@ -2,26 +2,20 @@
 @author: bartulem
 Fitting kinematic encoding models on quiet frames, and choosing which features enter them.
 
-The procedure is nested. A day's sessions split into a POOL and a held-out TEST session; screening and
-forward selection see only the pool, using an inner leave-one-pool-session-out split, and the test session
-is untouched until the fitted model is scored. Selecting features by a score measured on the same session
-that later reports the result would be circular, and nesting is what prevents it -- at the cost of one
-session, which on a three-session day leaves only two inner folds.
+The procedure is nested: a unit's sessions split into a pool and a held-out test session, and screening and
+forward selection see only the pool, through an inner leave-one-pool-session-out split. The model is a
+Bernoulli GLM on lagged features, fitted on subsampled quiet anchors with the case-control log-prior
+offset and per-session baselines, with each filter parametrised on a spline lag basis.
 
-Two things about the selection are easy to get wrong and were got wrong here first.
-
-The screen judges each feature against ITS OWN null. Features differ in how easily they overfit: a slow,
-smooth, heavily autocorrelated variable has a much wider null under a circular shift than a fast one, so a
-pooled null would penalise the tight-null features for the loose ones.
-
-Acceptance compares a PAIRED improvement against a PAIRED standard error. The obvious form -- accept when
-the candidate's mean minus the candidate's own standard error beats the incumbent -- charges the
-improvement for variation that both models share. Measured here: per-fold scores of [0.1941, 0.1418] for
-one model and [0.2060, 0.1534] for the same model plus a feature give an improvement of [0.0118, 0.0116],
-about as consistent as anything in the analysis, yet the unpaired standard error is 0.02629 against the
-paired 0.00012 -- a factor of 219. A candidate improving by 97 of its own standard errors was rejected
-three folds running. Session-to-session variation moves both models together and cancels in the
-difference; only the paired form sees that.
+The module provides:
+- the fit (:func:`fit_quiet_model`, :func:`lag_basis`, :class:`FrameFilterModel`) and its frozen linear
+  predictor (:func:`linear_predictor_at_frames`);
+- the per-feature screen against each feature's own circular-shift null (:func:`screen_features`,
+  :func:`frozen_null_scores`);
+- greedy forward selection with the paired one-standard-error rule (:func:`forward_select`);
+- the inner splits (:func:`inner_folds`, and :func:`quiet_block_sessions` for a single-session pool);
+- the stored descriptors: the block-resampled filter band, filter shape summaries and the spike-triggered
+  average.
 """
 
 from __future__ import annotations
@@ -112,36 +106,18 @@ def lag_basis(n_lags: int, temporal_basis: dict) -> np.ndarray | None:
     -----------
     The lag-axis basis the quiet fit is parametrised in, or None for one free weight per frame.
 
-    ``"bspline"`` is the modeling pipeline's own layer (``gam_bspline_basis``: ``n_splines`` cubic
-    B-splines on knots spaced evenly over the history), with its lag-varying ridge applied the same way
-    -- each column scaled by ``1 / sqrt(1 + alpha * lag_fraction**2)``, ``lag_fraction`` the spline
-    centre's distance from the spike's frame as a fraction of the window, so a uniform ridge on the
-    scaled coefficients is a ridge that grows with distance from onset -- and then the WHOLE basis
-    divided by its mean column sum. That last constant is what the neural solver needs that the modeling
-    solver did not: it turns each projected column into a lag-average on the feature's own scale, and
-    FISTA, whose step follows the design's Lipschitz constant, converged on the raw column sums only
-    with a far smaller step than its iteration cap allows.
+    ``"bspline"`` (the shipped path) is the modeling pipeline's ``gam_bspline_basis``: ``n_splines``
+    B-splines on knots spaced evenly over the history. Three adjustments follow:
 
-    Measured on three PAG units (2026-10-14, LOSO, identical subsamples): at ridge 0.1 on the rescaled
-    coefficients the basis reproduced the raw-600 ridge+D1 model's held-out quiet D2 to the second
-    decimal (.161 vs .162, .101 vs .105, .085 vs .083), its filter shapes at r 0.95-0.98 and both
-    transfers to three decimals, at 0.3-0.5 s per fit against 25-130 s. Ridge 1e-3 does not converge,
-    ridge 10 loses ~15 %, dropping the lag ridge loses ~10 %, and an added second-difference smoothness
-    bought nothing, hence a default of 0.
-
-    ``spike_end_correction`` repairs what a uniform coefficient ridge does at the spike end. The knots
-    are spaced evenly and run past both edges of the window, so the last spline lies mostly OUTSIDE it
-    (in-window mass 1.6 against 35 for an interior spline at 20 splines over 600 lags) and the one before
-    it about half outside (18). A coefficient on such a spline moves the filter very little per unit,
-    so the ridge makes it expensive and every fitted filter sagged back toward zero over the last
-    50-210 ms before the spike -- a reversal of 3-27 % of the peak that the raw 600-lag fit does not
-    have, and that the basis itself can express (the raw filter projected onto it unpenalised keeps its
-    end exactly). ``"drop_outside_and_rescale"`` removes the outermost spline at the spike end and scales
-    every remaining spline by ``sqrt(largest in-window mass / its own in-window mass)``, so a spline
-    partly outside the window pays a smaller penalty per unit of effect; the square root because full
-    equalisation overshoots (endpoint 3-4x the raw fit). Measured on four PAG units (2026-10-15, full
-    rotation): the reversal falls to 1-8 %, no verdict moves, 15 of 16 folds select the same features,
-    and quiet and transfer D2 rise slightly. ``"none"`` keeps the uncorrected basis.
+    1. ``spike_end_correction == "drop_outside_and_rescale"`` drops the outermost spline at the spike end,
+       which lies mostly outside the window, and scales each remaining spline by
+       ``sqrt(largest in-window mass / its own in-window mass)``, so a uniform ridge does not pull the
+       filter toward zero just before the spike. ``"none"`` keeps the uncorrected basis.
+    2. Each column is scaled by ``1 / sqrt(1 + alpha * lag_fraction**2)``, where ``lag_fraction`` is the
+       spline centre's distance from the spike frame as a fraction of the window, so a uniform ridge on
+       the scaled coefficients grows with lag.
+    3. The whole basis is divided by its mean column sum, which turns each projected column into a
+       lag-average on the feature's own scale and keeps the solver's step size workable.
 
     Parameters
     ----------
@@ -212,20 +188,11 @@ def quiet_block_sessions(session: dict, session_id: str, n_blocks: int, gap_fram
     -----------
     Split one session's quiet anchors into contiguous time blocks presented as pseudo-sessions.
 
-    Screening and selection need an inner split, and a unit with only one session left to fit on has no
-    second session to hold out. Cutting its quiet anchors into contiguous blocks supplies the split
-    within the session instead, which is the fallback ``data_sufficiency.single_session_inner_split_blocks``
-    anticipates. The separation between blocks is not a settings knob: it is derived from
-    ``history_pre_seconds``, because a gap shorter than the predictor history lets a validation
-    frame's lags reach into a training block, and a longer one only discards anchors.
-
-    The blocks are handed back as entries that look exactly like sessions, differing only in which quiet
-    anchors they carry, so ``inner_folds``, ``fit_quiet_model`` and the screen run over them unchanged.
-    Contiguous rather than interleaved blocks matter: kinematics are strongly autocorrelated, so an
-    interleaved split would put near-identical frames on both sides and report a generalisation that is
-    really memorisation. Each block is trimmed by ``gap_frames`` at both ends, which leaves a real gap
-    between any train block and any validation block and limits the leak the 4 s history would otherwise
-    carry across a boundary.
+    The inner split for a pool of one session (``data_sufficiency.single_session_inner_split_blocks``).
+    The blocks look exactly like sessions, so ``inner_folds``, ``fit_quiet_model`` and the screen run over
+    them unchanged. Blocks are contiguous because the kinematics are autocorrelated, and each is trimmed by
+    ``gap_frames`` (derived from the history length) at both ends, so a validation frame's history cannot
+    reach into a training block.
 
     Parameters
     ----------
@@ -265,15 +232,12 @@ def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices:
     Fit the encoding model on the quiet anchors of the given sessions, using only the requested feature
     columns.
 
-    Single-feature screens and multi-feature selection candidates both come through here, so the two cannot
-    drift apart. Anchors are class-balanced with the log-prior offset correction and the fit runs
-    unweighted, which is the efficient case-control estimator. The per-session cap divides the global cap
-    across training sessions, because the design is assembled from all of them at once and it is the total
-    that has to stay in memory.
+    Single-feature screens and multi-feature selection candidates both come through here. The majority
+    class is subsampled with the log-prior offset correction and the fit is unweighted. The global
+    ``max_train_total`` cap is divided across training sessions, since the design holds all of them at once.
 
-    Each training session carries its own unpenalised baseline (``session_intercepts``), backfitted against
-    the penalised filters, so a session that simply fires faster is not explained by a kinematic feature
-    that happens to differ in it; the filters describe within-session modulation only.
+    Each training session carries its own unpenalised baseline (``session_intercepts``), so the filters
+    describe within-session modulation only.
 
     Parameters
     ----------
@@ -301,11 +265,7 @@ def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices:
     """
 
     penalties = encoding_settings["significance_model"]
-    # ~98% of quiet frames carry no spike, so the majority class is subsampled and the fit is corrected
-    # by the classical case-control LOG-PRIOR OFFSET: unweighted, with log(f_pos/f_neg) added to eta
-    # during training, so the intercept lands on the true-population scale and prediction at offset
-    # zero is calibrated. Named in settings and never checked, it could have declared importance
-    # weighting -- the alternative that was measured and rejected -- and run the offset regardless.
+    # The log-prior offset is the only implemented correction, so any other setting is refused.
     if encoding_settings["subsampling_correction"] != "log_prior_offset":
         msg = (f"the subsampling correction is the case-control log-prior offset; "
                f"subsampling_correction is {encoding_settings['subsampling_correction']!r}.")
@@ -331,11 +291,8 @@ def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices:
     owner = np.concatenate(owner_blocks)
     basis = lag_basis(n_lags, encoding_settings["temporal_basis"])
     if basis is not None:
-        # Every feature's history collapses to the basis's lag-averages; the solver fits those coefficients
-        # (ridge on the lag-scaled basis, optional second-difference smoothness across neighbouring
-        # splines) and the same basis maps them back to one weight per frame, so everything downstream
-        # still handles a per-frame filter. The lagged design is feature-major, n_lags columns per
-        # feature, which is what the reshape relies on.
+        # Project each feature's history onto the basis; the fitted coefficients map back to one weight
+        # per frame below. The reshape relies on the lagged design being feature-major.
         design = (design.reshape(design.shape[0], len(columns), n_lags) @ basis).reshape(design.shape[0], -1)
 
     def solve(session_offsets: np.ndarray, x: np.ndarray, n_groups: int) -> GroupElasticNetGLM:
@@ -359,19 +316,12 @@ def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices:
         solver.fit(x, labels_all, offset=offsets_all + session_offsets)
         return solver
 
-    # PER-SESSION INTERCEPTS. A session that fires faster must not be explained by whatever kinematic
-    # feature also happens to differ in it, so each training session gets its own baseline and the filters
-    # learn only within-session modulation. The solver has one intercept and penalises every column, so:
-    #   spline basis -- the k - 1 session indicators (relative to the first session, whose level the
-    #     solver's intercept carries) enter as ONE extra column group scaled by `indicator_scale`, so the
-    #     uniform coefficient ridge reaches them at 1 / indicator_scale**2 of its strength: one fit,
-    #     effectively unpenalised. The basis path has no smoothness penalty across columns
-    #     (`lambda_smooth` 0 is shipped), which is what makes a padded indicator group safe.
-    #   raw per-frame lags -- the first-difference smoothness would couple neighbouring indicator columns,
-    #     so the baselines are BACKFITTED instead: fit with the baselines as offsets, Newton on each
-    #     baseline given the filters, repeat to a fixed point. Exact, but every sweep is a full refit.
-    # Measured 2026-10-16 against the full backfit: indicator filters within 0.4-1.4 % in norm at
-    # r >= 0.9999, at 1-2x the cost of a shared intercept against 13-25x for the backfit.
+    # Per-session baselines. The solver has one intercept and penalises every column, so:
+    #   spline basis -- the k - 1 session indicators (relative to the first session) enter as one extra
+    #     column group scaled by `indicator_scale`, which weakens the ridge on them by indicator_scale**2.
+    #     This is safe only because the basis path has no smoothness penalty across columns.
+    #   raw per-frame lags -- the smoothness penalty would couple indicator columns, so the baselines are
+    #     backfitted: Newton on each baseline given the filters, refit, repeat to a fixed point.
     settings_block = encoding_settings["session_intercepts"]
     n_sessions = len(train_session_ids)
     weights = np.bincount(owner, minlength=n_sessions).astype(np.float64)
@@ -412,9 +362,8 @@ def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices:
                     break
         filter_coefficients = (np.asarray(solver.coef_, dtype=np.float64).reshape(len(columns), -1)
                                if basis is not None else None)
-    # The returned intercept is the training sessions' anchor-weighted mean baseline: a new session's own
-    # level is unknown to the model, and every consumer either recalibrates it on that session's frames or
-    # uses it only as a population-level reference.
+    # A new session's level is unknown to the model, so the returned intercept is the anchor-weighted mean
+    # baseline; every consumer recalibrates it on the scored frames.
     intercept = float(solver.intercept_) + float(np.average(deltas, weights=weights))
     if basis is None:
         solver.intercept_ = intercept
@@ -423,11 +372,7 @@ def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices:
         frame_weights = filter_coefficients @ basis.T
         estimator = FrameFilterModel(frame_weights.ravel(), intercept, bool(solver.converged_), int(solver.n_iter_))
 
-    # A FISTA run that exhausts max_iter returns whatever iterate it reached, and it is otherwise
-    # indistinguishable from a converged fit -- same type, same attributes, a filter that looks
-    # plausible. Real single-feature fits land at 2,300-5,000 iterations against a 5,000 cap, so this
-    # is not a remote failure mode: it happens, and it decides whether a reported filter means
-    # anything. Say so where it happens rather than leaving it in an attribute nobody reads.
+    # A fit that exhausts max_iter otherwise looks exactly like a converged one, so report it here.
     if not estimator.converged_:
         message_output(f"    [!] FIT DID NOT CONVERGE: {len(columns)} feature(s), "
                        f"{estimator.n_iter_} iterations at the max_iter cap of "
@@ -445,9 +390,7 @@ def linear_predictor_at_frames(estimator, feature_time_series: np.ndarray, featu
     -----------
     The fitted model's linear predictor at the given frames, evaluated in chunks to bound peak memory.
 
-    Computing this once per (model, frame set) is what makes the frozen nulls cheap: a shuffle changes only
-    the LABELS, never the predictions, so a thousand draws cost a thousand relabellings rather than a
-    thousand fits.
+    Computed once per model and frame set: a null draw changes only the labels, never the predictions.
 
     Parameters
     ----------
@@ -509,9 +452,8 @@ def frozen_null_scores(eta: np.ndarray, frames: np.ndarray, spike_frames: np.nda
     calibration_steps (int)
         Newton iterations for each draw's calibration refit.
     calibration_bins (int)
-        Equal-count predictor bins for the binned calibration. ``0`` runs the exact path instead. The
-        responses are exact either way; see ``binned_calibrated_explained_deviance`` for the measured
-        cost of the approximation.
+        Equal-count predictor bins for the binned calibration; ``0`` runs the exact path. The responses
+        are exact either way.
     calibration (dict)
         The ``kinematic_encoding.calibration`` block; every draw is scored by the same rule as the
         observed score (:func:`deviance_metrics.frozen_model_score`).
@@ -522,13 +464,10 @@ def frozen_null_scores(eta: np.ndarray, frames: np.ndarray, spike_frames: np.nda
         ``n_shuffles`` null scores.
     """
 
-    # The shifts are drawn in one pass so the generator is consumed in exactly the order the
-    # one-draw-at-a-time version consumed it, and the null stays reproducible against older runs.
+    # All shifts are drawn first, so the generator is consumed in a fixed order.
     shifts = [sample_circular_shift(rng, n_frames, fps, guard_seconds) for _ in range(n_shuffles)]
 
-    # eta is frozen across draws, so the calibration design is shared and the draws batch. The block is
-    # sized by memory rather than by draw count: the Newton iteration holds several (n_frames, block)
-    # float64 arrays at once, and a whole 10,000-draw block over ~120,000 frames would be ~10 GB.
+    # eta is frozen across draws, so the draws batch; the block is sized by memory, not by draw count.
     block = int(max(1, min(n_shuffles, _NULL_BLOCK_BYTES // max(1, frames.size * 8))))
 
     null = np.empty(n_shuffles, dtype=np.float64)
@@ -554,21 +493,13 @@ def screen_features(per_session: dict, pool_session_ids: list, n_lags: int, rng,
     when its fold-averaged score is positive, its calibration slope is positive, and its own frozen-filter
     null puts it past the Bonferroni-corrected threshold.
 
-    The slope condition matters because the calibrated score grows with the square of the slope and is
-    therefore blind to sign; a filter that is reliably BACKWARDS explains deviance as well as a right one.
-    The slope relates the MODEL'S OUTPUT to the labels rather than the feature to the labels, so a
-    negatively tuned unit still gives a positive slope -- the fit has already absorbed the sign into
-    negative weights. A negative slope means the learned relationship flipped between the fitting sessions
-    and the validation session, which is a failure to replicate, not negative tuning.
+    The slope condition is needed because the calibrated score is blind to sign. The slope relates the
+    model's output to the labels, so a negatively tuned unit still gives a positive slope; a negative one
+    means the learned relationship flipped on the validation session.
 
-    The screen draws its own shuffle count, separate from the one behind the final p-values, because the two
-    are set by different bars. A feature must clear a Bonferroni threshold of ``screen_alpha / n_features``,
-    which for 19 features at 0.01 is 5.26e-4; an empirical p floors at ``1 / (n + 1)``, so a thousand draws
-    floor at 9.99e-4 and NOTHING could ever pass. Ten thousand floors at 1.0e-4 and clears the bar with room
-    to spare. This was masked for a long time by a parametric tail fit, which was quietly carrying the
-    screen rather than only the final p-values.
-
-    The test session is never touched: this is part of selection.
+    The screen uses its own shuffle count (``null.screen_n_shuffles``, 2,000), because an empirical p
+    floors at ``1 / (n + 1)`` and must clear the Bonferroni bar ``screen_alpha / n_features`` (5.26e-4 for
+    19 features at 0.01). The test session is never touched.
 
     Parameters
     ----------
@@ -629,8 +560,7 @@ def screen_features(per_session: dict, pool_session_ids: list, n_lags: int, rng,
         rows.append({"feature": feature, "name": feature_names[feature], "score": score, "slope": slope,
                      "p": p_value, "at_floor": at_floor, "survived": survived,
                      "converged": bool(np.all(fold_converged)),
-                     # The mean is what the screen decides on; the per-fold values are what says whether
-                     # the folds agreed, and they cost a refit to recover afterwards.
+                     # Per-fold values show whether the folds agreed; the decision uses the mean.
                      "fold_scores": [float(value) for value in fold_scores],
                      "fold_slopes": [float(value) for value in fold_slopes]})
         message_output(f"    screen {feature_names[feature]:<32} score {score:+.5f} | slope {slope:+.3f} "
@@ -648,9 +578,7 @@ def forward_select(per_session: dict, pool_session_ids: list, survivors: list, n
     rejection.
 
     A candidate is accepted when its mean paired per-fold improvement exceeds the standard error of those
-    paired differences. See the module docstring for why the improvement must be paired: charging it the
-    variation in the models' absolute scores made the rule about 219 times too conservative and stopped
-    selection at the anchor every time.
+    paired differences. Pairing cancels the session-to-session variation both models share.
 
     Parameters
     ----------
@@ -682,9 +610,7 @@ def forward_select(per_session: dict, pool_session_ids: list, survivors: list, n
     """
 
     encoding = settings["kinematic_encoding"]
-    # These two name the procedure this function IS. Unchecked they are decoration: a run could
-    # declare `marginal_d2` in its settings, be reported as such, and have run greedy forward
-    # selection all along. Refused rather than ignored.
+    # Only one method and one rule are implemented, so any other setting is refused.
     selection = encoding["feature_selection"]
     if selection["selection_method"] != "forward_d2":
         msg = (f"forward_select implements greedy forward selection by held-out D2 only; "
@@ -723,9 +649,7 @@ def forward_select(per_session: dict, pool_session_ids: list, survivors: list, n
     anchor, incumbent_scores, anchor_converged = max(scored, key=lambda item: finite_mean(item[1]))
     incumbent_mean = finite_mean(incumbent_scores)
     selected = [anchor]
-    # Every step keeps the per-inner-fold scores it was decided on. The stored mean and the SE of the
-    # PAIRED gain answer "was this step accepted"; they cannot answer "how much did the score move
-    # between validation sessions", and recovering that later costs a refit of every set on every fold.
+    # Each step keeps the per-inner-fold scores it was decided on.
     path = [{"step": 0, "candidate": feature_names[anchor], "mean": incumbent_mean,
              "improvement": np.nan, "standard_error": np.nan, "decision": "ANCHOR",
              "converged": anchor_converged,
@@ -769,18 +693,10 @@ def block_resample_anchors(anchors: np.ndarray, block_frames: int, rng) -> np.nd
     -----------
     Resample quiet anchors in contiguous BLOCKS, with replacement, to the original count.
 
-    The unit of resampling is a block rather than a frame, and that is the whole point. Quiet anchors
-    are adjacent frames of a strongly autocorrelated behavioural signal, and two frames a few tens of
-    milliseconds apart share almost their entire predictor. Resampling them independently would treat
-    hundreds of thousands of frames as hundreds of thousands of independent observations, when the
-    decorrelation unit is the history window -- on one pilot day 340,858 quiet frames amount to about
-    554 of them. A band built that way would be roughly an order of magnitude too narrow and would
-    read as precision the data does not have.
-
-    Blocks are drawn from the anchor sequence in index order, so a block spans contiguous anchors
-    rather than a contiguous stretch of wall-clock time. Where quiet anchors are interrupted, a block
-    therefore covers MORE elapsed time than the nominal length, which errs toward wider blocks and a
-    more conservative band.
+    Blocks rather than frames, because adjacent quiet anchors share almost their entire history, and
+    resampling frames independently would give a band far too narrow. Blocks span
+    contiguous anchors, not wall-clock time, so across gaps in the quiet anchors a block covers more
+    elapsed time, which errs toward a wider band.
 
     Parameters
     ----------
@@ -816,13 +732,9 @@ def filter_band(per_session: dict, train_session_ids: list, feature_indices: lis
     The reported error band on a unit's temporal filter: refit the SELECTED model on block resamples
     of its quiet anchors and take the per-lag spread across the refits.
 
-    The feature set is held FIXED at the representative model's, so the band shows how much the
-    coefficients move, not how much the selection moves. Those are different quantities, and the
-    plan already treats feature identity as description rather than result: a spread taken across
-    folds that chose different features is not a coefficient spread at all.
-
-    Computed during the run and persisted, because the alternative is refitting the whole model later
-    for a figure -- which at cohort scale is the expensive half of the analysis, paid twice.
+    The feature set is held fixed at the representative model's, so the band shows how much the
+    coefficients move, not how much the selection moves. Computed during the run and stored, since
+    recomputing it needs a full refit.
 
     Parameters
     ----------
@@ -881,15 +793,9 @@ def filter_descriptors(coefficients: np.ndarray, feature_names: list, n_lags: in
     -----------
     Per-feature shape summaries of a fitted temporal filter.
 
-    Roughness is the one to judge a filter by. The plan's standing rule is that curve identity is a
-    matter of SHAPE, never of magnitude -- ``norm`` is blind to shape and demotes the true predictor
-    under collinearity, which is exactly how a group-lasso ranking put ``allo_pitch`` above
-    ``self.speed``. It is stored anyway, beside the roughness, because it is what one reaches for by
-    reflex and it is better to have it labelled than recomputed from memory.
-
-    ``peak_lag_seconds`` and ``centre_of_mass_seconds`` are the interpretable pair: where the filter
-    is largest, and how far back its weight sits on average. A unit reading recent speed and a unit
-    integrating over a second and a half differ in these two numbers and in almost nothing else.
+    Filters are compared by shape, not magnitude: ``norm`` is stored but is blind to shape and unreliable
+    under collinearity, so ``roughness`` is the one to judge a filter by. ``peak_lag_seconds`` and
+    ``centre_of_mass_seconds`` give where the filter is largest and how far back its weight sits on average.
 
     Parameters
     ----------
@@ -937,15 +843,9 @@ def spike_triggered_average(per_session: dict, session_ids: list, feature_indice
     -----------
     Spike-triggered average of the selected features over the history window, on quiet anchors.
 
-    The STA is the robust interpretable readout and the fitted filter is a fragile deconvolution of
-    it: ``filter = C^-1 . STA``, and inverting a strongly autocorrelated covariance amplifies noise by
-    a factor of hundreds in roughness. A clean STA beside a wiggly filter is the expected picture, not
-    a fault -- and ``filter ~ STA`` is the signature of genuine broad integration, since broad filters
-    live in the well-determined low-frequency directions of C. Neither reading is available without
-    storing the STA, and recomputing it later means rebuilding the design.
-
-    Accumulated in chunks against the same memory budget the linear predictor uses, so a 600-lag
-    design over a hundred thousand anchors never lands in memory at once.
+    The STA is the robust readout; the fitted filter is roughly its deconvolution by the stimulus
+    covariance, ``filter = C^-1 . STA``, which amplifies noise, so a clean STA beside a rougher filter is
+    expected. Accumulated in chunks so the full lagged design is never held in memory.
 
     Parameters
     ----------

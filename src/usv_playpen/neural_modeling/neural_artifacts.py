@@ -2,24 +2,16 @@
 @author: bartulem
 The per-unit result file: one merged pickle carrying metrics and p-values, and no decisions.
 
-Every analysis writes its own SECTION into a single file per unit. What goes in is what a rule would
-consume -- effect sizes, p-values, the full null distributions, per-fold detail, and the data-
-sufficiency counts that say how much to trust any of it. What stays out is what a rule PRODUCES: no
-verdicts, no pass flags, no FDR marks, and no labels -- including the gating sub-analysis's
-per-feature GATE / int<vocal / ns label, its borderline flag and its survivor list, which apply
-thresholds one unit at a time exactly as a verdict does.
+Every analysis writes its own section into a single file per unit: effect sizes, p-values, the full
+null distributions, per-fold detail and the data-sufficiency counts. Verdicts, pass flags, FDR marks
+and labels are refused, because false-discovery control is a cohort operation that a per-unit file
+cannot perform.
 
-That division is not tidiness. A per-unit file cannot know the cohort, and false-discovery control is
-a cohort operation, so any verdict written here would be uncorrected by construction and would invite
-being read as though it were not. The rules themselves have also moved twice in a week -- the verdict
-became three-way, then transformation came to require the vocal-occurrence axis -- and each change would have
-invalidated stored decisions while leaving stored metrics perfectly good. Deciding later is free;
-re-fitting is not.
+Sections are written by read-modify-write, so two jobs must not write sections of the same unit at
+the same time; per-fold intermediates therefore stay in separate files.
 
-CONCURRENCY. Sections are written by read-modify-write, so two jobs must not write sections of the
-SAME unit at the same time. This is why the kinematic encoding's per-fold artifacts stay separate files: folds are
-an array job and do run concurrently. They are intermediates. The merged file is written once per
-analysis, by the step that finishes it, and the analyses run at different times.
+Exports :func:`write_unit_section`, :func:`read_unit_artifact`, :func:`unit_artifact_path`,
+:func:`build_provenance` and :func:`decision_key_paths`.
 """
 
 from __future__ import annotations
@@ -44,17 +36,10 @@ def decision_key_paths(value, path: str = "") -> list:
     -----------
     Every place a decision-shaped key appears in a payload, at ANY depth, as a readable path.
 
-    Checking only the top level would let decisions through wherever an analysis's results are nested,
-    and the gating sub-analysis is nested by construction: its per-feature label sits inside a
-    per-feature entry, never at the top of the payload. A guard that cannot see there would refuse
-    ``verdict`` while quietly storing nineteen of them under another name.
-
-    Matching is on the exact key, so a data array named ``labels`` -- the kinematic encoding stores the 0/1 spike
-    labels of every vocal frame under that name -- is not mistaken for a decision. Checked against
-    the real kinematic-encoding and vocal-decoding payloads on disk before this was made recursive: 126-129 distinct
-    nested keys, no collision.
-
-    Dicts and lists are descended into; arrays and scalars are leaves.
+    The search is recursive because analyses nest their results (the gating label sits inside a
+    per-feature entry). Matching is on the exact key, so a data array named ``labels`` (the 0/1 spike
+    labels of the kinematic encoding) is not mistaken for a decision. Dicts and lists are descended
+    into; arrays and scalars are leaves.
 
     Parameters
     ----------
@@ -88,9 +73,8 @@ def build_provenance(settings: dict) -> dict:
     -----------
     The provenance block every per-unit file carries: what code and what configuration produced it.
 
-    Reuses the modeling pipeline's own helpers rather than reimplementing them, so a neural artifact
-    and a behavioural one can be traced the same way. The settings hash is what makes "the frozen
-    config" checkable after the fact instead of asserted.
+    Reuses the modeling pipeline's helpers, so neural and behavioural artifacts are traced the same
+    way; the settings hash makes the configuration checkable after the fact.
 
     Parameters
     ----------
@@ -165,14 +149,9 @@ def write_unit_section(output_directory: str, unit: dict, section: str, payload:
     -----------
     Merge one analysis's results into the unit's file, leaving the other analyses' sections untouched.
 
-    Read-modify-write, published atomically, so a crash mid-write cannot leave a half-file where a
-    complete one used to be. The identity and provenance blocks are refreshed on every write, so the
-    file always records the configuration that produced its most recent section.
-
-    Payloads are checked for decision-shaped keys AT ANY DEPTH and refused (see
-    :func:`decision_key_paths`). The file is for what a rule consumes,
-    not what it produces: a verdict stored here would be uncorrected by construction, since false
-    discovery control needs the cohort and a per-unit file has never seen it.
+    Read-modify-write, published atomically, so a crash mid-write cannot leave a half-file. The
+    identity and provenance blocks are refreshed on every write. Payloads carrying decision-shaped
+    keys at any depth are refused (see :func:`decision_key_paths`).
 
     Parameters
     ----------
@@ -202,8 +181,8 @@ def write_unit_section(output_directory: str, unit: dict, section: str, payload:
 
     artifact = read_unit_artifact(output_directory, unit["unit_uid"])
     artifact[section] = payload
-    # The cohort record IS the identity: unit_uid, mouse, area, quality, both session sets and the
-    # per-session focal-USV counts the vocal gate was applied on.
+    # The cohort record is the identity: uid, mouse, area, quality, both session sets and the
+    # per-session focal-USV counts.
     artifact["identity"] = dict(unit)
     artifact["provenance"] = build_provenance(settings)
 

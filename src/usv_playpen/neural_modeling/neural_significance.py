@@ -2,26 +2,18 @@
 @author: bartulem
 Cohort-level multiplicity control and the exact within-session permutation null.
 
-Two things live here, both shared by every analysis rather than reimplemented for each.
+Shared by every analysis:
 
-Benjamini-Hochberg existed in seven near-identical copies across the prototype scripts, in two
-incompatible shapes -- some returning a discovery count and a threshold, others a boolean mask -- which
-is how a cohort ends up with two different answers to the same question. One implementation returns
-both.
+- `benjamini_hochberg`          — step-up FDR control over a cohort of p-values; returns both the
+                                   rejection mask and the threshold.
+- `within_session_permutation`  — one exact permutation of events within each session.
+- `permutation_null`            — the null distribution of a statistic under that permutation, refit
+                                   inside every draw.
 
-The permutation null is what the vocalization-identity axis tests against, and it is a DIFFERENT null from
-the circular shift used by the kinematic encoding, the nested vocal-manifold position decoding, the vocal gating
-analysis and the vocal-occurrence axis. The distinction
-is not stylistic. Shifting a spike train destroys the alignment between spikes and vocal onsets IN
-ADDITION to the pairing under test, so a strongly onset-responsive unit gets a null centred far too low:
-52.5% of position-permuted control units exceeded |z| > 2 under the shift, and 10% reached the 0/1000
-floor. Permuting the TARGET across events within a session destroys only the count-to-position pairing,
-leaving counts, the spike train and the bout envelope untouched, and is exact by exchangeability for any
-statistic computed from them.
-
-Permutation is within SESSION, never across. Sessions differ in rate, in behavioural state and in
-repertoire, so a global permutation would manufacture structure by mixing them and would be testing a
-different, easier null.
+The permutation null destroys only the pairing of spike counts with a per-USV target, leaving the
+counts and the spike train in place; it is used by the identity tests instead of the circular shift
+of ``shift_null_inference``, which would also destroy the alignment of spikes with vocal onsets.
+Permutation is always within session, never across.
 """
 
 from __future__ import annotations
@@ -39,11 +31,8 @@ def benjamini_hochberg(p_values: np.ndarray, q: float) -> tuple[np.ndarray, floa
     everything ranked below it. NaN p-values are carried through as non-rejections rather than dropped,
     so a unit that could not be tested never silently changes the multiplicity for the units that could.
 
-    Note the floor interaction that governs every empirical p in this project: a p cannot fall below
-    ``1 / (n_draws + 1)``, so units tied at that floor are rejectable only when
-    ``k >= m / (q * (n_draws + 1))``. For a 2,525-unit cohort at ``q = 0.01`` that is 253 units at 1,000
-    draws but under 3 at 100,000, which is what the escalation ladder in ``shift_null_inference`` exists
-    to deliver.
+    An empirical p cannot fall below ``1 / (n_draws + 1)``, so units tied at that floor are rejectable
+    only when ``k >= m / (q * (n_draws + 1))``.
 
     Parameters
     ----------

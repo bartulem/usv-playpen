@@ -2,14 +2,12 @@
 @author: bartulem
 Run the cohort-scale behaviour control: select its features once, then fit it once per recording day.
 
-Both stages are cohort-level and run RARELY -- once per cohort, not once per unit -- which is the whole
-point. The per-unit nested decoding then READS what this writes, and refuses to run on an artifact that
-disagrees with its settings.
+Both stages run once per cohort, not once per unit. The per-unit nested decoding reads what this
+writes and refuses to run on an artifact that disagrees with its settings.
 
-Order matters. ``select`` writes the feature set, ``fit`` writes the model; the settings'
-``reduced_model_features`` must be updated to the selected list DELIBERATELY in between, because that
-list is the behaviour the neuron is measured against, and it should never change as a side
-effect of a re-run.
+``select`` writes the feature set and ``fit`` writes the model. In between, the settings'
+``reduced_model_features`` must be updated to the selected list by hand, so the behaviour the neuron is
+measured against never changes as a side effect of a re-run.
 
 Usage:
     python -m usv_playpen.neural_modeling.main_behaviour_control_dispatcher --stage select
@@ -118,10 +116,9 @@ def main(message_output=print) -> None:
     # History length of the behaviour design, in tracking frames (600 = 4 s at 150 fps); recorded in the
     # artifact, so the per-unit nested decoding reads it back from there rather than from settings.
     n_lags = int(settings["nested_vocal_manifold_position_decoding"]["behaviour_control_n_lags"])
-    # Resolve the feature set BEFORE assembling anything. Both stages need it and the assembly costs
-    # minutes, so a missing or drifted selection artifact must fail in a second rather than after it.
-    # The select stage tolerates a missing file -- it is about to write one -- and uses whatever is
-    # frozen as its independent reference.
+    # Resolve the feature set before the (slow) assembly, so a missing or drifted selection artifact
+    # fails early. The select stage tolerates a missing file, since it is about to write one, and uses
+    # the frozen list as its independent reference.
     features = (reduced_model_features(settings) if arguments.stage == "fit"
                 else reduced_model_features(settings, require_selection_file=False))
 
@@ -141,9 +138,8 @@ def main(message_output=print) -> None:
         cache = pathlib.Path(arguments.design_cache if arguments.design_cache is not None
                              else "behaviour_control_design.npy")
         np.save(cache, cohort["design"])
-        # The frozen list is scored alongside as an INDEPENDENT reference: the selection sees every
-        # day, including days units are later scored on, and the gap between the two bounds that
-        # optimism.
+        # The frozen list is scored alongside as an independent reference; the gap between the two
+        # bounds the selection's optimism.
         selection = select_control_features(cohort, settings, n_lags, arguments.n_workers,
                                             str(cache), external_reference=features)
         destination = pathlib.Path(arguments.output if arguments.output is not None

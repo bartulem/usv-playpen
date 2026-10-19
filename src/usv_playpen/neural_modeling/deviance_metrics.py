@@ -2,24 +2,20 @@
 @author: bartulem
 Held-out scoring metrics for the neural encoding models.
 
-Every statistic here is an explained-deviance (D^2) against an intercept-only reference, computed on frames
-the model was not fitted on. Two design decisions are baked in, and both were forced by measurement rather
-than preference.
+Every statistic here is an explained deviance (D^2) of a frozen predictor against an intercept-only
+reference, computed on frames the model was not fitted on. The reference is the scored frames' own rate,
+and the predictor passes through a calibration (per-session intercepts and one shared scale) before it is
+scored. The shipped scheme cross-fits that calibration over contiguous blocks, so no scored frame helps
+estimate the numbers it is judged by.
 
-The reference rate is the scored frames' own spike rate, not the training rate. A unit can fire at a very
-different rate during vocalization than during silence (0.031 against 0.291 per frame for one PAG unit, a
-9.3x step). Scoring against the training rate then rewards the model for predicting the epoch's rate change
-rather than for discriminating spike from no-spike, which is a different question.
-``explained_deviance_vs_reference_rate`` is retained as a descriptor because that level information is
-interesting, but it never gates anything.
-
-The calibration slope is refitted on the frames being scored. Raw D^2 grades two things at once, whether
-the model orders frames correctly and whether its predictions are the right size, and the second makes it
-unusable against a frozen null. Shuffling destroys the ordering while leaving the magnitude intact, so a
-loud misaligned filter scores far below an intercept-only model, at a depth set by its magnitude rather
-than its error. Measured on a real filter: observed +0.151 against a null mean of -0.534, which let all 19
-features clear the bar including 17 that scored worse than predicting the average rate. Refitting one
-scalar removes exactly that and nothing else, since a scalar cannot reorder frames.
+The module provides:
+- the scoring rule, :func:`frozen_model_score`, and its batched null-draw twin,
+  :func:`frozen_model_null_scores`, which dispatch to the cross-fitted or in-sample calibrations;
+- the in-sample calibrations (binary, pooled binary, pooled Poisson) and their batched and binned
+  null-draw versions;
+- the Newton cores for small logistic and Poisson fits;
+- the descriptors stored alongside the score (:func:`encoding_metrics`,
+  :func:`explained_deviance_vs_reference_rate`, :func:`area_under_roc`).
 """
 
 from __future__ import annotations
@@ -32,12 +28,8 @@ def finite_mean(values: np.ndarray) -> float:
     """
     Description
     -----------
-    Mean of the finite entries, or NaN when there are none.
-
-    ``np.nanmean`` of an all-NaN slice warns and returns NaN, and the test suite runs with warnings as
-    errors, but the reason to avoid it is not the suite: in a run the warning passes and the NaN then
-    compares False against every candidate, so an amplitude search would silently fall through to the
-    first grid point. A fold whose events are all masked has to be visibly absent, not quietly zero.
+    Mean of the finite entries, or NaN when there are none, without ``np.nanmean``'s all-NaN warning.
+    A fold whose events are all masked comes back as NaN, visibly absent rather than quietly zero.
 
     Parameters
     ----------
@@ -59,12 +51,9 @@ def finite_min(values) -> float:
     """
     Description
     -----------
-    Minimum of the finite entries, or NaN when there are none -- ``np.nanmin`` semantics without its
-    all-NaN warning (see :func:`finite_mean` for why the warning matters).
-
-    The decoders' ``min_leave_one_fold_out`` is read through here: a single fold whose left-out pooled
-    mean is NaN (every remaining event masked) is skipped rather than turning the whole descriptor NaN,
-    which ``np.min`` did.
+    Minimum of the finite entries, or NaN when there are none (``np.nanmin`` without its all-NaN warning).
+    The decoders' ``min_leave_one_fold_out`` goes through here, so a single NaN fold is skipped rather than
+    turning the whole descriptor NaN.
 
     Parameters
     ----------
@@ -110,14 +99,11 @@ def area_under_roc(scores: np.ndarray, labels: np.ndarray) -> float:
     """
     Description
     -----------
-    Area under the ROC curve by rank sum. Scale-free, so it is unaffected by the calibration issues that
-    motivate :func:`calibrated_explained_deviance`, which makes it a useful companion diagnostic though not
-    the gate, since the rest of the project scores in deviance.
+    Area under the ROC curve by rank sum. Scale-free, so it is stored as a descriptor next to the
+    calibrated deviance but gates nothing.
 
-    Ties take the AVERAGE rank, which counts a tied pair as half a win. This is not a refinement: the
-    vocal-occurrence axis scores raw spike counts in a 50 ms window, where the predictor takes a handful of integer values
-    and the great majority of pairs are tied, so breaking ties by position would read an arbitrary sort
-    order as discrimination. On a continuous linear predictor there are no ties and the two agree exactly.
+    Ties take the average rank, counting a tied pair as half a win. This matters for the vocal-occurrence
+    axis, whose predictor is a raw spike count taking a handful of integer values, so most pairs are tied.
 
     Parameters
     ----------
@@ -145,12 +131,8 @@ def calibrate_intercept(offset: np.ndarray, y: np.ndarray, n_steps: int) -> floa
     """
     Description
     -----------
-    Fit the intercept alone against a fixed offset -- the recalibration a frozen model gets when it is
-    carried to a session it was not fitted on.
-
-    Freezing the slope and moving only the intercept is what makes such a transfer a test of the
-    RELATIONSHIP rather than of the level: a unit may sit at a different baseline rate in the held-out
-    session, but its predictor-to-probability slope has to carry over unchanged for the transfer to count.
+    Fit the intercept alone against a fixed offset: the level-only recalibration of a frozen model
+    carried to a session it was not fitted on, which lets the baseline move while the slope stays fixed.
 
     Parameters
     ----------
@@ -176,10 +158,8 @@ def newton_logistic(x: np.ndarray, y: np.ndarray, ridge_vector: np.ndarray,
     """
     Description
     -----------
-    Ridge-penalized logistic regression by Newton steps, with an optional fixed offset.
-
-    Shared numerical core for every calibration refit in this module, so the small logistic fits that turn
-    a frozen model's output into a score all go through one implementation rather than drifting apart.
+    Ridge-penalized logistic regression by Newton steps, with an optional fixed offset. The shared core of
+    every binary calibration fit in this module.
 
     Parameters
     ----------
@@ -225,9 +205,8 @@ def newton_poisson(x: np.ndarray, counts: np.ndarray, ridge_vector: np.ndarray, 
     -----------
     Ridge-penalized Poisson regression (log link) by damped Newton steps, with an optional fixed offset.
 
-    The count-grain transfer's calibration core, mirroring :func:`newton_logistic` so the two grains
-    share one numerical discipline. Steps are damped to a largest coordinate change of 2 because a
-    Poisson fit started from zero can overshoot wildly on the first iteration when counts are large.
+    The count-grain counterpart of :func:`newton_logistic`. Steps are damped to a largest coordinate change
+    of 2, because a Poisson fit started from zero can overshoot on the first iteration when counts are large.
 
     Parameters
     ----------
@@ -299,12 +278,9 @@ def pooled_poisson_explained_deviance(x: np.ndarray, counts: np.ndarray, session
     one intercept per session, ``log(exposure)`` as a fixed offset, scored as Poisson deviance explained
     over the intercepts-only model.
 
-    This is the transfer's scoring under ``kinematic_encoding.transfer.grain == "count"``: the frozen quiet
-    filter's log-odds averaged per bin is the predictor, the spikes per bin the response. Counts keep the
-    multi-spike frames a binarised 6.7 ms frame throws away and have no ceiling at one, which is what the
-    per-frame score lacked inside vocal episodes where these units sit at 0.3-0.6 spikes per frame. Measured
-    2026-10-14 on nine 20250919 units: two marginal units moved to the null floor, every passer stayed, the
-    known-flat unit stayed null; on twelve low-rate 20250927 units it was neutral.
+    The in-sample transfer score at the count grain: the frozen quiet filter's mean log-odds per bin is the
+    predictor and the spikes per bin the response. Counts keep the multi-spike frames that a binary frame
+    label discards.
 
     Parameters
     ----------
@@ -371,22 +347,10 @@ def calibrated_explained_deviance(eta: np.ndarray, y: np.ndarray, n_steps: int) 
     """
     Description
     -----------
-    Explained deviance after refitting the calibration slope on the frames being scored.
-
-    A model carried to data it was not fitted on usually gets the order of observations roughly right while
-    overstating how much they differ; coefficients fitted on one dataset are habitually too extreme for
-    another, which is why the calibration slope is a routine diagnostic in prediction-model validation.
-    Fitting ``y ~ a + b * z(eta)`` and scoring the fitted values removes that overstatement and nothing
-    else, since ``b`` multiplies the whole coefficient vector and cannot reorder anything.
-
-    A predictor whose ordering is useless fits ``b`` toward 0 and scores near 0, rather than the large
-    negative value raw D^2 would assign it. That is what makes the statistic usable against a frozen null,
-    where the null draws must land near zero for the comparison to mean anything.
-
-    Two parameters are estimated on the scored frames, negligible against the tens of thousands typically
-    present, and the null draws are scored the same way so the comparison stays exact. The slope cannot be
-    frozen from training data: a frozen slope leaves the null's magnitude intact and reintroduces the
-    problem.
+    Explained deviance after refitting ``y ~ a + b * z(eta)`` on the frames being scored (the in-sample
+    scheme). The scale ``b`` cannot reorder frames, so it removes a frozen model's over- or under-stated
+    magnitude and nothing else, and a predictor with useless ordering scores near 0 rather than far below
+    it.
 
     Parameters
     ----------
@@ -425,20 +389,14 @@ def batched_calibrated_explained_deviance(eta: np.ndarray, labels: np.ndarray,
     -----------
     Calibrated explained deviance for many label vectors sharing one linear predictor.
 
-    This is the null-draw inner loop. Every draw of a circular-shift null re-scores the SAME frozen
-    ``eta`` against a different relabelling, so the calibration design ``[z(eta), 1]`` is identical for
-    all of them and only the response moves. Running the draws one at a time therefore repeats the same
-    120,000-row standardization and makes 10,000 separate two-parameter Newton solves, each dominated by
-    an ``exp`` over the full frame set at poor memory throughput.
+    The in-sample null-draw inner loop. Every draw of a circular-shift null re-scores the same frozen
+    ``eta`` against a different relabelling, so the design ``[z(eta), 1]`` is shared and only the response
+    moves. The Newton iteration runs on an ``(n_frames, n_draws)`` block, and the per-draw 2x2 Hessian is
+    inverted in closed form. The result matches :func:`calibrated_explained_deviance` to floating-point
+    tolerance.
 
-    Batching changes none of the arithmetic. The design is standardized once; the Newton iteration runs on
-    an ``(n_frames, n_draws)`` block so each ``exp`` is one large vectorized call; and because the design
-    has exactly two columns, the per-draw Hessian is 2x2 and is inverted in closed form rather than by a
-    ``solve`` per draw. The result matches the sequential path to floating-point tolerance.
-
-    Draws whose response is degenerate -- all spikes or no spikes, so the intercept-only deviance is zero
-    -- yield ``nan``, matching the scalar function. A draw whose Hessian goes singular stops updating and
-    keeps the coefficients it had, which is what the scalar path's ``LinAlgError`` break does.
+    Degenerate draws (all spikes or none) yield ``nan``; a draw whose Hessian goes singular keeps its last
+    coefficients, as the scalar path does.
 
     Parameters
     ----------
@@ -447,8 +405,7 @@ def batched_calibrated_explained_deviance(eta: np.ndarray, labels: np.ndarray,
     labels (np.ndarray)
         Binary responses, shape ``(n_frames, n_draws)`` -- one column per draw.
     n_steps (int)
-        Maximum Newton iterations. Iteration stops early once every draw's step is below 1e-9; in
-        practice this fires at eight steps regardless of the cap.
+        Maximum Newton iterations. Iteration stops early once every draw's step is below 1e-9.
 
     Returns
     -------
@@ -525,29 +482,10 @@ def binned_calibrated_explained_deviance(eta: np.ndarray, labels: np.ndarray, n_
     -----------
     Calibrated explained deviance for many label vectors, with the frozen predictor summarised into bins.
 
-    This is the fast path for the null. Its starting point is an identity: in the two-parameter
-    calibration, every per-frame quantity the Newton iteration needs -- the fitted mean, the working
-    weights, and all three entries of the Hessian -- is a function of the coefficients and of the FIXED
-    standardized predictor alone. The response enters the whole calculation through exactly two scalars
-    per draw, ``z @ y`` and ``sum(y)``, and both are computed once, exactly, in a single pass. The
-    deviance decomposes the same way.
-
-    What the sequential path therefore spends its time on is not reading the data but re-evaluating a
-    smooth function of two scalars over the same 120,000 fixed values, once per draw per iteration.
-    Summarising those values into equal-count bins replaces each of those reductions with one over
-    ``n_bins`` terms instead. **The responses are never approximated** -- only the predictor-side sums are,
-    and only through the within-bin spread of a smooth function.
-
-    Measured on the real fitted ``eta`` of all three cl0401 folds -- which is left-skewed (about -1.1 to
-    -1.3) with heavy tails (excess kurtosis +2.4 to +3.1), not Gaussian -- at both the vocal and the quiet
-    spike rate: at 2000 bins the error is 3.1e-5 to 2.6e-4 of the null's own standard deviation, and the
-    worst case over 400 threshold placements is ONE draw in a thousand changing side of the observed
-    score, i.e. a p-value shift of 0.001. Accuracy degrades as the frame count falls, since bin summaries
-    get noisier; the worst case above is the smallest fold, at 4,920 frames, against the ~120,000 the
-    screen actually runs on.
-
-    Bins are equal-count rather than equal-width so they follow the predictor's density instead of its
-    range, which is what keeps the skew and the tails from mattering.
+    The fast in-sample null path. With the standardized predictor fixed, the responses enter the Newton
+    iteration and the deviance only through two exact sums per draw, ``z @ y`` and ``sum(y)``. Only the
+    predictor-side sums are approximated, by summarising ``z`` into equal-count bins, which follow the
+    predictor's density rather than its range. The responses are never approximated.
 
     Parameters
     ----------
@@ -639,16 +577,9 @@ def pooled_calibrated_explained_deviance(eta: np.ndarray, y: np.ndarray, session
     :func:`calibrated_explained_deviance` on held-out predictions pooled across cross-validation folds, with
     one shared slope and one intercept per session.
 
-    Averaging a per-fold score across folds wastes the data when the folds are unequal. Each fold's
-    predictions are already held-out, so concatenating them leaks nothing; what it buys is that the
-    calibration is estimated once on every event instead of separately on each fold. Measured on a
-    three-session unit whose folds held 1,045, 962 and 372 events: fitting two parameters against a shuffled
-    train on the smallest fold overfitted so badly that its null mean exceeded its own observed value and
-    its spread swamped the average. Pooling dropped the null mean from +0.0081 to +0.0019 and the null
-    spread from 0.0086 to 0.0028, moving the result from p = 0.065 to p = 9.9e-06 on the same data.
-
-    Sessions keep their own intercepts because they are not on a common scale, while the slope, the
-    quantity the test is about, is shared and estimated on everything.
+    Each fold's predictions are already held out, so concatenating them leaks nothing, and the calibration
+    is then estimated once on every event rather than separately on small folds. Sessions
+    keep their own intercepts; the slope is shared.
 
     Parameters
     ----------
@@ -691,13 +622,8 @@ def explained_deviance_vs_reference_rate(eta: np.ndarray, y: np.ndarray, referen
     The uncalibrated level descriptor: how the frozen model scores against a constant at some external
     reference rate, typically the training epoch's. Reported, never gated on.
 
-    It answers a different question from :func:`calibrated_explained_deviance`, namely whether the model
-    knows the unit will fire faster here, rather than whether it knows which frames carry spikes. A model
-    that predicts the rate change perfectly but orders frames at chance scores highly here and at zero
-    there. Both are worth knowing; only the second is discrimination.
-
-    A bare rate change does not inflate this: a synthetic with no kinematic structure and a 9.4x rate step
-    returns exactly 0.00000, because the model's own predictions did not move either.
+    It asks whether the model anticipates the unit's change in rate, not whether it knows which frames
+    carry spikes, which is what the calibrated score asks.
 
     Parameters
     ----------
@@ -730,19 +656,11 @@ def encoding_metrics(eta: np.ndarray, y: np.ndarray, n_steps: int) -> dict:
     -----------
     The full per-scoring-set metric roster for a frozen encoding model, from one calibration refit.
 
-    The tested statistic is the calibrated explained deviance, and everything here comes free with it.
-    They are saved because they answer questions the headline cannot, and because refitting a cohort
-    to recover a number that was already in memory is the expensive way to learn something.
-
-    ``llr_per_spike`` divides by the spike count rather than the frame count, which is what makes
-    units of different firing rates comparable -- the encoding analogue of the nats-per-spike currency
-    already ruled for the decoding axis. ``brier`` is a proper score that responds to miscalibration
-    differently from deviance, so a model can look healthy in one and poor in the other.
-    ``calibration_intercept`` is the ``a`` in ``y ~ a + b * z(eta)``, which the tested statistic fits
-    and then discards: it says whether a frozen model systematically over- or under-predicts the rate,
-    a different failure from getting the ordering wrong, which is what ``calibration_slope`` catches.
-    ``auroc`` is scale-free and therefore the one number directly comparable between the quiet and
-    vocal regimes, which is the comparison the transfer is about.
+    The tested statistic is the calibrated explained deviance; the rest are descriptors that come with the
+    same fit. ``llr_per_spike`` divides by the spike count, putting units of different
+    firing rates on one scale. ``calibration_intercept`` is the ``a`` in ``y ~ a + b * z(eta)``, and says
+    whether the model over- or under-predicts the rate. ``auroc`` is scale-free, so it is comparable
+    between quiet and vocal frames.
 
     Parameters
     ----------
@@ -797,10 +715,9 @@ def contiguous_blocks(group_index: np.ndarray, n_blocks: int) -> np.ndarray:
     -----------
     Contiguous blocks within each group, numbered ``0 .. n_blocks - 1``, for cross-fitted scoring.
 
-    Rows are assumed to be in time order within each group (scored frames and bins are built that way).
-    Contiguous rather than interleaved because neighbouring frames share their kinematic history and their
-    spikes are autocorrelated: an interleaved split would put near-copies of a scored frame into the data
-    its calibration is estimated on.
+    Rows are assumed to be in time order within each group. Blocks are contiguous because neighbouring
+    frames share their history, so an interleaved split would put near-copies of a scored frame into its
+    own calibration data.
 
     Parameters
     ----------
@@ -837,16 +754,11 @@ def crossfitted_explained_deviance(x: np.ndarray, y: np.ndarray, group_index: np
     Explained deviance of a frozen predictor where every number a scored row is judged by is estimated
     WITHOUT that row.
 
-    The scored rows are cut into contiguous blocks within each group. For every block, the calibration --
-    one intercept per group and one shared scale on the standardised predictor -- is fitted on the OTHER
-    blocks, and the block is then scored with it. The reference is the same cross-fitted per-group
-    intercepts with no predictor. Both sides are therefore out of sample, which is what the in-sample
-    calibration (:func:`calibrated_explained_deviance`, :func:`pooled_calibrated_explained_deviance`,
-    :func:`pooled_poisson_explained_deviance`) is not: those fit intercept and scale on the very rows they
-    score. The scale is kept, rather than fixed at 1, for the reason the in-sample calibration was adopted:
-    a filter carried into new data typically gets the ordering right while overstating the magnitude, and
-    at a fixed scale of 1 shuffled draws score far below zero, so the null loses most of its resolution
-    (measured 2026-10-16: the scale-1 variant flipped a clearly transferring unit's transfer negative).
+    The scored rows are cut into contiguous blocks within each group. For every block, the calibration (one
+    intercept per group and one shared scale on the standardised predictor) is fitted on the other blocks
+    and the block is scored with it. The reference is the cross-fitted per-group intercepts alone, so both
+    sides are out of sample. The scale is fitted rather than fixed at 1, since at a fixed scale the null
+    draws score far below zero and the test loses its resolution.
 
     Parameters
     ----------
@@ -1027,13 +939,12 @@ def frozen_model_score(x: np.ndarray, y: np.ndarray, group_index: np.ndarray, n_
     """
     Description
     -----------
-    The ONE scoring rule for a frozen kinematic model, wherever it is scored: the per-feature screen,
-    forward selection, the quiet score and the transfer (and every null draw of each).
+    The scoring rule for a frozen kinematic model, wherever it is scored: the per-feature screen, forward
+    selection, the quiet score and the transfer, and every null draw of each.
 
-    ``calibration["scheme"]`` decides how the frozen predictor is turned into a score:
-    ``"crossfit"`` (shipped, ruled 2026-10-16) -- per-group intercepts and one shared scale estimated on
-    the other contiguous blocks, see :func:`crossfitted_explained_deviance`; ``"in_sample"`` -- the
-    earlier rule, intercepts and scale refitted on the scored rows themselves.
+    ``calibration["scheme"]`` selects the calibration: ``"crossfit"`` (the shipped scheme, see
+    :func:`crossfitted_explained_deviance`) or ``"in_sample"`` (intercepts and scale refitted on the
+    scored rows themselves).
 
     Parameters
     ----------

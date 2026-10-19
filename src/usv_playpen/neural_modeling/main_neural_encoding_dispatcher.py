@@ -2,16 +2,17 @@
 @author: bartulem
 Cluster dispatcher for the kinematic encoding analysis.
 
-The outer folds of a unit share nothing -- separate pools, separate screens, separate selections -- so they
-run as independent jobs and are combined afterwards. That is not an optimization. Screen nulls alone cost
-about 195 minutes per outer fold on a six-session unit, so a serial run is a day and a half per unit and a
-cohort is not reachable; six concurrent jobs bring the same unit to a few hours.
+The outer folds of a unit share nothing (separate pools, screens and selections), so each runs as an
+independent job and the results are combined afterwards; pooling has to wait for every fold because the
+transfer calibration is fitted once across all held-out predictions.
 
-    --fold K     run one outer fold and write its artifacts
-    --combine    pool every fold's held-out predictions, run the null, write the result
+    --fold K     run one outer fold and write its artifact
+    --combine    pick the representative fold, pool the transfer, compute the filter band and STA, and
+                 write the unit's kinematic_encoding section
+    --single     select once on all sessions but one, fit once, and write the same section
 
-The split falls where the analysis already wanted it: pooling has to happen after all folds exist, because
-the calibration is fitted once across every held-out prediction rather than per fold.
+Exports: ``run_fold``, ``combine``, ``run_single``, ``representative_fold``, ``per_fold_roster``,
+``focal_vocal_frames``, ``build_unit_record`` and the command-line entry point ``main``.
 """
 
 from __future__ import annotations
@@ -60,10 +61,8 @@ def unwrap_stored(value):
     -----------
     Recover a dict or list that ``np.savez`` wrapped in a 0-d object array.
 
-    The per-fold artifacts are npz because folds are an array job and write concurrently, and npz has
-    no notion of a nested mapping: a dict goes in and a 0-d object array comes out, which iterates as
-    a scalar rather than as the mapping it was. The merged per-unit RESULT is a pickle for exactly
-    this reason; the intermediates cannot be.
+    The per-fold artifacts are npz, which has no notion of a nested mapping: a dict goes in and a 0-d
+    object array comes out.
 
     Parameters
     ----------
@@ -112,13 +111,11 @@ def focal_vocal_frames(session: dict, session_id: str, data_root: str, mouse_id:
 
     "Focal" is ``vocal_settings["vocal_emitter"]``, resolved against the session's track names exactly as
     the vocal-side assembler resolves it: ``'self'`` is the unit's own animal, ``'partner'`` the other one,
-    and ``'all'`` applies no emitter filter. Reading the same key is what keeps the transfer frames and
-    the vocal decoding's events on the same animal's vocalizations when the key is changed; this used to
-    match the unit's own mouse id unconditionally.
+    and ``'all'`` applies no emitter filter, so the transfer frames and the vocal analyses' events always
+    follow the same animal.
 
-    Every focal vocalization is kept. The clean-pre-history rule that defines quiet anchors is
-    deliberately not applied: it is the right rule for silence, but on a bout it retains almost nothing
-    and what it does retain is systematically bout-initial.
+    Every focal vocalization is kept: the clean-history rule that defines quiet anchors would keep almost
+    nothing inside a bout, and only bout-initial USVs.
 
     Parameters
     ----------
@@ -148,18 +145,15 @@ def focal_vocal_frames(session: dict, session_id: str, data_root: str, mouse_id:
         Silent gap preceding each retained vocalization.
     """
 
-    # Match emitter labels EXACTLY, as the assembler does. Substring matching buys nothing here
-    # -- across 77 courtship sessions it never once found a focal animal that equality missed -- and
-    # it is fragile, because a bare mouse id is a prefix of the same animal's suffixed form.
+    # Match emitter labels exactly, as the assembler does: a bare mouse id is a prefix of the same
+    # animal's suffixed form, so substring matching is fragile.
     usv_table = filter_vocalizations(load_session_usvs(data_root, session_id), vocal_settings,
                                      "analysed")
     focal_names = emitter_names(session["track_names"], mouse_id, vocal_settings["vocal_emitter"])
     focal_vocalizations = (usv_table.filter(usv_table["emitter"].is_in(focal_names)) if focal_names
                            else usv_table)
     if focal_vocalizations.height == 0:
-        # The focal animal simply did not vocalize in this session, which is ordinary: it happens in
-        # 8 of 77 courtship sessions. Such a session contributes no vocal frames to the transfer,
-        # which is the correct answer -- previously it raised IndexError and killed the fold.
+        # The focal animal did not vocalize in this session; it contributes no vocal frames.
         return (np.zeros(0, dtype=np.int64), np.zeros(1, dtype=np.int64), np.zeros(0, dtype=np.float64))
     order = np.argsort(focal_vocalizations["start"].to_numpy())
     starts = focal_vocalizations["start"].to_numpy()[order]
@@ -175,17 +169,9 @@ def write_fold_artifact(artifact: dict, unit: dict, fold_index: int, output_dire
     -----------
     Save one fold's artifact where ``combine`` will look for it, and hand it back.
 
-    EVERY fold goes through here, including folds that found no model, and that is the reason this
-    function exists. ``combine`` demands a file for every fold and stops with "fold artifact missing"
-    when one is absent. The two no-model branches used to return before the save, so any unit with a
-    single no-model fold saved nothing at all -- and a unit that is not kinematically tuned produces a
-    no-model fold on EVERY fold. At cohort scale that is not an edge case; it is the untuned units,
-    which would have vanished from the cohort table as failed jobs rather than appearing as the
-    "not tuned" result they are. Every run before 2026-09-14 was on a tuned unit, so the path had
-    never executed.
-
-    npz has no notion of a nested mapping, so lists and dicts are boxed as object arrays; see
-    :func:`unwrap_stored` for the reverse.
+    Every fold goes through here, including folds that found no model, because ``combine`` requires a
+    file for every fold and an untuned unit must appear as a "not tuned" result rather than as a failed
+    job. Lists and dicts are boxed as object arrays; see :func:`unwrap_stored` for the reverse.
 
     Parameters
     ----------
@@ -220,16 +206,15 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
     Description
     -----------
     Run one outer fold: screen and select inside the pool, then score the frozen model on the held-out
-    session's quiet anchors and vocal frames.
+    session's quiet anchors and on every vocal session's transfer frames.
 
-    The held-out predictions are written out rather than reduced to a score, because the transfer is scored
-    by pooling every fold's predictions and calibrating once. Reducing here would throw away exactly what
-    the combine step needs.
+    The held-out predictions are written out rather than reduced to a score, because the transfer is
+    scored by pooling predictions and calibrating once in ``combine``.
 
     Parameters
     ----------
     unit (dict)
-        ``unit_id``, ``mouse_id``, ``rec_date``, ``courtship_sessions``.
+        ``unit_id``, ``mouse_id``, ``rec_date``, ``courtship_sessions``, ``vocal_sessions``.
     fold_index (int)
         Which session is held out.
     settings (dict)
@@ -253,36 +238,23 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
     pool_ids = [session for session in sessions if session != test_id]
     message_output(f"[fold {fold_index}] test = {test_id} | pool = {pool_ids}")
 
-    # The `self.` role is derived from the unit's own mouse_id, not configured -- see
-    # `build_zscored_feature_frames`. `vocalization_settings.vocal_emitter` is a different question (whose
-    # VOCALIZATIONS count as the recorded animal's) and stays a knob; `focal_vocal_frames` reads it, so the
-    # kinematic encoding's transfer frames and the vocal decoding's events move together when it is changed.
+    # The `self.` role comes from the unit's own mouse_id; `vocal_emitter` (read by `focal_vocal_frames`)
+    # decides whose vocalizations are scored.
     per_session = assemble_unit_sessions(unit, data_root, settings["kinematic_features"],
                                          encoding["history_pre_seconds"], encoding["clean_post_seconds"],
                                          settings["vocalization_settings"]["clean_against"],
                                          settings["vocalization_settings"])
     fps = per_session[sessions[0]]["fps"]
-    # `history_pre_seconds` does THREE jobs at once, deliberately coupled: it is the kinematic
-    # filter's LENGTH (these lags), the quiet window's backward guard, and the train/validation gap
-    # in the single-session block split, which is derived from it. Changing it therefore redefines
-    # what "quiet" means and how far apart CV blocks must sit, not merely how far back the model
-    # looks. That is the intended coupling -- a quiet window shorter than the history would let a
-    # vocalization into the predictor -- but it is not something the settings file can say.
+    # `history_pre_seconds` is the filter length, the quiet window's backward guard and the gap of the
+    # single-session block split, so changing it redefines all three.
     n_lags = int(np.floor(encoding["history_pre_seconds"] * fps))
     feature_names = list(per_session[sessions[0]]["feature_names"])
-    # Seed from the TEST SESSION id, not the fold index, so a fold is reproducible regardless of
-    # which path ran it or how the sessions were ordered. crc32 rather than hash(): Python salts
-    # string hashing per process, which made an earlier run irreproducible between invocations.
+    # Seeded from the test session id (crc32, not the per-process salted hash()), so a fold is
+    # reproducible however it was run.
     rng = np.random.default_rng(settings["null"]["shuffle_seed"] + crc32(test_id.encode()) % 10_000)
 
-    # A 2-session unit leaves a pool of ONE, and leave-one-pool-session-out then yields a fold with an
-    # empty training set -- a crash, not a degradation. The inner split then comes from contiguous
-    # quiet-anchor blocks within that single pool session, with a gap at least as long as the predictor
-    # history so a validation frame's lags cannot reach into a training block. The model itself is still
-    # fitted on the whole pool session.
-    # The test session's vocal frames depend on nothing the pool split decides, and BOTH of the
-    # no-model early returns below have to report them. Computing them here rather than after the
-    # split is what stops the block-CV branch raising NameError instead of returning its artifact.
+    # The test session's transfer frames are computed before the pool split, since both no-model
+    # returns below report them.
     session = per_session[test_id]
     transfer_settings = settings["kinematic_encoding"]["transfer"]
     vocal_frames, pointer, gaps = focal_vocal_frames(session, test_id, data_root, unit["mouse_id"],
@@ -292,11 +264,9 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
 
     inner_sessions, inner_ids = per_session, pool_ids
     if len(pool_ids) == 1:
-        # The gap is DERIVED from the predictor history rather than configured. It can never be
-        # shorter -- a validation frame's history would reach into a training block and the split
-        # would leak -- and there is no reason to make it longer, the behavioural decorrelation lag
-        # having been measured at 2.2 s, well inside the 4 s history. A settings key here could only
-        # be silently overridden or pointlessly obeyed.
+        # A pool of one session has no inner session to hold out, so the inner split uses contiguous
+        # quiet-anchor blocks of that session, separated by the predictor history so no validation
+        # frame's lags reach a training block. The final model is still fitted on the whole session.
         required_gap = float(encoding["history_pre_seconds"])
         blocks = quiet_block_sessions(per_session[pool_ids[0]], pool_ids[0],
                                       settings["data_sufficiency"]["single_session_inner_split_blocks"],
@@ -319,13 +289,9 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
     survivors = [row["feature"] for row in screen_rows if row["survived"]]
     message_output(f"    survivors: {len(survivors)}/{len(screen_rows)}")
 
-    # A fold with no survivor has no model, and that is the RESULT -- but it still has nineteen screened
-    # features, and the best of them is what a figure of an untuned unit has to show. Fitting it costs one
-    # single-feature fit and makes every unit, tuned or not, describable by the same panels. It is fitted on
-    # the pool and scored on the held-out session exactly as a selected model is, so nothing about the
-    # scoring differs; what differs is that it was REJECTED, which `no_model` keeps saying. Its p-value is
-    # also the maximum over nineteen features scored against a single-feature null, so it is optimistic by
-    # construction and must never be read as a test.
+    # A fold with no survivor has no model. Its best screened feature is still fitted and scored, for
+    # description only (`no_model` stays True): its p is a maximum over all screened features and is
+    # never a test.
     best_screened = None
     if not survivors:
         scored_rows = [row for row in screen_rows if np.isfinite(row["score"])]
@@ -354,8 +320,7 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
     estimator, base_rate = fit_quiet_model(per_session, pool_ids, selected, n_lags, rng, encoding,
                                            message_output)
     final_fit_seconds = time.time() - fit_started
-    # The final model is what every reported number rests on, so its convergence travels with the
-    # artifact rather than living only in a log line a cluster run may never have read back.
+    # Convergence of the final model is stored with the artifact, not only logged.
     final_converged = bool(estimator.converged_)
 
     eta_quiet = linear_predictor_at_frames(estimator, session["feature_time_series"], selected,
@@ -381,18 +346,9 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
     vocal = score_fold(estimator, session, selected, vocal_frames, n_lags, base_rate, encoding,
                        linear_predictor_at_frames, transfer_settings)
 
-    # This fold's model is also carried onto EVERY session's vocal frames, not just its own. The
-    # transfer is a statement about ONE model, and pooling eta from a different model per fold would
-    # mix six of them into a single calibration. Scoring every fold's model everywhere lets `combine`
-    # take the representative fold's numbers, and lets the transfer conclusion be checked against the
-    # other folds' models rather than resting on the choice. It is cheap -- no refit, just the linear
-    # predictor and a two-parameter calibration -- and legitimate for every session, because quiet
-    # anchors exclude vocal periods by construction, so the model has never seen a vocal frame.
-    # ONLY vocal-eligible sessions are scored. A session in which the male barely vocalized is not
-    # impoverished for the QUIET fit -- it has more silence, not less -- so it stays in the rotation
-    # that selects and fits the model. It is excluded here, where the statistic rests on the USVs
-    # themselves and a session with a handful of them contributes a fold whose score is mostly noise.
-    # The two session sets come from the cohort builder for exactly this reason.
+    # This fold's model is scored on every vocal session's transfer frames, not just its own, so the
+    # transfer in `combine` pools ONE model (the representative fold's). No vocal frame was ever fitted,
+    # so every session is held out for it. Only vocal sessions are scored.
     vocal_everywhere = []
     for other_id in [s for s in sessions if s in set(unit["vocal_sessions"])]:
         other_frames, other_pointer, other_gaps = focal_vocal_frames(
@@ -409,9 +365,7 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
     if not final_converged:
         message_output(f"    [!] fold {fold_index} FINAL MODEL DID NOT CONVERGE -- treat both halves "
                        f"of this fold as provisional")
-    # The quiet half of this line can become the tested number, if this fold is the representative.
-    # The vocal half NEVER is: the tested transfer is the representative model pooled across every
-    # session, computed in `combine`. Labelled so the two are not read as equivalent.
+    # The own-session vocal score is a diagnostic; the tested transfer is pooled in `combine`.
     message_output(f"    TEST {test_id}: quiet {quiet_score:+.5f} (slope {quiet_slope:+.3f}) "
                    f"p {quiet_p:.3e} | [diagnostic] own-session vocal {vocal['fold_score']:+.5f} "
                    f"(slope {vocal['fold_slope']:+.3f}) on {vocal['n_frames']} frames")
@@ -439,23 +393,11 @@ def representative_fold(artifacts: list) -> int:
     """
     Description
     -----------
-    Pick the fold whose model represents the unit: the MEDIAN by held-out quiet D2, tie-broken on vocal
-    frame count.
+    Pick the fold whose model represents the unit: the median by held-out quiet D2.
 
-    The transfer freezes one model and carries it to vocal periods, so exactly one of the folds' models
-    has to be the one that travels. The median is chosen over the best because the best is a maximum of
-    `n` draws and would need the null to take a maximum too; the median asks less of the null and is the
-    more conservative summary of a spread that runs 2.3-2.4x across sessions on the pilot units.
-
-    An even fold count has no middle element, and the two straddling folds are EQUIDISTANT from the median
-    value by construction -- the median IS their midpoint -- so "closest to the median" can never separate
-    them. The tie is therefore broken on the count of focal vocal frames in the fold's held-out session,
-    taking the larger. That is outcome-blind, always resolves, and systematically avoids thin sessions
-    rather than landing on one by chance: on the VTA pilot it takes the 10,695-frame fold over the
-    4,745-frame fold, and the thin one was the single fold whose transfer disagreed with the other five.
-
-    Choosing on the QUIET side keeps the transfer honest. Vocal frames play no part in the fit, in
-    selection, or in this choice, so the chosen model's vocal score remains an ordinary held-out number.
+    With an even number of model folds, the two middle folds are equidistant from the median, so the one
+    whose held-out session has more transfer frames is taken. The choice uses only quiet scores and frame
+    counts, never a vocal score.
 
     Parameters
     ----------
@@ -483,24 +425,12 @@ def per_fold_roster(artifacts: list, n_lags: int) -> dict:
     -----------
     Everything the rotation produced per fold, as parallel lists indexed by fold, ready to persist.
 
-    Every fold is listed, INCLUDING folds that found no model, so position ``i`` in every list is fold
-    ``i``, which holds out ``courtship_sessions[i]``. Dropping no-model folds would shift every later
-    fold down a position and pair a filter with the wrong held-out session.
+    Every fold is listed, including folds that found no model, so position ``i`` in every list is fold
+    ``i``, which holds out ``courtship_sessions[i]``. A no-model fold records its quiet p as 1.0, its
+    fit-only entries as ``None`` (``nan`` for the fit time), and keeps its screen table.
 
-    A no-model fold fitted nothing, so it has no quiet metrics, fit time, iteration count or filter.
-    Those are recorded as absent -- ``None``, or ``nan`` in the one numeric list -- by branching on the
-    fold's own ``no_model`` flag, never by reading keys the fold does not carry. Reading them anyway
-    is what the previous inline version did, which would have stopped ``combine`` on the first unit
-    with a mix of model and no-model folds. A no-model fold's quiet p is 1.0, as the plan specifies
-    for a fold that fails at the screen, and its screen table is KEPT: which features came close is
-    exactly what a figure of a marginal unit needs.
-
-    EVERY fold's filter is kept, not only the representative's (ruled 2026-09-14). They are the
-    per-fold spread the rotation exists to deliver, seen as curves rather than as feature lists, and
-    they cannot be recovered afterwards without refitting. Each is reshaped to ``(n_features, n_lags)``
-    with its feature names alongside, because folds select different features and a flat vector means
-    nothing without them. The fold's held-out session travels with it, so no figure has to re-derive
-    the pairing.
+    Every fold's filter is kept, reshaped to ``(n_features, n_lags)`` with its feature names and held-out
+    session, since folds select different features and filters cannot be recovered without refitting.
 
     Parameters
     ----------
@@ -558,37 +488,21 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
     -----------
     Select once, fit once, and report ONE model for the unit.
 
-    The per-fold rotation gives an honest score but a different feature set per fold, because selection
-    re-runs on a different pool each time. Correlated kinematic features then trade places between folds
-    and the unit has no single interpretable model -- while the transfer, which freezes the SELECTED model
-    and carries it to vocal periods, is left testing a different object on every fold.
-
-    One set and honest scoring look mutually exclusive under pure rotation: to score session *i* the
-    feature set must not depend on *i*, so a set common to all sessions can depend on none of them. The
-    way out is that the two halves of the kinematic encoding are scored on DISJOINT frames. A quiet anchor admits no USV
-    from any emitter in ``[t - history_pre_seconds, t + clean_post_seconds]``, so its entire history is
-    vocalization-free, while vocal frames lie inside focal USVs. Fitting and selection touch quiet
-    anchors only. **No vocal frame from any session enters the model at any stage**, so every vocal frame
-    in the unit is held out for the transfer regardless of which sessions were fitted.
-
-    So only the QUIET half needs a reserved session, and the transfer keeps every USV the unit produced:
+    The single-split alternative to the per-fold rotation. Fitting and selection use quiet anchors
+    only, so every vocal frame of the unit stays held out for the transfer and only the quiet half needs
+    a reserved session:
 
         select + fit   quiet anchors of all sessions but one   -> one feature set, one weight vector
         score quiet    the held-out session's quiet anchors
-        score vocal    every session's vocal frames, pooled
+        score vocal    every vocal session's transfer frames, pooled
 
-    The held-out session is the one with the most quiet anchors, which is the most powerful place to
-    measure the quiet statistic and depends only on frame counts -- never on spikes or on any score.
-
-    Stated for the methods rather than glossed: a session contributing quiet anchors to the fit also
-    contributes vocal frames to the transfer. That overlap is at the level of the session, not the frame,
-    and the transfer calibration already carries per-session intercepts that absorb session-level rate
-    differences.
+    The held-out session is, excluding the session with the fewest spikes, the one with the most quiet
+    anchors; both criteria are counts, never scores.
 
     Parameters
     ----------
     unit (dict)
-        ``unit_id``, ``mouse_id``, ``rec_date``, ``courtship_sessions``.
+        ``unit_id``, ``mouse_id``, ``rec_date``, ``courtship_sessions``, ``vocal_sessions``.
     settings (dict)
         Full neural-modeling settings.
     data_root (str)
@@ -616,9 +530,7 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
     n_lags = int(np.floor(encoding["history_pre_seconds"] * fps))
     feature_names = list(per_session[sessions[0]]["feature_names"])
 
-    # The scoring session is never the one with the fewest spikes: the quiet statistic is measured
-    # there, and the sparsest train is where it is least well estimated. Among the rest, take the one
-    # with the most quiet anchors. Both criteria are counts, so neither looks at a score.
+    # Held-out session: never the sparsest train; among the rest, the most quiet anchors.
     spike_counts = {name: int(per_session[name]["spike_frames"].size) for name in sessions}
     sparsest = min(sessions, key=lambda name: spike_counts[name])
     candidates = [name for name in sessions if name != sparsest] or list(sessions)
@@ -632,11 +544,7 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
     # comes from contiguous time blocks within it. The FINAL fit still uses the whole session.
     inner_sessions, inner_ids = per_session, fit_ids
     if len(fit_ids) == 1:
-        # The gap must exceed the predictor history, or a validation frame's 4 s of lags reaches back
-        # into a training block and the split leaks. Trimming happens at BOTH ends of every block, so
-        # each end takes half the required separation and the realised gap is what was asked for --
-        # previously the trim was applied whole at each end, making the gap silently twice the setting.
-        # Derived from the predictor history; see the note in `run_fold`.
+        # The gap equals the predictor history; each block is trimmed by half of it at both ends.
         required_gap = float(encoding["history_pre_seconds"])
         gap_frames = int(np.ceil(required_gap * fps / 2.0))
         blocks = quiet_block_sessions(per_session[fit_ids[0]], fit_ids[0],
@@ -644,8 +552,7 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
                                       gap_frames)
         if len(blocks) < 2:
             message_output(f"    NO MODEL: {fit_ids[0]} yields {len(blocks)} usable quiet blocks")
-            # WRITTEN, not merely returned, for the same reason as in `combine`: an untuned unit must
-            # appear in the cohort table with quiet p 1.0, never as a silent missing value.
+            # Written, not only returned, so an untuned unit appears with quiet p 1.0.
             result = {"unit_id": unit["unit_id"], "no_model": True, "quiet_p": 1.0, "transfer_p": np.nan,
                       "held_out": held_out, "fit_sessions": fit_ids, "spike_counts": spike_counts,
                       "sparsest_session": sparsest, "inner_split": "blocks", "screen": None,
@@ -665,7 +572,7 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
     message_output(f"    survivors: {len(survivors)}/{len(feature_names)}")
     if not survivors:
         message_output("    NO MODEL: nothing survived the screen")
-        # WRITTEN, as in `combine`, with the screen table, which shows which features came close.
+        # Written with the screen table, as in `combine`.
         result = {"unit_id": unit["unit_id"], "no_model": True, "quiet_p": 1.0, "transfer_p": np.nan,
                   "held_out": held_out, "fit_sessions": fit_ids, "spike_counts": spike_counts,
                   "sparsest_session": sparsest, "inner_split": "blocks" if len(fit_ids) == 1 else "sessions",
@@ -705,12 +612,7 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
     message_output(f"  QUIET  {held_out}: score {quiet_score:+.5f} (slope {quiet_slope:+.3f}) "
                    f"| p {quiet_p:.4e}{' (at floor)' if quiet_at_floor else ''}")
 
-    # Every session's vocal frames are held out -- the model was fitted on quiet anchors only.
-    # ONLY vocal-eligible sessions are scored. A session in which the male barely vocalized is not
-    # impoverished for the QUIET fit -- it has more silence, not less -- so it stays in the rotation
-    # that selects and fits the model. It is excluded here, where the statistic rests on the USVs
-    # themselves and a session with a handful of them contributes a fold whose score is mostly noise.
-    # The two session sets come from the cohort builder for exactly this reason.
+    # Every vocal session's transfer frames are held out; only vocal sessions are scored.
     vocal_results, vocal_frames_by_session = [], {}
     vocal_ids = [s for s in sessions if s in set(unit["vocal_sessions"])]
     transfer_settings = settings["kinematic_encoding"]["transfer"]
@@ -730,8 +632,7 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
 
     if not final_converged:
         message_output("    [!] FINAL MODEL DID NOT CONVERGE -- treat every number here as provisional")
-    # Reported for eyes on a single unit, NOT persisted -- it compares raw p-values to a bare
-    # threshold, so it is uncorrected by construction. See the note in `combine`.
+    # Printed, not stored: an uncorrected reading against a bare threshold (see `combine`).
     level = float(settings["significance"]["fdr_q"])
     quiet_significant = quiet_p < level
     transfer_significant = transfer["p"] < level
@@ -775,7 +676,13 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
     """
     Description
     -----------
-    Pool every fold's held-out predictions, run the shared-draw null, and report both halves.
+    Combine the fold artifacts into the unit's kinematic encoding result.
+
+    The representative fold supplies the tested quiet score and the model that travels; that model's
+    predictions on every vocal session are pooled into the transfer and tested. The
+    filter band, shape descriptors and spike-triggered average are computed here and stored with the
+    per-fold roster in the unit's ``kinematic_encoding`` section. A unit whose every fold failed the
+    screen is written as ``no_model``.
 
     Parameters
     ----------
@@ -793,7 +700,9 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
     Returns
     -------
     result (dict)
-        Both halves' scores, p-values and floor flags.
+        The written section: both halves' scores, p-values, nulls and floor flags, the transfer
+        descriptors, the representative fold and its model, the filter band, descriptors and STA, and
+        the per-fold roster of :func:`per_fold_roster`.
     """
 
     sessions = unit["courtship_sessions"]
@@ -806,11 +715,8 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
             raise FileNotFoundError(msg)
         artifacts.append(dict(np.load(path, allow_pickle=True)))
 
-    # A unit whose every fold rejected its features still has, in each fold, the best screened feature
-    # fitted and scored exactly as a selected model is. Pooling those describes an untuned unit the same
-    # way a tuned one is described -- same halves, same nulls -- while `no_model` on the written section
-    # keeps saying that nothing was selected. Nothing may read these as a test: the feature is the maximum
-    # of nineteen and it failed the correction.
+    # When every fold failed the screen but carries a best screened feature, those are pooled for
+    # description only; the written section keeps `no_model` True.
     screened_only = bool(artifacts) and all(bool(artifact["no_model"]) for artifact in artifacts) and all(
         "best_screened" in artifact and bool(artifact["best_screened"]) for artifact in artifacts)
     if screened_only:
@@ -819,10 +725,6 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
         for artifact in artifacts:
             artifact["no_model"] = np.asarray(False)
 
-    # The `self.` role is derived from the unit's own mouse_id, not configured -- see
-    # `build_zscored_feature_frames`. `vocalization_settings.vocal_emitter` is a different question (whose
-    # VOCALIZATIONS count as the recorded animal's) and stays a knob; `focal_vocal_frames` reads it, so the
-    # kinematic encoding's transfer frames and the vocal decoding's events move together when it is changed.
     per_session = assemble_unit_sessions(unit, data_root, settings["kinematic_features"],
                                          encoding["history_pre_seconds"], encoding["clean_post_seconds"],
                                          settings["vocalization_settings"]["clean_against"],
@@ -847,10 +749,8 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
 
     if not fold_results:
         message_output("no fold produced a model; unit fails at the screen")
-        # WRITTEN, not merely returned. The plan records a unit that fails at the screen with quiet p 1.0,
-        # transfer p NaN and a no_model flag "so it never becomes a silent missing value in the cohort
-        # table" -- and the untuned units are a large share of the cohort. The per-fold screen tables go
-        # with it, since they show which features came close.
+        # Written, not only returned: quiet p 1.0, transfer p NaN and no_model, with the per-fold
+        # screen tables, so an untuned unit is never a missing value in the cohort table.
         result = {"unit_id": unit["unit_id"], "no_model": True, "quiet_p": 1.0, "transfer_p": np.nan,
                   "n_lags": n_lags, "fps": fps, **per_fold_roster(artifacts, n_lags)}
         written = write_unit_section(output_directory, unit, "kinematic_encoding", result, settings)
@@ -858,10 +758,8 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
         return result
 
     quiet_scores = [float(a["quiet_score"]) for a in artifacts if not bool(a["no_model"])]
-    # Both halves must describe the SAME model, or `max(p_quiet, p_transfer)` conjoins p-values about
-    # two different objects. The transfer carries the representative fold's model, so the quiet
-    # statistic is that fold's too. The fold-average survives as a DESCRIPTOR -- the honest summary of
-    # a spread running 2.3-2.4x across sessions on the pilot units -- but it is not the tested number.
+    # Both halves describe the representative fold's model; the fold-average quiet score is a
+    # descriptor only.
     chosen = representative_fold(artifacts)
     chosen_artifact = artifacts[chosen]
     quiet_score = float(chosen_artifact["quiet_score"])
@@ -885,9 +783,7 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
     transfer = combine_folds(fold_results, per_session, scored_ids, vocal_frames_by_session, settings,
                              message_output)
 
-    # The reported filter band, computed HERE and persisted rather than left to a figure script. The
-    # band needs refits of the representative model, which is the expensive half of the analysis; at
-    # cohort scale, recomputing it later means paying for the whole thing twice.
+    # The filter band needs refits of the representative model, so it is computed and stored here.
     band = None
     band_settings = encoding["filter_band"]
     representative_features = [int(f) for f in chosen_artifact["selected_indices"]]
@@ -899,11 +795,8 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
                            np.random.default_rng(settings["null"]["shuffle_seed"] + 977),
                            encoding, band_settings["n_resamples"], message_output)
 
-    # A three-way reading of these numbers -- transformation candidate / regime-switching / purely
-    # kinematic / not tuned -- is REPORTED here for eyes on a single unit, and deliberately NOT
-    # persisted. It compares raw p-values to a bare threshold, so it is uncorrected by construction;
-    # false-discovery control needs the cohort, which a per-unit file has never seen. The stored
-    # numbers are what a rule consumes; the consolidator is the only thing that decides.
+    # A reading of these numbers is printed for a single unit and not stored: it compares raw p-values
+    # to a bare threshold, and correction needs the cohort.
     level = float(settings["significance"]["fdr_q"])
     quiet_significant = quiet_p < level
     transfer_significant = transfer["p"] < level
@@ -921,9 +814,7 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
                    f"| transfer p {transfer['p']:.4e} slope {transfer['slope']:+.3f} "
                    f"| bare threshold {level}, no FDR")
 
-    # Shape descriptors off the STORED filter (no refit), and the spike-triggered average, which is
-    # the robust interpretable readout the fitted filter is a deconvolution of. Both are cheap and
-    # neither is recoverable later without rebuilding the design.
+    # Shape descriptors of the stored filter and the spike-triggered average.
     descriptors = filter_descriptors(np.asarray(chosen_artifact["coefficients"]),
                                      [feature_names[i] for i in representative_features],
                                      n_lags, fps) if representative_features else []
@@ -957,10 +848,7 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
               "quiet_metrics": dict(unwrap_stored(chosen_artifact["quiet_metrics"])),
               **per_fold_roster(artifacts, n_lags)}
 
-    # The combine step is the END of the kinematic encoding for this unit, and until now it returned its results and
-    # wrote nothing -- a cluster array would have computed every p-value and thrown them away, the
-    # fold artifacts on disk holding only the halves. Merged into the unit's own file, which the other
-    # analyses write their own sections into.
+    # Merged into the unit's own file, which the other analyses write their own sections into.
     written = write_unit_section(output_directory, unit, "kinematic_encoding", result, settings)
     message_output(f"    wrote {written.name} [kinematic_encoding]")
     return result
@@ -974,14 +862,9 @@ def build_unit_record(unit_id: str, mouse_id: str, rec_date: int, sessions: list
     The unit's record as every dispatcher sees it: identity, both session sets, and the per-session USV
     counts the vocal gate was applied on.
 
-    ONE builder for every dispatcher, and that is load-bearing rather than tidy. Each section write
-    stamps this record into the unit's file as its ``identity`` block, so a kinematic-encoding job and a vocal job
-    that built it even slightly differently would make the identity flip depending on which ran last.
-
-    The vocal session set is derived here rather than passed in, so an array task applies the same gate
-    the cohort builder does, from the same definition. It governs ONLY what is scored on vocalizations:
-    every session stays in the rotation that screens, selects and fits on quiet anchors, because a
-    session the male barely vocalized in has MORE silence, not less.
+    Every dispatcher uses this one builder, because each section write stamps the record into the
+    unit's file as its ``identity`` block. The vocal session set is derived here with the cohort
+    builder's gate, and governs only what is scored on vocalizations.
 
     Parameters
     ----------

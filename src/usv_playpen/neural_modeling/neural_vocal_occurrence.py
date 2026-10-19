@@ -2,34 +2,16 @@
 @author: bartulem
 Vocal occurrence: does a unit's firing distinguish the window around a vocalization's onset from silence?
 
-The statistic is a leave-one-session-out transfer logistic, not a rank test. Positives are the unit's
-spike count in a window before each clean focal onset; negatives are the same-width count in QUIET tiles,
-using the kinematic encoding's quiet definition so one notion of silence serves the whole project. The model is a
-single SHARED slope across sessions with a per-session intercept, and the transfer is what makes it a
-test of the relationship rather than of a level: the slope is frozen for the held-out session and only
-its intercept is recalibrated, so a unit may sit at a different baseline there but its count-to-onset
-relationship must carry over.
+Positives are the unit's spike count in a peri-onset window around each clean onset of the recorded
+animal's USVs; negatives are same-width counts in quiet tiles, which share the kinematic encoding's
+definition of silence and are capped per session upstream. Counts are standardized per session against
+the quiet tiles. The statistic is the leave-one-session-out added deviance of a logistic with one shared,
+ridge-penalised slope and per-session intercepts: the slope is frozen for the held-out session and only
+its intercept is recalibrated. The null circularly shifts each session's spike train and recounts both
+classes.
 
-Three numerical choices are locked because each was arrived at the hard way.
-
-The slope is SHARED and the intercepts are per-session. A per-session slope quasi-separates and diverges
-on small sessions -- one 361-USV session sent it to 1e8 and wrecked the pooled score -- while
-per-session intercepts are needed to absorb rate drift between sessions.
-
-The predictor is standardized PER SESSION. An intercept shifts the linear predictor but cannot rescale
-it, so on raw counts one extra spike means very different evidence in a 10 Hz session than in a 30 Hz
-one, and no single shared slope can serve both. Standardizing expresses the count in SDs of the unit's
-own distribution within that session -- the count analogue of the per-session exposure offsets the vocalization-identity
-axis uses.
-
-Negatives are subsampled without importance weights. Logistic slopes are consistent under
-outcome-dependent sampling and the base-rate distortion is absorbed entirely by the intercept; weights
-would inflate the effective n and destabilize the fit.
-
-No amplitude calibration is applied here, and that asymmetry with the vocalization-identity axis is deliberate rather
-than an omission: because the predictor is already per-session standardized, scale is normalised
-upstream of the model. It was tested -- a scalar gain on the frozen slope, tuned by inner LOSO -- and
-bought nothing: 4 of 16 units improved, median delta exactly 0.000000, tuned gain 1.0 at the median.
+Exports: ``counts_in_windows``, ``quiet_tile_edges``, ``standardize_per_session``,
+``vocal_occurrence_statistic`` and ``vocal_occurrence_shift_null``.
 """
 
 from __future__ import annotations
@@ -51,8 +33,8 @@ def counts_in_windows(spike_seconds: np.ndarray, left_edges: np.ndarray, width: 
     -----------
     Spike count in each half-open window ``[left, left + width)``.
 
-    Uses two searchsorted lookups per window rather than binning to a raster: the windows here are 50 ms
-    against sessions of ~20 minutes, so a raster would be almost entirely empty.
+    Uses two searchsorted lookups per window rather than binning to a raster, since the windows are
+    short against the session and a raster would be almost entirely empty.
 
     Parameters
     ----------
@@ -83,13 +65,9 @@ def quiet_tile_edges(vocalization_starts: np.ndarray, vocalization_stops: np.nda
     Left edges of non-overlapping quiet tiles, tiled through the gaps between guard-banded USVs.
 
     The guard band is the kinematic encoding's quiet definition -- a USV forbids
-    ``[start - clean_post, stop + history_pre]`` -- applied to USVs from EVERY emitter, so a tile is
-    silent of the partner as well as the focal animal. Sharing the definition matters twice over: one
-    code path across the kinematic encoding, the vocal-occurrence negatives and the vocal-decoding baselines, and a forward guard that
-    makes the negative class "no USV for seconds" rather than merely "not during a USV".
-
-    Tiles are contiguous and non-overlapping within each gap, so no spike is counted twice, and a gap
-    shorter than one tile contributes nothing rather than a partial window of a different width.
+    ``[start - clean_post, stop + history_pre]`` -- applied to USVs from every emitter, so a tile is
+    silent of the partner as well as the recorded animal. Tiles are contiguous and
+    non-overlapping within each gap, and a gap shorter than one tile contributes nothing.
 
     Parameters
     ----------
@@ -100,13 +78,12 @@ def quiet_tile_edges(vocalization_starts: np.ndarray, vocalization_stops: np.nda
     duration (float)
         Session duration in seconds.
     width (float)
-        Tile width, which must equal the prevocal window width or the counts are not comparable.
+        Tile width; must equal the peri-onset window width so the counts are comparable.
     history_pre_seconds (float)
-        Guard after each USV's stop. The same number is the kinematic filter's length, which is why
-        it appears here: a quiet window shorter than the predictor history would admit a vocalization
-        into the history of a frame called silent.
+        Guard after each USV's stop; equal to the kinematic history length, so no vocalization falls
+        inside the history of a quiet tile.
     clean_post_seconds (float)
-        Guard before each USV's start.
+        Guard before each USV's start (the forward look).
 
     Returns
     -------
@@ -148,15 +125,9 @@ def standardize_per_session(counts: np.ndarray, session_index: np.ndarray, label
     -----------
     Express counts in SDs of the unit's own QUIET-tile distribution within each session.
 
-    Scaling from the negatives -- the quiet tiles -- rather than from all windows makes the predictor
-    read "SDs above this unit's resting variability in this session", and on a held-out session it uses
-    only that session's negative-class statistics, which is the same rate-calibration allowance already
-    granted by recalibrating the intercept.
-
-    ``sigma_floor`` guards a real failure, not a hypothetical one: a unit that is silent during quiet
-    tiles has zero SD there, and the unstandardized ratio produced z-values around 2e10 for exactly the
-    most vocal-exclusive units. The floor is calibrated rather than guessed -- across 240 unit-sessions
-    the quiet-tile SD has a median far above it, so it binds only in the degenerate case.
+    Scaling from the quiet tiles makes the predictor read "SDs above this unit's resting variability in
+    this session"; a session with no quiet tiles is scaled on all its windows. ``sigma_floor`` bounds
+    the SD from below, so a unit silent during quiet tiles does not produce unbounded values.
 
     Parameters
     ----------
@@ -165,7 +136,7 @@ def standardize_per_session(counts: np.ndarray, session_index: np.ndarray, label
     session_index (np.ndarray)
         Session id per window.
     labels (np.ndarray)
-        1 for a prevocal window, 0 for a quiet tile.
+        1 for a peri-onset window, 0 for a quiet tile.
     sigma_floor (float)
         Lower bound on the per-session SD.
 
@@ -174,7 +145,7 @@ def standardize_per_session(counts: np.ndarray, session_index: np.ndarray, label
     standardized (np.ndarray)
         Counts in per-session SD units.
     n_floored (int)
-        How many sessions hit the floor, recorded so a degenerate unit is visible rather than silent.
+        How many sessions hit the floor.
     """
 
     values = np.asarray(counts, dtype=np.float64).copy()
@@ -209,20 +180,16 @@ def vocal_occurrence_statistic(counts: np.ndarray, labels: np.ndarray, session_i
     score is the deviance that frozen slope explains over an intercept-only model of the same session,
     summed across folds.
 
-    The statistic is sign-free, so suppressed units compete on equal footing with elevated ones -- about
-    a fifth of responders are suppressed, and the sign is reported separately as a descriptor rather than
-    being built into the score.
-
-    The ridge scales with the training-set size (``ridge_fraction * n_train``) rather than being a fixed
-    small constant: a constant is roughly a thousand times too weak at ~50k rows, and the penalty exists
-    to stop separation blowups on near-silent units.
+    The statistic is sign-free, so suppressed and elevated units are treated alike; the sign is
+    reported separately as a descriptor. The slope ridge scales with the training-set size
+    (``ridge_fraction * n_train``) so that it keeps near-silent units from separating at any sample size.
 
     Parameters
     ----------
     counts (np.ndarray)
         Raw window counts, positives and quiet tiles together.
     labels (np.ndarray)
-        1 for a prevocal window, 0 for a quiet tile.
+        1 for a peri-onset window, 0 for a quiet tile.
     session_index (np.ndarray)
         Session id per window.
     ridge_fraction (float)
@@ -238,7 +205,7 @@ def vocal_occurrence_statistic(counts: np.ndarray, labels: np.ndarray, session_i
     -------
     result (dict)
         ``nats_per_window``, ``d2``, ``auroc``, ``slope``, ``response_sign``, ``n_floored_sessions``,
-        ``per_fold`` -- and ``n_windows``.
+        ``n_windows`` and ``per_fold``.
     """
 
     standardized, n_floored = standardize_per_session(counts, session_index, labels, sigma_floor)
@@ -295,21 +262,13 @@ def vocal_occurrence_shift_null(occurrence_windows: dict, spike_seconds: dict, d
     Null draws of the vocal-occurrence statistic: circularly shift each session's spike train, recount BOTH classes
     at the same window positions, and refit.
 
-    BOTH classes are recounted from the shifted train -- the prevocal windows AND the quiet tiles. Freezing
-    the tiles and shifting only the positives would be a different null, one that also moves the
-    negatives' rate and would call a unit's ordinary rate drift significant. What the shift breaks is
-    exactly the alignment of spikes to vocal onsets, which IS the vocal-occurrence question; the unit's bursting and
-    slow rate structure travel with the train, so they cannot manufacture significance.
+    Both classes are recounted from the shifted train, so the shift breaks only the alignment of spikes
+    to vocal onsets while the unit's bursting and slow rate structure travel with it.
+    Each session is shifted independently, by an amount drawn uniformly from ``shift_range_seconds``,
+    and the shifted times wrap around the session.
 
-    Each session is shifted independently, by an amount drawn uniformly from the shared
-    ``shift_range_seconds`` range, and the shifted times wrap around the session.
-
-    Promoted into the package from the scratchpad driver that produced the pilot vocal-occurrence nulls, with ONE
-    change: each draw now has its own generator, seeded ``seed + start + draw``. The driver drew every shift
-    from one sequential generator, which cannot be split across workers or topped up by the escalation
-    ladder without changing earlier draws. With per-draw seeds, draws ``[start, start + n_draws)`` are the
-    same values however the range is partitioned -- the same convention as ``permutation_null`` and the nested
-    decoding's ``posterior_nested_null_chunk``.
+    Each draw has its own generator, seeded ``seed + start + draw``, so draws ``[start, start + n_draws)``
+    are the same however the range is partitioned across workers.
 
     Parameters
     ----------

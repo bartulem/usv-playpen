@@ -1,36 +1,19 @@
 """
 @author: bartulem
-Vocalization identity: does a unit's firing around a USV's onset carry information about WHICH USV it is?
+Vocalization identity: does a unit's firing around a USV's onset carry information about which USV it is?
 
-The target is the upcoming USV's position on the QLVM torus, and the decoder is a Bayesian inversion of
-a per-unit Poisson tuning surface: fit ``lambda(x)`` on the training sessions' events, then for a
-held-out event invert it against an occupancy prior to get a posterior density over the torus, and read
-that density at the USV's true position. The statistic is the GAIN -- how much better that posterior is
-than the prior alone -- in nats per event, which is a cross-validated estimate of mutual information.
+The target is the USV's position on the QLVM torus. The decoder is a Bayesian inversion of a per-unit
+Poisson tuning surface: ``lambda(x)`` is fitted on the training sessions' events (Fourier k=2 basis,
+per-session exposure offsets, ridge set as a fraction of the training spike count), and for each
+held-out event it is inverted against a kernel occupancy prior to give a posterior density over the
+torus. The statistic is the gain, the log posterior minus the log prior at the USV's true position, in
+nats per event. A non-negative amplitude calibration, tuned by inner leave-one-session-out on the
+training sessions, scales the depth of the surface.
 
-Bayesian inversion rather than a regression from count to position because it composes: the same
-per-unit surfaces multiply together for a population decode, which is where this is eventually going.
-
-Four things are locked, each after a measurement that is worth not repeating.
-
-The likelihood is Poisson on RAW counts with per-session exposure offsets. A Gaussian on z-scored counts
-is not a count likelihood and lost the bake-off on both currencies, missing one unit entirely.
-
-The tuning basis is Fourier k=2. A local bump basis wins on strong units by ~10% but HALVES the faintest
-unit's gain, and passes are decided at the faint margin. The bump gain is still computed as a persisted
-descriptor so the question stays answerable.
-
-The ridge is ``0.02 x total training spike count``, fixed. Scale-free, because the ridge competes with a
-data term whose Fisher weight is the training spike count, so the same number means the same thing for
-every unit and window. Nested per-unit selection costs ~6x the compute for no gain and its inner
-criterion chases amplitude shrinkage.
-
-An amplitude calibration is applied and is NOT optional. Exposure offsets fix the mean of ``lambda`` but
-leave its modulation DEPTH free, and because the score is a strictly proper log density, a surface
-carried into a session at the wrong amplitude is punished hard enough to drive the gain negative while
-the map still points the right way. A scalar ``alpha >= 0`` multiplies the surface's shape, tuned on the
-TRAINING sessions by inner LOSO. The non-negativity is load-bearing: the decoder may temper its
-confidence but can never invert a reversed map.
+Exports the bases (:func:`fourier_basis`, :func:`bump_basis`), the fold context
+(:func:`decoding_context`, :func:`basis_context`), the fit and scorer (:func:`poisson_tuning_fit`,
+:func:`score_events`, :func:`tuned_amplitude`), the statistic :func:`decode_gain`, and the descriptors
+(:func:`bump_basis_gain`, :func:`left_tail_anti_alignment`, :func:`flagged_descriptors`).
 """
 
 from __future__ import annotations
@@ -44,8 +27,8 @@ from ..modeling.manifold_metric import signed_diff
 from ..modeling.modeling_torus_geodesics import torus_grid as flat_torus_grid
 from .deviance_metrics import finite_mean, finite_min
 
-#: The tuning bases the decoder implements. Fourier k=2 is the ruled default; the local
-#: bump basis is retained because its per-unit gain is a persisted robustness descriptor.
+#: The tuning bases the decoder implements. Fourier is the shipped default; the local bump basis
+#: is kept because its per-unit gain is recorded as a robustness descriptor.
 TUNING_BASES = frozenset({"fourier", "bumps"})
 
 
@@ -55,13 +38,8 @@ def wrapped_square_distance(points: np.ndarray, nodes: np.ndarray, period: float
     -----------
     Squared distance on the flat torus, taking the shorter way round in each dimension.
 
-    The QLVM space is periodic, so a point at 0.98 and one at 0.02 are 0.04 apart, not 0.96. Every
-    distance in this module goes through here for that reason.
-
-    The wrapping itself is delegated to ``manifold_metric.signed_diff``, which is the project's one
-    wrapping convention -- the geodesic machinery routes through it for the same reason. What this adds is
-    the CROSS-SET shape: the existing helpers give pairwise distances within a single point cloud, while
-    every use here is events against grid cells or against basis nodes.
+    The wrapping is delegated to ``manifold_metric.signed_diff``; this adds the cross-set shape
+    (events against grid cells or basis nodes).
 
     Parameters
     ----------
@@ -90,9 +68,8 @@ def fourier_basis(positions: np.ndarray, k_max: int, period: float) -> np.ndarra
     -----------
     Global periodic basis on the torus: harmonics in each dimension plus the two diagonal terms.
 
-    Periodic by construction, so a surface fitted with it cannot have a seam at the wrap. At ``k_max=2``
-    this is 12 columns -- few enough to defend and to make a permutation null cheap, and broad enough
-    that a faint unit's surface is not shredded across many parameters.
+    Periodic by construction, so the fitted surface has no seam at the wrap. At ``k_max=2`` this is
+    12 columns.
 
     Parameters
     ----------
@@ -125,9 +102,7 @@ def bump_nodes(train_positions: np.ndarray, grid_n: int, sigma: float,
     -----------
     Node centres for a local bump basis, kept only where training events actually live.
 
-    The occupancy gate is what stops a local basis inventing tuning in empty regions of the torus: a node
-    with no events near it has nothing to constrain its weight, and an ungated basis would extrapolate
-    there.
+    The occupancy gate stops the basis placing unconstrained weights in empty regions of the torus.
 
     Parameters
     ----------
@@ -160,8 +135,7 @@ def bump_basis(positions: np.ndarray, nodes: np.ndarray, sigma: float, period: f
     -----------
     Local wrapped-Gaussian basis: one column per node.
 
-    Retained as the ruled-out alternative to Fourier, because its per-unit gain is persisted as a
-    robustness descriptor.
+    The alternative to the Fourier basis; its per-unit gain is recorded as a robustness descriptor.
 
     Parameters
     ----------
@@ -190,10 +164,8 @@ def torus_occupancy(train_positions: np.ndarray, grid_positions: np.ndarray,
     -----------
     Wrapped-Gaussian kernel occupancy of the training events over a grid.
 
-    This is the decoder's prior and also its mask. Note the occupancy is a KDE-WEIGHTED sum, so a cell
-    can clear a threshold of 1.0 while containing no training USV at all -- two USVs one bandwidth away
-    sum to 1.21. That is a real property of the mask and is reported rather than presented as a
-    conservative count.
+    This is the decoder's prior and also its mask. The occupancy is a kernel-weighted sum, so a cell
+    can clear a threshold of 1.0 without containing a training USV.
 
     Parameters
     ----------
@@ -222,9 +194,8 @@ def torus_grid(grid_n: int, period: float) -> tuple[np.ndarray, float]:
     -----------
     Cell centres of a regular ``grid_n x grid_n`` grid on the torus, and the area of one cell.
 
-    The centres come from the geodesic module's grid so the decode grid and the geodesic node set are the
-    same points; what is added here is the cell AREA, which turns a summed posterior into a density, so
-    the gain is in nats per event rather than per cell and does not move when the grid is refined.
+    The centres come from the geodesic module's grid. The cell area turns a summed posterior into a
+    density, so the gain does not depend on the grid resolution.
 
     Parameters
     ----------
@@ -252,14 +223,10 @@ def poisson_tuning_fit(basis: np.ndarray, counts: np.ndarray, ridge: float, n_st
     Poisson GLM with a log link, fitted by IRLS, with an unpenalized intercept and a fixed exposure
     offset.
 
-    The intercept carries the unit's overall rate and must stay free; penalizing it would push rate
-    differences into the surface's shape, which is the part being tested. The linear predictor is clipped
-    before exponentiating so a sparse unit cannot produce an overflow on the way to a near-zero rate.
-
-    The offset enters the linear predictor but not the working response, which is what makes it an
-    EXPOSURE rather than a covariate: it shifts each session's expected rate by a known amount and is not
-    fitted. Supplying per-session offsets is what stops session rate drift being absorbed into the
-    surface as if it were position tuning.
+    The intercept carries the unit's overall rate and is not penalized, so rate differences are not
+    pushed into the surface's shape. The offset enters the linear predictor but not the working
+    response, so it is an exposure rather than a fitted covariate. The linear predictor is clipped
+    before exponentiating to avoid overflow.
 
     Parameters
     ----------
@@ -308,14 +275,9 @@ def session_exposure_offsets(counts: np.ndarray, session_index: np.ndarray) -> n
     -----------
     Per-session Poisson exposure offsets: each event gets ``log`` of its own session's mean count.
 
-    This is the count-likelihood analogue of per-session z-scoring, and it is not cosmetic. A unit's
-    prevocal rate can more than double across a day's sessions, and a tuning surface fitted on pooled raw
-    counts with a single intercept absorbs that drift as if it were position tuning -- session rate leaks
-    into ``lambda(x)`` and reads as content. With the offsets in place, position explains only WITHIN-
-    session variation.
-
-    The floor at 1e-3 keeps a session in which the unit never fired from sending the offset to negative
-    infinity.
+    With the offsets in place, position explains only within-session variation, so drift in the
+    unit's rate across sessions is not read as tuning. The floor at 1e-3 keeps a session without
+    spikes from sending the offset to negative infinity.
 
     Parameters
     ----------
@@ -344,24 +306,14 @@ def decoding_context(positions: np.ndarray, session_index: np.ndarray, settings:
     -----------
     Precompute everything about a unit's LOSO folds that does NOT depend on spike counts.
 
-    The bases, the kernel occupancy, the masked log-prior and the truth-cell indices are functions of the
-    positions and the configuration alone, so they are identical for the observed fit and for every
-    permutation draw. Building them once is what makes an exact permutation null affordable; rebuilding
-    them per draw would repeat the KDE thousands of times.
+    The bases, kernel occupancy, masked log-prior and truth cells depend only on positions and
+    configuration, so they are built once and shared by the observed fit and every permutation draw.
+    The basis and truth cells are stored for all events, because a draw re-pairs counts with
+    positions; the prior and mask stay built from the real training positions. Each fold also carries
+    the inner leave-one-session-out splits used to tune the amplitude calibration.
 
-    The basis and truth cells are stored for ALL events, not only the fold's own, because a permutation
-    re-pairs counts with positions and the scoring then has to index them in the permuted order. The
-    prior, the mask and the occupancy stay built from the REAL training positions: the null destroys the
-    count-to-position pairing and nothing else, so the geometry an event is scored against must not move
-    with the draw.
-
-    Each fold also carries the inner leave-one-session-out splits over its own training sessions, which
-    is where the amplitude calibration is tuned. They are index sets rather than a nested context, so the
-    inner scoring reuses this fold's prior instead of rebuilding a KDE per draw.
-
-    The occupancy mask is a DECODE-TIME GATE, not a display convention: it stops the posterior placing
-    mass where no training USV ever occurred. Events whose true position falls in a masked cell are
-    excluded and counted, never silently scored.
+    The occupancy mask is a decode-time gate: the posterior places no mass where no training USV
+    occurred, and events whose true position is masked are excluded and counted.
 
     Parameters
     ----------
@@ -372,9 +324,8 @@ def decoding_context(positions: np.ndarray, session_index: np.ndarray, settings:
     settings (dict)
         The ``vocal_decoding`` block; ``tuning_surface`` supplies grid, bandwidth, basis and mask knobs.
     period (float)
-        Per-axis wrap period of the torus, ``vocalization_settings.torus_period`` -- the one value every
-        analysis of the manifold reads. It is stored on each fold (``period``) so the scorer wraps and
-        decodes with the same period the geometry was built with.
+        Per-axis wrap period of the torus (``vocalization_settings.torus_period``). It is stored on
+        each fold so the scorer uses the period the geometry was built with.
 
     Returns
     -------
@@ -383,10 +334,8 @@ def decoding_context(positions: np.ndarray, session_index: np.ndarray, settings:
     """
 
     surface = settings["tuning_surface"]
-    # An UNVALIDATED basis name is worse than an unsupported one here, because the branch is
-    # `fourier or else`: every other string -- a typo, or simply "FOURIER" -- silently selected the
-    # BUMP basis, i.e. the opposite of what was written. Its sibling knobs (`likelihood_family`,
-    # `ridge_selection.mode`) are both guarded; this one was not.
+    # The basis branch below is `fourier or else`, so an unknown name must fail here rather than
+    # silently select the bump basis.
     if surface["tuning_basis"] not in TUNING_BASES:
         msg = (f"tuning_basis must be one of {sorted(TUNING_BASES)}; got "
                f"{surface['tuning_basis']!r}.")
@@ -395,8 +344,7 @@ def decoding_context(positions: np.ndarray, session_index: np.ndarray, settings:
     grid_n = surface["grid_n"]
     sessions = np.unique(session_index)
     if sessions.size < 2:
-        # leave-one-session-out needs something to leave in; a one-session unit would build a fold with
-        # an empty training set and fail deep inside the solver instead of here
+        # leave-one-session-out needs at least one training session per fold
         msg = f"the decoder needs at least two sessions; got {sessions.size}."
         raise ValueError(msg)
     rows_by_session = {int(s): np.flatnonzero(session_index == s) for s in sessions}
@@ -424,9 +372,8 @@ def decoding_context(positions: np.ndarray, session_index: np.ndarray, settings:
         occupancy = torus_occupancy(train_positions, grid_positions, surface["kde_bandwidth"], period)
         prior = occupancy / (occupancy.sum() * cell_area)
         mask = occupancy >= surface["decode_grid_min_occupancy"]
-        # A mask that excludes the whole grid leaves nothing to normalise. It cannot arise from the
-        # shipped threshold, but a caller sweeping the mask can reach it, and dividing by zero here
-        # would emit a NaN prior that then silently poisons every score rather than failing.
+        # A mask that excludes the whole grid leaves nothing to normalise; skip the division
+        # rather than emit a NaN prior.
         masked_prior = np.where(mask, prior, 0.0)
         total = float(masked_prior.sum())
         masked_prior = masked_prior / (total * cell_area) if total > 0.0 else masked_prior
@@ -458,9 +405,8 @@ def surface_rate(beta: np.ndarray, fold: dict, alpha: float, scored_counts: np.n
     surface SHAPE centred on its occupancy-prior-weighted mean and scaled by ``alpha``, plus the LEVEL
     read from the scored session's own mean count.
 
-    This is the single definition of the predicted rate. :func:`score_events` builds the posterior from
-    it, and the overdispersion diagnostic reads each event's expected count off it at the event's own
-    cell, so the diagnostic measures the dispersion of the very rates the decoder used.
+    This is the single definition of the predicted rate, used by :func:`score_events` and by the
+    overdispersion diagnostic.
 
     Parameters
     ----------
@@ -480,8 +426,8 @@ def surface_rate(beta: np.ndarray, fold: dict, alpha: float, scored_counts: np.n
     """
 
     shape = fold["grid_basis"] @ beta[:-1]
-    # the shape is centred on the fold's OCCUPANCY prior whichever prior the posterior uses: the centre
-    # is a property of the surface (it fixes what `alpha` scales), not of what is being conditioned on
+    # centred on the occupancy prior whichever prior the posterior uses: the centre fixes what
+    # `alpha` scales
     weights = fold["masked_prior"] * fold["cell_area"]
     centre = float(np.sum(shape * weights) / max(float(np.sum(weights)), 1e-12))
     level = np.log(max(float(np.mean(scored_counts)), 1e-3))
@@ -496,26 +442,14 @@ def score_events(beta: np.ndarray, rows: np.ndarray, counts: np.ndarray, fold: d
     -----------
     Per-event decode gain -- log posterior minus log prior at the event's true position, in nats.
 
-    THE PRIOR IS THE ONE PLACE THIS FUNCTION CAN BE CONDITIONED. By default every event in the fold
-    shares the fold's occupancy prior, and the gain is the vocalization-identity statistic: what the
-    neuron adds over where USVs generally sit. Given ``log_prior_events`` -- one log-density per event,
-    here a von Mises around the behaviour control's prediction for that event -- the same posterior is
-    formed against THAT prior and the gain becomes what the neuron adds beyond behaviour. Nothing
-    else changes: surface, amplitude, exposure, mask and grid are identical, which is what makes the
-    nested statistic identity's statistic under a different prior rather than a second method.
+    By default every event shares the fold's occupancy prior and the gain is the vocalization-identity
+    statistic. Given ``log_prior_events`` (a per-event prior, such as a von Mises around the behaviour
+    control's prediction), the same posterior is formed against that prior and the gain becomes what the
+    neuron adds beyond it; nothing else changes.
 
-    The surface is decomposed into SHAPE and LEVEL before ``alpha`` is applied, which is the whole point
-    of the calibration. The shape is centred on its PRIOR-WEIGHTED mean, so scaling it by ``alpha``
-    changes the modulation depth and leaves the average height alone; the level is then supplied by the
-    scored session's own mean count. Without the centring, ``alpha`` would rescale the offset as well and
-    fight the exposure term it is meant to complement.
-
-    The level being read from the scored session is a rate calibration carrying no position information
-    whatever -- it is one number, the session's mean count -- and is the exact analogue of recalibrating
-    a held-out intercept on the vocal-occurrence axis.
-
-    Events whose true position lies in a masked cell return NaN, so they are excluded from the mean
-    rather than scored against a prior of zero.
+    The surface is split into a shape, centred on its prior-weighted mean and scaled by ``alpha``, and
+    a level, read from the scored session's own mean count (a single number with no position
+    information). Events whose true position is masked return NaN.
 
     Parameters
     ----------
@@ -532,14 +466,12 @@ def score_events(beta: np.ndarray, rows: np.ndarray, counts: np.ndarray, fold: d
     alpha (float)
         Amplitude scaling of the surface shape; ``>= 0``.
     with_detail (bool)
-        Also return the per-event decode error, posterior entropy and decoded position. Read off the
-        posterior already built, so free here -- but this function runs inside every permutation
-        draw, so the detail is taken only on the observed pass.
+        Also return the per-event decode error, posterior entropy and decoded position. Taken on the
+        observed pass only.
     log_prior_events (np.ndarray)
         ``(n_events, n_cells)`` log prior density per event over the fold's grid, already masked and
         normalised, indexed in the order counts are paired with; or None for the fold's shared
-        occupancy prior. The gain is always measured against the prior the posterior was formed
-        with, so passing a conditioned prior measures what the neuron adds BEYOND it.
+        occupancy prior. The gain is measured against the prior the posterior was formed with.
 
     Returns
     -------
@@ -574,9 +506,7 @@ def score_events(beta: np.ndarray, rows: np.ndarray, counts: np.ndarray, fold: d
     if not with_detail:
         return gains
 
-    # Everything below is read off the posterior that has ALREADY been built, so it is free here and
-    # ruinous anywhere else -- this function runs inside every permutation draw, which is why the
-    # detail is opt-in and taken only on the observed pass.
+    # Detail is read off the posterior already built; opt-in because this runs inside every draw.
     period = fold["period"]
     mass = density * fold["cell_area"]
     angles = 2.0 * np.pi * fold["grid_positions"] / period
@@ -602,23 +532,13 @@ def tuned_amplitude(counts: np.ndarray, fold: dict, basis: np.ndarray, truth_cel
     -----------
     Choose this fold's amplitude scaling on its TRAINING sessions alone, by inner leave-one-session-out.
 
-    The training sessions are rotated among themselves; for every candidate alpha the surface fitted on
-    the inner training set is scored on the held-in session, and the alpha with the best mean is kept for
-    the outer held-out session. No held-out information enters at any point, and the identical procedure
-    runs inside every permutation draw, so the extra parameter buys the null exactly what it buys the
-    observed value.
+    The training sessions are rotated among themselves; each candidate alpha is scored on the inner
+    held-in session, and the best mean is kept. The same procedure runs inside every permutation draw,
+    so the extra parameter gives the observed value no advantage over the null. The inner scoring
+    reuses the outer fold's prior and mask.
 
-    The inner scoring reuses the OUTER fold's prior and mask rather than rebuilding a KDE per inner
-    split. That is deliberate and load-bearing for cost: the geometry is a function of positions and
-    configuration only, and rebuilding it per draw would repeat the expensive part of the pipeline
-    thousands of times for a quantity that does not change.
-
-    A unit with fewer than three sessions has no inner rotation to tune on, and falls back to the grid
-    point nearest 1.0 -- the uncalibrated surface -- rather than tuning on data it does not have.
-
-    The grid floor matters and must not be lowered. Allowed below 0.10, null units select 0.01-0.025 and
-    the positive-gain count FALLS, because the inner criterion overfits the held-in fold. The floor
-    regularizes the calibration itself.
+    A unit with fewer than three sessions has no inner rotation and falls back to the grid point
+    nearest 1.0. The grid floor of 0.1 regularizes the calibration itself.
 
     Parameters
     ----------
@@ -640,8 +560,7 @@ def tuned_amplitude(counts: np.ndarray, fold: dict, basis: np.ndarray, truth_cel
         Whether the inner fits carry per-session exposure offsets; must match the outer fit.
     log_prior_events (np.ndarray)
         Per-event log prior in the same order as ``basis``, or None for the fold's occupancy prior.
-        The calibration is tuned under the SAME prior the statistic is scored with, so a conditioned
-        statistic gets an amplitude chosen for it rather than one borrowed from the unconditioned one.
+        The calibration is tuned under the same prior the statistic is scored with.
 
     Returns
     -------
@@ -681,21 +600,15 @@ def decode_gain(counts: np.ndarray, folds: list, settings: dict,
     The frozen vocalization-identity statistic: mean held-out decode gain in nats per event, with everything the
     configuration fixes applied in one pass.
 
-    Per outer fold the ridge is set from that fold's own training spike total, the amplitude is tuned by
-    inner leave-one-session-out on the training sessions alone, the surface is refitted with per-session
-    exposure offsets, and the held-out session's events are scored. The IDENTICAL procedure runs on a
-    permuted draw, which is what keeps the exact permutation test exact: any advantage the fitting gives
-    the observed value it gives the null too.
-
-    The gain is the effect size, not merely a test statistic -- it is how much this unit contributes to
-    decoding a given USV. A pass requires it to be positive AND the permutation p to be small, because a
-    statistic that gains significance by tightening its null rather than by predicting better does not
-    qualify.
+    Per outer fold the ridge is set from that fold's training spike total, the amplitude is tuned by
+    inner leave-one-session-out, the surface is refitted with per-session exposure offsets, and the
+    held-out session's events are scored. The identical procedure runs on every permuted draw. The
+    gain is also the effect size; the pass rule is applied at the cohort step.
 
     Parameters
     ----------
     counts (np.ndarray)
-        Spike count per event; NOT permuted -- the draw re-pairs positions, leaving counts in place.
+        Spike count per event; not permuted (a draw re-pairs positions, leaving counts in place).
     folds (list)
         From :func:`decoding_context`.
     settings (dict)
@@ -704,14 +617,11 @@ def decode_gain(counts: np.ndarray, folds: list, settings: dict,
         Event reordering applied to positions (basis rows and truth cells), or None for the observed fit.
     with_detail (bool)
         Also collect the per-event gain, decode error, posterior entropy and the overdispersion index.
-        Read off quantities already computed, but this function IS the permutation draw, so the detail
-        is taken once on the observed pass and never inside the null.
+        Taken on the observed pass only.
     log_prior_events (list)
         One ``(n_events, n_cells)`` per-event log prior per fold, in the folds' order and in the
-        UNPERMUTED event order, or None for each fold's occupancy prior. A prior row belongs to its
-        event's POSITION, so under a permutation draw it is reordered exactly as the positions are
-        and the conditioning it carries stays attached to the right USV; only the neuron's pairing
-        moves. This is how the nested statistic shares this function, and its null, with identity.
+        unpermuted event order, or None for each fold's occupancy prior. A prior row belongs to its
+        event's position, so under a draw it is reordered with the positions.
 
     Returns
     -------
@@ -745,8 +655,7 @@ def decode_gain(counts: np.ndarray, folds: list, settings: dict,
     alpha_grid = ([float(a) for a in calibration["alpha_grid"]]
                   if calibration["enabled"] else [1.0])
     if min(alpha_grid) < calibration["alpha_min"]:
-        # a negative amplitude would let the decoder INVERT a reversed map rather than decline to use
-        # it, which is the one thing the calibration must never be able to do
+        # a negative amplitude would let the decoder invert a reversed map
         msg = (f"alpha_grid contains {min(alpha_grid)}, below alpha_min "
                f"{calibration['alpha_min']}.")
         raise ValueError(msg)
@@ -761,7 +670,7 @@ def decode_gain(counts: np.ndarray, folds: list, settings: dict,
     for fold_index, fold in enumerate(folds):
         basis = fold["event_basis"][order]
         truth_cell = fold["truth_cell"][order]
-        # the prior row travels with its POSITION under a draw, never with the count
+        # the prior row travels with its position under a draw, never with the count
         prior = (None if log_prior_events is None
                  else np.asarray(log_prior_events[fold_index])[order])
         train_rows, test_rows = fold["train_rows"], fold["test_rows"]
@@ -779,12 +688,8 @@ def decode_gain(counts: np.ndarray, folds: list, settings: dict,
             calibrated[test_rows] = fold_gains
             decode_error[test_rows] = fold_detail["decode_error"]
             posterior_entropy[test_rows] = fold_detail["posterior_entropy"]
-            # the fitted surface's Pearson dispersion on the held-out counts: a diagnostic on whether
-            # the Poisson likelihood is defensible for THIS unit, which nothing else reports. Each
-            # event's expected count is the calibrated rate the decoder scored it with -- the same
-            # centred shape, alpha and session level -- read at the event's own cell, so an untuned
-            # Poisson unit gives ~1. (It used to compare every count with the grid average of the
-            # uncentred, level-free surface, which reported var + (mean - 1)^2 for such a unit.)
+            # Pearson dispersion of the held-out counts around the calibrated rate at each event's
+            # cell: a check on the Poisson likelihood (about 1 for an untuned Poisson unit)
             expected = surface_rate(beta, fold, alpha, counts[test_rows])[truth_cell[test_rows]]
             dispersion.append(float(np.mean((counts[test_rows] - expected) ** 2
                                             / np.clip(expected, 1e-9, None))))
@@ -801,15 +706,12 @@ def decode_gain(counts: np.ndarray, folds: list, settings: dict,
                          "gain": finite_mean(calibrated[test_rows])})
 
     gain = finite_mean(calibrated)
-    # Nats per spike over the SCORED events only: the summed gain of the events with a finite gain
-    # divided by the spikes those same events carry. Multiplying the mean gain over finite events by
-    # the count of ALL events mis-scaled it whenever events were masked.
+    # Nats per spike over the scored events only: their summed gain over their spikes.
     scored = np.isfinite(calibrated)
     scored_spikes = float(counts[scored].sum())
 
-    # The pooled mean is a summary of n fold values, and the failure it can hide is one session
-    # carrying the whole result. Dropping each fold in turn and taking the WORST pooled mean answers
-    # that directly; it costs nothing, needs no threshold, and is a descriptor rather than a gate.
+    # The worst pooled mean with any one fold dropped: a descriptor of whether one session carries
+    # the result.
     dropped = []
     for fold in folds:
         rest = np.setdiff1d(np.arange(counts.size), fold["test_rows"], assume_unique=False)
@@ -840,20 +742,9 @@ def bump_basis_gain(counts: np.ndarray, positions: np.ndarray, session_index: np
     -----------
     Refit the whole decoder under the LOCAL bump basis and return its gain.
 
-    Fourier k=2 is the shipped basis and the ruling behind it is not reopened here: the 100-node bump
-    basis wins by about 10% on strong units, where it resolves real fine structure, but HALVES the
-    faintest unit's gain because 100 parameters overfit a whisper -- and passes are decided at the
-    faint margin, not at the strong end. It is also roughly twice the cost inside a permutation null.
-
-    So the bump fit is kept as a persisted DESCRIPTOR rather than an alternative result. Recording it
-    per unit means the local-basis question stays answerable from a completed cohort run instead of
-    requiring the cohort to be run again, which is the whole point of the save-everything principle.
-
-    It is taken on the OBSERVED pass only. Nothing about the permutation null involves it, so it costs
-    one extra fit per unit rather than one per draw.
-
-    The basis is chosen inside :func:`decoding_context`, not at scoring time, so this needs its own
-    context rather than a second pass over the Fourier one.
+    A robustness descriptor, taken on the observed pass only, so the local-basis comparison can be
+    made from a completed run. The basis is chosen inside :func:`decoding_context`, so
+    this builds its own context.
 
     Parameters
     ----------
@@ -885,17 +776,9 @@ def basis_context(positions: np.ndarray, session_index: np.ndarray, settings: di
     -----------
     Build the LOSO folds for one tuning basis and return them with a scorer bound to them.
 
-    Two callers need this and they need different halves. A descriptor only wants the observed gain,
-    so it takes the scorer and calls it once. A permutation null wants the SAME folds reused across
-    every draw -- rebuilding the KDE and the basis per draw is what makes an exact null unaffordable --
-    so it takes the folds and drives :func:`decode_gain` itself.
-
-    Returning both is what lets the bump basis be TESTED rather than merely ranked. Without it the
-    bump gain is a bare number with no null behind it, which answers "which basis gives larger
-    values" but not "which basis detects more units" -- and passes are decided at the faint margin,
-    so detection is the question that matters.
-
-    The caller's settings are never mutated; the basis override is applied to a deep copy.
+    A descriptor uses the scorer once; a permutation null reuses the folds across draws and drives
+    :func:`decode_gain` itself, so the bump basis can be tested against its own null. The basis
+    override is applied to a deep copy of the settings.
 
     Parameters
     ----------
@@ -938,14 +821,9 @@ def left_tail_anti_alignment(null: np.ndarray, observed: float) -> dict:
     -----------
     The LEFT tail of the permutation null: is this unit significantly ANTI-aligned?
 
-    A unit can decode reliably backwards -- its surface points the wrong way about the torus more
-    consistently than chance allows. That is a real and interesting property (cl0235 is the recorded
-    case), and it is emphatically NOT a pass: the pass rule requires a POSITIVE gain, because a
-    statistic that is extreme in the wrong direction has not predicted anything.
-
-    Recording it costs nothing, since the null array is already in hand, and it is the descriptor that
-    distinguishes "this unit carries no content" from "this unit carries content the decoder is
-    reading inverted" -- two very different findings that a one-sided p alone reports identically.
+    A unit can decode reliably backwards, its surface pointing the wrong way more consistently than
+    chance allows. This is recorded as a descriptor, never a pass, and separates a unit with no
+    content from one whose content the decoder reads inverted.
 
     Parameters
     ----------
@@ -976,8 +854,8 @@ def flagged_descriptors(counts: np.ndarray, positions: np.ndarray, session_index
     -----------
     Compute the vocalization-identity descriptors the settings ask to record, honouring each flag.
 
-    The three ``record_*`` flags named real quantities the plan rules should be persisted, and read
-    nothing -- so a run could declare them true and record none of them. This is where they are read.
+    Reads the ``record_bump_basis_gain`` and ``record_left_tail_anti_alignment`` flags; the
+    overdispersion flag is read in :func:`decode_gain`.
 
     Parameters
     ----------

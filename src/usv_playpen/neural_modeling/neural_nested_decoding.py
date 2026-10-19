@@ -1,58 +1,23 @@
 """
 @author: bartulem
-Nested vocal-manifold position decoding: does a neuron carry vocal output type BEYOND the behaviour that
-predicts it?
+Nested vocal-manifold position decoding: does a neuron carry vocal output type beyond the behaviour
+that predicts it?
 
-Two nested models of the same target, the upcoming USV's position on the QLVM torus, differing in
-exactly the neuron:
+Two nested models of the same target, the upcoming USV's position on the QLVM torus, differ in exactly
+the neuron (reduced: behaviour; full: behaviour plus the neuron's spike count in the USV's window), and
+the statistic is what the neuron adds, held out. A unit whose spiking is a function of the measured
+behaviour adds nothing; a unit that adds something carries information beyond the measured behaviour.
 
-    reduced:  behaviour
-    full:     behaviour + the neuron's window count
+The tested statistic is the posterior form (:func:`posterior_nested_gain`): the vocalization-identity
+Bayes decoder with the behaviour control entering as the prior, a von Mises around the control's
+predicted position multiplied into the occupancy prior (:func:`behaviour_prior_log_density`). The
+point-regression form (:func:`nested_scores`, :class:`NestedTorusRegression`) is kept as a
+fine-position descriptor and is never a route to passing.
 
-and the statistic is what the neuron ADDS, held out, full minus reduced. A PURE RELAY, whose spiking
-is a function of the behaviour, adds nothing the behaviour did not already carry and fails. A unit
-that adds something passes -- and what it adds is either genuinely internal, or behaviour that was
-not measured. This test cannot separate those two, which is why the paper says "beyond MEASURED
-behaviour" rather than "computes the transformation", and why measuring behaviour more completely
-makes this test STRONGER rather than weaker.
-
-THE TESTED STATISTIC IS THE POSTERIOR FORM (ruled 2026-10-12): identity's own Bayes decoder with the
-behaviour control entering as the PRIOR -- a von Mises on the torus grid around the control's predicted
-position, with a concentration fitted on training events -- so ``added`` is log posterior(truth |
-neuron, behaviour) minus log prior(truth | behaviour), in nats per event. Identity's gain is the same
-quantity under the unconditioned occupancy prior, which makes the two claims one statistic under two
-priors. The reason is measured, not aesthetic: cl0401, whose counts run 3.4 to 5.7 across the four
-acoustic regions and decode +0.049 nats/event categorically, added NOTHING (-0.012) to the earlier
-point-regression form, because "probably this region" can reweight a distribution but cannot move a
-single predicted point without spreading it, and a concentration-fitting score punishes the spread.
-The regression form is RETAINED as a fine-position DESCRIPTOR (``point_regression`` in the section),
-never a route to passing.
-
-The point-regression form, for the record: ``reduced`` is the control's predicted position as four
-sine/cosine columns, ``full`` adds the neuron's z-scored count as one column, both fit by the torus
-ridge regression and scored by the macro von Mises log-score. Its asymmetry was deliberate and ran
-conservative -- the neuron earns its place as ONE column -- and its cost was power, not validity:
-contribution that is nonlinear in the count cannot be expressed. The posterior form removes that
-limitation for coarse tuning; the transformation count remains a lower bound.
-
-Three things are settled and should not be re-derived.
-
-The reduced model is P1's SELECTED five features, not all nineteen. The selection MEASURED that the
-other fourteen add no position information, and replacing a measurement with an assumption is the
-wrong direction. Its `final_model_features` is read from P1's own result file and asserted against
-the frozen list in settings, so a re-run of P1 fails loudly here instead of silently redefining what
-the neuron is measured against, after the counts are banked.
-
-It is scored under MACRO von Mises -- the objective the control was SELECTED under. Micro would leave
-the control mildly suboptimal for the test (its first-selected feature, `self.neck_elevation`, HURTS
-the micro score), which biases the test toward passing: the wrong direction for a positive result.
-
-The neuron enters as a spike COUNT, not 600 lags of binary train. A 4 s spike history spans ~20 prior
-USVs at the 195 ms median inter-USV interval, so it is largely the neuron's RESPONSES to earlier
-USVs -- and since USVs within a bout correlate in type, the test would pass on bout structure. The
-behaviour block has the same 4 s window and the same bout structure, and that is accepted there
-because behaviour is the CONTROL: a longer window makes it stronger and the test harder. The neuron
-is the TESTED predictor, so its window is kept short.
+The behaviour control's features are read from the cohort selection result and checked against the
+frozen list in settings (:func:`reduced_model_features`). Scoring uses the macro von Mises log-score.
+The neuron enters as one per-session z-scored count rather than a lagged spike history, so the test
+cannot pass on the neuron's responses to earlier USVs in the bout.
 """
 
 from __future__ import annotations
@@ -81,30 +46,14 @@ class NestedTorusRegression(SmoothTorusManifoldRegression):
     """
     Description
     -----------
-    The torus regressor with a BLOCK-DIAGONAL smoothness penalty, so a design that mixes a temporal
-    behaviour block with a handful of non-temporal neural columns is penalised correctly.
+    The torus regressor with a block-diagonal smoothness penalty, so a design that mixes temporal
+    behaviour blocks with non-temporal neural columns is penalised correctly.
 
-    The parent applies one identical ``D^T D`` block per feature across ``n_time_bins`` lags, which
-    assumes every feature is a temporal filter. The nested design is not like that: five behaviour
-    features carry 600 lags each and want smoothing along that axis, while the neural column is a
-    single number with no time axis at all and must receive ridge ONLY -- smoothing a one-element
-    filter is meaningless, and the parent's operator is not even defined for it.
-
-    Two constraints from the parent, both worked around here rather than fought:
-
-    ``fit`` hard-checks that ``X`` has exactly ``n_features * n_time_bins`` columns, so this class
-    reports the design as a single "feature" of ``total_columns`` bins. Those two numbers are used by
-    nothing except the penalty builder, which is overridden.
-
-    One scalar ``lambda_smooth`` multiplies the WHOLE penalty matrix, so any relative weighting
-    between blocks has to be baked into the matrix returned here. The neural block is given a zero
-    block, which is exactly the ruled policy: uniform ridge (``l2_reg`` reaches every column through
-    the parent's ``+ l2_reg * I``), per-block smoothness.
-
-    NOTE the penalty asymmetry this leaves, which is a KNOWN and accepted design choice rather than
-    an oversight: a behaviour filter pays ``l2_reg`` plus ``lambda_smooth * D^T D`` over 600
-    coefficients while the neuron pays ``l2_reg`` alone. The planned check is to report the added
-    score at several neural-ridge values, turning the judgement call into a measurement.
+    Each behaviour feature receives the parent's ``D^T D`` smoothness block over its lags; the neural
+    columns have no time axis and receive ridge only (``l2_reg`` reaches every column through the
+    parent's ``+ l2_reg * I``). The parent's ``fit`` checks that ``X`` has ``n_features * n_time_bins``
+    columns, so the design is reported as one "feature" of ``total_columns`` bins; those numbers are
+    used only by the penalty builder, which is overridden here.
 
     Parameters
     ----------
@@ -119,7 +68,7 @@ class NestedTorusRegression(SmoothTorusManifoldRegression):
     l2_reg (float)
         Ridge, applied uniformly to every column by the parent.
     smoothness_derivative_order (int)
-        1 or 2; passed through to the parent's operator so the boundary handling matches P1 exactly.
+        1 or 2; passed through to the parent's operator so the boundary handling is the parent's.
     period (float)
         Torus period per axis.
     huber_delta (float)
@@ -176,10 +125,9 @@ class NestedTorusRegression(SmoothTorusManifoldRegression):
         Block-diagonal penalty: one temporal block per behavioural feature, zeros for the neural
         columns.
 
-        The per-feature block is taken from a bare PARENT instance rather than rebuilt here, so the
-        finite-difference operator -- including the reflective (Neumann) boundary rows the parent adds
-        at order 2 -- stays identical to P1's by construction. Rebuilding it would be a second copy
-        able to drift from the one the control was selected under.
+        The per-feature block is taken from a bare parent instance rather than rebuilt here, so the
+        finite-difference operator, including the reflective boundary rows the parent adds at order 2,
+        is the parent's by construction.
 
         Parameters
         ----------
@@ -205,29 +153,13 @@ def reduced_model_features(settings: dict, require_selection_file: bool = True) 
     """
     Description
     -----------
-    The behaviour control's feature set: READ from the cohort selection's result file and ASSERTED
-    against the frozen list in settings.
+    The behaviour control's feature set: read from the selection result file and checked against the
+    frozen list in settings, so a re-run of the selection cannot silently redefine the behaviour the
+    neuron is measured against.
 
-    Reading alone would let a re-run of the selection silently redefine the behaviour the neuron is
-    measured against
-    after transformation counts are banked. Freezing alone would let the control drift out of step with
-    the selection it is meant to be. Doing both catches the drift instead of absorbing it, and is the
-    same "check rather than assume" the emitter and dyad resolutions use.
-
-    WHAT MAY BE ADOPTED FROM A BEHAVIOURAL SELECTION, AND WHAT MAY NOT. Its FITTED MAP does not
-    transfer to the ephys preparation -- measured at -0.00113 over 41,087 USVs -- while the same
-    estimator refitted in domain predicts perfectly well. That is a statement about COEFFICIENTS, not
-    about which features to use, so a behavioural selection's feature set is read here while the
-    control itself is always refitted in domain by ``fit_control_models``. An externally chosen set is
-    in one respect preferable: those features were never selected on the preparation the claim is made
-    about, so selection optimism is zero rather than merely bounded.
-
-    Both artifact shapes are therefore accepted -- a cohort selection's ``selected_features``, or a
-    behavioural selection's ``steps`` (its last step's ``current_features``) -- and either way the
-    result is ASSERTED against the frozen list, so a re-run of a selection cannot quietly redefine the
-    behaviour the neuron is measured against.
-
-    The file is an INPUT to the run, so it lives in the ``data`` block beside the session lists.
+    Two artifact shapes are accepted: a cohort selection's ``selected_features``, or a behavioural
+    selection's ``steps`` (its last step's ``current_features``). Only feature names are taken from a
+    behavioural selection; the control itself is always fitted in domain by ``fit_control_models``.
 
     Parameters
     ----------
@@ -241,7 +173,7 @@ def reduced_model_features(settings: dict, require_selection_file: bool = True) 
     Returns
     -------
     features (list)
-        The behaviour control's feature names, in P1's selection order.
+        The behaviour control's feature names, in selection order.
     """
 
     frozen = list(settings["nested_vocal_manifold_position_decoding"]["reduced_model_features"])
@@ -258,12 +190,8 @@ def reduced_model_features(settings: dict, require_selection_file: bool = True) 
     if "selected_features" in selection:
         selected = list(selection["selected_features"])
     elif "steps" in selection:
-        # A behavioural-modelling selection, whose FEATURE SET may be adopted while its COEFFICIENTS
-        # may not. Only the names are taken here; the control is still fitted in domain by
-        # `fit_control_models`, which is the guard that matters -- the fitted map is what failed to
-        # transfer (-0.00113 over 41,087 USVs), not the choice of features. Adopting an external set
-        # also removes selection optimism outright instead of bounding it, since those features were
-        # never chosen on the preparation the claim is made about.
+        # A behavioural-modelling selection: only its feature names are adopted, never its
+        # coefficients, since the control is fitted in domain by `fit_control_models`.
         selected = list(selection["steps"][-1]["current_features"])
     else:
         msg = (f"{path.name} is neither a cohort selection result ('selected_features') nor a "
@@ -285,37 +213,16 @@ def nested_design(events: dict, per_session: dict, feature_names: list, n_lags: 
     """
     Description
     -----------
-    Build the nested decoding's design: each event's 4 s behavioural history, plus the neuron as ONE column.
+    Build the nested decoding's design: each event's behavioural history, plus the neuron as one column.
 
-    Rows are USVs, not frames. Each behavioural feature contributes ``n_lags`` columns -- its history
-    ending at the USV's onset frame -- so a row is one USV with ``len(feature_names) * n_lags``
-    behaviour columns followed by a single neural column. The common misstatement to avoid is that
-    "every predictor is summarised to one value per USV": the behaviour block is NOT summarised, it
-    is 600 columns per feature. What differs between predictors is how many columns each contributes.
+    Rows are USVs. Each behavioural feature contributes ``n_lags`` columns, its history ending at the
+    frame before onset, followed by a single neural column: the unit's spike count in the USV's
+    window, z-scored per session. The neuron enters as a count, as in the
+    vocalization-identity decoder, rather than as a lagged spike history, which would mostly carry its
+    responses to earlier USVs in the bout.
 
-    **The neuron is a z-scored spike COUNT, not 600 lags of binary train.** The symmetric alternative
-    was considered and rejected: a 4 s spike history spans about twenty prior USVs at the 195 ms
-    median inter-USV interval, so it is largely the neuron's RESPONSES to earlier USVs, and since
-    USVs within a bout correlate in type the model would predict this USV's position from previous
-    USVs' positions via the neuron -- the test would pass on bout structure. The behaviour block has
-    the same 4 s window and the same bout structure and is accepted there because behaviour is the
-    CONTROL, where a longer window makes the test harder. Within the 50 ms window a count rather than
-    per-frame binary, because 50 ms at 150 fps is 7.5 frames (so per-frame needs the window rounded or
-    the last bin ragged), the data are sparse (cl0401: 2.16 spikes per window over 8 frame-columns),
-    and decisively because THE VOCAL DECODING ALREADY ENCODES THE NEURON AS A COUNT -- encoding it differently in
-    the two analyses of one conjunction would break the nesting.
-
-    The count is z-scored PER SESSION, the same correction the vocal-occurrence axis applies, because this
-    is a least-squares fit on a continuous predictor where standardising the input is available. (The
-    vocalization-identity axis cannot do that -- a Poisson probability is not evaluable at "2.4 SD" -- which is why it
-    corrects on the fitted rate instead. Same quantity, each normalised the way its likelihood
-    allows.)
-
-    **Events without a full history are DROPPED, and that is why the vocal decoding and the nested
-    decoding see different event counts.** A USV in a session's first 4 s is perfectly usable for the vocal
-    decoding, whose spike count
-    needs no history, and unusable here. Both counts are returned so the difference is reported rather
-    than discovered.
+    Events without a full behavioural history are dropped, so this design can hold fewer events than
+    the identity decoder; both counts are returned per session.
 
     Parameters
     ----------
@@ -326,8 +233,7 @@ def nested_design(events: dict, per_session: dict, feature_names: list, n_lags: 
         From ``assemble_unit_sessions``: per session ``feature_time_series``, ``feature_names``,
         ``fps`` and ``n_frames``.
     feature_names (list)
-        The behavioural features, in order. Selected BY NAME -- per-session column order differs, so
-        positional access reads a different feature in different sessions.
+        The behavioural features, in order. Selected by name, since per-session column order differs.
     n_lags (int)
         History length in frames.
     sigma_floor (float)
@@ -356,8 +262,7 @@ def nested_design(events: dict, per_session: dict, feature_names: list, n_lags: 
             msg = (f"{session_id}: behaviour control features {missing} are not in the assembled "
                    f"feature set. Available: {available}.")
             raise ValueError(msg)
-        # BY NAME, never by position: per-session column order differs, so a positional read would
-        # silently take a different feature in different sessions.
+        # By name, never by position: per-session column order differs.
         columns = [available.index(name) for name in feature_names]
         series = np.asarray(session["feature_time_series"], dtype=np.float64)[:, columns]
 
@@ -397,39 +302,18 @@ def behaviour_prior_log_density(fold: dict, predicted_positions: np.ndarray, pos
     """
     Description
     -----------
-    Behaviour as a PRIOR over the torus grid: for each event, the fold's occupancy prior MULTIPLIED by
-    the von Mises evidence the behaviour control supplies for that USV, with a concentration measured
-    on the training events alone.
+    Behaviour as a prior over the torus grid: for each event, the fold's occupancy prior multiplied by
+    the von Mises evidence the behaviour control supplies for that USV.
 
-    This is how the nested statistic conditions on behaviour without asking the neuron to compete for a
-    point. The regression form forced every model to answer "where exactly", one point per USV, and a
-    neuron whose knowledge is "probably this region" cannot help with that -- measured on cl0401, whose
-    counts run 3.4 to 5.7 across regions and decode +0.049 nats/event categorically, yet add nothing to
-    a point. A prior can be reweighted without being moved, so the same knowledge is worth nats here.
+    The control gives a point ``x_hat``; with the occupancy base rate ``p(x)`` the conditioned prior is
+    ``p(x | x_hat) ~ occupancy(x) * vM(x; x_hat, kappa)``, so a control that knows nothing
+    (``kappa = 0``) reduces to the occupancy prior. The product is renormalised over
+    the fold's masked grid, which absorbs ``log I0(kappa)``.
 
-    THE PRODUCT FORM IS BAYES, AND THE FLAT FORM WAS A BIAS -- found before it produced a number. The
-    control gives a point ``x_hat`` whose residual around the truth is von Mises with concentration
-    ``kappa``; by symmetry ``p(x_hat | x) = vM(x; x_hat, kappa)``, so with the occupancy base rate
-    ``p(x)`` the conditioned prior is ``p(x | x_hat) ~ occupancy(x) * vM(x; x_hat, kappa)``. The first
-    draft used the von Mises ALONE, the flat-prior special case, and on cl0401 that scored 0.22 nats
-    WORSE at the truth than identity's occupancy prior -- not because behaviour misled, but because the
-    prior had forgotten where USVs live. A neuron is then credited for restoring that, which inflates
-    ``added``. In the product form a control that knows nothing (``kappa`` to 0) reduces to the
-    occupancy prior, the ladder's first step goes to zero rather than -0.22, and a control that knows
-    something sharpens the base rate instead of replacing it.
-
-    The concentration is ONE shared kappa per fold, set on the training sessions alone, two ways.
-    ``train_residuals`` fits it on the training events' wrap-aware angular residuals around the
-    control's prediction -- the macro scorer's own convention (``_fit_von_mises_kappa`` over both
-    dimensions ravelled). ``train_tuned_inner_loso`` chooses it from ``kappa_grid`` by inner
-    leave-one-session-out on the training sessions, maximising the held-in log prior at the truth over
-    the occupancy prior -- the same discipline as the amplitude calibration, and for the same reason:
-    a residual fit is MIS-SPECIFIED for a shrunk predictor (see the branch comment) and only a
-    held-out criterion can tell a control that knows nothing from one that knows something. Either
-    way the evidence is only as sharp as behaviour has earned on data the scored session never sees.
-    The occupancy term already carries the fold's mask, so the product can put no mass where no
-    training USV ever sat; renormalising over the masked grid absorbs ``log I0(kappa)`` and no second
-    copy of the density formula is needed.
+    One shared ``kappa`` per fold is set on the training sessions alone, in one of two ways:
+    ``train_residuals`` fits it to the training events' wrap-aware residuals around the control's
+    prediction; ``train_tuned_inner_loso`` chooses it from ``kappa_grid`` by inner
+    leave-one-session-out, maximising the held-in log prior at the truth over the occupancy prior.
 
     Parameters
     ----------
@@ -479,22 +363,11 @@ def behaviour_prior_log_density(fold: dict, predicted_positions: np.ndarray, pos
                                period=period) * scale
         kappa = float(_fit_von_mises_kappa(residual.ravel()))
     elif prior["concentration"] == "train_tuned_inner_loso":
-        # MEASURED on cl0401 (2026-10-12): residual kappa (0.62-0.85) scored the prior 0.10 nats BELOW
-        # occupancy at the truth, because a shrunk predictor's residual spread is mostly the truth's
-        # own spread, which occupancy already carries -- the evidence double-counts the base rate.
-        # Tuning kappa on the training rotation, exactly as the amplitude is tuned, lets a control
-        # that knows nothing settle at kappa = 0 (the inner curve was monotone decreasing from zero
-        # on every fold) and a control that knows something sharpen the base rate by what it has
-        # earned. kappa >= 0 by construction: the evidence can be declined, never inverted.
-        #
-        # What this measures is evidence beyond the occupancy prior AS FITTED. If that prior is
-        # over-smoothed -- a KDE bandwidth too wide for a tight cluster -- a control that merely
-        # returns the cluster's centre earns a positive kappa by re-sharpening the base rate (seen on
-        # the coarse test grid: 0.5 for a constant predictor). That is CONSERVATIVE for `added`, since
-        # a sharper prior leaves the neuron less to add, but it is misattributed on the ladder's first
-        # rung. The shipped bandwidth is selected by held-out position likelihood, under which cl0401
-        # tuned to exactly 0, so it does not arise there; it is the reason the bandwidth must stay
-        # held-out-selected and never be widened for speed on real data.
+        # A residual fit double-counts the base rate for a shrunk predictor, so kappa is tuned by
+        # inner leave-one-session-out; a control that knows nothing settles at kappa = 0. The grid is
+        # non-negative, so the evidence can be declined but never inverted. An over-smoothed occupancy
+        # prior would let a constant predictor earn kappa > 0, which is why the KDE bandwidth must stay
+        # held-out-selected.
         kappa = float(prior["kappa_grid"][0])
         if fold["inner_splits"]:
             best = -np.inf
@@ -521,13 +394,10 @@ def behaviour_priors(folds: list, predicted_positions: np.ndarray, positions: np
     """
     Description
     -----------
-    The behaviour prior for every fold, built ONCE.
+    The behaviour prior for every fold, built once.
 
-    A prior depends only on positions, the control's predictions and the fold's geometry -- none of
-    which a null draw changes -- so it is computed here and handed to every draw, rather than rebuilt
-    a thousand times inside the null for a quantity that does not move. The grid matrices are the
-    largest arrays this statistic holds (events x cells per fold), so building them once is also what
-    keeps the worker processes' memory flat.
+    A prior depends only on positions, the control's predictions and the fold's geometry, none of
+    which a null draw changes, so it is computed here and handed to every draw.
 
     Parameters
     ----------
@@ -564,16 +434,15 @@ def posterior_nested_gain(counts: np.ndarray, folds: list, decoding: dict, prior
     The nested statistic in identity's currency: what the neuron adds, in nats per event, once
     behaviour has already set the prior.
 
-    It IS ``decode_gain`` -- same tuning surface, ridge, exposure offsets, amplitude calibration, grid
-    and mask -- with the fold's occupancy prior replaced by :func:`behaviour_prior_log_density`. So
+    It is ``decode_gain`` (same tuning surface, ridge, exposure offsets, amplitude calibration, grid
+    and mask) with the fold's occupancy prior replaced by :func:`behaviour_prior_log_density`, so
     ``added`` is log posterior(truth | neuron, behaviour) minus log prior(truth | behaviour), averaged
-    over held-out events, and identity's gain is the same quantity under the unconditioned prior. The
-    two claims are one statistic under two priors, which is what combining their p-values assumes.
+    over held-out events. The identity gain is the same quantity under the unconditioned prior.
 
-    Reported beside it, the LADDER the regression form also drew: ``behaviour_over_no_behaviour`` is
-    log prior(truth | behaviour) minus log occupancy prior(truth) -- what behaviour alone buys -- and
-    ``full_over_no_behaviour`` is the sum. The ladder's first step is INVARIANT under the permutation
-    null because a prior row travels with its position; only ``added`` is tested.
+    Reported beside it: ``behaviour_over_no_behaviour`` (log prior(truth | behaviour) minus log
+    occupancy prior(truth), what behaviour alone buys) and ``full_over_no_behaviour`` (the sum). The
+    first is invariant under the permutation null, since a prior row travels with its position; only
+    ``added`` is tested.
 
     Parameters
     ----------
@@ -630,14 +499,8 @@ def posterior_nested_gain(counts: np.ndarray, folds: list, decoding: dict, prior
     return {**renamed, **detail}
 
 
-#: The only value implemented for each option `nested_vocal_manifold_position_decoding` names. Every one of these
-#: keys described a real alternative the plan discusses, and every one was read by NOTHING -- so a run
-#: could declare `vm_score_mode: "micro"`, be reported as micro, and score macro. The plan RULED macro
-#: for this test (micro leaves the behaviour control suboptimal for it, which biases it toward
-#: passing), RULED the rich behaviour window, and RULED the neuron as ONE z-scored count -- so
-#: these are settled decisions, and the guard makes a deviation from them loud instead of silent.
-#: `statistic` is the 2026-10-12 ruling: the posterior form is the tested statistic and the point
-#: regression is kept as a fine-position DESCRIPTOR, never a route to passing.
+#: The only values implemented for each option `nested_vocal_manifold_position_decoding` names, so a
+#: settings file that declares any other value is refused rather than silently scored as these.
 IMPLEMENTED_OPTIONS = {
     "vm_score_mode": ("macro",),
     "behaviour_control": ("rich",),
@@ -661,10 +524,8 @@ def nested_settings(settings: dict) -> dict:
     -----------
     The ``nested_vocal_manifold_position_decoding`` block with the shared manifold period merged in, validated.
 
-    The torus period is a property of the QLVM MANIFOLD, not of this test, so it lives in the shared
-    ``vocalization_settings`` block where every analysis can see one value. This module's functions take a
-    single block, so the caller merges here rather than the key being duplicated into two blocks that
-    could drift apart -- which is the defect this whole audit was about.
+    The torus period is a property of the QLVM manifold and lives in the shared
+    ``vocalization_settings`` block; it is merged here so this module's functions can take one block.
 
     Parameters
     ----------
@@ -724,9 +585,9 @@ def _fit_predict(behaviour: np.ndarray, neural: np.ndarray, positions: np.ndarra
     -----------
     Fit one model on the training rows and predict the held-out ones.
 
-    ``neural`` of None gives the REDUCED model (behaviour alone); passing the column gives the FULL
-    model. Both go through the same estimator and the same penalty policy, so the pair differs in
-    exactly one column, which is what makes the added score interpretable.
+    ``neural`` of None gives the reduced model (behaviour alone); passing the column gives the full
+    model. Both use the same estimator and penalty policy, so the pair differs in exactly the neural
+    column.
 
     Parameters
     ----------
@@ -768,12 +629,11 @@ def reduced_predictions(design: dict, settings: dict, n_lags: int) -> np.ndarray
     """
     Description
     -----------
-    The reduced model's pooled held-out predictions -- IDENTICAL in every null draw, so they are
-    computed once and reused.
+    The reduced model's pooled held-out predictions, computed once and handed to
+    :func:`nested_scores`.
 
-    The circular shift moves only the spike train. Behaviour, positions and the equal-region weights
-    (which depend on region labels) are untouched, so the reduced fit cannot change between draws.
-    Recomputing it per draw would double the null's cost for a guaranteed-identical answer.
+    The reduced fit depends only on behaviour, positions and region labels, none of which the neural
+    column changes.
 
     Parameters
     ----------
@@ -808,18 +668,11 @@ def shifted_neural_column(design: dict, window_edges: np.ndarray, spikes: dict, 
     """
     Description
     -----------
-    One null draw's neural column: recount the neuron in each event's window from a CIRCULARLY
-    SHIFTED spike train, then z-score per session exactly as the observed column is.
+    A neural column recounted from a circularly shifted spike train, z-scored per session as the
+    observed column is.
 
-    The shift is the right null here because the question is purely the neuron's contribution. It
-    preserves the unit's rate, bursting and slow drift -- so the null column looks like a real spike
-    train in every respect except its alignment to the USVs -- while behaviour and position keep
-    their real relationship, which a target permutation would destroy along with the thing being
-    conditioned on.
-
-    Counts are RECOUNTED from the shifted train rather than reordered, because a reordering would
-    preserve the exact multiset of counts and so test something narrower than "this neuron, decoupled
-    in time".
+    Not used by the shipped null, which is the within-session pair permutation of
+    ``posterior_nested_null_chunk``.
 
     Parameters
     ----------
@@ -864,28 +717,14 @@ def nested_scores(design: dict, settings: dict, n_lags: int,
     """
     Description
     -----------
-    The nested decoding's statistic: the POOLED added ``vm_logscore`` of ``position ~ kinematics + neuron`` over
-    ``position ~ kinematics``, across leave-one-session-out folds.
+    The point-regression descriptor: the pooled added macro von Mises log-score of
+    ``position ~ behaviour + neuron`` over ``position ~ behaviour``, across leave-one-session-out folds.
 
-    **Pooled, not fold-averaged, and this is ruled rather than stylistic.** Two reasons specific to
-    this score. First, the von Mises concentration is FITTED at scoring time, so fold-averaging fits a
-    separate one per fold on a thin fold's residuals. Second, the macro score drops acoustic regions
-    below ``min_region_events`` and returns NaN when none clear -- measured over the cohort's 70
-    vocal-eligible sessions, at the ruled threshold of 20 events, 31.4% carry a region that would be
-    dropped at fold grain, so per-fold macro scores would be averages over DIFFERENT region sets, with
-    a 1-event region weighted equally against a 500-event one. Pooled, cl0401's thinnest region holds
-    198 events and cl0499's 454.
-
-    Each model fits its OWN concentration on the pooled residuals, which is the ordinary nested
-    likelihood comparison: a model with tighter residuals earns both a higher concentration and a
-    higher score, and that is the score being what it is meant to be rather than a nuisance advantage.
-
-    Training rows carry EQUAL-REGION REWEIGHTING, exactly as P1 fits it, so common regions do not
-    dominate. Those weights depend only on the region labels, which no shuffle moves.
-
-    The guard against one session carrying the result is the LEAVE-ONE-FOLD-OUT MINIMUM -- the worst
-    pooled added score with any single fold's events dropped. Threshold-free, free to compute, and a
-    descriptor rather than a gate.
+    Scores are pooled over folds rather than fold-averaged, because the concentration is fitted at
+    scoring time and the macro score drops regions below ``min_region_events``, which a thin fold
+    would do unevenly. Each model fits its own concentration. Training rows carry equal-region
+    weights. The leave-one-fold-out minimum (the worst pooled added score with any one fold dropped)
+    is reported as a descriptor.
 
     Parameters
     ----------
@@ -896,8 +735,9 @@ def nested_scores(design: dict, settings: dict, n_lags: int,
     n_lags (int)
         History length in frames.
     neural (np.ndarray)
-        Neural column to use instead of ``design['neural']`` -- the null passes a shifted one. None
-        uses the observed column.
+        Neural column to use instead of ``design['neural']``; None uses the observed column.
+    reduced_predicted (np.ndarray)
+        Precomputed reduced-model predictions (:func:`reduced_predictions`); None fits them here.
 
     Returns
     -------
@@ -965,8 +805,8 @@ def pooled_macro_score(predictions: np.ndarray, positions: np.ndarray, regions: 
     """
     Description
     -----------
-    The pooled macro von Mises log-score of torus predictions, the ONE scoring rule every model in this module
-    is compared under.
+    The pooled macro von Mises log-score of torus predictions, the scoring rule every model in this
+    module is compared under.
 
     Pooled over whatever rows are passed, macro over acoustic regions (each clearing ``min_region_events``
     weighted equally), with the concentration fitted to these predictions at scoring time -- so each model is
@@ -998,30 +838,13 @@ def no_behaviour_predictions(design: dict, settings: dict, n_lags: int) -> np.nd
     """
     Description
     -----------
-    Held-out predictions of a model given NO behaviour: the behaviour model's own estimator, weights and
-    leave-one-session-out folds, fit on an all-zero design, so all it can learn is each fold's weighted mean
-    position.
+    Held-out predictions of a model given no behaviour: the behaviour model's own estimator, weights and
+    leave-one-session-out folds, fitted on an all-zero design, so all it can learn is each fold's weighted
+    mean position.
 
-    It exists for one condition the analysis rests on (ruled 2026-09-15). What is claimed is that the neuron
-    beats the BEHAVIOUR MODEL -- not that it carries information beyond behaviour itself -- and that is only
-    worth claiming when the behaviour model predicts. The behaviour model's pooled score minus this model's is
-    its held-out improvement over having no behaviour at all. It is stored per unit and judged at the cohort
-    step.
-
-    MEASURED 2026-09-22, and the condition FAILS for the behaviour model as it is built above: the per-unit
-    refit scores BELOW this baseline on both example recording days (-0.0090 and -0.0062). Five features over
-    six hundred lags is three thousand columns, and a unit carries about two thousand USVs; P1's own data
-    cut to that size reproduces the failure exactly (median +0.00000 over eight draws against +0.06356 on all
-    of it), so the shortfall is the USV count and not the ephys sessions. A behaviour model fitted on the
-    ephys cohort and held out by recording day DOES predict (+0.042 pooled over 41,087 USVs), and the fix is
-    to carry that model in as its predicted position rather than to refit its columns here. An earlier
-    docstring quoted "about +0.04" for both days; that figure came from a script whose constant was fitted on
-    P1's USVs and applied to ephys ones, which is a baseline at the wrong centre.
-
-    No null is attached, deliberately. The behaviour features' ability to predict USV position was already
-    tested when they were selected, against a within-session permutation of USV positions on independent
-    animals. What remains per unit is only whether that carries over to these animals and USVs, and the
-    held-out improvement shows that directly.
+    Beating the behaviour control is only worth claiming where that control predicts, so the control's
+    pooled score minus this model's is stored per unit as its held-out improvement over no behaviour and
+    judged at the cohort step. No null is attached to this improvement.
 
     Parameters
     ----------
@@ -1055,6 +878,8 @@ def _score_block(design: dict, settings: dict, n_lags: int) -> float:
     Description
     -----------
     Pooled macro score of a behaviour-only design, over the same folds ``nested_scores`` uses.
+
+    Not called by the shipped pipeline.
 
     Parameters
     ----------
