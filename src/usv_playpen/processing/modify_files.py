@@ -1204,6 +1204,12 @@ class Operator:
             concatenation_command = 'copy /b ' if os.name == 'nt' else 'cat '
             total_size_bytes = 0
             total_time_secs = 0.0
+            # The .meta of the first .bin actually concatenated (first session in the
+            # listed order) is the template for the concatenated .meta: the stitched
+            # file starts where that recording starts, so its per-file start fields
+            # (e.g. firstSample, fileCreateTime) are the right ones, and a probe absent
+            # from later sessions still has a template.
+            template_meta_file = None
             for one_root_dir in self.root_directory:
                 ephys_probe_dir = pathlib.Path(one_root_dir) / 'ephys' / probe_id
                 if ephys_probe_dir.is_dir():
@@ -1217,6 +1223,8 @@ class Operator:
                         # so swapping it for `.meta` is exact.
                         one_meta = one_file.with_name(one_file.name[:-len(".bin")] + ".meta") if one_file.name.endswith(".bin") else one_file.with_suffix(".meta")
                         if one_file.is_file() and one_meta.is_file():
+                            if template_meta_file is None:
+                                template_meta_file = one_meta
 
                             # parse metadata file for channel and headstage information.
                             # Initialise every parsed variable up front so a .meta
@@ -1305,18 +1313,16 @@ class Operator:
             # save concatenated META file
             concatenated_meta_file = concat_save_path / f"concatenated_{concat_save_path.name}.{npx_file_type}.meta"
             if not concatenated_meta_file.is_file():
-                # A probe folder may hold several recordings (each concatenated
-                # above); they share the probe's acquisition settings, so the meta of
-                # the first one in sorted order is the explicit template, and only its
-                # size and duration fields are replaced by the concatenation's totals.
-                src_meta_files = sorted(ephys_probe_dir.glob(f"*{npx_file_type}.meta*"))
-                if not src_meta_files:
+                # The concatenated recordings share the probe's acquisition settings,
+                # so the first concatenated recording's meta is the template, and only
+                # its size and duration fields are replaced by the concatenation's totals.
+                if template_meta_file is None:
                     msg = (
-                        f"source .{npx_file_type}.meta for concatenation: no match for glob pattern "
-                        f"'*{npx_file_type}.meta*' under '{ephys_probe_dir}'."
+                        f"source .{npx_file_type}.meta for concatenation: no '*{npx_file_type}.bin' with a "
+                        f"sibling .meta under 'ephys/{probe_id}' in any of {list(self.root_directory)}."
                     )
                     raise FileNotFoundError(msg)
-                src_meta_file = src_meta_files[0]
+                src_meta_file = template_meta_file
                 with pathlib.Path(src_meta_file).open(encoding='utf-8') as f_in, \
                         atomic_output_path(concatenated_meta_file) as tmp_meta_file, \
                         pathlib.Path(tmp_meta_file).open('w', encoding='utf-8') as f_out:

@@ -26,15 +26,23 @@ fast and deterministic on tiny inputs.
 Coverage: ``concatenate_audio_files`` (memmap write, fewer-than-two skip),
 ``concatenate_binary_files`` (outputs, chained / merged / extended
 changepoints, the concatenated tracking clock on rerun, failed-rewrite
-atomicity, the non-zero return warning), ``concatenate_video_files`` (stale
-output excluded and replaced, ``-y`` overwrite, a single video promoted, an
-empty folder skipped), ``split_clusters_to_sessions``
+atomicity, the non-zero return warning, a .meta missing required keys, no
+template .meta, and a probe absent from the last session),
+``concatenate_video_files`` (stale output excluded and replaced, ``-y``
+overwrite, a single video copied with the raw recording kept, a stale output
+beside a single chunk, calibration and unlisted folders ignored, an empty
+folder skipped, the timeout tunable), ``split_clusters_to_sessions``
 (duplicate-spike removal, failed-save atomicity), ``rectify_video_fps``
 (copy path and calibration handling), the broadband helpers (high-pass cutoff
-and design, unit phasors, line-noise estimation, low-band variance and its
-backfill function and CLI), ``broadband_filter_audio`` (tone removal, column
-order, chunk-length independence, idempotency / revalidation), the batch
-runner, the session-list reader, and the required root directory.
+and design, unit phasors and block demodulation edge cases, line-noise
+estimation incl. silence and the separation rule, the stream's short-read
+guard, low-band variance incl. a too-short memmap, its backfill function and
+CLI, every rejection reason of ``validate_broadband_output``),
+``broadband_filter_audio`` (tone removal, column order, chunk-length
+independence, idempotency / revalidation, input checks, a short output never
+published, an older memmap replaced, an unknown code version), the batch
+runner and its in-process worker, the session-list reader, and the required
+root directory.
 """
 
 from __future__ import annotations
@@ -42,6 +50,8 @@ from __future__ import annotations
 import configparser
 import json
 import pathlib
+import re
+from importlib import metadata as importlib_metadata
 
 import numpy as np
 import pytest
@@ -53,11 +63,12 @@ from scipy.io import wavfile
 import usv_playpen
 from tests.conftest import write_broadband_audio
 from usv_playpen.os_utils import find_audio_mmap
-from usv_playpen.processing import preprocess_data
+from usv_playpen.processing import modify_files, preprocess_data
 from usv_playpen.processing.modify_files import (
     BROADBAND_BATCH_REPORT_COLUMNS,
     BROADBAND_REPORT_NAME,
     Operator,
+    _BroadbandChannelStream,
     add_broadband_low_band_variance,
     block_mean_phasors,
     broadband_filter_sessions,
@@ -68,6 +79,7 @@ from usv_playpen.processing.modify_files import (
     estimate_low_band_variance,
     read_broadband_session_list,
     unit_phasor,
+    validate_broadband_output,
 )
 
 
@@ -1634,3 +1646,632 @@ def test_operator_requires_a_root_directory(processing_settings):
         Operator(root_directory=None, input_parameter_dict=processing_settings)
     with pytest.raises(ValueError, match="needs a root_directory"):
         Operator()
+
+
+def test_concatenate_video_files_stale_output_beside_one_chunk_copies_the_chunk(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    A camera folder holding ONE real video chunk next to a stale
+    ``<concatenated_video_name>_<serial>`` output of a crashed run: the stale file
+    must not count as a second input (which would have sent the folder down the
+    ffmpeg concatenation path with the old output as one of its own inputs), it
+    must be deleted with a logged message, and the single real chunk must be
+    COPIED byte-identically to ``video/<concatenated_video_name>_<serial>.<ext>``
+    while the raw chunk stays in its camera folder. A calibration folder and a
+    folder whose serial is not listed in ``concatenate_camera_serial_num`` are
+    left untouched, no ffmpeg process is started, and the ffmpeg wait receives
+    the ``subprocess_timeout_hours`` tunable converted to seconds.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        Stubs ffmpeg via ``_patch_concat_ffmpeg``.
+
+    Returns
+    -------
+    None
+    """
+
+    concat = processing_settings['modify_files']['Operator']['concatenate_video_files']
+    serial, unlisted_serial = "21372315", "21372399"
+    concat['concatenate_camera_serial_num'] = [serial]
+    concat['subprocess_timeout_hours'] = 0.5
+    concat_name = concat['concatenated_video_name']
+    vid_ext = concat['concatenate_video_extension']
+
+    video_dir = tmp_path / "video"
+    cam_dir = video_dir / f"20250101_120000.{serial}"
+    calibration_dir = video_dir / f"calibration_20250101_120000.{serial}"
+    unlisted_dir = video_dir / f"20250101_120000.{unlisted_serial}"
+    for one_dir in (cam_dir, calibration_dir, unlisted_dir):
+        one_dir.mkdir(parents=True)
+    (cam_dir / f"000000.{vid_ext}").write_bytes(b"raw-chunk")
+    (cam_dir / f"{concat_name}_{serial}.{vid_ext}").write_bytes(b"stale")
+    (calibration_dir / f"000000.{vid_ext}").write_bytes(b"calib")
+    (unlisted_dir / f"000000.{vid_ext}").write_bytes(b"other")
+
+    invocations = _patch_concat_ffmpeg(mocker, written_bytes=b"fresh")
+
+    messages = []
+    _make_operator(str(tmp_path), processing_settings, messages).concatenate_video_files()
+
+    assert invocations == []
+    assert modify_files.wait_for_subprocesses.call_args.kwargs['max_seconds'] == 0.5 * 60 * 60
+    assert modify_files.wait_for_subprocesses.call_args.kwargs['subps'] == []
+    assert (video_dir / f"{concat_name}_{serial}.{vid_ext}").read_bytes() == b"raw-chunk"
+    assert (cam_dir / f"000000.{vid_ext}").read_bytes() == b"raw-chunk"
+    assert not (cam_dir / f"{concat_name}_{serial}.{vid_ext}").exists()
+    assert sorted(path.name for path in cam_dir.iterdir()) == [f"000000.{vid_ext}"]
+    assert sum("stale" in message.lower() and "1 video chunk(s)" in message for message in messages) == 1
+    assert sum("the original stays in its folder" in message for message in messages) == 1
+    assert sorted(path.name for path in calibration_dir.iterdir()) == [f"000000.{vid_ext}"]
+    assert sorted(path.name for path in unlisted_dir.iterdir()) == [f"000000.{vid_ext}"]
+    assert not (video_dir / f"{concat_name}_{unlisted_serial}.{vid_ext}").exists()
+    assert sorted(path.name for path in video_dir.iterdir() if path.is_file()) == [f"{concat_name}_{serial}.{vid_ext}"]
+
+
+def test_concatenate_binary_files_rejects_a_meta_missing_required_keys(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    A SpikeGLX ``.meta`` without ``imDatPrb_sn`` (or any other of the three
+    required keys) must fail loudly with a ``KeyError`` that names the file and
+    the missing key, instead of silently reusing the previous file's parsed
+    value or crashing later in the sample arithmetic. No concatenated output is
+    written.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp dir; session rooted at ``<tmp>/Data/<id>``.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        No-ops the interactive ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.modify_files.smart_wait")
+
+    root = tmp_path / "Data" / "20250101_120000"
+    imec_dir = root / "ephys" / "imec0"
+    imec_dir.mkdir(parents=True)
+    _write_synthetic_binary(imec_dir, "20250101_120000.imec0", _headstage_sn(), n_samples_per_channel=16)
+    meta_path = imec_dir / "20250101_120000.imec0.ap.meta"
+    meta_path.write_text("".join(line + "\n" for line in meta_path.read_text().splitlines() if not line.startswith("imDatPrb_sn=")))
+
+    with pytest.raises(KeyError, match=r"missing required meta key\(s\): imDatPrb_sn"):
+        _make_operator([str(root)], processing_settings, []).concatenate_binary_files()
+    assert not (tmp_path / "EPHYS" / "20250101_imec0" / "concatenated_20250101_imec0.ap.bin").exists()
+
+
+def test_concatenate_binary_files_without_any_source_meta_raises(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    A probe folder holding a ``.bin`` without its ``.meta`` contributes no
+    recording, and with no ``.meta`` anywhere to serve as the template of the
+    concatenated ``.meta`` the method must raise a ``FileNotFoundError`` that
+    names the file pattern, the probe folder and the session searched, before
+    any concatenated ``.meta`` or changepoints JSON is written.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp dir; session rooted at ``<tmp>/Data/<id>``.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        No-ops the interactive ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.modify_files.smart_wait")
+
+    root = tmp_path / "Data" / "20250101_120000"
+    imec_dir = root / "ephys" / "imec0"
+    imec_dir.mkdir(parents=True)
+    _write_synthetic_binary(imec_dir, "20250101_120000.imec0", _headstage_sn(), n_samples_per_channel=16)
+    (imec_dir / "20250101_120000.imec0.ap.meta").unlink()
+
+    with pytest.raises(FileNotFoundError, match=r"no '\*ap\.bin' with a sibling \.meta under 'ephys/imec0'") as raised:
+        _make_operator([str(root)], processing_settings, []).concatenate_binary_files()
+    assert str(root) in str(raised.value)
+    ephys_base = tmp_path / "EPHYS" / "20250101_imec0"
+    assert not (ephys_base / "concatenated_20250101_imec0.ap.meta").exists()
+    assert not (ephys_base / "changepoints_info_20250101_imec0.json").exists()
+
+
+def test_concatenate_binary_files_probe_absent_from_the_last_session(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    Two sessions are concatenated; ``imec0`` is recorded in both, ``imec1``
+    only in the first. The ``imec1`` output must be the first session's
+    recording alone, with its concatenated ``.meta`` built from that session's
+    ``.meta`` (the template is the first concatenated recording's ``.meta``,
+    not a search of the last session's probe folder, which does not exist for
+    ``imec1``). For ``imec0`` the template is likewise the FIRST session's
+    ``.meta``: every line except the size and duration fields matches it.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp dir; both sessions rooted under ``<tmp>/Data``.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        No-ops the interactive ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.modify_files.smart_wait")
+
+    headstage_sn = _headstage_sn()
+    root_a = tmp_path / "Data" / "20250101_120000"
+    root_b = tmp_path / "Data" / "20250101_130000"
+    for root in (root_a, root_b):
+        (root / "ephys" / "imec0").mkdir(parents=True)
+        _write_synthetic_binary(root / "ephys" / "imec0", f"{root.name}.imec0", headstage_sn, n_samples_per_channel=32)
+        # A per-session start field, so the output reveals WHICH session's .meta was the template.
+        imec0_meta = root / "ephys" / "imec0" / f"{root.name}.imec0.ap.meta"
+        imec0_meta.write_text(imec0_meta.read_text() + f"fileCreateTime={root.name}\n")
+    (root_a / "ephys" / "imec1").mkdir()
+    _write_synthetic_binary(root_a / "ephys" / "imec1", f"{root_a.name}.imec1", headstage_sn, n_samples_per_channel=32)
+
+    _make_operator([str(root_a), str(root_b)], processing_settings, []).concatenate_binary_files()
+
+    imec1_base = tmp_path / "EPHYS" / "20250101_imec1"
+    info = json.loads((imec1_base / "changepoints_info_20250101_imec1.json").read_text())
+    assert info["20250101_120000.imec1"]["session_start_end"] == [0, 32]
+    assert (imec1_base / "concatenated_20250101_imec1.ap.meta").is_file()
+
+    for probe_id in ("imec0", "imec1"):
+        source_lines = (root_a / "ephys" / probe_id / f"{root_a.name}.{probe_id}.ap.meta").read_text().splitlines()
+        output_lines = (tmp_path / "EPHYS" / f"20250101_{probe_id}"
+                        / f"concatenated_20250101_{probe_id}.ap.meta").read_text().splitlines()
+        assert len(output_lines) == len(source_lines)
+        for source_line, output_line in zip(source_lines, output_lines, strict=True):
+            if not source_line.startswith(("fileSizeBytes=", "fileTimeSecs=")):
+                assert output_line == source_line
+
+
+def test_unit_phasor_and_block_mean_phasors_handle_empty_and_short_input():
+    """
+    Description
+    -----------
+    Edge cases of the complex demodulation helpers: a zero-length phasor and
+    an empty sample stretch both return an empty complex128 array, and a stretch
+    shorter than one block is demodulated as a single (partial) tail block whose
+    value is the plain mean of ``x[n] exp(-i w n)`` over the absolute sample
+    indices ``n`` of that stretch; for a tone ``A cos(w n + phi)`` spanning a
+    whole number of cycles that is ``(A / 2) exp(i phi)``.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    empty_phasor = unit_phasor(1000.0, 250000, 12345, 0)
+    assert empty_phasor.shape == (0,)
+    assert empty_phasor.dtype == np.complex128
+    empty_blocks = block_mean_phasors(np.zeros(0), 1000.0, 250000, 0, 250)
+    assert empty_blocks.shape == (0,)
+    assert empty_blocks.dtype == np.complex128
+
+    sampling_rate, frequency, start = 250000, 1000.0, 1000
+    n = np.arange(start, start + 500)
+    x = 40.0 * np.cos(2 * np.pi * frequency * n / sampling_rate + 0.7)
+    phasors = block_mean_phasors(x, frequency, sampling_rate, start, block_length=4096)
+    expected = np.mean(x * np.exp(-2j * np.pi * frequency * n / sampling_rate))
+    assert phasors.shape == (1,)
+    np.testing.assert_allclose(phasors[0], expected, rtol=1e-9)
+    np.testing.assert_allclose(phasors[0], 20.0 * np.exp(0.7j), rtol=1e-9)
+
+
+def test_estimate_line_noise_on_silence_reports_one_unkept_candidate(tmp_path):
+    """
+    Description
+    -----------
+    On an all-zero channel the whitened spectrum is zero everywhere, so the
+    first (and only) candidate stands at the ``tiny``-clamped floor (about
+    -3077 dB), far below ``min_height_db``: it is reported with ``kept`` False,
+    at a frequency inside the band, without parabolic refinement (the zero power
+    has no log), and the search stops there.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test directory.
+
+    Returns
+    -------
+    None
+    """
+
+    path = tmp_path / "m_230101120000_ch01_cropped_to_video_hpss.wav"
+    wavfile.write(path, 250000, np.zeros(250000, dtype=np.int16))
+    tones = estimate_line_noise(wav_path=path, search_bands_hz=[[7950, 8050]], min_height_db=8.0, n_windows=2, window_s=0.5,
+                                max_tones_per_band=4, min_separation_hz=0.25, floor_window_hz=4.0)
+    assert len(tones) == 1
+    assert tones[0]['kept'] is False
+    assert tones[0]['search_band_hz'] == [7950.0, 8050.0]
+    assert 7950.0 <= tones[0]['frequency_hz'] <= 8050.0
+    assert tones[0]['height_db'] == pytest.approx(10 * np.log10(np.finfo(np.float64).tiny), abs=0.01)
+
+
+def test_estimate_line_noise_keeps_peaks_at_least_the_separation_apart(tmp_path):
+    """
+    Description
+    -----------
+    With a threshold every bin passes and no cap on the tone count, the greedy
+    search walks the whole band: every bin closer than
+    ``max(min_separation_hz, main lobe)`` to an already kept peak is skipped, so
+    the kept tones are pairwise at least ``min_separation_hz`` apart (here 10 Hz
+    on a 100 Hz band, so between 6 and 11 of them), all inside the band and all
+    marked kept.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test directory.
+
+    Returns
+    -------
+    None
+    """
+
+    path = tmp_path / "m_230101120000_ch01_cropped_to_video_hpss.wav"
+    wavfile.write(path, 250000, np.zeros(250000, dtype=np.int16))
+    tones = estimate_line_noise(wav_path=path, search_bands_hz=[[7950, 8050]], min_height_db=-1e5, n_windows=2, window_s=0.5,
+                                max_tones_per_band=1000, min_separation_hz=10.0, floor_window_hz=4.0)
+    frequencies = np.sort([tone['frequency_hz'] for tone in tones])
+    assert all(tone['kept'] for tone in tones)
+    assert 6 <= frequencies.size <= 11
+    assert np.min(np.diff(frequencies)) >= 10.0 - 1e-6
+    assert frequencies[0] >= 7950.0
+    assert frequencies[-1] <= 8050.0
+
+
+def test_broadband_channel_stream_raises_on_a_short_read(tmp_path):
+    """
+    Description
+    -----------
+    A wav that holds fewer samples than the stream was told (a truncated or
+    still-growing file) must raise an ``OSError`` naming the expected and the
+    delivered sample counts, instead of silently padding the output.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test directory.
+
+    Returns
+    -------
+    None
+    """
+
+    path = tmp_path / "m_230101120000_ch01_cropped_to_video_hpss.wav"
+    wavfile.write(path, 250000, np.zeros(1000, dtype=np.int16))
+    taps, _ = design_broadband_highpass(250000, 2000, 1000, 120)
+    stream = _BroadbandChannelStream(wav_path=path, n_samples=5000, sampling_rate=250000, taps=taps,
+                                     tone_frequencies_hz=[], block_length=250, half_window=1)
+    try:
+        with pytest.raises(OSError, match=r"Short read from .* expected 5000 samples, got 1000"):
+            stream.process(0, 5000)
+    finally:
+        stream.close()
+
+
+def test_estimate_low_band_variance_rejects_a_memmap_shorter_than_one_window(tmp_path):
+    """
+    Description
+    -----------
+    A broadband memmap with fewer samples than one ``window_s`` window cannot
+    give any variance window, so the estimate raises a ``ValueError`` that names
+    the sample count and the window length.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+
+    Returns
+    -------
+    None
+    """
+
+    name = "m_230101120000_ch01_cropped_to_video_hpss.wav"
+    mmap_path = write_broadband_audio(tmp_path, [(name, np.zeros(1000, dtype=np.int16))], 250000)
+    with pytest.raises(ValueError, match=re.escape("holds 1000 samples, fewer than one 0.2 s window")):
+        estimate_low_band_variance([tmp_path / name], mmap_path, n_windows=3, window_s=0.2, seed=0)
+
+
+def test_validate_broadband_output_names_every_reason_for_rejecting_an_output(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    After one real broadband run the output validates as ``complete and
+    current``; each kind of damage is then rejected with its own reason: no
+    source wavs, a memmap of the wrong byte size, a second broadband memmap, an
+    unreadable report, a report naming another memmap, changed source files, and
+    a report missing a required key.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        No-ops the interactive ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.modify_files.smart_wait")
+    settings = _broadband_settings(processing_settings)
+    assert validate_broadband_output(tmp_path, settings) == (False, "no source wavs")
+    _write_broadband_session(tmp_path)
+    _make_operator(str(tmp_path), processing_settings, []).broadband_filter_audio()
+    mmap_path = find_audio_mmap(tmp_path, "broadband")
+    report_path = mmap_path.parent / BROADBAND_REPORT_NAME
+    report_text = report_path.read_text(encoding="utf-8")
+    report = json.loads(report_text)
+    assert validate_broadband_output(tmp_path, settings) == (True, "complete and current")
+
+    original_bytes = mmap_path.read_bytes()
+    mmap_path.write_bytes(original_bytes[:-2])
+    valid, reason = validate_broadband_output(tmp_path, settings)
+    assert valid is False
+    assert reason == f"{mmap_path.name} has {len(original_bytes) - 2} bytes, expected {len(original_bytes)}"
+    mmap_path.write_bytes(original_bytes)
+
+    other = mmap_path.parent / "230101120000_concatenated_audio_broadband_filtered_250000_10_3_int16.mmap"
+    other.write_bytes(b"")
+    assert validate_broadband_output(tmp_path, settings) == (False, f"other broadband memmaps present: {[other.name]}")
+    other.unlink()
+
+    report_path.write_text("{not json", encoding="utf-8")
+    valid, reason = validate_broadband_output(tmp_path, settings)
+    assert valid is False
+    assert reason.startswith(f"unreadable {BROADBAND_REPORT_NAME}: ")
+
+    report_path.write_text(json.dumps({**report, 'output': {**report['output'], 'file': other.name}}), encoding="utf-8")
+    assert validate_broadband_output(tmp_path, settings) == (False, "report names another memmap")
+
+    changed_sources = [{**source, 'bytes': source['bytes'] + 1} for source in report['sources']]
+    report_path.write_text(json.dumps({**report, 'sources': changed_sources}), encoding="utf-8")
+    assert validate_broadband_output(tmp_path, settings) == (False, "source files changed")
+
+    report_path.write_text(json.dumps({key: value for key, value in report.items() if key != 'settings'}), encoding="utf-8")
+    assert validate_broadband_output(tmp_path, settings) == (False, f"malformed {BROADBAND_REPORT_NAME}: missing 'settings'")
+
+    report_path.write_text(report_text, encoding="utf-8")
+    assert validate_broadband_output(tmp_path, settings) == (True, "complete and current")
+
+
+def test_broadband_filter_audio_rejects_missing_or_mismatched_sources_and_even_smoothing(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    The input checks of ``broadband_filter_audio``: a session without source
+    wavs raises a ``FileNotFoundError`` naming the glob and folder; a source
+    wav at another sampling rate raises a ``ValueError`` naming the offending
+    file; and an even ``line_noise_smoothing_blocks`` (the running median needs
+    a centre block) raises a ``ValueError`` naming the value. None of them leaves
+    a broadband memmap behind.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test directory (three session roots).
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        No-ops the interactive ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.modify_files.smart_wait")
+    settings = _broadband_settings(processing_settings)
+
+    empty_root = tmp_path / "empty"
+    (empty_root / "audio" / settings['source_dir']).mkdir(parents=True)
+    with pytest.raises(FileNotFoundError, match=f"No '{re.escape(settings['source_glob'])}' files in"):
+        _make_operator(str(empty_root), processing_settings, []).broadband_filter_audio()
+
+    mismatched_root = tmp_path / "mismatched"
+    hpss_dir = mismatched_root / "audio" / "hpss"
+    hpss_dir.mkdir(parents=True)
+    wavfile.write(hpss_dir / "m_230101120000_ch01_cropped_to_video_hpss.wav", 250000, np.zeros(2000, dtype=np.int16))
+    wavfile.write(hpss_dir / "m_230101120000_ch02_cropped_to_video_hpss.wav", 125000, np.zeros(2000, dtype=np.int16))
+    with pytest.raises(ValueError, match=re.escape("'m_230101120000_ch02_cropped_to_video_hpss.wav' is 1 ch PCM_16 at 125000 Hz")) as raised:
+        _make_operator(str(mismatched_root), processing_settings, []).broadband_filter_audio()
+    assert "every source must be 1 ch PCM_16 at 250000 Hz with 2000 samples" in str(raised.value)
+
+    even_root = tmp_path / "even"
+    _write_broadband_session(even_root)
+    settings['line_noise_smoothing_blocks'] = 4
+    with pytest.raises(ValueError, match="line_noise_smoothing_blocks must be a positive odd integer, got 4"):
+        _make_operator(str(even_root), processing_settings, []).broadband_filter_audio()
+
+    for root in (empty_root, mismatched_root, even_root):
+        assert list((root / "audio").rglob("*.mmap")) == []
+
+
+def test_broadband_filter_audio_short_output_is_never_published(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    If the written memmap ends up with fewer bytes than ``n_samples x
+    n_channels x 2`` (here every chunk is made one sample short), the step must
+    raise an ``OSError`` naming both sizes and leave neither the memmap nor its
+    hidden temporary nor a report in the output folder.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        No-ops the interactive ``smart_wait`` and shortens each streamed chunk.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.modify_files.smart_wait")
+    _broadband_settings(processing_settings)
+    signals = _write_broadband_session(tmp_path)
+
+    def _one_sample_short(_stream, start, end):
+        """
+        Description
+        -----------
+        Stand-in for ``_BroadbandChannelStream.process`` returning one sample
+        fewer than requested.
+
+        Parameters
+        ----------
+        _stream (_BroadbandChannelStream)
+            The stream instance (unused).
+        start (int)
+            First absolute sample of the chunk.
+        end (int)
+            One past the last absolute sample of the chunk.
+
+        Returns
+        -------
+        column (np.ndarray)
+            int16 zeros of length ``end - start - 1``.
+        """
+
+        return np.zeros(end - start - 1, dtype=np.int16)
+
+    mocker.patch.object(_BroadbandChannelStream, "process", _one_sample_short)
+    n_samples = signals[0].shape[0]
+    n_chunks = -(-n_samples // round(2.0 * _BB_SR))
+    expected_bytes = n_samples * 3 * 2
+    with pytest.raises(OSError, match=f"Broadband memmap has {expected_bytes - n_chunks * 3 * 2} bytes, expected {expected_bytes}"):
+        _make_operator(str(tmp_path), processing_settings, []).broadband_filter_audio()
+    output_dir = tmp_path / "audio" / "broadband_filtered"
+    assert sorted(path.name for path in output_dir.iterdir()) == []
+
+
+def test_broadband_filter_audio_replaces_an_older_memmap_and_records_an_unknown_version(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    Exactly one broadband memmap may exist: an older one with another name
+    (e.g. from a run on a different sample count) is deleted once the new one
+    is in place. When the installed package metadata cannot be found, the
+    report records ``code_version`` as ``unknown`` instead of failing.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        No-ops the interactive ``smart_wait`` and makes the version lookup fail.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.modify_files.smart_wait")
+    mocker.patch("usv_playpen.processing.modify_files.metadata.version", side_effect=importlib_metadata.PackageNotFoundError("usv-playpen"))
+    _broadband_settings(processing_settings)
+    signals = _write_broadband_session(tmp_path)
+    output_dir = tmp_path / "audio" / "broadband_filtered"
+    output_dir.mkdir(parents=True)
+    older = output_dir / "230101120000_concatenated_audio_broadband_filtered_250000_10_3_int16.mmap"
+    older.write_bytes(np.zeros(30, dtype=np.int16).tobytes())
+
+    summary = _make_operator(str(tmp_path), processing_settings, []).broadband_filter_audio()
+
+    expected_name = f"230101120000_concatenated_audio_broadband_filtered_{_BB_SR}_{signals[0].shape[0]}_3_int16.mmap"
+    assert summary['status'] == 'written'
+    assert not older.exists()
+    assert sorted(path.name for path in output_dir.glob("*.mmap")) == [expected_name]
+    with (output_dir / BROADBAND_REPORT_NAME).open(encoding="utf-8") as report_file:
+        report = json.load(report_file)
+    assert report['code_version'] == 'unknown'
+    assert report['output']['file'] == expected_name
+
+
+def test_broadband_filter_session_worker_returns_written_and_failed_rows(tmp_path, processing_settings):
+    """
+    Description
+    -----------
+    The batch worker, run in-process: a good session yields a ``written`` row
+    carrying the step's summary (3 channels, the exact sample count and byte
+    size, an empty error) and logs the session's messages with its name; a
+    session without wavs yields a ``failed`` row with empty numeric fields and
+    the exception type and message in ``error``, and logs ``FAILED``. Both rows
+    carry every report column.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test directory.
+    processing_settings (dict)
+        Package processing-settings fixture.
+
+    Returns
+    -------
+    None
+    """
+
+    _broadband_settings(processing_settings)
+    good = tmp_path / "good"
+    signals = _write_broadband_session(good)
+    bad = tmp_path / "bad"
+    (bad / "audio" / "hpss").mkdir(parents=True)
+    log_path = tmp_path / "batch.log"
+
+    good_row = modify_files._broadband_filter_session_worker(str(good), processing_settings, str(log_path))
+    bad_row = modify_files._broadband_filter_session_worker(str(bad), processing_settings, str(log_path))
+
+    n_samples = signals[0].shape[0]
+    assert good_row['status'] == 'written'
+    assert good_row['n_channels'] == 3
+    assert good_row['n_samples'] == n_samples
+    assert good_row['output_bytes'] == n_samples * 3 * 2
+    assert good_row['error'] == ''
+    assert bad_row['status'] == 'failed'
+    assert bad_row['n_channels'] == ''
+    assert bad_row['tones_kept'] == ''
+    assert bad_row['error'].startswith("FileNotFoundError: No ")
+    for row in (good_row, bad_row):
+        assert set(row) == set(BROADBAND_BATCH_REPORT_COLUMNS)
+    log_text = log_path.read_text(encoding="utf-8")
+    assert "[good] Broadband filtering of" in log_text
+    assert "[bad] FAILED: FileNotFoundError" in log_text
