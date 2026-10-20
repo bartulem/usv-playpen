@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import pickle
 import re
+from typing import ClassVar
 
 import h5py
 import numpy as np
@@ -59,6 +60,8 @@ from usv_playpen.modeling.load_input_files import (
     is_vocal_signal,
     load_behavioral_feature_data,
     load_pickle_modeling_data,
+    mixture_component_count,
+    mixture_ibi_threshold,
     onset_target_tag,
     read_usv_summary_table,
     require_labels_for_vocal_predictors,
@@ -271,6 +274,41 @@ class TestCalculateIbiThresholdIg:
 
         assert _calculate_ibi_threshold_ig(0.1, 0.5, 3.0) > _calculate_ibi_threshold_ig(0.1, 0.5, 1.0)
         assert _calculate_ibi_threshold_ig(0.2, 0.5, 2.58) > _calculate_ibi_threshold_ig(0.1, 0.5, 2.58)
+
+
+class TestMixtureIbiThreshold:
+    """One helper reads either mixture-block form, so every reader of ``mixture_model_params``
+    gives the same threshold the loaders use."""
+
+    LOGNORMAL: ClassVar[dict] = {'means': [-2.5, -1.0], 'sds': [0.3, 0.4]}
+    INVERSE_GAUSSIAN: ClassVar[dict] = {'model_class': 'ig', 'mus': [0.1, 0.4], 'lambdas': [1.0, 2.0]}
+
+    def test_component_count_reads_the_block_form(self):
+        """A log-normal block counts ``means``, an inverse-Gaussian block counts ``mus``."""
+
+        assert mixture_component_count(self.LOGNORMAL) == 2
+        assert mixture_component_count({'model_class': 'ig', 'mus': [0.1], 'lambdas': [1.0]}) == 1
+
+    def test_lognormal_block_matches_the_lognormal_threshold(self):
+        """A log-normal block gives exactly ``exp(mean + z * sd)`` of the chosen component."""
+
+        assert mixture_ibi_threshold(self.LOGNORMAL, 1, 2.58) == pytest.approx(
+            float(_calculate_ibi_threshold(-1.0, 0.4, 2.58)))
+
+    def test_inverse_gaussian_block_matches_the_ig_threshold(self):
+        """An inverse-Gaussian block gives the ``Phi(z)`` quantile of the chosen component,
+        where reading ``means`` would raise KeyError."""
+
+        assert mixture_ibi_threshold(self.INVERSE_GAUSSIAN, 1, 2.58) == pytest.approx(
+            _calculate_ibi_threshold_ig(0.4, 2.0, 2.58))
+
+    @pytest.mark.parametrize('index', [-1, 2])
+    def test_an_out_of_range_index_raises(self, index):
+        """A negative index would wrap to the last component, and one past the end has no component."""
+
+        for block in (self.LOGNORMAL, self.INVERSE_GAUSSIAN):
+            with pytest.raises(ValueError, match="Invalid mixture_model_component_index"):
+                mixture_ibi_threshold(block, index, 2.58)
 
 
 # _generate_vocal_trace

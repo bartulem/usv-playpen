@@ -42,6 +42,7 @@ from click.core import ParameterSource
 from scipy.ndimage import binary_dilation, gaussian_filter
 
 from ..cli_utils import modify_settings_json_for_cli
+from ..modeling.load_input_files import mixture_ibi_threshold
 from ..os_utils import (
     atomic_output_path,
     drop_noise_usvs,
@@ -383,8 +384,7 @@ class NaturalisticUsvRepositoryBuilder:
         # Bout-gap threshold from the target sex's first mixture component; a mixed build
         # (no target sex) falls back to the male component.
         ibi_sex = target_sex if target_sex is not None else "male"
-        ibi_threshold = float(np.exp(mixture_params[ibi_sex]['means'][ibi_component_index]
-                                     + ibi_z_score * mixture_params[ibi_sex]['sds'][ibi_component_index]))
+        ibi_threshold = mixture_ibi_threshold(mixture_params[ibi_sex], ibi_component_index, ibi_z_score)
 
         # Single accumulator: audio chunks + parallel per-USV / per-bout metadata.
         store = {

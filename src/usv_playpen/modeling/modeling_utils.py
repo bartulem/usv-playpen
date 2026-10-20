@@ -105,9 +105,10 @@ from sklearn.model_selection import GroupKFold, StratifiedGroupKFold
 
 from ..os_utils import configure_path
 from .load_input_files import (
-    _calculate_ibi_threshold,
     is_pooled_vocal_signal,
     is_vocal_signal,
+    mixture_component_count,
+    mixture_ibi_threshold,
 )
 from .modeling_collinearity_audit import (
     audit_predictor_collinearity,
@@ -2456,15 +2457,12 @@ def run_predictor_audits(processed_beh_dict: dict,
             for sex in ('male', 'female'):
                 params = mixture_model_params[sex]
                 # Lower-bound the index too: a negative `mixture_model_idx` would pass a
-                # bare `< len(...)` guard and then index `params['means']` from
-                # the end of the array, silently selecting the wrong mixture-model
-                # component. Require a non-negative in-range index so any
-                # out-of-range value (negative or too large) falls to the NaN
-                # branch instead.
-                if 0 <= mixture_model_idx < len(params['means']):
-                    ibi_thresholds[sex] = float(_calculate_ibi_threshold(
-                        params['means'][mixture_model_idx], params['sds'][mixture_model_idx], mixture_model_z
-                    ))
+                # bare `< n` guard and then index the component arrays from the end,
+                # silently selecting the wrong mixture-model component. Require a
+                # non-negative in-range index so any out-of-range value (negative or
+                # too large) falls to the NaN branch instead.
+                if 0 <= mixture_model_idx < mixture_component_count(params):
+                    ibi_thresholds[sex] = mixture_ibi_threshold(params, mixture_model_idx, mixture_model_z)
                 else:
                     ibi_thresholds[sex] = float('nan')
 

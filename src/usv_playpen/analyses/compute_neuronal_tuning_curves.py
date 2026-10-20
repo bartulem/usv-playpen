@@ -59,6 +59,7 @@ from scipy import ndimage, stats
 from scipy.special import erf
 from tqdm import tqdm
 
+from ..modeling.load_input_files import mixture_ibi_threshold
 from ..os_utils import (
     QLVM_CATEGORY_COLUMNS,
     VOCAL_CLASSES,
@@ -742,9 +743,11 @@ def ibi_bout_threshold(sex: str, ibi_z_score: float, ibi_component_index: int) -
     -----------
     The inter-bout silence that ends an IBI bout, in seconds, for one emitter sex.
 
-    Read from the log inter-syllable-interval mixture in `modeling_settings.json`, exactly as
-    `build_naturalistic_usv_repository` does: the chosen component's mean plus `ibi_z_score`
-    standard deviations, exponentiated back out of log space. Component 0 is the respiratory
+    Read from the inter-syllable-interval mixture in `modeling_settings.json`, exactly as
+    `build_naturalistic_usv_repository` and the modeling loaders do (`mixture_ibi_threshold`): for
+    a log-normal block, the chosen component's mean plus `ibi_z_score` standard deviations,
+    exponentiated back out of log space; for an inverse-Gaussian block (`'model_class': 'ig'`),
+    the component's `Phi(ibi_z_score)` quantile. Component 0 is the respiratory
     rhythm, which for the male at z = 2.58 puts the threshold at 115.5 ms.
 
     This is NOT `bout_quiet_seconds`, which is the VMI baseline window and groups USVs only as a
@@ -773,9 +776,7 @@ def ibi_bout_threshold(sex: str, ibi_z_score: float, ibi_component_index: int) -
         msg = (f"No inter-syllable mixture for emitter sex {sex!r}; "
                f"modeling_settings.json carries {sorted(mixture_params)}.")
         raise KeyError(msg)
-    component = mixture_params[sex]
-    return float(np.exp(component["means"][ibi_component_index]
-                        + ibi_z_score * component["sds"][ibi_component_index]))
+    return mixture_ibi_threshold(mixture_params[sex], ibi_component_index, ibi_z_score)
 
 
 def ibi_bout_runs(starts: np.ndarray, stops: np.ndarray, ibi_threshold: float,

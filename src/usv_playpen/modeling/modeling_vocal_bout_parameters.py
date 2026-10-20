@@ -54,11 +54,12 @@ from tqdm import tqdm
 
 from ..os_utils import atomic_output_path
 from .load_input_files import (
-    _calculate_ibi_threshold,
     find_variable_length_bouts,
     is_pooled_vocal_signal,
     is_vocal_signal,
     load_behavioral_feature_data,
+    mixture_component_count,
+    mixture_ibi_threshold,
     require_labels_for_vocal_predictors,
 )
 from .modeling_metadata import (
@@ -359,11 +360,9 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             # Require a non-negative in-range index: a negative `mixture_model_idx` passes a
             # bare `< len(...)` guard and then indexes from the array end, silently selecting
             # the wrong mixture component (matches the guard in `modeling_utils`).
-            if 0 <= mixture_model_idx < len(params['means']):
-                ibi_thresholds_md[sex] = float(_calculate_ibi_threshold(
-                    params['means'][mixture_model_idx], params['sds'][mixture_model_idx],
-                    self.modeling_settings['model_params']['mixture_model_z_score'],
-                ))
+            if 0 <= mixture_model_idx < mixture_component_count(params):
+                ibi_thresholds_md[sex] = mixture_ibi_threshold(
+                    params, mixture_model_idx, self.modeling_settings['model_params']['mixture_model_z_score'])
             else:
                 ibi_thresholds_md[sex] = float('nan')
 

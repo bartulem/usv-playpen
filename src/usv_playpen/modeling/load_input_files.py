@@ -1789,6 +1789,73 @@ def _calculate_ibi_threshold_ig(mu: float, lam: float, z_score: float) -> float:
     return float(invgauss.ppf(q, mu / lam, scale=lam))
 
 
+def mixture_component_count(params: dict) -> int:
+    """
+    Description
+    -----------
+    Number of components in one sex's inter-syllable-interval mixture block.
+
+    A block is either log-normal (``means`` / ``sds``, log space) or inverse Gaussian, which
+    declares itself with ``'model_class': 'ig'`` and carries ``mus`` / ``lambdas`` (seconds).
+
+    Parameters
+    ----------
+    params (dict)
+        One sex's entry of ``mixture_model_params``.
+
+    Returns
+    -------
+    n_components (int)
+        Length of the block's component arrays.
+    """
+
+    if 'model_class' in params and params['model_class'] == 'ig':
+        return len(params['mus'])
+    return len(params['means'])
+
+
+def mixture_ibi_threshold(params: dict, component_index: int, z_score: float) -> float:
+    """
+    Description
+    -----------
+    Inter-bout interval threshold (seconds) from one component of one sex's mixture block,
+    for either block form: ``exp(mean + z * sd)`` for a log-normal block
+    (:func:`_calculate_ibi_threshold`), the ``Phi(z)`` quantile of the component for an
+    inverse-Gaussian one (:func:`_calculate_ibi_threshold_ig`).
+
+    Parameters
+    ----------
+    params (dict)
+        One sex's entry of ``mixture_model_params``.
+    component_index (int)
+        Which component sets the threshold; must lie in ``[0, n_components)``.
+    z_score (float)
+        The cutoff, ``model_params.mixture_model_z_score``.
+
+    Returns
+    -------
+    threshold (float)
+        Inter-bout silence threshold in seconds.
+
+    Raises
+    ------
+    ValueError
+        If ``component_index`` is outside ``[0, n_components)``. A negative index would otherwise
+        pick a component from the end of the arrays.
+    """
+
+    n_components = mixture_component_count(params)
+    if not 0 <= component_index < n_components:
+        msg = (f"Invalid mixture_model_component_index {component_index}: the mixture has "
+               f"{n_components} components.")
+        raise ValueError(msg)
+    if 'model_class' in params and params['model_class'] == 'ig':
+        return _calculate_ibi_threshold_ig(params['mus'][component_index],
+                                           params['lambdas'][component_index], z_score)
+    return float(_calculate_ibi_threshold(params['means'][component_index],
+                                          params['sds'][component_index], z_score))
+
+
 def find_variable_length_bouts(root_directories: list | None = None,
                                mouse_ids_dict: dict | None = None,
                                camera_fps_dict: dict | None = None,

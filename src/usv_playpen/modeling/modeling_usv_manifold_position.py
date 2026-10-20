@@ -65,10 +65,11 @@ from tqdm import tqdm
 from ..analyses.compute_behavioral_features import FeatureZoo
 from ..os_utils import atomic_output_path
 from .load_input_files import (
-    _calculate_ibi_threshold,
     find_usv_categories,
     is_vocal_signal,
     load_behavioral_feature_data,
+    mixture_component_count,
+    mixture_ibi_threshold,
     require_labels_for_vocal_predictors,
 )
 from .manifold_metric import (
@@ -1294,11 +1295,9 @@ class ContinuousModelingPipeline(FeatureZoo):
             # Require a non-negative in-range index: a negative `mixture_model_idx_md` passes a
             # bare `< len(...)` guard and then indexes from the array end, silently selecting
             # the wrong mixture component (matches the guard in `modeling_utils`).
-            if 0 <= mixture_model_idx_md < len(params['means']):
-                ibi_thresholds_md[sex] = float(_calculate_ibi_threshold(
-                    params['means'][mixture_model_idx_md], params['sds'][mixture_model_idx_md],
-                    self.modeling_settings['model_params']['mixture_model_z_score'],
-                ))
+            if 0 <= mixture_model_idx_md < mixture_component_count(params):
+                ibi_thresholds_md[sex] = mixture_ibi_threshold(
+                    params, mixture_model_idx_md, self.modeling_settings['model_params']['mixture_model_z_score'])
             else:
                 ibi_thresholds_md[sex] = float('nan')
 

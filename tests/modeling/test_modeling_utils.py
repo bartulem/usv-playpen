@@ -40,6 +40,7 @@ import polars as pls
 import pytest
 from sklearn.model_selection import StratifiedGroupKFold
 
+import usv_playpen.modeling.load_input_files as lif
 import usv_playpen.modeling.modeling_utils as mu
 from usv_playpen.modeling.modeling_utils import (
     align_probs_to_canonical,
@@ -2470,8 +2471,8 @@ class TestRunPredictorAuditsForwarding:
             'camera_fps_dict': fps,
             'max_lag_seconds': 5.0,
             'n_shuffles': 3,
-            'ibi_thresholds': {'male': float(mu._calculate_ibi_threshold(0.1, 0.05, 1.0)),
-                               'female': float(mu._calculate_ibi_threshold(0.12, 0.06, 1.0))},
+            'ibi_thresholds': {'male': float(lif._calculate_ibi_threshold(0.1, 0.05, 1.0)),
+                               'female': float(lif._calculate_ibi_threshold(0.12, 0.06, 1.0))},
             'save_path': str(tmp_path / 'myinput_timescales.pkl'),
             'source_pickle': 'myinput.pkl',
             'random_seed': 0,
@@ -2589,8 +2590,21 @@ class TestRunPredictorAuditsForwarding:
         ts = self._run_timescale(mocker, tmp_path, settings)
         ts.assert_called_once()
         thr = ts.call_args.kwargs['ibi_thresholds']
-        assert thr['male'] == float(mu._calculate_ibi_threshold(0.3, 0.07, 1.0))
+        assert thr['male'] == float(lif._calculate_ibi_threshold(0.3, 0.07, 1.0))
         assert np.isnan(thr['female'])
+
+    def test_ibi_threshold_reads_an_inverse_gaussian_block(self, mocker, tmp_path):
+        """An inverse-Gaussian block (``mus`` / ``lambdas``) gives the same threshold the loaders
+        use, where reading ``means`` would stop the audit with a KeyError."""
+
+        settings = self._settings(timescale=True, collinearity=False)
+        settings['model_params']['mixture_model_component_index'] = 0
+        settings['mixture_model_params'] = {'male': {'model_class': 'ig', 'mus': [0.1], 'lambdas': [1.0]},
+                                            'female': {'means': [0.12], 'sds': [0.06]}}
+        ts = self._run_timescale(mocker, tmp_path, settings)
+        thr = ts.call_args.kwargs['ibi_thresholds']
+        assert thr['male'] == pytest.approx(lif._calculate_ibi_threshold_ig(0.1, 1.0, 1.0))
+        assert thr['female'] == float(lif._calculate_ibi_threshold(0.12, 0.06, 1.0))
 
     @pytest.mark.parametrize(('bad_key', 'bad_val'), [
         ('timescale_shuffle_range', [20.0, 40.0, 60.0]),   # three elements
