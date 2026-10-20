@@ -113,19 +113,31 @@ def test_make_bevel_weights_rejects_feather_below_one():
         _make_bevel_weights((4, 4), feather_pixels=0)
 
 
-def test_parse_smartspim_metadata_reads_pixel_and_z_step(tmp_path):
+# The session block of metadata.txt as two SmartSPIM software releases write
+# it, with the micro sign as the single Latin-1 byte the instrument writes.
+_SESSION_BLOCK_OLD = (
+    b"Obj\tV_Res\t\xb5m/pix\tZ step (\xb5m)\tScanning\tSampling\tDestripe\tZ_Block\n"
+    b"LCT 3.6x\t1600\t0.76\t1.5\tFast\t1/1\tN/A/0\t7958\n"
+)
+_SESSION_BLOCK_NEW = (
+    b"Obj\tImmersion\tEmpty\tV_Res\t\xb5m/pix\tZ step (\xb5m)\tScanning\tSampling"
+    b"\tDestripe\tFlat\tZ_Block\tVersion\r\n"
+    b"LCT 3.6x\t1.52+\tBlank\t1600\t0.76\t1.5\tFast\t1/1\tN/0\tNone\t7526\t5.4.0.3\r\n"
+)
+
+
+@pytest.mark.parametrize("session_block", [_SESSION_BLOCK_OLD, _SESSION_BLOCK_NEW], ids=["old-layout", "new-layout"])
+def test_parse_smartspim_metadata_reads_pixel_and_z_step(tmp_path, session_block):
     """
     Description
     -----------
-    The pixel size and Z step are read from columns 5 and 6 of the data
-    row following the ``Obj`` header line.
+    The pixel size and Z step are read from the ``µm/pix`` and
+    ``Z step (µm)`` columns of the data row following the ``Obj`` header
+    line, wherever the software release places them.
     """
 
     meta_file = tmp_path / "metadata.txt"
-    meta_file.write_text(
-        "Obj\tcol1\tcol2\tcol3\tcol4\tcol5\n"
-        "val0\tval1\tval2\tval3\t0.76\t1.5\n"
-    )
+    meta_file.write_bytes(session_block)
     info = _parse_smartspim_metadata(meta_file)
     assert info == {"pixel_size_um": 0.76, "z_step_um": 1.5}
 
@@ -219,8 +231,9 @@ def _make_smartspim_tree(tmp_path):
     root = tmp_path / "acq"
     (root).mkdir()
     (root / "metadata.txt").write_text(
-        "Obj\ta\tb\tc\td\te\n"
-        "v0\tv1\tv2\tv3\t1.0\t2.0\n"
+        "Obj\tImmersion\tEmpty\tV_Res\tµm/pix\tZ step (µm)\n"
+        "LCT 3.6x\t1.52+\tBlank\t1600\t1.0\t2.0\n",
+        encoding="latin-1",
     )
     tile_a = root / "Ex_488_Ch0" / "0" / "0_0"
     tile_b = root / "Ex_488_Ch0" / "20" / "20_0"
@@ -357,7 +370,7 @@ def test_stitch_smartspim_tiles_no_tile_dirs_raises(tmp_path):
 
     root = tmp_path / "acq"
     (root / "Ex_488_Ch0").mkdir(parents=True)
-    (root / "metadata.txt").write_text("Obj\ta\tb\tc\td\te\nv0\tv1\tv2\tv3\t1.0\t2.0\n")
+    (root / "metadata.txt").write_bytes(_SESSION_BLOCK_NEW)
     with pytest.raises(
         FileNotFoundError,
         match=r"No SmartSPIM tile directories found under .*Ex_488_Ch0",
