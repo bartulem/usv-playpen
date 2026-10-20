@@ -6,11 +6,12 @@ Coverage: the nested vocal-manifold position decoding's block-diagonal penalty a
 fitted against; the nested design, the leave-one-session-out scores, the spike-train shift null and its
 escalation, the settings guards, the no-behaviour baseline and the posterior (behaviour-as-prior) statistic.
 
-The penalty is the piece that makes a mixed design legal -- five behavioural features wanting 600 lags
+The penalty is the piece that makes a mixed design legal -- behavioural features wanting 600 lags
 of smoothing beside one neural column that must receive ridge only -- so these tests pin its SHAPE
 (zeros off the behaviour blocks, zero on the neural diagonal) and its IDENTITY to the parent's
-operator, since a second copy of the finite-difference operator could drift from the one P1 selected
-its features under. They also pin the reduced model to P1's own result file rather than to a literal.
+operator, since a second copy of the finite-difference operator could drift from the one the
+behavioural model uses. They also pin the reduced model to the cohort behaviour-control selection,
+checked against the frozen feature list.
 """
 
 from __future__ import annotations
@@ -617,12 +618,12 @@ class TestNestedScores:
         assert scores["added"] > 0
 
     def test_a_relays_contribution_falls_as_it_relays_more_noisily(self):
-        """MEASURED, and it qualifies the plan's statement that "a pure relay adds ~0".
+        """A neuron that only relays behaviour can still add at finite n; how much depends on its noise.
 
         A relay carries NO information the behaviour lacks, so in the infinite-data limit it adds
         nothing. At finite n it can still add, by VARIANCE REDUCTION: the behaviour block has to
-        estimate its mapping from many penalised columns -- on real data the design is underdetermined
-        (cl0401: 2,155 events against 3,000 columns) -- while a clean relay hands the model a
+        estimate its mapping from many penalised columns -- on real data the design can have more
+        columns than events -- while a clean relay hands the model a
         low-variance, already-correctly-weighted summary of the same signal.
 
         So what is actually true, and what this pins, is that the contribution is governed by how
@@ -1007,7 +1008,7 @@ class TestPosteriorNested:
     def test_a_residual_kappa_double_counts_the_base_rate_for_a_shrunk_control(self):
         """What this test pins is the MIS-SPECIFICATION: a shrunk predictor's residual spread is the
         truth's own spread, so the fitted kappa is well above zero and the prior it builds scores
-        BELOW the occupancy prior at the truth -- measured on cl0401 at -0.10 nats/event."""
+        BELOW the occupancy prior at the truth."""
         positions, predicted, sessions = self._shrunk_control()
         folds = decoding_context(positions, sessions, self.DECODING, PERIOD)
         nested = copy.deepcopy(self.NESTED)
@@ -1022,7 +1023,7 @@ class TestPosteriorNested:
         neuron is never credited for repairing a deficit the prior created. It is a NARROWER promise
         than kappa = 0 for a shrunk control -- on this fast grid the KDE over-smooths a tight cluster,
         so a tilt toward the centre re-sharpens the BASE RATE and legitimately earns a kappa of 0.5
-        here; at the shipped bandwidth (selected by held-out likelihood) cl0401 tuned to 0."""
+        here."""
         positions, predicted, sessions = self._shrunk_control()
         folds = decoding_context(positions, sessions, self.DECODING, PERIOD)
         nested = copy.deepcopy(self.NESTED)

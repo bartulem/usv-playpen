@@ -6,7 +6,7 @@ Coverage: the job that runs vocal occurrence, vocalization identity, nested voca
 and vocal gating for one unit. Its own logic is thin, so these
 tests pin the properties that would fail SILENTLY rather than loudly -- that nulls split across spawned
 worker processes come back identical to the package's serial nulls, that escalation continues a draw
-sequence instead of repeating it, that the written sections follow the agreed design (held-out
+sequence instead of repeating it, that the written sections follow the shipped design (held-out
 sessions by name, no gating decisions), and that vocal gating's on/off switch reads its threshold from settings
 and skips an untuned unit without loading its kinematics.
 

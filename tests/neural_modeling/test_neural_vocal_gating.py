@@ -280,8 +280,8 @@ class TestActivation:
         assert should_run_gating(False, True, 500, 1.0, _gating())[0]
 
     def test_a_unit_with_no_vocal_tuning_is_skipped(self):
-        """User-ruled: the screen is 19 features x 2,000 shuffles, and a unit with no vocal tuning has
-        nothing for a gate to modulate."""
+        """The screen is 19 features x 2,000 shuffles, and a unit with no vocal tuning has nothing for a
+        gate to modulate, so it is skipped."""
         run, reason = should_run_gating(False, False, 500, 1.0, _gating())
         assert not run
         assert reason == "no_vocal_tuning"
@@ -803,8 +803,8 @@ class TestTheQuietOnlyNullRedrawsItsRows:
 
 class TestTheAlphasAreSettings:
     """Three SEPARATE bars, none of which is the FDR level -- `significance.fdr_q` is also 0.01, and
-    conflating a cohort FDR level with an uncorrected within-unit alpha is the confusion the plan
-    warns against."""
+    a cohort FDR level and an uncorrected within-unit alpha are different quantities that must not be
+    conflated."""
 
     def test_all_three_are_present_and_independent(self):
         """Each of the three alphas is its own shipped key at 0.01."""

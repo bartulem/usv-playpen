@@ -304,7 +304,7 @@ class TestCountGrainCombine:
 
 class TestShippedTransferSettings:
     """The transfer block of the shipped settings file."""
-    def test_the_ruled_values_are_shipped(self):
+    def test_the_shipped_values(self):
         """The shipped choice: bout window with a 4 s run-up at the repo's inter-bout
         threshold, Poisson counts per 100 ms bin."""
         with (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"

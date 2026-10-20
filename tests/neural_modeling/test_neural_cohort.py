@@ -203,9 +203,9 @@ class TestSummary:
 class TestShippedSettings:
 
     """The data-sufficiency and kinematic-encoding keys of the shipped settings file."""
-    def test_the_gate_keys_are_present_and_the_threshold_is_the_ruled_one(self):
+    def test_the_gate_keys_are_present_and_the_threshold_is_twenty(self):
         """The shipped settings must carry the three gate keys at 20 USVs per session, two vocal sessions and
-        two courtship sessions, so the cohort a run uses is the agreed one."""
+        two courtship sessions, so the cohort a run uses is the intended one."""
         with SETTINGS_PATH.open() as handle:
             sufficiency = json.load(handle)["data_sufficiency"]
         assert sufficiency["min_emitter_usvs_per_session"] == 20

@@ -190,14 +190,14 @@ class TestRepresentativeFold:
     def test_odd_counts_take_the_median(self):
         """With an odd number of usable folds the fold holding the median quiet score is chosen."""
         folds = [self._fold(0.09287, 14934), self._fold(0.21020, 14683), self._fold(0.16110, 4920)]
-        assert representative_fold(folds) == 2          # cl0401: the +0.16110 fold
+        assert representative_fold(folds) == 2          # the +0.16110 fold is the median
 
     def test_even_counts_break_the_tie_on_vocal_frames(self):
         """The two straddling folds are EQUIDISTANT from the median by construction -- the median is
         their midpoint -- so 'closest to the median' can never separate them."""
         folds = [self._fold(0.02019, 10447), self._fold(0.03100, 10695), self._fold(0.04678, 8564),
                  self._fold(0.04255, 4745), self._fold(0.02950, 27131), self._fold(0.04752, 7592)]
-        assert representative_fold(folds) == 1          # cl0499: 10,695 frames beats 4,745
+        assert representative_fold(folds) == 1          # 10,695 vocal frames beats 4,745
 
     def test_folds_without_a_model_are_ignored(self):
         """A no-model fold carries no filter to report, so it must not take part in the median."""
@@ -399,9 +399,9 @@ class TestSolverSettings:
 
 class TestFoldsWithoutAModel:
     """A fold that finds no model is the ORDINARY case at cohort scale -- an untuned unit produces one on
-    every fold -- yet every rotation before 2026-09-14 ran on a tuned unit, so the path had never run.
-    It saved no fold file, so `combine` stopped with "fold artifact missing" and the unit saved nothing;
-    and past that, the per-fold lists read keys a no-model fold never carries."""
+    every fold. Each such fold must still save a fold file, or `combine` stops with "fold artifact
+    missing" and the unit saves nothing, and the per-fold lists must not read keys a no-model fold never
+    carries."""
 
     N_LAGS = 5
     UNIT_ID = "imec1_cl0000_ch000_good"
@@ -535,8 +535,8 @@ class TestFoldsWithoutAModel:
         assert roster["screen_per_fold"][1][0]["p"] == 5e-3
 
     def test_every_folds_filter_is_kept_with_its_own_features(self, tmp_path):
-        """Ruled 2026-09-14: every fold's filter, not only the representative's. Folds select different
-        features, so each filter carries its own names and its own shape."""
+        """Every fold's filter is kept, not only the representative's. Folds select different features,
+        so each filter carries its own names and its own shape."""
         folds = self._mixed()
         roster = per_fold_roster(self._round_trip(tmp_path, folds), self.N_LAGS)
         first, last = roster["filters_per_fold"][0], roster["filters_per_fold"][2]
@@ -665,8 +665,8 @@ class TestTransferGuards:
                                                     **overrides}}}
 
     def test_fold_averaged_scoring_is_refused(self):
-        """Pooling is what stopped a 372-USV session's null -- mean four times its own observed --
-        swamping the average, and it flipped cl0401 from p 0.065 to 9.9e-06."""
+        """The transfer is calibrated once on the pooled folds; averaging per-fold scores lets a small
+        session's noisy null swamp the average, so the fold-averaged grain is refused."""
         with pytest.raises(ValueError, match="ONE calibration"):
             combine_folds([], {}, [], {}, self._settings(calibration_grain="per_fold"),
                           message_output=lambda *_a: None)
@@ -917,8 +917,8 @@ class TestTemporalBasis:
         assert abs(summed["per_session"] - 0.9) < abs(summed["shared"] - 0.9)
 
     def test_the_shipped_default_is_the_spline_basis(self):
-        """Ruled 2026-10-14 after the other-day test: the shipped fit is parametrised in the basis, the
-        raw per-frame path staying selectable as ``"none"``."""
+        """The shipped fit is parametrised in the spline basis, the raw per-frame path staying
+        selectable as ``"none"``."""
         with (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"
               / "_parameter_settings" / "neural_modeling_settings.json").open() as handle:
             block = json.load(handle)["kinematic_encoding"]["temporal_basis"]
@@ -928,14 +928,14 @@ class TestTemporalBasis:
                               "lambda_group", "smoothness_order", "spike_end_correction"}
 
     def test_the_shipped_scoring_is_cross_fitted(self):
-        """Ruled 2026-10-17: every frozen-model score is calibrated on blocks that exclude the scored block."""
+        """Every frozen-model score is calibrated on blocks that exclude the scored block."""
         with (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"
               / "_parameter_settings" / "neural_modeling_settings.json").open() as handle:
             block = json.load(handle)["kinematic_encoding"]["calibration"]
         assert block == {"scheme": "crossfit", "n_blocks": 5}
 
     def test_the_shipped_fit_has_per_session_intercepts(self):
-        """Ruled 2026-10-16: each training session gets its own unpenalised baseline."""
+        """Each training session gets its own unpenalised baseline."""
         with (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"
               / "_parameter_settings" / "neural_modeling_settings.json").open() as handle:
             block = json.load(handle)["kinematic_encoding"]["session_intercepts"]

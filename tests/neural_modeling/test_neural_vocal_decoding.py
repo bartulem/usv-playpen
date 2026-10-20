@@ -470,7 +470,7 @@ class TestConfigurationGuards:
 
 class TestSaveRoster:
     """The pooled gain is a summary of n fold values, and what it can hide is one session carrying the
-    whole result. The plan requires the folds themselves to be persisted, not just the mean."""
+    whole result. The folds themselves must be persisted, not just the mean."""
 
     def test_the_per_fold_detail_is_returned(self):
         """Each of the three per-fold records must carry exactly the stored keys and the 13 surface coefficients,
@@ -541,8 +541,8 @@ class TestSaveRoster:
 
 
 class TestFlaggedDescriptors:
-    """The three `record_*` flags named real quantities the plan rules should be persisted, and were
-    read by nothing -- so a run could declare them true and record none of them."""
+    """The three `record_*` flags name quantities that must be persisted when on; a flag read by
+    nothing would let a run declare it true and record none of them."""
 
     def test_the_overdispersion_index_follows_its_flag(self):
         """The overdispersion index must be present when its flag is on, absent when off, and near 1 for Poisson
@@ -623,7 +623,7 @@ class TestFlaggedDescriptors:
         assert neither == {}
 
     def test_the_shipped_settings_turn_all_three_on(self):
-        """If a flag ships false, the cohort run silently produces a thinner artifact than the plan's
+        """If a flag ships false, the cohort run silently produces a thinner artifact than the
         save-everything roster promises."""
         with SETTINGS_PATH.open() as handle:
             block = json.load(handle)["vocal_decoding"]

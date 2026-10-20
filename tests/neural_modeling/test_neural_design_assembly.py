@@ -11,7 +11,7 @@ the analysis window's own width so the two counts are comparable.
 
 Also guards the settings invariants the assembler reads: the analysis windows must agree with the
 baseline width, and the neural copy of ``kinematic_features`` must still equal the behavioural one, since
-the nested decoding's "beyond behaviour" means "beyond exactly what P1 fits".
+the nested decoding's "beyond behaviour" means "beyond exactly what the behavioural model fits".
 
 The kinematic half is covered against known answers on synthetic files: the quiet-anchor rasteriser at
 the recording edges, the loaders' missing-file errors, the pooled role-named z-scoring (zero mean and
@@ -513,20 +513,15 @@ class TestSettingsInvariants:
         assert "analysis_windows" not in settings["vocal_decoding"]
 
     def test_the_shipped_window_straddles_onset_deliberately(self):
-        """RULED 2026-09-11 (user): width 0.10 against a pre-offset of 0.05, so the window runs
-        [start - 50 ms, start + 50 ms) and roughly 40-55% of a typical USV (median duration 87-127
-        ms) falls INSIDE it.
+        """Width 0.10 against a pre-offset of 0.05, so the window runs [start - 50 ms, start + 50 ms)
+        and part of a typical USV falls INSIDE it.
 
-        This is a deliberate trade and it reverses the earlier prediction-clean default. It buys
-        POWER -- banked gains rise from +0.05726 to +0.07199 on cl0401 and from +0.0031 to +0.0114 on
-        cl0499, a 3.7x lift on the weak unit, and passes are decided at the faint margin. It costs the
-        ability to say the gain is purely PREDICTIVE: part of it is response to the USV in progress, and
-        the design cannot separate the two. The user ruled that showing the activity is purely
-        premotor is not required.
+        This is a deliberate trade. It buys power, at the cost of the ability to say the gain is purely
+        PREDICTIVE: part of it is response to the USV in progress, and the design cannot separate the
+        two. Showing that the activity is purely premotor is not required.
 
-        The pre-window is unchanged at 50 ms, so contamination from the PREVIOUS USV is unaffected
-        (3.7% of USVs cohort-wide have a gap below 50 ms); the post-onset half is inside the USV by
-        construction and needs no cleanliness guard.
+        The pre-window is 50 ms, so contamination from the PREVIOUS USV is guarded as before; the
+        post-onset half is inside the USV by construction and needs no cleanliness guard.
 
         The two numbers stay independent rather than collapsing into one duration precisely so this
         choice has to be made explicitly."""
@@ -554,9 +549,9 @@ class TestSettingsInvariants:
             "behaviour_control_n_lags", "sigma_floor", "prevocal_window_n_bins", "rate_transform",
             "rate_basis", "statistic", "discrimination_null", "behaviour_prior"}
 
-    def test_the_nested_decoding_matches_p1_where_it_must(self):
-        """The nested decoding is "P1 plus the neuron", so the control has to be fitted and SCORED the way P1
-        fitted and scored it. A silent divergence here would make the reduced model suboptimal for
+    def test_the_nested_decoding_matches_the_behavioural_model_where_it_must(self):
+        """The nested decoding is "the behavioural model plus the neuron", so the control has to be fitted
+        and SCORED the way the behavioural model fits and scores it. A silent divergence here would make the reduced model suboptimal for
         the test, which biases the test toward passing -- the wrong direction for a positive result."""
         nested = _load_settings()["nested_vocal_manifold_position_decoding"]
         modeling = (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"
@@ -576,7 +571,7 @@ class TestSettingsInvariants:
         promised behaviour (NaN plus a report line for a unit failing an enabled gate) was never
         implemented. Four were deleted and stay deleted.
 
-        TWO WERE RESTORED deliberately (2026-09-11) into `vocal_gating`, where they ARE read: gating
+        TWO live on deliberately in `vocal_gating`, where they ARE read: gating
         needs them to distinguish `not_testable` -- a feature with no spread during vocal frames
         leaves delta unidentifiable -- from `ns`, which says the test ran and found nothing.
         Collapsing those two would convert missing power into evidence of absence."""
@@ -619,8 +614,8 @@ class TestSettingsInvariants:
         assert "decorrelation_lag_seconds" not in settings["null"]
 
     def test_the_neural_kinematic_features_still_equal_the_behavioural_ones(self):
-        """The nested decoding asks whether a neuron adds beyond behaviour, where "behaviour" is the feature set P1
-        fits. The neural settings own their copy so a neural run can diverge deliberately, but the
+        """The nested decoding asks whether a neuron adds beyond behaviour, where "behaviour" is the feature set the
+        behavioural model fits. The neural settings own their copy so a neural run can diverge deliberately, but the
         shipped default has to match or the comparison silently stops meaning what it says."""
         with (SETTINGS_DIR / "modeling_settings.json").open() as handle:
             modeling = json.load(handle)
@@ -766,8 +761,8 @@ class TestSelfAndPartnerAreResolvedByName:
             emitter_names(self.NAMES, "male", "focal")
 
     def test_the_feature_split_asserts_a_dyad(self, monkeypatch):
-        """The P1 utility downstream derives the other animal as `abs(idx - 1)`, which is the partner
-        only in a dyad. Measured 2 track names in 73 of 73 cohort sessions -- so a third one would go
+        """The behavioural-model utility downstream derives the other animal as `abs(idx - 1)`, which is
+        the partner only in a dyad. Every cohort session has two tracks, so a third one would go
         unnoticed, which is what the assertion is for."""
         def _three_tracks(**_kwargs):
             """
@@ -797,10 +792,10 @@ class TestSelfAndPartnerAreResolvedByName:
 
 
 class TestOneQuietDefinition:
-    """The plan requires ONE quiet definition across the kinematic encoding, the vocal-occurrence
-    negatives and the vocal-decoding baselines. Two code paths that can disagree is how that breaks -- and it did: `clean_against` was
-    read by the vocal-side assembler and ignored by the kinematic one, so setting it to a mouse index
-    would have moved the vocal decoding's tiles while leaving the kinematic encoding's anchors all-emitter."""
+    """ONE quiet definition is shared by the kinematic encoding, the vocal-occurrence negatives and the
+    vocal-decoding baselines. Two code paths that can disagree is how that breaks: if `clean_against`
+    were read by the vocal-side assembler and ignored by the kinematic one, setting it to a mouse index
+    would move the vocal decoding's tiles while leaving the kinematic encoding's anchors all-emitter."""
 
     def test_the_kinematic_assembler_takes_clean_against(self):
         """The kinematic assembler must accept ``clean_against`` so both sides can share one quiet
