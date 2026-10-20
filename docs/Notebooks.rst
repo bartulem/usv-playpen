@@ -355,10 +355,8 @@ entirely through ``modeling_settings.json`` and the per-section Parameters cells
 
 .. code-block:: python
 
-    import json
     import pathlib
 
-    import usv_playpen
     from usv_playpen.os_utils import configure_path
     from usv_playpen.visualizations.plot_style import apply_plot_style
 
@@ -405,24 +403,6 @@ entirely through ``modeling_settings.json`` and the per-section Parameters cells
 
     apply_plot_style()
 
-**Settings.** The settings the notebook needs are loaded once, here. Every pipeline reads
-``modeling_settings.json`` itself (``modeling_settings_dict=None``); the only in-memory
-settings object is the copy the bout-OFFSET extraction in section 1 runs on, with
-``model_params.model_target_vocal_type`` set to ``bout_offset`` (the shipped value is
-``bout_onset``), so the file on disk is untouched.
-
-.. code-block:: python
-
-    modeling_settings_path = (
-        pathlib.Path(usv_playpen.__file__).parent
-        / "_parameter_settings"
-        / "modeling_settings.json"
-    )
-    offset_settings = json.loads(modeling_settings_path.read_text())
-    offset_settings["model_params"]["model_target_vocal_type"] = "bout_offset"
-
-* **offset_settings** — the in-memory copy of ``modeling_settings.json`` with the bout-offset target, passed to the second ``VocalOnsetModelingPipeline`` call in section 1.
-
 **1. Extract input data.** Convert session-level loader output into the modelling-input pickle that the
 downstream univariate / model-selection runners consume. The calls differ
 only in **what gets predicted** (and therefore which event timestamps populate
@@ -437,8 +417,9 @@ derived from ``io.session_list_file``.
     VocalOnsetModelingPipeline(
         modeling_settings_dict=None
     ).extract_and_save_modeling_input_data()
+    # with model_params.model_target_vocal_type set to 'bout_offset'
     VocalOnsetModelingPipeline(
-        modeling_settings_dict=offset_settings
+        modeling_settings_dict=None
     ).extract_and_save_modeling_input_data()
     BoutParameterPipeline(
         modeling_settings_dict=None
@@ -453,14 +434,14 @@ derived from ``io.session_list_file``.
         modeling_settings_dict=None
     ).extract_and_save_modeling_input_data()
 
-* **VocalOnsetModelingPipeline** — "does a frame start a vocal event (bout / USV)?"; ``Y(t)`` impulses at bout / USV onsets. Run a second time on ``offset_settings`` it builds the bout-OFFSET target ("does a frame end a bout?").
+* **VocalOnsetModelingPipeline** — "does a frame start a vocal event (bout / USV)?"; ``Y(t)`` impulses at bout / USV onsets. Run a second time with ``model_params.model_target_vocal_type`` set to ``'bout_offset'`` in ``modeling_settings.json``, it builds the bout-OFFSET target ("does a frame end a bout?").
 * **BoutParameterPipeline** — per-bout duration / complexity / intensity; ``Y(t)`` impulses at bout starts.
 * **MultinomialModelingPipeline** — per-USV vocal category; ``Y(t)`` impulses at per-USV starts.
 * **ContinuousModelingPipeline** — per-USV QLVM torus position; ``Y(t)`` impulses at per-USV starts.
 * **BehavioralResponsePipeline** — the female's kinematics around the male's bouts and inter-bout silences, consumed by section 8.
 
-Passing ``modeling_settings_dict=None`` loads the project default settings; only the
-bout-offset call consumes a Settings-cell variable (``offset_settings``).
+Passing ``modeling_settings_dict=None`` loads ``modeling_settings.json``, so every call,
+the bout-offset one included, runs on the settings in that file.
 
 Every plotter **returns** the figure(s) it draws (a list, a tuple of two, or for the audit
 plots a summary dict whose ``figure`` entry holds the open figure when nothing is saved)
