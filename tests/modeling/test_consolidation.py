@@ -337,9 +337,26 @@ class TestSelectionHelpers:
         assert cms._extract_run_timestamp(prefix) == '20260511_203829Z'
         assert cms._extract_run_timestamp('model_selection_test_step_') == ''
 
+    @pytest.mark.parametrize(('condition', 'cohort'), [
+        ('male_intact_partner', 'intact_partner'),
+        ('male_mute_partner', 'mute_partner'),
+    ])
+    def test_build_default_output_filename_strips_leading_sex(self, condition, cohort):
+        """A cohort label that leads with the target sex has that sex stripped,
+        so the filename names the sex once."""
+
+        md_in = {'target_mouse_sex': 'male',
+                 'experimental_condition': condition,
+                 'analysis_tag': 'bout',
+                 'analysis_specific': {}}
+        md_run = {'split_strategy': 'mixed'}
+        prefix = 'model_selection_male_20260511_203829Z_bout_step_'
+        out = cms._build_default_output_filename(md_in, md_run, step_prefix=prefix)
+        assert out == f'model_selection_final_male_{cohort}_bout_mixed_20260511_203829Z.pkl'
+
     def test_build_default_output_filename_strips_sex_suffix(self):
-        """The cohort label has its trailing ``_<sex>`` stripped and the
-        run timestamp is appended when present in the prefix."""
+        """An older ``intact_partners_<sex>`` label has its trailing ``_<sex>``
+        stripped and the run timestamp is appended when present in the prefix."""
 
         md_in = {'target_mouse_sex': 'male',
                  'experimental_condition': 'intact_partners_male',
@@ -381,7 +398,7 @@ class TestSelectionHelpers:
                  'analysis_specific': {'usv_category_column_name': 'qlvm_category'}}
         md_run = {'split_strategy': 'mixed'}
         out = cms._build_default_output_filename(md_in, md_run, step_prefix='')
-        assert out == ('model_selection_final_male_male_mute_partner_'
+        assert out == ('model_selection_final_male_mute_partner_'
                        'multinomial_qlvm_category_mixed.pkl')
 
     @pytest.mark.parametrize('analysis_tag', ['manifold_qlvm', 'manifold_qlvm_duration', 'manifold_qlvm_category'])

@@ -3385,3 +3385,18 @@ def test_matched_divergence_wraps_into_blocks_with_the_configured_gap(tmp_path, 
     assert {ax.get_subplotspec().colspan.start for ax in hidden} == {1}
     assert {ax.get_subplotspec().rowspan.start for ax in hidden} == {3, 4}
     assert not list(tmp_path.glob(f'matched_divergence*.{_FIGURE_FORMAT}'))
+
+
+@pytest.mark.parametrize(('path', 'expected'), [
+    ('/m/model_selection_final_female_mute_partner_bout.pkl', 'female_mute_partner'),
+    ('/m/model_selection_final_male_mute_partner_bout.pkl', 'male_mute_partner'),
+    ('/m/model_selection_final_female_intact_partner_bout.pkl', 'female'),
+    ('/m/model_selection_final_male_intact_partner_bout.pkl', 'male'),
+    ('/m/model_selection_final_bout.pkl', 'unknown'),
+])
+def test_condition_from_path_keeps_the_two_mute_cohorts_apart(path, expected):
+    """A female mute-partner path is named female_mute_partner (its name contains
+    male_mute_partner), intact paths give the bare sex, and a path naming no sex
+    gives the fallback."""
+
+    assert modeling_plots._condition_from_path(path, 'unknown') == expected

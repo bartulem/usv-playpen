@@ -284,9 +284,9 @@ def derive_experimental_condition(modeling_settings: dict) -> str:
     """
     Determines the experimental-cohort label for the current run.
 
-    The label is **target-centric**, matching the legacy
-    `male_mute_partner` / `female_mute_partner` naming that downstream
-    plotting and model-selection code already keys off. Two cohort
+    The label is **target-centric** and has one form for every cohort,
+    ``<target_sex>_<partner_state>_partner``: the sex of the modeled
+    (target) mouse, then whether its partner could vocalize. Two cohort
     families are supported:
 
     1. **Intact-partner cohorts** — the session-list filename contains
@@ -294,17 +294,16 @@ def derive_experimental_condition(modeling_settings: dict) -> str:
        sex is the opposite of `model_params['model_predictor_mouse_index']`
        (mouse index 0 is conventionally male, 1 is conventionally
        female across this project). The label returned is
-       `'intact_partners_male'` or `'intact_partners_female'`.
+       `'male_intact_partner'` or `'female_intact_partner'`.
 
     2. **Mute-partner cohorts** — the session-list filename contains
        either `'mute_female'` or `'mute_male'` (the substring identifies
        the *muted* partner's sex, e.g.
-       `behavioral_courtship_mute_female_sessions_list.txt`). Because
-       the muted partner cannot vocalize, the predictor mouse is always
-       the non-muted (intact) partner. The label returned is the legacy
-       `<predictor_sex>_mute_partner` form — i.e. `'male_mute_partner'`
-       when the partner is a mute female, `'female_mute_partner'` when
-       the partner is a mute male.
+       `behavioral_courtship_mute_female_sessions_list.txt`). The muted
+       partner cannot vocalize, so the target is the other, vocalizing
+       mouse, and the muted partner is the predictor. The label returned
+       is `'male_mute_partner'` when the partner is a mute female and
+       `'female_mute_partner'` when the partner is a mute male.
 
     If the filename matches none of the above patterns, the function
     returns `'unspecified'` rather than raising — the label is purely
@@ -322,7 +321,7 @@ def derive_experimental_condition(modeling_settings: dict) -> str:
     Returns
     -------
     str
-        One of `'intact_partners_male'`, `'intact_partners_female'`,
+        One of `'male_intact_partner'`, `'female_intact_partner'`,
         `'male_mute_partner'`, `'female_mute_partner'`, or
         `'unspecified'`.
     """
@@ -331,9 +330,8 @@ def derive_experimental_condition(modeling_settings: dict) -> str:
     fname = Path(session_list_path).name.lower()
 
     # Mute-partner cohorts: the filename encodes the *muted* partner's
-    # sex via the `mute_female` / `mute_male` substring. The predictor
-    # is the non-muted (intact) partner, and we report the legacy
-    # `<predictor_sex>_mute_partner` label that downstream code expects.
+    # sex via the `mute_female` / `mute_male` substring; the label leads
+    # with the sex of the other, vocalizing mouse, which is the target.
     if 'mute_female' in fname:
         return 'male_mute_partner'
     if 'mute_male' in fname:
@@ -344,7 +342,7 @@ def derive_experimental_condition(modeling_settings: dict) -> str:
     if 'intact_partners' in fname:
         pred_idx = modeling_settings['model_params']['model_predictor_mouse_index']
         target_sex = 'male' if pred_idx == 1 else 'female'
-        return f"intact_partners_{target_sex}"
+        return f"{target_sex}_intact_partner"
 
     return 'unspecified'
 

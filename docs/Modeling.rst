@@ -96,8 +96,8 @@ and pooled; blank lines are ignored. For example:
 
 The **filename itself carries the cohort label**: ``derive_experimental_condition``
 parses it (e.g. ``behavioral_courtship_intact_partners_sessions_list.txt`` →
-``intact_partners_male`` or ``intact_partners_female``, by the target mouse's sex; mute cohorts read ``male_mute_partner``
-or ``female_mute_partner``, and any other filename ``unspecified``) and embeds that label into every output filename,
+``male_intact_partner`` or ``female_intact_partner``, by the target mouse's sex; mute cohorts read ``male_mute_partner``
+or ``female_mute_partner``, also by the target mouse's sex, and any other filename ``unspecified``) and embeds that label into every output filename,
 so artifacts from different cohorts never collide and each one is self-identifying.
 
 **model_params** — the prediction target, history window, model engine,

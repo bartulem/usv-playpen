@@ -282,8 +282,8 @@ class TestDeriveExperimentalCondition:
 
         s0 = self._settings('intact_partners_list.txt', pred_idx=0)
         s1 = self._settings('intact_partners_list.txt', pred_idx=1)
-        assert derive_experimental_condition(s0) == 'intact_partners_female'
-        assert derive_experimental_condition(s1) == 'intact_partners_male'
+        assert derive_experimental_condition(s0) == 'female_intact_partner'
+        assert derive_experimental_condition(s1) == 'male_intact_partner'
 
     def test_unrecognised_returns_unspecified(self):
         """An unmatched filename yields ``'unspecified'`` rather than
@@ -911,7 +911,7 @@ class TestBuildInputMetadata:
 
         assert md['_schema_version'] == SCHEMA_VERSIONS['input']
         # Cohort / experimental scope.
-        assert md['experimental_condition'] == 'intact_partners_female'
+        assert md['experimental_condition'] == 'female_intact_partner'
         assert md['target_idx'] == 1
         assert md['target_mouse_sex'] == 'female'
         assert md['predictor_idx'] == 0

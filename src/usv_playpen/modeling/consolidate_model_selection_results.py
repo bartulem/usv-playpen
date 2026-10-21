@@ -243,8 +243,11 @@ def _build_default_output_filename(input_metadata: dict,
       * `sex` — `input_metadata['target_mouse_sex']`
         (e.g. `'male'`).
       * `condition` — `input_metadata['experimental_condition']` with
-        the trailing `_<sex>` suffix stripped (so
-        `'intact_partners_male'` → `'intact_partners'`).
+        the sex it repeats stripped: a leading `<sex>_` (so
+        `'male_intact_partner'` → `'intact_partner'` and
+        `'male_mute_partner'` → `'mute_partner'`), or a trailing `_<sex>`
+        on artifacts written under the older `intact_partners_<sex>` label
+        (so `'intact_partners_male'` → `'intact_partners'`).
       * `analysis_tag` — `input_metadata['analysis_tag']` embedded
         verbatim. The modeling pipelines now mint canonical short
         tags directly (`'bout_onset'`, `'durations'`,
@@ -305,10 +308,13 @@ def _build_default_output_filename(input_metadata: dict,
         cohort_raw = 'unknown'
         analysis_tag = 'unknown'
 
-    # Strip `_<sex>` suffix from the cohort label so the filename is
-    # `<sex>_<cohort>` (not `<sex>_<cohort>_<sex>`).
+    # Strip the sex the cohort label repeats, so the filename is
+    # `<sex>_<cohort>` (not `<sex>_<sex>_<cohort>`): a leading `<sex>_`
+    # (current labels), or a trailing `_<sex>` (older `intact_partners_<sex>`).
     cohort = cohort_raw
-    if sex != 'unknown' and cohort_raw.endswith(f"_{sex}"):
+    if sex != 'unknown' and cohort_raw.startswith(f"{sex}_"):
+        cohort = cohort_raw[len(sex) + 1:]
+    elif sex != 'unknown' and cohort_raw.endswith(f"_{sex}"):
         cohort = cohort_raw[: -(len(sex) + 1)]
 
     # Legacy step pickles produced before the pipeline-side rename
@@ -436,7 +442,7 @@ def consolidate(input_dir: str,
         Directory containing the per-step pickles.
     prefix : str, optional
         Per-step filename prefix (e.g.
-        `'model_selection_intact_partners_male_mixed_step_'`). When
+        `'model_selection_male_intact_partner_mixed_step_'`). When
         omitted the prefix is inferred from the input directory; if
         the directory mixes prefixes the function raises.
     output_dir : str, optional

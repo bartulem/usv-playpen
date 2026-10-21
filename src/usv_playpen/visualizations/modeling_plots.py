@@ -172,6 +172,44 @@ def _figure_filename(stem: str, file_format: str | None = None) -> str:
         return f"{stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{fmt}"
     return f"{stem}.{fmt}"
 
+
+def _condition_from_path(path_str: str, fallback: str) -> str:
+    """
+    Description
+    -----------
+    The cohort token a figure filename carries, read from the path of the
+    results it plots. The mute-partner cohorts keep their full label, so the
+    two are never confused: ``'female_mute_partner'`` is tested before
+    ``'male_mute_partner'``, which it contains as a substring, and likewise
+    ``'female'`` before ``'male'``. Intact-partner results
+    (``male_intact_partner`` / ``female_intact_partner``) give the bare sex.
+
+    Parameters
+    ----------
+    path_str (str)
+        The results path, as the caller compares it (lower-cased or not).
+    fallback (str)
+        Returned when the path names no sex (``'unknown'`` or ``'male'``, as
+        each figure has always defaulted).
+
+    Returns
+    -------
+    condition (str)
+        ``'female_mute_partner'``, ``'male_mute_partner'``, ``'female'``,
+        ``'male'`` or ``fallback``.
+    """
+
+    if 'female_mute_partner' in path_str:
+        return 'female_mute_partner'
+    if 'male_mute_partner' in path_str:
+        return 'male_mute_partner'
+    if 'female' in path_str:
+        return 'female'
+    if 'male' in path_str:
+        return 'male'
+    return fallback
+
+
 def plot_feature_ranking(
         results_file_loc: str,
         p_val: float = 0.01,
@@ -3055,14 +3093,7 @@ def plot_multinomial_selection_trajectory(
             _out_dir = pathlib.Path(output_dir)
         _out_dir.mkdir(parents=True, exist_ok=True)
         path_str = str(selection_results_path).lower()
-        if 'male_mute_partner' in path_str:
-            condition = 'male_mute_partner'
-        elif 'female' in path_str:
-            condition = 'female'
-        elif 'male' in path_str:
-            condition = 'male'
-        else:
-            condition = 'unknown'
+        condition = _condition_from_path(path_str, 'unknown')
         fname = _figure_filename(f"multinomial_selection_trajectory_{condition}_{metric_primary}")
         save_path = _out_dir / fname
         fig_traj.savefig(save_path, bbox_inches='tight', dpi=_FIGURE_DPI,
@@ -3365,8 +3396,7 @@ def plot_multinomial_multivariate_filters(
 
         if save_plot:
             path_str = str(selection_results_path).lower()
-            condition = 'male_mute_partner' if 'male_mute_partner' in path_str else \
-                ('female' if 'female' in path_str else 'male')
+            condition = _condition_from_path(path_str, 'male')
             # ``selection_results_path`` is polymorphic; if a file was
             # passed, anchor the output dir to its parent.
             _fallback = pathlib.Path(selection_results_path)
@@ -3588,14 +3618,7 @@ def plot_multinomial_selection_diagnosis(
         return pathlib.Path(output_dir)
 
     path_str = str(selection_results_path).lower()
-    if 'male_mute_partner' in path_str:
-        condition = 'male_mute_partner'
-    elif 'female' in path_str:
-        condition = 'female'
-    elif 'male' in path_str:
-        condition = 'male'
-    else:
-        condition = 'unknown'
+    condition = _condition_from_path(path_str, 'unknown')
 
     # Figure 1 -- pairwise binary AUC, lower triangle + diagonal
     fig_auc, ax = plt.subplots(figsize=(4.0, 3.6), dpi=_FIGURE_DPI)
@@ -4204,14 +4227,7 @@ def plot_manifold_selection_trajectory(
             _out_dir = pathlib.Path(output_dir)
         _out_dir.mkdir(parents=True, exist_ok=True)
         path_str = str(selection_results_path).lower()
-        if 'male_mute_partner' in path_str:
-            condition = 'male_mute_partner'
-        elif 'female' in path_str:
-            condition = 'female'
-        elif 'male' in path_str:
-            condition = 'male'
-        else:
-            condition = 'unknown'
+        condition = _condition_from_path(path_str, 'unknown')
         fname = _figure_filename(f"manifold_selection_trajectory_{condition}_{metric_primary}")
         save_path = _out_dir / fname
         fig_traj.savefig(save_path, bbox_inches='tight', dpi=_FIGURE_DPI,
@@ -5071,8 +5087,7 @@ def plot_manifold_filter_atlas(
 
     if save_plot:
         path_str = str(selection_results_path).lower()
-        condition = 'male_mute_partner' if 'male_mute_partner' in path_str else \
-            ('female' if 'female' in path_str else 'male')
+        condition = _condition_from_path(path_str, 'male')
         _fallback = pathlib.Path(selection_results_path)
         if _fallback.is_file():
             _fallback = _fallback.parent
@@ -5501,7 +5516,7 @@ class DeepResultsVisualizer:
 
         # Dynamic filename based on path metadata
         pkl_path = getattr(self, 'results_pkl_path', '')
-        sex_mod = "male_mute_partner" if "male_mute_partner" in pkl_path else ("female" if "female" in pkl_path else "male")
+        sex_mod = _condition_from_path(pkl_path, 'male')
         save_filename = f"cnn_permutation_test_{sex_mod}"
 
         if hasattr(self, '_handle_save'):
@@ -5634,12 +5649,7 @@ class DeepResultsVisualizer:
 
         # Save Logic (with sex-specific naming)
         pkl_path = getattr(self, 'results_pkl_path', '')
-        if "male_mute_partner" in pkl_path:
-            sex_mod = "male_mute_partner"
-        elif "female" in pkl_path:
-            sex_mod = "female"
-        else:
-            sex_mod = "male"
+        sex_mod = _condition_from_path(pkl_path, 'male')
 
         save_filename = f"cnn_feature_importance_{sex_mod}"
 
@@ -5900,12 +5910,7 @@ class DeepResultsVisualizer:
 
         # 5. Updated Save Logic
         pkl_path = getattr(self, 'results_pkl_path', '')
-        if "male_mute_partner" in pkl_path:
-            sex_mod = "male_mute_partner"
-        elif "female" in pkl_path:
-            sex_mod = "female"
-        else:
-            sex_mod = "male"
+        sex_mod = _condition_from_path(pkl_path, 'male')
 
         save_filename = f"cnn_precision_grid_{sex_mod}_{plot_type}"
 
@@ -6161,12 +6166,7 @@ class DeepResultsVisualizer:
                             bottom=0.02, wspace=0.08, hspace=0.18)
 
         pkl_path = getattr(self, 'results_pkl_path', '')
-        if "male_mute_partner" in pkl_path:
-            sex_mod = "male_mute_partner"
-        elif "female" in pkl_path:
-            sex_mod = "female"
-        else:
-            sex_mod = "male"
+        sex_mod = _condition_from_path(pkl_path, 'male')
         save_filename = f"cnn_precision_grid_{sex_mod}_torus_{plot_type}"
 
         if hasattr(self, '_handle_save'):
@@ -6317,12 +6317,7 @@ class DeepResultsVisualizer:
 
         # 3. Save Logic
         pkl_path = getattr(self, 'results_pkl_path', '')
-        if "male_mute_partner" in pkl_path:
-            sex_mod = "male_mute_partner"
-        elif "female" in pkl_path:
-            sex_mod = "female"
-        else:
-            sex_mod = "male"
+        sex_mod = _condition_from_path(pkl_path, 'male')
 
         save_filename = f"cnn_error_landscape_{sex_mod}"
 
@@ -6720,7 +6715,7 @@ class DeepResultsVisualizer:
 
         # Filename Logic
         pkl_path = getattr(self, 'results_pkl_path', '')
-        sex_mod = "male_mute_partner" if "male_mute_partner" in pkl_path else ("female" if "female" in pkl_path else "male")
+        sex_mod = _condition_from_path(pkl_path, 'male')
 
         self._handle_save(fig, f"cnn_regional_saliency_{region_key}_{sex_mod}",
                           save_plot, output_dir, file_format)
