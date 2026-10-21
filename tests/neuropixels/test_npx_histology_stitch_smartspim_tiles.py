@@ -156,6 +156,26 @@ def test_parse_smartspim_metadata_without_obj_header_raises(tmp_path):
         _parse_smartspim_metadata(meta_file)
 
 
+@pytest.mark.parametrize("header", [
+    b"Obj\tImmersion\tEmpty\tV_Res\tZ step (\xb5m)\tScanning\n",
+    b"Obj\tImmersion\tEmpty\tV_Res\t\xb5m/pix\tScanning\n",
+], ids=["no-pixel-size-label", "no-z-step-label"])
+def test_parse_smartspim_metadata_obj_header_without_labels_raises(tmp_path, header):
+    """
+    Description
+    -----------
+    An ``Obj`` header row that lacks the ``µm/pix`` or the ``Z step``
+    label is not used by position: the row is skipped, and with no other
+    usable ``Obj`` row the parser raises ``ValueError`` naming the file
+    instead of returning numbers from the wrong columns.
+    """
+
+    meta_file = tmp_path / "metadata.txt"
+    meta_file.write_bytes(header + b"LCT 3.6x\t1.52+\tBlank\t1600\t0.76\tFast\n")
+    with pytest.raises(ValueError, match="Could not parse pixel size"):
+        _parse_smartspim_metadata(meta_file)
+
+
 def test_enumerate_tile_dirs_maps_stage_coords_and_skips_malformed(tmp_path):
     """
     Description
