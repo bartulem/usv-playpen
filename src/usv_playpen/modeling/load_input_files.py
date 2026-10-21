@@ -87,6 +87,14 @@ def load_behavioral_feature_data(behavior_file_paths: list | None = None,
 # per-USV label column; 'pooled_rate' / 'pooled_binary' never read one.
 CATEGORY_PREDICTOR_TYPES = ('categories_rate', 'all_rate')
 
+# Raised when `vocal_features.vocal_predictor_classes` is null. Vocal predictors are
+# switched off by `vocal_predictor_type` alone; the class lists stay a list either way.
+NULL_PREDICTOR_CLASSES_MSG = (
+    "vocal_features.vocal_predictor_classes is null; it must be a non-empty list of class lists, "
+    "e.g. [['usv']]. To switch vocal predictors off, set vocal_features.vocal_predictor_type to null "
+    "and leave vocal_predictor_classes as a list."
+)
+
 # Vocal classes a bout-grouping prediction mode accepts as its target
 # (`model_params.onset_target_classes`): bouts are grouped with the per-sex
 # inter-bout threshold, which is calibrated on USV intervals, and squeaks do not
@@ -381,6 +389,8 @@ def build_vocal_predictor_signals(mouse_usvs: pls.DataFrame,
             "'pooled_rate', 'categories_rate', 'all_rate' or null."
         )
         raise ValueError(msg)
+    if predictor_classes is None:
+        raise ValueError(NULL_PREDICTOR_CLASSES_MSG)
     for group in predictor_classes:
         name = vocal_trace_name(group)
         group_usvs = vocal_event_times(mouse_usvs.filter(vocal_class_mask(mouse_usvs, group, source)), group, source)
@@ -517,6 +527,12 @@ def require_labels_for_vocal_predictors(voc_settings: dict) -> None:
     predictors on, it also checks ``vocal_predictor_classes``
     (``validate_vocal_class_settings``).
 
+    ``vocal_predictor_classes`` must be a list even when ``vocal_predictor_type``
+    is null: vocal predictors are switched off by the type alone, and the run
+    provenance (``modeling_metadata``) records the class lists either way. A null
+    class list is therefore refused here with a message naming both settings,
+    instead of surfacing later as a bare ``TypeError`` from iterating ``None``.
+
     Parameters
     ----------
     voc_settings (dict)
@@ -527,8 +543,17 @@ def require_labels_for_vocal_predictors(voc_settings: dict) -> None:
     Returns
     -------
     None
+
+    Raises
+    ------
+    ValueError
+        ``vocal_predictor_classes`` is null, or (with vocal predictors on) breaks a
+        rule of ``validate_vocal_class_settings``, or a per-category predictor type
+        has no category label column.
     """
 
+    if voc_settings['vocal_predictor_classes'] is None:
+        raise ValueError(NULL_PREDICTOR_CLASSES_MSG)
     if voc_settings['vocal_predictor_type']:
         validate_vocal_class_settings(None, voc_settings['vocal_predictor_classes'], None)
     if voc_settings['vocal_predictor_type'] in CATEGORY_PREDICTOR_TYPES:

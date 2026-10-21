@@ -2126,6 +2126,30 @@ class TestVocalClassTraces:
                                                  'vocal_predictor_classes': [['squeak'], ['squeak', 'overlap']],
                                                  'usv_category_column_name': None})
 
+    @pytest.mark.parametrize('predictor_type', ['pooled_rate', None])
+    def test_null_predictor_classes_are_refused_before_loading(self, predictor_type):
+        """A null vocal_predictor_classes stops the settings check with a message that
+        names the setting and says vocal predictors are switched off by the type, whether
+        the type is set or null (the run provenance reads the class lists either way)."""
+
+        with pytest.raises(ValueError, match=r"vocal_predictor_classes is null") as excinfo:
+            require_labels_for_vocal_predictors({'vocal_predictor_type': predictor_type,
+                                                 'vocal_predictor_classes': None,
+                                                 'usv_category_column_name': None})
+        assert 'vocal_predictor_type to null' in str(excinfo.value)
+
+    def test_null_predictor_classes_are_refused_by_the_trace_builder(self):
+        """The trace builder refuses a null class list with the same message instead of
+        failing on iterating None; with the type null it still returns no traces."""
+
+        with pytest.raises(ValueError, match=r"vocal_predictor_classes is null"):
+            build_vocal_predictor_signals(mouse_usvs=pls.DataFrame(), predictor_classes=None,
+                                          vocal_output_type='pooled_rate', category_column=None,
+                                          duration_frames=10, fps=150.0, smooth_sd=1.0, source='s.csv')
+        assert build_vocal_predictor_signals(mouse_usvs=pls.DataFrame(), predictor_classes=None,
+                                             vocal_output_type=None, category_column=None,
+                                             duration_frames=10, fps=150.0, smooth_sd=1.0, source='s.csv') == {}
+
     def test_target_tag(self):
         """The default ["usv"] adds nothing to a file name; any other list adds its
         classes in a fixed order."""
