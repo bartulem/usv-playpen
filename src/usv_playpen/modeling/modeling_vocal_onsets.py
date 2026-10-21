@@ -39,6 +39,7 @@ from tqdm import tqdm
 from ..analyses.compute_behavioral_features import FeatureZoo
 from ..os_utils import atomic_output_path
 from .load_input_files import (
+    epoch_class_labels,
     find_onset_epochs,
     is_vocal_signal,
     load_behavioral_feature_data,
@@ -687,30 +688,40 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         grand_total_usv = sum(modeling_final_data_dict[first_feat][s]['usv_feature_arr'].shape[0] for s in all_sessions)
         grand_total_none = sum(modeling_final_data_dict[first_feat][s]['no_usv_feature_arr'].shape[0] for s in all_sessions)
 
-        print("\n" + "=" * 105)
+        # The two groups are named for what this run models (bout onsets, single
+        # onsets, state samples or bout offsets of the target classes).
+        positive_label, negative_label = epoch_class_labels(
+            self.modeling_settings['model_params']['model_target_vocal_type'],
+            self.modeling_settings['model_params']['onset_target_classes'],
+        )
+        col_w = max(len(positive_label), len(negative_label), 12)
+        tally_w = max(len(positive_label), len(negative_label), len("Unique Features")) + 10
+        line_w = max(105, 70 + 2 * col_w)
+
+        print("\n" + "=" * line_w)
         print("MODELING INPUT: GLOBAL AGGREGATE SUMMARY")
-        print("=" * 105)
-        print(f"{'#':<4} {'Feature Name':<40} | {'Sess':<6} | {'USV Bouts':<12} | {'No-USV Bouts':<12} | {'Total N'}")
-        print("-" * 105)
+        print("=" * line_w)
+        print(f"{'#':<4} {'Feature Name':<40} | {'Sess':<6} | {positive_label:<{col_w}} | {negative_label:<{col_w}} | {'Total N'}")
+        print("-" * line_w)
 
         for i, feat in enumerate(final_covariate_names, 1):
             feat_usv_bouts = sum(modeling_final_data_dict[feat][s]['usv_feature_arr'].shape[0] for s in modeling_final_data_dict[feat])
             feat_none_bouts = sum(modeling_final_data_dict[feat][s]['no_usv_feature_arr'].shape[0] for s in modeling_final_data_dict[feat])
 
-            print(f"{i:3}. {feat:<40} | {len(modeling_final_data_dict[feat]):<6} | {feat_usv_bouts:<12} | {feat_none_bouts:<12} | {feat_usv_bouts + feat_none_bouts:<8}")
+            print(f"{i:3}. {feat:<40} | {len(modeling_final_data_dict[feat]):<6} | {feat_usv_bouts:<{col_w}} | {feat_none_bouts:<{col_w}} | {feat_usv_bouts + feat_none_bouts:<8}")
 
-        print("-" * 105)
+        print("-" * line_w)
         print("PROJECT-WIDE TOTAL TALLY:")
-        print(f"  > Total Unique Features:        {total_covariates}")
-        print(f"  > Total Sessions:               {grand_total_sessions}")
-        print(f"  > Total USV Bouts:              {grand_total_usv}")
-        print(f"  > Total No-USV Bouts:           {grand_total_none}")
-        print(f"  > Grand Total Epochs (N):       {grand_total_usv + grand_total_none}")
-        print(f"  > INTRA-SESSION ALIGNMENT:      {'PASSED (True)' if alignment_passed else 'FAILED (False)'}")
+        print(f"  > {'Total Unique Features:':<{tally_w}} {total_covariates}")
+        print(f"  > {'Total Sessions:':<{tally_w}} {grand_total_sessions}")
+        print(f"  > {'Total ' + positive_label + ':':<{tally_w}} {grand_total_usv}")
+        print(f"  > {'Total ' + negative_label + ':':<{tally_w}} {grand_total_none}")
+        print(f"  > {'Grand Total Epochs (N):':<{tally_w}} {grand_total_usv + grand_total_none}")
+        print(f"  > {'INTRA-SESSION ALIGNMENT:':<{tally_w}} {'PASSED (True)' if alignment_passed else 'FAILED (False)'}")
 
         if not alignment_passed:
             print(f"  [!] ALERT: Dimensional mismatch in sessions: {set(mismatched_sessions)}")
-        print("=" * 105 + "\n")
+        print("=" * line_w + "\n")
 
         save_dir = Path(self.modeling_settings['io']['save_directory'])
         save_path = save_dir / file_name_

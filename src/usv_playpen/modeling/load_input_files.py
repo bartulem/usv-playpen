@@ -176,6 +176,62 @@ def onset_target_tag(target_classes: list) -> str:
     return "" if ordered == ['usv'] else "_" + "+".join(ordered)
 
 
+# Display names of the trace names (`vocal_trace_name`) in printed summaries.
+VOCAL_TRACE_DISPLAY_NAMES = {'usv': 'USV', 'squeak': 'Squeak', 'overlap': 'Overlap', 'all_vocalizations': 'Vocalization'}
+
+
+def epoch_class_labels(prediction_mode: str, target_classes: list) -> tuple:
+    """
+    Description
+    -----------
+    The names of the two event groups of a vocal-event run, for the printed
+    extraction summary. What a positive and a negative are depends on
+    ``model_params.model_target_vocal_type`` (``prediction_mode``), and what
+    vocalizes in them on ``model_params.onset_target_classes``, named as the
+    trace name (``vocal_trace_name``) the classes give:
+
+    * ``'bout_onset'``: the onset of a bout of the target classes against a
+      silent epoch, e.g. ``("USV bout onsets", "Silent epochs")``;
+    * ``'individual'``: the onset of a single target-class vocalization against
+      a silent epoch, e.g. ``("Squeak onsets", "Silent epochs")``;
+    * ``'state'``: a grid sample inside a target-class vocalization against one
+      outside it (not necessarily silent: another class may be under way), e.g.
+      ``("USV samples", "Non-USV samples")``;
+    * ``'bout_offset'``: the offset of a bout's last vocalization against an
+      interior vocalization's offset, e.g.
+      ``("USV bout offsets", "Interior USV offsets")``.
+
+    Parameters
+    ----------
+    prediction_mode (str)
+        ``'bout_onset'``, ``'individual'``, ``'state'`` or ``'bout_offset'``.
+    target_classes (list)
+        The configured ``model_params.onset_target_classes``.
+
+    Returns
+    -------
+    labels (tuple of str)
+        ``(positive_label, negative_label)``.
+
+    Raises
+    ------
+    ValueError
+        ``prediction_mode`` is not one of the four modes.
+    """
+
+    name = VOCAL_TRACE_DISPLAY_NAMES[vocal_trace_name(target_classes)]
+    if prediction_mode == 'bout_onset':
+        return f"{name} bout onsets", "Silent epochs"
+    if prediction_mode == 'individual':
+        return f"{name} onsets", "Silent epochs"
+    if prediction_mode == 'state':
+        return f"{name} samples", f"Non-{name} samples"
+    if prediction_mode == 'bout_offset':
+        return f"{name} bout offsets", f"Interior {name} offsets"
+    msg = f"Unknown prediction_mode: {prediction_mode}. Must be 'bout_onset', 'individual', 'state' or 'bout_offset'."
+    raise ValueError(msg)
+
+
 def validate_vocal_class_settings(target_classes: list | None,
                                   predictor_classes: list | None,
                                   prediction_mode: str | None) -> None:

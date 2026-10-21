@@ -53,6 +53,7 @@ from usv_playpen.modeling.load_input_files import (
     _history_is_dirty,
     _smooth_occupancy,
     build_vocal_predictor_signals,
+    epoch_class_labels,
     find_onset_epochs,
     find_usv_categories,
     find_variable_length_bouts,
@@ -2149,6 +2150,25 @@ class TestVocalClassTraces:
         assert build_vocal_predictor_signals(mouse_usvs=pls.DataFrame(), predictor_classes=None,
                                              vocal_output_type=None, category_column=None,
                                              duration_frames=10, fps=150.0, smooth_sd=1.0, source='s.csv') == {}
+
+    @pytest.mark.parametrize(('mode', 'classes', 'expected'), [
+        ('bout_onset', ['usv', 'overlap'], ("USV bout onsets", "Silent epochs")),
+        ('individual', ['squeak', 'overlap'], ("Squeak onsets", "Silent epochs")),
+        ('individual', ['usv', 'squeak'], ("Vocalization onsets", "Silent epochs")),
+        ('state', ['usv'], ("USV samples", "Non-USV samples")),
+        ('bout_offset', ['usv', 'overlap'], ("USV bout offsets", "Interior USV offsets")),
+    ])
+    def test_epoch_class_labels(self, mode, classes, expected):
+        """The summary names the two event groups for what the run models and for
+        the vocal classes it targets."""
+
+        assert epoch_class_labels(mode, classes) == expected
+
+    def test_epoch_class_labels_rejects_an_unknown_mode(self):
+        """An unknown mode raises instead of printing a wrong label."""
+
+        with pytest.raises(ValueError, match="Unknown prediction_mode"):
+            epoch_class_labels('bout_middle', ['usv'])
 
     def test_target_tag(self):
         """The default ["usv"] adds nothing to a file name; any other list adds its
