@@ -21,7 +21,8 @@ coordinates in units of 0.1 micrometres (SmartSPIM convention).
 
 ``metadata.txt`` provides the lateral pixel size in micrometres and the
 axial Z step in micrometres, parsed from the data row immediately
-following the ``Obj`` header line.
+following the ``Obj`` header line by the ``µm/pix`` and ``Z step (µm)``
+column labels.
 
 Z-direction control
 -------------------
@@ -68,9 +69,11 @@ def _parse_smartspim_metadata(metadata_path: Path) -> dict:
     Parses a SmartSPIM ``metadata.txt`` file and returns the lateral
     pixel size and the axial Z step in micrometres. Both values are
     read from the tab-separated data row immediately following the
-    header line that begins with ``Obj``. The ``pixel_size_um`` value
-    is the 5th column and ``z_step_um`` is the 6th column of that data
-    row.
+    header line that begins with ``Obj``. Columns are found by their
+    header label (``µm/pix`` and ``Z step (µm)``), not by position:
+    older SmartSPIM software writes ``Obj, V_Res, µm/pix, Z step``
+    while newer software inserts ``Immersion`` and ``Empty`` after
+    ``Obj``, which moves both columns two places to the right.
 
     The metadata file uses a ``micro`` character that may be written
     in a non-UTF-8 single-byte encoding, so the file is read as
@@ -93,17 +96,21 @@ def _parse_smartspim_metadata(metadata_path: Path) -> dict:
     for idx, line in enumerate(lines):
         fields = [f.strip() for f in line.split('\t')]
         if fields and fields[0] == 'Obj' and idx + 1 < len(lines):
+            pixel_col = next((i for i, f in enumerate(fields) if f.endswith('m/pix')), None)
+            z_step_col = next((i for i, f in enumerate(fields) if f.startswith('Z step')), None)
+            if pixel_col is None or z_step_col is None:
+                continue
             data = [f.strip() for f in lines[idx + 1].split('\t')]
             # Only treat this as the data row when it has the expected
             # column count; a short/blank row (e.g. a trailing empty line
-            # that splits to ['']) would otherwise raise a bare IndexError
-            # on data[4]/data[5], bypassing the descriptive ValueError
-            # below. Falling through keeps scanning and ultimately raises
-            # the informative error that carries the metadata path.
-            if len(data) > 5:
+            # that splits to ['']) would otherwise raise a bare IndexError,
+            # bypassing the descriptive ValueError below. Falling through
+            # keeps scanning and ultimately raises the informative error
+            # that carries the metadata path.
+            if len(data) > max(pixel_col, z_step_col):
                 return {
-                    'pixel_size_um': float(data[4]),
-                    'z_step_um': float(data[5]),
+                    'pixel_size_um': float(data[pixel_col]),
+                    'z_step_um': float(data[z_step_col]),
                 }
     msg = f"Could not parse pixel size / Z step from {metadata_path}."
     raise ValueError(msg)
