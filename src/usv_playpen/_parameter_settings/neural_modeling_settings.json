@@ -120,7 +120,8 @@
       "pre_bout_seconds": 4.0,
       "inter_bout_threshold_seconds": 0.1155,
       "grain": "count",
-      "bin_seconds": 0.1
+      "bin_seconds": 0.1,
+      "null_block_megabytes": 64
     },
     "subsampling_correction": "log_prior_offset",
     "temporal_basis": {
@@ -135,7 +136,8 @@
       "spike_end_correction": "drop_outside_and_rescale"
     },
     "max_train_total": 70000,
-    "chunk_rows": 4000
+    "chunk_rows": 4000,
+    "null_block_megabytes": 32
   },
   "vocal_gating": {
     "vocal_window": "during_vocalization",
@@ -216,7 +218,8 @@
       },
       "category_column": "qlvm_category",
       "min_train_events": 20,
-      "min_test_events": 5
+      "min_test_events": 5,
+      "mean_count_floor": 0.001
     },
     "targets": ["manifold_position"],
     "discrimination_null": {

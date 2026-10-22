@@ -33,8 +33,6 @@ from .shift_null_inference import (
     shifted_spike_frames,
 )
 
-# Memory budget for one block of pooled null draws; see pooled_transfer_null.
-_POOLED_BLOCK_BYTES = 64 * 1024 * 1024
 TRANSFER_UNIVERSES = ("usv_span", "bout_window")
 TRANSFER_GRAINS = ("frame", "count")
 
@@ -282,7 +280,9 @@ def pooled_transfer_null(fold_results: list, per_session: dict, session_ids: lis
         Newton iterations per calibration refit.
     transfer_settings (dict)
         The ``kinematic_encoding.transfer`` settings block; under the count grain each draw recounts
-        the spikes per bin of the shifted train and re-scores the Poisson pooled calibration.
+        the spikes per bin of the shifted train and re-scores the Poisson pooled calibration. Under the
+        frame grain ``null_block_megabytes`` is the memory budget for one block of draws' label matrix;
+        it sets only how many draws run together, not the scores.
     calibration (dict)
         The ``kinematic_encoding.calibration`` settings block, passed to the scorer.
 
@@ -323,7 +323,8 @@ def pooled_transfer_null(fold_results: list, per_session: dict, session_ids: lis
     # matrix grows without bound with the draw count. Each session keeps one generator across chunks,
     # so the shifts are exactly those an unchunked run would draw.
     total_frames = max(int(eta.size), 1)
-    chunk = int(max(1, min(n_shuffles, _POOLED_BLOCK_BYTES // (total_frames * 8))))
+    block_bytes = int(transfer_settings["null_block_megabytes"] * 1024 * 1024)
+    chunk = int(max(1, min(n_shuffles, block_bytes // (total_frames * 8))))
     generators = [np.random.default_rng(seed + index) for index in range(len(session_ids))]
 
     null = np.empty(n_shuffles, dtype=np.float64)

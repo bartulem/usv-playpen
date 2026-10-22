@@ -18,10 +18,6 @@ from __future__ import annotations
 import numpy as np
 from scipy.special import gammaln, logsumexp
 
-# Floor on a session's mean count: a session with no spikes would otherwise give `0 * log(0)` = NaN
-# where the correct limit is a posterior equal to the prior (zero gain).
-MEAN_COUNT_FLOOR = 1e-3
-
 
 def decoding_spike_sufficiency(counts: np.ndarray, settings: dict) -> dict:
     """
@@ -125,7 +121,7 @@ def category_rates(counts: np.ndarray, codes: np.ndarray, n_categories: int,
 
 
 def category_posterior(counts: np.ndarray, rates: np.ndarray, prior: np.ndarray,
-                       alpha: float, exposure: float) -> np.ndarray:
+                       alpha: float, exposure: float, mean_count_floor: float) -> np.ndarray:
     """
     Description
     -----------
@@ -148,6 +144,10 @@ def category_posterior(counts: np.ndarray, rates: np.ndarray, prior: np.ndarray,
         Amplitude calibration.
     exposure (float)
         Held-out level correction.
+    mean_count_floor (float)
+        Lower bound on ``exposure`` (``category_surface.mean_count_floor``). A held-out session with no
+        spikes would otherwise give ``0 * log(0)`` = NaN, where the correct limit is a posterior equal to
+        the prior (zero gain).
 
     Returns
     -------
@@ -157,7 +157,7 @@ def category_posterior(counts: np.ndarray, rates: np.ndarray, prior: np.ndarray,
 
     log_rates = np.log(rates)
     tilted = (np.exp(log_rates.mean() + alpha * (log_rates - log_rates.mean()))
-              * max(float(exposure), MEAN_COUNT_FLOOR))
+              * max(float(exposure), mean_count_floor))
     log_likelihood = (counts[:, None] * np.log(tilted)[None, :] - tilted[None, :]
                       - gammaln(counts + 1.0)[:, None])
     posterior = log_likelihood + np.log(prior)[None, :]
@@ -234,7 +234,8 @@ def tuned_category_amplitude(counts: np.ndarray, labels: np.ndarray, fold: dict,
         One entry of ``category_context``.
     settings (dict)
         The ``vocal_decoding`` block; reads ``category_surface`` (ridge, amplitude calibration and the
-        ``min_train_events`` / ``min_test_events`` floors below which a split is skipped).
+        ``min_train_events`` / ``min_test_events`` floors below which a split is skipped, and the
+        ``mean_count_floor`` under each session's mean count).
 
     Returns
     -------
@@ -243,6 +244,7 @@ def tuned_category_amplitude(counts: np.ndarray, labels: np.ndarray, fold: dict,
     """
 
     surface = settings["category_surface"]
+    mean_count_floor = surface["mean_count_floor"]
     grid = [float(a) for a in surface["amplitude_calibration"]["alpha_grid"]]
     if not surface["amplitude_calibration"]["enabled"] or not fold["inner_splits"]:
         return 1.0
@@ -259,9 +261,10 @@ def tuned_category_amplitude(counts: np.ndarray, labels: np.ndarray, fold: dict,
             prior = prior / prior.sum()
             rates = category_rates(counts[train_rows], labels[train_rows], fold["n_categories"],
                                    ridge_frac * counts[train_rows].sum())
-            exposure = (max(float(counts[test_rows].mean()), MEAN_COUNT_FLOOR)
-                        / max(float(counts[train_rows].mean()), MEAN_COUNT_FLOOR))
-            posterior = category_posterior(counts[test_rows], rates, prior, alpha, exposure)
+            exposure = (max(float(counts[test_rows].mean()), mean_count_floor)
+                        / max(float(counts[train_rows].mean()), mean_count_floor))
+            posterior = category_posterior(counts[test_rows], rates, prior, alpha, exposure,
+                                           mean_count_floor)
             scores.append(float(np.mean(posterior[np.arange(test_rows.size), labels[test_rows]]
                                         - np.log(prior)[labels[test_rows]])))
         if scores and np.mean(scores) > best_score:
@@ -290,7 +293,8 @@ def category_gain(counts: np.ndarray, labels: np.ndarray, folds: list, settings:
         Output of ``category_context``.
     settings (dict)
         The ``vocal_decoding`` block; reads ``category_surface`` (ridge, amplitude calibration and the
-        ``min_train_events`` / ``min_test_events`` floors below which a split is skipped).
+        ``min_train_events`` / ``min_test_events`` floors below which a split is skipped, and the
+        ``mean_count_floor`` under each session's mean count).
     permutation (np.ndarray)
         Row order applied to the counts; ``None`` scores the observed pairing.
     with_detail (bool)
@@ -303,6 +307,7 @@ def category_gain(counts: np.ndarray, labels: np.ndarray, folds: list, settings:
     """
 
     surface = settings["category_surface"]
+    mean_count_floor = surface["mean_count_floor"]
     ridge_frac = surface["ridge_selection"]["ridge_frac"]
     scored = counts if permutation is None else counts[permutation]
     per_event = np.full(counts.size, np.nan)
@@ -317,15 +322,17 @@ def category_gain(counts: np.ndarray, labels: np.ndarray, folds: list, settings:
         ridge = ridge_frac * float(scored[train_rows].sum())
         alpha = tuned_category_amplitude(scored, labels, fold, settings)
         rates = category_rates(scored[train_rows], labels[train_rows], fold["n_categories"], ridge)
-        exposure = (max(float(scored[test_rows].mean()), MEAN_COUNT_FLOOR)
-                    / max(float(scored[train_rows].mean()), MEAN_COUNT_FLOOR))
+        exposure = (max(float(scored[test_rows].mean()), mean_count_floor)
+                    / max(float(scored[train_rows].mean()), mean_count_floor))
         log_prior = np.log(fold["prior"])
         truth = labels[test_rows]
 
-        posterior = category_posterior(scored[test_rows], rates, fold["prior"], alpha, exposure)
+        posterior = category_posterior(scored[test_rows], rates, fold["prior"], alpha, exposure,
+                                       mean_count_floor)
         per_event[test_rows] = posterior[np.arange(truth.size), truth] - log_prior[truth]
         entropy[test_rows] = -np.sum(np.exp(posterior) * posterior, axis=1)
-        raw = category_posterior(scored[test_rows], rates, fold["prior"], 1.0, exposure)
+        raw = category_posterior(scored[test_rows], rates, fold["prior"], 1.0, exposure,
+                                 mean_count_floor)
         uncalibrated[test_rows] = raw[np.arange(truth.size), truth] - log_prior[truth]
 
         per_fold.append({"held_out": fold["held_out"], "n_events": int(test_rows.size),

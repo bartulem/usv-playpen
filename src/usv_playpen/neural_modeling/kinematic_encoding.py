@@ -41,9 +41,6 @@ from .shift_null_inference import (
     shifted_spike_frames,
 )
 
-# Memory budget for one batched null block. The Newton iteration holds several (n_frames, block)
-# float64 arrays at once, so this caps the working set at a few hundred MB per block.
-_NULL_BLOCK_BYTES = 32 * 1024 * 1024
 TEMPORAL_BASIS_TYPES = ("none", "bspline")
 SPIKE_END_CORRECTIONS = ("none", "drop_outside_and_rescale")
 
@@ -424,7 +421,8 @@ def linear_predictor_at_frames(estimator, feature_time_series: np.ndarray, featu
 
 def frozen_null_scores(eta: np.ndarray, frames: np.ndarray, spike_frames: np.ndarray, n_frames: int,
                        fps: float, n_shuffles: int, rng, guard_seconds: float,
-                       calibration_steps: int, calibration_bins: int, calibration: dict) -> np.ndarray:
+                       calibration_steps: int, calibration_bins: int, calibration: dict,
+                       null_block_megabytes: float) -> np.ndarray:
     """
     Description
     -----------
@@ -457,6 +455,10 @@ def frozen_null_scores(eta: np.ndarray, frames: np.ndarray, spike_frames: np.nda
     calibration (dict)
         The ``kinematic_encoding.calibration`` block; every draw is scored by the same rule as the
         observed score (:func:`deviance_metrics.frozen_model_score`).
+    null_block_megabytes (float)
+        Memory budget for the label matrix of one block of draws (``kinematic_encoding.null_block_megabytes``).
+        The Newton iteration holds several ``(n_frames, block)`` float64 arrays at once, so the working set
+        is a few times this. It sets only how many draws run together; the scores do not depend on it.
 
     Returns
     -------
@@ -468,7 +470,8 @@ def frozen_null_scores(eta: np.ndarray, frames: np.ndarray, spike_frames: np.nda
     shifts = [sample_circular_shift(rng, n_frames, fps, guard_seconds) for _ in range(n_shuffles)]
 
     # eta is frozen across draws, so the draws batch; the block is sized by memory, not by draw count.
-    block = int(max(1, min(n_shuffles, _NULL_BLOCK_BYTES // max(1, frames.size * 8))))
+    block_bytes = int(null_block_megabytes * 1024 * 1024)
+    block = int(max(1, min(n_shuffles, block_bytes // max(1, frames.size * 8))))
 
     null = np.empty(n_shuffles, dtype=np.float64)
     for start in range(0, n_shuffles, block):
@@ -551,7 +554,8 @@ def screen_features(per_session: dict, pool_session_ids: list, n_lags: int, rng,
                 eta, session["quiet"], session["spike_frames"], session["n_frames"], session["fps"],
                 settings["null"]["screen_n_shuffles"], rng, settings["null"]["shuffle_guard_seconds"],
                 encoding["solver"]["calibration_steps"],
-                encoding["solver"]["null_calibration_bins"], encoding["calibration"]))
+                encoding["solver"]["null_calibration_bins"], encoding["calibration"],
+                encoding["null_block_megabytes"]))
         score = finite_mean(np.asarray(fold_scores))
         slope = finite_mean(np.asarray(fold_slopes))
         p_value, at_floor = empirical_pvalue(np.vstack(fold_nulls).mean(axis=0), score)

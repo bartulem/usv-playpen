@@ -483,7 +483,7 @@ class TestFrozenNullScores:
         spikes = np.flatnonzero(generator.random(cls.N_NULL_FRAMES) < probability)
         return eta, np.arange(cls.N_NULL_FRAMES), spikes
 
-    def _null(self, eta, frames, spikes, n_shuffles, seed):
+    def _null(self, eta, frames, spikes, n_shuffles, seed, block_megabytes=32.0):
         """
         Description
         -----------
@@ -501,6 +501,8 @@ class TestFrozenNullScores:
             Number of draws.
         seed (int)
             Seed for the generator the shifts are drawn from.
+        block_megabytes (float)
+            Memory budget for one block of draws' labels.
 
         Returns
         -------
@@ -519,6 +521,7 @@ class TestFrozenNullScores:
             30,
             0,
             NULL_CALIBRATION,
+            block_megabytes,
         )
 
     def test_it_is_the_frozen_score_of_each_shifted_train(self):
@@ -545,15 +548,14 @@ class TestFrozenNullScores:
         assert null.shape == (12,)
         np.testing.assert_allclose(null, expected)
 
-    def test_splitting_the_draws_into_memory_blocks_changes_nothing(self, monkeypatch):
+    def test_splitting_the_draws_into_memory_blocks_changes_nothing(self):
         """The block size is a memory budget, not a statistical choice: forcing blocks of three draws must
         give exactly the scores of one block holding all of them, including a short final block."""
         eta, frames, spikes = self._case(driven=False)
         whole = self._null(eta, frames, spikes, 10, seed=3)
-        monkeypatch.setattr(
-            kinematic_encoding, "_NULL_BLOCK_BYTES", frames.size * 8 * 3
+        blocked = self._null(
+            eta, frames, spikes, 10, seed=3, block_megabytes=frames.size * 8 * 3 / (1024 * 1024)
         )
-        blocked = self._null(eta, frames, spikes, 10, seed=3)
         np.testing.assert_allclose(blocked, whole)
 
     def test_an_unrelated_predictor_has_a_null_centred_on_zero(self):

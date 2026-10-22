@@ -10,6 +10,7 @@ Coverage:
   predictor, the gain's sign recovered.
 - combine_folds under the count grain: a planted unit passes, the per-frame descriptors survive, the
   diagnostics carry no bin arrays; the frame grain is untouched.
+- pooled_transfer_null under the frame grain: the memory budget sets only how many draws run together.
 - The shipped transfer block carries the chosen values.
 """
 
@@ -32,6 +33,7 @@ from usv_playpen.neural_modeling.quiet_to_vocal_transfer import (
     bin_frame_matrix,
     combine_folds,
     counts_per_frame,
+    pooled_transfer_null,
     score_fold,
     transfer_frames,
 )
@@ -39,7 +41,7 @@ from usv_playpen.neural_modeling.quiet_to_vocal_transfer import (
 FPS = 100.0
 TRANSFER = {"calibration_grain": "pooled_across_folds", "d2_reference_rate": "scored_frames",
             "universe": "bout_window", "pre_bout_seconds": 1.0, "inter_bout_threshold_seconds": 0.2,
-            "grain": "count", "bin_seconds": 0.1}
+            "grain": "count", "bin_seconds": 0.1, "null_block_megabytes": 64.0}
 
 
 def spans(usvs: list, fps: float = FPS) -> tuple[np.ndarray, np.ndarray]:
@@ -301,6 +303,32 @@ class TestCountGrainCombine:
         assert out["score"] > 0.02
         assert out["n_frames"] == 8000
 
+    def test_splitting_the_frame_grain_null_into_memory_blocks_changes_nothing(self):
+        """The block size is a memory budget, not a statistical choice: a budget holding three draws' labels
+        must give exactly the null of a budget holding all of them, including a short final block."""
+        sessions = {"a": self._session(10, True), "b": self._session(11, True)}
+        filters = np.zeros(self.N_LAGS)
+        filters[-1] = 1.2
+        model = FrameFilterModel(filters, -2.0, True, 1)
+        transfer = {**TRANSFER, "grain": "frame", "universe": "usv_span"}
+        encoding = {"chunk_rows": 2000, "solver": {"calibration_steps": 30}, "transfer": transfer,
+                    "calibration": {"scheme": "crossfit", "n_blocks": 5}}
+        frames = {sid: np.arange(1500, 5500) for sid in sessions}
+        results = [score_fold(model, sessions[sid], [0], frames[sid], self.N_LAGS, 0.1, encoding,
+                              linear_predictor_at_frames, transfer) for sid in sessions]
+        total_frames = sum(int(result["eta"].size) for result in results)
+
+        def null_with(block_megabytes):
+            """The 10-draw pooled null under a given memory budget."""
+            return pooled_transfer_null(results, sessions, list(sessions), frames, 10, 0, 1.0, 30,
+                                        {**transfer, "null_block_megabytes": block_megabytes},
+                                        encoding["calibration"])
+
+        whole = null_with(64.0)
+        blocked = null_with(total_frames * 8 * 3 / (1024 * 1024))
+        assert whole.shape == (10,)
+        np.testing.assert_allclose(blocked, whole)
+
 
 class TestShippedTransferSettings:
     """The transfer block of the shipped settings file."""
@@ -315,5 +343,6 @@ class TestShippedTransferSettings:
         assert block["pre_bout_seconds"] == 4.0
         assert block["bin_seconds"] == 0.1
         assert block["inter_bout_threshold_seconds"] == pytest.approx(0.1155, abs=1e-4)
+        assert block["null_block_megabytes"] == 64
         assert set(block) == {"calibration_grain", "d2_reference_rate", "universe", "pre_bout_seconds",
-                              "inter_bout_threshold_seconds", "grain", "bin_seconds"}
+                              "inter_bout_threshold_seconds", "grain", "bin_seconds", "null_block_megabytes"}

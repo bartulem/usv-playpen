@@ -688,7 +688,8 @@ class TestTransferGuards:
         assert encoding["feature_selection"]["screen_require_positive_slope"] is True
         assert "require_positive_slope" not in encoding["transfer"]
         assert set(encoding["transfer"]) == {"calibration_grain", "d2_reference_rate", "universe", "pre_bout_seconds",
-                                             "inter_bout_threshold_seconds", "grain", "bin_seconds"}
+                                             "inter_bout_threshold_seconds", "grain", "bin_seconds",
+                                             "null_block_megabytes"}
 
 
 class TestTemporalBasis:

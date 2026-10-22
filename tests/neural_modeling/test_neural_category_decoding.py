@@ -30,7 +30,8 @@ SETTINGS = {"category_surface": {"ridge_selection": {"mode": "count_normalized_f
                                                            "alpha_grid": [0.1, 0.25, 0.5, 1.0]},
                                  "category_column": "qlvm_category",
                                  "min_train_events": 20,
-                                 "min_test_events": 5}}
+                                 "min_test_events": 5,
+                                 "mean_count_floor": 1e-3}}
 
 
 def _synthetic(n_sessions=3, per_session=200, n_categories=4, strength=3.0, seed=0):
@@ -124,21 +125,21 @@ class TestPosterior:
     def test_alpha_zero_collapses_to_the_prior(self):
         """With no amplitude the categories share a rate, so the count carries nothing."""
         prior = np.array([0.5, 0.3, 0.2])
-        post = category_posterior(np.array([5.0]), np.array([1.0, 5.0, 20.0]), prior, 0.0, 1.0)
+        post = category_posterior(np.array([5.0]), np.array([1.0, 5.0, 20.0]), prior, 0.0, 1.0, 1e-3)
         assert np.allclose(np.exp(post[0]), prior, atol=1e-9)
 
     def test_alpha_cannot_invert_the_profile(self):
         """It may temper a profile but never reverse its ordering -- the one-sided property."""
         rates = np.array([1.0, 5.0])
         for alpha in (0.1, 0.5, 1.0, 1.5):
-            post = category_posterior(np.array([8.0]), rates, np.array([0.5, 0.5]), alpha, 1.0)
+            post = category_posterior(np.array([8.0]), rates, np.array([0.5, 0.5]), alpha, 1.0, 1e-3)
             assert post[0, 1] > post[0, 0]
 
     def test_rows_are_normalised(self):
         """Every row of the log-posterior must exponentiate to a distribution summing to 1, so the decoded
         entropy and log-score are well defined."""
         post = category_posterior(np.arange(1.0, 6.0), np.array([1.0, 2.0, 3.0]),
-                                  np.array([0.2, 0.3, 0.5]), 1.0, 1.0)
+                                  np.array([0.2, 0.3, 0.5]), 1.0, 1.0, 1e-3)
         assert np.allclose(np.exp(post).sum(axis=1), 1.0)
 
 
@@ -281,7 +282,7 @@ class TestSilentSessions:
         """At zero exposure the log-posterior must be finite and equal to the uniform prior, so ``0 * log(0)``
         never reaches the score."""
         post = category_posterior(np.zeros(3), np.array([1.0, 2.0, 3.0, 4.0]),
-                                  np.full(4, 0.25), 1.0, 0.0)
+                                  np.full(4, 0.25), 1.0, 0.0, 1e-3)
         assert np.isfinite(post).all()
         assert np.allclose(np.exp(post[0]), 0.25, atol=1e-3)
 

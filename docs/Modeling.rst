@@ -1816,7 +1816,8 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
             "pre_bout_seconds": 4.0,
             "inter_bout_threshold_seconds": 0.1155,
             "grain": "count",
-            "bin_seconds": 0.1
+            "bin_seconds": 0.1,
+            "null_block_megabytes": 64
         },
         "subsampling_correction": "log_prior_offset",
         "temporal_basis": {
@@ -1831,7 +1832,8 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
             "spike_end_correction": "drop_outside_and_rescale"
         },
         "max_train_total": 70000,
-        "chunk_rows": 4000
+        "chunk_rows": 4000,
+        "null_block_megabytes": 32
     }
 
 * **history_pre_seconds** — the kinematic history length (``4.0`` → 600 lags at 150 fps). It also defines a quiet frame (no vocalization within this long before it) and the minimum gap of the single-session inner split, deliberately coupled so a quiet anchor's whole history is vocalization-free.
@@ -1845,11 +1847,12 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
 * **significance_model** — the penalties of the raw per-frame-lag fit: ``lambda_group`` (group lasso, ``0.0`` = no sparsity), ``lambda_smooth`` (``1000.0``) and ``lambda_ridge`` (``0.01``).
 * **feature_selection** — features are screened one at a time against the circular-shift null at a Bonferroni bar of ``screen_alpha / n_features`` (``0.01``), optionally requiring a positive calibration slope (``screen_require_positive_slope``), then added by ``selection_method`` ``'forward_d2'`` (forward selection on held-out explained deviance) under ``acceptance_rule`` ``'paired_1se'`` (a step is accepted when its paired gain exceeds one paired standard error). Both names accept only the implemented value.
 * **solver** — ``max_iter`` (``5000``) and ``tol`` (``1e-6``) of the FISTA group-elastic-net solver; ``calibration_steps`` (``30``) Newton iterations of each two-parameter calibration refit; ``null_calibration_bins`` (``2000``) equal-count predictor bins for the binned calibration of the null draws (``0`` runs the exact path; the responses are exact either way).
-* **transfer** — the frozen quiet model scored on vocal periods. ``calibration_grain`` ``'pooled_across_folds'`` concatenates the held-out predictions and calibrates once (averaging per-fold scores let a small fold dominate); ``d2_reference_rate`` ``'scored_frames'`` scores explained deviance against the vocal frames' own rate; ``universe`` ``'bout_window'`` scores each bout from ``pre_bout_seconds`` (``4.0``) before its first USV to its end, bouts being split where the inter-USV gap reaches ``inter_bout_threshold_seconds`` (``0.1155``); ``grain`` ``'count'`` scores spike counts in ``bin_seconds`` (``0.1``) bins rather than per frame.
+* **transfer** — the frozen quiet model scored on vocal periods. ``calibration_grain`` ``'pooled_across_folds'`` concatenates the held-out predictions and calibrates once (averaging per-fold scores let a small fold dominate); ``d2_reference_rate`` ``'scored_frames'`` scores explained deviance against the vocal frames' own rate; ``universe`` ``'bout_window'`` scores each bout from ``pre_bout_seconds`` (``4.0``) before its first USV to its end, bouts being split where the inter-USV gap reaches ``inter_bout_threshold_seconds`` (``0.1155``); ``grain`` ``'count'`` scores spike counts in ``bin_seconds`` (``0.1``) bins rather than per frame; ``null_block_megabytes`` (``64``) is the memory budget for one block of pooled null draws under the ``'frame'`` grain, a memory bound only (the null scores do not depend on it).
 * **subsampling_correction** — ``'log_prior_offset'``: the negative subsampling is corrected by a ``log`` sampling-rate offset in the linear predictor (the only implemented value).
 * **temporal_basis** — the lag basis of the shipped fit: ``type`` ``'bspline'`` (``'none'`` keeps the raw per-frame lags) with ``n_splines`` (``20``) cubic (``spline_order`` ``3``) B-splines over the 600 lags; ``l2_lag_alpha`` (``100.0``) makes the ridge grow with a spline's distance from the spike, each column's penalty scaled by ``1 + l2_lag_alpha · f²`` with ``f`` its centre's lag as a fraction of the window, so the far end of the history is shrunk hardest; ``lambda_ridge`` (``0.1``) and ``lambda_smooth`` (``0.0``) are the coefficient ridge and the smoothness penalty across neighbouring splines; ``lambda_group`` (``0.0``) is the group-lasso strength of the basis-path fit (off: the basis path does no feature sparsity); ``smoothness_order`` (``2``) is the finite-difference order of that spline-coefficient smoothness penalty (inert while ``lambda_smooth`` is ``0``); ``spike_end_correction`` ``'drop_outside_and_rescale'`` repairs what a uniform coefficient ridge does at the spike end of the basis (``'none'`` leaves it).
 * **max_train_total** — cap on the training rows of one fit across sessions (``70000``, split evenly per session), which bounds memory and time.
 * **chunk_rows** — rows per block when the lagged design is scored in chunks (``4000``); a memory bound only.
+* **null_block_megabytes** — memory budget, in MB, for the label matrix of one block of circular-shift null draws (``32``); the batched calibration holds a few such arrays at once. A memory bound only: the null scores do not depend on it. **Allowed:** a positive number; fractions of a MB are fine.
 
 **vocal_gating** — is a unit's vocal response gated on a behavioural feature (a feature × vocalization interaction in a contemporaneous logistic model, quiet frames guard-banded and the peri-vocal zone dropped)?
 
@@ -1952,7 +1955,8 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
             },
             "category_column": "qlvm_category",
             "min_train_events": 20,
-            "min_test_events": 5
+            "min_test_events": 5,
+            "mean_count_floor": 0.001
         },
         "targets": ["manifold_position"],
         "discrimination_null": {
@@ -1972,7 +1976,7 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
 * **vocal_occurrence** — ``ridge_frac`` (``0.02``, scaled by the training count), ``sigma_floor`` (``0.05``, a floor on the standard deviation that z-scores the count column, so a unit silent in quiet cannot produce an exploding column) and the ``solver`` steps (``irls_n_steps`` ``30``, ``calibration_steps`` ``40``).
 * **geodesic_metrics** — declared but read by no current neural code (``compute``, ``grid_n_per_dim``, ``graph_k``, ``density_exponent``, ``decoder_weights_npz_path``).
 * **tuning_surface** — the Poisson tuning surface over the torus: ``tuning_basis`` ``'fourier'`` with ``fourier_k`` (``2``) harmonics per axis, or a local ``'bump'`` basis of ``bump_grid_n`` (``10``) nodes per axis of width ``bump_sigma`` (``0.1``) kept where the kernel-weighted training occupancy reaches ``min_basis_occupancy`` (``5.0``) events; decoding runs on a grid of ``grid_n`` (``60``) cells per axis restricted to cells whose training occupancy (KDE of bandwidth ``kde_bandwidth``, ``0.03``) reaches ``decode_grid_min_occupancy`` (``1.0``); ``likelihood_family`` ``'poisson'`` (the only implemented value); ``session_rate_offsets`` adds per-session rate offsets; ``solver.irls_n_steps`` (``50``); ``ridge_selection``: ``mode`` ``'count_normalized_fixed'`` (the only implemented value; the ridge is ``ridge_frac`` × the training spike count, ``ridge_frac`` ``0.02``); ``amplitude_calibration``: when ``enabled``, a likelihood-sharpening amplitude is tuned over ``alpha_grid`` by inner leave-one-session-out on the training sessions (``mode`` ``'train_tuned_inner_loso'``, the only implemented value; ``alpha_min`` ``0.0`` is the smallest grid value allowed), and when disabled the amplitude is 1; ``record_bump_basis_gain`` also records the bump-basis gain beside the Fourier one.
-* **category_surface** — the same decoder over the QLVM categories: ``ridge_selection``, ``amplitude_calibration`` as above; ``category_column`` is declared but not read; ``min_train_events`` (``20``) / ``min_test_events`` (``5``) — an outer or inner split with fewer training or test events than these is skipped, too few for a stable per-category rate or a meaningful held-out score.
+* **category_surface** — the same decoder over the QLVM categories: ``ridge_selection``, ``amplitude_calibration`` as above; ``category_column`` is declared but not read; ``min_train_events`` (``20``) / ``min_test_events`` (``5``) — an outer or inner split with fewer training or test events than these is skipped, too few for a stable per-category rate or a meaningful held-out score; ``mean_count_floor`` (``0.001``) is the lower bound on a session's mean spike count when the held-out level correction is formed, so a session with no spikes gives a posterior equal to the prior (zero gain) rather than ``0 · log 0`` = NaN. **Allowed:** a positive number, small against any real session's mean count.
 * **targets** — declared but read by no current code (the position target is always decoded).
 * **discrimination_null** — the exact within-session permutation null of the identity axis: ``n_permutations`` (``1000``) draws; ``record_left_tail_anti_alignment`` records the left-tail statistics; ``method``, ``sided``, ``pass_rule`` and ``n_permutations_category_grain`` are declared but read by no current code.
 * **record_overdispersion_index** — record the count overdispersion index with each decoding: the mean Pearson dispersion ``(count − expected)² / expected`` of the held-out events, where an event's expected count is the calibrated surface rate the decoder scored it with (the centred surface shape times the tuned amplitude, at the held-out session's mean-count level) read at the event's own grid cell, so an untuned Poisson unit gives about ``1``. The decoding also stores ``nats_per_spike`` (the summed finite per-event gain divided by the spikes of those same events) and ``min_leave_one_fold_out`` (the smallest pooled gain with one fold left out, over the folds whose left-out gain is finite).

@@ -337,7 +337,8 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
                                   session["n_frames"], fps, count, rng,
                                   settings["null"]["shuffle_guard_seconds"],
                                   encoding["solver"]["calibration_steps"],
-                                  encoding["solver"]["null_calibration_bins"], encoding["calibration"])
+                                  encoding["solver"]["null_calibration_bins"], encoding["calibration"],
+                                  encoding["null_block_megabytes"])
 
     quiet_null = draw_quiet_null(settings["null"]["n_shuffles"])
     quiet_p, quiet_at_floor, quiet_null = escalated_empirical_pvalue(
@@ -603,7 +604,8 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
                                   session["n_frames"], fps, count, rng,
                                   settings["null"]["shuffle_guard_seconds"],
                                   encoding["solver"]["calibration_steps"],
-                                  encoding["solver"]["null_calibration_bins"], encoding["calibration"])
+                                  encoding["solver"]["null_calibration_bins"], encoding["calibration"],
+                                  encoding["null_block_megabytes"])
 
     quiet_null = draw_quiet_null(settings["null"]["n_shuffles"])
     quiet_p, quiet_at_floor, quiet_null = escalated_empirical_pvalue(
