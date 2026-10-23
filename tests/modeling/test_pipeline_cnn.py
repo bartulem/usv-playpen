@@ -23,8 +23,8 @@ Coverage:
   labels when every session carries them.
 
 * ``run_cnn_training`` — the full tri-strategy training loop
-  (``null_model_free`` empirical-density draw, ``null`` session-isolated
-  target shuffle, ``actual`` kinematic fit), the spatial K-Means CV
+  (``null_model_free`` empirical-density draw, ``null`` target shuffle across
+  the training fold, ``actual`` kinematic fit), the spatial K-Means CV
   splitter, Phase-1 per-fold checkpointing, Phase-2 post-hoc permutation
   feature importance, and Phase-3 contrastive centroid-gradient saliency
   (which transitively exercises ``compute_centroid_saliency``). Every knob

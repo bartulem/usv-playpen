@@ -92,6 +92,7 @@ from .modeling_utils import (
     format_selection_step,
     held_out_session_ids_from_metadata,
     mean_absolute_error_1d,
+    null_target_permutation,
     paired_one_se_improvement,
     pearson_r_safe,
     pool_session_arrays,
@@ -99,7 +100,6 @@ from .modeling_utils import (
     safe_confusion_matrix,
     safe_matthews_corrcoef,
     session_grouped_inner_cv,
-    within_group_permutation,
 )
 from .modeling_vocal_categories_multinomial import (
     _balance_multinomial_train_indices,
@@ -560,7 +560,7 @@ def _fold_paired_margin_bootstrap(
 
     This is the operative statistic for the manifold selection gate. Each CV
     fold yields one predictive score for the ``actual`` fit and one for the
-    within-session-permutation ``null`` fit, computed on that fold's genuine
+    target-permutation ``null`` fit, computed on that fold's genuine
     out-of-sample test predictions; the per-fold ``actual - null`` difference is
     the *within-fold* behaviour->position signal, with the structure both share
     cancelled by the pairing. **Folds -- not sessions, not individual
@@ -593,7 +593,7 @@ def _fold_paired_margin_bootstrap(
         The ``actual`` block's ``folds`` dict; must carry per-fold
         ``test_indices``, ``y_pred_xy`` and ``y_true`` lists.
     null_folds (dict)
-        The within-session-shuffle ``null`` block's ``folds`` dict (same keys).
+        The target-permuted ``null`` block's ``folds`` dict (same keys).
     metric (str)
         ``'torus'`` or ``'euclidean'`` -- the manifold geometry for the score.
     period (float)
@@ -1807,10 +1807,6 @@ def vocal_onset_model_selection(univariate_results_path: str,
             if n_p_held is None:
                 n_p_held, n_n_held = p_held.shape[0], n_held.shape[0]
         n_keep = min(p_dev_by_feat[0].shape[0], n_dev_by_feat[0].shape[0])
-        # Session of every development row (the same for every feature), for the null.
-        _, _, g_p_dev, g_n_dev = pool_session_arrays(
-            all_feature_data[current_model_features[0]], dev_sessions, pos_key="usv_feature_arr",
-            neg_key="no_usv_feature_arr", n_frames=history_frames, return_groups=True)
         heldout_result = {
             'features': list(current_model_features),
             'n_held_out_sessions': len(held_sessions),
@@ -1834,11 +1830,10 @@ def vocal_onset_model_selection(univariate_results_path: str,
             ]
             X_tr_gam = get_unrolled_X_for_multivariate(X_train_list, history_frames)
             y_tr_bal = np.concatenate((np.ones(n_keep), np.zeros(n_keep)))
-            groups_dev = np.concatenate((g_p_dev[idx_p], g_n_dev[idx_n]))
             for branch in ('actual', 'null'):
-                # The held-out null shuffles labels within the development sessions.
+                # The held-out null shuffles labels across the development set.
                 y_tr_use = (y_tr_bal if branch == 'actual'
-                            else y_tr_bal[within_group_permutation(groups_dev, held_rng)])
+                            else y_tr_bal[null_target_permutation(y_tr_bal.shape[0], held_rng)])
                 rec = {'ll': np.nan, 'auc': np.nan, 'score': np.nan,
                        'deviance_explained': np.nan, 'brier': np.nan,
                        'heldout_fit_failed': False, 'heldout_fit_error': None}
@@ -1955,8 +1950,8 @@ def _category_row_sessions(
     The session of every row `_pool_category_features` pools for one feature, in the
     same order (sessions in `session_list` order, a session's rows contiguous), for the
     Target and the Other class. Every feature carries the same rows per session, so
-    one feature's labels serve the whole feature list; they let the selection permute
-    labels within sessions and split its inner cross-validation by session.
+    one feature's labels serve the whole feature list; they let the selection split
+    its inner cross-validation by session.
 
     Parameters
     ----------
@@ -2335,7 +2330,7 @@ def vocal_category_model_selection(
         ref_targ = pooled_category_cache[ranked_features[0]]['target']
         ref_other = pooled_category_cache[ranked_features[0]]['other']
         # Session of every cached row (the same for every feature), sliced per fold
-        # like the arrays, for the within-session null and the grouped inner CV.
+        # like the arrays, for the grouped inner CV.
         g_all_targ, g_all_other = _category_row_sessions(all_feature_data, ranked_features[0], all_sessions_arr)
         n_targ_total = ref_targ.shape[0]
         n_other_total = ref_other.shape[0]
@@ -2963,9 +2958,9 @@ def vocal_category_model_selection(
             y_te_int = y_test_held.astype(int)
             held_rng = np.random.default_rng(held_seed)
             for branch in ('actual', 'null'):
-                # The held-out null shuffles labels within the development sessions.
+                # The held-out null shuffles labels across the development set.
                 y_tr = (y_tr_bal if branch == 'actual'
-                        else y_tr_bal[within_group_permutation(groups_dev, held_rng)])
+                        else y_tr_bal[null_target_permutation(y_tr_bal.shape[0], held_rng)])
                 rec = {'ll': np.nan, 'auc': np.nan, 'score': np.nan,
                        'deviance_explained': np.nan, 'brier': np.nan,
                        'heldout_fit_failed': False, 'heldout_fit_error': None}
@@ -3894,9 +3889,9 @@ def bout_parameter_model_selection(
             'n_held_out_events': int(_held_positions.size),
         }
         for branch in ('actual', 'null'):
-            # The held-out null shuffles targets within the development sessions.
+            # The held-out null shuffles targets across the development set.
             y_dev_use = (y_dev if branch == 'actual'
-                         else y_dev[within_group_permutation(groups_global[_dev_positions], held_rng)])
+                         else y_dev[null_target_permutation(y_dev.shape[0], held_rng)])
             rec = {'explained_deviance': np.nan, 'residual_deviance': np.nan,
                    'heldout_fit_failed': False, 'heldout_fit_error': None}
             try:
@@ -5274,15 +5269,15 @@ def multinomial_vocal_category_model_selection(
             p_train_labels = y_dev_fit
             model_type = 'multinomial_logistic'
             # No-signal filter band: the same model and hyperparameters refit on
-            # the development rows with the category labels permuted within each
-            # session; the filter figures draw the final filters against it.
+            # the development rows with the category labels permuted across the
+            # development set; the filter figures draw the final filters against it.
             groups_dev_fit = (groups_global[_dev_positions][dev_train_idx] if balance_train
                               else groups_global[_dev_positions])
             n_null_permutations = int(settings['model_params']['filter_null_permutations'])
             null_rng = np.random.default_rng(held_seed_mn)
             held_null_weights = []
             for _ in range(n_null_permutations):
-                perm = within_group_permutation(groups_dev_fit, null_rng)
+                perm = null_target_permutation(groups_dev_fit.shape[0], null_rng)
                 null_model = SmoothMultinomialLogisticRegression(
                     n_features=n_final_feats, n_time_bins=n_time_bins,
                     lambda_smooth=final_lambda_smooth,
@@ -5445,16 +5440,16 @@ def continuous_vocal_manifold_model_selection(
        The torus estimator decodes to a coordinate that is always on the
        manifold, so it deliberately does not snap.
     2. Fold-grain paired-margin screening (higher-is-better). For every
-       feature the per-fold margin of `actual` over the within-session
-       Y-permutation `null` (`SCREEN_BASELINE_STRATEGY`) on the selection
+       feature the per-fold margin of `actual` over the Y-permutation
+       `null` (`SCREEN_BASELINE_STRATEGY`) on the selection
        score is tested over folds (`_fold_paired_margin_bootstrap`): the
        one-sided exact sign-flip permutation p-values (`_sign_flip_p_value`,
        floor `1 / 2**manifold_n_cv_folds`, so 20 folds let a single feature clear the
        BH rank-1 threshold `q / m`) are Benjamini-Hochberg controlled at
        `q = p_val`, and a surviving feature must also clear a relative
        effect floor (`selection_effect_floor` x the top surviving margin).
-       The permutation removes the session-level confound while leaving
-       the trial-level dependence to test. On the torus the screen scores
+       The permutation across the training fold destroys every
+       behaviour->position pairing, within and between sessions. On the torus the screen scores
        every fold with the same rule as the greedy gate -- the selection
        score's own averaging (the region-balanced macro score by default,
        matching the equal-region fit reweighting) and, with
@@ -5627,7 +5622,7 @@ def continuous_vocal_manifold_model_selection(
     #     `r2_spatial` is a reported descriptor only.
     # The score drives the greedy candidate/baseline ranking and (via the
     # per-fold paired margin) the accept gate; on both geometries it is
-    # screened against the within-session `null` (see SCREEN_BASELINE_STRATEGY).
+    # screened against the target-permuted `null` (see SCREEN_BASELINE_STRATEGY).
     _selection_manifold_metric, _selection_manifold_period = resolve_manifold_metric(settings)
     # Explicitly named, geometry-specific selection key: the torus selects on a
     # von Mises log-score, euclidean on distance correlation (`dcor_xy`). On the
@@ -5640,10 +5635,10 @@ def continuous_vocal_manifold_model_selection(
     SELECTION_SCORE_KEY = resolve_manifold_selection_score_key(
         settings, _selection_manifold_metric
     )
-    # The screen tests `actual` against the within-session-shuffle `null`
-    # baseline on BOTH geometries: the shuffle preserves session-level structure
-    # and destroys the trial-level X->Y pairing, so beating it isolates genuine
-    # trial-level prediction from a session-level artefact. The `null_model_free`
+    # The screen tests `actual` against the target-permuted `null` baseline on
+    # BOTH geometries: the permutation across the training fold destroys every
+    # X->Y pairing, so beating it shows a behaviour->position relationship that
+    # generalises to held-out sessions. The `null_model_free`
     # empirical-density draw is the reported chance floor, not the baseline.
     SCREEN_BASELINE_STRATEGY = 'null'
 
@@ -7232,13 +7227,13 @@ def continuous_vocal_manifold_model_selection(
             }
             # No-signal filter band: the same model, hyperparameters and
             # reweighting refit on the development sessions with the positions
-            # (with their weights and regions) permuted within each session; the
-            # filter figures draw the final filters against it.
+            # (with their weights and regions) permuted across the development set;
+            # the filter figures draw the final filters against it.
             n_null_permutations = int(settings['model_params']['filter_null_permutations'])
             null_rng = np.random.default_rng(held_seed)
             null_weights = []
             for _ in range(n_null_permutations):
-                perm = within_group_permutation(groups_dev, null_rng)
+                perm = null_target_permutation(groups_dev.shape[0], null_rng)
                 w_perm = w_dev[perm]
                 w_perm_fit = (w_perm * inverse_region_frequency_weights(region_dev[perm])
                               if manifold_metric == 'torus' else w_perm)

@@ -32,19 +32,19 @@ Key scientific capabilities:
     acoustic regions are proportionally represented in every train / test
     fold.
 4.  Rigorous null baselines: compares model performance against a
-    within-session **target (Y) permutation** (`null`) and an empirical-density
-    draw from the training-set `Y` (`null_model_free`, the chance floor).
-    The target permutation is
-    the canonical permutation test for regression: each trial's kinematic
-    history stays where it is, but its torus position (with its density
-    weight and acoustic region) is re-paired with another trial's from the
-    same session. Permuting *within* session preserves session-level
-    biases and each session's vocal repertoire — so a
-    predictor that just memorises "this session tends to vocalise at
-    region R" cannot beat the null by accident — while breaking the
-    kinematics-to-position pairing, isolating that mapping as the only
-    signal the actual model can exploit. (This matches the target-
-    permutation null used by the onset / category / bout selectors.)
+    **target (Y) permutation** (`null`) and an empirical-density draw from
+    the training-set `Y` (`null_model_free`, the chance floor). The target
+    permutation is the canonical permutation test for regression: each
+    trial's kinematic history stays where it is, but its torus position
+    (with its density weight and acoustic region) is re-paired with another
+    trial's drawn from the whole training fold, pooled over its sessions.
+    This breaks every kinematics-to-position pairing, including any
+    difference between sessions (e.g. sessions with a faster partner also
+    vocalising nearer region R), so a feature beats the null by carrying any
+    relationship to vocal output that generalises to held-out sessions.
+    Sessions stay whole on either side of every split; only the null's
+    target is pooled. (This matches the target-permutation null used by the
+    onset / category / bout selectors.)
 """
 
 from __future__ import annotations
@@ -110,6 +110,7 @@ from .modeling_utils import (
     harmonize_session_columns,
     held_out_session_ids_from_metadata,
     manifold_tag_segment,
+    null_target_permutation,
     prepare_modeling_sessions,
     resolve_mouse_roles,
     run_predictor_audits,
@@ -1493,7 +1494,7 @@ class ContinuousModelRunner:
        temporally downsampled (binned) arrays for efficient gradient
        descent.
     2. Experimental control: evaluates features against an `actual`
-       framework, a within-session shuffled `null` framework, and a
+       framework, a target-permuted `null` framework, and a
        `null_model_free` empirical-density baseline (a uniform draw from
        the training-set `Y` — the chance floor, sampling the observed
        repertoire independent of kinematics).
@@ -1871,15 +1872,14 @@ class ContinuousModelRunner:
         position `Y`. Performance is evaluated across three strategies:
 
         1. `actual` — fits the true kinematic-to-acoustic mapping.
-        2. `null` — within-session target (Y) permutation. For the training
-           fold, every trial's torus position (with its density weight and
-           acoustic region) is re-paired with another trial's from the same
-           session (seeded per fold via `np.random.default_rng`); `X_train`
-           stays in place. This is the classical permutation test for
-           regression and, because the permutation is within session, it
-           preserves each session's repertoire — so a predictor that exploits
-           "this session tends to vocalise around region R" cannot beat
-           the null accidentally. The test fold is left untouched so the
+        2. `null` — target (Y) permutation. For the training fold, every
+           trial's torus position (with its density weight and acoustic
+           region) is re-paired with another trial's drawn from the whole
+           training fold, pooled over its sessions (`null_target_permutation`,
+           seeded per fold via `np.random.default_rng`); `X_train` stays in
+           place. This is the classical permutation test for regression; it
+           breaks every kinematics-to-position pairing, including any
+           difference between sessions. The test fold is left untouched so the
            null estimator is evaluated on the same real `(X_test,
            Y_test)` pairing as the actual model.
         3. `null_model_free` — bypasses modelling entirely and predicts a
@@ -2156,47 +2156,6 @@ class ContinuousModelRunner:
         results = {}
         strategies = ['actual', 'null', 'null_model_free']
 
-        def _within_session_permutation(groups_block: np.ndarray,
-                                        rng_: np.random.Generator) -> np.ndarray:
-            """
-            Return a row-permutation index that reorders rows only *within* each
-            session block, so the caller can apply it to the prediction target
-            (torus position `Y`, its density weight, and acoustic-region label) to
-            break the kinematics->position pairing while preserving session-level
-            vocal-repertoire structure.
-
-            This is the within-session **target permutation** underpinning the
-            `null` control: every trial's torus position is re-paired with another
-            trial's from the same session (with its own weight/region moving with
-            it), matching the target-permutation nulls used by the onset / category
-            / bout selectors. The permutation is drawn independently per session so
-            trials never cross session boundaries, and single-trial sessions are
-            left untouched (a 1-element permutation is a no-op).
-
-            Parameters
-            ----------
-            groups_block : np.ndarray
-                Session-ID label for each row, shape `(n_samples,)`. Determines
-                which rows may be permuted together.
-            rng_ : np.random.Generator
-                Seeded NumPy generator used to draw the per-session permutations.
-                Passed in from the caller so the null strategy is deterministic per
-                fold.
-
-            Returns
-            -------
-            perm : np.ndarray
-                Integer index of shape `(n_samples,)`; `array[perm]` reorders rows
-                inside each session block. Same length as `groups_block`.
-            """
-            perm = np.arange(len(groups_block))
-            for sess_id in np.unique(groups_block):
-                sess_positions = np.where(groups_block == sess_id)[0]
-                shuffled = sess_positions.copy()
-                rng_.shuffle(shuffled)
-                perm[sess_positions] = shuffled
-            return perm
-
         for strategy in strategies:
 
             results[strategy] = {
@@ -2261,16 +2220,15 @@ class ContinuousModelRunner:
                 region_train, region_test = region[train_idx], region[test_idx]
 
                 if strategy == 'null':
-                    # Within-session target permutation: each training trial's torus
-                    # position -- with its density weight and acoustic region -- is
-                    # re-paired with another trial's from the same session, breaking
-                    # the kinematics->position link while preserving session-level
-                    # repertoire structure. X stays put and the (Y, w, region) unit
-                    # moves together (every position keeps its own weight), matching
-                    # the target-permutation `null` used by the onset / category /
-                    # bout selectors.
-                    null_perm = _within_session_permutation(
-                        groups_train, np.random.default_rng(random_seed + fold_idx + 1))
+                    # Target permutation across the training fold: each training trial's
+                    # torus position -- with its density weight and acoustic region -- is
+                    # re-paired with another training trial's from any session, breaking
+                    # every kinematics->position link. X stays put and the (Y, w, region)
+                    # unit moves together (every position keeps its own weight), matching
+                    # the target-permutation `null` used by the onset / category / bout
+                    # selectors.
+                    null_perm = null_target_permutation(
+                        groups_train.shape[0], np.random.default_rng(random_seed + fold_idx + 1))
                     Y_train = Y_train[null_perm]
                     w_train = w_train[null_perm]
                     region_train = region_train[null_perm]
@@ -2335,7 +2293,7 @@ class ContinuousModelRunner:
                     fold_tuned_flag = False
                 else:
                     # Pick the regularisation strengths for this outer fold.
-                    # Tuning is strategy-agnostic: the within-session
+                    # Tuning is strategy-agnostic: the
                     # target-permuted `null` is also tuned, so the
                     # permutation test compares like-against-like
                     # hyperparameters rather than penalising the null by
@@ -2488,11 +2446,11 @@ class ContinuousModelRunner:
             region_held = region[_held_positions]
 
             if strategy == 'null':
-                # Within-session target permutation (see the per-fold branch): the
-                # (Y, w, region) development unit is permuted within session while X
-                # stays, breaking the kinematics->position pairing.
-                null_perm = _within_session_permutation(
-                    groupsh_train, np.random.default_rng(held_seed + 1))
+                # Target permutation across the development set (see the per-fold
+                # branch): the (Y, w, region) unit is permuted while X stays,
+                # breaking the kinematics->position pairing.
+                null_perm = null_target_permutation(
+                    groupsh_train.shape[0], np.random.default_rng(held_seed + 1))
                 Yh_train = Yh_train[null_perm]
                 wh_train = wh_train[null_perm]
                 region_dev = region_dev[null_perm]

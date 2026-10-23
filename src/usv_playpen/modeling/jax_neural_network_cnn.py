@@ -77,6 +77,7 @@ from .modeling_usv_manifold_position import (
 from .modeling_utils import (
     development_heldout_masks,
     held_out_session_ids_from_metadata,
+    null_target_permutation,
 )
 
 
@@ -2046,12 +2047,9 @@ class NeuralContinuousCNNRunner:
                     continue
 
                 if strategy == 'null':
-                    # 2. Strict Session-Isolated Shuffling
-                    unique_groups = np.unique(groups[train_idx])
-                    groups_tr = groups[train_idx]
-                    for g in unique_groups:
-                        g_idx = np.where(groups_tr == g)[0]
-                        Y_tr[g_idx] = Y_tr[rng.permutation(g_idx)]
+                    # 2. Target permutation across the whole training fold, pooled
+                    # over its sessions (null_target_permutation).
+                    Y_tr = Y_tr[null_target_permutation(Y_tr.shape[0], rng)]
 
                 # 3. JAX Network Initialization using the full hyperparameter dictionary
                 # Every random stream derives from `random_seed`: one key per (fold,

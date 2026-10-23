@@ -1352,9 +1352,11 @@ class TestManifoldModelSelection:
            is held out, so the printed kappa equals the fit on every event of all
            twenty-five sessions -- a different number than in (1), which proves
            the metadata source actually decides the development mask. This run
-           ranks only the no-signal feature, so the screen keeps nothing and the
-           run stops right after it (a run past the screen needs the input
-           metadata's ``analysis_tag`` to name its step files).
+           ranks only the no-signal feature at the strict screen level of 0.01
+           (the lenient 0.5 of run 1 can keep a pure-noise feature by chance), so
+           the screen keeps nothing and the run stops right after it (a run past
+           the screen needs the input metadata's ``analysis_tag`` to name its step
+           files).
         """
 
         gate_n_sessions = 25
@@ -1412,7 +1414,7 @@ class TestManifoldModelSelection:
         kappa_all = _frozen_selection_kappa(y_all, w_all, metric='torus', period=1.0)
         assert f"{kappa_dev:.4f}" != f"{kappa_all:.4f}"
 
-        def _run(out_name: str, ranking_path: Path) -> str:
+        def _run(out_name: str, ranking_path: Path, p_val: float = 0.5) -> str:
             """
             Description
             -----------
@@ -1426,6 +1428,8 @@ class TestManifoldModelSelection:
                 Name of the output subdirectory created under ``tmp_path``.
             ranking_path (pathlib.Path)
                 Univariate ranking pickle handed to the selector.
+            p_val (float)
+                Screen level (the Benjamini-Hochberg q) handed to the selector.
 
             Returns
             -------
@@ -1442,7 +1446,7 @@ class TestManifoldModelSelection:
                 output_directory=str(ms_dir),
                 settings_path=str(settings_json),
                 use_top_rank_as_anchor=True,
-                p_val=0.5,
+                p_val=p_val,
             )
             return capsys.readouterr().out
 
@@ -1457,7 +1461,7 @@ class TestManifoldModelSelection:
         no_signal_path = tmp_path / 'univariate_no_signal.pkl'
         with no_signal_path.open('wb') as fh:
             pickle.dump({'other.speed': combined['other.speed']}, fh)
-        out_no_md = _run('model_selection_no_md', no_signal_path)
+        out_no_md = _run('model_selection_no_md', no_signal_path, p_val=0.01)
         assert f"Frozen selection kappa = {kappa_all:.4f}" in out_no_md
         assert 'No significant features found' in out_no_md
 

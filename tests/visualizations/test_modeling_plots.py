@@ -1789,7 +1789,7 @@ class TestPlotMultinomialMultivariateFilters:
         captions = [t for t in fig.texts if t.get_position() == (0.5, 0.995)]
         assert len(captions) == 1
         assert captions[0].get_text().startswith("Faded cells: weight within the 95th percentile")
-        assert "within-session permuted labels (no-signal band)" in captions[0].get_text()
+        assert "refit on permuted labels (no-signal band)" in captions[0].get_text()
 
     @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
     def test_artifact_without_null_band_draws_plain_heatmaps(self, tmp_path):

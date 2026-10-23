@@ -1916,7 +1916,7 @@ class TestSecondMutationRoundKnownAnswers:
 
 class TestSessionLabelsThroughPooledTasks:
     """The pooled-row tasks (onset, category, bout parameters) carry each row's session so
-    their nulls shuffle labels within sessions and their inner CVs hold out whole sessions."""
+    their inner CVs hold out whole sessions; their nulls shuffle labels across the training set."""
 
     @staticmethod
     def _data():
@@ -1950,18 +1950,18 @@ class TestSessionLabelsThroughPooledTasks:
         assert [index[g] for g in gp] == list(bp[:, 0])
         assert [index[g] for g in gn] == list(bn[:, 0])
 
-    def test_within_group_permutation_keeps_each_sessions_labels(self):
-        """Shuffling within sessions moves labels only among a session's own rows: every
-        session keeps exactly its label counts, and over many draws every row of a session
-        takes every value present in it."""
-        groups = np.array(["a"] * 4 + ["b"] * 6)
+    def test_null_target_permutation_mixes_labels_across_sessions(self):
+        """The null permutes labels over the whole training set: every draw is a permutation
+        of all rows (the label multiset is kept), and over many draws a session's rows take
+        labels from other sessions, so its label count is no longer fixed."""
         y = np.array([1, 1, 1, 0, 0, 0, 0, 0, 1, 0])
-        for seed in range(20):
-            perm = mu.within_group_permutation(groups, np.random.default_rng(seed))
-            assert sorted(perm[:4]) == [0, 1, 2, 3]
-            assert sorted(perm[4:]) == list(range(4, 10))
-            assert y[perm][:4].sum() == 3
-            assert y[perm][4:].sum() == 1
+        first_session_counts = set()
+        for seed in range(50):
+            perm = mu.null_target_permutation(y.size, np.random.default_rng(seed))
+            np.testing.assert_array_equal(np.sort(perm), np.arange(y.size))
+            assert y[perm].sum() == y.sum()
+            first_session_counts.add(int(y[perm][:4].sum()))
+        assert len(first_session_counts) > 1
 
     def test_inner_cv_splits_hold_out_whole_sessions_with_both_classes(self):
         """The inner folds never put one session on both sides and keep both classes on each
@@ -2230,17 +2230,16 @@ class TestThirdMutationRoundKnownAnswers:
         assert len(out) == 2
         assert out[0].shape == (2, 1)
 
-    def test_within_group_permutation_moves_rows_only_inside_their_group(self):
-        """With three groups the permutation actually shuffles every group (it is not the
-        identity) and never sends a row to another group's position."""
+    def test_null_target_permutation_is_seeded_and_crosses_groups(self):
+        """The same seed gives the same permutation, a different seed a different one, and
+        with three groups of rows the permutation sends rows to other groups' positions."""
 
         groups = np.repeat(np.array(['a', 'b', 'c']), 10)
-        perm = mu.within_group_permutation(groups, np.random.default_rng(0))
+        perm = mu.null_target_permutation(groups.size, np.random.default_rng(0))
+        np.testing.assert_array_equal(perm, mu.null_target_permutation(groups.size, np.random.default_rng(0)))
+        assert not np.array_equal(perm, mu.null_target_permutation(groups.size, np.random.default_rng(1)))
         np.testing.assert_array_equal(np.sort(perm), np.arange(30))
-        np.testing.assert_array_equal(groups[perm], groups)
-        for g in ('a', 'b', 'c'):
-            rows = np.where(groups == g)[0]
-            assert not np.array_equal(perm[rows], rows), g
+        assert not np.array_equal(groups[perm], groups)
 
     def test_inner_cv_two_sessions_seed_and_fold_count(self):
         """Two sessions are enough for session folds; the folds are exactly the seeded

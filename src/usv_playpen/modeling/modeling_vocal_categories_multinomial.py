@@ -77,6 +77,7 @@ from .modeling_utils import (
     format_split_line,
     harmonize_session_columns,
     held_out_session_ids_from_metadata,
+    null_target_permutation,
     prepare_modeling_sessions,
     resolve_mouse_roles,
     run_predictor_audits,
@@ -1323,7 +1324,8 @@ class MultinomialModelRunner:
        unified, temporally downsampled (binned) arrays for efficient modeling.
     2. Experimental control: Implements a tri-strategy 'Actual vs. Null vs.
        Null-Model-Free' design so behavioral predictive power is benchmarked
-       against both a within-session shuffled null and a class-prior floor.
+       against both a label-shuffled null (labels permuted across the training
+       fold) and a class-prior floor.
     3. Cross-validation: Delegates to `get_stratified_group_splits_stable`,
        which dispatches on `split_strategy`:
          - 'mixed':  `StratifiedShuffleSplit` on pooled samples — perfectly
@@ -1544,9 +1546,10 @@ class MultinomialModelRunner:
         To validate results, it employs a tri-strategy design:
         1. 'actual': Trains the model on the real temporal association
            between behavior (X) and vocal category (y).
-        2. 'null': Shuffles the vocal labels (y) strictly WITHIN each
-           session. This breaks the temporal link while preserving the session-specific
-           vocal repertoire and behavioral variance.
+        2. 'null': Shuffles the training vocal labels (y) across the whole
+           training fold, pooled over its sessions (`null_target_permutation`).
+           This breaks every link between behavior and category, within and
+           between sessions, while keeping the training label frequencies.
         3. 'null_model_free': The absolute marginal prior. Instead of modeling, it
            calculates the empirical class distribution (the frequency of each USV
            category) from the training set, and predicts that exact static probability
@@ -1770,12 +1773,6 @@ class MultinomialModelRunner:
             print("=" * 60)
 
             y = feat_data['y'].copy()
-            if strategy == 'null':
-                for sess_id in np.unique(groups):
-                    sess_mask = (groups == sess_id)
-                    sess_labels = y[sess_mask].copy()
-                    null_rng.shuffle(sess_labels)
-                    y[sess_mask] = sess_labels
 
             strategy_data = {
                 'folds': {
@@ -1842,11 +1839,14 @@ class MultinomialModelRunner:
                     train_idx = train_idx_raw
 
                 X_train, X_test = X[train_idx], X[test_idx]
-                # The 'null' strategy fits on within-session shuffled labels but is
-                # scored, like every strategy and like its held-out refit, against the
-                # TRUE test labels, so `folds['y_true']` is always the truth and the
-                # null's score is the chance a label-blind fit reaches on real data.
+                # The 'null' strategy fits on training labels shuffled across the whole
+                # training fold (null_target_permutation) but is scored, like every
+                # strategy and like its held-out refit, against the TRUE test labels, so
+                # `folds['y_true']` is always the truth and the null's score is the
+                # chance a label-blind fit reaches on real data.
                 y_train, y_test = y[train_idx], feat_data['y'][test_idx]
+                if strategy == 'null':
+                    y_train = y_train[null_target_permutation(y_train.shape[0], null_rng)]
 
                 fold_weights = None
                 fold_basis_coefficients = None
@@ -1893,7 +1893,7 @@ class MultinomialModelRunner:
                     # inner CV (same focal_gamma / uniform_class_weights as
                     # the outer fit) to pick (lambda_smooth, l2_reg); when
                     # off we use the settings-level fixed centres. Both the
-                    # `actual` and within-session label-shuffled `null`
+                    # `actual` and label-shuffled `null`
                     # strategies are tuned identically so the permutation
                     # test compares like-against-like hyperparameters.
                     if tune_regularization_bool:
@@ -2064,16 +2064,12 @@ class MultinomialModelRunner:
             for strategy in strategies:
                 # Re-derive the development labels exactly as the CV loop did for
                 # this strategy so the held-out model matches the strategy under
-                # test: 'actual' keeps true labels; 'null' shuffles labels within
-                # each development session; 'null_model_free' keeps true labels
-                # but predicts the empirical development prior for every trial.
+                # test: 'actual' keeps true labels; 'null' shuffles labels across
+                # the development set; 'null_model_free' keeps true labels but
+                # predicts the empirical development prior for every trial.
                 y_dev = y_dev_true.copy()
                 if strategy == 'null':
-                    for sess_id in np.unique(groups_dev):
-                        sess_mask = (groups_dev == sess_id)
-                        sess_labels = y_dev[sess_mask].copy()
-                        held_null_rng.shuffle(sess_labels)
-                        y_dev[sess_mask] = sess_labels
+                    y_dev = y_dev[null_target_permutation(y_dev.shape[0], held_null_rng)]
 
                 held_weights = None
                 held_basis_coefficients = None

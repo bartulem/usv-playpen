@@ -3108,7 +3108,7 @@ def _final_null_filter_weights(selection_steps: list, features: list, layout: st
     Description
     -----------
     The no-signal band of a selection's final filters: the filters of the final
-    feature set refit with the target permuted within each session, stored by the
+    feature set refit with the target permuted across the development set, stored by the
     torus and multinomial selections with the held-out block
     (``heldout['null_weights']``, ``model_params.filter_null_permutations`` refits),
     reordered to ``features``.
@@ -3382,7 +3382,7 @@ def plot_multinomial_multivariate_filters(
 
         if null_band is not None:
             fig.text(0.5, 0.995, "Faded cells: weight within the 95th percentile of the same model refit on "
-                     "within-session permuted labels (no-signal band).",
+                     "permuted labels (no-signal band).",
                      ha='center', va='top', color=TEXT_COLOR, fontsize=11)
         cbar_ax = fig.add_axes([0.92, 0.3, 0.012, 0.4])
         sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=-1, vmax=1))
