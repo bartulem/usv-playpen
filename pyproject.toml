@@ -90,6 +90,7 @@ test = [
   "pytest-mock",
   "pytest-qt",
   "iblatlas",
+  "pytest-xdist>=3.8.0",
 ]
 dev = [
   { include-group = "test" },
