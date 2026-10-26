@@ -278,7 +278,7 @@
   "significance": {
     "pvalue_method": "empirical_escalated",
     "fdr_method": "bh",
-    "fdr_q": 0.01,
+    "fdr_q": 0.05,
     "escalation_ladder": [],
     "report_bh_floor_requirement": true
   },

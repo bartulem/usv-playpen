@@ -1389,7 +1389,7 @@ class TestCombine:
         Description
         -----------
         The uncorrected reading printed for a single unit compares both p-values to
-        ``significance.fdr_q`` (0.01) and the transfer slope to zero; each of its four outcomes must be
+        ``significance.fdr_q`` (0.05) and the transfer slope to zero; each of its four outcomes must be
         reachable, and none of them may be persisted.
 
         Parameters

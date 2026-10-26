@@ -2054,12 +2054,12 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
     "significance": {
         "pvalue_method": "empirical_escalated",
         "fdr_method": "bh",
-        "fdr_q": 0.01,
+        "fdr_q": 0.05,
         "escalation_ladder": [],
         "report_bh_floor_requirement": true
     }
 
-* **fdr_q** — the Benjamini–Hochberg false-discovery rate over the cohort (``0.01``).
+* **fdr_q** — the Benjamini–Hochberg false-discovery rate over the cohort (``0.05``).
 * **escalation_ladder** — draw counts to escalate floor-tied p-values through (accumulating, not restarting); ``[]`` runs the base count only. Each rung counts FINITE draws only, as only finite draws enter the p-value.
 * **pvalue_method** / **fdr_method** / **report_bh_floor_requirement** — declared but read by no current code (p-values are always empirical with escalation and the correction is always Benjamini–Hochberg).
 

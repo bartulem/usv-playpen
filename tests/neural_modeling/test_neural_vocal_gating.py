@@ -819,7 +819,7 @@ class TestTheQuietOnlyNullRedrawsItsRows:
 
 
 class TestTheAlphasAreSettings:
-    """Three SEPARATE bars, none of which is the FDR level -- `significance.fdr_q` is also 0.01, and
+    """Three SEPARATE bars, none of which is the FDR level -- `significance.fdr_q` is 0.05, and
     a cohort FDR level and an uncorrected within-unit alpha are different quantities that must not be
     conflated."""
 

@@ -92,7 +92,7 @@ class TestMergedFile:
         different configurations would be indistinguishable in the provenance."""
         settings = _settings()
         before = build_provenance(settings)["settings_sha256"]
-        settings["significance"]["fdr_q"] = 0.05
+        settings["significance"]["fdr_q"] = 0.1
         assert build_provenance(settings)["settings_sha256"] != before
 
     def test_a_missing_file_reads_as_empty_rather_than_raising(self, tmp_path):
