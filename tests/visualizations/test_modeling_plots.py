@@ -3392,11 +3392,13 @@ def test_matched_divergence_wraps_into_blocks_with_the_configured_gap(tmp_path, 
     ('/m/model_selection_final_male_mute_partner_bout.pkl', 'male_mute_partner'),
     ('/m/model_selection_final_female_intact_partner_bout.pkl', 'female'),
     ('/m/model_selection_final_male_intact_partner_bout.pkl', 'male'),
+    ('/m/model_selection_final_female_all_partners_bout.pkl', 'female_all_partners'),
+    ('/m/model_selection_final_male_all_partners_bout.pkl', 'male_all_partners'),
     ('/m/model_selection_final_bout.pkl', 'unknown'),
 ])
 def test_condition_from_path_keeps_the_two_mute_cohorts_apart(path, expected):
     """A female mute-partner path is named female_mute_partner (its name contains
-    male_mute_partner), intact paths give the bare sex, and a path naming no sex
-    gives the fallback."""
+    male_mute_partner), the all-partner paths keep their full label the same way,
+    intact paths give the bare sex, and a path naming no sex gives the fallback."""
 
     assert modeling_plots._condition_from_path(path, 'unknown') == expected

@@ -285,6 +285,15 @@ class TestDeriveExperimentalCondition:
         assert derive_experimental_condition(s0) == 'female_intact_partner'
         assert derive_experimental_condition(s1) == 'male_intact_partner'
 
+    def test_all_partners_target_is_opposite_of_predictor(self):
+        """Pooled intact + mute cohort: predictor slot 0 -> target female;
+        slot 1 -> target male, labelled ``<sex>_all_partners``."""
+
+        s0 = self._settings('ephys_courtship_all_partners_sessions_list.txt', pred_idx=0)
+        s1 = self._settings('ephys_courtship_all_partners_sessions_list.txt', pred_idx=1)
+        assert derive_experimental_condition(s0) == 'female_all_partners'
+        assert derive_experimental_condition(s1) == 'male_all_partners'
+
     def test_unrecognised_returns_unspecified(self):
         """An unmatched filename yields ``'unspecified'`` rather than
         raising."""

@@ -305,6 +305,13 @@ def derive_experimental_condition(modeling_settings: dict) -> str:
        is `'male_mute_partner'` when the partner is a mute female and
        `'female_mute_partner'` when the partner is a mute male.
 
+    3. **All-partner cohorts** — the session-list filename contains
+       `'all_partners'` (e.g. `ephys_courtship_all_partners_sessions_list.txt`,
+       intact and mute partners pooled). The target sex is the opposite of
+       `model_params['model_predictor_mouse_index']`, as for the intact
+       cohorts, and the label returned is `'male_all_partners'` or
+       `'female_all_partners'` (plural: the cohort pools partner states).
+
     If the filename matches none of the above patterns, the function
     returns `'unspecified'` rather than raising — the label is purely
     descriptive provenance and an unrecognised cohort should not abort
@@ -315,14 +322,15 @@ def derive_experimental_condition(modeling_settings: dict) -> str:
     modeling_settings : dict
         The fully loaded `modeling_settings.json` dictionary. Must
         contain `'io' -> 'session_list_file'` (path string) and, for
-        the intact-partner branch, `'model_params' ->
+        the intact- and all-partner branches, `'model_params' ->
         'model_predictor_mouse_index'` (int).
 
     Returns
     -------
     str
         One of `'male_intact_partner'`, `'female_intact_partner'`,
-        `'male_mute_partner'`, `'female_mute_partner'`, or
+        `'male_mute_partner'`, `'female_mute_partner'`,
+        `'male_all_partners'`, `'female_all_partners'`, or
         `'unspecified'`.
     """
 
@@ -343,6 +351,13 @@ def derive_experimental_condition(modeling_settings: dict) -> str:
         pred_idx = modeling_settings['model_params']['model_predictor_mouse_index']
         target_sex = 'male' if pred_idx == 1 else 'female'
         return f"{target_sex}_intact_partner"
+
+    # All-partner cohorts pool intact and mute partners; the target is again
+    # the opposite of the predictor mouse.
+    if 'all_partners' in fname:
+        pred_idx = modeling_settings['model_params']['model_predictor_mouse_index']
+        target_sex = 'male' if pred_idx == 1 else 'female'
+        return f"{target_sex}_all_partners"
 
     return 'unspecified'
 

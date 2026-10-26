@@ -181,7 +181,10 @@ def _condition_from_path(path_str: str, fallback: str) -> str:
     results it plots. The mute-partner cohorts keep their full label, so the
     two are never confused: ``'female_mute_partner'`` is tested before
     ``'male_mute_partner'``, which it contains as a substring, and likewise
-    ``'female'`` before ``'male'``. Intact-partner results
+    ``'female'`` before ``'male'``. The all-partner cohorts (intact and mute
+    partners pooled) keep their full label too, ``'female_all_partners'``
+    tested before ``'male_all_partners'``, so their figures never share a
+    name with the intact cohort's. Intact-partner results
     (``male_intact_partner`` / ``female_intact_partner``) give the bare sex.
 
     Parameters
@@ -195,7 +198,8 @@ def _condition_from_path(path_str: str, fallback: str) -> str:
     Returns
     -------
     condition (str)
-        ``'female_mute_partner'``, ``'male_mute_partner'``, ``'female'``,
+        ``'female_mute_partner'``, ``'male_mute_partner'``,
+        ``'female_all_partners'``, ``'male_all_partners'``, ``'female'``,
         ``'male'`` or ``fallback``.
     """
 
@@ -203,6 +207,10 @@ def _condition_from_path(path_str: str, fallback: str) -> str:
         return 'female_mute_partner'
     if 'male_mute_partner' in path_str:
         return 'male_mute_partner'
+    if 'female_all_partners' in path_str:
+        return 'female_all_partners'
+    if 'male_all_partners' in path_str:
+        return 'male_all_partners'
     if 'female' in path_str:
         return 'female'
     if 'male' in path_str:

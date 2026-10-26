@@ -1684,11 +1684,16 @@ class NeuralContinuousCNNRunner:
         # final write at the end of `run_cnn_training` rewrites the
         # same path with the fully-populated `deep_storage`.
         source_file = pathlib.Path(data_blocks['source_pkl_path']).name
-        # 'female_mute_partner' first: it contains 'male_mute_partner'.
+        # 'female_mute_partner' first: it contains 'male_mute_partner' (and
+        # likewise for the all-partner cohorts).
         if "female_mute_partner" in source_file:
             sex_mod = "female_mute_partner"
         elif "male_mute_partner" in source_file:
             sex_mod = "male_mute_partner"
+        elif "female_all_partners" in source_file:
+            sex_mod = "female_all_partners"
+        elif "male_all_partners" in source_file:
+            sex_mod = "male_all_partners"
         elif "female" in source_file:
             sex_mod = "female"
         else:

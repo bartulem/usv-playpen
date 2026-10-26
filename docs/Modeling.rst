@@ -76,7 +76,7 @@ blocks. Each block is shown below as it appears in the file, followed by its key
         "camera_sampling_rate": 150
     }
 
-* **session_list_file** — path to the text file that lists the cohort's sessions (one session root per line; see below). **Allowed:** path (string) to an existing plain-text file holding at least one session root (a missing file or one without any session path raises); the filename should contain ``intact_partners``, ``mute_female`` or ``mute_male`` so the cohort label can be derived, otherwise the label is ``unspecified``; shipped ``/mnt/falkner/Bartul/modeling/input_files/behavioral_courtship_intact_partners_sessions_list.txt``.
+* **session_list_file** — path to the text file that lists the cohort's sessions (one session root per line; see below). **Allowed:** path (string) to an existing plain-text file holding at least one session root (a missing file or one without any session path raises); the filename should contain ``intact_partners``, ``mute_female``, ``mute_male`` or ``all_partners`` so the cohort label can be derived, otherwise the label is ``unspecified``; shipped ``/mnt/falkner/Bartul/modeling/input_files/behavioral_courtship_intact_partners_sessions_list.txt``.
 * **save_directory** — directory where every modeling-input pickle, audit, and result is written. **Allowed:** path (string) to a writable directory (not validated; the extraction pipelines write into it as given); shipped ``/mnt/falkner/Bartul/modeling``.
 * **csv_separator** — column delimiter of the per-session ``*_behavioral_features.csv`` files (``','``). **Allowed:** a single-character string matching the behavioral-features CSVs (not validated; a wrong separator fails when the CSVs are parsed); shipped ``','``.
 * **camera_sampling_rate** — camera frame rate in Hz (``150``); every pipeline uses it to convert ``filter_history`` seconds into a frame count. **Allowed:** positive number, in Hz (not validated); shipped ``150``.
@@ -97,7 +97,7 @@ and pooled; blank lines are ignored. For example:
 The **filename itself carries the cohort label**: ``derive_experimental_condition``
 parses it (e.g. ``behavioral_courtship_intact_partners_sessions_list.txt`` →
 ``male_intact_partner`` or ``female_intact_partner``, by the target mouse's sex; mute cohorts read ``male_mute_partner``
-or ``female_mute_partner``, also by the target mouse's sex, and any other filename ``unspecified``) and embeds that label into every output filename,
+or ``female_mute_partner``, also by the target mouse's sex; a pooled intact + mute cohort whose filename contains ``all_partners`` reads ``male_all_partners`` or ``female_all_partners``; and any other filename ``unspecified``) and embeds that label into every output filename,
 so artifacts from different cohorts never collide and each one is self-identifying.
 
 **model_params** — the prediction target, history window, model engine,
