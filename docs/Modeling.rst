@@ -1682,7 +1682,7 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
 * **session_list_files** — text files listing one session directory per line; the union is the courtship cohort (the intact-partner and the mute-female ephys lists are shipped).
 * **behaviour_selection_result_path** — the pickle the behaviour-control feature selection (``main_behaviour_control_dispatcher --stage select``) writes and the nested decoding reads back to check its frozen ``reduced_model_features`` against.
 * **brain_areas** / **area_mode** — the unit catalog's ``brain_area`` filter: ``'include'`` keeps the listed areas, ``'exclude'`` drops them, ``'all'`` ignores the list.
-* **pool_areas** — declared but read by no current code (areas are not pooled or split anywhere).
+* **pool_areas** — whether the cross-unit corrections pool every brain area of the cohort into one group (``true``) or correct each area on its own (``false``, shipped), so one area's count never depends on how many units of another were run.
 * **quality** — the allowed ``cluster_group`` labels of the unit catalog (``["good"]``).
 * **somatic** — ``'somatic'``, ``'non_somatic'`` or ``'both'``: which units pass the catalog's somatic waveform classification.
 
@@ -2055,12 +2055,15 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
         "fdr_method": "bh",
         "fdr_q": 0.05,
         "escalation_ladder": [],
-        "report_bh_floor_requirement": true
+        "report_bh_floor_requirement": true,
+        "include_single_session_units": false
     }
 
 * **fdr_q** — the Benjamini–Hochberg false-discovery rate over the cohort (``0.05``).
 * **escalation_ladder** — draw counts to escalate floor-tied p-values through (accumulating, not restarting); ``[]`` runs the base count only. Each rung counts FINITE draws only, as only finite draws enter the p-value.
-* **pvalue_method** / **fdr_method** / **report_bh_floor_requirement** — declared but read by no current code (p-values are always empirical with escalation and the correction is always Benjamini–Hochberg).
+* **fdr_method** — the cross-unit correction applied by ``consolidate_neural_modeling_results``: ``'bh'`` (Benjamini–Hochberg) or ``'by'`` (Benjamini–Yekutieli, valid under any dependence between units). **Allowed:** ``'bh'`` or ``'by'``.
+* **include_single_session_units** — whether units recorded in one session (tested on blocks of it) enter the cross-unit corrections (``false``). They are listed in the cohort table either way; the default excludes them until the block procedure's validation study is done.
+* **pvalue_method** / **report_bh_floor_requirement** — declared but read by no current code (p-values are always empirical with escalation, and the consolidation always reports each test's floor requirement).
 
 **robustness** — planned robustness checks; every key is declared but read by no current code.
 

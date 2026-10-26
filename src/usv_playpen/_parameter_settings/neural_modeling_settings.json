@@ -279,7 +279,8 @@
     "fdr_method": "bh",
     "fdr_q": 0.05,
     "escalation_ladder": [],
-    "report_bh_floor_requirement": true
+    "report_bh_floor_requirement": true,
+    "include_single_session_units": false
   },
   "robustness": {
     "decode_raw_acoustics": true,
