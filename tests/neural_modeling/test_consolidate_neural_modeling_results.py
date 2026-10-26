@@ -80,7 +80,8 @@ def _artifact(p: float = 1e-3, slope: float = 0.4, gating=None, null_draws: int 
             "vocal_occurrence": {"p": p, "z": 9.0, "gain": 0.3, "response_sign": "elevated", "n_shuffles": 1000},
             "vocalization_identity": {"p": p, "z": 8.0, "gain": 0.05, "target": "manifold",
                                       "n_permutations": 1000},
-            "nested_vocal_manifold_position_decoding": {"p": p, "z": 7.0, "added": 0.02, "n_permutations": 1000},
+            "nested_vocal_decoding": {"p": p, "z": 7.0, "added": 0.02, "n_permutations": 1000,
+                                      "behaviour_over_no_behaviour": 0.01},
             "vocal_gating": gating if gating is not None else {"ran": False, "reason": "no_vocal_tuning"}}
 
 
@@ -275,3 +276,18 @@ class TestCorrelationMatrix:
         entry = report["PAG"]["tests"]["gating"]
         assert entry["floor_p"] == pytest.approx(19 / 2001)
         assert entry["floor_requirement"] == pytest.approx(4 * (19 / 2001) / 0.05)
+
+
+class TestBehaviourModifier:
+    """Units whose day the behaviour control does not help are kept, flagged and counted."""
+
+    def test_an_uninformative_control_is_flagged_not_dropped(self):
+        """A transformation unit with a non-positive behaviour gain stays a Transformation, is flagged, and is
+        counted in the report."""
+        informative, uninformative = _artifact(), _artifact()
+        uninformative["nested_vocal_decoding"]["behaviour_over_no_behaviour"] = -0.002
+        table, report = consolidate([_record("a"), _record("b")], {"a": informative, "b": uninformative},
+                                    SETTINGS)
+        assert table["category"].to_list() == ["Transformation", "Transformation"]
+        assert table["behaviour_informative"].to_list() == [True, False]
+        assert report["PAG"]["transformation_where_behaviour_uninformative"] == 1

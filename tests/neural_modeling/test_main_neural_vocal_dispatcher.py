@@ -896,7 +896,7 @@ class TestTheAnalysisSteps:
         """
         events = _vocal_events()
         settings = _fast_decoding_settings()
-        settings["nested_vocal_manifold_position_decoding"]["discrimination_null"][
+        settings["nested_vocal_decoding"]["discrimination_null"][
             "n_permutations"
         ] = 4
         spawned = _inline_pools(monkeypatch)
@@ -944,7 +944,7 @@ class TestTheAnalysisSteps:
         for name, result in stubs.items():
             monkeypatch.setattr(vocal, name, _recording_stub(calls, name, result))
 
-        payload = vocal.run_nested_vocal_manifold_position_decoding(
+        payload = vocal.run_nested_vocal_decoding(
             UNIT, events, settings, "/data", str(tmp_path), 2, _quiet
         )
 
@@ -1017,7 +1017,7 @@ class TestTheAnalysisSteps:
         }
         stored = read_unit_artifact(str(tmp_path), UNIT["unit_uid"])
         assert (
-            stored["nested_vocal_manifold_position_decoding"]["added"]
+            stored["nested_vocal_decoding"]["added"]
             == payload["added"]
         )
 
@@ -1289,7 +1289,7 @@ class TestRunVocalOrder:
             "assemble_unit_vocal_events": events,
             "run_vocal_occurrence": {"p": occurrence_p, "n_shuffles": 1000},
             "run_vocalization_identity": {"p": identity_p, "n_permutations": 1000},
-            "run_nested_vocal_manifold_position_decoding": {},
+            "run_nested_vocal_decoding": {},
             "run_vocal_gating": {},
         }
         for name, result in stubs.items():
@@ -1345,7 +1345,7 @@ class TestRunVocalOrder:
         )
         events = calls["run_vocal_occurrence"][0][0][1]
         assert calls["run_vocalization_identity"][0][0][1] is events
-        assert calls["run_nested_vocal_manifold_position_decoding"][0][0][1] is events
+        assert calls["run_nested_vocal_decoding"][0][0][1] is events
         assert calls["run_vocal_occurrence"][0][0][5] == 4
         assert calls["run_vocal_gating"][0][0] == (
             UNIT,
@@ -1473,12 +1473,12 @@ class TestRunVocalOrder:
             "/data",
             str(tmp_path),
             1,
-            ("nested_vocal_manifold_position_decoding",),
+            ("nested_vocal_decoding",),
             _quiet,
         )
         assert list(calls) == [
             "assemble_unit_vocal_events",
-            "run_nested_vocal_manifold_position_decoding",
+            "run_nested_vocal_decoding",
         ]
 
 
@@ -1507,7 +1507,7 @@ class TestRunVocalOrder:
         with pytest.raises(ValueError, match="multinomial behaviour control"):
             vocal.run_vocal(UNIT, settings, "/data", str(tmp_path), 1, vocal.VOCAL_STEPS, _quiet)
         assert not calls
-        steps = tuple(step for step in vocal.VOCAL_STEPS if step != "nested_vocal_manifold_position_decoding")
+        steps = tuple(step for step in vocal.VOCAL_STEPS if step != "nested_vocal_decoding")
         vocal.run_vocal(UNIT, settings, "/data", str(tmp_path), 1, steps, _quiet)
         assert "run_vocalization_identity" in calls
 
@@ -1537,7 +1537,7 @@ class TestNotVocalTestable:
         """
         calls = collections.defaultdict(list)
         for name in ("assemble_unit_vocal_events", "run_vocal_occurrence", "run_vocalization_identity",
-                     "run_nested_vocal_manifold_position_decoding", "run_vocal_gating"):
+                     "run_nested_vocal_decoding", "run_vocal_gating"):
             monkeypatch.setattr(vocal, name, _recording_stub(calls, name, {}))
         settings = _settings()
         settings["data_sufficiency"]["min_vocal_sessions"] = 2

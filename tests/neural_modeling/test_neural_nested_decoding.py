@@ -92,7 +92,7 @@ def _nested(**overrides) -> dict:
     """
     Description
     -----------
-    Return the SHIPPED nested_vocal_manifold_position_decoding block, merged and validated exactly as a
+    Return the SHIPPED nested_vocal_decoding block, merged and validated exactly as a
     run does, with only tiny-synthetic knobs overridden. Built from the real file rather than a literal
     so that a key the code starts reading -- or stops honouring -- shows up here instead of only at run
     time.
@@ -322,7 +322,7 @@ class TestTheBehaviourControl:
     def test_the_shipped_settings_freeze_the_selected_features(self):
         """The shipped ``reduced_model_features`` equal the frozen list, so the control cannot change
         without this test changing too."""
-        assert _settings()["nested_vocal_manifold_position_decoding"]["reduced_model_features"] == self.FROZEN
+        assert _settings()["nested_vocal_decoding"]["reduced_model_features"] == self.FROZEN
 
     def test_a_matching_file_returns_the_selection_order(self, tmp_path):
         """A selection file agreeing with the freeze returns the features in selection order."""
@@ -360,11 +360,11 @@ class TestTheBehaviourControl:
     def test_the_settings_do_not_mutate(self, tmp_path):
         """Reading the control must not modify the frozen list in the caller's settings."""
         settings = _settings()
-        original = copy.deepcopy(settings["nested_vocal_manifold_position_decoding"]["reduced_model_features"])
+        original = copy.deepcopy(settings["nested_vocal_decoding"]["reduced_model_features"])
         settings["data"]["behaviour_selection_result_path"] = str(
             self._fake_selection(tmp_path, self.FROZEN))
         reduced_model_features(settings)
-        assert settings["nested_vocal_manifold_position_decoding"]["reduced_model_features"] == original
+        assert settings["nested_vocal_decoding"]["reduced_model_features"] == original
 
 
 class TestNestedDesign:
@@ -688,7 +688,7 @@ class TestTheNull:
 
 
 class TestSettingsAreNotHardCoded:
-    """Every option key named `nested_vocal_manifold_position_decoding` described a real alternative and was read by
+    """Every option key named `nested_vocal_decoding` described a real alternative and was read by
     NOTHING, so a run could declare one and silently get another."""
 
     def test_the_shipped_block_is_accepted(self):
@@ -703,7 +703,7 @@ class TestSettingsAreNotHardCoded:
     def test_an_unimplemented_option_is_refused(self, key, bad):
         """Each named alternative that is not implemented must raise rather than run the default."""
         settings = _settings()
-        settings["nested_vocal_manifold_position_decoding"][key] = bad
+        settings["nested_vocal_decoding"][key] = bad
         with pytest.raises(ValueError, match="is not implemented"):
             nested_settings(settings)
 
@@ -712,7 +712,7 @@ class TestSettingsAreNotHardCoded:
         blocks is exactly the drift this audit was about."""
         settings = _settings()
         assert "torus_period" in settings["vocalization_settings"]
-        assert "torus_period" not in settings["nested_vocal_manifold_position_decoding"]
+        assert "torus_period" not in settings["nested_vocal_decoding"]
 
     def test_the_vocal_decoding_reads_the_period_it_is_given(self):
         """The vocal decoding takes the period as an argument (it used to keep a module constant), so
@@ -742,11 +742,11 @@ class TestSettingsAreNotHardCoded:
         same constant as a default argument, which is how the two could have drifted apart."""
         parameter = inspect.signature(nested_design).parameters["sigma_floor"]
         assert parameter.default is inspect.Parameter.empty
-        assert _settings()["nested_vocal_manifold_position_decoding"]["sigma_floor"] == 0.05
+        assert _settings()["nested_vocal_decoding"]["sigma_floor"] == 0.05
 
     def test_the_dead_bins_knob_is_gone(self):
         """`rate_basis_n_bins` only configured `rate_basis: "bins"`, which is now refused."""
-        assert "rate_basis_n_bins" not in _settings()["nested_vocal_manifold_position_decoding"]
+        assert "rate_basis_n_bins" not in _settings()["nested_vocal_decoding"]
 
 
 

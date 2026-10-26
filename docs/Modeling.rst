@@ -1980,11 +1980,11 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
 * **discrimination_null** — the exact within-session permutation null of the identity axis: ``n_permutations`` (``1000``) draws; ``record_left_tail_anti_alignment`` records the left-tail statistics; ``method``, ``sided``, ``pass_rule`` and ``n_permutations_category_grain`` are declared but read by no current code.
 * **record_overdispersion_index** — record the count overdispersion index with each decoding: the mean Pearson dispersion ``(count − expected)² / expected`` of the held-out events, where an event's expected count is the calibrated surface rate the decoder scored it with (the centred surface shape times the tuned amplitude, at the held-out session's mean-count level) read at the event's own grid cell, so an untuned Poisson unit gives about ``1``. The decoding also stores ``nats_per_spike`` (the summed finite per-event gain divided by the spikes of those same events) and ``min_leave_one_fold_out`` (the smallest pooled gain with one fold left out, over the folds whose left-out gain is finite).
 
-**nested_vocal_manifold_position_decoding** — does the neuron add information about a USV's torus position beyond the cohort behaviour control? A REDUCED model (behaviour alone) and a FULL model (behaviour plus the neuron's count) are fitted by the same torus regressor and compared on the held-out macro von Mises log-score.
+**nested_vocal_decoding** — does the neuron add information about a USV's torus position beyond the cohort behaviour control? A REDUCED model (behaviour alone) and a FULL model (behaviour plus the neuron's count) are fitted by the same torus regressor and compared on the held-out macro von Mises log-score.
 
 .. code-block:: json
 
-    "nested_vocal_manifold_position_decoding": {
+    "nested_vocal_decoding": {
         "behaviour_control": "rich",
         "reduced_model_features": ["head-head", "allo_yaw-head", "allo_pitch-head", "self.speed"],
         "behaviour_control_model_path": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_model_ephys_cohort.pkl",

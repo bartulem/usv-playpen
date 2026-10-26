@@ -71,20 +71,20 @@ class NestedTorusRegression(SmoothTorusManifoldRegression):
         Torus period per axis.
     huber_delta (float)
         Huber transition point of the parent's residual loss, in torus units; production passes
-        ``nested_vocal_manifold_position_decoding.huber_delta``. The default equals the shipped value.
+        ``nested_vocal_decoding.huber_delta``. The default equals the shipped value.
     learning_rate (float)
         Initial Adam step size of the parent's optimiser (cosine-decayed to zero over ``max_iter``);
-        production passes ``nested_vocal_manifold_position_decoding.learning_rate``. The default equals the
+        production passes ``nested_vocal_decoding.learning_rate``. The default equals the
         shipped value.
     max_iter (int)
-        Optimiser step cap; production passes ``nested_vocal_manifold_position_decoding.max_iter``. The
+        Optimiser step cap; production passes ``nested_vocal_decoding.max_iter``. The
         default equals the shipped value.
     tol (float)
         Convergence tolerance on the parameter-change norm; production passes
-        ``nested_vocal_manifold_position_decoding.tol``. The default equals the shipped value.
+        ``nested_vocal_decoding.tol``. The default equals the shipped value.
     random_state (int)
         Seed of the weight initialisation; production passes
-        ``nested_vocal_manifold_position_decoding.random_state``. The default equals the shipped value.
+        ``nested_vocal_decoding.random_state``. The default equals the shipped value.
 
     Returns
     -------
@@ -163,7 +163,7 @@ def reduced_model_features(settings: dict, require_selection_file: bool = True) 
     ----------
     settings (dict)
         The whole neural-modelling settings dict; ``data.behaviour_selection_result_path`` and
-        ``nested_vocal_manifold_position_decoding.reduced_model_features`` are read.
+        ``nested_vocal_decoding.reduced_model_features`` are read.
     require_selection_file (bool)
         When False, a missing selection file is tolerated and the frozen list is returned unchecked --
         for running where the lab share is not mounted. A file that IS present is always checked.
@@ -174,7 +174,7 @@ def reduced_model_features(settings: dict, require_selection_file: bool = True) 
         The behaviour control's feature names, in selection order.
     """
 
-    frozen = list(settings["nested_vocal_manifold_position_decoding"]["reduced_model_features"])
+    frozen = list(settings["nested_vocal_decoding"]["reduced_model_features"])
     path = pathlib.Path(settings["data"]["behaviour_selection_result_path"])
     if not path.exists():
         if require_selection_file:
@@ -497,7 +497,7 @@ def posterior_nested_gain(counts: np.ndarray, folds: list, decoding: dict, prior
     return {**renamed, **detail}
 
 
-#: The only values implemented for each option `nested_vocal_manifold_position_decoding` names, so a
+#: The only values implemented for each option `nested_vocal_decoding` names, so a
 #: settings file that declares any other value is refused rather than silently scored as these.
 IMPLEMENTED_OPTIONS = {
     "vm_score_mode": ("macro",),
@@ -520,7 +520,7 @@ def nested_settings(settings: dict) -> dict:
     """
     Description
     -----------
-    The ``nested_vocal_manifold_position_decoding`` block with the shared manifold period merged in, validated.
+    The ``nested_vocal_decoding`` block with the shared manifold period merged in, validated.
 
     The torus period is a property of the QLVM manifold and lives in the shared
     ``vocalization_settings`` block; it is merged here so this module's functions can take one block.
@@ -533,11 +533,11 @@ def nested_settings(settings: dict) -> dict:
     Returns
     -------
     block (dict)
-        A copy of ``nested_vocal_manifold_position_decoding`` carrying ``torus_period``, refused if it declares an
+        A copy of ``nested_vocal_decoding`` carrying ``torus_period``, refused if it declares an
         option this module does not implement.
     """
 
-    block = dict(settings["nested_vocal_manifold_position_decoding"])
+    block = dict(settings["nested_vocal_decoding"])
     block["torus_period"] = settings["vocalization_settings"]["torus_period"]
     check_settings(block)
     return block
@@ -547,12 +547,12 @@ def check_settings(settings: dict) -> None:
     """
     Description
     -----------
-    Refuse a ``nested_vocal_manifold_position_decoding`` block that declares an option this module does not implement.
+    Refuse a ``nested_vocal_decoding`` block that declares an option this module does not implement.
 
     Parameters
     ----------
     settings (dict)
-        The ``nested_vocal_manifold_position_decoding`` block.
+        The ``nested_vocal_decoding`` block.
 
     Returns
     -------
@@ -562,14 +562,14 @@ def check_settings(settings: dict) -> None:
         value = settings[key]
         if value not in allowed:
             others = ", ".join(repr(a) for a in allowed)
-            msg = (f"nested_vocal_manifold_position_decoding.{key} = {value!r} is not implemented; this module supports "
+            msg = (f"nested_vocal_decoding.{key} = {value!r} is not implemented; this module supports "
                    f"{others}.")
             raise ValueError(msg)
     for (outer, inner), allowed in IMPLEMENTED_NESTED_OPTIONS.items():
         value = settings[outer][inner]
         if value not in allowed:
             others = ", ".join(repr(a) for a in allowed)
-            msg = (f"nested_vocal_manifold_position_decoding.{outer}.{inner} = {value!r} is not "
+            msg = (f"nested_vocal_decoding.{outer}.{inner} = {value!r} is not "
                    f"implemented; this module supports {others}.")
             raise ValueError(msg)
 
@@ -601,7 +601,7 @@ def _fit_predict(behaviour: np.ndarray, neural: np.ndarray, positions: np.ndarra
     n_lags, n_features (int)
         Design shape.
     settings (dict)
-        The ``nested_vocal_manifold_position_decoding`` block.
+        The ``nested_vocal_decoding`` block.
 
     Returns
     -------
@@ -637,7 +637,7 @@ def reduced_predictions(design: dict, settings: dict, n_lags: int) -> np.ndarray
     design (dict)
         From :func:`nested_design`.
     settings (dict)
-        The ``nested_vocal_manifold_position_decoding`` block.
+        The ``nested_vocal_decoding`` block.
     n_lags (int)
         History length in frames.
 
@@ -678,7 +678,7 @@ def nested_scores(design: dict, settings: dict, n_lags: int,
     design (dict)
         From :func:`nested_design`.
     settings (dict)
-        The ``nested_vocal_manifold_position_decoding`` block.
+        The ``nested_vocal_decoding`` block.
     n_lags (int)
         History length in frames.
     neural (np.ndarray)

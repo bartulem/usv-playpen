@@ -1020,7 +1020,7 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
     tiles_cap = decoding["max_quiet_tiles_per_session"]
     history_pre_seconds = encoding["history_pre_seconds"]
     clean_post_seconds = encoding["clean_post_seconds"]
-    region_column = settings["nested_vocal_manifold_position_decoding"]["region_label_column"]
+    region_column = settings["nested_vocal_decoding"]["region_label_column"]
     category_column = decoding["category_surface"]["category_column"]
     vocal_emitter = settings["vocalization_settings"]["vocal_emitter"]
     clean_against = settings["vocalization_settings"]["clean_against"]

@@ -206,7 +206,7 @@ def unit_row(record: dict, artifact: dict) -> dict:
 
     for test, name, effect in (("occurrence", "vocal_occurrence", "gain"),
                                ("identity", "vocalization_identity", "gain"),
-                               ("nested", "nested_vocal_manifold_position_decoding", "added")):
+                               ("nested", "nested_vocal_decoding", "added")):
         section = _section(artifact, name)
         if _ran(section):
             row[f"p_{test}"] = _number(section, "p")
@@ -220,6 +220,12 @@ def unit_row(record: dict, artifact: dict) -> dict:
                                      else "not_run")
     occurrence = _section(artifact, "vocal_occurrence")
     row["response_sign"] = occurrence["response_sign"] if _ran(occurrence) and "response_sign" in occurrence else None
+    # What behaviour alone buys this unit's USVs over no behaviour. A unit is never dropped for it, since it
+    # is a property of the behaviour model, not of the neuron; it is carried as a modifier so a nested
+    # pass on a day where behaviour predicts nothing is visible as such.
+    nested = _section(artifact, "nested_vocal_decoding")
+    row["behaviour_gain"] = (_number(nested, "behaviour_over_no_behaviour") if _ran(nested)
+                             else float("nan"))
     identity = _section(artifact, "vocalization_identity")
     row["identity_target"] = identity["target"] if _ran(identity) and "target" in identity else None
 
@@ -384,7 +390,7 @@ def _draw_counts(artifacts: dict) -> dict:
                     found[test].append(int(np.size(null)))
         for test, name, key in (("occurrence", "vocal_occurrence", "n_shuffles"),
                                 ("identity", "vocalization_identity", "n_permutations"),
-                                ("nested", "nested_vocal_manifold_position_decoding", "n_permutations"),
+                                ("nested", "nested_vocal_decoding", "n_permutations"),
                                 ("gating", "vocal_gating", "n_draws")):
             section = _section(artifact, name)
             if _ran(section) and key in section:
@@ -443,7 +449,8 @@ def _area_report(frame: pls.DataFrame, q: float, draws: dict) -> dict:
         Per test: units tested, units rejected, units excluded by reason and the floor requirement (for
         gating, read off the Bonferroni-adjusted floor its units reach, ``floor_p``); the
         conjunction's count; the share of quiet-encoding units each conjunction requirement removes; the
-        correlation matrix of the tests' z-scores; and the category counts.
+        correlation matrix of the tests' z-scores; the category counts; and how many transformation units
+        sit where the behaviour control buys nothing over no behaviour, which are kept and counted.
     """
 
     report: dict = {"n_units": frame.height, "tests": {}}
@@ -482,6 +489,9 @@ def _area_report(frame: pls.DataFrame, q: float, draws: dict) -> dict:
                                "pearson": (correlation_matrix(z[complete]).tolist() if complete.sum() > 2 else None)}
     report["categories"] = {name: int((frame["category"] == name).sum()) for name in CATEGORIES}
     report["separate_pass_conjunction_fail"] = int(frame["separate_pass_conjunction_fail"].sum())
+    transformation = frame.filter(pls.col("category") == "Transformation")
+    report["transformation_where_behaviour_uninformative"] = int(
+        (transformation["behaviour_informative"] == False).sum())  # noqa: E712
     return report
 
 
@@ -538,7 +548,9 @@ def consolidate(cohort: list, artifacts: dict, settings: dict) -> tuple[pls.Data
         for row in members:
             category, modifiers = classify_unit({test: row[f"pass_{test}"] for test in TESTS},
                                                 row["transfer_slope"], row["pass_conjunction"] is True)
-            row.update({"category": category, **modifiers})
+            row.update({"category": category, **modifiers,
+                        "behaviour_informative": (None if not np.isfinite(row["behaviour_gain"])
+                                                  else bool(row["behaviour_gain"] > 0))})
         out.extend(members)
         frame = pls.DataFrame(members, infer_schema_length=None)
         report[group] = _area_report(frame, q, draws)
@@ -547,7 +559,8 @@ def consolidate(cohort: list, artifacts: dict, settings: dict) -> tuple[pls.Data
     for row in excluded:
         row.update({f"pass_{test}": None for test in [*TESTS, "conjunction"]})
         row.update({"category": None, "encoding_state": None, "vocal_tests_passed": None, "nested": None,
-                    "transfers": None, "gated": None, "separate_pass_conjunction_fail": False})
+                    "transfers": None, "gated": None, "separate_pass_conjunction_fail": False,
+                    "behaviour_informative": None})
     report["excluded_single_session"] = [row["unit_uid"] for row in excluded]
     table = pls.DataFrame(out + excluded, infer_schema_length=None)
     return table, report

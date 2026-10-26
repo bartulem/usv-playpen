@@ -71,7 +71,7 @@ from .neural_vocal_occurrence import (
 )
 from .shift_null_inference import escalated_empirical_pvalue
 
-VOCAL_STEPS = ("vocal_occurrence", "vocalization_identity", "nested_vocal_manifold_position_decoding",
+VOCAL_STEPS = ("vocal_occurrence", "vocalization_identity", "nested_vocal_decoding",
                "vocal_gating")
 
 #: What vocalization identity decodes, shared with the behaviour control of the nested decoding so the
@@ -709,7 +709,7 @@ def run_vocalization_identity(unit: dict, events: dict, settings: dict, output_d
     return identity
 
 
-def run_nested_vocal_manifold_position_decoding(unit: dict, events: dict, settings: dict, data_root: str, output_directory: str,
+def run_nested_vocal_decoding(unit: dict, events: dict, settings: dict, data_root: str, output_directory: str,
                n_workers: int, message_output=print) -> dict:
     """
     Description
@@ -794,8 +794,8 @@ def run_nested_vocal_manifold_position_decoding(unit: dict, events: dict, settin
                                        p_value, at_floor, design["behaviour_control"])
     message_output(f"    null z {payload['z']:+.1f} | p {p_value:.4e}{' (at floor)' if at_floor else ''} "
                    f"| {null.size:,} draws")
-    write_unit_section(output_directory, unit, "nested_vocal_manifold_position_decoding", payload, settings)
-    message_output(f"    wrote [nested_vocal_manifold_position_decoding] for {unit['unit_uid']}")
+    write_unit_section(output_directory, unit, "nested_vocal_decoding", payload, settings)
+    message_output(f"    wrote [nested_vocal_decoding] for {unit['unit_uid']}")
     return payload
 
 
@@ -983,10 +983,10 @@ def run_vocal(unit: dict, settings: dict, data_root: str, output_directory: str,
         msg = f"unknown vocal step(s) {unknown}; choose from {list(VOCAL_STEPS)}"
         raise ValueError(msg)
     # Refused before anything is fitted, so a run never writes some sections and then stops.
-    if vocal_target(settings) == "multinomial" and "nested_vocal_manifold_position_decoding" in steps:
+    if vocal_target(settings) == "multinomial" and "nested_vocal_decoding" in steps:
         msg = ("the nested decoding has no multinomial behaviour control yet; with "
                "vocalization_settings.vocal_target = 'multinomial', leave "
-               "nested_vocal_manifold_position_decoding out of the steps")
+               "nested_vocal_decoding out of the steps")
         raise ValueError(msg)
     n_vocal_sessions = len(unit["vocal_sessions"])
     if n_vocal_sessions < int(settings["data_sufficiency"]["min_vocal_sessions"]):
@@ -1011,8 +1011,8 @@ def run_vocal(unit: dict, settings: dict, data_root: str, output_directory: str,
     if "vocalization_identity" in steps:
         identity = run_vocalization_identity(unit, events, settings, output_directory, n_workers, message_output)
         results["vocalization_identity"] = (identity["p"], identity["n_permutations"])
-    if "nested_vocal_manifold_position_decoding" in steps:
-        run_nested_vocal_manifold_position_decoding(unit, events, settings, data_root, output_directory,
+    if "nested_vocal_decoding" in steps:
+        run_nested_vocal_decoding(unit, events, settings, data_root, output_directory,
                                                     n_workers, message_output)
     if "vocal_gating" in steps:
         stored = read_unit_artifact(output_directory, unit["unit_uid"])

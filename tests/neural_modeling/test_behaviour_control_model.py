@@ -516,7 +516,7 @@ class TestControlEstimator:
         -------
         None
         """
-        block = settings["nested_vocal_manifold_position_decoding"]
+        block = settings["nested_vocal_decoding"]
         block["lambda_smooth"] = 3.0
         block["l2_reg"] = 0.2
         block["smoothness_derivative_order"] = 2
@@ -660,8 +660,8 @@ class TestLoadControlModel:
         ``ValueError`` ("behaviour control drift") instead of being applied."""
         path = tmp_path / "control.pkl"
         write_control_model(artifact, str(path))
-        settings["nested_vocal_manifold_position_decoding"]["behaviour_control_model_path"] = str(path)
-        settings["nested_vocal_manifold_position_decoding"]["reduced_model_features"] = ["nose-nose"]
+        settings["nested_vocal_decoding"]["behaviour_control_model_path"] = str(path)
+        settings["nested_vocal_decoding"]["reduced_model_features"] = ["nose-nose"]
         with pytest.raises(ValueError, match="behaviour control drift"):
             load_control_model(settings)
 
@@ -670,8 +670,8 @@ class TestLoadControlModel:
         drift guard does not refuse a valid control."""
         path = tmp_path / "control.pkl"
         write_control_model(artifact, str(path))
-        settings["nested_vocal_manifold_position_decoding"]["behaviour_control_model_path"] = str(path)
-        settings["nested_vocal_manifold_position_decoding"]["reduced_model_features"] = list(
+        settings["nested_vocal_decoding"]["behaviour_control_model_path"] = str(path)
+        settings["nested_vocal_decoding"]["reduced_model_features"] = list(
             artifact["features"])
         assert load_control_model(settings)["features"] == artifact["features"]
 
@@ -706,7 +706,7 @@ class TestLoadControlModel:
     def test_a_missing_control_names_the_dispatcher(self, settings: dict, tmp_path) -> None:
         """A missing control file must raise ``FileNotFoundError`` naming the behaviour-control dispatcher, so the
         reader knows which job produces it."""
-        settings["nested_vocal_manifold_position_decoding"]["behaviour_control_model_path"] = str(
+        settings["nested_vocal_decoding"]["behaviour_control_model_path"] = str(
             tmp_path / "absent.pkl")
         with pytest.raises(FileNotFoundError, match="behaviour-control dispatcher"):
             load_control_model(settings)
@@ -728,7 +728,7 @@ class TestReducedModelFeaturesRepoint:
         path.write_bytes(pickle.dumps({"steps": [{"current_features": chosen[:1]},
                                                  {"current_features": chosen}]}))
         settings["data"]["behaviour_selection_result_path"] = str(path)
-        settings["nested_vocal_manifold_position_decoding"]["reduced_model_features"] = chosen
+        settings["nested_vocal_decoding"]["reduced_model_features"] = chosen
         assert reduced_model_features(settings) == chosen
 
     def test_a_behavioural_selection_is_still_drift_checked(self, settings: dict,
@@ -737,7 +737,7 @@ class TestReducedModelFeaturesRepoint:
         path = tmp_path / "behavioural.pkl"
         path.write_bytes(pickle.dumps({"steps": [{"current_features": ["head-head"]}]}))
         settings["data"]["behaviour_selection_result_path"] = str(path)
-        settings["nested_vocal_manifold_position_decoding"]["reduced_model_features"] = ["nose-nose"]
+        settings["nested_vocal_decoding"]["reduced_model_features"] = ["nose-nose"]
         with pytest.raises(ValueError, match="behaviour selection drift"):
             reduced_model_features(settings)
 
@@ -756,7 +756,7 @@ class TestReducedModelFeaturesRepoint:
         chosen = ["nose-nose", "other.speed", "allo_yaw-nose"]
         path.write_bytes(pickle.dumps({"selected_features": chosen}))
         settings["data"]["behaviour_selection_result_path"] = str(path)
-        settings["nested_vocal_manifold_position_decoding"]["reduced_model_features"] = chosen
+        settings["nested_vocal_decoding"]["reduced_model_features"] = chosen
         assert reduced_model_features(settings) == chosen
 
     def test_drift_between_file_and_settings_raises(self, settings: dict, tmp_path) -> None:
@@ -764,7 +764,7 @@ class TestReducedModelFeaturesRepoint:
         path = tmp_path / "selection.pkl"
         path.write_bytes(pickle.dumps({"selected_features": ["nose-nose"]}))
         settings["data"]["behaviour_selection_result_path"] = str(path)
-        settings["nested_vocal_manifold_position_decoding"]["reduced_model_features"] = ["other.speed"]
+        settings["nested_vocal_decoding"]["reduced_model_features"] = ["other.speed"]
         with pytest.raises(ValueError, match="behaviour selection drift"):
             reduced_model_features(settings)
 
@@ -1143,8 +1143,8 @@ class TestLegacyCountKeys:
                                                                      "no_behaviour": -3.5}}}
         path = tmp_path / "control.pkl"
         write_control_model(old, str(path))
-        settings["nested_vocal_manifold_position_decoding"]["behaviour_control_model_path"] = str(path)
-        settings["nested_vocal_manifold_position_decoding"]["reduced_model_features"] = list(
+        settings["nested_vocal_decoding"]["behaviour_control_model_path"] = str(path)
+        settings["nested_vocal_decoding"]["reduced_model_features"] = list(
             artifact["features"])
         loaded = load_control_model(settings)
         assert loaded["n_vocalizations"] == 120

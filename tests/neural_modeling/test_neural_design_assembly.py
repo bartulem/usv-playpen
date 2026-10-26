@@ -554,7 +554,7 @@ class TestSettingsInvariants:
             "max_quiet_tiles_per_session", "vocal_occurrence", "geodesic_metrics", "tuning_surface",
             "category_surface", "discrimination_null", "record_overdispersion_index"}
         assert settings["vocalization_settings"]["vocal_target"] in ("manifold", "multinomial")
-        assert set(settings["nested_vocal_manifold_position_decoding"]) == {
+        assert set(settings["nested_vocal_decoding"]) == {
             "behaviour_control", "reduced_model_features", "behaviour_control_model_path",
             "vm_score_mode", "region_label_column", "min_region_events", "lambda_smooth", "l2_reg",
             "smoothness_derivative_order", "huber_delta", "learning_rate", "max_iter", "tol", "random_state",
@@ -565,7 +565,7 @@ class TestSettingsInvariants:
         """The nested decoding is "the behavioural model plus the neuron", so the control has to be fitted
         and SCORED the way the behavioural model fits and scores it. A silent divergence here would make the reduced model suboptimal for
         the test, which biases the test toward passing -- the wrong direction for a positive result."""
-        nested = _load_settings()["nested_vocal_manifold_position_decoding"]
+        nested = _load_settings()["nested_vocal_decoding"]
         modeling = (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"
                     / "_parameter_settings" / "modeling_settings.json")
         with modeling.open() as handle:

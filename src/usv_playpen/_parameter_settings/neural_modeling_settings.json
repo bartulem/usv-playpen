@@ -231,7 +231,7 @@
     },
     "record_overdispersion_index": true
   },
-  "nested_vocal_manifold_position_decoding": {
+  "nested_vocal_decoding": {
     "behaviour_control": "rich",
     "reduced_model_features": [
       "head-head",

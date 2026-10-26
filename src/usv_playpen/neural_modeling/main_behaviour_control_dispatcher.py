@@ -115,7 +115,7 @@ def main(message_output=print) -> None:
     settings = load_settings(arguments.settings)
     # History length of the behaviour design, in tracking frames (600 = 4 s at 150 fps); recorded in the
     # artifact, so the per-unit nested decoding reads it back from there rather than from settings.
-    n_lags = int(settings["nested_vocal_manifold_position_decoding"]["behaviour_control_n_lags"])
+    n_lags = int(settings["nested_vocal_decoding"]["behaviour_control_n_lags"])
     # Resolve the feature set before the (slow) assembly, so a missing or drifted selection artifact
     # fails early. The select stage tolerates a missing file, since it is about to write one, and uses
     # the frozen list as its independent reference.
@@ -162,13 +162,13 @@ def main(message_output=print) -> None:
                   f"{selection['external_reference']['pooled']:+.5f} -- the gap to the selected model "
                   f"BOUNDS the selection's optimism", flush=True)
         message_output(f"  -> {destination}", flush=True)
-        message_output("  UPDATE nested_vocal_manifold_position_decoding.reduced_model_features to this list "
+        message_output("  UPDATE nested_vocal_decoding.reduced_model_features to this list "
               "before fitting; the change must be deliberate.", flush=True)
         return
 
     artifact = fit_control_models(cohort, features, settings, n_lags)
     destination = (arguments.output if arguments.output is not None
-                   else settings["nested_vocal_manifold_position_decoding"]
+                   else settings["nested_vocal_decoding"]
                    ["behaviour_control_model_path"])
     write_control_model(artifact, destination)
     message_output(f"\nFITTED {artifact['features']} over {len(artifact['coefficients'])} held-out days",

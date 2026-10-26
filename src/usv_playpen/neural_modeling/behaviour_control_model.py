@@ -143,7 +143,7 @@ def session_vocalization_design(session_directory: str, settings: dict, n_lags: 
     session_id = pathlib.Path(session_directory).name
     data_root = settings["data_roots"]["data_root"]
     position_columns = settings["vocal_decoding"]["usv_manifold_column_names"]
-    region_column = settings["nested_vocal_manifold_position_decoding"]["region_label_column"]
+    region_column = settings["nested_vocal_decoding"]["region_label_column"]
     vocal_settings = settings["vocalization_settings"]
     window = vocal_settings["spike_window"]
     minimum = settings["data_sufficiency"]["min_emitter_usvs_per_session"]
@@ -163,7 +163,7 @@ def session_vocalization_design(session_directory: str, settings: dict, n_lags: 
     if absent:
         msg = (f"{session_id}: usv_summary lacks {absent}. Reconcile "
                f"vocal_decoding.usv_manifold_column_names and "
-               f"nested_vocal_manifold_position_decoding.region_label_column with the summary's "
+               f"nested_vocal_decoding.region_label_column with the summary's "
                f"columns.")
         raise KeyError(msg)
 
@@ -521,7 +521,7 @@ def load_control_model(settings: dict) -> dict:
     """
 
     path = pathlib.Path(
-        settings["nested_vocal_manifold_position_decoding"]["behaviour_control_model_path"])
+        settings["nested_vocal_decoding"]["behaviour_control_model_path"])
     if not path.exists():
         msg = (f"behaviour control model not found at {path}; fit it once with the behaviour-control "
                f"dispatcher before running the nested decoding.")
@@ -529,7 +529,7 @@ def load_control_model(settings: dict) -> dict:
     with path.open("rb") as handle:
         artifact = upgrade_legacy_counts(pickle.load(handle))
 
-    frozen = list(settings["nested_vocal_manifold_position_decoding"]["reduced_model_features"])
+    frozen = list(settings["nested_vocal_decoding"]["reduced_model_features"])
     if list(artifact["features"]) != frozen:
         msg = (f"behaviour control drift: {path.name} was fitted on {list(artifact['features'])}, but "
                f"settings freeze {frozen}. Refit the control or update the settings deliberately.")
