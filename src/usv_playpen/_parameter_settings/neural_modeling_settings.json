@@ -69,7 +69,8 @@
       "pre_offset_seconds": 0.05,
       "width_seconds": 0.1
     },
-    "torus_period": 1.0
+    "torus_period": 1.0,
+    "vocal_target": "manifold"
   },
   "kinematic_encoding": {
     "history_pre_seconds": 4.0,
@@ -166,11 +167,11 @@
     "max_quiet_tiles_per_session": 5000,
     "vocal_occurrence": {
       "ridge_frac": 0.02,
-      "sigma_floor": 0.05,
-      "solver": {
-        "irls_n_steps": 30,
-        "calibration_steps": 40
-      }
+      "amplitude_calibration": {
+        "enabled": true,
+        "alpha_grid": [0.1, 0.25, 0.5, 0.75, 1.0, 1.5]
+      },
+      "mean_count_floor": 0.001
     },
     "geodesic_metrics": {
       "compute": true,
@@ -220,7 +221,6 @@
       "min_test_events": 5,
       "mean_count_floor": 0.001
     },
-    "targets": ["manifold_position"],
     "discrimination_null": {
       "method": "within_session_position_permutation",
       "n_permutations": 1000,

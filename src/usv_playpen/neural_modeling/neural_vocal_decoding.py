@@ -299,8 +299,59 @@ def session_exposure_offsets(counts: np.ndarray, session_index: np.ndarray) -> n
     return offsets
 
 
+def inner_rotation_splits(train_sessions: list, rows_by_session: dict, event_times: np.ndarray | None,
+                          single_session_blocks: int) -> list:
+    """
+    Description
+    -----------
+    The inner splits a fold tunes its calibration on, using its TRAINING sessions alone.
+
+    With two or more training sessions the split is leave-one-training-session-out. With a single
+    training session (a unit with two vocal sessions, or two vocal blocks) there is no session to hold
+    out, so that session's events are ordered in time and cut into ``single_session_blocks`` contiguous
+    blocks of equal event count, rotated leave-one-block-out -- the same fallback the kinematic encoding
+    uses for a pool of one session. Contiguous blocks keep neighbouring events, which share a bout and a
+    behavioural state, on the same side of a split. Without event times or with fewer than two blocks
+    there are no inner splits, and the caller falls back to its uncalibrated default.
+
+    Parameters
+    ----------
+    train_sessions (list)
+        Session ids of the fold's training sessions.
+    rows_by_session (dict)
+        ``{session id: row indices of that session's events}``.
+    event_times (np.ndarray)
+        Time of each event in seconds (onset, or window left edge), used only to order the events of a
+        single training session; ``None`` disables the single-session fallback.
+    single_session_blocks (int)
+        Blocks a single training session is cut into (``data_sufficiency.single_session_blocks``).
+
+    Returns
+    -------
+    splits (list)
+        ``(inner_train_rows, inner_test_rows)`` pairs.
+    """
+
+    if len(train_sessions) >= 2:
+        splits = []
+        for inner_held_out in train_sessions:
+            rest = [s for s in train_sessions if s != inner_held_out]
+            splits.append((np.concatenate([rows_by_session[s] for s in rest]), rows_by_session[inner_held_out]))
+        return splits
+    if len(train_sessions) == 0 or event_times is None or single_session_blocks < 2:
+        return []
+    rows = np.asarray(rows_by_session[train_sessions[0]])
+    ordered = rows[np.argsort(np.asarray(event_times, dtype=np.float64)[rows], kind="stable")]
+    blocks = [block for block in np.array_split(ordered, int(single_session_blocks)) if block.size]
+    if len(blocks) < 2:
+        return []
+    return [(np.sort(np.concatenate([other for index, other in enumerate(blocks) if index != held])),
+             np.sort(blocks[held])) for held in range(len(blocks))]
+
+
 def decoding_context(positions: np.ndarray, session_index: np.ndarray, settings: dict,
-                     period: float) -> list:
+                     period: float, event_times: np.ndarray | None = None,
+                     single_session_blocks: int = 0) -> list:
     """
     Description
     -----------
@@ -310,7 +361,8 @@ def decoding_context(positions: np.ndarray, session_index: np.ndarray, settings:
     configuration, so they are built once and shared by the observed fit and every permutation draw.
     The basis and truth cells are stored for all events, because a draw re-pairs counts with
     positions; the prior and mask stay built from the real training positions. Each fold also carries
-    the inner leave-one-session-out splits used to tune the amplitude calibration.
+    the inner splits used to tune the amplitude calibration (:func:`inner_rotation_splits`):
+    leave-one-training-session-out, or contiguous blocks of a fold's single training session.
 
     The occupancy mask is a decode-time gate: the posterior places no mass where no training USV
     occurred, and events whose true position is masked are excluded and counted.
@@ -326,6 +378,12 @@ def decoding_context(positions: np.ndarray, session_index: np.ndarray, settings:
     period (float)
         Per-axis wrap period of the torus (``vocalization_settings.torus_period``). It is stored on
         each fold so the scorer uses the period the geometry was built with.
+    event_times (np.ndarray)
+        Onset time of each event in seconds, used to cut a fold's single training session into blocks
+        for its inner splits. The per-unit dispatcher always passes it; ``None`` leaves such a fold
+        without inner splits.
+    single_session_blocks (int)
+        Blocks a single training session is cut into (``data_sufficiency.single_session_blocks``).
 
     Returns
     -------
@@ -378,12 +436,8 @@ def decoding_context(positions: np.ndarray, session_index: np.ndarray, settings:
         total = float(masked_prior.sum())
         masked_prior = masked_prior / (total * cell_area) if total > 0.0 else masked_prior
 
-        inner_splits = []
-        for inner_held_out in train_sessions:
-            rest = [s for s in train_sessions if s != inner_held_out]
-            if rest:
-                inner_splits.append((np.concatenate([rows_by_session[s] for s in rest]),
-                                     rows_by_session[inner_held_out]))
+        inner_splits = inner_rotation_splits(train_sessions, rows_by_session, event_times,
+                                             single_session_blocks)
 
         folds.append({"held_out": int(held_out), "train_sessions": train_sessions,
                       "train_rows": train_rows, "test_rows": rows_by_session[int(held_out)],
@@ -537,8 +591,8 @@ def tuned_amplitude(counts: np.ndarray, fold: dict, basis: np.ndarray, truth_cel
     so the extra parameter gives the observed value no advantage over the null. The inner scoring
     reuses the outer fold's prior and mask.
 
-    A unit with fewer than three sessions has no inner rotation and falls back to the grid point
-    nearest 1.0. The grid floor of 0.1 regularizes the calibration itself.
+    A fold whose single training session yields no inner blocks has no inner rotation and falls back to
+    the grid point nearest 1.0. The grid floor of 0.1 regularizes the calibration itself.
 
     Parameters
     ----------
@@ -736,7 +790,8 @@ def decode_gain(counts: np.ndarray, folds: list, settings: dict,
 
 
 def bump_basis_gain(counts: np.ndarray, positions: np.ndarray, session_index: np.ndarray,
-                    settings: dict, period: float) -> float:
+                    settings: dict, period: float, event_times: np.ndarray | None = None,
+                    single_session_blocks: int = 0) -> float:
     """
     Description
     -----------
@@ -759,6 +814,11 @@ def bump_basis_gain(counts: np.ndarray, positions: np.ndarray, session_index: np
         caller's dict is not mutated.
     period (float)
         Per-axis wrap period of the torus.
+    event_times (np.ndarray)
+        Onset time of each event in seconds, passed to :func:`decoding_context` for the inner splits
+        of a fold with a single training session; ``None`` leaves such a fold without them.
+    single_session_blocks (int)
+        Blocks a single training session is cut into (``data_sufficiency.single_session_blocks``).
 
     Returns
     -------
@@ -766,11 +826,13 @@ def bump_basis_gain(counts: np.ndarray, positions: np.ndarray, session_index: np
         Pooled event-weighted gain in nats per event under the bump basis, or NaN if it cannot be fit.
     """
 
-    return float(basis_context(positions, session_index, settings, "bumps", period)[1](counts)["gain"])
+    return float(basis_context(positions, session_index, settings, "bumps", period, event_times,
+                               single_session_blocks)[1](counts)["gain"])
 
 
 def basis_context(positions: np.ndarray, session_index: np.ndarray, settings: dict,
-                  basis: str, period: float) -> tuple:
+                  basis: str, period: float, event_times: np.ndarray | None = None,
+                  single_session_blocks: int = 0) -> tuple:
     """
     Description
     -----------
@@ -792,6 +854,11 @@ def basis_context(positions: np.ndarray, session_index: np.ndarray, settings: di
         One of :data:`TUNING_BASES`.
     period (float)
         Per-axis wrap period of the torus.
+    event_times (np.ndarray)
+        Onset time of each event in seconds, passed to :func:`decoding_context` for the inner splits
+        of a fold with a single training session; ``None`` leaves such a fold without them.
+    single_session_blocks (int)
+        Blocks a single training session is cut into (``data_sufficiency.single_session_blocks``).
 
     Returns
     -------
@@ -805,7 +872,7 @@ def basis_context(positions: np.ndarray, session_index: np.ndarray, settings: di
         raise ValueError(msg)
     local = copy.deepcopy(settings)
     local["tuning_surface"]["tuning_basis"] = basis
-    folds = decoding_context(positions, session_index, local, period)
+    folds = decoding_context(positions, session_index, local, period, event_times, single_session_blocks)
 
     def score(counts: np.ndarray, permutation: np.ndarray = None,
               with_detail: bool = False) -> dict:
@@ -848,7 +915,8 @@ def left_tail_anti_alignment(null: np.ndarray, observed: float) -> dict:
 
 
 def flagged_descriptors(counts: np.ndarray, positions: np.ndarray, session_index: np.ndarray,
-                        settings: dict, period: float, observed_gain: float, null: np.ndarray) -> dict:
+                        settings: dict, period: float, observed_gain: float, null: np.ndarray,
+                        event_times: np.ndarray | None = None, single_session_blocks: int = 0) -> dict:
     """
     Description
     -----------
@@ -873,6 +941,11 @@ def flagged_descriptors(counts: np.ndarray, positions: np.ndarray, session_index
         The observed Fourier-basis gain.
     null (np.ndarray)
         The permutation null of that gain.
+    event_times (np.ndarray)
+        Onset time of each event in seconds, passed to :func:`decoding_context` for the inner splits
+        of a fold with a single training session; ``None`` leaves such a fold without them.
+    single_session_blocks (int)
+        Blocks a single training session is cut into (``data_sufficiency.single_session_blocks``).
 
     Returns
     -------
@@ -884,7 +957,8 @@ def flagged_descriptors(counts: np.ndarray, positions: np.ndarray, session_index
 
     out: dict = {}
     if settings["tuning_surface"]["record_bump_basis_gain"]:
-        out["bump_basis_gain"] = bump_basis_gain(counts, positions, session_index, settings, period)
+        out["bump_basis_gain"] = bump_basis_gain(counts, positions, session_index, settings, period, event_times,
+                                                 single_session_blocks)
     if settings["discrimination_null"]["record_left_tail_anti_alignment"]:
         out.update(left_tail_anti_alignment(null, observed_gain))
     return out

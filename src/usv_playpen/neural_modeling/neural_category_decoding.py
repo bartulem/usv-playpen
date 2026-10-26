@@ -18,6 +18,8 @@ from __future__ import annotations
 import numpy as np
 from scipy.special import gammaln, logsumexp
 
+from .neural_vocal_decoding import inner_rotation_splits
+
 
 def decoding_spike_sufficiency(counts: np.ndarray, settings: dict) -> dict:
     """
@@ -164,7 +166,8 @@ def category_posterior(counts: np.ndarray, rates: np.ndarray, prior: np.ndarray,
     return posterior - logsumexp(posterior, axis=1, keepdims=True)
 
 
-def category_context(labels: np.ndarray, session_index: np.ndarray) -> list:
+def category_context(labels: np.ndarray, session_index: np.ndarray, event_times: np.ndarray | None = None,
+                     single_session_blocks: int = 0) -> list:
     """
     Description
     -----------
@@ -179,6 +182,12 @@ def category_context(labels: np.ndarray, session_index: np.ndarray) -> list:
         Contiguous category codes, one per event.
     session_index (np.ndarray)
         Session id per event.
+    event_times (np.ndarray)
+        Onset time of each event in seconds, used to cut a fold's single training session into blocks
+        for its inner splits (:func:`neural_vocal_decoding.inner_rotation_splits`). The per-unit
+        dispatcher always passes it; ``None`` leaves such a fold without inner splits.
+    single_session_blocks (int)
+        Blocks a single training session is cut into (``data_sufficiency.single_session_blocks``).
 
     Returns
     -------
@@ -200,12 +209,8 @@ def category_context(labels: np.ndarray, session_index: np.ndarray) -> list:
         # A category absent from the training fold still needs non-zero prior mass.
         prior = np.maximum(np.bincount(labels[train_rows], minlength=n_categories).astype(np.float64),
                            0.5)
-        inner_splits = []
-        for inner_held_out in train_sessions:
-            rest = [s for s in train_sessions if s != inner_held_out]
-            if rest:
-                inner_splits.append((np.concatenate([rows_by_session[s] for s in rest]),
-                                     rows_by_session[inner_held_out]))
+        inner_splits = inner_rotation_splits(train_sessions, rows_by_session, event_times,
+                                             single_session_blocks)
         folds.append({"held_out": int(held_out), "train_sessions": train_sessions,
                       "train_rows": train_rows, "test_rows": rows_by_session[int(held_out)],
                       "prior": prior / prior.sum(), "n_categories": n_categories,
@@ -218,11 +223,11 @@ def tuned_category_amplitude(counts: np.ndarray, labels: np.ndarray, fold: dict,
     """
     Description
     -----------
-    Choose the amplitude calibration on the TRAINING sessions, by inner leave-one-session-out.
+    Choose the amplitude calibration on the TRAINING sessions, by the fold's inner splits.
 
     The same search runs inside every permutation draw, so the extra parameter gives the observed
-    value no advantage over the null. A fold with a single training session has no inner rotation and
-    falls back to 1.0.
+    value no advantage over the null. The inner splits rotate the training sessions, or contiguous blocks
+    of a single training session; a fold with no inner split falls back to 1.0.
 
     Parameters
     ----------

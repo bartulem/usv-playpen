@@ -1752,7 +1752,8 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
             "pre_offset_seconds": 0.05,
             "width_seconds": 0.1
         },
-        "torus_period": 1.0
+        "torus_period": 1.0,
+        "vocal_target": "manifold"
     }
 
 * **vocal_emitter** — whose USVs are the analysed vocalizations: ``'self'`` (the recorded animal's own), ``'partner'`` or ``'all'`` (no emitter filter). One key drives every analysis -- the vocal decoding's events, the kinematic encoding's transfer frames, the gating's vocal frames and the behaviour control's training rows -- so moving to the partner moves them together.
@@ -1762,6 +1763,7 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
 * **squeaks_block_quiet** — whether a squeak still makes the surrounding frames non-quiet even when excluded from the analysed set (``true``: quiet means the animal made no sound of any kind). Measured exposure (2026-09-30): 3.5% noise and 7.3% squeaks across the behavioural courtship sessions, 0.8–1.5% of focal USVs on the ephys days.
 * **spike_window** — the per-event spike count window: it opens ``pre_offset_seconds`` (``0.05``) before the USV onset and spans ``width_seconds`` (``0.1``), so it covers the pre-motor lead and the start of the USV.
 * **torus_period** — the QLVM manifold's wrap period, shared by every analysis (a property of the manifold, so it lives here once rather than in each block). The vocalization-identity decoder and the nested decoding both read it from here.
+* **vocal_target** — what vocalization identity decodes: ``'manifold'`` (the USV's torus position, the Poisson tuning-surface decoder) or ``'multinomial'`` (its acoustic category, ``vocal_decoding.category_surface``). One key for identity and the nested decoding's behaviour control, so the neuron is tested on the target the behavioural model predicts. The nested decoding is built for ``'manifold'`` only, and a vocal run asked for it under ``'multinomial'`` is refused before anything is fitted. **Allowed:** ``'manifold'`` or ``'multinomial'``.
 
 **kinematic_encoding** — the quiet-period kinematic encoding model (per-frame Bernoulli spike GLM of the behavioural history) and its transfer into vocal periods.
 
@@ -1903,11 +1905,11 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
         "max_quiet_tiles_per_session": 5000,
         "vocal_occurrence": {
             "ridge_frac": 0.02,
-            "sigma_floor": 0.05,
-            "solver": {
-                "irls_n_steps": 30,
-                "calibration_steps": 40
-            }
+            "amplitude_calibration": {
+                "enabled": true,
+                "alpha_grid": [0.1, 0.25, 0.5, 0.75, 1.0, 1.5]
+            },
+            "mean_count_floor": 0.001
         },
         "geodesic_metrics": {
             "compute": true,
@@ -1957,7 +1959,6 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
             "min_test_events": 5,
             "mean_count_floor": 0.001
         },
-        "targets": ["manifold_position"],
         "discrimination_null": {
             "method": "within_session_position_permutation",
             "n_permutations": 1000,
@@ -1972,11 +1973,10 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
 * **require_clean_prevocal_bool** — drop an event when another vocalization intrudes on its pre-vocal window.
 * **usv_manifold_column_names** — the summary columns holding a USV's torus position (``['qlvm1', 'qlvm2']``, the regular map).
 * **max_quiet_tiles_per_session** — cap on the quiet tiles that serve as the vocal-occurrence negatives (``5000`` per session).
-* **vocal_occurrence** — ``ridge_frac`` (``0.02``, scaled by the training count), ``sigma_floor`` (``0.05``, a floor on the standard deviation that z-scores the count column, so a unit silent in quiet cannot produce an exploding column) and the ``solver`` steps (``irls_n_steps`` ``30``, ``calibration_steps`` ``40``).
+* **vocal_occurrence** — the two-class decoder (peri-onset window against quiet tile, equal prior): ``ridge_frac`` (``0.02``) shrinks the two class rates toward their pooled rate by that fraction of the training spike count; ``amplitude_calibration`` tunes the contrast between the classes over ``alpha_grid`` on the training sessions (or, for a single training session, contiguous blocks of it), and when disabled it is 1; ``mean_count_floor`` (``0.001``) bounds a session's quiet level from below so a unit silent in quiet tiles stays finite. The held-out session's quiet level is cross-fitted over ``kinematic_encoding.calibration.n_blocks`` blocks.
 * **geodesic_metrics** — declared but read by no current neural code (``compute``, ``grid_n_per_dim``, ``graph_k``, ``density_exponent``, ``decoder_weights_npz_path``).
-* **tuning_surface** — the Poisson tuning surface over the torus: ``tuning_basis`` ``'fourier'`` with ``fourier_k`` (``2``) harmonics per axis, or a local ``'bump'`` basis of ``bump_grid_n`` (``10``) nodes per axis of width ``bump_sigma`` (``0.1``) kept where the kernel-weighted training occupancy reaches ``min_basis_occupancy`` (``5.0``) events; decoding runs on a grid of ``grid_n`` (``60``) cells per axis restricted to cells whose training occupancy (KDE of bandwidth ``kde_bandwidth``, ``0.03``) reaches ``decode_grid_min_occupancy`` (``1.0``); ``likelihood_family`` ``'poisson'`` (the only implemented value); ``session_rate_offsets`` adds per-session rate offsets; ``solver.irls_n_steps`` (``50``); ``ridge_selection``: ``mode`` ``'count_normalized_fixed'`` (the only implemented value; the ridge is ``ridge_frac`` × the training spike count, ``ridge_frac`` ``0.02``); ``amplitude_calibration``: when ``enabled``, a likelihood-sharpening amplitude is tuned over ``alpha_grid`` by inner leave-one-session-out on the training sessions (``mode`` ``'train_tuned_inner_loso'``, the only implemented value; ``alpha_min`` ``0.0`` is the smallest grid value allowed), and when disabled the amplitude is 1; ``record_bump_basis_gain`` also records the bump-basis gain beside the Fourier one.
-* **category_surface** — the same decoder over the QLVM categories: ``ridge_selection``, ``amplitude_calibration`` as above; ``category_column`` is declared but not read; ``min_train_events`` (``20``) / ``min_test_events`` (``5``) — an outer or inner split with fewer training or test events than these is skipped, too few for a stable per-category rate or a meaningful held-out score; ``mean_count_floor`` (``0.001``) is the lower bound on a session's mean spike count when the held-out level correction is formed, so a session with no spikes gives a posterior equal to the prior (zero gain) rather than ``0 · log 0`` = NaN. **Allowed:** a positive number, small against any real session's mean count.
-* **targets** — declared but read by no current code (the position target is always decoded).
+* **tuning_surface** — the Poisson tuning surface over the torus: ``tuning_basis`` ``'fourier'`` with ``fourier_k`` (``2``) harmonics per axis, or a local ``'bump'`` basis of ``bump_grid_n`` (``10``) nodes per axis of width ``bump_sigma`` (``0.1``) kept where the kernel-weighted training occupancy reaches ``min_basis_occupancy`` (``5.0``) events; decoding runs on a grid of ``grid_n`` (``60``) cells per axis restricted to cells whose training occupancy (KDE of bandwidth ``kde_bandwidth``, ``0.03``) reaches ``decode_grid_min_occupancy`` (``1.0``); ``likelihood_family`` ``'poisson'`` (the only implemented value); ``session_rate_offsets`` adds per-session rate offsets; ``solver.irls_n_steps`` (``50``); ``ridge_selection``: ``mode`` ``'count_normalized_fixed'`` (the only implemented value; the ridge is ``ridge_frac`` × the training spike count, ``ridge_frac`` ``0.02``); ``amplitude_calibration``: when ``enabled``, a likelihood-sharpening amplitude is tuned over ``alpha_grid`` by inner leave-one-session-out on the training sessions, or by leave-one-block-out over ``data_sufficiency.single_session_blocks`` contiguous blocks when a fold has a single training session (``mode`` ``'train_tuned_inner_loso'``, the only implemented value; ``alpha_min`` ``0.0`` is the smallest grid value allowed), and when disabled the amplitude is 1; ``record_bump_basis_gain`` also records the bump-basis gain beside the Fourier one.
+* **category_surface** — the same decoder over the QLVM categories, run when ``vocalization_settings.vocal_target`` is ``'multinomial'``: ``ridge_selection``, ``amplitude_calibration`` as above; ``category_column`` (``'qlvm_category'``) is the USV summary column holding each USV's category; ``min_train_events`` (``20``) / ``min_test_events`` (``5``) — an outer or inner split with fewer training or test events than these is skipped, too few for a stable per-category rate or a meaningful held-out score; ``mean_count_floor`` (``0.001``) is the lower bound on a session's mean spike count when the held-out level correction is formed, so a session with no spikes gives a posterior equal to the prior (zero gain) rather than ``0 · log 0`` = NaN. **Allowed:** a positive number, small against any real session's mean count.
 * **discrimination_null** — the exact within-session permutation null of the identity axis: ``n_permutations`` (``1000``) draws; ``record_left_tail_anti_alignment`` records the left-tail statistics; ``method``, ``sided``, ``pass_rule`` and ``n_permutations_category_grain`` are declared but read by no current code.
 * **record_overdispersion_index** — record the count overdispersion index with each decoding: the mean Pearson dispersion ``(count − expected)² / expected`` of the held-out events, where an event's expected count is the calibrated surface rate the decoder scored it with (the centred surface shape times the tuned amplitude, at the held-out session's mean-count level) read at the event's own grid cell, so an untuned Poisson unit gives about ``1``. The decoding also stores ``nats_per_spike`` (the summed finite per-event gain divided by the spikes of those same events) and ``min_leave_one_fold_out`` (the smallest pooled gain with one fold left out, over the folds whose left-out gain is finite).
 
@@ -2025,7 +2025,7 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
 * **lambda_smooth** / **l2_reg** / **smoothness_derivative_order** — the torus regressor's temporal smoothness (behaviour blocks only, ``1.0``), uniform ridge (``0.01``) and finite-difference order (``1``).
 * **huber_delta** / **learning_rate** / **max_iter** / **tol** / **random_state** — the regressor's optimiser: Huber transition point (``1.0``, torus units), initial Adam step size (``0.001``, cosine-decayed to zero), step cap (``5000``), parameter-change convergence tolerance (``1e-4``) and initialisation seed (``0``). These are the values the regressor used before they became settings; the shipped torus regressor is fitted in closed form, where the optimiser keys are inert.
 * **behaviour_control_n_lags** — history length of the behaviour design, in tracking frames (``600`` = 4 s at 150 fps), used by ``main_behaviour_control_dispatcher`` for both stages; the fitted artifact records it, and the per-unit decoding reads it from there.
-* **sigma_floor** — floor on the standard deviation z-scoring the neuron's count column (``0.05``), the same guard as the vocal-occurrence axis.
+* **sigma_floor** — floor on the standard deviation z-scoring the neuron's count column (``0.05``), so a unit silent in quiet tiles cannot produce an exploding column.
 * **prevocal_window_n_bins** / **rate_transform** / **rate_basis** / **statistic** — the neuron enters as ONE z-scored pre-vocal count (``1`` bin, no transform, a linear column) and the tested statistic is the posterior form (``'posterior'``); each accepts only that value.
 * **behaviour_prior** — the von Mises behaviour prior of the posterior statistic: ``form`` ``'von_mises'``; ``concentration`` ``'train_tuned_inner_loso'`` picks it from ``kappa_grid`` by inner leave-one-session-out on the training sessions (``'train_residuals'`` fits it on the training residuals).
 * **discrimination_null** — the within-session pair permutation null: ``method`` ``'within_session_pair_permutation'`` (the only implemented value), ``n_permutations`` (``1000``); ``sided`` is declared but not read.

@@ -2,11 +2,12 @@
 @author: bartulem
 Unit tests for ``usv_playpen.neural_modeling.neural_vocal_occurrence``.
 
-Coverage: the window counting and quiet tiling, the per-session standardization and its sigma floor, the
-LOSO transfer statistic, and its circular-shift null. The properties asserted are the ones the design turns
-on -- tiles never
-overlap a guarded USV, standardization is per session, the slope is shared while intercepts are not, and
-the statistic is sign-free so suppressed units are not penalised.
+Coverage: the window counting and quiet tiling, the per-session and cross-fitted quiet levels, the class
+rates and the equal-prior posterior, the class-balanced leave-one-session-out decoding gain, and its
+circular-shift null. The properties asserted are the ones the design turns on -- tiles never overlap a
+guarded USV, a held-out window never sets its own quiet level, the gain does not depend on how many quiet
+tiles were drawn and is bounded by log 2, it is sign-free so suppressed units are not penalised, and the
+null recounts both classes and refits.
 """
 
 from __future__ import annotations
@@ -20,13 +21,100 @@ from usv_playpen.neural_modeling.deviance_metrics import (
     newton_logistic,
 )
 from usv_playpen.neural_modeling.neural_vocal_occurrence import (
+    EQUAL_PRIOR_LOG,
+    class_balanced_mean,
     counts_in_windows,
+    held_out_quiet_levels,
+    occurrence_context,
+    occurrence_log_posterior,
+    occurrence_rates,
     quiet_tile_edges,
-    standardize_per_session,
+    session_quiet_levels,
     vocal_occurrence_shift_null,
     vocal_occurrence_statistic,
 )
 from usv_playpen.neural_modeling.shift_null_inference import shift_range_seconds
+
+AXIS = {"ridge_frac": 0.02, "amplitude_calibration": {"enabled": True, "alpha_grid": [0.1, 0.25, 0.5, 0.75, 1.0, 1.5]},
+        "mean_count_floor": 1e-3}
+CROSSFIT = 5
+
+
+def _unit(strength, n_sessions=3, n_positive=200, n_negative=200, seed=0, rate_scale=None):
+    """
+    Description
+    -----------
+    Builds a synthetic unit whose peri-onset windows carry ``strength`` more Poisson count than its quiet
+    tiles, with an optional per-session rate multiplier so the per-session quiet level is exercised.
+    Windows are laid in time order within each session, positives and tiles interleaved.
+
+    Parameters
+    ----------
+    strength (float)
+        Extra mean count of a positive window over the negative mean of 2.0.
+    n_sessions (int)
+        Number of sessions.
+    n_positive (int)
+        Peri-onset windows per session.
+    n_negative (int)
+        Quiet tiles per session.
+    seed (int)
+        Seed for ``np.random.default_rng``.
+    rate_scale (list[float] | None)
+        Per-session multiplier of both means; ``None`` means 1.0 everywhere.
+
+    Returns
+    -------
+    counts (np.ndarray)
+        Window counts across all sessions.
+    labels (np.ndarray)
+        1.0 for peri-onset windows, 0.0 for quiet tiles.
+    sessions (np.ndarray)
+        Session index of every window.
+    times (np.ndarray)
+        Window left edge in seconds.
+    """
+    generator = np.random.default_rng(seed)
+    counts, labels, sessions, times = [], [], [], []
+    for session in range(n_sessions):
+        scale = 1.0 if rate_scale is None else rate_scale[session]
+        positive = generator.poisson(scale * (2.0 + strength), n_positive).astype(float)
+        negative = generator.poisson(scale * 2.0, n_negative).astype(float)
+        counts.append(np.concatenate([positive, negative]))
+        labels.append(np.concatenate([np.ones(n_positive), np.zeros(n_negative)]))
+        sessions.append(np.full(n_positive + n_negative, session))
+        times.append(generator.permutation(n_positive + n_negative).astype(float))
+    return (np.concatenate(counts), np.concatenate(labels), np.concatenate(sessions), np.concatenate(times))
+
+
+def _statistic(counts, labels, sessions, times, axis=AXIS, single_session_blocks=5):
+    """
+    Description
+    -----------
+    Runs the occurrence statistic with folds built from the same windows.
+
+    Parameters
+    ----------
+    counts (np.ndarray)
+        Window counts.
+    labels (np.ndarray)
+        Window labels.
+    sessions (np.ndarray)
+        Session index per window.
+    times (np.ndarray)
+        Window left edge per window.
+    axis (dict)
+        The occurrence settings block.
+    single_session_blocks (int)
+        Blocks a single training session is cut into.
+
+    Returns
+    -------
+    result (dict)
+        The statistic's result.
+    """
+    folds = occurrence_context(labels, sessions, times, single_session_blocks)
+    return vocal_occurrence_statistic(counts, labels, sessions, times, folds, axis, CROSSFIT)
 
 
 class TestWindowCounts:
@@ -79,39 +167,68 @@ class TestQuietTiles:
         assert edges.size == 10
 
 
-class TestStandardization:
+class TestQuietLevels:
 
-    """Per-session standardization of the window counts and its sigma floor."""
-    def test_scaling_is_per_session_and_taken_from_the_negatives(self):
-        """Each session's quiet tiles must become mean 0 and unit SD on their own, so the predictor reads in SDs of
-        that session's resting variability and a high-rate session does not dominate the scale."""
+    """The quiet level each window's class rates are expressed against."""
+    def test_the_training_level_is_each_sessions_quiet_mean(self):
+        """A session's level is the mean count of its quiet tiles, so one pair of class rates serves sessions
+        that fire at different speeds."""
         counts = np.array([10.0, 12.0, 2.0, 4.0, 100.0, 104.0, 20.0, 24.0])
         sessions = np.array([0, 0, 0, 0, 1, 1, 1, 1])
         labels = np.array([1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0])
+        levels = session_quiet_levels(counts, labels, sessions, np.arange(8), 1e-3)
+        np.testing.assert_allclose(levels, [3.0] * 4 + [22.0] * 4)
 
-        standardized, floored = standardize_per_session(counts, sessions, labels, 0.05)
-
-        # what standardization guarantees: each session's quiet tiles become mean 0, unit SD
-        for session in (0, 1):
-            quiet = standardized[(sessions == session) & (labels < 0.5)]
-            assert np.mean(quiet) == pytest.approx(0.0, abs=1e-9)
-            assert np.std(quiet) == pytest.approx(1.0, abs=1e-9)
-        # the predictor now reads in SDs of each session's OWN resting variability, so it is the
-        # session's spread rather than its rate that sets the scale
-        assert floored == 0
-
-    def test_the_sigma_floor_catches_a_unit_silent_during_quiet(self):
-        """The failure it was calibrated for: zero quiet-tile SD produced z-values around 2e10 for
-        exactly the most vocal-exclusive units."""
+    def test_a_session_silent_in_quiet_tiles_stays_finite(self):
+        """The failure the old standardisation needed a floor for: a unit silent in every quiet tile. The level
+        floor keeps its rates finite."""
         counts = np.array([5.0, 7.0, 0.0, 0.0])
-        sessions = np.zeros(4, dtype=int)
         labels = np.array([1.0, 1.0, 0.0, 0.0])
+        levels = session_quiet_levels(counts, labels, np.zeros(4, dtype=int), np.arange(4), 1e-3)
+        assert np.all(levels == 1e-3)
 
-        standardized, floored = standardize_per_session(counts, sessions, labels, 0.05)
+    def test_a_held_out_window_never_sets_its_own_level(self):
+        """The held-out level is cross-fitted: changing one quiet tile's count must leave its own block's level
+        unchanged and move the other blocks'."""
+        generator = np.random.default_rng(3)
+        counts = generator.poisson(2.0, 100).astype(float)
+        labels = np.zeros(100)
+        times = np.arange(100, dtype=float)
+        rows = np.arange(100)
+        before = held_out_quiet_levels(counts, labels, times, rows, 5, 1e-3)
+        changed = counts.copy()
+        changed[0] += 50.0
+        after = held_out_quiet_levels(changed, labels, times, rows, 5, 1e-3)
+        np.testing.assert_allclose(after[:20], before[:20])
+        assert np.all(after[20:] > before[20:])
 
-        assert floored == 1
-        assert np.all(np.isfinite(standardized))
-        assert np.abs(standardized).max() < 1e4
+
+class TestRatesAndPosterior:
+
+    """The two class rates and the equal-prior posterior."""
+    def test_rates_are_count_over_exposure(self):
+        """With no ridge, each class rate is its total count over its total quiet level, so a peri-onset window
+        at twice the quiet mean reads as rate 2."""
+        counts = np.array([4.0, 4.0, 2.0, 2.0])
+        labels = np.array([1.0, 1.0, 0.0, 0.0])
+        rates = occurrence_rates(counts, labels, np.full(4, 2.0), 0.0)
+        np.testing.assert_allclose(rates, [1.0, 2.0])
+
+    def test_a_zero_amplitude_returns_the_prior(self):
+        """``alpha = 0`` removes the contrast between the classes, so the posterior is the equal prior and the
+        decoder earns nothing."""
+        log_posterior = occurrence_log_posterior(np.array([0.0, 3.0, 9.0]), np.array([1.0, 4.0]),
+                                                 np.full(3, 2.0), 0.0)
+        np.testing.assert_allclose(log_posterior, EQUAL_PRIOR_LOG)
+
+    def test_the_class_balanced_mean_ignores_the_class_sizes(self):
+        """Duplicating the quiet windows must not move the class-balanced mean, which is what keeps the gain
+        independent of the tile cap."""
+        values = np.array([0.4, 0.2, -0.1, 0.1])
+        labels = np.array([1.0, 1.0, 0.0, 0.0])
+        doubled = class_balanced_mean(np.concatenate([values, values[2:]]), np.concatenate([labels, labels[2:]]))
+        assert class_balanced_mean(values, labels) == pytest.approx(doubled)
+        assert np.isnan(class_balanced_mean(values[:2], labels[:2]))
 
 
 class TestFittingPrimitives:
@@ -151,101 +268,82 @@ class TestFittingPrimitives:
 
 class TestVocalOccurrenceStatistic:
 
-    """The leave-one-session-out vocal-occurrence statistic on synthetic units."""
-    @staticmethod
-    def _unit(strength, n_sessions=3, per_session=400, seed=0, rate_scale=None):
-        """
-        Description
-        -----------
-        Builds a synthetic unit whose prevocal windows carry ``strength`` more Poisson count than its quiet
-        tiles, with an optional per-session rate multiplier so the shared-slope logic is exercised.
-
-        Parameters
-        ----------
-        strength (float)
-            Extra mean count of a positive window over the negative mean of 2.0.
-        n_sessions (int)
-            Number of sessions.
-        per_session (int)
-            Windows per session, split evenly into positives then negatives.
-        seed (int)
-            Seed for ``np.random.default_rng``.
-        rate_scale (list[float] | None)
-            Per-session multiplier of both means; ``None`` means 1.0 everywhere.
-
-        Returns
-        -------
-        counts (np.ndarray)
-            Window counts across all sessions.
-        labels (np.ndarray)
-            1.0 for prevocal windows, 0.0 for quiet tiles.
-        sessions (np.ndarray)
-            Session index of every window.
-        """
-        generator = np.random.default_rng(seed)
-        counts, labels, sessions = [], [], []
-        for session in range(n_sessions):
-            scale = 1.0 if rate_scale is None else rate_scale[session]
-            positive = generator.poisson(scale * (2.0 + strength), per_session // 2).astype(float)
-            negative = generator.poisson(scale * 2.0, per_session // 2).astype(float)
-            counts.append(np.concatenate([positive, negative]))
-            labels.append(np.concatenate([np.ones(per_session // 2), np.zeros(per_session // 2)]))
-            sessions.append(np.full(per_session, session))
-        return (np.concatenate(counts), np.concatenate(labels), np.concatenate(sessions))
-
-    def test_a_predictive_unit_scores_above_a_null_one(self):
-        """A unit with a 3-count prevocal elevation must score D2 above 0.05 and AUROC above 0.7, while a unit
-        with none sits near D2 0 and AUROC 0.5, so the statistic separates signal from its absence."""
-        strong = vocal_occurrence_statistic(*self._unit(3.0), 0.02, 0.05, 40, 40)
-        null = vocal_occurrence_statistic(*self._unit(0.0, seed=1), 0.02, 0.05, 40, 40)
-
-        assert strong["d2"] > 0.05
+    """The leave-one-session-out occurrence decoder on synthetic units."""
+    def test_a_responsive_unit_decodes_and_a_flat_one_does_not(self):
+        """A unit with a 3-count peri-onset elevation must earn a clear gain and AUROC, while a flat unit sits
+        near zero gain and chance AUROC; both stay below the log 2 ceiling of an equal prior."""
+        strong = _statistic(*_unit(3.0))
+        flat = _statistic(*_unit(0.0, seed=1))
+        assert 0.05 < strong["gain"] < np.log(2.0)
         assert strong["auroc"] > 0.7
-        assert abs(null["d2"]) < 0.02
-        assert null["auroc"] == pytest.approx(0.5, abs=0.06)
+        assert abs(flat["gain"]) < 0.02
+        assert flat["auroc"] == pytest.approx(0.5, abs=0.06)
 
-    def test_the_statistic_is_sign_free_so_suppression_competes_equally(self):
-        """About a fifth of responders are suppressed; the score must not penalise them, and the
-        direction is reported separately."""
-        elevated = vocal_occurrence_statistic(*self._unit(3.0), 0.02, 0.05, 40, 40)
-        counts, labels, sessions = self._unit(3.0)
-        suppressed = vocal_occurrence_statistic(counts, 1.0 - labels, sessions, 0.02, 0.05, 40, 40)
+    def test_the_gain_does_not_depend_on_how_many_tiles_were_drawn(self):
+        """The prior is fixed and the gain class-balanced, so the same windows with every quiet tile drawn three
+        more times (at new times) must leave the gain essentially unchanged, where a frequency prior would
+        have moved it."""
+        counts, labels, sessions, times = _unit(3.0, seed=2)
+        quiet = labels < 0.5
+        copies = [(counts[quiet], labels[quiet], sessions[quiet], times[quiet] + 0.25 * (k + 1)) for k in range(3)]
+        many = _statistic(np.concatenate([counts] + [c[0] for c in copies]),
+                          np.concatenate([labels] + [c[1] for c in copies]),
+                          np.concatenate([sessions] + [c[2] for c in copies]),
+                          np.concatenate([times] + [c[3] for c in copies]))
+        few = _statistic(counts, labels, sessions, times)
+        assert many["gain"] == pytest.approx(few["gain"], abs=0.01)
 
-        assert suppressed["d2"] == pytest.approx(elevated["d2"], rel=0.35)
+    def test_the_gain_is_sign_free_so_suppression_competes_equally(self):
+        """A suppressed unit must decode about as well as an excited one; the direction is reported separately."""
+        counts, labels, sessions, times = _unit(3.0)
+        elevated = _statistic(counts, labels, sessions, times)
+        suppressed = _statistic(counts, 1.0 - labels, sessions, times)
+        assert suppressed["gain"] == pytest.approx(elevated["gain"], rel=0.25)
         assert elevated["response_sign"] == "elevated"
         assert suppressed["response_sign"] == "suppressed"
 
-    def test_a_per_session_rate_difference_does_not_break_the_shared_slope(self):
-        """Sessions firing at 1x, 3x and 6x the same relationship: per-session standardization plus
-        per-session intercepts must leave one slope serviceable for all three."""
-        result = vocal_occurrence_statistic(*self._unit(3.0, rate_scale=[1.0, 3.0, 6.0]), 0.02, 0.05, 40, 40)
-
-        assert result["d2"] > 0.05
+    def test_sessions_at_different_rates_share_one_pair_of_class_rates(self):
+        """Sessions firing at 1x, 3x and 6x the same relationship: the per-session quiet level must leave one
+        pair of class rates serviceable for all three."""
+        result = _statistic(*_unit(3.0, rate_scale=[1.0, 3.0, 6.0]))
+        assert result["gain"] > 0.05
         assert result["auroc"] > 0.65
         assert len(result["per_fold"]) == 3
 
+    def test_two_sessions_tune_the_amplitude_on_blocks(self):
+        """With two sessions each fold has one training session; its amplitude is tuned on blocks of it, and
+        without event times the fold falls back to 1.0."""
+        _counts, labels, sessions, times = _unit(3.0, n_sessions=2)
+        folds = occurrence_context(labels, sessions, times, 5)
+        assert all(len(fold["inner_splits"]) == 5 for fold in folds)
+        assert not any(occurrence_context(labels, sessions, None, 5)[0]["inner_splits"] for _ in [0])
+
     def test_every_fold_is_reported(self):
-        """Four sessions must give four per-fold records in session order and a total of 1,600 windows, so
-        every held-out session is accounted for in the stored result."""
-        result = vocal_occurrence_statistic(*self._unit(2.0, n_sessions=4), 0.02, 0.05, 40, 40)
+        """Four sessions must give four per-fold records in session order and a total of 1,600 windows."""
+        result = _statistic(*_unit(2.0, n_sessions=4))
         assert [fold["session"] for fold in result["per_fold"]] == [0, 1, 2, 3]
         assert result["n_windows"] == 1600
 
+    def test_labels_other_than_zero_and_one_are_refused(self):
+        """The decoder has exactly two classes."""
+        with pytest.raises(ValueError, match="must be 1"):
+            occurrence_context(np.array([0.0, 2.0, 1.0, 0.0]), np.array([0, 0, 1, 1]), np.arange(4.0), 5)
+
 
 class TestVocalOccurrenceShiftNull:
-    """The null the vocal-occurrence axis is tested against: shift each session's spike train, recount BOTH classes,
-    refit. Promoted from the pilot driver with per-draw seeds, which is what lets draws be split across
-    workers and topped up by the escalation ladder."""
+    """The null the vocal-occurrence axis is tested against: shift each session's spike train, recount BOTH
+    classes, refit. Seeded per draw, which is what lets draws be split across workers and topped up by the
+    escalation ladder."""
 
-    RIDGE, FLOOR, IRLS, CALIBRATION, GUARD = 0.02, 0.05, 30, 40, 20.0
+    GUARD = 20.0
 
     @staticmethod
     def _unit(n_sessions=2, duration=300.0, n_usvs=60, n_tiles=120, width=0.1, seed=0):
         """
         Description
         -----------
-        Builds a unit with uniform background spikes plus a three-spike burst inside every prevocal window, so
-        the spikes are ALIGNED to its USVs -- exactly what a circular shift should destroy.
+        Builds a unit with uniform background spikes plus a three-spike burst inside every peri-onset window,
+        so the spikes are ALIGNED to its USVs -- exactly what a circular shift should destroy.
 
         Parameters
         ----------
@@ -254,7 +352,7 @@ class TestVocalOccurrenceShiftNull:
         duration (float)
             Session length in seconds.
         n_usvs (int)
-            Prevocal windows (positives) per session.
+            Peri-onset windows (positives) per session.
         n_tiles (int)
             Quiet tiles (negatives) per session.
         width (float)
@@ -286,15 +384,14 @@ class TestVocalOccurrenceShiftNull:
             sessions.append(np.full(window_edges.size, slot))
             edges.append(window_edges)
         windows = {"counts": np.concatenate(counts), "labels": np.concatenate(labels),
-                "session_index": np.concatenate(sessions), "edges": np.concatenate(edges), "width": width}
+                   "session_index": np.concatenate(sessions), "edges": np.concatenate(edges), "width": width}
         return windows, spikes, durations
 
     def _null(self, windows, spikes, durations, start, n_draws, seed=7):
         """
         Description
         -----------
-        Runs ``vocal_occurrence_shift_null`` with the class-level ridge, sigma floor, IRLS, calibration and
-        guard settings.
+        Runs ``vocal_occurrence_shift_null`` with folds built from the windows and the module settings.
 
         Parameters
         ----------
@@ -316,8 +413,29 @@ class TestVocalOccurrenceShiftNull:
         null (np.ndarray)
             The ``n_draws`` null statistics.
         """
-        return vocal_occurrence_shift_null(windows, spikes, durations, start, n_draws, seed, self.GUARD, self.RIDGE,
-                               self.FLOOR, self.IRLS, self.CALIBRATION)
+        folds = occurrence_context(windows["labels"], windows["session_index"], windows["edges"], 5)
+        return vocal_occurrence_shift_null(windows, spikes, durations, start, n_draws, seed, self.GUARD, folds,
+                                           AXIS, CROSSFIT)
+
+    def _score(self, windows, counts):
+        """
+        Description
+        -----------
+        Scores a set of window counts with the occurrence statistic at the module settings.
+
+        Parameters
+        ----------
+        windows (dict)
+            The window arrays from ``_unit``.
+        counts (np.ndarray)
+            Window counts aligned with ``windows``.
+
+        Returns
+        -------
+        gain (float)
+            The statistic in nats per window.
+        """
+        return _statistic(counts, windows["labels"], windows["session_index"], windows["edges"])["gain"]
 
     def test_any_partition_of_the_draws_gives_the_same_values(self):
         """Draw d is seeded by its global index, so splitting [0, 6) as [0, 2) + [2, 6) -- across workers,
@@ -329,11 +447,9 @@ class TestVocalOccurrenceShiftNull:
         np.testing.assert_array_equal(whole, split)
 
     def test_a_shift_destroys_real_alignment(self):
-        """A unit whose spikes are aligned to its USVs must score above every one of 25 shift-null draws, so the
-        null does destroy the alignment it is meant to test."""
+        """A unit whose spikes are aligned to its USVs must score above every one of 25 shift-null draws."""
         windows, spikes, durations = self._unit(seed=1)
-        observed = vocal_occurrence_statistic(windows["counts"], windows["labels"], windows["session_index"], self.RIDGE,
-                                  self.FLOOR, self.IRLS, self.CALIBRATION)["nats_per_window"]
+        observed = self._score(windows, windows["counts"])
         null = self._null(windows, spikes, durations, 0, 25)
         assert observed > float(null.max())
 
@@ -351,25 +467,5 @@ class TestVocalOccurrenceShiftNull:
             recounted = counts_in_windows(shifted, windows["edges"][mask], windows["width"])
             both[mask] = recounted
             usvs_only[mask & (windows["labels"] == 1)] = recounted[windows["labels"][mask] == 1]
-
-        def score(counts):
-            """
-            Description
-            -----------
-            Scores a set of window counts with the vocal-occurrence statistic at the class-level settings.
-
-            Parameters
-            ----------
-            counts (np.ndarray)
-                Window counts aligned with the enclosing ``windows`` labels and sessions.
-
-            Returns
-            -------
-            nats_per_window (float)
-                The statistic in nats per window.
-            """
-            return vocal_occurrence_statistic(counts, windows["labels"], windows["session_index"], self.RIDGE, self.FLOOR,
-                                  self.IRLS, self.CALIBRATION)["nats_per_window"]
-
-        assert drawn == pytest.approx(score(both), rel=0, abs=0)
-        assert score(usvs_only) != pytest.approx(drawn)
+        assert drawn == pytest.approx(self._score(windows, both), rel=0, abs=0)
+        assert self._score(windows, usvs_only) != pytest.approx(drawn)

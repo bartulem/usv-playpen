@@ -32,6 +32,7 @@ from usv_playpen.neural_modeling.neural_vocal_decoding import (
     decoding_context,
     flagged_descriptors,
     fourier_basis,
+    inner_rotation_splits,
     left_tail_anti_alignment,
     poisson_tuning_fit,
     score_events,
@@ -676,3 +677,32 @@ class TestTuningBasisIsAFirstClassOption:
         settings = _settings()
         basis_context(positions, sessions, settings, "bumps", PERIOD)
         assert settings["tuning_surface"]["tuning_basis"] == "fourier"
+
+
+class TestInnerRotationSplits:
+    """The inner splits every decoder tunes its calibration on, from its training sessions alone."""
+
+    def test_two_or_more_training_sessions_rotate_by_session(self):
+        """With three training sessions the split is leave-one-training-session-out, ignoring event times."""
+        rows = {0: np.arange(0, 4), 1: np.arange(4, 8), 2: np.arange(8, 12)}
+        splits = inner_rotation_splits([0, 1, 2], rows, np.arange(12.0), 5)
+        assert [test.tolist() for _train, test in splits] == [rows[0].tolist(), rows[1].tolist(), rows[2].tolist()]
+        assert all(np.intersect1d(train, test).size == 0 for train, test in splits)
+
+    def test_a_single_training_session_is_cut_into_contiguous_blocks_in_time(self):
+        """One training session yields leave-one-block-out splits over contiguous blocks ordered by event time,
+        not by row order, and every event is held out exactly once."""
+        rows = {3: np.arange(10)}
+        times = np.array([9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0, 0.0])
+        splits = inner_rotation_splits([3], rows, times, 5)
+        held = [test.tolist() for _train, test in splits]
+        assert held[0] == [8, 9]                  # the two earliest events
+        assert sorted(index for block in held for index in block) == list(range(10))
+        assert all(np.union1d(train, test).size == 10 for train, test in splits)
+
+    def test_no_times_or_too_few_events_leave_no_split(self):
+        """Without event times, or with one event, a single training session has no inner split, and the caller
+        falls back to its uncalibrated default."""
+        assert inner_rotation_splits([0], {0: np.arange(6)}, None, 5) == []
+        assert inner_rotation_splits([0], {0: np.arange(1)}, np.zeros(1), 5) == []
+        assert inner_rotation_splits([0], {0: np.arange(6)}, np.arange(6.0), 1) == []

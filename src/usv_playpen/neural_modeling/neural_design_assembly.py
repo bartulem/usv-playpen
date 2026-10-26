@@ -1004,7 +1004,9 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
     -------
     events (dict)
         ``positions``, ``session_index``, ``counts``, ``region_labels`` (the acoustic region per
-        event, NaN where the summary carries no such column), ``silent_gap``, ``vocalization_start``,
+        event, NaN where the summary carries no such column), ``category_labels`` (the acoustic
+        category the multinomial identity decoder targets, ``vocal_decoding.category_surface.
+        category_column``, NaN where absent), ``silent_gap``, ``vocalization_start``,
         ``vocalization_stop`` at vocalization grain; ``occurrence_windows`` (``counts``, ``labels``, ``session_index``, plus the window ``edges`` and
         their ``width``, which the circular-shift null needs to recount both classes from a shifted
         train) over positives and tiles
@@ -1019,12 +1021,13 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
     history_pre_seconds = encoding["history_pre_seconds"]
     clean_post_seconds = encoding["clean_post_seconds"]
     region_column = settings["nested_vocal_manifold_position_decoding"]["region_label_column"]
+    category_column = decoding["category_surface"]["category_column"]
     vocal_emitter = settings["vocalization_settings"]["vocal_emitter"]
     clean_against = settings["vocalization_settings"]["clean_against"]
     rng = np.random.default_rng(settings["null"]["shuffle_seed"])
 
     session_ids: list[str] = []
-    positions_parts, counts_parts, gaps_parts, region_parts = [], [], [], []
+    positions_parts, counts_parts, gaps_parts, region_parts, category_parts = [], [], [], [], []
     starts_parts, stops_parts, index_parts, window_edge_parts = [], [], [], []
     tile_counts_parts, tile_edge_parts, tile_index_parts = [], [], []
     per_session: dict = {}
@@ -1068,6 +1071,11 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
         focal_regions = (focal[region_column].to_numpy().astype(np.float64)
                          if region_column in focal.columns
                          else np.full(focal_starts.size, np.nan))
+        # The acoustic category is the target of the multinomial identity decoder; NaN where the
+        # summary has no such column, which the categorical decoder drops and counts.
+        focal_categories = (focal[category_column].to_numpy().astype(np.float64)
+                            if category_column in focal.columns
+                            else np.full(focal_starts.size, np.nan))
 
         # The gap covariate `start[i] - stop[i-1]` needs rows in temporal order.
         if focal_starts.size > 1 and np.any(np.diff(focal_starts) < 0):
@@ -1100,6 +1108,7 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
         session_ids.append(session_id)
         positions_parts.append(focal_positions[keep])
         region_parts.append(focal_regions[keep])
+        category_parts.append(focal_categories[keep])
         counts_parts.append(event_counts)
         window_edge_parts.append(window_edges)
         gaps_parts.append(gaps[keep])
@@ -1133,6 +1142,8 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
         "counts": counts,
         "region_labels": (np.concatenate(region_parts) if region_parts
                           else np.empty(0, dtype=np.float64)),
+        "category_labels": (np.concatenate(category_parts) if category_parts
+                            else np.empty(0, dtype=np.float64)),
         "silent_gap": np.concatenate(gaps_parts) if gaps_parts else np.empty(0, dtype=np.float64),
         "vocalization_start": (np.concatenate(starts_parts) if starts_parts
                                else np.empty(0, dtype=np.float64)),

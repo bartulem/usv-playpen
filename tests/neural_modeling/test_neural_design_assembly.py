@@ -544,14 +544,16 @@ class TestSettingsInvariants:
         """The nested decoding is a separate analysis with its own model, null and statistic; its
         configuration living inside the vocal decoding's block was the file's worst piece of mis-filing.
 
-        `category_surface` and `targets` DO belong here: the categorical decode is the same claim's
-        axis on a different target -- same events, same window, same folds, same currency and the same
-        permutation draws -- so it is a vocal-decoding axis rather than a separate analysis."""
+        `category_surface` DOES belong here: the categorical decode is the same claim's axis on a
+        different target -- same events, same window, same folds, same currency and the same permutation
+        draws -- so it is a vocal-decoding axis rather than a separate analysis. Which target is decoded is
+        `vocalization_settings.vocal_target`, shared with the nested decoding's behaviour control."""
         settings = _load_settings()
         assert set(settings["vocal_decoding"]) == {
             "require_clean_prevocal_bool", "usv_manifold_column_names",
             "max_quiet_tiles_per_session", "vocal_occurrence", "geodesic_metrics", "tuning_surface",
-            "category_surface", "targets", "discrimination_null", "record_overdispersion_index"}
+            "category_surface", "discrimination_null", "record_overdispersion_index"}
+        assert settings["vocalization_settings"]["vocal_target"] in ("manifold", "multinomial")
         assert set(settings["nested_vocal_manifold_position_decoding"]) == {
             "behaviour_control", "reduced_model_features", "behaviour_control_model_path",
             "vm_score_mode", "region_label_column", "min_region_events", "lambda_smooth", "l2_reg",
@@ -619,7 +621,7 @@ class TestSettingsInvariants:
         assert "n_shuffles_screen" not in settings["vocal_gating"]
         assert settings["vocal_gating"]["gating_screen_n_shuffles"] == 2000
         assert "calib_n_steps" not in settings["vocal_gating"]["solver"]
-        assert "calib_n_steps" not in settings["vocal_decoding"]["vocal_occurrence"]["solver"]
+        assert "calib_n_steps" not in settings["vocal_decoding"]["vocal_occurrence"]
         assert "min_focal_usvs" not in settings["vocal_decoding"]
         assert "decorrelation_lag_seconds" not in settings["null"]
 

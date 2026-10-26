@@ -42,6 +42,11 @@ with warnings.catch_warnings():
         read_unit_artifact,
         write_unit_section,
     )
+    from usv_playpen.neural_modeling.neural_category_decoding import (
+        category_codes,
+        category_context,
+        category_gain,
+    )
     from usv_playpen.neural_modeling.neural_nested_decoding import (
         behaviour_priors,
         nested_settings,
@@ -57,6 +62,7 @@ with warnings.catch_warnings():
     )
     from usv_playpen.neural_modeling.neural_vocal_occurrence import (
         counts_in_windows,
+        occurrence_context,
         vocal_occurrence_shift_null,
     )
 
@@ -125,7 +131,8 @@ class TestParallelNullsAreExact:
 
         serial = permutation_null(lambda permutation: decode_gain(counts, folds, decoding, permutation)["gain"],
                                   sessions, 5, 11)
-        state = {"counts": counts, "folds": folds, "decoding": decoding, "session_index": sessions, "seed": 11}
+        state = {"target": "manifold", "counts": counts, "folds": folds, "decoding": decoding,
+                 "session_index": sessions, "seed": 11}
         with vocal.spawn_pool(2, state) as pool:
             parallel = vocal.parallel_draw_more(pool, vocal.vocalization_identity_null_chunk, 2)(5)
         np.testing.assert_array_equal(parallel, serial)
@@ -462,7 +469,8 @@ def _vocal_events() -> dict:
     -------
     events (dict)
         ``counts``, ``positions``, ``session_index``, ``session_ids``, ``per_session`` (durations),
-        ``occurrence_windows`` and ``spike_seconds`` (the trains, keyed by session id, for the loader stub).
+        ``occurrence_windows``, ``spike_seconds`` (the trains, keyed by session id, for the loader stub),
+        ``vocalization_start`` and ``category_labels`` (four categories by the first torus coordinate).
     """
     generator = np.random.default_rng(3)
     n_sessions, per_session, width, duration = 3, 120, 0.1, 300.0
@@ -507,6 +515,10 @@ def _vocal_events() -> dict:
             "width": width,
         },
         "spike_seconds": trains,
+        # Onsets in time order within each session, and an acoustic category per USV.
+        "vocalization_start": np.concatenate([np.sort(generator.uniform(5.0, duration - 5.0, per_session))
+                                              for _ in session_ids]),
+        "category_labels": (np.floor(positions[:, 0] * 4.0) + 1.0).astype(np.float64),
     }
 
 
@@ -622,8 +634,8 @@ class TestTheAnalysisSteps:
         """
         Description
         -----------
-        The occurrence null must be built from the settings' seed, guard, ridge, floor and solver caps,
-        spike trains loaded per session by name, and topped up by the escalation ladder from where it
+        The occurrence null must be built from the settings' seed, guard, occurrence block and
+        cross-fitting blocks, with folds over the windows, spike trains loaded per session by name, and topped up by the escalation ladder from where it
         stopped -- so 6 draws plus 4 more equal the serial ``vocal_occurrence_shift_null`` over draws
         0..9. The section lands in the unit file with the sensitivity fractions computed from the windows.
 
@@ -662,12 +674,8 @@ class TestTheAnalysisSteps:
         n_workers, state = spawned[0]
         assert n_workers == 3
         assert (state["seed"], state["guard_seconds"]) == (7, 15.0)
-        assert (state["ridge_fraction"], state["sigma_floor"]) == (
-            axis["ridge_frac"],
-            axis["sigma_floor"],
-        )
-        assert state["irls_steps"] == axis["solver"]["irls_n_steps"]
-        assert state["calibration_steps"] == axis["solver"]["calibration_steps"]
+        assert state["axis"] is axis
+        assert state["crossfit_blocks"] == settings["kinematic_encoding"]["calibration"]["n_blocks"]
         assert state["durations"] == {0: 300.0, 1: 300.0, 2: 300.0}
         assert [call[0] for call in calls["load"]] == [
             ("/data", session_id, UNIT["unit_id"])
@@ -679,18 +687,20 @@ class TestTheAnalysisSteps:
                 for session_id in events["session_ids"]
             )
         )
+        windows = events["occurrence_windows"]
+        folds = occurrence_context(windows["labels"], windows["session_index"], windows["edges"],
+                                   settings["data_sufficiency"]["single_session_blocks"])
         serial = vocal_occurrence_shift_null(
-            events["occurrence_windows"],
+            windows,
             trains,
             state["durations"],
             0,
             10,
             7,
             15.0,
-            axis["ridge_frac"],
-            axis["sigma_floor"],
-            axis["solver"]["irls_n_steps"],
-            axis["solver"]["calibration_steps"],
+            folds,
+            axis,
+            settings["kinematic_encoding"]["calibration"]["n_blocks"],
         )
         np.testing.assert_array_equal(payload["null"], serial)
         assert payload["n_shuffles"] == 10
@@ -769,6 +779,96 @@ class TestTheAnalysisSteps:
             ]["gain"]
             == payload["gain"]
         )
+
+    def test_the_multinomial_target_decodes_categories_against_their_own_null(self, tmp_path, monkeypatch):
+        """
+        Description
+        -----------
+        With ``vocal_target = "multinomial"`` identity decodes the acoustic category: the null takes
+        ``n_permutations_category_grain`` draws, equals the serial permutation null of the categorical gain
+        value for value, and the section records the target and the categories decoded.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Output directory for the unit file.
+        monkeypatch (pytest.MonkeyPatch)
+            Installs the in-process pool.
+
+        Returns
+        -------
+        None
+        """
+        events = _vocal_events()
+        settings = _fast_decoding_settings()
+        settings["vocalization_settings"]["vocal_target"] = "multinomial"
+        settings["vocal_decoding"]["discrimination_null"]["n_permutations_category_grain"] = 6
+        _inline_pools(monkeypatch)
+
+        payload = vocal.run_vocalization_identity(UNIT, events, settings, str(tmp_path), 2, _quiet)
+
+        codes, kept, values = category_codes(events["category_labels"])
+        folds = category_context(codes, events["session_index"][kept], events["vocalization_start"][kept],
+                                 settings["data_sufficiency"]["single_session_blocks"])
+        serial = permutation_null(
+            lambda permutation: category_gain(events["counts"][kept], codes, folds, settings["vocal_decoding"],
+                                              permutation)["gain"],
+            events["session_index"][kept], 6, 11)
+        np.testing.assert_array_equal(payload["null"], serial)
+        assert payload["target"] == "multinomial"
+        assert payload["categories"] == values.tolist()
+        assert payload["n_permutations"] == 6
+        assert "bump_basis_gain" not in payload
+
+    def test_a_single_training_session_tunes_on_blocks(self, monkeypatch, tmp_path):
+        """
+        Description
+        -----------
+        A unit with two vocal sessions leaves each fold one training session; identity must hand the fold
+        builder the USV onsets and the block count, so that session is cut into blocks for the amplitude
+        search rather than left uncalibrated.
+
+        Parameters
+        ----------
+        monkeypatch (pytest.MonkeyPatch)
+            Installs the in-process pool and the recorder.
+        tmp_path (pathlib.Path)
+            Output directory for the unit file.
+
+        Returns
+        -------
+        None
+        """
+        events = _vocal_events()
+        two = events["session_index"] < 2
+        events = {**events, "counts": events["counts"][two], "positions": events["positions"][two],
+                  "session_index": events["session_index"][two], "session_ids": events["session_ids"][:2],
+                  "vocalization_start": events["vocalization_start"][two],
+                  "category_labels": events["category_labels"][two]}
+        settings = _fast_decoding_settings()
+        settings["vocal_decoding"]["discrimination_null"]["n_permutations"] = 2
+        _inline_pools(monkeypatch)
+        built = []
+        original = vocal.decoding_context
+
+        def recording(*args, **kwargs):
+            """Record the folds the dispatcher builds."""
+            folds = original(*args, **kwargs)
+            built.append(folds)
+            return folds
+
+        monkeypatch.setattr(vocal, "decoding_context", recording)
+        vocal.run_vocalization_identity(UNIT, events, settings, str(tmp_path), 1, _quiet)
+        blocks = settings["data_sufficiency"]["single_session_blocks"]
+        assert all(len(fold["inner_splits"]) == blocks for fold in built[0])
+
+    @pytest.mark.parametrize("target", ["category", "MANIFOLD"])
+    def test_an_unknown_target_is_refused(self, target, tmp_path):
+        """A misspelled target must raise naming the key rather than fall back to the torus decoder."""
+        settings = _fast_decoding_settings()
+        settings["vocalization_settings"]["vocal_target"] = target
+        with pytest.raises(ValueError, match="vocal_target"):
+            vocal.run_vocalization_identity(UNIT, _vocal_events(), settings, str(tmp_path), 1, _quiet)
 
     def test_nested_decoding_carries_the_control_and_tests_the_posterior_statistic(
         self, tmp_path, monkeypatch
@@ -1380,6 +1480,36 @@ class TestRunVocalOrder:
             "assemble_unit_vocal_events",
             "run_nested_vocal_manifold_position_decoding",
         ]
+
+
+    def test_the_multinomial_target_refuses_the_nested_step_before_anything_runs(self, tmp_path, monkeypatch):
+        """
+        Description
+        -----------
+        The nested decoding has no multinomial behaviour control, so asking for it under the multinomial
+        target must raise before the events are assembled or any section is written; without the nested
+        step the other three run.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Output directory.
+        monkeypatch (pytest.MonkeyPatch)
+            Installs the stubs.
+
+        Returns
+        -------
+        None
+        """
+        settings = _settings()
+        settings["vocalization_settings"]["vocal_target"] = "multinomial"
+        calls = self._install(monkeypatch)
+        with pytest.raises(ValueError, match="multinomial behaviour control"):
+            vocal.run_vocal(UNIT, settings, "/data", str(tmp_path), 1, vocal.VOCAL_STEPS, _quiet)
+        assert not calls
+        steps = tuple(step for step in vocal.VOCAL_STEPS if step != "nested_vocal_manifold_position_decoding")
+        vocal.run_vocal(UNIT, settings, "/data", str(tmp_path), 1, steps, _quiet)
+        assert "run_vocalization_identity" in calls
 
 
 class TestNotVocalTestable:

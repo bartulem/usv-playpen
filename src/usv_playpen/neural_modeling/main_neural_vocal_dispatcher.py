@@ -29,6 +29,7 @@ import numpy as np
 from .behaviour_control_model import apply_behaviour_control, load_control_model
 from .main_neural_encoding_dispatcher import build_unit_record, load_settings
 from .neural_artifacts import read_unit_artifact, write_unit_section
+from .neural_category_decoding import category_codes, category_context, category_gain
 from .neural_design_assembly import (
     assemble_unit_sessions,
     assemble_unit_vocal_events,
@@ -48,7 +49,12 @@ from .neural_nested_decoding import (
     reduced_predictions,
 )
 from .neural_significance import within_session_permutation
-from .neural_vocal_decoding import decode_gain, decoding_context, flagged_descriptors
+from .neural_vocal_decoding import (
+    decode_gain,
+    decoding_context,
+    flagged_descriptors,
+    left_tail_anti_alignment,
+)
 from .neural_vocal_gating import check_settings as check_gating_settings
 from .neural_vocal_gating import (
     feature_gating_statistic,
@@ -59,6 +65,7 @@ from .neural_vocal_gating import (
     should_run_gating,
 )
 from .neural_vocal_occurrence import (
+    occurrence_context,
     vocal_occurrence_shift_null,
     vocal_occurrence_statistic,
 )
@@ -66,6 +73,10 @@ from .shift_null_inference import escalated_empirical_pvalue
 
 VOCAL_STEPS = ("vocal_occurrence", "vocalization_identity", "nested_vocal_manifold_position_decoding",
                "vocal_gating")
+
+#: What vocalization identity decodes, shared with the behaviour control of the nested decoding so the
+#: neuron is tested on the target the behavioural model predicts: the torus position, or the category.
+VOCAL_TARGETS = ("manifold", "multinomial")
 
 # State handed to each worker once, by the pool initializer, rather than pickled with every task.
 _WORKER: dict = {}
@@ -186,8 +197,9 @@ def vocalization_identity_null_chunk(start: int, n_draws: int) -> np.ndarray:
     """
     Description
     -----------
-    Vocalization-identity null draws ``[start, start + n_draws)``: the exact within-session position
-    permutation, seeded ``seed + draw`` exactly as ``permutation_null`` seeds it.
+    Vocalization-identity null draws ``[start, start + n_draws)``: the exact within-session permutation
+    of the target, seeded ``seed + draw`` exactly as ``permutation_null`` seeds it. The worker state's
+    ``target`` selects the torus decoder or the categorical one.
 
     Parameters
     ----------
@@ -199,7 +211,7 @@ def vocalization_identity_null_chunk(start: int, n_draws: int) -> np.ndarray:
     Returns
     -------
     null (np.ndarray)
-        Decode gains under permuted positions.
+        Decode gains under permuted targets.
     """
 
     state = _WORKER
@@ -207,7 +219,11 @@ def vocalization_identity_null_chunk(start: int, n_draws: int) -> np.ndarray:
     for draw in range(int(n_draws)):
         permutation = within_session_permutation(state["session_index"],
                                                  np.random.default_rng(state["seed"] + start + draw))
-        values[draw] = decode_gain(state["counts"], state["folds"], state["decoding"], permutation)["gain"]
+        if state["target"] == "multinomial":
+            values[draw] = category_gain(state["counts"], state["labels"], state["folds"], state["decoding"],
+                                         permutation)["gain"]
+        else:
+            values[draw] = decode_gain(state["counts"], state["folds"], state["decoding"], permutation)["gain"]
     return values
 
 
@@ -228,14 +244,13 @@ def vocal_occurrence_null_chunk(start: int, n_draws: int) -> np.ndarray:
     Returns
     -------
     null (np.ndarray)
-        ``nats_per_window`` under circularly shifted spike trains.
+        Occurrence gains under circularly shifted spike trains.
     """
 
     state = _WORKER
     return vocal_occurrence_shift_null(state["occurrence_windows"], state["spike_seconds"], state["durations"],
-                                       start, n_draws, state["seed"], state["guard_seconds"],
-                                       state["ridge_fraction"], state["sigma_floor"], state["irls_steps"],
-                                       state["calibration_steps"])
+                                       start, n_draws, state["seed"], state["guard_seconds"], state["folds"],
+                                       state["axis"], state["crossfit_blocks"])
 
 
 def posterior_nested_null_chunk(start: int, n_draws: int) -> np.ndarray:
@@ -514,6 +529,31 @@ def vocal_gating_payload(feature_names: list, observed: dict, nulls: dict, verdi
             "p_unit_at_floor": unit_p["at_floor"]}
 
 
+def vocal_target(settings: dict) -> str:
+    """
+    Description
+    -----------
+    The decoded target, ``vocalization_settings.vocal_target``, refused unless it is one of
+    :data:`VOCAL_TARGETS`.
+
+    Parameters
+    ----------
+    settings (dict)
+        Full neural-modeling settings.
+
+    Returns
+    -------
+    target (str)
+        ``"manifold"`` or ``"multinomial"``.
+    """
+
+    target = settings["vocalization_settings"]["vocal_target"]
+    if target not in VOCAL_TARGETS:
+        msg = f"vocalization_settings.vocal_target must be one of {list(VOCAL_TARGETS)}; got {target!r}."
+        raise ValueError(msg)
+    return target
+
+
 def run_vocal_occurrence(unit: dict, events: dict, settings: dict, data_root: str, output_directory: str,
                          n_workers: int, message_output=print) -> dict:
     """
@@ -522,8 +562,9 @@ def run_vocal_occurrence(unit: dict, events: dict, settings: dict, data_root: st
     Vocal occurrence for one unit: does its count distinguish the window around a USV's onset from
     silence, in a way that transfers across sessions? Written as its own section.
 
-    The statistic is the leave-one-session-out transfer logistic, tested against circular shifts of
-    the spike train that recount both classes.
+    The statistic is the held-out, class-balanced gain of a two-class Bayesian decoder (peri-onset
+    window against quiet tile, equal prior), tested against circular shifts of the spike train that
+    recount both classes and refit.
 
     Parameters
     ----------
@@ -550,32 +591,33 @@ def run_vocal_occurrence(unit: dict, events: dict, settings: dict, data_root: st
 
     axis = settings["vocal_decoding"]["vocal_occurrence"]
     windows = events["occurrence_windows"]
+    crossfit_blocks = int(settings["kinematic_encoding"]["calibration"]["n_blocks"])
+    folds = occurrence_context(windows["labels"], windows["session_index"], windows["edges"],
+                               int(settings["data_sufficiency"]["single_session_blocks"]))
     occurrence = vocal_occurrence_statistic(windows["counts"], windows["labels"], windows["session_index"],
-                                            axis["ridge_frac"], axis["sigma_floor"],
-                                            axis["solver"]["irls_n_steps"], axis["solver"]["calibration_steps"])
+                                            windows["edges"], folds, axis, crossfit_blocks)
     state = {"occurrence_windows": windows, "spike_seconds": session_spike_seconds(events, data_root, unit),
              "durations": session_durations(events), "seed": int(settings["null"]["shuffle_seed"]),
-             "guard_seconds": settings["null"]["shuffle_guard_seconds"], "ridge_fraction": axis["ridge_frac"],
-             "sigma_floor": axis["sigma_floor"], "irls_steps": axis["solver"]["irls_n_steps"],
-             "calibration_steps": axis["solver"]["calibration_steps"]}
+             "guard_seconds": settings["null"]["shuffle_guard_seconds"], "folds": folds, "axis": axis,
+             "crossfit_blocks": crossfit_blocks}
     with spawn_pool(n_workers, state) as pool:
         draw_more = parallel_draw_more(pool, vocal_occurrence_null_chunk, n_workers)
         null = draw_more(settings["null"]["n_shuffles"])
-        p_value, at_floor, null = escalated_empirical_pvalue(occurrence["nats_per_window"], draw_more,
+        p_value, at_floor, null = escalated_empirical_pvalue(occurrence["gain"], draw_more,
                                                              settings["significance"]["escalation_ladder"],
                                                              null, message_output)
     # Sensitivity beside the discrimination: whether a unit fires weakly on most USVs or strongly on
     # a few, which the averaged statistic and AUROC cannot tell apart.
     vocal_rows = windows["labels"] > 0.5
     occurrence.update({"null": null, "p": p_value, "at_floor": at_floor, "n_shuffles": int(null.size),
-                       "z": null_z(occurrence["nats_per_window"], null),
+                       "z": null_z(occurrence["gain"], null),
                        "fraction_vocal_windows_with_spike":
                            float(np.mean(windows["counts"][vocal_rows] > 0)),
                        "fraction_quiet_windows_with_spike":
                            float(np.mean(windows["counts"][~vocal_rows] > 0)),
                        "median_spikes_per_vocal_window":
                            float(np.median(windows["counts"][vocal_rows]))})
-    message_output(f"  VOCAL OCCURRENCE  nats {occurrence['nats_per_window']:+.6f} "
+    message_output(f"  VOCAL OCCURRENCE  gain {occurrence['gain']:+.6f} "
                    f"| AUROC {occurrence['auroc']:.3f} | z {occurrence['z']:+.1f} | p {p_value:.4e}"
                    f"{' (at floor)' if at_floor else ''} | {null.size:,} draws")
     write_unit_section(output_directory, unit, "vocal_occurrence", occurrence, settings)
@@ -588,11 +630,16 @@ def run_vocalization_identity(unit: dict, events: dict, settings: dict, output_d
     """
     Description
     -----------
-    Vocalization identity for one unit: does its count carry information about which USV it is, as a
-    position on the vocal manifold? Written as its own section.
+    Vocalization identity for one unit: does its count carry information about which USV it is? Written
+    as its own section.
 
-    The statistic is the held-out prior-corrected decode gain, tested against the exact within-session
-    position permutation.
+    ``vocalization_settings.vocal_target`` picks what is decoded: ``"manifold"``, the USV's position on
+    the torus (the Poisson tuning-surface decoder), or ``"multinomial"``, its acoustic category (one
+    Poisson rate per category). The setting is shared with the nested decoding's behaviour control, so
+    the neuron is tested on the target the behavioural model predicts. Either way the statistic is the
+    held-out prior-corrected decode gain in nats per event, tested against the exact within-session
+    permutation of the target, and the categorical arm uses
+    ``discrimination_null.n_permutations_category_grain`` draws.
 
     Parameters
     ----------
@@ -616,21 +663,46 @@ def run_vocalization_identity(unit: dict, events: dict, settings: dict, output_d
     """
 
     decoding = settings["vocal_decoding"]
+    target = vocal_target(settings)
     period = settings["vocalization_settings"]["torus_period"]
-    folds = decoding_context(events["positions"], events["session_index"], decoding, period)
-    identity = decode_gain(events["counts"], folds, decoding, with_detail=True)
-    state = {"counts": events["counts"], "folds": folds, "decoding": decoding,
-             "session_index": events["session_index"], "seed": int(settings["null"]["shuffle_seed"])}
+    single_session_blocks = int(settings["data_sufficiency"]["single_session_blocks"])
+    if target == "multinomial":
+        # Events without a category label are dropped here and counted, as the torus decoder drops
+        # events in masked cells.
+        codes, kept, values = category_codes(events["category_labels"])
+        counts = np.asarray(events["counts"], dtype=np.float64)[kept]
+        session_index = np.asarray(events["session_index"])[kept]
+        folds = category_context(codes, session_index, np.asarray(events["vocalization_start"])[kept],
+                                 single_session_blocks)
+        identity = category_gain(counts, codes, folds, decoding, with_detail=True)
+        identity.update({"categories": values.tolist(), "n_unlabelled": int((~kept).sum())})
+        n_draws = decoding["discrimination_null"]["n_permutations_category_grain"]
+        state = {"target": target, "counts": counts, "labels": codes, "folds": folds, "decoding": decoding,
+                 "session_index": session_index, "seed": int(settings["null"]["shuffle_seed"])}
+    else:
+        counts, session_index = events["counts"], events["session_index"]
+        folds = decoding_context(events["positions"], session_index, decoding, period, events["vocalization_start"],
+                                 single_session_blocks)
+        identity = decode_gain(counts, folds, decoding, with_detail=True)
+        n_draws = decoding["discrimination_null"]["n_permutations"]
+        state = {"target": target, "counts": counts, "folds": folds, "decoding": decoding,
+                 "session_index": session_index, "seed": int(settings["null"]["shuffle_seed"])}
     with spawn_pool(n_workers, state) as pool:
         draw_more = parallel_draw_more(pool, vocalization_identity_null_chunk, n_workers)
-        null = draw_more(decoding["discrimination_null"]["n_permutations"])
+        null = draw_more(n_draws)
         p_value, at_floor, null = escalated_empirical_pvalue(identity["gain"], draw_more,
                                                              settings["significance"]["escalation_ladder"],
                                                              null, message_output)
-    identity.update(flagged_descriptors(events["counts"], events["positions"], events["session_index"],
-                                        decoding, period, identity["gain"], null))
+    if target == "multinomial":
+        if decoding["discrimination_null"]["record_left_tail_anti_alignment"]:
+            identity.update(left_tail_anti_alignment(null, identity["gain"]))
+    else:
+        identity.update(flagged_descriptors(counts, events["positions"], session_index, decoding, period,
+                                            identity["gain"], null, events["vocalization_start"],
+                                            single_session_blocks))
+    identity["target"] = target
     identity = vocalization_identity_payload(identity, null, p_value, at_floor, events)
-    message_output(f"  VOCALIZATION IDENTITY  gain {identity['gain']:+.5f} | z {identity['z']:+.1f} "
+    message_output(f"  VOCALIZATION IDENTITY ({target})  gain {identity['gain']:+.5f} | z {identity['z']:+.1f} "
                    f"| p {p_value:.4e}{' (at floor)' if at_floor else ''} | {null.size:,} draws")
     write_unit_section(output_directory, unit, "vocalization_identity", identity, settings)
     message_output(f"    wrote [vocalization_identity] for {unit['unit_uid']}")
@@ -700,7 +772,9 @@ def run_nested_vocal_manifold_position_decoding(unit: dict, events: dict, settin
     decoding = settings["vocal_decoding"]
     counts = np.asarray(events["counts"], dtype=np.float64)[design["kept"]]
     folds = decoding_context(design["positions"], design["session_index"], decoding,
-                             settings["vocalization_settings"]["torus_period"])
+                             settings["vocalization_settings"]["torus_period"],
+                             np.asarray(events["vocalization_start"])[design["kept"]],
+                             int(settings["data_sufficiency"]["single_session_blocks"]))
     kappas, priors = behaviour_priors(folds, design["behaviour_control"]["predicted_positions"],
                                       design["positions"], nested)
     posterior = posterior_nested_gain(counts, folds, decoding, priors, kappas, with_detail=True)
@@ -872,7 +946,9 @@ def run_vocal(unit: dict, settings: dict, data_root: str, output_directory: str,
     The USV-grain event set is assembled once and shared by occurrence, identity and the nested
     decoding. Vocal gating uses the occurrence and identity p-values computed in this job, or reads
     them from the unit's result file, and refuses to run if one is missing or was computed from too
-    few draws to clear the activation threshold. Categorical decoding is not run here.
+    few draws to clear the activation threshold. Identity decodes the target set by
+    ``vocalization_settings.vocal_target``; the nested decoding is built for the manifold target only and
+    is refused under the multinomial one.
 
     A unit with fewer vocal sessions (or blocks) than ``data_sufficiency.min_vocal_sessions`` cannot be
     tested on the vocal side: every analysis here holds out a vocal session, and with one there is
@@ -905,6 +981,12 @@ def run_vocal(unit: dict, settings: dict, data_root: str, output_directory: str,
     unknown = sorted(set(steps) - set(VOCAL_STEPS))
     if unknown:
         msg = f"unknown vocal step(s) {unknown}; choose from {list(VOCAL_STEPS)}"
+        raise ValueError(msg)
+    # Refused before anything is fitted, so a run never writes some sections and then stops.
+    if vocal_target(settings) == "multinomial" and "nested_vocal_manifold_position_decoding" in steps:
+        msg = ("the nested decoding has no multinomial behaviour control yet; with "
+               "vocalization_settings.vocal_target = 'multinomial', leave "
+               "nested_vocal_manifold_position_decoding out of the steps")
         raise ValueError(msg)
     n_vocal_sessions = len(unit["vocal_sessions"])
     if n_vocal_sessions < int(settings["data_sufficiency"]["min_vocal_sessions"]):
