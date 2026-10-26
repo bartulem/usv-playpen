@@ -20,6 +20,11 @@ recorded mouse, skipped sessions without track names, and the slot and column-se
 per-session assembly (quiet frames, spike frames and imputed feature rows lined up exactly, under both
 ``clean_against`` settings). The vocal-event assembler's uncapped tile path is checked against the
 tiler it wraps.
+
+The block split for one-session units: equal-duration windows with the gap cut only at inner
+boundaries, block identifiers mapping back to their session, every block sharing the session's arrays
+with its quiet anchors clipped, vocal events and tiles falling inside their own block, and transfer
+vocalizations kept only when wholly inside the block.
 """
 
 from __future__ import annotations
@@ -43,13 +48,18 @@ from usv_playpen.neural_modeling.main_neural_encoding_dispatcher import (
 from usv_playpen.neural_modeling.neural_design_assembly import (
     assemble_unit_sessions,
     assemble_unit_vocal_events,
+    block_window_frames,
     build_zscored_feature_frames,
     clean_window_mask,
     emitter_names,
+    frames_in_window,
     load_session_usvs,
     load_unit_spike_frames,
     quiet_anchor_frames,
+    session_block_ids,
     session_timebase,
+    session_window,
+    source_session,
 )
 from usv_playpen.neural_modeling.neural_vocal_occurrence import (
     counts_in_windows,
@@ -590,7 +600,7 @@ class TestSettingsInvariants:
         of 0.70 -- three times the cohort's strongest tuned unit."""
         assert set(_load_settings()["data_sufficiency"]) == {
             "min_courtship_sessions", "min_emitter_usvs_per_session", "min_vocal_sessions",
-            "min_decoding_spikes", "single_session_inner_split_blocks"}
+            "min_decoding_spikes", "single_session_blocks"}
 
     def test_the_session_gate_is_named_for_the_emitter_it_follows(self):
         """The gate counts USVs from whoever `vocalization_settings.vocal_emitter` names, so a name
@@ -1567,3 +1577,136 @@ class TestAssembleUnitSessions:
             np.testing.assert_array_equal(
                 per_session[session_id]["quiet"], expected_quiet
             )
+
+
+class TestBlocks:
+    """A unit recorded in one session is tested on contiguous blocks of it, each standing in for a session.
+    The blocks are cut once, by duration, and every assembler must clip to the same windows, so nothing a
+    model is fitted on in one block is scored in another."""
+
+    UNIT = "imec0_cl0001_ch001_good"
+    SESSION = "20250101_000000"
+    FPS, N_FRAMES = 150.0, 150_000          # 1000 s, so five 200 s blocks, 2 s cut either side of a boundary
+    USVS: ClassVar[list] = [(10.0, 10.1, "male", 0.1, 0.2), (199.0, 199.1, "male", 0.2, 0.3),
+                            (250.0, 250.1, "male", 0.3, 0.4), (990.0, 990.1, "male", 0.4, 0.5)]
+
+    def _unit(self) -> dict:
+        """
+        Description
+        -----------
+        The record of a unit recorded only in ``SESSION``, tested on five blocks of it.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        unit (dict)
+            ``unit_id``, ``mouse_id``, ``block_split`` and both session sets as block identifiers.
+        """
+        blocks = session_block_ids(self.SESSION, 5)
+        return {"unit_id": self.UNIT, "mouse_id": "male", "block_split": {"n_blocks": 5},
+                "courtship_sessions": blocks, "vocal_sessions": blocks}
+
+    def test_windows_are_equal_duration_with_the_gap_cut_at_inner_boundaries_only(self):
+        """Five 200-frame stretches with 20 frames (2 s at 10 fps) cut either side of each inner boundary;
+        the session's own start and end are kept."""
+        assert block_window_frames(1000, 10.0, 5, 4.0) == [(0, 180), (220, 380), (420, 580), (620, 780),
+                                                          (820, 1000)]
+
+    def test_a_session_covers_itself_and_a_block_its_window(self):
+        """A session identifier spans the whole session; a block identifier its own window, and both map
+        back to the session on disk."""
+        unit = self._unit()
+        assert session_window(unit, self.SESSION, 1000, 10.0, 4.0) == (0, 1000)
+        assert session_window(unit, f"{self.SESSION}#block2", 1000, 10.0, 4.0) == (420, 580)
+        assert source_session(f"{self.SESSION}#block2") == self.SESSION
+        assert source_session(self.SESSION) == self.SESSION
+
+    def test_a_block_identifier_on_a_unit_without_a_block_split_raises(self):
+        """A block identifier reaching a unit tested across sessions is a bookkeeping error, not a window."""
+        with pytest.raises(ValueError, match="no block split"):
+            session_window({"block_split": None}, f"{self.SESSION}#block0", 1000, 10.0, 4.0)
+
+    def test_frames_in_window_is_half_open(self):
+        """The low bound is kept and the high bound is not."""
+        np.testing.assert_array_equal(frames_in_window(np.array([9, 10, 15, 20, 21]), (10, 20)), [10, 15])
+
+    def test_every_block_shares_the_session_and_clips_its_quiet_anchors(self, tmp_path, monkeypatch):
+        """The session is loaded once; each block carries its arrays whole (a history and a circular shift
+        both reach past the window) and only the quiet anchors inside its window."""
+        _write_session(tmp_path, self.SESSION, self.UNIT, n_frames=self.N_FRAMES, frame_rate=self.FPS,
+                       usvs=[(500.0, 500.1, "male", 0.1, 0.2)], spike_seconds=np.array([100.0, 700.0]))
+        requested = {}
+
+        def _features(session_dirs, **_kwargs):
+            """
+            Description
+            -----------
+            Stand-in for ``build_zscored_feature_frames``: records the requested directories and returns
+            one all-zero feature column for ``SESSION``.
+
+            Parameters
+            ----------
+            session_dirs (list[str])
+                Session directories the assembler asked for.
+            **_kwargs (dict)
+                Remaining keyword arguments, unused.
+
+            Returns
+            -------
+            frames (tuple[dict, dict, dict, dict])
+                Features, frame rates, track names and (empty) suffixes, as the real loader returns them.
+            """
+            requested["dirs"] = list(session_dirs)
+            frame = pls.DataFrame({"f0": np.zeros(self.N_FRAMES)})
+            return {self.SESSION: frame}, {self.SESSION: self.FPS}, {self.SESSION: ["male", "female"]}, {}
+
+        monkeypatch.setattr(
+            "usv_playpen.neural_modeling.neural_design_assembly.build_zscored_feature_frames", _features)
+        per_session = assemble_unit_sessions(self._unit(), str(tmp_path), {}, 4.0, 2.0, "all", VOCAL_SETTINGS)
+        assert requested["dirs"] == [f"{tmp_path}/{self.SESSION}"]
+        assert list(per_session) == session_block_ids(self.SESSION, 5)
+        whole = quiet_anchor_frames(np.array([500.0]), np.array([500.1]), self.N_FRAMES, self.FPS, 4.0, 2.0)
+        windows = block_window_frames(self.N_FRAMES, self.FPS, 5, 4.0)
+        for block_id, window in zip(per_session, windows, strict=True):
+            entry = per_session[block_id]
+            assert entry["window"] == window
+            np.testing.assert_array_equal(entry["quiet"], frames_in_window(whole, window))
+            assert entry["n_frames"] == self.N_FRAMES
+        assert (per_session[f"{self.SESSION}#block0"]["spike_frames"]
+                is per_session[f"{self.SESSION}#block4"]["spike_frames"])
+
+    def test_vocal_events_and_tiles_fall_inside_their_block(self, tmp_path):
+        """A USV belongs to the block its onset lies in, a USV in the gap around a boundary to none, every
+        quiet tile lies wholly inside its block, and the shift still wraps over the whole session."""
+        _write_session(tmp_path, self.SESSION, self.UNIT, n_frames=self.N_FRAMES, frame_rate=self.FPS,
+                       usvs=self.USVS, spike_seconds=np.array([10.01, 250.02, 250.03, 990.0]))
+        events = assemble_unit_vocal_events(self._unit(), str(tmp_path), _load_settings(), 0.05, 0.10)
+        assert events["session_ids"] == session_block_ids(self.SESSION, 5)
+        np.testing.assert_array_equal(events["vocalization_start"], [10.0, 250.0, 990.0])
+        np.testing.assert_array_equal(events["session_index"], [0, 1, 4])
+        np.testing.assert_array_equal(events["counts"], [1, 2, 1])
+        windows = events["occurrence_windows"]
+        tiles = windows["labels"] == 0
+        for slot, block_id in enumerate(events["session_ids"]):
+            low, high = events["per_session"][block_id]["window_seconds"]
+            edges = windows["edges"][tiles & (windows["session_index"] == slot)]
+            assert edges.size > 0
+            assert (edges >= low).all()
+            assert (edges + 0.10 <= high).all()
+            assert events["per_session"][block_id]["duration_seconds"] == pytest.approx(1000.0)
+
+    def test_transfer_vocalizations_are_those_wholly_inside_the_block(self, tmp_path):
+        """The block keeps only its own USV, and that USV's silent gap is still measured to the session's
+        previous USV, which lies in the gap before the block."""
+        _write_session(tmp_path, self.SESSION, self.UNIT, n_frames=self.N_FRAMES, frame_rate=self.FPS,
+                       usvs=self.USVS, spike_seconds=np.array([10.01]))
+        session = {"n_frames": self.N_FRAMES, "track_names": ["male", "female"],
+                   "window": block_window_frames(self.N_FRAMES, self.FPS, 5, 4.0)[1]}
+        frames, pointer, gaps = focal_vocal_frames(session, f"{self.SESSION}#block1", str(tmp_path), "male",
+                                                   self.FPS, 600, VOCAL_SETTINGS)
+        assert gaps.size == 1
+        assert frames[pointer[0]] == int(250.0 * self.FPS)
+        assert gaps[0] == pytest.approx(250.0 - 199.1)

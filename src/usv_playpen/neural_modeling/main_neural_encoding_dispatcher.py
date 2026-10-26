@@ -41,13 +41,16 @@ from .kinematic_encoding import (
     spike_triggered_average,
 )
 from .neural_artifacts import write_unit_section
-from .neural_cohort import emitter_usv_counts
+from .neural_cohort import block_usv_counts, focal_usv_onsets, unit_session_sets
 from .neural_design_assembly import (
+    BLOCK_TAG,
     assemble_unit_sessions,
     emitter_names,
     filter_vocalizations,
+    frames_in_window,
     load_session_usvs,
     silent_gap_before_vocalization,
+    source_session,
     spike_labels_at_frames,
     vocal_span_frames,
 )
@@ -115,14 +118,16 @@ def focal_vocal_frames(session: dict, session_id: str, data_root: str, mouse_id:
     follow the same animal.
 
     Every focal vocalization is kept: the clean-history rule that defines quiet anchors would keep almost
-    nothing inside a bout, and only bout-initial USVs.
+    nothing inside a bout, and only bout-initial USVs. For a block, only the vocalizations lying wholly in
+    the block's window are kept; their silent gaps are still measured against the session's previous
+    vocalization.
 
     Parameters
     ----------
     session (dict)
-        The session's assembled data; ``n_frames`` and ``track_names`` are read.
+        The session's assembled data; ``n_frames``, ``track_names`` and ``window`` are read.
     session_id (str)
-        Session directory basename.
+        Session directory basename or block identifier.
     data_root (str)
         The ``Data`` root.
     mouse_id (str)
@@ -147,7 +152,7 @@ def focal_vocal_frames(session: dict, session_id: str, data_root: str, mouse_id:
 
     # Match emitter labels exactly, as the assembler does: a bare mouse id is a prefix of the same
     # animal's suffixed form, so substring matching is fragile.
-    usv_table = filter_vocalizations(load_session_usvs(data_root, session_id), vocal_settings,
+    usv_table = filter_vocalizations(load_session_usvs(data_root, source_session(session_id)), vocal_settings,
                                      "analysed")
     focal_names = emitter_names(session["track_names"], mouse_id, vocal_settings["vocal_emitter"])
     focal_vocalizations = (usv_table.filter(usv_table["emitter"].is_in(focal_names)) if focal_names
@@ -158,8 +163,13 @@ def focal_vocal_frames(session: dict, session_id: str, data_root: str, mouse_id:
     order = np.argsort(focal_vocalizations["start"].to_numpy())
     starts = focal_vocalizations["start"].to_numpy()[order]
     stops = focal_vocalizations["stop"].to_numpy()[order]
+    gaps = silent_gap_before_vocalization(starts, stops)
+    if BLOCK_TAG in session_id:
+        low, high = session["window"]
+        inside = (starts >= low / fps) & (stops < high / fps)
+        starts, stops, gaps = starts[inside], stops[inside], gaps[inside]
     kept, frames, pointer = vocal_span_frames(starts, stops, fps, session["n_frames"], n_lags)
-    return frames, pointer, silent_gap_before_vocalization(starts, stops)[kept]
+    return frames, pointer, gaps[kept]
 
 
 def write_fold_artifact(artifact: dict, unit: dict, fold_index: int, output_directory: str,
@@ -259,8 +269,9 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
     transfer_settings = settings["kinematic_encoding"]["transfer"]
     vocal_frames, pointer, gaps = focal_vocal_frames(session, test_id, data_root, unit["mouse_id"],
                                                      fps, n_lags, settings["vocalization_settings"])
-    vocal_frames = transfer_frames(vocal_frames, pointer, fps, session["n_frames"], n_lags, session["quiet"],
-                                   transfer_settings)
+    # Clipped to the window: a bout window reaches back before a block's first vocalization.
+    vocal_frames = frames_in_window(transfer_frames(vocal_frames, pointer, fps, session["n_frames"], n_lags,
+                                                    session["quiet"], transfer_settings), session["window"])
 
     inner_sessions, inner_ids = per_session, pool_ids
     if len(pool_ids) == 1:
@@ -269,7 +280,7 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
         # frame's lags reach a training block. The final model is still fitted on the whole session.
         required_gap = float(encoding["history_pre_seconds"])
         blocks = quiet_block_sessions(per_session[pool_ids[0]], pool_ids[0],
-                                      settings["data_sufficiency"]["single_session_inner_split_blocks"],
+                                      settings["data_sufficiency"]["single_session_blocks"],
                                       int(np.ceil(required_gap * fps / 2.0)))
         if len(blocks) < 2:
             message_output(f"    NO MODEL: {pool_ids[0]} yields {len(blocks)} usable quiet blocks")
@@ -355,8 +366,9 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
         other_frames, other_pointer, other_gaps = focal_vocal_frames(
             per_session[other_id], other_id, data_root, unit["mouse_id"], fps, n_lags,
             settings["vocalization_settings"])
-        other_frames = transfer_frames(other_frames, other_pointer, fps, per_session[other_id]["n_frames"],
-                                       n_lags, per_session[other_id]["quiet"], transfer_settings)
+        other_frames = frames_in_window(
+            transfer_frames(other_frames, other_pointer, fps, per_session[other_id]["n_frames"], n_lags,
+                            per_session[other_id]["quiet"], transfer_settings), per_session[other_id]["window"])
         scored = score_fold(estimator, per_session[other_id], selected, other_frames, n_lags,
                             base_rate, encoding, linear_predictor_at_frames, transfer_settings)
         scored["session_id"] = other_id
@@ -396,9 +408,14 @@ def representative_fold(artifacts: list) -> int:
     -----------
     Pick the fold whose model represents the unit: the median by held-out quiet D2.
 
-    With an even number of model folds, the two middle folds are equidistant from the median, so the one
-    whose held-out session has more transfer frames is taken. The choice uses only quiet scores and frame
-    counts, never a vocal score.
+    Only folds with a model AND a finite quiet score take part. A held-out session (or block) with no
+    quiet spikes has an undefined D2, which the scorer returns as NaN; such a fold cannot be ranked, and
+    sorting with a NaN key gives an arbitrary order, so it is left out rather than allowed to land in the
+    middle.
+
+    With an even number of rankable folds, the two middle folds are equidistant from the median, so the
+    one whose held-out session has more transfer frames is taken. The choice uses only quiet scores and
+    frame counts, never a vocal score.
 
     Parameters
     ----------
@@ -408,10 +425,12 @@ def representative_fold(artifacts: list) -> int:
     Returns
     -------
     fold_index (int)
-        Index into ``artifacts`` of the representative fold, or ``-1`` when none has a model.
+        Index into ``artifacts`` of the representative fold, or ``-1`` when no fold has both a model and
+        a finite quiet score.
     """
 
-    usable = [index for index, a in enumerate(artifacts) if not bool(a["no_model"])]
+    usable = [index for index, a in enumerate(artifacts)
+              if not bool(a["no_model"]) and np.isfinite(float(a["quiet_score"]))]
     if not usable:
         return -1
     ordered = sorted(usable, key=lambda index: float(artifacts[index]["quiet_score"]))
@@ -531,8 +550,10 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
     n_lags = int(np.floor(encoding["history_pre_seconds"] * fps))
     feature_names = list(per_session[sessions[0]]["feature_names"])
 
-    # Held-out session: never the sparsest train; among the rest, the most quiet anchors.
-    spike_counts = {name: int(per_session[name]["spike_frames"].size) for name in sessions}
+    # Held-out session: never the sparsest train; among the rest, the most quiet anchors. Spikes are
+    # counted in each window, since the blocks of one session share its whole train.
+    spike_counts = {name: int(frames_in_window(per_session[name]["spike_frames"], per_session[name]["window"]).size)
+                    for name in sessions}
     sparsest = min(sessions, key=lambda name: spike_counts[name])
     candidates = [name for name in sessions if name != sparsest] or list(sessions)
     held_out = max(candidates, key=lambda name: per_session[name]["quiet"].size)
@@ -549,7 +570,7 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
         required_gap = float(encoding["history_pre_seconds"])
         gap_frames = int(np.ceil(required_gap * fps / 2.0))
         blocks = quiet_block_sessions(per_session[fit_ids[0]], fit_ids[0],
-                                      settings["data_sufficiency"]["single_session_inner_split_blocks"],
+                                      settings["data_sufficiency"]["single_session_blocks"],
                                       gap_frames)
         if len(blocks) < 2:
             message_output(f"    NO MODEL: {fit_ids[0]} yields {len(blocks)} usable quiet blocks")
@@ -622,8 +643,9 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
         frames, pointer, gaps = focal_vocal_frames(per_session[session_id], session_id, data_root,
                                                    unit["mouse_id"], fps, n_lags,
                                                    settings["vocalization_settings"])
-        frames = transfer_frames(frames, pointer, fps, per_session[session_id]["n_frames"], n_lags,
-                                 per_session[session_id]["quiet"], transfer_settings)
+        frames = frames_in_window(transfer_frames(frames, pointer, fps, per_session[session_id]["n_frames"], n_lags,
+                                                  per_session[session_id]["quiet"], transfer_settings),
+                                  per_session[session_id]["window"])
         vocal_frames_by_session[session_id] = frames
         result = score_fold(estimator, per_session[session_id], selected, frames, n_lags, base_rate,
                             encoding, linear_predictor_at_frames, transfer_settings)
@@ -663,6 +685,7 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
                 "transfer_grain": transfer["grain"], "transfer_universe": transfer["universe"],
                 "transfer_leave_one_session_out": transfer["leave_one_session_out"],
                 "transfer_min_leave_one_session_out": transfer["min_leave_one_session_out"],
+                "transfer_left_out_sessions": transfer["left_out_sessions"],
                 "n_vocal_frames": transfer["n_frames"], "final_fit_converged": final_converged,
                 # the fitted filter itself, feature-major with n_lags weights per feature, so a scorer
                 # can carry this exact model to another universe without refitting it
@@ -672,6 +695,40 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
     written = write_unit_section(output_directory, unit, "kinematic_encoding", artifact, settings)
     message_output(f"    wrote {written.name} [kinematic_encoding, single-split]")
     return artifact
+
+def spike_counts_per_session(per_session: dict) -> dict:
+    """
+    Description
+    -----------
+    How many spikes the unit fired in each of its sessions (or blocks), overall and at quiet anchors.
+
+    Stored with every unit so a unit that is silent for part of its recording -- a neuron the probe held
+    for only part of a session, say -- is visible from the result file without reloading spikes. Spikes
+    are counted inside the session's window, which for a block is the block's span and otherwise the
+    whole session.
+
+    Parameters
+    ----------
+    per_session (dict)
+        The assembled sessions, as :func:`assemble_unit_sessions` returns them.
+
+    Returns
+    -------
+    counts (dict)
+        ``{session_id: {"spikes": int, "quiet_spikes": int, "seconds": float}}``, where ``seconds`` is the
+        window's duration.
+    """
+
+    counts = {}
+    for session_id, session in per_session.items():
+        low, high = session["window"]
+        spikes = np.asarray(session["spike_frames"], dtype=np.int64)
+        quiet_labels = spike_labels_at_frames(session["spike_frames"], session["quiet"], session["n_frames"])
+        counts[session_id] = {"spikes": int(np.sum((spikes >= low) & (spikes < high))),
+                              "quiet_spikes": int(np.sum(quiet_labels)),
+                              "seconds": float((high - low) / session["fps"])}
+    return counts
+
 
 def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
             message_output=print) -> dict:
@@ -734,6 +791,7 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
     fps = per_session[sessions[0]]["fps"]
     n_lags = int(np.floor(encoding["history_pre_seconds"] * fps))
     feature_names = list(per_session[sessions[0]]["feature_names"])
+    spike_counts = spike_counts_per_session(per_session)
 
     fold_results, vocal_frames_by_session, scored_ids = [], {}, []
     for artifact in artifacts:
@@ -753,7 +811,8 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
         message_output("no fold produced a model; unit fails at the screen")
         # Written, not only returned: quiet p 1.0, transfer p NaN and no_model, with the per-fold
         # screen tables, so an untuned unit is never a missing value in the cohort table.
-        result = {"unit_id": unit["unit_id"], "no_model": True, "quiet_p": 1.0, "transfer_p": np.nan,
+        result = {"unit_id": unit["unit_id"], "no_model": True, "no_scoreable_fold": False,
+                  "quiet_p": 1.0, "transfer_p": np.nan, "spike_counts_per_session": spike_counts,
                   "n_lags": n_lags, "fps": fps, **per_fold_roster(artifacts, n_lags)}
         written = write_unit_section(output_directory, unit, "kinematic_encoding", result, settings)
         message_output(f"    wrote {written.name} [kinematic_encoding, no model]")
@@ -763,6 +822,19 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
     # Both halves describe the representative fold's model; the fold-average quiet score is a
     # descriptor only.
     chosen = representative_fold(artifacts)
+    if chosen < 0:
+        message_output("every fold with a model scored a NaN quiet D2 (no quiet spikes in its held-out "
+                       "session); the unit cannot be scored")
+        # Written with both p-values NaN, not 1.0: the unit was not tested, which is different from
+        # being tested and failing.
+        result = {"unit_id": unit["unit_id"], "no_model": screened_only,
+                  "best_screened_only": screened_only, "no_scoreable_fold": True,
+                  "quiet_p": np.nan, "transfer_p": np.nan, "spike_counts_per_session": spike_counts,
+                  "n_lags": n_lags, "fps": fps,
+                  **per_fold_roster(artifacts, n_lags)}
+        written = write_unit_section(output_directory, unit, "kinematic_encoding", result, settings)
+        message_output(f"    wrote {written.name} [kinematic_encoding, no scoreable fold]")
+        return result
     chosen_artifact = artifacts[chosen]
     quiet_score = float(chosen_artifact["quiet_score"])
     quiet_p = float(chosen_artifact["quiet_p"])
@@ -826,7 +898,8 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
            if representative_features else None)
 
     result = {"unit_id": unit["unit_id"], "no_model": screened_only,
-              "best_screened_only": screened_only,
+              "best_screened_only": screened_only, "no_scoreable_fold": False,
+              "spike_counts_per_session": spike_counts,
               "quiet_score": quiet_score, "quiet_slope": float(chosen_artifact["quiet_slope"]),
               "quiet_p": quiet_p, "quiet_at_floor": quiet_at_floor, "quiet_null": quiet_null,
               "quiet_score_fold_average": quiet_mean_across_folds,
@@ -837,6 +910,7 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
               "transfer_grain": transfer["grain"], "transfer_universe": transfer["universe"],
               "transfer_leave_one_session_out": transfer["leave_one_session_out"],
               "transfer_min_leave_one_session_out": transfer["min_leave_one_session_out"],
+              "transfer_left_out_sessions": transfer["left_out_sessions"],
               "transfer_per_session": fold_results, "transfer_session_ids": scored_ids,
               "n_lags": n_lags, "fps": fps,
               "representative_fold": int(chosen_artifact["fold_index"]),
@@ -865,8 +939,9 @@ def build_unit_record(unit_id: str, mouse_id: str, rec_date: int, sessions: list
     counts the vocal gate was applied on.
 
     Every dispatcher uses this one builder, because each section write stamps the record into the
-    unit's file as its ``identity`` block. The vocal session set is derived here with the cohort
-    builder's gate, and governs only what is scored on vocalizations.
+    unit's file as its ``identity`` block. The session sets come from the cohort builder's own
+    :func:`neural_cohort.unit_session_sets`, so a unit recorded in one session is split into the same
+    blocks, with the same vocal gate per block, as in the manifest.
 
     Parameters
     ----------
@@ -887,17 +962,20 @@ def build_unit_record(unit_id: str, mouse_id: str, rec_date: int, sessions: list
     -------
     unit (dict)
         ``unit_uid``, ``mouse_id``, ``rec_date``, ``unit_id``, ``courtship_sessions``, ``vocal_sessions``
-        and ``emitter_usvs_per_session``.
+        (session or block identifiers), ``block_split`` and ``emitter_usvs_per_session``.
     """
 
-    counts = emitter_usv_counts(sessions, data_root, dict.fromkeys(sessions, mouse_id),
-                                settings["vocalization_settings"]["vocal_emitter"],
-                                settings["vocalization_settings"])
-    threshold = settings["data_sufficiency"]["min_emitter_usvs_per_session"]
+    sufficiency = settings["data_sufficiency"]
+    onsets = focal_usv_onsets(sessions, data_root, dict.fromkeys(sessions, mouse_id),
+                              settings["vocalization_settings"]["vocal_emitter"],
+                              settings["vocalization_settings"])
+    counts = {**{session_id: (0 if entry is None else int(entry[0].size)) for session_id, entry in onsets.items()},
+              **block_usv_counts(onsets, sufficiency["single_session_blocks"],
+                                 settings["kinematic_encoding"]["history_pre_seconds"])}
+    sets = unit_session_sets(list(sessions), counts, sufficiency["single_session_blocks"],
+                             sufficiency["min_emitter_usvs_per_session"])
     return {"unit_uid": f"{mouse_id}_{rec_date}_{unit_id}", "mouse_id": mouse_id,
-            "rec_date": rec_date, "unit_id": unit_id, "courtship_sessions": list(sessions),
-            "vocal_sessions": [s for s in sessions if counts[s] >= threshold],
-            "emitter_usvs_per_session": counts}
+            "rec_date": rec_date, "unit_id": unit_id, **sets}
 
 
 def dispatch(args: argparse.Namespace) -> int:

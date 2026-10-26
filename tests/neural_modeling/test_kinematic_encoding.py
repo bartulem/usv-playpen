@@ -613,7 +613,7 @@ class TestFitQuietModelCornerPaths:
         """
         encoding = _settings()["kinematic_encoding"]
         encoding["temporal_basis"]["type"] = "none"
-        encoding["significance_model"]["lambda_smooth"] = 10.0
+        encoding["raw_lag_penalties"]["lambda_smooth"] = 10.0
         return encoding
 
     def test_a_subsampling_correction_other_than_the_log_prior_offset_is_refused(self):
@@ -1525,7 +1525,7 @@ class TestFitQuietModelArithmetic:
         for lambda_group in (0.0, 0.05):
             if path == "raw":
                 encoding = TestFitQuietModelCornerPaths._raw_encoding()
-                encoding["significance_model"]["lambda_group"] = lambda_group
+                encoding["raw_lag_penalties"]["lambda_group"] = lambda_group
             else:
                 encoding = _settings()["kinematic_encoding"]
                 encoding["temporal_basis"]["lambda_group"] = lambda_group

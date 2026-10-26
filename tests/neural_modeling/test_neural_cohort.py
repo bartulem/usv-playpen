@@ -12,6 +12,10 @@ Also covered with hand-countable synthetic data: the session-to-mouse map read o
 per-session focal USV counts (analysed-set filtering, emitter resolution by name, and a missing file
 counting as zero), every unit-level filter's rejection path, and the end-to-end manifest built from a
 settings dict pointing at a synthetic data tree.
+
+Also the units recorded in one session: their USVs are counted per block by onset, the blocks take the
+place of sessions in both sets with the vocal floor applied per block, and the summary counts slots in
+blocks for them.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ from __future__ import annotations
 import copy
 import json
 import pathlib
+from typing import ClassVar
 
 import h5py
 import numpy as np
@@ -27,12 +32,14 @@ import pytest
 
 from usv_playpen.neural_modeling.neural_cohort import (
     _area_pass,
+    block_usv_counts,
     build_cohort_manifest,
     emitter_usv_counts,
     load_courtship_session_ids,
     recorded_mouse_by_session,
     select_cohort,
     summarize_cohort,
+    unit_session_sets,
 )
 
 SETTINGS_PATH = (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"
@@ -80,9 +87,9 @@ def _select(tmp_path, **overrides):
     """
     Description
     -----------
-    Runs ``select_cohort`` on the four-unit synthetic catalog with the shipped-like defaults (PAG,
-    include, good, somatic, two courtship sessions, 20 emitter USVs per session, two vocal sessions),
-    letting a test override any single keyword.
+    Runs ``select_cohort`` on the four-unit synthetic catalog with fixed defaults (PAG, include, good,
+    somatic, two courtship sessions, 20 emitter USVs per session, two vocal sessions, five blocks for a
+    one-session unit), letting a test override any single keyword.
 
     Parameters
     ----------
@@ -100,7 +107,7 @@ def _select(tmp_path, **overrides):
               "courtship_session_ids": {"s_rich", "s_rich2", "s_thin"},
               "brain_areas": ["PAG"], "area_mode": "include", "quality": ["good"],
               "somatic": "somatic", "min_courtship_sessions": 2, "emitter_counts": COUNTS,
-              "min_emitter_usvs_per_session": 20, "min_vocal_sessions": 2}
+              "min_emitter_usvs_per_session": 20, "min_vocal_sessions": 2, "single_session_blocks": 5}
     kwargs.update(overrides)
     return select_cohort(**kwargs)
 
@@ -205,12 +212,13 @@ class TestShippedSettings:
     """The data-sufficiency and kinematic-encoding keys of the shipped settings file."""
     def test_the_gate_keys_are_present_and_the_threshold_is_twenty(self):
         """The shipped settings must carry the three gate keys at 20 USVs per session, two vocal sessions and
-        two courtship sessions, so the cohort a run uses is the intended one."""
+        one courtship session (a one-session unit is tested on blocks), so the cohort a run uses is the
+        intended one."""
         with SETTINGS_PATH.open() as handle:
             sufficiency = json.load(handle)["data_sufficiency"]
         assert sufficiency["min_emitter_usvs_per_session"] == 20
         assert sufficiency["min_vocal_sessions"] == 2
-        assert sufficiency["min_courtship_sessions"] == 2
+        assert sufficiency["min_courtship_sessions"] == 1
 
     def test_the_block_split_gap_is_derived_not_configured(self):
         """A gap shorter than the predictor history leaks and is silently overridden; a longer one
@@ -218,7 +226,7 @@ class TestShippedSettings:
         with SETTINGS_PATH.open() as handle:
             settings = json.load(handle)
         assert "block_cv_gap_seconds" not in settings["data_sufficiency"]
-        assert settings["data_sufficiency"]["single_session_inner_split_blocks"] == 5
+        assert settings["data_sufficiency"]["single_session_blocks"] == 5
 
     def test_the_filter_band_knob_is_absent_until_the_band_is_built(self):
         """The reported filter band is a RESAMPLING of the representative model's quiet anchors with
@@ -494,9 +502,10 @@ class TestBuildCohortManifest:
         blank line) plus ``SESSION_ORPHAN``, which no catalog unit lists and which therefore has no recorded
         mouse and must not be counted. The catalog holds ``u1`` (good, somatic, PAG; A and B), ``u2`` (good,
         somatic, PAG; A only -- short of two courtship sessions), ``u3`` (MUA; A and B) and ``u4`` (VTA; A
-        and B). With the vocal floor overridden in a deep copy to 2 USVs per session, the manifest must be
-        exactly ``u1``, with both courtship sessions, the hand counts ``{A: 3, B: 1}`` (B's recorded male sits
-        in track slot 1), only A vocal-eligible, and therefore not vocal-testable at two vocal sessions.
+        and B). With the vocal floor overridden in a deep copy to 2 USVs per session and the courtship floor
+        to 2 sessions, the manifest must be exactly ``u1``, with both courtship sessions, the hand counts
+        ``{A: 3, B: 1}`` (B's recorded male sits in track slot 1), only A vocal-eligible, and therefore not
+        vocal-testable at two vocal sessions.
         The shipped settings dict itself must be left untouched.
 
         Parameters
@@ -530,6 +539,7 @@ class TestBuildCohortManifest:
         settings["data_roots"]["catalog_path"] = str(catalog)
         settings["data_roots"]["data_root"] = str(data_root)
         settings["data_sufficiency"]["min_emitter_usvs_per_session"] = 2
+        settings["data_sufficiency"]["min_courtship_sessions"] = 2
         settings["vocalization_settings"]["vocal_emitter"] = "self"
 
         manifest = build_cohort_manifest(settings)
@@ -541,3 +551,57 @@ class TestBuildCohortManifest:
         assert unit["vocal_testable"] is False
         assert unit["rec_date"] == 20250101
         assert shipped["data_sufficiency"]["min_emitter_usvs_per_session"] == 20
+
+
+class TestBlockUnits:
+    """A unit recorded in one courtship session has no session to hold out, so it is tested on blocks of
+    that session, and the blocks are its sessions in both sets."""
+
+    BLOCKS: ClassVar[list] = [f"s_rich#block{index}" for index in range(5)]
+
+    def test_block_counts_assign_each_usv_by_onset_and_drop_the_gaps(self):
+        """At 10 fps a 1000-frame session gives windows of [0, 18), [22, 38), ... seconds, so the USVs at
+        18.1 s and 21.0 s fall in the gap and count for no block; a session without files counts zero."""
+        onsets = {"s": (np.array([1.0, 17.9, 18.1, 21.0, 99.0]), 10.0, 1000), "gone": None}
+        counts = block_usv_counts(onsets, 5, 4.0)
+        assert [counts[f"s#block{index}"] for index in range(5)] == [2, 0, 0, 0, 1]
+        assert [counts[f"gone#block{index}"] for index in range(5)] == [0, 0, 0, 0, 0]
+
+    def test_a_one_session_unit_is_tested_on_blocks_with_a_per_block_vocal_floor(self):
+        """Every block is a courtship block; only the blocks reaching 20 USVs are vocal blocks."""
+        counts = {"s_rich": 100, **dict(zip(self.BLOCKS, [30, 5, 25, 0, 40], strict=True))}
+        sets = unit_session_sets(["s_rich"], counts, 5, 20)
+        assert sets["courtship_sessions"] == self.BLOCKS
+        assert sets["vocal_sessions"] == ["s_rich#block0", "s_rich#block2", "s_rich#block4"]
+        assert sets["block_split"] == {"n_blocks": 5}
+        assert sets["emitter_usvs_per_session"]["s_rich#block1"] == 5
+
+    def test_a_unit_with_two_sessions_is_tested_across_them(self):
+        """Two sessions are used as they are, with no block split."""
+        sets = unit_session_sets(["a", "b"], {"a": 30, "b": 5}, 5, 20)
+        assert sets == {"courtship_sessions": ["a", "b"], "vocal_sessions": ["a"], "block_split": None,
+                        "emitter_usvs_per_session": {"a": 30, "b": 5}}
+
+    def test_select_cohort_tests_a_one_session_unit_on_blocks(self, tmp_path):
+        """With the courtship floor at one session, a one-session unit enters with its blocks as its sessions
+        and is vocal-testable on its vocal blocks; the summary counts it and its block slots."""
+        path = tmp_path / "one_session_catalog.csv"
+        pls.DataFrame({
+            "mouse_id": ["m1", "m1"], "rec_date": [20250101, 20250101],
+            "unit_id": ["imec0_cl0001_ch001_good", "imec0_cl0002_ch002_good"],
+            "brain_area": ["PAG", "PAG"], "cluster_group": ["good", "good"], "somatic": [True, True],
+            "rec_sessions": ["['s_rich', 's_rich2']", "['s_rich']"],
+        }).write_csv(path)
+        counts = {**COUNTS, **dict(zip(self.BLOCKS, [30, 5, 25, 0, 40], strict=True))}
+        cohort = _select(tmp_path, catalog_path=str(path), min_courtship_sessions=1, emitter_counts=counts)
+        across, blocks = cohort
+        assert across["block_split"] is None
+        assert across["courtship_sessions"] == ["s_rich", "s_rich2"]
+        assert blocks["block_split"] == {"n_blocks": 5}
+        assert blocks["courtship_sessions"] == self.BLOCKS
+        assert blocks["n_courtship_sessions"] == 1
+        assert blocks["vocal_sessions"] == ["s_rich#block0", "s_rich#block2", "s_rich#block4"]
+        assert blocks["vocal_testable"] is True
+        summary = summarize_cohort(cohort)
+        assert summary["n_block_units"] == 1
+        assert summary["session_slots"] == 2 + 5

@@ -10,7 +10,10 @@ pipeline's own loaders and column utilities, and does the frame bookkeeping the 
 - vocal frames      — frames inside the recorded animal's own USVs, with no cleanliness condition;
 - per-USV events    — one row per analysed USV with its torus position, acoustic region, silent gap
                       and the unit's spike count in the peri-onset window, plus quiet tiles of the same
-                      width as the negative class.
+                      width as the negative class;
+- blocks            — a unit recorded in one session is tested on contiguous time blocks of it, each
+                      standing in for a session (``<session>#block<i>``); every assembler clips what it
+                      returns to the block's window.
 
 The modelling itself lives elsewhere; this module only decides what gets modelled.
 """
@@ -643,6 +646,147 @@ def build_zscored_feature_frames(
     return canonical, camera_fr_dict, mouse_names_dict, suffixes
 
 
+#: Separator between a session id and a block index in a block identifier, ``<session>#block<i>``.
+BLOCK_TAG = "#block"
+
+
+def source_session(session_id: str) -> str:
+    """
+    Description
+    -----------
+    The recording session a session or block identifier refers to: the identifier itself for a
+    session, the part before ``BLOCK_TAG`` for a block. Every load from disk goes through this.
+
+    Parameters
+    ----------
+    session_id (str)
+        A session directory basename or a block identifier.
+
+    Returns
+    -------
+    source (str)
+        The session directory basename.
+    """
+
+    return session_id.split(BLOCK_TAG, maxsplit=1)[0]
+
+
+def session_block_ids(session_id: str, n_blocks: int) -> list[str]:
+    """
+    Description
+    -----------
+    The block identifiers a single recording session is split into, in time order.
+
+    Parameters
+    ----------
+    session_id (str)
+        Session directory basename.
+    n_blocks (int)
+        Number of blocks.
+
+    Returns
+    -------
+    block_ids (list[str])
+        ``[f"{session_id}#block0", ..., f"{session_id}#block{n_blocks - 1}"]``.
+    """
+
+    return [f"{session_id}{BLOCK_TAG}{index}" for index in range(n_blocks)]
+
+
+def block_window_frames(n_frames: int, fps: float, n_blocks: int, gap_seconds: float) -> list[tuple[int, int]]:
+    """
+    Description
+    -----------
+    The frame windows of a session's blocks: ``n_blocks`` stretches of equal duration, with
+    ``gap_seconds`` removed around every boundary between two blocks (half on each side), so nothing
+    within ``gap_seconds`` of a neighbouring block is kept. The session's own start and end are not
+    trimmed. Windows are half-open, ``[low, high)``.
+
+    Parameters
+    ----------
+    n_frames (int)
+        Session frame count.
+    fps (float)
+        Camera frame rate.
+    n_blocks (int)
+        Number of blocks.
+    gap_seconds (float)
+        Separation kept between neighbouring blocks.
+
+    Returns
+    -------
+    windows (list[tuple[int, int]])
+        ``(low, high)`` frame bounds per block, in time order.
+    """
+
+    edges = np.round(np.linspace(0, n_frames, n_blocks + 1)).astype(np.int64)
+    half = int(np.ceil(gap_seconds * fps / 2.0))
+    windows = []
+    for index in range(n_blocks):
+        low = int(edges[index]) + (half if index > 0 else 0)
+        high = int(edges[index + 1]) - (half if index < n_blocks - 1 else 0)
+        windows.append((low, max(high, low)))
+    return windows
+
+
+def session_window(unit: dict, session_id: str, n_frames: int, fps: float, gap_seconds: float) -> tuple[int, int]:
+    """
+    Description
+    -----------
+    The frame window a session or block identifier covers: the whole session for a session, the
+    block's window (:func:`block_window_frames`) for a block of a unit carrying a ``block_split``.
+
+    Parameters
+    ----------
+    unit (dict)
+        The unit record; ``block_split`` is read (``None`` for a unit tested across sessions).
+    session_id (str)
+        A session directory basename or a block identifier.
+    n_frames (int)
+        Frame count of the source session.
+    fps (float)
+        Camera frame rate.
+    gap_seconds (float)
+        Separation between neighbouring blocks (``kinematic_encoding.history_pre_seconds``).
+
+    Returns
+    -------
+    window (tuple[int, int])
+        ``(low, high)``, half-open frame bounds.
+    """
+
+    if BLOCK_TAG not in session_id:
+        return 0, int(n_frames)
+    if unit["block_split"] is None:
+        msg = f"{session_id} is a block identifier, but the unit record carries no block split."
+        raise ValueError(msg)
+    index = int(session_id.split(BLOCK_TAG)[1])
+    return block_window_frames(n_frames, fps, unit["block_split"]["n_blocks"], gap_seconds)[index]
+
+
+def frames_in_window(frames: np.ndarray, window: tuple[int, int]) -> np.ndarray:
+    """
+    Description
+    -----------
+    Keep the frames inside a half-open window.
+
+    Parameters
+    ----------
+    frames (np.ndarray)
+        Frame indices.
+    window (tuple[int, int])
+        ``(low, high)``.
+
+    Returns
+    -------
+    kept (np.ndarray)
+        The frames with ``low <= frame < high``, in their original order.
+    """
+
+    frames = np.asarray(frames, dtype=np.int64)
+    return frames[(frames >= window[0]) & (frames < window[1])]
+
+
 def assemble_unit_sessions(
         unit: dict,
         data_root: str,
@@ -661,16 +805,21 @@ def assemble_unit_sessions(
     are z-scored across all the unit's sessions together; they are same-day blocks with the same mice,
     so feature columns align across them.
 
+    For a unit tested on blocks of one session, every block shares that session's arrays and differs
+    only in its ``window`` and in its quiet anchors, which are clipped to the window. The spike train and
+    feature series stay whole, because a history reaches back past the window's start and a circular
+    shift wraps over the whole session.
+
     Parameters
     ----------
     unit (dict)
-        A cohort record (``unit_id``, ``courtship_sessions``, ...).
+        A cohort record (``unit_id``, ``courtship_sessions``, ``block_split``, ...).
     data_root (str)
         The ``Data`` root.
     kinematic_features (dict)
         The kinematic-features schema.
     history_pre_seconds (float)
-        Kinematic-history / pre-window length.
+        Kinematic-history / pre-window length, and the separation between neighbouring blocks.
     clean_post_seconds (float)
         Quiet-anchor post-buffer.
     clean_against (str)
@@ -685,17 +834,19 @@ def assemble_unit_sessions(
     -------
     per_session (dict)
         ``{session_id: {feature_time_series, feature_names, fps, n_frames, spike_frames, quiet,
-        track_names}}``.
+        track_names, window}}``, keyed by the unit's session or block identifiers.
     """
 
-    session_dirs = [f"{data_root}/{s}" for s in unit["courtship_sessions"]]
+    # Blocks of one session load that session once.
+    source_ids = list(dict.fromkeys(source_session(s) for s in unit["courtship_sessions"]))
+    session_dirs = [f"{data_root}/{s}" for s in source_ids]
     feats, cam_fr, names, _suffixes = build_zscored_feature_frames(
         session_dirs=session_dirs, kinematic_features=kinematic_features,
         recorded_mouse_id=unit["mouse_id"],
     )
 
-    per_session: dict = {}
-    for session_id in unit["courtship_sessions"]:
+    per_source: dict = {}
+    for session_id in source_ids:
         if session_id not in feats:
             continue
         feat_df = feats[session_id]
@@ -721,10 +872,20 @@ def assemble_unit_sessions(
         quiet = quiet_anchor_frames(guard_starts, guard_stops, n_frames, fps,
                                     history_pre_seconds, clean_post_seconds)
 
-        per_session[session_id] = {
+        per_source[session_id] = {
             "feature_time_series": feature_ts, "feature_names": feature_names, "fps": fps, "n_frames": n_frames,
             "spike_frames": spike_frames, "quiet": quiet, "track_names": list(names[session_id]),
         }
+
+    per_session: dict = {}
+    for session_id in unit["courtship_sessions"]:
+        source_id = source_session(session_id)
+        if source_id not in per_source:
+            continue
+        entry = per_source[source_id]
+        window = session_window(unit, session_id, entry["n_frames"], entry["fps"], history_pre_seconds)
+        per_session[session_id] = {**entry, "quiet": frames_in_window(entry["quiet"], window),
+                                   "window": window}
     return per_session
 
 
@@ -820,10 +981,15 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
     contamination is ``vocalization_settings.clean_against`` for both. Both decoding axes receive the
     same positive events. USVs with a missing torus position are dropped and counted.
 
+    For a unit tested on blocks, each block is a session here: its events are the USVs whose onset lies
+    in the block's window and its tiles those lying wholly inside it, so nothing within
+    ``history_pre_seconds`` of a neighbouring block is kept. The circular shift still wraps over the
+    whole session, so ``duration_seconds`` is the session's.
+
     Parameters
     ----------
     unit (dict)
-        A cohort record; ``unit_id``, ``mouse_id`` and ``vocal_sessions`` are read.
+        A cohort record; ``unit_id``, ``mouse_id``, ``vocal_sessions`` and ``block_split`` are read.
     data_root (str)
         The ``Data`` root.
     settings (dict)
@@ -842,8 +1008,8 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
         ``vocalization_stop`` at vocalization grain; ``occurrence_windows`` (``counts``, ``labels``, ``session_index``, plus the window ``edges`` and
         their ``width``, which the circular-shift null needs to recount both classes from a shifted
         train) over positives and tiles
-        together; ``session_ids``; and ``per_session`` bookkeeping (durations, event and tile counts,
-        how many USVs were dropped by each filter).
+        together; ``session_ids``; and ``per_session`` bookkeeping (durations, the window in seconds,
+        event and tile counts, how many USVs were dropped by each filter).
     """
 
     decoding = settings["vocal_decoding"]
@@ -863,18 +1029,21 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
     tile_counts_parts, tile_edge_parts, tile_index_parts = [], [], []
     per_session: dict = {}
 
-    # Vocal sessions only.
+    # Vocal sessions only. Blocks load their source session from disk.
     for slot, session_id in enumerate(unit["vocal_sessions"]):
-        track_names, frame_rate, n_frames = session_timebase(data_root, session_id)
+        source_id = source_session(session_id)
+        track_names, frame_rate, n_frames = session_timebase(data_root, source_id)
         duration = n_frames / frame_rate
+        window = session_window(unit, session_id, n_frames, frame_rate, history_pre_seconds)
+        window_low, window_high = window[0] / frame_rate, window[1] / frame_rate
         # Resolved by name from the unit's `mouse_id`; an empty list for 'all' means no filter.
         focal_names = emitter_names(track_names, unit["mouse_id"], vocal_emitter)
 
         # `counts_in_windows` bisects, so the train must be sorted.
-        spike_seconds, _spike_frames = load_unit_spike_frames(data_root, session_id, unit["unit_id"])
+        spike_seconds, _spike_frames = load_unit_spike_frames(data_root, source_id, unit["unit_id"])
         spike_seconds = np.sort(spike_seconds)
 
-        usv = load_session_usvs(data_root, session_id)
+        usv = load_session_usvs(data_root, source_id)
         missing = [column for column in position_columns if column not in usv.columns]
         if missing:
             msg = (f"{session_id}: usv_summary is missing the torus position column(s) {missing}. "
@@ -909,7 +1078,11 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
         clean = (clean_window_mask(focal_starts, all_starts, all_stops, pre_offset)
                  if decoding["require_clean_prevocal_bool"]
                  else np.ones(focal_starts.size, dtype=bool))
-        keep = finite & clean
+        # A block keeps the USVs whose onset lies in its window; a session keeps every USV.
+        is_block = BLOCK_TAG in session_id
+        inside = ((focal_starts >= window_low) & (focal_starts < window_high) if is_block
+                  else np.ones(focal_starts.size, dtype=bool))
+        keep = finite & clean & inside
 
         gaps = silent_gap_before_vocalization(focal_starts, focal_stops)
         window_edges = focal_starts[keep] - pre_offset
@@ -918,6 +1091,8 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
         # Disjoint tiles at the analysis window's own width, so tile and event counts are comparable.
         tile_edges = quiet_tile_edges(all_starts, all_stops, duration, width,
                                       history_pre_seconds, clean_post_seconds)
+        if is_block:
+            tile_edges = tile_edges[(tile_edges >= window_low) & (tile_edges + width <= window_high)]
         if tiles_cap is not None and tile_edges.size > tiles_cap:
             tile_edges = np.sort(rng.choice(tile_edges, tiles_cap, replace=False))
         tile_counts = counts_in_windows(spike_seconds, tile_edges, width)
@@ -937,8 +1112,10 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
 
         per_session[session_id] = {
             "slot": slot, "duration_seconds": duration, "frame_rate": frame_rate,
-            "n_focal_vocalizations": int(focal_starts.size), "n_events": int(keep.sum()),
-            "n_dropped_unclean": int((~clean).sum()), "n_dropped_missing_position": int((~finite).sum()),
+            "window_seconds": (window_low, window_high),
+            "n_focal_vocalizations": int(inside.sum()), "n_events": int(keep.sum()),
+            "n_dropped_unclean": int((~clean & inside).sum()),
+            "n_dropped_missing_position": int((~finite & inside).sum()),
             "n_baseline_tiles": int(tile_edges.size), "n_spikes": int(spike_seconds.size),
         }
 

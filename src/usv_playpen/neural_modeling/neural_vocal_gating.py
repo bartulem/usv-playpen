@@ -30,8 +30,10 @@ from .deviance_metrics import bernoulli_deviance, calibrate_intercept, newton_lo
 from .neural_design_assembly import (
     emitter_names,
     filter_vocalizations,
+    frames_in_window,
     load_session_usvs,
     session_timebase,
+    source_session,
     spike_labels_at_frames,
     vocal_span_frames,
 )
@@ -536,7 +538,8 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
     data_root (str)
         The ``Data`` root.
     per_session (dict)
-        From ``assemble_unit_sessions``: feature time series, names, quiet anchors, spike frames.
+        From ``assemble_unit_sessions``: feature time series, names, quiet anchors, spike frames and the
+        ``window`` each session or block covers; a block's vocal frames are clipped to its window.
     settings (dict)
         The ``vocal_gating`` block.
     vocal_settings (dict)
@@ -578,8 +581,9 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
                    f"canonicalised upstream, so this means the assembler changed under us.")
             raise ValueError(msg)
 
-        track_names, fps, n_frames = session_timebase(data_root, session_id)
-        usv = filter_vocalizations(load_session_usvs(data_root, session_id), vocal_settings,
+        # A block loads its source session and keeps the frames in its window.
+        track_names, fps, n_frames = session_timebase(data_root, source_session(session_id))
+        usv = filter_vocalizations(load_session_usvs(data_root, source_session(session_id)), vocal_settings,
                                    "analysed")
         # 'all' resolves to an empty list, meaning no emitter filter.
         focal_names = emitter_names(track_names, unit["mouse_id"], vocal_settings["vocal_emitter"])
@@ -588,6 +592,7 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
         stops = focal["stop"].to_numpy().astype(np.float64)
         # n_lags of 1: gating needs no history. Only the flat frames of every span are used.
         _kept, vocal_frames, _pointer = vocal_span_frames(starts, stops, fps, n_frames, 1)
+        vocal_frames = frames_in_window(vocal_frames, session["window"])
         quiet_frames = np.asarray(session["quiet"], dtype=np.int64)
         spike_frames = np.asarray(session["spike_frames"], dtype=np.int64)
 

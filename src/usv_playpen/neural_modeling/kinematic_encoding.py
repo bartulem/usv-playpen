@@ -185,7 +185,7 @@ def quiet_block_sessions(session: dict, session_id: str, n_blocks: int, gap_fram
     -----------
     Split one session's quiet anchors into contiguous time blocks presented as pseudo-sessions.
 
-    The inner split for a pool of one session (``data_sufficiency.single_session_inner_split_blocks``).
+    The inner split for a pool of one session (``data_sufficiency.single_session_blocks``).
     The blocks look exactly like sessions, so ``inner_folds``, ``fit_quiet_model`` and the screen run over
     them unchanged. Blocks are contiguous because the kinematics are autocorrelated, and each is trimmed by
     ``gap_frames`` (derived from the history length) at both ends, so a validation frame's history cannot
@@ -261,7 +261,7 @@ def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices:
         Pooled training spike rate before subsampling, on the true-population scale.
     """
 
-    penalties = encoding_settings["significance_model"]
+    penalties = encoding_settings["raw_lag_penalties"]
     # The log-prior offset is the only implemented correction, so any other setting is refused.
     if encoding_settings["subsampling_correction"] != "log_prior_offset":
         msg = (f"the subsampling correction is the case-control log-prior offset; "

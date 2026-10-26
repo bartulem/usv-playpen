@@ -17,11 +17,11 @@
     "data_root": "/mnt/falkner/Bartul/Data"
   },
   "data_sufficiency": {
-    "min_courtship_sessions": 2,
+    "min_courtship_sessions": 1,
     "min_emitter_usvs_per_session": 20,
     "min_vocal_sessions": 2,
     "min_decoding_spikes": 50,
-    "single_session_inner_split_blocks": 5
+    "single_session_blocks": 5
   },
   "kinematic_features": {
     "egocentric": [
@@ -96,7 +96,7 @@
       "newton_max_steps": 25,
       "newton_step_tolerance": 1e-10
     },
-    "significance_model": {
+    "raw_lag_penalties": {
       "lambda_group": 0.0,
       "lambda_smooth": 1000.0,
       "lambda_ridge": 0.01

@@ -17,7 +17,8 @@ in-sample rule when asked for it.
 The guards and cores, against known answers: one Newton step from zero equals the closed-form step
 (logistic) or the damped step (Poisson), and a singular Hessian stops the solver at its current
 coefficients; every scorer's degenerate-input guard (flat predictor, one class, nothing to explain, a
-training split that leaves a group without events or non-events) returns NaN as documented; with zero
+training split that leaves a group without events or non-events) returns NaN as documented, except that
+a group whose events all fall in one cross-fitting piece is left out and named; with zero
 Newton steps the batched, binned and batched cross-fitted scorers return the closed-form score of the
 zero calibration; and both routers send every scheme, family and group count to the scorer they name.
 """
@@ -35,9 +36,12 @@ from usv_playpen.neural_modeling.deviance_metrics import (
     calibrated_explained_deviance,
     contiguous_blocks,
     crossfitted_explained_deviance,
+    drop_constant_response_groups,
+    drop_uncrossfittable_groups,
     encoding_metrics,
     frozen_model_null_scores,
     frozen_model_score,
+    groups_left_out,
     intercept_only_deviance,
     newton_logistic,
     newton_poisson,
@@ -306,6 +310,111 @@ class TestCrossfittedScoring:
         assert in_sample == calibrated_explained_deviance(x, y, 40)
         crossfit = frozen_model_score(x, y, group, 40, "bernoulli", 1.0, CROSSFIT)
         assert crossfit == crossfitted_explained_deviance(x, y, group, 5, "bernoulli", 40)
+
+
+class TestConstantResponseGroups:
+    """A group whose response never varies is left out of a pooled score: with its own free intercept it
+    contributes exactly zero, so leaving it out reproduces the limit instead of returning NaN."""
+
+    @staticmethod
+    def _two_groups(family, seed=4):
+        """
+        Description
+        -----------
+        Two groups of 3,000 rows with a planted predictor, for appending a silent group to.
+
+        Parameters
+        ----------
+        family (str)
+            ``"bernoulli"`` or ``"poisson"``.
+        seed (int)
+            Seed for ``np.random.default_rng``.
+
+        Returns
+        -------
+        x, y, group (tuple of np.ndarray)
+            Predictor, response and integer group per row.
+        """
+        generator = np.random.default_rng(seed)
+        x = np.convolve(generator.normal(size=6000), np.ones(25) / 5.0, mode="same")
+        group = np.repeat([0, 1], 3000)
+        if family == "bernoulli":
+            y = (generator.random(6000) < 1.0 / (1.0 + np.exp(-(0.8 * x - 2.0)))).astype(float)
+        else:
+            y = generator.poisson(np.exp(0.8 * x - 1.0)).astype(float)
+        return x, y, group
+
+    @pytest.mark.parametrize("family", ["bernoulli", "poisson"])
+    def test_a_silent_group_leaves_the_crossfitted_score_unchanged(self, family):
+        """Appending a group with no events must give exactly the score of the other groups alone, where
+        before it made every block's training set lack an event for that group and returned NaN."""
+        x, y, group = self._two_groups(family)
+        alone = crossfitted_explained_deviance(x, y, group, 5, family, 40)
+        silent_x = np.random.default_rng(9).normal(size=2000)
+        with_silent = crossfitted_explained_deviance(np.r_[x, silent_x], np.r_[y, np.zeros(2000)],
+                                                     np.r_[group, np.full(2000, 2)], 5, family, 40)
+        assert np.isfinite(with_silent[0])
+        assert with_silent == alone
+
+    def test_an_always_firing_group_is_also_left_out_for_labels(self):
+        """For 0/1 labels a group with an event on every row is just as uninformative under its own
+        intercept and must be left out the same way."""
+        x, y, group = self._two_groups("bernoulli")
+        x3, y3, g3 = drop_constant_response_groups(np.r_[x, np.zeros(50)], np.r_[y, np.ones(50)],
+                                                   np.r_[group, np.full(50, 7)], "bernoulli")
+        np.testing.assert_array_equal(g3, group)
+        np.testing.assert_array_equal(y3, y)
+        np.testing.assert_array_equal(x3, x)
+
+    @pytest.mark.parametrize("family", ["bernoulli", "poisson"])
+    def test_the_in_sample_pooled_scores_drop_a_silent_session_too(self, family):
+        """The in-sample pooled scorers take the same rule, so both calibration schemes agree on which
+        sessions are scored."""
+        x, y, group = self._two_groups(family)
+        scorer = (pooled_calibrated_explained_deviance if family == "bernoulli" else
+                  (lambda a, b, c, n: pooled_poisson_explained_deviance(a, b, c, n, 1.0)))
+        alone = scorer(x, y, group, 40)
+        with_silent = scorer(np.r_[x, np.ones(300)], np.r_[y, np.zeros(300)], np.r_[group, np.full(300, 5)], 40)
+        assert np.isfinite(with_silent[0])
+        np.testing.assert_allclose(with_silent, alone, rtol=1e-9, atol=1e-12)
+
+    @pytest.mark.parametrize("family", ["bernoulli", "poisson"])
+    def test_a_group_with_its_events_in_one_piece_is_left_out_of_the_crossfitted_score(self, family):
+        """A group whose only events sit in one of its five pieces cannot be cross-fitted: scoring that
+        piece would need an intercept estimated from no events. It is left out, so the score equals the
+        other groups' alone, and it is named with its reason."""
+        x, y, group = self._two_groups(family)
+        alone = crossfitted_explained_deviance(x, y, group, 5, family, 40)
+        thin_y = np.zeros(1000)
+        thin_y[[10, 30, 55]] = 1.0
+        x4, y4, g4 = np.r_[x, np.zeros(1000)], np.r_[y, thin_y], np.r_[group, np.full(1000, 3)]
+        assert crossfitted_explained_deviance(x4, y4, g4, 5, family, 40) == alone
+        assert groups_left_out(y4, g4, family, {"scheme": "crossfit", "n_blocks": 5}) == {3: "events_in_one_piece"}
+        kept_x, kept_y, kept_group = drop_uncrossfittable_groups(x4, y4, g4, 5, family)
+        np.testing.assert_array_equal(kept_group, group)
+        np.testing.assert_array_equal(kept_y, y)
+        np.testing.assert_array_equal(kept_x, x)
+
+    def test_a_group_with_events_in_two_pieces_is_kept(self):
+        """Events in two pieces leave every piece's training rows with at least one event, so the group is
+        scored, not left out."""
+        _x, y, group = self._two_groups("poisson")
+        thin_y = np.zeros(1000)
+        thin_y[[10, 900]] = 1.0
+        left_out = groups_left_out(np.r_[y, thin_y], np.r_[group, np.full(1000, 3)], "poisson",
+                                   {"scheme": "crossfit", "n_blocks": 5})
+        assert left_out == {}
+
+    def test_in_sample_scheme_names_only_constant_groups(self):
+        """The in-sample scheme refits on the scored rows themselves, so a group with its events in one
+        piece is scoreable there; only a constant group is named, with the exact-limit reason."""
+        y = np.r_[np.zeros(100), np.zeros(100)]
+        y[[5, 6]] = 1.0
+        group = np.repeat([0, 1], 100)
+        assert groups_left_out(y, group, "bernoulli", {"scheme": "in_sample", "n_blocks": 5}) == {
+            1: "constant_response"}
+        assert groups_left_out(y, group, "bernoulli", {"scheme": "crossfit", "n_blocks": 5}) == {
+            0: "events_in_one_piece", 1: "constant_response"}
 
 
 class TestNewtonCores:
@@ -629,14 +738,15 @@ class TestDegenerateInputsReturnNan:
         assert np.isnan(slope)
 
     @pytest.mark.parametrize("missing", ["events", "non_events"])
-    def test_crossfit_with_a_group_degenerate_in_a_training_split_is_nan(self, missing):
+    def test_crossfit_leaves_out_a_group_degenerate_in_a_training_split(self, missing):
         """
         Description
         -----------
         Group 1's events (or its non-events) all sit in its first contiguous block, so the
         training rows used to score that block leave group 1 with no events (or no
-        non-events) to estimate its intercept from; the score must then be NaN, as the
-        docstring states, rather than an extrapolated intercept.
+        non-events) to estimate its intercept from. The group is left out, so the score is
+        exactly that of group 0 alone rather than NaN or an extrapolated intercept, and
+        ``groups_left_out`` names it with the reason ``"events_in_one_piece"``.
 
         Parameters
         ----------
@@ -655,9 +765,11 @@ class TestDegenerateInputsReturnNan:
         y[100:120] = 1.0
         if missing == "non_events":
             y[100:] = 1.0 - y[100:]
-        score, slope = crossfitted_explained_deviance(x, y, group, 2, "bernoulli", 30)
-        assert np.isnan(score)
-        assert np.isnan(slope)
+        both = crossfitted_explained_deviance(x, y, group, 2, "bernoulli", 30)
+        alone = crossfitted_explained_deviance(x[:100], y[:100], group[:100], 2, "bernoulli", 30)
+        assert both == alone
+        assert groups_left_out(y, group, "bernoulli", {"scheme": "crossfit", "n_blocks": 2}) == {
+            1: "events_in_one_piece"}
 
     def test_crossfit_poisson_with_nothing_to_explain_is_nan(self):
         """

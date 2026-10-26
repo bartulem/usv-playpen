@@ -303,6 +303,53 @@ class TestCountGrainCombine:
         assert out["score"] > 0.02
         assert out["n_frames"] == 8000
 
+    @pytest.mark.parametrize("grain", ["count", "frame"])
+    def test_a_session_with_no_transfer_frames_is_scored_as_empty_not_raised(self, grain):
+        """A held-out session or block in which the animal did not vocalize has no transfer frames. The
+        fold's own vocal score must come back empty -- NaN scores, ``n_frames`` 0, empty arrays -- rather
+        than raising on an empty division, which crashed four folds of a one-session unit whose USVs all
+        fell in its first block."""
+        session = self._session(12, True)
+        filters = np.zeros(self.N_LAGS)
+        filters[-1] = 1.2
+        model = FrameFilterModel(filters, -2.0, True, 1)
+        transfer = {**TRANSFER, "grain": grain, "universe": "usv_span"}
+        encoding = {"chunk_rows": 2000, "solver": {"calibration_steps": 30}, "transfer": transfer,
+                    "calibration": {"scheme": "crossfit", "n_blocks": 5}}
+        result = score_fold(model, session, [0], np.zeros(0, dtype=np.int64), self.N_LAGS, 0.1, encoding,
+                            linear_predictor_at_frames, transfer)
+        assert result["n_frames"] == 0
+        assert np.isnan(result["fold_score"])
+        assert np.isnan(result["fold_slope"])
+        assert result["eta"].size == 0
+        assert result["labels"].size == 0
+        if grain == "count":
+            assert result["n_bins"] == 0
+            assert result["bin_counts"].size == 0
+
+    def test_a_block_with_its_spikes_in_one_piece_is_left_out_and_named(self):
+        """A third session whose few spikes all sit at the start of its transfer frames cannot be
+        cross-fitted, which made the pooled transfer NaN on one-session units. It must be left out of the
+        score, named in ``left_out_sessions`` with its reason, and leave the score finite."""
+        sessions = {"a": self._session(10, True), "b": self._session(11, True), "c": self._session(13, True)}
+        sessions["c"]["spike_frames"] = np.array([1510, 1540, 1600])
+        filters = np.zeros(self.N_LAGS)
+        filters[-1] = 1.2
+        model = FrameFilterModel(filters, -2.0, True, 1)
+        transfer = {**TRANSFER, "grain": "count", "universe": "usv_span"}
+        encoding = {"chunk_rows": 2000, "solver": {"calibration_steps": 30}, "transfer": transfer,
+                    "calibration": {"scheme": "crossfit", "n_blocks": 5}}
+        settings = {"kinematic_encoding": encoding, "null": {"n_shuffles": 20, "shuffle_guard_seconds": 1.0,
+                                                             "shuffle_seed": 0},
+                    "significance": {"escalation_ladder": []}}
+        frames = {sid: np.arange(1500, 5500) for sid in sessions}
+        results = [score_fold(model, sessions[sid], [0], frames[sid], self.N_LAGS, 0.1, encoding,
+                              linear_predictor_at_frames, transfer) for sid in sessions]
+        out = combine_folds(results, sessions, list(sessions), frames, settings, message_output=lambda *_a: None)
+        assert out["left_out_sessions"] == {"c": "events_in_one_piece"}
+        assert np.isfinite(out["score"])
+        assert out["score"] > 0.05
+
     def test_splitting_the_frame_grain_null_into_memory_blocks_changes_nothing(self):
         """The block size is a memory budget, not a statistical choice: a budget holding three draws' labels
         must give exactly the null of a budget holding all of them, including a short final block."""

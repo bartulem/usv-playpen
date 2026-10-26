@@ -498,14 +498,15 @@ class TestTheUniverse:
         -------
         per_session (dict)
             ``{session_id: {...}}`` with ``feature_time_series``, ``feature_names``, ``fps``,
-            ``n_frames``, ``quiet`` and ``spike_frames``.
+            ``n_frames``, ``quiet``, ``spike_frames`` and ``window`` (the whole session).
         """
         series = np.column_stack([np.arange(self.N_FRAMES, dtype=float),
                                   -np.arange(self.N_FRAMES, dtype=float)])
         return {sid: {"feature_time_series": series, "feature_names": ["f0", "f1"],
                       "fps": self.FPS, "n_frames": self.N_FRAMES,
                       "quiet": np.asarray(quiet, dtype=np.int64),
-                      "spike_frames": np.asarray(spike_frames, dtype=np.int64)}
+                      "spike_frames": np.asarray(spike_frames, dtype=np.int64),
+                      "window": (0, self.N_FRAMES)}
                 for sid in session_ids}
 
     def _unit(self):
@@ -524,6 +525,21 @@ class TestTheUniverse:
             ``mouse_id`` ``"male"`` with vocal sessions ``s0`` and ``s1``.
         """
         return {"mouse_id": "male", "vocal_sessions": ["s0", "s1"]}
+
+    def test_a_block_keeps_only_the_vocal_frames_in_its_window(self, monkeypatch):
+        """Two blocks of one session see the same USV table; each keeps only the USV frames inside its own
+        window, so a USV is never a vocal row of two blocks."""
+        self._patch(monkeypatch, [(10.0, 10.5, "male"), (30.0, 30.5, "male")])   # frames 1000-1049, 3000-3049
+        per_session = self._per_session(["s#block0", "s#block1"], np.arange(1500, 1600), [1005, 3005])
+        per_session["s#block0"]["window"] = (0, 2000)
+        per_session["s#block1"]["window"] = (2000, 4000)
+        per_session["s#block1"]["quiet"] = np.arange(3500, 3600)
+        unit = {"mouse_id": "male", "vocal_sessions": ["s#block0", "s#block1"]}
+        universe = gating_universe(unit, "/data", per_session, _gating(), VOCAL_SETTINGS)
+        frames = universe["features"][:, 0]                       # feature 0 IS the frame index
+        vocal = universe["vocal"] > 0
+        assert set(np.unique(frames[vocal & (universe["session_index"] == 0)] // 1000)) == {1.0}
+        assert set(np.unique(frames[vocal & (universe["session_index"] == 1)] // 1000)) == {3.0}
 
     def test_peri_vocal_frames_reach_neither_class(self, monkeypatch):
         """A frame just outside a USV is neither vocal nor quiet, and must appear in no row."""
@@ -757,7 +773,8 @@ class TestTheQuietOnlyNullRedrawsItsRows:
             per_session[f"s{slot}"] = {
                 "feature_time_series": feature[:, None], "feature_names": ["f0"], "fps": self.FPS,
                 "n_frames": self.N_FRAMES, "quiet": np.flatnonzero(~vocal).astype(np.int64),
-                "spike_frames": np.flatnonzero(rng.random(self.N_FRAMES) < rate_hz / self.FPS)}
+                "spike_frames": np.flatnonzero(rng.random(self.N_FRAMES) < rate_hz / self.FPS),
+                "window": (0, self.N_FRAMES)}
         settings = _gating()
         settings["max_quiet_frames_per_session"] = 1500
         unit = {"mouse_id": "male", "vocal_sessions": list(per_session)}

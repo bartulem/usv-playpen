@@ -373,7 +373,7 @@ class GroupElasticNetGLM:
     lambda_group (float)
         Group-lasso strength (feature sparsity). ``0.0`` disables sparsity (pure smooth fit).
         Keyword-only, no default: callers pass the settings value
-        (``kinematic_encoding.significance_model.lambda_group`` or
+        (``kinematic_encoding.raw_lag_penalties.lambda_group`` or
         ``kinematic_encoding.temporal_basis.lambda_group``).
     lambda_smooth (float)
         Temporal-smoothness penalty strength. Keyword-only, no default (settings value).

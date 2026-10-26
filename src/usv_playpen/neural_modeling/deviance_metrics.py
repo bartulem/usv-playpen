@@ -269,6 +269,46 @@ def poisson_deviance(eta: np.ndarray, counts: np.ndarray) -> float:
     return float(2.0 * np.sum(term - (counts - mu)))
 
 
+def drop_constant_response_groups(x: np.ndarray, y: np.ndarray, group_index: np.ndarray,
+                                  family: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Description
+    -----------
+    Remove the rows of every group (session, or block of a one-session unit) whose response never varies:
+    no events at all, or, for 0/1 labels, events on every row.
+
+    Each group carries its own free intercept. For such a group the intercept's best fit runs to minus (or
+    plus) infinity, where both the model and the intercepts-only reference predict every one of its rows
+    perfectly. The group then adds exactly zero to both log-likelihoods and to the saturated term, and
+    nothing to the shared slope, so removing it gives the score the fit converges to rather than the NaN
+    an infinite intercept produces. A unit silent for part of its recording is the usual case.
+
+    Parameters
+    ----------
+    x (np.ndarray)
+        Predictor per row.
+    y (np.ndarray)
+        Response per row (0/1 labels or counts).
+    group_index (np.ndarray)
+        Integer group per row.
+    family (str)
+        ``"bernoulli"`` or ``"poisson"``.
+
+    Returns
+    -------
+    x, y, group_index (tuple of np.ndarray)
+        The rows of the groups whose response varies.
+    """
+
+    keep = np.ones(y.size, dtype=bool)
+    for group in np.unique(group_index):
+        rows = group_index == group
+        total = float(np.sum(y[rows]))
+        if total <= 0.0 or (family == "bernoulli" and total >= float(np.sum(rows))):
+            keep &= ~rows
+    return x[keep], y[keep], group_index[keep]
+
+
 def pooled_poisson_explained_deviance(x: np.ndarray, counts: np.ndarray, session_index: np.ndarray,
                                       n_steps: int, exposure: float) -> tuple[float, float]:
     """
@@ -298,11 +338,13 @@ def pooled_poisson_explained_deviance(x: np.ndarray, counts: np.ndarray, session
     Returns
     -------
     explained_deviance (float)
-        Poisson deviance explained over the per-session-intercept baseline.
+        Poisson deviance explained over the per-session-intercept baseline. Sessions with no spikes are
+        left out (:func:`drop_constant_response_groups`).
     slope (float)
         The shared gain on standardized ``x``.
     """
 
+    x, counts, session_index = drop_constant_response_groups(x, counts, session_index, "poisson")
     spread = float(np.std(x)) if np.size(x) else 0.0
     if spread < 1e-12 or counts.size == 0 or counts.sum() == 0:
         return np.nan, np.nan
@@ -595,11 +637,13 @@ def pooled_calibrated_explained_deviance(eta: np.ndarray, y: np.ndarray, session
     Returns
     -------
     explained_deviance (float)
-        Explained deviance over a per-session-intercept baseline.
+        Explained deviance over a per-session-intercept baseline. Sessions whose labels never vary are left
+        out (:func:`drop_constant_response_groups`).
     slope (float)
         The shared calibration slope on standardized ``eta``.
     """
 
+    eta, y, session_index = drop_constant_response_groups(eta, y, session_index, "bernoulli")
     spread = float(np.std(eta)) if np.size(eta) else 0.0
     if spread < 1e-12 or y.size == 0 or y.min() == y.max():
         return np.nan, np.nan
@@ -739,6 +783,94 @@ def contiguous_blocks(group_index: np.ndarray, n_blocks: int) -> np.ndarray:
     return blocks
 
 
+def groups_left_out(y: np.ndarray, group_index: np.ndarray, family: str, calibration: dict) -> dict:
+    """
+    Description
+    -----------
+    The groups (sessions, or blocks of a one-session unit) that a frozen-model score leaves out, and why.
+
+    Two reasons, checked in this order:
+
+    - ``"constant_response"``: the group's response never varies (no events, or, for 0/1 labels, events on
+      every row). Leaving it out is exact (:func:`drop_constant_response_groups`). Applies under both
+      calibration schemes.
+    - ``"events_in_one_piece"``: cross-fitted scheme only. The group's response varies, but for at least
+      one of its contiguous cross-fitting pieces the OTHER pieces hold no events (or, for 0/1 labels,
+      events on every row), so the intercept that piece is scored with would be estimated from no events
+      and run to infinity. A unit with a handful of spikes in one block is the usual case. Unlike the first
+      reason this is a choice, not an exact limit: the group's events are real but cannot be scored out of
+      sample.
+
+    Parameters
+    ----------
+    y (np.ndarray)
+        Response per row (0/1 labels or counts), in time order within each group.
+    group_index (np.ndarray)
+        Integer group per row.
+    family (str)
+        ``"bernoulli"`` or ``"poisson"``.
+    calibration (dict)
+        The ``kinematic_encoding.calibration`` block: ``scheme`` and ``n_blocks``.
+
+    Returns
+    -------
+    left_out (dict)
+        ``{group: reason}`` for every group left out; empty when none is.
+    """
+
+    left_out = {}
+    blocks = contiguous_blocks(group_index, int(calibration["n_blocks"]))
+    for group in np.unique(group_index):
+        rows = group_index == group
+        total = float(np.sum(y[rows]))
+        if total <= 0.0 or (family == "bernoulli" and total >= float(np.sum(rows))):
+            left_out[group.item()] = "constant_response"
+            continue
+        if calibration["scheme"] != "crossfit":
+            continue
+        for block in np.unique(blocks[rows]):
+            train = rows & (blocks != block)
+            train_total = float(np.sum(y[train]))
+            if train_total <= 0.0 or (family == "bernoulli" and train_total >= float(np.sum(train))):
+                left_out[group.item()] = "events_in_one_piece"
+                break
+    return left_out
+
+
+def drop_uncrossfittable_groups(x: np.ndarray, y: np.ndarray, group_index: np.ndarray, n_blocks: int,
+                                family: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Description
+    -----------
+    Remove the rows of every group that cannot be cross-fitted: constant-response groups (exact) and groups
+    whose events all fall in one cross-fitting piece (a choice; see :func:`groups_left_out`).
+
+    Removing a group does not move any other group's pieces, since pieces are cut within each group.
+
+    Parameters
+    ----------
+    x (np.ndarray)
+        Predictor per row.
+    y (np.ndarray)
+        Response per row (0/1 labels or counts), in time order within each group.
+    group_index (np.ndarray)
+        Integer group per row.
+    n_blocks (int)
+        Contiguous cross-fitting pieces per group.
+    family (str)
+        ``"bernoulli"`` or ``"poisson"``.
+
+    Returns
+    -------
+    x, y, group_index (tuple of np.ndarray)
+        The rows of the groups that can be cross-fitted.
+    """
+
+    left_out = groups_left_out(y, group_index, family, {"scheme": "crossfit", "n_blocks": n_blocks})
+    keep = ~np.isin(group_index, np.array(list(left_out), dtype=group_index.dtype))
+    return x[keep], y[keep], group_index[keep]
+
+
 def _log_likelihood(eta: np.ndarray, y: np.ndarray, family: str) -> float:
     """Summed log-likelihood up to terms that cancel in a deviance ratio (Bernoulli logit or Poisson log)."""
     if family == "bernoulli":
@@ -780,13 +912,15 @@ def crossfitted_explained_deviance(x: np.ndarray, y: np.ndarray, group_index: np
     Returns
     -------
     explained_deviance (float)
-        Cross-fitted deviance explained over the cross-fitted intercepts-only reference; NaN when the
-        predictor is flat, the response degenerate, or a block's training rows leave a group without
-        any events to estimate its intercept from.
+        Cross-fitted deviance explained over the cross-fitted intercepts-only reference. Groups that cannot
+        be cross-fitted are left out first (:func:`drop_uncrossfittable_groups`): those whose response never
+        varies, and those whose events all fall in one block. NaN when the predictor is flat or nothing
+        remains.
     slope (float)
         Mean over blocks of the cross-fitted scale on the standardised predictor.
     """
 
+    x, y, group_index = drop_uncrossfittable_groups(x, y, group_index, n_blocks, family)
     spread = float(np.std(x)) if np.size(x) else 0.0
     if spread < 1e-12 or y.size == 0 or float(np.sum(y)) == 0.0 or (family == "bernoulli" and y.min() == y.max()):
         return np.nan, np.nan

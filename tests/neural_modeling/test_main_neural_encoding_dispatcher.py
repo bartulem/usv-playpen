@@ -114,7 +114,7 @@ def _per_session(quiet_sizes: dict, spike_counts: dict) -> dict:
     -------
     per_session (dict)
         ``{session_id: session dict}`` with ``fps``, ``feature_names``, ``n_frames``, ``quiet``,
-        ``spike_frames``, ``feature_time_series`` and ``track_names``.
+        ``spike_frames``, ``feature_time_series``, ``track_names`` and ``window`` (the whole session).
     """
     per_session = {}
     for session_id, size in quiet_sizes.items():
@@ -129,6 +129,7 @@ def _per_session(quiet_sizes: dict, spike_counts: dict) -> dict:
             ).astype(np.int64),
             "feature_time_series": np.zeros((N_FRAMES, len(FEATURES))),
             "track_names": ["m1", "f1"],
+            "window": (0, N_FRAMES),
         }
     return per_session
 
@@ -373,6 +374,7 @@ def _combine_stubs(
         "universe": "bout_window",
         "leave_one_session_out": [0.01, 0.02],
         "min_leave_one_session_out": 0.01,
+        "left_out_sessions": {},
         "folds": [{"session": "a"}],
     }
     monkeypatch.setattr(
@@ -830,7 +832,7 @@ class TestRunFold:
         Description
         -----------
         A two-session unit leaves one pool session. Its inner split comes from
-        ``data_sufficiency.single_session_inner_split_blocks`` contiguous blocks separated by half the
+        ``data_sufficiency.single_session_blocks`` contiguous blocks separated by half the
         history (``ceil(4 s * 10 fps / 2) = 20`` frames per end); with fewer than two usable blocks the
         fold has no model, and that fold must STILL be written -- ``combine`` demands a file for every
         fold -- without ever screening.
@@ -847,7 +849,7 @@ class TestRunFold:
         None
         """
         settings = _settings()
-        settings["data_sufficiency"]["single_session_inner_split_blocks"] = 3
+        settings["data_sufficiency"]["single_session_blocks"] = 3
         per_session = _per_session({"s0": 300, "s1": 200}, {"s0": 30, "s1": 20})
         calls = _install_fold_stubs(
             monkeypatch, per_session, [], [0], blocks={"s0#0": per_session["s0"]}
@@ -1230,6 +1232,57 @@ class TestCombine:
         assert section["screen_per_fold"] == [[{"feature": 1, "survived": False}]] * 2
         assert result["no_model_per_fold"] == [True, True]
 
+    def test_a_unit_whose_model_folds_all_score_nan_is_written_as_not_scoreable(
+        self, tmp_path, monkeypatch
+    ):
+        """
+        Description
+        -----------
+        Both folds carry a model but every held-out session had no quiet spikes, so both quiet scores
+        are NaN and no fold can be ranked. ``combine`` must not index fold ``-1``; it must WRITE the unit
+        with quiet p and transfer p both NaN (not tested, which is different from failing) and
+        ``no_scoreable_fold`` True, keep the per-fold roster, and never pool a transfer.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Output directory for the fold files and the unit file.
+        monkeypatch (pytest.MonkeyPatch)
+            Installs the stubs.
+
+        Returns
+        -------
+        None
+        """
+        unit = _unit(["s0", "s1"], ["s0", "s1"])
+        for fold_index, session_id in enumerate(["s0", "s1"]):
+            enc.write_fold_artifact(
+                _toy_fold_artifact(fold_index, session_id, np.nan, np.nan, 40),
+                unit,
+                fold_index,
+                str(tmp_path),
+                lambda _text: None,
+            )
+        calls = collections.defaultdict(list)
+        _combine_stubs(
+            monkeypatch, calls, _per_session({"s0": 300}, {"s0": 30}), 0.5, 0.2
+        )
+
+        result = enc.combine(
+            unit, _settings(), "/data", str(tmp_path), lambda _text: None
+        )
+
+        assert "combine_folds" not in calls
+        section = read_unit_artifact(str(tmp_path), unit["unit_uid"])[
+            "kinematic_encoding"
+        ]
+        assert section["no_scoreable_fold"] is True
+        assert section["no_model"] is False
+        assert np.isnan(section["quiet_p"])
+        assert np.isnan(section["transfer_p"])
+        assert result["no_model_per_fold"] == [False, False]
+        assert len(result["filters_per_fold"]) == 2
+
     def test_best_screened_folds_are_pooled_for_description_only(
         self, tmp_path, monkeypatch
     ):
@@ -1527,7 +1580,7 @@ class TestRunSingle:
         assert artifact["inner_split"] == "blocks"
         assert calls["quiet_block_sessions"][0][0][1:] == (
             "s1",
-            settings["data_sufficiency"]["single_session_inner_split_blocks"],
+            settings["data_sufficiency"]["single_session_blocks"],
             20,
         )
         assert calls["screen_features"][0][0][1] == ["s1#0", "s1#1"]
@@ -1661,8 +1714,8 @@ class TestCommandLine:
         Description
         -----------
         Writes a settings file whose vocal gate threshold and vocal emitter differ from the shipped
-        ones, stubs the per-session USV counter (``s0``: 25, ``s1``: 15) and the three run steps with
-        recording stubs, and returns where they record.
+        ones, stubs the per-session USV onset reader (``s0``: 25 USVs, ``s1``: 15) and the three run steps
+        with recording stubs, and returns where they record.
 
         Parameters
         ----------
@@ -1686,8 +1739,9 @@ class TestCommandLine:
         calls = collections.defaultdict(list)
         monkeypatch.setattr(
             enc,
-            "emitter_usv_counts",
-            _recording_stub(calls, "emitter_usv_counts", {"s0": 25, "s1": 15}),
+            "focal_usv_onsets",
+            _recording_stub(calls, "focal_usv_onsets", {"s0": (np.arange(25.0), 150.0, 150_000),
+                                                        "s1": (np.arange(15.0), 150.0, 150_000)}),
         )
         for name in ("run_fold", "combine", "run_single"):
             monkeypatch.setattr(enc, name, _recording_stub(calls, name, {}))
@@ -1766,7 +1820,7 @@ class TestCommandLine:
         assert unit["vocal_sessions"] == ["s0", "s1"]
         assert unit["unit_uid"] == "m1_20250101_imec0_cl0001_ch001_good"
         assert unit["rec_date"] == 20250101
-        counter_args = calls["emitter_usv_counts"][0][0]
+        counter_args = calls["focal_usv_onsets"][0][0]
         assert counter_args[:3] == (["s0", "s1"], "/data", {"s0": "m1", "s1": "m1"})
         assert counter_args[3] == "partner"
         assert "combine" not in calls
@@ -1803,7 +1857,7 @@ class TestCommandLine:
         settings_path, calls = self._patch(monkeypatch, tmp_path, threshold=20)
         monkeypatch.setattr(sys, "argv", self._argv(settings_path, flag))
         assert enc.main() == 0
-        assert set(calls) == {"emitter_usv_counts", step}
+        assert set(calls) == {"focal_usv_onsets", step}
         unit, _settings_passed, data_root, output_directory = calls[step][0][0]
         assert unit["vocal_sessions"] == ["s0"]
         assert (data_root, output_directory) == ("/data", "/out")
@@ -1934,3 +1988,19 @@ class TestCommandLine:
         None
         """
         assert enc.load_settings(None) == _settings()
+
+
+class TestOneSessionUnitRecord:
+    """The command-line unit record splits a one-session unit into the cohort builder's blocks."""
+
+    def test_a_one_session_unit_record_is_tested_on_blocks(self, monkeypatch):
+        """Five 200 s blocks of a 1000 s session: 25 USVs in block 2 make it the only vocal block, and every
+        block's count is recorded."""
+        onsets = {"s0": (np.concatenate([[10.0, 20.0, 250.0, 990.0], np.linspace(410.0, 590.0, 25)]),
+                         150.0, 150_000)}
+        monkeypatch.setattr(enc, "focal_usv_onsets", lambda *_args: onsets)
+        unit = enc.build_unit_record("imec0_cl0001_ch001_good", "m1", 20250101, ["s0"], "/data", _settings())
+        assert unit["courtship_sessions"] == [f"s0#block{index}" for index in range(5)]
+        assert unit["block_split"] == {"n_blocks": 5}
+        assert unit["vocal_sessions"] == ["s0#block2"]
+        assert [unit["emitter_usvs_per_session"][f"s0#block{index}"] for index in range(5)] == [2, 1, 25, 0, 1]

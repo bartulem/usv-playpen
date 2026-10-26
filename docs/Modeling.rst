@@ -1705,18 +1705,18 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
 .. code-block:: json
 
     "data_sufficiency": {
-        "min_courtship_sessions": 2,
+        "min_courtship_sessions": 1,
         "min_emitter_usvs_per_session": 20,
         "min_vocal_sessions": 2,
         "min_decoding_spikes": 50,
-        "single_session_inner_split_blocks": 5
+        "single_session_blocks": 5
     }
 
-* **min_courtship_sessions** — courtship sessions a unit must appear in (``2``: the leave-one-session-out rotation needs at least two).
-* **min_emitter_usvs_per_session** — focal USVs a session needs before any vocalization-scored analysis (or the behaviour-control cohort) may use it (``20``).
-* **min_vocal_sessions** — vocal-eligible sessions a unit needs for the vocal-side leave-one-session-out rotation (``2``).
+* **min_courtship_sessions** — courtship sessions a unit must appear in (``1``). A unit recorded in a single session is tested on blocks of it (``single_session_blocks``); with two or more it is tested across sessions.
+* **min_emitter_usvs_per_session** — focal USVs a session (or, for a one-session unit, a block) needs before any vocalization-scored analysis (or the behaviour-control cohort) may use it (``20``).
+* **min_vocal_sessions** — vocal-eligible sessions (or blocks) a unit needs for the vocal-side leave-one-session-out rotation (``2``).
 * **min_decoding_spikes** — total spikes across the scored events below which the category decoding reports the unit as not decodable (``50``).
-* **single_session_inner_split_blocks** — when a held-out fold leaves a single training session, the inner split falls back to this many contiguous blocks within that session (``5``).
+* **single_session_blocks** — blocks a single session is split into (``5``), in two places. A unit recorded in one session is split into this many blocks of equal duration, separated by ``kinematic_encoding.history_pre_seconds`` (whatever lies within it of a boundary is dropped), and the blocks stand in for sessions in every analysis, each with its own baseline and its own 20-USV vocal floor. And when an outer fold of a two-session unit leaves a single training session, the inner split for screening and selection uses this many contiguous quiet-anchor blocks of it.
 
 **kinematic_features** — the behavioural feature zoo, with exactly the meaning of the modeling block of the same name (see the ``kinematic_features`` bullets of *Modeling settings* above); the neural design assembly reuses the modeling column selection and pooled z-scoring, so the features match the behavioural models exactly.
 
@@ -1792,7 +1792,7 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
             "newton_max_steps": 25,
             "newton_step_tolerance": 1e-10
         },
-        "significance_model": {
+        "raw_lag_penalties": {
             "lambda_group": 0.0,
             "lambda_smooth": 1000.0,
             "lambda_ridge": 0.01
@@ -1844,7 +1844,7 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
 * **negatives_per_positive** — non-spike frames kept per spike frame in each training session (``10``); the subsampling is undone exactly by the ``subsampling_correction`` offset.
 * **calibration** — how a frozen model is turned into a score: ``scheme`` ``'crossfit'`` calibrates on blocks that exclude the scored block (``n_blocks`` contiguous blocks, ``5``), so no score is calibrated on its own frames.
 * **session_intercepts** — per-session baselines, so a session that fires faster cannot be explained by whichever feature also differs in it. ``compute`` toggles them; on the spline path the session indicators enter as one column group scaled by ``indicator_scale`` (``10.0``, so the uniform ridge reaches them at 1/100 of its strength — effectively unpenalised); on the raw per-frame path they are backfitted: ``max_sweeps`` (``30``) alternations of a filter refit and a per-session Newton update of the baselines, stopped when the baselines move less than ``tolerance`` (``1e-4``). Each per-session Newton solve takes at most ``newton_max_steps`` (``25``) steps and stops once a step is below ``newton_step_tolerance`` (``1e-10``); it is a one-dimensional convex solve, so these only bound it.
-* **significance_model** — the penalties of the raw per-frame-lag fit: ``lambda_group`` (group lasso, ``0.0`` = no sparsity), ``lambda_smooth`` (``1000.0``) and ``lambda_ridge`` (``0.01``).
+* **raw_lag_penalties** — the penalties of the raw per-frame-lag fit: ``lambda_group`` (group lasso, ``0.0`` = no sparsity), ``lambda_smooth`` (``1000.0``) and ``lambda_ridge`` (``0.01``).
 * **feature_selection** — features are screened one at a time against the circular-shift null at a Bonferroni bar of ``screen_alpha / n_features`` (``0.01``), optionally requiring a positive calibration slope (``screen_require_positive_slope``), then added by ``selection_method`` ``'forward_d2'`` (forward selection on held-out explained deviance) under ``acceptance_rule`` ``'paired_1se'`` (a step is accepted when its paired gain exceeds one paired standard error). Both names accept only the implemented value.
 * **solver** — ``max_iter`` (``5000``) and ``tol`` (``1e-6``) of the FISTA group-elastic-net solver; ``calibration_steps`` (``30``) Newton iterations of each two-parameter calibration refit; ``null_calibration_bins`` (``2000``) equal-count predictor bins for the binned calibration of the null draws (``0`` runs the exact path; the responses are exact either way).
 * **transfer** — the frozen quiet model scored on vocal periods. ``calibration_grain`` ``'pooled_across_folds'`` concatenates the held-out predictions and calibrates once (averaging per-fold scores let a small fold dominate); ``d2_reference_rate`` ``'scored_frames'`` scores explained deviance against the vocal frames' own rate; ``universe`` ``'bout_window'`` scores each bout from ``pre_bout_seconds`` (``4.0``) before its first USV to its end, bouts being split where the inter-USV gap reaches ``inter_bout_threshold_seconds`` (``0.1155``); ``grain`` ``'count'`` scores spike counts in ``bin_seconds`` (``0.1``) bins rather than per frame; ``null_block_megabytes`` (``64``) is the memory budget for one block of pooled null draws under the ``'frame'`` grain, a memory bound only (the null scores do not depend on it).

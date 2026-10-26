@@ -209,6 +209,26 @@ class TestRepresentativeFold:
         with nothing to report."""
         assert representative_fold([self._fold(0.0, 0, no_model=True)]) == -1
 
+    def test_folds_with_a_nan_quiet_score_are_ignored(self):
+        """A held-out block with no quiet spikes scores NaN. Sorting with a NaN key gives an arbitrary
+        order, so such a fold could otherwise land in the middle and become the representative; it must
+        be left out, and the median taken over the folds that can be ranked."""
+        folds = [self._fold(np.nan, 900), self._fold(-0.029, 100), self._fold(np.nan, 900),
+                 self._fold(-0.004, 100), self._fold(-0.043, 100)]
+        assert representative_fold(folds) == 1          # median of -0.043, -0.029, -0.004
+
+    def test_nan_folds_do_not_count_toward_the_even_tie_break(self):
+        """Three NaN folds and two finite ones leave an even count of two; the tie-break on vocal
+        frames decides between the finite pair only."""
+        folds = [self._fold(0.014, 200), self._fold(-0.002, 300), self._fold(np.nan, 5000),
+                 self._fold(np.nan, 5000), self._fold(np.nan, 5000)]
+        assert representative_fold(folds) == 1
+
+    def test_every_model_fold_nan_returns_minus_one(self):
+        """With models but no finite quiet score anywhere, there is nothing to rank, so -1 is returned
+        rather than an index into a fold whose score is undefined."""
+        assert representative_fold([self._fold(np.nan, 10), self._fold(np.nan, 20)]) == -1
+
 
 class TestFilterBand:
     """The reported band: refit the SELECTED model on block resamples and take the per-lag spread."""
@@ -258,8 +278,8 @@ class TestFilterBand:
         encoding (dict)
             A self-contained ``kinematic_encoding`` block with every key ``fit_quiet_model`` reads.
         """
-        return {"significance_model": {"lambda_group": 0.0, "lambda_smooth": 1000.0,
-                                       "lambda_ridge": 0.01},
+        return {"raw_lag_penalties": {"lambda_group": 0.0, "lambda_smooth": 1000.0,
+                                      "lambda_ridge": 0.01},
                 "smoothness_order": 1, "negatives_per_positive": 10, "max_train_total": 4000,
                 "solver": {"max_iter": 300, "tol": 1e-6},
                 "subsampling_correction": "log_prior_offset",
@@ -555,10 +575,15 @@ class TestFoldsWithoutAModel:
                 "rec_date": 20250101, "courtship_sessions": sessions, "vocal_sessions": sessions}
         self._round_trip(tmp_path, [self._no_model_fold(0, "s0"), self._no_model_fold(1, "s1")])
         monkeypatch.setattr(dispatcher, "assemble_unit_sessions",
-                            lambda *_a, **_k: {s: {"fps": 150.0, "feature_names": ["a", "b"]}
+                            lambda *_a, **_k: {s: {"fps": 150.0, "feature_names": ["a", "b"], "n_frames": 1500,
+                                                   "spike_frames": np.array([10, 20, 900, 1400]),
+                                                   "quiet": np.array([20, 30, 900]), "window": (0, 1000)}
                                                for s in sessions})
         combine(unit, load_settings(), str(tmp_path), str(tmp_path), message_output=lambda *_a: None)
         stored = read_unit_artifact(str(tmp_path), unit["unit_uid"])["kinematic_encoding"]
+        # three spikes inside the window [0, 1000), two of them on quiet anchors (20 and 900)
+        assert stored["spike_counts_per_session"]["s0"] == {"spikes": 3, "quiet_spikes": 2,
+                                                            "seconds": pytest.approx(1000 / 150.0)}
         assert stored["no_model"] is True
         assert stored["quiet_p"] == 1.0
         assert np.isnan(stored["transfer_p"])
@@ -742,7 +767,7 @@ class TestTemporalBasis:
         encoding (dict)
             A complete ``kinematic_encoding`` block.
         """
-        return {"significance_model": {"lambda_group": 0.0, "lambda_smooth": 1000.0, "lambda_ridge": 0.01},
+        return {"raw_lag_penalties": {"lambda_group": 0.0, "lambda_smooth": 1000.0, "lambda_ridge": 0.01},
                 "smoothness_order": 1, "negatives_per_positive": 10, "max_train_total": 6000,
                 "solver": {"max_iter": 3000, "tol": 1e-6}, "subsampling_correction": "log_prior_offset",
                 "calibration": {"scheme": "crossfit", "n_blocks": 5},

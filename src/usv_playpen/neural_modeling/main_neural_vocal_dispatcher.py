@@ -33,6 +33,7 @@ from .neural_design_assembly import (
     assemble_unit_sessions,
     assemble_unit_vocal_events,
     load_unit_spike_frames,
+    source_session,
     worker_process_context,
 )
 from .neural_nested_decoding import (
@@ -373,7 +374,8 @@ def session_spike_seconds(events: dict, data_root: str, unit: dict) -> dict:
     """
     Description
     -----------
-    Each vocal session's spike times in seconds, sorted, keyed by the events' session slot.
+    Each vocal session's spike times in seconds, sorted, keyed by the events' session slot. A block
+    carries its whole session's train, which the circular shift wraps over.
 
     Parameters
     ----------
@@ -390,7 +392,7 @@ def session_spike_seconds(events: dict, data_root: str, unit: dict) -> dict:
         ``{slot: sorted spike times}``.
     """
 
-    return {slot: np.sort(load_unit_spike_frames(data_root, session_id, unit["unit_id"])[0])
+    return {slot: np.sort(load_unit_spike_frames(data_root, source_session(session_id), unit["unit_id"])[0])
             for slot, session_id in enumerate(events["session_ids"])}
 
 
@@ -872,6 +874,12 @@ def run_vocal(unit: dict, settings: dict, data_root: str, output_directory: str,
     them from the unit's result file, and refuses to run if one is missing or was computed from too
     few draws to clear the activation threshold. Categorical decoding is not run here.
 
+    A unit with fewer vocal sessions (or blocks) than ``data_sufficiency.min_vocal_sessions`` cannot be
+    tested on the vocal side: every analysis here holds out a vocal session, and with one there is
+    nothing left to train on. Each requested section is then written as ``{"ran": False, "reason":
+    "not_vocal_testable", "n_vocal_sessions": ...}`` and nothing is fitted, so the unit is recorded
+    rather than missing.
+
     Parameters
     ----------
     unit (dict)
@@ -898,6 +906,15 @@ def run_vocal(unit: dict, settings: dict, data_root: str, output_directory: str,
     if unknown:
         msg = f"unknown vocal step(s) {unknown}; choose from {list(VOCAL_STEPS)}"
         raise ValueError(msg)
+    n_vocal_sessions = len(unit["vocal_sessions"])
+    if n_vocal_sessions < int(settings["data_sufficiency"]["min_vocal_sessions"]):
+        message_output(f"  NOT VOCAL-TESTABLE: {n_vocal_sessions} vocal session(s), "
+                       f"{settings['data_sufficiency']['min_vocal_sessions']} required; sections written as not run")
+        for step in [s for s in VOCAL_STEPS if s in steps]:
+            write_unit_section(output_directory, unit, step,
+                               {"ran": False, "reason": "not_vocal_testable", "n_vocal_sessions": n_vocal_sessions},
+                               settings)
+        return
     results: dict = {}
     events = None
     if any(step in steps for step in VOCAL_STEPS[:3]):

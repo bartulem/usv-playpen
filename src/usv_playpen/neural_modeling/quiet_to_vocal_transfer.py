@@ -24,6 +24,7 @@ from .deviance_metrics import (
     encoding_metrics,
     explained_deviance_vs_reference_rate,
     frozen_model_score,
+    groups_left_out,
     pooled_calibrated_explained_deviance,
 )
 from .neural_design_assembly import spike_labels_at_frames
@@ -218,7 +219,21 @@ def score_fold(estimator, session: dict, feature_indices: list, vocal_frames: np
         log-odds averaged per bin), ``bin_counts``, ``n_bins`` and ``bin_width_frames``, with
         ``fold_score`` / ``fold_slope`` then the Poisson pooled score on this session's bins. The
         per-frame descriptors are kept under either grain.
+
+        A session (or block) with no transfer frames -- one in which the animal did not vocalize -- has
+        nothing to score: the result then carries empty arrays and NaN scores, with ``n_frames`` 0,
+        rather than raising on an empty division.
     """
+
+    if vocal_frames.size == 0:
+        empty = np.zeros(0, dtype=np.float64)
+        result = {"eta": empty, "labels": np.zeros(0, dtype=np.int64), "fold_score": np.nan,
+                  "fold_slope": np.nan, "auroc": np.nan, "spike_rate": np.nan, "n_frames": 0,
+                  "metrics": None, "level": None}
+        if transfer_settings["grain"] == "count":
+            result.update({"bin_eta": empty, "bin_counts": np.zeros(0, dtype=np.int64), "n_bins": 0,
+                           "bin_width_frames": bin_width_frames(transfer_settings, float(session["fps"]))})
+        return result
 
     eta = linear_predictor_fn(estimator, session["feature_time_series"], feature_indices, vocal_frames,
                               n_lags, encoding_settings["chunk_rows"])
@@ -428,8 +443,10 @@ def combine_folds(fold_results: list, per_session: dict, session_ids: list,
     result (dict)
         ``score``, ``slope``, ``p``, ``at_floor``, ``n_frames``, ``n_bins``, ``bin_width_frames``,
         ``grain``, ``universe``, ``null``, the leave-one-session-out descriptors
-        ``leave_one_session_out`` and ``min_leave_one_session_out``, and the per-fold diagnostics under
-        ``folds``.
+        ``leave_one_session_out`` and ``min_leave_one_session_out``, ``left_out_sessions``
+        (``{session_id: reason}`` for every session or block the observed score left out, see
+        :func:`~usv_playpen.neural_modeling.deviance_metrics.groups_left_out`), and the per-fold diagnostics
+        under ``folds``.
     """
 
     # These settings name what this function does; reject any other value rather than ignore it.
@@ -470,6 +487,9 @@ def combine_folds(fold_results: list, per_session: dict, session_ids: list,
         scorer = partial(frozen_model_score, family="bernoulli", exposure=1.0,
                          calibration=settings["kinematic_encoding"]["calibration"])
     score, slope = scorer(eta, labels, session_index, calibration_steps)
+    left_out_sessions = {session_ids[index]: reason for index, reason in
+                         groups_left_out(labels, session_index, "poisson" if grain == "count" else "bernoulli",
+                                         settings["kinematic_encoding"]["calibration"]).items()}
     leave_one_session_out = leave_one_session_out_scores(eta, labels, session_index, session_ids,
                                                          calibration_steps, scorer)
     min_leave_one_session_out = (min(entry["score"] for entry in leave_one_session_out.values())
@@ -500,6 +520,8 @@ def combine_folds(fold_results: list, per_session: dict, session_ids: list,
     if leave_one_session_out:
         message_output(f"    leave-one-session-out minimum {min_leave_one_session_out:+.5f} "
                        f"(descriptor, gates nothing)")
+    for session_id, reason in left_out_sessions.items():
+        message_output(f"    left out of the score: {session_id} ({reason})")
     for session_id, result in zip(session_ids, fold_results, strict=True):
         dropped = leave_one_session_out[session_id] if leave_one_session_out else None
         without = (f" | without it {dropped['score']:+.5f} slope {dropped['slope']:+.3f}"
@@ -512,6 +534,7 @@ def combine_folds(fold_results: list, per_session: dict, session_ids: list,
             "bin_width_frames": width, "grain": grain, "universe": transfer_settings["universe"],
             "null": null, "leave_one_session_out": leave_one_session_out,
             "min_leave_one_session_out": min_leave_one_session_out,
+            "left_out_sessions": left_out_sessions,
             "folds": [{key: value for key, value in result.items()
                        if key not in ("eta", "labels", "bin_eta", "bin_counts")}
                       for result in fold_results]}

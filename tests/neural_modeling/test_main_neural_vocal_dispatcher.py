@@ -1382,6 +1382,45 @@ class TestRunVocalOrder:
         ]
 
 
+class TestNotVocalTestable:
+    """A unit with fewer vocal sessions (or blocks) than ``min_vocal_sessions`` is recorded, not crashed."""
+
+    def test_every_requested_section_is_written_as_not_run_and_nothing_is_fitted(self, tmp_path, monkeypatch):
+        """
+        Description
+        -----------
+        A one-session unit whose USVs all fall in one block has a single vocal block, so every vocal
+        analysis would hold it out and train on nothing. ``run_vocal`` must fit nothing -- the event
+        assembler and every step are recorders that must stay unreached -- and must write each requested
+        section as ``{"ran": False, "reason": "not_vocal_testable", "n_vocal_sessions": 1}``.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Output directory.
+        monkeypatch (pytest.MonkeyPatch)
+            Installs the recorders.
+
+        Returns
+        -------
+        None
+        """
+        calls = collections.defaultdict(list)
+        for name in ("assemble_unit_vocal_events", "run_vocal_occurrence", "run_vocalization_identity",
+                     "run_nested_vocal_manifold_position_decoding", "run_vocal_gating"):
+            monkeypatch.setattr(vocal, name, _recording_stub(calls, name, {}))
+        settings = _settings()
+        settings["data_sufficiency"]["min_vocal_sessions"] = 2
+        unit = {**UNIT, "courtship_sessions": [f"s0#block{i}" for i in range(5)], "vocal_sessions": ["s0#block0"]}
+
+        vocal.run_vocal(unit, settings, "/data", str(tmp_path), 1, vocal.VOCAL_STEPS, _quiet)
+
+        assert not calls
+        stored = read_unit_artifact(str(tmp_path), unit["unit_uid"])
+        for step in vocal.VOCAL_STEPS:
+            assert stored[step] == {"ran": False, "reason": "not_vocal_testable", "n_vocal_sessions": 1}
+
+
 class TestVocalCommandLine:
     """``main`` parses one unit's job and ``dispatch`` hands it to ``run_vocal``."""
 
@@ -1424,8 +1463,8 @@ class TestVocalCommandLine:
         """
         Description
         -----------
-        Stubs the per-session USV counter the unit record is built from (``s0``: 25, ``s1``: 5) and
-        ``run_vocal`` with recorders.
+        Stubs the per-session USV onset reader the unit record is built from (``s0``: 25 USVs, ``s1``: 5)
+        and ``run_vocal`` with recorders.
 
         Parameters
         ----------
@@ -1442,8 +1481,9 @@ class TestVocalCommandLine:
         calls = collections.defaultdict(list)
         monkeypatch.setattr(
             enc,
-            "emitter_usv_counts",
-            _recording_stub(calls, "emitter_usv_counts", {"s0": 25, "s1": 5}),
+            "focal_usv_onsets",
+            _recording_stub(calls, "focal_usv_onsets", {"s0": (np.arange(25.0), 150.0, 150_000),
+                                                        "s1": (np.arange(5.0), 150.0, 150_000)}),
         )
         monkeypatch.setattr(
             vocal, "run_vocal", _recording_stub(calls, "run_vocal", run_vocal_result)
