@@ -754,8 +754,10 @@ class TestRunFold:
             "s1",
         ]
         assert calls["focal_vocal_frames"][0][0][6] is settings["vocalization_settings"]
+        # the run-up is the quiet rule's forward guard, so the window and the quiet set cannot overlap
         assert all(
-            call[0][6] is settings["kinematic_encoding"]["transfer"]
+            call[0][6] == settings["kinematic_encoding"]["clean_post_seconds"]
+            and call[0][7] is settings["kinematic_encoding"]["transfer"]
             for call in calls["transfer_frames"]
         )
 

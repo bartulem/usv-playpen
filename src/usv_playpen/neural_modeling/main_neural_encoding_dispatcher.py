@@ -271,7 +271,8 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
                                                      fps, n_lags, settings["vocalization_settings"])
     # Clipped to the window: a bout window reaches back before a block's first vocalization.
     vocal_frames = frames_in_window(transfer_frames(vocal_frames, pointer, fps, session["n_frames"], n_lags,
-                                                    session["quiet"], transfer_settings), session["window"])
+                                                    session["quiet"], encoding["clean_post_seconds"],
+                                                    transfer_settings), session["window"])
 
     inner_sessions, inner_ids = per_session, pool_ids
     if len(pool_ids) == 1:
@@ -368,7 +369,8 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
             settings["vocalization_settings"])
         other_frames = frames_in_window(
             transfer_frames(other_frames, other_pointer, fps, per_session[other_id]["n_frames"], n_lags,
-                            per_session[other_id]["quiet"], transfer_settings), per_session[other_id]["window"])
+                            per_session[other_id]["quiet"], encoding["clean_post_seconds"], transfer_settings),
+            per_session[other_id]["window"])
         scored = score_fold(estimator, per_session[other_id], selected, other_frames, n_lags,
                             base_rate, encoding, linear_predictor_at_frames, transfer_settings)
         scored["session_id"] = other_id
@@ -644,7 +646,8 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
                                                    unit["mouse_id"], fps, n_lags,
                                                    settings["vocalization_settings"])
         frames = frames_in_window(transfer_frames(frames, pointer, fps, per_session[session_id]["n_frames"], n_lags,
-                                                  per_session[session_id]["quiet"], transfer_settings),
+                                                  per_session[session_id]["quiet"], encoding["clean_post_seconds"],
+                                                  transfer_settings),
                                   per_session[session_id]["window"])
         vocal_frames_by_session[session_id] = frames
         result = score_fold(estimator, per_session[session_id], selected, frames, n_lags, base_rate,

@@ -39,7 +39,7 @@ TRANSFER_GRAINS = ("frame", "count")
 
 
 def transfer_frames(span_frames: np.ndarray, pointer: np.ndarray, fps: float, n_frames: int, n_lags: int,
-                    quiet_frames: np.ndarray, transfer_settings: dict) -> np.ndarray:
+                    quiet_frames: np.ndarray, run_up_seconds: float, transfer_settings: dict) -> np.ndarray:
     """
     Description
     -----------
@@ -47,8 +47,13 @@ def transfer_frames(span_frames: np.ndarray, pointer: np.ndarray, fps: float, n_
 
     ``"usv_span"`` keeps every frame inside one of the recorded animal's USVs. ``"bout_window"`` groups
     the USVs into bouts (consecutive USVs closer than ``inter_bout_threshold_seconds``, single-USV bouts
-    included) and keeps the union of ``[bout start - pre_bout_seconds, bout end]``. Frames without a full
+    included) and keeps the union of ``[bout start - run_up_seconds, bout end]``. Frames without a full
     history and every quiet anchor are removed, so no frame is both fitted and scored.
+
+    The run-up is the quiet rule's forward guard (``kinematic_encoding.clean_post_seconds``), passed in by
+    the caller rather than set separately: a quiet anchor admits no vocalization within that long after it,
+    so with the two equal no frame of a bout's run-up can also be a quiet anchor, and the whole run-up is
+    scored as peri-vocal instead of part of it being fitted as silence.
 
     Parameters
     ----------
@@ -65,6 +70,8 @@ def transfer_frames(span_frames: np.ndarray, pointer: np.ndarray, fps: float, n_
         History length in frames.
     quiet_frames (np.ndarray)
         The session's quiet anchors.
+    run_up_seconds (float)
+        How far before each bout's first USV the window starts; the quiet rule's forward guard.
     transfer_settings (dict)
         The ``kinematic_encoding.transfer`` settings block.
 
@@ -85,7 +92,7 @@ def transfer_frames(span_frames: np.ndarray, pointer: np.ndarray, fps: float, n_
     gaps = (first[1:] - last[:-1]) / fps
     starts = np.concatenate([[0], np.flatnonzero(gaps >= float(transfer_settings["inter_bout_threshold_seconds"])) + 1])
     ends = np.concatenate([starts[1:] - 1, [first.size - 1]])
-    pre = int(np.round(float(transfer_settings["pre_bout_seconds"]) * fps))
+    pre = int(np.round(float(run_up_seconds) * fps))
     mask = np.zeros(n_frames, dtype=bool)
     for bout_start, bout_end in zip(starts, ends, strict=True):
         mask[max(int(first[bout_start]) - pre, 0):int(last[bout_end]) + 1] = True

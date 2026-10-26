@@ -1769,7 +1769,7 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
 
     "kinematic_encoding": {
         "history_pre_seconds": 4.0,
-        "clean_post_seconds": 2.0,
+        "clean_post_seconds": 4.0,
         "bin_resize_factor": 1,
         "smoothness_order": 1,
         "include_spike_history": false,
@@ -1813,7 +1813,6 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
             "calibration_grain": "pooled_across_folds",
             "d2_reference_rate": "scored_frames",
             "universe": "bout_window",
-            "pre_bout_seconds": 4.0,
             "inter_bout_threshold_seconds": 0.1155,
             "grain": "count",
             "bin_seconds": 0.1,
@@ -1837,7 +1836,7 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
     }
 
 * **history_pre_seconds** — the kinematic history length (``4.0`` → 600 lags at 150 fps). It also defines a quiet frame (no vocalization within this long before it) and the minimum gap of the single-session inner split, deliberately coupled so a quiet anchor's whole history is vocalization-free.
-* **clean_post_seconds** — a quiet frame must also have no vocalization within this long after it (``2.0``).
+* **clean_post_seconds** — a quiet frame must also have no vocalization within this long after it (``4.0``). The transfer's run-up before each bout is this same length, so no frame of a run-up can be a quiet anchor.
 * **bin_resize_factor** / **include_spike_history** / **spike_history_window_seconds** / **subsample_negatives** — declared but read by no current code (the model runs at the tracking frame rate, without spike history, and always subsamples the negatives by ``negatives_per_positive``).
 * **smoothness_order** — finite-difference order of the temporal-smoothness penalty on the raw per-frame lag path (``1``: first differences, the GLM-HMM tradition); used only when ``temporal_basis.type`` is ``'none'``.
 * **filter_band** — ``compute`` toggles the per-lag spread band of the representative filters; ``n_resamples`` is the number of refits it is built from (``10``).
@@ -1847,7 +1846,7 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
 * **raw_lag_penalties** — the penalties of the raw per-frame-lag fit: ``lambda_group`` (group lasso, ``0.0`` = no sparsity), ``lambda_smooth`` (``1000.0``) and ``lambda_ridge`` (``0.01``).
 * **feature_selection** — features are screened one at a time against the circular-shift null at a Bonferroni bar of ``screen_alpha / n_features`` (``0.01``), optionally requiring a positive calibration slope (``screen_require_positive_slope``), then added by ``selection_method`` ``'forward_d2'`` (forward selection on held-out explained deviance) under ``acceptance_rule`` ``'paired_1se'`` (a step is accepted when its paired gain exceeds one paired standard error). Both names accept only the implemented value.
 * **solver** — ``max_iter`` (``5000``) and ``tol`` (``1e-6``) of the FISTA group-elastic-net solver; ``calibration_steps`` (``30``) Newton iterations of each two-parameter calibration refit; ``null_calibration_bins`` (``2000``) equal-count predictor bins for the binned calibration of the null draws (``0`` runs the exact path; the responses are exact either way).
-* **transfer** — the frozen quiet model scored on vocal periods. ``calibration_grain`` ``'pooled_across_folds'`` concatenates the held-out predictions and calibrates once (averaging per-fold scores let a small fold dominate); ``d2_reference_rate`` ``'scored_frames'`` scores explained deviance against the vocal frames' own rate; ``universe`` ``'bout_window'`` scores each bout from ``pre_bout_seconds`` (``4.0``) before its first USV to its end, bouts being split where the inter-USV gap reaches ``inter_bout_threshold_seconds`` (``0.1155``); ``grain`` ``'count'`` scores spike counts in ``bin_seconds`` (``0.1``) bins rather than per frame; ``null_block_megabytes`` (``64``) is the memory budget for one block of pooled null draws under the ``'frame'`` grain, a memory bound only (the null scores do not depend on it).
+* **transfer** — the frozen quiet model scored on vocal periods. ``calibration_grain`` ``'pooled_across_folds'`` concatenates the held-out predictions and calibrates once (averaging per-fold scores let a small fold dominate); ``d2_reference_rate`` ``'scored_frames'`` scores explained deviance against the vocal frames' own rate; ``universe`` ``'bout_window'`` scores each bout from ``clean_post_seconds`` (``4.0``) before its first USV to its end, bouts being split where the inter-USV gap reaches ``inter_bout_threshold_seconds`` (``0.1155``); ``grain`` ``'count'`` scores spike counts in ``bin_seconds`` (``0.1``) bins rather than per frame; ``null_block_megabytes`` (``64``) is the memory budget for one block of pooled null draws under the ``'frame'`` grain, a memory bound only (the null scores do not depend on it).
 * **subsampling_correction** — ``'log_prior_offset'``: the negative subsampling is corrected by a ``log`` sampling-rate offset in the linear predictor (the only implemented value).
 * **temporal_basis** — the lag basis of the shipped fit: ``type`` ``'bspline'`` (``'none'`` keeps the raw per-frame lags) with ``n_splines`` (``20``) cubic (``spline_order`` ``3``) B-splines over the 600 lags; ``l2_lag_alpha`` (``100.0``) makes the ridge grow with a spline's distance from the spike, each column's penalty scaled by ``1 + l2_lag_alpha · f²`` with ``f`` its centre's lag as a fraction of the window, so the far end of the history is shrunk hardest; ``lambda_ridge`` (``0.1``) and ``lambda_smooth`` (``0.0``) are the coefficient ridge and the smoothness penalty across neighbouring splines; ``lambda_group`` (``0.0``) is the group-lasso strength of the basis-path fit (off: the basis path does no feature sparsity); ``smoothness_order`` (``2``) is the finite-difference order of that spline-coefficient smoothness penalty (inert while ``lambda_smooth`` is ``0``); ``spike_end_correction`` ``'drop_outside_and_rescale'`` repairs what a uniform coefficient ridge does at the spike end of the basis (``'none'`` leaves it).
 * **max_train_total** — cap on the training rows of one fit across sessions (``70000``, split evenly per session), which bounds memory and time.

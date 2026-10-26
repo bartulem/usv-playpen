@@ -29,6 +29,7 @@ from usv_playpen.neural_modeling.kinematic_encoding import (
     FrameFilterModel,
     linear_predictor_at_frames,
 )
+from usv_playpen.neural_modeling.neural_design_assembly import quiet_anchor_frames
 from usv_playpen.neural_modeling.quiet_to_vocal_transfer import (
     bin_frame_matrix,
     combine_folds,
@@ -40,7 +41,7 @@ from usv_playpen.neural_modeling.quiet_to_vocal_transfer import (
 
 FPS = 100.0
 TRANSFER = {"calibration_grain": "pooled_across_folds", "d2_reference_rate": "scored_frames",
-            "universe": "bout_window", "pre_bout_seconds": 1.0, "inter_bout_threshold_seconds": 0.2,
+            "universe": "bout_window", "inter_bout_threshold_seconds": 0.2,
             "grain": "count", "bin_seconds": 0.1, "null_block_megabytes": 64.0}
 
 
@@ -79,21 +80,21 @@ class TestTransferFrames:
         """Under ``universe = "usv_span"`` the output must be the USV span frames unchanged, so the span
         universe adds no run-up and merges nothing."""
         frames, pointer = spans([(2.0, 2.1), (2.15, 2.25)])
-        out = transfer_frames(frames, pointer, FPS, 1000, 50, np.arange(0, 100), {**TRANSFER, "universe": "usv_span"})
+        out = transfer_frames(frames, pointer, FPS, 1000, 50, np.arange(0, 100), 1.0, {**TRANSFER, "universe": "usv_span"})
         np.testing.assert_array_equal(out, frames)
 
     def test_the_bout_window_merges_close_usvs_and_adds_the_run_up(self):
         """Two USVs 50 ms apart are one bout; the window runs from 1 s before the first to the end of the
         second, including the gap between them."""
         frames, pointer = spans([(5.0, 5.1), (5.15, 5.25)])
-        out = transfer_frames(frames, pointer, FPS, 2000, 50, np.zeros(0, dtype=np.int64), TRANSFER)
+        out = transfer_frames(frames, pointer, FPS, 2000, 50, np.zeros(0, dtype=np.int64), 1.0, TRANSFER)
         np.testing.assert_array_equal(out, np.arange(400, 525))
 
     def test_a_long_gap_starts_a_new_bout_with_its_own_run_up(self):
         """USVs 3 s apart (beyond the inter-bout threshold) must form two bouts, each with its own 1 s run-up and
         nothing filled in between, so silence between bouts is never scored as vocal."""
         frames, pointer = spans([(5.0, 5.1), (8.0, 8.1)])
-        out = transfer_frames(frames, pointer, FPS, 2000, 50, np.zeros(0, dtype=np.int64), TRANSFER)
+        out = transfer_frames(frames, pointer, FPS, 2000, 50, np.zeros(0, dtype=np.int64), 1.0, TRANSFER)
         expected = np.concatenate([np.arange(400, 510), np.arange(700, 810)])
         np.testing.assert_array_equal(out, expected)
 
@@ -102,17 +103,45 @@ class TestTransferFrames:
         n_lags - 1 frames have no full history."""
         frames, pointer = spans([(0.6, 0.7)])
         quiet = np.arange(0, 20)
-        out = transfer_frames(frames, pointer, FPS, 1000, 30, quiet, TRANSFER)
+        out = transfer_frames(frames, pointer, FPS, 1000, 30, quiet, 1.0, TRANSFER)
         assert out.min() >= 29
         assert not np.intersect1d(out, quiet).size
         assert out.max() == 69
+
+    @pytest.mark.parametrize(("clean_post", "run_up_lost"), [(4.0, False), (2.0, True)])
+    def test_a_run_up_equal_to_the_quiet_guard_is_scored_whole(self, clean_post, run_up_lost):
+        """
+        Description
+        -----------
+        The run-up is passed in as the quiet rule's forward guard. With the two equal (4 s), no frame of an
+        isolated bout's run-up can be a quiet anchor, so the whole run-up is scored and nothing is both
+        fitted and scored. With a shorter guard (2 s) the frames 2-4 s before the bout pass the quiet rule,
+        are fitted as silence, and drop out of the run-up.
+
+        Parameters
+        ----------
+        clean_post (float)
+            The quiet rule's forward guard in seconds.
+        run_up_lost (bool)
+            Whether part of a 4 s run-up is expected to fall in the quiet set.
+
+        Returns
+        -------
+        None
+        """
+        frames, pointer = spans([(20.0, 20.1)])
+        quiet = quiet_anchor_frames(np.array([20.0]), np.array([20.1]), 4000, FPS, 4.0, clean_post)
+        out = transfer_frames(frames, pointer, FPS, 4000, 400, quiet, 4.0, TRANSFER)
+        run_up = np.arange(1600, 2000)
+        assert not np.intersect1d(out, quiet).size
+        assert np.isin(run_up, out).all() != run_up_lost
 
     def test_an_unknown_universe_is_refused(self):
         """An unrecognised universe must raise ``ValueError`` naming ``transfer.universe`` rather than fall back
         to a default frame set."""
         frames, pointer = spans([(1.0, 1.1)])
         with pytest.raises(ValueError, match=r"transfer\.universe"):
-            transfer_frames(frames, pointer, FPS, 500, 10, np.zeros(0, dtype=np.int64), {**TRANSFER, "universe": "bouts"})
+            transfer_frames(frames, pointer, FPS, 500, 10, np.zeros(0, dtype=np.int64), 1.0, {**TRANSFER, "universe": "bouts"})
 
 
 class TestBinsAndCounts:
@@ -380,16 +409,18 @@ class TestCountGrainCombine:
 class TestShippedTransferSettings:
     """The transfer block of the shipped settings file."""
     def test_the_shipped_values(self):
-        """The shipped choice: bout window with a 4 s run-up at the repo's inter-bout
-        threshold, Poisson counts per 100 ms bin."""
+        """The shipped choice: bout window whose run-up is the quiet rule's 4 s forward guard, at the repo's
+        inter-bout threshold, Poisson counts per 100 ms bin."""
         with (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"
               / "_parameter_settings" / "neural_modeling_settings.json").open() as handle:
             block = json.load(handle)["kinematic_encoding"]["transfer"]
         assert block["universe"] == "bout_window"
         assert block["grain"] == "count"
-        assert block["pre_bout_seconds"] == 4.0
+        with (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"
+              / "_parameter_settings" / "neural_modeling_settings.json").open() as handle:
+            assert json.load(handle)["kinematic_encoding"]["clean_post_seconds"] == 4.0
         assert block["bin_seconds"] == 0.1
         assert block["inter_bout_threshold_seconds"] == pytest.approx(0.1155, abs=1e-4)
         assert block["null_block_megabytes"] == 64
-        assert set(block) == {"calibration_grain", "d2_reference_rate", "universe", "pre_bout_seconds",
+        assert set(block) == {"calibration_grain", "d2_reference_rate", "universe",
                               "inter_bout_threshold_seconds", "grain", "bin_seconds", "null_block_megabytes"}
