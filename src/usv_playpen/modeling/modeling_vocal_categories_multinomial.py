@@ -1767,10 +1767,17 @@ class MultinomialModelRunner:
         # reliance on ambient NumPy global state.
         null_rng = np.random.default_rng(base_seed + 9_973)
 
+        # The three strategies run as separate silent passes over the splits; the
+        # per-split lines joining their metrics print only after the last pass, so
+        # each pass announces itself here with one progress line instead.
+        strategy_descriptions = {
+            'actual': "ACTUAL (true category labels)",
+            'null': "NULL (training labels shuffled across the training fold)",
+            'null_model_free': "NULL-MF (training-fold category shares, no model fit)",
+        }
+
         for strategy in strategies:
-            print("\n" + "=" * 60)
-            print(f"FEATURE: {feat_name} | STRATEGY: {strategy.upper()}")
-            print("=" * 60)
+            print(f"Fitting {strategy_descriptions[strategy]} on {n_splits} splits...")
 
             y = feat_data['y'].copy()
 
@@ -2238,6 +2245,8 @@ class MultinomialModelRunner:
         # fit in separate passes above, so their per-fold metric lists are joined
         # into one line per split here, once every pass is done.
         n_ran = len(combined_results['actual']['folds']['metrics']['score'])
+        print(f"\nPer-split test metrics for {feat_name} (bal-acc = balanced accuracy, "
+              f"AUC = macro one-vs-rest, LL = log-loss):")
         for fold_idx in range(n_ran):
             line_groups = {}
             for strat, label in (('actual', 'ACTUAL'), ('null', 'NULL'),
