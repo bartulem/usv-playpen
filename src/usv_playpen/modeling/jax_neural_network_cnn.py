@@ -1698,6 +1698,9 @@ class NeuralContinuousCNNRunner:
             sex_mod = "female"
         else:
             sex_mod = "male"
+        # Keep the recording-modality prefix of an ephys input file.
+        if "_ephys_" in source_file or source_file.startswith("ephys_"):
+            sex_mod = f"ephys_{sex_mod}"
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         filename = f"cnn_manifold_integrated_predictions_{sex_mod}_{timestamp}.pkl"
         save_dir = pathlib.Path(self.modeling_settings['io']['save_directory'])

@@ -1308,7 +1308,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
     resume_converged = False
 
     fname = Path(univariate_results_path).name
-    cond_match = re.search(r'((?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
+    cond_match = re.search(r'((?:ephys_)?(?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
     target_condition = cond_match.group(1) if cond_match else "unknown"
     prediction_mode = settings['model_params']['model_target_vocal_type']
 
@@ -2138,7 +2138,7 @@ def vocal_category_model_selection(
 
     cat_match = re.search(r'category_(\d+)', fname)
     target_category = f"category_{cat_match.group(1)}" if cat_match else "category_unknown"
-    cond_match = re.search(r'((?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
+    cond_match = re.search(r'((?:ephys_)?(?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
     target_condition = cond_match.group(1) if cond_match else "unknown"
 
     with Path(univariate_results_path).open('rb') as f:
@@ -3381,7 +3381,7 @@ def bout_parameter_model_selection(
     step_counter = 0
 
     fname = Path(univariate_results_path).name
-    cond_match = re.search(r'((?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
+    cond_match = re.search(r'((?:ephys_)?(?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
     target_condition = cond_match.group(1) if cond_match else "unknown"
 
     prefix = f"model_selection_{target_variable}_{target_condition}_{split_strategy}_step_"
@@ -4502,9 +4502,9 @@ def multinomial_vocal_category_model_selection(
     fname = Path(univariate_results_path).name
     # Match the binomial / bout-onset regex grouping: `(?:...)` non-capture on
     # the alternation so conditions like `male_mute_partner` are captured in
-    # full. The older `(male|female.*?)` form captured only the literal `male`
+    # full, together with an `ephys_` recording-modality prefix when present. The older `(male|female.*?)` form captured only the literal `male`
     # for any `male_...` filename and truncated the prefix.
-    cond_match = re.search(r'((?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
+    cond_match = re.search(r'((?:ephys_)?(?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
     target_condition = cond_match.group(1) if cond_match else "unknown"
     # Pin which USV category column generated the multinomial labels so
     # the per-step prefix (and downstream consolidation) carries the
@@ -6140,8 +6140,9 @@ def continuous_vocal_manifold_model_selection(
 
     fname = Path(univariate_results_path).name
     # Use a non-capturing alternation so conditions like `male_mute_partner`
-    # are captured in full rather than truncated to `male`.
-    cond_match = re.search(r'((?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
+    # are captured in full rather than truncated to `male`, together with an
+    # `ephys_` recording-modality prefix when present.
+    cond_match = re.search(r'((?:ephys_)?(?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
     target_condition = cond_match.group(1) if cond_match else "unknown"
 
     # The per-step prefix (and so the consolidated artifact) carries the input

@@ -289,10 +289,24 @@ class TestDeriveExperimentalCondition:
         """Pooled intact + mute cohort: predictor slot 0 -> target female;
         slot 1 -> target male, labelled ``<sex>_all_partners``."""
 
-        s0 = self._settings('ephys_courtship_all_partners_sessions_list.txt', pred_idx=0)
-        s1 = self._settings('ephys_courtship_all_partners_sessions_list.txt', pred_idx=1)
+        s0 = self._settings('behavioral_courtship_all_partners_sessions_list.txt', pred_idx=0)
+        s1 = self._settings('behavioral_courtship_all_partners_sessions_list.txt', pred_idx=1)
         assert derive_experimental_condition(s0) == 'female_all_partners'
         assert derive_experimental_condition(s1) == 'male_all_partners'
+
+    @pytest.mark.parametrize(('fname', 'pred_idx', 'expected'), [
+        ('ephys_courtship_all_partners_sessions_list.txt', 1, 'ephys_male_all_partners'),
+        ('ephys_courtship_intact_partners_sessions_list.txt', 0, 'ephys_female_intact_partner'),
+        ('ephys_courtship_mute_female_sessions_list.txt', 1, 'ephys_male_mute_partner'),
+        ('behavioral_courtship_all_partners_sessions_list.txt', 1, 'male_all_partners'),
+        ('ephys_random.txt', 1, 'unspecified'),
+    ])
+    def test_ephys_lists_get_the_modality_prefix(self, fname, pred_idx, expected):
+        """An ``ephys...`` session list prefixes the cohort label with
+        ``ephys_``; behavioral lists keep the bare label, and an unmatched
+        ephys list is still ``'unspecified'``."""
+
+        assert derive_experimental_condition(self._settings(fname, pred_idx=pred_idx)) == expected
 
     def test_unrecognised_returns_unspecified(self):
         """An unmatched filename yields ``'unspecified'`` rather than

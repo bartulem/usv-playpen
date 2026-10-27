@@ -97,7 +97,7 @@ and pooled; blank lines are ignored. For example:
 The **filename itself carries the cohort label**: ``derive_experimental_condition``
 parses it (e.g. ``behavioral_courtship_intact_partners_sessions_list.txt`` →
 ``male_intact_partner`` or ``female_intact_partner``, by the target mouse's sex; mute cohorts read ``male_mute_partner``
-or ``female_mute_partner``, also by the target mouse's sex; a pooled intact + mute cohort whose filename contains ``all_partners`` reads ``male_all_partners`` or ``female_all_partners``; and any other filename ``unspecified``) and embeds that label into every output filename,
+or ``female_mute_partner``, also by the target mouse's sex; a pooled intact + mute cohort whose filename contains ``all_partners`` reads ``male_all_partners`` or ``female_all_partners``; a list whose filename starts with ``ephys`` puts ``ephys_`` in front of any of these, e.g. ``ephys_male_all_partners``; and any other filename ``unspecified``) and embeds that label into every output filename,
 so artifacts from different cohorts never collide and each one is self-identifying.
 
 **model_params** — the prediction target, history window, model engine,
@@ -1303,7 +1303,12 @@ Visualise the trajectory with ``plot_model_selection_results`` (binary / regress
 ``plot_multinomial_selection_trajectory`` (multinomial), or
 ``plot_manifold_selection_trajectory`` (continuous manifold): each reads the
 consolidated ``model_selection_final_*.pkl`` and shows the per-step held-out score
-gain and the retained-feature filters.
+gain and the retained-feature filters. Called with no metric arguments, the manifold
+plotter draws the score the run selected on (``_run_metadata['selection_metric']``:
+``vm_logscore`` on the torus, ``dcor_xy`` on euclidean) and, as percent improvement
+over chance, the region-balanced errors of the run's geometry: on the torus the
+manifold-position error (``euclidean_mae_macro``) and the acoustic error
+(``pullback_geodesic_mae_macro``), on euclidean the manifold-position error alone.
 
 For the acoustic-manifold model the converged filters have a single dedicated
 view, ``plot_manifold_filter_atlas`` (torus runs only), reading the same

@@ -312,6 +312,13 @@ def derive_experimental_condition(modeling_settings: dict) -> str:
        cohorts, and the label returned is `'male_all_partners'` or
        `'female_all_partners'` (plural: the cohort pools partner states).
 
+    **Recording modality.** A session list whose filename starts with
+    `'ephys'` (e.g. `ephys_courtship_all_partners_sessions_list.txt`) holds
+    the electrophysiology sessions, so any of the labels above gets an
+    `'ephys_'` prefix (`'ephys_male_all_partners'`,
+    `'ephys_male_intact_partner'`, ...). Behavioral lists keep the bare
+    label, so artifacts written before the prefix existed keep their names.
+
     If the filename matches none of the above patterns, the function
     returns `'unspecified'` rather than raising — the label is purely
     descriptive provenance and an unrecognised cohort should not abort
@@ -330,7 +337,8 @@ def derive_experimental_condition(modeling_settings: dict) -> str:
     str
         One of `'male_intact_partner'`, `'female_intact_partner'`,
         `'male_mute_partner'`, `'female_mute_partner'`,
-        `'male_all_partners'`, `'female_all_partners'`, or
+        `'male_all_partners'`, `'female_all_partners'` (each with an
+        `'ephys_'` prefix for an `ephys...` session list), or
         `'unspecified'`.
     """
 
@@ -341,25 +349,32 @@ def derive_experimental_condition(modeling_settings: dict) -> str:
     # sex via the `mute_female` / `mute_male` substring; the label leads
     # with the sex of the other, vocalizing mouse, which is the target.
     if 'mute_female' in fname:
-        return 'male_mute_partner'
-    if 'mute_male' in fname:
-        return 'female_mute_partner'
+        cohort_label = 'male_mute_partner'
+    elif 'mute_male' in fname:
+        cohort_label = 'female_mute_partner'
 
     # Intact cohorts: target is the *opposite* of the predictor mouse,
     # since the project convention is mouse_idx 0 = male, 1 = female.
-    if 'intact_partners' in fname:
+    elif 'intact_partners' in fname:
         pred_idx = modeling_settings['model_params']['model_predictor_mouse_index']
         target_sex = 'male' if pred_idx == 1 else 'female'
-        return f"{target_sex}_intact_partner"
+        cohort_label = f"{target_sex}_intact_partner"
 
     # All-partner cohorts pool intact and mute partners; the target is again
     # the opposite of the predictor mouse.
-    if 'all_partners' in fname:
+    elif 'all_partners' in fname:
         pred_idx = modeling_settings['model_params']['model_predictor_mouse_index']
         target_sex = 'male' if pred_idx == 1 else 'female'
-        return f"{target_sex}_all_partners"
+        cohort_label = f"{target_sex}_all_partners"
 
-    return 'unspecified'
+    else:
+        return 'unspecified'
+
+    # Electrophysiology session lists carry the recording modality as a prefix
+    # so ephys and behavioral artifacts of the same cohort never share a name.
+    if fname.startswith('ephys'):
+        return f"ephys_{cohort_label}"
+    return cohort_label
 
 
 def build_input_metadata(modeling_settings: dict,
