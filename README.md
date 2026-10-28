@@ -1,4 +1,4 @@
-[![Python version](https://img.shields.io/badge/Python-3.12%20|%203.13-blue)](https://www.python.org/downloads/)
+[![Python version](https://img.shields.io/badge/Python-3.13%20|%203.14-blue)](https://www.python.org/downloads/)
 [![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.7926971-blue)](https://doi.org/10.5281/zenodo.7926971)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](https://github.com/bartulem/usv-playpen/blob/main/LICENSE)
 [![repo size](https://img.shields.io/github/repo-size/bartulem/usv-playpen)](https://github.com/bartulem/usv-playpen/)
@@ -115,14 +115,36 @@ package version from the new git tag; without it the GUI may display a stale
 version number. All machines should be set to the same tag to guarantee
 identical behaviour.
 
-### Disk usage on quota-limited systems
+### Development installs
 
-`uv` caches wheels and build artifacts under `~/.cache/uv`; with the
-torch/jax/CUDA stack this grows to **tens of GB** and keeps growing across
-`uv sync` runs. On a quota-limited home directory (e.g. the PNI cluster's ~95 GB
-soft limit) run **`uv cache clean`** periodically — it is safe, since it only
-removes re-downloadable caches (the next `uv sync` re-fetches). If you also use
-conda on that machine, `conda clean --all` reclaims its package cache too.
+The commands above install the runtime dependencies only. To work on the code
+itself (tests, notebooks, docs), also install the development dependency groups:
+
+```bash
+uv sync --all-groups               # macOS, or Linux without an NVIDIA GPU
+uv sync --all-groups --all-extras  # Linux with an NVIDIA GPU (adds jax[cuda12])
+```
+
+Do not pass `--all-extras` on macOS: the `gpu` extra has no macOS build and the
+sync fails. Then enable the git hooks once per clone:
+
+```bash
+pre-commit install                        # formatting checks on commit
+pre-commit install --hook-type pre-push   # full test suite before each push
+```
+
+and run the test suite with `pytest -n auto`. See
+[CONTRIBUTING](.github/CONTRIBUTING.md) for the full development workflow.
+
+### Disk usage
+
+`uv` keeps downloaded wheels and build artifacts in its cache (`uv cache dir`
+prints the location; `~/.cache/uv` on Linux). With the torch/jax/CUDA stack the
+cache reaches **tens of GB** and grows with every `uv sync`. Where disk space or
+a home-directory quota is limited, run **`uv cache clean`** periodically. It
+only removes files that can be downloaded again; the next `uv sync` re-fetches
+what it needs. If conda is installed on the same machine, `conda clean --all`
+clears its package cache as well.
 
 ## Usage
 
