@@ -170,6 +170,56 @@ def _harvest_upstream_metadata(univariate_data: dict,
     return in_md, univ_md
 
 
+def _require_analysis_type(loaded: dict, expected: str, source: str) -> None:
+    """
+    Description
+    -----------
+    Refuses an upstream artifact that was built for a different analysis than
+    the selection reading it. Every modeling-input pickle records the pipeline
+    that built it in ``_input_metadata.analysis_type`` (``'onset'``,
+    ``'category'``, ``'params'``, ``'multinomial'`` or ``'continuous'``, the
+    vocabulary of the dispatchers' ``--analysis_type``), and the consolidated
+    univariate file carries that block verbatim. A selection fed the other
+    pipeline's files (e.g. a bout-offset input, built by the onset pipeline,
+    sent to the bout-parameter selection) would otherwise fail deep inside the
+    fit on a missing key, or run on data of the wrong layout; this check stops
+    it at load time with both names. It runs before the reserved blocks are
+    popped, once on the univariate file and once on the input pickle, so a
+    mismatch in either is caught. A legacy artifact without an
+    ``_input_metadata`` block, or with one that predates the
+    ``analysis_type`` field, cannot be checked and passes.
+
+    Parameters
+    ----------
+    loaded (dict)
+        The dict ``pickle.load`` returned for the univariate or input file,
+        still holding its reserved metadata keys.
+    expected (str)
+        The analysis type of the calling selection.
+    source (str)
+        The file's path, named in the error.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    ValueError
+        If the recorded ``analysis_type`` differs from ``expected``.
+    """
+
+    if '_input_metadata' not in loaded or 'analysis_type' not in loaded['_input_metadata']:
+        return
+    recorded = loaded['_input_metadata']['analysis_type']
+    if recorded != expected:
+        msg = (f"{source} was built for analysis_type '{recorded}' "
+               f"(analysis_tag '{loaded['_input_metadata']['analysis_tag']}'), but this is the "
+               f"'{expected}' model selection. Rerun with --analysis_type {recorded}, or pass the "
+               f"'{expected}' files.")
+        raise ValueError(msg)
+
+
 def _dump_step_pickle(path: str | Path, payload: Any) -> None:
     """
     Description
@@ -1117,6 +1167,8 @@ def vocal_onset_model_selection(univariate_results_path: str,
     # reserved-key blocks (`_input_metadata` etc.) must not be mistaken
     # for feature entries. The harvested blocks are embedded into every
     # step pickle below via `_wrap_step`.
+    _require_analysis_type(univariate_data, 'onset', univariate_results_path)
+    _require_analysis_type(all_feature_data, 'onset', input_data_path)
     _input_md, _univariate_md = _harvest_upstream_metadata(univariate_data, all_feature_data)
 
     # Filter feature-level candidates *after* metadata extraction so the
@@ -2151,6 +2203,7 @@ def vocal_category_model_selection(
     # `for feat_name, payload in univariate_data.items()` loop only sees
     # behavioral-feature entries.
     _univ_pre_md = univariate_data.pop('_run_metadata', None)
+    _require_analysis_type(univariate_data, 'category', univariate_results_path)
     _input_pre_md_from_univ = univariate_data.pop('_input_metadata', None)
     univariate_data.pop('_consolidation_metadata', None)
     for feat_name, payload in univariate_data.items():
@@ -2190,6 +2243,7 @@ def vocal_category_model_selection(
     # Final upstream-metadata harvest. Prefer the value the consolidator
     # asserted across every per-feature pickle; fall back to the
     # Level-1 input pickle's copy for legacy runs.
+    _require_analysis_type(all_feature_data, 'category', input_data_path)
     _input_md = _input_pre_md_from_univ
     if _input_md is None and '_input_metadata' in all_feature_data:
         _input_md = all_feature_data.pop('_input_metadata')
@@ -3160,6 +3214,7 @@ def bout_parameter_model_selection(
     # iterating its `.items()`. The same pattern is applied to
     # `all_feature_data` further down once it is loaded.
     _univ_pre_md = univariate_data.pop('_run_metadata', None)
+    _require_analysis_type(univariate_data, 'params', univariate_results_path)
     _input_pre_md_from_univ = univariate_data.pop('_input_metadata', None)
     univariate_data.pop('_consolidation_metadata', None)
 
@@ -3214,6 +3269,7 @@ def bout_parameter_model_selection(
     # Final upstream-metadata harvest: prefer the value the consolidator
     # asserted against every per-feature univariate pickle, then fall
     # back to the Level-1 pickle's own block for legacy runs.
+    _require_analysis_type(all_feature_data, 'params', input_data_path)
     _input_md = _input_pre_md_from_univ
     if _input_md is None and '_input_metadata' in all_feature_data:
         _input_md = all_feature_data.pop('_input_metadata')
@@ -4143,6 +4199,7 @@ def multinomial_vocal_category_model_selection(
 
     # Strip upstream metadata blocks before iterating feature entries.
     _univ_pre_md = univariate_data.pop('_run_metadata', None)
+    _require_analysis_type(univariate_data, 'multinomial', univariate_results_path)
     _input_pre_md_from_univ = univariate_data.pop('_input_metadata', None)
     univariate_data.pop('_consolidation_metadata', None)
 
@@ -4188,6 +4245,7 @@ def multinomial_vocal_category_model_selection(
     # Final upstream-metadata harvest. The univariate-side blocks were
     # captured above; the input-side block falls back to the Level-1
     # pickle if the consolidator did not provide one (legacy run).
+    _require_analysis_type(raw_data, 'multinomial', input_data_path)
     _input_md = _input_pre_md_from_univ
     if _input_md is None and '_input_metadata' in raw_data:
         _input_md = raw_data.pop('_input_metadata')
@@ -5581,6 +5639,7 @@ def continuous_vocal_manifold_model_selection(
 
     # Strip upstream metadata blocks before iterating feature entries.
     _univ_pre_md = univariate_data.pop('_run_metadata', None)
+    _require_analysis_type(univariate_data, 'continuous', univariate_results_path)
     _input_pre_md_from_univ = univariate_data.pop('_input_metadata', None)
     univariate_data.pop('_consolidation_metadata', None)
 
@@ -5874,6 +5933,7 @@ def continuous_vocal_manifold_model_selection(
 
     # Final upstream-metadata harvest: prefer the univariate copy, fall back to
     # the input pickle's own block for legacy runs.
+    _require_analysis_type(raw_data, 'continuous', input_data_path)
     _input_md = _input_pre_md_from_univ
     if _input_md is None and '_input_metadata' in raw_data:
         _input_md = raw_data.pop('_input_metadata')

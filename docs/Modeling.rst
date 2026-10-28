@@ -1252,7 +1252,13 @@ for the inner-loop parallelism):
     python -m usv_playpen.modeling.main_model_selection_dispatcher
 
 The dispatchers read the same ``modeling_settings.json`` and write one
-per-feature / per-step pickle each. Consolidate the model-selection steps with
+per-feature / per-step pickle each. ``--analysis_type`` must name the pipeline
+that built the input pickle (recorded in its ``_input_metadata.analysis_type``):
+bout onset and bout offset inputs are ``onset``, bout durations ``params``. A
+mismatch stops the univariate task, or the selection (for the univariate file
+as well as the input pickle), at load time with exit status 1 and a message
+naming the type to rerun with; an artifact that does not record the field is
+not checked. Consolidate the model-selection steps with
 ``consolidate_model_selection`` (the same metadata-equality guard and metadata
 hoisting as the univariate consolidator above):
 

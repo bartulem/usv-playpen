@@ -250,7 +250,9 @@ def dispatch_univariate_job(args: argparse.Namespace) -> int:
     status (int)
         0 when the feature's results were written (atomically, via
         ``os_utils.atomic_output_path``) to a .pkl file; 1 when any stage failed
-        (settings load, feature mapping, fitting, an empty result or the save). The
+        (settings load, an ``--analysis_type`` that differs from the input pickle's
+        recorded ``_input_metadata.analysis_type``, feature mapping, fitting, an
+        empty result or the save). The
         ``__main__`` entry point exits with it, so a failed SLURM array task is a
         failed job (``--mail-type=FAIL``, ``set -e``) rather than a silent gap in
         the consolidated candidate pool.
@@ -280,6 +282,23 @@ def dispatch_univariate_job(args: argparse.Namespace) -> int:
             # verbatim into the per-feature pickle.
             loaded = pickle.load(f)
             input_metadata = read_reserved_block(loaded, '_input_metadata')
+
+            # The input pickle records the pipeline that built it
+            # (`_input_metadata.analysis_type`, the same vocabulary as
+            # `--analysis_type`). A mismatch routes the data into a pipeline
+            # that expects another layout (e.g. a bout-offset input sent to
+            # 'params' fails deep inside the fit on a missing key), so it is
+            # refused here with both names. A legacy pickle without the block
+            # (or with a block that predates the field) cannot be checked and
+            # falls through; a missing block also gets the warning below.
+            if (input_metadata is not None and 'analysis_type' in input_metadata
+                    and input_metadata['analysis_type'] != args.analysis_type):
+                print(f"FATAL: --analysis_type '{args.analysis_type}' does not match the input data, "
+                      f"which was built for '{input_metadata['analysis_type']}' "
+                      f"(analysis_tag '{input_metadata['analysis_tag']}', {input_metadata['pipeline_class']}). "
+                      f"Rerun with --analysis_type {input_metadata['analysis_type']}.")
+                return 1
+
             all_features = sorted([k for k in loaded if k not in RESERVED_METADATA_KEYS])
 
             # Guard both bounds: a negative index would otherwise wrap via
