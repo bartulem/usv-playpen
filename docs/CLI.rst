@@ -103,16 +103,15 @@ Process
       --output-name         Name of the concatenated file.
 
 ``rectify-video-fps``
-``rectify-video-fps`` is the command-line interface for re-encoding videos to a correct frame rate.
+``rectify-video-fps`` is the command-line interface for re-encoding videos to a correct frame rate. Each camera's input is found on disk: the concatenated video if concatenation made one, otherwise the single video in the camera folder.
 
 .. code-block:: text
 
     usage: rectify-video-fps [-h] --root-directory PATH [--camera-serial TEXT...]
-                             [--target-file TEXT] [--extension TEXT]
+                             [--extension TEXT]
                              [--crf INTEGER]
                              [--preset {ultrafast,superfast,veryfast,faster,fast,medium,slow,slower,veryslow}]
                              [--delete-old-file | --no-delete-old-file]
-                             [--conduct-concat | --no-conduct-concat]
 
     required arguments:
       --root-directory      Session root directory path.
@@ -120,14 +119,11 @@ Process
     optional arguments:
       -h, --help            Show this help message and exit.
       --camera-serial       Camera serial number(s).
-      --target-file         Name of the target video file.
       --extension           Video file extension.
       --crf                 FFMPEG -crf (e.g., 16).
       --preset              FFMPEG encoding speed preset.
       --delete-old-file / --no-delete-old-file
                             Deletes the original file after encoding.
-      --conduct-concat / --no-conduct-concat
-                            Indicate if prior concatenation was performed
 
 ``multichannel-to-single-ch``
 ``multichannel-to-single-ch`` is the command-line interface for splitting multichannel audio files into single-channel files.

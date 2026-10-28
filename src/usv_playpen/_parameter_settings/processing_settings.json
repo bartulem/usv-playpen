@@ -159,12 +159,11 @@
           "22085397",
           "21241563"
         ],
-        "conversion_target_file": "concatenated_temp",
         "encode_video_extension": "mp4",
         "constant_rate_factor": 16,
         "encoding_preset": "veryfast",
         "delete_old_file": true,
-        "subprocess_timeout_hours": 6
+        "subprocess_timeout_hours": 2
       }
     }
   },

@@ -488,7 +488,7 @@ def test_file_manipulation_pipeline(file_pipeline_fixture: Path, mocker):
     mock_img_store.get_frame_metadata.return_value = {'frame_time': np.linspace(0, expected_video_duration, expected_total_frames)}
     mocker.patch('usv_playpen.processing.modify_files.new_for_filename', return_value=mock_img_store)
 
-    result_rectify = runner.invoke(rectify_video_fps_cli, ['--root-directory', str(root_dir), '--conduct-concat'])
+    result_rectify = runner.invoke(rectify_video_fps_cli, ['--root-directory', str(root_dir)])
     assert result_rectify.exit_code == 0, f"CLI failed:\n{result_rectify.output}"
 
     print("--> Verifying rectification outputs...")
@@ -2578,7 +2578,8 @@ def _make_rectify_operator(root_dir: Path, serials: list[str], message_output) -
     """Builds an Operator wired for a focused ``rectify_video_fps`` test.
 
     Only the nested config the method actually touches is supplied: the
-    ``rectify_video_fps`` block under ``modify_files/Operator`` and the empty
+    ``rectify_video_fps`` block under ``modify_files/Operator`` (plus the
+    concatenated-file name it looks for) and the empty
     ``synchronize_files/Synchronizer`` block the constructor also reads. The
     camera serials are caller-controlled so a test can configure more serials
     than there are on-disk camera directories (the case that exercises the
@@ -2586,12 +2587,12 @@ def _make_rectify_operator(root_dir: Path, serials: list[str], message_output) -
     """
     input_parameter_dict = {
         'modify_files': {'Operator': {
+            'concatenate_video_files': {'concatenated_video_name': 'concatenated_video'},
             'rectify_video_fps': {
                 'encode_camera_serial_num': list(serials),
                 'constant_rate_factor': 16,
                 'encoding_preset': 'veryfast',
                 'encode_video_extension': 'mp4',
-                'conversion_target_file': 'concatenated_video',
                 'delete_old_file': False,
                 'subprocess_timeout_hours': 6,
             },
@@ -2652,9 +2653,11 @@ def test_rectify_video_fps_missing_camera_uses_nanmedian(tmp_path, mocker):
     frame_count, frame_max, fps = 1000, 1000, 150
     serials = ['cam0', 'cam1', 'cam2']
     video_dir = tmp_path / 'video'
-    # Only two of the three configured cameras actually recorded a directory.
+    # Only two of the three configured cameras actually recorded a directory,
+    # each holding the single video re-encoding reads in place.
     for serial in ('cam0', 'cam1'):
         (video_dir / f'm_20230101_120000.{serial}').mkdir(parents=True)
+        (video_dir / f'm_20230101_120000.{serial}' / '000000.mp4').write_bytes(b'\x00')
 
     img_store = _make_rectify_mock_img_store(mocker, frame_count, frame_max, fps)
     _patch_rectify_externals(mocker, img_store)
@@ -2692,6 +2695,7 @@ def test_rectify_video_fps_all_dropped_frames_warns_and_uses_sentinel(tmp_path, 
     video_dir = tmp_path / 'video'
     for serial in serials:
         (video_dir / f'm_20230101_120000.{serial}').mkdir(parents=True)
+        (video_dir / f'm_20230101_120000.{serial}' / '000000.mp4').write_bytes(b'\x00')
 
     img_store = _make_rectify_mock_img_store(mocker, frame_count, frame_max, fps)
     _patch_rectify_externals(mocker, img_store)

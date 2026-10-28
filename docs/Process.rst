@@ -501,12 +501,12 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file also contai
 
 * **concatenate_camera_serial_num** / **encode_camera_serial_num** : serial numbers of cameras used in the recording (for concatenation / re-encoding, respectively)
 * **concatenate_video_extension** / **encode_video_extension** : video type (usually "mp4")
-* **concatenated_video_name** : name of the concatenated video file; concatenation writes *<concatenated_video_name>_<serial>* inside each camera folder that holds more than one video chunk and then moves it up into the session's *video* directory. A file of that name already in the camera folder (left behind by a crashed run) is never treated as a chunk: it is deleted, with a logged message, and rebuilt, and ffmpeg always overwrites its output. A camera folder with exactly one video has that video copied instead (never moved): the copy goes, unchanged, to the same *<concatenated_video_name>_<serial>* file in the *video* directory (logged), so re-encoding treats it like any concatenated recording, while the raw recording stays in its camera folder next to the imgstore metadata that indexes it (re-encoding deletes the *<concatenated_video_name>_<serial>* file afterwards as a disposable intermediate, so moving the only copy would lose it); a camera folder with no video is skipped with a logged message
-* **conversion_target_file** : name of the concatenated video file as target for re-encoding
+* **concatenated_video_name** : name of the concatenated video file; concatenation writes *<concatenated_video_name>_<serial>* inside each camera folder that holds more than one video chunk and then moves it up into the session's *video* directory. A file of that name already in the camera folder (left behind by a crashed run) is never treated as a chunk: it is deleted, with a logged message, and rebuilt, and ffmpeg always overwrites its output. A camera folder with exactly one video has nothing to join and is left untouched (logged); a camera folder with no video is skipped with a logged message
+* re-encoding finds each camera's input itself, so no file name is set for it: the concatenated *<concatenated_video_name>_<serial>* file in the *video* directory if concatenation made one (deleted after re-encoding when **delete_old_file** is true); otherwise the single video in the camera folder, whatever its name (e.g. *000000*), read in place and never deleted. A camera folder with several videos and no concatenated file stops the step with an error asking to run concatenation first (re-encoding one chunk would give a partial video), and one with no video stops it too. Every camera is checked before any ffmpeg process starts. Calibration folders always re-encode their *000000* video, which is never deleted
 * **constant_rate_factor** : FFMPEG constant rate factor for re-encoding
 * **encoding_preset** : FFMPEG encoding preset for re-encoding
-* **delete_old_file** : whether to delete the concatenated file after re-encoding
-* **subprocess_timeout_hours** : hours the ffmpeg subprocesses of each step may run, all cameras together, before they are killed as hung and the step stops (3 for concatenation, 6 for re-encoding: generous for multi-hour sessions, while still catching a wedged ffmpeg)
+* **delete_old_file** : whether to delete the concatenated file after re-encoding (a single video read from its camera folder is the raw recording and is never deleted)
+* **subprocess_timeout_hours** : hours the ffmpeg subprocesses of each step may run, all cameras together, before they are killed as hung and the step stops (3 for concatenation, not in the GUI; 2 for re-encoding, set in the GUI as *FFMPEG timeout (h)*: generous for a normal session, while still catching a wedged ffmpeg)
 
 .. code-block:: json
 
@@ -530,12 +530,11 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file also contai
           "22085397",
           "21241563"
         ],
-        "conversion_target_file": "concatenated_temp",
         "encode_video_extension": "mp4",
         "constant_rate_factor": 16,
         "encoding_preset": "veryfast",
         "delete_old_file": true,
-        "subprocess_timeout_hours": 6
+        "subprocess_timeout_hours": 2
       }
 
 Prepare SLEAP cluster job
