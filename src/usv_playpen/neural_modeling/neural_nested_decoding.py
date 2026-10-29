@@ -14,8 +14,10 @@ predicted position multiplied into the occupancy prior (:func:`behaviour_prior_l
 point-regression form (:func:`nested_scores`, :class:`NestedTorusRegression`) is kept as a
 fine-position descriptor and is never a route to passing.
 
-The behaviour control's features are read from the cohort selection result and checked against the
-frozen list in settings (:func:`reduced_model_features`). Scoring uses the macro von Mises log-score.
+The behaviour control's features are read from the selection result for the run's target
+(``vocalization_settings.vocal_target``) and checked against the frozen list in settings
+(:func:`reduced_model_features`). Scoring uses the macro von Mises log-score. The categorical
+counterpart of the posterior statistic lives in ``neural_category_decoding``.
 The neuron enters as one per-session z-scored count rather than a lagged spike history, so the test
 cannot pass on the neuron's responses to earlier USVs in the bout.
 """
@@ -147,13 +149,97 @@ class NestedTorusRegression(SmoothTorusManifoldRegression):
         return block_diag(*blocks) if len(blocks) > 1 else blocks[0]
 
 
-def reduced_model_features(settings: dict, require_selection_file: bool = True) -> list:
+#: The two decoded targets. Every unit is decoded on both, each against its own behaviour control, so
+#: the neuron is always tested on the target the behavioural model predicts: the torus position, or the
+#: category. ``vocalization_settings.vocal_target`` names the one the claims use.
+VOCAL_TARGETS = ("manifold", "multinomial")
+
+
+def check_target(target: str) -> str:
     """
     Description
     -----------
-    The behaviour control's feature set: read from the selection result file and checked against the
-    frozen list in settings, so a re-run of the selection cannot silently redefine the behaviour the
-    neuron is measured against.
+    Refuse a target that is not one of :data:`VOCAL_TARGETS`.
+
+    Parameters
+    ----------
+    target (str)
+        The target to check.
+
+    Returns
+    -------
+    target (str)
+        The same target, once checked.
+    """
+
+    if target not in VOCAL_TARGETS:
+        msg = f"vocal target must be one of {list(VOCAL_TARGETS)}; got {target!r}."
+        raise ValueError(msg)
+    return target
+
+
+def vocal_target(settings: dict) -> str:
+    """
+    Description
+    -----------
+    The target the claims use, ``vocalization_settings.vocal_target``, refused unless it is one of
+    :data:`VOCAL_TARGETS`.
+
+    Every unit is decoded on both targets regardless; this setting picks which one's identity and
+    nested p-values enter the cohort correction and which identity p-value decides whether vocal gating
+    runs. Changing it later needs only the cohort consolidation re-run, not the units.
+
+    Parameters
+    ----------
+    settings (dict)
+        Full neural-modeling settings.
+
+    Returns
+    -------
+    target (str)
+        ``"manifold"`` or ``"multinomial"``.
+    """
+
+    target = settings["vocalization_settings"]["vocal_target"]
+    if target not in VOCAL_TARGETS:
+        msg = f"vocalization_settings.vocal_target must be one of {list(VOCAL_TARGETS)}; got {target!r}."
+        raise ValueError(msg)
+    return target
+
+
+def target_section(step: str, target: str) -> str:
+    """
+    Description
+    -----------
+    The result-file section holding one target's result of a target-dependent analysis.
+
+    Identity and the nested decoding run once per target, and each target's result is its own
+    section, ``<step>_<target>`` (e.g. ``vocalization_identity_manifold``), written as soon as it is
+    done.
+
+    Parameters
+    ----------
+    step (str)
+        ``"vocalization_identity"`` or ``"nested_vocal_decoding"``.
+    target (str)
+        One of :data:`VOCAL_TARGETS`.
+
+    Returns
+    -------
+    section (str)
+        The section name.
+    """
+
+    return f"{step}_{check_target(target)}"
+
+
+def reduced_model_features(settings: dict, target: str, require_selection_file: bool = True) -> list:
+    """
+    Description
+    -----------
+    The behaviour control's feature set for one target: read from the selection result file and
+    checked against the frozen list in settings, so a re-run of the selection cannot silently redefine
+    the behaviour the neuron is measured against. Both settings are dicts keyed by target.
 
     Two artifact shapes are accepted: a cohort selection's ``selected_features``, or a behavioural
     selection's ``steps`` (its last step's ``current_features``). Only feature names are taken from a
@@ -163,7 +249,9 @@ def reduced_model_features(settings: dict, require_selection_file: bool = True) 
     ----------
     settings (dict)
         The whole neural-modelling settings dict; ``data.behaviour_selection_result_path`` and
-        ``nested_vocal_decoding.reduced_model_features`` are read.
+        ``nested_vocal_decoding.reduced_model_features`` are read at the target's key.
+    target (str)
+        One of :data:`VOCAL_TARGETS`.
     require_selection_file (bool)
         When False, a missing selection file is tolerated and the frozen list is returned unchecked --
         for running where the lab share is not mounted. A file that IS present is always checked.
@@ -174,8 +262,9 @@ def reduced_model_features(settings: dict, require_selection_file: bool = True) 
         The behaviour control's feature names, in selection order.
     """
 
-    frozen = list(settings["nested_vocal_decoding"]["reduced_model_features"])
-    path = pathlib.Path(settings["data"]["behaviour_selection_result_path"])
+    check_target(target)
+    frozen = list(settings["nested_vocal_decoding"]["reduced_model_features"][target])
+    path = pathlib.Path(settings["data"]["behaviour_selection_result_path"][target])
     if not path.exists():
         if require_selection_file:
             msg = (f"behaviour selection result not found at {path}; it defines the nested decoding's reduced "
@@ -194,7 +283,7 @@ def reduced_model_features(settings: dict, require_selection_file: bool = True) 
     else:
         msg = (f"{path.name} is neither a cohort selection result ('selected_features') nor a "
                f"behavioural-modelling selection ('steps'). Point "
-               f"data.behaviour_selection_result_path at the artifact written by "
+               f"data.behaviour_selection_result_path[{target!r}] at the artifact written by "
                f"behaviour_control_model.select_control_features, or at a behavioural selection "
                f"whose feature set is being adopted.")
         raise ValueError(msg)

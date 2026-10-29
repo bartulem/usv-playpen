@@ -15,6 +15,9 @@ coordinate and the other two are pure noise: the day holdout must never let a da
 set, the fitted control must recover the planted coefficient and beat the no-behaviour baseline, the
 forward selection must pick the planted feature and nothing when nothing is planted, and the cohort
 assembly must stack sessions in order, record each USV's day and refuse an empty or inconsistent cohort.
+The categorical control is covered the same way: on a cohort whose category one feature sets, it must
+predict that category on every held-out day and sit at chance when nothing is planted, and its stored
+folds must reproduce the held-out scores; a control serves only the target it was fitted for.
 The process pools are replaced by an in-process serial executor so every worker body runs (and is
 measured) inside the test process.
 """
@@ -31,6 +34,7 @@ import h5py
 import numpy as np
 import polars as pls
 import pytest
+from sklearn.metrics import roc_auc_score
 
 from usv_playpen.modeling.manifold_metric import (
     inverse_region_frequency_weights,
@@ -42,12 +46,15 @@ from usv_playpen.neural_modeling.behaviour_control_model import (
     EMBEDDING_COLUMNS,
     apply_behaviour_control,
     assemble_cohort,
+    category_control_evidence,
     control_estimator,
     control_predictions,
     feature_columns,
+    fit_category_control_models,
     fit_control_models,
     held_out_by_day,
     load_control_model,
+    macro_one_versus_rest_auc,
     paired_gain,
     pooled_macro,
     select_control_features,
@@ -660,20 +667,20 @@ class TestLoadControlModel:
         ``ValueError`` ("behaviour control drift") instead of being applied."""
         path = tmp_path / "control.pkl"
         write_control_model(artifact, str(path))
-        settings["nested_vocal_decoding"]["behaviour_control_model_path"] = str(path)
-        settings["nested_vocal_decoding"]["reduced_model_features"] = ["nose-nose"]
+        settings["nested_vocal_decoding"]["behaviour_control_model_path"]["manifold"] = str(path)
+        settings["nested_vocal_decoding"]["reduced_model_features"]["manifold"] = ["nose-nose"]
         with pytest.raises(ValueError, match="behaviour control drift"):
-            load_control_model(settings)
+            load_control_model(settings, "manifold")
 
     def test_matching_features_load(self, settings: dict, artifact: dict, tmp_path) -> None:
         """A stored control whose features match the settings must load and return those features, so the
         drift guard does not refuse a valid control."""
         path = tmp_path / "control.pkl"
         write_control_model(artifact, str(path))
-        settings["nested_vocal_decoding"]["behaviour_control_model_path"] = str(path)
-        settings["nested_vocal_decoding"]["reduced_model_features"] = list(
+        settings["nested_vocal_decoding"]["behaviour_control_model_path"]["manifold"] = str(path)
+        settings["nested_vocal_decoding"]["reduced_model_features"]["manifold"] = list(
             artifact["features"])
-        assert load_control_model(settings)["features"] == artifact["features"]
+        assert load_control_model(settings, "manifold")["features"] == artifact["features"]
 
     def test_the_control_is_written_into_a_directory_that_does_not_exist_yet(self, artifact: dict,
                                                                               tmp_path) -> None:
@@ -706,10 +713,10 @@ class TestLoadControlModel:
     def test_a_missing_control_names_the_dispatcher(self, settings: dict, tmp_path) -> None:
         """A missing control file must raise ``FileNotFoundError`` naming the behaviour-control dispatcher, so the
         reader knows which job produces it."""
-        settings["nested_vocal_decoding"]["behaviour_control_model_path"] = str(
+        settings["nested_vocal_decoding"]["behaviour_control_model_path"]["manifold"] = str(
             tmp_path / "absent.pkl")
         with pytest.raises(FileNotFoundError, match="behaviour-control dispatcher"):
-            load_control_model(settings)
+            load_control_model(settings, "manifold")
 
 
 class TestReducedModelFeaturesRepoint:
@@ -727,27 +734,27 @@ class TestReducedModelFeaturesRepoint:
         chosen = ["allo_yaw-head", "self.neck_elevation", "head-head"]
         path.write_bytes(pickle.dumps({"steps": [{"current_features": chosen[:1]},
                                                  {"current_features": chosen}]}))
-        settings["data"]["behaviour_selection_result_path"] = str(path)
-        settings["nested_vocal_decoding"]["reduced_model_features"] = chosen
-        assert reduced_model_features(settings) == chosen
+        settings["data"]["behaviour_selection_result_path"]["manifold"] = str(path)
+        settings["nested_vocal_decoding"]["reduced_model_features"]["manifold"] = chosen
+        assert reduced_model_features(settings, "manifold") == chosen
 
     def test_a_behavioural_selection_is_still_drift_checked(self, settings: dict,
                                                             tmp_path) -> None:
         """Adopting a feature set must not let a re-selection silently redefine the control."""
         path = tmp_path / "behavioural.pkl"
         path.write_bytes(pickle.dumps({"steps": [{"current_features": ["head-head"]}]}))
-        settings["data"]["behaviour_selection_result_path"] = str(path)
-        settings["nested_vocal_decoding"]["reduced_model_features"] = ["nose-nose"]
+        settings["data"]["behaviour_selection_result_path"]["manifold"] = str(path)
+        settings["nested_vocal_decoding"]["reduced_model_features"]["manifold"] = ["nose-nose"]
         with pytest.raises(ValueError, match="behaviour selection drift"):
-            reduced_model_features(settings)
+            reduced_model_features(settings, "manifold")
 
     def test_an_unrecognised_artifact_is_refused(self, settings: dict, tmp_path) -> None:
         """Neither shape present would otherwise raise an unhelpful KeyError deep in the reader."""
         path = tmp_path / "mystery.pkl"
         path.write_bytes(pickle.dumps({"something_else": ["a"]}))
-        settings["data"]["behaviour_selection_result_path"] = str(path)
+        settings["data"]["behaviour_selection_result_path"]["manifold"] = str(path)
         with pytest.raises(ValueError, match="neither a cohort selection result"):
-            reduced_model_features(settings)
+            reduced_model_features(settings, "manifold")
 
     def test_a_cohort_selection_is_read_and_checked(self, settings: dict, tmp_path) -> None:
         """A cohort selection result's ``selected_features`` must be read and, when it matches the frozen
@@ -755,18 +762,18 @@ class TestReducedModelFeaturesRepoint:
         path = tmp_path / "selection.pkl"
         chosen = ["nose-nose", "other.speed", "allo_yaw-nose"]
         path.write_bytes(pickle.dumps({"selected_features": chosen}))
-        settings["data"]["behaviour_selection_result_path"] = str(path)
-        settings["nested_vocal_decoding"]["reduced_model_features"] = chosen
-        assert reduced_model_features(settings) == chosen
+        settings["data"]["behaviour_selection_result_path"]["manifold"] = str(path)
+        settings["nested_vocal_decoding"]["reduced_model_features"]["manifold"] = chosen
+        assert reduced_model_features(settings, "manifold") == chosen
 
     def test_drift_between_file_and_settings_raises(self, settings: dict, tmp_path) -> None:
         """Freezing alone lets the control drift; reading alone lets a re-run redefine the claim."""
         path = tmp_path / "selection.pkl"
         path.write_bytes(pickle.dumps({"selected_features": ["nose-nose"]}))
-        settings["data"]["behaviour_selection_result_path"] = str(path)
-        settings["nested_vocal_decoding"]["reduced_model_features"] = ["other.speed"]
+        settings["data"]["behaviour_selection_result_path"]["manifold"] = str(path)
+        settings["nested_vocal_decoding"]["reduced_model_features"]["manifold"] = ["other.speed"]
         with pytest.raises(ValueError, match="behaviour selection drift"):
-            reduced_model_features(settings)
+            reduced_model_features(settings, "manifold")
 
 
 class TestSessionVocalizationDesign:
@@ -1143,10 +1150,10 @@ class TestLegacyCountKeys:
                                                                      "no_behaviour": -3.5}}}
         path = tmp_path / "control.pkl"
         write_control_model(old, str(path))
-        settings["nested_vocal_decoding"]["behaviour_control_model_path"] = str(path)
-        settings["nested_vocal_decoding"]["reduced_model_features"] = list(
+        settings["nested_vocal_decoding"]["behaviour_control_model_path"]["manifold"] = str(path)
+        settings["nested_vocal_decoding"]["reduced_model_features"]["manifold"] = list(
             artifact["features"])
-        loaded = load_control_model(settings)
+        loaded = load_control_model(settings, "manifold")
         assert loaded["n_vocalizations"] == 120
         assert loaded["per_day"]["20250919"]["n_vocalizations"] == 120
         assert "n_calls" not in loaded
@@ -2086,3 +2093,194 @@ class TestAssembleCohort:
         with pytest.raises(ValueError, match="20250102_100000 resolved a different feature set"):
             assemble_cohort(["/data/20250101_100000", "/data/20250102_100000"], {"sentinel": True}, 7, 1)
         assert serial_pools.requested_workers == [1]
+
+
+CATEGORY_N_LAGS = 8
+
+
+def category_settings(settings: dict) -> dict:
+    """
+    Description
+    -----------
+    The shipped settings set up for the categorical control on the tiny synthetic cohort: the
+    multinomial target, a four-spline basis (the cohort's histories are eight frames long) and a short
+    optimiser run, so a fold fits in about a second.
+
+    Parameters
+    ----------
+    settings (dict)
+        The shipped settings, a fresh copy.
+
+    Returns
+    -------
+    settings (dict)
+        The same dict, modified in place.
+    """
+    settings["vocalization_settings"]["vocal_target"] = "multinomial"
+    block = settings["nested_vocal_decoding"]["category_control"]
+    block["temporal_basis"]["n_splines"] = 4
+    block["max_iter"] = 1500
+    return settings
+
+
+def category_cohort(seed: int, planted: bool, per_day: int = 90) -> dict:
+    """
+    Description
+    -----------
+    A tiny cohort in the shape ``assemble_cohort`` returns, whose acoustic category is KNOWN from one
+    feature.
+
+    Three features (``signal``, ``noise_a``, ``noise_b``) are drawn uniformly on [-1, 1] per USV and
+    repeated over ``CATEGORY_N_LAGS`` lag columns with jitter of sd 0.05. When ``planted`` is True the
+    category is 1, 2 or 3 as ``signal`` falls in the lower, middle or upper third (flipped at random for
+    10% of USVs); when False it is drawn uniformly, independent of every feature.
+
+    Parameters
+    ----------
+    seed (int)
+        Seed of the ``numpy`` generator.
+    planted (bool)
+        Whether ``signal`` sets the category.
+    per_day (int)
+        USVs per recording day.
+
+    Returns
+    -------
+    cohort (dict)
+        ``design``, ``positions`` (unused here, uniform), ``regions`` (the category labels), ``days``,
+        ``session_ids``, ``feature_names`` and ``skipped``.
+    """
+    generator = np.random.default_rng(seed)
+    n_rows = len(SYNTHETIC_DAYS) * per_day
+    base = generator.uniform(-1.0, 1.0, (n_rows, len(SYNTHETIC_FEATURES)))
+    design = np.repeat(base, CATEGORY_N_LAGS, axis=1) + generator.normal(
+        0.0, 0.05, (n_rows, len(SYNTHETIC_FEATURES) * CATEGORY_N_LAGS))
+    if planted:
+        labels = 1 + np.digitize(base[:, 0], [-1.0 / 3.0, 1.0 / 3.0])
+        flip = generator.random(n_rows) < 0.1
+        labels[flip] = generator.integers(1, 4, int(flip.sum()))
+    else:
+        labels = generator.integers(1, 4, n_rows)
+    return {"design": design.astype(np.float32),
+            "positions": generator.uniform(0.0, 1.0, (n_rows, 2)),
+            "regions": labels.astype(np.float64),
+            "days": np.repeat(SYNTHETIC_DAYS, per_day),
+            "session_ids": [f"{day}_120000" for day in SYNTHETIC_DAYS],
+            "feature_names": list(SYNTHETIC_FEATURES), "skipped": {}}
+
+
+class TestCategoryControl:
+    """The categorical behaviour control: the behavioural modelling's multinomial model, held out by day."""
+
+    def test_a_planted_category_is_predicted_out_of_day(self, settings: dict) -> None:
+        """The category one feature sets is predicted on every held-out day well above chance."""
+        settings = category_settings(settings)
+        fitted = fit_category_control_models(category_cohort(0, planted=True), ["signal", "noise_a"],
+                                             settings, CATEGORY_N_LAGS)
+        assert fitted["target"] == "multinomial"
+        assert fitted["held_out_auc"] > 0.85
+        assert all(day["auc"] > 0.75 for day in fitted["per_day"].values())
+        assert fitted["held_out_log_score_gain"] > 0.0
+        assert sorted(fitted["coefficients"]) == SYNTHETIC_DAYS
+
+    def test_no_plant_predicts_at_chance(self, settings: dict) -> None:
+        """With categories independent of every feature the held-out AUROC sits near 0.5."""
+        settings = category_settings(settings)
+        fitted = fit_category_control_models(category_cohort(1, planted=False), ["signal", "noise_a"],
+                                             settings, CATEGORY_N_LAGS)
+        assert abs(fitted["held_out_auc"] - 0.5) < 0.08
+
+    def test_the_stored_folds_reproduce_the_held_out_scores(self, settings: dict) -> None:
+        """Each day's evidence rebuilt from the stored arrays scores that day's stored AUROC exactly, and
+        is a probability distribution per USV."""
+        settings = category_settings(settings)
+        cohort = category_cohort(2, planted=True)
+        features = ["signal", "noise_a"]
+        fitted = fit_category_control_models(cohort, features, settings, CATEGORY_N_LAGS)
+        columns = feature_columns(cohort["feature_names"], features, CATEGORY_N_LAGS)
+        for day in SYNTHETIC_DAYS:
+            rows = np.flatnonzero(cohort["days"] == day)
+            evidence = category_control_evidence(fitted, day, cohort["design"][rows][:, columns], settings)
+            assert evidence.shape == (rows.size, 3)
+            np.testing.assert_allclose(evidence.sum(axis=1), 1.0, rtol=1e-5)
+            auc = macro_one_versus_rest_auc(evidence, cohort["regions"][rows].astype(np.int64),
+                                            fitted["classes"])
+            assert auc == pytest.approx(fitted["per_day"][day]["auc"], abs=1e-6)
+
+    def test_a_category_seen_on_one_day_only_is_refused(self, settings: dict) -> None:
+        """The fold holding that day out could never predict the category, so the fit raises."""
+        settings = category_settings(settings)
+        cohort = category_cohort(3, planted=True)
+        cohort["regions"][cohort["days"] == SYNTHETIC_DAYS[0]] = 9.0
+        with pytest.raises(ValueError, match="occur only on day"):
+            fit_category_control_models(cohort, ["signal"], settings, CATEGORY_N_LAGS)
+
+    def test_the_label_columns_must_agree(self, settings: dict) -> None:
+        """The control must predict the category system the neuron is decoded on."""
+        settings = category_settings(settings)
+        settings["vocal_decoding"]["category_surface"]["category_column"] = "vae_category"
+        with pytest.raises(ValueError, match="must predict the categories"):
+            fit_category_control_models(category_cohort(0, planted=True), ["signal"], settings,
+                                        CATEGORY_N_LAGS)
+
+    def test_a_unit_whose_day_the_control_saw_is_refused(self, settings: dict) -> None:
+        """Evidence is only ever drawn from the fold that held the unit's day out."""
+        settings = category_settings(settings)
+        artifact = {"target": "multinomial", "features": ["signal"], "n_lags": CATEGORY_N_LAGS,
+                    "classes": np.array([1, 2, 3]), "coefficients": {"20250101": {}}}
+        with pytest.raises(KeyError, match="no fold for day"):
+            category_control_evidence(artifact, "20250102", np.zeros((2, CATEGORY_N_LAGS)), settings)
+
+    def test_the_macro_auroc_matches_scikit_learn(self) -> None:
+        """The one-versus-rest macro AUROC equals scikit-learn's, ties included."""
+        generator = np.random.default_rng(4)
+        labels = generator.integers(0, 3, 200)
+        probabilities = generator.dirichlet(np.ones(3), 200).round(2)
+        expected = roc_auc_score(labels, probabilities / probabilities.sum(axis=1, keepdims=True),
+                                 multi_class="ovr", average="macro")
+        observed = macro_one_versus_rest_auc(probabilities / probabilities.sum(axis=1, keepdims=True),
+                                             labels, np.array([0, 1, 2]))
+        assert observed == pytest.approx(expected)
+
+
+class TestControlTargets:
+    """Every target-dependent setting is keyed by target, and a control serves only its own target."""
+
+    def test_a_control_for_the_other_target_is_refused(self, settings: dict, artifact: dict,
+                                                       tmp_path) -> None:
+        """A torus control cannot be loaded for the categorical target."""
+        path = tmp_path / "control.pkl"
+        write_control_model({**artifact, "target": "manifold"}, str(path))
+        settings["nested_vocal_decoding"]["behaviour_control_model_path"]["multinomial"] = str(path)
+        settings["nested_vocal_decoding"]["reduced_model_features"]["multinomial"] = list(
+            artifact["features"])
+        with pytest.raises(ValueError, match="target mismatch"):
+            load_control_model(settings, "multinomial")
+
+    def test_an_untagged_control_is_read_as_a_torus_control(self, settings: dict, artifact: dict,
+                                                            tmp_path) -> None:
+        """Controls fitted before the categorical one existed carry no target and were all torus."""
+        path = tmp_path / "control.pkl"
+        write_control_model(artifact, str(path))
+        settings["nested_vocal_decoding"]["behaviour_control_model_path"]["manifold"] = str(path)
+        settings["nested_vocal_decoding"]["reduced_model_features"]["manifold"] = list(artifact["features"])
+        assert load_control_model(settings, "manifold")["target"] == "manifold"
+
+    def test_each_target_reads_its_own_feature_list(self, settings: dict) -> None:
+        """The frozen list follows the target asked for, whatever ``vocal_target`` says, with no selection
+        file needed to read it."""
+        settings["data"]["behaviour_selection_result_path"] = {"manifold": "/absent/a.pkl",
+                                                               "multinomial": "/absent/b.pkl"}
+        settings["vocalization_settings"]["vocal_target"] = "manifold"
+        manifold = reduced_model_features(settings, "manifold", require_selection_file=False)
+        multinomial = reduced_model_features(settings, "multinomial", require_selection_file=False)
+        assert manifold == settings["nested_vocal_decoding"]["reduced_model_features"]["manifold"]
+        assert multinomial == settings["nested_vocal_decoding"]["reduced_model_features"]["multinomial"]
+        assert manifold != multinomial
+
+    def test_an_unknown_target_is_refused(self, settings: dict) -> None:
+        """A target outside ``VOCAL_TARGETS`` is refused before any file is read."""
+        with pytest.raises(ValueError, match="vocal target must be one of"):
+            reduced_model_features(settings, "categories", require_selection_file=False)
+        with pytest.raises(ValueError, match="vocal target must be one of"):
+            load_control_model(settings, "categories")

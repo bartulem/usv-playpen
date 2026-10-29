@@ -1,7 +1,9 @@
 """
 @author: bartulem
-The vocal analyses for one unit, in one job: vocal occurrence, vocalization identity, nested vocal-manifold
-position decoding, then vocal gating.
+The vocal analyses for one unit, in one job: vocal occurrence, vocalization identity, nested vocal
+decoding, then vocal gating. Identity and the nested decoding run on both targets, the USV's torus
+position and its acoustic category, each written as its own section (``<analysis>_<target>``);
+``vocalization_settings.vocal_target`` names the one whose identity p-value decides vocal gating.
 
 Each analysis is a single held-out computation per unit whose cost sits in its null, and they run in
 order: occurrence and identity score the same USV-grain event set, the nested decoding scores that set
@@ -26,10 +28,20 @@ from datetime import datetime
 
 import numpy as np
 
-from .behaviour_control_model import apply_behaviour_control, load_control_model
+from .behaviour_control_model import (
+    apply_behaviour_control,
+    category_control_evidence,
+    load_control_model,
+)
 from .main_neural_encoding_dispatcher import build_unit_record, load_settings
 from .neural_artifacts import read_unit_artifact, write_unit_section
-from .neural_category_decoding import category_codes, category_context, category_gain
+from .neural_category_decoding import (
+    category_behaviour_tilts,
+    category_codes,
+    category_context,
+    category_gain,
+    category_nested_gain,
+)
 from .neural_design_assembly import (
     assemble_unit_sessions,
     assemble_unit_vocal_events,
@@ -38,6 +50,7 @@ from .neural_design_assembly import (
     worker_process_context,
 )
 from .neural_nested_decoding import (
+    VOCAL_TARGETS,
     behaviour_priors,
     nested_design,
     nested_scores,
@@ -47,6 +60,8 @@ from .neural_nested_decoding import (
     posterior_nested_gain,
     reduced_model_features,
     reduced_predictions,
+    target_section,
+    vocal_target,
 )
 from .neural_significance import within_session_permutation
 from .neural_vocal_decoding import (
@@ -74,9 +89,8 @@ from .shift_null_inference import escalated_empirical_pvalue
 VOCAL_STEPS = ("vocal_occurrence", "vocalization_identity", "nested_vocal_decoding",
                "vocal_gating")
 
-#: What vocalization identity decodes, shared with the behaviour control of the nested decoding so the
-#: neuron is tested on the target the behavioural model predicts: the torus position, or the category.
-VOCAL_TARGETS = ("manifold", "multinomial")
+# The steps that run once per target (``VOCAL_TARGETS``), each target written as ``<step>_<target>``.
+TARGET_STEPS = ("vocalization_identity", "nested_vocal_decoding")
 
 # State handed to each worker once, by the pool initializer, rather than pickled with every task.
 _WORKER: dict = {}
@@ -286,6 +300,95 @@ def posterior_nested_null_chunk(start: int, n_draws: int) -> np.ndarray:
     return values
 
 
+def category_nested_null_chunk(start: int, n_draws: int) -> np.ndarray:
+    """
+    Description
+    -----------
+    One worker's share of the categorical nested statistic's null: the exact within-session
+    permutation of the counts, seeded ``seed + start + draw`` as in the identity chunk. Each event keeps
+    its category and its behaviour tilt, so only the neuron's pairing with the USVs moves.
+
+    Parameters
+    ----------
+    start (int)
+        Global index of this chunk's first draw.
+    n_draws (int)
+        Draws to produce.
+
+    Returns
+    -------
+    values (np.ndarray)
+        Added scores under permuted pairings.
+    """
+
+    state = _WORKER
+    values = np.empty(int(n_draws), dtype=np.float64)
+    for draw in range(int(n_draws)):
+        permutation = within_session_permutation(state["session_index"],
+                                                 np.random.default_rng(state["seed"] + start + draw))
+        values[draw] = category_nested_gain(state["counts"], state["labels"], state["folds"],
+                                            state["decoding"], state["tilts"], state["kappas"],
+                                            permutation)["added"]
+    return values
+
+
+def category_nested_payload(result: dict, session_ids: list, null: np.ndarray, p_value: float,
+                            at_floor: bool, behaviour_control: dict, categories: list,
+                            n_unlabelled: int) -> dict:
+    """
+    Description
+    -----------
+    The nested section for the categorical target: the statistic with its null and p-value, and the
+    control's provenance. Metrics and p-values only, no verdict. There is no point-regression
+    descriptor, which exists for the torus only.
+
+    Parameters
+    ----------
+    result (dict)
+        From ``category_nested_gain`` on the observed pass, with detail.
+    session_ids (list)
+        Session id per slot, to name each fold's held-out session.
+    null (np.ndarray)
+        The permutation null of ``added``.
+    p_value, at_floor (float, bool)
+        From the empirical test.
+    behaviour_control (dict)
+        The control's ``features``, ``held_out_day`` and ``settings_sha256``.
+    categories (list)
+        The raw category label of each code.
+    n_unlabelled (int)
+        Events dropped for having no category label.
+
+    Returns
+    -------
+    payload (dict)
+        The section as written.
+    """
+
+    per_fold = [{"held_out_session": session_ids[int(fold["held_out"])], "n_events": fold["n_events"],
+                 "added": fold["added"], "alpha": fold["alpha"], "ridge": fold["ridge"],
+                 "kappa": fold["kappa"], "rates": fold["rates"]}
+                for fold in result["per_fold"]]
+    detail = {key: result[key] for key in ("per_event_gain", "posterior_entropy", "mean_posterior_entropy")
+              if key in result}
+    return {"target": "multinomial", "added": result["added"],
+            "added_uncalibrated": result["added_uncalibrated"],
+            "nats_per_spike": result["nats_per_spike"],
+            "behaviour_over_no_behaviour": result["behaviour_over_no_behaviour"],
+            "full_over_no_behaviour": result["full_over_no_behaviour"],
+            "n_events": int(sum(fold["n_events"] for fold in per_fold)),
+            "n_masked": result["n_masked"], "n_unlabelled": int(n_unlabelled),
+            "n_folds_positive": result["n_folds_positive"],
+            "min_leave_one_fold_out": result["min_leave_one_fold_out"],
+            "per_fold": per_fold, "alphas": result["alphas"], "ridges": result["ridges"],
+            "kappas": result["kappas"], "categories": list(categories), **detail,
+            "null": null, "p": p_value, "at_floor": at_floor, "z": null_z(result["added"], null),
+            "n_permutations": int(null.size),
+            "behaviour_control": {"features": list(behaviour_control["features"]),
+                                  "held_out_day": behaviour_control["held_out_day"],
+                                  "settings_sha256": behaviour_control["settings_sha256"]}}
+
+
 def posterior_nested_payload(posterior: dict, regression: dict, no_behaviour: float, session_ids: list,
                              null: np.ndarray, p_value: float, at_floor: bool,
                              behaviour_control: dict) -> dict:
@@ -326,7 +429,8 @@ def posterior_nested_payload(posterior: dict, regression: dict, no_behaviour: fl
     detail = {key: posterior[key] for key in ("per_event_gain", "decode_error", "posterior_entropy",
                                                "mean_decode_error", "mean_posterior_entropy",
                                                "overdispersion_index") if key in posterior}
-    return {"added": posterior["added"], "added_uncalibrated": posterior["added_uncalibrated"],
+    return {"target": "manifold", "added": posterior["added"],
+            "added_uncalibrated": posterior["added_uncalibrated"],
             "nats_per_spike": posterior["nats_per_spike"],
             "behaviour_over_no_behaviour": posterior["behaviour_over_no_behaviour"],
             "full_over_no_behaviour": posterior["full_over_no_behaviour"],
@@ -529,31 +633,6 @@ def vocal_gating_payload(feature_names: list, observed: dict, nulls: dict, verdi
             "p_unit_at_floor": unit_p["at_floor"]}
 
 
-def vocal_target(settings: dict) -> str:
-    """
-    Description
-    -----------
-    The decoded target, ``vocalization_settings.vocal_target``, refused unless it is one of
-    :data:`VOCAL_TARGETS`.
-
-    Parameters
-    ----------
-    settings (dict)
-        Full neural-modeling settings.
-
-    Returns
-    -------
-    target (str)
-        ``"manifold"`` or ``"multinomial"``.
-    """
-
-    target = settings["vocalization_settings"]["vocal_target"]
-    if target not in VOCAL_TARGETS:
-        msg = f"vocalization_settings.vocal_target must be one of {list(VOCAL_TARGETS)}; got {target!r}."
-        raise ValueError(msg)
-    return target
-
-
 def run_vocal_occurrence(unit: dict, events: dict, settings: dict, data_root: str, output_directory: str,
                          n_workers: int, message_output=print) -> dict:
     """
@@ -625,18 +704,17 @@ def run_vocal_occurrence(unit: dict, events: dict, settings: dict, data_root: st
     return occurrence
 
 
-def run_vocalization_identity(unit: dict, events: dict, settings: dict, output_directory: str,
+def run_vocalization_identity(unit: dict, events: dict, settings: dict, target: str, output_directory: str,
                               n_workers: int, message_output=print) -> dict:
     """
     Description
     -----------
-    Vocalization identity for one unit: does its count carry information about which USV it is? Written
-    as its own section.
+    Vocalization identity for one unit on one target: does its count carry information about which USV
+    it is? Written as its own section, ``vocalization_identity_<target>``.
 
-    ``vocalization_settings.vocal_target`` picks what is decoded: ``"manifold"``, the USV's position on
-    the torus (the Poisson tuning-surface decoder), or ``"multinomial"``, its acoustic category (one
-    Poisson rate per category). The setting is shared with the nested decoding's behaviour control, so
-    the neuron is tested on the target the behavioural model predicts. Either way the statistic is the
+    ``target`` picks what is decoded: ``"manifold"``, the USV's position on the torus (the Poisson
+    tuning-surface decoder), or ``"multinomial"``, its acoustic category (one Poisson rate per
+    category). :func:`run_vocal` runs both. Either way the statistic is the
     held-out prior-corrected decode gain in nats per event, tested against the exact within-session
     permutation of the target, and the categorical arm uses
     ``discrimination_null.n_permutations_category_grain`` draws.
@@ -649,6 +727,8 @@ def run_vocalization_identity(unit: dict, events: dict, settings: dict, output_d
         Output of ``assemble_unit_vocal_events``.
     settings (dict)
         Full neural-modeling settings.
+    target (str)
+        ``"manifold"`` or ``"multinomial"``.
     output_directory (str)
         Where the unit's result file lives.
     n_workers (int)
@@ -663,7 +743,7 @@ def run_vocalization_identity(unit: dict, events: dict, settings: dict, output_d
     """
 
     decoding = settings["vocal_decoding"]
-    target = vocal_target(settings)
+    section = target_section("vocalization_identity", target)
     period = settings["vocalization_settings"]["torus_period"]
     single_session_blocks = int(settings["data_sufficiency"]["single_session_blocks"])
     if target == "multinomial":
@@ -704,22 +784,24 @@ def run_vocalization_identity(unit: dict, events: dict, settings: dict, output_d
     identity = vocalization_identity_payload(identity, null, p_value, at_floor, events)
     message_output(f"  VOCALIZATION IDENTITY ({target})  gain {identity['gain']:+.5f} | z {identity['z']:+.1f} "
                    f"| p {p_value:.4e}{' (at floor)' if at_floor else ''} | {null.size:,} draws")
-    write_unit_section(output_directory, unit, "vocalization_identity", identity, settings)
-    message_output(f"    wrote [vocalization_identity] for {unit['unit_uid']}")
+    write_unit_section(output_directory, unit, section, identity, settings)
+    message_output(f"    wrote [{section}] for {unit['unit_uid']}")
     return identity
 
 
 def run_nested_vocal_decoding(unit: dict, events: dict, settings: dict, data_root: str, output_directory: str,
-               n_workers: int, message_output=print) -> dict:
+                              n_workers: int, message_output=print) -> dict:
     """
     Description
     -----------
-    Nested vocal-manifold position decoding for one unit: does the neuron add vocalization-identity
-    information beyond the behaviour control?
+    Nested vocal decoding for one unit, on both targets: does the neuron add vocalization-identity
+    information beyond the behaviour control fitted for that target?
 
-    The behaviour control's own held-out improvement over a no-behaviour model on the same USVs is
-    stored beside the result, since beating the control only matters where it predicts.
-    The kinematic data are released before the pool starts.
+    The unit's kinematics are assembled once, and each target's design is built from them on its own
+    control's features (the torus and categorical controls were selected separately and use different
+    features). The kinematic data are released before either null starts. Each target is then written
+    as its own section, ``nested_vocal_decoding_<target>``, by :func:`run_manifold_nested_decoding` and
+    :func:`run_category_nested_decoding`.
 
     Parameters
     ----------
@@ -735,6 +817,62 @@ def run_nested_vocal_decoding(unit: dict, events: dict, settings: dict, data_roo
     output_directory (str)
         Where the unit's result file lives.
     n_workers (int)
+        Worker processes for the nulls.
+    message_output (Callable)
+        Where progress is reported.
+
+    Returns
+    -------
+    payloads (dict)
+        ``{target: the section as written}``.
+    """
+
+    nested = nested_settings(settings)
+    encoding = settings["kinematic_encoding"]
+    per_session = assemble_unit_sessions(unit, data_root, settings["kinematic_features"],
+                                         encoding["history_pre_seconds"], encoding["clean_post_seconds"],
+                                         settings["vocalization_settings"]["clean_against"],
+                                         settings["vocalization_settings"])
+    fps = per_session[unit["courtship_sessions"][0]]["fps"]
+    history_lags = int(np.floor(encoding["history_pre_seconds"] * fps))
+    designs = {target: nested_design(events, per_session, reduced_model_features(settings, target), history_lags,
+                                     nested["sigma_floor"])
+               for target in VOCAL_TARGETS}
+    del per_session
+    return {"manifold": run_manifold_nested_decoding(unit, events, designs["manifold"], settings, output_directory,
+                                                     n_workers, message_output),
+            "multinomial": run_category_nested_decoding(unit, events, designs["multinomial"], settings,
+                                                        output_directory, n_workers, message_output)}
+
+
+def run_manifold_nested_decoding(unit: dict, events: dict, design: dict, settings: dict, output_directory: str,
+                                 n_workers: int, message_output=print) -> dict:
+    """
+    Description
+    -----------
+    The torus arm of the nested decoding, from a design whose behaviour block still holds the control's
+    features at full lag.
+
+    The torus control (fitted once at cohort scale, held out by day) gives each USV a predicted
+    position, which conditions the occupancy prior (``posterior_nested_gain``); the point-regression
+    form is stored as a descriptor. The null is the exact within-session permutation with the behaviour
+    prior travelling with its USV. The behaviour control's own held-out improvement over no behaviour on
+    the same USVs is stored beside the result, since beating the control only matters where it
+    predicts. Written as ``nested_vocal_decoding_manifold``.
+
+    Parameters
+    ----------
+    unit (dict)
+        The unit record.
+    events (dict)
+        Output of ``assemble_unit_vocal_events``.
+    design (dict)
+        From ``nested_design`` on the torus control's features.
+    settings (dict)
+        Full neural-modeling settings.
+    output_directory (str)
+        Where the unit's result file lives.
+    n_workers (int)
         Worker processes for the null.
     message_output (Callable)
         Where progress is reported.
@@ -746,20 +884,11 @@ def run_nested_vocal_decoding(unit: dict, events: dict, settings: dict, data_roo
     """
 
     nested = nested_settings(settings)
-    encoding = settings["kinematic_encoding"]
-    per_session = assemble_unit_sessions(unit, data_root, settings["kinematic_features"],
-                                         encoding["history_pre_seconds"], encoding["clean_post_seconds"],
-                                         settings["vocalization_settings"]["clean_against"],
-                                         settings["vocalization_settings"])
-    fps = per_session[unit["courtship_sessions"][0]]["fps"]
-    history_lags = int(np.floor(encoding["history_pre_seconds"] * fps))
-    reduced = reduced_model_features(settings)
-    design = nested_design(events, per_session, reduced, history_lags, nested["sigma_floor"])
+    section = target_section("nested_vocal_decoding", "manifold")
     # The behaviour control is fitted at cohort scale and enters as its prediction.
     # `n_lags` changes with the block, which is why the swap returns both.
-    control = load_control_model(settings)
+    control = load_control_model(settings, "manifold")
     design, n_lags = apply_behaviour_control(design, control, str(unit["rec_date"]), settings)
-    del per_session
 
     # The point-regression form: a fine-position descriptor, observed only, with no null.
     reduced_predicted = reduced_predictions(design, nested, n_lags)
@@ -778,8 +907,8 @@ def run_nested_vocal_decoding(unit: dict, events: dict, settings: dict, data_roo
     kappas, priors = behaviour_priors(folds, design["behaviour_control"]["predicted_positions"],
                                       design["positions"], nested)
     posterior = posterior_nested_gain(counts, folds, decoding, priors, kappas, with_detail=True)
-    message_output(f"  NESTED DECODING  added {posterior['added']:+.5f} nats/event over {counts.size} events "
-                   f"| behaviour over no behaviour {posterior['behaviour_over_no_behaviour']:+.5f} "
+    message_output(f"  NESTED DECODING (manifold)  added {posterior['added']:+.5f} nats/event over "
+                   f"{counts.size} events | behaviour over no behaviour {posterior['behaviour_over_no_behaviour']:+.5f} "
                    f"| point regression {regression['added']:+.5f}")
 
     state = {"counts": counts, "folds": folds, "decoding": decoding, "priors": priors, "kappas": kappas,
@@ -794,8 +923,93 @@ def run_nested_vocal_decoding(unit: dict, events: dict, settings: dict, data_roo
                                        p_value, at_floor, design["behaviour_control"])
     message_output(f"    null z {payload['z']:+.1f} | p {p_value:.4e}{' (at floor)' if at_floor else ''} "
                    f"| {null.size:,} draws")
-    write_unit_section(output_directory, unit, "nested_vocal_decoding", payload, settings)
-    message_output(f"    wrote [nested_vocal_decoding] for {unit['unit_uid']}")
+    write_unit_section(output_directory, unit, section, payload, settings)
+    message_output(f"    wrote [{section}] for {unit['unit_uid']}")
+    return payload
+
+
+def run_category_nested_decoding(unit: dict, events: dict, design: dict, settings: dict,
+                                 output_directory: str, n_workers: int, message_output=print) -> dict:
+    """
+    Description
+    -----------
+    The categorical arm of the nested decoding, from a design whose behaviour block still holds the
+    control's features at full lag.
+
+    The categorical control (fitted once at cohort scale, held out by day) gives each USV base-rate-free
+    category probabilities. These tilt each fold's category prior with a concentration tuned on the
+    training sessions (``category_behaviour_tilts``), and the statistic is the categorical identity
+    decoder under that prior (``category_nested_gain``). Events without a category label are dropped
+    and counted. Written as ``nested_vocal_decoding_multinomial``.
+
+    Parameters
+    ----------
+    unit (dict)
+        The unit record.
+    events (dict)
+        Output of ``assemble_unit_vocal_events``.
+    design (dict)
+        From ``nested_design``: the kept events (``kept``), their sessions, and the behaviour block.
+    settings (dict)
+        Full neural-modeling settings.
+    output_directory (str)
+        Where the unit's result file lives.
+    n_workers (int)
+        Worker processes for the null.
+    message_output (Callable)
+        Where progress is reported.
+
+    Returns
+    -------
+    payload (dict)
+        The section as written.
+    """
+
+    nested = nested_settings(settings)
+    decoding = settings["vocal_decoding"]
+    section = target_section("nested_vocal_decoding", "multinomial")
+    control = load_control_model(settings, "multinomial")
+    held_out_day = str(unit["rec_date"])
+    evidence = category_control_evidence(control, held_out_day, design["behaviour"], settings)
+
+    codes, labelled, values = category_codes(np.asarray(events["category_labels"])[design["kept"]])
+    classes = [float(c) for c in np.asarray(control["classes"])]
+    absent = [float(v) for v in values if float(v) not in classes]
+    if absent:
+        msg = (f"categories {absent} occur in {unit['unit_uid']}'s events but not in the behaviour "
+               f"control, which was fitted on {classes}.")
+        raise ValueError(msg)
+    columns = [classes.index(float(v)) for v in values]
+    log_evidence = np.log(np.maximum(evidence[labelled][:, columns], 1e-300))
+    counts = np.asarray(events["counts"], dtype=np.float64)[design["kept"]][labelled]
+    session_index = np.asarray(design["session_index"])[labelled]
+    times = np.asarray(events["vocalization_start"])[design["kept"]][labelled]
+    folds = category_context(codes, session_index, times,
+                             int(settings["data_sufficiency"]["single_session_blocks"]))
+    kappas, tilts = category_behaviour_tilts(folds, codes, log_evidence,
+                                             nested["behaviour_prior"]["kappa_grid"])
+    result = category_nested_gain(counts, codes, folds, decoding, tilts, kappas, with_detail=True)
+    message_output(f"  NESTED DECODING (multinomial)  added {result['added']:+.5f} nats/event over "
+                   f"{counts.size} events | behaviour over no behaviour "
+                   f"{result['behaviour_over_no_behaviour']:+.5f} | kappas {result['kappas']}")
+
+    state = {"counts": counts, "labels": codes, "folds": folds, "decoding": decoding, "tilts": tilts,
+             "kappas": kappas, "session_index": session_index,
+             "seed": int(settings["null"]["shuffle_seed"])}
+    with spawn_pool(n_workers, state) as pool:
+        draw_more = parallel_draw_more(pool, category_nested_null_chunk, n_workers)
+        null = draw_more(nested["discrimination_null"]["n_permutations"])
+        p_value, at_floor, null = escalated_empirical_pvalue(result["added"], draw_more,
+                                                             settings["significance"]["escalation_ladder"],
+                                                             null, message_output)
+    behaviour_control = {"features": control["features"], "held_out_day": held_out_day,
+                         "settings_sha256": control["settings_sha256"]}
+    payload = category_nested_payload(result, events["session_ids"], null, p_value, at_floor,
+                                      behaviour_control, values.tolist(), int((~labelled).sum()))
+    message_output(f"    null z {payload['z']:+.1f} | p {p_value:.4e}{' (at floor)' if at_floor else ''} "
+                   f"| {null.size:,} draws")
+    write_unit_section(output_directory, unit, section, payload, settings)
+    message_output(f"    wrote [{section}] for {unit['unit_uid']}")
     return payload
 
 
@@ -944,15 +1158,16 @@ def run_vocal(unit: dict, settings: dict, data_root: str, output_directory: str,
     Run the requested vocal analyses for one unit, in order.
 
     The USV-grain event set is assembled once and shared by occurrence, identity and the nested
-    decoding. Vocal gating uses the occurrence and identity p-values computed in this job, or reads
-    them from the unit's result file, and refuses to run if one is missing or was computed from too
-    few draws to clear the activation threshold. Identity decodes the target set by
-    ``vocalization_settings.vocal_target``; the nested decoding is built for the manifold target only and
-    is refused under the multinomial one.
+    decoding. Identity and the nested decoding run on both targets (:data:`VOCAL_TARGETS`), each
+    target written as its own section. Vocal gating uses the occurrence p-value and the identity
+    p-value of ``vocalization_settings.vocal_target``, computed in this job or read from the unit's
+    result file, and refuses to run if one is missing or was computed from too few draws to clear the
+    activation threshold.
 
     A unit with fewer vocal sessions (or blocks) than ``data_sufficiency.min_vocal_sessions`` cannot be
     tested on the vocal side: every analysis here holds out a vocal session, and with one there is
-    nothing left to train on. Each requested section is then written as ``{"ran": False, "reason":
+    nothing left to train on. Each requested section (both targets' sections for identity and the
+    nested decoding) is then written as ``{"ran": False, "reason":
     "not_vocal_testable", "n_vocal_sessions": ...}`` and nothing is fitted, so the unit is recorded
     rather than missing.
 
@@ -982,20 +1197,19 @@ def run_vocal(unit: dict, settings: dict, data_root: str, output_directory: str,
     if unknown:
         msg = f"unknown vocal step(s) {unknown}; choose from {list(VOCAL_STEPS)}"
         raise ValueError(msg)
-    # Refused before anything is fitted, so a run never writes some sections and then stops.
-    if vocal_target(settings) == "multinomial" and "nested_vocal_decoding" in steps:
-        msg = ("the nested decoding has no multinomial behaviour control yet; with "
-               "vocalization_settings.vocal_target = 'multinomial', leave "
-               "nested_vocal_decoding out of the steps")
-        raise ValueError(msg)
+    # An unknown target is refused before anything is fitted.
+    target = vocal_target(settings)
+    identity_section = target_section("vocalization_identity", target)
     n_vocal_sessions = len(unit["vocal_sessions"])
     if n_vocal_sessions < int(settings["data_sufficiency"]["min_vocal_sessions"]):
         message_output(f"  NOT VOCAL-TESTABLE: {n_vocal_sessions} vocal session(s), "
                        f"{settings['data_sufficiency']['min_vocal_sessions']} required; sections written as not run")
         for step in [s for s in VOCAL_STEPS if s in steps]:
-            write_unit_section(output_directory, unit, step,
-                               {"ran": False, "reason": "not_vocal_testable", "n_vocal_sessions": n_vocal_sessions},
-                               settings)
+            sections = ([target_section(step, t) for t in VOCAL_TARGETS] if step in TARGET_STEPS else [step])
+            for section in sections:
+                write_unit_section(output_directory, unit, section,
+                                   {"ran": False, "reason": "not_vocal_testable",
+                                    "n_vocal_sessions": n_vocal_sessions}, settings)
         return
     results: dict = {}
     events = None
@@ -1009,25 +1223,29 @@ def run_vocal(unit: dict, settings: dict, data_root: str, output_directory: str,
                                           message_output)
         results["vocal_occurrence"] = (occurrence["p"], occurrence["n_shuffles"])
     if "vocalization_identity" in steps:
-        identity = run_vocalization_identity(unit, events, settings, output_directory, n_workers, message_output)
-        results["vocalization_identity"] = (identity["p"], identity["n_permutations"])
+        for each_target in VOCAL_TARGETS:
+            identity = run_vocalization_identity(unit, events, settings, each_target, output_directory, n_workers,
+                                                 message_output)
+            results[target_section("vocalization_identity", each_target)] = (identity["p"],
+                                                                             identity["n_permutations"])
     if "nested_vocal_decoding" in steps:
-        run_nested_vocal_decoding(unit, events, settings, data_root, output_directory,
-                                                    n_workers, message_output)
+        run_nested_vocal_decoding(unit, events, settings, data_root, output_directory, n_workers, message_output)
     if "vocal_gating" in steps:
         stored = read_unit_artifact(output_directory, unit["unit_uid"])
-        for section, draw_key in (("vocal_occurrence", "n_shuffles"), ("vocalization_identity", "n_permutations")):
+        for section, draw_key, step in (("vocal_occurrence", "n_shuffles", "vocal_occurrence"),
+                                        (identity_section, "n_permutations", "vocalization_identity")):
             if section in results:
                 continue
             if section not in stored:
                 msg = (f"vocal gating needs {section}'s p-value, and {unit['unit_uid']} has no {section} "
-                       f"section in {output_directory}; run {section} first")
+                       f"section in {output_directory}; run {step} first")
                 raise ValueError(msg)
             results[section] = (stored[section]["p"], stored[section][draw_key])
         check_tuning_threshold_is_reachable(settings["vocal_gating"]["vocal_tuning_alpha"],
-                                            {section: n_draws for section, (_p, n_draws) in results.items()})
+                                            {section: results[section][1]
+                                             for section in ("vocal_occurrence", identity_section)})
         run_vocal_gating(unit, settings, data_root, output_directory, n_workers, results["vocal_occurrence"][0],
-                         results["vocalization_identity"][0], message_output)
+                         results[identity_section][0], message_output)
 
 
 def dispatch(args: argparse.Namespace) -> int:
@@ -1065,8 +1283,8 @@ def dispatch(args: argparse.Namespace) -> int:
 
 def main() -> int:
     """Parse arguments and dispatch."""
-    parser = argparse.ArgumentParser(description="Vocal occurrence, vocalization identity, nested vocal-manifold position "
-                                                 "decoding and vocal gating for one unit, in one job.")
+    parser = argparse.ArgumentParser(description="Vocal occurrence, vocalization identity, nested vocal decoding and "
+                                                 "vocal gating for one unit, in one job.")
     parser.add_argument("--unit-id", dest="unit_id", required=True)
     parser.add_argument("--mouse-id", dest="mouse_id", required=True)
     parser.add_argument("--rec-date", dest="rec_date", type=int, required=True)

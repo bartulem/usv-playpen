@@ -4,7 +4,10 @@
       "/mnt/falkner/Bartul/modeling/input_files/ephys_courtship_intact_partners_sessions_list.txt",
       "/mnt/falkner/Bartul/modeling/input_files/ephys_courtship_mute_female_sessions_list.txt"
     ],
-    "behaviour_selection_result_path": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_selection_ephys_newmap.pkl",
+    "behaviour_selection_result_path": {
+      "manifold": "/mnt/falkner/Bartul/modeling/model_selection_results/model_selection_final_ephys_male_all_partners_manifold_qlvm_session_20261026_205129Z.pkl",
+      "multinomial": "/mnt/falkner/Bartul/modeling/model_selection_results/model_selection_final_ephys_male_all_partners_multinomial_qlvm_category_session_20261026_203704Z.pkl"
+    },
     "brain_areas": ["PAG"],
     "area_mode": "include",
     "pool_areas": false,
@@ -233,13 +236,44 @@
   },
   "nested_vocal_decoding": {
     "behaviour_control": "rich",
-    "reduced_model_features": [
-      "head-head",
-      "allo_yaw-head",
-      "allo_pitch-head",
-      "self.speed"
-    ],
-    "behaviour_control_model_path": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_model_ephys_cohort.pkl",
+    "reduced_model_features": {
+      "manifold": ["head-head"],
+      "multinomial": [
+        "allo_yaw-head",
+        "head-head",
+        "other.speed",
+        "self.back_pitch"
+      ]
+    },
+    "behaviour_control_model_path": {
+      "manifold": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_model_ephys_manifold.pkl",
+      "multinomial": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_model_ephys_multinomial.pkl"
+    },
+    "category_control": {
+      "bin_resizing_factor": 1,
+      "lambda_smooth_fixed": 1.0,
+      "l2_reg_fixed": 0.01,
+      "smoothness_derivative_order": 1,
+      "temporal_basis": {
+        "type": "bspline",
+        "n_splines": 20,
+        "spline_order": 3,
+        "lambda_smooth_fixed": 1e-5,
+        "l2_reg_fixed": 1e-5,
+        "l2_lag_alpha": 100,
+        "lambda_smooth_decades_each_side": 2
+      },
+      "tune_regularization_params": {
+        "lambda_smooth_decades_each_side": 0,
+        "l2_reg_decades_each_side": 4
+      },
+      "focal_loss_gamma": 0.5,
+      "learning_rate": 0.005,
+      "max_iter": 20000,
+      "tol": 0.001,
+      "random_state": 0,
+      "use_lax_loop": true
+    },
     "vm_score_mode": "macro",
     "region_label_column": "qlvm_category",
     "min_region_events": 20,

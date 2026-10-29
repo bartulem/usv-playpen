@@ -43,11 +43,14 @@ with warnings.catch_warnings():
         write_unit_section,
     )
     from usv_playpen.neural_modeling.neural_category_decoding import (
+        category_behaviour_tilts,
         category_codes,
         category_context,
         category_gain,
+        category_nested_gain,
     )
     from usv_playpen.neural_modeling.neural_nested_decoding import (
+        VOCAL_TARGETS,
         behaviour_priors,
         nested_settings,
         posterior_nested_gain,
@@ -253,15 +256,16 @@ class TestTheGatingSwitch:
         """Found on a real smoke run: at 20 draws every p-value floors at 1/21 = 0.048, above the 0.01
         threshold, so a strongly tuned unit read as untuned. Silently skipping every unit is refused."""
         write_unit_section(str(tmp_path), UNIT, "vocal_occurrence", {"p": 1 / 21, "n_shuffles": 20}, _settings())
-        write_unit_section(str(tmp_path), UNIT, "vocalization_identity", {"p": 1 / 21, "n_permutations": 20},
-                           _settings())
+        write_unit_section(str(tmp_path), UNIT, "vocalization_identity_manifold",
+                           {"p": 1 / 21, "n_permutations": 20}, _settings())
         with pytest.raises(ValueError, match="cannot fall below"):
             vocal.run_vocal(UNIT, _settings(), "unused", str(tmp_path), 1, steps=("vocal_gating",),
                             message_output=_quiet)
 
     def test_the_fewest_draws_that_can_clear_the_threshold_are_accepted(self):
         """1/(n+1) must be strictly below alpha: at 0.01 that is 100 draws, and 99 is refused."""
-        vocal.check_tuning_threshold_is_reachable(0.01, {"vocal_occurrence": 100, "vocalization_identity": 1000})
+        vocal.check_tuning_threshold_is_reachable(0.01, {"vocal_occurrence": 100,
+                                                          "vocalization_identity_manifold": 1000})
         with pytest.raises(ValueError, match="at least 100 draws"):
             vocal.check_tuning_threshold_is_reachable(0.01, {"vocal_occurrence": 99})
 
@@ -746,7 +750,7 @@ class TestTheAnalysisSteps:
         spawned = _inline_pools(monkeypatch)
 
         payload = vocal.run_vocalization_identity(
-            UNIT, events, settings, str(tmp_path), 2, _quiet
+            UNIT, events, settings, "manifold", str(tmp_path), 2, _quiet
         )
 
         decoding = settings["vocal_decoding"]
@@ -775,7 +779,7 @@ class TestTheAnalysisSteps:
         }
         assert (
             read_unit_artifact(str(tmp_path), UNIT["unit_uid"])[
-                "vocalization_identity"
+                "vocalization_identity_manifold"
             ]["gain"]
             == payload["gain"]
         )
@@ -784,7 +788,7 @@ class TestTheAnalysisSteps:
         """
         Description
         -----------
-        With ``vocal_target = "multinomial"`` identity decodes the acoustic category: the null takes
+        On the ``"multinomial"`` target identity decodes the acoustic category: the null takes
         ``n_permutations_category_grain`` draws, equals the serial permutation null of the categorical gain
         value for value, and the section records the target and the categories decoded.
 
@@ -801,11 +805,10 @@ class TestTheAnalysisSteps:
         """
         events = _vocal_events()
         settings = _fast_decoding_settings()
-        settings["vocalization_settings"]["vocal_target"] = "multinomial"
         settings["vocal_decoding"]["discrimination_null"]["n_permutations_category_grain"] = 6
         _inline_pools(monkeypatch)
 
-        payload = vocal.run_vocalization_identity(UNIT, events, settings, str(tmp_path), 2, _quiet)
+        payload = vocal.run_vocalization_identity(UNIT, events, settings, "multinomial", str(tmp_path), 2, _quiet)
 
         codes, kept, values = category_codes(events["category_labels"])
         folds = category_context(codes, events["session_index"][kept], events["vocalization_start"][kept],
@@ -819,6 +822,8 @@ class TestTheAnalysisSteps:
         assert payload["categories"] == values.tolist()
         assert payload["n_permutations"] == 6
         assert "bump_basis_gain" not in payload
+        assert read_unit_artifact(str(tmp_path), UNIT["unit_uid"])[
+            "vocalization_identity_multinomial"]["gain"] == payload["gain"]
 
     def test_a_single_training_session_tunes_on_blocks(self, monkeypatch, tmp_path):
         """
@@ -858,17 +863,16 @@ class TestTheAnalysisSteps:
             return folds
 
         monkeypatch.setattr(vocal, "decoding_context", recording)
-        vocal.run_vocalization_identity(UNIT, events, settings, str(tmp_path), 1, _quiet)
+        vocal.run_vocalization_identity(UNIT, events, settings, "manifold", str(tmp_path), 1, _quiet)
         blocks = settings["data_sufficiency"]["single_session_blocks"]
         assert all(len(fold["inner_splits"]) == blocks for fold in built[0])
 
     @pytest.mark.parametrize("target", ["category", "MANIFOLD"])
     def test_an_unknown_target_is_refused(self, target, tmp_path):
-        """A misspelled target must raise naming the key rather than fall back to the torus decoder."""
+        """A misspelled target must raise rather than fall back to the torus decoder."""
         settings = _fast_decoding_settings()
-        settings["vocalization_settings"]["vocal_target"] = target
-        with pytest.raises(ValueError, match="vocal_target"):
-            vocal.run_vocalization_identity(UNIT, _vocal_events(), settings, str(tmp_path), 1, _quiet)
+        with pytest.raises(ValueError, match="vocal target must be one of"):
+            vocal.run_vocalization_identity(UNIT, _vocal_events(), settings, target, str(tmp_path), 1, _quiet)
 
     def test_nested_decoding_carries_the_control_and_tests_the_posterior_statistic(
         self, tmp_path, monkeypatch
@@ -876,12 +880,11 @@ class TestTheAnalysisSteps:
         """
         Description
         -----------
-        The nested step must assemble the unit's kinematics with the encoding's history, build the design
-        at ``floor(4 s * fps)`` lags with the nested floor, hand the cohort control the unit's recording day
-        as an eight-character string, score the regression descriptor at the lag count the control returns
-        (1) against the reduced predictions it computed, and test the POSTERIOR statistic on the kept
-        events with a permutation null equal to the serial one. The section names held-out sessions and
-        records the control's identity.
+        The torus arm must load the torus control, hand it the unit's recording day as an
+        eight-character string, score the regression descriptor at the lag count the control returns (1)
+        against the reduced predictions it computed, and test the POSTERIOR statistic on the kept events
+        with a permutation null equal to the serial one. The section, ``nested_vocal_decoding_manifold``,
+        names held-out sessions and records the control's identity.
 
         Parameters
         ----------
@@ -931,9 +934,6 @@ class TestTheAnalysisSteps:
         reduced = np.zeros((kept.size, 2))
         calls = collections.defaultdict(list)
         stubs = {
-            "assemble_unit_sessions": {"s0": {"fps": 10.0}},
-            "reduced_model_features": ["head-head", "self.speed"],
-            "nested_design": design,
             "load_control_model": {"artifact": True},
             "apply_behaviour_control": (controlled, 1),
             "reduced_predictions": reduced,
@@ -944,24 +944,12 @@ class TestTheAnalysisSteps:
         for name, result in stubs.items():
             monkeypatch.setattr(vocal, name, _recording_stub(calls, name, result))
 
-        payload = vocal.run_nested_vocal_decoding(
-            UNIT, events, settings, "/data", str(tmp_path), 2, _quiet
+        payload = vocal.run_manifold_nested_decoding(
+            UNIT, events, design, settings, str(tmp_path), 2, _quiet
         )
 
-        encoding = settings["kinematic_encoding"]
-        assert calls["assemble_unit_sessions"][0][0][1:5] == (
-            "/data",
-            settings["kinematic_features"],
-            encoding["history_pre_seconds"],
-            encoding["clean_post_seconds"],
-        )
         nested = nested_settings(settings)
-        assert calls["nested_design"][0][0][2:] == (
-            ["head-head", "self.speed"],
-            40,
-            nested["sigma_floor"],
-        )
-        assert calls["load_control_model"][0][0] == (settings,)
+        assert calls["load_control_model"][0][0] == (settings, "manifold")
         assert calls["apply_behaviour_control"][0][0][1:] == (
             {"artifact": True},
             "20250101",
@@ -1017,9 +1005,135 @@ class TestTheAnalysisSteps:
         }
         stored = read_unit_artifact(str(tmp_path), UNIT["unit_uid"])
         assert (
-            stored["nested_vocal_decoding"]["added"]
+            stored["nested_vocal_decoding_manifold"]["added"]
             == payload["added"]
         )
+
+
+    def test_the_categorical_nested_step_conditions_the_category_prior_on_the_control(self, tmp_path,
+                                                                                      monkeypatch):
+        """
+        Description
+        -----------
+        The categorical arm must read the categorical control, draw its evidence
+        from the fold that held the unit's day out, map the control's category columns onto the unit's
+        own category codes, tilt each fold's prior with a tuned concentration, and test the categorical
+        nested statistic with a permutation null equal to the serial one. No torus piece (the control
+        swap, the point regression) may run.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Output directory for the unit file.
+        monkeypatch (pytest.MonkeyPatch)
+            Installs the in-process pool and the stubs for the kinematic and JAX-fitted pieces.
+
+        Returns
+        -------
+        None
+        """
+        events = _vocal_events()
+        settings = _fast_decoding_settings()
+        settings["nested_vocal_decoding"]["discrimination_null"]["n_permutations"] = 4
+        spawned = _inline_pools(monkeypatch)
+        kept = np.arange(12, events["counts"].size)
+        labels = np.asarray(events["category_labels"])[kept]
+        values = np.unique(labels[np.isfinite(labels)])
+        # The control's classes in a different order from the unit's codes, plus one the unit never
+        # emits, so the column mapping is exercised.
+        classes = np.concatenate([values[::-1], [99.0]])
+        generator = np.random.default_rng(5)
+        evidence = generator.dirichlet(np.ones(classes.size), kept.size)
+        design = {"behaviour": np.zeros((kept.size, 3)), "session_index": events["session_index"][kept],
+                  "kept": kept, "positions": events["positions"][kept]}
+        artifact = {"target": "multinomial", "features": ["allo_yaw-head"], "classes": classes,
+                    "settings_sha256": "abc123"}
+        calls = collections.defaultdict(list)
+        stubs = {"load_control_model": artifact,
+                 "category_control_evidence": evidence}
+        for name, result in stubs.items():
+            monkeypatch.setattr(vocal, name, _recording_stub(calls, name, result))
+        for name in ("apply_behaviour_control", "nested_scores", "reduced_predictions"):
+            monkeypatch.setattr(vocal, name, _recording_stub(calls, name, None))
+
+        payload = vocal.run_category_nested_decoding(UNIT, events, design, settings, str(tmp_path), 2, _quiet)
+
+        assert calls["load_control_model"][0][0] == (settings, "multinomial")
+        assert calls["category_control_evidence"][0][0][1] == "20250101"
+        assert not any(name in calls for name in ("apply_behaviour_control", "nested_scores",
+                                                  "reduced_predictions"))
+        codes, labelled, unit_values = category_codes(labels)
+        columns = [list(classes).index(v) for v in unit_values]
+        log_evidence = np.log(evidence[labelled][:, columns])
+        counts = np.asarray(events["counts"], dtype=np.float64)[kept][labelled]
+        session_index = events["session_index"][kept][labelled]
+        decoding = settings["vocal_decoding"]
+        folds = category_context(codes, session_index, np.asarray(events["vocalization_start"])[kept][labelled],
+                                 int(settings["data_sufficiency"]["single_session_blocks"]))
+        kappas, tilts = category_behaviour_tilts(
+            folds, codes, log_evidence, settings["nested_vocal_decoding"]["behaviour_prior"]["kappa_grid"])
+        observed = category_nested_gain(counts, codes, folds, decoding, tilts, kappas)
+        serial = [category_nested_gain(counts, codes, folds, decoding, tilts, kappas,
+                                       within_session_permutation(session_index,
+                                                                  np.random.default_rng(11 + draw)))["added"]
+                  for draw in range(4)]
+        assert spawned[0][0] == 2
+        assert payload["target"] == "multinomial"
+        assert payload["added"] == pytest.approx(observed["added"])
+        assert payload["behaviour_over_no_behaviour"] == pytest.approx(observed["behaviour_over_no_behaviour"])
+        np.testing.assert_array_equal(payload["null"], serial)
+        assert payload["kappas"] == kappas
+        assert payload["categories"] == unit_values.tolist()
+        assert "point_regression" not in payload
+        assert payload["behaviour_control"] == {"features": ["allo_yaw-head"], "held_out_day": "20250101",
+                                                "settings_sha256": "abc123"}
+        stored = read_unit_artifact(str(tmp_path), UNIT["unit_uid"])
+        assert stored["nested_vocal_decoding_multinomial"]["added"] == payload["added"]
+
+    def test_the_nested_step_assembles_once_and_runs_both_targets_on_their_own_features(self, monkeypatch):
+        """
+        Description
+        -----------
+        The kinematics must be assembled once, with the encoding's history; each target's design must be
+        built at ``floor(4 s * fps)`` lags with the nested floor on THAT target's control features (the
+        two controls select different features); and each arm must receive its own design and the same
+        events, with the payloads returned keyed by target.
+
+        Parameters
+        ----------
+        monkeypatch (pytest.MonkeyPatch)
+            Installs the stubs.
+
+        Returns
+        -------
+        None
+        """
+        events = _vocal_events()
+        settings = _fast_decoding_settings()
+        features = {"manifold": ["head-head"], "multinomial": ["allo_yaw-head", "other.speed"]}
+        calls = collections.defaultdict(list)
+        stubs = {"assemble_unit_sessions": {"s0": {"fps": 10.0}},
+                 "reduced_model_features": lambda call: features[call[0][1]],
+                 "nested_design": lambda call: {"features": call[0][2]},
+                 "run_manifold_nested_decoding": {"added": 0.01},
+                 "run_category_nested_decoding": {"added": 0.02}}
+        for name, result in stubs.items():
+            monkeypatch.setattr(vocal, name, _recording_stub(calls, name, result))
+
+        payloads = vocal.run_nested_vocal_decoding(UNIT, events, settings, "/data", "/out", 3, _quiet)
+
+        encoding = settings["kinematic_encoding"]
+        assert len(calls["assemble_unit_sessions"]) == 1
+        assert calls["assemble_unit_sessions"][0][0][1:5] == (
+            "/data", settings["kinematic_features"], encoding["history_pre_seconds"],
+            encoding["clean_post_seconds"])
+        floor = nested_settings(settings)["sigma_floor"]
+        assert [call[0][2:] for call in calls["nested_design"]] == [
+            (features[target], 40, floor) for target in VOCAL_TARGETS]
+        assert calls["run_manifold_nested_decoding"][0][0][1] is events
+        assert calls["run_manifold_nested_decoding"][0][0][2] == {"features": ["head-head"]}
+        assert calls["run_category_nested_decoding"][0][0][2] == {"features": ["allo_yaw-head", "other.speed"]}
+        assert payloads == {"manifold": {"added": 0.01}, "multinomial": {"added": 0.02}}
 
 
 def _gating_universe() -> dict:
@@ -1344,7 +1458,9 @@ class TestRunVocalOrder:
             0.2,
         )
         events = calls["run_vocal_occurrence"][0][0][1]
-        assert calls["run_vocalization_identity"][0][0][1] is events
+        # Identity runs once per target, on the same events; the nested step runs both targets itself.
+        assert [call[0][3] for call in calls["run_vocalization_identity"]] == list(VOCAL_TARGETS)
+        assert all(call[0][1] is events for call in calls["run_vocalization_identity"])
         assert calls["run_nested_vocal_decoding"][0][0][1] is events
         assert calls["run_vocal_occurrence"][0][0][5] == 4
         assert calls["run_vocal_gating"][0][0] == (
@@ -1381,7 +1497,7 @@ class TestRunVocalOrder:
         write_unit_section(
             str(tmp_path),
             UNIT,
-            "vocalization_identity",
+            "vocalization_identity_manifold",
             {"p": 0.003, "n_permutations": 1000},
             _settings(),
         )
@@ -1437,7 +1553,7 @@ class TestRunVocalOrder:
         write_unit_section(
             str(tmp_path),
             UNIT,
-            "vocalization_identity",
+            "vocalization_identity_manifold",
             {"p": 0.005, "n_permutations": 1000},
             _settings(),
         )
@@ -1482,13 +1598,13 @@ class TestRunVocalOrder:
         ]
 
 
-    def test_the_multinomial_target_refuses_the_nested_step_before_anything_runs(self, tmp_path, monkeypatch):
+    def test_vocal_target_picks_the_identity_p_value_gating_reads(self, tmp_path, monkeypatch):
         """
         Description
         -----------
-        The nested decoding has no multinomial behaviour control, so asking for it under the multinomial
-        target must raise before the events are assembled or any section is written; without the nested
-        step the other three run.
+        Identity runs on both targets whatever ``vocal_target`` says; ``vocal_target`` only picks which
+        identity p-value reaches vocal gating. With it set to ``"multinomial"``, gating must receive the
+        categorical identity p, not the torus one.
 
         Parameters
         ----------
@@ -1504,12 +1620,38 @@ class TestRunVocalOrder:
         settings = _settings()
         settings["vocalization_settings"]["vocal_target"] = "multinomial"
         calls = self._install(monkeypatch)
-        with pytest.raises(ValueError, match="multinomial behaviour control"):
+        monkeypatch.setattr(vocal, "run_vocalization_identity", _recording_stub(
+            calls, "run_vocalization_identity",
+            lambda call: {"p": 0.004 if call[0][3] == "multinomial" else 0.3, "n_permutations": 1000}))
+        vocal.run_vocal(UNIT, settings, "/data", str(tmp_path), 1, vocal.VOCAL_STEPS, _quiet)
+        assert "run_nested_vocal_decoding" in calls
+        assert [call[0][3] for call in calls["run_vocalization_identity"]] == list(VOCAL_TARGETS)
+        assert calls["run_vocal_gating"][0][0][6] == 0.004
+
+    def test_an_unknown_target_is_refused_before_anything_runs(self, tmp_path, monkeypatch):
+        """
+        Description
+        -----------
+        A target other than ``manifold`` or ``multinomial`` raises before the events are assembled or any
+        section is written.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Output directory.
+        monkeypatch (pytest.MonkeyPatch)
+            Installs the stubs.
+
+        Returns
+        -------
+        None
+        """
+        settings = _settings()
+        settings["vocalization_settings"]["vocal_target"] = "categories"
+        calls = self._install(monkeypatch)
+        with pytest.raises(ValueError, match="vocal_target"):
             vocal.run_vocal(UNIT, settings, "/data", str(tmp_path), 1, vocal.VOCAL_STEPS, _quiet)
         assert not calls
-        steps = tuple(step for step in vocal.VOCAL_STEPS if step != "nested_vocal_decoding")
-        vocal.run_vocal(UNIT, settings, "/data", str(tmp_path), 1, steps, _quiet)
-        assert "run_vocalization_identity" in calls
 
 
 class TestNotVocalTestable:
@@ -1547,8 +1689,14 @@ class TestNotVocalTestable:
 
         assert not calls
         stored = read_unit_artifact(str(tmp_path), unit["unit_uid"])
+        not_run = {"ran": False, "reason": "not_vocal_testable", "n_vocal_sessions": 1}
         for step in vocal.VOCAL_STEPS:
-            assert stored[step] == {"ran": False, "reason": "not_vocal_testable", "n_vocal_sessions": 1}
+            if step in vocal.TARGET_STEPS:
+                for target in VOCAL_TARGETS:
+                    assert stored[f"{step}_{target}"] == not_run
+                assert step not in stored
+            else:
+                assert stored[step] == not_run
 
 
 class TestVocalCommandLine:

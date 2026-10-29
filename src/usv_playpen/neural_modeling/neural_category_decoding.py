@@ -11,7 +11,12 @@ by inner leave-one-session-out as in the continuous decoder.
 
 Exports :func:`category_codes`, :func:`category_context`, :func:`category_gain`,
 :func:`category_rates`, :func:`category_posterior`, :func:`tuned_category_amplitude` and
-:func:`decoding_spike_sufficiency`. The per-unit vocal dispatcher does not yet run this module.
+:func:`decoding_spike_sufficiency`.
+
+The nested decoding's categorical form also lives here: :func:`category_behaviour_tilts` turns the
+categorical behaviour control's evidence into a per-USV tilt of the category prior, and
+:func:`category_nested_gain` is :func:`category_gain` under that behaviour-conditioned prior, so the
+two report one statistic under two priors, as the torus forms do.
 """
 from __future__ import annotations
 
@@ -141,7 +146,8 @@ def category_posterior(counts: np.ndarray, rates: np.ndarray, prior: np.ndarray,
     rates (np.ndarray)
         Per-category rates from the training fold.
     prior (np.ndarray)
-        Category prior from the training fold.
+        Category prior: ``(n_categories,)`` shared by every event, or ``(n_events, n_categories)`` one
+        row per event (the behaviour-conditioned prior of the nested decoding).
     alpha (float)
         Amplitude calibration.
     exposure (float)
@@ -162,8 +168,65 @@ def category_posterior(counts: np.ndarray, rates: np.ndarray, prior: np.ndarray,
               * max(float(exposure), mean_count_floor))
     log_likelihood = (counts[:, None] * np.log(tilted)[None, :] - tilted[None, :]
                       - gammaln(counts + 1.0)[:, None])
-    posterior = log_likelihood + np.log(prior)[None, :]
+    log_prior = np.log(prior)
+    posterior = log_likelihood + (log_prior[None, :] if log_prior.ndim == 1 else log_prior)
     return posterior - logsumexp(posterior, axis=1, keepdims=True)
+
+
+def tilted_category_prior(frequencies: np.ndarray, tilt: np.ndarray | None) -> np.ndarray:
+    """
+    Description
+    -----------
+    A category prior: the given frequencies, optionally tilted per event by the behaviour evidence.
+
+    With ``tilt`` the prior of event ``i`` is ``frequencies * exp(tilt[i])``, renormalised, which is
+    Bayes' rule with ``exp(tilt[i])`` as the behaviour's likelihood of each category; ``tilt = 0`` is the
+    frequencies themselves.
+
+    Parameters
+    ----------
+    frequencies (np.ndarray)
+        ``(n_categories,)`` category frequencies, strictly positive, summing to one.
+    tilt (np.ndarray | None)
+        ``(n_events, n_categories)`` log-evidence per event, or None.
+
+    Returns
+    -------
+    prior (np.ndarray)
+        ``frequencies`` unchanged when ``tilt`` is None, otherwise ``(n_events, n_categories)`` rows
+        summing to one.
+    """
+
+    if tilt is None:
+        return frequencies
+    log_prior = np.log(frequencies)[None, :] + tilt
+    return np.exp(log_prior - logsumexp(log_prior, axis=1, keepdims=True))
+
+
+def training_frequencies(labels: np.ndarray, rows: np.ndarray, n_categories: int) -> np.ndarray:
+    """
+    Description
+    -----------
+    Category frequencies of the given rows, with a floor of half an event so a category absent from
+    them keeps non-zero prior mass.
+
+    Parameters
+    ----------
+    labels (np.ndarray)
+        Category code per event.
+    rows (np.ndarray)
+        Rows to count.
+    n_categories (int)
+        Number of categories.
+
+    Returns
+    -------
+    frequencies (np.ndarray)
+        ``(n_categories,)`` frequencies summing to one.
+    """
+
+    counts = np.maximum(np.bincount(labels[rows], minlength=n_categories).astype(np.float64), 0.5)
+    return counts / counts.sum()
 
 
 def category_context(labels: np.ndarray, session_index: np.ndarray, event_times: np.ndarray | None = None,
@@ -207,19 +270,18 @@ def category_context(labels: np.ndarray, session_index: np.ndarray, event_times:
         train_sessions = [int(s) for s in sessions if s != held_out]
         train_rows = np.concatenate([rows_by_session[s] for s in train_sessions])
         # A category absent from the training fold still needs non-zero prior mass.
-        prior = np.maximum(np.bincount(labels[train_rows], minlength=n_categories).astype(np.float64),
-                           0.5)
+        prior = training_frequencies(labels, train_rows, n_categories)
         inner_splits = inner_rotation_splits(train_sessions, rows_by_session, event_times,
                                              single_session_blocks)
         folds.append({"held_out": int(held_out), "train_sessions": train_sessions,
                       "train_rows": train_rows, "test_rows": rows_by_session[int(held_out)],
-                      "prior": prior / prior.sum(), "n_categories": n_categories,
+                      "prior": prior, "n_categories": n_categories,
                       "inner_splits": inner_splits})
     return folds
 
 
 def tuned_category_amplitude(counts: np.ndarray, labels: np.ndarray, fold: dict,
-                             settings: dict) -> float:
+                             settings: dict, tilt: np.ndarray | None = None) -> float:
     """
     Description
     -----------
@@ -241,6 +303,9 @@ def tuned_category_amplitude(counts: np.ndarray, labels: np.ndarray, fold: dict,
         The ``vocal_decoding`` block; reads ``category_surface`` (ridge, amplitude calibration and the
         ``min_train_events`` / ``min_test_events`` floors below which a split is skipped, and the
         ``mean_count_floor`` under each session's mean count).
+    tilt (np.ndarray | None)
+        ``(n_events, n_categories)`` behaviour tilt of the prior (:func:`category_behaviour_tilts`),
+        applied to each inner split's own frequencies; None for the unconditioned prior.
 
     Returns
     -------
@@ -261,24 +326,26 @@ def tuned_category_amplitude(counts: np.ndarray, labels: np.ndarray, fold: dict,
             if (train_rows.size < surface["min_train_events"]
                     or test_rows.size < surface["min_test_events"]):
                 continue
-            prior = np.maximum(np.bincount(labels[train_rows],
-                                           minlength=fold["n_categories"]).astype(np.float64), 0.5)
-            prior = prior / prior.sum()
+            prior = tilted_category_prior(training_frequencies(labels, train_rows, fold["n_categories"]),
+                                          None if tilt is None else tilt[test_rows])
             rates = category_rates(counts[train_rows], labels[train_rows], fold["n_categories"],
                                    ridge_frac * counts[train_rows].sum())
             exposure = (max(float(counts[test_rows].mean()), mean_count_floor)
                         / max(float(counts[train_rows].mean()), mean_count_floor))
             posterior = category_posterior(counts[test_rows], rates, prior, alpha, exposure,
                                            mean_count_floor)
+            prior_at_truth = (prior[labels[test_rows]] if prior.ndim == 1
+                              else prior[np.arange(test_rows.size), labels[test_rows]])
             scores.append(float(np.mean(posterior[np.arange(test_rows.size), labels[test_rows]]
-                                        - np.log(prior)[labels[test_rows]])))
+                                        - np.log(prior_at_truth))))
         if scores and np.mean(scores) > best_score:
             best_alpha, best_score = alpha, float(np.mean(scores))
     return best_alpha
 
 
 def category_gain(counts: np.ndarray, labels: np.ndarray, folds: list, settings: dict,
-                  permutation: np.ndarray = None, with_detail: bool = False) -> dict:
+                  permutation: np.ndarray = None, with_detail: bool = False,
+                  prior_tilts: list | None = None) -> dict:
     """
     Description
     -----------
@@ -304,6 +371,11 @@ def category_gain(counts: np.ndarray, labels: np.ndarray, folds: list, settings:
         Row order applied to the counts; ``None`` scores the observed pairing.
     with_detail (bool)
         Whether to return the per-event companions.
+    prior_tilts (list | None)
+        One ``(n_events, n_categories)`` behaviour tilt per fold (:func:`category_behaviour_tilts`),
+        which conditions every prior on the behaviour control, in the outer fold and in its amplitude
+        tuning alike. The tilt stays with its event's label, so a permutation of the counts moves only
+        the neuron. None scores the unconditioned prior (vocalization identity).
 
     Returns
     -------
@@ -320,25 +392,28 @@ def category_gain(counts: np.ndarray, labels: np.ndarray, folds: list, settings:
     uncalibrated = np.full(counts.size, np.nan)
     per_fold = []
 
-    for fold in folds:
+    for fold_index, fold in enumerate(folds):
         train_rows, test_rows = fold["train_rows"], fold["test_rows"]
         if train_rows.size < surface["min_train_events"] or test_rows.size < surface["min_test_events"]:
             continue
+        tilt = None if prior_tilts is None else np.asarray(prior_tilts[fold_index])
         ridge = ridge_frac * float(scored[train_rows].sum())
-        alpha = tuned_category_amplitude(scored, labels, fold, settings)
+        alpha = tuned_category_amplitude(scored, labels, fold, settings, tilt)
         rates = category_rates(scored[train_rows], labels[train_rows], fold["n_categories"], ridge)
         exposure = (max(float(scored[test_rows].mean()), mean_count_floor)
                     / max(float(scored[train_rows].mean()), mean_count_floor))
-        log_prior = np.log(fold["prior"])
         truth = labels[test_rows]
+        prior = tilted_category_prior(fold["prior"], None if tilt is None else tilt[test_rows])
+        log_prior_at_truth = np.log(prior[truth] if prior.ndim == 1
+                                    else prior[np.arange(truth.size), truth])
 
-        posterior = category_posterior(scored[test_rows], rates, fold["prior"], alpha, exposure,
+        posterior = category_posterior(scored[test_rows], rates, prior, alpha, exposure,
                                        mean_count_floor)
-        per_event[test_rows] = posterior[np.arange(truth.size), truth] - log_prior[truth]
+        per_event[test_rows] = posterior[np.arange(truth.size), truth] - log_prior_at_truth
         entropy[test_rows] = -np.sum(np.exp(posterior) * posterior, axis=1)
-        raw = category_posterior(scored[test_rows], rates, fold["prior"], 1.0, exposure,
+        raw = category_posterior(scored[test_rows], rates, prior, 1.0, exposure,
                                  mean_count_floor)
-        uncalibrated[test_rows] = raw[np.arange(truth.size), truth] - log_prior[truth]
+        uncalibrated[test_rows] = raw[np.arange(truth.size), truth] - log_prior_at_truth
 
         per_fold.append({"held_out": fold["held_out"], "n_events": int(test_rows.size),
                          "gain": float(np.nanmean(per_event[test_rows])), "alpha": float(alpha),
@@ -368,4 +443,150 @@ def category_gain(counts: np.ndarray, labels: np.ndarray, folds: list, settings:
         result.update({"per_event_gain": per_event, "posterior_entropy": entropy,
                        "mean_posterior_entropy": (float(np.mean(entropy[np.isfinite(entropy)]))
                                                   if np.isfinite(entropy).any() else float("nan"))})
+    return result
+
+
+def category_behaviour_tilts(folds: list, labels: np.ndarray, log_evidence: np.ndarray,
+                             kappa_grid: list) -> tuple[list, list]:
+    """
+    Description
+    -----------
+    The behaviour control's evidence as a per-USV tilt of each fold's category prior, with one tuned
+    concentration per fold.
+
+    The categorical behaviour control gives, for each USV, base-rate-free category probabilities
+    ``e_i(c)``. The behaviour-conditioned prior is ``p_i(c) ~ freq(c) * e_i(c) ** kappa``: the
+    training frequencies, sharpened by the behaviour's evidence. ``kappa = 0`` is the frequencies
+    themselves (the identity decoder's prior), ``kappa = 1`` is Bayes' rule with the control's
+    probabilities taken at face value. The control is fitted with a focal loss, so its probabilities
+    are not calibrated, and the concentration is tuned rather than fixed at 1.
+
+    The concentration is chosen per outer fold from ``kappa_grid`` by the fold's inner splits, on the
+    training sessions alone: for each candidate, the mean over inner held-out events of the log
+    conditioned prior at the true category minus the log inner-training frequency at it, each inner
+    split using its own training frequencies. The grid is non-negative, so the evidence can be
+    declined but never inverted, and ties go to the first (smallest) candidate. A fold with no inner
+    split takes the grid's first value.
+
+    Parameters
+    ----------
+    folds (list)
+        From :func:`category_context`.
+    labels (np.ndarray)
+        Category code per event.
+    log_evidence (np.ndarray)
+        ``(n_events, n_categories)`` log of the control's base-rate-free probabilities, columns in code
+        order.
+    kappa_grid (list)
+        Candidate concentrations, all ``>= 0`` (``nested_vocal_decoding.behaviour_prior.kappa_grid``).
+
+    Returns
+    -------
+    kappas, tilts (tuple)
+        One concentration per fold, and one ``(n_events, n_categories)`` tilt ``kappa * log_evidence``
+        per fold.
+    """
+
+    grid = [float(k) for k in kappa_grid]
+    if any(k < 0 for k in grid):
+        msg = f"kappa_grid must be non-negative; got {grid}."
+        raise ValueError(msg)
+    log_evidence = np.asarray(log_evidence, dtype=np.float64)
+    kappas, tilts = [], []
+    for fold in folds:
+        kappa = grid[0]
+        if fold["inner_splits"]:
+            best = -np.inf
+            for candidate in grid:
+                held_in = []
+                for train_rows, test_rows in fold["inner_splits"]:
+                    frequencies = training_frequencies(labels, train_rows, fold["n_categories"])
+                    prior = tilted_category_prior(frequencies, candidate * log_evidence[test_rows])
+                    truth = labels[test_rows]
+                    held_in.append(float(np.mean(np.log(prior[np.arange(truth.size), truth])
+                                                 - np.log(frequencies[truth]))))
+                score = float(np.mean(held_in))
+                if score > best:
+                    best, kappa = score, candidate
+        kappas.append(kappa)
+        tilts.append(kappa * log_evidence)
+    return kappas, tilts
+
+
+def category_nested_gain(counts: np.ndarray, labels: np.ndarray, folds: list, settings: dict,
+                         tilts: list, kappas: list, permutation: np.ndarray = None,
+                         with_detail: bool = False) -> dict:
+    """
+    Description
+    -----------
+    The nested statistic for the categorical target: what the neuron adds, in nats per event, once
+    behaviour has already set the category prior.
+
+    It is :func:`category_gain` with each fold's prior conditioned on the behaviour control
+    (:func:`category_behaviour_tilts`), so ``added`` is log posterior(truth | neuron, behaviour) minus
+    log prior(truth | behaviour), averaged over held-out events. Reported beside it:
+    ``behaviour_over_no_behaviour`` (log prior(truth | behaviour) minus log frequency(truth), what
+    behaviour alone buys) and ``full_over_no_behaviour`` (the sum). A permutation reorders the counts
+    only, so the first is invariant under the null and only ``added`` is tested.
+
+    Parameters
+    ----------
+    counts (np.ndarray)
+        Spike count per event.
+    labels (np.ndarray)
+        Category code per event.
+    folds (list)
+        From :func:`category_context`.
+    settings (dict)
+        The ``vocal_decoding`` block.
+    tilts (list)
+        From :func:`category_behaviour_tilts`.
+    kappas (list)
+        The concentration each tilt was built with.
+    permutation (np.ndarray)
+        Row order applied to the counts; ``None`` scores the observed pairing.
+    with_detail (bool)
+        Carry the per-event detail through, observed pass only.
+
+    Returns
+    -------
+    result (dict)
+        ``added``, ``added_uncalibrated``, ``nats_per_spike``, ``behaviour_over_no_behaviour``,
+        ``full_over_no_behaviour``, ``n_masked``, ``n_folds_positive``, ``min_leave_one_fold_out``,
+        ``per_fold`` (each with its ``kappa``), ``alphas``, ``ridges``, ``kappas``, and the detail.
+    """
+
+    full = category_gain(counts, labels, folds, settings, permutation, with_detail, prior_tilts=tilts)
+
+    surface = settings["category_surface"]
+    behaviour_over = np.full(counts.size, np.nan, dtype=np.float64)
+    fold_kappa = {}
+    for fold, tilt, kappa in zip(folds, tilts, kappas, strict=True):
+        train_rows, test_rows = fold["train_rows"], fold["test_rows"]
+        if train_rows.size < surface["min_train_events"] or test_rows.size < surface["min_test_events"]:
+            continue
+        truth = labels[test_rows]
+        prior = tilted_category_prior(fold["prior"], np.asarray(tilt)[test_rows])
+        behaviour_over[test_rows] = (np.log(prior[np.arange(truth.size), truth])
+                                     - np.log(fold["prior"][truth]))
+        fold_kappa[fold["held_out"]] = kappa
+    finite = np.isfinite(behaviour_over)
+    behaviour_gain = float(np.mean(behaviour_over[finite])) if finite.any() else float("nan")
+
+    per_fold = []
+    for fold_result in full["per_fold"]:
+        entry = {key: value for key, value in fold_result.items() if key != "gain"}
+        entry.update({"added": fold_result["gain"], "kappa": fold_kappa[fold_result["held_out"]]})
+        per_fold.append(entry)
+    result = {"added": full["gain"], "added_uncalibrated": full["gain_uncalibrated"],
+              "nats_per_spike": full["nats_per_spike"], "n_masked": full["n_masked"],
+              "n_folds_positive": full["n_folds_positive"],
+              "min_leave_one_fold_out": full["min_leave_one_fold_out"],
+              "per_fold": per_fold, "alphas": full["alphas"], "ridges": full["ridges"],
+              "kappas": [entry["kappa"] for entry in per_fold],
+              "behaviour_over_no_behaviour": behaviour_gain,
+              "full_over_no_behaviour": full["gain"] + behaviour_gain}
+    if with_detail:
+        result.update({key: full[key] for key in ("per_event_gain", "posterior_entropy",
+                                                  "mean_posterior_entropy")})
     return result

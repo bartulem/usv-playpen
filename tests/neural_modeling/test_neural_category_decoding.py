@@ -3,7 +3,8 @@
 Unit tests for ``usv_playpen.neural_modeling.neural_category_decoding``.
 
 Coverage: the categorical decoding target -- code mapping, per-category rates, the posterior, the
-leave-one-session-out context, the amplitude calibration and the gain's key roster.
+leave-one-session-out context, the amplitude calibration and the gain's key roster -- and the nested
+decoding's categorical form: the behaviour tilt of the prior and the nested gain under it.
 """
 
 from __future__ import annotations
@@ -14,14 +15,18 @@ import numpy as np
 import pytest
 
 from usv_playpen.neural_modeling.neural_category_decoding import (
+    category_behaviour_tilts,
     category_codes,
     category_context,
     category_gain,
+    category_nested_gain,
     category_posterior,
     category_rates,
     decoding_spike_sufficiency,
+    tilted_category_prior,
     tuned_category_amplitude,
 )
+from usv_playpen.neural_modeling.neural_significance import within_session_permutation
 
 SETTINGS = {"category_surface": {"ridge_selection": {"mode": "count_normalized_fixed",
                                                      "ridge_frac": 0.02},
@@ -324,3 +329,139 @@ class TestSpikeSufficiency:
         """Exactly 50 spikes must pass and 49 must fail, pinning the floor as inclusive."""
         assert decoding_spike_sufficiency(np.full(50, 1.0), self.SETTINGS)["sufficient"]
         assert not decoding_spike_sufficiency(np.full(49, 1.0), self.SETTINGS)["sufficient"]
+
+
+def _behaviour_evidence(labels, n_categories, informativeness, seed=1):
+    """
+    Description
+    -----------
+    Synthetic base-rate-free category probabilities from a behaviour control: a mixture of the true
+    category's indicator and a uniform distribution, so ``informativeness`` 0 carries nothing and 1
+    names the category outright.
+
+    Parameters
+    ----------
+    labels (np.ndarray)
+        True category code per event.
+    n_categories (int)
+        Number of categories.
+    informativeness (float)
+        Weight of the true category in the mixture, in ``[0, 1)``.
+    seed (int)
+        Seed for the noise that keeps rows from being identical.
+
+    Returns
+    -------
+    log_evidence (np.ndarray)
+        ``(n_events, n_categories)`` log-probabilities.
+    """
+    rng = np.random.default_rng(seed)
+    evidence = np.full((labels.size, n_categories), (1.0 - informativeness) / n_categories)
+    evidence[np.arange(labels.size), labels] += informativeness
+    evidence = evidence * rng.uniform(0.9, 1.1, evidence.shape)
+    evidence /= evidence.sum(axis=1, keepdims=True)
+    return np.log(evidence)
+
+
+KAPPA_GRID = [0.0, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0]
+
+
+class TestBehaviourTilts:
+    """The behaviour control's evidence as a per-USV tilt of the category prior."""
+
+    def test_uninformative_evidence_is_declined(self):
+        """Evidence that is uniform for every event cannot improve the held-in prior, so every fold keeps
+        the frequencies (kappa 0, the first and smallest candidate)."""
+        _counts, labels, session = _synthetic()
+        folds = category_context(labels, session)
+        kappas, tilts = category_behaviour_tilts(folds, labels, np.zeros((labels.size, 4)), KAPPA_GRID)
+        assert kappas == [0.0, 0.0, 0.0]
+        assert all(np.all(tilt == 0.0) for tilt in tilts)
+
+    def test_informative_evidence_earns_a_positive_kappa(self):
+        """Evidence that points at the true category is taken up on every fold."""
+        _counts, labels, session = _synthetic()
+        folds = category_context(labels, session)
+        kappas, _tilts = category_behaviour_tilts(folds, labels, _behaviour_evidence(labels, 4, 0.6),
+                                                  KAPPA_GRID)
+        assert all(kappa > 0 for kappa in kappas)
+
+    def test_a_negative_grid_is_refused(self):
+        """The evidence may be declined but never inverted."""
+        _counts, labels, session = _synthetic()
+        with pytest.raises(ValueError, match="non-negative"):
+            category_behaviour_tilts(category_context(labels, session), labels,
+                                     np.zeros((labels.size, 4)), [-1.0, 0.0])
+
+    def test_the_tilted_prior_reduces_to_the_frequencies_at_zero_tilt(self):
+        """``tilted_category_prior`` with a zero tilt returns the frequencies on every row."""
+        frequencies = np.array([0.1, 0.2, 0.3, 0.4])
+        prior = tilted_category_prior(frequencies, np.zeros((5, 4)))
+        np.testing.assert_allclose(prior, np.tile(frequencies, (5, 1)))
+
+    def test_the_tilted_prior_is_bayes_rule(self):
+        """A tilt of ``log e`` gives ``freq * e`` renormalised."""
+        frequencies = np.array([0.5, 0.25, 0.25])
+        evidence = np.array([[0.2, 0.6, 0.2]])
+        expected = frequencies * evidence[0] / np.sum(frequencies * evidence[0])
+        np.testing.assert_allclose(tilted_category_prior(frequencies, np.log(evidence))[0], expected)
+
+
+class TestNestedGain:
+    """The categorical nested statistic: the identity decoder under the behaviour-conditioned prior."""
+
+    def test_zero_tilt_reproduces_vocalization_identity(self):
+        """With the evidence declined everywhere the nested statistic IS the identity gain, and behaviour
+        alone buys nothing."""
+        counts, labels, session = _synthetic()
+        folds = category_context(labels, session)
+        tilts = [np.zeros((labels.size, 4))] * len(folds)
+        nested = category_nested_gain(counts, labels, folds, SETTINGS, tilts, [0.0] * len(folds))
+        identity = category_gain(counts, labels, folds, SETTINGS)
+        assert nested["added"] == pytest.approx(identity["gain"])
+        assert nested["behaviour_over_no_behaviour"] == pytest.approx(0.0, abs=1e-12)
+
+    def test_behaviour_that_names_the_category_leaves_the_neuron_less_to_add(self):
+        """When the control already carries the category, the neuron's added information shrinks below
+        its identity gain, while behaviour alone buys a positive amount."""
+        counts, labels, session = _synthetic(strength=3.0)
+        folds = category_context(labels, session)
+        kappas, tilts = category_behaviour_tilts(folds, labels, _behaviour_evidence(labels, 4, 0.8),
+                                                 KAPPA_GRID)
+        nested = category_nested_gain(counts, labels, folds, SETTINGS, tilts, kappas)
+        identity = category_gain(counts, labels, folds, SETTINGS)
+        assert nested["behaviour_over_no_behaviour"] > 0.1
+        assert nested["added"] < identity["gain"]
+
+    def test_a_neuron_carrying_nothing_adds_nothing(self):
+        """An untuned neuron adds about zero beyond an informative control."""
+        counts, labels, session = _synthetic(strength=0.0)
+        folds = category_context(labels, session)
+        kappas, tilts = category_behaviour_tilts(folds, labels, _behaviour_evidence(labels, 4, 0.5),
+                                                 KAPPA_GRID)
+        nested = category_nested_gain(counts, labels, folds, SETTINGS, tilts, kappas)
+        assert abs(nested["added"]) < 0.02
+
+    def test_behaviour_alone_is_invariant_under_the_null(self):
+        """A permutation moves only the counts; each USV keeps its category and its tilt, so what
+        behaviour alone buys does not change, while the neuron's added information collapses."""
+        counts, labels, session = _synthetic(strength=3.0)
+        folds = category_context(labels, session)
+        kappas, tilts = category_behaviour_tilts(folds, labels, _behaviour_evidence(labels, 4, 0.4),
+                                                 KAPPA_GRID)
+        observed = category_nested_gain(counts, labels, folds, SETTINGS, tilts, kappas)
+        permutation = within_session_permutation(session, np.random.default_rng(3))
+        shuffled = category_nested_gain(counts, labels, folds, SETTINGS, tilts, kappas, permutation)
+        assert shuffled["behaviour_over_no_behaviour"] == pytest.approx(
+            observed["behaviour_over_no_behaviour"])
+        assert shuffled["added"] < observed["added"]
+
+    def test_each_fold_reports_its_kappa(self):
+        """Every fold of the result carries the concentration its prior was built with."""
+        counts, labels, session = _synthetic()
+        folds = category_context(labels, session)
+        kappas, tilts = category_behaviour_tilts(folds, labels, _behaviour_evidence(labels, 4, 0.6),
+                                                 KAPPA_GRID)
+        nested = category_nested_gain(counts, labels, folds, SETTINGS, tilts, kappas)
+        assert nested["kappas"] == kappas
+        assert [fold["kappa"] for fold in nested["per_fold"]] == kappas

@@ -16,6 +16,13 @@ Both write an artifact that the per-unit run reads and checks (:func:`load_contr
 recomputes. :func:`apply_behaviour_control` swaps a unit's raw behaviour block for the four
 sine/cosine columns of the control's prediction from the fold that did not see the unit's day. Torus
 positions and region labels are read from the ``Data`` tree summaries through ``load_session_usvs``.
+
+The categorical target has its own control (:func:`fit_category_control_models`): the behavioural
+modelling's multinomial logistic regression (``SmoothMultinomialLogisticRegression`` on the same
+B-spline lag basis, penalties and focal loss as that pipeline, from
+``nested_vocal_decoding.category_control``), fitted on the same cohort assembly and held out by the
+same recording day. It enters each unit as the base-rate-free category evidence of each USV
+(:func:`category_control_evidence`), which the per-unit run turns into a per-USV category prior.
 """
 
 from __future__ import annotations
@@ -26,6 +33,13 @@ from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 
+from ..modeling.jax_multinomial_logistic_regression import (
+    SmoothMultinomialLogisticRegression,
+)
+from ..modeling.modeling_bases_functions import (
+    project_history_onto_basis,
+    resolve_temporal_basis,
+)
 from ..modeling.modeling_metadata import compute_settings_sha256
 from .neural_design_assembly import (
     build_zscored_feature_frames,
@@ -39,6 +53,7 @@ from .neural_design_assembly import (
 )
 from .neural_nested_decoding import (
     NestedTorusRegression,
+    check_target,
     inverse_region_frequency_weights,
     macro_von_mises_logscore,
     nested_settings,
@@ -372,8 +387,9 @@ def fit_control_models(cohort: dict, feature_names: list, settings: dict, n_lags
     Returns
     -------
     artifact (dict)
-        ``features``, ``n_lags``, ``coefficients`` (day to ``{coef, intercept}``), ``held_out_score``,
-        ``no_behaviour_score``, per-day scores, counts and ``settings_sha256``.
+        ``target`` (``"manifold"``), ``features``, ``n_lags``, ``coefficients`` (day to
+        ``{coef, intercept}``), ``held_out_score``, ``no_behaviour_score``, per-day scores, counts and
+        ``settings_sha256``.
     """
 
     positions, regions, days = cohort["positions"], cohort["regions"], cohort["days"]
@@ -402,7 +418,8 @@ def fit_control_models(cohort: dict, feature_names: list, settings: dict, n_lags
             "no_behaviour": pooled_macro(no_behaviour[rows], positions[rows], regions[rows],
                                          settings)}
 
-    return {"features": list(feature_names), "n_lags": int(n_lags), "coefficients": coefficients,
+    return {"target": "manifold", "features": list(feature_names), "n_lags": int(n_lags),
+            "coefficients": coefficients,
             "held_out_score": pooled_macro(predicted, positions, regions, settings),
             "no_behaviour_score": pooled_macro(no_behaviour, positions, regions, settings),
             "per_day": per_day, "n_vocalizations": int(positions.shape[0]),
@@ -469,9 +486,10 @@ def upgrade_legacy_counts(record: dict) -> dict:
     -----------
     Read an artifact that stores its counts under the legacy key ``n_calls`` under the current name.
 
-    Renames ``n_calls`` to ``n_vocalizations`` at the top level and inside every ``per_day`` entry. A
-    record that already carries the current names passes through unchanged, and the input is not
-    mutated.
+    Renames ``n_calls`` to ``n_vocalizations`` at the top level and inside every ``per_day`` entry, and
+    tags a fitted control that predates the categorical control with ``target = "manifold"``, the only
+    control that existed then. A record that already carries the current names passes through
+    unchanged, and the input is not mutated.
 
     Parameters
     ----------
@@ -486,6 +504,9 @@ def upgrade_legacy_counts(record: dict) -> dict:
     """
 
     upgraded = dict(record)
+    # Artifacts fitted before the categorical control existed were all torus controls.
+    if "target" not in upgraded and "coefficients" in upgraded:
+        upgraded["target"] = "manifold"
     if "n_calls" in upgraded:
         upgraded["n_vocalizations"] = upgraded.pop("n_calls")
     if "per_day" in upgraded:
@@ -499,19 +520,22 @@ def upgrade_legacy_counts(record: dict) -> dict:
     return upgraded
 
 
-def load_control_model(settings: dict) -> dict:
+def load_control_model(settings: dict, target: str) -> dict:
     """
     Description
     -----------
-    Read the fitted control and check its features against the settings it is about to serve.
+    Read the fitted control for one target and check it against the settings it is about to serve.
 
     A control out of step with the settings would change every added score without changing any
-    reported configuration value, so a feature mismatch raises.
+    reported configuration value, so a feature or target mismatch raises. The path and the frozen
+    features are read at the target's key.
 
     Parameters
     ----------
     settings (dict)
         The whole neural-modelling settings dict.
+    target (str)
+        ``"manifold"`` or ``"multinomial"``.
 
     Returns
     -------
@@ -520,8 +544,9 @@ def load_control_model(settings: dict) -> dict:
         ``n_vocalizations`` (:func:`upgrade_legacy_counts`).
     """
 
+    check_target(target)
     path = pathlib.Path(
-        settings["nested_vocal_decoding"]["behaviour_control_model_path"])
+        settings["nested_vocal_decoding"]["behaviour_control_model_path"][target])
     if not path.exists():
         msg = (f"behaviour control model not found at {path}; fit it once with the behaviour-control "
                f"dispatcher before running the nested decoding.")
@@ -529,7 +554,11 @@ def load_control_model(settings: dict) -> dict:
     with path.open("rb") as handle:
         artifact = upgrade_legacy_counts(pickle.load(handle))
 
-    frozen = list(settings["nested_vocal_decoding"]["reduced_model_features"])
+    if artifact["target"] != target:
+        msg = (f"behaviour control target mismatch: {path.name} is a {artifact['target']!r} control, but "
+               f"it was asked for as the {target!r} control.")
+        raise ValueError(msg)
+    frozen = list(settings["nested_vocal_decoding"]["reduced_model_features"][target])
     if list(artifact["features"]) != frozen:
         msg = (f"behaviour control drift: {path.name} was fitted on {list(artifact['features'])}, but "
                f"settings freeze {frozen}. Refit the control or update the settings deliberately.")
@@ -776,3 +805,318 @@ def apply_behaviour_control(design: dict, artifact: dict, held_out_day: str,
                                        "predicted_positions": predicted,
                                        "settings_sha256": artifact["settings_sha256"]}
     return controlled, 1
+
+
+def category_control_basis(settings: dict, n_lags: int) -> tuple[np.ndarray, dict]:
+    """
+    Description
+    -----------
+    The categorical control's lag basis and the penalty settings its fit uses.
+
+    Resolved by the behavioural modelling's own ``resolve_temporal_basis`` from
+    ``nested_vocal_decoding.category_control``, a copy of that pipeline's multinomial settings block,
+    so the control is the same model the categorical feature selection scored: each feature's history
+    is projected onto the same B-splines with the same lag-varying ridge.
+
+    Parameters
+    ----------
+    settings (dict)
+        The whole neural-modelling settings dict.
+    n_lags (int)
+        History length in frames.
+
+    Returns
+    -------
+    basis, block (tuple)
+        ``(n_lags, n_splines)`` projection basis, and the effective settings block
+        (``lambda_smooth_fixed``, ``l2_reg_fixed``, ``smoothness_derivative_order``,
+        ``smoothness_reflective_edges`` and the solver settings).
+    """
+
+    basis, block = resolve_temporal_basis(settings["nested_vocal_decoding"]["category_control"], int(n_lags))
+    if basis is None:
+        msg = ("nested_vocal_decoding.category_control.temporal_basis.type must be 'bspline'; the "
+               "categorical control is the behavioural modelling's spline-basis model.")
+        raise ValueError(msg)
+    return basis, block
+
+
+def project_category_design(design: np.ndarray, n_features: int, basis: np.ndarray) -> np.ndarray:
+    """
+    Description
+    -----------
+    Project a feature-major lagged design onto the categorical control's basis, feature by feature,
+    in the column order the behavioural modelling uses.
+
+    Parameters
+    ----------
+    design (np.ndarray)
+        ``(n, n_features * n_lags)`` histories, feature-major.
+    n_features (int)
+        Number of features.
+    basis (np.ndarray)
+        ``(n_lags, n_splines)`` basis.
+
+    Returns
+    -------
+    projected (np.ndarray)
+        ``(n, n_features * n_splines)`` projected design.
+    """
+
+    n_lags = basis.shape[0]
+    if design.shape[1] != n_features * n_lags:
+        msg = (f"design has {design.shape[1]} columns, expected {n_features} features x {n_lags} lags.")
+        raise ValueError(msg)
+    return np.hstack([project_history_onto_basis(design[:, index * n_lags:(index + 1) * n_lags], basis)
+                      for index in range(n_features)])
+
+
+def category_control_estimator(n_features: int, basis: np.ndarray, block: dict,
+                               random_state: int) -> SmoothMultinomialLogisticRegression:
+    """
+    Description
+    -----------
+    An unfitted categorical control, configured as the behavioural modelling's multinomial fit.
+
+    Parameters
+    ----------
+    n_features (int)
+        Number of behaviour features.
+    basis (np.ndarray)
+        The projection basis; its column count is the number of coefficients per feature.
+    block (dict)
+        The effective settings block from :func:`category_control_basis`.
+    random_state (int)
+        Seed of the fit.
+
+    Returns
+    -------
+    model (SmoothMultinomialLogisticRegression)
+        The unfitted estimator.
+    """
+
+    return SmoothMultinomialLogisticRegression(
+        n_features=int(n_features), n_time_bins=int(basis.shape[1]),
+        lambda_smooth=float(block["lambda_smooth_fixed"]), l2_reg=float(block["l2_reg_fixed"]),
+        smoothness_derivative_order=int(block["smoothness_derivative_order"]),
+        smoothness_reflective_edges=bool(block["smoothness_reflective_edges"]),
+        focal_gamma=float(block["focal_loss_gamma"]), uniform_class_weights=False,
+        learning_rate=float(block["learning_rate"]), max_iter=int(block["max_iter"]),
+        tol=float(block["tol"]), random_state=int(random_state),
+        _use_lax_loop=bool(block["use_lax_loop"]))
+
+
+def category_labels(cohort: dict, settings: dict) -> np.ndarray:
+    """
+    Description
+    -----------
+    The categorical control's target: the cohort's acoustic category per USV.
+
+    The cohort assembly carries the ``nested_vocal_decoding.region_label_column`` labels; the
+    categorical decoder of the per-unit run reads ``vocal_decoding.category_surface.category_column``.
+    The two must name the same column, or the control would predict one category system while the
+    neuron is decoded on another.
+
+    Parameters
+    ----------
+    cohort (dict)
+        From :func:`assemble_cohort`.
+    settings (dict)
+        The whole neural-modelling settings dict.
+
+    Returns
+    -------
+    labels (np.ndarray)
+        Integer category label per USV.
+    """
+
+    region_column = settings["nested_vocal_decoding"]["region_label_column"]
+    category_column = settings["vocal_decoding"]["category_surface"]["category_column"]
+    if region_column != category_column:
+        msg = (f"nested_vocal_decoding.region_label_column ({region_column!r}) and "
+               f"vocal_decoding.category_surface.category_column ({category_column!r}) differ; the "
+               f"categorical control must predict the categories the neuron is decoded on.")
+        raise ValueError(msg)
+    return np.asarray(cohort["regions"]).astype(np.int64)
+
+
+def macro_one_versus_rest_auc(probabilities: np.ndarray, labels: np.ndarray,
+                              classes: np.ndarray) -> float:
+    """
+    Description
+    -----------
+    Mean over categories of the one-versus-rest AUROC, the behavioural modelling's selection metric.
+
+    Parameters
+    ----------
+    probabilities (np.ndarray)
+        ``(n, n_classes)`` predicted probabilities, columns in ``classes`` order.
+    labels (np.ndarray)
+        True category per USV.
+    classes (np.ndarray)
+        Category of each column.
+
+    Returns
+    -------
+    auc (float)
+        Macro AUROC over the categories present with both positives and negatives; NaN if none.
+    """
+
+    values = []
+    for column, category in enumerate(classes):
+        positive = labels == category
+        if positive.all() or not positive.any():
+            continue
+        scores = probabilities[:, column]
+        order = np.argsort(scores, kind="mergesort")
+        ranks = np.empty(scores.size, dtype=np.float64)
+        ranks[order] = np.arange(1, scores.size + 1)
+        # Average ranks over ties, so the AUROC is exact for tied scores.
+        _unique, inverse = np.unique(scores, return_inverse=True)
+        ranks = np.bincount(inverse, weights=ranks)[inverse] / np.bincount(inverse)[inverse]
+        n_positive = int(positive.sum())
+        n_negative = scores.size - n_positive
+        values.append((ranks[positive].sum() - n_positive * (n_positive + 1) / 2.0)
+                      / (n_positive * n_negative))
+    return float(np.mean(values)) if values else float("nan")
+
+
+def fit_category_control_models(cohort: dict, feature_names: list, settings: dict, n_lags: int) -> dict:
+    """
+    Description
+    -----------
+    Fit the categorical control once per held-out recording day and return the artifact payload.
+
+    The estimator is the behavioural modelling's multinomial logistic regression on the B-spline lag
+    basis (:func:`category_control_estimator`), fitted on every day but the held-out one. Only each
+    fold's ``coef_``, ``intercept_``, ``log_priors_`` and ``classes_`` are kept, since those are all a
+    prediction needs.
+
+    Two held-out scores are reported, per day and pooled, neither of which the per-unit statistic
+    uses: the macro one-versus-rest AUROC of the base-rate-free probabilities (the behavioural
+    modelling's metric, chance 0.5), and the mean log-probability of the true category under the
+    fitted probabilities minus that under the training days' category frequencies (nats per USV,
+    zero for a control that knows nothing). The model is fitted with a focal loss, so its
+    probabilities are not calibrated and the second score is only indicative; the per-unit prior
+    tunes its own concentration (``neural_category_decoding.category_behaviour_tilts``).
+
+    Parameters
+    ----------
+    cohort (dict)
+        From :func:`assemble_cohort`.
+    feature_names (list)
+        The control's features, a subset of the cohort's canonical feature list.
+    settings (dict)
+        The whole neural-modelling settings dict.
+    n_lags (int)
+        History length in frames.
+
+    Returns
+    -------
+    artifact (dict)
+        ``target`` (``"multinomial"``), ``features``, ``n_lags``, ``classes``, ``coefficients`` (day to
+        ``{coef, intercept, log_priors}``), ``held_out_auc``, ``held_out_log_score_gain``, ``per_day``,
+        counts, ``converged`` per day and ``settings_sha256``.
+    """
+
+    labels = category_labels(cohort, settings)
+    days = cohort["days"]
+    classes = np.unique(labels)
+    columns = feature_columns(cohort["feature_names"], feature_names, n_lags)
+    basis, block = category_control_basis(settings, n_lags)
+    design = project_category_design(cohort["design"][:, columns].astype(np.float64),
+                                     len(feature_names), basis).astype(np.float32)
+
+    coefficients, per_day = {}, {}
+    balanced = np.full((labels.size, classes.size), np.nan)
+    gain = np.full(labels.size, np.nan)
+    for held_out in np.unique(days):
+        test = np.flatnonzero(days == held_out)
+        train = np.flatnonzero(days != held_out)
+        missing = np.setdiff1d(classes, np.unique(labels[train]))
+        if missing.size:
+            msg = (f"categories {missing.tolist()} occur only on day {held_out}; the control held out "
+                   f"by that day cannot predict them.")
+            raise ValueError(msg)
+        model = category_control_estimator(len(feature_names), basis, block, int(block["random_state"]))
+        model.fit(design[train], labels[train])
+        if not np.array_equal(model.classes_, classes):
+            msg = f"fold {held_out} fitted classes {model.classes_.tolist()}, expected {classes.tolist()}."
+            raise ValueError(msg)
+        balanced[test] = model.predict_proba(design[test], balanced=True)
+        fitted = model.predict_proba(design[test], balanced=False)
+        frequency = np.bincount(np.searchsorted(classes, labels[train]),
+                                minlength=classes.size) / float(train.size)
+        truth = np.searchsorted(classes, labels[test])
+        gain[test] = (np.log(np.maximum(fitted[np.arange(test.size), truth], 1e-300))
+                      - np.log(frequency[truth]))
+        coefficients[str(held_out)] = {"coef": np.asarray(model.coef_).copy(),
+                                       "intercept": np.asarray(model.intercept_).copy(),
+                                       "log_priors": np.asarray(model.log_priors_).copy(),
+                                       "converged": bool(model.converged_),
+                                       "n_iter": int(model.n_iter_)}
+        per_day[str(held_out)] = {
+            "n_vocalizations": int(test.size),
+            "auc": macro_one_versus_rest_auc(balanced[test], labels[test], classes),
+            "log_score_gain": float(np.mean(gain[test]))}
+
+    return {"target": "multinomial", "features": list(feature_names), "n_lags": int(n_lags),
+            "classes": classes, "coefficients": coefficients,
+            "held_out_auc": macro_one_versus_rest_auc(balanced, labels, classes),
+            "held_out_log_score_gain": float(np.mean(gain)),
+            "per_day": per_day, "n_vocalizations": int(labels.size),
+            "session_ids": list(cohort["session_ids"]), "skipped": dict(cohort["skipped"]),
+            "settings_sha256": compute_settings_sha256(settings)}
+
+
+def category_control_evidence(artifact: dict, held_out_day: str, design: np.ndarray,
+                              settings: dict) -> np.ndarray:
+    """
+    Description
+    -----------
+    The categorical control's base-rate-free category probabilities for a unit's USVs, from the fold
+    that did not see that unit's day.
+
+    ``predict_proba(balanced=True)`` removes the training log-priors from the logits, so the result
+    carries the behaviour's evidence about the category and not the cohort's category frequencies;
+    the per-unit prior supplies its own frequencies.
+
+    Parameters
+    ----------
+    artifact (dict)
+        From :func:`load_control_model`, a ``"multinomial"`` control.
+    held_out_day (str)
+        The unit's recording date, as the eight-character day key.
+    design (np.ndarray)
+        ``(n, n_features * n_lags)`` histories for the unit's USVs, in the artifact's feature order.
+    settings (dict)
+        The whole neural-modelling settings dict.
+
+    Returns
+    -------
+    evidence (np.ndarray)
+        ``(n, n_classes)`` probabilities, columns in ``artifact["classes"]`` order.
+    """
+
+    if artifact["target"] != "multinomial":
+        msg = f"category_control_evidence needs a multinomial control; got {artifact['target']!r}."
+        raise ValueError(msg)
+    if held_out_day not in artifact["coefficients"]:
+        msg = (f"the behaviour control carries no fold for day {held_out_day}; it was fitted over "
+               f"{sorted(artifact['coefficients'])}. A unit's own day must be held out.")
+        raise KeyError(msg)
+    n_features = len(artifact["features"])
+    expected = n_features * artifact["n_lags"]
+    if design.shape[1] != expected:
+        msg = (f"the unit's behaviour block has {design.shape[1]} columns but the control was fitted on "
+               f"{n_features} features x {artifact['n_lags']} lags = {expected}.")
+        raise ValueError(msg)
+    basis, block = category_control_basis(settings, artifact["n_lags"])
+    fold = artifact["coefficients"][held_out_day]
+    model = category_control_estimator(n_features, basis, block, int(block["random_state"]))
+    model.coef_ = np.asarray(fold["coef"])
+    model.intercept_ = np.asarray(fold["intercept"])
+    model.log_priors_ = np.asarray(fold["log_priors"])
+    model.classes_ = np.asarray(artifact["classes"])
+    projected = project_category_design(np.asarray(design, dtype=np.float64), n_features, basis)
+    return model.predict_proba(projected.astype(np.float32), balanced=True)

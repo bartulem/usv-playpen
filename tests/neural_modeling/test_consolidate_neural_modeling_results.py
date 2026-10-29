@@ -78,15 +78,21 @@ def _artifact(p: float = 1e-3, slope: float = 0.4, gating=None, null_draws: int 
                                    "quiet_score": 3.0, "transfer_score": 2.0,
                                    "quiet_null": null, "transfer_null": null},
             "vocal_occurrence": {"p": p, "z": 9.0, "gain": 0.3, "response_sign": "elevated", "n_shuffles": 1000},
-            "vocalization_identity": {"p": p, "z": 8.0, "gain": 0.05, "target": "manifold",
-                                      "n_permutations": 1000},
-            "nested_vocal_decoding": {"p": p, "z": 7.0, "added": 0.02, "n_permutations": 1000,
-                                      "behaviour_over_no_behaviour": 0.01},
+            "vocalization_identity_manifold": {"p": p, "z": 8.0, "gain": 0.05, "target": "manifold",
+                                               "n_permutations": 1000},
+            "nested_vocal_decoding_manifold": {"p": p, "z": 7.0, "added": 0.02, "n_permutations": 1000,
+                                               "behaviour_over_no_behaviour": 0.01},
+            # The categorical target carries its own, distinct numbers, so a test reading the wrong
+            # target would see them.
+            "vocalization_identity_multinomial": {"p": 0.5, "z": 0.1, "gain": 0.001, "target": "multinomial",
+                                                  "n_permutations": 5000},
+            "nested_vocal_decoding_multinomial": {"p": 0.6, "z": -0.2, "added": -0.001, "n_permutations": 1000,
+                                                  "behaviour_over_no_behaviour": 0.03},
             "vocal_gating": gating if gating is not None else {"ran": False, "reason": "no_vocal_tuning"}}
 
 
 SETTINGS = {"significance": {"fdr_q": 0.05, "fdr_method": "bh", "include_single_session_units": False},
-            "data": {"pool_areas": False}}
+            "data": {"pool_areas": False}, "vocalization_settings": {"vocal_target": "manifold"}}
 
 
 class TestUnitRow:
@@ -94,7 +100,7 @@ class TestUnitRow:
 
     def test_a_unit_with_every_test_reads_every_p_value(self):
         """Each test's p-value is read from its own section, the encoding z-scores from the stored nulls."""
-        row = unit_row(_record("u"), _artifact(p=2e-3))
+        row = unit_row(_record("u"), _artifact(p=2e-3), "manifold")
         assert all(row[f"p_{test}"] == pytest.approx(2e-3) for test in TESTS if test != "gating")
         assert row["z_quiet"] == pytest.approx(null_z(3.0, np.linspace(-1, 1, 1000)))
         assert row["reason_gating"] == "no_vocal_tuning"
@@ -102,7 +108,7 @@ class TestUnitRow:
 
     def test_an_unrun_unit_is_missing_everywhere_never_failed(self):
         """A unit with no result file has a NaN p-value and a ``not_run`` reason for every test."""
-        row = unit_row(_record("u"), {})
+        row = unit_row(_record("u"), {}, "manifold")
         assert all(np.isnan(row[f"p_{test}"]) for test in TESTS)
         assert all(row[f"reason_{test}"] == "not_run" for test in TESTS)
         assert not row["has_results"]
@@ -111,7 +117,7 @@ class TestUnitRow:
         """A vocal section written as not vocal-testable is missing, with that reason."""
         artifact = _artifact()
         artifact["vocal_occurrence"] = {"ran": False, "reason": "not_vocal_testable", "n_vocal_sessions": 1}
-        row = unit_row(_record("u"), artifact)
+        row = unit_row(_record("u"), artifact, "manifold")
         assert np.isnan(row["p_occurrence"])
         assert row["reason_occurrence"] == "not_vocal_testable"
 
@@ -121,7 +127,25 @@ class TestUnitRow:
         """A NaN transfer p from a unit with no scoreable fold or no model is missing with that reason."""
         artifact = _artifact()
         artifact["kinematic_encoding"].update({"transfer_p": float("nan"), **flags})
-        assert unit_row(_record("u"), artifact)["reason_transfer"] == reason
+        assert unit_row(_record("u"), artifact, "manifold")["reason_transfer"] == reason
+
+    def test_the_tested_target_supplies_identity_and_nested_and_both_are_described(self):
+        """``target`` picks which sections are tested; both targets' numbers are copied as descriptors."""
+        artifact = _artifact(p=2e-3)
+        manifold = unit_row(_record("u"), artifact, "manifold")
+        multinomial = unit_row(_record("u"), artifact, "multinomial")
+        assert manifold["p_identity"] == pytest.approx(2e-3)
+        assert manifold["p_nested"] == pytest.approx(2e-3)
+        assert manifold["behaviour_gain"] == pytest.approx(0.01)
+        assert multinomial["p_identity"] == pytest.approx(0.5)
+        assert multinomial["p_nested"] == pytest.approx(0.6)
+        assert multinomial["behaviour_gain"] == pytest.approx(0.03)
+        assert multinomial["identity_target"] == "multinomial"
+        for row in (manifold, multinomial):
+            assert row["p_identity_manifold"] == pytest.approx(2e-3)
+            assert row["p_identity_multinomial"] == pytest.approx(0.5)
+            assert row["nested_effect_multinomial"] == pytest.approx(-0.001)
+            assert row["behaviour_gain_multinomial"] == pytest.approx(0.03)
 
     def test_null_z_is_undefined_for_a_constant_or_absent_null(self):
         """A z-score needs a null with spread."""
@@ -221,10 +245,21 @@ class TestConsolidate:
     def test_the_conjunction_is_the_largest_component(self):
         """The conjunction p-value is the largest of quiet, transfer, identity and nested; occurrence is not in it."""
         artifact = _artifact(p=1e-3)
-        artifact["vocalization_identity"]["p"] = 0.03
+        artifact["vocalization_identity_manifold"]["p"] = 0.03
         artifact["vocal_occurrence"]["p"] = 0.9
         table, _ = consolidate([_record("u")], {"u": artifact}, SETTINGS)
         assert table["p_conjunction"][0] == pytest.approx(0.03)
+
+    def test_switching_the_target_needs_only_the_consolidation(self):
+        """The same result files classify differently under the other target: here the categorical
+        identity and nested tests fail, so the unit is no longer a Transformation."""
+        artifact = _artifact(p=1e-3)
+        manifold, _ = consolidate([_record("u")], {"u": artifact}, SETTINGS)
+        multinomial, _ = consolidate([_record("u")], {"u": artifact},
+                                     {**SETTINGS, "vocalization_settings": {"vocal_target": "multinomial"}})
+        assert manifold["category"][0] == "Transformation"
+        assert multinomial["p_conjunction"][0] == pytest.approx(0.6)
+        assert multinomial["category"][0] != "Transformation"
 
     def test_single_session_units_are_listed_but_not_corrected_by_default(self):
         """Excluded by default, admitted by the switch; listed either way."""
@@ -285,7 +320,7 @@ class TestBehaviourModifier:
         """A transformation unit with a non-positive behaviour gain stays a Transformation, is flagged, and is
         counted in the report."""
         informative, uninformative = _artifact(), _artifact()
-        uninformative["nested_vocal_decoding"]["behaviour_over_no_behaviour"] = -0.002
+        uninformative["nested_vocal_decoding_manifold"]["behaviour_over_no_behaviour"] = -0.002
         table, report = consolidate([_record("a"), _record("b")], {"a": informative, "b": uninformative},
                                     SETTINGS)
         assert table["category"].to_list() == ["Transformation", "Transformation"]

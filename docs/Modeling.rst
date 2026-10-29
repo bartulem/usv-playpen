@@ -1671,7 +1671,10 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
 
     "data": {
         "session_list_files": ["/mnt/falkner/Bartul/modeling/input_files/ephys_courtship_intact_partners_sessions_list.txt", "/mnt/falkner/Bartul/modeling/input_files/ephys_courtship_mute_female_sessions_list.txt"],
-        "behaviour_selection_result_path": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_selection_ephys_newmap.pkl",
+        "behaviour_selection_result_path": {
+            "manifold": "/mnt/falkner/Bartul/modeling/model_selection_results/model_selection_final_ephys_male_all_partners_manifold_qlvm_session_20261026_205129Z.pkl",
+            "multinomial": "/mnt/falkner/Bartul/modeling/model_selection_results/model_selection_final_ephys_male_all_partners_multinomial_qlvm_category_session_20261026_203704Z.pkl"
+        },
         "brain_areas": ["PAG"],
         "area_mode": "include",
         "pool_areas": false,
@@ -1680,7 +1683,7 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
     }
 
 * **session_list_files** — text files listing one session directory per line; the union is the courtship cohort (the intact-partner and the mute-female ephys lists are shipped).
-* **behaviour_selection_result_path** — the pickle the behaviour-control feature selection (``main_behaviour_control_dispatcher --stage select``) writes and the nested decoding reads back to check its frozen ``reduced_model_features`` against.
+* **behaviour_selection_result_path** — per target (``'manifold'``, ``'multinomial'``), the selection whose feature set defines the behaviour control, read back to check the frozen ``reduced_model_features`` against. Either a behavioural-modelling selection (its last forward step's ``current_features``; only the names are adopted, never the coefficients) or the pickle ``main_behaviour_control_dispatcher --stage select --output <file>`` writes (the select stage never writes to this path). Shipped: the behavioural modelling's manifold and multinomial selections on the ephys courtship sessions (both partner conditions pooled), which selected ``head-head`` alone and ``allo_yaw-head``, ``head-head``, ``other.speed``, ``self.back_pitch``.
 * **brain_areas** / **area_mode** — the unit catalog's ``brain_area`` filter: ``'include'`` keeps the listed areas, ``'exclude'`` drops them, ``'all'`` ignores the list.
 * **pool_areas** — whether the cross-unit corrections pool every brain area of the cohort into one group (``true``) or correct each area on its own (``false``, shipped), so one area's count never depends on how many units of another were run.
 * **quality** — the allowed ``cluster_group`` labels of the unit catalog (``["good"]``).
@@ -1763,7 +1766,7 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
 * **squeaks_block_quiet** — whether a squeak still makes the surrounding frames non-quiet even when excluded from the analysed set (``true``: quiet means the animal made no sound of any kind). Measured exposure (2026-09-30): 3.5% noise and 7.3% squeaks across the behavioural courtship sessions, 0.8–1.5% of focal USVs on the ephys days.
 * **spike_window** — the per-event spike count window: it opens ``pre_offset_seconds`` (``0.05``) before the USV onset and spans ``width_seconds`` (``0.1``), so it covers the pre-motor lead and the start of the USV.
 * **torus_period** — the QLVM manifold's wrap period, shared by every analysis (a property of the manifold, so it lives here once rather than in each block). The vocalization-identity decoder and the nested decoding both read it from here.
-* **vocal_target** — what vocalization identity decodes: ``'manifold'`` (the USV's torus position, the Poisson tuning-surface decoder) or ``'multinomial'`` (its acoustic category, ``vocal_decoding.category_surface``). One key for identity and the nested decoding's behaviour control, so the neuron is tested on the target the behavioural model predicts. The nested decoding is built for ``'manifold'`` only, and a vocal run asked for it under ``'multinomial'`` is refused before anything is fitted. **Allowed:** ``'manifold'`` or ``'multinomial'``.
+* **vocal_target** — which target the claims use. Every unit is decoded on BOTH targets: vocalization identity and the nested decoding each run on ``'manifold'`` (the USV's torus position, the Poisson tuning-surface decoder, against the torus behaviour control) and on ``'multinomial'`` (its acoustic category, ``vocal_decoding.category_surface``, against the categorical behaviour control), and each target is written as its own section of the unit's result file: ``vocalization_identity_manifold``, ``vocalization_identity_multinomial``, ``nested_vocal_decoding_manifold``, ``nested_vocal_decoding_multinomial``. This key picks which target's identity p-value decides whether vocal gating runs, and which target's identity and nested p-values the cohort consolidation corrects; the other target's p-values and effect sizes are carried in the cohort table as uncorrected descriptors. Changing it needs only the consolidation re-run, not the units. **Allowed:** ``'manifold'`` or ``'multinomial'``.
 
 **kinematic_encoding** — the quiet-period kinematic encoding model (per-frame Bernoulli spike GLM of the behavioural history) and its transfer into vocal periods.
 
@@ -1976,18 +1979,39 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
 * **vocal_occurrence** — the two-class decoder (peri-onset window against quiet tile, equal prior): ``ridge_frac`` (``0.02``) shrinks the two class rates toward their pooled rate by that fraction of the training spike count; ``amplitude_calibration`` tunes the contrast between the classes over ``alpha_grid`` on the training sessions (or, for a single training session, contiguous blocks of it), and when disabled it is 1; ``mean_count_floor`` (``0.001``) bounds a session's quiet level from below so a unit silent in quiet tiles stays finite. The held-out session's quiet level is cross-fitted over ``kinematic_encoding.calibration.n_blocks`` blocks.
 * **geodesic_metrics** — declared but read by no current neural code (``compute``, ``grid_n_per_dim``, ``graph_k``, ``density_exponent``, ``decoder_weights_npz_path``).
 * **tuning_surface** — the Poisson tuning surface over the torus: ``tuning_basis`` ``'fourier'`` with ``fourier_k`` (``2``) harmonics per axis, or a local ``'bump'`` basis of ``bump_grid_n`` (``10``) nodes per axis of width ``bump_sigma`` (``0.1``) kept where the kernel-weighted training occupancy reaches ``min_basis_occupancy`` (``5.0``) events; decoding runs on a grid of ``grid_n`` (``60``) cells per axis restricted to cells whose training occupancy (KDE of bandwidth ``kde_bandwidth``, ``0.03``) reaches ``decode_grid_min_occupancy`` (``1.0``); ``likelihood_family`` ``'poisson'`` (the only implemented value); ``session_rate_offsets`` adds per-session rate offsets; ``solver.irls_n_steps`` (``50``); ``ridge_selection``: ``mode`` ``'count_normalized_fixed'`` (the only implemented value; the ridge is ``ridge_frac`` × the training spike count, ``ridge_frac`` ``0.02``); ``amplitude_calibration``: when ``enabled``, a likelihood-sharpening amplitude is tuned over ``alpha_grid`` by inner leave-one-session-out on the training sessions, or by leave-one-block-out over ``data_sufficiency.single_session_blocks`` contiguous blocks when a fold has a single training session (``mode`` ``'train_tuned_inner_loso'``, the only implemented value; ``alpha_min`` ``0.0`` is the smallest grid value allowed), and when disabled the amplitude is 1; ``record_bump_basis_gain`` also records the bump-basis gain beside the Fourier one.
-* **category_surface** — the same decoder over the QLVM categories, run when ``vocalization_settings.vocal_target`` is ``'multinomial'``: ``ridge_selection``, ``amplitude_calibration`` as above; ``category_column`` (``'qlvm_category'``) is the USV summary column holding each USV's category; ``min_train_events`` (``20``) / ``min_test_events`` (``5``) — an outer or inner split with fewer training or test events than these is skipped, too few for a stable per-category rate or a meaningful held-out score; ``mean_count_floor`` (``0.001``) is the lower bound on a session's mean spike count when the held-out level correction is formed, so a session with no spikes gives a posterior equal to the prior (zero gain) rather than ``0 · log 0`` = NaN. **Allowed:** a positive number, small against any real session's mean count.
+* **category_surface** — the same decoder over the QLVM categories, run for the ``'multinomial'`` target on every unit: ``ridge_selection``, ``amplitude_calibration`` as above; ``category_column`` (``'qlvm_category'``) is the USV summary column holding each USV's category; ``min_train_events`` (``20``) / ``min_test_events`` (``5``) — an outer or inner split with fewer training or test events than these is skipped, too few for a stable per-category rate or a meaningful held-out score; ``mean_count_floor`` (``0.001``) is the lower bound on a session's mean spike count when the held-out level correction is formed, so a session with no spikes gives a posterior equal to the prior (zero gain) rather than ``0 · log 0`` = NaN. **Allowed:** a positive number, small against any real session's mean count.
 * **discrimination_null** — the exact within-session permutation null of the identity axis: ``n_permutations`` (``1000``) draws; ``record_left_tail_anti_alignment`` records the left-tail statistics; ``method``, ``sided``, ``pass_rule`` and ``n_permutations_category_grain`` are declared but read by no current code.
 * **record_overdispersion_index** — record the count overdispersion index with each decoding: the mean Pearson dispersion ``(count − expected)² / expected`` of the held-out events, where an event's expected count is the calibrated surface rate the decoder scored it with (the centred surface shape times the tuned amplitude, at the held-out session's mean-count level) read at the event's own grid cell, so an untuned Poisson unit gives about ``1``. The decoding also stores ``nats_per_spike`` (the summed finite per-event gain divided by the spikes of those same events) and ``min_leave_one_fold_out`` (the smallest pooled gain with one fold left out, over the folds whose left-out gain is finite).
 
-**nested_vocal_decoding** — does the neuron add information about a USV's torus position beyond the cohort behaviour control? A REDUCED model (behaviour alone) and a FULL model (behaviour plus the neuron's count) are fitted by the same torus regressor and compared on the held-out macro von Mises log-score.
+**nested_vocal_decoding** — does the neuron add information about a USV's identity beyond the cohort behaviour control? Run on both targets for every unit, each against its own control (the kinematics are assembled once and each target's design is built on its own control's features). For the torus position, a REDUCED model (behaviour alone) and a FULL model (behaviour plus the neuron's count) are fitted by the same torus regressor and compared on the held-out macro von Mises log-score. For the category, the categorical control's probabilities tilt the category prior (``category_control`` below) and the statistic is the categorical identity decoder's gain under that prior.
 
 .. code-block:: json
 
     "nested_vocal_decoding": {
         "behaviour_control": "rich",
-        "reduced_model_features": ["head-head", "allo_yaw-head", "allo_pitch-head", "self.speed"],
-        "behaviour_control_model_path": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_model_ephys_cohort.pkl",
+        "reduced_model_features": {
+            "manifold": ["head-head"],
+            "multinomial": ["allo_yaw-head", "head-head", "other.speed", "self.back_pitch"]
+        },
+        "behaviour_control_model_path": {
+            "manifold": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_model_ephys_manifold.pkl",
+            "multinomial": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_model_ephys_multinomial.pkl"
+        },
+        "category_control": {
+            "bin_resizing_factor": 1,
+            "lambda_smooth_fixed": 1.0,
+            "l2_reg_fixed": 0.01,
+            "smoothness_derivative_order": 1,
+            "temporal_basis": {"type": "bspline", "n_splines": 20, "spline_order": 3, "lambda_smooth_fixed": 1e-05,
+                               "l2_reg_fixed": 1e-05, "l2_lag_alpha": 100, "lambda_smooth_decades_each_side": 2},
+            "tune_regularization_params": {"lambda_smooth_decades_each_side": 0, "l2_reg_decades_each_side": 4},
+            "focal_loss_gamma": 0.5,
+            "learning_rate": 0.005,
+            "max_iter": 20000,
+            "tol": 0.001,
+            "random_state": 0,
+            "use_lax_loop": true
+        },
         "vm_score_mode": "macro",
         "region_label_column": "qlvm_category",
         "min_region_events": 20,
@@ -2018,8 +2042,9 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
     }
 
 * **behaviour_control** — ``'rich'``: the full 4 s behaviour window (the only implemented value).
-* **reduced_model_features** — the frozen behaviour-control feature list; asserted against the selection result file, so a re-run of the selection cannot silently redefine the behaviour the neuron is measured against.
-* **behaviour_control_model_path** — the cohort-fitted behaviour-control artifact (``main_behaviour_control_dispatcher --stage fit``); the decoding refuses an artifact that disagrees with these settings. The control is fitted on exactly the vocalization rows the per-unit analysis scores: the ``'analysed'`` set of ``vocalization_settings`` (noise and squeak rows removed) restricted to ``vocal_emitter`` (``'all'`` applies no emitter filter), with a vocalization dropped when one from the ``'guard'`` set intrudes on its ``spike_window.pre_offset_seconds`` pre-window. Every behaviour history, at fit and at application, ends at the frame before onset (``round(start × fps) − 1``). An artifact fitted before 2026-10-18 was trained on the unfiltered summary with histories one frame earlier than the unit side used, and must be refitted. The artifact's counts are stored as ``n_vocalizations`` (top level and per day); an older artifact's ``n_calls`` is read under that name.
+* **reduced_model_features** — the frozen behaviour-control feature list per target; asserted against that target's selection result file, so a re-run of the selection cannot silently redefine the behaviour the neuron is measured against.
+* **behaviour_control_model_path** — the cohort-fitted behaviour-control artifact per target (``main_behaviour_control_dispatcher --stage fit --target manifold`` and ``--target multinomial``; both are needed, since every unit is decoded on both targets, and ``--target`` defaults to ``vocal_target``); the decoding refuses an artifact fitted for the other target or on other features. The control is fitted on exactly the vocalization rows the per-unit analysis scores: the ``'analysed'`` set of ``vocalization_settings`` (noise and squeak rows removed) restricted to ``vocal_emitter`` (``'all'`` applies no emitter filter), with a vocalization dropped when one from the ``'guard'`` set intrudes on its ``spike_window.pre_offset_seconds`` pre-window. Every behaviour history, at fit and at application, ends at the frame before onset (``round(start × fps) − 1``). An artifact fitted before 2026-10-18 was trained on the unfiltered summary with histories one frame earlier than the unit side used, and must be refitted. The artifact's counts are stored as ``n_vocalizations`` (top level and per day); an older artifact's ``n_calls`` is read under that name.
+* **category_control** — the categorical behaviour control's model, a copy of the behavioural modelling's ``hyperparameters.linear_models.multinomial_logistic`` block, resolved by that pipeline's own ``resolve_temporal_basis``: the multinomial logistic regression on a 20-spline lag basis with the lag-varying ridge (``temporal_basis``), a focal loss (``focal_loss_gamma``) and the Adam solver settings. Its probabilities enter each unit base-rate free and tilt the category prior with a concentration tuned per fold from ``behaviour_prior.kappa_grid``.
 * **vm_score_mode** — ``'macro'``: the region-balanced von Mises score (the only implemented value).
 * **region_label_column** / **min_region_events** — the acoustic-region labels of the macro score (``qlvm_category``) and the minimum events a region needs to enter it (``20``).
 * **lambda_smooth** / **l2_reg** / **smoothness_derivative_order** — the torus regressor's temporal smoothness (behaviour blocks only, ``1.0``), uniform ridge (``0.01``) and finite-difference order (``1``).

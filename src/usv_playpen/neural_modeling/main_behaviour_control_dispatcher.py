@@ -5,13 +5,22 @@ Run the cohort-scale behaviour control: select its features once, then fit it on
 Both stages run once per cohort, not once per unit. The per-unit nested decoding reads what this
 writes and refuses to run on an artifact that disagrees with its settings.
 
-``select`` writes the feature set and ``fit`` writes the model. In between, the settings'
-``reduced_model_features`` must be updated to the selected list by hand, so the behaviour the neuron is
-measured against never changes as a side effect of a re-run.
+``fit`` fits the control for one target (``--target``, default ``vocalization_settings.vocal_target``):
+the torus regression for ``"manifold"``, the behavioural modelling's multinomial logistic regression
+for ``"multinomial"``, on the features frozen at ``nested_vocal_decoding.reduced_model_features[target]``,
+and writes it to ``behaviour_control_model_path[target]``. Every unit is decoded on both targets, so
+both controls must be fitted, one run each.
+
+``select`` runs this package's own forward selection for the torus control. The shipped feature sets
+come from the behavioural modelling's selections instead (``data.behaviour_selection_result_path``
+points at them), so ``select`` takes an explicit ``--output`` and never writes onto that path. After a
+selection the settings' ``reduced_model_features`` must be updated by hand, so the behaviour the
+neuron is measured against never changes as a side effect of a re-run.
 
 Usage:
-    python -m usv_playpen.neural_modeling.main_behaviour_control_dispatcher --stage select
-    python -m usv_playpen.neural_modeling.main_behaviour_control_dispatcher --stage fit
+    python -m usv_playpen.neural_modeling.main_behaviour_control_dispatcher --stage fit --target manifold
+    python -m usv_playpen.neural_modeling.main_behaviour_control_dispatcher --stage fit --target multinomial
+    python -m usv_playpen.neural_modeling.main_behaviour_control_dispatcher --stage select --output <file>
 """
 
 from __future__ import annotations
@@ -26,11 +35,12 @@ import numpy as np
 
 from .behaviour_control_model import (
     assemble_cohort,
+    fit_category_control_models,
     fit_control_models,
     select_control_features,
     write_control_model,
 )
-from .neural_nested_decoding import reduced_model_features
+from .neural_nested_decoding import reduced_model_features, vocal_target
 
 
 def load_settings(path: str | None) -> dict:
@@ -110,17 +120,30 @@ def main(message_output=print) -> None:
     parser.add_argument("--n-workers", type=int, default=6)
     parser.add_argument("--exclude-days", nargs="*", default=[],
                         help="recording days to leave out entirely, as eight-character keys")
+    parser.add_argument("--target", choices=("manifold", "multinomial"), default=None,
+                        help="which target's control to select or fit; default is "
+                             "vocalization_settings.vocal_target")
     arguments = parser.parse_args()
 
     settings = load_settings(arguments.settings)
+    # Every unit is decoded on both targets, so both controls are fitted, one run each; the settings
+    # are not edited, so the artifact's settings hash matches the shipped file.
+    target = arguments.target if arguments.target is not None else vocal_target(settings)
+    if arguments.stage == "select" and target != "manifold":
+        msg = "the select stage runs the torus control's selection; set vocal_target to 'manifold'."
+        raise ValueError(msg)
+    if arguments.stage == "select" and arguments.output is None:
+        msg = ("the select stage needs --output: data.behaviour_selection_result_path names the "
+               "behavioural modelling's selection, which must not be overwritten.")
+        raise ValueError(msg)
     # History length of the behaviour design, in tracking frames (600 = 4 s at 150 fps); recorded in the
     # artifact, so the per-unit nested decoding reads it back from there rather than from settings.
     n_lags = int(settings["nested_vocal_decoding"]["behaviour_control_n_lags"])
     # Resolve the feature set before the (slow) assembly, so a missing or drifted selection artifact
     # fails early. The select stage tolerates a missing file, since it is about to write one, and uses
     # the frozen list as its independent reference.
-    features = (reduced_model_features(settings) if arguments.stage == "fit"
-                else reduced_model_features(settings, require_selection_file=False))
+    features = (reduced_model_features(settings, target) if arguments.stage == "fit"
+                else reduced_model_features(settings, target, require_selection_file=False))
 
     directories = session_directories(settings, list(arguments.exclude_days))
     message_output(f"{len(directories)} sessions listed"
@@ -142,8 +165,7 @@ def main(message_output=print) -> None:
         # bounds the selection's optimism.
         selection = select_control_features(cohort, settings, n_lags, arguments.n_workers,
                                             str(cache), external_reference=features)
-        destination = pathlib.Path(arguments.output if arguments.output is not None
-                                   else settings["data"]["behaviour_selection_result_path"])
+        destination = pathlib.Path(arguments.output)
         destination.parent.mkdir(parents=True, exist_ok=True)
         with destination.open("wb") as handle:
             pickle.dump(selection, handle)
@@ -166,10 +188,24 @@ def main(message_output=print) -> None:
               "before fitting; the change must be deliberate.", flush=True)
         return
 
-    artifact = fit_control_models(cohort, features, settings, n_lags)
     destination = (arguments.output if arguments.output is not None
-                   else settings["nested_vocal_decoding"]
-                   ["behaviour_control_model_path"])
+                   else settings["nested_vocal_decoding"]["behaviour_control_model_path"][target])
+    if target == "multinomial":
+        artifact = fit_category_control_models(cohort, features, settings, n_lags)
+        write_control_model(artifact, destination)
+        message_output(f"\nFITTED {target} {artifact['features']} over {len(artifact['coefficients'])} "
+                       f"held-out days", flush=True)
+        message_output(f"  macro AUROC {artifact['held_out_auc']:.4f} (chance 0.5)   log-score gain over "
+                       f"training frequencies {artifact['held_out_log_score_gain']:+.5f}", flush=True)
+        for day, scores in sorted(artifact["per_day"].items()):
+            message_output(f"    {day}  n={scores['n_vocalizations']:>6,}  AUROC {scores['auc']:.4f}  "
+                           f"{scores['log_score_gain']:+.5f}  "
+                           f"{'converged' if artifact['coefficients'][day]['converged'] else 'NOT CONVERGED'}",
+                           flush=True)
+        message_output(f"  -> {destination}", flush=True)
+        return
+
+    artifact = fit_control_models(cohort, features, settings, n_lags)
     write_control_model(artifact, destination)
     message_output(f"\nFITTED {artifact['features']} over {len(artifact['coefficients'])} held-out days",
           flush=True)

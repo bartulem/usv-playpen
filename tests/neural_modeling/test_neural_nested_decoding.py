@@ -243,7 +243,7 @@ class TestTheBehaviourControl:
     shape and the control is always refitted in domain. An externally chosen set also carries NO
     selection optimism, since those features were never chosen on this preparation."""
 
-    FROZEN: ClassVar[list[str]] = ["head-head", "allo_yaw-head", "allo_pitch-head", "self.speed"]
+    FROZEN: ClassVar[list[str]] = ["head-head"]
 
     @staticmethod
     def _fake_selection(tmp_path, features):
@@ -297,17 +297,17 @@ class TestTheBehaviourControl:
     def test_a_behavioural_selection_feature_set_is_adopted(self, tmp_path):
         """The last forward step's `current_features` defines the set; coefficients are never read."""
         settings = _settings()
-        settings["data"]["behaviour_selection_result_path"] = str(
+        settings["data"]["behaviour_selection_result_path"]["manifold"] = str(
             self._behavioural_selection(tmp_path, self.FROZEN))
-        assert reduced_model_features(settings) == self.FROZEN
+        assert reduced_model_features(settings, "manifold") == self.FROZEN
 
     def test_a_behavioural_selection_is_drift_checked_too(self, tmp_path):
         """Accepting the shape must not exempt it from the freeze."""
         settings = _settings()
-        settings["data"]["behaviour_selection_result_path"] = str(
+        settings["data"]["behaviour_selection_result_path"]["manifold"] = str(
             self._behavioural_selection(tmp_path, [*self.FROZEN, "self.speed"]))
         with pytest.raises(ValueError, match="behaviour selection drift"):
-            reduced_model_features(settings)
+            reduced_model_features(settings, "manifold")
 
     def test_an_unrecognised_artifact_is_refused(self, tmp_path):
         """Neither shape present would otherwise raise an unhelpful KeyError inside the reader."""
@@ -315,55 +315,55 @@ class TestTheBehaviourControl:
         with path.open("wb") as handle:
             pickle.dump({"something_else": ["a"]}, handle)
         settings = _settings()
-        settings["data"]["behaviour_selection_result_path"] = str(path)
+        settings["data"]["behaviour_selection_result_path"]["manifold"] = str(path)
         with pytest.raises(ValueError, match="neither a cohort selection result"):
-            reduced_model_features(settings)
+            reduced_model_features(settings, "manifold")
 
     def test_the_shipped_settings_freeze_the_selected_features(self):
         """The shipped ``reduced_model_features`` equal the frozen list, so the control cannot change
         without this test changing too."""
-        assert _settings()["nested_vocal_decoding"]["reduced_model_features"] == self.FROZEN
+        assert _settings()["nested_vocal_decoding"]["reduced_model_features"]["manifold"] == self.FROZEN
 
     def test_a_matching_file_returns_the_selection_order(self, tmp_path):
         """A selection file agreeing with the freeze returns the features in selection order."""
         settings = _settings()
-        settings["data"]["behaviour_selection_result_path"] = str(
+        settings["data"]["behaviour_selection_result_path"]["manifold"] = str(
             self._fake_selection(tmp_path, self.FROZEN))
-        assert reduced_model_features(settings) == self.FROZEN
+        assert reduced_model_features(settings, "manifold") == self.FROZEN
 
     def test_drift_fails_loudly_rather_than_being_absorbed(self, tmp_path):
         """A selection file disagreeing with the freeze must raise rather than silently redefine the
         control."""
         settings = _settings()
-        settings["data"]["behaviour_selection_result_path"] = str(
+        settings["data"]["behaviour_selection_result_path"]["manifold"] = str(
             self._fake_selection(tmp_path, [*self.FROZEN, "self.speed"]))
         with pytest.raises(ValueError, match="behaviour selection drift"):
-            reduced_model_features(settings)
+            reduced_model_features(settings, "manifold")
 
     def test_a_missing_file_raises_unless_explicitly_tolerated(self, tmp_path):
         """An absent selection file raises by default and falls back to the frozen list only when
         ``require_selection_file=False``."""
         settings = _settings()
-        settings["data"]["behaviour_selection_result_path"] = str(tmp_path / "absent.pkl")
+        settings["data"]["behaviour_selection_result_path"]["manifold"] = str(tmp_path / "absent.pkl")
         with pytest.raises(FileNotFoundError, match="behaviour selection result not found"):
-            reduced_model_features(settings)
-        assert reduced_model_features(settings, require_selection_file=False) == self.FROZEN
+            reduced_model_features(settings, "manifold")
+        assert reduced_model_features(settings, "manifold", require_selection_file=False) == self.FROZEN
 
     def test_a_present_file_is_checked_even_when_the_file_is_optional(self, tmp_path):
         """`require_selection_file=False` tolerates ABSENCE, never disagreement."""
         settings = _settings()
-        settings["data"]["behaviour_selection_result_path"] = str(
+        settings["data"]["behaviour_selection_result_path"]["manifold"] = str(
             self._fake_selection(tmp_path, ["something.else"]))
         with pytest.raises(ValueError, match="behaviour selection drift"):
-            reduced_model_features(settings, require_selection_file=False)
+            reduced_model_features(settings, "manifold", require_selection_file=False)
 
     def test_the_settings_do_not_mutate(self, tmp_path):
         """Reading the control must not modify the frozen list in the caller's settings."""
         settings = _settings()
         original = copy.deepcopy(settings["nested_vocal_decoding"]["reduced_model_features"])
-        settings["data"]["behaviour_selection_result_path"] = str(
+        settings["data"]["behaviour_selection_result_path"]["manifold"] = str(
             self._fake_selection(tmp_path, self.FROZEN))
-        reduced_model_features(settings)
+        reduced_model_features(settings, "manifold")
         assert settings["nested_vocal_decoding"]["reduced_model_features"] == original
 
 

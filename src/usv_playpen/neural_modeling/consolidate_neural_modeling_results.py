@@ -18,6 +18,12 @@ cannot be made from one unit. This module makes those decisions once, over the w
 - it reports, per area, the floor requirement of each test, how many units each test could not use, the
   share of units each requirement of the conjunction removes, and the correlation of the tests' z-scores.
 
+Identity and the nested decoding are stored per target (``<analysis>_<target>``). The target named by
+``vocalization_settings.vocal_target`` supplies the corrected identity and nested p-values; both
+targets' p-values, effect sizes and behaviour gains are carried in the table as uncorrected
+descriptors (``p_identity_<target>`` and the like), so the claims can be re-read on the other target
+by re-running only this step.
+
 Units recorded in one session (tested on blocks of it) are excluded from every correction unless
 ``significance.include_single_session_units`` admits them; they are listed either way.
 
@@ -40,6 +46,7 @@ from ..os_utils import atomic_output_path
 from .main_neural_encoding_dispatcher import load_settings
 from .neural_artifacts import build_provenance, read_unit_artifact
 from .neural_cohort import build_cohort_manifest
+from .neural_nested_decoding import VOCAL_TARGETS, target_section, vocal_target
 from .neural_significance import benjamini_hochberg
 from .shift_null_inference import bh_floor_requirement
 
@@ -154,7 +161,7 @@ def _number(section: dict, key: str) -> float:
     return value if np.isfinite(value) else float("nan")
 
 
-def unit_row(record: dict, artifact: dict) -> dict:
+def unit_row(record: dict, artifact: dict, target: str) -> dict:
     """
     Description
     -----------
@@ -165,6 +172,9 @@ def unit_row(record: dict, artifact: dict) -> dict:
     kinematic encoding with no scoreable fold, or a transfer with no model). Missing is never failed:
     the unit then drops out of that test's correction and of anything that needs it.
 
+    Identity and nested are read from ``target``'s sections. Both targets' p-values, effect sizes and
+    behaviour gains are also copied as descriptors, suffixed by target, and are never corrected.
+
     Parameters
     ----------
     record (dict)
@@ -172,13 +182,15 @@ def unit_row(record: dict, artifact: dict) -> dict:
     artifact (dict)
         The unit's result file, as :func:`neural_artifacts.read_unit_artifact` returns it; empty when the
         unit was never run.
+    target (str)
+        The target whose identity and nested sections are tested (``vocalization_settings.vocal_target``).
 
     Returns
     -------
     row (dict)
         Flat per-unit inputs: ``p_<test>``, ``z_<test>`` and ``reason_<test>`` for every test in
-        :data:`TESTS`, plus the transfer slope, the occurrence response sign, the identity target, the
-        gating feature and the effect sizes.
+        :data:`TESTS`, plus the transfer slope, the occurrence response sign, the tested target, the
+        gating feature, the effect sizes and the per-target descriptors.
     """
 
     row = {"unit_uid": record["unit_uid"], "brain_area": record["brain_area"],
@@ -205,8 +217,8 @@ def unit_row(record: dict, artifact: dict) -> dict:
         row["quiet_score"] = row["transfer_score"] = row["transfer_slope"] = float("nan")
 
     for test, name, effect in (("occurrence", "vocal_occurrence", "gain"),
-                               ("identity", "vocalization_identity", "gain"),
-                               ("nested", "nested_vocal_decoding", "added")):
+                               ("identity", target_section("vocalization_identity", target), "gain"),
+                               ("nested", target_section("nested_vocal_decoding", target), "added")):
         section = _section(artifact, name)
         if _ran(section):
             row[f"p_{test}"] = _number(section, "p")
@@ -223,11 +235,20 @@ def unit_row(record: dict, artifact: dict) -> dict:
     # What behaviour alone buys this unit's USVs over no behaviour. A unit is never dropped for it, since it
     # is a property of the behaviour model, not of the neuron; it is carried as a modifier so a nested
     # pass on a day where behaviour predicts nothing is visible as such.
-    nested = _section(artifact, "nested_vocal_decoding")
+    nested = _section(artifact, target_section("nested_vocal_decoding", target))
     row["behaviour_gain"] = (_number(nested, "behaviour_over_no_behaviour") if _ran(nested)
                              else float("nan"))
-    identity = _section(artifact, "vocalization_identity")
-    row["identity_target"] = identity["target"] if _ran(identity) and "target" in identity else None
+    row["identity_target"] = target
+    # Both targets, uncorrected, so the other target can be read without re-running any unit.
+    for each_target in VOCAL_TARGETS:
+        identity = _section(artifact, target_section("vocalization_identity", each_target))
+        nested = _section(artifact, target_section("nested_vocal_decoding", each_target))
+        row[f"p_identity_{each_target}"] = _number(identity, "p") if _ran(identity) else float("nan")
+        row[f"identity_effect_{each_target}"] = _number(identity, "gain") if _ran(identity) else float("nan")
+        row[f"p_nested_{each_target}"] = _number(nested, "p") if _ran(nested) else float("nan")
+        row[f"nested_effect_{each_target}"] = _number(nested, "added") if _ran(nested) else float("nan")
+        row[f"behaviour_gain_{each_target}"] = (_number(nested, "behaviour_over_no_behaviour") if _ran(nested)
+                                                else float("nan"))
 
     gating = _section(artifact, "vocal_gating")
     if _ran(gating):
@@ -363,7 +384,7 @@ def _passes(p_values: np.ndarray, rejected: np.ndarray) -> list:
     return [None if not np.isfinite(p) else bool(r) for p, r in zip(p_values, rejected, strict=True)]
 
 
-def _draw_counts(artifacts: dict) -> dict:
+def _draw_counts(artifacts: dict, target: str) -> dict:
     """
     Description
     -----------
@@ -373,6 +394,8 @@ def _draw_counts(artifacts: dict) -> dict:
     ----------
     artifacts (dict)
         ``{unit_uid: result file}``.
+    target (str)
+        The target whose identity and nested sections are tested.
 
     Returns
     -------
@@ -389,8 +412,8 @@ def _draw_counts(artifacts: dict) -> dict:
                 if null is not None and np.size(null):
                     found[test].append(int(np.size(null)))
         for test, name, key in (("occurrence", "vocal_occurrence", "n_shuffles"),
-                                ("identity", "vocalization_identity", "n_permutations"),
-                                ("nested", "nested_vocal_decoding", "n_permutations"),
+                                ("identity", target_section("vocalization_identity", target), "n_permutations"),
+                                ("nested", target_section("nested_vocal_decoding", target), "n_permutations"),
                                 ("gating", "vocal_gating", "n_draws")):
             section = _section(artifact, name)
             if _ran(section) and key in section:
@@ -514,7 +537,8 @@ def consolidate(cohort: list, artifacts: dict, settings: dict) -> tuple[pls.Data
         ``{unit_uid: result file}``; a unit without one is listed as having no results.
     settings (dict)
         Full neural-modeling settings; reads ``significance.fdr_q``, ``significance.fdr_method``,
-        ``significance.include_single_session_units`` and ``data.pool_areas``.
+        ``significance.include_single_session_units``, ``data.pool_areas`` and
+        ``vocalization_settings.vocal_target``.
 
     Returns
     -------
@@ -527,7 +551,8 @@ def consolidate(cohort: list, artifacts: dict, settings: dict) -> tuple[pls.Data
     significance = settings["significance"]
     q, method = float(significance["fdr_q"]), significance["fdr_method"]
     include_single = bool(significance["include_single_session_units"])
-    rows = [unit_row(record, artifacts[record["unit_uid"]] if record["unit_uid"] in artifacts else {})
+    target = vocal_target(settings)
+    rows = [unit_row(record, artifacts[record["unit_uid"]] if record["unit_uid"] in artifacts else {}, target)
             for record in cohort]
     for row in rows:
         conjunction = [row[f"p_{test}"] for test in CONJUNCTION_TESTS]
@@ -535,7 +560,7 @@ def consolidate(cohort: list, artifacts: dict, settings: dict) -> tuple[pls.Data
         row["corrected"] = include_single or not row["single_session"]
         row["group"] = "pooled" if settings["data"]["pool_areas"] else row["brain_area"]
 
-    draws = _draw_counts(artifacts)
+    draws = _draw_counts(artifacts, target)
     out, report = [], {}
     for group in sorted({row["group"] for row in rows}):
         members = [row for row in rows if row["group"] == group and row["corrected"]]
