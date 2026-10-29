@@ -425,6 +425,7 @@ class TestFoldsWithoutAModel:
 
     N_LAGS = 5
     UNIT_ID = "imec1_cl0000_ch000_good"
+    UNIT_UID = f"m_20250101_{UNIT_ID}"
 
     @classmethod
     def _model_fold(cls, fold_index, test_id, names, indices, seed):
@@ -506,11 +507,11 @@ class TestFoldsWithoutAModel:
         loaded (list[dict])
             The folds as read back from disk, in input order.
         """
-        unit = {"unit_id": cls.UNIT_ID}
+        unit = {"unit_id": cls.UNIT_ID, "unit_uid": cls.UNIT_UID}
         for fold in folds:
-            write_fold_artifact(fold, unit, fold["fold_index"], str(tmp_path),
+            write_fold_artifact(fold, unit, fold["fold_index"], str(tmp_path), load_settings(),
                                 message_output=lambda *_a: None)
-        return [dict(np.load(tmp_path / f"{cls.UNIT_ID}_fold{fold['fold_index']}.npz", allow_pickle=True))
+        return [dict(np.load(tmp_path / f"{cls.UNIT_UID}_fold{fold['fold_index']}.npz", allow_pickle=True))
                 for fold in folds]
 
     def _mixed(self):
@@ -535,9 +536,31 @@ class TestFoldsWithoutAModel:
     def test_a_no_model_fold_still_writes_the_file_combine_looks_for(self, tmp_path):
         """A no-model fold must still write its ``.npz``, or ``combine`` stops on a missing fold and the
         untuned unit saves nothing."""
-        write_fold_artifact(self._no_model_fold(0, "s0"), {"unit_id": self.UNIT_ID}, 0, str(tmp_path),
-                            message_output=lambda *_a: None)
-        assert (tmp_path / f"{self.UNIT_ID}_fold0.npz").exists()
+        write_fold_artifact(self._no_model_fold(0, "s0"), {"unit_id": self.UNIT_ID, "unit_uid": self.UNIT_UID},
+                            0, str(tmp_path), load_settings(), message_output=lambda *_a: None)
+        assert (tmp_path / f"{self.UNIT_UID}_fold0.npz").exists()
+
+    def test_folds_are_named_by_unit_uid_so_units_sharing_a_unit_id_do_not_collide(self, tmp_path):
+        """Two units with the same probe/cluster/channel name on different days must write different
+        fold files into one cohort directory."""
+        for date in ("20250101", "20250102"):
+            write_fold_artifact(self._no_model_fold(0, "s0"),
+                                {"unit_id": self.UNIT_ID, "unit_uid": f"m_{date}_{self.UNIT_ID}"},
+                                0, str(tmp_path), load_settings(), message_output=lambda *_a: None)
+        assert len(list(tmp_path.glob(f"*{self.UNIT_ID}_fold0.npz"))) == 2
+
+    def test_combine_refuses_folds_written_under_other_settings(self, tmp_path):
+        """A fold made under other settings must not be combined into a result labelled with these."""
+        sessions = ["s0", "s1"]
+        unit = {"unit_id": self.UNIT_ID, "unit_uid": self.UNIT_UID, "mouse_id": "m",
+                "rec_date": 20250101, "courtship_sessions": sessions, "vocal_sessions": sessions}
+        other = load_settings()
+        other["null"]["shuffle_seed"] = int(other["null"]["shuffle_seed"]) + 1
+        for fold_index, session in enumerate(sessions):
+            write_fold_artifact(self._no_model_fold(fold_index, session), unit, fold_index, str(tmp_path),
+                                other, message_output=lambda *_a: None)
+        with pytest.raises(ValueError, match="other settings"):
+            combine(unit, load_settings(), str(tmp_path), str(tmp_path), message_output=lambda *_a: None)
 
     def test_every_fold_is_listed_in_order_with_no_model_folds_recorded_as_absent(self, tmp_path):
         """Position i must stay fold i. Dropping the no-model fold would pair fold 2's filter with the
@@ -571,7 +594,7 @@ class TestFoldsWithoutAModel:
         """The untuned unit must reach the cohort table as a result -- quiet p 1.0, transfer p NaN, a
         no_model flag -- not vanish as a failed job."""
         sessions = ["s0", "s1"]
-        unit = {"unit_id": self.UNIT_ID, "unit_uid": f"m_20250101_{self.UNIT_ID}", "mouse_id": "m",
+        unit = {"unit_id": self.UNIT_ID, "unit_uid": self.UNIT_UID, "mouse_id": "m",
                 "rec_date": 20250101, "courtship_sessions": sessions, "vocal_sessions": sessions}
         self._round_trip(tmp_path, [self._no_model_fold(0, "s0"), self._no_model_fold(1, "s1")])
         monkeypatch.setattr(dispatcher, "assemble_unit_sessions",

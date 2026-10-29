@@ -59,6 +59,7 @@ from usv_playpen.neural_modeling.deviance_metrics import (
 )
 from usv_playpen.neural_modeling.main_neural_encoding_dispatcher import (
     focal_vocal_frames,
+    fold_artifact_path,
 )
 from usv_playpen.neural_modeling.neural_category_decoding import (
     category_behaviour_tilts,
@@ -1157,7 +1158,7 @@ def session_trace_data(unit_uid: str, paths: FigurePaths, identity: dict, settin
     steps = kinematic["solver"]["calibration_steps"]
     sessions = []
     for fold_index in range(len(identity["courtship_sessions"])):
-        fold = np.load(paths.results_directory / f"{identity['unit_id']}_fold{fold_index}.npz", allow_pickle=True)
+        fold = np.load(fold_artifact_path(str(paths.results_directory), identity, fold_index), allow_pickle=True)
         if bool(fold["no_model"]) and not ("best_screened" in fold.files and bool(fold["best_screened"])):
             continue
         session_id = str(fold["test_id"])
@@ -1960,7 +1961,7 @@ def per_fold_transfer(paths: FigurePaths, identity: dict, settings: dict) -> lis
     steps = settings["kinematic_encoding"]["solver"]["calibration_steps"]
     transfers = []
     for fold_index in range(len(identity["courtship_sessions"])):
-        fold = np.load(paths.results_directory / f"{identity['unit_id']}_fold{fold_index}.npz", allow_pickle=True)
+        fold = np.load(fold_artifact_path(str(paths.results_directory), identity, fold_index), allow_pickle=True)
         # A fold that selected nothing still fitted its best screened feature, and that is what the panels
         # of an untuned unit describe; only a fold with no fitted filter at all is skipped.
         if bool(fold["no_model"]) and not ("best_screened" in fold.files and bool(fold["best_screened"])):

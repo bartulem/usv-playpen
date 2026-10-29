@@ -674,7 +674,7 @@ class TestRunFold:
         ladder must top the quiet null up through the SAME draw closure (9 draws, then 10 more), the
         generator must be seeded from ``null.shuffle_seed`` and the held-out session id, the model must be
         carried onto exactly the vocal-eligible sessions, and the artifact must land at
-        ``<output>/<unit_id>_fold1.npz`` with the documented keys.
+        ``<output>/<unit_uid>_fold1.npz`` with the documented keys.
 
         Parameters
         ----------
@@ -775,7 +775,7 @@ class TestRunFold:
         ]
 
         stored = dict(
-            np.load(tmp_path / "imec0_cl0001_ch001_good_fold1.npz", allow_pickle=True)
+            np.load(tmp_path / "m1_20250101_imec0_cl0001_ch001_good_fold1.npz", allow_pickle=True)
         )
         assert set(stored) == set(artifact)
         assert str(stored["test_id"]) == "s1"
@@ -873,7 +873,7 @@ class TestRunFold:
         assert artifact["no_model"] is True
         assert artifact["quiet_p"] == 1.0
         stored = dict(
-            np.load(tmp_path / "imec0_cl0001_ch001_good_fold1.npz", allow_pickle=True)
+            np.load(tmp_path / "m1_20250101_imec0_cl0001_ch001_good_fold1.npz", allow_pickle=True)
         )
         assert bool(stored["no_model"])
         assert list(stored["vocal_everywhere"]) == []
@@ -1007,7 +1007,7 @@ class TestRunFold:
         assert artifact["no_model"] is True
         assert artifact["best_screened"] is False
         assert artifact["screen"] == rows
-        assert (tmp_path / "imec0_cl0001_ch001_good_fold0.npz").exists()
+        assert (tmp_path / "m1_20250101_imec0_cl0001_ch001_good_fold0.npz").exists()
 
 
 class TestCombine:
@@ -1127,6 +1127,7 @@ class TestCombine:
             unit,
             0,
             str(tmp_path),
+            _settings(),
             lambda _text: None,
         )
         with pytest.raises(FileNotFoundError, match="fold1"):
@@ -1162,7 +1163,7 @@ class TestCombine:
         ]
         for fold_index, artifact in enumerate(folds):
             enc.write_fold_artifact(
-                artifact, unit, fold_index, str(tmp_path), lambda _text: None
+                artifact, unit, fold_index, str(tmp_path), settings, lambda _text: None
             )
         calls = collections.defaultdict(list)
         _combine_stubs(
@@ -1212,6 +1213,7 @@ class TestCombine:
                 unit,
                 fold_index,
                 str(tmp_path),
+                _settings(),
                 lambda _text: None,
             )
         calls = collections.defaultdict(list)
@@ -1263,6 +1265,7 @@ class TestCombine:
                 unit,
                 fold_index,
                 str(tmp_path),
+                _settings(),
                 lambda _text: None,
             )
         calls = collections.defaultdict(list)
@@ -1320,7 +1323,7 @@ class TestCombine:
                 best_screened=True,
             )
             enc.write_fold_artifact(
-                artifact, unit, fold_index, str(tmp_path), lambda _text: None
+                artifact, unit, fold_index, str(tmp_path), _settings(), lambda _text: None
             )
         calls = collections.defaultdict(list)
         _combine_stubs(
@@ -1365,6 +1368,7 @@ class TestCombine:
             unit,
             0,
             str(tmp_path),
+            settings,
             lambda _text: None,
         )
         calls = collections.defaultdict(list)
@@ -1419,6 +1423,7 @@ class TestCombine:
             unit,
             0,
             str(tmp_path),
+            _settings(),
             lambda _text: None,
         )
         calls = collections.defaultdict(list)

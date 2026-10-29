@@ -37,6 +37,7 @@ from ..modeling.manifold_metric import (
     signed_diff,
 )
 from ..modeling.manifold_torus_regression import SmoothTorusManifoldRegression
+from ..os_utils import configure_path
 from .deviance_metrics import finite_mean, finite_min
 from .neural_design_assembly import lagged_design, onset_history_anchor_frames
 from .neural_vocal_decoding import decode_gain
@@ -264,7 +265,7 @@ def reduced_model_features(settings: dict, target: str, require_selection_file: 
 
     check_target(target)
     frozen = list(settings["nested_vocal_decoding"]["reduced_model_features"][target])
-    path = pathlib.Path(settings["data"]["behaviour_selection_result_path"][target])
+    path = pathlib.Path(configure_path(settings["data"]["behaviour_selection_result_path"][target]))
     if not path.exists():
         if require_selection_file:
             msg = (f"behaviour selection result not found at {path}; it defines the nested decoding's reduced "

@@ -4021,17 +4021,40 @@ Neural modeling settings
 ------------------------
 The single-unit PAG analyses (``usv_playpen.neural_modeling``: the kinematic
 encoding, the quiet-to-vocal transfer, the vocal gating, the vocal-occurrence and
-vocalization-identity decodings, the nested vocal-manifold position decoding and
-the cohort behaviour control) read one settings file,
+vocalization-identity decodings, the nested vocal decoding and the cohort
+behaviour control) read one settings file,
 ``_parameter_settings/neural_modeling_settings.json``. The dispatchers
 (``main_neural_encoding_dispatcher``, ``main_neural_vocal_dispatcher``,
-``main_behaviour_control_dispatcher``) take ``--settings`` to point at another copy
+``main_neural_cohort_dispatcher``) take ``--settings-path``, and
+``main_behaviour_control_dispatcher`` takes ``--settings``, to point at another copy
 (default: the shipped file). Every key is read strictly (a missing key raises
 ``KeyError``); keys that name a design alternative (``selection_method``,
 ``calibration_grain``, ``vm_score_mode`` and the like) accept only the value the
 code implements and raise on any other, so a declared alternative can never run as
 the default in disguise. All durations are in seconds, all frame counts in
 tracking frames (150 fps), and all torus coordinates in units of the period.
+
+**Running the cohort.** ``python -m usv_playpen.neural_modeling.main_neural_cohort_dispatcher plan
+--output-directory <dir>`` builds the cohort from these settings, checks that the unit catalog, the data
+root and both targets' behaviour-control and selection files exist, and writes
+``<dir>/cohort_manifest.json`` (the settings hash and one record per unit), printing the ``sbatch
+--array`` range. Each array task then runs ``... run --manifest <dir>/cohort_manifest.json
+--output-directory <dir> --data-root <Data> --n-workers <cpus> [--parallel-folds <k>]`` on the manifest
+index ``SLURM_ARRAY_TASK_ID`` (plus ``--index-offset`` for arrays submitted in chunks): the unit's
+kinematic-encoding folds as separate processes, their combination, then the vocal steps (occurrence,
+identity and the nested decoding on both targets, gating), all into ``<dir>/<unit_uid>.pkl`` and
+``<dir>/<unit_uid>_fold<i>.npz``. A run resumes: a fold file or result-file section already written under
+the same settings hash is kept (each section records its own provenance under ``section_provenance``),
+and once a vocal step is recomputed every later one is too. A manifest planned under other settings, or a
+unit whose session sets changed since planning, is refused. Each task's log is a timestamped timeline: a
+header (unit, area, sessions, settings hash, commit, host, job), each fold's start and end with a
+heartbeat every 10 minutes naming the step each running fold is on (a failed fold's last 30 log lines are
+copied in), one line per vocal step with its duration and result, and a closing per-stage summary with the
+peak memory; fold logs go to ``<dir>/logs``. The same stages are written to
+``<dir>/status/<unit_uid>.json``, and ``... status --manifest <dir>/cohort_manifest.json
+--output-directory <dir>`` counts units done, running, failed and not started, names the failed stages,
+and reports each stage's median duration. ``consolidate_neural_modeling_results`` corrects across the
+cohort afterwards, and ``neural-modeling-figures`` draws the per-unit pages.
 
 **data** — which sessions and units the run draws on.
 

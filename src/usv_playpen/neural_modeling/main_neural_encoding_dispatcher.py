@@ -28,6 +28,7 @@ from zlib import crc32
 
 import numpy as np
 
+from ..modeling.modeling_metadata import compute_settings_sha256
 from .deviance_metrics import encoding_metrics, frozen_model_score
 from .kinematic_encoding import (
     filter_band,
@@ -172,7 +173,35 @@ def focal_vocal_frames(session: dict, session_id: str, data_root: str, mouse_id:
     return frames, pointer, gaps[kept]
 
 
-def write_fold_artifact(artifact: dict, unit: dict, fold_index: int, output_directory: str,
+def fold_artifact_path(output_directory: str, unit: dict, fold_index: int) -> pathlib.Path:
+    """
+    Description
+    -----------
+    Where one outer fold's artifact lives: ``<output_directory>/<unit_uid>_fold<i>.npz``.
+
+    Named by ``unit_uid`` (mouse, date and unit), not by ``unit_id``: the same probe / cluster / channel
+    name recurs on other recording days, and a cohort run writes every unit into one directory, so a
+    ``unit_id`` name would let units overwrite each other's folds.
+
+    Parameters
+    ----------
+    output_directory (str)
+        Where the fold files live.
+    unit (dict)
+        The unit record; ``unit_uid`` names the file.
+    fold_index (int)
+        Which fold.
+
+    Returns
+    -------
+    path (pathlib.Path)
+        The fold artifact's path.
+    """
+
+    return pathlib.Path(output_directory) / f"{unit['unit_uid']}_fold{fold_index}.npz"
+
+
+def write_fold_artifact(artifact: dict, unit: dict, fold_index: int, output_directory: str, settings: dict,
                         message_output=print) -> dict:
     """
     Description
@@ -181,18 +210,22 @@ def write_fold_artifact(artifact: dict, unit: dict, fold_index: int, output_dire
 
     Every fold goes through here, including folds that found no model, because ``combine`` requires a
     file for every fold and an untuned unit must appear as a "not tuned" result rather than as a failed
-    job. Lists and dicts are boxed as object arrays; see :func:`unwrap_stored` for the reverse.
+    job. Lists and dicts are boxed as object arrays; see :func:`unwrap_stored` for the reverse. The
+    settings hash is stored with it, so ``combine`` and a resumed cohort run can tell a fold made under
+    other settings from a current one.
 
     Parameters
     ----------
     artifact (dict)
         The fold's results, model or no model.
     unit (dict)
-        The unit record; ``unit_id`` names the file.
+        The unit record; ``unit_uid`` names the file.
     fold_index (int)
         Which fold this is.
     output_directory (str)
         Where the fold files live.
+    settings (dict)
+        Full neural-modeling settings, whose hash is stored with the artifact.
     message_output (Callable)
         Where the write is reported.
 
@@ -202,7 +235,8 @@ def write_fold_artifact(artifact: dict, unit: dict, fold_index: int, output_dire
         The same artifact, unchanged.
     """
 
-    destination = pathlib.Path(output_directory) / f"{unit['unit_id']}_fold{fold_index}.npz"
+    artifact["settings_sha256"] = compute_settings_sha256(settings)
+    destination = fold_artifact_path(output_directory, unit, fold_index)
     destination.parent.mkdir(parents=True, exist_ok=True)
     np.savez(destination, **{key: np.asarray(value, dtype=object) if isinstance(value, (list, dict))
                              else value for key, value in artifact.items()})
@@ -291,7 +325,7 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
                  "quiet_p": 1.0, "quiet_at_floor": False,
                  "eta_vocal": np.zeros(0), "labels_vocal": np.zeros(0), "pointer": pointer,
                  "gaps": gaps, "screen": [], "vocal_everywhere": []},
-                unit, fold_index, output_directory, message_output)
+                unit, fold_index, output_directory, settings, message_output)
         inner_sessions, inner_ids = {**per_session, **blocks}, list(blocks)
         message_output(f"    one pool session: inner split is {len(blocks)} contiguous quiet blocks "
                        f"with a {required_gap:g} s gap")
@@ -327,7 +361,7 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
              "quiet_p": 1.0, "quiet_at_floor": False,
              "eta_vocal": np.zeros(0), "labels_vocal": np.zeros(0), "pointer": pointer,
              "gaps": gaps, "screen": screen_rows, "best_screened": False},
-            unit, fold_index, output_directory, message_output)
+            unit, fold_index, output_directory, settings, message_output)
     fit_started = time.time()
     estimator, base_rate = fit_quiet_model(per_session, pool_ids, selected, n_lags, rng, encoding,
                                            message_output)
@@ -401,7 +435,7 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
                 "fold_vocal_score": vocal["fold_score"], "fold_vocal_slope": vocal["fold_slope"],
                 "auroc_vocal": vocal["auroc"], "spike_rate_vocal": vocal["spike_rate"],
                 "final_fit_converged": final_converged, "vocal_everywhere": vocal_everywhere}
-    return write_fold_artifact(artifact, unit, fold_index, output_directory, message_output)
+    return write_fold_artifact(artifact, unit, fold_index, output_directory, settings, message_output)
 
 
 def representative_fold(artifacts: list) -> int:
@@ -771,11 +805,16 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
     encoding = settings["kinematic_encoding"]
     artifacts = []
     for fold_index in range(len(sessions)):
-        path = pathlib.Path(output_directory) / f"{unit['unit_id']}_fold{fold_index}.npz"
+        path = fold_artifact_path(output_directory, unit, fold_index)
         if not path.exists():
             msg = f"fold artifact missing: {path}"
             raise FileNotFoundError(msg)
-        artifacts.append(dict(np.load(path, allow_pickle=True)))
+        artifact = dict(np.load(path, allow_pickle=True))
+        # Folds made under other settings would be combined into a result labelled with these ones.
+        if "settings_sha256" not in artifact or str(artifact["settings_sha256"]) != compute_settings_sha256(settings):
+            msg = f"fold artifact {path} was written under other settings; re-run that fold"
+            raise ValueError(msg)
+        artifacts.append(artifact)
 
     # When every fold failed the screen but carries a best screened feature, those are pooled for
     # description only; the written section keeps `no_model` True.

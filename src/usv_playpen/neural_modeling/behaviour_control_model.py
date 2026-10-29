@@ -41,6 +41,7 @@ from ..modeling.modeling_bases_functions import (
     resolve_temporal_basis,
 )
 from ..modeling.modeling_metadata import compute_settings_sha256
+from ..os_utils import configure_path
 from .neural_design_assembly import (
     build_zscored_feature_frames,
     emitter_names,
@@ -545,8 +546,8 @@ def load_control_model(settings: dict, target: str) -> dict:
     """
 
     check_target(target)
-    path = pathlib.Path(
-        settings["nested_vocal_decoding"]["behaviour_control_model_path"][target])
+    path = pathlib.Path(configure_path(
+        settings["nested_vocal_decoding"]["behaviour_control_model_path"][target]))
     if not path.exists():
         msg = (f"behaviour control model not found at {path}; fit it once with the behaviour-control "
                f"dispatcher before running the nested decoding.")

@@ -3,8 +3,8 @@
 Unit tests for ``usv_playpen.neural_modeling.neural_artifacts``.
 
 Coverage: the merged per-unit file. The properties that matter are the ones the design turns on --
-one analysis's section survives another analysis's write, provenance travels with the results, and a
-decision-shaped key is refused rather than stored.
+one analysis's section survives another analysis's write, provenance travels with the results (per
+file and per section), and a decision-shaped key is refused rather than stored.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import pytest
 from usv_playpen.neural_modeling.neural_artifacts import (
     build_provenance,
     read_unit_artifact,
+    section_is_current,
     unit_artifact_path,
     write_unit_section,
 )
@@ -158,3 +159,30 @@ class TestDecisionsAreRefused:
         write_unit_section(str(tmp_path), UNIT, "kinematic_encoding",
                            {"quiet_p": 1e-6, "quiet_d2": 0.15, "transfer_slope": 0.44}, _settings())
         assert read_unit_artifact(str(tmp_path), UNIT["unit_uid"])["kinematic_encoding"]["quiet_d2"] == 0.15
+
+
+class TestSectionProvenance:
+    """Each section records the settings it was written under, so a resumed run can tell what is current."""
+
+    def test_a_section_written_under_these_settings_is_current(self, tmp_path):
+        """A section just written is current under the settings it was written with."""
+        settings = _settings()
+        write_unit_section(str(tmp_path), UNIT, "vocal_occurrence", {"p": 0.01}, settings)
+        assert section_is_current(read_unit_artifact(str(tmp_path), UNIT["unit_uid"]), "vocal_occurrence", settings)
+
+    def test_a_section_written_under_other_settings_is_not_current(self, tmp_path):
+        """A later write under new settings must not make an earlier section look current: the file-level
+        provenance names only the last writer, the per-section record names each."""
+        old, new = _settings(), _settings()
+        new["null"]["shuffle_seed"] = int(new["null"]["shuffle_seed"]) + 1
+        write_unit_section(str(tmp_path), UNIT, "vocal_occurrence", {"p": 0.01}, old)
+        write_unit_section(str(tmp_path), UNIT, "vocal_gating", {"ran": False}, new)
+        artifact = read_unit_artifact(str(tmp_path), UNIT["unit_uid"])
+        assert not section_is_current(artifact, "vocal_occurrence", new)
+        assert section_is_current(artifact, "vocal_gating", new)
+
+    def test_a_missing_section_or_record_is_not_current(self):
+        """No section, or a section from before per-section provenance, must be recomputed."""
+        settings = _settings()
+        assert not section_is_current({}, "vocal_occurrence", settings)
+        assert not section_is_current({"vocal_occurrence": {"p": 0.01}}, "vocal_occurrence", settings)

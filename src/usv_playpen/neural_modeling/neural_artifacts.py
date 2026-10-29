@@ -150,8 +150,11 @@ def write_unit_section(output_directory: str, unit: dict, section: str, payload:
     Merge one analysis's results into the unit's file, leaving the other analyses' sections untouched.
 
     Read-modify-write, published atomically, so a crash mid-write cannot leave a half-file. The
-    identity and provenance blocks are refreshed on every write. Payloads carrying decision-shaped
-    keys at any depth are refused (see :func:`decision_key_paths`).
+    identity and provenance blocks are refreshed on every write, and the section's own provenance is
+    recorded under ``section_provenance[section]``: the file-level block names only the last writer, so
+    a file whose sections were written under different settings is told apart by these (see
+    :func:`section_is_current`). Payloads carrying decision-shaped keys at any depth are refused (see
+    :func:`decision_key_paths`).
 
     Parameters
     ----------
@@ -185,9 +188,40 @@ def write_unit_section(output_directory: str, unit: dict, section: str, payload:
     # per-session focal-USV counts.
     artifact["identity"] = dict(unit)
     artifact["provenance"] = build_provenance(settings)
+    artifact.setdefault("section_provenance", {})[section] = artifact["provenance"]
 
     path = unit_artifact_path(output_directory, unit["unit_uid"])
     path.parent.mkdir(parents=True, exist_ok=True)
     with atomic_output_path(path) as temporary, pathlib.Path(temporary).open("wb") as handle:
         pickle.dump(artifact, handle, protocol=pickle.HIGHEST_PROTOCOL)
     return path
+
+
+def section_is_current(artifact: dict, section: str, settings: dict) -> bool:
+    """
+    Description
+    -----------
+    Whether a unit's file carries ``section`` written under exactly these settings.
+
+    A resumed run skips a section only when this holds, so a section written under other settings (or
+    by code that did not yet record per-section provenance) is recomputed rather than mixed into a file
+    labelled with the current settings.
+
+    Parameters
+    ----------
+    artifact (dict)
+        The unit's file, from :func:`read_unit_artifact` (empty when none exists).
+    section (str)
+        The section name.
+    settings (dict)
+        The whole neural-modeling settings dict.
+
+    Returns
+    -------
+    current (bool)
+        True when the section exists and its recorded settings hash is these settings'.
+    """
+
+    if section not in artifact or section not in artifact.get("section_provenance", {}):
+        return False
+    return artifact["section_provenance"][section]["settings_sha256"] == compute_settings_sha256(settings)
