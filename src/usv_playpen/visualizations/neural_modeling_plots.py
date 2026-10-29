@@ -59,7 +59,7 @@ from usv_playpen.neural_modeling.deviance_metrics import (
 )
 from usv_playpen.neural_modeling.main_neural_encoding_dispatcher import (
     focal_vocal_frames,
-    fold_artifact_path,
+    read_fold_artifact,
 )
 from usv_playpen.neural_modeling.neural_category_decoding import (
     category_behaviour_tilts,
@@ -235,7 +235,7 @@ def subplot_span() -> float:
 
     Parameters
     ----------
-    ----------
+    None
 
     Returns
     -------
@@ -1057,7 +1057,7 @@ def draw_rate_traces(quiet_axis, vocal_axis, data: dict, settings: dict) -> None
                     bbox={"facecolor": "#FFFFFF", "edgecolor": "none", "alpha": 0.8, "pad": 1.5})
     width = int(np.rint(RATE_INSET_SECONDS * fps))
     candidates = []
-    for start in range(0, n_frames - width, width):
+    for start in range(0, n_frames - width + 1, width):
         window = slice(start, start + width)
         if mask[window].mean() < RATE_INSET_MIN_QUIET_FRACTION:
             continue
@@ -1158,8 +1158,8 @@ def session_trace_data(unit_uid: str, paths: FigurePaths, identity: dict, settin
     steps = kinematic["solver"]["calibration_steps"]
     sessions = []
     for fold_index in range(len(identity["courtship_sessions"])):
-        fold = np.load(fold_artifact_path(str(paths.results_directory), identity, fold_index), allow_pickle=True)
-        if bool(fold["no_model"]) and not ("best_screened" in fold.files and bool(fold["best_screened"])):
+        fold = stored_fold(paths, identity, fold_index)
+        if bool(fold["no_model"]) and not ("best_screened" in fold and bool(fold["best_screened"])):
             continue
         session_id = str(fold["test_id"])
         session = per_session[session_id]
@@ -1299,7 +1299,7 @@ def best_windows(observed: np.ndarray, predicted: np.ndarray, has: np.ndarray, f
 
     width = int(np.rint(RATE_INSET_SECONDS * fps))
     candidates = []
-    for start in range(0, observed.size - width, width // 4):
+    for start in range(0, observed.size - width + 1, width // 4):
         window = slice(start, start + width)
         if has[window].mean() < 0.99:
             continue
@@ -1935,6 +1935,35 @@ def draw_selection(axis, forward_path: list, fold_scores: dict, title: str | Non
     axis.set_title(title if title else f"forward selection ({n_inner} inner folds)", loc="left", fontsize=PANEL_TITLE_SIZE)
 
 
+def stored_fold(paths: FigurePaths, identity: dict, fold_index: int) -> dict:
+    """
+    Description
+    -----------
+    One encoding fold's artifact, from its ``.npz`` file or, once the unit is finished, from the
+    ``kinematic_encoding_folds`` section of its result file.
+
+    Parameters
+    ----------
+    paths (FigurePaths)
+        Where the results, the session data and the figure cache live.
+    identity (dict)
+        The result file's ``identity`` block (``unit_uid`` names the fold).
+    fold_index (int)
+        Which fold.
+
+    Returns
+    -------
+    fold (dict)
+        The fold's artifact.
+    """
+
+    fold = read_fold_artifact(str(paths.results_directory), identity, fold_index)
+    if fold is None:
+        msg = f"{identity['unit_uid']}: fold {fold_index} is in neither a fold file nor the result file"
+        raise FileNotFoundError(msg)
+    return fold
+
+
 def per_fold_transfer(paths: FigurePaths, identity: dict, settings: dict) -> list:
     """
     Description
@@ -1961,10 +1990,10 @@ def per_fold_transfer(paths: FigurePaths, identity: dict, settings: dict) -> lis
     steps = settings["kinematic_encoding"]["solver"]["calibration_steps"]
     transfers = []
     for fold_index in range(len(identity["courtship_sessions"])):
-        fold = np.load(fold_artifact_path(str(paths.results_directory), identity, fold_index), allow_pickle=True)
+        fold = stored_fold(paths, identity, fold_index)
         # A fold that selected nothing still fitted its best screened feature, and that is what the panels
         # of an untuned unit describe; only a fold with no fitted filter at all is skipped.
-        if bool(fold["no_model"]) and not ("best_screened" in fold.files and bool(fold["best_screened"])):
+        if bool(fold["no_model"]) and not ("best_screened" in fold and bool(fold["best_screened"])):
             continue
         everywhere = list(fold["vocal_everywhere"])
         if "bin_eta" in everywhere[0]:
@@ -3397,8 +3426,9 @@ def smoothed_manifold_field(positions: np.ndarray, values: np.ndarray, settings:
 
     surface_settings = settings["vocal_decoding"]["tuning_surface"]
     grid_n = ERROR_DISPLAY_POINTS
-    grid, _cell = torus_grid(grid_n, settings["vocalization_settings"]["torus_period"])
-    delta = (grid[:, None, :] - positions[None, :, :] + 0.5) % 1.0 - 0.5
+    period = settings["vocalization_settings"]["torus_period"]
+    grid, _cell = torus_grid(grid_n, period)
+    delta = (grid[:, None, :] - positions[None, :, :] + 0.5 * period) % period - 0.5 * period
     weights = np.exp(-0.5 * np.sum(delta ** 2, axis=2) / ERROR_SIGMA ** 2)
     totals = weights.sum(axis=1)
     field = np.divide(weights @ values, totals, out=np.full(grid.shape[0], np.nan),
@@ -4160,6 +4190,8 @@ def nested_section(unit: dict, unit_uid: str, target: str) -> dict:
         The unit's artifact.
     unit_uid (str)
         The unit's uid, for the message.
+    target (str)
+        Which target's section: ``'manifold'`` or ``'multinomial'``.
 
     Returns
     -------

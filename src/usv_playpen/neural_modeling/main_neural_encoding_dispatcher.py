@@ -41,7 +41,7 @@ from .kinematic_encoding import (
     screen_features,
     spike_triggered_average,
 )
-from .neural_artifacts import write_unit_section
+from .neural_artifacts import read_unit_artifact, write_unit_section
 from .neural_cohort import block_usv_counts, focal_usv_onsets, unit_session_sets
 from .neural_design_assembly import (
     BLOCK_TAG,
@@ -199,6 +199,84 @@ def fold_artifact_path(output_directory: str, unit: dict, fold_index: int) -> pa
     """
 
     return pathlib.Path(output_directory) / f"{unit['unit_uid']}_fold{fold_index}.npz"
+
+
+FOLDS_SECTION = "kinematic_encoding_folds"
+
+
+def read_fold_artifact(output_directory: str, unit: dict, fold_index: int) -> dict | None:
+    """
+    Description
+    -----------
+    One outer fold's artifact, wherever it currently lives: its ``.npz`` file while the unit's folds are
+    still being run, or the unit's result file once :func:`combine` has archived them there.
+
+    The archived fold is the ``.npz`` contents exactly as loaded (object arrays included), so every
+    reader treats both sources the same way, and its ``settings_sha256`` travels with it.
+
+    Parameters
+    ----------
+    output_directory (str)
+        Where the fold files and the unit's result file live.
+    unit (dict)
+        The unit record.
+    fold_index (int)
+        Which fold.
+
+    Returns
+    -------
+    artifact (dict | None)
+        The fold's artifact, or None when it exists in neither place.
+    """
+
+    path = fold_artifact_path(output_directory, unit, fold_index)
+    if path.exists():
+        return dict(np.load(path, allow_pickle=True))
+    stored = read_unit_artifact(output_directory, unit["unit_uid"])
+    if FOLDS_SECTION in stored and fold_index < len(stored[FOLDS_SECTION]["folds"]):
+        return dict(stored[FOLDS_SECTION]["folds"][fold_index])
+    return None
+
+
+def archive_folds(unit: dict, folds: list, settings: dict, output_directory: str,
+                  message_output=print) -> None:
+    """
+    Description
+    -----------
+    Move the unit's fold artifacts into its result file and delete the ``.npz`` files, so a finished
+    unit is one file.
+
+    Called by :func:`combine` once the ``kinematic_encoding`` section is written. The section is written
+    before any file is deleted, so an interruption leaves the folds in one place or the other, never
+    nowhere. The folds stay readable through :func:`read_fold_artifact` (a later re-combine, the
+    resume check of the cohort runner, the figures).
+
+    Parameters
+    ----------
+    unit (dict)
+        The unit record.
+    folds (list)
+        Every fold's artifact as loaded, in fold order, before ``combine`` changed anything in them.
+    settings (dict)
+        Full neural-modeling settings, for the section's provenance.
+    output_directory (str)
+        Where the fold files and the result file live.
+    message_output (Callable)
+        Where the archiving is reported.
+
+    Returns
+    -------
+    None
+    """
+
+    write_unit_section(output_directory, unit, FOLDS_SECTION, {"folds": folds}, settings)
+    removed = 0
+    for fold_index in range(len(folds)):
+        path = fold_artifact_path(output_directory, unit, fold_index)
+        if path.exists():
+            path.unlink()
+            removed += 1
+    message_output(f"    archived {len(folds)} folds into [{FOLDS_SECTION}], removed {removed} fold files")
 
 
 def write_fold_artifact(artifact: dict, unit: dict, fold_index: int, output_directory: str, settings: dict,
@@ -778,7 +856,9 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
     predictions on every vocal session are pooled into the transfer and tested. The
     filter band, shape descriptors and spike-triggered average are computed here and stored with the
     per-fold roster in the unit's ``kinematic_encoding`` section. A unit whose every fold failed the
-    screen is written as ``no_model``.
+    screen is written as ``no_model``. The folds are then archived into the result file and their
+    ``.npz`` files deleted (:func:`archive_folds`), so a finished unit is one file; a later re-combine
+    reads them back from there (:func:`read_fold_artifact`).
 
     Parameters
     ----------
@@ -803,18 +883,20 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
 
     sessions = unit["courtship_sessions"]
     encoding = settings["kinematic_encoding"]
-    artifacts = []
+    loaded = []
     for fold_index in range(len(sessions)):
-        path = fold_artifact_path(output_directory, unit, fold_index)
-        if not path.exists():
-            msg = f"fold artifact missing: {path}"
+        artifact = read_fold_artifact(output_directory, unit, fold_index)
+        if artifact is None:
+            msg = f"fold artifact missing: {fold_artifact_path(output_directory, unit, fold_index)}"
             raise FileNotFoundError(msg)
-        artifact = dict(np.load(path, allow_pickle=True))
         # Folds made under other settings would be combined into a result labelled with these ones.
         if "settings_sha256" not in artifact or str(artifact["settings_sha256"]) != compute_settings_sha256(settings):
-            msg = f"fold artifact {path} was written under other settings; re-run that fold"
+            msg = f"fold {fold_index} of {unit['unit_uid']} was written under other settings; re-run that fold"
             raise ValueError(msg)
-        artifacts.append(artifact)
+        loaded.append(artifact)
+    # Shallow copies: the description-only path below replaces `no_model` in them, and the archived
+    # folds must stay as the fold jobs wrote them.
+    artifacts = [dict(artifact) for artifact in loaded]
 
     # When every fold failed the screen but carries a best screened feature, those are pooled for
     # description only; the written section keeps `no_model` True.
@@ -857,6 +939,7 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
                   "quiet_p": 1.0, "transfer_p": np.nan, "spike_counts_per_session": spike_counts,
                   "n_lags": n_lags, "fps": fps, **per_fold_roster(artifacts, n_lags)}
         written = write_unit_section(output_directory, unit, "kinematic_encoding", result, settings)
+        archive_folds(unit, loaded, settings, output_directory, message_output)
         message_output(f"    wrote {written.name} [kinematic_encoding, no model]")
         return result
 
@@ -875,6 +958,7 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
                   "n_lags": n_lags, "fps": fps,
                   **per_fold_roster(artifacts, n_lags)}
         written = write_unit_section(output_directory, unit, "kinematic_encoding", result, settings)
+        archive_folds(unit, loaded, settings, output_directory, message_output)
         message_output(f"    wrote {written.name} [kinematic_encoding, no scoreable fold]")
         return result
     chosen_artifact = artifacts[chosen]
@@ -968,6 +1052,7 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
 
     # Merged into the unit's own file, which the other analyses write their own sections into.
     written = write_unit_section(output_directory, unit, "kinematic_encoding", result, settings)
+    archive_folds(unit, loaded, settings, output_directory, message_output)
     message_output(f"    wrote {written.name} [kinematic_encoding]")
     return result
 

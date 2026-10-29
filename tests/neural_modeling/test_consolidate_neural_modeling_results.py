@@ -5,15 +5,22 @@ Unit tests for ``usv_playpen.neural_modeling.consolidate_neural_modeling_results
 Coverage: reading one unit's p-values with every way a test can be missing, the false-discovery
 procedures, the category rules (including that a missing test is neither a pass nor a failure and that
 Transformation is the conjunction test), and the cohort consolidation -- correction within each area or
-pooled, the conjunction as the largest component p-value, the exclusion of single-session units, and the
-report's floor requirements and exclusion counts.
+pooled, the conjunction as the largest component p-value, the exclusion of single-session units, the
+report's floor requirements and exclusion counts, a group left with nothing to correct -- and the command
+line, which writes the cohort table and report and warns when the unit files disagree on their settings.
 """
 
 from __future__ import annotations
 
+import pickle
+import sys
+
 import numpy as np
 import pytest
 
+from usv_playpen.neural_modeling import (
+    consolidate_neural_modeling_results as consolidation,
+)
 from usv_playpen.neural_modeling.consolidate_neural_modeling_results import (
     CATEGORIES,
     TESTS,
@@ -326,3 +333,52 @@ class TestBehaviourModifier:
         assert table["category"].to_list() == ["Transformation", "Transformation"]
         assert table["behaviour_informative"].to_list() == [True, False]
         assert report["PAG"]["transformation_where_behaviour_uninformative"] == 1
+
+
+class TestGapsAndCommandLine:
+    """The less common paths of the consolidation and its command line."""
+
+    def test_a_section_that_ran_without_a_p_value_names_why(self):
+        """A test that ran but stored no p-value is missing with the reason ``no_p_value``, never failed."""
+        artifact = _artifact()
+        artifact["vocal_occurrence"]["p"] = None
+        artifact["vocal_gating"] = {"p_unit": None}
+        row = unit_row(_record("u0"), artifact, "manifold")
+        assert np.isnan(row["p_occurrence"])
+        assert row["reason_occurrence"] == "no_p_value"
+        assert row["reason_gating"] == "no_p_value"
+        assert row["gating_feature"] is None
+
+    def test_an_encoding_without_stored_nulls_still_consolidates(self):
+        """Missing encoding nulls leave the floor requirement without a draw count, not a crash."""
+        artifact = _artifact()
+        artifact["kinematic_encoding"]["quiet_null"] = None
+        artifact["kinematic_encoding"]["transfer_null"] = np.zeros(0)
+        table, _report = consolidate([_record("u0")], {"u0": artifact}, SETTINGS)
+        assert table.height == 1
+
+    def test_a_group_left_with_nothing_to_correct_is_not_reported(self):
+        """An area whose only units are excluded single-session units has no correction to report."""
+        cohort = [_record("s0", single=True), _record("s1", single=True)]
+        _table, report = consolidate(cohort, {"s0": _artifact(), "s1": _artifact()}, SETTINGS)
+        assert "PAG" not in report
+
+    def test_the_command_line_writes_the_table_and_report(self, tmp_path, monkeypatch, capsys):
+        """The command reads every unit's file, writes the table and the report, and warns when the unit
+        files were written under different settings."""
+        cohort = [_record("u0"), _record("u1")]
+        artifacts = {"u0": {**_artifact(), "provenance": {"settings_sha256": "a" * 64}},
+                     "u1": {**_artifact(p=0.5), "provenance": {"settings_sha256": "b" * 64}}}
+        monkeypatch.setattr(consolidation, "build_cohort_manifest", lambda _settings: cohort)
+        monkeypatch.setattr(consolidation, "read_unit_artifact", lambda _directory, uid: artifacts[uid])
+        monkeypatch.setattr(consolidation, "load_settings",
+                            lambda _path: {**SETTINGS, "nested_vocal_decoding": {}, "x": 1})
+        monkeypatch.setattr(consolidation, "build_provenance", lambda _settings: {"settings_sha256": "c" * 64})
+        monkeypatch.setattr(sys, "argv", ["consolidate", "--results-directory", str(tmp_path),
+                                          "--output-directory", str(tmp_path / "out")])
+        assert consolidation.main() == 0
+        assert (tmp_path / "out" / "neural_cohort_table.csv").exists()
+        with (tmp_path / "out" / "neural_cohort_report.pkl").open("rb") as handle:
+            stored = pickle.load(handle)
+        assert stored["unit_settings_sha256"] == ["a" * 64, "b" * 64]
+        assert "different settings" in capsys.readouterr().out

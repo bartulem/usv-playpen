@@ -7,12 +7,14 @@ vocal step writes, which steps a resumed run still owes, whether a fold file is 
 settings check, the input check before planning, the written manifest -- ``run_unit``'s orchestration
 with the heavy stages stubbed (what is skipped when current, what is re-run, a session set that changed
 since planning, an encoding failure that must not stop the vocal steps), and the monitoring: timestamped
-log lines, the per-section result line, the per-unit status file and the cohort status summary.
+log lines, the per-section result line, the per-unit status file and the cohort status summary -- plus
+the fold-process loop (with a stand-in for the process), a failing vocal step, and the command line.
 """
 
 from __future__ import annotations
 
 import json
+import sys
 
 import numpy as np
 import pytest
@@ -27,11 +29,14 @@ from usv_playpen.neural_modeling.main_neural_cohort_dispatcher import (
     cohort_status,
     fold_is_current,
     load_manifest,
+    log_tail,
     pending_vocal_steps,
     plan,
     recorded_sessions,
+    run_folds,
     run_unit,
     section_summary,
+    slurm_variable,
     step_sections,
     timestamped,
 )
@@ -111,6 +116,16 @@ class TestBookkeeping:
                             message_output=lambda *_a: None)
         assert fold_is_current(str(tmp_path), RECORD, 0, settings)
         assert not fold_is_current(str(tmp_path), RECORD, 0, other)
+
+
+    def test_an_archived_fold_counts_as_current(self, tmp_path):
+        """A fold archived into the result file by combine must not be re-run on resumption."""
+        settings = load_settings()
+        write_unit_section(str(tmp_path), RECORD, "kinematic_encoding_folds",
+                           {"folds": [{"fold_index": 0, "settings_sha256": compute_settings_sha256(settings)}]},
+                           settings)
+        assert fold_is_current(str(tmp_path), RECORD, 0, settings)
+        assert not fold_is_current(str(tmp_path), RECORD, 1, settings)
 
     def test_a_manifest_planned_under_other_settings_is_refused(self, tmp_path):
         """Which units and sessions the cohort holds depends on the settings, so a mismatch stops the run."""
@@ -224,6 +239,22 @@ class TestRunUnit:
         artifact = read_unit_artifact(str(tmp_path), RECORD["unit_uid"])
         assert artifact["identity"]["brain_area"] == "PAG"
 
+    def test_folds_left_behind_by_an_interrupted_archive_are_archived(self, tmp_path, monkeypatch):
+        """A task that died after writing the encoding but before archiving its folds is finished off on
+        resumption: the folds move into the result file and the .npz files go."""
+        calls: dict = {}
+        self._stub(monkeypatch, calls)
+        settings = load_settings()
+        for fold_index in range(2):
+            write_fold_artifact({"fold_index": fold_index}, RECORD, fold_index, str(tmp_path), settings,
+                                message_output=lambda *_a: None)
+        write_unit_section(str(tmp_path), RECORD, "kinematic_encoding", {"quiet_p": 0.5}, settings)
+        run_unit(RECORD, settings, None, "/data", str(tmp_path), 4, 2, message_output=lambda *_a: None)
+        assert "combine" not in calls
+        assert not list(tmp_path.glob("*_fold*.npz"))
+        archived = read_unit_artifact(str(tmp_path), RECORD["unit_uid"])["kinematic_encoding_folds"]["folds"]
+        assert [int(fold["fold_index"]) for fold in archived] == [0, 1]
+
     def test_a_session_set_changed_since_planning_is_refused(self, tmp_path, monkeypatch):
         """A unit is never analysed on other sessions than the cohort lists."""
         self._stub(monkeypatch, {}, rebuilt={"vocal_sessions": ["20250101_100000"]})
@@ -293,3 +324,166 @@ class TestMonitoring:
         assert summary["counts"] == {"done": 1, "running": 1, "failed": 1, "not_started": 1}
         assert summary["failed"] == {"u1": ["kinematic_encoding"]}
         assert summary["median_minutes"] == {"vocal_occurrence": 2.0}
+
+
+class _FakeProcess:
+    """
+    Description
+    -----------
+    A stand-in for a fold process: it writes its log lines and finishes on its second poll with a given
+    exit code, so the fold loop can be run without launching Python.
+
+    Parameters
+    ----------
+    command (list)
+        The command the loop would have run.
+    stdout (file)
+        The fold's open log file.
+    returncode (int)
+        The exit code it finishes with.
+
+    Returns
+    -------
+    None
+    """
+
+    def __init__(self, command: list, stdout, returncode: int) -> None:
+        """
+        Description
+        -----------
+        Record the command and write a log line.
+
+        Parameters
+        ----------
+        command (list)
+            The command.
+        stdout (file)
+            The fold's log file.
+        returncode (int)
+            The exit code.
+
+        Returns
+        -------
+        None
+        """
+
+        self.command, self.final, self.polls, self.returncode = command, returncode, 0, None
+        stdout.write("    screen self.speed  score +0.01 | p 1e-04 | pass\n")
+        if returncode:
+            stdout.write("Traceback (most recent call last):\nValueError: synthetic failure\n")
+        stdout.flush()
+
+    def poll(self):
+        """
+        Description
+        -----------
+        Finish on the second poll.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        returncode (int | None)
+            None while running, then the exit code.
+        """
+
+        self.polls += 1
+        if self.polls >= 2:
+            self.returncode = self.final
+        return self.returncode
+
+
+class TestFoldsAndCommandLine:
+    """The fold-process loop, the environment helpers and the command line."""
+
+    def test_folds_run_as_processes_and_a_failure_is_reported_with_its_log(self, tmp_path, monkeypatch):
+        """Each fold runs as ``--fold i`` with capped threads; a failed fold is returned and its log tail is
+        copied into the task log; the heartbeat names the step a running fold is on."""
+        launched: list = []
+
+        def popen(command, stdout, env, **_streams):
+            launched.append((command, env))
+            return _FakeProcess(command, stdout, 1 if command[-1] == "1" else 0)
+
+        monkeypatch.setattr(cohort_dispatcher.subprocess, "Popen", popen)
+        monkeypatch.setattr(cohort_dispatcher.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(cohort_dispatcher, "HEARTBEAT_SECONDS", 0.0)
+        lines: list = []
+        failed = run_folds(RECORD, [0, 1, 2], str(tmp_path), "/data", "/settings.json", 2, 3, lines.append)
+        assert failed == [1]
+        assert [command[-1] for command, _env in launched] == ["0", "1", "2"]
+        assert all(env["OMP_NUM_THREADS"] == "3" for _command, env in launched)
+        assert "--settings-path" in launched[0][0]
+        assert any("ValueError: synthetic failure" in line for line in lines)
+        assert any("heartbeat" in line and "screen self.speed" in line for line in lines)
+        assert any("folds waiting" in line for line in lines)
+
+    def test_a_failing_vocal_step_is_recorded_and_later_steps_still_run(self, tmp_path, monkeypatch):
+        """One step raising must not stop the steps after it; the task reports the failure."""
+        TestRunUnit._stub(monkeypatch, {})
+
+        def run_vocal(unit, settings, _data_root, output_directory, _n_workers, steps, _message_output):
+            if steps == ("vocalization_identity",):
+                msg = "synthetic identity failure"
+                raise RuntimeError(msg)
+            for step in steps:
+                for section in step_sections(step):
+                    write_unit_section(output_directory, unit, section, {"p": 0.5}, settings)
+
+        monkeypatch.setattr(cohort_dispatcher, "run_vocal", run_vocal)
+        assert not run_unit(RECORD, load_settings(), None, "/data", str(tmp_path), 4, 2,
+                            message_output=lambda *_a: None)
+        status = json.loads((tmp_path / "status" / f"{RECORD['unit_uid']}.json").read_text())
+        assert status["stages"]["vocalization_identity"]["state"] == "failed"
+        assert status["stages"]["vocal_gating"]["state"] == "done"
+
+    def test_environment_and_log_helpers(self, tmp_path, monkeypatch):
+        """A SLURM variable is read when set and None otherwise; a missing log has no tail."""
+        monkeypatch.setenv("SLURM_ARRAY_TASK_ID", "17")
+        monkeypatch.delenv("SLURM_JOB_ID", raising=False)
+        assert slurm_variable("SLURM_ARRAY_TASK_ID") == "17"
+        assert slurm_variable("SLURM_JOB_ID") is None
+        assert log_tail(tmp_path / "absent.log", 3) == []
+        (tmp_path / "fold.log").write_text("a\n\nb\nc\n")
+        assert log_tail(tmp_path / "fold.log", 2) == ["b", "c"]
+
+    def test_a_manifest_under_these_settings_is_accepted(self, tmp_path):
+        """The manifest planned under the run's settings loads."""
+        settings = load_settings()
+        manifest = tmp_path / MANIFEST_NAME
+        manifest.write_text(json.dumps({"settings_sha256": compute_settings_sha256(settings), "n_units": 0,
+                                        "units": []}))
+        assert load_manifest(str(manifest), settings)["n_units"] == 0
+
+    def test_the_command_line_plans_runs_and_reports(self, tmp_path, monkeypatch, capsys):
+        """``plan``, ``status`` and ``run`` dispatch to their functions; ``run`` takes the array index from
+        SLURM plus the offset, does nothing outside the manifest, and exits non-zero on a failed unit."""
+        settings = load_settings()
+        manifest = tmp_path / MANIFEST_NAME
+        manifest.write_text(json.dumps({"settings_sha256": compute_settings_sha256(settings), "n_units": 2,
+                                        "units": [dict(RECORD), dict(RECORD)]}))
+        planned: list = []
+        monkeypatch.setattr(cohort_dispatcher, "plan", lambda directory, path: planned.append((directory, path)))
+        monkeypatch.setattr(sys, "argv", ["runner", "plan", "--output-directory", str(tmp_path)])
+        assert cohort_dispatcher.main() == 0
+        assert planned == [(str(tmp_path), None)]
+
+        monkeypatch.setattr(sys, "argv", ["runner", "status", "--manifest", str(manifest),
+                                          "--output-directory", str(tmp_path)])
+        assert cohort_dispatcher.main() == 0
+        assert "not_started 2" in capsys.readouterr().out
+
+        ran: list = []
+        monkeypatch.setattr(cohort_dispatcher, "run_unit",
+                            lambda record, *_args: ran.append(record["unit_uid"]) or False)
+        monkeypatch.setenv("SLURM_ARRAY_TASK_ID", "0")
+        run_arguments = ["runner", "run", "--manifest", str(manifest), "--output-directory", str(tmp_path),
+                         "--data-root", "/data", "--n-workers", "2"]
+        monkeypatch.setattr(sys, "argv", [*run_arguments, "--index-offset", "1"])
+        assert cohort_dispatcher.main() == 1
+        assert ran == [RECORD["unit_uid"]]
+        monkeypatch.setattr(sys, "argv", [*run_arguments, "--index", "5"])
+        assert cohort_dispatcher.main() == 0
+        assert "outside the manifest" in capsys.readouterr().out

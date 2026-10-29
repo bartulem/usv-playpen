@@ -45,10 +45,12 @@ import numpy as np
 from ..modeling.modeling_metadata import compute_settings_sha256
 from ..os_utils import configure_path
 from .main_neural_encoding_dispatcher import (
+    archive_folds,
     build_unit_record,
     combine,
     fold_artifact_path,
     load_settings,
+    read_fold_artifact,
 )
 from .main_neural_vocal_dispatcher import TARGET_STEPS, VOCAL_STEPS, run_vocal
 from .neural_artifacts import build_provenance, read_unit_artifact, section_is_current
@@ -244,7 +246,8 @@ def fold_is_current(output_directory: str, unit: dict, fold_index: int, settings
     """
     Description
     -----------
-    Whether a fold's artifact exists and was written under these settings.
+    Whether a fold's artifact exists, as its ``.npz`` file or archived in the unit's result file, and
+    was written under these settings.
 
     Parameters
     ----------
@@ -263,11 +266,10 @@ def fold_is_current(output_directory: str, unit: dict, fold_index: int, settings
         True when the fold need not be re-run.
     """
 
-    path = fold_artifact_path(output_directory, unit, fold_index)
-    if not path.exists():
+    stored = read_fold_artifact(output_directory, unit, fold_index)
+    if stored is None:
         return False
-    with np.load(path, allow_pickle=True) as stored:
-        return "settings_sha256" in stored and str(stored["settings_sha256"]) == compute_settings_sha256(settings)
+    return "settings_sha256" in stored and str(stored["settings_sha256"]) == compute_settings_sha256(settings)
 
 
 def slurm_variable(name: str) -> str | None:
@@ -687,6 +689,11 @@ def run_unit(record: dict, settings: dict, settings_path: str | None, data_root:
             state = "done"
         else:
             state = "kept"
+            # A task stopped between writing the section and archiving its folds leaves .npz files behind.
+            leftover = [fold for fold in range(n_folds) if fold_artifact_path(output_directory, unit, fold).exists()]
+            if leftover:
+                archive_folds(unit, [read_fold_artifact(output_directory, unit, fold) for fold in range(n_folds)],
+                              settings, output_directory, log)
         summary = section_summary(read_unit_artifact(output_directory, unit["unit_uid"]), "kinematic_encoding")
         minutes = (time.time() - started) / 60.0
         log(f"STAGE kinematic_encoding {state.upper()} in {minutes:.1f} min | {summary}")

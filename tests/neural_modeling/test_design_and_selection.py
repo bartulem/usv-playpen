@@ -613,6 +613,28 @@ class TestFoldsWithoutAModel:
         assert stored["no_model_per_fold"] == [True, True]
         assert stored["screen_per_fold"][0][0]["p"] == 5e-3
 
+    def test_combine_archives_the_folds_into_the_result_file(self, tmp_path, monkeypatch):
+        """A finished unit is one file: the folds move into the result file, their .npz files are removed,
+        and a second combine reads them back from there with the same result."""
+        sessions = ["s0", "s1"]
+        unit = {"unit_id": self.UNIT_ID, "unit_uid": self.UNIT_UID, "mouse_id": "m",
+                "rec_date": 20250101, "courtship_sessions": sessions, "vocal_sessions": sessions}
+        self._round_trip(tmp_path, [self._no_model_fold(0, "s0"), self._no_model_fold(1, "s1")])
+        monkeypatch.setattr(dispatcher, "assemble_unit_sessions",
+                            lambda *_a, **_k: {s: {"fps": 150.0, "feature_names": ["a", "b"], "n_frames": 1500,
+                                                   "spike_frames": np.array([10, 20, 900, 1400]),
+                                                   "quiet": np.array([20, 30, 900]), "window": (0, 1000)}
+                                               for s in sessions})
+        first = combine(unit, load_settings(), str(tmp_path), str(tmp_path), message_output=lambda *_a: None)
+        assert not list(tmp_path.glob("*_fold*.npz"))
+        archived = read_unit_artifact(str(tmp_path), unit["unit_uid"])[dispatcher.FOLDS_SECTION]["folds"]
+        assert [str(fold["test_id"]) for fold in archived] == ["s0", "s1"]
+        assert str(dispatcher.read_fold_artifact(str(tmp_path), unit, 1)["test_id"]) == "s1"
+        assert dispatcher.read_fold_artifact(str(tmp_path), unit, 2) is None
+        second = combine(unit, load_settings(), str(tmp_path), str(tmp_path), message_output=lambda *_a: None)
+        assert second["no_model_per_fold"] == first["no_model_per_fold"]
+        assert second["screen_per_fold"] == first["screen_per_fold"]
+
 
 class TestLeaveOneSessionOut:
     """The guard against one session carrying the transfer, matching `min_leave_one_fold_out` on the

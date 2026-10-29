@@ -49,6 +49,11 @@ interactively from the :ref:`modeling-notebook` (``modeling_analyses.ipynb``,
 detailed in :doc:`Notebooks`) or, at cohort scale, from the SLURM job scheduler's dispatchers
 described in :ref:`modeling-model-selection`.
 
+The page closes with the **neural modeling** subsystem (``usv_playpen.neural_modeling``, :ref:`modeling-neural`),
+which asks the question per recorded neuron: does a periaqueductal gray (PAG) unit encode the mice's
+kinematics, predict when and which USV is coming, and add to what behaviour alone predicts. It has its own
+settings file and runs on the cluster as one array of units.
+
 .. note::
 
    The modeling pipelines are **not** exposed as a GUI tab. Run them from
@@ -4015,6 +4020,285 @@ sessions and control counts, the anchors rejected for lacking an eligible contro
 the pooled scaling, the ``parameters`` block it was built with and the camera frame
 rate; ``plot_matched_divergence`` draws it.
 
+.. _modeling-neural:
+
+Neural modeling
+---------------
+The neural modeling subsystem (``usv_playpen.neural_modeling``) asks, one recorded neuron ("unit") at a
+time, whether periaqueductal gray (PAG) neurons transform sensory input into vocal output. Each unit is
+put through a fixed series of analyses: does its spiking encode the recent kinematics of the two mice
+while they are silent, and does that encoding still hold while the male vocalizes; does its activity
+around a USV (ultrasonic vocalization) tell a vocal moment from a quiet one, and which USV is coming;
+does it add to what behaviour alone predicts about that USV; and is its vocal response gated by a
+behavioural feature.
+
+Every analysis is held out by recording session, and every p-value comes from a null that breaks only the
+relationship under test (a circular shift of the spike train, or a permutation of the pairing between
+spike counts and USVs within each session). The per-unit file stores metrics, p-values and full nulls but
+no verdicts: false-discovery control is a cohort operation, applied afterwards by the consolidation.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 24 40 22 14
+
+   * - Analysis
+     - Asks
+     - Result-file section
+     - Null
+   * - Kinematic encoding
+     - does a model of the last 4 s of kinematics, fitted on silent frames, predict spiking in held-out
+       silence, and still predict it around vocal bouts (the transfer)?
+     - ``kinematic_encoding``
+     - circular shift
+   * - Vocal occurrence
+     - does the spike count in a window around USV onset tell a vocal window from a quiet one?
+     - ``vocal_occurrence``
+     - circular shift
+   * - Vocalization identity
+     - does the count predict which USV it is, as a torus position (``manifold``) or a category
+       (``multinomial``)?
+     - ``vocalization_identity_<target>``
+     - permutation
+   * - Nested vocal decoding
+     - does the count add to what a cohort behaviour model predicts about the USV?
+     - ``nested_vocal_decoding_<target>``
+     - permutation
+   * - Vocal gating
+     - is the vocal response scaled by a behavioural feature (a feature × vocalization interaction)?
+     - ``vocal_gating``
+     - circular shift
+
+The analyses read one settings file, ``_parameter_settings/neural_modeling_settings.json``, described
+key by key under :ref:`modeling-neural-settings`. Paths in it ship with the literal experimenter
+``/mnt/falkner/Bartul/...`` and are re-keyed to the active experimenter at run time; on the cluster the
+``/mnt/falkner`` form is translated to the cluster mount automatically (``os_utils.configure_path``).
+
+The cohort
+~~~~~~~~~~
+The cohort is built from the unit catalog (``data_roots.catalog_path``) by
+``neural_cohort.build_cohort_manifest``: units in ``data.brain_areas`` (PAG by default), of the listed
+``data.quality`` and ``data.somatic`` class, recorded in at least ``data_sufficiency.min_courtship_sessions``
+of the courtship sessions named in ``data.session_list_files``. With the shipped settings this gives
+2,649 PAG units, 124 of them recorded in a single session.
+
+A unit's sessions are split into two sets. Every courtship session serves the kinematic encoding, which is
+fitted on silence; a session serves the vocal analyses only if the male emitted at least
+``data_sufficiency.min_emitter_usvs_per_session`` USVs in it, and a unit with fewer than
+``min_vocal_sessions`` such sessions is kept and flagged rather than dropped, so the denominators the
+cohort fractions are reported against never shrink silently.
+
+A unit recorded in one session is analysed on ``data_sufficiency.single_session_blocks`` blocks of equal
+duration, which stand in for sessions in every analysis (each block has its own baseline and its own vocal
+floor, and the time within ``kinematic_encoding.history_pre_seconds`` of a block boundary is dropped). Such
+units are listed in the cohort table but left out of the cross-unit corrections by default
+(``significance.include_single_session_units``).
+
+The behaviour controls
+~~~~~~~~~~~~~~~~~~~~~~
+The nested decoding measures each neuron against a behaviour model of the USV, one per target, fitted
+once for the whole cohort and held out by recording day, so a unit's own USVs never train the model it is
+compared with. Their features are those the behavioural modelling's selections chose on the ephys
+courtship sessions (``data.behaviour_selection_result_path``, frozen in
+``nested_vocal_decoding.reduced_model_features``). Fit both before any unit runs:
+
+.. code-block:: bash
+
+    python -m usv_playpen.neural_modeling.main_behaviour_control_dispatcher --stage fit --target manifold
+    python -m usv_playpen.neural_modeling.main_behaviour_control_dispatcher --stage fit --target multinomial
+
+Each run writes ``nested_vocal_decoding.behaviour_control_model_path[target]``; ``--n-workers`` (``6``)
+sets the processes and ``--exclude-days`` leaves recording days out. The per-unit decoding refuses a
+control fitted for the other target or on other features. ``--stage select --output <file>`` runs this
+package's own forward selection for the torus control; it never writes onto the settings' selection path,
+and the frozen feature list is only changed by hand.
+
+Kinematic encoding
+~~~~~~~~~~~~~~~~~~
+The encoding model is a per-frame Bernoulli spike model of the last ``history_pre_seconds`` (4 s) of every
+behavioural feature, each feature's history expanded on a spline lag basis (``temporal_basis``) and fitted
+on quiet frames only: frames with no USV from any emitter in the 4 s before or the
+``clean_post_seconds`` (4 s) after. Each session in turn is held out (an outer fold); inside the remaining
+sessions, every feature is screened alone against a circular-shift null at a Bonferroni level
+(``feature_selection.screen_alpha`` over the feature count, ``null.screen_n_shuffles`` draws), and the
+survivors are added by forward selection with a paired one-standard-error rule.
+
+One fold's model represents the unit: the fold whose held-out quiet score is the median (ties broken by
+the larger number of vocal frames). Its quiet p-value scores the frozen model on its held-out session's
+quiet frames against circular shifts of that session's spike train. The transfer scores the same frozen
+model around vocal bouts (from ``clean_post_seconds`` before a bout's first USV to its end), as spike
+counts in ``transfer.bin_seconds`` bins pooled over every vocal session with a shared gain and one
+intercept per session; its null shifts each session's spikes independently.
+
+Folds are independent jobs (``main_neural_encoding_dispatcher --fold K``) whose files are combined by
+``--combine``, which picks the representative fold, pools the transfer and writes the
+``kinematic_encoding`` section: both scores and p-values with their nulls, the transfer slope (a
+transformation candidate needs it positive), the representative fold's filters, a block-resampled filter
+band and the spike-triggered average, and every fold's screen, selection path and scores.
+
+Vocal occurrence
+~~~~~~~~~~~~~~~~
+Vocal occurrence is a two-class decoder of the spike count in the window given by
+``vocalization_settings.spike_window`` (from 50 ms before each USV onset, 100 ms wide) against quiet tiles
+of the same width, under an equal prior. Each class has a Poisson rate shrunk toward the pooled rate, the
+contrast between them is tuned on the training sessions (``vocal_decoding.vocal_occurrence``), and the
+statistic is the held-out, class-balanced gain in nats per window, whose ceiling is ``log 2``.
+
+Its null circularly shifts each session's spike train within ``null.shuffle_guard_seconds`` of either end,
+recounts both classes and refits everything, ``null.n_shuffles`` (1,000) times. The section stores the
+gain, the area under the ROC curve, the response sign (elevated or suppressed firing), the per-fold values
+and the null.
+
+Vocalization identity
+~~~~~~~~~~~~~~~~~~~~~
+Vocalization identity decodes which USV is coming from the same spike count, on both targets for every
+unit. For ``manifold`` a Poisson tuning surface over the QLVM torus (``vocal_decoding.tuning_surface``) is
+inverted into a posterior over the USV's position; for ``multinomial`` one Poisson rate per category
+(``vocal_decoding.category_surface``) gives a posterior over its category. The statistic is the held-out
+gain of that posterior over the training occupancy prior, in nats per USV.
+
+Its null permutes the spike counts against the USVs within each session, which breaks only the pairing
+under test; it is exact, and runs ``discrimination_null.n_permutations`` (1,000) draws on the torus and
+``n_permutations_category_grain`` (5,000) on categories. ``vocalization_settings.vocal_target`` names the
+target whose identity p-value decides whether vocal gating runs and which the consolidation corrects; the
+other target is kept as an uncorrected descriptor, so switching needs only the consolidation re-run.
+
+Nested vocal decoding
+~~~~~~~~~~~~~~~~~~~~~
+The nested decoding asks whether the neuron adds to what behaviour already predicts about the USV. The
+day-held-out behaviour control sets the prior: on the torus its predicted position, on categories its
+base-rate-free category probabilities raised to a concentration tuned per fold
+(``behaviour_prior.kappa_grid``). The identity decoder is then run under that prior, and the statistic,
+``added``, is the log posterior given the neuron and behaviour minus the log prior given behaviour, in
+nats per USV.
+
+Its null permutes counts against USVs within each session, the behaviour prior travelling with its USV,
+``nested_vocal_decoding.discrimination_null.n_permutations`` (1,000) times. The section also stores what
+behaviour alone buys (``behaviour_over_no_behaviour``), which the consolidation carries as a modifier,
+and on the torus a regression-based descriptor of the same comparison (``point_regression``).
+
+Vocal gating
+~~~~~~~~~~~~
+Vocal gating runs only on a unit whose occurrence or identity p-value reaches
+``vocal_gating.vocal_tuning_alpha``; the section says why when it does not. For each behavioural feature
+it fits a contemporaneous spike model with a vocalization term, the feature and their interaction, on
+frames inside the male's USVs and on quiet frames (frames near a USV but in neither set are left out), and
+measures each term's held-out added deviance.
+
+The interaction is the gate. Each feature is tested against ``gating_screen_n_shuffles`` (2,000) circular
+shifts, and its p-value requires both that the interaction beats the null and that it exceeds the
+vocalization term (``require_interaction_gt_vocal``). The unit's p-value is the Bonferroni adjustment of
+its best feature over the features tested. The section stores every feature's terms, nulls and p-values,
+but no labels: whether a unit counts as gated is decided at the cohort step.
+
+Running the cohort on the cluster
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``main_neural_cohort_dispatcher`` runs the whole cohort as one SLURM array, one unit per task. ``plan``
+builds the cohort, checks that the unit catalog, the data root and both targets' behaviour-control and
+selection files exist, and writes ``cohort_manifest.json`` (the settings hash and one record per unit),
+printing the array range:
+
+.. code-block:: bash
+
+    python -m usv_playpen.neural_modeling.main_neural_cohort_dispatcher plan \
+        --output-directory /mnt/falkner/Bartul/neural_modeling/cohort_<date>
+
+Each task then runs ``run`` on the manifest index ``SLURM_ARRAY_TASK_ID`` (plus ``--index-offset`` for an
+array submitted in chunks): the unit's encoding folds as separate processes, ``--parallel-folds`` at a
+time, their combination, then occurrence, identity and the nested decoding on both targets, then gating,
+with ``--n-workers`` processes for the nulls. The cluster script
+``/mnt/falkner/Bartul/neural_modeling/cluster/neural_modeling_cohort.sh`` wraps it (8 CPUs, 24 h):
+
+.. code-block:: bash
+
+    sbatch --array=0-2648%50 neural_modeling_cohort.sh /mnt/falkner/Bartul/neural_modeling/cohort_<date>
+
+A run resumes: a fold file or a result-file section already written under the same settings hash is kept,
+so a task that timed out is simply resubmitted, and once a vocal step is recomputed every later step is
+too. A manifest planned under other settings, or a unit whose session sets changed after planning, is
+refused rather than run.
+
+Each task's log is a timestamped timeline: a header (unit, area, sessions, settings hash, commit, host,
+job), each fold's start and end with a heartbeat every 10 minutes naming the step each running fold is on,
+a failed fold's last 30 log lines, one line per vocal step with its duration and result, and a closing
+summary with the peak memory. Fold logs go to ``<output>/logs``, and each unit's stages are mirrored into
+``<output>/status/<unit_uid>.json``.
+
+``status`` reads those files and counts the units done, running, failed and not started, names the stage
+each failure stopped at, and reports each stage's median duration, so a run of thousands of tasks can be
+followed without opening their logs:
+
+.. code-block:: bash
+
+    python -m usv_playpen.neural_modeling.main_neural_cohort_dispatcher status \
+        --manifest /mnt/falkner/Bartul/neural_modeling/cohort_<date>/cohort_manifest.json \
+        --output-directory /mnt/falkner/Bartul/neural_modeling/cohort_<date>
+
+The result file
+~~~~~~~~~~~~~~~
+Each unit has one merged file, ``<unit_uid>.pkl``, to which every analysis adds its section. While its
+encoding folds run, each writes ``<unit_uid>_fold<i>.npz`` (named by ``unit_uid``, since the probe,
+cluster and channel name recurs across recording days); the combination then moves them into the
+result file's ``kinematic_encoding_folds`` section and deletes the ``.npz`` files, so a finished unit is
+one file. Every section records the settings hash, commit and package version it was written under,
+which is what a resumed run and the consolidation check:
+
+.. code-block:: text
+
+    {
+        "identity": {"unit_uid": "...", "brain_area": "PAG", "courtship_sessions": ["..."],
+                     "vocal_sessions": ["..."], "block_split": None, "...": "..."},
+        "kinematic_encoding": {"quiet_p": "...", "transfer_p": "...", "transfer_slope": "...", "...": "..."},
+        "vocal_occurrence": {"gain": "...", "p": "...", "null": "<array>", "...": "..."},
+        "vocalization_identity_manifold": {"gain": "...", "p": "...", "per_fold": ["..."], "...": "..."},
+        "vocalization_identity_multinomial": {"...": "..."},
+        "nested_vocal_decoding_manifold": {"added": "...", "p": "...", "...": "..."},
+        "nested_vocal_decoding_multinomial": {"...": "..."},
+        "vocal_gating": {"p_unit": "...", "per_feature": {"...": "..."}},
+        "kinematic_encoding_folds": {"folds": [{"test_id": "...", "selected": "...", "...": "..."}]},
+        "provenance": {"settings_sha256": "...", "git_commit": "...", "...": "..."},
+        "section_provenance": {"<section>": {"settings_sha256": "...", "...": "..."}}
+    }
+
+A section that did not run is written as ``{"ran": False, "reason": ...}`` (for example
+``not_vocal_testable``), so an absent result is never ambiguous. Payloads are refused if they carry a
+decision-shaped key (``verdict``, ``passed``, ``significant`` and the like): a verdict stored per unit
+would be uncorrected by construction.
+
+Cohort consolidation
+~~~~~~~~~~~~~~~~~~~~
+Once the units have run, ``consolidate_neural_modeling_results`` reads every result file, corrects each
+test across units with ``significance.fdr_method`` at ``significance.fdr_q`` (within each brain area
+unless ``data.pool_areas``), and assigns each unit one of six categories:
+``Transformation``, ``Relay``, ``Regime-switching``, ``Vocal``, ``Kinematic`` or ``None``:
+
+.. code-block:: bash
+
+    python -m usv_playpen.neural_modeling.consolidate_neural_modeling_results \
+        --results-directory /mnt/falkner/Bartul/neural_modeling/cohort_<date> \
+        --output-directory /mnt/falkner/Bartul/neural_modeling/cohort_<date>/consolidated
+
+A Transformation unit passes the conjunction test (the largest of its quiet, transfer, identity and
+nested p-values, corrected like the others) with a positive transfer slope. The step writes
+``neural_cohort_table.csv`` (one row per unit: every p-value, effect, pass and reason) and
+``neural_cohort_report.pkl`` (per group: units tested and excluded, floor requirements, category counts,
+the correlation of the tests' z-scores, and the settings hashes found among the unit files).
+
+Figures
+~~~~~~~
+``neural-modeling-figures`` draws one page per unit from its result file
+(``visualizations.neural_modeling_plots``), plus per-session trace pages for a unit whose kinematic
+encoding holds on held-out data. Arrays the result file leaves out are rebuilt from the session data,
+checked against the stored values and cached under the output directory, keyed by the settings hash; a
+result file written under other settings is skipped:
+
+.. code-block:: bash
+
+    neural-modeling-figures \
+        --results-directory /mnt/falkner/Bartul/neural_modeling/cohort_<date> \
+        --output-directory /mnt/falkner/Bartul/neural_modeling/cohort_<date>/figures \
+        --data-root /mnt/falkner/Bartul/Data \
+        --unit-uid 181316_0_20250919_imec1_cl0401_ch220_good
+
 .. _modeling-neural-settings:
 
 Neural modeling settings
@@ -4034,27 +4318,7 @@ code implements and raise on any other, so a declared alternative can never run 
 the default in disguise. All durations are in seconds, all frame counts in
 tracking frames (150 fps), and all torus coordinates in units of the period.
 
-**Running the cohort.** ``python -m usv_playpen.neural_modeling.main_neural_cohort_dispatcher plan
---output-directory <dir>`` builds the cohort from these settings, checks that the unit catalog, the data
-root and both targets' behaviour-control and selection files exist, and writes
-``<dir>/cohort_manifest.json`` (the settings hash and one record per unit), printing the ``sbatch
---array`` range. Each array task then runs ``... run --manifest <dir>/cohort_manifest.json
---output-directory <dir> --data-root <Data> --n-workers <cpus> [--parallel-folds <k>]`` on the manifest
-index ``SLURM_ARRAY_TASK_ID`` (plus ``--index-offset`` for arrays submitted in chunks): the unit's
-kinematic-encoding folds as separate processes, their combination, then the vocal steps (occurrence,
-identity and the nested decoding on both targets, gating), all into ``<dir>/<unit_uid>.pkl`` and
-``<dir>/<unit_uid>_fold<i>.npz``. A run resumes: a fold file or result-file section already written under
-the same settings hash is kept (each section records its own provenance under ``section_provenance``),
-and once a vocal step is recomputed every later one is too. A manifest planned under other settings, or a
-unit whose session sets changed since planning, is refused. Each task's log is a timestamped timeline: a
-header (unit, area, sessions, settings hash, commit, host, job), each fold's start and end with a
-heartbeat every 10 minutes naming the step each running fold is on (a failed fold's last 30 log lines are
-copied in), one line per vocal step with its duration and result, and a closing per-stage summary with the
-peak memory; fold logs go to ``<dir>/logs``. The same stages are written to
-``<dir>/status/<unit_uid>.json``, and ``... status --manifest <dir>/cohort_manifest.json
---output-directory <dir>`` counts units done, running, failed and not started, names the failed stages,
-and reports each stage's median duration. ``consolidate_neural_modeling_results`` corrects across the
-cohort afterwards, and ``neural-modeling-figures`` draws the per-unit pages.
+How the dispatchers run a unit and the cohort is described under :ref:`modeling-neural`.
 
 **data** — which sessions and units the run draws on.
 
@@ -5421,7 +5685,7 @@ cohort afterwards, and ``neural-modeling-figures`` draws the per-unit pages.
       * **Definition** — the index is the mean Pearson dispersion ``(count − expected)² / expected`` of the held-out events, where an event's expected count is the calibrated surface rate the decoder scored it with (the centred surface shape times the tuned amplitude, at the held-out session's mean-count level) read at the event's own grid cell, so an untuned Poisson unit gives about ``1``.
       * **Also stored** — the decoding also stores ``nats_per_spike`` (the summed finite per-event gain divided by the spikes of those same events) and ``min_leave_one_fold_out`` (the smallest pooled gain with one fold left out, over the folds whose left-out gain is finite).
 
-**nested_vocal_decoding** — does the neuron add information about a USV's identity beyond the cohort behaviour control? Run on both targets for every unit, each against its own control (the kinematics are assembled once and each target's design is built on its own control's features). For the torus position, a REDUCED model (behaviour alone) and a FULL model (behaviour plus the neuron's count) are fitted by the same torus regressor and compared on the held-out macro von Mises log-score. For the category, the categorical control's probabilities tilt the category prior (``category_control`` below) and the statistic is the categorical identity decoder's gain under that prior.
+**nested_vocal_decoding** — does the neuron add information about a USV's identity beyond the cohort behaviour control? Run on both targets for every unit, each against its own control (the kinematics are assembled once and each target's design is built on its own control's features). The behaviour control sets the decoder's prior (on the torus its predicted position, on categories its probabilities, tilted by a tuned concentration; ``category_control`` below), and the statistic is what the neuron adds under that prior, in nats per USV; on the torus, a REDUCED and a FULL torus regression (behaviour alone, behaviour plus the neuron's count) compared on the held-out macro von Mises log-score are kept as a descriptor (``point_regression``).
 
 .. code-block:: json
 
