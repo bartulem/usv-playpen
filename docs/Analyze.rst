@@ -38,12 +38,6 @@ Shared settings
 ---------------
 Besides the per-analysis blocks documented under each function below, *analyses_settings.json* carries the blocks the Analyze window and every analysis share. The GUI writes the first four from its fields; the ``data_roots`` block is edited in the file only. Every path in the file is stored with the shipped experimenter folder (``Bartul``) and is re-keyed to the experimenter selected on the GUI main display (or, for the CLI, to the ``experimenter`` of *behavioral_experiments_settings.toml* / the ``EXPERIMENTER_ID`` environment variable) and to the host OS mount before it is used:
 
-* **analyses_booleans** : one toggle per analysis, set by the orange fields of the window — ``compute_behavioral_features_bool``, ``compute_neuronal_tuning_bool``, ``frequency_shift_audio_segment_bool``, ``create_usv_playback_wav_bool`` and ``create_naturalistic_usv_playback_wav_bool``. The sixth and seventh have no GUI field and run in a GUI session only when set to ``true`` in the file by hand: ``compute_inter_usv_interval_distributions_bool`` (the inter-USV interval analysis, which otherwise runs from the command line, ``generate-usv-interval-distributions``, see :doc:`CLI`, or from its notebook, see :doc:`Notebooks`) and ``decode_usv_bout_occupancy_bool`` (the per-session vocal-bout occupancy decoder, see *Decode vocal-bout occupancy* below)
-* **analyze_data.root_directories** : the *Root directories* field above (one session root per row)
-* **credentials_directory** : the *Credentials directory* field — the directory holding *email_config.ini*, read to send the PC-usage e-mails
-* **send_email** : ``analyses_pc_list`` (the PC names offered in the *Analyses PC of choice* dropdown), ``analyses_pc_choice`` (the selected one, named in the e-mail subject), ``experimenter`` (the selected experimenter, named in the e-mail body) and ``send_message.receivers`` (the *Notify e-mail(s) of PC usage* field)
-* **data_roots** : the canonical data locations every analysis, figure and notebook resolves through ``os_utils.resolve_data_root`` instead of hard-coding them — ``data_root`` (the ``Data`` tree of session roots) and ``ephys_root`` (its sibling ``EPHYS`` tree of spike-sorted recordings), ``catalog_path`` (the unit catalog CSV) and ``aggregator_out_dir`` (where the :ref:`unit-triage aggregator <unit-triage-aggregator>` writes), ``histology_root``, ``allen_meshes_dir`` and ``converter_path`` (the histology stacks, the Allen atlas meshes and the sites-to-anatomy converter JSON of the :doc:`Neuropixels` tools and the anatomy figures), and ``naturalistic_usv_repository_dir`` / ``naturalistic_usv_playback_dir`` (the naturalistic playback repository root and the playback output directory, see *Build the naturalistic USV repository* and *Create naturalistic playback .WAV* below)
-
 .. code-block:: json
 
     "analyses_booleans": {
@@ -78,6 +72,291 @@ Besides the per-analysis blocks documented under each function below, *analyses_
             "receivers": []
         }
     }
+
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`analyses_booleans.compute_behavioral_features_bool <ana-analyses-booleans-compute-behavioral-features-bool>`
+     - ``false``
+     - ``true``, ``false``
+   * - :ref:`analyses_booleans.compute_neuronal_tuning_bool <ana-analyses-booleans-compute-neuronal-tuning-bool>`
+     - ``false``
+     - ``true``, ``false``
+   * - :ref:`analyses_booleans.compute_inter_usv_interval_distributions_bool <ana-analyses-booleans-compute-inter-usv-interval-distributions-bool>`
+     - ``false``
+     - ``true``, ``false`` (file only)
+   * - :ref:`analyses_booleans.create_usv_playback_wav_bool <ana-analyses-booleans-create-usv-playback-wav-bool>`
+     - ``false``
+     - ``true``, ``false``
+   * - :ref:`analyses_booleans.create_naturalistic_usv_playback_wav_bool <ana-analyses-booleans-create-naturalistic-usv-playback-wav-bool>`
+     - ``false``
+     - ``true``, ``false``
+   * - :ref:`analyses_booleans.frequency_shift_audio_segment_bool <ana-analyses-booleans-frequency-shift-audio-segment-bool>`
+     - ``false``
+     - ``true``, ``false``
+   * - :ref:`analyses_booleans.decode_usv_bout_occupancy_bool <ana-analyses-booleans-decode-usv-bout-occupancy-bool>`
+     - ``false``
+     - ``true``, ``false`` (file only)
+   * - :ref:`analyze_data.root_directories <ana-analyze-data-root-directories>`
+     - ``[]``
+     - list of session-root paths
+   * - :ref:`credentials_directory <ana-credentials-directory>`
+     - ``""``
+     - path to a directory
+   * - :ref:`data_roots.ephys_root <ana-data-roots-ephys-root>`
+     - path
+     - path to a directory
+   * - :ref:`data_roots.histology_root <ana-data-roots-histology-root>`
+     - path
+     - path to a directory
+   * - :ref:`data_roots.data_root <ana-data-roots-data-root>`
+     - path
+     - path to a directory
+   * - :ref:`data_roots.catalog_path <ana-data-roots-catalog-path>`
+     - path
+     - path to a CSV file
+   * - :ref:`data_roots.aggregator_out_dir <ana-data-roots-aggregator-out-dir>`
+     - path
+     - path to a directory
+   * - :ref:`data_roots.allen_meshes_dir <ana-data-roots-allen-meshes-dir>`
+     - path
+     - path to a directory
+   * - :ref:`data_roots.converter_path <ana-data-roots-converter-path>`
+     - path
+     - path to a JSON file
+   * - :ref:`data_roots.naturalistic_usv_repository_dir <ana-data-roots-naturalistic-usv-repository-dir>`
+     - path
+     - path to a directory
+   * - :ref:`data_roots.naturalistic_usv_playback_dir <ana-data-roots-naturalistic-usv-playback-dir>`
+     - path
+     - path to a directory
+   * - :ref:`send_email.analyses_pc_list <ana-send-email-analyses-pc-list>`
+     - see JSON above
+     - list of PC names
+   * - :ref:`send_email.analyses_pc_choice <ana-send-email-analyses-pc-choice>`
+     - ``"A84I Linux"``
+     - one entry of ``analyses_pc_list``
+   * - :ref:`send_email.experimenter <ana-send-email-experimenter>`
+     - ``"Bartul"``
+     - an experimenter name
+   * - :ref:`send_email.send_message.receivers <ana-send-email-send-message-receivers>`
+     - ``[]``
+     - list of e-mail addresses
+
+.. _ana-analyses-booleans-compute-behavioral-features-bool:
+
+``analyses_booleans.compute_behavioral_features_bool``
+   ``compute_behavioral_features_bool`` in ``analyses_booleans`` — the toggle of the *Compute 3D behavioral features* analysis (one toggle per analysis in ``analyses_booleans``).
+
+   :Options:
+      * ``true`` — run the analysis
+      * ``false`` — skip it
+   :Default: ``false``
+   :Notes: set by the orange *Compute 3D behavioral features* field of the window.
+
+.. _ana-analyses-booleans-compute-neuronal-tuning-bool:
+
+``analyses_booleans.compute_neuronal_tuning_bool``
+   ``compute_neuronal_tuning_bool`` in ``analyses_booleans`` — the toggle of the *Compute neuronal tuning curves* analysis.
+
+   :Options:
+      * ``true`` — run the analysis
+      * ``false`` — skip it
+   :Default: ``false``
+   :Notes: set by the orange *Compute neuronal tuning curves* field of the window.
+
+.. _ana-analyses-booleans-compute-inter-usv-interval-distributions-bool:
+
+``analyses_booleans.compute_inter_usv_interval_distributions_bool``
+   ``compute_inter_usv_interval_distributions_bool`` in ``analyses_booleans`` — the toggle of the inter-USV interval analysis.
+
+   :Options:
+      * ``true`` — run the analysis in a GUI session
+      * ``false`` — skip it
+   :Default: ``false``
+   :Notes: has no GUI field and runs in a GUI session only when set to ``true`` in the file by hand; otherwise the analysis runs from the command line (``generate-usv-interval-distributions``, see :doc:`CLI`) or from its notebook (see :doc:`Notebooks`).
+
+.. _ana-analyses-booleans-create-usv-playback-wav-bool:
+
+``analyses_booleans.create_usv_playback_wav_bool``
+   ``create_usv_playback_wav_bool`` in ``analyses_booleans`` — the toggle of the *Create artificial playback .WAV* analysis.
+
+   :Options:
+      * ``true`` — run the analysis
+      * ``false`` — skip it
+   :Default: ``false``
+   :Notes: set by the orange *Create artificial playback .WAV* field of the window.
+
+.. _ana-analyses-booleans-create-naturalistic-usv-playback-wav-bool:
+
+``analyses_booleans.create_naturalistic_usv_playback_wav_bool``
+   ``create_naturalistic_usv_playback_wav_bool`` in ``analyses_booleans`` — the toggle of the *Create naturalistic playback .WAV* analysis.
+
+   :Options:
+      * ``true`` — run the analysis
+      * ``false`` — skip it
+   :Default: ``false``
+   :Notes: set by the orange *Create naturalistic playback .WAV* field of the window.
+
+.. _ana-analyses-booleans-frequency-shift-audio-segment-bool:
+
+``analyses_booleans.frequency_shift_audio_segment_bool``
+   ``frequency_shift_audio_segment_bool`` in ``analyses_booleans`` — the toggle of the *Frequency shift audio segment* analysis.
+
+   :Options:
+      * ``true`` — run the analysis
+      * ``false`` — skip it
+   :Default: ``false``
+   :Notes: set by the orange *Frequency shift audio segment* field of the window.
+
+.. _ana-analyses-booleans-decode-usv-bout-occupancy-bool:
+
+``analyses_booleans.decode_usv_bout_occupancy_bool``
+   ``decode_usv_bout_occupancy_bool`` in ``analyses_booleans`` — the toggle of the per-session vocal-bout occupancy decoder (see *Decode vocal-bout occupancy* below).
+
+   :Options:
+      * ``true`` — run the decoder in a GUI session
+      * ``false`` — skip it
+   :Default: ``false``
+   :Notes: has no GUI field and runs in a GUI session only when set to ``true`` in the file by hand.
+
+.. _ana-analyze-data-root-directories:
+
+``analyze_data.root_directories``
+   ``root_directories`` in ``analyze_data`` — the *Root directories* field above (one session root per row).
+
+   :Options: a list of session-root directory paths
+   :Default: ``[]``
+   :Notes: written by the GUI from its *Root directories* field.
+
+.. _ana-credentials-directory:
+
+``credentials_directory``
+   The *Credentials directory* field — the directory holding *email_config.ini*, read to send the PC-usage e-mails.
+
+   :Options: path to a directory holding *email_config.ini*
+   :Default: ``""``
+   :Notes: written by the GUI from its *Credentials directory* field.
+
+.. _ana-data-roots-ephys-root:
+
+``data_roots.ephys_root``
+   ``ephys_root`` in ``data_roots`` — the ``EPHYS`` tree of spike-sorted recordings, sibling of the ``Data`` tree (``data_root``).
+
+   :Options: path to a directory
+   :Default: ``/mnt/falkner/Bartul/EPHYS``
+   :Notes: like every ``data_roots`` entry, a canonical data location that every analysis, figure and notebook resolves through ``os_utils.resolve_data_root`` instead of hard-coding it; edited in the file only.
+
+.. _ana-data-roots-histology-root:
+
+``data_roots.histology_root``
+   ``histology_root`` in ``data_roots`` — the histology stacks of the :doc:`Neuropixels` tools and the anatomy figures.
+
+   :Options: path to a directory
+   :Default: ``/mnt/falkner/Bartul/histology``
+   :Notes: like every ``data_roots`` entry, resolved through ``os_utils.resolve_data_root`` instead of hard-coded; edited in the file only.
+
+.. _ana-data-roots-data-root:
+
+``data_roots.data_root``
+   ``data_root`` in ``data_roots`` — the ``Data`` tree of session roots.
+
+   :Options: path to a directory
+   :Default: ``/mnt/falkner/Bartul/Data``
+   :Notes: like every ``data_roots`` entry, resolved through ``os_utils.resolve_data_root`` instead of hard-coded; edited in the file only.
+
+.. _ana-data-roots-catalog-path:
+
+``data_roots.catalog_path``
+   ``catalog_path`` in ``data_roots`` — the unit catalog CSV.
+
+   :Options: path to a CSV file
+   :Default: ``/mnt/falkner/Bartul/EPHYS/unit_catalog.csv``
+   :Notes: like every ``data_roots`` entry, resolved through ``os_utils.resolve_data_root`` instead of hard-coded; edited in the file only.
+
+.. _ana-data-roots-aggregator-out-dir:
+
+``data_roots.aggregator_out_dir``
+   ``aggregator_out_dir`` in ``data_roots`` — where the :ref:`unit-triage aggregator <unit-triage-aggregator>` writes.
+
+   :Options: path to a directory
+   :Default: ``/mnt/falkner/Bartul/neuronal_tuning``
+   :Notes: like every ``data_roots`` entry, resolved through ``os_utils.resolve_data_root`` instead of hard-coded; edited in the file only.
+
+.. _ana-data-roots-allen-meshes-dir:
+
+``data_roots.allen_meshes_dir``
+   ``allen_meshes_dir`` in ``data_roots`` — the Allen atlas meshes of the :doc:`Neuropixels` tools and the anatomy figures.
+
+   :Options: path to a directory
+   :Default: ``/mnt/falkner/Bartul/EPHYS/allen_meshes``
+   :Notes: like every ``data_roots`` entry, resolved through ``os_utils.resolve_data_root`` instead of hard-coded; edited in the file only.
+
+.. _ana-data-roots-converter-path:
+
+``data_roots.converter_path``
+   ``converter_path`` in ``data_roots`` — the sites-to-anatomy converter JSON of the :doc:`Neuropixels` tools and the anatomy figures.
+
+   :Options: path to a JSON file
+   :Default: ``/mnt/falkner/Bartul/EPHYS/neuropixels_sites_to_anatomy_converter.json``
+   :Notes: like every ``data_roots`` entry, resolved through ``os_utils.resolve_data_root`` instead of hard-coded; edited in the file only.
+
+.. _ana-data-roots-naturalistic-usv-repository-dir:
+
+``data_roots.naturalistic_usv_repository_dir``
+   ``naturalistic_usv_repository_dir`` in ``data_roots`` — the naturalistic playback repository root: the root directory holding the ``male`` / ``female`` / ``mixed`` subdirectories that the builds are written into and the playback step reads from (see *Build the naturalistic USV repository* and *Create naturalistic playback .WAV* below).
+
+   :Options: path to a directory
+   :Default: ``/mnt/falkner/Bartul/usv_playback_experiments/usv_naturalistic_playback_repositories``
+   :Notes: like every ``data_roots`` entry, resolved through ``os_utils.resolve_data_root`` instead of hard-coded; edited in the file only.
+
+.. _ana-data-roots-naturalistic-usv-playback-dir:
+
+``data_roots.naturalistic_usv_playback_dir``
+   ``naturalistic_usv_playback_dir`` in ``data_roots`` — the playback output directory of *Create naturalistic playback .WAV* (see below).
+
+   :Options: path to a directory
+   :Default: ``/mnt/falkner/Bartul/usv_playback_experiments/usv_naturalistic_playback_files``
+   :Notes: like every ``data_roots`` entry, resolved through ``os_utils.resolve_data_root`` instead of hard-coded; edited in the file only.
+
+.. _ana-send-email-analyses-pc-list:
+
+``send_email.analyses_pc_list``
+   ``analyses_pc_list`` in ``send_email`` — the PC names offered in the *Analyses PC of choice* dropdown.
+
+   :Options: a list of PC-name strings
+   :Default: ``["A84E Windows", "A84I Linux", "A84I Windows", "165B Audio", "165B Neural"]``
+
+.. _ana-send-email-analyses-pc-choice:
+
+``send_email.analyses_pc_choice``
+   ``analyses_pc_choice`` in ``send_email`` — the selected PC, named in the e-mail subject.
+
+   :Options: one of the names in ``analyses_pc_list``
+   :Default: ``"A84I Linux"``
+   :Notes: written by the GUI from the *Analyses PC of choice* dropdown.
+
+.. _ana-send-email-experimenter:
+
+``send_email.experimenter``
+   ``experimenter`` in ``send_email`` — the selected experimenter, named in the e-mail body.
+
+   :Options: an experimenter name
+   :Default: ``"Bartul"``
+   :Notes: written by the GUI from the experimenter selected on the GUI main display.
+
+.. _ana-send-email-send-message-receivers:
+
+``send_email.send_message.receivers``
+   ``send_message.receivers`` in ``send_email`` — the *Notify e-mail(s) of PC usage* field.
+
+   :Options: a list of e-mail addresses
+   :Default: ``[]``
 
 The remaining blocks of the file belong to analyses that have no window in the GUI and are documented with them: ``compute_inter_usv_interval_distributions`` (:doc:`CLI`, ``generate-usv-interval-distributions``, and :doc:`Notebooks`), ``detect_interesting_tuning_neurons`` and ``neuronal_coactivity`` (:doc:`Notebooks`), and the ``npx_*`` blocks (:doc:`Neuropixels`).
 
@@ -137,18 +416,6 @@ The *behavioral_features.csv* file should look similar to an example table below
 
 The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a section not modifiable in the GUI itself, but it can be modified manually:
 
-* **head_points** : head skeleton node names (order matters!)
-* **tail_points** : tail skeleton node names (order matters!)
-* **back_root_points** : back skeleton node names (order matters!)
-* **derivative_bins** : number of bins to compute derivatives over
-* **speed_smoothing_time_window** : Gaussian speed-smoothing window (in seconds); its stddev is ``floor(window * capture_framerate)`` frames
-* **feature_hist_num_bins** : number of bins for the 1-D feature-distribution histograms
-* **spatial_hist_min_val** : lower edge (cm) of the 2-D spatial-occupancy histogram
-* **spatial_hist_max_val** : upper edge (cm) of the 2-D spatial-occupancy histogram
-* **spatial_hist_num_bins** : number of bins per axis for the 2-D spatial-occupancy histogram
-* **back_angles_optimizer_seed** : seed of the random generator that draws the Nelder-Mead starting point (two angles uniform in (-π/4, π/4)) used to find the canonical back frame for back pitch / yaw; fixed (``0``) so the back angles are bit-exactly reproducible across runs
-* **sei_speed_percentile** : percentile (0-100) of each observer's speed trace used as the speed normaliser ``v_max`` of the Social Engagement Index (SEI); ``99`` so a handful of extreme-speed frames cannot compress every other frame's speed term
-
 .. code-block:: json
 
     "compute_behavioral_features": {
@@ -180,6 +447,139 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "sei_speed_percentile": 99
   }
 
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`head_points <ana-compute-behavioral-features-head-points>`
+     - see JSON above
+     - ordered list of skeleton node names
+   * - :ref:`tail_points <ana-compute-behavioral-features-tail-points>`
+     - see JSON above
+     - ordered list of skeleton node names
+   * - :ref:`back_root_points <ana-compute-behavioral-features-back-root-points>`
+     - see JSON above
+     - ordered list of skeleton node names
+   * - :ref:`derivative_bins <ana-compute-behavioral-features-derivative-bins>`
+     - ``10``
+     - integer > 0
+   * - :ref:`speed_smoothing_time_window <ana-compute-behavioral-features-speed-smoothing-time-window>`
+     - ``0.015``
+     - seconds > 0
+   * - :ref:`feature_hist_num_bins <ana-compute-behavioral-features-feature-hist-num-bins>`
+     - ``36``
+     - integer > 0
+   * - :ref:`spatial_hist_min_val <ana-compute-behavioral-features-spatial-hist-min-val>`
+     - ``-32``
+     - cm
+   * - :ref:`spatial_hist_max_val <ana-compute-behavioral-features-spatial-hist-max-val>`
+     - ``32``
+     - cm
+   * - :ref:`spatial_hist_num_bins <ana-compute-behavioral-features-spatial-hist-num-bins>`
+     - ``196``
+     - integer > 0
+   * - :ref:`back_angles_optimizer_seed <ana-compute-behavioral-features-back-angles-optimizer-seed>`
+     - ``0``
+     - integer seed
+   * - :ref:`sei_speed_percentile <ana-compute-behavioral-features-sei-speed-percentile>`
+     - ``99``
+     - percentile in 0-100
+
+.. _ana-compute-behavioral-features-head-points:
+
+``head_points``
+   Head skeleton node names (order matters!).
+
+   :Options: an ordered list of skeleton node names
+   :Default: ``["Head", "Ear_R", "Ear_L", "Nose"]``
+
+.. _ana-compute-behavioral-features-tail-points:
+
+``tail_points``
+   Tail skeleton node names (order matters!).
+
+   :Options: an ordered list of skeleton node names
+   :Default: ``["TTI", "Tail_0", "Tail_1", "Tail_2", "TailTip"]``
+
+.. _ana-compute-behavioral-features-back-root-points:
+
+``back_root_points``
+   Back skeleton node names (order matters!).
+
+   :Options: an ordered list of skeleton node names
+   :Default: ``["Neck", "Trunk", "TTI"]``
+
+.. _ana-compute-behavioral-features-derivative-bins:
+
+``derivative_bins``
+   Number of bins to compute derivatives over.
+
+   :Options: a positive integer number of bins
+   :Default: ``10``
+
+.. _ana-compute-behavioral-features-speed-smoothing-time-window:
+
+``speed_smoothing_time_window``
+   Gaussian speed-smoothing window (in seconds).
+
+   :Options: a positive number of seconds
+   :Default: ``0.015``
+   :Notes: the Gaussian's stddev is ``floor(window * capture_framerate)`` frames.
+
+.. _ana-compute-behavioral-features-feature-hist-num-bins:
+
+``feature_hist_num_bins``
+   Number of bins for the 1-D feature-distribution histograms.
+
+   :Options: a positive integer number of bins
+   :Default: ``36``
+
+.. _ana-compute-behavioral-features-spatial-hist-min-val:
+
+``spatial_hist_min_val``
+   Lower edge (cm) of the 2-D spatial-occupancy histogram.
+
+   :Options: a number in cm
+   :Default: ``-32``
+
+.. _ana-compute-behavioral-features-spatial-hist-max-val:
+
+``spatial_hist_max_val``
+   Upper edge (cm) of the 2-D spatial-occupancy histogram.
+
+   :Options: a number in cm
+   :Default: ``32``
+
+.. _ana-compute-behavioral-features-spatial-hist-num-bins:
+
+``spatial_hist_num_bins``
+   Number of bins per axis for the 2-D spatial-occupancy histogram.
+
+   :Options: a positive integer number of bins per axis
+   :Default: ``196``
+
+.. _ana-compute-behavioral-features-back-angles-optimizer-seed:
+
+``back_angles_optimizer_seed``
+   Seed of the random generator that draws the Nelder-Mead starting point (two angles uniform in (-π/4, π/4)) used to find the canonical back frame for back pitch / yaw.
+
+   :Options: an integer seed
+   :Default: ``0``
+   :Notes: fixed (``0``) so the back angles are bit-exactly reproducible across runs.
+
+.. _ana-compute-behavioral-features-sei-speed-percentile:
+
+``sei_speed_percentile``
+   Percentile (0-100) of each observer's speed trace used as the speed normaliser ``v_max`` of the Social Engagement Index (SEI).
+
+   :Options: a percentile in 0-100
+   :Default: ``99``
+   :Notes: ``99`` so a handful of extreme-speed frames cannot compress every other frame's speed term.
+
 Compute neuronal tuning curves
 ------------------------------
 Having recorded unit activity, social behavior, and ultrasonic vocalizations (USVs), you might be interested whether individual units encode specific behavioral features and / or vocal properties. To get at this, you can compute session-averaged *tuning curves* capturing the relationship between the firing rate of each unit and (a) each 3D behavioral feature, and (b) USV-anchored quantities — a pooled peri-USV-onset PETH (peri-event time histogram; ``usv_peth``, by default from 2 s before to 0.5 s after each USV's onset), within-USV firing rate as a function of each continuous acoustic property (``usv_property_tuning`` over duration, mean / peak frequency, bandwidth, mean / max amplitude (relative to each USV's own peak), absolute loudness (``loudness_db``), spectral entropy, mask number), within-USV firing rate as a function of categorical USV labels (``usv_category_tuning`` over the QLVM (quasi-Monte Carlo latent variable model) category column of the summary, ``qlvm_category``: the content-ridge categories R-1 … R-k of the regular map; the conditional maps carry no category), and a per-category time-resolved peri-USV PETH (``usv_category_peth``; saved in the pickle, not plotted). Noise segments are always dropped. Squeaks are dropped from the self side's anchors by default (``exclude_squeaks_self``; ``exclude_squeaks_partner`` for the partner side, off by default) and never enter the QLVM category tuning — the QLVM maps were trained without squeaks, which get their own embedding. Behavioral features listed in ``excluded_behavioral_features`` (by default the nose-anchored dyadic features, whose head-anchored versions are tuned instead) are left out, derivatives included. Behavioral and vocal payloads are produced together and serialized into a single per-cluster pickle; a re-run replaces each part's keys whole, and a part that is skipped (missing inputs, no eligible emitter side) or fails for a cluster removes that part's previous results from the pickle rather than leaving them next to the new ones. A cluster whose vocal part fails is logged and the remaining clusters are still computed, but the session then ends with an error naming every failed cluster, so a partial run is never reported as finished. The computation lives in ``usv_playpen.analyses.compute_neuronal_tuning_curves``. To trigger this in the GUI, list the root directories of interest, select *Compute neuronal tuning curves*, click *Next* and then *Analyze* (a progress bar will appear in the terminal while the analysis is running):
@@ -209,42 +609,6 @@ The analysis results in the creation of a *tuning_curves* subdirectory containin
     │       ...
 
 The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a section only partially modifiable in the GUI, but it can be modified manually:
-
-* **temporal_offsets** : list of temporal offsets between spikes and behavior (in seconds, negative values: spikes follow behavior, i.e. behavior precedes spikes) for which the tuning curves will be calculated (adding values to the list increases the time needed for analysis drastically)
-* **n_shuffles** : number of spike train shuffles (increasing this number increases the time needed for analysis drastically)
-* **shuffle_seed** : base seed for the spike-train shuffle null distribution; fixing it makes the significance verdicts reproducible across runs
-* **total_bin_num** : total number of bins for a 1D behavioral / vocal-property feature
-* **n_spatial_bins** : number of spatial bins (2D behavioral feature)
-* **spatial_scale_cm** : maximum distance from center of arena to one edge (in cm)
-* **shuffle_seconds_range** : ``[min, max]`` of the uniform circular shift (in s) used to build the null distribution
-* **peth_window_seconds** : ``[start, stop]`` of the PETH window relative to each USV's onset (in s); default ``[-2, 0.5]``. Bins before onset honour the two cleanliness rules below; a bin after onset is kept only while it ends before the next USV's onset (any emitter, squeak and overlap segments included), so the post-onset PETH covers the USV itself and the silence after it, never a following USV
-* **peth_bin_seconds** : PETH bin width (in s)
-* **bout_quiet_seconds** : inter-bout silence required to define a new bout (in s)
-* **ramp_anchor_near_seconds** / **ramp_anchor_far_seconds** : the two PETH bins (in s, relative to USV onset) whose rates give ``triage_stats.usv_peth[emitter].ramp_index = (rate(near) - rate(far)) / (rate(near) + rate(far))``; default ``-0.1`` (just before onset) and ``-1.5`` (inside the default 2 s pre-onset window, well before it). The ramp index is NaN when ``peth_window_seconds`` does not span both anchors
-* **vmi_wilcoxon_exact_max_n** : largest number of valid per-bout ``(FR_baseline, FR_USV)`` pairs for which the VMI's Wilcoxon signed-rank p-value uses scipy's exact null distribution; above it the normal approximation is used (default ``25``)
-* **ibi_bout_onset** : per-unit statistics around the onset of IBI bouts, the respiratory-tempo grouping (not the ``bout_quiet_seconds`` one; each silence is measured from the latest stop of every earlier USV, so a USV nested inside a longer one does not split a bout, and a bout ends at the latest stop of its USVs), stored as ``usv_ibi_bout_onset`` in the pkl and in ``triage_stats``. Each statistic is referenced to the unit's own session rate, never to a pre-onset baseline (the window before an onset is occupied by the previous bout on roughly half of all bouts), and gets a circular-shift null and a two-sided empirical p:
-
-  * **ibi_z_score** / **ibi_component_index** : the inter-bout threshold, as the emitter sex's inter-syllable mixture component at this many standard deviations (the construction ``decode_usv_bout_occupancy`` and ``build-naturalistic-usv-repository`` use; 115.5 ms for the male at 2.58)
-  * **min_vocalizations** : fewest USVs a run needs to count as a bout
-  * **shuffle_guard_seconds** : the null's circular shifts are drawn from ``[guard, duration - guard]`` (in s)
-  * **trigger_window_seconds** / **trigger_bin_seconds** / **smoothing_bins** : the bout-triggered rate, its window around onset and bin width (in s), and its Gaussian smoothing (in bins)
-  * **gain_window_seconds** : window after onset whose mean rate over the session rate is ``onset_gain`` (in s)
-  * **pre_window_seconds** : window before onset whose mean rate over the session rate is ``pre_onset_gain`` (in s)
-  * **peak_search_seconds** : window in which the smoothed trace's maximum gives ``peak_latency`` (in s)
-  * **response_window_seconds** / **response_kernel_seconds** : each USV's response for ``first_over_later`` (the bout's first USV's response over the mean of its later USVs') and ``fraction_first_above`` (share of bouts whose first USV drew more): spikes in a window of this width after the USV onset, weighted through a Gaussian of this standard deviation rather than a hard edge, so the response is continuous rather than a small integer (in s)
-* **vocal_require_clean_post_anchor** : if ``true``, the time after the USV onset must be free of contaminating USVs to keep the anchor
-* **vocal_require_clean_prior_anchor** : if ``true``, the lookback window must also be free of contaminating USVs
-* **n_usv_min_self** : minimum self-side USV count for the self plots to be computed
-* **n_usv_min_partner** : minimum partner-side USV count for the partner plots to be computed
-* **n_usv_min_category** : minimum per-category USV count to retain that category in the categorical tuning layouts
-* **behavioral_min_occupancy_seconds** : minimum behavioral occupancy per bin (in s) to draw that bin in 1D feature plots; persisted into ``behavioral_metadata``
-* **usv_property_min_occupancy_seconds** : minimum vocal-property occupancy per bin (in s) to keep the rate estimate finite
-* **include_partner_vocalization_tuning_bool** : also compute partner-side vocal tuning when its threshold is met. The self side is the tracked animal with more pure USVs and the partner the other; each side's ``sex`` label comes from the session metadata's ``Subjects`` (matched to the track name), never from the track slot, so a female-female session has two female sides
-* **exclude_squeaks_self** : restrict the self side's anchors to pure USVs (``usv`` true and ``squeak`` false), leaving its pure squeaks and its overlap segments (a squeak and a USV in one segment, treated like squeaks) out (default ``true``). The self side is the emitter with more pure USVs. Squeak-bearing segments still count as other vocalizations in the overlap checks. Every anchor is the onset of its vocalization (``os_utils.vocal_event_times``): a pure squeak at its own ``squeak_start``, an overlap segment at the earlier of its segment's and its squeak's onset, a pure USV at its segment's ``start``. A summary without the ``usv`` / ``squeak`` or ``squeak_start`` / ``squeak_end`` columns raises
-* **exclude_squeaks_partner** : the same for the partner side (default ``false``, since the partner is usually the female, who emits the squeaks). Either way, only pure-USV anchors enter the QLVM category tuning (the QLVM label of a squeak or of an overlap segment is not a USV category)
-* **excluded_behavioral_features** : behavioral base features left out of the tuning, derivatives (``_1st_der`` / ``_2nd_der``) included (default ``nose-nose``, ``allo_yaw-nose``, ``nose-allo_yaw``, ``allo_pitch-nose``, ``nose-allo_pitch``: their head-anchored versions, ``head-head``, ``allo_yaw-head``, ``head-allo_yaw``, ``allo_pitch-head``, ``head-allo_pitch``, are tuned instead)
-* **smoothing_sd** : standard deviation of the Gaussian kernel (in bins) applied to ratemaps and shuffle distributions; ``0`` disables smoothing
-* **circular_features** : list of behavioral feature suffixes that are wrap-around in nature (e.g. ``allo_yaw``, ``body_dir``, binned over one full turn); their smoothed rate maps and shuffle bands wrap around the ends (the first and last bins are one direction), and the triage helpers detect divergence runs that span the bin-0 / bin-N boundary; their derivatives are linear
 
 .. code-block:: json
 
@@ -290,6 +654,439 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "smoothing_sd": 1.0,
         "circular_features": ["allo_yaw", "body_dir"]
     }
+
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`temporal_offsets <ana-calculate-neuronal-tuning-curves-temporal-offsets>`
+     - ``[0]``
+     - list of offsets in seconds
+   * - :ref:`n_shuffles <ana-calculate-neuronal-tuning-curves-n-shuffles>`
+     - ``1000``
+     - integer > 0
+   * - :ref:`shuffle_seed <ana-calculate-neuronal-tuning-curves-shuffle-seed>`
+     - ``0``
+     - integer seed
+   * - :ref:`total_bin_num <ana-calculate-neuronal-tuning-curves-total-bin-num>`
+     - ``36``
+     - integer > 0
+   * - :ref:`n_spatial_bins <ana-calculate-neuronal-tuning-curves-n-spatial-bins>`
+     - ``196``
+     - integer > 0
+   * - :ref:`spatial_scale_cm <ana-calculate-neuronal-tuning-curves-spatial-scale-cm>`
+     - ``32``
+     - cm > 0
+   * - :ref:`shuffle_seconds_range <ana-calculate-neuronal-tuning-curves-shuffle-seconds-range>`
+     - ``[20, 60]``
+     - ``[min, max]`` in seconds
+   * - :ref:`peth_window_seconds <ana-calculate-neuronal-tuning-curves-peth-window-seconds>`
+     - ``[-2, 0.5]``
+     - ``[start, stop]`` in seconds
+   * - :ref:`peth_bin_seconds <ana-calculate-neuronal-tuning-curves-peth-bin-seconds>`
+     - ``0.05``
+     - seconds > 0
+   * - :ref:`bout_quiet_seconds <ana-calculate-neuronal-tuning-curves-bout-quiet-seconds>`
+     - ``2.0``
+     - seconds > 0
+   * - :ref:`ramp_anchor_near_seconds <ana-calculate-neuronal-tuning-curves-ramp-anchor>`
+     - ``-0.1``
+     - seconds relative to USV onset
+   * - :ref:`ramp_anchor_far_seconds <ana-calculate-neuronal-tuning-curves-ramp-anchor>`
+     - ``-1.5``
+     - seconds relative to USV onset
+   * - :ref:`vmi_wilcoxon_exact_max_n <ana-calculate-neuronal-tuning-curves-vmi-wilcoxon-exact-max-n>`
+     - ``25``
+     - integer > 0
+   * - :ref:`ibi_bout_onset <ana-calculate-neuronal-tuning-curves-ibi-bout-onset>`
+     - see JSON above
+     - object of the sub-keys below
+   * - :ref:`ibi_bout_onset.ibi_z_score <ana-calculate-neuronal-tuning-curves-ibi-bout-onset-threshold>`
+     - ``2.58``
+     - standard deviations > 0
+   * - :ref:`ibi_bout_onset.ibi_component_index <ana-calculate-neuronal-tuning-curves-ibi-bout-onset-threshold>`
+     - ``0``
+     - mixture component index
+   * - :ref:`ibi_bout_onset.min_vocalizations <ana-calculate-neuronal-tuning-curves-ibi-bout-onset-min-vocalizations>`
+     - ``3``
+     - integer >= 1
+   * - :ref:`ibi_bout_onset.shuffle_guard_seconds <ana-calculate-neuronal-tuning-curves-ibi-bout-onset-shuffle-guard-seconds>`
+     - ``20.0``
+     - seconds >= 0
+   * - :ref:`ibi_bout_onset.trigger_window_seconds <ana-calculate-neuronal-tuning-curves-ibi-bout-onset-trigger>`
+     - ``[-1.0, 2.0]``
+     - ``[start, stop]`` in seconds
+   * - :ref:`ibi_bout_onset.trigger_bin_seconds <ana-calculate-neuronal-tuning-curves-ibi-bout-onset-trigger>`
+     - ``0.02``
+     - seconds > 0
+   * - :ref:`ibi_bout_onset.smoothing_bins <ana-calculate-neuronal-tuning-curves-ibi-bout-onset-trigger>`
+     - ``2.0``
+     - bins >= 0
+   * - :ref:`ibi_bout_onset.gain_window_seconds <ana-calculate-neuronal-tuning-curves-ibi-bout-onset-gain-window-seconds>`
+     - ``[0.0, 0.25]``
+     - ``[start, stop]`` in seconds
+   * - :ref:`ibi_bout_onset.pre_window_seconds <ana-calculate-neuronal-tuning-curves-ibi-bout-onset-pre-window-seconds>`
+     - ``[-1.0, -0.5]``
+     - ``[start, stop]`` in seconds
+   * - :ref:`ibi_bout_onset.peak_search_seconds <ana-calculate-neuronal-tuning-curves-ibi-bout-onset-peak-search-seconds>`
+     - ``[-0.25, 1.0]``
+     - ``[start, stop]`` in seconds
+   * - :ref:`ibi_bout_onset.response_window_seconds <ana-calculate-neuronal-tuning-curves-ibi-bout-onset-response>`
+     - ``0.15``
+     - seconds > 0
+   * - :ref:`ibi_bout_onset.response_kernel_seconds <ana-calculate-neuronal-tuning-curves-ibi-bout-onset-response>`
+     - ``0.02``
+     - seconds > 0
+   * - :ref:`vocal_require_clean_post_anchor <ana-calculate-neuronal-tuning-curves-vocal-require-clean-post-anchor>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`vocal_require_clean_prior_anchor <ana-calculate-neuronal-tuning-curves-vocal-require-clean-prior-anchor>`
+     - ``false``
+     - ``true``, ``false``
+   * - :ref:`n_usv_min_self <ana-calculate-neuronal-tuning-curves-n-usv-min-self>`
+     - ``30``
+     - integer >= 0
+   * - :ref:`n_usv_min_partner <ana-calculate-neuronal-tuning-curves-n-usv-min-partner>`
+     - ``30``
+     - integer >= 0
+   * - :ref:`n_usv_min_category <ana-calculate-neuronal-tuning-curves-n-usv-min-category>`
+     - ``20``
+     - integer >= 0
+   * - :ref:`behavioral_min_occupancy_seconds <ana-calculate-neuronal-tuning-curves-behavioral-min-occupancy-seconds>`
+     - ``1.0``
+     - seconds >= 0
+   * - :ref:`usv_property_min_occupancy_seconds <ana-calculate-neuronal-tuning-curves-usv-property-min-occupancy-seconds>`
+     - ``0.25``
+     - seconds >= 0
+   * - :ref:`include_partner_vocalization_tuning_bool <ana-calculate-neuronal-tuning-curves-include-partner-vocalization-tuning-bool>`
+     - ``false``
+     - ``true``, ``false``
+   * - :ref:`exclude_squeaks_self <ana-calculate-neuronal-tuning-curves-exclude-squeaks-self>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`exclude_squeaks_partner <ana-calculate-neuronal-tuning-curves-exclude-squeaks-partner>`
+     - ``false``
+     - ``true``, ``false``
+   * - :ref:`excluded_behavioral_features <ana-calculate-neuronal-tuning-curves-excluded-behavioral-features>`
+     - see JSON above
+     - list of behavioral base-feature names
+   * - :ref:`smoothing_sd <ana-calculate-neuronal-tuning-curves-smoothing-sd>`
+     - ``1.0``
+     - bins >= 0; ``0`` disables
+   * - :ref:`circular_features <ana-calculate-neuronal-tuning-curves-circular-features>`
+     - ``["allo_yaw", "body_dir"]``
+     - list of feature suffixes
+
+.. _ana-calculate-neuronal-tuning-curves-temporal-offsets:
+
+``temporal_offsets``
+   List of temporal offsets between spikes and behavior (in seconds) for which the tuning curves will be calculated.
+
+   :Options: a list of offsets in seconds; negative values: spikes follow behavior, i.e. behavior precedes spikes
+   :Default: ``[0]``
+   :Notes: adding values to the list increases the time needed for analysis drastically.
+
+.. _ana-calculate-neuronal-tuning-curves-n-shuffles:
+
+``n_shuffles``
+   Number of spike train shuffles.
+
+   :Options: a positive integer
+   :Default: ``1000``
+   :Notes: increasing this number increases the time needed for analysis drastically.
+
+.. _ana-calculate-neuronal-tuning-curves-shuffle-seed:
+
+``shuffle_seed``
+   Base seed for the spike-train shuffle null distribution.
+
+   :Options: an integer seed
+   :Default: ``0``
+   :Notes: fixing it makes the significance verdicts reproducible across runs.
+
+.. _ana-calculate-neuronal-tuning-curves-total-bin-num:
+
+``total_bin_num``
+   Total number of bins for a 1D behavioral / vocal-property feature.
+
+   :Options: a positive integer number of bins
+   :Default: ``36``
+
+.. _ana-calculate-neuronal-tuning-curves-n-spatial-bins:
+
+``n_spatial_bins``
+   Number of spatial bins (2D behavioral feature).
+
+   :Options: a positive integer number of bins
+   :Default: ``196``
+
+.. _ana-calculate-neuronal-tuning-curves-spatial-scale-cm:
+
+``spatial_scale_cm``
+   Maximum distance from center of arena to one edge (in cm).
+
+   :Options: a positive distance in cm
+   :Default: ``32``
+
+.. _ana-calculate-neuronal-tuning-curves-shuffle-seconds-range:
+
+``shuffle_seconds_range``
+   ``[min, max]`` of the uniform circular shift (in s) used to build the null distribution.
+
+   :Options: two numbers of seconds, ``[min, max]``
+   :Default: ``[20, 60]``
+
+.. _ana-calculate-neuronal-tuning-curves-peth-window-seconds:
+
+``peth_window_seconds``
+   ``[start, stop]`` of the PETH window relative to each USV's onset (in s).
+
+   :Options: two numbers of seconds, ``[start, stop]``
+   :Default: ``[-2, 0.5]``
+   :Notes: bins before onset honour the two cleanliness rules below (:ref:`vocal_require_clean_post_anchor <ana-calculate-neuronal-tuning-curves-vocal-require-clean-post-anchor>` and :ref:`vocal_require_clean_prior_anchor <ana-calculate-neuronal-tuning-curves-vocal-require-clean-prior-anchor>`); a bin after onset is kept only while it ends before the next USV's onset (any emitter, squeak and overlap segments included), so the post-onset PETH covers the USV itself and the silence after it, never a following USV.
+
+.. _ana-calculate-neuronal-tuning-curves-peth-bin-seconds:
+
+``peth_bin_seconds``
+   PETH bin width (in s).
+
+   :Options: a positive number of seconds
+   :Default: ``0.05``
+
+.. _ana-calculate-neuronal-tuning-curves-bout-quiet-seconds:
+
+``bout_quiet_seconds``
+   Inter-bout silence required to define a new bout (in s).
+
+   :Options: a positive number of seconds
+   :Default: ``2.0``
+
+.. _ana-calculate-neuronal-tuning-curves-ramp-anchor:
+
+``ramp_anchor_near_seconds`` / ``ramp_anchor_far_seconds``
+   The two PETH bins (in s, relative to USV onset) whose rates give ``triage_stats.usv_peth[emitter].ramp_index = (rate(near) - rate(far)) / (rate(near) + rate(far))``.
+
+   :Options:
+      * ``ramp_anchor_near_seconds`` — seconds relative to USV onset, the near anchor
+      * ``ramp_anchor_far_seconds`` — seconds relative to USV onset, the far anchor
+   :Default: ``-0.1`` (just before onset) and ``-1.5`` (inside the default 2 s pre-onset window, well before it)
+   :Notes: the ramp index is NaN when ``peth_window_seconds`` does not span both anchors.
+
+.. _ana-calculate-neuronal-tuning-curves-vmi-wilcoxon-exact-max-n:
+
+``vmi_wilcoxon_exact_max_n``
+   Largest number of valid per-bout ``(FR_baseline, FR_USV)`` pairs for which the VMI's Wilcoxon signed-rank p-value uses scipy's exact null distribution.
+
+   :Options: a positive integer number of pairs
+   :Default: ``25``
+   :Notes: above it the normal approximation is used.
+
+.. _ana-calculate-neuronal-tuning-curves-ibi-bout-onset:
+
+``ibi_bout_onset``
+   Per-unit statistics around the onset of IBI bouts, the respiratory-tempo grouping (not the ``bout_quiet_seconds`` one), stored as ``usv_ibi_bout_onset`` in the pkl and in ``triage_stats``.
+
+   :Options: an object holding the sub-keys below
+   :Default: see the JSON above
+   :Notes: each silence is measured from the latest stop of every earlier USV, so a USV nested inside a longer one does not split a bout, and a bout ends at the latest stop of its USVs. Each statistic is referenced to the unit's own session rate, never to a pre-onset baseline (the window before an onset is occupied by the previous bout on roughly half of all bouts), and gets a circular-shift null and a two-sided empirical p.
+
+.. _ana-calculate-neuronal-tuning-curves-ibi-bout-onset-threshold:
+
+``ibi_bout_onset.ibi_z_score`` / ``ibi_bout_onset.ibi_component_index``
+   The inter-bout threshold, as the emitter sex's inter-syllable mixture component at this many standard deviations.
+
+   :Options:
+      * ``ibi_z_score`` — a positive number of standard deviations
+      * ``ibi_component_index`` — the index of the emitter sex's inter-syllable mixture component
+   :Default: ``2.58`` and ``0``
+   :Notes: the construction ``decode_usv_bout_occupancy`` and ``build-naturalistic-usv-repository`` use; 115.5 ms for the male at 2.58.
+
+.. _ana-calculate-neuronal-tuning-curves-ibi-bout-onset-min-vocalizations:
+
+``ibi_bout_onset.min_vocalizations``
+   Fewest USVs a run needs to count as a bout.
+
+   :Options: a positive integer number of USVs
+   :Default: ``3``
+
+.. _ana-calculate-neuronal-tuning-curves-ibi-bout-onset-shuffle-guard-seconds:
+
+``ibi_bout_onset.shuffle_guard_seconds``
+   The null's circular shifts are drawn from ``[guard, duration - guard]`` (in s).
+
+   :Options: a non-negative number of seconds
+   :Default: ``20.0``
+
+.. _ana-calculate-neuronal-tuning-curves-ibi-bout-onset-trigger:
+
+``ibi_bout_onset.trigger_window_seconds`` / ``ibi_bout_onset.trigger_bin_seconds`` / ``ibi_bout_onset.smoothing_bins``
+   The bout-triggered rate: its window around onset and bin width (in s), and its Gaussian smoothing (in bins).
+
+   :Options:
+      * ``trigger_window_seconds`` — ``[start, stop]`` around onset, in seconds
+      * ``trigger_bin_seconds`` — a positive bin width, in seconds
+      * ``smoothing_bins`` — the Gaussian smoothing, in bins
+   :Default: ``[-1.0, 2.0]``, ``0.02`` and ``2.0``
+
+.. _ana-calculate-neuronal-tuning-curves-ibi-bout-onset-gain-window-seconds:
+
+``ibi_bout_onset.gain_window_seconds``
+   Window after onset whose mean rate over the session rate is ``onset_gain`` (in s).
+
+   :Options: ``[start, stop]`` in seconds
+   :Default: ``[0.0, 0.25]``
+
+.. _ana-calculate-neuronal-tuning-curves-ibi-bout-onset-pre-window-seconds:
+
+``ibi_bout_onset.pre_window_seconds``
+   Window before onset whose mean rate over the session rate is ``pre_onset_gain`` (in s).
+
+   :Options: ``[start, stop]`` in seconds
+   :Default: ``[-1.0, -0.5]``
+
+.. _ana-calculate-neuronal-tuning-curves-ibi-bout-onset-peak-search-seconds:
+
+``ibi_bout_onset.peak_search_seconds``
+   Window in which the smoothed trace's maximum gives ``peak_latency`` (in s).
+
+   :Options: ``[start, stop]`` in seconds
+   :Default: ``[-0.25, 1.0]``
+
+.. _ana-calculate-neuronal-tuning-curves-ibi-bout-onset-response:
+
+``ibi_bout_onset.response_window_seconds`` / ``ibi_bout_onset.response_kernel_seconds``
+   Each USV's response for ``first_over_later`` (the bout's first USV's response over the mean of its later USVs') and ``fraction_first_above`` (share of bouts whose first USV drew more): spikes in a window of this width after the USV onset, weighted through a Gaussian of this standard deviation rather than a hard edge, so the response is continuous rather than a small integer (in s).
+
+   :Options:
+      * ``response_window_seconds`` — the window width after the USV onset, in seconds
+      * ``response_kernel_seconds`` — the Gaussian's standard deviation, in seconds
+   :Default: ``0.15`` and ``0.02``
+
+.. _ana-calculate-neuronal-tuning-curves-vocal-require-clean-post-anchor:
+
+``vocal_require_clean_post_anchor``
+   Whether the time after the USV onset must be free of contaminating USVs to keep the anchor.
+
+   :Options:
+      * ``true`` — the time after the USV onset must be free of contaminating USVs to keep the anchor
+      * ``false`` — no such requirement
+   :Default: ``true``
+
+.. _ana-calculate-neuronal-tuning-curves-vocal-require-clean-prior-anchor:
+
+``vocal_require_clean_prior_anchor``
+   Whether the lookback window must also be free of contaminating USVs.
+
+   :Options:
+      * ``true`` — the lookback window must also be free of contaminating USVs
+      * ``false`` — no such requirement
+   :Default: ``false``
+
+.. _ana-calculate-neuronal-tuning-curves-n-usv-min-self:
+
+``n_usv_min_self``
+   Minimum self-side USV count for the self plots to be computed.
+
+   :Options: a non-negative integer number of USVs
+   :Default: ``30``
+
+.. _ana-calculate-neuronal-tuning-curves-n-usv-min-partner:
+
+``n_usv_min_partner``
+   Minimum partner-side USV count for the partner plots to be computed.
+
+   :Options: a non-negative integer number of USVs
+   :Default: ``30``
+
+.. _ana-calculate-neuronal-tuning-curves-n-usv-min-category:
+
+``n_usv_min_category``
+   Minimum per-category USV count to retain that category in the categorical tuning layouts.
+
+   :Options: a non-negative integer number of USVs
+   :Default: ``20``
+
+.. _ana-calculate-neuronal-tuning-curves-behavioral-min-occupancy-seconds:
+
+``behavioral_min_occupancy_seconds``
+   Minimum behavioral occupancy per bin (in s) to draw that bin in 1D feature plots.
+
+   :Options: a non-negative number of seconds
+   :Default: ``1.0``
+   :Notes: persisted into ``behavioral_metadata``. GUI field: *Min occupancy behavior bin (s)*.
+
+.. _ana-calculate-neuronal-tuning-curves-usv-property-min-occupancy-seconds:
+
+``usv_property_min_occupancy_seconds``
+   Minimum vocal-property occupancy per bin (in s) to keep the rate estimate finite.
+
+   :Options: a non-negative number of seconds
+   :Default: ``0.25``
+   :Notes: GUI field: *Min occupancy vocal bin (s)*.
+
+.. _ana-calculate-neuronal-tuning-curves-include-partner-vocalization-tuning-bool:
+
+``include_partner_vocalization_tuning_bool``
+   Also compute partner-side vocal tuning when its threshold is met.
+
+   :Options:
+      * ``true`` — also compute partner-side vocal tuning when its threshold (``n_usv_min_partner``) is met
+      * ``false`` — self side only
+   :Default: ``false``
+   :Notes: the self side is the tracked animal with more pure USVs and the partner the other; each side's ``sex`` label comes from the session metadata's ``Subjects`` (matched to the track name), never from the track slot, so a female-female session has two female sides. GUI field: *Include partner vocal tuning*.
+
+.. _ana-calculate-neuronal-tuning-curves-exclude-squeaks-self:
+
+``exclude_squeaks_self``
+   Restrict the self side's anchors to pure USVs (``usv`` true and ``squeak`` false), leaving its pure squeaks and its overlap segments (a squeak and a USV in one segment, treated like squeaks) out.
+
+   :Options:
+      * ``true`` — pure-USV anchors only on the self side
+      * ``false`` — the self side's pure squeaks and overlap segments are anchors too
+   :Default: ``true``
+   :Notes: the self side is the emitter with more pure USVs. Squeak-bearing segments still count as other vocalizations in the overlap checks. Every anchor is the onset of its vocalization (``os_utils.vocal_event_times``): a pure squeak at its own ``squeak_start``, an overlap segment at the earlier of its segment's and its squeak's onset, a pure USV at its segment's ``start``. A summary without the ``usv`` / ``squeak`` or ``squeak_start`` / ``squeak_end`` columns raises.
+
+.. _ana-calculate-neuronal-tuning-curves-exclude-squeaks-partner:
+
+``exclude_squeaks_partner``
+   The same as ``exclude_squeaks_self`` for the partner side.
+
+   :Options:
+      * ``true`` — pure-USV anchors only on the partner side
+      * ``false`` — the partner side's pure squeaks and overlap segments are anchors too
+   :Default: ``false``, since the partner is usually the female, who emits the squeaks
+   :Notes: either way, only pure-USV anchors enter the QLVM category tuning (the QLVM label of a squeak or of an overlap segment is not a USV category).
+
+.. _ana-calculate-neuronal-tuning-curves-excluded-behavioral-features:
+
+``excluded_behavioral_features``
+   Behavioral base features left out of the tuning, derivatives (``_1st_der`` / ``_2nd_der``) included.
+
+   :Options: a list of behavioral base-feature names
+   :Default: ``nose-nose``, ``allo_yaw-nose``, ``nose-allo_yaw``, ``allo_pitch-nose``, ``nose-allo_pitch``
+   :Notes: their head-anchored versions, ``head-head``, ``allo_yaw-head``, ``head-allo_yaw``, ``allo_pitch-head``, ``head-allo_pitch``, are tuned instead.
+
+.. _ana-calculate-neuronal-tuning-curves-smoothing-sd:
+
+``smoothing_sd``
+   Standard deviation of the Gaussian kernel (in bins) applied to ratemaps and shuffle distributions.
+
+   :Options: a non-negative number of bins; ``0`` disables smoothing
+   :Default: ``1.0``
+   :Notes: GUI field: *Smoothing sigma (bins)*.
+
+.. _ana-calculate-neuronal-tuning-curves-circular-features:
+
+``circular_features``
+   List of behavioral feature suffixes that are wrap-around in nature (e.g. ``allo_yaw``, ``body_dir``, binned over one full turn).
+
+   :Options: a list of behavioral feature suffixes
+   :Default: ``["allo_yaw", "body_dir"]``
+   :Notes: their smoothed rate maps and shuffle bands wrap around the ends (the first and last bins are one direction), and the triage helpers detect divergence runs that span the bin-0 / bin-N boundary; their derivatives are linear.
 
 Per-cluster ``triage_stats`` block
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -345,19 +1142,6 @@ Below you can find an example of a brief sequence of frequency-shifted mouse voc
 
 The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a section only partially modifiable in the GUI, but it can be modified manually:
 
-* **fs_audio_dir** : audio subdirectory where the audio files are stored
-* **fs_device_id** : USGH (Avisoft UltraSoundGate hardware) device ID (e.g. "m" for main, "s" for secondary)
-* **fs_channel_id** : microphone channel ID (1-12)
-* **fs_wav_sampling_rate** : sampling rate of the audio devices in kHz
-* **fs_sequence_start** : start time of the audio segment in seconds
-* **fs_sequence_duration** : duration of the audio segment in seconds
-* **fs_octave_shift** : octave shift of the audio segment (e.g. -3 shifts down three octaves, to 1/8 the original frequency)
-* **fs_volume_adjustment** : whether to automatically increase the volume of the audio segment; recommended since the vocalizations are faint
-* **fs_compand_transfer** : SoX ``compand`` transfer-function argument string applied during the volume-adjustment pass (attack/decay + dB transfer points)
-* **fs_noise_reduction_std_threshold** : ``noisereduce`` stationary noise-reduction threshold (in noise standard deviations)
-* **fs_sinc_upper_cutoff_hz** : upper cutoff (Hz) of the SoX ``sinc`` low-pass, scaled by the octave shift, applied to non-filtered source audio
-* **fs_sox_timeout_s** : upper bound (in s) on each SoX pass of the frequency shift (``600``); the segments are presentation clips of seconds to minutes, which SoX processes in well under a second per minute of audio, so a pass that runs this long has hung (e.g. waiting on a broken pipe) and is stopped with an error rather than blocking the run
-
 .. code-block:: json
 
     "frequency_shift_audio_segment": {
@@ -374,6 +1158,162 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "fs_sinc_upper_cutoff_hz": 25000,
         "fs_sox_timeout_s": 600
     }
+
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`fs_audio_dir <ana-frequency-shift-audio-segment-fs-audio-dir>`
+     - ``"hpss_filtered"``
+     - ``"cropped_to_video"``, ``"hpss"``, ``"hpss_filtered"``
+   * - :ref:`fs_device_id <ana-frequency-shift-audio-segment-fs-device-id>`
+     - ``"m"``
+     - ``"m"``, ``"s"``
+   * - :ref:`fs_channel_id <ana-frequency-shift-audio-segment-fs-channel-id>`
+     - ``1``
+     - integer 1-12
+   * - :ref:`fs_wav_sampling_rate <ana-frequency-shift-audio-segment-fs-wav-sampling-rate>`
+     - ``250``
+     - kHz
+   * - :ref:`fs_sequence_start <ana-frequency-shift-audio-segment-fs-sequence-start>`
+     - ``900.0``
+     - seconds
+   * - :ref:`fs_sequence_duration <ana-frequency-shift-audio-segment-fs-sequence-duration>`
+     - ``2.0``
+     - seconds
+   * - :ref:`fs_octave_shift <ana-frequency-shift-audio-segment-fs-octave-shift>`
+     - ``-3``
+     - integer number of octaves
+   * - :ref:`fs_volume_adjustment <ana-frequency-shift-audio-segment-fs-volume-adjustment>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`fs_compand_transfer <ana-frequency-shift-audio-segment-fs-compand-transfer>`
+     - see JSON above
+     - SoX ``compand`` argument string
+   * - :ref:`fs_noise_reduction_std_threshold <ana-frequency-shift-audio-segment-fs-noise-reduction-std-threshold>`
+     - ``3``
+     - noise standard deviations
+   * - :ref:`fs_sinc_upper_cutoff_hz <ana-frequency-shift-audio-segment-fs-sinc-upper-cutoff-hz>`
+     - ``25000``
+     - Hz
+   * - :ref:`fs_sox_timeout_s <ana-frequency-shift-audio-segment-fs-sox-timeout-s>`
+     - ``600``
+     - seconds > 0
+
+.. _ana-frequency-shift-audio-segment-fs-audio-dir:
+
+``fs_audio_dir``
+   Audio subdirectory where the audio files are stored.
+
+   :Options:
+      * ``"cropped_to_video"``
+      * ``"hpss"``
+      * ``"hpss_filtered"``
+   :Default: ``"hpss_filtered"``
+   :Notes: GUI field: *WAV audio subdirectory of choice* (a dropdown offering the three options above).
+
+.. _ana-frequency-shift-audio-segment-fs-device-id:
+
+``fs_device_id``
+   USGH (Avisoft UltraSoundGate hardware) device ID.
+
+   :Options:
+      * ``"m"`` — main
+      * ``"s"`` — secondary
+   :Default: ``"m"``
+   :Notes: GUI field: *Recording device identity (m|s)*.
+
+.. _ana-frequency-shift-audio-segment-fs-channel-id:
+
+``fs_channel_id``
+   Microphone channel ID.
+
+   :Options: an integer channel, 1-12
+   :Default: ``1``
+   :Notes: GUI field: *Recording device channel (1-12)*.
+
+.. _ana-frequency-shift-audio-segment-fs-wav-sampling-rate:
+
+``fs_wav_sampling_rate``
+   Sampling rate of the audio devices in kHz.
+
+   :Options: a sampling rate in kHz
+   :Default: ``250``
+
+.. _ana-frequency-shift-audio-segment-fs-sequence-start:
+
+``fs_sequence_start``
+   Start time of the audio segment in seconds.
+
+   :Options: a number of seconds
+   :Default: ``900.0``
+   :Notes: GUI field: *Start of audio sequence (s)*.
+
+.. _ana-frequency-shift-audio-segment-fs-sequence-duration:
+
+``fs_sequence_duration``
+   Duration of the audio segment in seconds.
+
+   :Options: a positive number of seconds
+   :Default: ``2.0``
+   :Notes: GUI field: *Total duration of audio sequence (s)*.
+
+.. _ana-frequency-shift-audio-segment-fs-octave-shift:
+
+``fs_octave_shift``
+   Octave shift of the audio segment.
+
+   :Options: an integer number of octaves; e.g. -3 shifts down three octaves, to 1/8 the original frequency
+   :Default: ``-3``
+   :Notes: GUI field: *Octave shift (direction and quantity)*.
+
+.. _ana-frequency-shift-audio-segment-fs-volume-adjustment:
+
+``fs_volume_adjustment``
+   Whether to automatically increase the volume of the audio segment.
+
+   :Options:
+      * ``true`` — automatically increase the volume (recommended since the vocalizations are faint)
+      * ``false`` — leave the volume as it is
+   :Default: ``true``
+   :Notes: GUI field: *Volume-adjust audio segment*.
+
+.. _ana-frequency-shift-audio-segment-fs-compand-transfer:
+
+``fs_compand_transfer``
+   SoX ``compand`` transfer-function argument string applied during the volume-adjustment pass (attack/decay + dB transfer points).
+
+   :Options: a SoX ``compand`` argument string
+   :Default: ``"0.3,1 6:-70,-60,-20 -5 -90 0.2"``
+
+.. _ana-frequency-shift-audio-segment-fs-noise-reduction-std-threshold:
+
+``fs_noise_reduction_std_threshold``
+   ``noisereduce`` stationary noise-reduction threshold (in noise standard deviations).
+
+   :Options: a positive number of noise standard deviations
+   :Default: ``3``
+
+.. _ana-frequency-shift-audio-segment-fs-sinc-upper-cutoff-hz:
+
+``fs_sinc_upper_cutoff_hz``
+   Upper cutoff (Hz) of the SoX ``sinc`` low-pass, scaled by the octave shift, applied to non-filtered source audio.
+
+   :Options: a frequency in Hz
+   :Default: ``25000``
+
+.. _ana-frequency-shift-audio-segment-fs-sox-timeout-s:
+
+``fs_sox_timeout_s``
+   Upper bound (in s) on each SoX pass of the frequency shift.
+
+   :Options: a positive number of seconds
+   :Default: ``600``
+   :Notes: the segments are presentation clips of seconds to minutes, which SoX processes in well under a second per minute of audio, so a pass that runs this long has hung (e.g. waiting on a broken pipe) and is stopped with an error rather than blocking the run.
 
 Create artificial playback .WAV
 -------------------------------
@@ -399,13 +1339,6 @@ The analysis results in the creation of three files: [1] WAV file containing pla
 
 The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a section only partially modifiable in the GUI, but it can be modified manually:
 
-* **num_usv_files** : number of artificial playback files to be created
-* **total_usv_number** : total number of USVs to be included in one playback file
-* **ipi_duration** : inter-pulse interval duration in seconds
-* **wav_sampling_rate** : sampling rate of the playback .WAV file in kHz
-* **playback_snippets_dir** : subdirectory where the USV snippets are stored
-* **playback_seed** : optional RNG seed for reproducible snippet selection and assembly; ``null`` draws a fresh random stimulus each run, an integer reproduces the same stimulus
-
 .. code-block:: json
 
     "create_usv_playback_wav": {
@@ -416,6 +1349,86 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "playback_snippets_dir": "usv_playback_snippets_loudness_corrected",
         "playback_seed": null
     }
+
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`num_usv_files <ana-create-usv-playback-wav-num-usv-files>`
+     - ``1``
+     - integer > 0
+   * - :ref:`total_usv_number <ana-create-usv-playback-wav-total-usv-number>`
+     - ``10000``
+     - integer > 0
+   * - :ref:`ipi_duration <ana-create-usv-playback-wav-ipi-duration>`
+     - ``0.015``
+     - seconds
+   * - :ref:`wav_sampling_rate <ana-create-usv-playback-wav-wav-sampling-rate>`
+     - ``250``
+     - kHz
+   * - :ref:`playback_snippets_dir <ana-create-usv-playback-wav-playback-snippets-dir>`
+     - see JSON above
+     - subdirectory name
+   * - :ref:`playback_seed <ana-create-usv-playback-wav-playback-seed>`
+     - ``null``
+     - ``null``, or an integer
+
+.. _ana-create-usv-playback-wav-num-usv-files:
+
+``num_usv_files``
+   Number of artificial playback files to be created.
+
+   :Options: a positive integer
+   :Default: ``1``
+   :Notes: GUI field: *Number of playback files*.
+
+.. _ana-create-usv-playback-wav-total-usv-number:
+
+``total_usv_number``
+   Total number of USVs to be included in one playback file.
+
+   :Options: a positive integer
+   :Default: ``10000``
+   :Notes: GUI field: *Total number of USVs per file*.
+
+.. _ana-create-usv-playback-wav-ipi-duration:
+
+``ipi_duration``
+   Inter-pulse interval duration in seconds.
+
+   :Options: a number of seconds
+   :Default: ``0.015``
+   :Notes: GUI field: *Fixed silence between USVs (s)*.
+
+.. _ana-create-usv-playback-wav-wav-sampling-rate:
+
+``wav_sampling_rate``
+   Sampling rate of the playback .WAV file in kHz.
+
+   :Options: a sampling rate in kHz
+   :Default: ``250``
+
+.. _ana-create-usv-playback-wav-playback-snippets-dir:
+
+``playback_snippets_dir``
+   Subdirectory where the USV snippets are stored.
+
+   :Options: a subdirectory name
+   :Default: ``"usv_playback_snippets_loudness_corrected"``
+
+.. _ana-create-usv-playback-wav-playback-seed:
+
+``playback_seed``
+   Optional RNG seed for reproducible snippet selection and assembly.
+
+   :Options:
+      * ``null`` — draws a fresh random stimulus each run
+      * an integer — reproduces the same stimulus
+   :Default: ``null``
 
 Build the naturalistic USV repository
 -------------------------------------
@@ -428,23 +1441,6 @@ Each run builds exactly **one (sex, social context) database**, chosen by ``cont
 where ``naturalistic_usv_repository_dir`` is configured once under the shared ``data_roots`` block, ``<sex>`` is ``male`` / ``female`` / ``mixed``, and ``<context>`` is the filename token (``courtship`` / ``same_sex`` / ``lone`` / ``mixed``). The datestring suffix means rebuilding a context never overwrites an earlier build, and each H5 also records the exact session lists it was built from (provenance). The H5 is written to a temporary file next to its final name and renamed into place, so an interrupted build never leaves a truncated repository for the playback step to read. A session whose inputs cannot be resolved (a missing or unreadable file, a missing column, or a failed consistency check) is skipped and logged, and every skipped session is listed again once the build finishes; an error while reconstructing a session's audio stops the build, since the repository would otherwise hold part of that session. To run it from the command line, see :doc:`CLI`.
 
 The */usv-playpen/_parameter_settings/analyses_settings.json* ``build_naturalistic_usv_repository`` section:
-
-* **session_lists** : one or more text files (one session root directory per line) whose sessions this build draws from; this list is the *sole* selection of what enters the repository
-* **context_label** : which (sex, social context) database to build — one of ``courtship_male``, ``courtship_female``, ``lone_male``, ``lone_female``, ``same_sex_male``, ``same_sex_female``, ``mixed``. It sets three things at once: (1) *emitter handling* — a ``courtship_*`` build keeps only the target sex's attributed track (the two animals differ in sex; the target animal is the one the session metadata's ``Subjects`` records with that sex, never a track slot, and a session whose metadata does not name exactly one such animal is skipped and logged), while ``same_sex_*`` / ``lone_*`` keep **every** USV labelled by that sex (no per-USV attribution needed), and ``mixed`` keeps every USV with no sex split; (2) the output *subdirectory* (``male`` / ``female`` / ``mixed``); and (3) the filename *context token*
-* **ibi_z_score** : how many standard deviations above the mean (in log inter-USV-interval space) a silent gap must be to count as a **bout boundary** — the split threshold is ``exp(μ + z·σ)`` (``2.58`` ≈ the 99.5th percentile of the one-sided cutoff), with the per-sex ``μ`` and ``σ`` taken from the modeling mixture model
-* **ibi_component_index** : which component of the per-sex log-inter-USV-interval mixture supplies that ``μ`` and ``σ`` (``0`` = the first / fastest component)
-* **min_vocalizations** : the fewest USVs a bout must contain to be kept (single-USV bouts are dropped)
-* **length_threshold** : the maximum USV duration in spectrogram **time-bins** — a bout is discarded if any of its USVs is longer than this, since the stored mask is only 128 columns wide and would otherwise truncate the USV
-* **min_duration** : the minimum USV duration in time-bins — a bout is discarded if any of its USVs is shorter
-* **mask_dilation** : grow the SAM mask by this many bins before inversion; ``0`` keeps the mask **tight** (dilation pulls in neighbouring energy and muddies the reconstruction)
-* **feather_sigma_time** : Gaussian sigma (in time-bins) of the **time-only** mask feather that softens each USV's onset/offset to remove edge clicks (feathering is applied in time only — a frequency feather bleeds a halo above and below the USV)
-* **fade_ms** : length (ms) of the raised-cosine onset/offset fade applied to each reconstructed USV (capped at a third of that USV's length), removing any residual edge click
-* **peak_normalize** : if ``true``, peak-normalize every USV to a uniform level; if ``false``, preserve the USVs' relative amplitudes
-* **peak_target_fraction** : the fraction of the int16 ceiling each peak-normalized snippet is scaled to (``0.85`` leaves headroom below clipping)
-
-The repository root itself lives under the shared ``data_roots`` block:
-
-* **naturalistic_usv_repository_dir** : the root directory holding the ``male`` / ``female`` / ``mixed`` subdirectories that the builds are written into and the playback step reads from
 
 .. code-block:: json
 
@@ -464,6 +1460,161 @@ The repository root itself lives under the shared ``data_roots`` block:
         "peak_normalize": true,
         "peak_target_fraction": 0.85
     }
+
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`session_lists <ana-build-naturalistic-usv-repository-session-lists>`
+     - see JSON above
+     - list of session-list text files
+   * - :ref:`context_label <ana-build-naturalistic-usv-repository-context-label>`
+     - ``"courtship_female"``
+     - ``courtship_male``, ``courtship_female``, ``lone_male``, ``lone_female``, ``same_sex_male``, ``same_sex_female``, ``mixed``
+   * - :ref:`ibi_z_score <ana-build-naturalistic-usv-repository-ibi-z-score>`
+     - ``2.58``
+     - standard deviations > 0
+   * - :ref:`ibi_component_index <ana-build-naturalistic-usv-repository-ibi-component-index>`
+     - ``0``
+     - mixture component index
+   * - :ref:`min_vocalizations <ana-build-naturalistic-usv-repository-min-vocalizations>`
+     - ``2``
+     - integer >= 1
+   * - :ref:`length_threshold <ana-build-naturalistic-usv-repository-length-threshold>`
+     - ``128``
+     - time-bins
+   * - :ref:`min_duration <ana-build-naturalistic-usv-repository-min-duration>`
+     - ``1``
+     - time-bins
+   * - :ref:`mask_dilation <ana-build-naturalistic-usv-repository-mask-dilation>`
+     - ``0``
+     - bins >= 0
+   * - :ref:`feather_sigma_time <ana-build-naturalistic-usv-repository-feather-sigma-time>`
+     - ``0.8``
+     - time-bins
+   * - :ref:`fade_ms <ana-build-naturalistic-usv-repository-fade-ms>`
+     - ``4.0``
+     - ms
+   * - :ref:`peak_normalize <ana-build-naturalistic-usv-repository-peak-normalize>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`peak_target_fraction <ana-build-naturalistic-usv-repository-peak-target-fraction>`
+     - ``0.85``
+     - fraction of the int16 ceiling
+
+.. _ana-build-naturalistic-usv-repository-session-lists:
+
+``session_lists``
+   One or more text files (one session root directory per line) whose sessions this build draws from.
+
+   :Options: a list of paths to session-list text files
+   :Default: ``["/mnt/falkner/Bartul/modeling/input_files/behavioral_courtship_intact_partners_sessions_list.txt"]``
+   :Notes: this list is the *sole* selection of what enters the repository.
+
+.. _ana-build-naturalistic-usv-repository-context-label:
+
+``context_label``
+   Which (sex, social context) database to build.
+
+   :Options:
+      * ``courtship_male`` / ``courtship_female`` — keep only the target sex's attributed track
+      * ``lone_male`` / ``lone_female`` — keep **every** USV labelled by that sex
+      * ``same_sex_male`` / ``same_sex_female`` — keep **every** USV labelled by that sex
+      * ``mixed`` — keep every USV with no sex split
+   :Default: ``"courtship_female"``
+   :Notes: it sets three things at once: (1) *emitter handling* — a ``courtship_*`` build keeps only the target sex's attributed track (the two animals differ in sex; the target animal is the one the session metadata's ``Subjects`` records with that sex, never a track slot, and a session whose metadata does not name exactly one such animal is skipped and logged), while ``same_sex_*`` / ``lone_*`` keep **every** USV labelled by that sex (no per-USV attribution needed), and ``mixed`` keeps every USV with no sex split; (2) the output *subdirectory* (``male`` / ``female`` / ``mixed``); and (3) the filename *context token*.
+
+.. _ana-build-naturalistic-usv-repository-ibi-z-score:
+
+``ibi_z_score``
+   How many standard deviations above the mean (in log inter-USV-interval space) a silent gap must be to count as a **bout boundary**.
+
+   :Options: a positive number of standard deviations
+   :Default: ``2.58`` (≈ the 99.5th percentile of the one-sided cutoff)
+   :Notes: the split threshold is ``exp(μ + z·σ)``, with the per-sex ``μ`` and ``σ`` taken from the modeling mixture model.
+
+.. _ana-build-naturalistic-usv-repository-ibi-component-index:
+
+``ibi_component_index``
+   Which component of the per-sex log-inter-USV-interval mixture supplies that ``μ`` and ``σ``.
+
+   :Options: a mixture component index; ``0`` = the first / fastest component
+   :Default: ``0``
+
+.. _ana-build-naturalistic-usv-repository-min-vocalizations:
+
+``min_vocalizations``
+   The fewest USVs a bout must contain to be kept.
+
+   :Options: a positive integer number of USVs
+   :Default: ``2`` (single-USV bouts are dropped)
+
+.. _ana-build-naturalistic-usv-repository-length-threshold:
+
+``length_threshold``
+   The maximum USV duration in spectrogram **time-bins** — a bout is discarded if any of its USVs is longer than this.
+
+   :Options: a number of time-bins
+   :Default: ``128``
+   :Notes: the stored mask is only 128 columns wide and would otherwise truncate the USV.
+
+.. _ana-build-naturalistic-usv-repository-min-duration:
+
+``min_duration``
+   The minimum USV duration in time-bins — a bout is discarded if any of its USVs is shorter.
+
+   :Options: a number of time-bins
+   :Default: ``1``
+
+.. _ana-build-naturalistic-usv-repository-mask-dilation:
+
+``mask_dilation``
+   Grow the SAM mask by this many bins before inversion.
+
+   :Options: a non-negative number of bins; ``0`` keeps the mask **tight**
+   :Default: ``0``
+   :Notes: dilation pulls in neighbouring energy and muddies the reconstruction.
+
+.. _ana-build-naturalistic-usv-repository-feather-sigma-time:
+
+``feather_sigma_time``
+   Gaussian sigma (in time-bins) of the **time-only** mask feather that softens each USV's onset/offset to remove edge clicks.
+
+   :Options: a sigma in time-bins
+   :Default: ``0.8``
+   :Notes: feathering is applied in time only — a frequency feather bleeds a halo above and below the USV.
+
+.. _ana-build-naturalistic-usv-repository-fade-ms:
+
+``fade_ms``
+   Length (ms) of the raised-cosine onset/offset fade applied to each reconstructed USV (capped at a third of that USV's length), removing any residual edge click.
+
+   :Options: a length in ms
+   :Default: ``4.0``
+
+.. _ana-build-naturalistic-usv-repository-peak-normalize:
+
+``peak_normalize``
+   Whether every USV is peak-normalized to a uniform level.
+
+   :Options:
+      * ``true`` — peak-normalize every USV to a uniform level
+      * ``false`` — preserve the USVs' relative amplitudes
+   :Default: ``true``
+
+.. _ana-build-naturalistic-usv-repository-peak-target-fraction:
+
+``peak_target_fraction``
+   The fraction of the int16 ceiling each peak-normalized snippet is scaled to.
+
+   :Options: a fraction of the int16 ceiling
+   :Default: ``0.85`` (leaves headroom below clipping)
+
+The repository root itself lives under the shared ``data_roots`` block: :ref:`naturalistic_usv_repository_dir <ana-data-roots-naturalistic-usv-repository-dir>` is the root directory holding the ``male`` / ``female`` / ``mixed`` subdirectories that the builds are written into and the playback step reads from.
 
 Create naturalistic playback .WAV
 ---------------------------------
@@ -497,18 +1648,6 @@ The three files are written into the ``naturalistic_usv_playback_dir`` directory
 
 Every setting below is exposed in the GUI's *Create naturalistic playback .WAV* block: ``context_label`` is a dropdown (populated only with contexts that have a built repository); ``total_acceptable_naturalistic_playback_time``, ``num_naturalistic_usv_files`` and ``playback_seed`` are text fields; ``complexity_enabled`` is a Yes/No dropdown; and ``complexity_mask_threshold``, ``complexity_start_fraction``, ``complexity_end_fraction`` and ``complexity_bandwidth`` are sliders that grey out while complexity is disabled; ``edge_silence_seconds``, ``max_isi_seconds`` and ``max_consecutive_bout_skips`` are edited in the JSON only. The same values can equally be edited directly in *analyses_settings.json*:
 
-* **num_naturalistic_usv_files** : number of naturalistic playback files to create in one run (with a fixed ``playback_seed`` the files differ from one another but the whole set is reproducible)
-* **context_label** : which repository to play back — one of ``courtship_male``, ``courtship_female``, ``lone_male``, ``lone_female``, ``same_sex_male``, ``same_sex_female``, ``mixed``. It selects the sex subdirectory and context token, and the playback always opens the **newest** matching build in that directory (no explicit file path); the chosen sex also prefixes the output filenames
-* **total_acceptable_naturalistic_playback_time** : the target duration of the playback file (in s); since the file is assembled from whole bouts framed by the fixed edge silences, the result is *up to* this length (a little under), ending on a complete bout
-* **complexity_enabled** : master switch for complexity steering. If ``false`` (default) bouts are drawn **uniformly at random** (the natural mix) and the remaining ``complexity_*`` settings are inert; if ``true`` the draws are biased by USV complexity
-* **complexity_mask_threshold** : with steering on, a USV is *complex* if its ``mask_number`` (count of SAM masks) is ``>=`` this value (``2`` = multi-component), else *simple*
-* **complexity_start_fraction** / **complexity_end_fraction** : the target fraction of *complex* USVs at the **start** and **end** of the file (0–1), interpolated linearly across the file position. Equal values hold a constant simple:complex ratio (e.g. ``1.0 / 1.0`` = all-complex throughout); unequal values are a ramp — ``0.0 → 1.0`` starts simple and grows more complex. Because bouts are drawn with replacement, a target is met by repeating complex-heavy bouts as needed (whole bouts, natural order preserved), bounded by what the available bouts contain; the achieved ratio and number of distinct bouts used are logged
-* **complexity_bandwidth** : the width (standard deviation, in complex-fraction units) of the Gaussian that weights each bout by how far its own complex-fraction sits from the current target. **Smaller** (e.g. ``0.05``) steers tightly to the target but from a narrow pool of bouts (more repetition); **larger** (e.g. ``0.5``) keeps more variety but tracks the target more loosely. The default ``0.15`` is a moderate middle
-* **edge_silence_seconds** : fixed silence written at the very start and very end of the file (s), so it opens and closes on a short, constant gap rather than a variable (or truncated) real pause. Default ``1.0``
-* **max_isi_seconds** : each inserted inter-bout pause (ISI) is clipped to at most this many seconds, so a single unusually long recorded gap cannot drop a giant silence into the file. Default ``12.6`` (a typical courtship inter-bout gap)
-* **max_consecutive_bout_skips** : how many bout draws in a row may fail to fit the remaining time (with the lead-out) before the file is closed. Default ``100``: once that many random draws have all overrun, no bout in the repository is likely to fit, so the loop stops rather than drawing forever
-* **playback_seed** : RNG seed for the bout draws; ``null`` draws a fresh random stimulus every run (non-reproducible), an integer reproduces the exact same file(s)
-
 .. code-block:: json
 
     "create_naturalistic_usv_playback_wav": {
@@ -525,6 +1664,156 @@ Every setting below is exposed in the GUI's *Create naturalistic playback .WAV* 
         "max_consecutive_bout_skips": 100,
         "playback_seed": null
     }
+
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`num_naturalistic_usv_files <ana-create-naturalistic-usv-playback-wav-num-naturalistic-usv-files>`
+     - ``1``
+     - integer > 0
+   * - :ref:`context_label <ana-create-naturalistic-usv-playback-wav-context-label>`
+     - ``"courtship_male"``
+     - ``courtship_male``, ``courtship_female``, ``lone_male``, ``lone_female``, ``same_sex_male``, ``same_sex_female``, ``mixed``
+   * - :ref:`total_acceptable_naturalistic_playback_time <ana-create-naturalistic-usv-playback-wav-total-acceptable-naturalistic-playback-time>`
+     - ``60``
+     - seconds > 0
+   * - :ref:`complexity_enabled <ana-create-naturalistic-usv-playback-wav-complexity-enabled>`
+     - ``false``
+     - ``true``, ``false``
+   * - :ref:`complexity_mask_threshold <ana-create-naturalistic-usv-playback-wav-complexity-mask-threshold>`
+     - ``2``
+     - integer mask count
+   * - :ref:`complexity_start_fraction <ana-create-naturalistic-usv-playback-wav-complexity-fractions>`
+     - ``0.0``
+     - fraction 0–1
+   * - :ref:`complexity_end_fraction <ana-create-naturalistic-usv-playback-wav-complexity-fractions>`
+     - ``1.0``
+     - fraction 0–1
+   * - :ref:`complexity_bandwidth <ana-create-naturalistic-usv-playback-wav-complexity-bandwidth>`
+     - ``0.15``
+     - complex-fraction units
+   * - :ref:`edge_silence_seconds <ana-create-naturalistic-usv-playback-wav-edge-silence-seconds>`
+     - ``1.0``
+     - seconds
+   * - :ref:`max_isi_seconds <ana-create-naturalistic-usv-playback-wav-max-isi-seconds>`
+     - ``12.6``
+     - seconds
+   * - :ref:`max_consecutive_bout_skips <ana-create-naturalistic-usv-playback-wav-max-consecutive-bout-skips>`
+     - ``100``
+     - integer > 0
+   * - :ref:`playback_seed <ana-create-naturalistic-usv-playback-wav-playback-seed>`
+     - ``null``
+     - ``null``, or an integer
+
+.. _ana-create-naturalistic-usv-playback-wav-num-naturalistic-usv-files:
+
+``num_naturalistic_usv_files``
+   Number of naturalistic playback files to create in one run.
+
+   :Options: a positive integer
+   :Default: ``1``
+   :Notes: with a fixed ``playback_seed`` the files differ from one another but the whole set is reproducible. GUI field: *Number of generated files* (a text field).
+
+.. _ana-create-naturalistic-usv-playback-wav-context-label:
+
+``context_label``
+   Which repository to play back.
+
+   :Options: one of ``courtship_male``, ``courtship_female``, ``lone_male``, ``lone_female``, ``same_sex_male``, ``same_sex_female``, ``mixed``
+   :Default: ``"courtship_male"``
+   :Notes: it selects the sex subdirectory and context token, and the playback always opens the **newest** matching build in that directory (no explicit file path); the chosen sex also prefixes the output filenames. GUI field: *Choose vocalization context* (a dropdown populated only with contexts that have a built repository).
+
+.. _ana-create-naturalistic-usv-playback-wav-total-acceptable-naturalistic-playback-time:
+
+``total_acceptable_naturalistic_playback_time``
+   The target duration of the playback file (in s).
+
+   :Options: a positive number of seconds
+   :Default: ``60``
+   :Notes: since the file is assembled from whole bouts framed by the fixed edge silences, the result is *up to* this length (a little under), ending on a complete bout. GUI field: *Playback duration (s)* (a text field).
+
+.. _ana-create-naturalistic-usv-playback-wav-complexity-enabled:
+
+``complexity_enabled``
+   Master switch for complexity steering.
+
+   :Options:
+      * ``false`` — bouts are drawn **uniformly at random** (the natural mix) and the remaining ``complexity_*`` settings are inert
+      * ``true`` — the draws are biased by USV complexity
+   :Default: ``false``
+   :Notes: GUI field: *Complexity enabled* (a Yes/No dropdown).
+
+.. _ana-create-naturalistic-usv-playback-wav-complexity-mask-threshold:
+
+``complexity_mask_threshold``
+   With steering on, a USV is *complex* if its ``mask_number`` (count of SAM masks) is ``>=`` this value, else *simple*.
+
+   :Options: an integer mask count (``2`` = multi-component)
+   :Default: ``2``
+   :Notes: GUI field: the *Complexity threshold* slider (2 to 6), greyed out while complexity is disabled.
+
+.. _ana-create-naturalistic-usv-playback-wav-complexity-fractions:
+
+``complexity_start_fraction`` / ``complexity_end_fraction``
+   The target fraction of *complex* USVs at the **start** and **end** of the file (0–1), interpolated linearly across the file position.
+
+   :Options:
+      * equal values — hold a constant simple:complex ratio (e.g. ``1.0 / 1.0`` = all-complex throughout)
+      * unequal values — a ramp; ``0.0 → 1.0`` starts simple and grows more complex
+   :Default: ``0.0`` and ``1.0``
+   :Notes: because bouts are drawn with replacement, a target is met by repeating complex-heavy bouts as needed (whole bouts, natural order preserved), bounded by what the available bouts contain; the achieved ratio and number of distinct bouts used are logged. GUI fields: the *Start fraction* and *End fraction* sliders, greyed out while complexity is disabled.
+
+.. _ana-create-naturalistic-usv-playback-wav-complexity-bandwidth:
+
+``complexity_bandwidth``
+   The width (standard deviation, in complex-fraction units) of the Gaussian that weights each bout by how far its own complex-fraction sits from the current target.
+
+   :Options: a width in complex-fraction units; **smaller** (e.g. ``0.05``) steers tightly to the target but from a narrow pool of bouts (more repetition); **larger** (e.g. ``0.5``) keeps more variety but tracks the target more loosely
+   :Default: ``0.15``, a moderate middle
+   :Notes: GUI field: the *Steering bandwidth* slider, greyed out while complexity is disabled.
+
+.. _ana-create-naturalistic-usv-playback-wav-edge-silence-seconds:
+
+``edge_silence_seconds``
+   Fixed silence written at the very start and very end of the file (s), so it opens and closes on a short, constant gap rather than a variable (or truncated) real pause.
+
+   :Options: a number of seconds
+   :Default: ``1.0``
+   :Notes: edited in the JSON only.
+
+.. _ana-create-naturalistic-usv-playback-wav-max-isi-seconds:
+
+``max_isi_seconds``
+   Each inserted inter-bout pause (ISI) is clipped to at most this many seconds, so a single unusually long recorded gap cannot drop a giant silence into the file.
+
+   :Options: a number of seconds
+   :Default: ``12.6`` (a typical courtship inter-bout gap)
+   :Notes: edited in the JSON only.
+
+.. _ana-create-naturalistic-usv-playback-wav-max-consecutive-bout-skips:
+
+``max_consecutive_bout_skips``
+   How many bout draws in a row may fail to fit the remaining time (with the lead-out) before the file is closed.
+
+   :Options: a positive integer number of draws
+   :Default: ``100``
+   :Notes: once that many random draws have all overrun, no bout in the repository is likely to fit, so the loop stops rather than drawing forever. Edited in the JSON only.
+
+.. _ana-create-naturalistic-usv-playback-wav-playback-seed:
+
+``playback_seed``
+   RNG seed for the bout draws.
+
+   :Options:
+      * ``null`` — draws a fresh random stimulus every run (non-reproducible)
+      * an integer — reproduces the exact same file(s)
+   :Default: ``null``
+   :Notes: GUI field: *Playback seed (blank=random)* (a text field; blank writes ``null``).
 
 .. note::
 
@@ -611,12 +1900,225 @@ pooled**: assembling across them is a later step, done in the notebook (see :doc
       "output_directory": "/mnt/falkner/Bartul/EPHYS/bout_decoding"
     }
 
-``emitter`` takes ``self`` (the recorded animal), ``partner`` or ``all``; the inter-bout threshold
-follows the sex of whichever animal is vocalizing, so a female side is not segmented by a male
-rhythm. ``brain_areas`` set to ``null`` means every area clearing the unit floor. ``catalog_path``
-is the unit catalog the brain areas and unit filters are read from, and ``output_directory`` is
-where each area's compressed archive is written (both re-keyed to the experimenter in use). A
-unit's spike file is looked up by name under the session's ``ephys`` tree; a name matching no file,
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`emitter <ana-decode-usv-bout-occupancy-emitter>`
+     - ``"self"``
+     - ``self``, ``partner``, ``all``
+   * - :ref:`ibi_z_score <ana-decode-usv-bout-occupancy-threshold>`
+     - ``2.58``
+     - standard deviations > 0
+   * - :ref:`ibi_component_index <ana-decode-usv-bout-occupancy-threshold>`
+     - ``0``
+     - mixture component index
+   * - :ref:`min_vocalizations <ana-decode-usv-bout-occupancy-min-vocalizations>`
+     - ``3``
+     - integer >= 1
+   * - :ref:`bin_seconds <ana-decode-usv-bout-occupancy-bin-seconds>`
+     - ``0.25``
+     - seconds > 0
+   * - :ref:`min_kept_seconds <ana-decode-usv-bout-occupancy-min-kept-seconds>`
+     - ``0.03``
+     - seconds
+   * - :ref:`brain_areas <ana-decode-usv-bout-occupancy-brain-areas>`
+     - ``null``
+     - ``null``, or a list of area names
+   * - :ref:`min_units_per_area <ana-decode-usv-bout-occupancy-min-units-per-area>`
+     - ``50``
+     - integer > 0
+   * - :ref:`cluster_group <ana-decode-usv-bout-occupancy-cluster-group>`
+     - ``["good"]``
+     - list of catalog ``cluster_group`` labels
+   * - :ref:`somatic_bool <ana-decode-usv-bout-occupancy-somatic-bool>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`unit_ladder <ana-decode-usv-bout-occupancy-unit-ladder>`
+     - ``[5, 10, 20, 50, 100, 200]``
+     - list of unit counts
+   * - :ref:`runs_per_count <ana-decode-usv-bout-occupancy-runs-per-count>`
+     - ``10``
+     - integer > 0
+   * - :ref:`n_folds <ana-decode-usv-bout-occupancy-n-folds>`
+     - ``3``
+     - integer > 1
+   * - :ref:`n_shuffles <ana-decode-usv-bout-occupancy-n-shuffles>`
+     - ``1000``
+     - integer > 0
+   * - :ref:`shuffle_guard_seconds <ana-decode-usv-bout-occupancy-shuffle-guard-seconds>`
+     - ``20.0``
+     - seconds
+   * - :ref:`shuffle_seed <ana-decode-usv-bout-occupancy-shuffle-seed>`
+     - ``0``
+     - integer seed
+   * - :ref:`catalog_path <ana-decode-usv-bout-occupancy-catalog-path>`
+     - path
+     - path to the unit catalog CSV
+   * - :ref:`output_directory <ana-decode-usv-bout-occupancy-output-directory>`
+     - path
+     - path to a directory
+
+.. _ana-decode-usv-bout-occupancy-emitter:
+
+``emitter``
+   Whose USVs define the bouts and the silence.
+
+   :Options:
+      * ``self`` — the recorded animal
+      * ``partner`` — the other animal
+      * ``all`` — no emitter filter
+   :Default: ``"self"``
+   :Notes: the inter-bout threshold follows the sex of whichever animal is vocalizing, so a female side is not segmented by a male rhythm. Under ``all`` the emitter set is mixed (and includes USVs assigned to no animal), so the recorded animal's sex is used.
+
+.. _ana-decode-usv-bout-occupancy-threshold:
+
+``ibi_z_score`` / ``ibi_component_index``
+   The inter-bout threshold: the emitter sex's log inter-syllable-interval mixture component (``ibi_component_index``) at ``ibi_z_score`` standard deviations.
+
+   :Options:
+      * ``ibi_z_score`` — a positive number of standard deviations
+      * ``ibi_component_index`` — the index of the emitter sex's mixture component
+   :Default: ``2.58`` and ``0``
+   :Notes: the same construction ``build-naturalistic-usv-repository`` uses, which for the male at z = 2.58 puts the threshold at 115.5 ms. A bout is a maximal run of the emitter's USVs whose consecutive silences all stay under this threshold.
+
+.. _ana-decode-usv-bout-occupancy-min-vocalizations:
+
+``min_vocalizations``
+   Runs shorter than this many USVs are not bouts.
+
+   :Options: a positive integer number of USVs
+   :Default: ``3``
+
+.. _ana-decode-usv-bout-occupancy-bin-seconds:
+
+``bin_seconds``
+   The bin width: a positive bin is laid from a bout's own first USV start, stepping forward by this much while it stays inside that bout, and negative bins come from the global lattice of this width.
+
+   :Options: a positive number of seconds
+   :Default: ``0.25``
+
+.. _ana-decode-usv-bout-occupancy-min-kept-seconds:
+
+``min_kept_seconds``
+   The silent time a positive bin needs to count at all.
+
+   :Options: a number of seconds
+   :Default: ``0.03``
+
+.. _ana-decode-usv-bout-occupancy-brain-areas:
+
+``brain_areas``
+   Which brain areas to decode.
+
+   :Options:
+      * ``null`` — every area clearing the unit floor (``min_units_per_area``)
+      * a list of area names — only those areas; a requested area absent from the session is reported
+   :Default: ``null``
+   :Notes: the session's units are split by brain area from the unit catalog on their own, so no area list is needed.
+
+.. _ana-decode-usv-bout-occupancy-min-units-per-area:
+
+``min_units_per_area``
+   The unit floor: every area clearing it is decoded into its own compressed archive.
+
+   :Options: a positive integer number of units
+   :Default: ``50``
+   :Notes: areas seen but held back by the floor are reported by name.
+
+.. _ana-decode-usv-bout-occupancy-cluster-group:
+
+``cluster_group``
+   Only catalog units whose ``cluster_group`` is in this list are decoded.
+
+   :Options: a list of catalog ``cluster_group`` labels
+   :Default: ``["good"]``
+
+.. _ana-decode-usv-bout-occupancy-somatic-bool:
+
+``somatic_bool``
+   Whether only units the catalog marks as somatic are decoded.
+
+   :Options:
+      * ``true`` — somatic units only
+      * ``false`` — no somatic filter
+   :Default: ``true``
+
+.. _ana-decode-usv-bout-occupancy-unit-ladder:
+
+``unit_ladder``
+   The unit-subset sizes of the sweep over increasingly large random subsets of each area's units.
+
+   :Options: a list of unit counts
+   :Default: ``[5, 10, 20, 50, 100, 200]``
+   :Notes: only the counts smaller than an area's unit count are used, and the area's full unit count is always added as the last rung.
+
+.. _ana-decode-usv-bout-occupancy-runs-per-count:
+
+``runs_per_count``
+   How many random unit subsets each rung's observed accuracy, and each of its null draws, is averaged over.
+
+   :Options: a positive integer
+   :Default: ``10``
+   :Notes: costs ``runs_per_count`` decodes per null draw.
+
+.. _ana-decode-usv-bout-occupancy-n-folds:
+
+``n_folds``
+   The number of contiguous time blocks that rotate as train and test.
+
+   :Options: an integer of at least 2
+   :Default: ``3`` (three contiguous thirds)
+
+.. _ana-decode-usv-bout-occupancy-n-shuffles:
+
+``n_shuffles``
+   The number of null draws per rung, each one common circular shift applied to every unit.
+
+   :Options: a positive integer
+   :Default: ``1000``
+   :Notes: the p-value is ``(1 + #{null >= observed}) / (n_shuffles + 1)``.
+
+.. _ana-decode-usv-bout-occupancy-shuffle-guard-seconds:
+
+``shuffle_guard_seconds``
+   The null's circular shifts are drawn uniformly from ``[guard, duration - guard]`` (in s).
+
+   :Options: a number of seconds
+   :Default: ``20.0``
+
+.. _ana-decode-usv-bout-occupancy-shuffle-seed:
+
+``shuffle_seed``
+   Seed of the random generator that draws the unit subsets, the circular shifts and the nearest-neighbour classifier's random choices.
+
+   :Options: an integer seed
+   :Default: ``0``
+   :Notes: the generator is re-seeded for every area.
+
+.. _ana-decode-usv-bout-occupancy-catalog-path:
+
+``catalog_path``
+   The unit catalog the brain areas and unit filters are read from.
+
+   :Options: path to the unit catalog CSV
+   :Default: ``/mnt/falkner/Bartul/EPHYS/unit_catalog.csv``
+   :Notes: re-keyed to the experimenter in use.
+
+.. _ana-decode-usv-bout-occupancy-output-directory:
+
+``output_directory``
+   Where each area's compressed archive is written.
+
+   :Options: path to a directory
+   :Default: ``/mnt/falkner/Bartul/EPHYS/bout_decoding``
+   :Notes: re-keyed to the experimenter in use.
+
+A unit's spike file is looked up by name under the session's ``ephys`` tree; a name matching no file,
 or more than one, raises instead of decoding whichever file sorts first. The decoder is implemented
 in ``usv_playpen.analyses.decode_usv_bout_occupancy``.
 

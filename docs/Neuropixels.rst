@@ -220,17 +220,6 @@ files at the chosen ``output_path``:
 The tunables live in ``analyses_settings.json`` (read at the top of the notebook and
 passed to the calls above).
 
-``npx_histology_stack_lightsheet_volume``:
-
-* **xy_flip** : mirror each Z-plane image — ``'none'`` / ``'vertical'`` / ``'horizontal'`` / ``'both'`` (affects the axial view in *napari*).
-* **z_flip** : reverse the Z iteration order (affects the coronal / sagittal views).
-* **skip_first** : drop the LaVision ``Z0000`` plane, which alone carries the OME-XML header.
-
-``npx_histology_stitch_smartspim_tiles``:
-
-* **z_flip** : reverse the Z iteration order (as above, for the SmartSPIM path).
-* **feather_pixels** : width (px) of the linear feather ramp blended over the tile seams.
-
 .. code-block:: json
 
     "npx_histology_stack_lightsheet_volume": {
@@ -242,6 +231,87 @@ passed to the calls above).
         "z_flip": true,
         "feather_pixels": 64
     }
+
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`npx_histology_stack_lightsheet_volume.xy_flip <npx-stack-lightsheet-volume-xy-flip>`
+     - ``'none'``
+     - ``'none'``, ``'vertical'``, ``'horizontal'``, ``'both'``
+   * - :ref:`npx_histology_stack_lightsheet_volume.z_flip <npx-stack-lightsheet-volume-z-flip>`
+     - ``false``
+     - ``true``, ``false``
+   * - :ref:`npx_histology_stack_lightsheet_volume.skip_first <npx-stack-lightsheet-volume-skip-first>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`npx_histology_stitch_smartspim_tiles.z_flip <npx-stitch-smartspim-tiles-z-flip>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`npx_histology_stitch_smartspim_tiles.feather_pixels <npx-stitch-smartspim-tiles-feather-pixels>`
+     - ``64``
+     - pixels, integer >= 1
+
+``npx_histology_stack_lightsheet_volume``:
+
+.. _npx-stack-lightsheet-volume-xy-flip:
+
+``xy_flip``
+   Mirror each Z-plane image.
+
+   :Options:
+      * ``'none'`` — leave each plane as acquired
+      * ``'vertical'`` — mirror each plane vertically
+      * ``'horizontal'`` — mirror each plane horizontally
+      * ``'both'`` — mirror each plane both ways
+   :Default: ``'none'``
+   :Notes: affects the axial view in *napari*.
+
+.. _npx-stack-lightsheet-volume-z-flip:
+
+``z_flip``
+   Reverse the Z iteration order.
+
+   :Options:
+      * ``true`` — reverse the Z order
+      * ``false`` — keep the acquired Z order
+   :Default: ``false``
+   :Notes: affects the coronal / sagittal views.
+
+.. _npx-stack-lightsheet-volume-skip-first:
+
+``skip_first``
+   Drop the LaVision ``Z0000`` plane, which alone carries the OME-XML header.
+
+   :Options:
+      * ``true`` — drop the ``Z0000`` plane
+      * ``false`` — keep it
+   :Default: ``true``
+
+``npx_histology_stitch_smartspim_tiles``:
+
+.. _npx-stitch-smartspim-tiles-z-flip:
+
+``z_flip``
+   Reverse the Z iteration order (as above, for the SmartSPIM path).
+
+   :Options:
+      * ``true`` — reverse the Z order
+      * ``false`` — keep the acquired Z order
+   :Default: ``true``
+   :Notes: affects the coronal / sagittal views.
+
+.. _npx-stitch-smartspim-tiles-feather-pixels:
+
+``feather_pixels``
+   Width (px) of the linear feather ramp blended over the tile seams.
+
+   :Options: a positive integer number of pixels (a value below ``1`` raises)
+   :Default: ``64``
 
 .. _histology-registration:
 
@@ -384,8 +454,6 @@ The probe → hemisphere map is read from the ``npx_histology_ibl_alignment_expo
 block of ``analyses_settings.json`` (and reused by the post-alignment and
 quality-metrics steps):
 
-* **probe_to_hemisphere** : per-lab convention mapping each ``imecN`` probe to the hemisphere it was inserted into (defaults ``imec0`` → ``R``, ``imec1`` → ``L``).
-
 .. code-block:: json
 
     "npx_histology_ibl_alignment_export": {
@@ -394,6 +462,27 @@ quality-metrics steps):
             "imec1": "L"
         }
     }
+
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`probe_to_hemisphere <npx-ibl-alignment-export-probe-to-hemisphere>`
+     - ``imec0`` → ``R``, ``imec1`` → ``L``
+     - mapping of ``imecN`` probe id to ``'R'`` / ``'L'``
+
+.. _npx-ibl-alignment-export-probe-to-hemisphere:
+
+``probe_to_hemisphere``
+   Per-lab convention mapping each ``imecN`` probe to the hemisphere it was inserted into.
+
+   :Options: a mapping with one entry per probe, from its ``imecN`` id to its hemisphere, ``'R'`` (right) or ``'L'`` (left)
+   :Default: ``imec0`` → ``R``, ``imec1`` → ``L``
+   :Notes: every step runs once per probe listed here; the post-alignment and quality-metrics steps reuse the same map.
 
 .. _histology-ibl-gui:
 
@@ -621,27 +710,6 @@ columns. ``run`` writes the global ``EPHYS/unit_catalog.csv`` and a per-probe
 The metrics tunables live in the ``npx_spike_quality_metrics`` block of
 ``analyses_settings.json``:
 
-* **kilosort_version** : which ``kilosort{N}`` subdirectory to read.
-* **phy_curated** : whether the session was curated in *phy* (``spike_clusters`` differ from ``spike_templates``).
-* **num_channels_sparsity** : channels per unit in the *phy*-peak-centred sparsity.
-* **shank_width_microns** / **shank_spacing_microns** : geometry used to fold the within-shank lateral offset into the anatomical AP axis.
-* **probe_to_hemisphere** : the same probe → hemisphere map as the alignment step.
-* **job_kwargs** : *SpikeInterface* job settings — ``n_jobs`` (the main throughput knob for the single recording read), ``chunk_duration``, ``progress_bar``.
-* **extension_params** : per-session overrides for the *SpikeInterface* extension parameters — the ``waveforms`` window (``ms_before`` / ``ms_after``), the ``random_spikes`` subsample size / seed, and the ``noise_levels`` chunk-sample seed. Only the keys given are overridden; unnamed keys keep their module defaults.
-* **quality_metric_params** : per-session overrides for the per-metric quality parameters — the ``isi_violation`` (``isi_threshold_ms`` / ``min_isi_ms``) and ``rp_violation`` (``refractory_period_ms`` / ``censored_period_ms``) thresholds. Layered onto the module defaults key-by-key.
-* **template_metric_params** : per-session overrides for the template-metric parameters — the exp-decay goodness-of-fit floor (``min_r2_exp_decay``) and the spread threshold (``spread_threshold``).
-* **triangulation_max_distance_um** : maximum distance (µm) the monopolar-triangulation solver may place a source from the reference channel.
-
-The ``somatic_classifier`` sub-block holds the waveform peak/trough shape thresholds
-for the somatic / non-somatic decision (after Deligkaris et al. 2016 — a unit reads as
-non-somatic when a large, narrow positive peak precedes the main trough):
-
-* **min_trough_to_peak2_ratio** (``5.0``) — non-somatic requires the main-trough-to-pre-trough-peak amplitude ratio *below* this.
-* **min_width_first_peak** (``4``) / **min_width_main_trough** (``5``) — non-somatic requires the pre-trough peak and main-trough half-prominence widths (in samples) *below* these.
-* **max_peak1_to_peak2_ratio** (``3.0``) — non-somatic requires the pre-trough-to-post-trough peak amplitude ratio *above* this.
-* **max_main_peak_to_trough_ratio** (``0.8``) — a unit is non-somatic outright when its largest positive peak exceeds this fraction of the trough amplitude.
-* **standard_spike_width** (``61``) — reference template length (samples) the two width thresholds scale against.
-
 .. code-block:: json
 
     "npx_spike_quality_metrics": {
@@ -682,6 +750,223 @@ non-somatic when a large, narrow positive peak precedes the main trough):
         },
         "triangulation_max_distance_um": 1000
     }
+
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`kilosort_version <npx-spike-quality-metrics-kilosort-version>`
+     - ``4``
+     - Kilosort version, names the ``kilosort{N}`` subdirectory
+   * - :ref:`phy_curated <npx-spike-quality-metrics-phy-curated>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`num_channels_sparsity <npx-spike-quality-metrics-num-channels-sparsity>`
+     - ``7``
+     - number of channels per unit
+   * - :ref:`shank_width_microns <npx-spike-quality-metrics-shank-geometry>`
+     - ``70``
+     - µm
+   * - :ref:`shank_spacing_microns <npx-spike-quality-metrics-shank-geometry>`
+     - ``250``
+     - µm
+   * - :ref:`probe_to_hemisphere <npx-spike-quality-metrics-probe-to-hemisphere>`
+     - ``imec0`` → ``R``, ``imec1`` → ``L``
+     - mapping of ``imecN`` probe id to ``'R'`` / ``'L'``
+   * - :ref:`job_kwargs.n_jobs <npx-spike-quality-metrics-job-kwargs>`
+     - ``16``
+     - number of parallel jobs
+   * - :ref:`job_kwargs.chunk_duration <npx-spike-quality-metrics-job-kwargs>`
+     - ``"1s"``
+     - *SpikeInterface* chunk duration string
+   * - :ref:`job_kwargs.progress_bar <npx-spike-quality-metrics-job-kwargs>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`extension_params.random_spikes <npx-spike-quality-metrics-extension-params>`
+     - ``{"max_spikes_per_unit": 1000, "seed": 0}``
+     - subsample size / seed
+   * - :ref:`extension_params.waveforms <npx-spike-quality-metrics-extension-params>`
+     - ``{"ms_before": 0.7, "ms_after": 2.1}``
+     - waveform window, ms
+   * - :ref:`extension_params.noise_levels <npx-spike-quality-metrics-extension-params>`
+     - ``{"random_slices_kwargs": {"seed": 0}}``
+     - chunk-sample seed
+   * - :ref:`quality_metric_params.isi_violation <npx-spike-quality-metrics-quality-metric-params>`
+     - ``{"isi_threshold_ms": 1.5, "min_isi_ms": 0}``
+     - thresholds, ms
+   * - :ref:`quality_metric_params.rp_violation <npx-spike-quality-metrics-quality-metric-params>`
+     - ``{"refractory_period_ms": 1.0, "censored_period_ms": 0.0}``
+     - thresholds, ms
+   * - :ref:`template_metric_params.min_r2_exp_decay <npx-spike-quality-metrics-template-metric-params>`
+     - ``0.5``
+     - goodness-of-fit floor
+   * - :ref:`template_metric_params.spread_threshold <npx-spike-quality-metrics-template-metric-params>`
+     - ``0.2``
+     - spread threshold
+   * - :ref:`triangulation_max_distance_um <npx-spike-quality-metrics-triangulation-max-distance-um>`
+     - ``1000``
+     - µm
+   * - :ref:`somatic_classifier.min_trough_to_peak2_ratio <npx-spike-quality-metrics-somatic-classifier-min-trough-to-peak2-ratio>`
+     - ``5.0``
+     - amplitude ratio
+   * - :ref:`somatic_classifier.min_width_first_peak <npx-spike-quality-metrics-somatic-classifier-widths>`
+     - ``4``
+     - samples
+   * - :ref:`somatic_classifier.min_width_main_trough <npx-spike-quality-metrics-somatic-classifier-widths>`
+     - ``5``
+     - samples
+   * - :ref:`somatic_classifier.max_peak1_to_peak2_ratio <npx-spike-quality-metrics-somatic-classifier-max-peak1-to-peak2-ratio>`
+     - ``3.0``
+     - amplitude ratio
+   * - :ref:`somatic_classifier.max_main_peak_to_trough_ratio <npx-spike-quality-metrics-somatic-classifier-max-main-peak-to-trough-ratio>`
+     - ``0.8``
+     - fraction of the trough amplitude
+   * - :ref:`somatic_classifier.standard_spike_width <npx-spike-quality-metrics-somatic-classifier-standard-spike-width>`
+     - ``61``
+     - samples
+
+.. _npx-spike-quality-metrics-kilosort-version:
+
+``kilosort_version``
+   Which ``kilosort{N}`` subdirectory to read.
+
+   :Options: a Kilosort version number ``N``
+   :Default: ``4`` (reads ``kilosort4``)
+
+.. _npx-spike-quality-metrics-phy-curated:
+
+``phy_curated``
+   Whether the session was curated in *phy* (``spike_clusters`` differ from ``spike_templates``).
+
+   :Options:
+      * ``true`` — the session was curated in *phy*
+      * ``false`` — it was not
+   :Default: ``true``
+
+.. _npx-spike-quality-metrics-num-channels-sparsity:
+
+``num_channels_sparsity``
+   Channels per unit in the *phy*-peak-centred sparsity.
+
+   :Options: a positive integer number of channels
+   :Default: ``7``
+
+.. _npx-spike-quality-metrics-shank-geometry:
+
+``shank_width_microns`` / ``shank_spacing_microns``
+   Geometry used to fold the within-shank lateral offset into the anatomical AP axis.
+
+   :Options: a length in µm for each
+   :Default: ``70`` and ``250``
+
+.. _npx-spike-quality-metrics-probe-to-hemisphere:
+
+``probe_to_hemisphere``
+   The same probe → hemisphere map as the alignment step.
+
+   :Options: a mapping from each ``imecN`` probe id to ``'R'`` or ``'L'``, as in ``npx_histology_ibl_alignment_export``
+   :Default: ``imec0`` → ``R``, ``imec1`` → ``L``
+
+.. _npx-spike-quality-metrics-job-kwargs:
+
+``job_kwargs``
+   *SpikeInterface* job settings.
+
+   :Options:
+      * ``n_jobs`` — the number of parallel jobs; the main throughput knob for the single recording read
+      * ``chunk_duration`` — the *SpikeInterface* chunk duration
+      * ``progress_bar`` — whether to show a progress bar (``true`` / ``false``)
+   :Default: ``n_jobs`` ``16``, ``chunk_duration`` ``"1s"``, ``progress_bar`` ``true``
+
+.. _npx-spike-quality-metrics-extension-params:
+
+``extension_params``
+   Per-session overrides for the *SpikeInterface* extension parameters.
+
+   :Options:
+      * ``waveforms`` — the waveform window (``ms_before`` / ``ms_after``)
+      * ``random_spikes`` — the random-spike subsample size / seed (``max_spikes_per_unit`` / ``seed``)
+      * ``noise_levels`` — the chunk-sample seed (``random_slices_kwargs.seed``)
+   :Default: ``waveforms`` ``ms_before`` ``0.7`` / ``ms_after`` ``2.1``; ``random_spikes`` ``max_spikes_per_unit`` ``1000`` / ``seed`` ``0``; ``noise_levels`` seed ``0``
+   :Notes: only the keys given are overridden; unnamed keys keep their module defaults.
+
+.. _npx-spike-quality-metrics-quality-metric-params:
+
+``quality_metric_params``
+   Per-session overrides for the per-metric quality parameters.
+
+   :Options:
+      * ``isi_violation`` — the inter-spike-interval violation thresholds (``isi_threshold_ms`` / ``min_isi_ms``)
+      * ``rp_violation`` — the refractory-period violation thresholds (``refractory_period_ms`` / ``censored_period_ms``)
+   :Default: ``isi_violation`` ``isi_threshold_ms`` ``1.5`` / ``min_isi_ms`` ``0``; ``rp_violation`` ``refractory_period_ms`` ``1.0`` / ``censored_period_ms`` ``0.0``
+   :Notes: layered onto the module defaults key-by-key.
+
+.. _npx-spike-quality-metrics-template-metric-params:
+
+``template_metric_params``
+   Per-session overrides for the template-metric parameters.
+
+   :Options:
+      * ``min_r2_exp_decay`` — the exp-decay goodness-of-fit floor
+      * ``spread_threshold`` — the spread threshold
+   :Default: ``min_r2_exp_decay`` ``0.5``, ``spread_threshold`` ``0.2``
+
+.. _npx-spike-quality-metrics-triangulation-max-distance-um:
+
+``triangulation_max_distance_um``
+   Maximum distance (µm) the monopolar-triangulation solver may place a source from the reference channel.
+
+   :Options: a distance in µm
+   :Default: ``1000``
+
+The ``somatic_classifier`` sub-block holds the waveform peak/trough shape thresholds
+for the somatic / non-somatic decision (after Deligkaris et al. 2016 — a unit reads as
+non-somatic when a large, narrow positive peak precedes the main trough):
+
+.. _npx-spike-quality-metrics-somatic-classifier-min-trough-to-peak2-ratio:
+
+``min_trough_to_peak2_ratio``
+   Non-somatic requires the main-trough-to-pre-trough-peak amplitude ratio *below* this.
+
+   :Options: an amplitude ratio
+   :Default: ``5.0``
+
+.. _npx-spike-quality-metrics-somatic-classifier-widths:
+
+``min_width_first_peak`` / ``min_width_main_trough``
+   Non-somatic requires the pre-trough peak and main-trough half-prominence widths (in samples) *below* these.
+
+   :Options: a width in samples for each
+   :Default: ``4`` and ``5``
+   :Notes: both scale against ``standard_spike_width``.
+
+.. _npx-spike-quality-metrics-somatic-classifier-max-peak1-to-peak2-ratio:
+
+``max_peak1_to_peak2_ratio``
+   Non-somatic requires the pre-trough-to-post-trough peak amplitude ratio *above* this.
+
+   :Options: an amplitude ratio
+   :Default: ``3.0``
+
+.. _npx-spike-quality-metrics-somatic-classifier-max-main-peak-to-trough-ratio:
+
+``max_main_peak_to_trough_ratio``
+   A unit is non-somatic outright when its largest positive peak exceeds this fraction of the trough amplitude.
+
+   :Options: a fraction of the trough amplitude
+   :Default: ``0.8``
+
+.. _npx-spike-quality-metrics-somatic-classifier-standard-spike-width:
+
+``standard_spike_width``
+   Reference template length (samples) the two width thresholds scale against.
+
+   :Options: a template length in samples
+   :Default: ``61``
 
 Every unit becomes one row of ``unit_catalog.csv``. Its columns, by group:
 

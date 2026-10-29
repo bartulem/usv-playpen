@@ -227,23 +227,61 @@ On the next page, you can set some basic parameters:
 * **Ethernet network ID** : this is the ID of the ethernet network
 * **Notify e-mail(s) of PC usage** : this is the e-mail address that will be notified of the start and end of PC usage
 
-The file-destination directories above are derived from the ``[[lab_shares]]`` table near the top of *behavioral_experiments_settings.toml*, which records how this host mounts the lab CUP file server shares (it is also read by ``os_utils`` and the processing code). Each entry stores only the per-platform tokens, not full paths:
+The file-destination directories above are derived from the ``[[lab_shares]]`` table near the top of *behavioral_experiments_settings.toml*, which records how this host mounts the lab CUP file server shares (it is also read by ``os_utils`` and the processing code). Each entry stores only the per-platform tokens, not full paths. This table has no code block on this page; the defaults below are the two entries of the shipped *_config/behavioral_experiments_settings.toml* (``falkner`` first, then ``murthy``).
 
-* **name** : the share name (e.g. ``falkner``, ``murthy``); it is appended to the mount parent to form each full root, and is also used as ``\\<file_server>\<name>``
-* **windows** : the drive **letter** the share is mapped to on Windows (a ``:`` is appended automatically)
-* **darwin** / **linux** / **cluster** : the mount **parent** directory under which the share appears on macOS, Linux, and the compute cluster respectively
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`name <rec-lab-shares-name>`
+     - ``'falkner'`` / ``'murthy'``
+     - the share name (any string)
+   * - :ref:`windows <rec-lab-shares-windows>`
+     - ``'F'`` / ``'M'``
+     - a single drive letter
+   * - :ref:`darwin <rec-lab-shares-mount-parents>`
+     - ``'/Volumes'``
+     - path to a mount parent directory
+   * - :ref:`linux <rec-lab-shares-mount-parents>`
+     - ``'/mnt'``
+     - path to a mount parent directory
+   * - :ref:`cluster <rec-lab-shares-mount-parents>`
+     - ``'/mnt/cup/labs'``
+     - path to a mount parent directory
+
+.. _rec-lab-shares-name:
+
+``name``
+   The share name (e.g. ``falkner``, ``murthy``).
+
+   :Options: any string naming a lab CUP share
+   :Default: ``'falkner'`` (first entry) and ``'murthy'`` (second entry)
+   :Notes: it is appended to the mount parent to form each full root, and is also used as ``\\<file_server>\<name>``.
+
+.. _rec-lab-shares-windows:
+
+``windows``
+   The drive **letter** the share is mapped to on Windows.
+
+   :Options: a single drive letter
+   :Default: ``'F'`` (``falkner``) and ``'M'`` (``murthy``)
+   :Notes: a ``:`` is appended automatically.
+
+.. _rec-lab-shares-mount-parents:
+
+``darwin`` / ``linux`` / ``cluster``
+   The mount **parent** directory under which the share appears on macOS, Linux, and the compute cluster respectively.
+
+   :Options: path (string) to the mount parent directory on that platform
+   :Default: ``'/Volumes'``, ``'/mnt'`` and ``'/mnt/cup/labs'`` (the same in both shipped entries)
 
 The first ``[[lab_shares]]`` entry is the default returned by ``find_base_path``. To remap a drive or mount point, edit the relevant token here.
 
 The ``[timeouts]`` table of the same file (not in the GUI) holds the time budgets and retry counts of the recording PC's health checks and file transfers:
-
-* **ethernet_up_max_wait_s** / **ethernet_up_poll_interval_s** : after re-enabling the Ethernet adapter, how long (s) to wait for it to report *Up* and how often (s) to poll it (20 / 5); past the budget the recording stops
-* **avisoft_warmup_s** / **avisoft_poll_interval_s** / **avisoft_max_wait_s** : the Avisoft health check after launch waits this long (s) for the first .wav files, then polls them at this interval (s) for byte growth within this budget (s) (3 / 3 / 12); a channel directory without growth aborts the recording
-* **drive_mount_max_retries** : attempts at mapping each CUP drive on Windows before the failure is reported (3)
-* **drive_verify_timeout_s** : how long (s) a freshly mapped drive may take to answer a directory check before the attempt counts as failed (10)
-* **ssh_connect_timeout_s** : SSH connection timeout (s) of the mount check on the Motif PCs (10)
-* **audio_move_timeout_min** : overall budget (min) of the parallel robocopy moves of the audio files to the file server (15: a safety margin over each file's own ~10 min robocopy retry budget, short enough that a wedged transfer cannot hold the GUI)
-* **backup_mirror_timeout_hours** : budget (h) of the robocopy mirrors to the backup destinations (2)
 
 .. code-block:: toml
 
@@ -258,6 +296,109 @@ The ``[timeouts]`` table of the same file (not in the GUI) holds the time budget
     ssh_connect_timeout_s = 10
     audio_move_timeout_min = 15
     backup_mirror_timeout_hours = 2
+
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`ethernet_up_max_wait_s <rec-timeouts-ethernet-up>`
+     - ``20``
+     - seconds > 0
+   * - :ref:`ethernet_up_poll_interval_s <rec-timeouts-ethernet-up>`
+     - ``5``
+     - seconds > 0
+   * - :ref:`avisoft_warmup_s <rec-timeouts-avisoft>`
+     - ``3``
+     - seconds > 0
+   * - :ref:`avisoft_poll_interval_s <rec-timeouts-avisoft>`
+     - ``3``
+     - seconds > 0
+   * - :ref:`avisoft_max_wait_s <rec-timeouts-avisoft>`
+     - ``12``
+     - seconds > 0
+   * - :ref:`drive_mount_max_retries <rec-timeouts-drive-mount-max-retries>`
+     - ``3``
+     - integer > 0
+   * - :ref:`drive_verify_timeout_s <rec-timeouts-drive-verify-timeout-s>`
+     - ``10``
+     - seconds > 0
+   * - :ref:`ssh_connect_timeout_s <rec-timeouts-ssh-connect-timeout-s>`
+     - ``10``
+     - seconds > 0
+   * - :ref:`audio_move_timeout_min <rec-timeouts-audio-move-timeout-min>`
+     - ``15``
+     - minutes > 0
+   * - :ref:`backup_mirror_timeout_hours <rec-timeouts-backup-mirror-timeout-hours>`
+     - ``2``
+     - hours > 0
+
+.. _rec-timeouts-ethernet-up:
+
+``ethernet_up_max_wait_s`` / ``ethernet_up_poll_interval_s``
+   After re-enabling the Ethernet adapter, how long (s) to wait for it to report *Up* and how often (s) to poll it.
+
+   :Options:
+      * ``ethernet_up_max_wait_s`` — the wait budget, a positive number of seconds
+      * ``ethernet_up_poll_interval_s`` — the poll interval, a positive number of seconds
+   :Default: ``20`` (budget) and ``5`` (interval)
+   :Notes: past the budget the recording stops.
+
+.. _rec-timeouts-avisoft:
+
+``avisoft_warmup_s`` / ``avisoft_poll_interval_s`` / ``avisoft_max_wait_s``
+   The Avisoft health check after launch waits this long (s) for the first .wav files, then polls them at this interval (s) for byte growth within this budget (s).
+
+   :Options:
+      * ``avisoft_warmup_s`` — the warm-up wait before the first check, a positive number of seconds
+      * ``avisoft_poll_interval_s`` — the interval between byte-growth polls, a positive number of seconds
+      * ``avisoft_max_wait_s`` — the budget within which byte growth must be seen, a positive number of seconds
+   :Default: ``3`` / ``3`` / ``12``
+   :Notes: a channel directory without growth aborts the recording.
+
+.. _rec-timeouts-drive-mount-max-retries:
+
+``drive_mount_max_retries``
+   Attempts at mapping each CUP drive on Windows before the failure is reported.
+
+   :Options: a positive integer
+   :Default: ``3``
+
+.. _rec-timeouts-drive-verify-timeout-s:
+
+``drive_verify_timeout_s``
+   How long (s) a freshly mapped drive may take to answer a directory check before the attempt counts as failed.
+
+   :Options: a positive number of seconds
+   :Default: ``10``
+
+.. _rec-timeouts-ssh-connect-timeout-s:
+
+``ssh_connect_timeout_s``
+   SSH connection timeout (s) of the mount check on the Motif PCs.
+
+   :Options: a positive number of seconds
+   :Default: ``10``
+
+.. _rec-timeouts-audio-move-timeout-min:
+
+``audio_move_timeout_min``
+   Overall budget (min) of the parallel robocopy moves of the audio files to the file server.
+
+   :Options: a positive number of minutes
+   :Default: ``15``
+   :Notes: 15 is a safety margin over each file's own ~10 min robocopy retry budget, short enough that a wedged transfer cannot hold the GUI.
+
+.. _rec-timeouts-backup-mirror-timeout-hours:
+
+``backup_mirror_timeout_hours``
+   Budget (h) of the robocopy mirrors to the backup destinations.
+
+   :Options: a positive number of hours
+   :Default: ``2``
 
 In the example below, one would be doing a 20 minute audio and video recording without calibration. When ready, click *Next*:
 
