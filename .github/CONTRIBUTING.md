@@ -555,6 +555,14 @@ rather than as a universal requirement.
 - **RST hygiene (pre-commit-enforced):** two-backtick ` `code` ` for anything
   code-like, directives end with `::`, correct inline-code spacing. Build
   warning-clean before pushing.
+- **One topic per paragraph.** Long prose is split into paragraphs at the
+  sentences where the topic changes (what a step does / how it works / what it
+  writes / what it refuses / how it was validated), aiming at roughly 300–900
+  characters each. A single 2,000+ character paragraph covering several topics
+  is a doc bug. Don't split inside a parenthesis, between a sentence ending in
+  `:` and the list or example it introduces, or inside a bullet item. Inside an
+  indented block (a directive, a `:Notes:` body) the new paragraph keeps the
+  block's indentation.
 
 **`Notebooks.rst` (per-notebook walkthroughs):** the single detailed home for
 the package notebooks; topical pages link here rather than restating. Per
@@ -609,6 +617,66 @@ notebook:
   settings files.
 - **Media:** screenshots / gifs live in `docs/media/`, named
   `<page>_step_<n>.<ext>`, referenced with a consistent image/figure directive.
+
+**Settings reference sections (table + one block per setting):** every
+documented settings block on the user-guide pages (Record, Process, Analyze,
+Visualize, Neuropixels, Modeling) uses the same three-part layout, so a reader
+can scan a block at a glance and then jump to the detail of one key:
+
+1. **The JSON block as shipped**, in a `.. code-block:: json`, matching the
+   `*_settings.json` file (see above).
+2. **A summary table** — a `list-table` with the `settings-glance` class, one
+   row per key: the key name linking to its block, the default, and a short
+   description of the allowed values. No caption above the table.
+3. **One block per key**, in the table's order: a `.. _label:` target, the key
+   in double backticks as a definition-list term, a one-line description of what
+   it does, then a field list with `:Options:` (what values it takes),
+   `:Default:` (the shipped value) and, when there is more to say, `:Notes:`
+   (validation, interactions with other keys, where it is GUI- or CLI-only).
+   Several notes go in a bullet list; a single note stays inline. Omit `:Notes:`
+   when there is nothing to add.
+
+```rst
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`save_directory <mio-save-directory>`
+     - ``/mnt/falkner/Bartul/modeling``
+     - path to a writable directory
+
+.. _mio-save-directory:
+
+``save_directory``
+   Directory where every modeling-input pickle, audit, and result is written.
+
+   :Options: path (string) to a writable directory
+   :Default: ``/mnt/falkner/Bartul/modeling``
+   :Notes: not validated; the extraction pipelines write into it as given.
+```
+
+- **Labels** are `<page prefix>-<block prefix>-<key with dashes>` and must be
+  unique across the whole docs build (Sphinx warns on duplicates). Page
+  prefixes: `rec-` (Record), `proc-` (Process), `ana-` (Analyze), `vis-`
+  (Visualize), `npx-` (Neuropixels); Modeling uses one short prefix per block
+  (e.g. `mio-` for `io`, `mval-` for `model_validation`, `nm-` for the neural
+  modeling blocks). Follow the prefixes already used on the page you edit.
+- **Nested keys** keep their full dotted path in the term and the table
+  (` ``calibration.scheme`` `), so the reader can find them in the JSON.
+- **Options must come from the code**, not from memory: copy the accepted values
+  from the validator, `click.Choice`, or constant set that enforces them, and
+  quote them exactly as the code spells them. When the code and the docs
+  disagree, fix whichever is wrong in the same change.
+- **Styling is automatic.** `docs/_static/settings.css` (registered in
+  `docs/conf.py` via `html_css_files`) styles the `settings-glance` tables and
+  matches the definition-list + field-list shape of each block with CSS
+  selectors, so a new section needs no extra markup or classes beyond
+  `:class: settings-glance` on its table. Check the result in both the light and
+  the dark theme when changing that file.
 
 **Local live preview (esbonio, optional):** in-editor live preview uses the
 **Esbonio** VS Code extension (`swyddfa.esbonio`), which is in the `docs`
