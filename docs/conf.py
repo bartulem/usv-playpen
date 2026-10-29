@@ -51,6 +51,10 @@ html_logo = "media/gui_icon.png"
 #
 html_theme = "sphinx_rtd_theme"
 
+# extra styling for the settings reference pages (setting names, option lists, glance tables)
+html_static_path = ["_static"]
+html_css_files = ["settings.css"]
+
 html_theme_options = {
     "canonical_url": "",
     "logo_only": False,

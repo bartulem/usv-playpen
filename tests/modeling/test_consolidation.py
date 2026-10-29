@@ -354,6 +354,20 @@ class TestSelectionHelpers:
         out = cms._build_default_output_filename(md_in, md_run, step_prefix=prefix)
         assert out == f'model_selection_final_male_{cohort}_bout_mixed_20260511_203829Z.pkl'
 
+    def test_build_default_output_filename_leads_with_the_ephys_prefix(self):
+        """An ``ephys_<sex>_<cohort>`` label puts ``ephys_`` in front of the
+        sex and names the sex once."""
+
+        md_in = {'target_mouse_sex': 'male',
+                 'experimental_condition': 'ephys_male_all_partners',
+                 'analysis_tag': 'multinomial_qlvm_category',
+                 'analysis_specific': {}}
+        md_run = {'split_strategy': 'session'}
+        prefix = 'model_selection_multinomial_qlvm_category_ephys_male_all_partners_20261026_203704Z_session_step_'
+        out = cms._build_default_output_filename(md_in, md_run, step_prefix=prefix)
+        assert out == ('model_selection_final_ephys_male_all_partners_multinomial_qlvm_category_'
+                       'session_20261026_203704Z.pkl')
+
     def test_build_default_output_filename_strips_sex_suffix(self):
         """An older ``intact_partners_<sex>`` label has its trailing ``_<sex>``
         stripped and the run timestamp is appended when present in the prefix."""

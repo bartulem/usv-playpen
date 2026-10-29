@@ -960,8 +960,8 @@ def pool_session_arrays(feature_data: dict,
         the empty `(0, n_frames)` placeholder returned for a class that has no
         usable data across the requested sessions.
     return_groups : bool, default False
-        Also return the session of every pooled row, so the caller can permute
-        labels within sessions and split its inner cross-validation by session.
+        Also return the session of every pooled row, so the caller can split its
+        inner cross-validation by session.
 
     Returns
     -------
@@ -1205,36 +1205,37 @@ def shuffle_train_test_arrays(X_train: np.ndarray,
     return (*shuffled, groups_train[train_shuffle_idx])
 
 
-def within_group_permutation(groups: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+def null_target_permutation(n_rows: int, rng: np.random.Generator) -> np.ndarray:
     """
     Description
     -----------
-    Index permutation that shuffles rows only within their own group (session):
-    applied to a target it keeps every session's target distribution (its class
-    balance, or its mean bout duration) and destroys only the trial-level pairing
-    with the inputs. A permutation across pooled sessions would also destroy any
-    difference between sessions, which the actual model can still exploit through
-    a feature that merely differs between sessions, so its null would be too easy
-    to beat.
+    Index permutation for the label-destroying null of every behavioral modeling
+    pipeline: the training rows' targets (onset labels, category labels, bout
+    parameters, torus positions with their weights and regions) are shuffled
+    across the WHOLE training set, pooled over its sessions, while the inputs stay
+    in place. This destroys every pairing between behavior and target, both the
+    moment-to-moment pairing inside a session and any difference between sessions
+    (e.g. sessions with a faster partner also holding more bout onsets), so the
+    null model learns nothing and a feature beats it by carrying any relationship
+    to vocal output that generalizes to held-out sessions. Sessions are still kept
+    whole on either side of every train / test split; only the null's target is
+    pooled. The test rows are never permuted: the null is always scored against
+    the true test targets.
 
     Parameters
     ----------
-    groups (np.ndarray)
-        ``(n,)`` group (session) label of every row.
+    n_rows (int)
+        Number of training rows whose targets are permuted.
     rng (np.random.Generator)
-        Random generator.
+        Seeded random generator the permutation is drawn from.
 
     Returns
     -------
     permutation (np.ndarray)
-        ``(n,)`` row indices; ``target[permutation]`` is the permuted target.
+        ``(n_rows,)`` row indices; ``target[permutation]`` is the permuted target.
     """
 
-    permutation = np.arange(groups.shape[0])
-    for group in np.unique(groups):
-        rows = np.where(groups == group)[0]
-        permutation[rows] = rows[rng.permutation(rows.size)]
-    return permutation
+    return rng.permutation(n_rows)
 
 
 def classification_inner_cv_splits(y: np.ndarray,

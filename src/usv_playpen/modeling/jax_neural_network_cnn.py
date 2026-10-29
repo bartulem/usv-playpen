@@ -77,6 +77,7 @@ from .modeling_usv_manifold_position import (
 from .modeling_utils import (
     development_heldout_masks,
     held_out_session_ids_from_metadata,
+    null_target_permutation,
 )
 
 
@@ -1683,15 +1684,23 @@ class NeuralContinuousCNNRunner:
         # final write at the end of `run_cnn_training` rewrites the
         # same path with the fully-populated `deep_storage`.
         source_file = pathlib.Path(data_blocks['source_pkl_path']).name
-        # 'female_mute_partner' first: it contains 'male_mute_partner'.
+        # 'female_mute_partner' first: it contains 'male_mute_partner' (and
+        # likewise for the all-partner cohorts).
         if "female_mute_partner" in source_file:
             sex_mod = "female_mute_partner"
         elif "male_mute_partner" in source_file:
             sex_mod = "male_mute_partner"
+        elif "female_all_partners" in source_file:
+            sex_mod = "female_all_partners"
+        elif "male_all_partners" in source_file:
+            sex_mod = "male_all_partners"
         elif "female" in source_file:
             sex_mod = "female"
         else:
             sex_mod = "male"
+        # Keep the recording-modality prefix of an ephys input file.
+        if "_ephys_" in source_file or source_file.startswith("ephys_"):
+            sex_mod = f"ephys_{sex_mod}"
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         filename = f"cnn_manifold_integrated_predictions_{sex_mod}_{timestamp}.pkl"
         save_dir = pathlib.Path(self.modeling_settings['io']['save_directory'])
@@ -2046,12 +2055,9 @@ class NeuralContinuousCNNRunner:
                     continue
 
                 if strategy == 'null':
-                    # 2. Strict Session-Isolated Shuffling
-                    unique_groups = np.unique(groups[train_idx])
-                    groups_tr = groups[train_idx]
-                    for g in unique_groups:
-                        g_idx = np.where(groups_tr == g)[0]
-                        Y_tr[g_idx] = Y_tr[rng.permutation(g_idx)]
+                    # 2. Target permutation across the whole training fold, pooled
+                    # over its sessions (null_target_permutation).
+                    Y_tr = Y_tr[null_target_permutation(Y_tr.shape[0], rng)]
 
                 # 3. JAX Network Initialization using the full hyperparameter dictionary
                 # Every random stream derives from `random_seed`: one key per (fold,

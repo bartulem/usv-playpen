@@ -259,6 +259,11 @@ def _build_default_output_filename(input_metadata: dict,
         needed.
       * `split_strategy` — `run_metadata['split_strategy']` (e.g.
         `'mixed'`).
+      * an `ephys_` recording-modality prefix on the cohort label
+        (`'ephys_male_all_partners'`) is moved to the front of the
+        `<sex>_<condition>` block, so the filename reads
+        `model_selection_final_ephys_male_all_partners_...` with the sex
+        named once.
       * `ts` — the `YYYYMMDD_HHMMSSZ` token embedded in the per-step
         file prefix (the model-selection run start time). Appended
         when present so the consolidated artifact is unambiguously
@@ -307,6 +312,13 @@ def _build_default_output_filename(input_metadata: dict,
         sex = 'unknown'
         cohort_raw = 'unknown'
         analysis_tag = 'unknown'
+
+    # An `ephys_` recording-modality prefix leads the whole `<sex>_<cohort>`
+    # block, so it is set aside before the sex is stripped.
+    modality_prefix = ''
+    if cohort_raw.startswith('ephys_'):
+        modality_prefix = 'ephys_'
+        cohort_raw = cohort_raw[len(modality_prefix):]
 
     # Strip the sex the cohort label repeats, so the filename is
     # `<sex>_<cohort>` (not `<sex>_<sex>_<cohort>`): a leading `<sex>_`
@@ -359,7 +371,7 @@ def _build_default_output_filename(input_metadata: dict,
     ts_suffix = f"_{ts}" if ts else ''
 
     return (
-        f"model_selection_final_{sex}_{cohort}_{analysis_tag}_"
+        f"model_selection_final_{modality_prefix}{sex}_{cohort}_{analysis_tag}_"
         f"{split_strategy}{ts_suffix}.pkl"
     )
 

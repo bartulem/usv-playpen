@@ -3844,40 +3844,40 @@ class USVPlaypenWindow(QMainWindow):
         self.conduct_video_fps_change_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_video_fps_change_cb_bool'))
         self.conduct_video_fps_change_cb.move(column_two_x2, 70)
 
-        conversion_target_file_label = QLabel('Concatenation name:', self.ProcessSettings)
-        conversion_target_file_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        conversion_target_file_label.move(column_two_x1, 100)
-        self.conversion_target_file = QLineEdit(self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['conversion_target_file'], self.ProcessSettings)
-        self.conversion_target_file.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.conversion_target_file.setStyleSheet('QLineEdit { width: 108px; }')
-        self.conversion_target_file.move(column_two_x2, 102)
-
         constant_rate_factor_label = QLabel('FFMPEG crf (0–51):', self.ProcessSettings)
         constant_rate_factor_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        constant_rate_factor_label.move(column_two_x1, 130)
+        constant_rate_factor_label.move(column_two_x1, 100)
         self.constant_rate_factor = QLineEdit(f"{self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['constant_rate_factor']}", self.ProcessSettings)
         self.constant_rate_factor.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.constant_rate_factor.setStyleSheet('QLineEdit { width: 108px; }')
-        self.constant_rate_factor.move(column_two_x2, 132)
+        self.constant_rate_factor.move(column_two_x2, 102)
 
         encoding_preset_label = QLabel('FFMPEG preset:', self.ProcessSettings)
         encoding_preset_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        encoding_preset_label.move(column_two_x1, 160)
+        encoding_preset_label.move(column_two_x1, 130)
         self.encoding_preset_list = sorted(['veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'], key=lambda x: x == self.encoding_preset, reverse=True)
         self.encoding_preset_cb = QComboBox(self.ProcessSettings)
         self.encoding_preset_cb.addItems([str(encode_preset_item) for encode_preset_item in self.encoding_preset_list])
         self.encoding_preset_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.encoding_preset_cb.activated.connect(partial(self._combo_box_encoding_preset, variable_id='encoding_preset'))
-        self.encoding_preset_cb.move(column_two_x2, 160)
+        self.encoding_preset_cb.move(column_two_x2, 130)
 
         delete_con_file_cb_label = QLabel('Purge concatenated files:', self.ProcessSettings)
         delete_con_file_cb_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        delete_con_file_cb_label.move(column_two_x1, 190)
+        delete_con_file_cb_label.move(column_two_x1, 160)
         self.delete_con_file_cb = QComboBox(self.ProcessSettings)
         self.delete_con_file_cb.addItems(['Yes', 'No'])
         self.delete_con_file_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.delete_con_file_cb.activated.connect(partial(self._combo_box_prior_true, variable_id='delete_con_file_cb_bool'))
-        self.delete_con_file_cb.move(column_two_x2, 190)
+        self.delete_con_file_cb.move(column_two_x2, 160)
+
+        rectify_timeout_label = QLabel('FFMPEG timeout (h):', self.ProcessSettings)
+        rectify_timeout_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        rectify_timeout_label.move(column_two_x1, 190)
+        self.rectify_subprocess_timeout_hours = QLineEdit(f"{self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['subprocess_timeout_hours']}", self.ProcessSettings)
+        self.rectify_subprocess_timeout_hours.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.rectify_subprocess_timeout_hours.setStyleSheet('QLineEdit { width: 108px; }')
+        self.rectify_subprocess_timeout_hours.move(column_two_x2, 192)
 
         sleap_cluster_cb_label = QLabel('Make SLEAP job list:', self.ProcessSettings)
         sleap_cluster_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
@@ -5605,7 +5605,7 @@ class USVPlaypenWindow(QMainWindow):
         None
         """
 
-        qlabel_strings = ['conversion_target_file', 'constant_rate_factor', 'ch_receiving_input',
+        qlabel_strings = ['constant_rate_factor', 'rectify_subprocess_timeout_hours', 'ch_receiving_input',
                           'a_ch_receiving_input', 'pc_usage_process', 'min_spike_num',
                           'n_deriv_smooth', 'das_model_base', 'das_output_type',
                           'smooth_scale', 'static_reference_len', 'weight_rigid', 'weight_weak',
@@ -5656,8 +5656,10 @@ class USVPlaypenWindow(QMainWindow):
 
         self.processing_input_dict['send_email']['Messenger']['processing_pc_choice'] = str(self.processing_pc_choice)
 
-        self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['conversion_target_file'] = self.conversion_target_file
         self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['constant_rate_factor'] = round(_safe_literal_eval(self.constant_rate_factor))
+        # whole hours stay integers so a save does not rewrite 2 as 2.0 in the settings file
+        rectify_timeout_hours = float(_safe_literal_eval(self.rectify_subprocess_timeout_hours))
+        self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['subprocess_timeout_hours'] = int(rectify_timeout_hours) if rectify_timeout_hours.is_integer() else rectify_timeout_hours
         self.processing_input_dict['modify_files']['Operator']['rectify_video_fps']['encoding_preset'] = str(self.encoding_preset)
         self.processing_input_dict['synchronize_files']['Synchronizer']['crop_wav_files_to_video']['triggerbox_ch_receiving_input'] = int(_safe_literal_eval(self.ch_receiving_input))
         self.processing_input_dict['modify_files']['Operator']['get_spike_times']['min_spike_num'] = int(_safe_literal_eval(self.min_spike_num))

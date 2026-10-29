@@ -258,7 +258,7 @@ class Stylist:
                     if self.input_parameter_dict['processing_booleans']['conduct_video_fps_change']:
                         Operator(root_directory=one_directory,
                                  input_parameter_dict=self.input_parameter_dict,
-                                 message_output=self.message_output).rectify_video_fps(conduct_concat=self.input_parameter_dict['processing_booleans']['conduct_video_concatenation'])
+                                 message_output=self.message_output).rectify_video_fps()
 
                     # # # convert multichannel to single channel files
                     if self.input_parameter_dict['processing_booleans']['conduct_audio_multichannel_to_single_ch'] and len(list((pathlib.Path(one_directory) / 'audio' / 'original').iterdir())) == 0:
@@ -507,18 +507,18 @@ def concatenate_video_files_cli(ctx, root_directory, **kwargs) -> None:
 @click.command(name="rectify-video-fps")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
 @click.option('--camera-serial', 'encode_camera_serial_num', multiple=True, type=str, default=None, required=False, help='Camera serial number(s).')
-@click.option('--target-file', 'conversion_target_file', type=str, default=None, required=False, help='Name of the target video file.')
 @click.option('--extension', 'encode_video_extension', type=str, default=None, required=False, help='Video file extension.')
 @click.option('--crf', 'constant_rate_factor', type=int, default=None, required=False, help='FFMPEG -crf (e.g., 16).')
 @click.option('--preset', 'encoding_preset', type=click.Choice(['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'], case_sensitive=False), default=None, required=False, help='FFMPEG encoding speed preset.')
 @click.option('--delete-old-file/--no-delete-old-file', 'delete_old_file', default=None, help='Delete the original file after encoding.')
-@click.option('--conduct-concat/--no-conduct-concat', 'conduct_concat', default=None, help='Indicate if prior concatenation was performed')
 @click.pass_context
-def rectify_video_fps_cli(ctx, root_directory, conduct_concat, **kwargs) -> None:
+def rectify_video_fps_cli(ctx, root_directory, **kwargs) -> None:
     """
     Description
     -----------
     A command-line tool to re-encode videos to an appropriate frame rate.
+    Each camera's input (a concatenated video, or the single video in its
+    camera folder) is found on disk, see Operator.rectify_video_fps.
 
     Parameters
     ----------
@@ -526,8 +526,6 @@ def rectify_video_fps_cli(ctx, root_directory, conduct_concat, **kwargs) -> None
         The click context; its parameter sources tell which options were given on the command line.
     root_directory (str)
         Session root directory path.
-    conduct_concat (bool)
-        Indicate if prior concatenation was performed
     **kwargs (dict)
         The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
@@ -553,7 +551,7 @@ def rectify_video_fps_cli(ctx, root_directory, conduct_concat, **kwargs) -> None
     Operator(
         root_directory=root_directory,
         input_parameter_dict=processing_settings_dict
-    ).rectify_video_fps(conduct_concat=conduct_concat)
+    ).rectify_video_fps()
 
 @click.command(name="multichannel-to-single-ch")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
@@ -579,7 +577,7 @@ def multichannel_to_channel_audio_cli(root_directory) -> None:
 
 @click.command(name="crop-wav-files")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
-@click.option('--trigger-device', 'device_receiving_input', type=click.Choice(['both', 'm', 'r'], case_sensitive=False), default=None, required=False, help='USGH device(s) receiving triggerbox input.')
+@click.option('--trigger-device', 'device_receiving_input', type=click.Choice(['both', 'm', 's'], case_sensitive=False), default=None, required=False, help='USGH device(s) receiving triggerbox input.')
 @click.option('--trigger-channel', 'triggerbox_ch_receiving_input', type=int, default=None, required=False, help='USGH channel receiving triggerbox input.')
 @click.pass_context
 def crop_wav_files_to_video_cli(ctx, root_directory, **kwargs) -> None:
@@ -1272,7 +1270,7 @@ def translate_rotate_metric_cli(ctx, root_directory, **kwargs) -> None:
 @click.option('--env-name', 'das_conda_env_name', type=str, default=None, required=False, help='Name of the DAS conda environment.')
 @click.option('--model-dir', 'das_model_directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=False, help='Directory of the DAS model.')
 @click.option('--model-name', 'model_name_base', type=str, default=None, required=False, help='Base name of the DAS model.')
-@click.option('--output-type', 'output_file_type', type=click.Choice(['csv', 'hdf5'], case_sensitive=False), default=None, required=False, help='Output file type for DAS predictions.')
+@click.option('--output-type', 'output_file_type', type=click.Choice(['csv', 'h5'], case_sensitive=False), default=None, required=False, help='Output file type for DAS predictions.')
 @click.option('--confidence-thresh', 'segment_confidence_threshold', type=float, default=None, required=False, help='Confidence threshold for segment detection.')
 @click.option('--min-len', 'segment_minlen', type=float, default=None, required=False, help='Minimum length for a detected segment (s).')
 @click.option('--fill-gap', 'segment_fillgap', type=float, default=None, required=False, help='Gap duration to fill between segments (s).')

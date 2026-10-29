@@ -1476,6 +1476,29 @@ class TestPlotMultinomialSelectionTrajectory:
         )
         assert len(list(out_dir.glob(f"multinomial_selection_trajectory_*_auc_*.{_FIGURE_FORMAT}"))) == 1
 
+    @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
+    def test_cap_below_the_bars_still_ticks_up_to_the_tallest_bar(self, tmp_path):
+        """A ``secondary_ylim_max`` tuned for another category count (0.26 for
+        K=7) sits just above the K=4 chance floor (0.25) and below the bars.
+        The balanced-accuracy axis must still carry several ticks, the top one
+        at or above the tallest bar, instead of a single tick at the floor."""
+
+        rng = np.random.default_rng(48)
+        pkl = _write_multinomial_selection_pickle(tmp_path, rng, n_classes=4)
+        fig = plot_multinomial_selection_trajectory(
+            selection_results_path=pkl,
+            metric_primary='auc',
+            metric_secondary='score',
+            secondary_ylim_max=0.26,
+            save_plot=False,
+        )
+        ax_bars = fig.axes[1]
+        ticks = np.asarray(ax_bars.get_yticks())
+        bar_top = max(p.get_y() + p.get_height() for p in ax_bars.patches)
+        assert ticks.size >= 2
+        assert ticks.max() >= bar_top - 1e-9
+        plt.close(fig)
+
 
 def _manifold_candidate(rng, n_folds: int = 6) -> dict:
     """
@@ -1485,7 +1508,8 @@ def _manifold_candidate(rng, n_folds: int = 6) -> dict:
     Mirrors the ``candidates_summary[feature]`` schema the manifold
     trajectory plotter reads: ``{'folds': {'metrics': {metric: per-fold
     array}}}`` with the 2-D regression metrics it scores on
-    (``r2_spatial``, ``pearson_y``, ``euclidean_mae``).
+    (``r2_spatial``, ``pearson_y``, ``euclidean_mae``) plus the
+    torus and euclidean selection scores and the region-balanced errors.
 
     Parameters
     ----------
@@ -1509,12 +1533,19 @@ def _manifold_candidate(rng, n_folds: int = 6) -> dict:
                 # Torus selection score: a log-likelihood living near the
                 # baseline draw (~-3.6), NOT anchored at 0.
                 'vm_logscore': rng.uniform(-3.8, -3.5, size=n_folds),
+                # Event-pooled (micro) twin of the torus selection score.
+                'vm_logscore_pooled': rng.uniform(-3.8, -3.5, size=n_folds),
+                # Euclidean selection score and the two region-balanced
+                # distance errors the plotter defaults to per geometry.
+                'dcor_xy': rng.uniform(0.05, 0.3, size=n_folds),
+                'euclidean_mae_macro': rng.uniform(0.3, 0.4, size=n_folds),
+                'pullback_geodesic_mae_macro': rng.uniform(30.0, 40.0, size=n_folds),
             },
         },
     }
 
 
-def _write_manifold_selection_pickle(tmp_path, rng) -> str:
+def _write_manifold_selection_pickle(tmp_path, rng, metadata: dict | None = None) -> str:
     """
     Write a synthetic consolidated manifold ``selection_*.pkl`` to
     `tmp_path`.
@@ -1524,6 +1555,18 @@ def _write_manifold_selection_pickle(tmp_path, rng) -> str:
     exercises the accepted-bar, rejected-row, and best-univariate-bar
     paths. Filename carries ``_male_`` for the colour split and the
     ``selection_`` prefix so ``load_selection_results`` accepts it.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Directory the pickle is written to.
+    rng : numpy.random.Generator
+        Seeded generator for the per-fold metric values.
+    metadata : dict, optional
+        Reserved metadata blocks (``_run_metadata``, ``_input_metadata``)
+        stored next to ``steps``, so the plotter can read the run's
+        selection metric and manifold geometry. ``None`` writes an
+        artifact without them.
 
     Returns
     -------
@@ -1547,8 +1590,11 @@ def _write_manifold_selection_pickle(tmp_path, rng) -> str:
         'candidates_summary': {'nose-nose': _manifold_candidate(rng)},
     }
     out = tmp_path / "selection_manifold_male_hist4.0s.pkl"
+    artifact = {'steps': [step0, step1, step2]}
+    if metadata is not None:
+        artifact.update(metadata)
     with out.open('wb') as fh:
-        pickle.dump({'steps': [step0, step1, step2]}, fh)
+        pickle.dump(artifact, fh)
     return str(out)
 
 
@@ -1558,7 +1604,7 @@ class TestPlotManifoldSelectionTrajectory:
 
     @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
     def test_writes_trajectory_svg_higher_is_better(self, tmp_path):
-        """The default higher-is-better primary metric (``r2_spatial``)
+        """An explicit higher-is-better primary metric (``r2_spatial``)
         writes a single trajectory SVG named for the cohort + metric."""
 
         rng = np.random.default_rng(53)
@@ -1616,6 +1662,66 @@ class TestPlotManifoldSelectionTrajectory:
         # Right panel: anchor bar (1) + one stacked segment per accepted feature
         # (the fixture has 2), so the final-model bar is genuinely stacked.
         assert len(fig.axes[1].patches) >= 3
+
+    @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
+    @pytest.mark.parametrize(("geometry", "selection_metric", "primary_label", "secondary_labels"), [
+        ('torus', 'vm_logscore', "von Mises log-score",
+         ["manifold-position error", "acoustic error"]),
+        ('torus', 'vm_logscore_pooled', "von Mises log-score (pooled)",
+         ["manifold-position error", "acoustic error"]),
+        ('euclidean', 'dcor_xy', "distance correlation", ["manifold-position error"]),
+    ])
+    def test_defaults_follow_the_runs_selection_metric_and_geometry(
+            self, tmp_path, geometry, selection_metric, primary_label, secondary_labels):
+        """With no metric arguments the figure plots the score the run selected
+        on (``_run_metadata['selection_metric']``) and the geometry's gain
+        panels as percent improvement over chance (torus: the region-balanced
+        torus-space and acoustic-space errors; euclidean: the region-balanced
+        distance error), never the old ``r2_spatial`` / ``pearson_y``
+        defaults: the saved filename carries the selection metric, one gain
+        panel is drawn per default metric, and every panel carries its label."""
+
+        rng = np.random.default_rng(72)
+        pkl = _write_manifold_selection_pickle(tmp_path, rng, metadata={
+            '_run_metadata': {'selection_metric': selection_metric},
+            '_input_metadata': {'analysis_specific': {'manifold_metric': geometry}},
+        })
+        out_dir = tmp_path / "mftraj_defaults"
+        out_dir.mkdir()
+        fig = plot_manifold_selection_trajectory(
+            selection_results_path=pkl, save_plot=True, output_dir=str(out_dir))
+        assert len(list(out_dir.glob(f"manifold_selection_trajectory_*_{selection_metric}_*.{_FIGURE_FORMAT}"))) == 1
+        assert primary_label in fig.axes[0].get_xlabel()
+        assert len(fig.axes) == 1 + len(secondary_labels)
+        for ax, label in zip(fig.axes[1:], secondary_labels, strict=True):
+            assert label in ax.get_ylabel()
+            assert "improvement (%)" in ax.get_ylabel()
+        plt.close(fig)
+
+    @pytest.mark.parametrize("metadata", [
+        None,
+        {'_input_metadata': {'analysis_specific': {'manifold_metric': 'torus'}}},
+    ])
+    def test_default_primary_raises_without_a_recorded_selection_metric(self, tmp_path, metadata):
+        """An artifact that does not record its selection metric raises when no
+        ``metric_primary`` is passed, instead of falling back to a metric the
+        run did not select on."""
+
+        rng = np.random.default_rng(73)
+        pkl = _write_manifold_selection_pickle(tmp_path, rng, metadata=metadata)
+        with pytest.raises(ValueError, match="selection metric"):
+            plot_manifold_selection_trajectory(selection_results_path=pkl, save_plot=False)
+
+    def test_default_secondary_raises_without_a_recorded_geometry(self, tmp_path):
+        """An artifact that records its selection metric but not its manifold
+        geometry raises when no secondary metric is passed."""
+
+        rng = np.random.default_rng(74)
+        pkl = _write_manifold_selection_pickle(tmp_path, rng, metadata={
+            '_run_metadata': {'selection_metric': 'vm_logscore'},
+        })
+        with pytest.raises(ValueError, match="manifold geometry"):
+            plot_manifold_selection_trajectory(selection_results_path=pkl, save_plot=False)
 
 
 def _write_multinomial_multivariate_pickle(tmp_path, rng, n_classes: int = 3,
@@ -1789,7 +1895,7 @@ class TestPlotMultinomialMultivariateFilters:
         captions = [t for t in fig.texts if t.get_position() == (0.5, 0.995)]
         assert len(captions) == 1
         assert captions[0].get_text().startswith("Faded cells: weight within the 95th percentile")
-        assert "within-session permuted labels (no-signal band)" in captions[0].get_text()
+        assert "refit on permuted labels (no-signal band)" in captions[0].get_text()
 
     @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
     def test_artifact_without_null_band_draws_plain_heatmaps(self, tmp_path):
@@ -3392,11 +3498,18 @@ def test_matched_divergence_wraps_into_blocks_with_the_configured_gap(tmp_path, 
     ('/m/model_selection_final_male_mute_partner_bout.pkl', 'male_mute_partner'),
     ('/m/model_selection_final_female_intact_partner_bout.pkl', 'female'),
     ('/m/model_selection_final_male_intact_partner_bout.pkl', 'male'),
+    ('/m/model_selection_final_female_all_partners_bout.pkl', 'female_all_partners'),
+    ('/m/model_selection_final_male_all_partners_bout.pkl', 'male_all_partners'),
+    ('/m/model_selection_final_ephys_male_all_partners_bout.pkl', 'ephys_male_all_partners'),
+    ('/m/ephys_male/univariate_bout_male_intact_partner_x.pkl', 'male'),
+    ('/m/univariate_bout_ephys_male_intact_partner_x.pkl', 'ephys_male'),
     ('/m/model_selection_final_bout.pkl', 'unknown'),
 ])
 def test_condition_from_path_keeps_the_two_mute_cohorts_apart(path, expected):
     """A female mute-partner path is named female_mute_partner (its name contains
-    male_mute_partner), intact paths give the bare sex, and a path naming no sex
+    male_mute_partner), the all-partner paths keep their full label the same way,
+    intact paths give the bare sex, an ephys results file keeps its ephys_ prefix
+    (a parent folder named ephys_... does not count), and a path naming no sex
     gives the fallback."""
 
     assert modeling_plots._condition_from_path(path, 'unknown') == expected

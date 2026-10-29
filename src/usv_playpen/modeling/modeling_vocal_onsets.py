@@ -67,6 +67,7 @@ from .modeling_utils import (
     format_split_line,
     harmonize_session_columns,
     identify_empty_event_sessions,
+    null_target_permutation,
     pool_session_arrays,
     prepare_modeling_sessions,
     resolve_mouse_roles,
@@ -77,7 +78,6 @@ from .modeling_utils import (
     select_kinematic_columns,
     shuffle_train_test_arrays,
     unroll_history_matrix,
-    within_group_permutation,
     zscore_features_across_sessions,
 )
 
@@ -797,8 +797,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             A tuple of (X_train, y_train, X_test, y_test, groups_train) for each
             split. X_train/y_train are class-balanced; X_test/y_test preserve the
             natural class prior of the source data; groups_train is the session of
-            every training row (for the within-session null and the session-grouped
-            inner cross-validation).
+            every training row (for the session-grouped inner cross-validation).
         """
 
         split_strategy = self.modeling_settings['model_validation']['split_strategy']
@@ -1173,10 +1172,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 shuffle_rng = np.random.default_rng(
                     (self.modeling_settings['model_validation']['random_seed'] or 0) + split_idx + 1
                 )
-                # Labels shuffled WITHIN sessions (within_group_permutation): every session
-                # keeps its own class balance, so a feature that merely differs between
-                # sessions helps the null as much as the actual model.
-                y_train_shuffled = y_train[within_group_permutation(groups_train, shuffle_rng)]
+                # Labels shuffled across the whole training set (null_target_permutation).
+                y_train_shuffled = y_train[null_target_permutation(y_train.shape[0], shuffle_rng)]
 
                 fit_start = time.perf_counter()
                 lr_shuffled = LogisticRegressionCV(
@@ -1315,9 +1312,9 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     (self.modeling_settings['model_validation']['random_seed'] or 0) + n_splits + 1
                 )
                 for branch in ('actual', 'null'):
-                    # The held-out null shuffles labels within the development sessions.
+                    # The held-out null shuffles labels across the development set.
                     y_train_use = (y_train_dev if branch == 'actual'
-                                   else y_train_dev[within_group_permutation(groups_dev, held_rng)])
+                                   else y_train_dev[null_target_permutation(y_train_dev.shape[0], held_rng)])
                     rec = heldout[branch]
                     try:
                         fit_start = time.perf_counter()
@@ -1601,7 +1598,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 break
 
             if actual_split and actual_split[0].shape[0] > 0 and actual_split[2].shape[0] > 0:
-                (X_train, y_train, X_test, y_test, groups_train) = actual_split
+                (X_train, y_train, X_test, y_test, _groups_train) = actual_split
                 split_has_data_actual = True
 
                 results['split_sizes']['train'].append(X_train.shape[0])
@@ -1682,9 +1679,9 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 shuffle_rng = np.random.default_rng(
                     (self.modeling_settings['model_validation']['random_seed'] or 0) + split_idx + 1
                 )
-                # Labels shuffled within sessions, so every session keeps its class balance.
+                # Labels shuffled across the whole training set (null_target_permutation).
                 y_train_tiled_null = np.repeat(
-                    y_train[within_group_permutation(groups_train, shuffle_rng)].astype(np.float32), history_frames
+                    y_train[null_target_permutation(y_train.shape[0], shuffle_rng)].astype(np.float32), history_frames
                 )
 
                 try:
@@ -1755,19 +1752,17 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         # selection. Stored as a top-level `results['heldout']`. Skipped when
         # holdout is disabled or the pooled data is degenerate -- no `heldout` key.
         if held_sessions:
-            X_pos_dev, X_neg_dev, g_pos_dev, g_neg_dev = pool_session_arrays(
+            X_pos_dev, X_neg_dev = pool_session_arrays(
                 feature_data, dev_sessions, pos_key="usv_feature_arr",
-                neg_key="no_usv_feature_arr", n_frames=history_frames, return_groups=True
+                neg_key="no_usv_feature_arr", n_frames=history_frames
             )
             X_pos_held, X_neg_held = pool_session_arrays(
                 feature_data, held_sessions, pos_key="usv_feature_arr",
                 neg_key="no_usv_feature_arr", n_frames=history_frames
             )
-            X_pos_dev_bal, X_neg_dev_bal, g_pos_dev_bal, g_neg_dev_bal = balance_two_class_arrays(
+            X_pos_dev_bal, X_neg_dev_bal = balance_two_class_arrays(
                 X_pos_dev, X_neg_dev,
-                np.random.default_rng((self.modeling_settings['model_validation']['random_seed'] or 0) + n_splits + 2),
-                groups_pos=g_pos_dev, groups_neg=g_neg_dev)
-            groups_dev = np.concatenate((g_pos_dev_bal, g_neg_dev_bal))
+                np.random.default_rng((self.modeling_settings['model_validation']['random_seed'] or 0) + n_splits + 2))
             n_held_events = int(X_pos_held.shape[0] + X_neg_held.shape[0])
 
             def _empty_heldout_rec():
@@ -1824,7 +1819,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                         y_train_use = y_train_dev.astype(np.float32)
                         gam_kwargs_branch = gam_kwargs_actual
                     else:
-                        y_train_use = y_train_dev[within_group_permutation(groups_dev, held_rng)].astype(np.float32)
+                        y_train_use = y_train_dev[null_target_permutation(y_train_dev.shape[0], held_rng)].astype(np.float32)
                         gam_kwargs_branch = gam_kwargs_shuffled
                     y_train_tiled = np.repeat(y_train_use, history_frames)
                     rec = heldout[branch]

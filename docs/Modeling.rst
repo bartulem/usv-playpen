@@ -63,7 +63,14 @@ blocks. Each block is shown below as it appears in the file, followed by its key
 
 .. note::
 
-   The ``mixture_model_params`` block holds the fitted inter-USV-interval mixture of each sex, from which the inter-bout threshold is derived. It is not a tuning knob, and no pipeline writes it: the *Inter-USV interval analyses* notebook (``inter_usv_interval_analyses.ipynb``) fits the mixtures and prints the block in this layout for pasting into the settings. Its four entries are ``male.means`` / ``male.sds`` and ``female.means`` / ``female.sds``: the means and standard deviations of the lognormal components on the natural-log scale of the interval in seconds, in ascending order, so component ``0`` is the shortest-interval peak. The threshold is ``exp(means[i] + z * sds[i])``, with ``i`` = ``model_params.mixture_model_component_index`` and ``z`` = ``model_params.mixture_model_z_score``. One index serves both sexes, so it must be valid for the shorter list (the shipped male mixture has 4 components and the female 3, so ``0``–``2``); a negative or out-of-range index raises in the vocal-event loaders. The vocal-event loaders also accept an inverse-Gaussian block, ``"model_class": "ig"`` with linear-time ``mus`` / ``lambdas`` in place of ``means`` / ``sds``. **Allowed:** for each of ``male`` and ``female``, ``means`` a list of real numbers (log seconds) and ``sds`` a list of positive numbers of the same length, with the fitted component order kept; shipped male ``means`` ``[-2.77117, -1.71942, -1.23503, 2.4513]`` / ``sds`` ``[0.23762, 0.23762, 1.17292, 1.09014]``, female ``means`` ``[-2.69071, -2.03767, 0.05272]`` / ``sds`` ``[0.23676, 0.83522, 1.34804]``.
+   The ``mixture_model_params`` block holds the fitted inter-USV-interval mixture of each sex, from which the inter-bout threshold is derived. It is not a tuning knob, and no pipeline writes it: the *Inter-USV interval analyses* notebook (``inter_usv_interval_analyses.ipynb``) fits the mixtures and prints the block in this layout for pasting into the settings. Its four entries are ``male.means`` / ``male.sds`` and ``female.means`` / ``female.sds``: the means and standard deviations of the lognormal components on the natural-log scale of the interval in seconds, in ascending order, so component ``0`` is the shortest-interval peak.
+
+   The threshold is ``exp(means[i] + z * sds[i])``, with ``i`` = ``model_params.mixture_model_component_index`` and ``z`` = ``model_params.mixture_model_z_score``. One index serves both sexes, so it must be valid for the shorter list (the shipped male mixture has 4 components and the female 3, so ``0``–``2``); a negative or out-of-range index raises in the vocal-event loaders. The vocal-event loaders also accept an inverse-Gaussian block, ``"model_class": "ig"`` with linear-time ``mus`` / ``lambdas`` in place of ``means`` / ``sds``.
+
+   :Options: for each of ``male`` and ``female``, ``means`` a list of real numbers (log seconds) and ``sds`` a list of positive numbers of the same length, with the fitted component order kept
+   :Default:
+      * ``male`` — ``means`` ``[-2.77117, -1.71942, -1.23503, 2.4513]`` / ``sds`` ``[0.23762, 0.23762, 1.17292, 1.09014]``
+      * ``female`` — ``means`` ``[-2.69071, -2.03767, 0.05272]`` / ``sds`` ``[0.23676, 0.83522, 1.34804]``
 
 **io** — the cohort and where outputs go.
 
@@ -76,10 +83,63 @@ blocks. Each block is shown below as it appears in the file, followed by its key
         "camera_sampling_rate": 150
     }
 
-* **session_list_file** — path to the text file that lists the cohort's sessions (one session root per line; see below). **Allowed:** path (string) to an existing plain-text file holding at least one session root (a missing file or one without any session path raises); the filename should contain ``intact_partners``, ``mute_female`` or ``mute_male`` so the cohort label can be derived, otherwise the label is ``unspecified``; shipped ``/mnt/falkner/Bartul/modeling/input_files/behavioral_courtship_intact_partners_sessions_list.txt``.
-* **save_directory** — directory where every modeling-input pickle, audit, and result is written. **Allowed:** path (string) to a writable directory (not validated; the extraction pipelines write into it as given); shipped ``/mnt/falkner/Bartul/modeling``.
-* **csv_separator** — column delimiter of the per-session ``*_behavioral_features.csv`` files (``','``). **Allowed:** a single-character string matching the behavioral-features CSVs (not validated; a wrong separator fails when the CSVs are parsed); shipped ``','``.
-* **camera_sampling_rate** — camera frame rate in Hz (``150``); every pipeline uses it to convert ``filter_history`` seconds into a frame count. **Allowed:** positive number, in Hz (not validated); shipped ``150``.
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`session_list_file <mio-session-list-file>`
+     - path (see JSON above)
+     - path to an existing plain-text session list
+   * - :ref:`save_directory <mio-save-directory>`
+     - ``/mnt/falkner/Bartul/modeling``
+     - path to a writable directory
+   * - :ref:`csv_separator <mio-csv-separator>`
+     - ``','``
+     - a single-character string
+   * - :ref:`camera_sampling_rate <mio-camera-sampling-rate>`
+     - ``150``
+     - Hz > 0
+
+.. _mio-session-list-file:
+
+``session_list_file``
+   Path to the text file that lists the cohort's sessions (one session root per line; see below).
+
+   :Options: path (string) to an existing plain-text file holding at least one session root
+   :Default: ``/mnt/falkner/Bartul/modeling/input_files/behavioral_courtship_intact_partners_sessions_list.txt``
+   :Notes:
+      * A missing file or one without any session path raises.
+      * The filename should contain ``intact_partners``, ``mute_female``, ``mute_male`` or ``all_partners`` so the cohort label can be derived, otherwise the label is ``unspecified``.
+
+.. _mio-save-directory:
+
+``save_directory``
+   Directory where every modeling-input pickle, audit, and result is written.
+
+   :Options: path (string) to a writable directory
+   :Default: ``/mnt/falkner/Bartul/modeling``
+   :Notes: not validated; the extraction pipelines write into it as given.
+
+.. _mio-csv-separator:
+
+``csv_separator``
+   Column delimiter of the per-session ``*_behavioral_features.csv`` files.
+
+   :Options: a single-character string matching the behavioral-features CSVs
+   :Default: ``','``
+   :Notes: not validated; a wrong separator fails when the CSVs are parsed.
+
+.. _mio-camera-sampling-rate:
+
+``camera_sampling_rate``
+   Camera frame rate in Hz; every pipeline uses it to convert ``filter_history`` seconds into a frame count.
+
+   :Options: a positive number, in Hz (not validated)
+   :Default: ``150``
 
 The **session-list file** is the single source of truth for the cohort: a plain
 text file with **one session-root directory per line**, each a ``Data``-tree
@@ -97,7 +157,7 @@ and pooled; blank lines are ignored. For example:
 The **filename itself carries the cohort label**: ``derive_experimental_condition``
 parses it (e.g. ``behavioral_courtship_intact_partners_sessions_list.txt`` →
 ``male_intact_partner`` or ``female_intact_partner``, by the target mouse's sex; mute cohorts read ``male_mute_partner``
-or ``female_mute_partner``, also by the target mouse's sex, and any other filename ``unspecified``) and embeds that label into every output filename,
+or ``female_mute_partner``, also by the target mouse's sex; a pooled intact + mute cohort whose filename contains ``all_partners`` reads ``male_all_partners`` or ``female_all_partners``; a list whose filename starts with ``ephys`` puts ``ephys_`` in front of any of these, e.g. ``ephys_male_all_partners``; and any other filename ``unspecified``) and embeds that label into every output filename,
 so artifacts from different cohorts never collide and each one is self-identifying.
 
 **model_params** — the prediction target, history window, model engine,
@@ -130,22 +190,266 @@ cross-validation and held-out-test settings live in their own
         "onset_target_classes": ["usv"]
     }
 
-* **filter_history** — seconds of behavioral history preceding each event that feed the temporal filter (× ``camera_sampling_rate`` → frames). **Allowed:** positive number of seconds (not validated); shipped ``4``.
-* **mixture_model_component_index** / **mixture_model_z_score** — bout grouping: the fitted inter-syllable-interval mixture (``mixture_model_params``) is thresholded at ``mean + z·sd`` of the selected component (component ``0``, ``z = 2.58``) to decide where one bout ends and the next begins. **Allowed:** ``mixture_model_component_index``: integer index into the target sex's fitted mixture in ``mixture_model_params``, ``0``–``3`` for male and ``0``–``2`` for female (an index past the last component raises ``IndexError``; components are ordered by mean log interval, so ``0`` is the shortest-interval component); ``mixture_model_z_score``: positive number of standard deviations (not validated); shipped ``0`` and ``2.58``.
-* **model_basis_function** — temporal-filter basis over the history window: ``'raised_cosine'`` / ``'bspline'`` / ``'laplacian_pyramid'`` (parameters in ``hyperparameters.basis_functions``), or ``'identity'`` (the raw per-frame history, no projection). Only relevant when ``model_engine = 'sklearn'`` — the ``'pygam'`` engine uses its own tensor-product splines instead. **Allowed:** one of ``'raised_cosine'``, ``'bspline'``, ``'laplacian_pyramid'``, ``'identity'`` (any other value raises when the ``'sklearn'`` engine builds its basis; ignored under ``'pygam'``); shipped ``'raised_cosine'``.
-* **model_engine** — univariate model backend: ``'pygam'`` (tensor-product-spline GAM, a generalized additive model) or ``'sklearn'`` (basis-projected linear). **Allowed:** ``'pygam'`` or ``'sklearn'`` (the model selections raise on any other value); the multinomial category and acoustic-manifold targets always run the JAX estimators and ignore it; shipped ``'pygam'``.
-* **model_predictor_mouse_index** — which mouse (``0`` / ``1``) is the **partner**; the **target** — the mouse whose vocal behavior is being predicted — is defined as the other one. Both mice's kinematics enter the predictor set. **Allowed:** ``0`` or ``1``, the slot in the session's ``track_names`` (not validated; the target is ``abs(index - 1)``, so other values are meaningless); shipped ``1``.
-* **model_target_vocal_type** — onset target mode, one of ``'bout_onset'`` (clustered bout onsets, both positive and negative pre-event windows kept clean), ``'individual'`` (per-USV onsets), ``'state'`` (the session is sampled on a regular ``filter_history``-spaced time grid and each sample labelled vocal / silent by whether a vocalization of the ``onset_target_classes`` occupies it, with no clean-history requirement), or ``'bout_offset'`` (the END of a bout against an interior USV of a bout that continued; configured by the ``bout_offset`` block, see :ref:`Bout offsets <modeling-bout-offsets>`); used only by ``VocalOnsetModelingPipeline``. **Allowed:** one of ``'bout_onset'``, ``'individual'``, ``'state'``, ``'bout_offset'`` (any other value raises ``ValueError``); shipped ``'bout_onset'``.
-* **model_target_variable** — for ``BoutParameterPipeline``, which per-bout quantity to regress: ``'bout_durations'`` (first-to-last-USV span, seconds), ``'bout_syllable_counts'`` (the number of USVs in the bout), ``'mean_mask_complexity'`` (per-USV mean spectrogram-mask complexity), or ``'total_mask_complexity'`` (summed over the bout). The model-selection dispatcher (``main_model_selection_dispatcher``) reads it from here for the ``params`` selection; it is not a command-line flag. **Allowed:** one of ``'bout_durations'``, ``'bout_syllable_counts'``, ``'mean_mask_complexity'``, ``'total_mask_complexity'`` (any other value raises ``KeyError`` at extraction); shipped ``'bout_durations'``.
-* **selection_p_val** — the significance level gating whether a candidate feature is admitted during forward-stepwise model selection (default ``0.01``); on the acoustic-manifold target it is the Benjamini–Hochberg FDR ``q`` used to screen candidates. The model-selection dispatcher passes this value to every selector; it is not a command-line flag. **Allowed:** number in ``(0, 1)`` (not validated); on the onset, category and bout-parameter selections it is a family-wise level, Bonferroni-divided by the number of candidate features before the null percentile is read; shipped ``0.01``.
-* **selection_effect_floor** / **selection_n_bootstrap** / **selection_ci_level** — the acoustic-manifold selection's **fold-grain acceptance gate** (``continuous_vocal_manifold_model_selection``): a feature is kept only when its per-fold paired score margin over the shuffle null (the macro von Mises log-likelihood on the torus, the wrap-aware distance correlation on euclidean) is consistently positive across CV folds. ``selection_effect_floor`` is the relative effect floor a screened feature must clear — a fraction of the top surviving driver's margin (default ``0.1`` = 10%); ``selection_n_bootstrap`` is the number of fold bootstrap resamples (default ``1000``); ``selection_ci_level`` is the bootstrap confidence level whose lower bound must exceed ``0`` for an anchor / forward step to be accepted (default ``0.99``). The screen's p-value is not a bootstrap: it is an exact one-sided sign-flip permutation test over the folds, ``p = (1 + k) / (1 + B)`` over the ``B = 2**manifold_n_cv_folds - 1`` non-identity sign patterns (every pattern enumerated; ``k`` counts those whose margin sum ties or beats the observed one), so it is never ``0`` and its floor is ``1 / 2**manifold_n_cv_folds`` (``9.5e-7`` at the shipped 20 folds, below the Benjamini–Hochberg rank-1 threshold ``q / m``); above ``selection_sign_flip_exact_max_folds`` usable folds a seeded Monte-Carlo set of ``selection_sign_flip_monte_carlo_draws`` patterns replaces the enumeration. These apply to the manifold gate only; the onset / category / bout-parameter selections use ``selection_p_val`` alone. All of the gate's knobs are read from the run's own settings file at call time. **Allowed:** ``selection_effect_floor``: fraction in ``[0, 1]`` of the top surviving margin (``0`` disables the floor; not validated); ``selection_n_bootstrap``: positive integer (not validated); ``selection_ci_level``: number in ``(0, 1)`` (not validated); shipped ``0.1``, ``1000`` and ``0.99``.
-* **selection_min_fold_events** — the manifold gate scores a fold only when its test set holds at least this many events (default ``30``); a sparser fold is dropped from the paired margin, since too few points give an unstable per-fold score (and an unstable per-fold ``kappa`` when the concentration is not frozen). **Allowed:** positive integer (not validated); shipped ``30``.
-* **selection_sign_flip_exact_max_folds** / **selection_sign_flip_monte_carlo_draws** — how the gate's sign-flip p-value is computed: up to ``selection_sign_flip_exact_max_folds`` usable folds (default ``22``) every one of the ``2**n`` sign patterns is enumerated, so the test is exact (``2**22`` sums are ~32 MB of float64, a fraction of a second); above it a seeded Monte-Carlo set of ``selection_sign_flip_monte_carlo_draws`` patterns (default ``1048576`` = ``2**20``) is drawn instead and the p-value floor becomes ``1 / (1 + draws)``. The shipped ``manifold_n_cv_folds`` (20) is always enumerated exactly, so the draw count matters only for a run configured with more than 22 folds. **Allowed:** ``selection_sign_flip_exact_max_folds``: positive integer (memory grows as ``2**n``, so values much above ~25 are impractical; not validated); ``selection_sign_flip_monte_carlo_draws``: positive integer (not validated); shipped ``22`` and ``1048576``.
-* **filter_null_permutations** — the torus and multinomial (QLVM category) model selections refit the final feature set on the development sessions this many times with the target permuted within each session (positions with their weights and regions on the torus, category labels for the multinomial model) and store the permuted filters with the held-out block (``heldout['null_weights']``). The filter figures draw each filter against that no-signal band: part of a filter's weight at the two ends of the history window appears without any signal (the residual end weight of the lag basis), so only weight above the band reads as a real effect. ``0`` stores none (the figures then draw no band); no band is stored when the held-out reserve is disabled. **Allowed:** integer ``>= 0`` (``0`` stores no band; not validated); shipped ``20``.
-* **usv_bout_time** — duration (seconds) of the post-onset silence window that defines the **negative (No-USV) events** in ``'bout_onset'`` and ``'individual'`` modes: a candidate silent-epoch onset is kept only if no vocalization of the target mouse, and none assigned to no animal, starts within ``[t_onset, t_onset + usv_bout_time)`` after it. **Allowed:** positive number of seconds (not validated); shipped ``2``.
-* **usv_per_bout_floor** — the minimum number of USVs a bout must contain: the positive bouts in ``'bout_onset'`` and ``'bout_offset'`` modes, the bouts of ``BoutParameterPipeline``, and the bouts of the behavioral-response pipeline. **Allowed:** integer ``>= 1`` (not validated); shipped ``2``.
-* **onset_target_category** — restrict positive onsets to a single USV category (``'individual'`` mode only); ``null`` pools all categories (see the single-category note under :ref:`Modeling input data <modeling-extract>`). **Allowed:** ``null`` (all categories pooled) or one integer label of ``usv_category_column_name``, ``1``–``4`` for ``qlvm_category`` (1 is the category with the most USVs); read only in ``'individual'`` mode, ignored with a warning otherwise; a set value needs a non-null ``usv_category_column_name``; shipped ``null``.
-* **onset_target_classes** — which vocal classes are the positive onsets, a non-empty list read from the summary's ``usv`` / ``squeak`` booleans (written by ``detect-usv-squeaks``): ``"usv"`` (a pure USV, ``usv`` true and ``squeak`` false), ``"squeak"`` (a pure squeak, ``squeak`` true and ``usv`` false) and ``"overlap"`` (a USV and a squeak in one segment, both true). ``["usv"]`` (default) models pure USVs, ``["usv", "overlap"]`` every segment holding a USV, ``["squeak", "overlap"]`` every segment holding a squeak, ``["overlap"]`` overlaps alone, and ``["usv", "squeak", "overlap"]`` everything. An unscored segment (null booleans) is in no class. Each positive is timed as the event the list asks about (``os_utils.vocal_event_times``): a pure USV by its segment ``start`` / ``stop``, a pure squeak by its own extent ``squeak_start`` / ``squeak_end`` (written by ``detect-usv-squeaks``), and an overlap segment by the squeak extent when the list names ``"squeak"`` but not ``"usv"`` (the squeak typically begins ~40 ms after the segment's USV onset), by the segment when it names ``"usv"`` but not ``"squeak"``, and by the union of the two otherwise (``["overlap"]`` alone, or both classes named); a list that can time a row by the squeak extent raises when a summary has no ``squeak_start`` / ``squeak_end``. Vocalizations of the other classes neither join nor split a bout; the bout-parameter and behavioral-response pipelines group their bouts from the same classes, so a bout is the same in every model. The bout modes (``'bout_onset'``, ``'bout_offset'``) accept ``"usv"`` and ``"overlap"`` only, since squeaks do not come in bouts and the inter-bout threshold is calibrated on USV intervals; ``'individual'`` and ``'state'`` take any list. Silence is not class-specific: a negative window, and a ``'bout_onset'`` positive's clean history, must both be free of every vocalization of the target mouse (any class) and of every vocalization assigned to no animal, so the two groups are built under one rule whatever the target. A negative window needs exactly the clean history a ``'bout_onset'`` positive needs, ``filter_history`` of silence before its end and nothing more: window ends are tiled every ``filter_history`` from the start of each clean zone, so the first negative after a vocalization ends ``filter_history`` after its stop, the earliest point a positive is clean; a squeak-bearing segment blocks the union of the segment and its squeak extent (``os_utils.vocal_occupancy_times``), which may reach past the segment, so every summary needs ``squeak_start`` / ``squeak_end``. Noise segments are removed first in every case when ``vocal_features.exclude_noise_usvs`` is ``true``. Applied before ``onset_target_category``; any list other than ``["usv"]`` is embedded in the ``analysis_tag`` (e.g. ``individual_squeak``, ``bout_onset_usv+overlap``). **Allowed:** a non-empty list of distinct classes from ``"usv"``, ``"squeak"``, ``"overlap"`` (anything else raises ``ValueError``); in ``'bout_onset'`` and ``'bout_offset'`` modes only ``"usv"`` and ``"overlap"``; shipped ``["usv"]``.
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`filter_history <mp-filter-history>`
+     - ``4``
+     - seconds > 0
+   * - :ref:`mixture_model_component_index <mp-mixture-model>`
+     - ``0``
+     - ``0``–``3`` (male), ``0``–``2`` (female)
+   * - :ref:`mixture_model_z_score <mp-mixture-model>`
+     - ``2.58``
+     - standard deviations > 0
+   * - :ref:`model_basis_function <mp-model-basis-function>`
+     - ``'raised_cosine'``
+     - ``'raised_cosine'``, ``'bspline'``, ``'laplacian_pyramid'``, ``'identity'``
+   * - :ref:`model_engine <mp-model-engine>`
+     - ``'pygam'``
+     - ``'pygam'``, ``'sklearn'``
+   * - :ref:`model_predictor_mouse_index <mp-model-predictor-mouse-index>`
+     - ``1``
+     - ``0``, ``1``
+   * - :ref:`model_target_vocal_type <mp-model-target-vocal-type>`
+     - ``'bout_onset'``
+     - ``'bout_onset'``, ``'individual'``, ``'state'``, ``'bout_offset'``
+   * - :ref:`model_target_variable <mp-model-target-variable>`
+     - ``'bout_durations'``
+     - ``'bout_durations'``, ``'bout_syllable_counts'``, ``'mean_mask_complexity'``, ``'total_mask_complexity'``
+   * - :ref:`selection_p_val <mp-selection-p-val>`
+     - ``0.01``
+     - number in ``(0, 1)``
+   * - :ref:`selection_effect_floor <mp-manifold-gate>`
+     - ``0.1``
+     - fraction in ``[0, 1]``
+   * - :ref:`selection_n_bootstrap <mp-manifold-gate>`
+     - ``1000``
+     - integer > 0
+   * - :ref:`selection_ci_level <mp-manifold-gate>`
+     - ``0.99``
+     - number in ``(0, 1)``
+   * - :ref:`selection_min_fold_events <mp-selection-min-fold-events>`
+     - ``30``
+     - integer > 0
+   * - :ref:`selection_sign_flip_exact_max_folds <mp-sign-flip>`
+     - ``22``
+     - integer > 0
+   * - :ref:`selection_sign_flip_monte_carlo_draws <mp-sign-flip>`
+     - ``1048576``
+     - integer > 0
+   * - :ref:`filter_null_permutations <mp-filter-null-permutations>`
+     - ``20``
+     - integer >= 0
+   * - :ref:`usv_bout_time <mp-usv-bout-time>`
+     - ``2``
+     - seconds > 0
+   * - :ref:`usv_per_bout_floor <mp-usv-per-bout-floor>`
+     - ``2``
+     - integer >= 1
+   * - :ref:`onset_target_category <mp-onset-target-category>`
+     - ``null``
+     - ``null``, or one category label
+   * - :ref:`onset_target_classes <mp-onset-target-classes>`
+     - ``["usv"]``
+     - list of ``"usv"``, ``"squeak"``, ``"overlap"``
+
+.. _mp-filter-history:
+
+``filter_history``
+   Seconds of behavioral history preceding each event that feed the temporal filter.
+
+   :Options: any positive number of seconds (not validated)
+   :Default: ``4``
+   :Notes: multiplied by ``camera_sampling_rate`` to give the window in frames.
+
+.. _mp-mixture-model:
+
+``mixture_model_component_index`` / ``mixture_model_z_score``
+   Bout grouping: where one bout ends and the next begins. The fitted inter-syllable-interval mixture (``mixture_model_params``) is thresholded at ``mean + z·sd`` of the selected component.
+
+   :Options:
+      * ``mixture_model_component_index`` — an integer index into the target sex's fitted mixture in ``mixture_model_params``: ``0``–``3`` for male, ``0``–``2`` for female. Components are ordered by mean log interval, so ``0`` is the shortest-interval component; an index past the last component raises ``IndexError``.
+      * ``mixture_model_z_score`` — a positive number of standard deviations (not validated)
+   :Default: ``0`` and ``2.58`` (component ``0``, ``z = 2.58``)
+
+.. _mp-model-basis-function:
+
+``model_basis_function``
+   Temporal-filter basis over the history window.
+
+   :Options:
+      * ``'raised_cosine'`` — raised-cosine basis (parameters in ``hyperparameters.basis_functions``)
+      * ``'bspline'`` — B-spline basis (parameters in ``hyperparameters.basis_functions``)
+      * ``'laplacian_pyramid'`` — Laplacian-pyramid basis (parameters in ``hyperparameters.basis_functions``)
+      * ``'identity'`` — the raw per-frame history, no projection
+   :Default: ``'raised_cosine'``
+   :Notes: only relevant when ``model_engine = 'sklearn'``; the ``'pygam'`` engine uses its own tensor-product splines instead and ignores this setting. Any other value raises when the ``'sklearn'`` engine builds its basis.
+
+.. _mp-model-engine:
+
+``model_engine``
+   Univariate model backend.
+
+   :Options:
+      * ``'pygam'`` — tensor-product-spline GAM (a generalized additive model)
+      * ``'sklearn'`` — basis-projected linear model
+   :Default: ``'pygam'``
+   :Notes: the multinomial category and acoustic-manifold targets always run the JAX estimators and ignore it. The model selections raise on any other value.
+
+.. _mp-model-predictor-mouse-index:
+
+``model_predictor_mouse_index``
+   Which mouse is the **partner**; the **target** — the mouse whose vocal behavior is being predicted — is the other one.
+
+   :Options: ``0`` or ``1``, the slot in the session's ``track_names``
+   :Default: ``1``
+   :Notes: both mice's kinematics enter the predictor set. Not validated; the target is ``abs(index - 1)``, so other values are meaningless.
+
+.. _mp-model-target-vocal-type:
+
+``model_target_vocal_type``
+   Onset target mode; used only by ``VocalOnsetModelingPipeline``.
+
+   :Options:
+      * ``'bout_onset'`` — clustered bout onsets, both positive and negative pre-event windows kept clean
+      * ``'individual'`` — per-USV onsets
+      * ``'state'`` — the session is sampled on a regular ``filter_history``-spaced time grid and each sample labelled vocal / silent by whether a vocalization of the ``onset_target_classes`` occupies it, with no clean-history requirement
+      * ``'bout_offset'`` — the END of a bout against an interior USV of a bout that continued; configured by the ``bout_offset`` block, see :ref:`Bout offsets <modeling-bout-offsets>`
+   :Default: ``'bout_onset'``
+   :Notes: any other value raises ``ValueError``.
+
+.. _mp-model-target-variable:
+
+``model_target_variable``
+   For ``BoutParameterPipeline``, which per-bout quantity to regress.
+
+   :Options:
+      * ``'bout_durations'`` — first-to-last-USV span, seconds
+      * ``'bout_syllable_counts'`` — the number of USVs in the bout
+      * ``'mean_mask_complexity'`` — per-USV mean spectrogram-mask complexity
+      * ``'total_mask_complexity'`` — spectrogram-mask complexity summed over the bout
+   :Default: ``'bout_durations'``
+   :Notes: the model-selection dispatcher (``main_model_selection_dispatcher``) reads it from here for the ``params`` selection; it is not a command-line flag. Any other value raises ``KeyError`` at extraction.
+
+.. _mp-selection-p-val:
+
+``selection_p_val``
+   The significance level gating whether a candidate feature is admitted during forward-stepwise model selection.
+
+   :Options: a number in ``(0, 1)`` (not validated)
+   :Default: ``0.01``
+   :Notes:
+      * On the onset, category and bout-parameter selections it is a family-wise level, Bonferroni-divided by the number of candidate features before the null percentile is read.
+      * On the acoustic-manifold target it is the Benjamini–Hochberg FDR ``q`` used to screen candidates.
+      * The model-selection dispatcher passes this value to every selector; it is not a command-line flag.
+
+.. _mp-manifold-gate:
+
+``selection_effect_floor`` / ``selection_n_bootstrap`` / ``selection_ci_level``
+   The acoustic-manifold selection's **fold-grain acceptance gate** (``continuous_vocal_manifold_model_selection``): a feature is kept only when its per-fold paired score margin over the shuffle null (the macro von Mises log-likelihood on the torus, the wrap-aware distance correlation on euclidean) is consistently positive across CV folds.
+
+   :Options:
+      * ``selection_effect_floor`` — the relative effect floor a screened feature must clear: a fraction in ``[0, 1]`` of the top surviving driver's margin; ``0`` disables the floor (not validated)
+      * ``selection_n_bootstrap`` — the number of fold bootstrap resamples, a positive integer (not validated)
+      * ``selection_ci_level`` — the bootstrap confidence level, a number in ``(0, 1)``, whose lower bound must exceed ``0`` for an anchor / forward step to be accepted (not validated)
+   :Default: ``0.1`` (10%), ``1000`` and ``0.99``
+   :Notes:
+      * These apply to the manifold gate only; the onset / category / bout-parameter selections use ``selection_p_val`` alone.
+      * The screen's p-value is not a bootstrap: it is an exact one-sided sign-flip permutation test over the folds, ``p = (1 + k) / (1 + B)`` over the ``B = 2**manifold_n_cv_folds - 1`` non-identity sign patterns (every pattern enumerated; ``k`` counts those whose margin sum ties or beats the observed one), so it is never ``0`` and its floor is ``1 / 2**manifold_n_cv_folds`` (``9.5e-7`` at the shipped 20 folds, below the Benjamini–Hochberg rank-1 threshold ``q / m``); above ``selection_sign_flip_exact_max_folds`` usable folds a seeded Monte-Carlo set of ``selection_sign_flip_monte_carlo_draws`` patterns replaces the enumeration.
+      * All of the gate's knobs are read from the run's own settings file at call time.
+
+.. _mp-selection-min-fold-events:
+
+``selection_min_fold_events``
+   The manifold gate scores a fold only when its test set holds at least this many events.
+
+   :Options: a positive integer (not validated)
+   :Default: ``30``
+   :Notes: a sparser fold is dropped from the paired margin, since too few points give an unstable per-fold score (and an unstable per-fold ``kappa`` when the concentration is not frozen).
+
+.. _mp-sign-flip:
+
+``selection_sign_flip_exact_max_folds`` / ``selection_sign_flip_monte_carlo_draws``
+   How the manifold gate's sign-flip p-value is computed.
+
+   :Options:
+      * ``selection_sign_flip_exact_max_folds`` — up to this many usable folds, every one of the ``2**n`` sign patterns is enumerated, so the test is exact; a positive integer (memory grows as ``2**n``, so values much above ~25 are impractical; not validated)
+      * ``selection_sign_flip_monte_carlo_draws`` — above that fold count, a seeded Monte-Carlo set of this many patterns is drawn instead and the p-value floor becomes ``1 / (1 + draws)``; a positive integer (not validated)
+   :Default: ``22`` and ``1048576`` (``2**20``)
+   :Notes: ``2**22`` sums are ~32 MB of float64, a fraction of a second. The shipped ``manifold_n_cv_folds`` (20) is always enumerated exactly, so the draw count matters only for a run configured with more than 22 folds.
+
+.. _mp-filter-null-permutations:
+
+``filter_null_permutations``
+   How many target-permuted refits the torus and multinomial (QLVM category) model selections store, as the no-signal band of the filter figures.
+
+   :Options: an integer ``>= 0`` (not validated); ``0`` stores none, and the figures then draw no band
+   :Default: ``20``
+   :Notes:
+      * The selections refit the final feature set on the development sessions this many times with the target permuted across the development set (positions with their weights and regions on the torus, category labels for the multinomial model) and store the permuted filters with the held-out block (``heldout['null_weights']``).
+      * The filter figures draw each filter against that no-signal band: part of a filter's weight at the two ends of the history window appears without any signal (the residual end weight of the lag basis), so only weight above the band reads as a real effect.
+      * No band is stored when the held-out reserve is disabled.
+
+.. _mp-usv-bout-time:
+
+``usv_bout_time``
+   Duration (seconds) of the post-onset silence window that defines the **negative (No-USV) events** in ``'bout_onset'`` and ``'individual'`` modes.
+
+   :Options: a positive number of seconds (not validated)
+   :Default: ``2``
+   :Notes: a candidate silent-epoch onset is kept only if no vocalization of the target mouse, and none assigned to no animal, starts within ``[t_onset, t_onset + usv_bout_time)`` after it.
+
+.. _mp-usv-per-bout-floor:
+
+``usv_per_bout_floor``
+   The minimum number of USVs a bout must contain.
+
+   :Options: an integer ``>= 1`` (not validated)
+   :Default: ``2``
+   :Notes: applies to the positive bouts in ``'bout_onset'`` and ``'bout_offset'`` modes, the bouts of ``BoutParameterPipeline``, and the bouts of the behavioral-response pipeline.
+
+.. _mp-onset-target-category:
+
+``onset_target_category``
+   Restrict positive onsets to a single USV category (``'individual'`` mode only).
+
+   :Options:
+      * ``null`` — all categories pooled
+      * one integer label of ``usv_category_column_name`` — ``1``–``4`` for ``qlvm_category`` (1 is the category with the most USVs); a set value needs a non-null ``usv_category_column_name``
+   :Default: ``null``
+   :Notes: read only in ``'individual'`` mode, ignored with a warning otherwise. See the single-category note under :ref:`Modeling input data <modeling-extract>`.
+
+.. _mp-onset-target-classes:
+
+``onset_target_classes``
+   Which vocal classes are the positive onsets: a non-empty list read from the summary's ``usv`` / ``squeak`` booleans (written by ``detect-usv-squeaks``).
+
+   :Options: a non-empty list of distinct classes:
+
+      * ``"usv"`` — a pure USV (``usv`` true and ``squeak`` false)
+      * ``"squeak"`` — a pure squeak (``squeak`` true and ``usv`` false)
+      * ``"overlap"`` — a USV and a squeak in one segment (both true)
+
+      Common lists:
+
+      * ``["usv"]`` — pure USVs (the default)
+      * ``["usv", "overlap"]`` — every segment holding a USV
+      * ``["squeak", "overlap"]`` — every segment holding a squeak
+      * ``["overlap"]`` — overlaps alone
+      * ``["usv", "squeak", "overlap"]`` — everything
+   :Default: ``["usv"]``
+   :Notes:
+      * **Validation** — anything else raises ``ValueError``. The bout modes (``'bout_onset'``, ``'bout_offset'``) accept ``"usv"`` and ``"overlap"`` only, since squeaks do not come in bouts and the inter-bout threshold is calibrated on USV intervals; ``'individual'`` and ``'state'`` take any list. An unscored segment (null booleans) is in no class.
+      * **Timing** — each positive is timed as the event the list asks about (``os_utils.vocal_event_times``): a pure USV by its segment ``start`` / ``stop``, a pure squeak by its own extent ``squeak_start`` / ``squeak_end`` (written by ``detect-usv-squeaks``), and an overlap segment by the squeak extent when the list names ``"squeak"`` but not ``"usv"`` (the squeak typically begins ~40 ms after the segment's USV onset), by the segment when it names ``"usv"`` but not ``"squeak"``, and by the union of the two otherwise (``["overlap"]`` alone, or both classes named); a list that can time a row by the squeak extent raises when a summary has no ``squeak_start`` / ``squeak_end``.
+      * **Bouts** — vocalizations of the other classes neither join nor split a bout; the bout-parameter and behavioral-response pipelines group their bouts from the same classes, so a bout is the same in every model.
+      * **Silence** — silence is not class-specific: a negative window, and a ``'bout_onset'`` positive's clean history, must both be free of every vocalization of the target mouse (any class) and of every vocalization assigned to no animal, so the two groups are built under one rule whatever the target. A negative window needs exactly the clean history a ``'bout_onset'`` positive needs, ``filter_history`` of silence before its end and nothing more: window ends are tiled every ``filter_history`` from the start of each clean zone, so the first negative after a vocalization ends ``filter_history`` after its stop, the earliest point a positive is clean; a squeak-bearing segment blocks the union of the segment and its squeak extent (``os_utils.vocal_occupancy_times``), which may reach past the segment, so every summary needs ``squeak_start`` / ``squeak_end``.
+      * **Order and naming** — noise segments are removed first in every case when ``vocal_features.exclude_noise_usvs`` is ``true``. Applied before ``onset_target_category``; any list other than ``["usv"]`` is embedded in the ``analysis_tag`` (e.g. ``individual_squeak``, ``bout_onset_usv+overlap``).
 
 **model_validation** — the held-out test set and cross-validation splitting.
 
@@ -167,16 +471,152 @@ cross-validation and held-out-test settings live in their own
         "stratification_min_events_per_bin": 20
     }
 
-* **held_out_test_proportion** — the fraction of sessions carved off **once** as a final held-out test set that is excluded from every CV fold and the whole feature-selection search, then scored only by the refit final model — an honest last-look estimate untouched by selection. ``0`` disables the carve-out (the entire dataset enters CV); default ``0.1``. **Allowed:** number in ``[0, 1)`` (other values raise ``ValueError``); shipped ``0.1``.
-* **split_strategy** — the cross-validation scheme: ``'mixed'`` (stratified shuffle over the pooled data) or ``'session'`` (hold whole sessions out, so no session straddles train and test). **Allowed:** ``'session'`` or ``'mixed'`` (the category and manifold pipelines raise on any other value); shipped ``'session'``.
-* **n_cv_folds** — the number of outer cross-validation folds each candidate feature is scored across, in every pipeline except the acoustic-manifold position (default ``10``). **Allowed:** positive integer (not validated); shipped ``10``.
-* **manifold_n_cv_folds** — the outer fold count of the acoustic-manifold position pipeline only: the univariate manifold runner, the selection screen that re-tests those folds, and the manifold forward selection (default ``20``). The screen tests each feature's per-fold margin with an exact sign-flip permutation over these folds, whose smallest attainable p-value is ``1 / 2**manifold_n_cv_folds``; at 10 folds that floor (``1 / 1024``) sits above the Benjamini–Hochberg rank-1 threshold ``q / m`` (``0.01 / 19``), so no feature could pass, while 20 folds bring it to ``9.5e-7``. A manifold resume refuses a checkpoint written with another fold count. **Allowed:** positive integer (not validated); the screen's p-value floor ``1 / 2**n`` must sit below the Benjamini–Hochberg rank-1 threshold ``q / m``, which needs at least ``11`` folds for 19 candidates at ``q = 0.01``; shipped ``20``.
-* **cv_validation_proportion** — the fraction of data held out per CV fold as that fold's validation set. **Allowed:** number in ``(0, 1)`` (not validated; under ``'session'`` it is the fraction of sessions held out); shipped ``0.1``.
-* **random_seed** — seeds every stochastic step (splits, permutations, initialisation) for reproducibility. **Allowed:** integer (``BoutParameterPipeline`` raises on a non-integer; some helpers read ``null`` as ``0``); shipped ``0``.
-* **spatial_cluster_num** — the number of spatial clusters used to build the spatial-CV folds for the continuous manifold target. **Allowed:** positive integer, at most the number of development events (not validated); shipped ``20``.
-* **session_split_initial_tolerance** — the starting class-balance tolerance for the ``'session'`` strategy's held-out-set search, before it begins widening (default ``0.05``). **Allowed:** number in ``[0, 1]`` (not validated); shipped ``0.05``.
-* **session_split_max_attempts** / **session_split_widen_step** / **session_split_widen_every** — tuning for the ``'session'`` strategy's search for balanced held-out session sets (max attempts, plus how much / how often the balance tolerance is relaxed). These four, like ``session_split_initial_tolerance``, are passed from the run's settings to every splitter (outer folds, the inner-CV tuners and the CNN); none of the splitters carries a default of its own. **Allowed:** ``session_split_max_attempts``: positive integer; ``session_split_widen_step``: positive number; ``session_split_widen_every``: positive integer (none validated); shipped ``50000``, ``0.02`` and ``1000``.
-* **stratification_max_bins** / **stratification_min_events_per_bin** — the continuous bout-parameter target is stratified across folds by cutting it into quantile bins: at most ``stratification_max_bins`` bins (default ``10``), and in ``BoutParameterPipeline`` no more than one bin per ``stratification_min_events_per_bin`` events (default ``20``), so every stratum holds enough events to be split; the bout-parameter selection caps its bins at ``stratification_max_bins`` with one bin per ``n_cv_folds`` events. Two bins is the structural floor (a single stratum stratifies nothing). **Allowed:** ``stratification_max_bins``: integer ``>= 2``; ``stratification_min_events_per_bin``: positive integer (neither validated); shipped ``10`` and ``20``.
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`held_out_test_proportion <mval-held-out-test-proportion>`
+     - ``0.1``
+     - number in ``[0, 1)``
+   * - :ref:`split_strategy <mval-split-strategy>`
+     - ``'session'``
+     - ``'session'``, ``'mixed'``
+   * - :ref:`n_cv_folds <mval-n-cv-folds>`
+     - ``10``
+     - integer > 0
+   * - :ref:`manifold_n_cv_folds <mval-manifold-n-cv-folds>`
+     - ``20``
+     - integer > 0 (at least ``11`` in practice)
+   * - :ref:`cv_validation_proportion <mval-cv-validation-proportion>`
+     - ``0.1``
+     - number in ``(0, 1)``
+   * - :ref:`random_seed <mval-random-seed>`
+     - ``0``
+     - any integer
+   * - :ref:`spatial_cluster_num <mval-spatial-cluster-num>`
+     - ``20``
+     - integer > 0
+   * - :ref:`session_split_initial_tolerance <mval-session-split-initial-tolerance>`
+     - ``0.05``
+     - number in ``[0, 1]``
+   * - :ref:`session_split_max_attempts <mval-session-split-search>`
+     - ``50000``
+     - integer > 0
+   * - :ref:`session_split_widen_step <mval-session-split-search>`
+     - ``0.02``
+     - number > 0
+   * - :ref:`session_split_widen_every <mval-session-split-search>`
+     - ``1000``
+     - integer > 0
+   * - :ref:`stratification_max_bins <mval-stratification>`
+     - ``10``
+     - integer >= 2
+   * - :ref:`stratification_min_events_per_bin <mval-stratification>`
+     - ``20``
+     - integer > 0
+
+.. _mval-held-out-test-proportion:
+
+``held_out_test_proportion``
+   The fraction of sessions carved off **once** as a final held-out test set that is excluded from every CV fold and the whole feature-selection search, then scored only by the refit final model — an honest last-look estimate untouched by selection.
+
+   :Options: a number in ``[0, 1)`` (other values raise ``ValueError``); ``0`` disables the carve-out (the entire dataset enters CV)
+   :Default: ``0.1``
+
+.. _mval-split-strategy:
+
+``split_strategy``
+   The cross-validation scheme.
+
+   :Options:
+      * ``'session'`` — hold whole sessions out, so no session straddles train and test
+      * ``'mixed'`` — stratified shuffle over the pooled data
+   :Default: ``'session'``
+   :Notes: the category and manifold pipelines raise on any other value.
+
+.. _mval-n-cv-folds:
+
+``n_cv_folds``
+   The number of outer cross-validation folds each candidate feature is scored across, in every pipeline except the acoustic-manifold position.
+
+   :Options: a positive integer (not validated)
+   :Default: ``10``
+
+.. _mval-manifold-n-cv-folds:
+
+``manifold_n_cv_folds``
+   The outer fold count of the acoustic-manifold position pipeline only: the univariate manifold runner, the selection screen that re-tests those folds, and the manifold forward selection.
+
+   :Options: a positive integer (not validated); the screen's p-value floor ``1 / 2**n`` must sit below the Benjamini–Hochberg rank-1 threshold ``q / m``, which needs at least ``11`` folds for 19 candidates at ``q = 0.01``
+   :Default: ``20``
+   :Notes:
+      * The screen tests each feature's per-fold margin with an exact sign-flip permutation over these folds, whose smallest attainable p-value is ``1 / 2**manifold_n_cv_folds``; at 10 folds that floor (``1 / 1024``) sits above the Benjamini–Hochberg rank-1 threshold ``q / m`` (``0.01 / 19``), so no feature could pass, while 20 folds bring it to ``9.5e-7``.
+      * A manifold resume refuses a checkpoint written with another fold count.
+
+.. _mval-cv-validation-proportion:
+
+``cv_validation_proportion``
+   The fraction of data held out per CV fold as that fold's validation set.
+
+   :Options: a number in ``(0, 1)`` (not validated)
+   :Default: ``0.1``
+   :Notes: under ``'session'`` it is the fraction of sessions held out.
+
+.. _mval-random-seed:
+
+``random_seed``
+   Seeds every stochastic step (splits, permutations, initialisation) for reproducibility.
+
+   :Options: an integer
+   :Default: ``0``
+   :Notes: ``BoutParameterPipeline`` raises on a non-integer; some helpers read ``null`` as ``0``.
+
+.. _mval-spatial-cluster-num:
+
+``spatial_cluster_num``
+   The number of spatial clusters used to build the spatial-CV folds for the continuous manifold target.
+
+   :Options: a positive integer, at most the number of development events (not validated)
+   :Default: ``20``
+
+.. _mval-session-split-initial-tolerance:
+
+``session_split_initial_tolerance``
+   The starting class-balance tolerance for the ``'session'`` strategy's held-out-set search, before it begins widening.
+
+   :Options: a number in ``[0, 1]`` (not validated)
+   :Default: ``0.05``
+
+.. _mval-session-split-search:
+
+``session_split_max_attempts`` / ``session_split_widen_step`` / ``session_split_widen_every``
+   Tuning for the ``'session'`` strategy's search for balanced held-out session sets (max attempts, plus how much / how often the balance tolerance is relaxed).
+
+   :Options:
+      * ``session_split_max_attempts`` — a positive integer
+      * ``session_split_widen_step`` — a positive number
+      * ``session_split_widen_every`` — a positive integer
+
+      (none validated)
+   :Default: ``50000``, ``0.02`` and ``1000``
+   :Notes: these three, like ``session_split_initial_tolerance``, are passed from the run's settings to every splitter (outer folds, the inner-CV tuners and the CNN); none of the splitters carries a default of its own.
+
+.. _mval-stratification:
+
+``stratification_max_bins`` / ``stratification_min_events_per_bin``
+   The continuous bout-parameter target is stratified across folds by cutting it into quantile bins: at most ``stratification_max_bins`` bins, and in ``BoutParameterPipeline`` no more than one bin per ``stratification_min_events_per_bin`` events, so every stratum holds enough events to be split.
+
+   :Options:
+      * ``stratification_max_bins`` — an integer ``>= 2``
+      * ``stratification_min_events_per_bin`` — a positive integer
+
+      (neither validated)
+   :Default: ``10`` and ``20``
+   :Notes: the bout-parameter selection caps its bins at ``stratification_max_bins`` with one bin per ``n_cv_folds`` events. Two bins is the structural floor (a single stratum stratifies nothing).
 
 **kinematic_features** — which behavioral predictors enter the feature zoo.
 
@@ -197,13 +637,110 @@ cross-validation and held-out-test settings live in their own
         "smooth_abs_features": {"ego_yaw": 1.0, "back_yaw": 0.5}
     }
 
-* **egocentric** — single-mouse posture / movement features; each name is kept for both mice (``<mouse>.<feature>``). **Allowed:** a list of single-mouse feature names present in the behavioral-features CSVs: ``speed``, ``acceleration``, ``neck_elevation``, ``allo_roll``, ``allo_pitch``, ``allo_yaw``, ``ego_yaw``, ``back_pitch``, ``back_yaw``, ``body_dir``, ``tail_curvature``, ``spaceX``, ``spaceY``, ``spaceZ``; a name absent from a session's CSV is skipped silently; shipped ``["speed", "neck_elevation", "allo_roll", "allo_pitch", "ego_yaw", "back_pitch", "back_yaw", "tail_curvature"]``.
-* **dyadic_pose** — relative-pose features between the two mice (``<self>-<other>`` naming). ``head-head`` is the inter-partner distance between the two Head nodes (skull centroids); ``allo_yaw-head`` / ``allo_pitch-head`` are the egocentric yaw / pitch of the partner's Head seen from the predictor mouse's head frame, and ``head-allo_yaw`` / ``head-allo_pitch`` the reverse direction. The Nose- and TTI-anchored equivalents (``allo_yaw-nose``, ``allo_pitch-TTI``, ...) remain available in every behavioral-features CSV. **Allowed:** a list of dyadic-pose names present in the CSVs: ``head-head``, ``nose-nose``, ``nose-TTI``, ``TTI-nose``, ``TTI-TTI``, and the angle pairs ``allo_yaw-<node>`` / ``<node>-allo_yaw`` and ``allo_pitch-<node>`` / ``<node>-allo_pitch`` with ``<node>`` one of ``head``, ``nose``, ``TTI``; a name absent from the CSV is skipped silently; shipped ``["head-head", "allo_yaw-head", "head-allo_yaw", "allo_pitch-head", "head-allo_pitch"]``.
-* **dyadic_engagement** — social-engagement features (e.g. ``orofacial-sei``). **Allowed:** a list from ``orofacial-sei``, ``anogenital-sei``, or empty; only the target-toward-partner orientation is kept; shipped ``[]``.
-* **dyadic_pose_symmetric** — if ``true``, include both ``A-B`` and ``B-A`` orientations of each dyadic-pose feature. **Allowed:** ``true`` or ``false``; with ``false`` one direction of each angle pair is dropped by the predictor-mouse rule; shipped ``false``.
-* **include_1st_derivatives** / **include_2nd_derivatives** — also add the velocity / acceleration of each feature. **Allowed:** ``include_1st_derivatives`` and ``include_2nd_derivatives``: ``true`` or ``false`` each (``speed`` and ``acceleration`` never get derivatives); shipped ``false`` and ``false``.
-* **abs_features** — feature suffixes folded to their plain absolute value ``|x|`` before pooled z-scoring (for signed angles whose sign is not behaviorally meaningful); read by every pipeline that z-scores across sessions. The pooled mean and standard deviation come from the development sessions only (the held-out sessions are drawn first, then excluded from the statistics, then z-scored with them), and the manifold pipeline's inverse-density KDE weights are likewise fit on the development targets only. **Allowed:** a list of feature suffixes (matched on the part after the last ``.``), or empty; suffixes absent from the data have no effect; shipped ``["allo_roll", "allo_yaw-nose", "nose-allo_yaw", "allo_yaw-head", "head-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw"]``.
-* **smooth_abs_features** — a *smooth* magnitude fold, ``sqrt(x² + ε²)``, where the mapped value is the per-feature ``ε`` **in the feature's own units** (degrees for the angles), not a smoothing width in frames and not a Gaussian σ. It is the differentiable counterpart of ``abs_features``: identical to ``|x|`` away from zero, but rounded near it, which avoids the kink that a plain absolute value puts at ``x = 0``. A feature listed in both dicts takes this branch, since ``smooth_abs_features`` has priority (see ``zscore_different_sessions_together``). **Allowed:** an object mapping a feature suffix to a positive ``ε`` in the feature's units, or empty ``{}``; shipped ``{"ego_yaw": 1.0, "back_yaw": 0.5}``.
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`egocentric <mkf-egocentric>`
+     - 8 features (see JSON above)
+     - list of single-mouse feature names
+   * - :ref:`dyadic_pose <mkf-dyadic-pose>`
+     - 5 features (see JSON above)
+     - list of dyadic-pose feature names
+   * - :ref:`dyadic_engagement <mkf-dyadic-engagement>`
+     - ``[]``
+     - list from ``orofacial-sei``, ``anogenital-sei``, or empty
+   * - :ref:`dyadic_pose_symmetric <mkf-dyadic-pose-symmetric>`
+     - ``false``
+     - ``true``, ``false``
+   * - :ref:`include_1st_derivatives <mkf-derivatives>`
+     - ``false``
+     - ``true``, ``false``
+   * - :ref:`include_2nd_derivatives <mkf-derivatives>`
+     - ``false``
+     - ``true``, ``false``
+   * - :ref:`abs_features <mkf-abs-features>`
+     - 7 suffixes (see JSON above)
+     - list of feature suffixes, or empty
+   * - :ref:`smooth_abs_features <mkf-smooth-abs-features>`
+     - ``{"ego_yaw": 1.0, "back_yaw": 0.5}``
+     - object of suffix → ``ε`` > 0, or ``{}``
+
+.. _mkf-egocentric:
+
+``egocentric``
+   Single-mouse posture / movement features; each name is kept for both mice (``<mouse>.<feature>``).
+
+   :Options: a list of single-mouse feature names present in the behavioral-features CSVs: ``speed``, ``acceleration``, ``neck_elevation``, ``allo_roll``, ``allo_pitch``, ``allo_yaw``, ``ego_yaw``, ``back_pitch``, ``back_yaw``, ``body_dir``, ``tail_curvature``, ``spaceX``, ``spaceY``, ``spaceZ``
+   :Default: ``["speed", "neck_elevation", "allo_roll", "allo_pitch", "ego_yaw", "back_pitch", "back_yaw", "tail_curvature"]``
+   :Notes: a name absent from a session's CSV is skipped silently.
+
+.. _mkf-dyadic-pose:
+
+``dyadic_pose``
+   Relative-pose features between the two mice (``<self>-<other>`` naming).
+
+   :Options: a list of dyadic-pose names present in the CSVs:
+
+      * ``head-head``, ``nose-nose``, ``nose-TTI``, ``TTI-nose``, ``TTI-TTI``
+      * the angle pairs ``allo_yaw-<node>`` / ``<node>-allo_yaw`` and ``allo_pitch-<node>`` / ``<node>-allo_pitch``, with ``<node>`` one of ``head``, ``nose``, ``TTI``
+   :Default: ``["head-head", "allo_yaw-head", "head-allo_yaw", "allo_pitch-head", "head-allo_pitch"]``
+   :Notes:
+      * ``head-head`` is the inter-partner distance between the two Head nodes (skull centroids); ``allo_yaw-head`` / ``allo_pitch-head`` are the egocentric yaw / pitch of the partner's Head seen from the predictor mouse's head frame, and ``head-allo_yaw`` / ``head-allo_pitch`` the reverse direction.
+      * The Nose- and TTI-anchored equivalents (``allo_yaw-nose``, ``allo_pitch-TTI``, ...) remain available in every behavioral-features CSV.
+      * A name absent from the CSV is skipped silently.
+
+.. _mkf-dyadic-engagement:
+
+``dyadic_engagement``
+   Social-engagement features (e.g. ``orofacial-sei``).
+
+   :Options: a list from ``orofacial-sei``, ``anogenital-sei``, or empty
+   :Default: ``[]``
+   :Notes: only the target-toward-partner orientation is kept.
+
+.. _mkf-dyadic-pose-symmetric:
+
+``dyadic_pose_symmetric``
+   Whether to include both ``A-B`` and ``B-A`` orientations of each dyadic-pose feature.
+
+   :Options:
+      * ``true`` — include both orientations
+      * ``false`` — one direction of each angle pair is dropped by the predictor-mouse rule
+   :Default: ``false``
+
+.. _mkf-derivatives:
+
+``include_1st_derivatives`` / ``include_2nd_derivatives``
+   Also add the velocity / acceleration of each feature.
+
+   :Options: ``true`` or ``false`` each
+   :Default: ``false`` and ``false``
+   :Notes: ``speed`` and ``acceleration`` never get derivatives.
+
+.. _mkf-abs-features:
+
+``abs_features``
+   Feature suffixes folded to their plain absolute value ``|x|`` before pooled z-scoring (for signed angles whose sign is not behaviorally meaningful).
+
+   :Options: a list of feature suffixes (matched on the part after the last ``.``), or empty
+   :Default: ``["allo_roll", "allo_yaw-nose", "nose-allo_yaw", "allo_yaw-head", "head-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw"]``
+   :Notes:
+      * Read by every pipeline that z-scores across sessions; suffixes absent from the data have no effect.
+      * The pooled mean and standard deviation come from the development sessions only (the held-out sessions are drawn first, then excluded from the statistics, then z-scored with them), and the manifold pipeline's inverse-density KDE weights are likewise fit on the development targets only.
+
+.. _mkf-smooth-abs-features:
+
+``smooth_abs_features``
+   A *smooth* magnitude fold, ``sqrt(x² + ε²)``, where the mapped value is the per-feature ``ε`` **in the feature's own units** (degrees for the angles), not a smoothing width in frames and not a Gaussian σ.
+
+   :Options: an object mapping a feature suffix to a positive ``ε`` in the feature's units, or empty ``{}``
+   :Default: ``{"ego_yaw": 1.0, "back_yaw": 0.5}``
+   :Notes: it is the differentiable counterpart of ``abs_features``: identical to ``|x|`` away from zero, but rounded near it, which avoids the kink that a plain absolute value puts at ``x = 0``. A feature listed in both dicts takes this branch, since ``smooth_abs_features`` has priority (see ``zscore_different_sessions_together``).
 
 **vocal_features** — which vocal predictors enter the zoo, and the acoustic-manifold definition.
 
@@ -238,21 +775,283 @@ cross-validation and held-out-test settings live in their own
         }
     }
 
-* **vocal_predictor_type** — how each vocal predictor trace is built: ``'pooled_binary'`` (a per-frame event indicator, ``<name>_event``), ``'pooled_rate'`` (a smoothed rate, ``<name>_rate``), ``'categories_rate'`` (one smoothed rate per ``usv_category_column_name`` category, ``<name>_cat_<k>``; the shipped default, over ``qlvm_category``), or ``'all_rate'`` (the pooled rate plus the per-category rates). Pure squeaks carry no QLVM category, so a trace whose class list holds pure squeaks is one ``<name>_rate`` under ``'categories_rate'`` and ``'all_rate'``. A falsy value builds no vocal predictors. ``'categories_rate'`` and ``'all_rate'`` need a label column: with ``usv_category_column_name`` ``null``, or naming a column a session's summary lacks (e.g. a summary whose categories ``assign-qlvm-categories`` has not written yet), they raise a ``ValueError`` naming the setting (before any session is loaded, for the ``null`` case) instead of silently building no category traces. The pooled modes never read a label column. **Allowed:** ``'pooled_binary'``, ``'pooled_rate'``, ``'categories_rate'``, ``'all_rate'``, or ``null`` / ``false`` (no vocal predictors); any other string raises ``ValueError``; shipped ``'categories_rate'``.
-* **vocal_predictor_classes** — which vocalizations the predictor traces hold: a list of class lists, each one trace, from the same three classes as ``onset_target_classes``. A trace is named by what it holds: a list holding ``"usv"`` (alone or with ``"overlap"``) is a ``usv`` trace, one holding ``"squeak"`` (alone or with ``"overlap"``) a ``squeak`` trace, ``["overlap"]`` an ``overlap`` trace, and one holding both ``"usv"`` and ``"squeak"`` an ``all_vocalizations`` trace. ``[["usv"]]`` (default) gives ``other.usv_cat_<k>`` (or ``other.usv_rate``); ``[["squeak", "overlap"]]`` gives ``other.squeak_rate``; ``[["usv", "overlap"], ["squeak"]]`` gives a USV and a squeak trace side by side. Lists may share classes (an overlap segment holds a USV and a squeak, so it belongs in both), but two lists that give the same name are refused. The exact lists are recorded in ``_input_metadata`` (``vocal_predictor_classes``), since ``["usv"]`` and ``["usv", "overlap"]`` both give a ``usv`` trace. Each trace times its rows as the onset targets do (a squeak by its own extent, an overlap segment by the squeak extent, the segment or their union as the list asks about squeaks, USVs or both). The target mouse's own pooled traces (any name) are never used as its predictors. **Allowed:** a non-empty list of non-empty lists, each holding distinct classes from ``"usv"``, ``"squeak"`` and ``"overlap"``, with no two lists giving the same trace name (all checked, ``ValueError`` otherwise); never ``null``, even with vocal predictors off (switch them off with ``vocal_predictor_type``); shipped ``[["usv"]]``.
-* **vocal_predictor_partner_only** — if ``true``, ingest only the *partner's* vocal traces as predictors (not the target mouse's own vocal history). **Allowed:** ``true`` (partner's traces only) or ``false`` (both mice; the target's own pooled traces are still dropped); shipped ``true``.
-* **vocal_predictor_smoothing_sd** — Gaussian σ (frames) applied to the USV-rate predictor traces. **Allowed:** a non-negative number of frames; ``0`` or ``null`` leaves the rate traces unsmoothed (the ``_event`` traces are never smoothed); not range-checked; shipped ``1``.
-* **usv_category_column_name** — the USV-catalog column defining categories: ``'qlvm_category'`` (shipped), the content-ridge categories R-1 … R-k (4 in production) of the regular map's ``qlvm1`` / ``qlvm2`` torus that ``assign-qlvm-categories`` writes; it is the summary's only category column (no coarse level, and no category column of the conditional maps: the categories are defined on the regular map, so every map's analyses — ``qlvm`` and the conditional ``qlvm_duration``, ``qlvm_entropy``, ``qlvm_bandwidth`` and ``qlvm_loudness`` alike — label a USV with its ``qlvm_category``). Labels are integers ``1..k``, 1 the category with the most USVs. ``null`` runs the label-free paths only: every label-dependent path fails clearly on ``null`` — the multinomial and binomial category pipelines, ``onset_target_category`` in ``'individual'`` mode, and the ``'categories_rate'`` / ``'all_rate'`` predictors raise ``QLVM category labels are not available; set vocal_features.usv_category_column_name to an existing label column`` before loading anything — while the continuous manifold pipeline runs without it (no category packet). A column that is set must exist in every summary. **Allowed:** ``null`` (label-free paths only) or the name of an integer label column present in every summary; ``'qlvm_category'`` is the only such column the pipeline writes; a set column missing from a summary raises; shipped ``'qlvm_category'``.
-* **exclude_noise_usvs** — whether to drop the USV segments ``detect-usv-noise`` flagged as holding no vocalization. A session whose summary lacks the ``noise`` column raises rather than contributing unfiltered detections. **Allowed:** ``true`` (drop segments with ``noise`` true) or ``false`` (keep every detection); shipped ``true``.
-* **usv_manifold_column_names** — the two catalog columns giving the 2-D manifold position (the ``ContinuousModelingPipeline`` target). USVs the embedding could not place have null coordinates; they are dropped at extraction (with the count printed per session and in total), so the inverse-density KDE, the regressions and the GLM-HMM never see a NaN position. The squeak map (``['qlvm_squeak1', 'qlvm_squeak2']``) places the squeak of every squeak-bearing segment, so its onsets are the squeaks' own (``squeak_start``, also for an overlap segment, whose USV begins earlier; a summary without the column raises); every other map keeps the segment onsets. The columns' map prefix also names the run: the manifold analysis tag is ``manifold_<map>`` (``['qlvm1', 'qlvm2']`` -> ``manifold_qlvm``, ``['qlvm_duration1', 'qlvm_duration2']`` -> ``manifold_qlvm_duration``; ``modeling_utils.manifold_tag_segment``) whether or not a category column is set, and it carries into the modeling input pickle (``modeling_manifold_<map>_<cohort>_<ts>.pkl``), the univariate results, the model-selection step files (``model_selection_continuous_manifold_<map>_<condition>_<split>_step_*.pkl``, named from the input pickle's ``analysis_tag``) and the consolidated artifact (``model_selection_final_<sex>_<condition>_manifold_<map>_<split>_<ts>.pkl``). Results written before this naming carry ``manifold_qlvm_category`` (the category column, the same for every map); they are read as before, and the consolidator never appends the category column to a ``manifold_<map>`` tag. **Allowed:** exactly two summary column names (a list of any other length raises ``ValueError``) naming one map's coordinates: ``['qlvm1', 'qlvm2']`` (regular map), ``['qlvm_duration1', 'qlvm_duration2']``, ``['qlvm_entropy1', 'qlvm_entropy2']``, ``['qlvm_bandwidth1', 'qlvm_bandwidth2']``, ``['qlvm_loudness1', 'qlvm_loudness2']`` (conditional maps) or ``['qlvm_squeak1', 'qlvm_squeak2']`` (squeak map); shipped ``['qlvm1', 'qlvm2']``.
-* **usv_manifold_metric** — ``'euclidean'`` (plane) or ``'torus'`` (wrap-aware) distance on the manifold. **Allowed:** ``'torus'`` or ``'euclidean'``; any other value raises ``ValueError``; shipped ``'torus'``.
-* **usv_manifold_period** — the wrap period for the ``'torus'`` metric. **Allowed:** a strictly positive number (a non-positive value raises ``ValueError``, also on euclidean); ``1.0`` matches the QLVM coordinates, which lie in ``[0, 1)``; shipped ``1.0``.
-* **usv_manifold_weight_clip_percentile** — the percentile at which the per-USV inverse-density KDE weights of the manifold extraction are capped (default ``95.0``, taken over the development rows), so a single isolated USV in an almost empty corner of the manifold cannot dominate the weighted loss; the weights are then rescaled to a development-row mean of 1. The value is recorded in ``_input_metadata.analysis_specific.manifold_weight_clip_percentile``. **Allowed:** a percentile in ``[0, 100]`` (outside it ``numpy.percentile`` raises); ``100`` disables the cap; shipped ``95.0``.
-* **usv_manifold_min_region_events** — the minimum number of labelled events an acoustic region (a QLVM category) must contain to enter the **macro** (region-balanced) von Mises average and the region-weighted MAE; sparser regions are dropped from those balanced statistics so a single under-sampled corner cannot dominate them (default ``20``). Ignored on euclidean and when no region labels are present. Without region labels (``usv_category_column_name`` ``null``, or a pickle extracted without them) the torus ``'macro'`` score falls back to the pooled score and the equal-region fit reweighting to uniform weights; the univariate and selection runs print a ``WARNING`` saying so, rather than substituting silently. **Allowed:** a non-negative integer (not validated; ``0`` keeps every region); shipped ``20``.
-* **usv_manifold_selection_score** — on the ``'torus'`` metric, which von Mises log-score the forward selection ranks on: ``'macro'`` (default) uses the region-balanced ``vm_logscore``, ``'micro'`` uses the event-weighted ``vm_logscore_pooled`` twin. Both are always logged per candidate, so this only changes which column drives the greedy ranking and the acceptance gate — the candidate pool, the region-reweighted fit, and every other reported metric are identical — making a macro-vs-micro selection comparison a one-key flip. Ignored on euclidean (which always ranks on ``dcor_xy``); an absent key resolves to ``'macro'``. **Allowed:** ``'macro'`` or ``'micro'`` (any other value raises ``ValueError``), or the key absent (``'macro'``); shipped ``'macro'``.
-* **freeze_selection_kappa** — on a torus manifold run, ``true`` fits the von Mises concentration ``kappa`` once on the development set and reuses it for every score (the univariate screen, baseline, fitted candidates, held-out, and the acceptance-gate bootstrap), so every margin sits on one dispersion scale and a fold predicted worse than the marginal scores below the flat-torus density instead of being clamped to it; ``true`` is shipped. ``false`` refits ``kappa`` per scored prediction set (see the *Frozen von Mises concentration* note below). Ignored on euclidean. **Allowed:** ``true`` or ``false`` (read as a boolean); shipped ``true``.
-* **usv_manifold_dcor** — the subsampling of the wrap-aware distance correlation ``dcor_xy``, the euclidean manifold selection score (unused on the torus, which scores with the von Mises log-likelihood). Distance correlation is ``O(n²)`` in memory and time, so each evaluation averages ``n_repeats`` random subsamples of ``n_subsample`` events (defaults ``3`` and ``2500``: a 2500-point distance matrix holds ~6.25e6 entries, small enough to stay fast and large enough for a stable estimate on production folds); the per-fold selection-gate score uses ``n_repeats_fold_gate`` (default ``1``), because a single fold's events sit under the subsample cap, so extra repeats would recompute the identical full-sample value. **Allowed:** ``n_subsample`` a positive integer (the subsample is ``min(n_subsample, n)`` events), ``n_repeats`` and ``n_repeats_fold_gate`` positive integers (``0`` returns ``NaN``); none is validated; shipped ``2500``, ``3`` and ``1``.
-* **usv_manifold_geodesic_metrics** — the analysis-only *reference-map* geometry for the two torus **geodesic** prediction-error columns (``density_geodesic_mae``, ``pullback_geodesic_mae``), reported per fold alongside the flat-torus MAE on the ``'torus'`` metric (both ``NaN`` on euclidean). ``compute`` toggles the whole block; ``grid_n_per_dim`` sets the resolution of the regular torus grid the all-pairs geodesic distance matrices are precomputed on once (``40`` → a 40×40 node lattice, so per-event errors are cheap snap-to-grid look-ups); ``graph_k`` is the number of wrap-aware nearest neighbours per node in the k-NN graph the shortest paths run over; ``density_exponent`` is the inverse-aggregate-posterior-density exponent ``α`` weighting the density-ratio geodesic (``0`` recovers the flat graph metric, larger values push paths harder through dense regions); ``pullback_metric`` switches the decoder-Jacobian pullback geodesic on: the frozen decoder whose Jacobian defines the pullback metric ``G = JᵀJ`` is not a setting but the production cell of the map the manifold coordinates come from, ``os_utils.qlvm_map_cell_directory(<map>)`` with ``<map>`` the map prefix of the input pickle's recorded ``usv_manifold_column_names`` (``_input_metadata.analysis_specific``; a pickle without that record falls back to the current setting): ``qlvm1`` / ``qlvm2`` -> the regular cell ``.../spectrograms/qlvm/qlvm``, ``qlvm_duration`` / ``qlvm_entropy`` / ``qlvm_bandwidth`` / ``qlvm_loudness`` -> their cells ``.../spectrograms/qlvm/<map>`` (``QLVM_PRODUCTION_MODEL_CELLS`` under ``QLVM_MODEL_PACKAGE_ROOT``), ``qlvm_squeak1`` / ``qlvm_squeak2`` -> the squeak cell ``QLVM_SQUEAK_PRODUCTION_CELL`` under ``QLVM_SQUEAK_PACKAGE_ROOT``; each is read without torch from its ``checkpoint.tar``. A pullback metric of one map's coordinates under another map's decoder would measure distances on a torus the coordinates do not live on. Manifold columns that name no QLVM map with ``pullback_metric`` ``true`` are a settings error. The cell comes from the code constants so the CLI / GUI re-keying of experimenter folders in the settings can never point it at another folder; a ``decoder_model_cell_directory`` (or the retired ``decoder_weights_npz_path``) key left in older settings is ignored. ``pullback_condition_quantile`` (in ``[0, 1]``, default ``0.5``) fixes the conditioning value of a conditional map's decoder, which decodes a torus position *and* a per-USV conditioning value ``c`` (duration, spectral entropy, bandwidth or loudness): every grid node is decoded at the same ``c``, that quantile of the cell's training corpus's conditioning distribution (read from the cell's ``condition_bins.npz`` bin edges and per-bin training counts, linear inside a bin, then decoded by the cell's own ``condition.decode`` rule: clamped for ``'exact'``, snapped to the decode grid for ``'grid'``; ``processing.qlvm_latents.condition_quantile_value``), so ``G`` is one Riemannian metric of the torus. ``0.5`` measures distances as decoded-spectrogram change for the corpus median USV (production medians: duration ``c`` 0.244, entropy 0.595, bandwidth 0.245, loudness 0.545); the value depends only on the cell, not on which USVs a run holds. The regular and squeak decoders take no conditioning value and ignore it. ``pullback_metric`` ``false`` (or an unreadable decoder) degrades ``pullback_geodesic_mae`` to ``NaN`` and the run proceeds. **Allowed:** ``compute`` ``true`` / ``false`` (the whole block may also be absent, which skips the geodesic columns); ``grid_n_per_dim`` a positive integer (the grid has ``grid_n_per_dim**2`` nodes; not validated); ``graph_k`` a positive integer below the node count (not validated); ``density_exponent`` a non-negative number, ``0`` giving the flat graph metric (not validated); ``pullback_metric`` ``true`` / ``false``; ``pullback_condition_quantile`` a number in ``[0, 1]`` (outside it raises ``ValueError``); shipped ``true``, ``40``, ``8``, ``1.0``, ``true`` and ``0.5``.
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`vocal_predictor_type <mvf-vocal-predictor-type>`
+     - ``'categories_rate'``
+     - ``'pooled_binary'``, ``'pooled_rate'``, ``'categories_rate'``, ``'all_rate'``, ``null`` / ``false``
+   * - :ref:`vocal_predictor_classes <mvf-vocal-predictor-classes>`
+     - ``[["usv"]]``
+     - list of class lists from ``"usv"``, ``"squeak"``, ``"overlap"``
+   * - :ref:`vocal_predictor_partner_only <mvf-vocal-predictor-partner-only>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`vocal_predictor_smoothing_sd <mvf-vocal-predictor-smoothing-sd>`
+     - ``1``
+     - frames >= 0, or ``null``
+   * - :ref:`usv_category_column_name <mvf-usv-category-column-name>`
+     - ``'qlvm_category'``
+     - ``'qlvm_category'``, ``null``
+   * - :ref:`exclude_noise_usvs <mvf-exclude-noise-usvs>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`usv_manifold_column_names <mvf-usv-manifold-column-names>`
+     - ``['qlvm1', 'qlvm2']``
+     - two coordinate columns of one map
+   * - :ref:`usv_manifold_metric <mvf-usv-manifold-metric>`
+     - ``'torus'``
+     - ``'torus'``, ``'euclidean'``
+   * - :ref:`usv_manifold_period <mvf-usv-manifold-period>`
+     - ``1.0``
+     - number > 0
+   * - :ref:`usv_manifold_weight_clip_percentile <mvf-usv-manifold-weight-clip-percentile>`
+     - ``95.0``
+     - percentile in ``[0, 100]``
+   * - :ref:`usv_manifold_min_region_events <mvf-usv-manifold-min-region-events>`
+     - ``20``
+     - integer >= 0
+   * - :ref:`usv_manifold_selection_score <mvf-usv-manifold-selection-score>`
+     - ``'macro'``
+     - ``'macro'``, ``'micro'``
+   * - :ref:`freeze_selection_kappa <mvf-freeze-selection-kappa>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`usv_manifold_dcor.n_subsample <mvf-usv-manifold-dcor>`
+     - ``2500``
+     - integer > 0
+   * - :ref:`usv_manifold_dcor.n_repeats <mvf-usv-manifold-dcor>`
+     - ``3``
+     - integer > 0
+   * - :ref:`usv_manifold_dcor.n_repeats_fold_gate <mvf-usv-manifold-dcor>`
+     - ``1``
+     - integer > 0
+   * - :ref:`usv_manifold_geodesic_metrics.compute <mvf-usv-manifold-geodesic-metrics>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`usv_manifold_geodesic_metrics.grid_n_per_dim <mvf-usv-manifold-geodesic-metrics>`
+     - ``40``
+     - integer > 0
+   * - :ref:`usv_manifold_geodesic_metrics.graph_k <mvf-usv-manifold-geodesic-metrics>`
+     - ``8``
+     - integer > 0, below the node count
+   * - :ref:`usv_manifold_geodesic_metrics.density_exponent <mvf-usv-manifold-geodesic-metrics>`
+     - ``1.0``
+     - number >= 0
+   * - :ref:`usv_manifold_geodesic_metrics.pullback_metric <mvf-usv-manifold-geodesic-metrics>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`usv_manifold_geodesic_metrics.pullback_condition_quantile <mvf-usv-manifold-geodesic-metrics>`
+     - ``0.5``
+     - number in ``[0, 1]``
+
+.. _mvf-vocal-predictor-type:
+
+``vocal_predictor_type``
+   How each vocal predictor trace is built.
+
+   :Options:
+      * ``'pooled_binary'`` — a per-frame event indicator, ``<name>_event``
+      * ``'pooled_rate'`` — a smoothed rate, ``<name>_rate``
+      * ``'categories_rate'`` — one smoothed rate per ``usv_category_column_name`` category, ``<name>_cat_<k>``
+      * ``'all_rate'`` — the pooled rate plus the per-category rates
+      * ``null`` / ``false`` — no vocal predictors (a falsy value builds no vocal predictors)
+   :Default: ``'categories_rate'`` (over ``qlvm_category``)
+   :Notes:
+      * **Validation:** any other string raises ``ValueError``.
+      * **Squeaks:** pure squeaks carry no QLVM category, so a trace whose class list holds pure squeaks is one ``<name>_rate`` under ``'categories_rate'`` and ``'all_rate'``.
+      * **Label column:** ``'categories_rate'`` and ``'all_rate'`` need a label column: with ``usv_category_column_name`` ``null``, or naming a column a session's summary lacks (e.g. a summary whose categories ``assign-qlvm-categories`` has not written yet), they raise a ``ValueError`` naming the setting (before any session is loaded, for the ``null`` case) instead of silently building no category traces. The pooled modes never read a label column.
+
+.. _mvf-vocal-predictor-classes:
+
+``vocal_predictor_classes``
+   Which vocalizations the predictor traces hold: a list of class lists, each one trace, from the same three classes as ``onset_target_classes``.
+
+   :Options: a non-empty list of non-empty lists, each holding distinct classes from ``"usv"``, ``"squeak"`` and ``"overlap"``, with no two lists giving the same trace name (all checked, ``ValueError`` otherwise). Examples:
+
+      * ``[["usv"]]`` — gives ``other.usv_cat_<k>`` (or ``other.usv_rate``); the default
+      * ``[["squeak", "overlap"]]`` — gives ``other.squeak_rate``
+      * ``[["usv", "overlap"], ["squeak"]]`` — gives a USV and a squeak trace side by side
+   :Default: ``[["usv"]]``
+   :Notes:
+      * **Naming:** a trace is named by what it holds: a list holding ``"usv"`` (alone or with ``"overlap"``) is a ``usv`` trace, one holding ``"squeak"`` (alone or with ``"overlap"``) a ``squeak`` trace, ``["overlap"]`` an ``overlap`` trace, and one holding both ``"usv"`` and ``"squeak"`` an ``all_vocalizations`` trace.
+      * **Sharing:** lists may share classes (an overlap segment holds a USV and a squeak, so it belongs in both), but two lists that give the same name are refused. The exact lists are recorded in ``_input_metadata`` (``vocal_predictor_classes``), since ``["usv"]`` and ``["usv", "overlap"]`` both give a ``usv`` trace.
+      * **Timing:** each trace times its rows as the onset targets do (a squeak by its own extent, an overlap segment by the squeak extent, the segment or their union as the list asks about squeaks, USVs or both).
+      * **Own traces:** the target mouse's own pooled traces (any name) are never used as its predictors.
+      * **Never null:** never ``null``, even with vocal predictors off (switch them off with ``vocal_predictor_type``).
+
+.. _mvf-vocal-predictor-partner-only:
+
+``vocal_predictor_partner_only``
+   Whether to ingest only the *partner's* vocal traces as predictors (not the target mouse's own vocal history).
+
+   :Options:
+      * ``true`` — partner's traces only
+      * ``false`` — both mice; the target's own pooled traces are still dropped
+   :Default: ``true``
+
+.. _mvf-vocal-predictor-smoothing-sd:
+
+``vocal_predictor_smoothing_sd``
+   Gaussian σ (frames) applied to the USV-rate predictor traces.
+
+   :Options: a non-negative number of frames; ``0`` or ``null`` leaves the rate traces unsmoothed
+   :Default: ``1``
+   :Notes: the ``_event`` traces are never smoothed; not range-checked.
+
+.. _mvf-usv-category-column-name:
+
+``usv_category_column_name``
+   The USV-catalog column defining categories.
+
+   :Options:
+      * ``'qlvm_category'`` — the content-ridge categories R-1 … R-k (4 in production) of the regular map's ``qlvm1`` / ``qlvm2`` torus that ``assign-qlvm-categories`` writes; the only such column the pipeline writes
+      * the name of another integer label column present in every summary
+      * ``null`` — label-free paths only
+   :Default: ``'qlvm_category'``
+   :Notes:
+      * **One column:** ``'qlvm_category'`` is the summary's only category column (no coarse level, and no category column of the conditional maps: the categories are defined on the regular map, so every map's analyses — ``qlvm`` and the conditional ``qlvm_duration``, ``qlvm_entropy``, ``qlvm_bandwidth`` and ``qlvm_loudness`` alike — label a USV with its ``qlvm_category``). Labels are integers ``1..k``, 1 the category with the most USVs.
+      * **null:** ``null`` runs the label-free paths only: every label-dependent path fails clearly on ``null`` — the multinomial and binomial category pipelines, ``onset_target_category`` in ``'individual'`` mode, and the ``'categories_rate'`` / ``'all_rate'`` predictors raise ``QLVM category labels are not available; set vocal_features.usv_category_column_name to an existing label column`` before loading anything — while the continuous manifold pipeline runs without it (no category packet).
+      * **Validation:** a column that is set must exist in every summary; a set column missing from a summary raises.
+
+.. _mvf-exclude-noise-usvs:
+
+``exclude_noise_usvs``
+   Whether to drop the USV segments ``detect-usv-noise`` flagged as holding no vocalization.
+
+   :Options:
+      * ``true`` — drop segments with ``noise`` true
+      * ``false`` — keep every detection
+   :Default: ``true``
+   :Notes: a session whose summary lacks the ``noise`` column raises rather than contributing unfiltered detections.
+
+.. _mvf-usv-manifold-column-names:
+
+``usv_manifold_column_names``
+   The two catalog columns giving the 2-D manifold position (the ``ContinuousModelingPipeline`` target).
+
+   :Options: exactly two summary column names (a list of any other length raises ``ValueError``) naming one map's coordinates:
+
+      * ``['qlvm1', 'qlvm2']`` — regular map
+      * ``['qlvm_duration1', 'qlvm_duration2']`` — conditional map
+      * ``['qlvm_entropy1', 'qlvm_entropy2']`` — conditional map
+      * ``['qlvm_bandwidth1', 'qlvm_bandwidth2']`` — conditional map
+      * ``['qlvm_loudness1', 'qlvm_loudness2']`` — conditional map
+      * ``['qlvm_squeak1', 'qlvm_squeak2']`` — squeak map
+   :Default: ``['qlvm1', 'qlvm2']``
+   :Notes:
+      * **Null coordinates:** USVs the embedding could not place have null coordinates; they are dropped at extraction (with the count printed per session and in total), so the inverse-density KDE, the regressions and the GLM-HMM never see a NaN position.
+      * **Squeak map:** the squeak map (``['qlvm_squeak1', 'qlvm_squeak2']``) places the squeak of every squeak-bearing segment, so its onsets are the squeaks' own (``squeak_start``, also for an overlap segment, whose USV begins earlier; a summary without the column raises); every other map keeps the segment onsets.
+      * **Run naming:** the columns' map prefix also names the run: the manifold analysis tag is ``manifold_<map>`` (``['qlvm1', 'qlvm2']`` -> ``manifold_qlvm``, ``['qlvm_duration1', 'qlvm_duration2']`` -> ``manifold_qlvm_duration``; ``modeling_utils.manifold_tag_segment``) whether or not a category column is set, and it carries into the modeling input pickle (``modeling_manifold_<map>_<cohort>_<ts>.pkl``), the univariate results, the model-selection step files (``model_selection_continuous_manifold_<map>_<condition>_<split>_step_*.pkl``, named from the input pickle's ``analysis_tag``) and the consolidated artifact (``model_selection_final_<sex>_<condition>_manifold_<map>_<split>_<ts>.pkl``).
+      * **Older results:** results written before this naming carry ``manifold_qlvm_category`` (the category column, the same for every map); they are read as before, and the consolidator never appends the category column to a ``manifold_<map>`` tag.
+
+.. _mvf-usv-manifold-metric:
+
+``usv_manifold_metric``
+   The distance on the manifold.
+
+   :Options:
+      * ``'torus'`` — wrap-aware distance
+      * ``'euclidean'`` — plane distance
+   :Default: ``'torus'``
+   :Notes: any other value raises ``ValueError``.
+
+.. _mvf-usv-manifold-period:
+
+``usv_manifold_period``
+   The wrap period for the ``'torus'`` metric.
+
+   :Options: a strictly positive number (a non-positive value raises ``ValueError``, also on euclidean)
+   :Default: ``1.0``
+   :Notes: ``1.0`` matches the QLVM coordinates, which lie in ``[0, 1)``.
+
+.. _mvf-usv-manifold-weight-clip-percentile:
+
+``usv_manifold_weight_clip_percentile``
+   The percentile at which the per-USV inverse-density KDE weights of the manifold extraction are capped (taken over the development rows), so a single isolated USV in an almost empty corner of the manifold cannot dominate the weighted loss; the weights are then rescaled to a development-row mean of 1.
+
+   :Options: a percentile in ``[0, 100]`` (outside it ``numpy.percentile`` raises); ``100`` disables the cap
+   :Default: ``95.0``
+   :Notes: the value is recorded in ``_input_metadata.analysis_specific.manifold_weight_clip_percentile``.
+
+.. _mvf-usv-manifold-min-region-events:
+
+``usv_manifold_min_region_events``
+   The minimum number of labelled events an acoustic region (a QLVM category) must contain to enter the **macro** (region-balanced) von Mises average and the region-weighted MAE; sparser regions are dropped from those balanced statistics so a single under-sampled corner cannot dominate them.
+
+   :Options: a non-negative integer (not validated); ``0`` keeps every region
+   :Default: ``20``
+   :Notes: ignored on euclidean and when no region labels are present. Without region labels (``usv_category_column_name`` ``null``, or a pickle extracted without them) the torus ``'macro'`` score falls back to the pooled score and the equal-region fit reweighting to uniform weights; the univariate and selection runs print a ``WARNING`` saying so, rather than substituting silently.
+
+.. _mvf-usv-manifold-selection-score:
+
+``usv_manifold_selection_score``
+   On the ``'torus'`` metric, which von Mises log-score the forward selection ranks on.
+
+   :Options:
+      * ``'macro'`` — the region-balanced ``vm_logscore``
+      * ``'micro'`` — the event-weighted ``vm_logscore_pooled`` twin
+      * key absent — resolves to ``'macro'``
+   :Default: ``'macro'``
+   :Notes: any other value raises ``ValueError``. Both scores are always logged per candidate, so this only changes which column drives the greedy ranking and the acceptance gate — the candidate pool, the region-reweighted fit, and every other reported metric are identical — making a macro-vs-micro selection comparison a one-key flip. Ignored on euclidean (which always ranks on ``dcor_xy``).
+
+.. _mvf-freeze-selection-kappa:
+
+``freeze_selection_kappa``
+   On a torus manifold run, whether the von Mises concentration ``kappa`` is fitted once or per scored prediction set.
+
+   :Options:
+      * ``true`` — fits ``kappa`` once on the development set and reuses it for every score (the univariate screen, baseline, fitted candidates, held-out, and the acceptance-gate bootstrap), so every margin sits on one dispersion scale and a fold predicted worse than the marginal scores below the flat-torus density instead of being clamped to it
+      * ``false`` — refits ``kappa`` per scored prediction set (see the *Frozen von Mises concentration* note below)
+   :Default: ``true``
+   :Notes: read as a boolean. Ignored on euclidean.
+
+.. _mvf-usv-manifold-dcor:
+
+``usv_manifold_dcor``
+   The subsampling of the wrap-aware distance correlation ``dcor_xy``, the euclidean manifold selection score (unused on the torus, which scores with the von Mises log-likelihood). Distance correlation is ``O(n²)`` in memory and time, so each evaluation averages ``n_repeats`` random subsamples of ``n_subsample`` events.
+
+   :Options:
+      * ``n_subsample`` — a positive integer; the subsample is ``min(n_subsample, n)`` events
+      * ``n_repeats`` — a positive integer (``0`` returns ``NaN``)
+      * ``n_repeats_fold_gate`` — a positive integer (``0`` returns ``NaN``): the repeat count of the per-fold selection-gate score
+
+      (none is validated)
+   :Default: ``2500``, ``3`` and ``1``
+   :Notes: a 2500-point distance matrix holds ~6.25e6 entries, small enough to stay fast and large enough for a stable estimate on production folds. The per-fold selection-gate score uses ``n_repeats_fold_gate`` repeats because a single fold's events sit under the subsample cap, so extra repeats would recompute the identical full-sample value.
+
+.. _mvf-usv-manifold-geodesic-metrics:
+
+``usv_manifold_geodesic_metrics``
+   The analysis-only *reference-map* geometry for the two torus **geodesic** prediction-error columns (``density_geodesic_mae``, ``pullback_geodesic_mae``), reported per fold alongside the flat-torus MAE on the ``'torus'`` metric (both ``NaN`` on euclidean).
+
+   :Options:
+      * ``compute`` — ``true`` / ``false``; toggles the whole block (the whole block may also be absent, which skips the geodesic columns)
+      * ``grid_n_per_dim`` — a positive integer (not validated): the resolution of the regular torus grid the all-pairs geodesic distance matrices are precomputed on once (``40`` → a 40×40 node lattice, so per-event errors are cheap snap-to-grid look-ups); the grid has ``grid_n_per_dim**2`` nodes
+      * ``graph_k`` — a positive integer below the node count (not validated): the number of wrap-aware nearest neighbours per node in the k-NN graph the shortest paths run over
+      * ``density_exponent`` — a non-negative number (not validated): the inverse-aggregate-posterior-density exponent ``α`` weighting the density-ratio geodesic; ``0`` recovers the flat graph metric, larger values push paths harder through dense regions
+      * ``pullback_metric`` — ``true`` / ``false``: switches the decoder-Jacobian pullback geodesic on
+      * ``pullback_condition_quantile`` — a number in ``[0, 1]`` (outside it raises ``ValueError``): fixes the conditioning value of a conditional map's decoder
+   :Default: ``true``, ``40``, ``8``, ``1.0``, ``true`` and ``0.5``
+   :Notes:
+      **Pullback decoder:** the frozen decoder whose Jacobian defines the pullback metric ``G = JᵀJ`` is not a setting but the production cell of the map the manifold coordinates come from, ``os_utils.qlvm_map_cell_directory(<map>)`` with ``<map>`` the map prefix of the input pickle's recorded ``usv_manifold_column_names`` (``_input_metadata.analysis_specific``; a pickle without that record falls back to the current setting):
+
+      * ``qlvm1`` / ``qlvm2`` -> the regular cell ``.../spectrograms/qlvm/qlvm``
+      * ``qlvm_duration`` / ``qlvm_entropy`` / ``qlvm_bandwidth`` / ``qlvm_loudness`` -> their cells ``.../spectrograms/qlvm/<map>`` (``QLVM_PRODUCTION_MODEL_CELLS`` under ``QLVM_MODEL_PACKAGE_ROOT``)
+      * ``qlvm_squeak1`` / ``qlvm_squeak2`` -> the squeak cell ``QLVM_SQUEAK_PRODUCTION_CELL`` under ``QLVM_SQUEAK_PACKAGE_ROOT``
+
+      Each is read without torch from its ``checkpoint.tar``. A pullback metric of one map's coordinates under another map's decoder would measure distances on a torus the coordinates do not live on. Manifold columns that name no QLVM map with ``pullback_metric`` ``true`` are a settings error. The cell comes from the code constants so the CLI / GUI re-keying of experimenter folders in the settings can never point it at another folder; a ``decoder_model_cell_directory`` (or the retired ``decoder_weights_npz_path``) key left in older settings is ignored.
+
+      **Conditioning value:** ``pullback_condition_quantile`` (default ``0.5``) fixes the conditioning value of a conditional map's decoder, which decodes a torus position *and* a per-USV conditioning value ``c`` (duration, spectral entropy, bandwidth or loudness): every grid node is decoded at the same ``c``, that quantile of the cell's training corpus's conditioning distribution (read from the cell's ``condition_bins.npz`` bin edges and per-bin training counts, linear inside a bin, then decoded by the cell's own ``condition.decode`` rule: clamped for ``'exact'``, snapped to the decode grid for ``'grid'``; ``processing.qlvm_latents.condition_quantile_value``), so ``G`` is one Riemannian metric of the torus.
+
+      ``0.5`` measures distances as decoded-spectrogram change for the corpus median USV (production medians: duration ``c`` 0.244, entropy 0.595, bandwidth 0.245, loudness 0.545); the value depends only on the cell, not on which USVs a run holds. The regular and squeak decoders take no conditioning value and ignore it.
+
+      **Degrading:** ``pullback_metric`` ``false`` (or an unreadable decoder) degrades ``pullback_geodesic_mae`` to ``NaN`` and the run proceeds.
 
 **diagnostics** — the predictor-collinearity and predictor-timescale audits (rendered in :ref:`Predictor diagnostics <modeling-diagnostics>`).
 
@@ -273,14 +1072,124 @@ cross-validation and held-out-test settings live in their own
         "timescale_signal_min_run_seconds": 0.2
     }
 
-* **collinearity_audit** / **timescale_audit** — enable each audit during extraction. **Allowed:** ``true`` or ``false`` each; shipped ``false`` and ``false``.
-* **collinearity_concern_threshold** / **collinearity_exclude_threshold** — Pearson ``|ρ|`` cutoffs for the collinearity audit: pairs at or above the concern threshold are flagged ``concern``, and pairs at or above the exclude threshold are flagged ``exclude`` (effectively redundant). The audit only reports the pairs; it removes no feature. **Allowed:** each a number in ``[0, 1]``, the concern threshold below the exclude threshold (neither checked); shipped ``0.7`` and ``0.85``.
-* **binary_decision_threshold** — probability cutoff for turning a predicted probability into a 0/1 label (a positive label is assigned when ``p >= threshold``); shared by every binary onset / category selector and pipeline. **Allowed:** a probability in ``[0, 1]`` (not validated); shipped ``0.5``.
-* **ece_n_bins** — histogram bin count for the Expected Calibration Error diagnostic (default ``10``), shared by every calibration computation (the one adaptive site scales its own bin count to the sample size). It is read from the run's settings at every call site (including the multinomial inner-CV tuner's ``'ece'`` score). **Allowed:** a positive integer (not validated); shipped ``10``.
-* **summary_star_alpha** — the console-only significance marker of the manifold univariate runner's end-of-run summary: a metric is starred ``***`` when its one-sided Wilcoxon signed-rank test over folds against the shuffle null (or the empirical-density draw) gives ``p`` below this level (default ``0.01``). It prints only; no stored result depends on it. **Allowed:** a level in ``(0, 1)`` (not validated); shipped ``0.01``.
-* **timescale_max_lag_seconds** — maximum lag examined for the ACF (autocorrelation function) / cross-correlation horizons. **Allowed:** a positive number of seconds (not validated); shipped ``10.0``.
-* **timescale_n_shuffles** / **timescale_shuffle_range** — number of circular-shift surrogates and the ``(min, max)`` shift range (seconds) for the null envelope. **Allowed:** ``timescale_n_shuffles`` a positive integer (not validated); ``timescale_shuffle_range`` a two-element list ``[min, max]`` of seconds with ``0 < min < max`` (checked, ``ValueError`` otherwise); shipped ``1000`` and ``[20, 60]``.
-* **timescale_signal_floor_seconds** / **timescale_signal_min_run_seconds** — where the cross-correlation significance marker may sit: crossings of the null envelope at lags below ``timescale_signal_floor_seconds`` are ignored, and the marker is placed at the end of the longest sign-consistent above-null run on the positive lag axis that lasts at least ``timescale_signal_min_run_seconds``. **Allowed:** ``timescale_signal_floor_seconds`` a non-negative number of seconds, ``timescale_signal_min_run_seconds`` a strictly positive number of seconds (both checked, ``ValueError`` otherwise); shipped ``0.5`` and ``0.2``.
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`collinearity_audit <mdg-audits>`
+     - ``false``
+     - ``true``, ``false``
+   * - :ref:`collinearity_concern_threshold <mdg-collinearity-thresholds>`
+     - ``0.7``
+     - number in ``[0, 1]``
+   * - :ref:`collinearity_exclude_threshold <mdg-collinearity-thresholds>`
+     - ``0.85``
+     - number in ``[0, 1]``
+   * - :ref:`timescale_audit <mdg-audits>`
+     - ``false``
+     - ``true``, ``false``
+   * - :ref:`binary_decision_threshold <mdg-binary-decision-threshold>`
+     - ``0.5``
+     - probability in ``[0, 1]``
+   * - :ref:`ece_n_bins <mdg-ece-n-bins>`
+     - ``10``
+     - integer > 0
+   * - :ref:`summary_star_alpha <mdg-summary-star-alpha>`
+     - ``0.01``
+     - level in ``(0, 1)``
+   * - :ref:`timescale_max_lag_seconds <mdg-timescale-max-lag-seconds>`
+     - ``10.0``
+     - seconds > 0
+   * - :ref:`timescale_n_shuffles <mdg-timescale-null>`
+     - ``1000``
+     - integer > 0
+   * - :ref:`timescale_shuffle_range <mdg-timescale-null>`
+     - ``[20, 60]``
+     - ``[min, max]`` seconds, ``0 < min < max``
+   * - :ref:`timescale_signal_floor_seconds <mdg-timescale-signal>`
+     - ``0.5``
+     - seconds >= 0
+   * - :ref:`timescale_signal_min_run_seconds <mdg-timescale-signal>`
+     - ``0.2``
+     - seconds > 0
+
+.. _mdg-audits:
+
+``collinearity_audit`` / ``timescale_audit``
+   Enable each audit during extraction.
+
+   :Options: ``true`` or ``false`` each
+   :Default: ``false`` and ``false``
+
+.. _mdg-collinearity-thresholds:
+
+``collinearity_concern_threshold`` / ``collinearity_exclude_threshold``
+   Pearson ``|ρ|`` cutoffs for the collinearity audit: pairs at or above the concern threshold are flagged ``concern``, and pairs at or above the exclude threshold are flagged ``exclude`` (effectively redundant).
+
+   :Options: each a number in ``[0, 1]``, the concern threshold below the exclude threshold (neither checked)
+   :Default: ``0.7`` and ``0.85``
+   :Notes: the audit only reports the pairs; it removes no feature.
+
+.. _mdg-binary-decision-threshold:
+
+``binary_decision_threshold``
+   Probability cutoff for turning a predicted probability into a 0/1 label (a positive label is assigned when ``p >= threshold``).
+
+   :Options: a probability in ``[0, 1]`` (not validated)
+   :Default: ``0.5``
+   :Notes: shared by every binary onset / category selector and pipeline.
+
+.. _mdg-ece-n-bins:
+
+``ece_n_bins``
+   Histogram bin count for the Expected Calibration Error diagnostic.
+
+   :Options: a positive integer (not validated)
+   :Default: ``10``
+   :Notes: shared by every calibration computation (the one adaptive site scales its own bin count to the sample size). It is read from the run's settings at every call site (including the multinomial inner-CV tuner's ``'ece'`` score).
+
+.. _mdg-summary-star-alpha:
+
+``summary_star_alpha``
+   The console-only significance marker of the manifold univariate runner's end-of-run summary: a metric is starred ``***`` when its one-sided Wilcoxon signed-rank test over folds against the shuffle null (or the empirical-density draw) gives ``p`` below this level.
+
+   :Options: a level in ``(0, 1)`` (not validated)
+   :Default: ``0.01``
+   :Notes: it prints only; no stored result depends on it.
+
+.. _mdg-timescale-max-lag-seconds:
+
+``timescale_max_lag_seconds``
+   Maximum lag examined for the ACF (autocorrelation function) / cross-correlation horizons.
+
+   :Options: a positive number of seconds (not validated)
+   :Default: ``10.0``
+
+.. _mdg-timescale-null:
+
+``timescale_n_shuffles`` / ``timescale_shuffle_range``
+   Number of circular-shift surrogates and the ``(min, max)`` shift range (seconds) for the null envelope.
+
+   :Options:
+      * ``timescale_n_shuffles`` — a positive integer (not validated)
+      * ``timescale_shuffle_range`` — a two-element list ``[min, max]`` of seconds with ``0 < min < max`` (checked, ``ValueError`` otherwise)
+   :Default: ``1000`` and ``[20, 60]``
+
+.. _mdg-timescale-signal:
+
+``timescale_signal_floor_seconds`` / ``timescale_signal_min_run_seconds``
+   Where the cross-correlation significance marker may sit: crossings of the null envelope at lags below ``timescale_signal_floor_seconds`` are ignored, and the marker is placed at the end of the longest sign-consistent above-null run on the positive lag axis that lasts at least ``timescale_signal_min_run_seconds``.
+
+   :Options:
+      * ``timescale_signal_floor_seconds`` — a non-negative number of seconds
+      * ``timescale_signal_min_run_seconds`` — a strictly positive number of seconds
+
+      (both checked, ``ValueError`` otherwise)
+   :Default: ``0.5`` and ``0.2``
 
 **hyperparameters** — per-engine model tuning, grouped into four sub-blocks:
 ``deep_learning`` (the CNN), ``linear_models`` (the two JAX linear models),
@@ -348,29 +1257,411 @@ continuous manifold target, consumed by ``NeuralContinuousCNNRunner`` (see
         }
     }
 
-* **use_kde_weights** — how each epoch's training rows are drawn: ``true`` samples ``N`` rows with replacement with probability proportional to the pickle's inverse-density KDE weights ``w`` (rare acoustic regions are over-drawn); ``false`` uses the grid-balanced sampler instead (``grid_size`` / ``samples_per_cell`` below). **Allowed:** ``true`` or ``false``; shipped ``true``.
-* **loss_function** / **huber_delta** — the training loss on the wrap-aware residual (per ``usv_manifold_metric``): ``'huber'`` (quadratic below ``huber_delta``, linear beyond it, so satellite USVs cannot dominate the gradient); any other value is plain squared error. **Allowed:** ``loss_function`` ``'huber'``, or any other string for squared error (not validated); ``huber_delta`` a positive float in manifold units, read only with ``'huber'`` (not validated); shipped ``'huber'`` and ``1.0``.
-* **learning_rate** / **use_scheduler** / **warmup_fraction** — the peak Adam(W) step size; with ``use_scheduler`` ``true`` the rate starts at 0, warms up linearly over ``warmup_fraction`` of the total steps to the peak and then cosine-decays to 0 over the rest, with ``false`` it is constant. **Allowed:** ``learning_rate`` a positive float; ``use_scheduler`` ``true`` or ``false``; ``warmup_fraction`` a fraction in ``[0, 1)``, read only when ``use_scheduler`` is ``true`` (neither number is validated); shipped ``0.0005``, ``true`` and ``0.1``.
-* **block_channels** — output channels of each residual block (the list length is the network depth; every block halves the time axis). **Allowed:** a non-empty list of positive integers, one per block, short enough that the halved time axis stays at least one frame (not validated); shipped ``[32, 64, 128, 256]``.
-* **weight_decay** / **weight_decay_exclude_output_head** — AdamW decoupled weight decay; ``true`` exempts the output head (``dense2``), whose collapse to zero would park the torus ``sin_cos`` head at a constant prediction. **Allowed:** ``weight_decay`` a float ``>= 0`` (``0`` turns decay off; not validated); ``weight_decay_exclude_output_head`` ``true`` or ``false``; shipped ``0.001`` and ``true``.
-* **cnn_torus_output_encoding** — torus runs only: ``'sin_cos'`` predicts a per-axis ``(sin, cos)`` pair and trains on the chord distance, ``'raw'`` predicts the two coordinates directly. Ignored on euclidean. **Allowed:** ``'sin_cos'`` or ``'raw'`` (any other value raises a ``ValueError`` on a torus run); shipped ``'sin_cos'``.
-* **epochs** / **batch_size** — the epoch cap per fold and strategy (early stopping usually ends training earlier) and the mini-batch size. **Allowed:** ``epochs`` an integer ``>= 1`` (``0`` raises a ``ValueError``); ``batch_size`` a positive integer no larger than a fold's training rows, or an epoch has no steps (not validated); shipped ``301`` and ``32``.
-* **kernel_size** / **use_inception_kernels** / **inception_kernel_sizes** — the depthwise convolution kernel (frames); ``use_inception_kernels`` ``true`` replaces it with parallel depthwise kernels of the listed sizes, so short and long temporal motifs are extracted side by side. **Allowed:** ``kernel_size`` a positive integer (frames; ``'SAME'`` padding, so odd and even both work; not validated); ``use_inception_kernels`` ``true`` or ``false``; ``inception_kernel_sizes`` a non-empty list of positive integers, read only when ``use_inception_kernels`` is ``true`` (a list too long for the network's reserved random-key budget raises a ``ValueError``); shipped ``15``, ``false`` and ``[3, 15, 31]``.
-* **dropout_rate** — dropout before the dense head. **Allowed:** a fraction in ``[0, 1)``; ``0`` turns dropout off (not validated); shipped ``0.3``.
-* **se_reduction** / **se_activation** — the squeeze-and-excitation channel attention of every block: bottleneck width ``channels // se_reduction`` and gate (``'sigmoid'``, anything else a hard sigmoid). **Allowed:** ``se_reduction`` a positive integer no larger than the smallest entry of ``block_channels`` (not validated); ``se_activation`` ``'sigmoid'``, or any other string for a hard sigmoid; shipped ``4`` and ``'sigmoid'``.
-* **hidden_dim** / **act_func** — the dense head's width and activation (``'relu'``, anything else GELU). **Allowed:** ``hidden_dim`` a positive integer (not validated); ``act_func`` ``'relu'``, or any other string for GELU; shipped ``128`` and ``'relu'``.
-* **bn_momentum** / **bn_eps** — the batch-normalisation running-statistics momentum and numerical floor. **Allowed:** ``bn_momentum`` a float in ``(0, 1)``; ``bn_eps`` a small positive float (neither validated); shipped ``0.99`` and ``1e-5``.
-* **grid_size** / **samples_per_cell** / **grid_balance_alpha** — the grid-balanced sampler used when ``use_kde_weights`` is ``false`` (it then also sizes the steps per epoch): the manifold is tiled ``grid_size × grid_size`` and every populated cell contributes ``ceil(samples_per_cell · count^alpha / samples_per_cell^alpha)`` rows (at least one), with ``alpha = grid_balance_alpha`` (default ``0.5``): ``0`` gives every populated cell the same quota (perfect grid balance), ``1`` draws in proportion to occupancy (no balancing), and ``0.5`` sits between, so the dense core cannot monopolise the batches without the rare cells being copied hundreds of times. **Allowed:** ``grid_size`` and ``samples_per_cell`` positive integers; ``grid_balance_alpha`` a float in ``[0, 1]``; all three read only when ``use_kde_weights`` is ``false`` (none validated); shipped ``25``, ``40`` and ``0.5``.
-* **prediction_head_scale_margin** — the network's ``tanh`` output head is scaled to each fold's training-target half-range times this margin (default ``1.1``), so the bounded head can reach the edge of the training support with 10% to spare instead of saturating exactly at the most extreme training USV. **Allowed:** a float ``>= 1`` (below ``1`` the head cannot reach the training edge; not validated); shipped ``1.1``.
-* **patience** / **null_patience** — early-stopping patience on the validation error, counted in validation checks (one every ``early_stopping_eval_every_epochs`` epochs), for the ``actual`` model and for the label-shuffled ``null`` model (which converges to nothing and is stopped sooner). **Allowed:** positive integers, counted in validation checks (not validated); shipped ``12`` and ``3``.
-* **early_stopping_eval_every_epochs** / **early_stopping_min_delta** — the validation error is computed every ``early_stopping_eval_every_epochs`` epochs (default ``5``), and a check counts as an improvement (resetting the patience counter and snapshotting the best weights) only when the error falls by more than ``early_stopping_min_delta`` (default ``0.001``, in manifold units) below the best so far, so a numerically negligible improvement cannot keep a plateaued run alive. **Allowed:** ``early_stopping_eval_every_epochs`` a positive integer; ``early_stopping_min_delta`` a float ``>= 0`` in manifold units (neither validated); shipped ``5`` and ``0.001``.
-* **validation_session_fraction** — the share of each fold's training sessions (at least one, drawn with a seed derived from ``random_seed``) whose training events are held back to choose the early-stopping epoch and the best weights; the network is fit on the rest, and the test fold is scored exactly once with the chosen weights, so its error is not optimistic. The best CV fold (whose weights are applied to the held-out block) is likewise chosen on the validation error. A fold with fewer than two training sessions raises. **Allowed:** a fraction in ``(0, 1)``; the count it gives is clamped to at least one session and at most all but one (not validated); shipped ``0.15``.
-* **warp_range** — temporal-warping augmentation: every sequence in a batch is stretched by a factor drawn uniformly from ``[1 - warp_range, 1 + warp_range]`` (centre-anchored). **Allowed:** a float in ``[0, 1)``; ``0`` turns warping off (not validated); shipped ``0.1``.
-* **n_folds** / **permutation_iterations** — the number of spatial-CV folds, and the permutation repeats per feature in the permutation-importance phase. **Allowed:** ``n_folds`` an integer ``>= 2`` (not validated); ``permutation_iterations`` an integer ``>= 2``, since a single repeat has zero spread, so its SNR is set to ``0`` and no feature is listed (not validated); shipped ``10`` and ``10``.
-* **importance_snr_threshold** — a feature is listed as significant by the permutation-importance phase when the mean error increase its permutation causes, divided by the standard deviation over the ``permutation_iterations`` repeats, exceeds this signal-to-noise ratio (default ``3.0``, the threshold defined in the Methods). **Allowed:** a positive float (not validated); shipped ``3.0``.
-* **use_kinematic_masking** / **masking_prob** / **masking_length_frames** — 1-D cutout augmentation: with probability ``masking_prob`` each feature channel of a sequence has a contiguous ``masking_length_frames`` chunk zeroed (the z-score mean), so the network cannot lean on a single dominant feature. **Allowed:** ``use_kinematic_masking`` ``true`` or ``false``; ``masking_prob`` a probability in ``[0, 1]``; ``masking_length_frames`` a positive integer, cut to the sequence length; both read only when masking is on (neither validated); shipped ``true``, ``0.15`` and ``60``.
-* **use_hybrid_flatten** — ``true`` concatenates a global-average-pooled channel vector to the flattened final feature map before the dense head, so time-invariant averages reach the head beside the strictly-timed motifs. **Allowed:** ``true`` or ``false``; shipped ``false``.
-* **saliency** — the regional-saliency phase. ``enable`` toggles it; it is shipped ``true`` with ``segmentation`` ``'category'`` (the only value): the segmentation groups USVs by their QLVM category, which the modeling pickle carries when it was extracted from summaries holding ``qlvm_category`` (the regular map's categories, the label of every map, the conditional ones included). A pickle without the requested labels stops the run in the saliency pre-flight check, before Phase 1 (a ``RuntimeError`` saying the labels are unavailable); set ``enable`` to ``false`` for such a pickle. ``alpha`` scales each category's inclusion circle (radius ``alpha × d_nn / 2``, ``d_nn`` the distance to the nearest other category centre, so circles never overlap for ``alpha <= 1``) and ``radius_mode`` is ``'adaptive'`` (one radius per category from its own ``d_nn``) or ``'uniform'`` (one shared radius from the tightest pair). Each category centre is the highest-density point of a 2-D Gaussian KDE of that category's USVs, evaluated on a square grid of ``center_grid_resolution`` points per axis (default ``200``) laid over the category's data range padded on every side by ``center_grid_margin_fraction`` (default ``0.05``) of the larger axis range (on a torus the padded grid is clipped to the period, so the margin acts on a euclidean manifold); a category with fewer than ``center_min_points_per_label`` USVs (default ``20``) gets no centre (too few for a stable density mode), and a category with more than ``center_max_points_per_label`` (default ``30000``) is subsampled to that many with the generator seeded by ``center_rng_seed`` (default ``0``) to bound the KDE cost. The five values are stored with the derived geometry (``cluster_geometry``). **Allowed:** ``enable`` ``true`` or ``false``; ``segmentation`` ``'category'`` only (any other value raises a ``ValueError``); ``alpha`` a float ``> 0`` (``<= 0`` raises; ``<= 1`` keeps circles from overlapping); ``radius_mode`` ``'adaptive'`` or ``'uniform'`` (any other value raises); ``center_min_points_per_label`` and ``center_max_points_per_label`` positive integers with min ``<=`` max; ``center_grid_resolution`` a positive integer; ``center_grid_margin_fraction`` a float ``>= 0``; ``center_rng_seed`` any integer (the last five not validated); shipped ``true``, ``'category'``, ``0.5``, ``'adaptive'``, ``20``, ``30000``, ``200``, ``0.05`` and ``0``.
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`use_kde_weights <mhp-cnn-use-kde-weights>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`loss_function <mhp-cnn-loss-function>`
+     - ``'huber'``
+     - ``'huber'``, or any other string (squared error)
+   * - :ref:`huber_delta <mhp-cnn-loss-function>`
+     - ``1.0``
+     - float > 0, manifold units
+   * - :ref:`learning_rate <mhp-cnn-learning-rate>`
+     - ``0.0005``
+     - float > 0
+   * - :ref:`use_scheduler <mhp-cnn-learning-rate>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`warmup_fraction <mhp-cnn-learning-rate>`
+     - ``0.1``
+     - fraction in ``[0, 1)``
+   * - :ref:`block_channels <mhp-cnn-block-channels>`
+     - ``[32, 64, 128, 256]``
+     - non-empty list of integers > 0
+   * - :ref:`weight_decay <mhp-cnn-weight-decay>`
+     - ``0.001``
+     - float >= 0
+   * - :ref:`weight_decay_exclude_output_head <mhp-cnn-weight-decay>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`cnn_torus_output_encoding <mhp-cnn-cnn-torus-output-encoding>`
+     - ``'sin_cos'``
+     - ``'sin_cos'``, ``'raw'``
+   * - :ref:`epochs <mhp-cnn-epochs>`
+     - ``301``
+     - integer >= 1
+   * - :ref:`batch_size <mhp-cnn-epochs>`
+     - ``32``
+     - integer > 0
+   * - :ref:`kernel_size <mhp-cnn-kernel-size>`
+     - ``15``
+     - integer > 0 (frames)
+   * - :ref:`use_inception_kernels <mhp-cnn-kernel-size>`
+     - ``false``
+     - ``true``, ``false``
+   * - :ref:`inception_kernel_sizes <mhp-cnn-kernel-size>`
+     - ``[3, 15, 31]``
+     - non-empty list of integers > 0
+   * - :ref:`dropout_rate <mhp-cnn-dropout-rate>`
+     - ``0.3``
+     - fraction in ``[0, 1)``
+   * - :ref:`se_reduction <mhp-cnn-se-reduction>`
+     - ``4``
+     - integer > 0
+   * - :ref:`se_activation <mhp-cnn-se-reduction>`
+     - ``'sigmoid'``
+     - ``'sigmoid'``, or any other string (hard sigmoid)
+   * - :ref:`hidden_dim <mhp-cnn-hidden-dim>`
+     - ``128``
+     - integer > 0
+   * - :ref:`act_func <mhp-cnn-hidden-dim>`
+     - ``'relu'``
+     - ``'relu'``, or any other string (GELU)
+   * - :ref:`bn_momentum <mhp-cnn-bn-momentum>`
+     - ``0.99``
+     - float in ``(0, 1)``
+   * - :ref:`bn_eps <mhp-cnn-bn-momentum>`
+     - ``1e-5``
+     - small float > 0
+   * - :ref:`grid_size <mhp-cnn-grid-size>`
+     - ``25``
+     - integer > 0
+   * - :ref:`samples_per_cell <mhp-cnn-grid-size>`
+     - ``40``
+     - integer > 0
+   * - :ref:`grid_balance_alpha <mhp-cnn-grid-size>`
+     - ``0.5``
+     - float in ``[0, 1]``
+   * - :ref:`prediction_head_scale_margin <mhp-cnn-prediction-head-scale-margin>`
+     - ``1.1``
+     - float >= 1
+   * - :ref:`patience <mhp-cnn-patience>`
+     - ``12``
+     - integer > 0 (validation checks)
+   * - :ref:`null_patience <mhp-cnn-patience>`
+     - ``3``
+     - integer > 0 (validation checks)
+   * - :ref:`early_stopping_eval_every_epochs <mhp-cnn-early-stopping>`
+     - ``5``
+     - integer > 0
+   * - :ref:`early_stopping_min_delta <mhp-cnn-early-stopping>`
+     - ``0.001``
+     - float >= 0, manifold units
+   * - :ref:`validation_session_fraction <mhp-cnn-validation-session-fraction>`
+     - ``0.15``
+     - fraction in ``(0, 1)``
+   * - :ref:`warp_range <mhp-cnn-warp-range>`
+     - ``0.1``
+     - float in ``[0, 1)``
+   * - :ref:`n_folds <mhp-cnn-n-folds>`
+     - ``10``
+     - integer >= 2
+   * - :ref:`permutation_iterations <mhp-cnn-n-folds>`
+     - ``10``
+     - integer >= 2
+   * - :ref:`importance_snr_threshold <mhp-cnn-importance-snr-threshold>`
+     - ``3.0``
+     - float > 0
+   * - :ref:`use_kinematic_masking <mhp-cnn-kinematic-masking>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`masking_prob <mhp-cnn-kinematic-masking>`
+     - ``0.15``
+     - probability in ``[0, 1]``
+   * - :ref:`masking_length_frames <mhp-cnn-kinematic-masking>`
+     - ``60``
+     - integer > 0 (frames)
+   * - :ref:`use_hybrid_flatten <mhp-cnn-use-hybrid-flatten>`
+     - ``false``
+     - ``true``, ``false``
+   * - :ref:`saliency.enable <mhp-cnn-saliency-enable>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`saliency.segmentation <mhp-cnn-saliency-enable>`
+     - ``'category'``
+     - ``'category'`` only
+   * - :ref:`saliency.alpha <mhp-cnn-saliency-alpha>`
+     - ``0.5``
+     - float > 0
+   * - :ref:`saliency.radius_mode <mhp-cnn-saliency-alpha>`
+     - ``'adaptive'``
+     - ``'adaptive'``, ``'uniform'``
+   * - :ref:`saliency.center_min_points_per_label <mhp-cnn-saliency-centers>`
+     - ``20``
+     - integer > 0, <= max
+   * - :ref:`saliency.center_max_points_per_label <mhp-cnn-saliency-centers>`
+     - ``30000``
+     - integer > 0, >= min
+   * - :ref:`saliency.center_grid_resolution <mhp-cnn-saliency-centers>`
+     - ``200``
+     - integer > 0
+   * - :ref:`saliency.center_grid_margin_fraction <mhp-cnn-saliency-centers>`
+     - ``0.05``
+     - float >= 0
+   * - :ref:`saliency.center_rng_seed <mhp-cnn-saliency-centers>`
+     - ``0``
+     - any integer
+
+.. _mhp-cnn-use-kde-weights:
+
+``use_kde_weights``
+   How each epoch's training rows are drawn.
+
+   :Options:
+      * ``true`` — samples ``N`` rows with replacement with probability proportional to the pickle's inverse-density KDE weights ``w`` (rare acoustic regions are over-drawn)
+      * ``false`` — uses the grid-balanced sampler instead (``grid_size`` / ``samples_per_cell`` below)
+   :Default: ``true``
+
+.. _mhp-cnn-loss-function:
+
+``loss_function`` / ``huber_delta``
+   The training loss on the wrap-aware residual (per ``usv_manifold_metric``).
+
+   :Options:
+      * ``loss_function`` — ``'huber'`` (quadratic below ``huber_delta``, linear beyond it, so satellite USVs cannot dominate the gradient); any other value is plain squared error (not validated)
+      * ``huber_delta`` — a positive float in manifold units, read only with ``'huber'`` (not validated)
+   :Default: ``'huber'`` and ``1.0``
+
+.. _mhp-cnn-learning-rate:
+
+``learning_rate`` / ``use_scheduler`` / ``warmup_fraction``
+   The peak Adam(W) step size and its schedule.
+
+   :Options:
+      * ``learning_rate`` — a positive float (not validated)
+      * ``use_scheduler`` — ``true``: the rate starts at 0, warms up linearly over ``warmup_fraction`` of the total steps to the peak and then cosine-decays to 0 over the rest; ``false``: it is constant
+      * ``warmup_fraction`` — a fraction in ``[0, 1)``, read only when ``use_scheduler`` is ``true`` (not validated)
+   :Default: ``0.0005``, ``true`` and ``0.1``
+
+.. _mhp-cnn-block-channels:
+
+``block_channels``
+   Output channels of each residual block (the list length is the network depth; every block halves the time axis).
+
+   :Options: a non-empty list of positive integers, one per block, short enough that the halved time axis stays at least one frame (not validated)
+   :Default: ``[32, 64, 128, 256]``
+
+.. _mhp-cnn-weight-decay:
+
+``weight_decay`` / ``weight_decay_exclude_output_head``
+   AdamW decoupled weight decay, and whether the output head is exempt from it.
+
+   :Options:
+      * ``weight_decay`` — a float ``>= 0``; ``0`` turns decay off (not validated)
+      * ``weight_decay_exclude_output_head`` — ``true`` exempts the output head (``dense2``), whose collapse to zero would park the torus ``sin_cos`` head at a constant prediction; ``false`` decays it too
+   :Default: ``0.001`` and ``true``
+
+.. _mhp-cnn-cnn-torus-output-encoding:
+
+``cnn_torus_output_encoding``
+   The output encoding on torus runs only; ignored on euclidean.
+
+   :Options:
+      * ``'sin_cos'`` — predicts a per-axis ``(sin, cos)`` pair and trains on the chord distance
+      * ``'raw'`` — predicts the two coordinates directly
+   :Default: ``'sin_cos'``
+   :Notes: any other value raises a ``ValueError`` on a torus run.
+
+.. _mhp-cnn-epochs:
+
+``epochs`` / ``batch_size``
+   The epoch cap per fold and strategy (early stopping usually ends training earlier) and the mini-batch size.
+
+   :Options:
+      * ``epochs`` — an integer ``>= 1`` (``0`` raises a ``ValueError``)
+      * ``batch_size`` — a positive integer no larger than a fold's training rows, or an epoch has no steps (not validated)
+   :Default: ``301`` and ``32``
+
+.. _mhp-cnn-kernel-size:
+
+``kernel_size`` / ``use_inception_kernels`` / ``inception_kernel_sizes``
+   The depthwise convolution kernel (frames); ``use_inception_kernels`` ``true`` replaces it with parallel depthwise kernels of the listed sizes, so short and long temporal motifs are extracted side by side.
+
+   :Options:
+      * ``kernel_size`` — a positive integer (frames; ``'SAME'`` padding, so odd and even both work; not validated)
+      * ``use_inception_kernels`` — ``true`` (parallel kernels of ``inception_kernel_sizes``) or ``false`` (the single ``kernel_size`` kernel)
+      * ``inception_kernel_sizes`` — a non-empty list of positive integers, read only when ``use_inception_kernels`` is ``true`` (a list too long for the network's reserved random-key budget raises a ``ValueError``)
+   :Default: ``15``, ``false`` and ``[3, 15, 31]``
+
+.. _mhp-cnn-dropout-rate:
+
+``dropout_rate``
+   Dropout before the dense head.
+
+   :Options: a fraction in ``[0, 1)``; ``0`` turns dropout off (not validated)
+   :Default: ``0.3``
+
+.. _mhp-cnn-se-reduction:
+
+``se_reduction`` / ``se_activation``
+   The squeeze-and-excitation channel attention of every block: bottleneck width ``channels // se_reduction`` and gate.
+
+   :Options:
+      * ``se_reduction`` — a positive integer no larger than the smallest entry of ``block_channels`` (not validated)
+      * ``se_activation`` — ``'sigmoid'``, or any other string for a hard sigmoid
+   :Default: ``4`` and ``'sigmoid'``
+
+.. _mhp-cnn-hidden-dim:
+
+``hidden_dim`` / ``act_func``
+   The dense head's width and activation.
+
+   :Options:
+      * ``hidden_dim`` — a positive integer (not validated)
+      * ``act_func`` — ``'relu'``, or any other string for GELU
+   :Default: ``128`` and ``'relu'``
+
+.. _mhp-cnn-bn-momentum:
+
+``bn_momentum`` / ``bn_eps``
+   The batch-normalisation running-statistics momentum and numerical floor.
+
+   :Options:
+      * ``bn_momentum`` — a float in ``(0, 1)`` (not validated)
+      * ``bn_eps`` — a small positive float (not validated)
+   :Default: ``0.99`` and ``1e-5``
+
+.. _mhp-cnn-grid-size:
+
+``grid_size`` / ``samples_per_cell`` / ``grid_balance_alpha``
+   The grid-balanced sampler used when ``use_kde_weights`` is ``false`` (it then also sizes the steps per epoch).
+
+   :Options:
+      * ``grid_size`` — a positive integer (not validated)
+      * ``samples_per_cell`` — a positive integer (not validated)
+      * ``grid_balance_alpha`` — a float in ``[0, 1]`` (not validated): ``0`` gives every populated cell the same quota (perfect grid balance), ``1`` draws in proportion to occupancy (no balancing), and ``0.5`` sits between
+   :Default: ``25``, ``40`` and ``0.5``
+   :Notes: the manifold is tiled ``grid_size × grid_size`` and every populated cell contributes ``ceil(samples_per_cell · count^alpha / samples_per_cell^alpha)`` rows (at least one), with ``alpha = grid_balance_alpha`` (default ``0.5``), so the dense core cannot monopolise the batches without the rare cells being copied hundreds of times. All three are read only when ``use_kde_weights`` is ``false``.
+
+.. _mhp-cnn-prediction-head-scale-margin:
+
+``prediction_head_scale_margin``
+   The network's ``tanh`` output head is scaled to each fold's training-target half-range times this margin, so the bounded head can reach the edge of the training support with 10% to spare instead of saturating exactly at the most extreme training USV.
+
+   :Options: a float ``>= 1``; below ``1`` the head cannot reach the training edge (not validated)
+   :Default: ``1.1``
+
+.. _mhp-cnn-patience:
+
+``patience`` / ``null_patience``
+   Early-stopping patience on the validation error, counted in validation checks (one every ``early_stopping_eval_every_epochs`` epochs).
+
+   :Options:
+      * ``patience`` — for the ``actual`` model; a positive integer, counted in validation checks (not validated)
+      * ``null_patience`` — for the label-shuffled ``null`` model (which converges to nothing and is stopped sooner); a positive integer, counted in validation checks (not validated)
+   :Default: ``12`` and ``3``
+
+.. _mhp-cnn-early-stopping:
+
+``early_stopping_eval_every_epochs`` / ``early_stopping_min_delta``
+   How often the validation error is checked and how large a drop counts as an improvement.
+
+   :Options:
+      * ``early_stopping_eval_every_epochs`` — the validation error is computed every this many epochs; a positive integer (not validated)
+      * ``early_stopping_min_delta`` — a check counts as an improvement (resetting the patience counter and snapshotting the best weights) only when the error falls by more than this below the best so far; a float ``>= 0`` in manifold units (not validated)
+   :Default: ``5`` and ``0.001`` (in manifold units)
+   :Notes: the minimum delta means a numerically negligible improvement cannot keep a plateaued run alive.
+
+.. _mhp-cnn-validation-session-fraction:
+
+``validation_session_fraction``
+   The share of each fold's training sessions (at least one, drawn with a seed derived from ``random_seed``) whose training events are held back to choose the early-stopping epoch and the best weights.
+
+   :Options: a fraction in ``(0, 1)``; the count it gives is clamped to at least one session and at most all but one (not validated)
+   :Default: ``0.15``
+   :Notes: the network is fit on the rest, and the test fold is scored exactly once with the chosen weights, so its error is not optimistic. The best CV fold (whose weights are applied to the held-out block) is likewise chosen on the validation error. A fold with fewer than two training sessions raises.
+
+.. _mhp-cnn-warp-range:
+
+``warp_range``
+   Temporal-warping augmentation: every sequence in a batch is stretched by a factor drawn uniformly from ``[1 - warp_range, 1 + warp_range]`` (centre-anchored).
+
+   :Options: a float in ``[0, 1)``; ``0`` turns warping off (not validated)
+   :Default: ``0.1``
+
+.. _mhp-cnn-n-folds:
+
+``n_folds`` / ``permutation_iterations``
+   The number of spatial-CV folds, and the permutation repeats per feature in the permutation-importance phase.
+
+   :Options:
+      * ``n_folds`` — an integer ``>= 2`` (not validated)
+      * ``permutation_iterations`` — an integer ``>= 2``, since a single repeat has zero spread, so its SNR is set to ``0`` and no feature is listed (not validated)
+   :Default: ``10`` and ``10``
+
+.. _mhp-cnn-importance-snr-threshold:
+
+``importance_snr_threshold``
+   A feature is listed as significant by the permutation-importance phase when the mean error increase its permutation causes, divided by the standard deviation over the ``permutation_iterations`` repeats, exceeds this signal-to-noise ratio.
+
+   :Options: a positive float (not validated)
+   :Default: ``3.0``
+   :Notes: the threshold defined in the Methods.
+
+.. _mhp-cnn-kinematic-masking:
+
+``use_kinematic_masking`` / ``masking_prob`` / ``masking_length_frames``
+   1-D cutout augmentation: with probability ``masking_prob`` each feature channel of a sequence has a contiguous ``masking_length_frames`` chunk zeroed (the z-score mean), so the network cannot lean on a single dominant feature.
+
+   :Options:
+      * ``use_kinematic_masking`` — ``true`` or ``false``
+      * ``masking_prob`` — a probability in ``[0, 1]`` (not validated)
+      * ``masking_length_frames`` — a positive integer, cut to the sequence length (not validated)
+   :Default: ``true``, ``0.15`` and ``60``
+   :Notes: ``masking_prob`` and ``masking_length_frames`` are both read only when masking is on.
+
+.. _mhp-cnn-use-hybrid-flatten:
+
+``use_hybrid_flatten``
+   Whether time-invariant averages reach the dense head beside the strictly-timed motifs.
+
+   :Options:
+      * ``true`` — concatenates a global-average-pooled channel vector to the flattened final feature map before the dense head
+      * ``false`` — the flattened final feature map alone
+   :Default: ``false``
+
+.. _mhp-cnn-saliency-enable:
+
+``saliency.enable`` / ``saliency.segmentation``
+   The regional-saliency phase (the ``saliency`` sub-block): ``enable`` toggles it, and ``segmentation`` groups USVs by their QLVM category, which the modeling pickle carries when it was extracted from summaries holding ``qlvm_category`` (the regular map's categories, the label of every map, the conditional ones included).
+
+   :Options:
+      * ``enable`` — ``true`` or ``false``
+      * ``segmentation`` — ``'category'`` only (any other value raises a ``ValueError``)
+   :Default: ``true`` and ``'category'``
+   :Notes: a pickle without the requested labels stops the run in the saliency pre-flight check, before Phase 1 (a ``RuntimeError`` saying the labels are unavailable); set ``enable`` to ``false`` for such a pickle.
+
+.. _mhp-cnn-saliency-alpha:
+
+``saliency.alpha`` / ``saliency.radius_mode``
+   Each category's inclusion circle.
+
+   :Options:
+      * ``alpha`` — scales each category's inclusion circle (radius ``alpha × d_nn / 2``, ``d_nn`` the distance to the nearest other category centre, so circles never overlap for ``alpha <= 1``); a float ``> 0`` (``<= 0`` raises; ``<= 1`` keeps circles from overlapping)
+      * ``radius_mode`` — ``'adaptive'`` (one radius per category from its own ``d_nn``) or ``'uniform'`` (one shared radius from the tightest pair); any other value raises
+   :Default: ``0.5`` and ``'adaptive'``
+
+.. _mhp-cnn-saliency-centers:
+
+``saliency.center_min_points_per_label`` / ``saliency.center_max_points_per_label`` / ``saliency.center_grid_resolution`` / ``saliency.center_grid_margin_fraction`` / ``saliency.center_rng_seed``
+   How each category centre is found: the highest-density point of a 2-D Gaussian KDE of that category's USVs.
+
+   :Options:
+      * ``center_grid_resolution`` — the KDE is evaluated on a square grid of this many points per axis; a positive integer (not validated)
+      * ``center_grid_margin_fraction`` — the grid is laid over the category's data range padded on every side by this fraction of the larger axis range; a float ``>= 0`` (not validated). On a torus the padded grid is clipped to the period, so the margin acts on a euclidean manifold
+      * ``center_min_points_per_label`` — a category with fewer USVs than this gets no centre (too few for a stable density mode); a positive integer with min ``<=`` max (not validated)
+      * ``center_max_points_per_label`` — a category with more USVs than this is subsampled to that many to bound the KDE cost; a positive integer with min ``<=`` max (not validated)
+      * ``center_rng_seed`` — the seed of the generator for that subsample; any integer (not validated)
+   :Default: ``20``, ``30000``, ``200``, ``0.05`` and ``0`` (in the order listed in the heading)
+   :Notes: the five values are stored with the derived geometry (``cluster_geometry``).
 
 **hyperparameters.linear_models** — the two JAX linear models,
 ``manifold_regression`` (continuous manifold position: the Huber coordinate
@@ -449,25 +1740,285 @@ log-score ``vm_logscore`` on the torus, ``dcor_xy`` on euclidean).
         }
     }
 
-* **bin_resizing_factor** — temporal binning of the history before the fit: every ``bin_resizing_factor`` consecutive frames are averaged into one bin (``1`` keeps the full frame resolution). Cannot be combined with a ``temporal_basis`` other than ``"none"``. **Allowed:** an integer ``≥ 1``, read only with ``temporal_basis.type`` ``"none"`` (with ``"bspline"`` any value other than ``1`` raises); values below ``2`` mean no binning, and a factor larger than the history window (``filter_history × camera_sampling_rate`` frames) raises; shipped ``1`` in both models.
-* **lambda_smooth_fixed** / **l2_reg_fixed** — the fixed temporal-smoothness and L2 penalties of the per-frame representation (``temporal_basis.type`` ``"none"``). With the shipped ``"bspline"`` basis these two keys are not read: the fit takes ``temporal_basis.lambda_smooth_fixed`` and ``temporal_basis.l2_reg_fixed`` instead (``modeling_bases_functions.resolve_temporal_basis``). Both linear models ship with ``tune_regularization_bool`` ``false`` (see the note below), so whichever pair applies is used as is; in model selection the L2 penalty is additionally rescaled by ``1 / sqrt(n_features)`` of the trial model so larger stacks are not over-regularised. **Allowed:** ``lambda_smooth_fixed`` a non-negative float, ``l2_reg_fixed`` a non-negative float; each must be positive when tuning is on and its ``*_decades_each_side`` is above ``0`` (the log-spaced grid needs a positive centre; validated); shipped ``1.0`` and ``0.01`` in both models.
-* **smoothness_derivative_order** — the finite-difference order of the smoothness penalty along the time axis: ``1`` (shipped) penalises squared first differences, zero-cost for a flat filter (the Pillow / Calhoun GLM tradition); ``2`` penalises squared second differences, zero-cost for any straight line (the GAM / smoothing-spline choice). With order ``2`` on full-resolution frames the multinomial loss and the torus solve add reflective (Neumann) edge rows so the filter's end points are constrained like its interior; order ``1`` is already a first-difference operator and needs none. With ``temporal_basis.type`` ``"bspline"`` this key is not read: the spline penalty is always a second-order difference on neighbouring coefficients. **Allowed:** ``1`` or ``2`` (validated); shipped ``1`` in both models.
-* **huber_delta** — ``manifold_regression`` only: the Huber transition point (native manifold units) of the euclidean coordinate regression's loss; the torus solve is closed-form squared error and ignores it. **Allowed:** a positive float in the manifold's native units (not validated); read only on the euclidean metric; shipped ``1.0``.
-* **learning_rate** / **max_iter** / **tol** — the Adam optimiser of the iterative fits (the multinomial model, the euclidean coordinate regression): the initial step size (cosine-decayed to zero over ``max_iter`` steps, with a fixed global-norm gradient clip of ``1.0`` in both estimators), the step cap, and the parameter-change tolerance that ends the loop early. The torus solve is closed-form and ignores all three. The shipped multinomial rate (``0.005``) was validated with the spline basis; with the per-frame basis (``temporal_basis.type`` ``"none"``) ``0.001`` converged in a third of the iterations with the same held-out score on the same inputs, so lower it when switching that model to raw lags. **Allowed:** ``learning_rate`` a positive float, ``max_iter`` a positive integer, ``tol`` a positive float (none validated); shipped ``0.005``, ``20000`` and ``1e-3`` in both models.
-* **random_state** — the base seed of every fit (offset by the fold index, and by the inner-fold index in the inner CV). **Allowed:** an integer (not validated; ``null`` fails, since the fold index is added to it); shipped ``0`` in both models.
-* **verbose** — print per-fit optimiser progress. **Allowed:** ``true`` / ``false``; shipped ``false`` in both models.
-* **use_lax_loop** — run the whole descent inside one compiled ``jax.lax.while_loop`` (``true``, the fast path) instead of a Python loop. **Allowed:** ``true`` / ``false``; shipped ``true`` in both models.
-* **balance_predictions_bool** — ``multinomial_logistic`` only: ``true`` subtracts the training log class priors from the logits before the softmax (``predict_proba(balanced=True)``), so the scored probabilities carry the learned behaviour-to-category evidence as if every category were equally likely a priori; ``false`` scores the raw softmax. **Allowed:** ``true`` / ``false``; shipped ``false``.
-* **balance_train_bool** — ``multinomial_logistic`` only: ``true`` down-samples every training fold to ``min(class_count)`` rows per class and fits with ``focal_gamma = 0`` and uniform class weights (an already balanced batch must not be re-weighted); ``false`` keeps the natural class prior in the training fold and handles imbalance inside the loss (softened inverse-frequency class weights plus the focal modulation). The test fold always keeps the natural prior. **Allowed:** ``true`` / ``false``; shipped ``false``.
-* **focal_loss_gamma** — ``multinomial_logistic`` only: the focal-loss focusing exponent ``(1 - p_t) ** gamma`` that down-weights easy examples (``0`` is plain class-weighted cross-entropy). The base is clamped at ``max(1 - p_t, 1e-7)``: for ``gamma < 1`` the modulator's derivative is infinite at ``p_t = 1``, which float32 reaches exactly once an event's logit margin exceeds about 17; without the clamp one saturated event turned the whole gradient NaN and ended the fit, with it a saturated event contributes nothing to the gradient and the loss is unchanged everywhere else. **Allowed:** a non-negative float (not validated); ``0`` turns the focal modulation off, and the value is not read when ``balance_train_bool`` is ``true`` (the fit then uses ``0``); shipped ``0.5``.
-* **tune_regularization_bool** — if ``true``, run an inner-loop cross-validation to pick ``lambda_smooth`` / ``l2_reg`` per fold (parameters in ``tune_regularization_params``: the search width in decades, inner-CV folds, scoring metric, and the one-standard-error rule). Each inner validation fold holds out whole training sessions, as the outer folds do (capped at the number of training sessions; a fold with a single training session falls back to the fixed centres), so a penalty is never scored on events from sessions it was fit on. When ``false``, ``tune_regularization_params`` is not read and the two ``*_fixed`` penalties are used directly. **Allowed:** ``true`` / ``false``; shipped ``false`` in both models.
-* **tune_regularization_params** — the inner-CV search: ``lambda_smooth_decades_each_side`` / ``l2_reg_decades_each_side`` set the log-spaced grid around each ``*_fixed`` centre (``0`` pins that penalty to its centre, ``4`` spans eight decades); ``inner_cv_folds`` is the inner fold count; ``inner_cv_scoring_metric`` (multinomial only; ``'auc'`` is the macro one-vs-rest AUC) is the inner objective, which the manifold model derives from its geometry instead; ``inner_cv_use_one_se_rule`` ``true`` picks the smoothest pair within one standard error of the inner argmax rather than the argmax itself; ``inner_max_iter`` caps the inner fits' steps (see the note below on why the multinomial inner CV is under-converged at ``2500``). With ``temporal_basis.type`` ``"bspline"`` the two decade keys here are not read: the smoothness grid takes ``temporal_basis.lambda_smooth_decades_each_side`` and the L2 is pinned to its fixed value. **Allowed:** ``lambda_smooth_decades_each_side`` and ``l2_reg_decades_each_side`` non-negative integers (a negative value raises), ``inner_cv_folds`` an integer ``≥ 2`` (not validated; capped at the number of training sessions, and a training fold with fewer than ``2 × inner_cv_folds`` events or a single session falls back to the fixed centres), ``inner_cv_scoring_metric`` one of ``'auc'``, ``'score'``, ``'f1'``, ``'recall'``, ``'mcc'`` (higher is better) or ``'ll'``, ``'brier'``, ``'ece'`` (lower is better; ``'ece'`` uses ``diagnostics.ece_n_bins``), validated when the tuner runs, ``inner_cv_use_one_se_rule`` ``true`` / ``false``, ``inner_max_iter`` a positive integer (not validated); none of them is read while ``tune_regularization_bool`` is ``false``; shipped ``0``, ``4``, ``5``, ``'auc'`` (multinomial only), ``false`` and ``2500`` in both models.
-* **temporal_basis** — how each feature's filter over the history window is represented, the same in the univariate screen and model selection (every sub-key except ``type`` is read only when ``type`` is ``"bspline"``). **Allowed:** ``type`` ``"none"`` or ``"bspline"`` (validated); ``n_splines`` an integer ``≥ spline_order + 1`` (validated); ``spline_order`` a positive integer, the B-spline degree (``3`` is cubic; not validated beyond the ``n_splines`` check); ``lambda_smooth_fixed`` a non-negative float, positive when tuning is on with ``lambda_smooth_decades_each_side`` above ``0``; ``l2_reg_fixed`` a non-negative float (not validated); ``l2_lag_alpha`` a non-negative float, ``0`` for a uniform L2 (only a positive value turns the lag-varying ridge on); ``lambda_smooth_decades_each_side`` a non-negative integer, read only when tuning is on; shipped ``"bspline"``, ``20``, ``3``, ``1e-8`` / ``1e-5``, ``1e-4`` / ``1e-5``, ``10`` / ``100`` and ``2`` (manifold / multinomial where they differ):
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
 
-  * ``"type": "none"`` — one free weight per frame, penalised by the block's ``lambda_smooth_fixed``, ``l2_reg_fixed`` and ``smoothness_derivative_order`` (with reflective edge rows for order 2).
-  * ``"type": "bspline"`` (both models' default) — a spline layer on top of the same models, mirroring the bout-onset GAM's lag axis. Every feature's history is projected onto ``n_splines`` (default 20) cubic B-splines (``spline_order`` 3) with knots spaced evenly from the first to the last frame — exactly pyGAM's basis (``modeling_bases_functions.gam_bspline_basis``) — so the model fits ``n_splines`` coefficients per feature. The projection averages the history under each spline (the basis is divided by the window length, as the GAM averages its per-lag contributions per event), which keeps the inputs on the features' z-score scale. The penalty mirrors pyGAM's: a second-order difference penalty on neighbouring spline coefficients, open boundary, at strength ``temporal_basis.lambda_smooth_fixed``, plus an L2 penalty on the spline coefficients at ``temporal_basis.l2_reg_fixed`` (1e-4 for the torus model, 1e-5 for the multinomial model); with ``tune_regularization_bool`` on, the smoothness strength is tuned over ``lambda_smooth_decades_each_side`` decades and the L2 stays at its fixed value. The 20 splines and the two L2 values come from a basis experiment on the intact-partner male cohort: on the torus, 8 splines with no L2 put 7.3× the mid-window weight at −4 s (and 11× at 0 s) in a fit to permuted positions, because the nearly unpenalised end coefficients absorb noise (the rise follows the window edge when the window is shortened); an L2 of 1e-4 brings that to about 2–3×, recovers planted filters of known shape (bumps at −3 s and −1.5 s, ramps over the last 0.3 s and 1 s) at r ≥ 0.90 with 20 splines, and costs about 9 % of the cross-validated gain, whereas the per-frame torus fit recovers none of them (r −0.18 to 0.36), which is why the torus model also ships in spline mode. For the multinomial model 20 splines gave the highest cross-validated macro-AUC and recovered every planted shape at r ≥ 0.96; its L2 is set with the lag-varying ridge below. A 2–4× end weight remains in every configuration, so the filter figures draw each filter against its permuted null. With ``l2_lag_alpha`` > 0 the L2 grows with each spline's distance from onset, ``l2_reg_fixed × (1 + alpha × lag²)`` (``lag`` as a fraction of the window), the lag-varying ridge of penalised distributed-lag models, implemented by scaling the basis columns (the stored ``basis_coefficients`` belong to the scaled basis). The torus model uses ``alpha = 10``: with a uniform L2 its filters still rose at −4 s, and neither a clamped basis nor much stronger smoothness changed that, whereas the lag-varying ridge brought the far-edge weight of head pitch and neck elevation to their permuted level, kept the recovery of planted shapes (a bump at −3 s included) and the onset rise, and cost no cross-validated gain except for inter-partner distance (−7 %), whose oldest frames carry real information from before the window. The multinomial model uses ``l2_reg_fixed = 1e-5`` with ``alpha = 100``: without them its no-signal fits put a spike at −4 s (inter-partner distance 15.1 against an onset peak of 22.1, ×1e-3), which this setting cuts to 0.76 against 8.8 while costing at most 4 % of the cross-validated macro-AUC (inter-partner distance; under 2 % elsewhere) and keeping the planted-shape recovery at r ≥ 0.89. The history window stays at 4 s: an 8 s re-extraction showed that the residual far-edge weight of the slow dyadic features is information from before the window (inter-partner distance and head pitch predict ~40 % better with 8 s, with no edge rise in the longer window), while the features that act in the last second gain nothing (neck elevation −14 %); the far-edge weight of a slow feature is read as history beyond the window, not as a timed effect at −4 s. The multinomial default is ``lambda_smooth_fixed`` = 1e-5 with ``lambda_smooth_decades_each_side`` = 2 (1e-7 to 1e-3), set by a penalty pilot: on the top screened feature, cross-validated macro-AUC is flat from no penalty up to 1e-4 and falls beyond it, as the second-order penalty straightens the filters; 1e-5 is the largest strength with no measurable loss and damps the noise at the oldest lags. The multinomial model ships in spline mode: on the same inputs the two bases select the same anchor and second feature and reach the same cross-validated macro-AUC (0.611 spline vs 0.618 per-frame, overlapping 99 % intervals), but the spline selection ran in a fiftieth of the time and never lost a fold, whereas the per-frame fits at the shipped learning rate occasionally let Adam move a feature's 600 correlated raw-lag weights together and push a few events past the float32 softmax saturation margin (a logit margin of about 17, where ``p_t`` rounds to exactly 1) — on 8 of 10 folds from the second selection step on. Before the focal modulator was clamped (see ``focal_loss_gamma``) one saturated event gave a NaN gradient and killed the fold. On the torus the two bases gave the same selection and scores at an 8-spline, no-L2 setting, but the per-frame filters cannot recover a planted shape (see above), so the torus model ships in spline mode too. The manifold (torus) default is ``lambda_smooth_fixed`` = 1e-8 with ``lambda_smooth_decades_each_side`` = 2 (1e-10 to 1e-6), from the same pilot: there every strength costs some macro von Mises log-score, because the signal is a sharp rise over the last ~0.3 s that the penalty flattens, and 1e-8 is the largest strength whose loss is negligible. The fitted coefficients are turned back into filters on the frame axis (basis × coefficients) before they are stored, so results, consolidation and plots keep the full-resolution layout. The raw spline coefficients are stored beside them, under ``basis_coefficients`` (per fold, per held-out refit and per selection candidate; ``None`` without a basis). It cannot be combined with ``bin_resizing_factor`` > 1. The run metadata records the ``temporal_basis`` block and the ``effective_penalty`` the fit used.
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`bin_resizing_factor <mhp-lin-bin-resizing-factor>`
+     - ``1``
+     - integer ``≥ 1``; only with ``temporal_basis.type`` ``"none"``
+   * - :ref:`lambda_smooth_fixed <mhp-lin-fixed-penalties>`
+     - ``1.0``
+     - float ``>= 0``; per-frame basis only
+   * - :ref:`l2_reg_fixed <mhp-lin-fixed-penalties>`
+     - ``0.01``
+     - float ``>= 0``; per-frame basis only
+   * - :ref:`smoothness_derivative_order <mhp-lin-smoothness-derivative-order>`
+     - ``1``
+     - ``1``, ``2``
+   * - :ref:`temporal_basis.type <mhp-lin-temporal-basis>`
+     - ``"bspline"``
+     - ``"none"``, ``"bspline"``
+   * - :ref:`temporal_basis.n_splines <mhp-lin-temporal-basis>`
+     - ``20``
+     - integer ``≥ spline_order + 1``
+   * - :ref:`temporal_basis.spline_order <mhp-lin-temporal-basis>`
+     - ``3``
+     - positive integer (B-spline degree)
+   * - :ref:`temporal_basis.lambda_smooth_fixed <mhp-lin-temporal-basis>`
+     - ``1e-8`` / ``1e-5``
+     - float ``>= 0``
+   * - :ref:`temporal_basis.l2_reg_fixed <mhp-lin-temporal-basis>`
+     - ``1e-4`` / ``1e-5``
+     - float ``>= 0``
+   * - :ref:`temporal_basis.l2_lag_alpha <mhp-lin-temporal-basis>`
+     - ``10`` / ``100``
+     - float ``>= 0``; ``0`` is a uniform L2
+   * - :ref:`temporal_basis.lambda_smooth_decades_each_side <mhp-lin-temporal-basis>`
+     - ``2``
+     - integer ``>= 0``
+   * - :ref:`huber_delta <mhp-lin-huber-delta>`
+     - ``1.0`` (manifold only)
+     - float > 0, manifold units
+   * - :ref:`learning_rate <mhp-lin-optimiser>`
+     - ``0.005``
+     - float > 0
+   * - :ref:`max_iter <mhp-lin-optimiser>`
+     - ``20000``
+     - integer > 0
+   * - :ref:`tol <mhp-lin-optimiser>`
+     - ``1e-3``
+     - float > 0
+   * - :ref:`random_state <mhp-lin-random-state>`
+     - ``0``
+     - any integer (not ``null``)
+   * - :ref:`verbose <mhp-lin-verbose>`
+     - ``false``
+     - ``true``, ``false``
+   * - :ref:`use_lax_loop <mhp-lin-use-lax-loop>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`balance_predictions_bool <mhp-lin-balance-predictions-bool>`
+     - ``false`` (multinomial only)
+     - ``true``, ``false``
+   * - :ref:`balance_train_bool <mhp-lin-balance-train-bool>`
+     - ``false`` (multinomial only)
+     - ``true``, ``false``
+   * - :ref:`focal_loss_gamma <mhp-lin-focal-loss-gamma>`
+     - ``0.5`` (multinomial only)
+     - float ``>= 0``; ``0`` is off
+   * - :ref:`tune_regularization_bool <mhp-lin-tune-regularization-bool>`
+     - ``false``
+     - ``true``, ``false``
+   * - :ref:`tune_regularization_params.lambda_smooth_decades_each_side <mhp-lin-tune-regularization-params>`
+     - ``0``
+     - integer ``>= 0``
+   * - :ref:`tune_regularization_params.l2_reg_decades_each_side <mhp-lin-tune-regularization-params>`
+     - ``4``
+     - integer ``>= 0``
+   * - :ref:`tune_regularization_params.inner_cv_folds <mhp-lin-tune-regularization-params>`
+     - ``5``
+     - integer ``≥ 2``
+   * - :ref:`tune_regularization_params.inner_cv_scoring_metric <mhp-lin-tune-regularization-params>`
+     - ``'auc'`` (multinomial only)
+     - ``'auc'``, ``'score'``, ``'f1'``, ``'recall'``, ``'mcc'``, ``'ll'``, ``'brier'``, ``'ece'``
+   * - :ref:`tune_regularization_params.inner_cv_use_one_se_rule <mhp-lin-tune-regularization-params>`
+     - ``false``
+     - ``true``, ``false``
+   * - :ref:`tune_regularization_params.inner_max_iter <mhp-lin-tune-regularization-params>`
+     - ``2500``
+     - integer > 0
 
-  The penalty strength is not transferable between the two types (the B-spline penalty acts on ``n_splines`` coefficients, not on every frame), nor from pyGAM's ``lam_penalty`` (pyGAM adds it to a deviance summed over all rows, the JAX models to per-event mean losses).
+.. _mhp-lin-bin-resizing-factor:
+
+``bin_resizing_factor``
+   Temporal binning of the history before the fit: every ``bin_resizing_factor`` consecutive frames are averaged into one bin (``1`` keeps the full frame resolution).
+
+   :Options: an integer ``≥ 1``; values below ``2`` mean no binning
+   :Default: ``1`` in both models
+   :Notes: cannot be combined with a ``temporal_basis`` other than ``"none"``: it is read only with ``temporal_basis.type`` ``"none"`` (with ``"bspline"`` any value other than ``1`` raises). A factor larger than the history window (``filter_history × camera_sampling_rate`` frames) raises.
+
+.. _mhp-lin-fixed-penalties:
+
+``lambda_smooth_fixed`` / ``l2_reg_fixed``
+   The fixed temporal-smoothness and L2 penalties of the per-frame representation (``temporal_basis.type`` ``"none"``).
+
+   :Options:
+      * ``lambda_smooth_fixed`` — a non-negative float
+      * ``l2_reg_fixed`` — a non-negative float
+
+      Each must be positive when tuning is on and its ``*_decades_each_side`` is above ``0`` (the log-spaced grid needs a positive centre; validated).
+   :Default: ``1.0`` and ``0.01`` in both models
+   :Notes: with the shipped ``"bspline"`` basis these two keys are not read: the fit takes ``temporal_basis.lambda_smooth_fixed`` and ``temporal_basis.l2_reg_fixed`` instead (``modeling_bases_functions.resolve_temporal_basis``). Both linear models ship with ``tune_regularization_bool`` ``false`` (see the note below), so whichever pair applies is used as is; in model selection the L2 penalty is additionally rescaled by ``1 / sqrt(n_features)`` of the trial model so larger stacks are not over-regularised.
+
+.. _mhp-lin-smoothness-derivative-order:
+
+``smoothness_derivative_order``
+   The finite-difference order of the smoothness penalty along the time axis.
+
+   :Options:
+      * ``1`` — penalises squared first differences, zero-cost for a flat filter (the Pillow / Calhoun GLM tradition)
+      * ``2`` — penalises squared second differences, zero-cost for any straight line (the GAM / smoothing-spline choice)
+
+      Validated.
+   :Default: ``1`` in both models
+   :Notes: with order ``2`` on full-resolution frames the multinomial loss and the torus solve add reflective (Neumann) edge rows so the filter's end points are constrained like its interior; order ``1`` is already a first-difference operator and needs none. With ``temporal_basis.type`` ``"bspline"`` this key is not read: the spline penalty is always a second-order difference on neighbouring coefficients.
+
+.. _mhp-lin-temporal-basis:
+
+``temporal_basis``
+   How each feature's filter over the history window is represented, the same in the univariate screen and model selection (every sub-key except ``type`` is read only when ``type`` is ``"bspline"``).
+
+   :Options:
+      * ``type`` — ``"none"`` or ``"bspline"`` (validated):
+
+        * ``"type": "none"`` — one free weight per frame, penalised by the block's ``lambda_smooth_fixed``, ``l2_reg_fixed`` and ``smoothness_derivative_order`` (with reflective edge rows for order 2).
+        * ``"type": "bspline"`` (both models' default) — a spline layer on top of the same models, mirroring the bout-onset GAM's lag axis (see **Spline basis** below).
+
+      * ``n_splines`` — an integer ``≥ spline_order + 1`` (validated)
+      * ``spline_order`` — a positive integer, the B-spline degree (``3`` is cubic; not validated beyond the ``n_splines`` check)
+      * ``lambda_smooth_fixed`` — a non-negative float, positive when tuning is on with ``lambda_smooth_decades_each_side`` above ``0``
+      * ``l2_reg_fixed`` — a non-negative float (not validated)
+      * ``l2_lag_alpha`` — a non-negative float, ``0`` for a uniform L2 (only a positive value turns the lag-varying ridge on)
+      * ``lambda_smooth_decades_each_side`` — a non-negative integer, read only when tuning is on
+   :Default: ``"bspline"``, ``20``, ``3``, ``1e-8`` / ``1e-5``, ``1e-4`` / ``1e-5``, ``10`` / ``100`` and ``2`` (manifold / multinomial where they differ)
+   :Notes:
+      **Spline basis:** every feature's history is projected onto ``n_splines`` (default 20) cubic B-splines (``spline_order`` 3) with knots spaced evenly from the first to the last frame — exactly pyGAM's basis (``modeling_bases_functions.gam_bspline_basis``) — so the model fits ``n_splines`` coefficients per feature. The projection averages the history under each spline (the basis is divided by the window length, as the GAM averages its per-lag contributions per event), which keeps the inputs on the features' z-score scale.
+
+      **Penalty:** the penalty mirrors pyGAM's: a second-order difference penalty on neighbouring spline coefficients, open boundary, at strength ``temporal_basis.lambda_smooth_fixed``, plus an L2 penalty on the spline coefficients at ``temporal_basis.l2_reg_fixed`` (1e-4 for the torus model, 1e-5 for the multinomial model); with ``tune_regularization_bool`` on, the smoothness strength is tuned over ``lambda_smooth_decades_each_side`` decades and the L2 stays at its fixed value.
+
+      **Why 20 splines and these L2 values:** the 20 splines and the two L2 values come from a basis experiment on the intact-partner male cohort: on the torus, 8 splines with no L2 put 7.3× the mid-window weight at −4 s (and 11× at 0 s) in a fit to permuted positions, because the nearly unpenalised end coefficients absorb noise (the rise follows the window edge when the window is shortened); an L2 of 1e-4 brings that to about 2–3×, recovers planted filters of known shape (bumps at −3 s and −1.5 s, ramps over the last 0.3 s and 1 s) at r ≥ 0.90 with 20 splines, and costs about 9 % of the cross-validated gain, whereas the per-frame torus fit recovers none of them (r −0.18 to 0.36), which is why the torus model also ships in spline mode. For the multinomial model 20 splines gave the highest cross-validated macro-AUC and recovered every planted shape at r ≥ 0.96; its L2 is set with the lag-varying ridge below. A 2–4× end weight remains in every configuration, so the filter figures draw each filter against its permuted null.
+
+      **Lag-varying ridge (l2_lag_alpha):** with ``l2_lag_alpha`` > 0 the L2 grows with each spline's distance from onset, ``l2_reg_fixed × (1 + alpha × lag²)`` (``lag`` as a fraction of the window), the lag-varying ridge of penalised distributed-lag models, implemented by scaling the basis columns (the stored ``basis_coefficients`` belong to the scaled basis).
+
+      The torus model uses ``alpha = 10``: with a uniform L2 its filters still rose at −4 s, and neither a clamped basis nor much stronger smoothness changed that, whereas the lag-varying ridge brought the far-edge weight of head pitch and neck elevation to their permuted level, kept the recovery of planted shapes (a bump at −3 s included) and the onset rise, and cost no cross-validated gain except for inter-partner distance (−7 %), whose oldest frames carry real information from before the window.
+
+      The multinomial model uses ``l2_reg_fixed = 1e-5`` with ``alpha = 100``: without them its no-signal fits put a spike at −4 s (inter-partner distance 15.1 against an onset peak of 22.1, ×1e-3), which this setting cuts to 0.76 against 8.8 while costing at most 4 % of the cross-validated macro-AUC (inter-partner distance; under 2 % elsewhere) and keeping the planted-shape recovery at r ≥ 0.89.
+
+      **History window:** the history window stays at 4 s: an 8 s re-extraction showed that the residual far-edge weight of the slow dyadic features is information from before the window (inter-partner distance and head pitch predict ~40 % better with 8 s, with no edge rise in the longer window), while the features that act in the last second gain nothing (neck elevation −14 %); the far-edge weight of a slow feature is read as history beyond the window, not as a timed effect at −4 s.
+
+      **Multinomial smoothness default:** the multinomial default is ``lambda_smooth_fixed`` = 1e-5 with ``lambda_smooth_decades_each_side`` = 2 (1e-7 to 1e-3), set by a penalty pilot: on the top screened feature, cross-validated macro-AUC is flat from no penalty up to 1e-4 and falls beyond it, as the second-order penalty straightens the filters; 1e-5 is the largest strength with no measurable loss and damps the noise at the oldest lags.
+
+      **Why both models ship in spline mode:** the multinomial model ships in spline mode: on the same inputs the two bases select the same anchor and second feature and reach the same cross-validated macro-AUC (0.611 spline vs 0.618 per-frame, overlapping 99 % intervals), but the spline selection ran in a fiftieth of the time and never lost a fold, whereas the per-frame fits at the shipped learning rate occasionally let Adam move a feature's 600 correlated raw-lag weights together and push a few events past the float32 softmax saturation margin (a logit margin of about 17, where ``p_t`` rounds to exactly 1) — on 8 of 10 folds from the second selection step on. Before the focal modulator was clamped (see ``focal_loss_gamma``) one saturated event gave a NaN gradient and killed the fold. On the torus the two bases gave the same selection and scores at an 8-spline, no-L2 setting, but the per-frame filters cannot recover a planted shape (see above), so the torus model ships in spline mode too.
+
+      **Manifold smoothness default:** the manifold (torus) default is ``lambda_smooth_fixed`` = 1e-8 with ``lambda_smooth_decades_each_side`` = 2 (1e-10 to 1e-6), from the same pilot: there every strength costs some macro von Mises log-score, because the signal is a sharp rise over the last ~0.3 s that the penalty flattens, and 1e-8 is the largest strength whose loss is negligible.
+
+      **Stored outputs:** the fitted coefficients are turned back into filters on the frame axis (basis × coefficients) before they are stored, so results, consolidation and plots keep the full-resolution layout. The raw spline coefficients are stored beside them, under ``basis_coefficients`` (per fold, per held-out refit and per selection candidate; ``None`` without a basis). The run metadata records the ``temporal_basis`` block and the ``effective_penalty`` the fit used.
+
+      **Compatibility:** the B-spline basis cannot be combined with ``bin_resizing_factor`` > 1. The penalty strength is not transferable between the two types (the B-spline penalty acts on ``n_splines`` coefficients, not on every frame), nor from pyGAM's ``lam_penalty`` (pyGAM adds it to a deviance summed over all rows, the JAX models to per-event mean losses).
+
+.. _mhp-lin-huber-delta:
+
+``huber_delta``
+   ``manifold_regression`` only: the Huber transition point (native manifold units) of the euclidean coordinate regression's loss.
+
+   :Options: a positive float in the manifold's native units (not validated)
+   :Default: ``1.0``
+   :Notes: read only on the euclidean metric; the torus solve is closed-form squared error and ignores it.
+
+.. _mhp-lin-optimiser:
+
+``learning_rate`` / ``max_iter`` / ``tol``
+   The Adam optimiser of the iterative fits (the multinomial model, the euclidean coordinate regression): the initial step size (cosine-decayed to zero over ``max_iter`` steps, with a fixed global-norm gradient clip of ``1.0`` in both estimators), the step cap, and the parameter-change tolerance that ends the loop early.
+
+   :Options:
+      * ``learning_rate`` — a positive float
+      * ``max_iter`` — a positive integer
+      * ``tol`` — a positive float
+
+      None validated.
+   :Default: ``0.005``, ``20000`` and ``1e-3`` in both models
+   :Notes: the torus solve is closed-form and ignores all three. The shipped multinomial rate (``0.005``) was validated with the spline basis; with the per-frame basis (``temporal_basis.type`` ``"none"``) ``0.001`` converged in a third of the iterations with the same held-out score on the same inputs, so lower it when switching that model to raw lags.
+
+.. _mhp-lin-random-state:
+
+``random_state``
+   The base seed of every fit (offset by the fold index, and by the inner-fold index in the inner CV).
+
+   :Options: an integer (not validated; ``null`` fails, since the fold index is added to it)
+   :Default: ``0`` in both models
+
+.. _mhp-lin-verbose:
+
+``verbose``
+   Print per-fit optimiser progress.
+
+   :Options: ``true`` / ``false``
+   :Default: ``false`` in both models
+
+.. _mhp-lin-use-lax-loop:
+
+``use_lax_loop``
+   Run the whole descent inside one compiled ``jax.lax.while_loop`` instead of a Python loop.
+
+   :Options:
+      * ``true`` — one compiled ``jax.lax.while_loop`` (the fast path)
+      * ``false`` — a Python loop
+   :Default: ``true`` in both models
+
+.. _mhp-lin-balance-predictions-bool:
+
+``balance_predictions_bool``
+   ``multinomial_logistic`` only: whether the scored probabilities are prior-corrected.
+
+   :Options:
+      * ``true`` — subtracts the training log class priors from the logits before the softmax (``predict_proba(balanced=True)``), so the scored probabilities carry the learned behaviour-to-category evidence as if every category were equally likely a priori
+      * ``false`` — scores the raw softmax
+   :Default: ``false``
+
+.. _mhp-lin-balance-train-bool:
+
+``balance_train_bool``
+   ``multinomial_logistic`` only: how class imbalance is handled in the training fold.
+
+   :Options:
+      * ``true`` — down-samples every training fold to ``min(class_count)`` rows per class and fits with ``focal_gamma = 0`` and uniform class weights (an already balanced batch must not be re-weighted)
+      * ``false`` — keeps the natural class prior in the training fold and handles imbalance inside the loss (softened inverse-frequency class weights plus the focal modulation)
+   :Default: ``false``
+   :Notes: the test fold always keeps the natural prior.
+
+.. _mhp-lin-focal-loss-gamma:
+
+``focal_loss_gamma``
+   ``multinomial_logistic`` only: the focal-loss focusing exponent ``(1 - p_t) ** gamma`` that down-weights easy examples (``0`` is plain class-weighted cross-entropy).
+
+   :Options: a non-negative float (not validated); ``0`` turns the focal modulation off
+   :Default: ``0.5``
+   :Notes: the value is not read when ``balance_train_bool`` is ``true`` (the fit then uses ``0``). The base is clamped at ``max(1 - p_t, 1e-7)``: for ``gamma < 1`` the modulator's derivative is infinite at ``p_t = 1``, which float32 reaches exactly once an event's logit margin exceeds about 17; without the clamp one saturated event turned the whole gradient NaN and ended the fit, with it a saturated event contributes nothing to the gradient and the loss is unchanged everywhere else.
+
+.. _mhp-lin-tune-regularization-bool:
+
+``tune_regularization_bool``
+   If ``true``, run an inner-loop cross-validation to pick ``lambda_smooth`` / ``l2_reg`` per fold (parameters in ``tune_regularization_params``: the search width in decades, inner-CV folds, scoring metric, and the one-standard-error rule).
+
+   :Options:
+      * ``true`` — tune the two penalties per fold by inner CV
+      * ``false`` — ``tune_regularization_params`` is not read and the two ``*_fixed`` penalties are used directly
+   :Default: ``false`` in both models (see the note below)
+   :Notes: each inner validation fold holds out whole training sessions, as the outer folds do (capped at the number of training sessions; a fold with a single training session falls back to the fixed centres), so a penalty is never scored on events from sessions it was fit on.
+
+.. _mhp-lin-tune-regularization-params:
+
+``tune_regularization_params``
+   The inner-CV search; none of its keys is read while ``tune_regularization_bool`` is ``false``.
+
+   :Options:
+      * ``lambda_smooth_decades_each_side`` / ``l2_reg_decades_each_side`` — set the log-spaced grid around each ``*_fixed`` centre (``0`` pins that penalty to its centre, ``4`` spans eight decades); non-negative integers (a negative value raises)
+      * ``inner_cv_folds`` — the inner fold count; an integer ``≥ 2`` (not validated; capped at the number of training sessions, and a training fold with fewer than ``2 × inner_cv_folds`` events or a single session falls back to the fixed centres)
+      * ``inner_cv_scoring_metric`` — multinomial only, the inner objective, which the manifold model derives from its geometry instead; validated when the tuner runs:
+
+        * ``'auc'`` — the macro one-vs-rest AUC (higher is better)
+        * ``'score'``, ``'f1'``, ``'recall'``, ``'mcc'`` — higher is better
+        * ``'ll'``, ``'brier'``, ``'ece'`` — lower is better; ``'ece'`` uses ``diagnostics.ece_n_bins``
+
+      * ``inner_cv_use_one_se_rule`` — ``true`` picks the smoothest pair within one standard error of the inner argmax rather than the argmax itself; ``true`` / ``false``
+      * ``inner_max_iter`` — caps the inner fits' steps; a positive integer (not validated; see the note below on why the multinomial inner CV is under-converged at ``2500``)
+   :Default: ``0``, ``4``, ``5``, ``'auc'`` (multinomial only), ``false`` and ``2500`` in both models
+   :Notes: with ``temporal_basis.type`` ``"bspline"`` the two decade keys here are not read: the smoothness grid takes ``temporal_basis.lambda_smooth_decades_each_side`` and the L2 is pinned to its fixed value.
 
 .. note::
 
@@ -553,9 +2104,169 @@ selections):
         }
     }
 
-* **pygam** — the ``'pygam'`` engine's tensor-product-spline GAM, ``te(value, lag)``: ``n_splines_value`` and ``n_splines_time`` are the B-spline counts on the feature-value and lag axes (the lag basis is the same one ``temporal_basis.type = 'bspline'`` reuses for the JAX models); ``lam_penalty`` is the **fixed** smoothness penalty strength (``0.6``). The strength is never tuned: pyGAM chooses it by GCV / UBRE only inside ``gridsearch()``, which no pipeline runs. ``max_iterations`` and ``tol_val`` are the PIRLS optimiser's iteration cap and convergence tolerance (a fit whose last deviance change is still above ``tol_val`` is recorded as ``converged = 0``). ``distribution`` / ``link`` are recorded in the run metadata (``pygam_hyperparameters``) and read nowhere else: the bout-parameter GAM is always fitted as a Gamma GAM with a log link and the binary pipelines as ``LogisticGAM``, so editing these two keys changes the record, not the fit. The whole block is required: a settings file without it raises ``KeyError`` instead of falling back to hard-coded values. **Allowed:** ``n_splines_value`` and ``n_splines_time`` integers ``>= 4`` (pyGAM requires more splines than the cubic spline order of 3); ``lam_penalty`` a number ``>= 0`` (pyGAM raises on a negative value and on ``null``); ``max_iterations`` an integer ``>= 1`` (checked by pyGAM); ``tol_val`` a positive number (not validated; ``0`` or a negative value only makes every fit run to ``max_iterations``); ``distribution`` and ``link`` any string (recorded, not validated), with ``'gamma'`` / ``'log'`` describing the fit actually used; shipped ``n_splines_time`` ``8``, ``n_splines_value`` ``5``, ``lam_penalty`` ``0.6``, ``max_iterations`` ``100``, ``tol_val`` ``1e-4``, ``distribution`` ``'gamma'``, ``link`` ``'log'``.
-* **logistic_regression** — the ``'sklearn'`` engine's ``LogisticRegressionCV`` for the binary targets (onsets, binomial categories): ``penalty`` and ``solver`` as in scikit-learn, ``cs`` the inverse-regularisation grid searched by ``cv``-fold inner cross-validation, ``max_iter`` the iteration cap (a fold that reaches it is recorded as not converged). The inner folds hold out whole training sessions (stratified by class); ``cv`` is capped at the number of training sessions, and a training set from a single session, or one whose session folds would leave a class out of a fold, falls back to ``cv`` stratified event folds. **Allowed:** ``penalty`` ``'l2'`` or ``'l1'``, in a pair the solver supports: ``'l2'`` with ``'liblinear'``, ``'lbfgs'``, ``'newton-cg'``, ``'newton-cholesky'``, ``'sag'`` or ``'saga'``; ``'l1'`` with ``'liblinear'`` or ``'saga'`` (scikit-learn raises on any other pair; ``'elasticnet'`` is not usable because no ``l1_ratios`` are passed); ``cs`` a non-empty list of positive numbers (scikit-learn raises on ``0``); ``cv`` an integer ``>= 2``; ``max_iter`` a positive integer; shipped ``penalty`` ``'l2'``, ``cs`` ``[0.0001, 0.001, 0.01, 0.1]``, ``cv`` ``10``, ``solver`` ``'liblinear'``, ``max_iter`` ``10000``.
-* **ridge_regression** — the ``'sklearn'`` engine's bout-parameter regression, an L2-penalized Gamma GLM (``GammaRegressor``, log link) whose penalty ``alpha`` is chosen from ``alphas`` by a ``cv``-fold ``GridSearchCV`` on the Gamma deviance — the same likelihood the model is scored with, so fit and score agree. The inner folds hold out whole training sessions (``GroupKFold``, ``cv`` capped at the number of training sessions; a single-session training set falls back to ``cv`` event folds). **Allowed:** ``alphas`` a non-empty list of numbers ``>= 0`` (scikit-learn raises on a negative value; ``0`` is an unpenalized fit); ``cv`` an integer ``>= 2``; shipped ``alphas`` ``[0.1, 1.0, 10.0, 100.0]``, ``cv`` ``10``.
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`pygam.n_splines_time <mhp-cls-pygam-n-splines>`
+     - ``8``
+     - integer >= 4
+   * - :ref:`pygam.n_splines_value <mhp-cls-pygam-n-splines>`
+     - ``5``
+     - integer >= 4
+   * - :ref:`pygam.lam_penalty <mhp-cls-pygam-lam-penalty>`
+     - ``0.6``
+     - number >= 0
+   * - :ref:`pygam.max_iterations <mhp-cls-pygam-pirls>`
+     - ``100``
+     - integer >= 1
+   * - :ref:`pygam.tol_val <mhp-cls-pygam-pirls>`
+     - ``1e-4``
+     - number > 0
+   * - :ref:`pygam.distribution <mhp-cls-pygam-distribution-link>`
+     - ``'gamma'``
+     - any string (recorded only)
+   * - :ref:`pygam.link <mhp-cls-pygam-distribution-link>`
+     - ``'log'``
+     - any string (recorded only)
+   * - :ref:`logistic_regression.penalty <mhp-cls-lr-penalty-solver>`
+     - ``'l2'``
+     - ``'l2'``, ``'l1'``
+   * - :ref:`logistic_regression.solver <mhp-cls-lr-penalty-solver>`
+     - ``'liblinear'``
+     - a solver that supports the penalty
+   * - :ref:`logistic_regression.cs <mhp-cls-lr-cs>`
+     - ``[0.0001, 0.001, 0.01, 0.1]``
+     - non-empty list of numbers > 0
+   * - :ref:`logistic_regression.cv <mhp-cls-lr-cv>`
+     - ``10``
+     - integer >= 2
+   * - :ref:`logistic_regression.max_iter <mhp-cls-lr-max-iter>`
+     - ``10000``
+     - integer > 0
+   * - :ref:`ridge_regression.alphas <mhp-cls-rr-alphas>`
+     - ``[0.1, 1.0, 10.0, 100.0]``
+     - non-empty list of numbers >= 0
+   * - :ref:`ridge_regression.cv <mhp-cls-rr-cv>`
+     - ``10``
+     - integer >= 2
+
+.. _mhp-cls-pygam:
+
+``pygam``
+   The ``'pygam'`` engine's tensor-product-spline GAM, ``te(value, lag)``.
+
+   :Notes: the whole block is required: a settings file without it raises ``KeyError`` instead of falling back to hard-coded values.
+
+.. _mhp-cls-pygam-n-splines:
+
+``pygam.n_splines_value`` / ``pygam.n_splines_time``
+   The B-spline counts on the feature-value and lag axes of ``te(value, lag)``.
+
+   :Options: integers ``>= 4`` (pyGAM requires more splines than the cubic spline order of 3)
+   :Default: ``n_splines_value`` ``5`` and ``n_splines_time`` ``8``
+   :Notes: the lag basis is the same one ``temporal_basis.type = 'bspline'`` reuses for the JAX models.
+
+.. _mhp-cls-pygam-lam-penalty:
+
+``pygam.lam_penalty``
+   ``lam_penalty`` is the **fixed** smoothness penalty strength of the GAM.
+
+   :Options: a number ``>= 0`` (pyGAM raises on a negative value and on ``null``)
+   :Default: ``0.6``
+   :Notes: the strength is never tuned: pyGAM chooses it by GCV / UBRE only inside ``gridsearch()``, which no pipeline runs.
+
+.. _mhp-cls-pygam-pirls:
+
+``pygam.max_iterations`` / ``pygam.tol_val``
+   The PIRLS optimiser's iteration cap and convergence tolerance.
+
+   :Options:
+      * ``max_iterations`` — an integer ``>= 1`` (checked by pyGAM)
+      * ``tol_val`` — a positive number (not validated; ``0`` or a negative value only makes every fit run to ``max_iterations``)
+   :Default: ``100`` and ``1e-4``
+   :Notes: a fit whose last deviance change is still above ``tol_val`` is recorded as ``converged = 0``.
+
+.. _mhp-cls-pygam-distribution-link:
+
+``pygam.distribution`` / ``pygam.link``
+   Recorded in the run metadata (``pygam_hyperparameters``) and read nowhere else.
+
+   :Options: any string (recorded, not validated), with ``'gamma'`` / ``'log'`` describing the fit actually used
+   :Default: ``distribution`` ``'gamma'`` and ``link`` ``'log'``
+   :Notes: the bout-parameter GAM is always fitted as a Gamma GAM with a log link and the binary pipelines as ``LogisticGAM``, so editing these two keys changes the record, not the fit.
+
+.. _mhp-cls-logistic-regression:
+
+``logistic_regression``
+   The ``'sklearn'`` engine's ``LogisticRegressionCV`` for the binary targets (onsets, binomial categories).
+
+   :Notes: the inner folds hold out whole training sessions (stratified by class); ``cv`` is capped at the number of training sessions, and a training set from a single session, or one whose session folds would leave a class out of a fold, falls back to ``cv`` stratified event folds.
+
+.. _mhp-cls-lr-penalty-solver:
+
+``logistic_regression.penalty`` / ``logistic_regression.solver``
+   The penalty and the solver, as in scikit-learn.
+
+   :Options: ``penalty`` ``'l2'`` or ``'l1'``, in a pair the ``solver`` supports:
+
+      * ``'l2'`` — with ``'liblinear'``, ``'lbfgs'``, ``'newton-cg'``, ``'newton-cholesky'``, ``'sag'`` or ``'saga'``
+      * ``'l1'`` — with ``'liblinear'`` or ``'saga'``
+   :Default: ``'l2'`` and ``'liblinear'``
+   :Notes: scikit-learn raises on any other pair; ``'elasticnet'`` is not usable because no ``l1_ratios`` are passed.
+
+.. _mhp-cls-lr-cs:
+
+``logistic_regression.cs``
+   The inverse-regularisation grid searched by ``cv``-fold inner cross-validation.
+
+   :Options: a non-empty list of positive numbers (scikit-learn raises on ``0``)
+   :Default: ``[0.0001, 0.001, 0.01, 0.1]``
+
+.. _mhp-cls-lr-cv:
+
+``logistic_regression.cv``
+   The number of inner cross-validation folds over which ``cs`` is searched.
+
+   :Options: an integer ``>= 2``
+   :Default: ``10``
+   :Notes: capped at the number of training sessions (see ``logistic_regression`` above for the event-fold fallback).
+
+.. _mhp-cls-lr-max-iter:
+
+``logistic_regression.max_iter``
+   The iteration cap.
+
+   :Options: a positive integer
+   :Default: ``10000``
+   :Notes: a fold that reaches ``max_iter`` is recorded as not converged.
+
+.. _mhp-cls-ridge-regression:
+
+``ridge_regression``
+   The ``'sklearn'`` engine's bout-parameter regression, an L2-penalized Gamma GLM (``GammaRegressor``, log link) whose penalty ``alpha`` is chosen from ``alphas`` by a ``cv``-fold ``GridSearchCV`` on the Gamma deviance — the same likelihood the model is scored with, so fit and score agree.
+
+   :Notes: the inner folds hold out whole training sessions (``GroupKFold``, ``cv`` capped at the number of training sessions; a single-session training set falls back to ``cv`` event folds).
+
+.. _mhp-cls-rr-alphas:
+
+``ridge_regression.alphas``
+   The grid the penalty ``alpha`` is chosen from.
+
+   :Options: a non-empty list of numbers ``>= 0`` (scikit-learn raises on a negative value; ``0`` is an unpenalized fit)
+   :Default: ``[0.1, 1.0, 10.0, 100.0]``
+
+.. _mhp-cls-rr-cv:
+
+``ridge_regression.cv``
+   The number of ``GridSearchCV`` folds.
+
+   :Options: an integer ``>= 2``
+   :Default: ``10``
 
 **hyperparameters.basis_functions** — the temporal bases of the ``'sklearn'``
 engine, selected by ``model_params.model_basis_function`` (the ``'pygam'`` engine
@@ -587,10 +2298,91 @@ are back-projected onto the frame axis for the stored ``filter_shapes``.
         }
     }
 
-* **raised_cosine** — ``ncos`` raised cosines whose peaks are log-spaced (denser near the event) from the first frame to ``kpeaks_proportion`` of the window, with ``b`` the offset of the log stretch (larger is closer to linear spacing); ``neye`` prepends that many identity (single-frame) columns for dense sampling right before the event. **Allowed:** ``neye`` an integer ``>= 0``; ``ncos`` an integer ``>= 2`` (one cosine leaves the peak spacing undefined and the construction fails); ``kpeaks_proportion`` a fraction in ``(0, 1]`` of the history window; ``b`` a positive number; none of the four is validated beyond what the construction itself rejects; shipped ``neye`` ``0``, ``ncos`` ``6``, ``kpeaks_proportion`` ``0.95``, ``b`` ``96``.
-* **bspline** — B-splines of polynomial ``degree`` on knots spaced evenly from the first frame to ``degree`` frames before the window's end. ``n_splines`` sets the knot count, ``n_splines - degree + 1``, and the basis has one column per distinct knot, so the shipped ``32`` / ``3`` gives 30 columns, not 32. A short window that cannot hold that many distinct knots keeps as many as it can, and raises when fewer than ``degree + 1`` remain. **Allowed:** ``degree`` an integer from ``1`` to ``5`` (the range SciPy's ``splrep`` accepts); ``n_splines`` an integer ``>= 2 * degree``, so that at least ``degree + 1`` knots exist (``6`` at the shipped degree); shipped ``n_splines`` ``32``, ``degree`` ``3``.
-* **laplacian_pyramid** — Gaussians at the level indices ``0, step, 2*step, …`` below ``levels``, each whole level doubling the width. The Gaussians at level index ``i`` have a full width at half maximum of ``2**(i - 1) * fwhm`` frames, so ``fwhm`` is the width at index ``1`` and the finest level (index ``0``) is half as wide. Each level tiles the window with centres spaced by half its own width, so the column count grows quickly as the finest level narrows (the shipped values give 4,048 columns over a 600-frame window). A level too wide to place two centres in the window contributes nothing, and a setting that yields no column raises. **Allowed:** ``levels`` a positive number (fractional values are allowed, since the indices step by ``step``); ``step`` a positive number; ``fwhm`` a positive number of frames; none is validated beyond the no-column check; shipped ``levels`` ``9.5``, ``step`` ``0.5``, ``fwhm`` ``10``.
-* **plot_bool** — every basis block carries it: whether the dispatcher writes the ``basis_verification.png`` figure of the basis columns (once per job array, guarded by a lock file). The ``'identity'`` basis has no block and always writes its plot. **Allowed:** ``true`` or ``false``; shipped ``true`` in all three blocks.
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`raised_cosine.neye <mhp-bf-raised-cosine>`
+     - ``0``
+     - integer >= 0
+   * - :ref:`raised_cosine.ncos <mhp-bf-raised-cosine>`
+     - ``6``
+     - integer >= 2
+   * - :ref:`raised_cosine.kpeaks_proportion <mhp-bf-raised-cosine>`
+     - ``0.95``
+     - fraction in ``(0, 1]``
+   * - :ref:`raised_cosine.b <mhp-bf-raised-cosine>`
+     - ``96``
+     - number > 0
+   * - :ref:`bspline.n_splines <mhp-bf-bspline>`
+     - ``32``
+     - integer >= ``2 * degree``
+   * - :ref:`bspline.degree <mhp-bf-bspline>`
+     - ``3``
+     - integer ``1``–``5``
+   * - :ref:`laplacian_pyramid.levels <mhp-bf-laplacian-pyramid>`
+     - ``9.5``
+     - number > 0
+   * - :ref:`laplacian_pyramid.step <mhp-bf-laplacian-pyramid>`
+     - ``0.5``
+     - number > 0
+   * - :ref:`laplacian_pyramid.fwhm <mhp-bf-laplacian-pyramid>`
+     - ``10``
+     - frames > 0
+   * - :ref:`plot_bool <mhp-bf-plot-bool>` (all three bases)
+     - ``true``
+     - ``true``, ``false``
+
+.. _mhp-bf-raised-cosine:
+
+``raised_cosine.neye`` / ``raised_cosine.ncos`` / ``raised_cosine.kpeaks_proportion`` / ``raised_cosine.b``
+   ``ncos`` raised cosines whose peaks are log-spaced (denser near the event) from the first frame to ``kpeaks_proportion`` of the window, with ``b`` the offset of the log stretch (larger is closer to linear spacing); ``neye`` prepends that many identity (single-frame) columns for dense sampling right before the event.
+
+   :Options:
+      * ``neye`` — an integer ``>= 0``
+      * ``ncos`` — an integer ``>= 2`` (one cosine leaves the peak spacing undefined and the construction fails)
+      * ``kpeaks_proportion`` — a fraction in ``(0, 1]`` of the history window
+      * ``b`` — a positive number
+   :Default: ``neye`` ``0``, ``ncos`` ``6``, ``kpeaks_proportion`` ``0.95``, ``b`` ``96``
+   :Notes: none of the four is validated beyond what the construction itself rejects.
+
+.. _mhp-bf-bspline:
+
+``bspline.n_splines`` / ``bspline.degree``
+   B-splines of polynomial ``degree`` on knots spaced evenly from the first frame to ``degree`` frames before the window's end.
+
+   :Options:
+      * ``degree`` — an integer from ``1`` to ``5`` (the range SciPy's ``splrep`` accepts)
+      * ``n_splines`` — an integer ``>= 2 * degree``, so that at least ``degree + 1`` knots exist (``6`` at the shipped degree)
+   :Default: ``n_splines`` ``32``, ``degree`` ``3``
+   :Notes: ``n_splines`` sets the knot count, ``n_splines - degree + 1``, and the basis has one column per distinct knot, so the shipped ``32`` / ``3`` gives 30 columns, not 32. A short window that cannot hold that many distinct knots keeps as many as it can, and raises when fewer than ``degree + 1`` remain.
+
+.. _mhp-bf-laplacian-pyramid:
+
+``laplacian_pyramid.levels`` / ``laplacian_pyramid.step`` / ``laplacian_pyramid.fwhm``
+   Gaussians at the level indices ``0, step, 2*step, …`` below ``levels``, each whole level doubling the width.
+
+   :Options:
+      * ``levels`` — a positive number (fractional values are allowed, since the indices step by ``step``)
+      * ``step`` — a positive number
+      * ``fwhm`` — a positive number of frames
+   :Default: ``levels`` ``9.5``, ``step`` ``0.5``, ``fwhm`` ``10``
+   :Notes: the Gaussians at level index ``i`` have a full width at half maximum of ``2**(i - 1) * fwhm`` frames, so ``fwhm`` is the width at index ``1`` and the finest level (index ``0``) is half as wide. Each level tiles the window with centres spaced by half its own width, so the column count grows quickly as the finest level narrows (the shipped values give 4,048 columns over a 600-frame window). A level too wide to place two centres in the window contributes nothing, and a setting that yields no column raises. None is validated beyond the no-column check.
+
+.. _mhp-bf-plot-bool:
+
+``plot_bool``
+   Every basis block carries it: whether the dispatcher writes the ``basis_verification.png`` figure of the basis columns (once per job array, guarded by a lock file).
+
+   :Options:
+      * ``true`` — write the figure
+      * ``false`` — do not write it
+   :Default: ``true`` in all three blocks
+   :Notes: the ``'identity'`` basis has no block and always writes its plot.
 
 **glm_hmm** — the GLM-HMM over latent vocal states (see
 :ref:`Latent vocal states <modeling-glm-hmm>` below).
@@ -627,26 +2419,277 @@ are back-projected onto the frame axis for the stored ``filter_shapes``.
         "init_bias_sd": 0.3
     }
 
-* **emission_type** — the per-state observation model: ``'manifold'`` (behaviour → 2-D acoustic-manifold position, von Mises density) or ``'multinomial'`` (behaviour → discrete USV category, categorical density). **Allowed:** ``'manifold'`` or ``'multinomial'`` (any other value raises); shipped ``'manifold'``.
-* **transition_mode** — ``'static'`` fits the EM-based engine with a stationary ``K × K`` transition matrix; ``'input_driven'`` fits a direct-marginal engine whose transition *into* each time bin is a per-state GLM of the behavioural design (Calhoun/Pillow/Murthy), validated on the Coen-2014 fly to reproduce its state-selection without the state collapse the EM engine suffers on weakly-identified data. Input-driven is defined for both emissions (categorical → reference-coded ``InputDrivenGLMHMM``; manifold → torus product-von-Mises ``InputDrivenManifoldGLMHMM``, which requires a torus manifold). **Allowed:** ``'static'`` or ``'input_driven'`` (any other value raises); ``'input_driven'`` with ``emission_type='manifold'`` requires ``vocal_features.usv_manifold_metric`` ``'torus'`` and raises on euclidean; shipped ``'static'``.
-* **history_frames** — number of most-recent behavioural-history frames kept per feature (the emission's temporal-filter length ``n_time_bins``). **Allowed:** a positive integer (not validated); a value at or above the stored history window's length (``model_params.filter_history`` × ``io.camera_sampling_rate`` at extraction) keeps the whole window; shipped ``75``.
-* **cv_folds** — number of cross-validation folds over the development sessions used to select the state count. **Allowed:** an integer ``≥ 2``; it is capped at the number of development sessions, and a run with fewer than two development folds (including ``cv_folds`` ``1``) raises; shipped ``5``.
-* **n_states_min** / **n_states_max** — inclusive range of latent state counts ``K`` swept during selection. **Allowed:** positive integers with ``n_states_min`` ≤ ``n_states_max`` (not validated; a reversed range sweeps no state count); shipped ``2`` and ``6``.
-* **n_em_iters** — maximum Baum-Welch EM iterations per restart (``'static'`` engine only). **Allowed:** a positive integer (not validated); shipped ``100``.
-* **n_lbfgs** — L-BFGS iterations per restart for the ``'input_driven'`` direct-marginal engines. **Allowed:** a positive integer (not validated); shipped ``500``.
-* **n_restarts** — number of random-initialisation restarts; the best by training log-likelihood is kept, so the reserved held-out sessions are scored once and never shape the fitted model. **Allowed:** a positive integer (not validated); shipped ``5``.
-* **n_kappa_rounds** — the input-driven manifold engine alternates L-BFGS on the regressors and transitions (at a frozen von Mises concentration) with a responsibility-weighted global concentration MLE; this is the number of such alternations per restart (default ``3``). The alternation is what keeps the concentration from collapsing to the uniform torus density. **Allowed:** a positive integer (not validated); read only by the input-driven manifold engine; shipped ``3``.
-* **em_tol** — relative EM convergence tolerance (``'static'`` engine only). **Allowed:** a positive float (not validated); shipped ``0.0001``.
-* **transition_pseudocount** — Laplace pseudocount smoothing the static transition and initial-state expected counts (``'static'`` engine only). **Allowed:** a non-negative float (not validated; ``0`` leaves the counts unsmoothed); shipped ``1.0``.
-* **lambda_smooth** / **l2_reg** — the temporal-smoothness and ridge penalties on each state's *static-engine* emission GLM. **Allowed:** non-negative floats (not validated; ``0`` switches the penalty off); shipped ``lambda_smooth`` ``100.0`` and ``l2_reg`` ``0.1``.
-* **input_driven_lambda_smooth** — the first-difference temporal-smoothness coefficient ``r`` for the *input-driven* engines (a separate key because its scale, ``~0.05``, differs from the static-engine ``lambda_smooth`` by orders of magnitude). **Allowed:** a non-negative float (not validated); read only by the input-driven engines; shipped ``0.05``.
-* **multinomial_target** — the categorical label column read as the target when ``emission_type='multinomial'`` (``'category'``, the QLVM category packet); events whose label is NaN are dropped. **Allowed:** the name of a label packet in the modeling input pickle, which the manifold extraction writes only as ``'category'`` (and only when ``vocal_features.usv_category_column_name`` is set); a packet missing from a session raises; read only when ``emission_type='multinomial'``; shipped ``'category'``.
-* **focal_gamma** — focal-loss focusing parameter of the static multinomial emission (``0.0`` = plain cross-entropy). **Allowed:** a non-negative float (not validated; ``0.0`` is plain cross-entropy); read only by the static multinomial emission; shipped ``0.0``.
-* **multinomial_max_iter** — optimiser iterations for the static multinomial emission's per-state classifier. **Allowed:** a positive integer (not validated); shipped ``2000``.
-* **emission_smoothness_derivative_order** / **emission_huber_delta** / **emission_learning_rate** / **manifold_max_iter** / **emission_tol** / **emission_random_state** — the optimiser of each state's *static-engine* emission: the finite-difference order of the temporal-smoothness penalty (default ``2``, the curvature penalty), the Huber transition point of the manifold emission's residual loss (default ``1.0``, manifold units), the initial Adam step size (default ``0.001``, cosine-decayed to zero), the manifold emission's step cap (default ``5000``; the multinomial emission's is ``multinomial_max_iter``), the parameter-change convergence tolerance (default ``0.0001``) and the weight-initialisation seed (default ``0``). The values are those the emission regressors used before they became settings, and all six are recorded in the result's ``metadata``. On a torus manifold the emission regressor is fitted in closed form, so the Huber, step-size, step-cap and tolerance keys act only on a euclidean manifold. **Allowed:** ``emission_smoothness_derivative_order`` ``1`` or ``2`` (the euclidean manifold and multinomial emission regressors raise on any other value; the torus regressor accepts any positive integer below ``history_frames``); ``emission_huber_delta``, ``emission_learning_rate`` and ``emission_tol`` positive floats; ``manifold_max_iter`` a positive integer; ``emission_random_state`` any integer (none of these five validated); shipped ``2``, ``1.0``, ``0.001``, ``5000``, ``0.0001`` and ``0``.
-* **init_kmeans_n_init** — the number of k-means initialisations (the best by inertia is kept) behind the structured initial state responsibilities of every static-engine EM restart (default ``3``); the k-means runs on the targets, one-hot encoded for a categorical target. **Allowed:** a positive integer (not validated); shipped ``3``.
-* **init_self_transition** — the diagonal of the static engine's initial transition matrix (default ``0.8``, so states start persistent over a bout); the remaining ``0.2`` is split evenly over the other states. It must lie in ``(0, 1)``; EM re-estimates the matrix from the first iteration on. **Allowed:** a float strictly inside ``(0, 1)`` (any other value raises); shipped ``0.8``.
-* **init_bias_sd** — the standard deviation of the normal draw that initialises the input-driven engines' transition biases and the categorical emission's biases at every restart (default ``0.3``). **Allowed:** a non-negative float (not validated); shipped ``0.3``.
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`emission_type <mgh-emission-type>`
+     - ``'manifold'``
+     - ``'manifold'``, ``'multinomial'``
+   * - :ref:`transition_mode <mgh-transition-mode>`
+     - ``'static'``
+     - ``'static'``, ``'input_driven'``
+   * - :ref:`history_frames <mgh-history-frames>`
+     - ``75``
+     - integer > 0
+   * - :ref:`cv_folds <mgh-cv-folds>`
+     - ``5``
+     - integer >= 2
+   * - :ref:`n_states_min <mgh-n-states>`
+     - ``2``
+     - integer > 0, <= ``n_states_max``
+   * - :ref:`n_states_max <mgh-n-states>`
+     - ``6``
+     - integer > 0, >= ``n_states_min``
+   * - :ref:`n_em_iters <mgh-n-em-iters>`
+     - ``100``
+     - integer > 0
+   * - :ref:`n_lbfgs <mgh-n-lbfgs>`
+     - ``500``
+     - integer > 0
+   * - :ref:`n_restarts <mgh-n-restarts>`
+     - ``5``
+     - integer > 0
+   * - :ref:`n_kappa_rounds <mgh-n-kappa-rounds>`
+     - ``3``
+     - integer > 0
+   * - :ref:`em_tol <mgh-em-tol>`
+     - ``0.0001``
+     - float > 0
+   * - :ref:`transition_pseudocount <mgh-transition-pseudocount>`
+     - ``1.0``
+     - float >= 0
+   * - :ref:`lambda_smooth <mgh-lambda-smooth-l2-reg>`
+     - ``100.0``
+     - float >= 0
+   * - :ref:`input_driven_lambda_smooth <mgh-input-driven-lambda-smooth>`
+     - ``0.05``
+     - float >= 0
+   * - :ref:`l2_reg <mgh-lambda-smooth-l2-reg>`
+     - ``0.1``
+     - float >= 0
+   * - :ref:`multinomial_target <mgh-multinomial-target>`
+     - ``'category'``
+     - a label packet name
+   * - :ref:`focal_gamma <mgh-focal-gamma>`
+     - ``0.0``
+     - float >= 0
+   * - :ref:`multinomial_max_iter <mgh-multinomial-max-iter>`
+     - ``2000``
+     - integer > 0
+   * - :ref:`emission_smoothness_derivative_order <mgh-emission-optimiser>`
+     - ``2``
+     - ``1``, ``2``
+   * - :ref:`emission_huber_delta <mgh-emission-optimiser>`
+     - ``1.0``
+     - float > 0
+   * - :ref:`emission_learning_rate <mgh-emission-optimiser>`
+     - ``0.001``
+     - float > 0
+   * - :ref:`manifold_max_iter <mgh-emission-optimiser>`
+     - ``5000``
+     - integer > 0
+   * - :ref:`emission_tol <mgh-emission-optimiser>`
+     - ``0.0001``
+     - float > 0
+   * - :ref:`emission_random_state <mgh-emission-optimiser>`
+     - ``0``
+     - any integer
+   * - :ref:`init_kmeans_n_init <mgh-init-kmeans-n-init>`
+     - ``3``
+     - integer > 0
+   * - :ref:`init_self_transition <mgh-init-self-transition>`
+     - ``0.8``
+     - float in ``(0, 1)``
+   * - :ref:`init_bias_sd <mgh-init-bias-sd>`
+     - ``0.3``
+     - float >= 0
+
+.. _mgh-emission-type:
+
+``emission_type``
+   The per-state observation model.
+
+   :Options:
+      * ``'manifold'`` — behaviour → 2-D acoustic-manifold position, von Mises density
+      * ``'multinomial'`` — behaviour → discrete USV category, categorical density
+   :Default: ``'manifold'``
+   :Notes: any other value raises.
+
+.. _mgh-transition-mode:
+
+``transition_mode``
+   How the hidden-state transitions are modelled.
+
+   :Options:
+      * ``'static'`` — fits the EM-based engine with a stationary ``K × K`` transition matrix
+      * ``'input_driven'`` — fits a direct-marginal engine whose transition *into* each time bin is a per-state GLM of the behavioural design (Calhoun/Pillow/Murthy), validated on the Coen-2014 fly to reproduce its state-selection without the state collapse the EM engine suffers on weakly-identified data
+   :Default: ``'static'``
+   :Notes: input-driven is defined for both emissions (categorical → reference-coded ``InputDrivenGLMHMM``; manifold → torus product-von-Mises ``InputDrivenManifoldGLMHMM``, which requires a torus manifold). Any other value raises; ``'input_driven'`` with ``emission_type='manifold'`` requires ``vocal_features.usv_manifold_metric`` ``'torus'`` and raises on euclidean.
+
+.. _mgh-history-frames:
+
+``history_frames``
+   Number of most-recent behavioural-history frames kept per feature (the emission's temporal-filter length ``n_time_bins``).
+
+   :Options: a positive integer (not validated)
+   :Default: ``75``
+   :Notes: a value at or above the stored history window's length (``model_params.filter_history`` × ``io.camera_sampling_rate`` at extraction) keeps the whole window.
+
+.. _mgh-cv-folds:
+
+``cv_folds``
+   Number of cross-validation folds over the development sessions used to select the state count.
+
+   :Options: an integer ``≥ 2``
+   :Default: ``5``
+   :Notes: it is capped at the number of development sessions, and a run with fewer than two development folds (including ``cv_folds`` ``1``) raises.
+
+.. _mgh-n-states:
+
+``n_states_min`` / ``n_states_max``
+   Inclusive range of latent state counts ``K`` swept during selection.
+
+   :Options: positive integers with ``n_states_min`` ≤ ``n_states_max`` (not validated; a reversed range sweeps no state count)
+   :Default: ``2`` and ``6``
+
+.. _mgh-n-em-iters:
+
+``n_em_iters``
+   Maximum Baum-Welch EM iterations per restart (``'static'`` engine only).
+
+   :Options: a positive integer (not validated)
+   :Default: ``100``
+
+.. _mgh-n-lbfgs:
+
+``n_lbfgs``
+   L-BFGS iterations per restart for the ``'input_driven'`` direct-marginal engines.
+
+   :Options: a positive integer (not validated)
+   :Default: ``500``
+
+.. _mgh-n-restarts:
+
+``n_restarts``
+   Number of random-initialisation restarts.
+
+   :Options: a positive integer (not validated)
+   :Default: ``5``
+   :Notes: the best by training log-likelihood is kept, so the reserved held-out sessions are scored once and never shape the fitted model.
+
+.. _mgh-n-kappa-rounds:
+
+``n_kappa_rounds``
+   The input-driven manifold engine alternates L-BFGS on the regressors and transitions (at a frozen von Mises concentration) with a responsibility-weighted global concentration MLE; this is the number of such alternations per restart.
+
+   :Options: a positive integer (not validated)
+   :Default: ``3``
+   :Notes: the alternation is what keeps the concentration from collapsing to the uniform torus density. Read only by the input-driven manifold engine.
+
+.. _mgh-em-tol:
+
+``em_tol``
+   Relative EM convergence tolerance (``'static'`` engine only).
+
+   :Options: a positive float (not validated)
+   :Default: ``0.0001``
+
+.. _mgh-transition-pseudocount:
+
+``transition_pseudocount``
+   Laplace pseudocount smoothing the static transition and initial-state expected counts (``'static'`` engine only).
+
+   :Options: a non-negative float (not validated; ``0`` leaves the counts unsmoothed)
+   :Default: ``1.0``
+
+.. _mgh-lambda-smooth-l2-reg:
+
+``lambda_smooth`` / ``l2_reg``
+   The temporal-smoothness and ridge penalties on each state's *static-engine* emission GLM.
+
+   :Options: non-negative floats (not validated; ``0`` switches the penalty off)
+   :Default: ``lambda_smooth`` ``100.0`` and ``l2_reg`` ``0.1``
+
+.. _mgh-input-driven-lambda-smooth:
+
+``input_driven_lambda_smooth``
+   The first-difference temporal-smoothness coefficient ``r`` for the *input-driven* engines.
+
+   :Options: a non-negative float (not validated)
+   :Default: ``0.05``
+   :Notes: a separate key because its scale, ``~0.05``, differs from the static-engine ``lambda_smooth`` by orders of magnitude. Read only by the input-driven engines.
+
+.. _mgh-multinomial-target:
+
+``multinomial_target``
+   The categorical label column read as the target when ``emission_type='multinomial'`` (``'category'``, the QLVM category packet); events whose label is NaN are dropped.
+
+   :Options: the name of a label packet in the modeling input pickle, which the manifold extraction writes only as ``'category'`` (and only when ``vocal_features.usv_category_column_name`` is set)
+   :Default: ``'category'``
+   :Notes: a packet missing from a session raises. Read only when ``emission_type='multinomial'``.
+
+.. _mgh-focal-gamma:
+
+``focal_gamma``
+   Focal-loss focusing parameter of the static multinomial emission (``0.0`` = plain cross-entropy).
+
+   :Options: a non-negative float (not validated; ``0.0`` is plain cross-entropy)
+   :Default: ``0.0``
+   :Notes: read only by the static multinomial emission.
+
+.. _mgh-multinomial-max-iter:
+
+``multinomial_max_iter``
+   Optimiser iterations for the static multinomial emission's per-state classifier.
+
+   :Options: a positive integer (not validated)
+   :Default: ``2000``
+
+.. _mgh-emission-optimiser:
+
+``emission_smoothness_derivative_order`` / ``emission_huber_delta`` / ``emission_learning_rate`` / ``manifold_max_iter`` / ``emission_tol`` / ``emission_random_state``
+   The optimiser of each state's *static-engine* emission.
+
+   :Options:
+      * ``emission_smoothness_derivative_order`` — the finite-difference order of the temporal-smoothness penalty: ``1`` or ``2`` (default ``2``, the curvature penalty); the euclidean manifold and multinomial emission regressors raise on any other value; the torus regressor accepts any positive integer below ``history_frames``
+      * ``emission_huber_delta`` — the Huber transition point of the manifold emission's residual loss (default ``1.0``, manifold units); a positive float
+      * ``emission_learning_rate`` — the initial Adam step size (default ``0.001``, cosine-decayed to zero); a positive float
+      * ``manifold_max_iter`` — the manifold emission's step cap (default ``5000``; the multinomial emission's is ``multinomial_max_iter``); a positive integer
+      * ``emission_tol`` — the parameter-change convergence tolerance (default ``0.0001``); a positive float
+      * ``emission_random_state`` — the weight-initialisation seed (default ``0``); any integer
+   :Default: ``2``, ``1.0``, ``0.001``, ``5000``, ``0.0001`` and ``0``
+   :Notes: none of the last five is validated. The values are those the emission regressors used before they became settings, and all six are recorded in the result's ``metadata``. On a torus manifold the emission regressor is fitted in closed form, so the Huber, step-size, step-cap and tolerance keys act only on a euclidean manifold.
+
+.. _mgh-init-kmeans-n-init:
+
+``init_kmeans_n_init``
+   The number of k-means initialisations (the best by inertia is kept) behind the structured initial state responsibilities of every static-engine EM restart.
+
+   :Options: a positive integer (not validated)
+   :Default: ``3``
+   :Notes: the k-means runs on the targets, one-hot encoded for a categorical target.
+
+.. _mgh-init-self-transition:
+
+``init_self_transition``
+   The diagonal of the static engine's initial transition matrix (default ``0.8``, so states start persistent over a bout); the remaining ``0.2`` is split evenly over the other states.
+
+   :Options: a float strictly inside ``(0, 1)`` (any other value raises)
+   :Default: ``0.8``
+   :Notes: EM re-estimates the matrix from the first iteration on.
+
+.. _mgh-init-bias-sd:
+
+``init_bias_sd``
+   The standard deviation of the normal draw that initialises the input-driven engines' transition biases and the categorical emission's biases at every restart.
+
+   :Options: a non-negative float (not validated)
+   :Default: ``0.3``
 
 **bout_offset** — the settings of the ``'bout_offset'`` target of ``VocalOnsetModelingPipeline``
 (see :ref:`Bout offsets <modeling-bout-offsets>`); read only when ``model_params.model_target_vocal_type``
@@ -662,11 +2705,78 @@ is ``'bout_offset'``.
         "max_negatives_per_bout": 3
     }
 
-* **filter_history** — the history window (s) of this target, deliberately its own key: ``model_params.filter_history`` also sets the silent-tile width, the clean-history criterion of ``'bout_onset'`` mode and the ``'state'`` grid, none of which this target uses, and the offset question lives on a shorter timescale (the kinematic changes that precede a bout end sit in the last ~0.5 s). **Allowed:** a positive number of seconds, at least one frame (``1 / camera_sampling_rate``), since the window is ``floor(camera_sampling_rate * filter_history)`` frames (not validated); shipped ``1.0``.
-* **negative_scheme** — how the negative (an interior USV of a bout that continued) is drawn; see below. **Allowed:** ``'cross_bout'`` (one negative per positive, from a different bout, matched on the time since bout onset) or ``'within_bout'`` (the latest qualifying USV of the same bout); any other value raises ``ValueError``; shipped ``'cross_bout'``.
-* **min_singing_after_negative_seconds** — a negative's bout must keep singing for at least this long after the negative's USV, so the negative sits outside the ending itself (the measured ending process spans ~0.3 s). Measured from the negative USV's stop to the bout's last stop, under both schemes. **Allowed:** a number of seconds ``>= 0`` (not validated; ``0`` admits every interior USV); shipped ``0.5``.
-* **time_since_bout_onset_tolerance_seconds** — ``'cross_bout'`` only: how far apart the time since bout onset of a positive and its negative may be. The nearest unused candidate within the tolerance is taken; a positive with none is dropped. **Allowed:** a number of seconds ``>= 0`` (not validated); ignored under ``'within_bout'``; shipped ``0.1``.
-* **max_negatives_per_bout** — ``'cross_bout'`` only: cap on negatives drawn from any one bout (``null`` for none), so that a few long bouts cannot supply most of the negative class. **Allowed:** ``null`` (no cap) or a positive integer (not validated; ``0`` would admit no negative at all); ignored under ``'within_bout'``, which draws one negative per bout by construction; shipped ``3``.
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`filter_history <mbo-filter-history>`
+     - ``1.0``
+     - seconds >= one frame
+   * - :ref:`negative_scheme <mbo-negative-scheme>`
+     - ``'cross_bout'``
+     - ``'cross_bout'``, ``'within_bout'``
+   * - :ref:`min_singing_after_negative_seconds <mbo-min-singing-after-negative-seconds>`
+     - ``0.5``
+     - seconds >= 0
+   * - :ref:`time_since_bout_onset_tolerance_seconds <mbo-time-since-bout-onset-tolerance-seconds>`
+     - ``0.1``
+     - seconds >= 0
+   * - :ref:`max_negatives_per_bout <mbo-max-negatives-per-bout>`
+     - ``3``
+     - ``null``, or integer > 0
+
+.. _mbo-filter-history:
+
+``filter_history``
+   The history window (s) of this target, deliberately its own key.
+
+   :Options: a positive number of seconds, at least one frame (``1 / camera_sampling_rate``), since the window is ``floor(camera_sampling_rate * filter_history)`` frames (not validated)
+   :Default: ``1.0``
+   :Notes: ``model_params.filter_history`` also sets the silent-tile width, the clean-history criterion of ``'bout_onset'`` mode and the ``'state'`` grid, none of which this target uses, and the offset question lives on a shorter timescale (the kinematic changes that precede a bout end sit in the last ~0.5 s).
+
+.. _mbo-negative-scheme:
+
+``negative_scheme``
+   How the negative (an interior USV of a bout that continued) is drawn; see below.
+
+   :Options:
+      * ``'cross_bout'`` — one negative per positive, from a different bout, matched on the time since bout onset
+      * ``'within_bout'`` — the latest qualifying USV of the same bout
+   :Default: ``'cross_bout'``
+   :Notes: any other value raises ``ValueError``.
+
+.. _mbo-min-singing-after-negative-seconds:
+
+``min_singing_after_negative_seconds``
+   A negative's bout must keep singing for at least this long after the negative's USV, so the negative sits outside the ending itself (the measured ending process spans ~0.3 s).
+
+   :Options: a number of seconds ``>= 0`` (not validated; ``0`` admits every interior USV)
+   :Default: ``0.5``
+   :Notes: measured from the negative USV's stop to the bout's last stop, under both schemes.
+
+.. _mbo-time-since-bout-onset-tolerance-seconds:
+
+``time_since_bout_onset_tolerance_seconds``
+   ``'cross_bout'`` only: how far apart the time since bout onset of a positive and its negative may be.
+
+   :Options: a number of seconds ``>= 0`` (not validated)
+   :Default: ``0.1``
+   :Notes: the nearest unused candidate within the tolerance is taken; a positive with none is dropped. Ignored under ``'within_bout'``.
+
+.. _mbo-max-negatives-per-bout:
+
+``max_negatives_per_bout``
+   ``'cross_bout'`` only: cap on negatives drawn from any one bout (``null`` for none), so that a few long bouts cannot supply most of the negative class.
+
+   :Options:
+      * ``null`` — no cap
+      * a positive integer — the cap (not validated; ``0`` would admit no negative at all)
+   :Default: ``3``
+   :Notes: ignored under ``'within_bout'``, which draws one negative per bout by construction.
 
 **behavioral_response** — the inverted analysis: does a partner's vocal trace predict a
 *behavioural* variable (see :ref:`Behavioral response <modeling-behavioral-response>` below)?
@@ -700,20 +2810,263 @@ is ``'bout_offset'``.
         }
     }
 
-* **response_mouse_index** — which mouse's behaviour is predicted, by **absolute slot index** (``0`` is always the male, ``1`` always the female). Deliberately *not* the relative ``self.`` / ``other.`` role keys used elsewhere: those are defined against ``model_params.model_predictor_mouse_index`` and cannot be read on their own. **This is the only mouse index you set.** ``model_params.model_predictor_mouse_index`` decides whose *vocalizations* are ingested and carries the opposite meaning on the same 0/1 axis; since the partner's vocalizations are by definition the other animal's, it is **derived** as ``1 - response_mouse_index`` on a private copy of the settings (the caller's dict is never mutated, and the shipped value the five vocal pipelines read is untouched). So ``response_mouse_index: 1`` predicts the female from the male's vocalizations, with nothing to keep in step by hand. **Allowed:** ``0`` (predict the male) or ``1`` (predict the female); any other value raises; shipped ``1``.
-* **response_features** — the behavioural features used as response variables, every one extracted in the same pass (the anchors are identical across features, only the target changes). Each must be one of ``kinematic_features.egocentric``; an unknown name is rejected before any session is read. Read from the raw per-session feature table **before** z-scoring, so the responses stay in native units — the likelihood of each is **derived** from its support (see :ref:`Behavioral response <modeling-behavioral-response>`): a non-negative feature (plain, or folded by ``abs_features`` / ``smooth_abs_features``) is fitted as a Gamma GAM with a log link, a signed one as Gaussian. **Allowed:** a non-empty list of names from ``kinematic_features.egocentric`` (a name outside it raises before any session is read); shipped the eight egocentric features.
-* **history_seconds** — seconds of behavioural history preceding each anchor, the window the covariate summaries are taken over. Block-local rather than shared with ``model_params.filter_history``, mirroring how ``glm_hmm`` carries its own ``history_frames``. It also sets the stride of the deep-silence anchors (below), so no two of those rows share a history sample. **Allowed:** positive seconds spanning at least one frame at ``io.camera_sampling_rate`` (a shorter value raises); shipped ``4.0``.
-* **target_window_seconds** — width of the forward window the response is averaged over for the headline (``window``) fit. Averaging suppresses the frame-to-frame differentiation noise in a single 6.7 ms sample and breaks the near-determinism that would otherwise tie the target to the last frame of its own history. **Allowed:** positive seconds spanning at least one frame (a shorter value raises); shipped ``0.5``.
-* **target_bin_seconds** — width of the bins the forward window is tiled into for the time-course fit (``0.05`` → ten bins across a ``0.5`` s window). The window is tiled with rounded bin **edges** rather than a fixed frame count, so at 150 fps the bins alternate between 7 and 8 frames and the last frames of the window are not dropped. Must not exceed ``target_window_seconds``. **Allowed:** positive seconds spanning at least one frame and no longer than ``target_window_seconds`` (either violation raises); shipped ``0.05``.
-* **post_bout_silence_seconds** — a male bout offset becomes a vocal anchor only when the next bout starts at least this long after it, so the forward window follows the bout rather than straddling the next one. It is set equal to ``target_window_seconds`` on purpose: the requirement selects on the future (bigger bouts are followed sooner by the next bout), so anything longer than the window discards long bouts for cleanliness the analysis never uses (see the note in :ref:`Behavioral response <modeling-behavioral-response>`). **Allowed:** non-negative seconds (not validated); shipped ``0.5``.
-* **deep_silence_margin_seconds** — the second, *deep-silence* control: anchors tiled every ``history_seconds`` through the stretches with no male bout within this margin on either side. A tile whose window touches any vocalization of the predictor mouse is dropped. Both controls are extracted in the same pass; ``behavioral_response_contrast`` picks one with its ``control`` argument (``'inter_bout_silence'`` or ``'deep_silence'``). Inter-bout silence keeps the animals inside an ongoing interaction but carries over the previous bout's effect; deep silence escapes the carry-over at the cost of a larger imbalance in social distance (measured ``1.09`` SD in ``nose-nose`` against ``0.74`` SD for inter-bout silence, every other covariate under ``0.32`` SD). **Allowed:** positive seconds (not validated); shipped ``10.0``.
-* **covariate_summary_seconds** — the pre-anchor windows each covariate is averaged over, one column per window per feature (``[0.5, 4.0]`` → ``<feature>__mean_0.5s`` and ``<feature>__mean_4s``). The covariates are summaries rather than lag histories because their job is to hold pre-anchor state fixed, and these features are slow (autocorrelation horizons ~0.75 s for ``speed`` to ~6.8 s for ``nose-nose``), so finer sub-windows would be collinear rather than informative. The responder's own, the vocalizer's and the dyadic features are all stored. **Allowed:** a non-empty list of positive seconds, each spanning at least one frame and meant to be no longer than ``history_seconds`` (not validated; a window wider than the history averages frames before it, and a zero-frame window gives an all-NaN column); shipped ``[0.5, 4.0]``.
-* **covariate_transform** — how the stored (pooled z-scored) covariates enter the contrast's design, applied at **fit time** (read from the settings, not from the artifact, so an artifact written before the key existed is still valid input): ``'yeo_johnson'`` (shipped) fits one Yeo-Johnson power parameter per covariate by maximum likelihood on its native-scale values and re-standardises; ``'derived'`` applies the response's own support rule (``log`` for a non-negative covariate, identity for a signed one); ``'normal_scores'`` replaces each covariate by the Gaussian quantile of its rank; ``'linear'`` uses the stored z-scores as they are. The non-linear options exist because the response is measured to be linear in the dominant covariate's *rank* and strongly concave in its value, a misfit an order of magnitude larger than the effect under test. **Allowed:** ``'yeo_johnson'``, ``'derived'``, ``'normal_scores'`` or ``'linear'`` (any other value raises when the contrast is fitted); shipped ``'yeo_johnson'``.
-* **covariate_features** — which animal's pre-anchor kinematics adjust the contrast, also a fit-time choice: ``'self'`` (the responder's), ``'partner'`` (the vocalizer's) or ``'both'`` (shipped). The dyadic columns stay in under every choice. **Allowed:** ``'self'``, ``'partner'`` or ``'both'`` (any other value raises when the contrast is fitted); shipped ``'both'``.
-* **duration_n_bins** — the number of equal-count quantile bands bout duration is cut into for the secondary banded design, in which each band is interacted with the vocal indicator so every band gets its own step against silence (``3`` = terciles); the primary design uses one continuous log-duration slope (``vocal_x_log_duration``) instead and does not read this key. Bands are kept as a check because duration is heavily skewed (median ``0.43`` s with a long tail). **Allowed:** a positive integer no larger than the number of distinct bout durations among the vocal rows (more bands than that raises when the contrast is fitted); shipped ``3``.
-* **report_alpha** — the console label of each contrast term: ``SIG`` when its cluster-robust p-value is below this level (default ``0.05``), ``ns`` otherwise. It labels the printed line only; the stored result keeps every p-value. **Allowed:** a float in ``(0, 1)`` (not validated); shipped ``0.05``.
-* **per_session_min_events_per_arm** — the unadjusted per-session effect (vocal minus silent mean, on the log scale for a positive feature) is computed for a session only when it holds at least this many usable rows in each arm (default ``3``), so a session with one or two rows on a side cannot contribute an arbitrary difference to the between-session spread. **Allowed:** a positive integer (not validated); shipped ``3``.
-* **matched_divergence** — the design-based companion analysis, ``MatchedDivergencePipeline.extract_and_save_matched_divergence`` (see :ref:`Matched divergence <modeling-matched-divergence>`), which holds pre-anchor state fixed by matching instead of by covariate adjustment. Every duration is in seconds. ``pre_seconds`` — a candidate silent anchor must lie at least this long after the last vocalization of **any** animal; ``post_clean_seconds`` — no vocalization of any animal may start (or still be ongoing) within this long after an anchor, vocal and silent alike (the bout offsets that fail it are dropped); ``window_seconds`` / ``pre_window_seconds`` — the stored per-anchor curve spans ``[-pre_window_seconds, +window_seconds]`` around the anchor; ``baseline_start_seconds`` / ``baseline_end_seconds`` — the matching window is the mean over ``[-baseline_start_seconds, -baseline_end_seconds]`` before the anchor (``start`` must exceed ``end``); it ends ``0.5`` s *before* the anchor because these features are slow (``tau(1/e)`` 0.35–0.54 s), so a window reaching the anchor would already contain the divergence under way; ``silence_grid_seconds`` — spacing of the grid the candidate silent anchors are drawn from (in every one of these silence tests, segments flagged as noise are not vocalizations and are ignored when ``vocal_features.exclude_noise_usvs`` is ``true``); ``match_caliper_sd`` — every silent anchor whose baseline lies within this many pooled standard deviations of a vocal anchor's is averaged into that anchor's control curve (a vocal anchor has a median of 82 eligible controls). **Allowed:** every ``*_seconds`` key positive seconds (not validated, except that ``baseline_start_seconds`` must exceed ``baseline_end_seconds`` in frames, which raises otherwise; ``silence_grid_seconds`` must be above ``0``, since it is the step of the anchor grid), and ``match_caliper_sd`` a positive float (not validated); shipped ``4.0`` for ``pre_seconds``, ``post_clean_seconds``, ``window_seconds``, ``pre_window_seconds`` and ``baseline_start_seconds``, ``0.5`` for ``baseline_end_seconds`` and ``silence_grid_seconds``, and ``0.1`` for ``match_caliper_sd``.
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`response_mouse_index <mbr-response-mouse-index>`
+     - ``1``
+     - ``0`` (male), ``1`` (female)
+   * - :ref:`response_features <mbr-response-features>`
+     - the eight egocentric features
+     - names from ``kinematic_features.egocentric``
+   * - :ref:`history_seconds <mbr-history-seconds>`
+     - ``4.0``
+     - seconds >= one frame
+   * - :ref:`target_window_seconds <mbr-target-window-seconds>`
+     - ``0.5``
+     - seconds >= one frame
+   * - :ref:`target_bin_seconds <mbr-target-bin-seconds>`
+     - ``0.05``
+     - seconds >= one frame, <= ``target_window_seconds``
+   * - :ref:`post_bout_silence_seconds <mbr-post-bout-silence-seconds>`
+     - ``0.5``
+     - seconds >= 0
+   * - :ref:`deep_silence_margin_seconds <mbr-deep-silence-margin-seconds>`
+     - ``10.0``
+     - seconds > 0
+   * - :ref:`covariate_summary_seconds <mbr-covariate-summary-seconds>`
+     - ``[0.5, 4.0]``
+     - non-empty list of seconds > 0
+   * - :ref:`covariate_transform <mbr-covariate-transform>`
+     - ``'yeo_johnson'``
+     - ``'yeo_johnson'``, ``'derived'``, ``'normal_scores'``, ``'linear'``
+   * - :ref:`covariate_features <mbr-covariate-features>`
+     - ``'both'``
+     - ``'self'``, ``'partner'``, ``'both'``
+   * - :ref:`duration_n_bins <mbr-duration-n-bins>`
+     - ``3``
+     - integer > 0
+   * - :ref:`report_alpha <mbr-report-alpha>`
+     - ``0.05``
+     - float in ``(0, 1)``
+   * - :ref:`per_session_min_events_per_arm <mbr-per-session-min-events-per-arm>`
+     - ``3``
+     - integer > 0
+   * - :ref:`matched_divergence.pre_seconds <mbr-md-pre-seconds>`
+     - ``4.0``
+     - seconds > 0
+   * - :ref:`matched_divergence.post_clean_seconds <mbr-md-post-clean-seconds>`
+     - ``4.0``
+     - seconds > 0
+   * - :ref:`matched_divergence.window_seconds <mbr-md-window>`
+     - ``4.0``
+     - seconds > 0
+   * - :ref:`matched_divergence.pre_window_seconds <mbr-md-window>`
+     - ``4.0``
+     - seconds > 0
+   * - :ref:`matched_divergence.baseline_start_seconds <mbr-md-baseline>`
+     - ``4.0``
+     - seconds > ``baseline_end_seconds``
+   * - :ref:`matched_divergence.baseline_end_seconds <mbr-md-baseline>`
+     - ``0.5``
+     - seconds > 0, < ``baseline_start_seconds``
+   * - :ref:`matched_divergence.silence_grid_seconds <mbr-md-silence-grid-seconds>`
+     - ``0.5``
+     - seconds > 0
+   * - :ref:`matched_divergence.match_caliper_sd <mbr-md-match-caliper-sd>`
+     - ``0.1``
+     - float > 0
+
+.. _mbr-response-mouse-index:
+
+``response_mouse_index``
+   Which mouse's behaviour is predicted, by **absolute slot index** (``0`` is always the male, ``1`` always the female). **This is the only mouse index you set.**
+
+   :Options:
+      * ``0`` — predict the male
+      * ``1`` — predict the female
+   :Default: ``1``
+   :Notes:
+      * **Why absolute** — deliberately *not* the relative ``self.`` / ``other.`` role keys used elsewhere: those are defined against ``model_params.model_predictor_mouse_index`` and cannot be read on their own.
+      * **Derived predictor index** — ``model_params.model_predictor_mouse_index`` decides whose *vocalizations* are ingested and carries the opposite meaning on the same 0/1 axis; since the partner's vocalizations are by definition the other animal's, it is **derived** as ``1 - response_mouse_index`` on a private copy of the settings (the caller's dict is never mutated, and the shipped value the five vocal pipelines read is untouched). So ``response_mouse_index: 1`` predicts the female from the male's vocalizations, with nothing to keep in step by hand.
+      * **Validation** — any other value raises.
+
+.. _mbr-response-features:
+
+``response_features``
+   The behavioural features used as response variables, every one extracted in the same pass (the anchors are identical across features, only the target changes).
+
+   :Options: a non-empty list of names from ``kinematic_features.egocentric`` (a name outside it raises before any session is read)
+   :Default: the eight egocentric features (see JSON above)
+   :Notes: each must be one of ``kinematic_features.egocentric``; an unknown name is rejected before any session is read. Read from the raw per-session feature table **before** z-scoring, so the responses stay in native units — the likelihood of each is **derived** from its support (see :ref:`Behavioral response <modeling-behavioral-response>`): a non-negative feature (plain, or folded by ``abs_features`` / ``smooth_abs_features``) is fitted as a Gamma GAM with a log link, a signed one as Gaussian.
+
+.. _mbr-history-seconds:
+
+``history_seconds``
+   Seconds of behavioural history preceding each anchor, the window the covariate summaries are taken over.
+
+   :Options: positive seconds spanning at least one frame at ``io.camera_sampling_rate`` (a shorter value raises)
+   :Default: ``4.0``
+   :Notes: block-local rather than shared with ``model_params.filter_history``, mirroring how ``glm_hmm`` carries its own ``history_frames``. It also sets the stride of the deep-silence anchors (below), so no two of those rows share a history sample.
+
+.. _mbr-target-window-seconds:
+
+``target_window_seconds``
+   Width of the forward window the response is averaged over for the headline (``window``) fit.
+
+   :Options: positive seconds spanning at least one frame (a shorter value raises)
+   :Default: ``0.5``
+   :Notes: averaging suppresses the frame-to-frame differentiation noise in a single 6.7 ms sample and breaks the near-determinism that would otherwise tie the target to the last frame of its own history.
+
+.. _mbr-target-bin-seconds:
+
+``target_bin_seconds``
+   Width of the bins the forward window is tiled into for the time-course fit (``0.05`` → ten bins across a ``0.5`` s window).
+
+   :Options: positive seconds spanning at least one frame and no longer than ``target_window_seconds`` (either violation raises)
+   :Default: ``0.05``
+   :Notes: the window is tiled with rounded bin **edges** rather than a fixed frame count, so at 150 fps the bins alternate between 7 and 8 frames and the last frames of the window are not dropped. Must not exceed ``target_window_seconds``.
+
+.. _mbr-post-bout-silence-seconds:
+
+``post_bout_silence_seconds``
+   A male bout offset becomes a vocal anchor only when the next bout starts at least this long after it, so the forward window follows the bout rather than straddling the next one.
+
+   :Options: non-negative seconds (not validated)
+   :Default: ``0.5``
+   :Notes: it is set equal to ``target_window_seconds`` on purpose: the requirement selects on the future (bigger bouts are followed sooner by the next bout), so anything longer than the window discards long bouts for cleanliness the analysis never uses (see the note in :ref:`Behavioral response <modeling-behavioral-response>`).
+
+.. _mbr-deep-silence-margin-seconds:
+
+``deep_silence_margin_seconds``
+   The second, *deep-silence* control: anchors tiled every ``history_seconds`` through the stretches with no male bout within this margin on either side.
+
+   :Options: positive seconds (not validated)
+   :Default: ``10.0``
+   :Notes: a tile whose window touches any vocalization of the predictor mouse is dropped. Both controls are extracted in the same pass; ``behavioral_response_contrast`` picks one with its ``control`` argument (``'inter_bout_silence'`` or ``'deep_silence'``). Inter-bout silence keeps the animals inside an ongoing interaction but carries over the previous bout's effect; deep silence escapes the carry-over at the cost of a larger imbalance in social distance (measured ``1.09`` SD in ``nose-nose`` against ``0.74`` SD for inter-bout silence, every other covariate under ``0.32`` SD).
+
+.. _mbr-covariate-summary-seconds:
+
+``covariate_summary_seconds``
+   The pre-anchor windows each covariate is averaged over, one column per window per feature (``[0.5, 4.0]`` → ``<feature>__mean_0.5s`` and ``<feature>__mean_4s``).
+
+   :Options: a non-empty list of positive seconds, each spanning at least one frame and meant to be no longer than ``history_seconds`` (not validated; a window wider than the history averages frames before it, and a zero-frame window gives an all-NaN column)
+   :Default: ``[0.5, 4.0]``
+   :Notes: the covariates are summaries rather than lag histories because their job is to hold pre-anchor state fixed, and these features are slow (autocorrelation horizons ~0.75 s for ``speed`` to ~6.8 s for ``nose-nose``), so finer sub-windows would be collinear rather than informative. The responder's own, the vocalizer's and the dyadic features are all stored.
+
+.. _mbr-covariate-transform:
+
+``covariate_transform``
+   How the stored (pooled z-scored) covariates enter the contrast's design, applied at **fit time** (read from the settings, not from the artifact, so an artifact written before the key existed is still valid input).
+
+   :Options:
+      * ``'yeo_johnson'`` — fits one Yeo-Johnson power parameter per covariate by maximum likelihood on its native-scale values and re-standardises
+      * ``'derived'`` — applies the response's own support rule (``log`` for a non-negative covariate, identity for a signed one)
+      * ``'normal_scores'`` — replaces each covariate by the Gaussian quantile of its rank
+      * ``'linear'`` — uses the stored z-scores as they are
+   :Default: ``'yeo_johnson'``
+   :Notes: the non-linear options exist because the response is measured to be linear in the dominant covariate's *rank* and strongly concave in its value, a misfit an order of magnitude larger than the effect under test. Any other value raises when the contrast is fitted.
+
+.. _mbr-covariate-features:
+
+``covariate_features``
+   Which animal's pre-anchor kinematics adjust the contrast, also a fit-time choice.
+
+   :Options:
+      * ``'self'`` — the responder's
+      * ``'partner'`` — the vocalizer's
+      * ``'both'`` — both animals'
+   :Default: ``'both'``
+   :Notes: the dyadic columns stay in under every choice. Any other value raises when the contrast is fitted.
+
+.. _mbr-duration-n-bins:
+
+``duration_n_bins``
+   The number of equal-count quantile bands bout duration is cut into for the secondary banded design, in which each band is interacted with the vocal indicator so every band gets its own step against silence (``3`` = terciles).
+
+   :Options: a positive integer no larger than the number of distinct bout durations among the vocal rows (more bands than that raises when the contrast is fitted)
+   :Default: ``3``
+   :Notes: the primary design uses one continuous log-duration slope (``vocal_x_log_duration``) instead and does not read this key. Bands are kept as a check because duration is heavily skewed (median ``0.43`` s with a long tail).
+
+.. _mbr-report-alpha:
+
+``report_alpha``
+   The console label of each contrast term: ``SIG`` when its cluster-robust p-value is below this level, ``ns`` otherwise.
+
+   :Options: a float in ``(0, 1)`` (not validated)
+   :Default: ``0.05``
+   :Notes: it labels the printed line only; the stored result keeps every p-value.
+
+.. _mbr-per-session-min-events-per-arm:
+
+``per_session_min_events_per_arm``
+   The unadjusted per-session effect (vocal minus silent mean, on the log scale for a positive feature) is computed for a session only when it holds at least this many usable rows in each arm.
+
+   :Options: a positive integer (not validated)
+   :Default: ``3``
+   :Notes: so a session with one or two rows on a side cannot contribute an arbitrary difference to the between-session spread.
+
+.. _mbr-matched-divergence:
+
+``matched_divergence``
+   The design-based companion analysis, ``MatchedDivergencePipeline.extract_and_save_matched_divergence`` (see :ref:`Matched divergence <modeling-matched-divergence>`), which holds pre-anchor state fixed by matching instead of by covariate adjustment.
+
+   :Notes: every duration is in seconds. Every ``*_seconds`` key takes positive seconds (not validated, except as noted for ``baseline_start_seconds`` / ``baseline_end_seconds`` and ``silence_grid_seconds`` below), and ``match_caliper_sd`` a positive float (not validated). Shipped ``4.0`` for ``pre_seconds``, ``post_clean_seconds``, ``window_seconds``, ``pre_window_seconds`` and ``baseline_start_seconds``, ``0.5`` for ``baseline_end_seconds`` and ``silence_grid_seconds``, and ``0.1`` for ``match_caliper_sd``. In every one of these silence tests, segments flagged as noise are not vocalizations and are ignored when ``vocal_features.exclude_noise_usvs`` is ``true``.
+
+.. _mbr-md-pre-seconds:
+
+``matched_divergence.pre_seconds``
+   A candidate silent anchor must lie at least this long after the last vocalization of **any** animal.
+
+   :Options: positive seconds (not validated)
+   :Default: ``4.0``
+
+.. _mbr-md-post-clean-seconds:
+
+``matched_divergence.post_clean_seconds``
+   No vocalization of any animal may start (or still be ongoing) within this long after an anchor, vocal and silent alike.
+
+   :Options: positive seconds (not validated)
+   :Default: ``4.0``
+   :Notes: the bout offsets that fail it are dropped.
+
+.. _mbr-md-window:
+
+``matched_divergence.window_seconds`` / ``matched_divergence.pre_window_seconds``
+   The stored per-anchor curve spans ``[-pre_window_seconds, +window_seconds]`` around the anchor.
+
+   :Options: positive seconds (not validated)
+   :Default: ``4.0`` and ``4.0``
+
+.. _mbr-md-baseline:
+
+``matched_divergence.baseline_start_seconds`` / ``matched_divergence.baseline_end_seconds``
+   The matching window is the mean over ``[-baseline_start_seconds, -baseline_end_seconds]`` before the anchor (``start`` must exceed ``end``).
+
+   :Options: positive seconds (not validated, except that ``baseline_start_seconds`` must exceed ``baseline_end_seconds`` in frames, which raises otherwise)
+   :Default: ``4.0`` and ``0.5``
+   :Notes: it ends ``0.5`` s *before* the anchor because these features are slow (``tau(1/e)`` 0.35–0.54 s), so a window reaching the anchor would already contain the divergence under way.
+
+.. _mbr-md-silence-grid-seconds:
+
+``matched_divergence.silence_grid_seconds``
+   Spacing of the grid the candidate silent anchors are drawn from.
+
+   :Options: positive seconds; it must be above ``0``, since it is the step of the anchor grid
+   :Default: ``0.5``
+
+.. _mbr-md-match-caliper-sd:
+
+``matched_divergence.match_caliper_sd``
+   Every silent anchor whose baseline lies within this many pooled standard deviations of a vocal anchor's is averaged into that anchor's control curve (a vocal anchor has a median of 82 eligible controls).
+
+   :Options: a positive float (not validated)
+   :Default: ``0.1``
 
 .. _modeling-extract:
 
@@ -1034,13 +3387,17 @@ per-feature pickle each. The ranking is visualised with ``plot_feature_ranking``
 (single target) or ``plot_univariate_multinomial_performance`` (multinomial), and
 the fitted temporal filters with ``plot_significant_filters``.
 
-Every feature is scored against a **null**: the same model refit with the target
-shuffled **within sessions**, so each session keeps its own class balance (onset,
-category) or its own bout-parameter distribution (bout parameters) and only the
-event-level pairing with the feature is broken. A shuffle across pooled sessions would
-also erase every difference between sessions, which the real model can still exploit
-through a feature that merely differs between sessions, so that null would be too easy to
-beat. The regularization each fold picks (``LogisticRegressionCV`` for onset and category,
+Every feature is scored against a **null**: the same model refit with the target of
+the training rows shuffled **across the whole training set**, pooled over its sessions
+(onset labels, category labels, bout parameters, and on the acoustic manifold the torus
+positions with their weights and regions), while the features stay in place and the
+test rows keep their true targets. This breaks every pairing between behavior and
+vocal output, both the moment-to-moment pairing inside a session and any difference
+between sessions (e.g. sessions with a faster partner also holding more bout onsets),
+so the null learns nothing and a feature beats it by carrying any relationship to vocal
+output that generalizes to held-out sessions. Sessions are still kept whole on either
+side of every split (see ``split_strategy``); only the null's target is pooled. The
+regularization each fold picks (``LogisticRegressionCV`` for onset and category,
 ``GridSearchCV`` for bout parameters) is chosen on inner folds that hold out whole training
 sessions, as the outer folds do (both classes kept in every inner fold; event folds when a
 training set has a single session). The class balancing and the row shuffling draw from a
@@ -1116,7 +3473,7 @@ the Benjamini–Hochberg ``q`` on the manifold).
    **Significance baseline for the discrete targets (vocal onsets, binomial
    USV categories).** Every univariate fit is evaluated against a
    *label-shuffle permutation null*: the same estimator is re-fit on a copy of
-   the **training** labels permuted within each fold — breaking the
+   the **training** labels permuted across the training fold — breaking the
    behaviour→vocalization association while preserving the marginal event rate
    — and then scored against the real (unpermuted) **test** labels, seeded
    reproducibly per fold from ``random_seed``. This replaced the earlier
@@ -1248,7 +3605,13 @@ for the inner-loop parallelism):
     python -m usv_playpen.modeling.main_model_selection_dispatcher
 
 The dispatchers read the same ``modeling_settings.json`` and write one
-per-feature / per-step pickle each. Consolidate the model-selection steps with
+per-feature / per-step pickle each. ``--analysis_type`` must name the pipeline
+that built the input pickle (recorded in its ``_input_metadata.analysis_type``):
+bout onset and bout offset inputs are ``onset``, bout durations ``params``. A
+mismatch stops the univariate task, or the selection (for the univariate file
+as well as the input pickle), at load time with exit status 1 and a message
+naming the type to rerun with; an artifact that does not record the field is
+not checked. Consolidate the model-selection steps with
 ``consolidate_model_selection`` (the same metadata-equality guard and metadata
 hoisting as the univariate consolidator above):
 
@@ -1299,7 +3662,12 @@ Visualise the trajectory with ``plot_model_selection_results`` (binary / regress
 ``plot_multinomial_selection_trajectory`` (multinomial), or
 ``plot_manifold_selection_trajectory`` (continuous manifold): each reads the
 consolidated ``model_selection_final_*.pkl`` and shows the per-step held-out score
-gain and the retained-feature filters.
+gain and the retained-feature filters. Called with no metric arguments, the manifold
+plotter draws the score the run selected on (``_run_metadata['selection_metric']``:
+``vm_logscore`` on the torus, ``dcor_xy`` on euclidean) and, as percent improvement
+over chance, the region-balanced errors of the run's geometry: on the torus the
+manifold-position error (``euclidean_mae_macro``) and the acoustic error
+(``pullback_geodesic_mae_macro``), on euclidean the manifold-position error alone.
 
 For the acoustic-manifold model the converged filters have a single dedicated
 view, ``plot_manifold_filter_atlas`` (torus runs only), reading the same
@@ -1682,12 +4050,91 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
         "somatic": "somatic"
     }
 
-* **session_list_files** — text files listing one session directory per line; the union is the courtship cohort (the intact-partner and the mute-female ephys lists are shipped).
-* **behaviour_selection_result_path** — per target (``'manifold'``, ``'multinomial'``), the selection whose feature set defines the behaviour control, read back to check the frozen ``reduced_model_features`` against. Either a behavioural-modelling selection (its last forward step's ``current_features``; only the names are adopted, never the coefficients) or the pickle ``main_behaviour_control_dispatcher --stage select --output <file>`` writes (the select stage never writes to this path). Shipped: the behavioural modelling's manifold and multinomial selections on the ephys courtship sessions (both partner conditions pooled), which selected ``head-head`` alone and ``allo_yaw-head``, ``head-head``, ``other.speed``, ``self.back_pitch``.
-* **brain_areas** / **area_mode** — the unit catalog's ``brain_area`` filter: ``'include'`` keeps the listed areas, ``'exclude'`` drops them, ``'all'`` ignores the list.
-* **pool_areas** — whether the cross-unit corrections pool every brain area of the cohort into one group (``true``) or correct each area on its own (``false``, shipped), so one area's count never depends on how many units of another were run.
-* **quality** — the allowed ``cluster_group`` labels of the unit catalog (``["good"]``).
-* **somatic** — ``'somatic'``, ``'non_somatic'`` or ``'both'``: which units pass the catalog's somatic waveform classification.
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`session_list_files <nm-data-session-list-files>`
+     - two lists, see JSON above
+     - list of paths to text files
+   * - :ref:`behaviour_selection_result_path <nm-data-behaviour-selection-result-path>`
+     - one path per target, see JSON above
+     - ``{'manifold': path, 'multinomial': path}``
+   * - :ref:`brain_areas <nm-data-brain-areas>`
+     - ``["PAG"]``
+     - list of ``brain_area`` labels
+   * - :ref:`area_mode <nm-data-brain-areas>`
+     - ``'include'``
+     - ``'include'``, ``'exclude'``, ``'all'``
+   * - :ref:`pool_areas <nm-data-pool-areas>`
+     - ``false``
+     - ``true``, ``false``
+   * - :ref:`quality <nm-data-quality>`
+     - ``["good"]``
+     - list of ``cluster_group`` labels
+   * - :ref:`somatic <nm-data-somatic>`
+     - ``'somatic'``
+     - ``'somatic'``, ``'non_somatic'``, ``'both'``
+
+.. _nm-data-session-list-files:
+
+``session_list_files``
+   Text files listing one session directory per line; the union is the courtship cohort.
+
+   :Options: a list of paths to text files
+   :Default: the intact-partner and the mute-female ephys lists (see the JSON above)
+
+.. _nm-data-behaviour-selection-result-path:
+
+``behaviour_selection_result_path``
+   Per target (``'manifold'``, ``'multinomial'``), the selection whose feature set defines the behaviour control, read back to check the frozen ``reduced_model_features`` against.
+
+   :Options: a dictionary with one path per target, each either a behavioural-modelling selection (its last forward step's ``current_features``; only the names are adopted, never the coefficients) or the pickle ``main_behaviour_control_dispatcher --stage select --output <file>`` writes
+   :Default: the behavioural modelling's manifold and multinomial selections on the ephys courtship sessions, both partner conditions pooled (see the JSON above)
+   :Notes: the shipped selections chose ``head-head`` alone (manifold) and ``allo_yaw-head``, ``head-head``, ``other.speed``, ``self.back_pitch`` (multinomial). The select stage never writes to this path.
+
+.. _nm-data-brain-areas:
+
+``brain_areas`` / ``area_mode``
+   The unit catalog's ``brain_area`` filter.
+
+   :Options:
+      * ``brain_areas`` — a list of ``brain_area`` labels
+      * ``area_mode`` — ``'include'`` keeps the listed areas, ``'exclude'`` drops them, ``'all'`` ignores the list
+   :Default: ``["PAG"]`` and ``'include'``
+
+.. _nm-data-pool-areas:
+
+``pool_areas``
+   Whether the cross-unit corrections pool every brain area of the cohort into one group or correct each area on its own.
+
+   :Options:
+      * ``true`` — one correction over all areas
+      * ``false`` — one correction per area, so one area's count never depends on how many units of another were run
+   :Default: ``false``
+
+.. _nm-data-quality:
+
+``quality``
+   The allowed ``cluster_group`` labels of the unit catalog.
+
+   :Options: a list of ``cluster_group`` labels
+   :Default: ``["good"]``
+
+.. _nm-data-somatic:
+
+``somatic``
+   Which units pass the catalog's somatic waveform classification.
+
+   :Options:
+      * ``'somatic'`` — somatic units only
+      * ``'non_somatic'`` — non-somatic units only
+      * ``'both'`` — both
+   :Default: ``'somatic'``
 
 **data_roots** — where the run reads its inputs.
 
@@ -1699,9 +4146,49 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
         "data_root": "/mnt/falkner/Bartul/Data"
     }
 
-* **ephys_root** — the EPHYS tree; declared for completeness, the neural modeling code itself reads none of it (the anatomy and catalog tools take it from the analyses settings).
-* **catalog_path** — the unit catalog (``unit_catalog.csv``) the cohort is selected from and the recorded animal of each session is resolved from.
-* **data_root** — the session data tree (tracking, USV summaries, spikes). The encoding and vocal dispatchers take it on the command line instead (``--data-root``, required); the behaviour control reads it from here.
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`ephys_root <nm-data-roots-ephys-root>`
+     - path, see JSON above
+     - path to a directory (not read here)
+   * - :ref:`catalog_path <nm-data-roots-catalog-path>`
+     - path, see JSON above
+     - path to a CSV file
+   * - :ref:`data_root <nm-data-roots-data-root>`
+     - path, see JSON above
+     - path to a directory
+
+.. _nm-data-roots-ephys-root:
+
+``ephys_root``
+   The EPHYS tree.
+
+   :Options: a path to a directory
+   :Default: the lab EPHYS tree (see the JSON above)
+   :Notes: declared for completeness, the neural modeling code itself reads none of it (the anatomy and catalog tools take it from the analyses settings).
+
+.. _nm-data-roots-catalog-path:
+
+``catalog_path``
+   The unit catalog (``unit_catalog.csv``) the cohort is selected from and the recorded animal of each session is resolved from.
+
+   :Options: a path to a CSV file
+   :Default: ``unit_catalog.csv`` in the EPHYS tree (see the JSON above)
+
+.. _nm-data-roots-data-root:
+
+``data_root``
+   The session data tree (tracking, USV summaries, spikes).
+
+   :Options: a path to a directory
+   :Default: the lab session data tree (see the JSON above)
+   :Notes: the encoding and vocal dispatchers take it on the command line instead (``--data-root``, required); the behaviour control reads it from here.
 
 **data_sufficiency** — how much data a unit must carry to be analysed. A unit failing the vocal floors is kept and flagged, not dropped, so the denominators the fractions are reported against do not shrink silently.
 
@@ -1715,11 +4202,73 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
         "single_session_blocks": 5
     }
 
-* **min_courtship_sessions** — courtship sessions a unit must appear in (``1``). A unit recorded in a single session is tested on blocks of it (``single_session_blocks``); with two or more it is tested across sessions.
-* **min_emitter_usvs_per_session** — focal USVs a session (or, for a one-session unit, a block) needs before any vocalization-scored analysis (or the behaviour-control cohort) may use it (``20``).
-* **min_vocal_sessions** — vocal-eligible sessions (or blocks) a unit needs for the vocal-side leave-one-session-out rotation (``2``).
-* **min_decoding_spikes** — total spikes across the scored events below which the category decoding reports the unit as not decodable (``50``).
-* **single_session_blocks** — blocks a single session is split into (``5``), in two places. A unit recorded in one session is split into this many blocks of equal duration, separated by ``kinematic_encoding.history_pre_seconds`` (whatever lies within it of a boundary is dropped), and the blocks stand in for sessions in every analysis, each with its own baseline and its own 20-USV vocal floor. And when an outer fold of a two-session unit leaves a single training session, the inner split for screening and selection uses this many contiguous quiet-anchor blocks of it.
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`min_courtship_sessions <nm-data-sufficiency-min-courtship-sessions>`
+     - ``1``
+     - integer >= 1
+   * - :ref:`min_emitter_usvs_per_session <nm-data-sufficiency-min-emitter-usvs-per-session>`
+     - ``20``
+     - integer >= 0
+   * - :ref:`min_vocal_sessions <nm-data-sufficiency-min-vocal-sessions>`
+     - ``2``
+     - integer >= 2
+   * - :ref:`min_decoding_spikes <nm-data-sufficiency-min-decoding-spikes>`
+     - ``50``
+     - integer >= 0
+   * - :ref:`single_session_blocks <nm-data-sufficiency-single-session-blocks>`
+     - ``5``
+     - integer > 0
+
+.. _nm-data-sufficiency-min-courtship-sessions:
+
+``min_courtship_sessions``
+   Courtship sessions a unit must appear in.
+
+   :Options: a positive integer
+   :Default: ``1``
+   :Notes: a unit recorded in a single session is tested on blocks of it (``single_session_blocks``); with two or more it is tested across sessions.
+
+.. _nm-data-sufficiency-min-emitter-usvs-per-session:
+
+``min_emitter_usvs_per_session``
+   Focal USVs a session (or, for a one-session unit, a block) needs before any vocalization-scored analysis (or the behaviour-control cohort) may use it.
+
+   :Options: a non-negative integer
+   :Default: ``20``
+
+.. _nm-data-sufficiency-min-vocal-sessions:
+
+``min_vocal_sessions``
+   Vocal-eligible sessions (or blocks) a unit needs for the vocal-side leave-one-session-out rotation.
+
+   :Options: an integer; at least ``2`` for the rotation to run
+   :Default: ``2``
+
+.. _nm-data-sufficiency-min-decoding-spikes:
+
+``min_decoding_spikes``
+   Total spikes across the scored events below which the category decoding reports the unit as not decodable.
+
+   :Options: a non-negative integer
+   :Default: ``50``
+
+.. _nm-data-sufficiency-single-session-blocks:
+
+``single_session_blocks``
+   Blocks a single session is split into, used in two places.
+
+   :Options: a positive integer
+   :Default: ``5``
+   :Notes:
+      * **One-session units** — a unit recorded in one session is split into this many blocks of equal duration, separated by ``kinematic_encoding.history_pre_seconds`` (whatever lies within it of a boundary is dropped); the blocks stand in for sessions in every analysis, each with its own baseline and its own 20-USV vocal floor.
+      * **Two-session units** — when an outer fold leaves a single training session, the inner split for screening and selection uses this many contiguous quiet-anchor blocks of it.
 
 **kinematic_features** — the behavioural feature zoo, with exactly the meaning of the modeling block of the same name (see the ``kinematic_features`` bullets of *Modeling settings* above); the neural design assembly reuses the modeling column selection and pooled z-scoring, so the features match the behavioural models exactly.
 
@@ -1739,7 +4288,46 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
         }
     }
 
-* **egocentric** / **dyadic_pose** / **dyadic_engagement** / **dyadic_pose_symmetric** / **include_1st_derivatives** / **include_2nd_derivatives** / **abs_features** / **smooth_abs_features** — as in the modeling block (``smooth_abs_features`` maps a feature to its smoothing ``ε`` in the feature's own units).
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`egocentric <nm-kinematic-features-zoo>`
+     - eight features, see JSON above
+     - as in the modeling block
+   * - :ref:`dyadic_pose <nm-kinematic-features-zoo>`
+     - five features, see JSON above
+     - as in the modeling block
+   * - :ref:`dyadic_engagement <nm-kinematic-features-zoo>`
+     - ``[]``
+     - as in the modeling block
+   * - :ref:`dyadic_pose_symmetric <nm-kinematic-features-zoo>`
+     - ``false``
+     - as in the modeling block
+   * - :ref:`include_1st_derivatives <nm-kinematic-features-zoo>`
+     - ``false``
+     - as in the modeling block
+   * - :ref:`include_2nd_derivatives <nm-kinematic-features-zoo>`
+     - ``false``
+     - as in the modeling block
+   * - :ref:`abs_features <nm-kinematic-features-zoo>`
+     - seven features, see JSON above
+     - as in the modeling block
+   * - :ref:`smooth_abs_features <nm-kinematic-features-zoo>`
+     - ``{"ego_yaw": 1.0, "back_yaw": 0.5}``
+     - feature → smoothing ``ε``
+
+.. _nm-kinematic-features-zoo:
+
+``egocentric`` / ``dyadic_pose`` / ``dyadic_engagement`` / ``dyadic_pose_symmetric`` / ``include_1st_derivatives`` / ``include_2nd_derivatives`` / ``abs_features`` / ``smooth_abs_features``
+   As in the modeling ``kinematic_features`` block (see *Modeling settings* above).
+
+   :Options: as in the modeling block; ``smooth_abs_features`` maps a feature to its smoothing ``ε`` in the feature's own units
+   :Default: see the JSON above
 
 **vocalization_settings** — which vocalizations count, whose, and the window spikes are counted in.
 
@@ -1759,14 +4347,119 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
         "vocal_target": "manifold"
     }
 
-* **vocal_emitter** — whose USVs are the analysed vocalizations: ``'self'`` (the recorded animal's own), ``'partner'`` or ``'all'`` (no emitter filter). One key drives every analysis -- the vocal decoding's events, the kinematic encoding's transfer frames, the gating's vocal frames and the behaviour control's training rows -- so moving to the partner moves them together.
-* **clean_against** — whose vocalizations make a frame unclean (non-quiet): ``'all'`` (shipped: a quiet frame is one in which the animal was not even hearing a vocalization), ``'self'`` or ``'partner'``.
-* **exclude_noise** — drop the segments ``detect-usv-noise`` flagged as noise everywhere, including from the quiet guard (a microphone artefact must not veto a silent frame).
-* **exclude_squeaks** — drop squeak-bearing segments from the analysed vocalization set (a squeak is out of distribution for the USV map).
-* **squeaks_block_quiet** — whether a squeak still makes the surrounding frames non-quiet even when excluded from the analysed set (``true``: quiet means the animal made no sound of any kind). Measured exposure (2026-09-30): 3.5% noise and 7.3% squeaks across the behavioural courtship sessions, 0.8–1.5% of focal USVs on the ephys days.
-* **spike_window** — the per-event spike count window: it opens ``pre_offset_seconds`` (``0.05``) before the USV onset and spans ``width_seconds`` (``0.1``), so it covers the pre-motor lead and the start of the USV.
-* **torus_period** — the QLVM manifold's wrap period, shared by every analysis (a property of the manifold, so it lives here once rather than in each block). The vocalization-identity decoder and the nested decoding both read it from here.
-* **vocal_target** — which target the claims use. Every unit is decoded on BOTH targets: vocalization identity and the nested decoding each run on ``'manifold'`` (the USV's torus position, the Poisson tuning-surface decoder, against the torus behaviour control) and on ``'multinomial'`` (its acoustic category, ``vocal_decoding.category_surface``, against the categorical behaviour control), and each target is written as its own section of the unit's result file: ``vocalization_identity_manifold``, ``vocalization_identity_multinomial``, ``nested_vocal_decoding_manifold``, ``nested_vocal_decoding_multinomial``. This key picks which target's identity p-value decides whether vocal gating runs, and which target's identity and nested p-values the cohort consolidation corrects; the other target's p-values and effect sizes are carried in the cohort table as uncorrected descriptors. Changing it needs only the consolidation re-run, not the units. **Allowed:** ``'manifold'`` or ``'multinomial'``.
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`vocal_emitter <nm-vocalization-settings-vocal-emitter>`
+     - ``'self'``
+     - ``'self'``, ``'partner'``, ``'all'``
+   * - :ref:`clean_against <nm-vocalization-settings-clean-against>`
+     - ``'all'``
+     - ``'all'``, ``'self'``, ``'partner'``
+   * - :ref:`exclude_noise <nm-vocalization-settings-exclude-noise>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`exclude_squeaks <nm-vocalization-settings-exclude-squeaks>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`squeaks_block_quiet <nm-vocalization-settings-squeaks-block-quiet>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`spike_window.pre_offset_seconds <nm-vocalization-settings-spike-window>`
+     - ``0.05``
+     - seconds >= 0
+   * - :ref:`spike_window.width_seconds <nm-vocalization-settings-spike-window>`
+     - ``0.1``
+     - seconds > 0
+   * - :ref:`torus_period <nm-vocalization-settings-torus-period>`
+     - ``1.0``
+     - number > 0
+   * - :ref:`vocal_target <nm-vocalization-settings-vocal-target>`
+     - ``'manifold'``
+     - ``'manifold'``, ``'multinomial'``
+
+.. _nm-vocalization-settings-vocal-emitter:
+
+``vocal_emitter``
+   Whose USVs are the analysed vocalizations.
+
+   :Options:
+      * ``'self'`` — the recorded animal's own
+      * ``'partner'`` — the partner's
+      * ``'all'`` — no emitter filter
+   :Default: ``'self'``
+   :Notes: one key drives every analysis -- the vocal decoding's events, the kinematic encoding's transfer frames, the gating's vocal frames and the behaviour control's training rows -- so moving to the partner moves them together.
+
+.. _nm-vocalization-settings-clean-against:
+
+``clean_against``
+   Whose vocalizations make a frame unclean (non-quiet).
+
+   :Options:
+      * ``'all'`` — a quiet frame is one in which the animal was not even hearing a vocalization
+      * ``'self'`` — only the recorded animal's own vocalizations
+      * ``'partner'`` — only the partner's vocalizations
+   :Default: ``'all'``
+
+.. _nm-vocalization-settings-exclude-noise:
+
+``exclude_noise``
+   Drop the segments ``detect-usv-noise`` flagged as noise everywhere, including from the quiet guard (a microphone artefact must not veto a silent frame).
+
+   :Options: ``true`` or ``false``
+   :Default: ``true``
+
+.. _nm-vocalization-settings-exclude-squeaks:
+
+``exclude_squeaks``
+   Drop squeak-bearing segments from the analysed vocalization set (a squeak is out of distribution for the USV map).
+
+   :Options: ``true`` or ``false``
+   :Default: ``true``
+
+.. _nm-vocalization-settings-squeaks-block-quiet:
+
+``squeaks_block_quiet``
+   Whether a squeak still makes the surrounding frames non-quiet even when excluded from the analysed set.
+
+   :Options: ``true`` or ``false``
+   :Default: ``true`` (quiet means the animal made no sound of any kind)
+   :Notes: measured exposure (2026-09-30): 3.5% noise and 7.3% squeaks across the behavioural courtship sessions, 0.8–1.5% of focal USVs on the ephys days.
+
+.. _nm-vocalization-settings-spike-window:
+
+``spike_window``
+   The per-event spike count window: it opens ``pre_offset_seconds`` before the USV onset and spans ``width_seconds``, so it covers the pre-motor lead and the start of the USV.
+
+   :Options:
+      * ``pre_offset_seconds`` — seconds before the USV onset at which the window opens
+      * ``width_seconds`` — the window's length in seconds
+   :Default: ``0.05`` and ``0.1``
+
+.. _nm-vocalization-settings-torus-period:
+
+``torus_period``
+   The QLVM manifold's wrap period, shared by every analysis.
+
+   :Options: a positive number (in units of the manifold's coordinates)
+   :Default: ``1.0``
+   :Notes: a property of the manifold, so it lives here once rather than in each block. The vocalization-identity decoder and the nested decoding both read it from here.
+
+.. _nm-vocalization-settings-vocal-target:
+
+``vocal_target``
+   Which target the claims use.
+
+   :Options:
+      * ``'manifold'`` — the USV's torus position (the Poisson tuning-surface decoder, against the torus behaviour control)
+      * ``'multinomial'`` — its acoustic category (``vocal_decoding.category_surface``, against the categorical behaviour control)
+   :Default: ``'manifold'``
+   :Notes: every unit is decoded on BOTH targets, each written as its own section of the unit's result file (``vocalization_identity_manifold``, ``vocalization_identity_multinomial``, ``nested_vocal_decoding_manifold``, ``nested_vocal_decoding_multinomial``). This key picks which target's identity p-value decides whether vocal gating runs, and which target's identity and nested p-values the cohort consolidation corrects; the other target's p-values and effect sizes are carried in the cohort table as uncorrected descriptors. Changing it needs only the consolidation re-run, not the units.
 
 **kinematic_encoding** — the quiet-period kinematic encoding model (per-frame Bernoulli spike GLM of the behavioural history) and its transfer into vocal periods.
 
@@ -1840,23 +4533,345 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
         "null_block_megabytes": 32
     }
 
-* **history_pre_seconds** — the kinematic history length (``4.0`` → 600 lags at 150 fps). It also defines a quiet frame (no vocalization within this long before it) and the minimum gap of the single-session inner split, deliberately coupled so a quiet anchor's whole history is vocalization-free.
-* **clean_post_seconds** — a quiet frame must also have no vocalization within this long after it (``4.0``). The transfer's run-up before each bout is this same length, so no frame of a run-up can be a quiet anchor.
-* **bin_resize_factor** / **include_spike_history** / **spike_history_window_seconds** / **subsample_negatives** — declared but read by no current code (the model runs at the tracking frame rate, without spike history, and always subsamples the negatives by ``negatives_per_positive``).
-* **smoothness_order** — finite-difference order of the temporal-smoothness penalty on the raw per-frame lag path (``1``: first differences, the GLM-HMM tradition); used only when ``temporal_basis.type`` is ``'none'``.
-* **filter_band** — ``compute`` toggles the per-lag spread band of the representative filters; ``n_resamples`` is the number of refits it is built from (``10``).
-* **negatives_per_positive** — non-spike frames kept per spike frame in each training session (``10``); the subsampling is undone exactly by the ``subsampling_correction`` offset.
-* **calibration** — how a frozen model is turned into a score: ``scheme`` ``'crossfit'`` calibrates on blocks that exclude the scored block (``n_blocks`` contiguous blocks, ``5``), so no score is calibrated on its own frames.
-* **session_intercepts** — per-session baselines, so a session that fires faster cannot be explained by whichever feature also differs in it. ``compute`` toggles them; on the spline path the session indicators enter as one column group scaled by ``indicator_scale`` (``10.0``, so the uniform ridge reaches them at 1/100 of its strength — effectively unpenalised); on the raw per-frame path they are backfitted: ``max_sweeps`` (``30``) alternations of a filter refit and a per-session Newton update of the baselines, stopped when the baselines move less than ``tolerance`` (``1e-4``). Each per-session Newton solve takes at most ``newton_max_steps`` (``25``) steps and stops once a step is below ``newton_step_tolerance`` (``1e-10``); it is a one-dimensional convex solve, so these only bound it.
-* **raw_lag_penalties** — the penalties of the raw per-frame-lag fit: ``lambda_group`` (group lasso, ``0.0`` = no sparsity), ``lambda_smooth`` (``1000.0``) and ``lambda_ridge`` (``0.01``).
-* **feature_selection** — features are screened one at a time against the circular-shift null at a Bonferroni bar of ``screen_alpha / n_features`` (``0.01``), optionally requiring a positive calibration slope (``screen_require_positive_slope``), then added by ``selection_method`` ``'forward_d2'`` (forward selection on held-out explained deviance) under ``acceptance_rule`` ``'paired_1se'`` (a step is accepted when its paired gain exceeds one paired standard error). Both names accept only the implemented value.
-* **solver** — ``max_iter`` (``5000``) and ``tol`` (``1e-6``) of the FISTA group-elastic-net solver; ``calibration_steps`` (``30``) Newton iterations of each two-parameter calibration refit; ``null_calibration_bins`` (``2000``) equal-count predictor bins for the binned calibration of the null draws (``0`` runs the exact path; the responses are exact either way).
-* **transfer** — the frozen quiet model scored on vocal periods. ``calibration_grain`` ``'pooled_across_folds'`` concatenates the held-out predictions and calibrates once (averaging per-fold scores let a small fold dominate); ``d2_reference_rate`` ``'scored_frames'`` scores explained deviance against the vocal frames' own rate; ``universe`` ``'bout_window'`` scores each bout from ``clean_post_seconds`` (``4.0``) before its first USV to its end, bouts being split where the inter-USV gap reaches ``inter_bout_threshold_seconds`` (``0.1155``); ``grain`` ``'count'`` scores spike counts in ``bin_seconds`` (``0.1``) bins rather than per frame; ``null_block_megabytes`` (``64``) is the memory budget for one block of pooled null draws under the ``'frame'`` grain, a memory bound only (the null scores do not depend on it).
-* **subsampling_correction** — ``'log_prior_offset'``: the negative subsampling is corrected by a ``log`` sampling-rate offset in the linear predictor (the only implemented value).
-* **temporal_basis** — the lag basis of the shipped fit: ``type`` ``'bspline'`` (``'none'`` keeps the raw per-frame lags) with ``n_splines`` (``20``) cubic (``spline_order`` ``3``) B-splines over the 600 lags; ``l2_lag_alpha`` (``100.0``) makes the ridge grow with a spline's distance from the spike, each column's penalty scaled by ``1 + l2_lag_alpha · f²`` with ``f`` its centre's lag as a fraction of the window, so the far end of the history is shrunk hardest; ``lambda_ridge`` (``0.1``) and ``lambda_smooth`` (``0.0``) are the coefficient ridge and the smoothness penalty across neighbouring splines; ``lambda_group`` (``0.0``) is the group-lasso strength of the basis-path fit (off: the basis path does no feature sparsity); ``smoothness_order`` (``2``) is the finite-difference order of that spline-coefficient smoothness penalty (inert while ``lambda_smooth`` is ``0``); ``spike_end_correction`` ``'drop_outside_and_rescale'`` repairs what a uniform coefficient ridge does at the spike end of the basis (``'none'`` leaves it).
-* **max_train_total** — cap on the training rows of one fit across sessions (``70000``, split evenly per session), which bounds memory and time.
-* **chunk_rows** — rows per block when the lagged design is scored in chunks (``4000``); a memory bound only.
-* **null_block_megabytes** — memory budget, in MB, for the label matrix of one block of circular-shift null draws (``32``); the batched calibration holds a few such arrays at once. A memory bound only: the null scores do not depend on it. **Allowed:** a positive number; fractions of a MB are fine.
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`history_pre_seconds <nm-kinematic-encoding-history-pre-seconds>`
+     - ``4.0``
+     - seconds > 0
+   * - :ref:`clean_post_seconds <nm-kinematic-encoding-clean-post-seconds>`
+     - ``4.0``
+     - seconds >= 0
+   * - :ref:`bin_resize_factor <nm-kinematic-encoding-unread-keys>`
+     - ``1``
+     - not read
+   * - :ref:`smoothness_order <nm-kinematic-encoding-smoothness-order>`
+     - ``1``
+     - integer >= 1
+   * - :ref:`include_spike_history <nm-kinematic-encoding-unread-keys>`
+     - ``false``
+     - not read
+   * - :ref:`spike_history_window_seconds <nm-kinematic-encoding-unread-keys>`
+     - ``0.1``
+     - not read
+   * - :ref:`filter_band.compute <nm-kinematic-encoding-filter-band>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`filter_band.n_resamples <nm-kinematic-encoding-filter-band>`
+     - ``10``
+     - integer > 0
+   * - :ref:`subsample_negatives <nm-kinematic-encoding-unread-keys>`
+     - ``true``
+     - not read
+   * - :ref:`negatives_per_positive <nm-kinematic-encoding-negatives-per-positive>`
+     - ``10``
+     - integer > 0
+   * - :ref:`calibration.scheme <nm-kinematic-encoding-calibration>`
+     - ``'crossfit'``
+     - ``'crossfit'``, ``'in_sample'``
+   * - :ref:`calibration.n_blocks <nm-kinematic-encoding-calibration>`
+     - ``5``
+     - integer > 1
+   * - :ref:`session_intercepts.compute <nm-kinematic-encoding-session-intercepts>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`session_intercepts.indicator_scale <nm-kinematic-encoding-session-intercepts>`
+     - ``10.0``
+     - number > 0
+   * - :ref:`session_intercepts.max_sweeps <nm-kinematic-encoding-session-intercepts>`
+     - ``30``
+     - integer > 0
+   * - :ref:`session_intercepts.tolerance <nm-kinematic-encoding-session-intercepts>`
+     - ``0.0001``
+     - number > 0
+   * - :ref:`session_intercepts.newton_max_steps <nm-kinematic-encoding-session-intercepts>`
+     - ``25``
+     - integer > 0
+   * - :ref:`session_intercepts.newton_step_tolerance <nm-kinematic-encoding-session-intercepts>`
+     - ``1e-10``
+     - number > 0
+   * - :ref:`raw_lag_penalties.lambda_group <nm-kinematic-encoding-raw-lag-penalties>`
+     - ``0.0``
+     - number >= 0
+   * - :ref:`raw_lag_penalties.lambda_smooth <nm-kinematic-encoding-raw-lag-penalties>`
+     - ``1000.0``
+     - number >= 0
+   * - :ref:`raw_lag_penalties.lambda_ridge <nm-kinematic-encoding-raw-lag-penalties>`
+     - ``0.01``
+     - number >= 0
+   * - :ref:`feature_selection.screen_alpha <nm-kinematic-encoding-feature-selection>`
+     - ``0.01``
+     - number in ``(0, 1)``
+   * - :ref:`feature_selection.selection_method <nm-kinematic-encoding-feature-selection>`
+     - ``'forward_d2'``
+     - ``'forward_d2'`` only
+   * - :ref:`feature_selection.acceptance_rule <nm-kinematic-encoding-feature-selection>`
+     - ``'paired_1se'``
+     - ``'paired_1se'`` only
+   * - :ref:`feature_selection.screen_require_positive_slope <nm-kinematic-encoding-feature-selection>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`solver.max_iter <nm-kinematic-encoding-solver>`
+     - ``5000``
+     - integer > 0
+   * - :ref:`solver.tol <nm-kinematic-encoding-solver>`
+     - ``1e-6``
+     - number > 0
+   * - :ref:`solver.calibration_steps <nm-kinematic-encoding-solver>`
+     - ``30``
+     - integer > 0
+   * - :ref:`solver.null_calibration_bins <nm-kinematic-encoding-solver>`
+     - ``2000``
+     - integer >= 0 (``0`` = exact)
+   * - :ref:`transfer.calibration_grain <nm-kinematic-encoding-transfer>`
+     - ``'pooled_across_folds'``
+     - ``'pooled_across_folds'`` only
+   * - :ref:`transfer.d2_reference_rate <nm-kinematic-encoding-transfer>`
+     - ``'scored_frames'``
+     - ``'scored_frames'`` only
+   * - :ref:`transfer.universe <nm-kinematic-encoding-transfer>`
+     - ``'bout_window'``
+     - ``'bout_window'``, ``'usv_span'``
+   * - :ref:`transfer.inter_bout_threshold_seconds <nm-kinematic-encoding-transfer>`
+     - ``0.1155``
+     - seconds > 0
+   * - :ref:`transfer.grain <nm-kinematic-encoding-transfer>`
+     - ``'count'``
+     - ``'count'``, ``'frame'``
+   * - :ref:`transfer.bin_seconds <nm-kinematic-encoding-transfer>`
+     - ``0.1``
+     - seconds > 0
+   * - :ref:`transfer.null_block_megabytes <nm-kinematic-encoding-transfer>`
+     - ``64``
+     - MB > 0
+   * - :ref:`subsampling_correction <nm-kinematic-encoding-subsampling-correction>`
+     - ``'log_prior_offset'``
+     - ``'log_prior_offset'`` only
+   * - :ref:`temporal_basis.type <nm-kinematic-encoding-temporal-basis>`
+     - ``'bspline'``
+     - ``'bspline'``, ``'none'``
+   * - :ref:`temporal_basis.n_splines <nm-kinematic-encoding-temporal-basis>`
+     - ``20``
+     - integer > 0
+   * - :ref:`temporal_basis.spline_order <nm-kinematic-encoding-temporal-basis>`
+     - ``3``
+     - integer > 0
+   * - :ref:`temporal_basis.l2_lag_alpha <nm-kinematic-encoding-temporal-basis>`
+     - ``100.0``
+     - number >= 0
+   * - :ref:`temporal_basis.lambda_ridge <nm-kinematic-encoding-temporal-basis>`
+     - ``0.1``
+     - number >= 0
+   * - :ref:`temporal_basis.lambda_smooth <nm-kinematic-encoding-temporal-basis>`
+     - ``0.0``
+     - number >= 0
+   * - :ref:`temporal_basis.lambda_group <nm-kinematic-encoding-temporal-basis>`
+     - ``0.0``
+     - number >= 0
+   * - :ref:`temporal_basis.smoothness_order <nm-kinematic-encoding-temporal-basis>`
+     - ``2``
+     - integer >= 1
+   * - :ref:`temporal_basis.spike_end_correction <nm-kinematic-encoding-temporal-basis>`
+     - ``'drop_outside_and_rescale'``
+     - ``'drop_outside_and_rescale'``, ``'none'``
+   * - :ref:`max_train_total <nm-kinematic-encoding-max-train-total>`
+     - ``70000``
+     - integer > 0
+   * - :ref:`chunk_rows <nm-kinematic-encoding-chunk-rows>`
+     - ``4000``
+     - integer > 0
+   * - :ref:`null_block_megabytes <nm-kinematic-encoding-null-block-megabytes>`
+     - ``32``
+     - MB > 0
+
+.. _nm-kinematic-encoding-history-pre-seconds:
+
+``history_pre_seconds``
+   The kinematic history length (``4.0`` → 600 lags at 150 fps).
+
+   :Options: a positive number of seconds
+   :Default: ``4.0``
+   :Notes: it also defines a quiet frame (no vocalization within this long before it) and the minimum gap of the single-session inner split, deliberately coupled so a quiet anchor's whole history is vocalization-free.
+
+.. _nm-kinematic-encoding-clean-post-seconds:
+
+``clean_post_seconds``
+   A quiet frame must also have no vocalization within this long after it.
+
+   :Options: a non-negative number of seconds
+   :Default: ``4.0``
+   :Notes: the transfer's run-up before each bout is this same length, so no frame of a run-up can be a quiet anchor.
+
+.. _nm-kinematic-encoding-unread-keys:
+
+``bin_resize_factor`` / ``include_spike_history`` / ``spike_history_window_seconds`` / ``subsample_negatives``
+   Declared but read by no current code.
+
+   :Options: none (the keys are not read)
+   :Default: ``1``, ``false``, ``0.1`` and ``true``
+   :Notes: the model runs at the tracking frame rate, without spike history, and always subsamples the negatives by ``negatives_per_positive``.
+
+.. _nm-kinematic-encoding-smoothness-order:
+
+``smoothness_order``
+   Finite-difference order of the temporal-smoothness penalty on the raw per-frame lag path.
+
+   :Options: a positive integer finite-difference order (``1``: first differences, the GLM-HMM tradition)
+   :Default: ``1``
+   :Notes: used only when ``temporal_basis.type`` is ``'none'``.
+
+.. _nm-kinematic-encoding-filter-band:
+
+``filter_band``
+   The per-lag spread band of the representative filters.
+
+   :Options:
+      * ``compute`` — ``true`` or ``false``: toggles the band
+      * ``n_resamples`` — the number of refits the band is built from, a positive integer
+   :Default: ``true`` and ``10``
+
+.. _nm-kinematic-encoding-negatives-per-positive:
+
+``negatives_per_positive``
+   Non-spike frames kept per spike frame in each training session.
+
+   :Options: a positive integer
+   :Default: ``10``
+   :Notes: the subsampling is undone exactly by the ``subsampling_correction`` offset.
+
+.. _nm-kinematic-encoding-calibration:
+
+``calibration``
+   How a frozen model is turned into a score.
+
+   :Options:
+      * ``scheme`` — ``'crossfit'`` calibrates on blocks that exclude the scored block, so no score is calibrated on its own frames; ``'in_sample'`` calibrates on the scored frames themselves
+      * ``n_blocks`` — the number of contiguous blocks ``'crossfit'`` uses
+   :Default: ``'crossfit'`` with ``5`` blocks
+   :Notes: ``'in_sample'`` is accepted by the code (``CALIBRATION_SCHEMES`` in ``deviance_metrics``) but was not described here before; any other ``scheme`` raises ``ValueError``.
+
+.. _nm-kinematic-encoding-session-intercepts:
+
+``session_intercepts``
+   Per-session baselines, so a session that fires faster cannot be explained by whichever feature also differs in it.
+
+   :Options:
+      * ``compute`` — ``true`` or ``false``: toggles them
+      * ``indicator_scale`` — on the spline path the session indicators enter as one column group scaled by this factor (``10.0``, so the uniform ridge reaches them at 1/100 of its strength — effectively unpenalised)
+      * ``max_sweeps`` — on the raw per-frame path the baselines are backfitted: at most this many alternations of a filter refit and a per-session Newton update of the baselines
+      * ``tolerance`` — the backfitting stops when the baselines move less than this
+      * ``newton_max_steps`` — each per-session Newton solve takes at most this many steps
+      * ``newton_step_tolerance`` — each Newton solve stops once a step is below this
+   :Default: ``true``, ``10.0``, ``30``, ``1e-4`` (``0.0001``), ``25`` and ``1e-10``
+   :Notes: the per-session Newton update is a one-dimensional convex solve, so ``newton_max_steps`` and ``newton_step_tolerance`` only bound it.
+
+.. _nm-kinematic-encoding-raw-lag-penalties:
+
+``raw_lag_penalties``
+   The penalties of the raw per-frame-lag fit.
+
+   :Options:
+      * ``lambda_group`` — group lasso (``0.0`` = no sparsity)
+      * ``lambda_smooth`` — the temporal-smoothness penalty
+      * ``lambda_ridge`` — the ridge penalty
+   :Default: ``0.0``, ``1000.0`` and ``0.01``
+
+.. _nm-kinematic-encoding-feature-selection:
+
+``feature_selection``
+   Features are screened one at a time against the circular-shift null, then added by forward selection.
+
+   :Options:
+      * ``screen_alpha`` — the screen's family-wise level; the Bonferroni bar is ``screen_alpha / n_features``
+      * ``screen_require_positive_slope`` — ``true`` or ``false``: whether the screen also requires a positive calibration slope
+      * ``selection_method`` — ``'forward_d2'`` (forward selection on held-out explained deviance)
+      * ``acceptance_rule`` — ``'paired_1se'`` (a step is accepted when its paired gain exceeds one paired standard error)
+   :Default: ``0.01``, ``true``, ``'forward_d2'`` and ``'paired_1se'``
+   :Notes: both names (``selection_method``, ``acceptance_rule``) accept only the implemented value.
+
+.. _nm-kinematic-encoding-solver:
+
+``solver``
+   Solver iteration limits and the calibration of the null draws.
+
+   :Options:
+      * ``max_iter`` — maximum iterations of the FISTA group-elastic-net solver
+      * ``tol`` — its convergence tolerance
+      * ``calibration_steps`` — Newton iterations of each two-parameter calibration refit
+      * ``null_calibration_bins`` — equal-count predictor bins for the binned calibration of the null draws; ``0`` runs the exact path (the responses are exact either way)
+   :Default: ``5000``, ``1e-6``, ``30`` and ``2000``
+
+.. _nm-kinematic-encoding-transfer:
+
+``transfer``
+   The frozen quiet model scored on vocal periods.
+
+   :Options:
+      * ``calibration_grain`` — ``'pooled_across_folds'`` concatenates the held-out predictions and calibrates once (averaging per-fold scores let a small fold dominate)
+      * ``d2_reference_rate`` — ``'scored_frames'`` scores explained deviance against the vocal frames' own rate
+      * ``universe`` — ``'bout_window'`` scores each bout from ``clean_post_seconds`` before its first USV to its end; ``'usv_span'`` scores only the frames inside the USVs themselves
+      * ``inter_bout_threshold_seconds`` — bouts are split where the inter-USV gap reaches this
+      * ``grain`` — ``'count'`` scores spike counts in ``bin_seconds`` bins rather than per frame; ``'frame'`` scores per frame
+      * ``bin_seconds`` — the count bin width
+      * ``null_block_megabytes`` — the memory budget for one block of pooled null draws under the ``'frame'`` grain
+   :Default: ``'pooled_across_folds'``, ``'scored_frames'``, ``'bout_window'``, ``0.1155``, ``'count'``, ``0.1`` and ``64``
+   :Notes: ``null_block_megabytes`` is a memory bound only (the null scores do not depend on it). ``calibration_grain`` and ``d2_reference_rate`` accept only the implemented value. ``'usv_span'`` is accepted by the code (``TRANSFER_UNIVERSES`` in ``quiet_to_vocal_transfer``) but was not described here before.
+
+.. _nm-kinematic-encoding-subsampling-correction:
+
+``subsampling_correction``
+   How the negative subsampling is corrected.
+
+   :Options: ``'log_prior_offset'`` only (the only implemented value): a ``log`` sampling-rate offset in the linear predictor
+   :Default: ``'log_prior_offset'``
+
+.. _nm-kinematic-encoding-temporal-basis:
+
+``temporal_basis``
+   The lag basis of the shipped fit.
+
+   :Options:
+      * ``type`` — ``'bspline'`` (B-splines over the 600 lags) or ``'none'`` (keeps the raw per-frame lags)
+      * ``n_splines`` — the number of B-splines
+      * ``spline_order`` — the spline order (``3``: cubic)
+      * ``l2_lag_alpha`` — makes the ridge grow with a spline's distance from the spike, each column's penalty scaled by ``1 + l2_lag_alpha · f²`` with ``f`` its centre's lag as a fraction of the window, so the far end of the history is shrunk hardest
+      * ``lambda_ridge`` — the coefficient ridge
+      * ``lambda_smooth`` — the smoothness penalty across neighbouring splines
+      * ``lambda_group`` — the group-lasso strength of the basis-path fit
+      * ``smoothness_order`` — the finite-difference order of that spline-coefficient smoothness penalty (inert while ``lambda_smooth`` is ``0``)
+      * ``spike_end_correction`` — ``'drop_outside_and_rescale'`` repairs what a uniform coefficient ridge does at the spike end of the basis; ``'none'`` leaves it
+   :Default: ``'bspline'`` with ``n_splines`` ``20``, cubic (``spline_order`` ``3``), ``l2_lag_alpha`` ``100.0``, ``lambda_ridge`` ``0.1``, ``lambda_smooth`` ``0.0``, ``lambda_group`` ``0.0`` (off: the basis path does no feature sparsity), ``smoothness_order`` ``2`` and ``spike_end_correction`` ``'drop_outside_and_rescale'``
+
+.. _nm-kinematic-encoding-max-train-total:
+
+``max_train_total``
+   Cap on the training rows of one fit across sessions, split evenly per session, which bounds memory and time.
+
+   :Options: a positive integer
+   :Default: ``70000``
+
+.. _nm-kinematic-encoding-chunk-rows:
+
+``chunk_rows``
+   Rows per block when the lagged design is scored in chunks.
+
+   :Options: a positive integer
+   :Default: ``4000``
+   :Notes: a memory bound only.
+
+.. _nm-kinematic-encoding-null-block-megabytes:
+
+``null_block_megabytes``
+   Memory budget, in MB, for the label matrix of one block of circular-shift null draws.
+
+   :Options: a positive number; fractions of a MB are fine
+   :Default: ``32``
+   :Notes: the batched calibration holds a few such arrays at once. A memory bound only: the null scores do not depend on it.
 
 **vocal_gating** — is a unit's vocal response gated on a behavioural feature (a feature × vocalization interaction in a contemporaneous logistic model, quiet frames guard-banded and the peri-vocal zone dropped)?
 
@@ -1885,18 +4900,181 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
         }
     }
 
-* **vocal_window** — ``'during_vocalization'``: the vocal frames are every frame inside a focal USV (the only implemented value).
-* **require_vocal_tuning** / **vocal_tuning_alpha** — only units whose vocal-occurrence or vocalization-identity test passes at ``vocal_tuning_alpha`` (``0.01``) are gated.
-* **ridge_frac** — the ridge of the gating fits scales with the training rows (``ridge_frac × n_train``, ``0.02``); a fixed small ridge is ~1000× too weak at ~50k rows.
-* **max_quiet_frames_per_session** / **quiet_zeros_per_spike** — the quiet frames entering the fit: at most ``12000`` per session, and non-spike quiet frames subsampled to ``40`` per spike. The quiet-only rows of the feature main effect (every quiet spike frame plus ``quiet_zeros_per_spike`` zeros each) are redrawn inside every circular-shift draw from that draw's shifted spike labels, by the same rule as the observed rows, so each draw has the observed class balance.
-* **min_vocal_spikes** / **min_feature_iqr_vocal** — optional identifiability floors (spikes inside vocal frames; the feature's interquartile range during vocalization); ``null`` disables them.
-* **require_interaction_gt_vocal** / **interaction_gt_vocal_alpha** — a gate must also exceed the plain vocal effect, tested at ``0.01``.
-* **feature_main_alpha** — the level at which the feature's quiet-only main effect is reported as present (``0.01``; it labels ``GATE+silentME`` and gates nothing).
-* **content_gating_compute** — the feature × torus-position branch; deferred, so only ``false`` is implemented.
-* **gating_screen_n_shuffles** / **screen_alpha** — the gating screen's circular-shift draws (``2000``) and its Bonferroni level (``screen_alpha / n_features``, ``0.01``); a draw count whose ``1 / (n + 1)`` floor cannot clear that bar raises. Each tested unit carries one p for the cohort correction: the smallest per-feature conjunction p (``max(p_interaction, p_interaction_gt_vocal)``, or ``p_interaction`` alone when ``require_interaction_gt_vocal`` is false) times the number of features tested, capped at 1 (``p_unit``). Every tested unit carries it, survivor or not; only a unit with no tested feature has a NaN ``p_unit``, so the cohort Benjamini–Hochberg runs over all tested units.
-* **sign_ridge_frac** — the interaction's SIGN is read from a strongly ridged fit (``sign_ridge_frac × n``, ``0.1``) while its magnitude comes from the deviance, since an unridged interaction coefficient quasi-separates.
-* **borderline_sigma_flag** — a passing gate whose margin over its bar is under this many null standard deviations (``5.0``) is flagged ``borderline``.
-* **solver** — ``irls_n_steps`` (``30``) Newton/IRLS iterations of each logistic fit and ``calibration_steps`` (``40``) of each calibration refit.
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`vocal_window <nm-vocal-gating-vocal-window>`
+     - ``'during_vocalization'``
+     - ``'during_vocalization'`` (only value)
+   * - :ref:`require_vocal_tuning <nm-vocal-gating-vocal-tuning>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`vocal_tuning_alpha <nm-vocal-gating-vocal-tuning>`
+     - ``0.01``
+     - significance level
+   * - :ref:`ridge_frac <nm-vocal-gating-ridge-frac>`
+     - ``0.02``
+     - fraction of the training rows
+   * - :ref:`max_quiet_frames_per_session <nm-vocal-gating-quiet-frames>`
+     - ``12000``
+     - frames per session
+   * - :ref:`quiet_zeros_per_spike <nm-vocal-gating-quiet-frames>`
+     - ``40``
+     - non-spike quiet frames per spike
+   * - :ref:`min_vocal_spikes <nm-vocal-gating-identifiability-floors>`
+     - ``null``
+     - ``null`` (off), or a spike count
+   * - :ref:`min_feature_iqr_vocal <nm-vocal-gating-identifiability-floors>`
+     - ``null``
+     - ``null`` (off), or an interquartile range
+   * - :ref:`require_interaction_gt_vocal <nm-vocal-gating-interaction-gt-vocal>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`interaction_gt_vocal_alpha <nm-vocal-gating-interaction-gt-vocal>`
+     - ``0.01``
+     - significance level
+   * - :ref:`feature_main_alpha <nm-vocal-gating-feature-main-alpha>`
+     - ``0.01``
+     - significance level
+   * - :ref:`content_gating_compute <nm-vocal-gating-content-gating-compute>`
+     - ``false``
+     - ``false`` (only value)
+   * - :ref:`gating_screen_n_shuffles <nm-vocal-gating-screen>`
+     - ``2000``
+     - number of circular-shift draws
+   * - :ref:`screen_alpha <nm-vocal-gating-screen>`
+     - ``0.01``
+     - significance level (Bonferroni-divided)
+   * - :ref:`sign_ridge_frac <nm-vocal-gating-sign-ridge-frac>`
+     - ``0.1``
+     - fraction of the rows
+   * - :ref:`borderline_sigma_flag <nm-vocal-gating-borderline-sigma-flag>`
+     - ``5.0``
+     - null standard deviations
+   * - :ref:`solver.irls_n_steps <nm-vocal-gating-solver>`
+     - ``30``
+     - Newton/IRLS iterations
+   * - :ref:`solver.calibration_steps <nm-vocal-gating-solver>`
+     - ``40``
+     - calibration-refit iterations
+
+.. _nm-vocal-gating-vocal-window:
+
+``vocal_window``
+   Which frames count as vocal frames in the gating model.
+
+   :Options: ``'during_vocalization'`` — the vocal frames are every frame inside a focal USV (the only implemented value)
+   :Default: ``'during_vocalization'``
+
+.. _nm-vocal-gating-vocal-tuning:
+
+``require_vocal_tuning`` / ``vocal_tuning_alpha``
+   Restrict the gating analysis to vocally tuned units.
+
+   :Options:
+      * ``require_vocal_tuning`` — ``true``: only units whose vocal-occurrence or vocalization-identity test passes at ``vocal_tuning_alpha`` are gated; ``false``: no such restriction
+      * ``vocal_tuning_alpha`` — the significance level of that vocal-tuning requirement
+   :Default: ``true`` and ``0.01``
+
+.. _nm-vocal-gating-ridge-frac:
+
+``ridge_frac``
+   The ridge of the gating fits, which scales with the training rows (``ridge_frac × n_train``).
+
+   :Options: a fraction multiplying the number of training rows
+   :Default: ``0.02``
+   :Notes: a fixed small ridge is ~1000× too weak at ~50k rows.
+
+.. _nm-vocal-gating-quiet-frames:
+
+``max_quiet_frames_per_session`` / ``quiet_zeros_per_spike``
+   The quiet frames entering the fit.
+
+   :Options:
+      * ``max_quiet_frames_per_session`` — at most this many quiet frames per session
+      * ``quiet_zeros_per_spike`` — non-spike quiet frames are subsampled to this many per spike
+   :Default: ``12000`` and ``40``
+   :Notes: the quiet-only rows of the feature main effect (every quiet spike frame plus ``quiet_zeros_per_spike`` zeros each) are redrawn inside every circular-shift draw from that draw's shifted spike labels, by the same rule as the observed rows, so each draw has the observed class balance.
+
+.. _nm-vocal-gating-identifiability-floors:
+
+``min_vocal_spikes`` / ``min_feature_iqr_vocal``
+   Optional identifiability floors.
+
+   :Options:
+      * ``min_vocal_spikes`` — a floor on the spikes inside vocal frames; ``null`` disables it
+      * ``min_feature_iqr_vocal`` — a floor on the feature's interquartile range during vocalization; ``null`` disables it
+   :Default: ``null`` and ``null`` (both disabled)
+
+.. _nm-vocal-gating-interaction-gt-vocal:
+
+``require_interaction_gt_vocal`` / ``interaction_gt_vocal_alpha``
+   A gate must also exceed the plain vocal effect.
+
+   :Options:
+      * ``require_interaction_gt_vocal`` — ``true``: require the interaction to exceed the plain vocal effect; ``false``: do not
+      * ``interaction_gt_vocal_alpha`` — the significance level of that test
+   :Default: ``true`` and ``0.01``
+
+.. _nm-vocal-gating-feature-main-alpha:
+
+``feature_main_alpha``
+   The level at which the feature's quiet-only main effect is reported as present.
+
+   :Options: a significance level
+   :Default: ``0.01``
+   :Notes: it labels ``GATE+silentME`` and gates nothing.
+
+.. _nm-vocal-gating-content-gating-compute:
+
+``content_gating_compute``
+   The feature × torus-position branch.
+
+   :Options: ``false`` — the branch is deferred, so only ``false`` is implemented
+   :Default: ``false``
+
+.. _nm-vocal-gating-screen:
+
+``gating_screen_n_shuffles`` / ``screen_alpha``
+   The gating screen's circular-shift draws and its Bonferroni level (``screen_alpha / n_features``).
+
+   :Options:
+      * ``gating_screen_n_shuffles`` — the number of circular-shift draws; a draw count whose ``1 / (n + 1)`` floor cannot clear the Bonferroni bar raises
+      * ``screen_alpha`` — the family-wise level, divided by the number of features
+   :Default: ``2000`` and ``0.01``
+   :Notes: each tested unit carries one p for the cohort correction: the smallest per-feature conjunction p (``max(p_interaction, p_interaction_gt_vocal)``, or ``p_interaction`` alone when ``require_interaction_gt_vocal`` is false) times the number of features tested, capped at 1 (``p_unit``). Every tested unit carries it, survivor or not; only a unit with no tested feature has a NaN ``p_unit``, so the cohort Benjamini–Hochberg runs over all tested units.
+
+.. _nm-vocal-gating-sign-ridge-frac:
+
+``sign_ridge_frac``
+   The interaction's SIGN is read from a strongly ridged fit (``sign_ridge_frac × n``) while its magnitude comes from the deviance.
+
+   :Options: a fraction multiplying the number of rows
+   :Default: ``0.1``
+   :Notes: an unridged interaction coefficient quasi-separates, hence the separate ridged fit for the sign.
+
+.. _nm-vocal-gating-borderline-sigma-flag:
+
+``borderline_sigma_flag``
+   A passing gate whose margin over its bar is under this many null standard deviations is flagged ``borderline``.
+
+   :Options: a number of null standard deviations
+   :Default: ``5.0``
+
+.. _nm-vocal-gating-solver:
+
+``solver``
+   Iteration counts of the gating fits.
+
+   :Options:
+      * ``irls_n_steps`` — Newton/IRLS iterations of each logistic fit
+      * ``calibration_steps`` — iterations of each calibration refit
+   :Default: ``irls_n_steps`` ``30``, ``calibration_steps`` ``40``
 
 **vocal_decoding** — the vocal-occurrence axis (does the unit fire before a USV?) and the vocalization-identity axis (does its count say WHICH USV, as a torus position or a category?).
 
@@ -1973,15 +5151,252 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
         "record_overdispersion_index": true
     }
 
-* **require_clean_prevocal_bool** — drop an event when another vocalization intrudes on its pre-vocal window.
-* **usv_manifold_column_names** — the summary columns holding a USV's torus position (``['qlvm1', 'qlvm2']``, the regular map).
-* **max_quiet_tiles_per_session** — cap on the quiet tiles that serve as the vocal-occurrence negatives (``5000`` per session).
-* **vocal_occurrence** — the two-class decoder (peri-onset window against quiet tile, equal prior): ``ridge_frac`` (``0.02``) shrinks the two class rates toward their pooled rate by that fraction of the training spike count; ``amplitude_calibration`` tunes the contrast between the classes over ``alpha_grid`` on the training sessions (or, for a single training session, contiguous blocks of it), and when disabled it is 1; ``mean_count_floor`` (``0.001``) bounds a session's quiet level from below so a unit silent in quiet tiles stays finite. The held-out session's quiet level is cross-fitted over ``kinematic_encoding.calibration.n_blocks`` blocks.
-* **geodesic_metrics** — declared but read by no current neural code (``compute``, ``grid_n_per_dim``, ``graph_k``, ``density_exponent``, ``decoder_weights_npz_path``).
-* **tuning_surface** — the Poisson tuning surface over the torus: ``tuning_basis`` ``'fourier'`` with ``fourier_k`` (``2``) harmonics per axis, or a local ``'bump'`` basis of ``bump_grid_n`` (``10``) nodes per axis of width ``bump_sigma`` (``0.1``) kept where the kernel-weighted training occupancy reaches ``min_basis_occupancy`` (``5.0``) events; decoding runs on a grid of ``grid_n`` (``60``) cells per axis restricted to cells whose training occupancy (KDE of bandwidth ``kde_bandwidth``, ``0.03``) reaches ``decode_grid_min_occupancy`` (``1.0``); ``likelihood_family`` ``'poisson'`` (the only implemented value); ``session_rate_offsets`` adds per-session rate offsets; ``solver.irls_n_steps`` (``50``); ``ridge_selection``: ``mode`` ``'count_normalized_fixed'`` (the only implemented value; the ridge is ``ridge_frac`` × the training spike count, ``ridge_frac`` ``0.02``); ``amplitude_calibration``: when ``enabled``, a likelihood-sharpening amplitude is tuned over ``alpha_grid`` by inner leave-one-session-out on the training sessions, or by leave-one-block-out over ``data_sufficiency.single_session_blocks`` contiguous blocks when a fold has a single training session (``mode`` ``'train_tuned_inner_loso'``, the only implemented value; ``alpha_min`` ``0.0`` is the smallest grid value allowed), and when disabled the amplitude is 1; ``record_bump_basis_gain`` also records the bump-basis gain beside the Fourier one.
-* **category_surface** — the same decoder over the QLVM categories, run for the ``'multinomial'`` target on every unit: ``ridge_selection``, ``amplitude_calibration`` as above; ``category_column`` (``'qlvm_category'``) is the USV summary column holding each USV's category; ``min_train_events`` (``20``) / ``min_test_events`` (``5``) — an outer or inner split with fewer training or test events than these is skipped, too few for a stable per-category rate or a meaningful held-out score; ``mean_count_floor`` (``0.001``) is the lower bound on a session's mean spike count when the held-out level correction is formed, so a session with no spikes gives a posterior equal to the prior (zero gain) rather than ``0 · log 0`` = NaN. **Allowed:** a positive number, small against any real session's mean count.
-* **discrimination_null** — the exact within-session permutation null of the identity axis: ``n_permutations`` (``1000``) draws; ``record_left_tail_anti_alignment`` records the left-tail statistics; ``method``, ``sided``, ``pass_rule`` and ``n_permutations_category_grain`` are declared but read by no current code.
-* **record_overdispersion_index** — record the count overdispersion index with each decoding: the mean Pearson dispersion ``(count − expected)² / expected`` of the held-out events, where an event's expected count is the calibrated surface rate the decoder scored it with (the centred surface shape times the tuned amplitude, at the held-out session's mean-count level) read at the event's own grid cell, so an untuned Poisson unit gives about ``1``. The decoding also stores ``nats_per_spike`` (the summed finite per-event gain divided by the spikes of those same events) and ``min_leave_one_fold_out`` (the smallest pooled gain with one fold left out, over the folds whose left-out gain is finite).
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`require_clean_prevocal_bool <nm-vocal-decoding-require-clean-prevocal-bool>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`usv_manifold_column_names <nm-vocal-decoding-usv-manifold-column-names>`
+     - ``["qlvm1", "qlvm2"]``
+     - two summary column names
+   * - :ref:`max_quiet_tiles_per_session <nm-vocal-decoding-max-quiet-tiles-per-session>`
+     - ``5000``
+     - tiles per session
+   * - :ref:`vocal_occurrence.ridge_frac <nm-vocal-decoding-vocal-occurrence>`
+     - ``0.02``
+     - fraction of the training count
+   * - :ref:`vocal_occurrence.amplitude_calibration.enabled <nm-vocal-decoding-vocal-occurrence>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`vocal_occurrence.amplitude_calibration.alpha_grid <nm-vocal-decoding-vocal-occurrence>`
+     - ``[0.1, 0.25, 0.5, 0.75, 1.0, 1.5]``
+     - list of amplitudes
+   * - :ref:`vocal_occurrence.mean_count_floor <nm-vocal-decoding-vocal-occurrence>`
+     - ``0.001``
+     - small positive number
+   * - :ref:`geodesic_metrics.compute <nm-vocal-decoding-geodesic-metrics>`
+     - ``true``
+     - declared, not read
+   * - :ref:`geodesic_metrics.grid_n_per_dim <nm-vocal-decoding-geodesic-metrics>`
+     - ``40``
+     - declared, not read
+   * - :ref:`geodesic_metrics.graph_k <nm-vocal-decoding-geodesic-metrics>`
+     - ``8``
+     - declared, not read
+   * - :ref:`geodesic_metrics.density_exponent <nm-vocal-decoding-geodesic-metrics>`
+     - ``1.0``
+     - declared, not read
+   * - :ref:`geodesic_metrics.decoder_weights_npz_path <nm-vocal-decoding-geodesic-metrics>`
+     - path (see JSON above)
+     - declared, not read
+   * - :ref:`tuning_surface.tuning_basis <nm-vocal-decoding-tuning-surface>`
+     - ``'fourier'``
+     - ``'fourier'``, ``'bumps'``
+   * - :ref:`tuning_surface.fourier_k <nm-vocal-decoding-tuning-surface>`
+     - ``2``
+     - harmonics per axis
+   * - :ref:`tuning_surface.bump_grid_n <nm-vocal-decoding-tuning-surface>`
+     - ``10``
+     - bump nodes per axis
+   * - :ref:`tuning_surface.bump_sigma <nm-vocal-decoding-tuning-surface>`
+     - ``0.1``
+     - bump width
+   * - :ref:`tuning_surface.min_basis_occupancy <nm-vocal-decoding-tuning-surface>`
+     - ``5.0``
+     - kernel-weighted events
+   * - :ref:`tuning_surface.decode_grid_min_occupancy <nm-vocal-decoding-tuning-surface>`
+     - ``1.0``
+     - KDE training occupancy
+   * - :ref:`tuning_surface.grid_n <nm-vocal-decoding-tuning-surface>`
+     - ``60``
+     - decoding cells per axis
+   * - :ref:`tuning_surface.kde_bandwidth <nm-vocal-decoding-tuning-surface>`
+     - ``0.03``
+     - KDE bandwidth
+   * - :ref:`tuning_surface.likelihood_family <nm-vocal-decoding-tuning-surface>`
+     - ``'poisson'``
+     - ``'poisson'`` (only value)
+   * - :ref:`tuning_surface.session_rate_offsets <nm-vocal-decoding-tuning-surface>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`tuning_surface.solver.irls_n_steps <nm-vocal-decoding-tuning-surface>`
+     - ``50``
+     - IRLS iterations
+   * - :ref:`tuning_surface.ridge_selection.mode <nm-vocal-decoding-tuning-surface>`
+     - ``'count_normalized_fixed'``
+     - ``'count_normalized_fixed'`` (only value)
+   * - :ref:`tuning_surface.ridge_selection.ridge_frac <nm-vocal-decoding-tuning-surface>`
+     - ``0.02``
+     - fraction of the training spike count
+   * - :ref:`tuning_surface.amplitude_calibration.enabled <nm-vocal-decoding-tuning-surface>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`tuning_surface.amplitude_calibration.mode <nm-vocal-decoding-tuning-surface>`
+     - ``'train_tuned_inner_loso'``
+     - ``'train_tuned_inner_loso'`` (only value)
+   * - :ref:`tuning_surface.amplitude_calibration.alpha_grid <nm-vocal-decoding-tuning-surface>`
+     - ``[0.1, 0.25, 0.5, 0.75, 1.0, 1.5]``
+     - list of amplitudes
+   * - :ref:`tuning_surface.amplitude_calibration.alpha_min <nm-vocal-decoding-tuning-surface>`
+     - ``0.0``
+     - smallest allowed grid value
+   * - :ref:`tuning_surface.record_bump_basis_gain <nm-vocal-decoding-tuning-surface>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`category_surface.ridge_selection.mode <nm-vocal-decoding-category-surface>`
+     - ``'count_normalized_fixed'``
+     - as ``tuning_surface``
+   * - :ref:`category_surface.ridge_selection.ridge_frac <nm-vocal-decoding-category-surface>`
+     - ``0.02``
+     - as ``tuning_surface``
+   * - :ref:`category_surface.amplitude_calibration.enabled <nm-vocal-decoding-category-surface>`
+     - ``true``
+     - as ``tuning_surface``
+   * - :ref:`category_surface.amplitude_calibration.mode <nm-vocal-decoding-category-surface>`
+     - ``'train_tuned_inner_loso'``
+     - as ``tuning_surface``
+   * - :ref:`category_surface.amplitude_calibration.alpha_grid <nm-vocal-decoding-category-surface>`
+     - ``[0.1, 0.25, 0.5, 0.75, 1.0, 1.5]``
+     - as ``tuning_surface``
+   * - :ref:`category_surface.category_column <nm-vocal-decoding-category-surface>`
+     - ``'qlvm_category'``
+     - a USV summary column
+   * - :ref:`category_surface.min_train_events <nm-vocal-decoding-category-surface>`
+     - ``20``
+     - events per split
+   * - :ref:`category_surface.min_test_events <nm-vocal-decoding-category-surface>`
+     - ``5``
+     - events per split
+   * - :ref:`category_surface.mean_count_floor <nm-vocal-decoding-category-surface>`
+     - ``0.001``
+     - small positive number
+   * - :ref:`discrimination_null.method <nm-vocal-decoding-discrimination-null>`
+     - ``'within_session_position_permutation'``
+     - declared, not read
+   * - :ref:`discrimination_null.n_permutations <nm-vocal-decoding-discrimination-null>`
+     - ``1000``
+     - number of permutation draws
+   * - :ref:`discrimination_null.sided <nm-vocal-decoding-discrimination-null>`
+     - ``'one_sided_upper'``
+     - declared, not read
+   * - :ref:`discrimination_null.pass_rule <nm-vocal-decoding-discrimination-null>`
+     - ``'gain_gt_zero_and_exact_p'``
+     - declared, not read
+   * - :ref:`discrimination_null.record_left_tail_anti_alignment <nm-vocal-decoding-discrimination-null>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`discrimination_null.n_permutations_category_grain <nm-vocal-decoding-discrimination-null>`
+     - ``5000``
+     - declared, not read
+   * - :ref:`record_overdispersion_index <nm-vocal-decoding-record-overdispersion-index>`
+     - ``true``
+     - ``true``, ``false``
+
+.. _nm-vocal-decoding-require-clean-prevocal-bool:
+
+``require_clean_prevocal_bool``
+   Whether to drop an event when another vocalization intrudes on its pre-vocal window.
+
+   :Options:
+      * ``true`` — drop such an event
+      * ``false`` — keep it
+   :Default: ``true``
+
+.. _nm-vocal-decoding-usv-manifold-column-names:
+
+``usv_manifold_column_names``
+   The summary columns holding a USV's torus position.
+
+   :Options: a list of the two summary column names of the torus coordinates
+   :Default: ``['qlvm1', 'qlvm2']`` (the regular map)
+
+.. _nm-vocal-decoding-max-quiet-tiles-per-session:
+
+``max_quiet_tiles_per_session``
+   Cap on the quiet tiles that serve as the vocal-occurrence negatives.
+
+   :Options: a number of tiles per session
+   :Default: ``5000`` per session
+
+.. _nm-vocal-decoding-vocal-occurrence:
+
+``vocal_occurrence``
+   The two-class decoder of the vocal-occurrence axis (peri-onset window against quiet tile, equal prior).
+
+   :Options:
+      * ``ridge_frac`` — shrinks the two class rates toward their pooled rate by this fraction of the training spike count
+      * ``amplitude_calibration`` — when ``enabled``, the contrast between the classes is tuned over ``alpha_grid`` on the training sessions (or, for a single training session, contiguous blocks of it); when disabled it is 1
+      * ``mean_count_floor`` — bounds a session's quiet level from below, so a unit silent in quiet tiles stays finite
+   :Default: ``ridge_frac`` ``0.02``, ``amplitude_calibration`` enabled over ``[0.1, 0.25, 0.5, 0.75, 1.0, 1.5]``, ``mean_count_floor`` ``0.001``
+   :Notes: the held-out session's quiet level is cross-fitted over ``kinematic_encoding.calibration.n_blocks`` blocks.
+
+.. _nm-vocal-decoding-geodesic-metrics:
+
+``geodesic_metrics``
+   Declared but read by no current neural code.
+
+   :Options: the sub-keys ``compute``, ``grid_n_per_dim``, ``graph_k``, ``density_exponent`` and ``decoder_weights_npz_path``, none of which has an effect
+   :Default: as in the JSON above
+
+.. _nm-vocal-decoding-tuning-surface:
+
+``tuning_surface``
+   The Poisson tuning surface over the torus.
+
+   :Options:
+      * ``tuning_basis`` — ``'fourier'``: a Fourier basis with ``fourier_k`` harmonics per axis; ``'bumps'``: a local basis of ``bump_grid_n`` nodes per axis of width ``bump_sigma``, kept where the kernel-weighted training occupancy reaches ``min_basis_occupancy`` events
+      * ``fourier_k`` — Fourier harmonics per axis
+      * ``bump_grid_n`` / ``bump_sigma`` / ``min_basis_occupancy`` — the bump basis's nodes per axis, node width and occupancy floor (events)
+      * ``grid_n`` — decoding runs on a grid of this many cells per axis, restricted to cells whose training occupancy (a KDE of bandwidth ``kde_bandwidth``) reaches ``decode_grid_min_occupancy``
+      * ``likelihood_family`` — ``'poisson'`` (the only implemented value)
+      * ``session_rate_offsets`` — ``true`` adds per-session rate offsets
+      * ``solver.irls_n_steps`` — IRLS iterations of the surface fit
+      * ``ridge_selection`` — ``mode`` ``'count_normalized_fixed'`` (the only implemented value; the ridge is ``ridge_frac`` × the training spike count)
+      * ``amplitude_calibration`` — when ``enabled``, a likelihood-sharpening amplitude is tuned over ``alpha_grid`` by inner leave-one-session-out on the training sessions, or by leave-one-block-out over ``data_sufficiency.single_session_blocks`` contiguous blocks when a fold has a single training session (``mode`` ``'train_tuned_inner_loso'``, the only implemented value; ``alpha_min`` is the smallest grid value allowed), and when disabled the amplitude is 1
+      * ``record_bump_basis_gain`` — also record the bump-basis gain beside the Fourier one
+   :Default: ``tuning_basis`` ``'fourier'``, ``fourier_k`` ``2``, ``bump_grid_n`` ``10``, ``bump_sigma`` ``0.1``, ``min_basis_occupancy`` ``5.0``, ``grid_n`` ``60``, ``kde_bandwidth`` ``0.03``, ``decode_grid_min_occupancy`` ``1.0``, ``likelihood_family`` ``'poisson'``, ``session_rate_offsets`` ``true``, ``solver.irls_n_steps`` ``50``, ``ridge_selection.ridge_frac`` ``0.02``, ``alpha_min`` ``0.0``, ``record_bump_basis_gain`` ``true``; the rest as in the JSON above
+
+.. _nm-vocal-decoding-category-surface:
+
+``category_surface``
+   The same decoder over the QLVM categories, run for the ``'multinomial'`` target on every unit.
+
+   :Options:
+      * ``ridge_selection`` / ``amplitude_calibration`` — as in ``tuning_surface`` above
+      * ``category_column`` — the USV summary column holding each USV's category
+      * ``min_train_events`` / ``min_test_events`` — an outer or inner split with fewer training or test events than these is skipped, too few for a stable per-category rate or a meaningful held-out score
+      * ``mean_count_floor`` — the lower bound on a session's mean spike count when the held-out level correction is formed, so a session with no spikes gives a posterior equal to the prior (zero gain) rather than ``0 · log 0`` = NaN; a positive number, small against any real session's mean count
+   :Default: ``min_train_events`` ``20``, ``min_test_events`` ``5``, ``mean_count_floor`` ``0.001``; the rest as in the JSON above
+
+.. _nm-vocal-decoding-discrimination-null:
+
+``discrimination_null``
+   The exact within-session permutation null of the identity axis.
+
+   :Options:
+      * ``n_permutations`` — the number of permutation draws
+      * ``record_left_tail_anti_alignment`` — record the left-tail statistics
+      * ``method``, ``sided``, ``pass_rule`` and ``n_permutations_category_grain`` — declared but read by no current code
+   :Default: ``n_permutations`` ``1000``, ``record_left_tail_anti_alignment`` ``true``; the rest as in the JSON above
+
+.. _nm-vocal-decoding-record-overdispersion-index:
+
+``record_overdispersion_index``
+   Record the count overdispersion index with each decoding.
+
+   :Options:
+      * ``true`` — record it
+      * ``false`` — do not
+   :Default: ``true``
+   :Notes:
+      * **Definition** — the index is the mean Pearson dispersion ``(count − expected)² / expected`` of the held-out events, where an event's expected count is the calibrated surface rate the decoder scored it with (the centred surface shape times the tuned amplitude, at the held-out session's mean-count level) read at the event's own grid cell, so an untuned Poisson unit gives about ``1``.
+      * **Also stored** — the decoding also stores ``nats_per_spike`` (the summed finite per-event gain divided by the spikes of those same events) and ``min_leave_one_fold_out`` (the smallest pooled gain with one fold left out, over the folds whose left-out gain is finite).
 
 **nested_vocal_decoding** — does the neuron add information about a USV's identity beyond the cohort behaviour control? Run on both targets for every unit, each against its own control (the kinematics are assembled once and each target's design is built on its own control's features). For the torus position, a REDUCED model (behaviour alone) and a FULL model (behaviour plus the neuron's count) are fitted by the same torus regressor and compared on the held-out macro von Mises log-score. For the category, the categorical control's probabilities tilt the category prior (``category_control`` below) and the statistic is the categorical identity decoder's gain under that prior.
 
@@ -2041,19 +5456,231 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
         }
     }
 
-* **behaviour_control** — ``'rich'``: the full 4 s behaviour window (the only implemented value).
-* **reduced_model_features** — the frozen behaviour-control feature list per target; asserted against that target's selection result file, so a re-run of the selection cannot silently redefine the behaviour the neuron is measured against.
-* **behaviour_control_model_path** — the cohort-fitted behaviour-control artifact per target (``main_behaviour_control_dispatcher --stage fit --target manifold`` and ``--target multinomial``; both are needed, since every unit is decoded on both targets, and ``--target`` defaults to ``vocal_target``); the decoding refuses an artifact fitted for the other target or on other features. The control is fitted on exactly the vocalization rows the per-unit analysis scores: the ``'analysed'`` set of ``vocalization_settings`` (noise and squeak rows removed) restricted to ``vocal_emitter`` (``'all'`` applies no emitter filter), with a vocalization dropped when one from the ``'guard'`` set intrudes on its ``spike_window.pre_offset_seconds`` pre-window. Every behaviour history, at fit and at application, ends at the frame before onset (``round(start × fps) − 1``). An artifact fitted before 2026-10-18 was trained on the unfiltered summary with histories one frame earlier than the unit side used, and must be refitted. The artifact's counts are stored as ``n_vocalizations`` (top level and per day); an older artifact's ``n_calls`` is read under that name.
-* **category_control** — the categorical behaviour control's model, a copy of the behavioural modelling's ``hyperparameters.linear_models.multinomial_logistic`` block, resolved by that pipeline's own ``resolve_temporal_basis``: the multinomial logistic regression on a 20-spline lag basis with the lag-varying ridge (``temporal_basis``), a focal loss (``focal_loss_gamma``) and the Adam solver settings. Its probabilities enter each unit base-rate free and tilt the category prior with a concentration tuned per fold from ``behaviour_prior.kappa_grid``.
-* **vm_score_mode** — ``'macro'``: the region-balanced von Mises score (the only implemented value).
-* **region_label_column** / **min_region_events** — the acoustic-region labels of the macro score (``qlvm_category``) and the minimum events a region needs to enter it (``20``).
-* **lambda_smooth** / **l2_reg** / **smoothness_derivative_order** — the torus regressor's temporal smoothness (behaviour blocks only, ``1.0``), uniform ridge (``0.01``) and finite-difference order (``1``).
-* **huber_delta** / **learning_rate** / **max_iter** / **tol** / **random_state** — the regressor's optimiser: Huber transition point (``1.0``, torus units), initial Adam step size (``0.001``, cosine-decayed to zero), step cap (``5000``), parameter-change convergence tolerance (``1e-4``) and initialisation seed (``0``). These are the values the regressor used before they became settings; the shipped torus regressor is fitted in closed form, where the optimiser keys are inert.
-* **behaviour_control_n_lags** — history length of the behaviour design, in tracking frames (``600`` = 4 s at 150 fps), used by ``main_behaviour_control_dispatcher`` for both stages; the fitted artifact records it, and the per-unit decoding reads it from there.
-* **sigma_floor** — floor on the standard deviation z-scoring the neuron's count column (``0.05``), so a unit silent in quiet tiles cannot produce an exploding column.
-* **prevocal_window_n_bins** / **rate_transform** / **rate_basis** / **statistic** — the neuron enters as ONE z-scored pre-vocal count (``1`` bin, no transform, a linear column) and the tested statistic is the posterior form (``'posterior'``); each accepts only that value.
-* **behaviour_prior** — the von Mises behaviour prior of the posterior statistic: ``form`` ``'von_mises'``; ``concentration`` ``'train_tuned_inner_loso'`` picks it from ``kappa_grid`` by inner leave-one-session-out on the training sessions (``'train_residuals'`` fits it on the training residuals).
-* **discrimination_null** — the within-session pair permutation null: ``method`` ``'within_session_pair_permutation'`` (the only implemented value), ``n_permutations`` (``1000``); ``sided`` is declared but not read.
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`behaviour_control <nm-nested-behaviour-control>`
+     - ``'rich'``
+     - ``'rich'`` (only value)
+   * - :ref:`reduced_model_features <nm-nested-reduced-model-features>`
+     - one list per target, see JSON above
+     - the frozen feature lists
+   * - :ref:`behaviour_control_model_path <nm-nested-behaviour-control-model-path>`
+     - one path per target, see JSON above
+     - paths to the fitted artifacts
+   * - :ref:`category_control <nm-nested-category-control>`
+     - see JSON above
+     - the multinomial model's settings
+   * - :ref:`vm_score_mode <nm-nested-vm-score-mode>`
+     - ``'macro'``
+     - ``'macro'`` (only value)
+   * - :ref:`region_label_column <nm-nested-region-labels>`
+     - ``'qlvm_category'``
+     - summary column name
+   * - :ref:`min_region_events <nm-nested-region-labels>`
+     - ``20``
+     - events per region
+   * - :ref:`lambda_smooth <nm-nested-regressor-penalties>`
+     - ``1.0``
+     - smoothness strength
+   * - :ref:`l2_reg <nm-nested-regressor-penalties>`
+     - ``0.01``
+     - ridge strength
+   * - :ref:`smoothness_derivative_order <nm-nested-regressor-penalties>`
+     - ``1``
+     - finite-difference order
+   * - :ref:`huber_delta <nm-nested-optimiser>`
+     - ``1.0``
+     - torus units (inert)
+   * - :ref:`learning_rate <nm-nested-optimiser>`
+     - ``0.001``
+     - Adam step size (inert)
+   * - :ref:`max_iter <nm-nested-optimiser>`
+     - ``5000``
+     - step cap (inert)
+   * - :ref:`tol <nm-nested-optimiser>`
+     - ``0.0001``
+     - tolerance (inert)
+   * - :ref:`random_state <nm-nested-optimiser>`
+     - ``0``
+     - seed (inert)
+   * - :ref:`behaviour_control_n_lags <nm-nested-behaviour-control-n-lags>`
+     - ``600``
+     - tracking frames
+   * - :ref:`sigma_floor <nm-nested-sigma-floor>`
+     - ``0.05``
+     - standard-deviation floor
+   * - :ref:`prevocal_window_n_bins <nm-nested-neuron-column>`
+     - ``1``
+     - ``1`` (only value)
+   * - :ref:`rate_transform <nm-nested-neuron-column>`
+     - ``'none'``
+     - ``'none'`` (only value)
+   * - :ref:`rate_basis <nm-nested-neuron-column>`
+     - ``'linear'``
+     - ``'linear'`` (only value)
+   * - :ref:`statistic <nm-nested-neuron-column>`
+     - ``'posterior'``
+     - ``'posterior'`` (only value)
+   * - :ref:`behaviour_prior.form <nm-nested-behaviour-prior>`
+     - ``'von_mises'``
+     - ``'von_mises'``
+   * - :ref:`behaviour_prior.concentration <nm-nested-behaviour-prior>`
+     - ``'train_tuned_inner_loso'``
+     - ``'train_tuned_inner_loso'``, ``'train_residuals'``
+   * - :ref:`behaviour_prior.kappa_grid <nm-nested-behaviour-prior>`
+     - ``[0.0, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0]``
+     - list of concentrations
+   * - :ref:`discrimination_null.method <nm-nested-discrimination-null>`
+     - ``'within_session_pair_permutation'``
+     - ``'within_session_pair_permutation'`` (only value)
+   * - :ref:`discrimination_null.n_permutations <nm-nested-discrimination-null>`
+     - ``1000``
+     - number of permutation draws
+   * - :ref:`discrimination_null.sided <nm-nested-discrimination-null>`
+     - ``'one_sided_upper'``
+     - declared, not read
+
+.. _nm-nested-behaviour-control:
+
+``behaviour_control``
+   Which behaviour control the REDUCED model uses.
+
+   :Options: ``'rich'`` — the full 4 s behaviour window (the only implemented value)
+   :Default: ``'rich'``
+
+.. _nm-nested-reduced-model-features:
+
+``reduced_model_features``
+   The frozen behaviour-control feature list, per target.
+
+   :Options: a dictionary with one list of behaviour feature names per target
+   :Default: ``["head-head"]`` (manifold) and ``["allo_yaw-head", "head-head", "other.speed", "self.back_pitch"]`` (multinomial)
+   :Notes: each list is asserted against that target's selection result file, so a re-run of the selection cannot silently redefine the behaviour the neuron is measured against.
+
+.. _nm-nested-behaviour-control-model-path:
+
+``behaviour_control_model_path``
+   The cohort-fitted behaviour-control artifact per target (``main_behaviour_control_dispatcher --stage fit --target manifold`` and ``--target multinomial``).
+
+   :Options: a dictionary with one path per target
+   :Default: see the JSON above
+   :Notes:
+      * **Both needed** — every unit is decoded on both targets; ``--target`` defaults to ``vocalization_settings.vocal_target``.
+      * **Agreement** — the decoding refuses an artifact fitted for the other target or on other features.
+      * **Rows** — the control is fitted on exactly the vocalization rows the per-unit analysis scores: the ``'analysed'`` set of ``vocalization_settings`` (noise and squeak rows removed) restricted to ``vocal_emitter`` (``'all'`` applies no emitter filter), with a vocalization dropped when one from the ``'guard'`` set intrudes on its ``spike_window.pre_offset_seconds`` pre-window.
+      * **History end** — every behaviour history, at fit and at application, ends at the frame before onset (``round(start × fps) − 1``).
+      * **Old artifacts** — an artifact fitted before 2026-10-18 was trained on the unfiltered summary with histories one frame earlier than the unit side used, and must be refitted. The artifact's counts are stored as ``n_vocalizations`` (top level and per day); an older artifact's ``n_calls`` is read under that name.
+
+.. _nm-nested-category-control:
+
+``category_control``
+   The categorical behaviour control's model: a copy of the behavioural modelling's ``hyperparameters.linear_models.multinomial_logistic`` block, resolved by that pipeline's own ``resolve_temporal_basis``.
+
+   :Options: the multinomial logistic regression on a 20-spline lag basis with the lag-varying ridge (``temporal_basis``), a focal loss (``focal_loss_gamma``) and the Adam solver settings
+   :Default: see the JSON above
+   :Notes: its probabilities enter each unit base-rate free and tilt the category prior with a concentration tuned per fold from ``behaviour_prior.kappa_grid``.
+
+.. _nm-nested-vm-score-mode:
+
+``vm_score_mode``
+   The held-out von Mises score the REDUCED and FULL models are compared on.
+
+   :Options: ``'macro'`` — the region-balanced von Mises score (the only implemented value)
+   :Default: ``'macro'``
+
+.. _nm-nested-region-labels:
+
+``region_label_column`` / ``min_region_events``
+   The acoustic regions of the macro score.
+
+   :Options:
+      * ``region_label_column`` — the summary column holding the acoustic-region labels of the macro score
+      * ``min_region_events`` — the minimum events a region needs to enter it
+   :Default: ``qlvm_category`` and ``20``
+
+.. _nm-nested-regressor-penalties:
+
+``lambda_smooth`` / ``l2_reg`` / ``smoothness_derivative_order``
+   The torus regressor's penalties.
+
+   :Options:
+      * ``lambda_smooth`` — temporal smoothness (behaviour blocks only)
+      * ``l2_reg`` — uniform ridge
+      * ``smoothness_derivative_order`` — finite-difference order of the smoothness penalty
+   :Default: ``1.0``, ``0.01`` and ``1``
+
+.. _nm-nested-optimiser:
+
+``huber_delta`` / ``learning_rate`` / ``max_iter`` / ``tol`` / ``random_state``
+   The regressor's optimiser.
+
+   :Options:
+      * ``huber_delta`` — Huber transition point, in torus units
+      * ``learning_rate`` — initial Adam step size, cosine-decayed to zero
+      * ``max_iter`` — step cap
+      * ``tol`` — parameter-change convergence tolerance
+      * ``random_state`` — initialisation seed
+   :Default: ``1.0``, ``0.001``, ``5000``, ``1e-4`` and ``0``
+   :Notes: these are the values the regressor used before they became settings; the shipped torus regressor is fitted in closed form, where the optimiser keys are inert.
+
+.. _nm-nested-behaviour-control-n-lags:
+
+``behaviour_control_n_lags``
+   History length of the behaviour design, in tracking frames.
+
+   :Options: a number of tracking frames
+   :Default: ``600`` (= 4 s at 150 fps)
+   :Notes: used by ``main_behaviour_control_dispatcher`` for both stages; the fitted artifact records it, and the per-unit decoding reads it from there.
+
+.. _nm-nested-sigma-floor:
+
+``sigma_floor``
+   Floor on the standard deviation z-scoring the neuron's count column.
+
+   :Options: a standard-deviation floor
+   :Default: ``0.05``
+   :Notes: so a unit silent in quiet tiles cannot produce an exploding column.
+
+.. _nm-nested-neuron-column:
+
+``prevocal_window_n_bins`` / ``rate_transform`` / ``rate_basis`` / ``statistic``
+   How the neuron enters the FULL model: as ONE z-scored pre-vocal count, and the tested statistic is the posterior form.
+
+   :Options:
+      * ``prevocal_window_n_bins`` — ``1`` bin
+      * ``rate_transform`` — ``'none'``, no transform
+      * ``rate_basis`` — ``'linear'``, a linear column
+      * ``statistic`` — ``'posterior'``, the posterior form
+   :Default: ``1``, ``'none'``, ``'linear'`` and ``'posterior'``
+   :Notes: each accepts only that value.
+
+.. _nm-nested-behaviour-prior:
+
+``behaviour_prior``
+   The von Mises behaviour prior of the posterior statistic.
+
+   :Options:
+      * ``form`` — ``'von_mises'``
+      * ``concentration`` — ``'train_tuned_inner_loso'`` picks it from ``kappa_grid`` by inner leave-one-session-out on the training sessions; ``'train_residuals'`` fits it on the training residuals
+      * ``kappa_grid`` — the candidate concentrations
+   :Default: ``form`` ``'von_mises'``, ``concentration`` ``'train_tuned_inner_loso'``, ``kappa_grid`` as in the JSON above
+
+.. _nm-nested-discrimination-null:
+
+``discrimination_null``
+   The within-session pair permutation null.
+
+   :Options:
+      * ``method`` — ``'within_session_pair_permutation'`` (the only implemented value)
+      * ``n_permutations`` — the number of permutation draws
+      * ``sided`` — declared but not read
+   :Default: ``method`` ``'within_session_pair_permutation'``, ``n_permutations`` ``1000``, ``sided`` ``'one_sided_upper'``
 
 **null** — the circular-shift null shared by the kinematic encoding, the transfer, the gating and the vocal-occurrence axis (the spike train is shifted, preserving its rate and burstiness while destroying its alignment with behaviour).
 
@@ -2066,10 +5693,62 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
         "screen_n_shuffles": 2000
     }
 
-* **n_shuffles** — base number of shift draws (``1000``); the empirical p-value floors at ``1 / (n + 1)`` and escalation adds draws where the cohort's Benjamini–Hochberg bar requires them.
-* **shuffle_guard_seconds** — the shift lag is drawn from ``[guard, duration - guard]`` (``20.0``): the full wrap minus a band where the shifted train is nearly back in register (the statistic's decorrelation lag was measured at 2.2 s).
-* **shuffle_seed** — base seed of every shift draw; each test derives its own stream from it.
-* **screen_n_shuffles** — draws of the feature screen (``2000``), whose Bonferroni bar ``screen_alpha / n_features`` needs a floor below it.
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`n_shuffles <nm-null-n-shuffles>`
+     - ``1000``
+     - base number of shift draws
+   * - :ref:`shuffle_guard_seconds <nm-null-shuffle-guard-seconds>`
+     - ``20.0``
+     - seconds
+   * - :ref:`shuffle_seed <nm-null-shuffle-seed>`
+     - ``0``
+     - integer seed
+   * - :ref:`screen_n_shuffles <nm-null-screen-n-shuffles>`
+     - ``2000``
+     - number of screen draws
+
+.. _nm-null-n-shuffles:
+
+``n_shuffles``
+   Base number of shift draws.
+
+   :Options: a number of draws
+   :Default: ``1000``
+   :Notes: the empirical p-value floors at ``1 / (n + 1)`` and escalation adds draws where the cohort's Benjamini–Hochberg bar requires them.
+
+.. _nm-null-shuffle-guard-seconds:
+
+``shuffle_guard_seconds``
+   The shift lag is drawn from ``[guard, duration - guard]``.
+
+   :Options: a number of seconds
+   :Default: ``20.0``
+   :Notes: the range is the full wrap minus a band where the shifted train is nearly back in register (the statistic's decorrelation lag was measured at 2.2 s).
+
+.. _nm-null-shuffle-seed:
+
+``shuffle_seed``
+   Base seed of every shift draw.
+
+   :Options: an integer seed
+   :Default: ``0``
+   :Notes: each test derives its own stream from it.
+
+.. _nm-null-screen-n-shuffles:
+
+``screen_n_shuffles``
+   Draws of the feature screen.
+
+   :Options: a number of draws, whose floor must lie below the screen's Bonferroni bar
+   :Default: ``2000``
+   :Notes: the screen's Bonferroni bar ``screen_alpha / n_features`` needs a floor below it.
 
 **significance** — cohort-level multiplicity control.
 
@@ -2084,11 +5763,78 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
         "include_single_session_units": false
     }
 
-* **fdr_q** — the Benjamini–Hochberg false-discovery rate over the cohort (``0.05``).
-* **escalation_ladder** — draw counts to escalate floor-tied p-values through (accumulating, not restarting); ``[]`` runs the base count only. Each rung counts FINITE draws only, as only finite draws enter the p-value.
-* **fdr_method** — the cross-unit correction applied by ``consolidate_neural_modeling_results``: ``'bh'`` (Benjamini–Hochberg) or ``'by'`` (Benjamini–Yekutieli, valid under any dependence between units). **Allowed:** ``'bh'`` or ``'by'``.
-* **include_single_session_units** — whether units recorded in one session (tested on blocks of it) enter the cross-unit corrections (``false``). They are listed in the cohort table either way; the default excludes them until the block procedure's validation study is done.
-* **pvalue_method** / **report_bh_floor_requirement** — declared but read by no current code (p-values are always empirical with escalation, and the consolidation always reports each test's floor requirement).
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`pvalue_method <nm-significance-declared>`
+     - ``'empirical_escalated'``
+     - declared, not read
+   * - :ref:`fdr_method <nm-significance-fdr-method>`
+     - ``'bh'``
+     - ``'bh'``, ``'by'``
+   * - :ref:`fdr_q <nm-significance-fdr-q>`
+     - ``0.05``
+     - false-discovery rate
+   * - :ref:`escalation_ladder <nm-significance-escalation-ladder>`
+     - ``[]``
+     - list of draw counts
+   * - :ref:`report_bh_floor_requirement <nm-significance-declared>`
+     - ``true``
+     - declared, not read
+   * - :ref:`include_single_session_units <nm-significance-include-single-session-units>`
+     - ``false``
+     - ``true``, ``false``
+
+.. _nm-significance-fdr-q:
+
+``fdr_q``
+   The false-discovery rate of the cross-unit correction.
+
+   :Options: a false-discovery rate
+   :Default: ``0.05``
+
+.. _nm-significance-fdr-method:
+
+``fdr_method``
+   The cross-unit correction applied by ``consolidate_neural_modeling_results``.
+
+   :Options:
+      * ``'bh'`` — Benjamini–Hochberg
+      * ``'by'`` — Benjamini–Yekutieli, valid under any dependence between units
+   :Default: ``'bh'``
+
+.. _nm-significance-include-single-session-units:
+
+``include_single_session_units``
+   Whether units recorded in one session (tested on blocks of it) enter the cross-unit corrections.
+
+   :Options: ``true`` or ``false``
+   :Default: ``false``
+   :Notes: they are listed in the cohort table either way; the default excludes them until the block procedure's validation study is done.
+
+.. _nm-significance-escalation-ladder:
+
+``escalation_ladder``
+   Draw counts to escalate floor-tied p-values through (accumulating, not restarting).
+
+   :Options:
+      * ``[]`` — runs the base count only
+      * a list of draw counts — the rungs floor-tied p-values escalate through
+   :Default: ``[]``
+   :Notes: each rung counts FINITE draws only, as only finite draws enter the p-value.
+
+.. _nm-significance-declared:
+
+``pvalue_method`` / ``report_bh_floor_requirement``
+   Declared but read by no current code.
+
+   :Options: no effect; p-values are always empirical with escalation, and the consolidation always reports each test's floor requirement
+   :Default: ``'empirical_escalated'`` and ``true``
 
 **robustness** — planned robustness checks; every key is declared but read by no current code.
 
@@ -2101,9 +5847,50 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
         "shift_range_check": false
     }
 
-* **decode_raw_acoustics** / **raw_acoustic_features** — decode the raw acoustic features listed instead of the torus position.
-* **time_in_session_nuisance** — add time-in-session as a nuisance covariate.
-* **shift_range_check** — repeat the null with a restricted shift range.
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`decode_raw_acoustics <nm-robustness-raw-acoustics>`
+     - ``true``
+     - declared, not read
+   * - :ref:`raw_acoustic_features <nm-robustness-raw-acoustics>`
+     - see JSON above
+     - declared, not read
+   * - :ref:`time_in_session_nuisance <nm-robustness-time-in-session-nuisance>`
+     - ``false``
+     - declared, not read
+   * - :ref:`shift_range_check <nm-robustness-shift-range-check>`
+     - ``false``
+     - declared, not read
+
+.. _nm-robustness-raw-acoustics:
+
+``decode_raw_acoustics`` / ``raw_acoustic_features``
+   Decode the raw acoustic features listed instead of the torus position.
+
+   :Options: planned; declared but read by no current code
+   :Default: ``true`` and ``["duration", "mean_freq_hz", "peak_freq_hz", "freq_bandwidth_hz"]``
+
+.. _nm-robustness-time-in-session-nuisance:
+
+``time_in_session_nuisance``
+   Add time-in-session as a nuisance covariate.
+
+   :Options: planned; declared but read by no current code
+   :Default: ``false``
+
+.. _nm-robustness-shift-range-check:
+
+``shift_range_check``
+   Repeat the null with a restricted shift range.
+
+   :Options: planned; declared but read by no current code
+   :Default: ``false``
 
 Notebook
 --------

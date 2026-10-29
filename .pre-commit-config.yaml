@@ -125,9 +125,16 @@ repos:
         always_run: true
         stages: [pre-push]
         verbose: true
+      # The suite runs in parallel (pytest-xdist, one worker per core) with
+      # the GPU hidden: workers sharing one GPU run out of its memory. The one
+      # GPU-only test (tests/processing/test_qlvm_model.py, TF32 precision)
+      # then skips; run that file on its own with the GPU visible when GPU
+      # code changes.
       - id: pytest
-        name: pytest (full suite, pre-push)
-        entry: python3 -m pytest -x
+        name: pytest (full suite, parallel on CPU, pre-push)
+        entry:
+          env CUDA_VISIBLE_DEVICES= JAX_PLATFORMS=cpu python3 -m pytest -x -n
+          auto
         language: system
         pass_filenames: false
         always_run: true

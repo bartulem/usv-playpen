@@ -1,0 +1,138 @@
+/*
+Styling for the settings reference pages.
+
+A setting block is a definition list whose description holds a field list
+(:Options: / :Default: / :Notes:). The selectors below match that shape,
+so a page needs no extra markup to use them. Colours are translucent
+accents, so the same rules read in the light and the dark theme.
+*/
+
+/* settings tables: rounded frame, tinted header, faint zebra rows, compact cells */
+.rst-content table.settings-glance {
+  border: 1px solid #2980b955;
+  border-radius: 6px;
+  border-collapse: separate;
+  border-spacing: 0;
+  overflow: hidden;
+  font-size: 0.9em;
+  margin-bottom: 1.8em;
+}
+
+.rst-content table.settings-glance thead th {
+  background: #2980b926;
+  border: none;
+  border-bottom: 2px solid #2980b9;
+  font-size: 0.8em;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 7px 12px;
+}
+
+.rst-content table.settings-glance td {
+  border: none;
+  border-top: 1px solid #8080801f;
+  padding: 5px 12px;
+  background: transparent;
+}
+
+.rst-content table.settings-glance tbody tr:nth-child(odd) td {
+  background: #8080800d;
+}
+
+.rst-content table.settings-glance tbody tr:hover td {
+  background: #2980b91a;
+}
+
+.rst-content table.settings-glance td p {
+  font-size: 1em;
+  line-height: 1.4;
+  margin: 0;
+}
+
+/* setting names in the first column: monospace, on one line */
+.rst-content table.settings-glance td:first-child {
+  white-space: nowrap;
+  font-family: "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.92em;
+}
+
+/* setting block: one compact card per setting, smaller text than the prose */
+.rst-content dl:has(> dd > dl.field-list) > dt {
+  font-size: 1em;
+  font-weight: 700;
+  margin: 1.3em 0 0 0;
+  padding: 0.35em 0.7em;
+  border-left: 4px solid #2980b9;
+  border-radius: 0 6px 0 0;
+  background: #2980b91a;
+}
+
+.rst-content dl:has(> dd > dl.field-list) > dt code {
+  font-size: 1em;
+  font-weight: 700;
+  color: inherit;
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
+.rst-content dl:has(> dd > dl.field-list) > dd {
+  margin: 0 0 0.4em 0;
+  padding: 0.5em 0.9em 0.3em 0.9em;
+  border-left: 4px solid #2980b955;
+  border-radius: 0 0 6px 0;
+  background: #8080800a;
+  font-size: 0.9em;
+  line-height: 1.45;
+}
+
+/* the theme fixes every paragraph at 16px, so the block text is sized here */
+.rst-content dl:has(> dd > dl.field-list) > dd p,
+.rst-content dl:has(> dd > dl.field-list) > dd li {
+  font-size: 14.5px;
+  line-height: 1.5;
+}
+
+.rst-content dl:has(> dd > dl.field-list) > dd > p {
+  margin-bottom: 0.5em;
+}
+
+/* long literals (paths) wrap inside the card instead of running past it */
+.rst-content dl:has(> dd > dl.field-list) > dd code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* Options / Default / Notes: small uppercase labels, tight rows */
+.rst-content dl:has(> dd > dl.field-list) > dd > dl.field-list {
+  margin-bottom: 0.3em;
+}
+
+.rst-content dl:has(> dd > dl.field-list) > dd > dl.field-list > dt {
+  font-size: 0.78em;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.75;
+  padding-top: 0.2em;
+  margin-bottom: 0.15em;
+}
+
+.rst-content dl:has(> dd > dl.field-list) > dd > dl.field-list > dd {
+  margin-bottom: 0.15em;
+}
+
+.rst-content dl:has(> dd > dl.field-list) > dd > dl.field-list > dd p {
+  margin-bottom: 0.2em;
+}
+
+/* the theme strips list markers inside field lists; bring the dots back */
+.rst-content dl.field-list ul {
+  list-style: disc;
+  margin-left: 1.4em;
+  margin-bottom: 0.2em;
+}
+
+.rst-content dl.field-list ul li {
+  list-style: disc;
+  margin-bottom: 0.1em;
+}

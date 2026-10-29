@@ -181,8 +181,16 @@ def _condition_from_path(path_str: str, fallback: str) -> str:
     results it plots. The mute-partner cohorts keep their full label, so the
     two are never confused: ``'female_mute_partner'`` is tested before
     ``'male_mute_partner'``, which it contains as a substring, and likewise
-    ``'female'`` before ``'male'``. Intact-partner results
+    ``'female'`` before ``'male'``. The all-partner cohorts (intact and mute
+    partners pooled) keep their full label too, ``'female_all_partners'``
+    tested before ``'male_all_partners'``, so their figures never share a
+    name with the intact cohort's. Intact-partner results
     (``male_intact_partner`` / ``female_intact_partner``) give the bare sex.
+    A results file whose name carries the ``ephys_`` recording-modality
+    prefix (``..._ephys_male_all_partners_...``) gets that prefix on the
+    returned token (``'ephys_male_all_partners'``, ``'ephys_male'``); only the
+    file name is read for it, so a parent folder named ``ephys_...`` does not
+    count.
 
     Parameters
     ----------
@@ -195,19 +203,53 @@ def _condition_from_path(path_str: str, fallback: str) -> str:
     Returns
     -------
     condition (str)
-        ``'female_mute_partner'``, ``'male_mute_partner'``, ``'female'``,
-        ``'male'`` or ``fallback``.
+        ``'female_mute_partner'``, ``'male_mute_partner'``,
+        ``'female_all_partners'``, ``'male_all_partners'``, ``'female'``,
+        ``'male'`` (each with an ``'ephys_'`` prefix for an ephys results
+        file) or ``fallback``.
+    """
+
+    file_name = pathlib.Path(path_str).name
+    modality_prefix = 'ephys_' if ('_ephys_' in file_name or file_name.startswith('ephys_')) else ''
+    condition = _cohort_condition_from_path(path_str)
+    if condition is None:
+        return fallback
+    return f"{modality_prefix}{condition}"
+
+
+def _cohort_condition_from_path(path_str: str) -> str | None:
+    """
+    Description
+    -----------
+    The cohort token of a results path without the recording-modality prefix,
+    tested in the order :func:`_condition_from_path` documents.
+
+    Parameters
+    ----------
+    path_str (str)
+        The results path, as the caller compares it (lower-cased or not).
+
+    Returns
+    -------
+    condition (str | None)
+        ``'female_mute_partner'``, ``'male_mute_partner'``,
+        ``'female_all_partners'``, ``'male_all_partners'``, ``'female'``,
+        ``'male'``, or None when the path names no sex.
     """
 
     if 'female_mute_partner' in path_str:
         return 'female_mute_partner'
     if 'male_mute_partner' in path_str:
         return 'male_mute_partner'
+    if 'female_all_partners' in path_str:
+        return 'female_all_partners'
+    if 'male_all_partners' in path_str:
+        return 'male_all_partners'
     if 'female' in path_str:
         return 'female'
     if 'male' in path_str:
         return 'male'
-    return fallback
+    return None
 
 
 def plot_feature_ranking(
@@ -2633,9 +2675,11 @@ def plot_multinomial_selection_trajectory(
         Hard upper bound for the right-panel y-axis (the secondary-
         metric bars). When supplied, overrides the default rate-metric
         cap (0.31) used for AUC / balanced-accuracy / recall / etc.
-        The visible tick range stops at this value; the label-stack
-        above each bar still extends past it if needed so feature
-        annotations are not clipped.
+        The visible tick range stops at this value, or at the tallest
+        bar rounded up to the next 0.05 when that is higher (so a cap
+        below the data never leaves the axis with a single tick at the
+        chance floor); the label-stack above each bar still extends
+        past it if needed so feature annotations are not clipped.
     message_output : Callable
         Sink for user-facing messages (progress, skips, saved-file paths);
         defaults to ``print``.
@@ -3038,8 +3082,13 @@ def plot_multinomial_selection_trajectory(
     # the chance floor (e.g., 0.20 when chance = 1/6 ~= 0.167).
     # ``secondary_ylim_max`` overrides the default rate-metric cap
     # when the caller wants tighter framing (e.g., 0.26 for K=7).
+    # The cap never stops the ticks below the tallest bar: it is raised
+    # to the bar top rounded up to the next 0.05, so a cap tuned for one
+    # category count (0.26 for K=7, chance ~0.14) cannot leave a K=4 run
+    # (chance 0.25, bars ~0.35) with a single tick at the floor.
     if metric_secondary in rate_metrics or metric_secondary == 'auc':
         cap = float(secondary_ylim_max) if secondary_ylim_max is not None else 0.31
+        cap = max(cap, float(np.ceil(y_data_max * 20 - 1e-9) / 20))
         y_top = max(cap, label_stack_top + 0.01)
         first_tick = float(np.ceil(chance_secondary * 20) / 20)
         visible_ticks = np.arange(first_tick, cap + 1e-9, 0.05)
@@ -3108,7 +3157,7 @@ def _final_null_filter_weights(selection_steps: list, features: list, layout: st
     Description
     -----------
     The no-signal band of a selection's final filters: the filters of the final
-    feature set refit with the target permuted within each session, stored by the
+    feature set refit with the target permuted across the development set, stored by the
     torus and multinomial selections with the held-out block
     (``heldout['null_weights']``, ``model_params.filter_null_permutations`` refits),
     reordered to ``features``.
@@ -3382,7 +3431,7 @@ def plot_multinomial_multivariate_filters(
 
         if null_band is not None:
             fig.text(0.5, 0.995, "Faded cells: weight within the 95th percentile of the same model refit on "
-                     "within-session permuted labels (no-signal band).",
+                     "permuted labels (no-signal band).",
                      ha='center', va='top', color=TEXT_COLOR, fontsize=11)
         cbar_ax = fig.add_axes([0.92, 0.3, 0.012, 0.4])
         sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=-1, vmax=1))
@@ -3729,14 +3778,39 @@ def plot_multinomial_selection_diagnosis(
     return fig_auc, fig_rec
 
 
+# Display names (base names: the panels append " (held-out data)" /
+# " improvement (%)") for the selection scores the trajectory plotter
+# reads from the artifact by default.
+_MANIFOLD_METRIC_LABELS = {
+    'vm_logscore': "von Mises log-score",
+    'vm_logscore_pooled': "von Mises log-score (pooled)",
+    'dcor_xy': "distance correlation",
+}
+
+# Default secondary gain panels per manifold geometry, as (metric key, label)
+# pairs. Torus: the region-balanced error in torus space (manifold position)
+# and in acoustic space (pullback geodesic). Euclidean: the region-balanced
+# flat distance error.
+_MANIFOLD_SECONDARY_BY_GEOMETRY = {
+    'torus': [('euclidean_mae_macro', "manifold-position error"),
+              ('pullback_geodesic_mae_macro', "acoustic error")],
+    'euclidean': [('euclidean_mae_macro', "manifold-position error")],
+}
+
+# Gap, in points, between a trajectory bar's end and its score label. A screen
+# offset (not a data-unit one) keeps the label next to its bar whatever the
+# metric's scale or span, and on an inverted (lower-is-better) axis too.
+_LABEL_OFFSET_PT = 4
+
+
 def plot_manifold_selection_trajectory(
         selection_results_path: str,
-        metric_primary: str = 'r2_spatial',
-        primary_metric_name: str = "R² (spatial, KDE-weighted)",
-        metric_secondary: str = 'pearson_y',
-        secondary_metric_name: str = "Pearson r (manifold y)",
+        metric_primary: str | None = None,
+        primary_metric_name: str | None = None,
+        metric_secondary: str | None = None,
+        secondary_metric_name: str | None = None,
         metrics_secondary: list | None = None,
-        secondary_as_pct_of_chance: bool = False,
+        secondary_as_pct_of_chance: bool | None = None,
         save_plot: bool = False,
         output_dir: str | None = None,
         feature_label_overrides: dict | None = None,
@@ -3794,29 +3868,53 @@ def plot_manifold_selection_trajectory(
         artifact produced by ``continuous_vocal_manifold_model_selection``.
         May be either the file itself or a directory containing one
         (latest mtime wins). Routed through ``configure_path``.
-    metric_primary : str, default ``'r2_spatial'``
+    metric_primary : str, optional
         Key for the primary per-fold metric. Used for the left-panel
-        trajectory.
-    primary_metric_name : str, default ``'R² (spatial, KDE-weighted)'``
-        Display name for ``metric_primary``; used as the left-panel
-        x-axis label (with `` (held-out data)`` appended).
-    metric_secondary : str, default ``'pearson_y'``
-        Key for the secondary per-fold metric. Used for the right-
-        panel bars.
-    secondary_metric_name : str, default ``'Pearson r (manifold y)'``
-        Display name for ``metric_secondary``; used as the right-
-        panel y-axis label (with `` (held-out data)`` appended).
+        trajectory. ``None`` (default) plots the score the run itself
+        selected on, read from the artifact's
+        ``_run_metadata['selection_metric']``: ``'vm_logscore'`` (macro
+        von Mises log-score) or ``'vm_logscore_pooled'`` (its micro twin)
+        on the torus, ``'dcor_xy'`` (wrap-aware distance correlation) on
+        euclidean. An artifact without that field raises instead of
+        falling back to a metric the run did not select on.
+    primary_metric_name : str, optional
+        Display name (base name) for ``metric_primary``; used as the
+        left-panel x-axis label (with `` (held-out data)`` appended).
+        ``None`` (default) uses the label in ``_MANIFOLD_METRIC_LABELS``
+        for the resolved key (``'von Mises log-score'`` for
+        ``vm_logscore``), or the key itself when it has no entry there.
+    metric_secondary : str, optional
+        Key for a single secondary per-fold metric (the classic 2-panel
+        figure). Ignored when ``metrics_secondary`` is given. When both
+        are ``None`` (default) the gain panels come from the run's
+        geometry instead (see ``metrics_secondary``).
+    secondary_metric_name : str, optional
+        Display name (base name) for ``metric_secondary``; used as the
+        right-panel y-axis label (with `` (held-out data)`` appended).
+        ``None`` (default) uses the metric key.
     metrics_secondary : list of (str, str), optional
         List of ``(metric_key, display_name)`` pairs; each renders one gain
         panel to the right of the trajectory (so N metrics -> 1 + N panels).
-        ``None`` -> ``[(metric_secondary, secondary_metric_name)]`` (the classic
-        2-panel figure), so existing callers are unchanged.
-    secondary_as_pct_of_chance : bool, default False
+        When this and ``metric_secondary`` are both ``None`` (default) the
+        panels follow the run's geometry, read from
+        ``_input_metadata['analysis_specific']['manifold_metric']``
+        (``_MANIFOLD_SECONDARY_BY_GEOMETRY``): on the torus, the
+        region-balanced error in torus space,
+        ``('euclidean_mae_macro', 'manifold-position error')``, and in
+        acoustic space, ``('pullback_geodesic_mae_macro', 'acoustic
+        error')``; on euclidean,
+        ``('euclidean_mae_macro', 'manifold-position error')``. An artifact
+        without that field raises. When only ``metric_secondary`` is given
+        it becomes ``[(metric_secondary, secondary_metric_name)]``.
+    secondary_as_pct_of_chance : bool, optional
         When True, each secondary panel shows the percent improvement over
         chance ``(chance - value) / chance`` instead of the raw ``value - chance``
         difference -- dimensionless and comparable across metrics on very
         different scales (e.g. euclidean MAE ~0.35 vs pullback geodesic ~38).
-        Only meaningful for metrics with a non-zero chance baseline.
+        Only meaningful for metrics with a non-zero chance baseline. ``None``
+        (default) is True for the geometry-default panels (all distance
+        errors, which have a non-zero chance baseline) and False when the
+        caller names the secondary metrics.
     save_plot : bool, default False
         Whether to save the figure to disk.
     output_dir : str, optional
@@ -3852,6 +3950,36 @@ def plot_manifold_selection_trajectory(
     if not selection_steps:
         message_output(f"No manifold selection step data found in {selection_results_path}")
         return None
+
+    # Default metrics come from the artifact, so the figure always shows the
+    # score the run selected on (torus: von Mises log-score; euclidean: dcor)
+    # and the distance error of the run's own geometry.
+    if metric_primary is None:
+        if ('_run_metadata' not in selection_metadata
+                or 'selection_metric' not in selection_metadata['_run_metadata']):
+            msg = (f"{display_name} does not record its selection metric "
+                   f"(_run_metadata['selection_metric']); pass metric_primary explicitly.")
+            raise ValueError(msg)
+        metric_primary = selection_metadata['_run_metadata']['selection_metric']
+    if metric_secondary is None and metrics_secondary is None:
+        if ('_input_metadata' not in selection_metadata
+                or 'analysis_specific' not in selection_metadata['_input_metadata']
+                or 'manifold_metric' not in selection_metadata['_input_metadata']['analysis_specific']):
+            msg = (f"{display_name} does not record its manifold geometry "
+                   f"(_input_metadata['analysis_specific']['manifold_metric']); "
+                   f"pass metric_secondary or metrics_secondary explicitly.")
+            raise ValueError(msg)
+        geometry = selection_metadata['_input_metadata']['analysis_specific']['manifold_metric']
+        metrics_secondary = list(_MANIFOLD_SECONDARY_BY_GEOMETRY[geometry])
+        if secondary_as_pct_of_chance is None:
+            secondary_as_pct_of_chance = True
+    if secondary_as_pct_of_chance is None:
+        secondary_as_pct_of_chance = False
+    if primary_metric_name is None:
+        primary_metric_name = (_MANIFOLD_METRIC_LABELS[metric_primary]
+                               if metric_primary in _MANIFOLD_METRIC_LABELS else metric_primary)
+    if secondary_metric_name is None and metric_secondary is not None:
+        secondary_metric_name = metric_secondary
 
     # Sex-aware palette inferred from the filename, matching the
     # bout-onset / multinomial selectors' convention.
@@ -4091,10 +4219,10 @@ def plot_manifold_selection_trajectory(
                              height=bar_height, color=base_color,
                              edgecolor='none')
             delta = cur_p - prev_p
-            ax_traj.text(cur_p - 0.003 * (chance_primary - cur_p + 1e-9), y,
-                         f"{cur_p:.3f}  (Δ {delta:+.3f})",
-                         ha='left', va='center', fontsize=7,
-                         color=TEXT_COLOR)
+            ax_traj.annotate(f"{cur_p:.3f}  (Δ {delta:+.3f})", xy=(cur_p, y),
+                             xytext=(_LABEL_OFFSET_PT, 0), textcoords='offset points',
+                             ha='left', va='center', fontsize=7,
+                             color=TEXT_COLOR)
         else:
             if prev_p > chance_primary:
                 ax_traj.barh(y, prev_p - chance_primary, left=chance_primary,
@@ -4105,10 +4233,10 @@ def plot_manifold_selection_trajectory(
                              height=bar_height, color=base_color,
                              edgecolor='none')
             delta = cur_p - prev_p
-            ax_traj.text(cur_p + 0.003, y,
-                         f"{cur_p:.3f}  (Δ {delta:+.3f})",
-                         ha='left', va='center', fontsize=7,
-                         color=TEXT_COLOR)
+            ax_traj.annotate(f"{cur_p:.3f}  (Δ {delta:+.3f})", xy=(cur_p, y),
+                             xytext=(_LABEL_OFFSET_PT, 0), textcoords='offset points',
+                             ha='left', va='center', fontsize=7,
+                             color=TEXT_COLOR)
 
     if rejection_row is not None and not np.isnan(rejection_row['prim_mean']):
         rejected_light = '#D7D7D7'
@@ -4124,10 +4252,10 @@ def plot_manifold_selection_trajectory(
                 ax_traj.barh(rej_y, prev_p - cur_p, left=cur_p,
                              height=bar_height, color=rejected_dark,
                              edgecolor='none')
-            ax_traj.text(cur_p - 0.003, rej_y,
-                         f"{cur_p:.3f}  (Δ {cur_p - prev_p:+.3f}, ns)",
-                         ha='left', va='center', fontsize=7,
-                         color=NEUTRAL_COLOR, style='italic')
+            ax_traj.annotate(f"{cur_p:.3f}  (Δ {cur_p - prev_p:+.3f}, ns)", xy=(cur_p, rej_y),
+                             xytext=(_LABEL_OFFSET_PT, 0), textcoords='offset points',
+                             ha='left', va='center', fontsize=7,
+                             color=NEUTRAL_COLOR, style='italic')
         else:
             if prev_p > chance_primary:
                 ax_traj.barh(rej_y, prev_p - chance_primary, left=chance_primary,
@@ -4137,10 +4265,10 @@ def plot_manifold_selection_trajectory(
                 ax_traj.barh(rej_y, cur_p - prev_p, left=prev_p,
                              height=bar_height, color=rejected_dark,
                              edgecolor='none')
-            ax_traj.text(cur_p + 0.003, rej_y,
-                         f"{cur_p:.3f}  (Δ {cur_p - prev_p:+.3f}, ns)",
-                         ha='left', va='center', fontsize=7,
-                         color=NEUTRAL_COLOR, style='italic')
+            ax_traj.annotate(f"{cur_p:.3f}  (Δ {cur_p - prev_p:+.3f}, ns)", xy=(cur_p, rej_y),
+                             xytext=(_LABEL_OFFSET_PT, 0), textcoords='offset points',
+                             ha='left', va='center', fontsize=7,
+                             color=NEUTRAL_COLOR, style='italic')
 
     ytick_positions = list(y_positions)
     ytick_labels = [f"+{_pretty(d['feature_name'])}" for d in steps_data]

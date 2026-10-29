@@ -10,7 +10,7 @@ authors = [
 description = "GUI/CLI to conduct, process and analyze experiments w/ multichannel e-phys, audio and video acquisition"
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.12,<3.14"
+requires-python = ">=3.13,<3.15"
 keywords = ["neuroscience", "mouse", "usv", "behavior", "social", "courtship"]
 classifiers = [
   "Development Status :: 1 - Planning",
@@ -21,8 +21,8 @@ classifiers = [
   "Programming Language :: Python",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Scientific/Engineering",
 ]
 dynamic = ["version"]
@@ -90,6 +90,7 @@ test = [
   "pytest-mock",
   "pytest-qt",
   "iblatlas",
+  "pytest-xdist>=3.8.0",
 ]
 dev = [
   { include-group = "test" },
@@ -243,7 +244,7 @@ files = ["src", "tests"]
 # strict type checking: the mask-segmentation kernels. The usv-playpen-native
 # orchestrator (processing/generate_masks.py) is checked normally.
 exclude = ["src/usv_playpen/processing/masks/"]
-python_version = "3.12"
+python_version = "3.13"
 warn_unused_configs = true
 strict = true
 enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
@@ -313,7 +314,7 @@ polars = "pls"
 "src/usv_playpen/neural_modeling/**" = ["T20"]
 
 [tool.pylint]
-py-version = "3.12"
+py-version = "3.13"
 ignore-paths = [".*/_version.py"]
 reports.output-format = "colorized"
 similarities.ignore-imports = "yes"
@@ -376,6 +377,13 @@ constraint-dependencies = [
     # We never build/ship sdists to untrusted parties, so practical exposure is nil and the
     # GPU regression is not worth it. Alert dismissed (tolerable_risk); revisit when torch's
     # setuptools ceiling lifts.
+    #
+    # 2026-10-28 -- Dependabot #119 (setuptools: Windows path escape via namespace_packages.txt
+    # during legacy wheel installation, fixed in 84.1.0) affects Windows only. Off Linux the
+    # resolver takes torch 2.13 from PyPI, which allows any setuptools>=77.0.3, so the floor
+    # is applied there; Linux keeps the cu128 torch and its setuptools<82 pin, where the
+    # Windows-only path escape cannot occur.
+    "setuptools>=84.1.0; sys_platform != 'linux'",
 ]
 
 [tool.uv.sources]

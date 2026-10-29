@@ -106,7 +106,7 @@ def _settings(tmp_path, model_engine='sklearn'):
     )
 
 
-def _input_pickle(tmp_path, features, with_metadata=True):
+def _input_pickle(tmp_path, features, with_metadata=True, analysis_type='onset'):
     """
     Description
     -----------
@@ -122,6 +122,10 @@ def _input_pickle(tmp_path, features, with_metadata=True):
     with_metadata (bool)
         Whether to add the ``_input_metadata`` block (False exercises the
         legacy-input path).
+    analysis_type (str)
+        The pipeline the input records as its builder
+        (``_input_metadata.analysis_type``); the dispatcher refuses a
+        ``--analysis_type`` that differs from it, so each test passes its route.
 
     Returns
     -------
@@ -134,6 +138,8 @@ def _input_pickle(tmp_path, features, with_metadata=True):
                 for feat in features}
     if with_metadata:
         artifact['_input_metadata'] = {'analysis_tag': 'bout',
+                                       'analysis_type': analysis_type,
+                                       'pipeline_class': 'VocalOnsetModelingPipeline',
                                        'experimental_condition': 'intact_partners_male'}
     path = tmp_path / 'input.pkl'
     with path.open('wb') as fh:
@@ -361,6 +367,44 @@ class TestDispatchUnivariate:
         uni.dispatch_univariate_job(args)
         assert 'out of bounds' in capsys.readouterr().out
 
+    def test_analysis_type_mismatch_with_the_input_returns_early(self, tmp_path, mocker, capsys):
+        """
+        Description
+        -----------
+        An ``--analysis_type`` that differs from the pipeline the input
+        pickle records (``_input_metadata.analysis_type``) is refused with
+        status 1 and a ``FATAL`` line naming both types and the rerun
+        flag, before any pipeline is constructed or anything is written
+        (a bout-offset input built by the onset pipeline sent to
+        ``params`` used to fail deep inside the fit on a missing key).
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Per-test scratch directory for the input pickle and outputs.
+        mocker (pytest_mock.MockerFixture)
+            Patches the settings load and spies on the pipeline class.
+        capsys (pytest.CaptureFixture)
+            Captures the printed FATAL line.
+
+        Returns
+        -------
+        None
+        """
+
+        settings = _settings(tmp_path)
+        mocker.patch.object(uni.json, 'load', return_value=settings)
+        pipeline_cls = mocker.patch.object(uni, 'BoutParameterPipeline')
+        inp = _input_pickle(tmp_path, ['self.speed'], analysis_type='onset')
+        out_dir = tmp_path / 'out'
+        rc = uni.dispatch_univariate_job(_uni_args('params', 0, inp, out_dir))
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert "FATAL: --analysis_type 'params' does not match the input data, which was built for 'onset'" in out
+        assert "Rerun with --analysis_type onset." in out
+        pipeline_cls.assert_not_called()
+        assert not list(out_dir.glob('univariate_*.pkl'))
+
     def test_legacy_input_without_metadata_warns(self, tmp_path, mocker, capsys):
         """An input pickle lacking ``_input_metadata`` is still processed
         but emits the legacy-provenance warning and falls back to the
@@ -442,7 +486,7 @@ class TestDispatchUnivariate:
 
         settings = _settings(tmp_path, model_engine='sklearn')
         mocker.patch.object(uni.json, 'load', return_value=settings)
-        inp = _input_pickle(tmp_path, ['self.speed'])
+        inp = _input_pickle(tmp_path, ['self.speed'], analysis_type='category')
 
         fake_pipeline = mocker.MagicMock()
         fake_pipeline.history_frames = 4
@@ -461,7 +505,7 @@ class TestDispatchUnivariate:
 
         settings = _settings(tmp_path, model_engine='sklearn')
         mocker.patch.object(uni.json, 'load', return_value=settings)
-        inp = _input_pickle(tmp_path, ['self.speed'])
+        inp = _input_pickle(tmp_path, ['self.speed'], analysis_type='params')
 
         fake_pipeline = mocker.MagicMock()
         fake_pipeline.history_frames = 4
@@ -480,7 +524,7 @@ class TestDispatchUnivariate:
 
         settings = _settings(tmp_path, model_engine='pygam')
         mocker.patch.object(uni.json, 'load', return_value=settings)
-        inp = _input_pickle(tmp_path, ['self.speed'])
+        inp = _input_pickle(tmp_path, ['self.speed'], analysis_type='params')
 
         fake_pipeline = mocker.MagicMock()
         fake_pipeline.history_frames = 4
@@ -533,7 +577,7 @@ class TestDispatchUnivariate:
 
         settings = _settings(tmp_path)
         mocker.patch.object(uni.json, 'load', return_value=settings)
-        inp = _input_pickle(tmp_path, ['self.speed'])
+        inp = _input_pickle(tmp_path, ['self.speed'], analysis_type='multinomial')
 
         fake_runner = mocker.MagicMock()
         fake_runner.run_univariate_training.return_value = (None, {'acc': 0.4})
@@ -550,7 +594,7 @@ class TestDispatchUnivariate:
 
         settings = _settings(tmp_path)
         mocker.patch.object(uni.json, 'load', return_value=settings)
-        inp = _input_pickle(tmp_path, ['self.speed'])
+        inp = _input_pickle(tmp_path, ['self.speed'], analysis_type='continuous')
         out_dir = tmp_path / 'out'
 
         fake_runner = mocker.MagicMock()
@@ -613,7 +657,7 @@ class TestDispatchUnivariate:
 
         settings = _settings(tmp_path, model_engine='sklearn')
         mocker.patch.object(uni.json, 'load', return_value=settings)
-        inp = _input_pickle(tmp_path, ['self.speed'])
+        inp = _input_pickle(tmp_path, ['self.speed'], analysis_type='unrouted')
         out_dir = tmp_path / 'out'
         rc = uni.dispatch_univariate_job(_uni_args('unrouted', 0, inp, out_dir))
         assert rc == 1
@@ -749,6 +793,154 @@ class TestDispatchModelSelection:
         args = _sel_args('onset', tmp_path, univariate_path=str(tmp_path / 'gone.pkl'))
         with pytest.raises(FileNotFoundError):
             sel.dispatch_model_selection(args)
+
+
+# _require_analysis_type (the selectors' upstream-artifact guard)
+
+
+def _typed_pickle(path, analysis_type, features=('self.speed',)):
+    """
+    Description
+    -----------
+    Write a tiny pickle that carries an ``_input_metadata`` block recording
+    `analysis_type`, the shape both the consolidated univariate file and the
+    modeling-input pickle have at the point the selectors check them.
+
+    Parameters
+    ----------
+    path (pathlib.Path)
+        Destination of the pickle.
+    analysis_type (str)
+        The analysis type the block records as the builder.
+    features (tuple of str)
+        Feature keys, each holding an empty dict.
+
+    Returns
+    -------
+    path (pathlib.Path)
+        The written path.
+    """
+
+    artifact = {feat: {} for feat in features}
+    artifact['_input_metadata'] = {'analysis_type': analysis_type,
+                                   'analysis_tag': f'{analysis_type}_tag'}
+    with path.open('wb') as fh:
+        pickle.dump(artifact, fh)
+    return path
+
+
+class TestRequireAnalysisType:
+    """``model_selection._require_analysis_type`` and its call sites in the five selectors."""
+
+    def test_matching_legacy_and_fieldless_blocks_pass(self):
+        """
+        Description
+        -----------
+        A block recording the selection's own analysis type passes, and so do
+        the two cases that cannot be checked: an artifact with no
+        ``_input_metadata`` block and a block without the ``analysis_type``
+        field.
+
+        Returns
+        -------
+        None
+        """
+
+        assert msrc._require_analysis_type({'_input_metadata': {'analysis_type': 'onset', 'analysis_tag': 't'}},
+                                           'onset', 'f.pkl') is None
+        assert msrc._require_analysis_type({'self.speed': {}}, 'onset', 'f.pkl') is None
+        assert msrc._require_analysis_type({'_input_metadata': {'analysis_tag': 't'}}, 'onset', 'f.pkl') is None
+
+    def test_mismatch_raises_naming_both_types_and_the_file(self):
+        """
+        Description
+        -----------
+        A block recording another analysis type raises a ``ValueError`` that
+        names the file, the recorded type and tag, the selection's type and
+        the ``--analysis_type`` to rerun with.
+
+        Returns
+        -------
+        None
+        """
+
+        loaded = {'_input_metadata': {'analysis_type': 'onset', 'analysis_tag': 'bout_offset_usv+overlap'}}
+        with pytest.raises(ValueError, match=(
+                r"^offset\.pkl was built for analysis_type 'onset' \(analysis_tag 'bout_offset_usv\+overlap'\), "
+                r"but this is the 'params' model selection\. Rerun with --analysis_type onset")):
+            msrc._require_analysis_type(loaded, 'params', 'offset.pkl')
+
+    @pytest.mark.parametrize('analysis_type', ['onset', 'category', 'params', 'multinomial', 'continuous'])
+    def test_each_selection_refuses_a_univariate_file_of_another_type(self, tmp_path, mocker, capsys,
+                                                                      analysis_type):
+        """
+        Description
+        -----------
+        Through the real dispatcher and the real selector of every analysis
+        type, a univariate file built for another type stops the run at load
+        time: the dispatcher returns 1, prints the guard's message under its
+        ``CRITICAL FAILURE`` line, and no step pickle is written.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Per-test scratch directory for the settings, pickles and output.
+        mocker (pytest_mock.MockerFixture)
+            Repoints the dispatcher's settings path at the synthetic settings.
+        capsys (pytest.CaptureFixture)
+            Captures the printed failure.
+        analysis_type (str)
+            The selection under test.
+
+        Returns
+        -------
+        None
+        """
+
+        other = 'params' if analysis_type == 'onset' else 'onset'
+        settings_file = tmp_path / 'modeling_settings.json'
+        settings_file.write_text(json.dumps(_settings(tmp_path)))
+        mocker.patch.object(sel, '_SETTINGS_PATH', settings_file)
+        univ = _typed_pickle(tmp_path / 'univariate_typed.pkl', other)
+        inp = _typed_pickle(tmp_path / 'input_typed.pkl', analysis_type)
+        args = _sel_args(analysis_type, tmp_path, univariate_path=str(univ), input_path=str(inp))
+        assert sel.dispatch_model_selection(args) == 1
+        out = capsys.readouterr().out
+        assert (f"{univ} was built for analysis_type '{other}' (analysis_tag '{other}_tag'), "
+                f"but this is the '{analysis_type}' model selection. Rerun with --analysis_type {other}") in out
+        assert not list((tmp_path / 'out').glob('model_selection_*.pkl'))
+
+    def test_onset_selection_refuses_an_input_pickle_of_another_type(self, tmp_path, mocker, capsys):
+        """
+        Description
+        -----------
+        The input-side check: with a matching univariate file, an input
+        pickle built for another analysis type is refused, and the message
+        names the input pickle rather than the univariate file.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Per-test scratch directory for the settings, pickles and output.
+        mocker (pytest_mock.MockerFixture)
+            Repoints the dispatcher's settings path at the synthetic settings.
+        capsys (pytest.CaptureFixture)
+            Captures the printed failure.
+
+        Returns
+        -------
+        None
+        """
+
+        settings_file = tmp_path / 'modeling_settings.json'
+        settings_file.write_text(json.dumps(_settings(tmp_path)))
+        mocker.patch.object(sel, '_SETTINGS_PATH', settings_file)
+        univ = _typed_pickle(tmp_path / 'univariate_typed.pkl', 'onset')
+        inp = _typed_pickle(tmp_path / 'input_typed.pkl', 'params')
+        args = _sel_args('onset', tmp_path, univariate_path=str(univ), input_path=str(inp))
+        assert sel.dispatch_model_selection(args) == 1
+        assert (f"{inp} was built for analysis_type 'params' (analysis_tag 'params_tag'), "
+                f"but this is the 'onset' model selection") in capsys.readouterr().out
 
 
 # Module-level CLI (`python -m ...`) entry points

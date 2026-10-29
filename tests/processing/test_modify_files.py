@@ -11,9 +11,11 @@ methods without performing heavy real I/O:
     synthetic SpikeGLX .bin/.meta pairs, the changepoints-JSON *merge* path
     taken on a second run (existing JSON, tracking_start_end offsetting), and
     the non-zero subprocess return-code warning.
-(3) rectify_video_fps - the `conduct_concat=False` copy-from-camera-subdir
-    path, the metadata session_duration write, and the calibration-camera
-    move/cleanup branch, with imgstore + ffmpeg invocation mocked out.
+(3) rectify_video_fps - how each camera's input is found (the concatenated
+    file, else the single video read in place from its camera folder), the
+    errors for several videos without concatenation and for no video, the
+    metadata session_duration write, and the calibration-camera move/cleanup
+    branch, with imgstore + ffmpeg invocation mocked out.
 (4) broadband_filter_audio - line-noise tone removal, the 2 kHz linear-phase
     high-pass response, memmap column order, chunk-length independence,
     idempotency / revalidation, and the batch runner, on small synthetic
@@ -29,11 +31,11 @@ changepoints, the concatenated tracking clock on rerun, failed-rewrite
 atomicity, the non-zero return warning, a .meta missing required keys, no
 template .meta, and a probe absent from the last session),
 ``concatenate_video_files`` (stale output excluded and replaced, ``-y``
-overwrite, a single video copied with the raw recording kept, a stale output
-beside a single chunk, calibration and unlisted folders ignored, an empty
-folder skipped, the timeout tunable), ``split_clusters_to_sessions``
+overwrite, a single video left untouched, a stale output beside a single
+chunk, calibration and unlisted folders ignored, an empty folder skipped, the
+timeout tunable), ``split_clusters_to_sessions``
 (duplicate-spike removal, failed-save atomicity), ``rectify_video_fps``
-(copy path and calibration handling), the broadband helpers (high-pass cutoff
+(input resolution, the two input errors, calibration handling), the broadband helpers (high-pass cutoff
 and design, unit phasors and block demodulation edge cases, line-noise
 estimation incl. silence and the separation rule, the stream's short-read
 guard, low-band variance incl. a too-short memmap, its backfill function and
@@ -901,7 +903,7 @@ def test_concatenate_video_files_replaces_stale_output(tmp_path, processing_sett
     assert any("stale" in message.lower() for message in messages)
 
 
-def test_concatenate_video_files_promotes_single_video_and_skips_empty_folder(tmp_path, processing_settings, mocker):
+def test_concatenate_video_files_leaves_single_video_and_skips_empty_folder(tmp_path, processing_settings, mocker):
     """
     Description
     -----------
@@ -910,13 +912,11 @@ def test_concatenate_video_files_promotes_single_video_and_skips_empty_folder(tm
     with more than one video chunk, so a folder with one video (or none) raised
     FileNotFoundError after the other cameras had already been concatenated.
 
-    A folder with two chunks is concatenated and published; the single-video
-    folder's video is COPIED (byte-identical, no ffmpeg run, no concat list) to
-    ``<concatenated_video_name>_<serial>`` in ``video/`` with a logged message,
-    and the raw recording stays in its camera folder: re-encoding later deletes
-    that ``<concatenated_video_name>_<serial>`` file as a disposable intermediate,
-    so a move would have destroyed the only copy of the recording. The empty
-    folder is skipped with a logged message.
+    A folder with two chunks is concatenated and published. The single-video
+    folder has nothing to join, so it is left exactly as it was (no ffmpeg run,
+    no concat list, no copy or renamed file in ``video/``) with a logged
+    message: re-encoding reads that video straight from the camera folder. The
+    empty folder is skipped with a logged message.
 
     Parameters
     ----------
@@ -956,33 +956,93 @@ def test_concatenate_video_files_promotes_single_video_and_skips_empty_folder(tm
     assert [invocation['cwd'] for invocation in invocations] == [multi_dir]
     assert (video_dir / f"{concat_name}_{multi_serial}.{vid_ext}").read_bytes() == b"fresh"
     assert not (multi_dir / f"file_concatenation_list_{multi_serial}.txt").exists()
-    assert (video_dir / f"{concat_name}_{single_serial}.{vid_ext}").read_bytes() == b"only"
+    assert not (video_dir / f"{concat_name}_{single_serial}.{vid_ext}").exists()
+    assert sorted(path.name for path in single_dir.iterdir()) == [f"000000.{vid_ext}"]
     assert (single_dir / f"000000.{vid_ext}").read_bytes() == b"only"
-    assert list(single_dir.glob("file_concatenation_list_*")) == []
-    assert sum("the original stays in its folder" in message for message in messages) == 1
+    assert sum("nothing to join" in message for message in messages) == 1
     assert not (video_dir / f"{concat_name}_{empty_serial}.{vid_ext}").exists()
-    assert sum("skipped" in message for message in messages) == 1
+    assert sum("holds no video files" in message for message in messages) == 1
 
 
-def test_rectify_video_fps_no_concat_copies_and_handles_calibration(tmp_path, processing_settings, mocker):
+def _patch_rectify_ffmpeg(mocker):
     """
     Description
     -----------
-    Drives the rarely-hit branches of ``rectify_video_fps`` with
-    ``conduct_concat=False``:
+    Stand in for the ffmpeg re-encoding runs of ``rectify_video_fps``:
+    ``subprocess.Popen`` records each invocation (argv + working directory),
+    creates the output file (the last argv entry) in the working directory so
+    the later move succeeds, and returns a process that exits with 0.
 
-    (a) the pre-loop copy path (no non-hidden files in ``video/`` yet, so the
-        per-camera ``conversion_target_file`` is copied up from the camera
-        sub-directory),
-    (b) the metadata ``session_duration`` write (metadata is present),
-    (c) the calibration-camera branch (``current_working_dir`` becomes the
-        camera dir, ``000000`` source / ``*-calibration`` destination),
-    (d) the post-encode move + ``delete_old_file`` cleanup for both a normal and
-        a calibration camera.
+    Parameters
+    ----------
+    mocker (pytest_mock.MockerFixture)
+        Patches ``smart_wait`` and ``subprocess.Popen`` in
+        ``usv_playpen.processing.modify_files``.
 
-    ``new_for_filename`` (imgstore) and ``subprocess.Popen`` (ffmpeg) are mocked;
-    the ffmpeg mock additionally creates the expected re-encoded output files so
-    the subsequent ``shutil.move`` calls succeed deterministically.
+    Returns
+    -------
+    invocations (list of dict)
+        One ``{'args': list, 'cwd': pathlib.Path}`` entry per ffmpeg invocation,
+        filled as the method under test runs.
+    """
+
+    invocations = []
+
+    def _fake_popen(args, cwd=None, **_kwargs):
+        """Record the invocation, create its output file in ``cwd`` and return a process that exits with 0."""
+        invocations.append({'args': args, 'cwd': pathlib.Path(cwd)})
+        (pathlib.Path(cwd) / args[-1]).write_bytes(b"\x00")
+        proc = mocker.MagicMock()
+        proc.poll.return_value = 0
+        proc.wait.return_value = 0
+        return proc
+
+    mocker.patch("usv_playpen.processing.modify_files.smart_wait")
+    mocker.patch("usv_playpen.processing.modify_files.subprocess.Popen", side_effect=_fake_popen)
+    return invocations
+
+
+def _rectify_input(invocation):
+    """
+    Description
+    -----------
+    Return the input video path of one recorded ffmpeg re-encoding invocation
+    (the argv entry after ``-i``).
+
+    Parameters
+    ----------
+    invocation (dict)
+        One entry recorded by ``_patch_rectify_ffmpeg``.
+
+    Returns
+    -------
+    input_path (str)
+        The ``-i`` argument.
+    """
+
+    return invocation['args'][invocation['args'].index('-i') + 1]
+
+
+def test_rectify_video_fps_finds_each_camera_input_and_handles_calibration(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    ``rectify_video_fps`` finds each camera's input on disk, with no file name
+    setting:
+
+    (a) a camera whose concatenated ``<concatenated_video_name>_<serial>`` file
+        exists in ``video/`` re-encodes that file, which ``delete_old_file``
+        then deletes as a disposable intermediate, even though its camera folder
+        still holds several chunks;
+    (b) a camera with a single ``000000`` video re-encodes it straight from the
+        camera folder (absolute ``-i`` path, output still written to ``video/``),
+        a stale concatenation output beside it is not counted as a second
+        video, and the raw recording is never deleted;
+    (c) the calibration camera re-encodes its ``000000`` source in its own folder
+        into ``calibration_images`` and keeps the raw source;
+    (d) the metadata ``session_duration`` and the frame-count JSON are written.
+
+    ``new_for_filename`` (imgstore) and ``subprocess.Popen`` (ffmpeg) are mocked.
 
     Parameters
     ----------
@@ -991,41 +1051,44 @@ def test_rectify_video_fps_no_concat_copies_and_handles_calibration(tmp_path, pr
     processing_settings (dict)
         Package processing-settings fixture.
     mocker (pytest_mock.MockerFixture)
-        No-ops ``smart_wait`` and patches imgstore + ffmpeg.
+        Patches imgstore, metadata I/O and ffmpeg.
 
     Returns
     -------
     None
     """
 
-    mocker.patch("usv_playpen.processing.modify_files.smart_wait")
-
     rectify = processing_settings['modify_files']['Operator']['rectify_video_fps']
-    normal_serial = "21372315"
-    rectify['encode_camera_serial_num'] = [normal_serial]
+    concat_serial, single_serial = "21372315", "21372316"
+    rectify['encode_camera_serial_num'] = [concat_serial, single_serial]
     rectify['delete_old_file'] = True
-    conv_target = rectify['conversion_target_file']
     vid_ext = rectify['encode_video_extension']
+    concat_name = processing_settings['modify_files']['Operator']['concatenate_video_files']['concatenated_video_name']
 
     date_token = "20250101_120000"
     date_joint = "20250101120000"
     video_dir = tmp_path / "video"
 
-    # normal camera sub-directory holding the conversion target file.
-    normal_cam_dir = video_dir / f"{date_token}.{normal_serial}"
-    normal_cam_dir.mkdir(parents=True)
-    (normal_cam_dir / f"{conv_target}.{vid_ext}").write_bytes(b"\x00")
+    concat_cam_dir = video_dir / f"{date_token}.{concat_serial}"
+    concat_cam_dir.mkdir(parents=True)
+    (concat_cam_dir / f"000000.{vid_ext}").write_bytes(b"chunk0")
+    (concat_cam_dir / f"000001.{vid_ext}").write_bytes(b"chunk1")
+    concat_product = video_dir / f"{concat_name}_{concat_serial}.{vid_ext}"
+    concat_product.write_bytes(b"joined")
 
-    # calibration camera sub-directory holding a 000000 source file.
-    calib_cam_dir = video_dir / f"calibration_{date_token}.{normal_serial}"
+    single_cam_dir = video_dir / f"{date_token}.{single_serial}"
+    single_cam_dir.mkdir(parents=True)
+    (single_cam_dir / f"000000.{vid_ext}").write_bytes(b"raw")
+    (single_cam_dir / f"{concat_name}_{single_serial}.{vid_ext}").write_bytes(b"stale")
+
+    calib_cam_dir = video_dir / f"calibration_{date_token}.{concat_serial}"
     calib_cam_dir.mkdir(parents=True)
-    (calib_cam_dir / f"000000.{vid_ext}").write_bytes(b"\x00")
+    (calib_cam_dir / f"000000.{vid_ext}").write_bytes(b"calib")
 
-    # imgstore + metadata
     esr_times = np.linspace(0, 1.0, 30)
     _patch_imgstore(mocker, total_frame_num=30, esr_frame_times=esr_times, has_dropped=False)
 
-    metadata = {'Session': {'session_duration': 0.0, 'camera_serials': [normal_serial]}}
+    metadata = {'Session': {'session_duration': 0.0, 'camera_serials': [concat_serial, single_serial]}}
     metadata_path = tmp_path / f"{tmp_path.name}_metadata.yaml"
     mocker.patch(
         "usv_playpen.processing.modify_files.load_session_metadata",
@@ -1039,48 +1102,115 @@ def test_rectify_video_fps_no_concat_copies_and_handles_calibration(tmp_path, pr
         saved['filepath'] = filepath
 
     mocker.patch("usv_playpen.processing.modify_files.save_session_metadata", side_effect=_fake_save)
-
-    # ffmpeg mock: create the new_file output in cwd so the later move succeeds.
-    def _fake_popen(args, cwd=None, **_kwargs):
-        """Create ffmpeg's output file (the last argument) in ``cwd`` and return a process that exits with 0."""
-        new_file = args[-1]
-        (pathlib.Path(cwd) / new_file).write_bytes(b"\x00")
-        proc = mocker.MagicMock()
-        proc.poll.return_value = 0
-        proc.wait.return_value = 0
-        return proc
-
-    mocker.patch("usv_playpen.processing.modify_files.subprocess.Popen", side_effect=_fake_popen)
+    invocations = _patch_rectify_ffmpeg(mocker)
 
     messages = []
-    operator = _make_operator(str(tmp_path), processing_settings, messages)
-    operator.rectify_video_fps(conduct_concat=False)
+    _make_operator(str(tmp_path), processing_settings, messages).rectify_video_fps()
 
-    # (a) the no-concat copy lifted the conversion target into video/.
-    assert (video_dir / f"{conv_target}_{normal_serial}.{vid_ext}").exists() or \
-        (video_dir / date_joint / normal_serial / f"{normal_serial}-{date_joint}.{vid_ext}").exists()
+    by_input = {_rectify_input(invocation): invocation for invocation in invocations}
+    assert len(invocations) == 3
 
-    # (b) metadata session_duration was written via save_session_metadata.
-    assert 'data' in saved
+    # (a) the concatenated file is the input and is deleted afterwards
+    assert by_input[str(concat_product)]['cwd'] == video_dir
+    assert not concat_product.exists()
+    assert (video_dir / date_joint / concat_serial / f"{concat_serial}-{date_joint}.{vid_ext}").is_file()
+
+    # (b) the single video is read in place, the stale file ignored, the raw kept
+    single_input = single_cam_dir / f"000000.{vid_ext}"
+    assert by_input[str(single_input)]['cwd'] == video_dir
+    assert single_input.read_bytes() == b"raw"
+    assert (video_dir / date_joint / single_serial / f"{single_serial}-{date_joint}.{vid_ext}").is_file()
+    assert sum("single video (000000" in message for message in messages) == 1
+
+    # (c) calibration: own folder, calibration_images destination, raw kept
+    assert by_input[f"000000.{vid_ext}"]['cwd'] == calib_cam_dir
+    assert (video_dir / date_joint / concat_serial / 'calibration_images' / f"{concat_serial}-{date_joint}-calibration.{vid_ext}").is_file()
+    assert (calib_cam_dir / f"000000.{vid_ext}").read_bytes() == b"calib"
+
+    # (d) metadata and frame counts
     assert saved['data']['Session']['session_duration'] == pytest.approx(round(esr_times[-1] - esr_times[0], 3))
-
-    # (c)/(d) the re-encoded normal video was moved into the deep date/serial dir.
-    moved_normal = video_dir / date_joint / normal_serial / f"{normal_serial}-{date_joint}.{vid_ext}"
-    assert moved_normal.exists()
-
-    # calibration output moved into calibration_images.
-    moved_calib = video_dir / date_joint / normal_serial / 'calibration_images' / f"{normal_serial}-{date_joint}-calibration.{vid_ext}"
-    assert moved_calib.exists()
-
-    # The RAW calibration source must NEVER be deleted, even with delete_old_file=True:
-    # that flag cleans up the disposable concatenation intermediate only. Regression guard
-    # for the bug where the calibration '000000.<ext>' -- original loopbio footage -- was
-    # silently destroyed after re-encoding.
-    assert (calib_cam_dir / f"000000.{vid_ext}").is_file(), \
-        "raw calibration source 000000.<ext> was deleted; it must be preserved"
-
-    # camera frame count JSON written for the session.
     assert (video_dir / f"{date_joint}_camera_frame_count_dict.json").is_file()
+
+
+def test_rectify_video_fps_several_videos_without_concatenation_raises(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    A camera folder holding several videos with no concatenated file in
+    ``video/`` stops re-encoding with a ValueError asking to run concatenation
+    first (re-encoding one chunk would give a partial video). Every camera is
+    checked before any ffmpeg process starts, so the camera listed first, whose
+    single video could be re-encoded, has not been started either.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        Patches ffmpeg.
+
+    Returns
+    -------
+    None
+    """
+
+    rectify = processing_settings['modify_files']['Operator']['rectify_video_fps']
+    single_serial, multi_serial = "21372315", "21372316"
+    rectify['encode_camera_serial_num'] = [single_serial, multi_serial]
+    vid_ext = rectify['encode_video_extension']
+
+    video_dir = tmp_path / "video"
+    single_cam_dir = video_dir / f"20250101_120000.{single_serial}"
+    multi_cam_dir = video_dir / f"20250101_120000.{multi_serial}"
+    single_cam_dir.mkdir(parents=True)
+    multi_cam_dir.mkdir(parents=True)
+    (single_cam_dir / f"000000.{vid_ext}").write_bytes(b"raw")
+    (multi_cam_dir / f"000000.{vid_ext}").write_bytes(b"chunk0")
+    (multi_cam_dir / f"000001.{vid_ext}").write_bytes(b"chunk1")
+
+    invocations = _patch_rectify_ffmpeg(mocker)
+
+    with pytest.raises(ValueError, match=rf"Camera {multi_serial}: .* holds 2 videos .*run video concatenation first"):
+        _make_operator(str(tmp_path), processing_settings, []).rectify_video_fps()
+
+    assert invocations == []
+    assert sorted(path.name for path in multi_cam_dir.iterdir()) == [f"000000.{vid_ext}", f"000001.{vid_ext}"]
+
+
+def test_rectify_video_fps_camera_without_video_raises(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    A listed camera folder with no video and no concatenated file in ``video/``
+    stops re-encoding with a FileNotFoundError before any ffmpeg process starts.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        Patches ffmpeg.
+
+    Returns
+    -------
+    None
+    """
+
+    rectify = processing_settings['modify_files']['Operator']['rectify_video_fps']
+    serial = "21372315"
+    rectify['encode_camera_serial_num'] = [serial]
+
+    (tmp_path / "video" / f"20250101_120000.{serial}").mkdir(parents=True)
+    invocations = _patch_rectify_ffmpeg(mocker)
+
+    with pytest.raises(FileNotFoundError, match=rf"Camera {serial}: .* holds no .* video .*nothing to re-encode"):
+        _make_operator(str(tmp_path), processing_settings, []).rectify_video_fps()
+
+    assert invocations == []
 
 
 _BB_SR = 250000
@@ -1648,7 +1778,7 @@ def test_operator_requires_a_root_directory(processing_settings):
         Operator()
 
 
-def test_concatenate_video_files_stale_output_beside_one_chunk_copies_the_chunk(tmp_path, processing_settings, mocker):
+def test_concatenate_video_files_stale_output_beside_one_chunk_is_removed(tmp_path, processing_settings, mocker):
     """
     Description
     -----------
@@ -1656,9 +1786,9 @@ def test_concatenate_video_files_stale_output_beside_one_chunk_copies_the_chunk(
     ``<concatenated_video_name>_<serial>`` output of a crashed run: the stale file
     must not count as a second input (which would have sent the folder down the
     ffmpeg concatenation path with the old output as one of its own inputs), it
-    must be deleted with a logged message, and the single real chunk must be
-    COPIED byte-identically to ``video/<concatenated_video_name>_<serial>.<ext>``
-    while the raw chunk stays in its camera folder. A calibration folder and a
+    must be deleted with a logged message, and the single real chunk is left in
+    its camera folder with nothing copied to ``video/`` (re-encoding reads it in
+    place). A calibration folder and a
     folder whose serial is not listed in ``concatenate_camera_serial_num`` are
     left untouched, no ffmpeg process is started, and the ffmpeg wait receives
     the ``subprocess_timeout_hours`` tunable converted to seconds.
@@ -1703,16 +1833,16 @@ def test_concatenate_video_files_stale_output_beside_one_chunk_copies_the_chunk(
     assert invocations == []
     assert modify_files.wait_for_subprocesses.call_args.kwargs['max_seconds'] == 0.5 * 60 * 60
     assert modify_files.wait_for_subprocesses.call_args.kwargs['subps'] == []
-    assert (video_dir / f"{concat_name}_{serial}.{vid_ext}").read_bytes() == b"raw-chunk"
+    assert not (video_dir / f"{concat_name}_{serial}.{vid_ext}").exists()
     assert (cam_dir / f"000000.{vid_ext}").read_bytes() == b"raw-chunk"
     assert not (cam_dir / f"{concat_name}_{serial}.{vid_ext}").exists()
     assert sorted(path.name for path in cam_dir.iterdir()) == [f"000000.{vid_ext}"]
     assert sum("stale" in message.lower() and "1 video chunk(s)" in message for message in messages) == 1
-    assert sum("the original stays in its folder" in message for message in messages) == 1
+    assert sum("nothing to join" in message for message in messages) == 1
     assert sorted(path.name for path in calibration_dir.iterdir()) == [f"000000.{vid_ext}"]
     assert sorted(path.name for path in unlisted_dir.iterdir()) == [f"000000.{vid_ext}"]
     assert not (video_dir / f"{concat_name}_{unlisted_serial}.{vid_ext}").exists()
-    assert sorted(path.name for path in video_dir.iterdir() if path.is_file()) == [f"{concat_name}_{serial}.{vid_ext}"]
+    assert sorted(path.name for path in video_dir.iterdir() if path.is_file()) == []
 
 
 def test_concatenate_binary_files_rejects_a_meta_missing_required_keys(tmp_path, processing_settings, mocker):

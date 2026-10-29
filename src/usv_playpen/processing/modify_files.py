@@ -1897,21 +1897,15 @@ class Operator:
         overwrite and silently leave an old file to be published.
 
         Only folders that actually hold more than one video chunk are
-        concatenated. A folder with exactly one video has that video COPIED
-        instead (never moved): the copy goes, unchanged, to the same place and
-        name the concatenation would produce (``<concatenated_video_name>_<serial>``
-        in the session's ``video`` directory), with a logged message, so later
-        steps (e.g. re-encoding with ``conduct_concat=True``) treat it like any
-        concatenated recording. The raw recording stays in its camera folder next
-        to the imgstore metadata that indexes it, because re-encoding deletes the
-        ``<concatenated_video_name>_<serial>`` file afterwards as a disposable
-        intermediate (``rectify_video_fps.delete_old_file``). A folder with no
-        video is skipped with a logged message.
+        concatenated. A folder with exactly one video has nothing to join and is
+        left untouched, with a logged message: re-encoding reads that single
+        video straight from its camera folder (see ``rectify_video_fps``), so no
+        copy or renamed file is made here. A folder with no video is skipped with
+        a logged message.
 
         After all ffmpeg processes finish, each concatenated folder's list file
         is deleted and its concatenated file is moved one level up, into the
-        session's ``video`` directory; single videos are copied at the same
-        point.
+        session's ``video`` directory.
 
         Parameters
         ----------
@@ -1919,9 +1913,8 @@ class Operator:
         Returns
         -------
         concatenated_temp (.mp4 file)
-            Concatenated video file, one per camera folder with at least one
-            video (a copy of the single video for a one-video folder), saved in
-            the session's ``video`` directory.
+            Concatenated video file, one per camera folder with more than one
+            video, saved in the session's ``video`` directory.
         """
 
         self.message_output(f"Video concatenation started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
@@ -1929,7 +1922,6 @@ class Operator:
 
         subprocesses = []
         concatenated_dirs = []
-        promoted_videos = []
 
         for sub_directory in (pathlib.Path(self.root_directory) / 'video').iterdir():
             if 'calibration' not in sub_directory.name \
@@ -1947,7 +1939,7 @@ class Operator:
                                          if file_path.name != concat_output_path.name)
                 if concat_output_path.is_file():
                     concat_output_path.unlink()
-                    self.message_output(f"Removed a stale concatenated video {concat_output_path} left by an earlier run; it will be rebuilt from the {len(all_video_files)} video chunk(s) in {current_working_dir}.")
+                    self.message_output(f"Removed a stale concatenated video {concat_output_path} left by an earlier run; {len(all_video_files)} video chunk(s) remain in {current_working_dir}.")
 
                 if len(all_video_files) > 1:
 
@@ -1966,7 +1958,7 @@ class Operator:
                     subprocesses.append(one_subprocess)
                     concatenated_dirs.append(current_working_dir)
                 elif len(all_video_files) == 1:
-                    promoted_videos.append((all_video_files[0], pathlib.Path(self.root_directory) / 'video' / concat_output_path.name))
+                    self.message_output(f"Video concatenation skipped for {current_working_dir}: it holds a single video ({all_video_files[0].name}), so there is nothing to join; re-encoding reads it from that folder.")
                 else:
                     self.message_output(f"Video concatenation skipped for {current_working_dir}: it holds no video files.")
 
@@ -1990,24 +1982,37 @@ class Operator:
             shutil.move(src=current_working_dir / f"{concat_name}_{cam_serial}.{vid_ext}",
                         dst=pathlib.Path(self.root_directory) / 'video' / f"{concat_name}_{cam_serial}.{vid_ext}")
 
-        # A folder with exactly one video has it COPIED (never moved) into place as the
-        # concatenated file. The copy is what re-encoding consumes and later deletes as a
-        # disposable intermediate (`rectify_video_fps.delete_old_file`); the raw recording
-        # stays in its camera folder next to the imgstore metadata that indexes it.
-        for single_video_path, promoted_path in promoted_videos:
-            shutil.copy2(src=single_video_path, dst=promoted_path)
-            self.message_output(f"Video {single_video_path} is the only video in its folder, so it was copied unchanged to {promoted_path} in place of a concatenation; the original stays in its folder.")
-
-    def rectify_video_fps(self, conduct_concat: bool = True) -> None:
+    def rectify_video_fps(self) -> None:
         """
         Description
         -----------
         This method changes video sampling rate via ffmpeg.
 
+        Each camera's input is found on disk, so no file name has to be set and
+        it does not matter whether concatenation ran in the same run, an earlier
+        one, or not at all. For every non-calibration camera folder whose serial
+        number is listed in ``encode_camera_serial_num``, before any ffmpeg
+        process starts:
+
+        1. If ``<concatenated_video_name>_<serial>`` exists in the session's
+           ``video`` directory, concatenation produced it, so it is re-encoded
+           and, with ``delete_old_file``, deleted afterwards as a disposable
+           intermediate.
+        2. Otherwise, if the camera folder holds exactly one video (e.g. a
+           single ``000000`` recording), that video is re-encoded straight from
+           the folder, whatever its name. It is the raw recording, so it is
+           never deleted.
+        3. Otherwise, if the camera folder holds several videos, a ValueError is
+           raised: re-encoding only one chunk would silently produce a partial
+           video, so concatenation must be run first.
+        4. A camera folder with no video raises a FileNotFoundError.
+
+        All cameras are resolved first, so an error stops the step before any
+        ffmpeg process has started. Calibration camera folders always re-encode
+        their ``000000`` recording, which is never deleted.
+
         Parameters
         ----------
-        conduct_concat (bool)
-            If True, concatenation was conducted prior to running this.
 
         Returns
         -------
@@ -2022,18 +2027,36 @@ class Operator:
         smart_wait(app_context_bool=self.app_context_bool, seconds=2)
 
         video_dir = pathlib.Path(self.root_directory) / 'video'
-        non_hidden_files = [p.name for p in video_dir.iterdir() if p.is_file() and not p.name.startswith('.')]
+        vid_ext = self.input_parameter_dict['rectify_video_fps']['encode_video_extension']
+        concat_name = self.input_parameter_dict['concatenate_video_files']['concatenated_video_name']
 
-        if not conduct_concat and len(non_hidden_files) == 0:
-            for sub_directory in video_dir.iterdir():
-                if 'calibration' not in sub_directory.name \
-                        and sub_directory.name.split('.')[-1] in self.input_parameter_dict['rectify_video_fps']['encode_camera_serial_num']:
-                    cam_serial = sub_directory.name.split('.')[-1]
-                    target_file = self.input_parameter_dict['rectify_video_fps']['conversion_target_file']
-                    vid_ext = self.input_parameter_dict['rectify_video_fps']['encode_video_extension']
-
-                    shutil.copy(src=sub_directory / f"{target_file}.{vid_ext}",
-                                dst=video_dir / f"{target_file}_{cam_serial}.{vid_ext}")
+        # resolve every camera's input before any ffmpeg process starts, so a folder
+        # that cannot be re-encoded stops the step without leaving encodes running;
+        # each entry is (input video path, whether it is a disposable concatenation product)
+        reencoding_inputs = {}
+        for sub_directory in sorted(video_dir.iterdir()):
+            if (sub_directory.is_dir()
+                    and '.' in sub_directory.name
+                    and 'calibration' not in sub_directory.name
+                    and sub_directory.name.split('.')[-1] in self.input_parameter_dict['rectify_video_fps']['encode_camera_serial_num']):
+                cam_serial = sub_directory.name.split('.')[-1]
+                concat_product = video_dir / f"{concat_name}_{cam_serial}.{vid_ext}"
+                if concat_product.is_file():
+                    reencoding_inputs[sub_directory.name] = (concat_product, True)
+                    continue
+                # a stale concatenation output left in the camera folder by a crashed run is not a recording
+                camera_videos = sorted(file_path for file_path in sub_directory.glob(f'*.{vid_ext}')
+                                       if file_path.name != concat_product.name)
+                if len(camera_videos) == 1:
+                    reencoding_inputs[sub_directory.name] = (camera_videos[0], False)
+                    self.message_output(f"Camera {cam_serial} has a single video ({camera_videos[0].name}), which is re-encoded straight from {sub_directory}.")
+                elif len(camera_videos) > 1:
+                    raise ValueError(f"Camera {cam_serial}: {sub_directory} holds {len(camera_videos)} videos and no concatenated "
+                                     f"{concat_product.name} exists in {video_dir}. Re-encoding one of them would give a partial "
+                                     f"video, so run video concatenation first.")
+                else:
+                    raise FileNotFoundError(f"Camera {cam_serial}: {sub_directory} holds no .{vid_ext} video and no concatenated "
+                                            f"{concat_product.name} exists in {video_dir}, so there is nothing to re-encode.")
 
         # load metadata
         metadata, metadata_path = load_session_metadata(
@@ -2092,12 +2115,12 @@ class Operator:
 
                 crf = self.input_parameter_dict['rectify_video_fps']['constant_rate_factor']
                 enc_preset = self.input_parameter_dict['rectify_video_fps']['encoding_preset']
-                vid_ext = self.input_parameter_dict['rectify_video_fps']['encode_video_extension']
-                conv_target = self.input_parameter_dict['rectify_video_fps']['conversion_target_file']
 
                 current_working_dir = video_dir
                 if 'calibration' not in sub_directory.name:
-                    target_file = f"{conv_target}_{cam_serial}.{vid_ext}"
+                    # an absolute input path, so the output still lands in video/ when the
+                    # input is a single video read from its camera folder
+                    target_file = str(reencoding_inputs[sub_directory.name][0])
                     new_file = f"{cam_serial}-{date_joint}.{vid_ext}"
                 else:
                     current_working_dir = sub_directory
@@ -2130,38 +2153,31 @@ class Operator:
                     and sub_directory.name.split('.')[-1] in self.input_parameter_dict['rectify_video_fps']['encode_camera_serial_num']):
 
                 cam_serial = sub_directory.name.split('.')[-1]
-                vid_ext = self.input_parameter_dict['rectify_video_fps']['encode_video_extension']
-                conv_target = self.input_parameter_dict['rectify_video_fps']['conversion_target_file']
                 dest_base = video_dir / date_joint / cam_serial
                 (dest_base / 'calibration_images').mkdir(parents=True, exist_ok=True)
 
-                current_working_dir = video_dir
                 if 'calibration' not in sub_directory.name:
-                    target_file = f"{conv_target}_{cam_serial}.{vid_ext}"
                     new_file = f"{cam_serial}-{date_joint}.{vid_ext}"
 
-                    shutil.move(src=current_working_dir / new_file,
+                    shutil.move(src=video_dir / new_file,
                                 dst=dest_base / new_file)
+
+                    # Clean up the disposable concatenation product ONLY. A single video
+                    # re-encoded straight from its camera folder is the RAW loopbio
+                    # recording, so it is never deleted.
+                    reencoding_input, is_concat_product = reencoding_inputs[sub_directory.name]
+                    if (self.input_parameter_dict['rectify_video_fps']['delete_old_file']
+                            and is_concat_product
+                            and reencoding_input.is_file()):
+                        reencoding_input.unlink()
                 else:
-                    current_working_dir = sub_directory
-                    target_file = f"000000.{vid_ext}"
+                    # In a calibration sub-directory the input is '000000.<ext>', the RAW
+                    # loopbio recording; the re-encoded copy goes to 'calibration_images'
+                    # and the recording itself is never deleted.
                     new_file = f"{cam_serial}-{date_joint}-calibration.{vid_ext}"
 
-                    shutil.move(src=current_working_dir / new_file,
+                    shutil.move(src=sub_directory / new_file,
                                 dst=dest_base / 'calibration_images' / new_file)
-
-                # Clean up the disposable intermediate ONLY.
-                #
-                # In a calibration sub-directory `target_file` is '000000.<ext>' -- the RAW
-                # loopbio recording, not a throwaway artefact -- and the re-encoded copy has
-                # already been moved into 'calibration_images'. Deleting it would irreversibly
-                # destroy original footage, so calibration directories are never cleaned.
-                # Non-calibration directories delete '<conv_target>_<serial>.<ext>', which is
-                # the temporary concatenation product and safe to remove.
-                if (self.input_parameter_dict['rectify_video_fps']['delete_old_file']
-                        and 'calibration' not in sub_directory.name
-                        and (current_working_dir / target_file).is_file()):
-                    (current_working_dir / target_file).unlink()
 
         # save camera_frame_count_dict to a file
         # If no camera produced a clean (no-dropped-frames) recording, there is

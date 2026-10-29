@@ -922,20 +922,19 @@ def _bout_feature_data(history_frames: int, n_per_session: int = 25, n_sessions:
     return {'X': X.astype(float), 'y': y, 'groups': groups}
 
 
-class TestNullShufflesWithinSessions:
-    """The bout-parameter null shuffles targets within sessions."""
+class TestNullShufflesAcrossTheTrainingSet:
+    """The bout-parameter null shuffles targets across the whole training set."""
 
     @pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
     @pytest.mark.filterwarnings("ignore:invalid value encountered:RuntimeWarning")
     @pytest.mark.filterwarnings("ignore:An input array is constant:scipy.stats.ConstantInputWarning")
-    def test_a_pure_session_confound_does_not_beat_the_null(self):
+    def test_a_relationship_between_sessions_beats_the_null(self):
         """
         Sessions differ in mean bout duration and in the feature's mean, but within a session
-        the feature carries nothing about the duration. The actual model explains deviance
-        through that session difference alone; a null that shuffles targets across sessions
-        loses the difference and would sit near zero, flagging a feature with no within-session
-        signal. The within-session null keeps every session's targets, so it explains as much
-        as the actual model.
+        the feature carries nothing about the duration. That between-session relationship is
+        a relationship between the feature and vocal output, so it must count: the actual
+        model explains deviance through it, while the null, whose targets are shuffled across
+        the whole training set, loses it and stays near zero.
         """
         pipeline = _minimal_bout_pipeline(split_strategy='mixed', split_num=4)
         rng = np.random.default_rng(11)
@@ -951,7 +950,7 @@ class TestNullShufflesWithinSessions:
         actual = np.nanmean(res['actual']['explained_deviance'])
         null = np.nanmean(res['null']['explained_deviance'])
         assert actual > 0.3
-        assert abs(actual - null) < 0.25 * actual
+        assert null < 0.25 * actual
 
 
 class TestCreateDataSplitsBranches:

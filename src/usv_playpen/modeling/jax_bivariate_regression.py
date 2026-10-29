@@ -1161,7 +1161,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
           smoothness penalty, which is why per-fold regularisation tuning is
           re-enabled on the torus and the reflective-boundary smoothing is now
           selectable. The screen compares it against the **`null`
-          (within-session Y-permutation)** strategy (a confound-controlled baseline).
+          (Y-permutation across the training fold)** strategy (a label-destroyed baseline).
         - `vm_logscore_pooled` : the **micro (event-weighted) twin** of
           `vm_logscore` on the torus (`nan` on Euclidean) — the identical
           per-event von Mises densities (same residuals, same internally-fit

@@ -314,10 +314,9 @@ def dcor_prediction_truth(Y_pred: np.ndarray, Y_true: np.ndarray, *,
 
     Because distance correlation is non-negative and never zero for a
     real predictor, it is *only* meaningful relative to a baseline: the
-    selection pipeline screens it against the within-session-shuffle
-    ``null`` strategy (refit on the session-permuted target), which removes
-    the session-level confound while leaving genuine trial-level
-    dependence to test. (The ``null_model_free`` empirical-density draw is
+    selection pipeline screens it against the ``null`` strategy (refit on the
+    target permuted across the training fold), which destroys every
+    behaviour-to-position dependence, so only a genuine one is left to test. (The ``null_model_free`` empirical-density draw is
     independent of the per-trial truth, so its ``dcor`` sits at the
     finite-sample noise floor; it is the reported chance reference, not
     the screening baseline.) See the ``dcor_xy`` entry in

@@ -58,10 +58,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # pyproject.toml requires Python >=3.12,<3.14 (3.12–3.13); both are
-        # exercised here. 3.14 is not yet supported: numba/llvmlite have no
-        # 3.14 wheel and their sdist fails to build on it.
-        python-version: ["3.12", "3.13"]
+        # pyproject.toml requires Python >=3.13,<3.15 (3.13–3.14); both are
+        # exercised here. On 3.14, numcodecs builds from source (spikeinterface
+        # 0.104.3 and zarr 2.x cap it below 0.16, the first release with a 3.14
+        # wheel), which needs the C compiler the runners provide.
+        python-version: ["3.13", "3.14"]
         # Windows is excluded: torch and jax fail to load their native
         # libraries on the Windows runner (torch c10.dll -> WinError 1114; jax
         # _jax DLL load failure), and jax has only experimental Windows support

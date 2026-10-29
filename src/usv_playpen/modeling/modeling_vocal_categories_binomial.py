@@ -75,6 +75,7 @@ from .modeling_utils import (
     expected_calibration_error,
     format_split_line,
     harmonize_session_columns,
+    null_target_permutation,
     pool_session_arrays,
     prepare_modeling_sessions,
     resolve_mouse_roles,
@@ -85,7 +86,6 @@ from .modeling_utils import (
     select_kinematic_columns,
     shuffle_train_test_arrays,
     unroll_history_matrix,
-    within_group_permutation,
     zscore_features_across_sessions,
 )
 
@@ -922,8 +922,8 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                     null_rng = np.random.default_rng(
                         (self.modeling_settings['model_validation']['random_seed'] or 0) + split_idx + 1
                     )
-                    # Labels shuffled within sessions, so every session keeps its class balance.
-                    y_tr = y_tr_split[within_group_permutation(g_tr, null_rng)]
+                    # Labels shuffled across the whole training set (null_target_permutation).
+                    y_tr = y_tr_split[null_target_permutation(y_tr_split.shape[0], null_rng)]
 
                 try:
                     y_prob = None
@@ -1148,9 +1148,9 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                     (self.modeling_settings['model_validation']['random_seed'] or 0) + n_splits + 1
                 )
                 for branch in ('actual', 'null'):
-                    # The held-out null shuffles labels within the development sessions.
+                    # The held-out null shuffles labels across the development set.
                     y_tr = (y_train_dev if branch == 'actual'
-                            else y_train_dev[within_group_permutation(groups_dev, held_rng)])
+                            else y_train_dev[null_target_permutation(y_train_dev.shape[0], held_rng)])
                     rec = heldout[branch]
                     try:
                         y_prob = None
