@@ -246,7 +246,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file also contai
             "apply_phase_shift": true
     }
 
-.. list-table:: ``validate_ephys_video_sync`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -439,7 +439,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file also contai
         "duplicate_censored_period_ms": 0.3
       },
 
-.. list-table:: ``get_spike_times`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -626,7 +626,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file also contai
         "subprocess_timeout_hours": 2
       }
 
-.. list-table:: ``concatenate_video_files`` / ``rectify_video_fps`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -785,7 +785,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
     "centered_instance_model_path": ""
   }
 
-.. list-table:: ``prepare_cluster_job`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -889,7 +889,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
         "subprocess_timeout_hours": 3
       }
 
-.. list-table:: ``sleap_file_conversion`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -1024,7 +1024,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file also contai
         "experimental_codes": []
       }
 
-.. list-table:: ``conduct_anipose_triangulation`` and ``translate_rotate_metric`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -1399,7 +1399,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
         "subprocess_timeout_hours": 2
       }
 
-.. list-table:: ``multichannel_to_channel_audio`` and ``crop_wav_files_to_video`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -1524,7 +1524,7 @@ These four parameters are no longer exposed in the GUI (only the *Run HPSS* togg
         ]
     }
 
-.. list-table:: ``hpss_audio`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -1631,7 +1631,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
         "subprocess_timeout_hours": 2
     }
 
-.. list-table:: ``filter_audio_files`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -1695,7 +1695,7 @@ The *Ultrasonic MEMMAP* step takes its parameters from the adjacent ``concatenat
         ]
     }
 
-.. list-table:: ``concatenate_audio_files`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -1776,7 +1776,7 @@ The step takes its parameters from the ``broadband_filter_audio`` block of */usv
         "low_band_variance_seed": 0
     }
 
-.. list-table:: ``broadband_filter_audio`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -2046,7 +2046,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
         "subprocess_timeout_hours": 12
       },
 
-.. list-table:: ``das_command_line_inference`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -2293,7 +2293,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
         "noise_histogram_cutoff_line_color": "#202020"
      }
 
-.. list-table:: ``summarize_das_findings`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -2759,7 +2759,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
     "subprocess_timeout_hours": null
    }
 
-.. list-table:: ``vocalocator`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -2849,7 +2849,7 @@ when turning the 6-D localizer output into per-mouse attributions (all exposed a
     "angle_pdf_seed": 0
    }
 
-.. list-table:: ``assign_vocalizations`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -3225,7 +3225,7 @@ Settings
 
     "spectrograms_root": "/mnt/falkner/Bartul/spectrograms"
 
-.. list-table:: ``spectrograms_root`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -3263,7 +3263,7 @@ Settings
         "top_db": 80.0
       }
 
-.. list-table:: ``generate_spectrograms`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -3418,7 +3418,7 @@ Settings
         "min_box_area": 0
       }
 
-.. list-table:: ``generate_masks`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -3720,7 +3720,7 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
         "high_energy_frac": 0.95
       }
 
-.. list-table:: ``compute_usv_acoustic_features`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -3761,7 +3761,7 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
         "batch_size": 64
       }
 
-.. list-table:: ``detect_usv_noise`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -3823,7 +3823,7 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
         "label_smoothing": 0.05
       }
 
-.. list-table:: ``train_noise_model`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -3946,7 +3946,7 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
         "batch_size": 64
       }
 
-.. list-table:: ``detect_usv_squeaks`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -4029,7 +4029,7 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
         "class_weighted": false
       }
 
-.. list-table:: ``train_usv_squeak_model`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -4212,7 +4212,7 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
         "data_batch_size": 512
       }
 
-.. list-table:: ``infer_qlvm_squeak_latents`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -4288,7 +4288,7 @@ The USV maps hold USVs only. A pure squeak (``squeak`` true and ``usv`` false, w
         "data_batch_size": 8192
       }
 
-.. list-table:: ``infer_qlvm_latents`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -4601,7 +4601,7 @@ The content-ridge categories of the regular map, built once from a corpus of emb
         "coordinate_prefix": ""
       }
 
-.. list-table:: ``build_qlvm_categories`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -4766,7 +4766,7 @@ The content-ridge categories of the regular map, built once from a corpus of emb
    :Options: a positive integer
    :Default: ``20``
 
-.. list-table:: ``assign_qlvm_categories`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -4824,7 +4824,7 @@ The two settings blocks (every key is also a flag of its command):
         "run_name": "usv_yolo_detector"
       }
 
-.. list-table:: ``export_yolo_dataset`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -4893,7 +4893,7 @@ The two settings blocks (every key is also a flag of its command):
    :Default: ``""``
    :Notes: used by ``manual`` / ``merge``.
 
-.. list-table:: ``train_masks`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -5081,7 +5081,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
         "unpaired_off_event_threshold_ceiling": 0.35
    }
 
-.. list-table:: A/V synchronization settings at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -5323,7 +5323,7 @@ The look of the *summary* figure is set in a section not modifiable in the GUI, 
     }
    }
 
-.. list-table:: ``preprocessing_summary`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance

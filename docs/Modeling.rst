@@ -81,7 +81,7 @@ blocks. Each block is shown below as it appears in the file, followed by its key
         "camera_sampling_rate": 150
     }
 
-.. list-table:: ``io`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -188,7 +188,7 @@ cross-validation and held-out-test settings live in their own
         "onset_target_classes": ["usv"]
     }
 
-.. list-table:: ``model_params`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -469,7 +469,7 @@ cross-validation and held-out-test settings live in their own
         "stratification_min_events_per_bin": 20
     }
 
-.. list-table:: ``model_validation`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -635,7 +635,7 @@ cross-validation and held-out-test settings live in their own
         "smooth_abs_features": {"ego_yaw": 1.0, "back_yaw": 0.5}
     }
 
-.. list-table:: ``kinematic_features`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -773,7 +773,7 @@ cross-validation and held-out-test settings live in their own
         }
     }
 
-.. list-table:: ``vocal_features`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -1068,7 +1068,7 @@ cross-validation and held-out-test settings live in their own
         "timescale_signal_min_run_seconds": 0.2
     }
 
-.. list-table:: ``diagnostics`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -1253,7 +1253,7 @@ continuous manifold target, consumed by ``NeuralContinuousCNNRunner`` (see
         }
     }
 
-.. list-table:: ``cnn_continuous`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -1736,7 +1736,7 @@ log-score ``vm_logscore`` on the torus, ``dcor_xy`` on euclidean).
         }
     }
 
-.. list-table:: ``linear_models`` at a glance (defaults are manifold / multinomial where they differ)
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -2096,7 +2096,7 @@ selections):
         }
     }
 
-.. list-table:: ``hyperparameters.classical`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -2290,7 +2290,7 @@ are back-projected onto the frame axis for the stored ``filter_shapes``.
         }
     }
 
-.. list-table:: ``hyperparameters.basis_functions`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -2411,7 +2411,7 @@ are back-projected onto the frame axis for the stored ``filter_shapes``.
         "init_bias_sd": 0.3
     }
 
-.. list-table:: ``glm_hmm`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -2697,7 +2697,7 @@ is ``'bout_offset'``.
         "max_negatives_per_bout": 3
     }
 
-.. list-table:: ``bout_offset`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -2802,7 +2802,7 @@ is ``'bout_offset'``.
         }
     }
 
-.. list-table:: ``behavioral_response`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -4039,7 +4039,7 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
         "somatic": "somatic"
     }
 
-.. list-table:: ``data`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -4133,7 +4133,7 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
         "data_root": "/mnt/falkner/Bartul/Data"
     }
 
-.. list-table:: ``data_roots`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -4189,7 +4189,7 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
         "single_session_inner_split_blocks": 5
     }
 
-.. list-table:: ``data_sufficiency`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -4271,7 +4271,7 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
         }
     }
 
-.. list-table:: ``kinematic_features`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -4329,7 +4329,7 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
         "torus_period": 1.0
     }
 
-.. list-table:: ``vocalization_settings`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -4502,7 +4502,7 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
         "null_block_megabytes": 32
     }
 
-.. list-table:: ``kinematic_encoding`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -4872,7 +4872,7 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
         }
     }
 
-.. list-table:: ``vocal_gating`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -5124,7 +5124,7 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
         "record_overdispersion_index": true
     }
 
-.. list-table:: ``vocal_decoding`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -5418,7 +5418,7 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
         }
     }
 
-.. list-table:: ``nested_vocal_manifold_position_decoding`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -5642,7 +5642,7 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
         "screen_n_shuffles": 2000
     }
 
-.. list-table:: ``null`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -5711,7 +5711,7 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
         "report_bh_floor_requirement": true
     }
 
-.. list-table:: ``significance`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
@@ -5773,7 +5773,7 @@ tracking frames (150 fps), and all torus coordinates in units of the period.
         "shift_range_check": false
     }
 
-.. list-table:: ``robustness`` at a glance
+.. list-table::
    :header-rows: 1
    :widths: 44 16 40
    :class: settings-glance
