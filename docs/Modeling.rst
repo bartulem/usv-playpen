@@ -130,22 +130,266 @@ cross-validation and held-out-test settings live in their own
         "onset_target_classes": ["usv"]
     }
 
-* **filter_history** — seconds of behavioral history preceding each event that feed the temporal filter (× ``camera_sampling_rate`` → frames). **Allowed:** positive number of seconds (not validated); shipped ``4``.
-* **mixture_model_component_index** / **mixture_model_z_score** — bout grouping: the fitted inter-syllable-interval mixture (``mixture_model_params``) is thresholded at ``mean + z·sd`` of the selected component (component ``0``, ``z = 2.58``) to decide where one bout ends and the next begins. **Allowed:** ``mixture_model_component_index``: integer index into the target sex's fitted mixture in ``mixture_model_params``, ``0``–``3`` for male and ``0``–``2`` for female (an index past the last component raises ``IndexError``; components are ordered by mean log interval, so ``0`` is the shortest-interval component); ``mixture_model_z_score``: positive number of standard deviations (not validated); shipped ``0`` and ``2.58``.
-* **model_basis_function** — temporal-filter basis over the history window: ``'raised_cosine'`` / ``'bspline'`` / ``'laplacian_pyramid'`` (parameters in ``hyperparameters.basis_functions``), or ``'identity'`` (the raw per-frame history, no projection). Only relevant when ``model_engine = 'sklearn'`` — the ``'pygam'`` engine uses its own tensor-product splines instead. **Allowed:** one of ``'raised_cosine'``, ``'bspline'``, ``'laplacian_pyramid'``, ``'identity'`` (any other value raises when the ``'sklearn'`` engine builds its basis; ignored under ``'pygam'``); shipped ``'raised_cosine'``.
-* **model_engine** — univariate model backend: ``'pygam'`` (tensor-product-spline GAM, a generalized additive model) or ``'sklearn'`` (basis-projected linear). **Allowed:** ``'pygam'`` or ``'sklearn'`` (the model selections raise on any other value); the multinomial category and acoustic-manifold targets always run the JAX estimators and ignore it; shipped ``'pygam'``.
-* **model_predictor_mouse_index** — which mouse (``0`` / ``1``) is the **partner**; the **target** — the mouse whose vocal behavior is being predicted — is defined as the other one. Both mice's kinematics enter the predictor set. **Allowed:** ``0`` or ``1``, the slot in the session's ``track_names`` (not validated; the target is ``abs(index - 1)``, so other values are meaningless); shipped ``1``.
-* **model_target_vocal_type** — onset target mode, one of ``'bout_onset'`` (clustered bout onsets, both positive and negative pre-event windows kept clean), ``'individual'`` (per-USV onsets), ``'state'`` (the session is sampled on a regular ``filter_history``-spaced time grid and each sample labelled vocal / silent by whether a vocalization of the ``onset_target_classes`` occupies it, with no clean-history requirement), or ``'bout_offset'`` (the END of a bout against an interior USV of a bout that continued; configured by the ``bout_offset`` block, see :ref:`Bout offsets <modeling-bout-offsets>`); used only by ``VocalOnsetModelingPipeline``. **Allowed:** one of ``'bout_onset'``, ``'individual'``, ``'state'``, ``'bout_offset'`` (any other value raises ``ValueError``); shipped ``'bout_onset'``.
-* **model_target_variable** — for ``BoutParameterPipeline``, which per-bout quantity to regress: ``'bout_durations'`` (first-to-last-USV span, seconds), ``'bout_syllable_counts'`` (the number of USVs in the bout), ``'mean_mask_complexity'`` (per-USV mean spectrogram-mask complexity), or ``'total_mask_complexity'`` (summed over the bout). The model-selection dispatcher (``main_model_selection_dispatcher``) reads it from here for the ``params`` selection; it is not a command-line flag. **Allowed:** one of ``'bout_durations'``, ``'bout_syllable_counts'``, ``'mean_mask_complexity'``, ``'total_mask_complexity'`` (any other value raises ``KeyError`` at extraction); shipped ``'bout_durations'``.
-* **selection_p_val** — the significance level gating whether a candidate feature is admitted during forward-stepwise model selection (default ``0.01``); on the acoustic-manifold target it is the Benjamini–Hochberg FDR ``q`` used to screen candidates. The model-selection dispatcher passes this value to every selector; it is not a command-line flag. **Allowed:** number in ``(0, 1)`` (not validated); on the onset, category and bout-parameter selections it is a family-wise level, Bonferroni-divided by the number of candidate features before the null percentile is read; shipped ``0.01``.
-* **selection_effect_floor** / **selection_n_bootstrap** / **selection_ci_level** — the acoustic-manifold selection's **fold-grain acceptance gate** (``continuous_vocal_manifold_model_selection``): a feature is kept only when its per-fold paired score margin over the shuffle null (the macro von Mises log-likelihood on the torus, the wrap-aware distance correlation on euclidean) is consistently positive across CV folds. ``selection_effect_floor`` is the relative effect floor a screened feature must clear — a fraction of the top surviving driver's margin (default ``0.1`` = 10%); ``selection_n_bootstrap`` is the number of fold bootstrap resamples (default ``1000``); ``selection_ci_level`` is the bootstrap confidence level whose lower bound must exceed ``0`` for an anchor / forward step to be accepted (default ``0.99``). The screen's p-value is not a bootstrap: it is an exact one-sided sign-flip permutation test over the folds, ``p = (1 + k) / (1 + B)`` over the ``B = 2**manifold_n_cv_folds - 1`` non-identity sign patterns (every pattern enumerated; ``k`` counts those whose margin sum ties or beats the observed one), so it is never ``0`` and its floor is ``1 / 2**manifold_n_cv_folds`` (``9.5e-7`` at the shipped 20 folds, below the Benjamini–Hochberg rank-1 threshold ``q / m``); above ``selection_sign_flip_exact_max_folds`` usable folds a seeded Monte-Carlo set of ``selection_sign_flip_monte_carlo_draws`` patterns replaces the enumeration. These apply to the manifold gate only; the onset / category / bout-parameter selections use ``selection_p_val`` alone. All of the gate's knobs are read from the run's own settings file at call time. **Allowed:** ``selection_effect_floor``: fraction in ``[0, 1]`` of the top surviving margin (``0`` disables the floor; not validated); ``selection_n_bootstrap``: positive integer (not validated); ``selection_ci_level``: number in ``(0, 1)`` (not validated); shipped ``0.1``, ``1000`` and ``0.99``.
-* **selection_min_fold_events** — the manifold gate scores a fold only when its test set holds at least this many events (default ``30``); a sparser fold is dropped from the paired margin, since too few points give an unstable per-fold score (and an unstable per-fold ``kappa`` when the concentration is not frozen). **Allowed:** positive integer (not validated); shipped ``30``.
-* **selection_sign_flip_exact_max_folds** / **selection_sign_flip_monte_carlo_draws** — how the gate's sign-flip p-value is computed: up to ``selection_sign_flip_exact_max_folds`` usable folds (default ``22``) every one of the ``2**n`` sign patterns is enumerated, so the test is exact (``2**22`` sums are ~32 MB of float64, a fraction of a second); above it a seeded Monte-Carlo set of ``selection_sign_flip_monte_carlo_draws`` patterns (default ``1048576`` = ``2**20``) is drawn instead and the p-value floor becomes ``1 / (1 + draws)``. The shipped ``manifold_n_cv_folds`` (20) is always enumerated exactly, so the draw count matters only for a run configured with more than 22 folds. **Allowed:** ``selection_sign_flip_exact_max_folds``: positive integer (memory grows as ``2**n``, so values much above ~25 are impractical; not validated); ``selection_sign_flip_monte_carlo_draws``: positive integer (not validated); shipped ``22`` and ``1048576``.
-* **filter_null_permutations** — the torus and multinomial (QLVM category) model selections refit the final feature set on the development sessions this many times with the target permuted across the development set (positions with their weights and regions on the torus, category labels for the multinomial model) and store the permuted filters with the held-out block (``heldout['null_weights']``). The filter figures draw each filter against that no-signal band: part of a filter's weight at the two ends of the history window appears without any signal (the residual end weight of the lag basis), so only weight above the band reads as a real effect. ``0`` stores none (the figures then draw no band); no band is stored when the held-out reserve is disabled. **Allowed:** integer ``>= 0`` (``0`` stores no band; not validated); shipped ``20``.
-* **usv_bout_time** — duration (seconds) of the post-onset silence window that defines the **negative (No-USV) events** in ``'bout_onset'`` and ``'individual'`` modes: a candidate silent-epoch onset is kept only if no vocalization of the target mouse, and none assigned to no animal, starts within ``[t_onset, t_onset + usv_bout_time)`` after it. **Allowed:** positive number of seconds (not validated); shipped ``2``.
-* **usv_per_bout_floor** — the minimum number of USVs a bout must contain: the positive bouts in ``'bout_onset'`` and ``'bout_offset'`` modes, the bouts of ``BoutParameterPipeline``, and the bouts of the behavioral-response pipeline. **Allowed:** integer ``>= 1`` (not validated); shipped ``2``.
-* **onset_target_category** — restrict positive onsets to a single USV category (``'individual'`` mode only); ``null`` pools all categories (see the single-category note under :ref:`Modeling input data <modeling-extract>`). **Allowed:** ``null`` (all categories pooled) or one integer label of ``usv_category_column_name``, ``1``–``4`` for ``qlvm_category`` (1 is the category with the most USVs); read only in ``'individual'`` mode, ignored with a warning otherwise; a set value needs a non-null ``usv_category_column_name``; shipped ``null``.
-* **onset_target_classes** — which vocal classes are the positive onsets, a non-empty list read from the summary's ``usv`` / ``squeak`` booleans (written by ``detect-usv-squeaks``): ``"usv"`` (a pure USV, ``usv`` true and ``squeak`` false), ``"squeak"`` (a pure squeak, ``squeak`` true and ``usv`` false) and ``"overlap"`` (a USV and a squeak in one segment, both true). ``["usv"]`` (default) models pure USVs, ``["usv", "overlap"]`` every segment holding a USV, ``["squeak", "overlap"]`` every segment holding a squeak, ``["overlap"]`` overlaps alone, and ``["usv", "squeak", "overlap"]`` everything. An unscored segment (null booleans) is in no class. Each positive is timed as the event the list asks about (``os_utils.vocal_event_times``): a pure USV by its segment ``start`` / ``stop``, a pure squeak by its own extent ``squeak_start`` / ``squeak_end`` (written by ``detect-usv-squeaks``), and an overlap segment by the squeak extent when the list names ``"squeak"`` but not ``"usv"`` (the squeak typically begins ~40 ms after the segment's USV onset), by the segment when it names ``"usv"`` but not ``"squeak"``, and by the union of the two otherwise (``["overlap"]`` alone, or both classes named); a list that can time a row by the squeak extent raises when a summary has no ``squeak_start`` / ``squeak_end``. Vocalizations of the other classes neither join nor split a bout; the bout-parameter and behavioral-response pipelines group their bouts from the same classes, so a bout is the same in every model. The bout modes (``'bout_onset'``, ``'bout_offset'``) accept ``"usv"`` and ``"overlap"`` only, since squeaks do not come in bouts and the inter-bout threshold is calibrated on USV intervals; ``'individual'`` and ``'state'`` take any list. Silence is not class-specific: a negative window, and a ``'bout_onset'`` positive's clean history, must both be free of every vocalization of the target mouse (any class) and of every vocalization assigned to no animal, so the two groups are built under one rule whatever the target. A negative window needs exactly the clean history a ``'bout_onset'`` positive needs, ``filter_history`` of silence before its end and nothing more: window ends are tiled every ``filter_history`` from the start of each clean zone, so the first negative after a vocalization ends ``filter_history`` after its stop, the earliest point a positive is clean; a squeak-bearing segment blocks the union of the segment and its squeak extent (``os_utils.vocal_occupancy_times``), which may reach past the segment, so every summary needs ``squeak_start`` / ``squeak_end``. Noise segments are removed first in every case when ``vocal_features.exclude_noise_usvs`` is ``true``. Applied before ``onset_target_category``; any list other than ``["usv"]`` is embedded in the ``analysis_tag`` (e.g. ``individual_squeak``, ``bout_onset_usv+overlap``). **Allowed:** a non-empty list of distinct classes from ``"usv"``, ``"squeak"``, ``"overlap"`` (anything else raises ``ValueError``); in ``'bout_onset'`` and ``'bout_offset'`` modes only ``"usv"`` and ``"overlap"``; shipped ``["usv"]``.
+.. list-table:: ``model_params`` at a glance
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`filter_history <mp-filter-history>`
+     - ``4``
+     - seconds > 0
+   * - :ref:`mixture_model_component_index <mp-mixture-model>`
+     - ``0``
+     - ``0``–``3`` (male), ``0``–``2`` (female)
+   * - :ref:`mixture_model_z_score <mp-mixture-model>`
+     - ``2.58``
+     - standard deviations > 0
+   * - :ref:`model_basis_function <mp-model-basis-function>`
+     - ``'raised_cosine'``
+     - ``'raised_cosine'``, ``'bspline'``, ``'laplacian_pyramid'``, ``'identity'``
+   * - :ref:`model_engine <mp-model-engine>`
+     - ``'pygam'``
+     - ``'pygam'``, ``'sklearn'``
+   * - :ref:`model_predictor_mouse_index <mp-model-predictor-mouse-index>`
+     - ``1``
+     - ``0``, ``1``
+   * - :ref:`model_target_vocal_type <mp-model-target-vocal-type>`
+     - ``'bout_onset'``
+     - ``'bout_onset'``, ``'individual'``, ``'state'``, ``'bout_offset'``
+   * - :ref:`model_target_variable <mp-model-target-variable>`
+     - ``'bout_durations'``
+     - ``'bout_durations'``, ``'bout_syllable_counts'``, ``'mean_mask_complexity'``, ``'total_mask_complexity'``
+   * - :ref:`selection_p_val <mp-selection-p-val>`
+     - ``0.01``
+     - number in ``(0, 1)``
+   * - :ref:`selection_effect_floor <mp-manifold-gate>`
+     - ``0.1``
+     - fraction in ``[0, 1]``
+   * - :ref:`selection_n_bootstrap <mp-manifold-gate>`
+     - ``1000``
+     - integer > 0
+   * - :ref:`selection_ci_level <mp-manifold-gate>`
+     - ``0.99``
+     - number in ``(0, 1)``
+   * - :ref:`selection_min_fold_events <mp-selection-min-fold-events>`
+     - ``30``
+     - integer > 0
+   * - :ref:`selection_sign_flip_exact_max_folds <mp-sign-flip>`
+     - ``22``
+     - integer > 0
+   * - :ref:`selection_sign_flip_monte_carlo_draws <mp-sign-flip>`
+     - ``1048576``
+     - integer > 0
+   * - :ref:`filter_null_permutations <mp-filter-null-permutations>`
+     - ``20``
+     - integer >= 0
+   * - :ref:`usv_bout_time <mp-usv-bout-time>`
+     - ``2``
+     - seconds > 0
+   * - :ref:`usv_per_bout_floor <mp-usv-per-bout-floor>`
+     - ``2``
+     - integer >= 1
+   * - :ref:`onset_target_category <mp-onset-target-category>`
+     - ``null``
+     - ``null``, or one category label
+   * - :ref:`onset_target_classes <mp-onset-target-classes>`
+     - ``["usv"]``
+     - list of ``"usv"``, ``"squeak"``, ``"overlap"``
+
+.. _mp-filter-history:
+
+``filter_history``
+   Seconds of behavioral history preceding each event that feed the temporal filter.
+
+   :Options: any positive number of seconds (not validated)
+   :Default: ``4``
+   :Notes: multiplied by ``camera_sampling_rate`` to give the window in frames.
+
+.. _mp-mixture-model:
+
+``mixture_model_component_index`` / ``mixture_model_z_score``
+   Bout grouping: where one bout ends and the next begins. The fitted inter-syllable-interval mixture (``mixture_model_params``) is thresholded at ``mean + z·sd`` of the selected component.
+
+   :Options:
+      * ``mixture_model_component_index`` — an integer index into the target sex's fitted mixture in ``mixture_model_params``: ``0``–``3`` for male, ``0``–``2`` for female. Components are ordered by mean log interval, so ``0`` is the shortest-interval component; an index past the last component raises ``IndexError``.
+      * ``mixture_model_z_score`` — a positive number of standard deviations (not validated)
+   :Default: ``0`` and ``2.58`` (component ``0``, ``z = 2.58``)
+
+.. _mp-model-basis-function:
+
+``model_basis_function``
+   Temporal-filter basis over the history window.
+
+   :Options:
+      * ``'raised_cosine'`` — raised-cosine basis (parameters in ``hyperparameters.basis_functions``)
+      * ``'bspline'`` — B-spline basis (parameters in ``hyperparameters.basis_functions``)
+      * ``'laplacian_pyramid'`` — Laplacian-pyramid basis (parameters in ``hyperparameters.basis_functions``)
+      * ``'identity'`` — the raw per-frame history, no projection
+   :Default: ``'raised_cosine'``
+   :Notes: only relevant when ``model_engine = 'sklearn'``; the ``'pygam'`` engine uses its own tensor-product splines instead and ignores this setting. Any other value raises when the ``'sklearn'`` engine builds its basis.
+
+.. _mp-model-engine:
+
+``model_engine``
+   Univariate model backend.
+
+   :Options:
+      * ``'pygam'`` — tensor-product-spline GAM (a generalized additive model)
+      * ``'sklearn'`` — basis-projected linear model
+   :Default: ``'pygam'``
+   :Notes: the multinomial category and acoustic-manifold targets always run the JAX estimators and ignore it. The model selections raise on any other value.
+
+.. _mp-model-predictor-mouse-index:
+
+``model_predictor_mouse_index``
+   Which mouse is the **partner**; the **target** — the mouse whose vocal behavior is being predicted — is the other one.
+
+   :Options: ``0`` or ``1``, the slot in the session's ``track_names``
+   :Default: ``1``
+   :Notes: both mice's kinematics enter the predictor set. Not validated; the target is ``abs(index - 1)``, so other values are meaningless.
+
+.. _mp-model-target-vocal-type:
+
+``model_target_vocal_type``
+   Onset target mode; used only by ``VocalOnsetModelingPipeline``.
+
+   :Options:
+      * ``'bout_onset'`` — clustered bout onsets, both positive and negative pre-event windows kept clean
+      * ``'individual'`` — per-USV onsets
+      * ``'state'`` — the session is sampled on a regular ``filter_history``-spaced time grid and each sample labelled vocal / silent by whether a vocalization of the ``onset_target_classes`` occupies it, with no clean-history requirement
+      * ``'bout_offset'`` — the END of a bout against an interior USV of a bout that continued; configured by the ``bout_offset`` block, see :ref:`Bout offsets <modeling-bout-offsets>`
+   :Default: ``'bout_onset'``
+   :Notes: any other value raises ``ValueError``.
+
+.. _mp-model-target-variable:
+
+``model_target_variable``
+   For ``BoutParameterPipeline``, which per-bout quantity to regress.
+
+   :Options:
+      * ``'bout_durations'`` — first-to-last-USV span, seconds
+      * ``'bout_syllable_counts'`` — the number of USVs in the bout
+      * ``'mean_mask_complexity'`` — per-USV mean spectrogram-mask complexity
+      * ``'total_mask_complexity'`` — spectrogram-mask complexity summed over the bout
+   :Default: ``'bout_durations'``
+   :Notes: the model-selection dispatcher (``main_model_selection_dispatcher``) reads it from here for the ``params`` selection; it is not a command-line flag. Any other value raises ``KeyError`` at extraction.
+
+.. _mp-selection-p-val:
+
+``selection_p_val``
+   The significance level gating whether a candidate feature is admitted during forward-stepwise model selection.
+
+   :Options: a number in ``(0, 1)`` (not validated)
+   :Default: ``0.01``
+   :Notes:
+      * On the onset, category and bout-parameter selections it is a family-wise level, Bonferroni-divided by the number of candidate features before the null percentile is read.
+      * On the acoustic-manifold target it is the Benjamini–Hochberg FDR ``q`` used to screen candidates.
+      * The model-selection dispatcher passes this value to every selector; it is not a command-line flag.
+
+.. _mp-manifold-gate:
+
+``selection_effect_floor`` / ``selection_n_bootstrap`` / ``selection_ci_level``
+   The acoustic-manifold selection's **fold-grain acceptance gate** (``continuous_vocal_manifold_model_selection``): a feature is kept only when its per-fold paired score margin over the shuffle null (the macro von Mises log-likelihood on the torus, the wrap-aware distance correlation on euclidean) is consistently positive across CV folds.
+
+   :Options:
+      * ``selection_effect_floor`` — the relative effect floor a screened feature must clear: a fraction in ``[0, 1]`` of the top surviving driver's margin; ``0`` disables the floor (not validated)
+      * ``selection_n_bootstrap`` — the number of fold bootstrap resamples, a positive integer (not validated)
+      * ``selection_ci_level`` — the bootstrap confidence level, a number in ``(0, 1)``, whose lower bound must exceed ``0`` for an anchor / forward step to be accepted (not validated)
+   :Default: ``0.1`` (10%), ``1000`` and ``0.99``
+   :Notes:
+      * These apply to the manifold gate only; the onset / category / bout-parameter selections use ``selection_p_val`` alone.
+      * The screen's p-value is not a bootstrap: it is an exact one-sided sign-flip permutation test over the folds, ``p = (1 + k) / (1 + B)`` over the ``B = 2**manifold_n_cv_folds - 1`` non-identity sign patterns (every pattern enumerated; ``k`` counts those whose margin sum ties or beats the observed one), so it is never ``0`` and its floor is ``1 / 2**manifold_n_cv_folds`` (``9.5e-7`` at the shipped 20 folds, below the Benjamini–Hochberg rank-1 threshold ``q / m``); above ``selection_sign_flip_exact_max_folds`` usable folds a seeded Monte-Carlo set of ``selection_sign_flip_monte_carlo_draws`` patterns replaces the enumeration.
+      * All of the gate's knobs are read from the run's own settings file at call time.
+
+.. _mp-selection-min-fold-events:
+
+``selection_min_fold_events``
+   The manifold gate scores a fold only when its test set holds at least this many events.
+
+   :Options: a positive integer (not validated)
+   :Default: ``30``
+   :Notes: a sparser fold is dropped from the paired margin, since too few points give an unstable per-fold score (and an unstable per-fold ``kappa`` when the concentration is not frozen).
+
+.. _mp-sign-flip:
+
+``selection_sign_flip_exact_max_folds`` / ``selection_sign_flip_monte_carlo_draws``
+   How the manifold gate's sign-flip p-value is computed.
+
+   :Options:
+      * ``selection_sign_flip_exact_max_folds`` — up to this many usable folds, every one of the ``2**n`` sign patterns is enumerated, so the test is exact; a positive integer (memory grows as ``2**n``, so values much above ~25 are impractical; not validated)
+      * ``selection_sign_flip_monte_carlo_draws`` — above that fold count, a seeded Monte-Carlo set of this many patterns is drawn instead and the p-value floor becomes ``1 / (1 + draws)``; a positive integer (not validated)
+   :Default: ``22`` and ``1048576`` (``2**20``)
+   :Notes: ``2**22`` sums are ~32 MB of float64, a fraction of a second. The shipped ``manifold_n_cv_folds`` (20) is always enumerated exactly, so the draw count matters only for a run configured with more than 22 folds.
+
+.. _mp-filter-null-permutations:
+
+``filter_null_permutations``
+   How many target-permuted refits the torus and multinomial (QLVM category) model selections store, as the no-signal band of the filter figures.
+
+   :Options: an integer ``>= 0`` (not validated); ``0`` stores none, and the figures then draw no band
+   :Default: ``20``
+   :Notes:
+      * The selections refit the final feature set on the development sessions this many times with the target permuted across the development set (positions with their weights and regions on the torus, category labels for the multinomial model) and store the permuted filters with the held-out block (``heldout['null_weights']``).
+      * The filter figures draw each filter against that no-signal band: part of a filter's weight at the two ends of the history window appears without any signal (the residual end weight of the lag basis), so only weight above the band reads as a real effect.
+      * No band is stored when the held-out reserve is disabled.
+
+.. _mp-usv-bout-time:
+
+``usv_bout_time``
+   Duration (seconds) of the post-onset silence window that defines the **negative (No-USV) events** in ``'bout_onset'`` and ``'individual'`` modes.
+
+   :Options: a positive number of seconds (not validated)
+   :Default: ``2``
+   :Notes: a candidate silent-epoch onset is kept only if no vocalization of the target mouse, and none assigned to no animal, starts within ``[t_onset, t_onset + usv_bout_time)`` after it.
+
+.. _mp-usv-per-bout-floor:
+
+``usv_per_bout_floor``
+   The minimum number of USVs a bout must contain.
+
+   :Options: an integer ``>= 1`` (not validated)
+   :Default: ``2``
+   :Notes: applies to the positive bouts in ``'bout_onset'`` and ``'bout_offset'`` modes, the bouts of ``BoutParameterPipeline``, and the bouts of the behavioral-response pipeline.
+
+.. _mp-onset-target-category:
+
+``onset_target_category``
+   Restrict positive onsets to a single USV category (``'individual'`` mode only).
+
+   :Options:
+      * ``null`` — all categories pooled
+      * one integer label of ``usv_category_column_name`` — ``1``–``4`` for ``qlvm_category`` (1 is the category with the most USVs); a set value needs a non-null ``usv_category_column_name``
+   :Default: ``null``
+   :Notes: read only in ``'individual'`` mode, ignored with a warning otherwise. See the single-category note under :ref:`Modeling input data <modeling-extract>`.
+
+.. _mp-onset-target-classes:
+
+``onset_target_classes``
+   Which vocal classes are the positive onsets: a non-empty list read from the summary's ``usv`` / ``squeak`` booleans (written by ``detect-usv-squeaks``).
+
+   :Options: a non-empty list of distinct classes:
+
+      * ``"usv"`` — a pure USV (``usv`` true and ``squeak`` false)
+      * ``"squeak"`` — a pure squeak (``squeak`` true and ``usv`` false)
+      * ``"overlap"`` — a USV and a squeak in one segment (both true)
+
+      Common lists:
+
+      * ``["usv"]`` — pure USVs (the default)
+      * ``["usv", "overlap"]`` — every segment holding a USV
+      * ``["squeak", "overlap"]`` — every segment holding a squeak
+      * ``["overlap"]`` — overlaps alone
+      * ``["usv", "squeak", "overlap"]`` — everything
+   :Default: ``["usv"]``
+   :Notes:
+      * **Validation** — anything else raises ``ValueError``. The bout modes (``'bout_onset'``, ``'bout_offset'``) accept ``"usv"`` and ``"overlap"`` only, since squeaks do not come in bouts and the inter-bout threshold is calibrated on USV intervals; ``'individual'`` and ``'state'`` take any list. An unscored segment (null booleans) is in no class.
+      * **Timing** — each positive is timed as the event the list asks about (``os_utils.vocal_event_times``): a pure USV by its segment ``start`` / ``stop``, a pure squeak by its own extent ``squeak_start`` / ``squeak_end`` (written by ``detect-usv-squeaks``), and an overlap segment by the squeak extent when the list names ``"squeak"`` but not ``"usv"`` (the squeak typically begins ~40 ms after the segment's USV onset), by the segment when it names ``"usv"`` but not ``"squeak"``, and by the union of the two otherwise (``["overlap"]`` alone, or both classes named); a list that can time a row by the squeak extent raises when a summary has no ``squeak_start`` / ``squeak_end``.
+      * **Bouts** — vocalizations of the other classes neither join nor split a bout; the bout-parameter and behavioral-response pipelines group their bouts from the same classes, so a bout is the same in every model.
+      * **Silence** — silence is not class-specific: a negative window, and a ``'bout_onset'`` positive's clean history, must both be free of every vocalization of the target mouse (any class) and of every vocalization assigned to no animal, so the two groups are built under one rule whatever the target. A negative window needs exactly the clean history a ``'bout_onset'`` positive needs, ``filter_history`` of silence before its end and nothing more: window ends are tiled every ``filter_history`` from the start of each clean zone, so the first negative after a vocalization ends ``filter_history`` after its stop, the earliest point a positive is clean; a squeak-bearing segment blocks the union of the segment and its squeak extent (``os_utils.vocal_occupancy_times``), which may reach past the segment, so every summary needs ``squeak_start`` / ``squeak_end``.
+      * **Order and naming** — noise segments are removed first in every case when ``vocal_features.exclude_noise_usvs`` is ``true``. Applied before ``onset_target_category``; any list other than ``["usv"]`` is embedded in the ``analysis_tag`` (e.g. ``individual_squeak``, ``bout_onset_usv+overlap``).
 
 **model_validation** — the held-out test set and cross-validation splitting.
 

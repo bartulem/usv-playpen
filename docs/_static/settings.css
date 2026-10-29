@@ -1,0 +1,36 @@
+/*
+Styling for the settings reference pages.
+
+A setting block is a definition list whose description holds a field list
+(:Options: / :Default: / :Notes:). The selectors below match that shape,
+so a page needs no extra markup to use them.
+*/
+
+/* "at a glance" tables: keep each setting name on one line */
+.rst-content table.settings-glance td:first-child {
+  white-space: nowrap;
+}
+
+/* setting name: larger, bold, with an accent bar so it stands out when scanning */
+.rst-content dl:has(> dd > dl.field-list) > dt {
+  font-size: 1.1em;
+  font-weight: 700;
+  margin-top: 1.6em;
+  padding: 0.2em 0 0.2em 0.6em;
+  border-left: 4px solid #2980b9;
+}
+
+.rst-content dl:has(> dd > dl.field-list) > dt code {
+  font-size: 1em;
+  font-weight: 700;
+}
+
+/* the theme strips list markers inside field lists; bring the dots back */
+.rst-content dl.field-list ul {
+  list-style: disc;
+  margin-left: 1.4em;
+}
+
+.rst-content dl.field-list ul li {
+  list-style: disc;
+}
