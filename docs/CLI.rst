@@ -143,7 +143,7 @@ Process
 
 .. code-block:: text
 
-    usage: crop-wav-files [-h] --root-directory PATH [--trigger-device {both,m,r}]
+    usage: crop-wav-files [-h] --root-directory PATH [--trigger-device {both,m,s}]
                           [--trigger-channel INTEGER]
 
     required arguments:
@@ -433,7 +433,7 @@ Process
 .. code-block:: text
 
     usage: das-infer [-h] --root-directory PATH [--env-name TEXT] [--model-dir PATH]
-                     [--model-name TEXT] [--output-type {csv,hdf5}]
+                     [--model-name TEXT] [--output-type {csv,h5}]
                      [--confidence-thresh FLOAT] [--min-len FLOAT] [--fill-gap FLOAT]
                      [--subprocess-timeout-hours FLOAT]
 

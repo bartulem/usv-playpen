@@ -577,7 +577,7 @@ def multichannel_to_channel_audio_cli(root_directory) -> None:
 
 @click.command(name="crop-wav-files")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
-@click.option('--trigger-device', 'device_receiving_input', type=click.Choice(['both', 'm', 'r'], case_sensitive=False), default=None, required=False, help='USGH device(s) receiving triggerbox input.')
+@click.option('--trigger-device', 'device_receiving_input', type=click.Choice(['both', 'm', 's'], case_sensitive=False), default=None, required=False, help='USGH device(s) receiving triggerbox input.')
 @click.option('--trigger-channel', 'triggerbox_ch_receiving_input', type=int, default=None, required=False, help='USGH channel receiving triggerbox input.')
 @click.pass_context
 def crop_wav_files_to_video_cli(ctx, root_directory, **kwargs) -> None:
@@ -1270,7 +1270,7 @@ def translate_rotate_metric_cli(ctx, root_directory, **kwargs) -> None:
 @click.option('--env-name', 'das_conda_env_name', type=str, default=None, required=False, help='Name of the DAS conda environment.')
 @click.option('--model-dir', 'das_model_directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=False, help='Directory of the DAS model.')
 @click.option('--model-name', 'model_name_base', type=str, default=None, required=False, help='Base name of the DAS model.')
-@click.option('--output-type', 'output_file_type', type=click.Choice(['csv', 'hdf5'], case_sensitive=False), default=None, required=False, help='Output file type for DAS predictions.')
+@click.option('--output-type', 'output_file_type', type=click.Choice(['csv', 'h5'], case_sensitive=False), default=None, required=False, help='Output file type for DAS predictions.')
 @click.option('--confidence-thresh', 'segment_confidence_threshold', type=float, default=None, required=False, help='Confidence threshold for segment detection.')
 @click.option('--min-len', 'segment_minlen', type=float, default=None, required=False, help='Minimum length for a detected segment (s).')
 @click.option('--fill-gap', 'segment_fillgap', type=float, default=None, required=False, help='Gap duration to fill between segments (s).')
