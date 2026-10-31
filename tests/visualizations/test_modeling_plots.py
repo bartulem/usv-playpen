@@ -3513,3 +3513,97 @@ def test_condition_from_path_keeps_the_two_mute_cohorts_apart(path, expected):
     gives the fallback."""
 
     assert modeling_plots._condition_from_path(path, 'unknown') == expected
+
+
+def _shift_numeric_leaves(node, offset: float):
+    """
+    Return a deep copy of a candidate block with ``offset`` added to every numeric
+    array / list leaf, so the copy outranks the original on every display metric
+    (higher-is-better metrics rise; it is used only where the plotters rank the
+    rejected row by a maximised metric).
+
+    Parameters
+    ----------
+    node : dict | list | numpy.ndarray | object
+        Candidate block (or a part of one).
+    offset : float
+        Value added to each numeric leaf.
+
+    Returns
+    -------
+    object
+        The shifted copy.
+    """
+
+    if isinstance(node, dict):
+        return {key: _shift_numeric_leaves(value, offset) for key, value in node.items()}
+    if isinstance(node, (list, np.ndarray)) and np.asarray(node).dtype.kind in 'fiu':
+        return np.asarray(node, dtype=float) + offset
+    return copy.deepcopy(node)
+
+
+def _plant_rejected_step_test(pkl: str, block_key: str) -> None:
+    """
+    Rewrite a synthetic selection pickle so its rejected last step carries a step
+    test record whose winner ('nose-nose', p_adjusted 0.0465) is NOT the best
+    candidate on the display metrics: a decoy candidate 'decoy.feature' is added
+    with every metric raised by 0.3, which the pre-fix plotters would draw in the
+    grey row.
+
+    Parameters
+    ----------
+    pkl : str
+        Path to the pickle written by one of the ``_write_*_selection_pickle``
+        helpers (rejected last step holds the single candidate 'nose-nose').
+    block_key : str
+        Name of the candidate block in that step (``'candidates'`` or
+        ``'candidates_summary'``).
+
+    Returns
+    -------
+    None
+    """
+
+    with pathlib.Path(pkl).open('rb') as handle:
+        artifact = pickle.load(handle)
+    rejected = artifact['steps'][-1]
+    rejected[block_key]['decoy.feature'] = _shift_numeric_leaves(rejected[block_key]['nose-nose'], 0.3)
+    rejected['step_test'] = {'winner': 'nose-nose', 'p_adjusted': 0.0465, 'accepted': False}
+    with pathlib.Path(pkl).open('wb') as handle:
+        pickle.dump(artifact, handle)
+
+
+_REJECTED_ROW_LABELS = {'nose-nose': 'TESTED', 'decoy.feature': 'DECOY',
+                        'self.speed': 'own speed', 'other.speed': 'partner speed'}
+
+
+@pytest.mark.filterwarnings("ignore:FigureCanvasAgg is non-interactive:UserWarning")
+@pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
+@pytest.mark.parametrize('plotter', ['onset', 'multinomial', 'manifold'])
+def test_rejected_row_names_the_step_test_winner_and_its_p(tmp_path, plotter):
+    """The grey rejection row of every trajectory plotter names the feature the
+    step test turned down, with that test's adjusted p, even when another
+    candidate ranks better on the figure's display metric."""
+
+    rng = np.random.default_rng(91)
+    if plotter == 'onset':
+        pkl = _write_selection_pickle(tmp_path, rng)
+        _plant_rejected_step_test(pkl, 'candidates')
+        fig = plot_model_selection_results(selection_results_path=pkl, metric_secondary='auc',
+                                           feature_label_overrides=_REJECTED_ROW_LABELS)[0]
+    elif plotter == 'multinomial':
+        pkl = _write_multinomial_selection_pickle(tmp_path, rng)
+        _plant_rejected_step_test(pkl, 'candidates_summary')
+        fig = plot_multinomial_selection_trajectory(selection_results_path=pkl, metric_primary='auc',
+                                                    metric_secondary='score',
+                                                    feature_label_overrides=_REJECTED_ROW_LABELS)
+    else:
+        pkl = _write_manifold_selection_pickle(tmp_path, rng)
+        _plant_rejected_step_test(pkl, 'candidates_summary')
+        fig = plot_manifold_selection_trajectory(selection_results_path=pkl, metric_primary='r2_spatial',
+                                                 metric_secondary='pearson_y',
+                                                 feature_label_overrides=_REJECTED_ROW_LABELS)
+    labels = [tick.get_text() for tick in fig.axes[0].get_yticklabels()]
+    plt.close('all')
+    assert labels[-1] == '+TESTED  p=0.0465'
+    assert not any('DECOY' in label for label in labels)

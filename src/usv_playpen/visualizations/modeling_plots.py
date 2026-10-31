@@ -1344,6 +1344,42 @@ def _step_test_p_adjusted(step: dict) -> float:
     return float(step['step_test']['p_adjusted'])
 
 
+def _step_test_winner(step: dict, candidates: dict) -> str | None:
+    """
+    Description
+    -----------
+    The candidate a step's per-step shift test was run on
+    (``step['step_test']['winner']``), when the step carries a test record and that
+    candidate is present in ``candidates``. On a rejected step this is the feature
+    the test turned down, so a trajectory figure draws THAT feature in its grey
+    rejection row instead of whichever candidate happens to rank best on the
+    figure's display metric (which can be a different feature, e.g. the best
+    balanced-accuracy candidate when the test winner was chosen on the selection
+    score).
+
+    Parameters
+    ----------
+    step : dict
+        One selection step pickle.
+    candidates : dict
+        The step's candidate block (``candidates_summary`` or ``candidates``),
+        keyed by feature name.
+
+    Returns
+    -------
+    str | None
+        The tested feature, or None for a step without a test record (a run under
+        an earlier acceptance rule) or whose tested feature is absent from
+        ``candidates``; callers then fall back to their display-metric ranking.
+    """
+    if 'step_test' not in step or step['step_test'] is None or 'winner' not in step['step_test']:
+        return None
+    winner = step['step_test']['winner']
+    if winner is None or winner not in candidates:
+        return None
+    return str(winner)
+
+
 def _label_with_p(label: str, p_adjusted: float) -> str:
     """
     Description
@@ -1563,6 +1599,16 @@ def plot_model_selection_results(
                 best_prim_mean = current_mean
                 best_feat = feat
 
+        # The row names the feature the selector actually added at this step; the
+        # display-metric ranking above is only the fallback for a step pickle whose
+        # selected feature is missing from its candidate block.
+        if ('selected_feature' in data and data['selected_feature'] in candidates
+                and primary_metric in candidates[data['selected_feature']]):
+            best_feat = data['selected_feature']
+            _sel_vals = np.array(candidates[best_feat][primary_metric], dtype=float)
+            _sel_vals = _sel_vals[~np.isnan(_sel_vals)]
+            best_prim_mean = float(np.mean(_sel_vals)) if _sel_vals.size else float('nan')
+
         if best_feat is None:
             continue
 
@@ -1714,19 +1760,27 @@ def plot_model_selection_results(
         else:
             rej_cands = {}
         if rej_cands:
-            best_rej_feat = None
+            # The rejected row names the feature the step test turned down; a run
+            # without a test record falls back to the best secondary-metric candidate.
+            best_rej_feat = _step_test_winner(rej_step, rej_cands)
             best_rej_mean = -np.inf
-            for _f, _m in rej_cands.items():
-                if metric_secondary not in _m:
-                    continue
-                _v = np.array(_m[metric_secondary], dtype=float)
+            if best_rej_feat is not None:
+                _v = np.array((rej_cands[best_rej_feat][metric_secondary]
+                               if metric_secondary in rej_cands[best_rej_feat] else []), dtype=float)
                 _v = _v[~np.isnan(_v)]
-                if _v.size == 0:
-                    continue
-                _mu = float(np.mean(_v))
-                if _mu > best_rej_mean:
-                    best_rej_mean = _mu
-                    best_rej_feat = _f
+                best_rej_mean = float(np.mean(_v)) if _v.size else float('nan')
+            else:
+                for _f, _m in rej_cands.items():
+                    if metric_secondary not in _m:
+                        continue
+                    _v = np.array(_m[metric_secondary], dtype=float)
+                    _v = _v[~np.isnan(_v)]
+                    if _v.size == 0:
+                        continue
+                    _mu = float(np.mean(_v))
+                    if _mu > best_rej_mean:
+                        best_rej_mean = _mu
+                        best_rej_feat = _f
             if best_rej_feat is not None:
                 _ll_v = np.array(
                     rej_cands[best_rej_feat][primary_metric], dtype=float
@@ -1808,7 +1862,8 @@ def plot_model_selection_results(
     ytick_labels = [_label_with_p(f"+{_pretty(d['feature_name'])}", d['p_adjusted']) for d in steps_data]
     if rejection_row is not None:
         ytick_positions.append(rej_y)
-        ytick_labels.append(f"+{_pretty(rejection_row['feature_name'])}")
+        ytick_labels.append(_label_with_p(f"+{_pretty(rejection_row['feature_name'])}",
+                                          _step_test_p_adjusted(selection_steps[-1])))
     ax_traj.set_yticks(ytick_positions)
     ax_traj.set_yticklabels(ytick_labels, fontsize=10, color=TEXT_COLOR)
     # Drop the y-axis tick MARKS (the small lines) while keeping the
@@ -2877,28 +2932,35 @@ def plot_multinomial_selection_trajectory(
 
     final_score = float(steps_data[-1]['sec_mean'])
 
-    # Rejected final step lookup (by secondary metric, like binary case).
+    # Rejected final step lookup: the feature the step test turned down; a run
+    # without a test record falls back to the best secondary-metric candidate
+    # (like the binary case).
     rejection_row = None
     if selection_steps[-1]['selected_feature'] is None:
         rej_step = selection_steps[-1]
         rej_cs = rej_step['candidates_summary']
         if rej_cs:
-            best_rej_feat = None
+            best_rej_feat = _step_test_winner(rej_step, rej_cs)
             best_rej_sec = -np.inf
             best_rej_pri = float('nan')
-            for f, cdata in rej_cs.items():
-                fm = cdata['folds']['metrics']
-                v = np.array((fm[metric_secondary] if metric_secondary in fm else []), dtype=float)
-                v = v[np.isfinite(v)]
-                if v.size == 0:
-                    continue
-                mu = float(np.mean(v))
-                if mu > best_rej_sec:
-                    best_rej_sec = mu
-                    best_rej_feat = f
-                    pv = np.array((fm[metric_primary] if metric_primary in fm else []), dtype=float)
-                    pv = pv[np.isfinite(pv)]
-                    best_rej_pri = float(np.mean(pv)) if pv.size else float('nan')
+            if best_rej_feat is not None:
+                fm = rej_cs[best_rej_feat]['folds']['metrics']
+                best_rej_sec = _fold_mean(fm, metric_secondary)
+                best_rej_pri = _fold_mean(fm, metric_primary)
+            else:
+                for f, cdata in rej_cs.items():
+                    fm = cdata['folds']['metrics']
+                    v = np.array((fm[metric_secondary] if metric_secondary in fm else []), dtype=float)
+                    v = v[np.isfinite(v)]
+                    if v.size == 0:
+                        continue
+                    mu = float(np.mean(v))
+                    if mu > best_rej_sec:
+                        best_rej_sec = mu
+                        best_rej_feat = f
+                        pv = np.array((fm[metric_primary] if metric_primary in fm else []), dtype=float)
+                        pv = pv[np.isfinite(pv)]
+                        best_rej_pri = float(np.mean(pv)) if pv.size else float('nan')
             if best_rej_feat is not None:
                 rejection_row = {
                     'feature_name': best_rej_feat,
@@ -3059,7 +3121,8 @@ def plot_multinomial_selection_trajectory(
     ytick_labels = [_label_with_p(f"+{_pretty(d['feature_name'])}", d['p_adjusted']) for d in steps_data]
     if rejection_row is not None:
         ytick_positions.append(rej_y)
-        ytick_labels.append(f"+{_pretty(rejection_row['feature_name'])}")
+        ytick_labels.append(_label_with_p(f"+{_pretty(rejection_row['feature_name'])}",
+                                          _step_test_p_adjusted(selection_steps[-1])))
     ax_traj.set_yticks(ytick_positions)
     ax_traj.set_yticklabels(ytick_labels, fontsize=10, color=TEXT_COLOR)
     ax_traj.tick_params(axis='y', length=0)
@@ -4150,25 +4213,30 @@ def plot_manifold_selection_trajectory(
         })
 
     # Rejected final step lookup -- mirrored from the multinomial
-    # trajectory plotter so a rejection row is rendered consistently.
+    # trajectory plotter so a rejection row is rendered consistently: the
+    # feature the step test turned down; a run without a test record falls
+    # back to the best primary-metric candidate.
     rejection_row = None
     if selection_steps[-1]['selected_feature'] is None:
         rej_step = selection_steps[-1]
         rej_cs = rej_step['candidates_summary']
         if rej_cs:
-            best_rej_feat = None
+            best_rej_feat = _step_test_winner(rej_step, rej_cs)
             best_rej_pri = float('nan')
-            comp = (lambda a, b: a < b) if is_minimization_primary else (lambda a, b: a > b)
-            best_pri_so_far = np.inf if is_minimization_primary else -np.inf
-            for f, cdata in rej_cs.items():
-                fm = cdata['folds']['metrics']
-                pv = _fold_mean(fm, metric_primary)
-                if not np.isfinite(pv):
-                    continue
-                if comp(pv, best_pri_so_far):
-                    best_pri_so_far = pv
-                    best_rej_feat = f
-                    best_rej_pri = pv
+            if best_rej_feat is not None:
+                best_rej_pri = _fold_mean(rej_cs[best_rej_feat]['folds']['metrics'], metric_primary)
+            else:
+                comp = (lambda a, b: a < b) if is_minimization_primary else (lambda a, b: a > b)
+                best_pri_so_far = np.inf if is_minimization_primary else -np.inf
+                for f, cdata in rej_cs.items():
+                    fm = cdata['folds']['metrics']
+                    pv = _fold_mean(fm, metric_primary)
+                    if not np.isfinite(pv):
+                        continue
+                    if comp(pv, best_pri_so_far):
+                        best_pri_so_far = pv
+                        best_rej_feat = f
+                        best_rej_pri = pv
             if best_rej_feat is not None:
                 rejection_row = {
                     'feature_name': best_rej_feat,
@@ -4325,7 +4393,8 @@ def plot_manifold_selection_trajectory(
     ytick_labels = [_label_with_p(f"+{_pretty(d['feature_name'])}", d['p_adjusted']) for d in steps_data]
     if rejection_row is not None:
         ytick_positions.append(rej_y)
-        ytick_labels.append(f"+{_pretty(rejection_row['feature_name'])}")
+        ytick_labels.append(_label_with_p(f"+{_pretty(rejection_row['feature_name'])}",
+                                          _step_test_p_adjusted(selection_steps[-1])))
     ax_traj.set_yticks(ytick_positions)
     ax_traj.set_yticklabels(ytick_labels, fontsize=10, color=TEXT_COLOR)
     ax_traj.tick_params(axis='y', length=0)
