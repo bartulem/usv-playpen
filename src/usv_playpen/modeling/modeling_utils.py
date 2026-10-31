@@ -93,12 +93,15 @@ the single audit-orchestration entry point:
 from __future__ import annotations
 
 import itertools
+import os
 import re
 from datetime import datetime
 from pathlib import Path
 
+import h5py
 import numpy as np
 import polars as pls
+from numpy.lib.stride_tricks import sliding_window_view
 from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import confusion_matrix, matthews_corrcoef
 from sklearn.model_selection import GroupKFold, StratifiedGroupKFold
@@ -1417,6 +1420,545 @@ def paired_one_se_improvement(candidate_fold_scores,
     standard_error = (float(np.std(difference, ddof=1) / np.sqrt(difference.size))
                       if difference.size > 1 else 0.0)
     return improvement, standard_error
+
+
+def valid_window_starts(event_ends: np.ndarray,
+                        history_frames: int,
+                        n_frames: int) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Description
+    -----------
+    Start frame of the history window preceding every event, keeping only the
+    events whose full window lies inside the recording. A window spans the
+    ``history_frames`` frames ending at the event frame (exclusive), so it starts at
+    ``end - history_frames`` and must satisfy ``0 <= start`` and ``end <= n_frames``.
+    Every extraction cuts its windows with this rule and stores the kept starts, and
+    the per-step shift test re-cuts the same windows from a shifted trace at the
+    same starts, so the rule lives here once.
+
+    Parameters
+    ----------
+    event_ends (np.ndarray)
+        ``(n_events,)`` integer frame index at which each window ends (exclusive):
+        ``round(time_seconds * fps)`` for a time-stamped event, or the onset frame.
+    history_frames (int)
+        Window length in frames.
+    n_frames (int)
+        Length of the feature trace the windows are cut from.
+
+    Returns
+    -------
+    starts (np.ndarray)
+        ``(n_valid,)`` int start frames of the kept windows, in event order.
+    valid_mask (np.ndarray)
+        ``(n_events,)`` bool, True for the events whose window was kept.
+    """
+
+    ends = np.asarray(event_ends).astype(int)
+    starts = ends - int(history_frames)
+    valid_mask = (starts >= 0) & (ends <= int(n_frames))
+    return starts[valid_mask].astype(int), valid_mask
+
+
+def cut_history_windows(column: np.ndarray,
+                        starts: np.ndarray,
+                        history_frames: int) -> np.ndarray:
+    """
+    Description
+    -----------
+    Cuts the ``history_frames``-long window starting at every start frame out of one
+    feature trace, with NaN replaced by 0 (the rule every extraction applies; ``inf``
+    is left as it is, as the onset and manifold extractions always did). Row
+    ``i`` equals ``column[starts[i] : starts[i] + history_frames]`` after the NaN fill;
+    the windows are gathered in one fancy-index on a sliding view and copied, so the
+    result is identical to a per-event slice loop. The extractions store the windows
+    this function returns, and the per-step shift test re-cuts them from a circularly
+    shifted copy of the same trace at the same starts; a lag of zero therefore
+    reproduces the stored windows exactly (``verify_windows_against_traces``).
+
+    Parameters
+    ----------
+    column (np.ndarray)
+        ``(n_frames,)`` feature trace of one session (any float dtype).
+    starts (np.ndarray)
+        ``(n_windows,)`` int start frames; every ``start + history_frames`` must be
+        ``<= n_frames`` and every start ``>= 0`` (``valid_window_starts``).
+    history_frames (int)
+        Window length in frames.
+
+    Returns
+    -------
+    windows (np.ndarray)
+        ``(n_windows, history_frames)`` array in the trace's dtype; ``(0,
+        history_frames)`` when there is no start.
+
+    Raises
+    ------
+    ValueError
+        If a start lies outside the trace.
+    """
+
+    column = np.asarray(column)
+    starts = np.asarray(starts, dtype=int)
+    history_frames = int(history_frames)
+    if starts.size == 0:
+        return np.empty((0, history_frames), dtype=column.dtype)
+    if starts.min() < 0 or starts.max() + history_frames > column.shape[0]:
+        msg = (f"cut_history_windows: a window start lies outside the trace "
+               f"(starts in [{starts.min()}, {starts.max()}], history {history_frames}, "
+               f"trace length {column.shape[0]}).")
+        raise ValueError(msg)
+    clean = np.nan_to_num(column, nan=0.0, posinf=np.inf, neginf=-np.inf)
+    windows = sliding_window_view(clean, history_frames)
+    return windows[starts].copy()
+
+
+def circular_shift_trace(column: np.ndarray, lag_frames: int) -> np.ndarray:
+    """
+    Description
+    -----------
+    Circularly shifts one session's feature trace by ``lag_frames``: frame ``t`` of the
+    result holds frame ``t - lag`` of the input, and the segment pushed past the end
+    wraps to the start. The trace's marginal distribution and autocorrelation are
+    preserved, its alignment with the session's event times is broken, and one
+    discontinuity is introduced at the wrap point. This is the null of the per-step
+    shift test (Harris 2020; Nevjen & Dunn 2024).
+
+    Parameters
+    ----------
+    column (np.ndarray)
+        ``(n_frames,)`` feature trace.
+    lag_frames (int)
+        Shift in frames (positive).
+
+    Returns
+    -------
+    shifted (np.ndarray)
+        The shifted trace, same shape and dtype.
+    """
+
+    return np.roll(np.asarray(column), int(lag_frames))
+
+
+def draw_session_shift_lags(rng: np.random.Generator,
+                            session_lengths: dict,
+                            min_lag_frames: int) -> dict:
+    """
+    Description
+    -----------
+    One circular-shift lag per session for one null draw of the per-step shift test,
+    drawn uniformly from ``{min_lag, ..., T_s - min_lag}`` frames where ``T_s`` is the
+    session's trace length, independently across sessions (sessions are independent
+    recordings). The lower bound keeps the shifted trace at least ``min_lag`` frames
+    away from its true position in both directions of the circle.
+
+    Parameters
+    ----------
+    rng (np.random.Generator)
+        Seeded generator of this draw.
+    session_lengths (dict)
+        ``{session_id: n_frames}`` for every session that is shifted, in the order the
+        lags are drawn (sorted session ids give a reproducible draw).
+    min_lag_frames (int)
+        Smallest admissible lag in frames.
+
+    Returns
+    -------
+    lags (dict)
+        ``{session_id: lag_frames}``.
+
+    Raises
+    ------
+    ValueError
+        If a session is shorter than ``2 * min_lag_frames`` (no admissible lag).
+    """
+
+    min_lag_frames = int(min_lag_frames)
+    if min_lag_frames < 1:
+        msg = f"draw_session_shift_lags: min_lag_frames must be >= 1, got {min_lag_frames}."
+        raise ValueError(msg)
+    lags = {}
+    for session_id, session_frames in session_lengths.items():
+        n_frames = int(session_frames)
+        high = n_frames - min_lag_frames
+        if high < min_lag_frames:
+            msg = (f"draw_session_shift_lags: session {session_id!r} has {n_frames} frames, "
+                   f"shorter than 2 x min_lag ({2 * min_lag_frames}); no admissible lag.")
+            raise ValueError(msg)
+        lags[session_id] = int(rng.integers(min_lag_frames, high + 1))
+    return lags
+
+
+def shift_refit_count(m_candidates: int, alpha: float) -> int:
+    """
+    Description
+    -----------
+    Number of shifted refits ``B`` the per-step test runs: the smallest ``B`` for which
+    a Bonferroni-corrected permutation p-value over ``m`` candidates can fall below
+    ``alpha`` at all. With ``p = (1 + k) / (B + 1)`` and ``p_adj = m * p``, passing
+    needs ``m * (1 + k) / (B + 1) < alpha``; ``B = floor(m / alpha)`` makes that
+    possible exactly when ``k = 0`` (no shifted refit reaches the observed statistic),
+    so the step is decided by the first exceedance and accepted steps run all ``B``.
+
+    Parameters
+    ----------
+    m_candidates (int)
+        Number of candidates the step chose its winner from (``>= 1``).
+    alpha (float)
+        Level of the test (``0 < alpha < 1``).
+
+    Returns
+    -------
+    n_refits (int)
+        ``floor(m / alpha)``.
+    """
+
+    m_candidates = int(m_candidates)
+    alpha = float(alpha)
+    if m_candidates < 1 or not (0.0 < alpha < 1.0):
+        msg = f"shift_refit_count: need m >= 1 and 0 < alpha < 1, got m={m_candidates}, alpha={alpha}."
+        raise ValueError(msg)
+    return int(np.floor(m_candidates / alpha))
+
+
+def bonferroni_permutation_p(k_exceed: int, n_draws: int, m_candidates: int) -> tuple[float, float]:
+    """
+    Description
+    -----------
+    Monte-Carlo permutation p-value ``(1 + k) / (n + 1)`` (the observed statistic
+    counted among the draws, exact at every ``n``) and its Bonferroni correction over
+    the ``m`` candidates the winner was chosen from, ``min(1, m * p)``.
+
+    Parameters
+    ----------
+    k_exceed (int)
+        Number of draws whose statistic reached the observed one (``>=``).
+    n_draws (int)
+        Number of draws run.
+    m_candidates (int)
+        Number of candidates at the step.
+
+    Returns
+    -------
+    p (float)
+        The uncorrected permutation p-value.
+    p_adjusted (float)
+        ``min(1, m * p)``.
+    """
+
+    p = (1.0 + int(k_exceed)) / (int(n_draws) + 1.0)
+    return float(p), float(min(1.0, int(m_candidates) * p))
+
+
+def macro_log_likelihood(y_true: np.ndarray,
+                         y_proba: np.ndarray,
+                         classes: np.ndarray) -> float:
+    """
+    Description
+    -----------
+    Class-balanced (macro) mean log-likelihood per event of a categorical predictor:
+    the mean over the classes present in ``y_true`` of each class's mean
+    ``log p(true class)``. Every class weighs the same whatever its prevalence, which
+    is what the multinomial pipeline's macro AUC also does; unlike AUC it is a proper
+    scoring rule on the likelihood scale, so it is the statistic of the multinomial
+    pipeline's per-step shift test. Probabilities are clipped to ``[1e-15, 1 -
+    1e-15]`` before the log, as the pipeline's log-loss is.
+
+    Parameters
+    ----------
+    y_true (np.ndarray)
+        ``(n,)`` true class labels.
+    y_proba (np.ndarray)
+        ``(n, n_classes)`` predicted probabilities, columns in the order of
+        ``classes``.
+    classes (np.ndarray)
+        ``(n_classes,)`` class labels matching the probability columns.
+
+    Returns
+    -------
+    macro_ll (float)
+        Mean over present classes of the class-mean log-probability of the true
+        class (``<= 0``; higher is better).
+    """
+
+    y_true = np.asarray(y_true)
+    y_proba = np.asarray(y_proba, dtype=np.float64)
+    classes = np.asarray(classes)
+    if y_proba.ndim != 2 or y_proba.shape[1] != classes.shape[0]:
+        msg = (f"macro_log_likelihood: y_proba must be (n, {classes.shape[0]}), "
+               f"got {y_proba.shape}.")
+        raise ValueError(msg)
+    clipped = np.clip(y_proba, 1e-15, 1.0 - 1e-15)
+    per_class = []
+    for column, label in enumerate(classes):
+        rows = y_true == label
+        if not np.any(rows):
+            continue
+        per_class.append(float(np.mean(np.log(clipped[rows, column]))))
+    if not per_class:
+        msg = "macro_log_likelihood: no row of y_true matches any class."
+        raise ValueError(msg)
+    return float(np.mean(per_class))
+
+
+def pool_worker_count(requested_workers: int,
+                      n_terms: int,
+                      memory_gb: float,
+                      peak_gb_base: float,
+                      peak_gb_per_term: float) -> int:
+    """
+    Description
+    -----------
+    Number of worker processes the selection pool may run at once: the requested
+    count (``0`` = every CPU of the SLURM task, or every CPU of the machine off the
+    cluster), capped by the memory one fit of the current model size peaks at.
+    The peak is modelled as ``peak_gb_base + peak_gb_per_term * n_terms`` from the
+    measured pygam peaks (13 GB at 3 terms, 36 GB at 9 terms); the memory budget is
+    ``memory_gb`` (``0`` = the SLURM job's memory, or no cap off the cluster).
+
+    Parameters
+    ----------
+    requested_workers (int)
+        ``model_params.selection_pool_workers`` (0 = all available CPUs).
+    n_terms (int)
+        Number of tensor terms of the models the pool is about to fit.
+    memory_gb (float)
+        ``model_params.selection_pool_memory_gb`` (0 = read ``SLURM_MEM_PER_NODE``,
+        or the machine's physical memory when that is unset).
+    peak_gb_base (float)
+        ``model_params.selection_fit_peak_gb_base``.
+    peak_gb_per_term (float)
+        ``model_params.selection_fit_peak_gb_per_term``.
+
+    Returns
+    -------
+    n_workers (int)
+        At least 1.
+    """
+
+    requested_workers = int(requested_workers)
+    if requested_workers <= 0:
+        slurm_cpus = os.environ.get('SLURM_CPUS_PER_TASK')
+        requested_workers = int(slurm_cpus) if slurm_cpus else (os.cpu_count() or 1)
+    memory_gb = float(memory_gb)
+    if memory_gb <= 0.0:
+        slurm_mem = os.environ.get('SLURM_MEM_PER_NODE')
+        if slurm_mem:
+            memory_gb = float(slurm_mem) / 1024.0
+        else:
+            # Off the cluster the budget is the machine's physical memory: with no
+            # cap, every CPU would get a worker and a 13-36 GB fit each.
+            memory_gb = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') / 1024.0 ** 3
+    peak = float(peak_gb_base) + float(peak_gb_per_term) * max(int(n_terms), 1)
+    by_memory = int(np.floor(memory_gb / peak))
+    return max(1, min(requested_workers, by_memory))
+
+
+#: Reserved group of the trace sidecar that holds the per-session window start frames
+#: (no behavioral feature key starts with an underscore).
+WINDOW_STARTS_GROUP = '_window_starts'
+
+#: Keys of a window-start entry that are session attributes, not start-frame slots.
+_WINDOW_STARTS_ATTRS = ('n_frames', 'fps')
+
+
+def write_feature_traces(path: str | Path,
+                         traces: dict,
+                         window_starts: dict) -> None:
+    """
+    Description
+    -----------
+    Writes the per-step shift test's inputs into an HDF5 sidecar next to the modeling
+    pickle: the processed per-session feature traces an extraction cut its windows
+    from, one dataset per ``/<feature>/<session>`` in the trace's own dtype, and the
+    start frame of every kept window, one dataset per
+    ``/_window_starts/<session>/<slot>`` under the pipeline's slot names, with the
+    trace length and the camera frame rate as attributes of every trace dataset and of
+    every session's start group. The windows themselves stay in the pickle, so every
+    reader of the pickle is unchanged, and the pickle's ``_input_metadata`` records
+    only the sidecar's path: that block stays JSON-like, as the consolidators compare
+    it leaf by leaf with ``!=`` and an array-valued leaf would break them. The
+    per-step shift test reads one feature's traces back (``read_feature_trace``) and
+    re-cuts shifted windows at the stored starts (``read_window_starts``).
+
+    Parameters
+    ----------
+    path (str | Path)
+        Destination ``.h5`` file (overwritten).
+    traces (dict)
+        ``{feature: {session_id: (n_frames,) np.ndarray}}``.
+    window_starts (dict)
+        ``{session_id: {slot_name: (n,) start frames, 'n_frames': int, 'fps': float}}``
+        for every session a trace is written for (``usv`` / ``no_usv``, ``target`` /
+        ``other`` or ``X`` slots).
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    ValueError
+        If a feature key equals the reserved start group's name, or a trace's session
+        has no window-start entry.
+    """
+
+    path = Path(path)
+    if WINDOW_STARTS_GROUP in traces:
+        msg = f"write_feature_traces: the feature key {WINDOW_STARTS_GROUP!r} is reserved for the window starts."
+        raise ValueError(msg)
+    with h5py.File(path, 'w') as handle:
+        for feature, by_session in traces.items():
+            group = handle.create_group(feature)
+            for session_id, column in by_session.items():
+                if session_id not in window_starts:
+                    msg = f"write_feature_traces: {feature!r} has a trace for {session_id!r} but no window starts."
+                    raise ValueError(msg)
+                dataset = group.create_dataset(str(session_id), data=np.asarray(column))
+                dataset.attrs['n_frames'] = int(window_starts[session_id]['n_frames'])
+                dataset.attrs['fps'] = float(window_starts[session_id]['fps'])
+        starts_group = handle.create_group(WINDOW_STARTS_GROUP)
+        for session_id, entry in window_starts.items():
+            session_group = starts_group.create_group(str(session_id))
+            session_group.attrs['n_frames'] = int(entry['n_frames'])
+            session_group.attrs['fps'] = float(entry['fps'])
+            for slot_name, starts in entry.items():
+                if slot_name in _WINDOW_STARTS_ATTRS:
+                    continue
+                session_group.create_dataset(str(slot_name), data=np.asarray(starts, dtype=np.int64))
+
+
+def read_window_starts(path: str | Path) -> dict:
+    """
+    Description
+    -----------
+    Reads the per-session window start frames back from the HDF5 sidecar written by
+    ``write_feature_traces``, in the layout the extractions built them in.
+
+    Parameters
+    ----------
+    path (str | Path)
+        The sidecar file.
+
+    Returns
+    -------
+    window_starts (dict)
+        ``{session_id: {slot_name: (n,) int64 start frames, 'n_frames': int, 'fps': float}}``.
+
+    Raises
+    ------
+    ValueError
+        If the sidecar holds no window-start group (written before the starts moved
+        into it).
+    """
+
+    window_starts = {}
+    with h5py.File(Path(path), 'r') as handle:
+        if WINDOW_STARTS_GROUP not in handle:
+            msg = (f"{path} holds no {WINDOW_STARTS_GROUP!r} group: the sidecar predates the window starts "
+                   f"being stored in it. Rebuild the modeling input pickle with the current extraction.")
+            raise ValueError(msg)
+        for session_id, session_group in handle[WINDOW_STARTS_GROUP].items():
+            entry = {slot_name: session_group[slot_name][()] for slot_name in session_group}
+            entry['n_frames'] = int(session_group.attrs['n_frames'])
+            entry['fps'] = float(session_group.attrs['fps'])
+            window_starts[session_id] = entry
+    return window_starts
+
+
+def read_feature_trace(path: str | Path, feature: str, session_id: str) -> np.ndarray:
+    """
+    Description
+    -----------
+    Reads one session's processed trace of one feature from the HDF5 sidecar written by
+    ``write_feature_traces``.
+
+    Parameters
+    ----------
+    path (str | Path)
+        The sidecar file.
+    feature (str)
+        Generic feature key (``'self.speed'``, ``'head-head'``, ...).
+    session_id (str)
+        Session id.
+
+    Returns
+    -------
+    column (np.ndarray)
+        ``(n_frames,)`` trace.
+    """
+
+    with h5py.File(Path(path), 'r') as handle:
+        return handle[feature][str(session_id)][()]
+
+
+def verify_windows_against_traces(feature_data: dict,
+                                  traces_path: str | Path,
+                                  window_starts: dict,
+                                  slots: dict,
+                                  history_frames: int,
+                                  features: list,
+                                  sessions: list) -> None:
+    """
+    Description
+    -----------
+    The lag-zero self-check of the per-step shift test: re-cuts every stored window of
+    every listed feature and session from the trace sidecar at the stored start
+    frames and requires bit-exact equality with the windows in the pickle. A mismatch
+    means the sidecar, the starts and the windows do not describe the same extraction
+    and the run aborts before any model is fit.
+
+    Parameters
+    ----------
+    feature_data (dict)
+        The modeling pickle's feature dict ``{feature: {session: {slot: windows}}}``
+        (metadata blocks stripped).
+    traces_path (str | Path)
+        The HDF5 sidecar.
+    window_starts (dict)
+        ``{session: {slot_name: (n,) start frames}}`` from the sidecar (``read_window_starts``).
+    slots (dict)
+        ``{slot_name: array_key}`` mapping each start list to the pickle key holding
+        its windows (``{'usv': 'usv_feature_arr', 'no_usv': 'no_usv_feature_arr'}``).
+    history_frames (int)
+        Window length in frames.
+    features (list)
+        Features to check.
+    sessions (list)
+        Sessions to check.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    ValueError
+        On the first window that does not reproduce.
+    """
+
+    with h5py.File(Path(traces_path), 'r') as handle:
+        for feature in features:
+            for session_id in sessions:
+                if session_id not in feature_data[feature]:
+                    continue
+                column = handle[feature][str(session_id)][()]
+                for slot_name, array_key in slots.items():
+                    stored = feature_data[feature][session_id][array_key]
+                    starts = np.asarray(window_starts[session_id][slot_name], dtype=int)
+                    if stored is None or stored.size == 0:
+                        if starts.size != 0:
+                            msg = (f"verify_windows_against_traces: {feature!r} / {session_id!r} / "
+                                   f"{slot_name!r} stores no windows but {starts.size} start frames.")
+                            raise ValueError(msg)
+                        continue
+                    rebuilt = cut_history_windows(column, starts, history_frames)
+                    if rebuilt.shape != stored.shape or not np.array_equal(rebuilt, stored):
+                        msg = (f"verify_windows_against_traces: {feature!r} / {session_id!r} / "
+                               f"{slot_name!r}: windows re-cut from the trace sidecar at lag 0 do not "
+                               f"match the stored windows (shapes {rebuilt.shape} vs {stored.shape}). "
+                               f"The pickle, its start frames and {traces_path} are not from one extraction.")
+                        raise ValueError(msg)
 
 
 def brier_score_multi(y_true: np.ndarray,

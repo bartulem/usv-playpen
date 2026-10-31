@@ -61,11 +61,17 @@ import pytest
 mpl.use('Agg')
 
 from tests.modeling._synth import (
+    attach_shift_test_sidecar,
     build_modeling_settings,
     build_session_tree,
     write_session_list_file,
 )
 from usv_playpen.modeling.modeling_bases_functions import gam_bspline_basis
+from usv_playpen.modeling.modeling_utils import (
+    cut_history_windows,
+    read_feature_trace,
+    read_window_starts,
+)
 
 # The modeling import chain pulls optax -> a one-time JAX DeprecationWarning.
 # Guard the top-level imports so collection does not trip ``filterwarnings =
@@ -239,7 +245,9 @@ def _build_signal_continuous_pickle(
     input_metadata (dict)
         The reserved ``_input_metadata`` block. Must carry
         ``analysis_specific.usv_category_column_name`` so the selector can
-        build its per-step filename prefix.
+        build its per-step filename prefix. The builder adds ``traces_path`` to
+        this dict in place (the univariate stand-ins reuse it as the copy the
+        univariate stage would carry).
     n_per_session (int)
         Number of vocal events per session.
     seed (int)
@@ -297,7 +305,12 @@ def _build_signal_continuous_pickle(
             artifact[feature][sess]['Y'] = Y
             artifact[feature][sess]['w'] = w
 
-    artifact['_input_metadata'] = input_metadata
+    artifact['_input_metadata'] = dict(input_metadata)
+    attach_shift_test_sidecar(artifact, save_path, history_frames, slots={'X': 'X'}, fps=CAMERA_FPS, seed=seed)
+    # The univariate stage copies the pickle's metadata block verbatim, and the tests
+    # hand ``input_metadata`` to their univariate stand-ins as that copy: record the
+    # sidecar in the caller's dict too, so the stand-in carries it like the real one.
+    input_metadata['traces_path'] = artifact['_input_metadata']['traces_path']
 
     save_path.parent.mkdir(parents=True, exist_ok=True)
     with save_path.open('wb') as fh:
@@ -378,6 +391,18 @@ class TestContinuousInputExtraction:
         # the tag names the map the target comes from (qlvm1 / qlvm2), not the
         # category column, which stays recorded in analysis_specific
         assert md['analysis_tag'] == 'manifold_qlvm'
+        # The per-step shift test's inputs: every session's float32 windows re-cut
+        # exactly from its processed trace in the HDF5 sidecar at the stored starts.
+        assert Path(md['traces_path']).is_file()
+        assert Path(md['traces_path']).name == f"{pkls[0].stem}_traces.h5"
+        assert 'window_starts' not in md
+        window_starts = read_window_starts(md['traces_path'])
+        for feat in feature_keys:
+            for sess in sessions:
+                entry = window_starts[sess]
+                rebuilt = cut_history_windows(read_feature_trace(md['traces_path'], feat, sess),
+                                              entry['X'], HISTORY_FRAMES).astype(np.float32)
+                np.testing.assert_array_equal(rebuilt, artifact[feat][sess]['X'])
         spec = md['analysis_specific']
         assert spec['manifold_metric'] == 'torus'
         assert spec['usv_category_column_name'] == 'qlvm_category'
@@ -1099,9 +1124,10 @@ class TestManifoldModelSelection:
     @pytest.mark.parametrize(("selection_score", "expects_regions"), [("macro", True), ("micro", False)])
     def test_selection_torus_gates_bootstrap_the_ranking_score(self, tmp_path, monkeypatch,
                                                               selection_score, expects_regions):
-        """Every fold bootstrap (screen, anchor and forward-step gates) scores the margin of
-        the score that ranks the candidates: a macro run hands it the region map, a micro run
-        hands it none, so a micro run never accepts or rejects on the macro margin."""
+        """Every fold bootstrap of the screen scores the margin of the score that ranks the
+        candidates: a macro run hands it the region map, a micro run hands it none, so a
+        micro run never screens on the macro margin. The forward steps use the per-step
+        shift test and bootstrap nothing."""
 
         settings, _save_dir = _build_manifold_settings(
             tmp_path, split_strategy='session', split_num=10, test_proportion=0.3,
@@ -1176,8 +1202,9 @@ class TestManifoldModelSelection:
             use_top_rank_as_anchor=True,
             p_val=0.5,
         )
-        # the screen bootstraps every feature, then at least the anchor gate runs
-        assert len(region_maps) > len(feature_names)
+        # the screen bootstraps every feature once; the forward steps are decided by the
+        # per-step shift test, which does not bootstrap
+        assert len(region_maps) == len(feature_names)
         if expects_regions:
             assert all(region_map is not None for region_map in region_maps)
         else:

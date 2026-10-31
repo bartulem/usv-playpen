@@ -95,14 +95,19 @@ CONSOLIDATED_SELECTION_PATTERNS = ('model_selection_final_*.pkl', 'legacy_select
 #: Schema version per metadata block. Bump the corresponding entry whenever
 #: the on-disk shape of that block changes incompatibly.
 SCHEMA_VERSIONS = {
-    'input': 2,
+    # input bumped when the extractions started storing the window start frames and
+    # the trace sidecar path the per-step shift test re-cuts windows from.
+    'input': 3,
     # run/selection bumped when the torus manifold selection score changed from
     # distance correlation to the macro von Mises log-likelihood (the numeric key
     # `dcor_xy` is reused but its torus semantics differ), with equal-region fit
     # reweighting and re-enabled regularisation tuning. Pickles at the new version
     # are NOT score-comparable to older ones on the torus.
     'run': 3,
-    'selection': 2,
+    # selection bumped when the paired one-standard-error step gate was replaced by
+    # the per-step shift test (`one_se_rule_used` dropped; the rule and its knobs are
+    # recorded in `extra_knobs['step_test']`).
+    'selection': 3,
     'consolidation': 1,
 }
 
@@ -823,7 +828,6 @@ def build_selection_metadata(modeling_settings: dict,
                              test_proportion: float,
                              split_strategy: str,
                              random_seed: int,
-                             one_se_rule_used: bool,
                              aic_termination_used: bool,
                              n_anchor_features: int,
                              anchor_feature: str,
@@ -845,8 +849,9 @@ def build_selection_metadata(modeling_settings: dict,
     - **Selection function** (`selection_function`, `selection_metric`).
     - **Outer CV layout** (`n_splits_selection`, `test_proportion`,
       `split_strategy`, `random_seed`).
-    - **Termination policy** (`one_se_rule_used`,
-      `aic_termination_used`).
+    - **Termination policy** (`aic_termination_used`; the per-step
+      acceptance rule and its knobs are the caller's
+      `extra_knobs['step_test']`).
     - **Anchor / GAM config** (`n_anchor_features`, `anchor_feature`,
       `gam_kwargs`).
     - **Caller-supplied extras** (`extra_knobs` — any selector-specific
@@ -873,8 +878,6 @@ def build_selection_metadata(modeling_settings: dict,
         `'mixed'` or `'session'`.
     random_seed : int
         Seed for the outer splitter.
-    one_se_rule_used : bool
-        Whether the 1-SE rule trimmed the chosen step.
     aic_termination_used : bool
         Whether AIC-based early termination was active.
     n_anchor_features : int
@@ -907,7 +910,6 @@ def build_selection_metadata(modeling_settings: dict,
         'test_proportion': float(test_proportion),
         'split_strategy': split_strategy,
         'random_seed': int(random_seed),
-        'one_se_rule_used': bool(one_se_rule_used),
         'aic_termination_used': bool(aic_termination_used),
         'n_anchor_features': int(n_anchor_features),
         'anchor_feature': anchor_feature,

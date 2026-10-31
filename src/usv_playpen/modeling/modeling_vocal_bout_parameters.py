@@ -41,7 +41,6 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-from numpy.lib.stride_tricks import sliding_window_view
 from pygam import GAM, te
 from sklearn.linear_model import GammaRegressor
 from sklearn.metrics import mean_gamma_deviance, mean_squared_log_error
@@ -71,6 +70,7 @@ from .modeling_metadata import (
 )
 from .modeling_utils import (
     build_vocal_signal_columns,
+    cut_history_windows,
     development_heldout_masks,
     format_split_line,
     harmonize_session_columns,
@@ -87,6 +87,8 @@ from .modeling_utils import (
     session_grouped_inner_cv,
     spearman_r_safe,
     unroll_history_matrix,
+    valid_window_starts,
+    write_feature_traces,
     zscore_features_across_sessions,
 )
 from .modeling_vocal_onsets import VocalOnsetModelingPipeline
@@ -432,6 +434,14 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         )
 
         final_data_dict = {}
+        # The per-step shift test re-cuts a feature's windows from its processed
+        # trace after a circular shift: every session's kept window start frames
+        # and every feature's processed trace are recorded alongside the windows
+        # (the traces in an HDF5 sidecar next to the pickle). This pipeline stores
+        # one global row set per feature; the rows of session `sess_id` are exactly
+        # `groups == sess_id`, in the order of that session's `valid_starts`.
+        session_window_starts = {}
+        feature_traces = {}
         for sess_id, df in tqdm(processed_beh_feature_data_dict.items(), desc="Extracting Epochs"):
             t_name = mouse_track_names_dict[sess_id][target_mouse_idx]
             p_name = mouse_track_names_dict[sess_id][predictor_mouse_idx]
@@ -448,17 +458,16 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             # are computed once per session here rather than re-derived inside
             # the per-column / per-bout double loop. Every column of a polars
             # session frame shares `df.height` rows, so the mask is column-
-            # invariant. `valid_starts` indexes a `sliding_window_view` of the
-            # cleaned column below; `valid` (>= 0 and <= n_frames) guarantees
-            # every start lies in `[0, n_frames - history_frames]`, the full
-            # legal range of that view, so the gather is byte-identical to the
-            # old per-bout `col_data[start:frame_idx]` slices.
+            # invariant. `valid_window_starts` is the rule every extraction and the
+            # per-step shift test share; `cut_history_windows` gathers the windows
+            # at those starts below (NaN -> 0 inside each window).
             n_frames = df.height
-            starts = onset_frames - self.history_frames
-            valid = (starts >= 0) & (onset_frames <= n_frames)
-            valid_starts = starts[valid]
+            valid_starts, valid = valid_window_starts(onset_frames, self.history_frames, n_frames)
             valid_targets = targets[valid]
             n_valid = int(valid.sum())
+            session_window_starts[sess_id] = {
+                'X': valid_starts, 'n_frames': int(n_frames), 'fps': float(camera_fr_dict[sess_id]),
+            }
 
             for col in df.columns:
                 base_feature = col.split('.')[-1]
@@ -481,15 +490,16 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 if n_valid == 0:
                     continue
 
-                # NaN -> 0 over the whole column once (matches the old per-chunk
-                # `chunk[np.isnan(chunk)] = 0.0`), then gather every valid
-                # history window in one fancy-index op. `valid` guarantees
-                # n_frames >= history_frames, so the sliding view is well-formed.
-                col_data = np.nan_to_num(df[col].to_numpy(), nan=0.0)
-                windows = sliding_window_view(col_data, self.history_frames)
-                final_data_dict[generic_key]['X'].extend(windows[valid_starts].copy())
+                # The processed column is stored as the session's trace (NaNs
+                # untouched); `cut_history_windows` sets NaN -> 0 inside every kept
+                # window, which matches the old per-chunk `chunk[np.isnan(chunk)] = 0.0`.
+                col_data_raw = df[col].to_numpy()
+                final_data_dict[generic_key]['X'].extend(cut_history_windows(col_data_raw, valid_starts, self.history_frames))
                 final_data_dict[generic_key]['y'].extend(valid_targets)
                 final_data_dict[generic_key]['groups'].extend([sess_id] * n_valid)
+                if generic_key not in feature_traces:
+                    feature_traces[generic_key] = {}
+                feature_traces[generic_key][sess_id] = col_data_raw
 
         for feat_entry in final_data_dict.values():
             for k in ['X', 'y', 'groups']:
@@ -596,10 +606,19 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         input_metadata['n_events_per_session'] = n_events_per_session
         input_metadata['feature_zoo_kept'] = sorted(final_data_dict.keys())
 
+        # The per-step shift test's inputs: the processed traces and the kept window
+        # start frames per session go to an HDF5 sidecar next to the pickle (one
+        # dataset per feature and session, one per session); the metadata records
+        # only the sidecar's path, so it stays JSON-like.
+        traces_path = save_dir / f"{Path(fname).stem}_traces.h5"
+        with atomic_output_path(traces_path) as temporary_traces_path:
+            write_feature_traces(temporary_traces_path, feature_traces, session_window_starts)
+        input_metadata['traces_path'] = str(traces_path)
+
         artifact = inject_metadata(final_data_dict, _input_metadata=input_metadata)
         with atomic_output_path(save_path) as temporary_path, temporary_path.open('wb') as f:
             pickle.dump(artifact, f)
-        print(f"[+] Saved: {save_path}")
+        print(f"[+] Saved: {save_path}\n    and the processed traces of {len(feature_traces)} feature(s) to: {traces_path}")
 
     def create_data_splits(self, feature_data: dict, strategy_override: str | None = None):
         """

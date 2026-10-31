@@ -176,7 +176,7 @@ class TestMultinomialFoldFailure:
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     @pytest.mark.filterwarnings("ignore::UserWarning")
     @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-    def test_every_fold_fails_pads_and_finalizes(self, tmp_path, monkeypatch):
+    def test_every_fold_fails_stops_the_run(self, tmp_path, monkeypatch):
         """
         Forcing ``SmoothMultinomialLogisticRegression.fit`` to raise makes every
         learned multinomial fold fail. The Step-0 model-free marginal-prior
@@ -185,13 +185,11 @@ class TestMultinomialFoldFailure:
         ``except`` arm: the metric lists gain scalar NaNs, ``weights`` /
         ``intercepts`` gain ``None``, the data arrays become empty-but-shaped, the
         confusion matrix becomes a ``(K, K)`` NaN block, and the audit
-        placeholders are appended. The anchor's "every fold errored out" arm then
-        fires (no finite AUC), the forward loop's "no finite folds" skip fires for
-        every candidate, the REJECT branch persists the empty-candidate step
-        pickle, and the final-promotion block runs with the ``null_model_free``
-        winner (so no weight reshaping is attempted). The run completes without
-        the forced exception propagating and writes at least the Step-0 baseline
-        plus a forward-selection step pickle.
+        placeholders are appended. The forced anchor then has no finite fold
+        score, and a step that cannot be decided stops the run with
+        ``RuntimeError`` instead of being recorded as a rejection and finalized as
+        an empty selection. Only the Step-0 baseline is on disk afterwards, so a
+        rerun resumes from it and re-attempts the anchor.
         """
 
         monkeypatch.setattr(ms, 'SmoothMultinomialLogisticRegression', _BoomMultinomial)
@@ -219,47 +217,38 @@ class TestMultinomialFoldFailure:
 
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
-        multinomial_vocal_category_model_selection(
-            univariate_results_path=univ_pkl,
-            input_data_path=input_pkl,
-            settings_path=_settings_json(tmp_path, settings),
-            output_directory=str(ms_dir),
-            use_top_rank_as_anchor=True,
-            p_val=0.5,
-        )
-
+        with pytest.raises(RuntimeError, match="Anchor: none of the 1 candidate"):
+            multinomial_vocal_category_model_selection(
+                univariate_results_path=univ_pkl,
+                input_data_path=input_pkl,
+                settings_path=_settings_json(tmp_path, settings),
+                output_directory=str(ms_dir),
+                use_top_rank_as_anchor=True,
+                p_val=0.5,
+            )
         step_pkls = sorted(ms_dir.glob('model_selection_multinomial_*_step_*.pkl'))
-        # Step-0 baseline (no model -> succeeds) plus a forward-selection step
-        # whose every candidate failed every fold (REJECT branch still persists).
-        assert len(step_pkls) >= 2
-
-        # The Step-0 baseline carries the model-free marginal prior; the forward
-        # step that follows it must have an empty candidates_summary (every
-        # candidate hit "no finite folds") and select nothing.
+        # The Step-0 baseline (no model -> succeeds) is the only record: the anchor
+        # step was never decided, so nothing beyond it is written.
+        assert len(step_pkls) == 1
         with step_pkls[0].open('rb') as fh:
             step0 = pickle.load(fh)
         assert step0['step_idx'] == 0
         assert step0['selected_feature'] == 'null_model_free'
 
-        with step_pkls[-1].open('rb') as fh:
-            last_step = pickle.load(fh)
-        # No learned candidate produced a finite fold, so nothing was accepted.
-        assert last_step['selected_feature'] is None
-        assert last_step['candidates_summary'] == {}
-
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     @pytest.mark.filterwarnings("ignore::UserWarning")
     @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-    def test_no_anchor_forward_failure_pads_and_finalizes(self, tmp_path, monkeypatch):
+    def test_no_anchor_forward_failure_stops_the_run(self, tmp_path, monkeypatch):
         """
         The same forced-failure regime but with ``use_top_rank_as_anchor=False``,
         so the auto-anchor block is skipped and the forward-selection loop is
         entered straight from the Step-0 baseline. Every forward-selection
         candidate fold still fails (the per-fold ``except`` padding in the forward
-        loop fires for each feature), the "no finite folds" skip fires for every
-        candidate, the REJECT branch persists the empty-candidate step pickle, and
-        the run finalizes on the ``null_model_free`` winner. Exercises the forward
-        loop's failure padding independently of the anchor block.
+        loop fires for each feature) and the "no finite folds" skip fires for every
+        candidate, so the step has no winner to test: the run stops with
+        ``RuntimeError`` naming the step instead of recording a rejection.
+        Exercises the forward loop's failure padding independently of the anchor
+        block.
         """
 
         monkeypatch.setattr(ms, 'SmoothMultinomialLogisticRegression', _BoomMultinomial)
@@ -287,21 +276,20 @@ class TestMultinomialFoldFailure:
 
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
-        multinomial_vocal_category_model_selection(
-            univariate_results_path=univ_pkl,
-            input_data_path=input_pkl,
-            settings_path=_settings_json(tmp_path, settings),
-            output_directory=str(ms_dir),
-            use_top_rank_as_anchor=False,
-            p_val=0.5,
-        )
-
+        with pytest.raises(RuntimeError, match="Step 1: none of the 2 candidate"):
+            multinomial_vocal_category_model_selection(
+                univariate_results_path=univ_pkl,
+                input_data_path=input_pkl,
+                settings_path=_settings_json(tmp_path, settings),
+                output_directory=str(ms_dir),
+                use_top_rank_as_anchor=False,
+                p_val=0.5,
+            )
         step_pkls = sorted(ms_dir.glob('model_selection_multinomial_*_step_*.pkl'))
-        assert len(step_pkls) >= 2
-        with step_pkls[-1].open('rb') as fh:
-            last_step = pickle.load(fh)
-        assert last_step['selected_feature'] is None
-        assert last_step['candidates_summary'] == {}
+        assert len(step_pkls) == 1
+        with step_pkls[0].open('rb') as fh:
+            step0 = pickle.load(fh)
+        assert step0['selected_feature'] == 'null_model_free'
 
 
 class TestManifoldFoldFailure:
@@ -310,7 +298,7 @@ class TestManifoldFoldFailure:
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     @pytest.mark.filterwarnings("ignore::UserWarning")
     @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-    def test_every_fold_fails_pads_and_finalizes(self, tmp_path, monkeypatch):
+    def test_every_fold_fails_stops_the_run(self, tmp_path, monkeypatch):
         """
         Monkeypatching ``resolve_manifold_regressor_cls`` to return a class whose
         ``.fit`` always raises makes every learned manifold fold fail. The
@@ -321,11 +309,10 @@ class TestManifoldFoldFailure:
         baseline (no learned model) still establishes, the auto-anchor block runs
         and every fold takes the ``_append_failed_fold`` placeholder arm (scalar-
         NaN metrics, ``None`` weights / intercepts, empty-but-shaped ``y_true`` /
-        ``y_pred_xy`` / ``w_test`` / ``test_indices``, NaN audit), the anchor's
-        "every fold errored out" arm fires, the forward loop's "no finite folds"
-        skip fires for every candidate, the REJECT branch persists the empty-
-        candidate step pickle, and the finalize block runs. The run completes and
-        writes at least the Step-0 baseline plus a forward step pickle.
+        ``y_pred_xy`` / ``w_test`` / ``test_indices``, NaN audit). The forced
+        anchor then has no finite fold score, so the run stops with
+        ``RuntimeError`` instead of recording a rejection and finalizing an empty
+        selection; only the Step-0 baseline is on disk afterwards.
         """
 
         # Session-holdout with a healthy session panel: the fold-grain screen
@@ -371,7 +358,12 @@ class TestManifoldFoldFailure:
         combined = {}
         for feature in feature_names:
             combined[feature] = runner.run_univariate_training(input_pkl, feature)
-        combined['_input_metadata'] = input_md
+        # The univariate stage copies the PICKLE's metadata block verbatim (the
+        # builder copied `input_md` before recording the trace sidecar in it), and
+        # the selection prefers that copy, so take it from the pickle as the
+        # dispatcher does.
+        with Path(input_pkl).open('rb') as fh:
+            combined['_input_metadata'] = pickle.load(fh)['_input_metadata']
         combined_path = tmp_path / 'univariate_combined.pkl'
         with combined_path.open('wb') as fh:
             pickle.dump(combined, fh)
@@ -384,29 +376,21 @@ class TestManifoldFoldFailure:
 
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
-        continuous_vocal_manifold_model_selection(
-            univariate_results_path=str(combined_path),
-            input_data_path=input_pkl,
-            output_directory=str(ms_dir),
-            settings_path=_settings_json(tmp_path, settings),
-            use_top_rank_as_anchor=True,
-            p_val=0.5,
-        )
-
+        with pytest.raises(RuntimeError, match="Anchor: none of the 1 candidate"):
+            continuous_vocal_manifold_model_selection(
+                univariate_results_path=str(combined_path),
+                input_data_path=input_pkl,
+                output_directory=str(ms_dir),
+                settings_path=_settings_json(tmp_path, settings),
+                use_top_rank_as_anchor=True,
+                p_val=0.5,
+            )
         step_pkls = sorted(ms_dir.glob('model_selection_continuous_manifold_*_step_*.pkl'))
-        # Step-0 empirical-density baseline (succeeds) plus a forward step whose
-        # every candidate failed every fold (REJECT branch still persists).
-        assert len(step_pkls) >= 2
-
+        # The Step-0 empirical-density baseline (succeeds) is the only record.
+        assert len(step_pkls) == 1
         with step_pkls[0].open('rb') as fh:
             step0 = pickle.load(fh)
         assert step0['selected_feature'] == 'null_model_free'
-
-        with step_pkls[-1].open('rb') as fh:
-            last_step = pickle.load(fh)
-        # No learned candidate produced a finite fold, so nothing was accepted.
-        assert last_step['selected_feature'] is None
-        assert last_step['candidates_summary'] == {}
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     @pytest.mark.filterwarnings("ignore::UserWarning")
@@ -437,7 +421,12 @@ class TestManifoldFoldFailure:
         ))
         runner = ContinuousModelRunner(ContinuousModelingPipeline(modeling_settings_dict=settings))
         combined = {feature: runner.run_univariate_training(input_pkl, feature) for feature in feature_names}
-        combined['_input_metadata'] = input_md
+        # The univariate stage copies the PICKLE's metadata block verbatim (the
+        # builder copied `input_md` before recording the trace sidecar in it), and
+        # the selection prefers that copy, so take it from the pickle as the
+        # dispatcher does.
+        with Path(input_pkl).open('rb') as fh:
+            combined['_input_metadata'] = pickle.load(fh)['_input_metadata']
         combined_path = tmp_path / 'univariate_combined.pkl'
         with combined_path.open('wb') as fh:
             pickle.dump(combined, fh)

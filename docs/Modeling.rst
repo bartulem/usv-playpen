@@ -182,6 +182,12 @@ cross-validation and held-out-test settings live in their own
         "model_target_vocal_type": "bout_onset",
         "model_target_variable": "bout_durations",
         "selection_p_val": 0.01,
+        "selection_step_null_min_lag_seconds": 20,
+        "selection_step_null_checkpoint_every": 50,
+        "selection_pool_workers": 0,
+        "selection_pool_memory_gb": 0,
+        "selection_fit_peak_gb_base": 2,
+        "selection_fit_peak_gb_per_term": 4,
         "selection_effect_floor": 0.1,
         "selection_n_bootstrap": 1000,
         "selection_ci_level": 0.99,
@@ -230,6 +236,24 @@ cross-validation and held-out-test settings live in their own
    * - :ref:`selection_p_val <mp-selection-p-val>`
      - ``0.01``
      - number in ``(0, 1)``
+   * - :ref:`selection_step_null_min_lag_seconds <mp-step-shift-test>`
+     - ``20``
+     - seconds > 0
+   * - :ref:`selection_step_null_checkpoint_every <mp-step-shift-test>`
+     - ``50``
+     - integer >= 1
+   * - :ref:`selection_pool_workers <mp-selection-pool>`
+     - ``0``
+     - integer >= 0 (``0`` = every CPU of the job)
+   * - :ref:`selection_pool_memory_gb <mp-selection-pool>`
+     - ``0``
+     - GB >= 0 (``0`` = the job's memory)
+   * - :ref:`selection_fit_peak_gb_base <mp-selection-pool>`
+     - ``2``
+     - GB >= 0
+   * - :ref:`selection_fit_peak_gb_per_term <mp-selection-pool>`
+     - ``4``
+     - GB >= 0
    * - :ref:`selection_effect_floor <mp-manifold-gate>`
      - ``0.1``
      - fraction in ``[0, 1]``
@@ -345,19 +369,48 @@ cross-validation and held-out-test settings live in their own
 .. _mp-selection-p-val:
 
 ``selection_p_val``
-   The significance level gating whether a candidate feature is admitted during forward-stepwise model selection.
+   The level ``alpha`` of the per-step shift test every forward step is decided by (:ref:`model selection <modeling-model-selection>`), and the level of the univariate screen that admits candidates.
 
    :Options: a number in ``(0, 1)`` (not validated)
    :Default: ``0.01``
    :Notes:
-      * On the onset, category and bout-parameter selections it is a family-wise level, Bonferroni-divided by the number of candidate features before the null percentile is read.
-      * On the acoustic-manifold target it is the Benjamini–Hochberg FDR ``q`` used to screen candidates.
+      * At every forward step the cross-validated winner among the ``m`` remaining candidates is accepted only when its Bonferroni-corrected permutation p-value, ``m * (1 + k) / (B + 1)`` over ``B = floor(m / alpha)`` shifted refits, is below this level, which requires ``k = 0`` (no shifted refit reaching the observed gain). The number of refits therefore scales as ``1 / alpha``.
+      * On the onset, category and bout-parameter screens it is Bonferroni-divided by the number of candidate features before the null percentile is read; on the acoustic-manifold screen it is the Benjamini–Hochberg FDR ``q``.
       * The model-selection dispatcher passes this value to every selector; it is not a command-line flag.
+
+.. _mp-step-shift-test:
+
+``selection_step_null_min_lag_seconds`` / ``selection_step_null_checkpoint_every``
+   The per-step shift test's null and its checkpointing (``step_shift_test.run_step_shift_test``): each shifted refit rolls the winner feature's processed trace within every development session by its own random lag and re-cuts the feature's history windows at the stored window start frames.
+
+   :Options:
+      * ``selection_step_null_min_lag_seconds`` — the smallest lag, in seconds; every session's lag is drawn uniformly from ``[min_lag, T_session - min_lag]`` frames at ``io.camera_sampling_rate`` (a session shorter than twice the floor stops the run); seconds > 0 (not validated)
+      * ``selection_step_null_checkpoint_every`` — finished draws are appended to ``<prefix><step>_null_partial.pkl`` every this many draws, and a restarted run reuses them; an integer >= 1 (not validated)
+   :Default: ``20`` and ``50``
+   :Notes:
+      * The lag floor keeps the shifted trace at least five history windows away from its true position in both directions; the floor is the one the neural shift null uses. Both values are recorded in ``_run_metadata.extra_knobs.step_test``.
+      * A step's partial file is deleted once the step is decided; a fresh start moves any left-over partial files aside with the stale step files.
+
+.. _mp-selection-pool:
+
+``selection_pool_workers`` / ``selection_pool_memory_gb`` / ``selection_fit_peak_gb_base`` / ``selection_fit_peak_gb_per_term``
+   The process pool one selection job fits through: the candidate x fold fits of every step and the shifted refits of its test run as independent single-thread tasks in forked worker processes (``step_shift_test.SelectionPool``), the same fits with the same seeds as a serial run.
+
+   :Options:
+      * ``selection_pool_workers`` — worker processes; ``0`` reads ``SLURM_CPUS_PER_TASK`` (every CPU of the machine off the cluster); an integer >= 0 (not validated)
+      * ``selection_pool_memory_gb`` — the memory budget the worker count is capped by; ``0`` reads the job's ``SLURM_MEM_PER_NODE``, or the machine's physical memory off the cluster; GB >= 0 (not validated)
+      * ``selection_fit_peak_gb_base`` / ``selection_fit_peak_gb_per_term`` — the peak memory of one pygam fit, modelled as ``base + per_term * n_terms`` GB with ``n_terms`` the number of tensor terms of the models about to be fit; GB >= 0 (not validated)
+   :Default: ``0``, ``0``, ``2`` and ``4``
+   :Notes:
+      * ``workers = min(selection_pool_workers, floor(memory / (base + per_term * n_terms)))``, at least 1, recomputed at every step as the model grows (``modeling_utils.pool_worker_count``).
+      * The shipped peaks come from measured pygam fits on 1.47 million unrolled rows: 13 GB at 3 terms and 36 GB at 9 terms. A 96 GB job runs 6 workers at 3 terms and 2 at 9.
+      * BLAS threads inside a worker are capped at one: pygam's dense QR gains at most 1.3x from threads, so cores go to workers, not threads.
+      * A pool requested in a process where JAX has already initialized a backend (a notebook that ran a JAX model earlier, for instance) runs serially and prints that it did: a fork after that point can deadlock. The multinomial and manifold selectors run their fits serially for the same reason.
 
 .. _mp-manifold-gate:
 
 ``selection_effect_floor`` / ``selection_n_bootstrap`` / ``selection_ci_level``
-   The acoustic-manifold selection's **fold-grain acceptance gate** (``continuous_vocal_manifold_model_selection``): a feature is kept only when its per-fold paired score margin over the shuffle null (the macro von Mises log-likelihood on the torus, the wrap-aware distance correlation on euclidean) is consistently positive across CV folds.
+   The acoustic-manifold **screen**'s fold-grain paired-margin statistics (``continuous_vocal_manifold_model_selection``): a feature enters the candidate set only when its per-fold paired score margin over the shuffle null (the macro von Mises log-likelihood on the torus, the wrap-aware distance correlation on euclidean) is consistently positive across CV folds. The acceptance of each forward step is the per-step shift test (:ref:`model selection <modeling-model-selection>`), not these knobs.
 
    :Options:
       * ``selection_effect_floor`` — the relative effect floor a screened feature must clear: a fraction in ``[0, 1]`` of the top surviving driver's margin; ``0`` disables the floor (not validated)
@@ -365,7 +418,7 @@ cross-validation and held-out-test settings live in their own
       * ``selection_ci_level`` — the bootstrap confidence level, a number in ``(0, 1)``, whose lower bound must exceed ``0`` for an anchor / forward step to be accepted (not validated)
    :Default: ``0.1`` (10%), ``1000`` and ``0.99``
    :Notes:
-      * These apply to the manifold gate only; the onset / category / bout-parameter selections use ``selection_p_val`` alone.
+      * These apply to the manifold screen only; the onset / category / bout-parameter screens use ``selection_p_val`` alone, and every selector's forward steps are decided by the shift test at ``selection_p_val``.
       * The screen's p-value is not a bootstrap: it is an exact one-sided sign-flip permutation test over the folds, ``p = (1 + k) / (1 + B)`` over the ``B = 2**manifold_n_cv_folds - 1`` non-identity sign patterns (every pattern enumerated; ``k`` counts those whose margin sum ties or beats the observed one), so it is never ``0`` and its floor is ``1 / 2**manifold_n_cv_folds`` (``9.5e-7`` at the shipped 20 folds, below the Benjamini–Hochberg rank-1 threshold ``q / m``); above ``selection_sign_flip_exact_max_folds`` usable folds a seeded Monte-Carlo set of ``selection_sign_flip_monte_carlo_draws`` patterns replaces the enumeration.
       * All of the gate's knobs are read from the run's own settings file at call time.
 
@@ -3122,10 +3175,17 @@ differ only in *what gets predicted*:
         modeling_settings_dict=None
     ).extract_and_save_continuous_data()
 
-Every extraction call writes three artifacts to ``io.save_directory``:
+Every extraction call writes four artifacts to ``io.save_directory``:
 
 - the modeling-input pickle (filename embeds the cohort label and a
   timestamp);
+- a paired ``*_traces.h5`` sidecar holding every feature's processed
+  per-session trace (one HDF5 dataset per ``/<feature>/<session>``, with the
+  trace length and camera rate as attributes) and the start frame of every
+  kept history window (one dataset per ``/_window_starts/<session>/<slot>``,
+  with the same two attributes on the session group), which the per-step
+  shift test of :ref:`model selection <modeling-model-selection>` re-cuts
+  shifted windows from; the pickle names it in ``_input_metadata.traces_path``;
 - a paired ``*_collinearity.pkl`` predictor-collinearity audit;
 - a paired ``*_timescales.pkl`` predictor-timescale audit.
 
@@ -3172,6 +3232,7 @@ provenance, for example:
         "vocal_predictor_type": "categories_rate", "vocal_predictor_classes": [["usv"]], "vocal_predictor_partner_only": true,
         "filter_history_seconds": 4, "filter_history_frames": 600,
         "ibi_thresholds": {"male": 0.42, "female": 0.55},
+        "traces_path": "/mnt/falkner/Bartul/modeling/modeling_<...>_traces.h5",
         "analysis_specific": { "...": "..." },
         "git_commit": "...", "settings_sha256": "...", "created_utc": "...", "package_version": "..."
     }
@@ -3181,6 +3242,7 @@ provenance, for example:
 * **behavioral features** — ``feature_zoo_full`` (everything requested) vs ``feature_zoo_kept`` (what survived the collinearity / timescale audits).
 * **vocal-input shape** — ``vocal_predictor_type``, ``vocal_predictor_classes``, ``vocal_predictor_partner_only``, ``vocal_predictor_smoothing_sd``.
 * **temporal frame** — ``filter_history_seconds`` / ``filter_history_frames`` (the history window), and ``ibi_thresholds`` (the per-sex bout-gap thresholds derived from the mixture model).
+* **shift-test inputs** — ``traces_path``, the ``*_traces.h5`` sidecar above. Besides the traces it holds, per session, the start frame of every kept history window under the pipeline's slot names (``/_window_starts/<session>/<slot>``: ``usv`` / ``no_usv`` for the onset pipeline, ``target`` / ``other`` for the binomial category pipeline, ``X`` for the bout-parameter, multinomial and manifold pipelines, whose per-session rows are stored in that order; for the bout-parameter pipeline the global ``X`` rows of a session are the rows with ``groups == session``) plus the session's trace length ``n_frames`` and its ``fps``, which must lie within half a frame per second of ``io.camera_sampling_rate``. The starts live in the sidecar, not in this block, which stays JSON-like for the consolidators' leaf-by-leaf comparison. A selection run re-cuts every stored window from the sidecar at these starts at lag zero and must reproduce the pickle exactly before any model is fit.
 * **analysis_specific** — the per-pipeline knobs (differs by pipeline; listed just below).
 * **run provenance** — ``git_commit`` / ``git_dirty``, ``settings_sha256``, ``created_utc``, ``package_version``, so any result traces back to exact code and settings.
 
@@ -3457,21 +3519,76 @@ alongside:
 
 Model selection
 ---------------
-Greedy forward-stepwise selection stacks features on top of the univariate
-ranking, adding at each step the feature whose contribution most improves
-the held-out score, subject to an acceptance gate that compares the candidate
-and the incumbent **paired per fold** (the two models are nested and scored on
-the same folds, so the fold-difficulty term they share cancels in the per-fold
-difference). The onset, binomial-category, bout-parameter and multinomial
-selectors apply the **one-standard-error (1SE) rule** to that paired improvement:
-a step is kept only when the mean per-fold improvement exceeds the standard error
-of the per-fold differences. The acoustic-manifold selector uses the **fold-grain
-paired-margin bootstrap gate** described in the note below instead (a step is kept
-only when its per-fold improvement has a ``selection_ci_level`` fold-bootstrap CI
-whose lower bound exceeds ``0``). ``use_top_rank_as_anchor=True`` seeds step 0 with
-the top univariate feature; ``p_val`` is the significance level of the univariate
-screen that admits candidates (Bonferroni-corrected for the discrete targets,
-the Benjamini–Hochberg ``q`` on the manifold).
+Greedy forward-stepwise selection grows the model from the empty model, one
+feature per step. At every step each remaining screened feature is added to
+the incumbent and scored by session-grouped cross-validation; the candidate with
+the best fold-mean score is the step's winner, and the winner enters the model
+only when it passes the **per-step shift test** of the note below, a permutation
+test of the gain it adds, corrected for having been picked among the ``m``
+candidates of that step. The search stops at the first step whose winner fails.
+The first step is decided the same way against the constant model.
+``use_top_rank_as_anchor=True`` (the dispatcher's ``--anchor``) forces the top
+univariate feature to be the first candidate instead of the cross-validated
+winner; it is still tested, against all screened features, never assumed.
+``p_val`` (``selection_p_val``) is the level ``alpha`` of the shift test and of the
+univariate screen that admits candidates (Bonferroni-corrected for the discrete
+targets, the Benjamini–Hochberg ``q`` on the manifold).
+
+.. note::
+
+   **The per-step shift test** (``step_shift_test.run_step_shift_test``, every
+   selector). With incumbent ``M`` and winner ``W`` among the ``m`` candidates of
+   the step:
+
+   * **Statistic.** ``M`` and ``M + W`` are refit on the balanced development draw
+     the once-touched held-out refit uses (all development sessions pooled, the
+     majority class subsampled to the minority count with the seed
+     ``random_seed + n_cv_folds + 1``), and ``T_obs`` is the in-sample gain per
+     event of the pipeline's log-likelihood: the Bernoulli log-likelihood of the
+     frame-averaged probability (the negative log-loss) for the onset, offset and
+     binomial-category selectors, the negative Gamma deviance for bout parameters,
+     the class-balanced (macro) categorical log-likelihood for the multinomial
+     selector, and the macro von Mises log-score on the torus. The empty model is
+     the constant predictor (``-ln 2`` per event for the balanced binary draws).
+   * **Null.** Draw ``b`` (seeded ``[random_seed, step, b]``) rolls ``W``'s
+     processed trace within every development session by its own lag, uniform in
+     ``[min_lag, T_session - min_lag]`` frames, re-cuts ``W``'s history windows at
+     the session's stored window start frames with the extraction's own cutter,
+     refits ``M + W_shifted`` on the identical rows and records the gain. The
+     feature keeps its distribution and autocorrelation and loses its alignment
+     with the events; the target, the incumbent and the other candidates are
+     untouched.
+   * **Decision.** ``B = floor(m / alpha)`` draws; ``p = (1 + k) / (B + 1)`` with
+     ``k`` the draws whose gain reaches ``T_obs``; ``p_adjusted = min(1, m * p)``;
+     accept iff ``p_adjusted < alpha``, which with this ``B`` holds only for
+     ``k = 0``. The first draw that reaches ``T_obs`` therefore ends the step as a
+     rejection, and an accepted step has run all ``B`` draws. Every accepted
+     feature carries its ``p``, ``p_adjusted``, ``B``, ``m`` and ``k`` in the step
+     record's ``step_test`` block.
+   * **Inputs and their check.** The extraction stores each session's kept window
+     start frames and the processed per-session traces in the
+     ``<pickle stem>_traces.h5`` sidecar named in ``_input_metadata.traces_path``
+     (the starts under ``/_window_starts/<session>/<slot>``). A selection run first re-cuts every stored
+     window of every screened feature at lag zero and requires bit-exact equality
+     with the pickle; a pickle extracted before these fields existed stops the run
+     with the instruction to rebuild it (a one-minute step).
+   * **Compute.** The candidate x fold fits and the shifted refits run inside the
+     one selection job through a forked process pool whose worker count is capped
+     by memory per fit (:ref:`selection_pool_* <mp-selection-pool>`); finished
+     draws are checkpointed and reused by a restarted job
+     (:ref:`selection_step_null_checkpoint_every <mp-step-shift-test>`).
+   * **One rule per run.** ``_run_metadata.extra_knobs.step_test`` records the
+     rule (``'shift_refit_bonferroni'``), the screened features in rank order
+     (``screened_features``, the Bonferroni factor of the first step), the
+     statistic, ``alpha``, the lag floor, the checkpoint interval, the worker
+     setting, the refit rows and the sidecar path; a resume refuses a checkpoint
+     written under another rule and tells the user to move the old step files out
+     of the directory.
+   * **An undecidable step is an error, not a rejection.** A candidate whose
+     folds all failed or diverged is skipped with a ``FAILED`` line; a step (the
+     forced anchor included) at which no candidate has a finite score stops the
+     run with a ``RuntimeError`` naming the step, instead of recording a rejection
+     and finishing as an empty selection, which would hide the failed fits.
 
 .. note::
 
@@ -3514,22 +3631,20 @@ the Benjamini–Hochberg ``q`` on the manifold).
    Benjamini–Hochberg-FDR-controlled at ``q = selection_p_val`` and clearing the
    relative ``selection_effect_floor`` (a fraction of the top surviving driver's
    margin), the per-feature p-value being an exact one-sided sign-flip
-   permutation test over the folds (floor ``1 / 2**manifold_n_cv_folds``) — and an anchor /
-   forward step is admitted only when its per-fold improvement over the current
-   model has a ``selection_ci_level`` fold-bootstrap CI (``selection_n_bootstrap``
-   resamples) whose lower bound exceeds ``0``. On the torus the current model the
-   anchor (or first forward feature) must beat is a training-fold
-   **intercept-only** predictor: every test event of a fold is predicted at the
-   circular mean of that fold's training targets (weighted like the candidates'
-   fit), scored with the same bundle and gated with the same per-fold margin, so
-   a model that carries no behavioural information ties it and is rejected. The
-   empirical-density draw (``null_model_free``, a random training target per test
-   event) is kept in the Step-0 file as the reported chance floor and never gates
-   on the torus; it used to be the gate baseline, which any prediction
-   concentrated where the repertoire is dense beat without behavioural
-   information. On euclidean, where the score is distance correlation (``0`` for
-   any constant prediction, positively biased for every other), the bias-matched
-   draw stays the gate baseline. This replaced an earlier fold-level Wilcoxon /
+   permutation test over the folds (floor ``1 / 2**manifold_n_cv_folds``). Every
+   forward step, the first included, is then decided by the per-step shift test
+   of the note above on the in-sample macro von Mises log-score. On the torus the
+   model the first feature must beat is the **intercept-only** predictor: every
+   event predicted at the circular mean of the training targets (weighted like
+   the candidates' fit), so a model that carries no behavioural information ties
+   it and is rejected. The empirical-density draw (``null_model_free``, a random
+   training target per test event) is kept in the Step-0 file as the reported
+   chance floor and never gates on the torus; it used to be the gate baseline,
+   which any prediction concentrated where the repertoire is dense beat without
+   behavioural information. On euclidean, where the score is distance correlation
+   (``0`` for any constant prediction, positively biased for every other), the
+   bias-matched draw stays the baseline. The shift test replaced the earlier
+   fold-bootstrap CI gate, which itself had replaced a fold-level Wilcoxon /
    one-standard-error gate.
 
 .. note::
@@ -3597,7 +3712,7 @@ Run on a single node from the notebook:
         univariate_results_path="/mnt/falkner/Bartul/modeling/univariate_<...>.pkl",
         input_data_path="/mnt/falkner/Bartul/modeling/modeling_<...>_bout_hist4s.pkl",
         output_directory="/mnt/falkner/Bartul/modeling/model_selection_results/<...>",
-        use_top_rank_as_anchor=True,
+        use_top_rank_as_anchor=False,  # True forces the top univariate feature as the first, tested, candidate
         p_val=0.01,
     )
 
@@ -3644,11 +3759,19 @@ hoisted metadata blocks:
                 "step_idx": 0,
                 "current_features": ["speed"],       # features already selected before this step
                 "baseline_score": 0.68,              # best score of current_features (chance floor at step 0)
-                "baseline_folds": "<array (n_folds,)>",  # their PER-FOLD scores, for the paired 1SE test
+                "baseline_folds": "<array (n_folds,)>",  # their PER-FOLD scores
                 "selected_feature": "nose-nose",     # feature accepted this step (None -> final, rejected step)
                 "candidates_summary": {              # every feature tested this step -> its per-fold metrics
                     "nose-nose":  {"ll": "<array (n_folds,)>", "auc": "...", "mean_ll": "...", "se_ll": "..."},
                     "back_pitch": {"...": "..."}
+                },
+                "step_test": {                       # the per-step shift test of the winner (None when no candidate scored)
+                    "rule": "shift_refit_bonferroni", "statistic": "bernoulli_log_likelihood_per_event",
+                    "winner": "nose-nose", "m_candidates": 14, "alpha": 0.01,
+                    "n_refits": 1400, "n_draws_run": 1400, "k_exceed": 0,
+                    "p": 0.000714, "p_adjusted": 0.00999, "accepted": true, "early_stop": false,
+                    "t_obs": 0.0123, "t_null": "<array (n_draws_run,)>", "lags": "<array (n_draws_run, n_dev_sessions)>",
+                    "...": "..."
                 }
             }
         ],
@@ -3658,15 +3781,17 @@ hoisted metadata blocks:
         "_consolidation_metadata": {"...": "..."}
     }
 
-* **``steps``** — an ordered list, one entry per forward-selection step. ``step_idx`` is the iteration, ``current_features`` are those already chosen, ``baseline_score`` is their held-out score (the chance floor at step 0), ``baseline_folds`` is the same model's PER-FOLD scores, and ``selected_feature`` is the feature accepted this step (``None`` marks the final, rejected step). ``baseline_folds`` is what the 1SE acceptance test pairs a candidate against: the incumbent and the candidate are nested and scored on the same folds, so the fold-difficulty term they share cancels in the per-fold difference but dominates either score on its own. Checkpoints written before this key existed resume against ``baseline_score`` as a constant, which reproduces the unpaired comparison that wrote them. For the multinomial and manifold selectors, step 0's ``selected_feature`` is the sentinel ``'null_model_free'``. The manifold Step-0 record also names the strategy the first feature is gated against in ``baseline_strategy`` (``'null_model_intercept'`` on the torus, ``'null_model_free'`` on euclidean), lists that strategy first in its ``candidates_summary``, and stores the empirical-density draw's fold-mean score separately as ``chance_floor_score`` (``chance_floor_strategy`` ``'null_model_free'``); ``baseline_score`` is the gate baseline's score. A resume refuses a manifold checkpoint whose ``_run_metadata.extra_knobs`` does not record the same ``step1_gate_baseline``, ``screen_p_value_test`` (``'exact_sign_flip'``) and ``manifold_n_cv_folds`` and starts fresh.
+* **``steps``** — an ordered list, one entry per forward-selection step. ``step_idx`` is the iteration, ``current_features`` are those already chosen, ``baseline_score`` is their held-out score (the chance floor at step 0), ``baseline_folds`` is the same model's PER-FOLD scores, and ``selected_feature`` is the feature accepted this step (``None`` marks the final, rejected step). ``baseline_folds`` is kept as the incumbent's per-fold record (the incumbent and the candidate are nested and scored on the same folds); the acceptance decision itself is the ``step_test`` block. For the multinomial and manifold selectors, step 0's ``selected_feature`` is the sentinel ``'null_model_free'``. The manifold Step-0 record also names the strategy the first feature is gated against in ``baseline_strategy`` (``'null_model_intercept'`` on the torus, ``'null_model_free'`` on euclidean), lists that strategy first in its ``candidates_summary``, and stores the empirical-density draw's fold-mean score separately as ``chance_floor_score`` (``chance_floor_strategy`` ``'null_model_free'``); ``baseline_score`` is the gate baseline's score. A resume refuses a manifold checkpoint whose ``_run_metadata.extra_knobs`` does not record the same ``step1_gate_baseline``, ``screen_p_value_test`` (``'exact_sign_flip'``) and ``manifold_n_cv_folds`` and starts fresh.
+* **``step_test``** — the per-step shift test (:ref:`model selection <modeling-model-selection>`) of the step's winner (a step at which no candidate returned a finite score stops the run with an error instead of writing a record): ``rule`` (``'shift_refit_bonferroni'``), ``statistic`` (the pipeline's per-event score, e.g. ``'bernoulli_log_likelihood_per_event'``) and ``statistic_family``, ``winner``, ``incumbent_features``, ``m_candidates`` (the Bonferroni factor), ``alpha``, ``n_refits`` (``B = floor(m / alpha)``), ``n_draws_run`` (``B`` on an accepted step, fewer on a rejected one), ``k_exceed``, ``p``, ``p_adjusted``, ``accepted``, ``early_stop``, ``t_obs`` (the observed in-sample gain), ``t_null`` (the gain of every draw run, in draw order), ``draw_indices``, ``lags`` (one row per draw, one column per development session in ``session_order``), ``min_lag_frames``, ``seed`` (``[random_seed, step_idx]``), ``score_incumbent`` and ``score_winner`` (the two development refits' scores), ``refit_seconds`` per draw and ``wall_seconds``. A step 0 written with ``--anchor`` carries the forced feature's test, with ``m_candidates`` equal to every screened feature.
 * **``candidates_summary``** — under each step, every candidate feature tested that step mapped to its per-fold metrics. For the discrete / regression targets these are flat per-fold arrays (``ll``, ``auc``, ``score``, ``f1``, ``brier``, ``ece``, ``mcc``, ``confusion_matrix``, ``n_iter`` / ``converged`` / ``fit_time``) plus aggregate ``mean_ll`` / ``se_ll``; the multinomial and manifold selectors nest these under a ``folds.metrics`` sub-dict (with ``y_true`` / ``y_pred`` / ``y_probs`` / ``classes``, the per-fold ``weights`` — always on the frame axis, ``n_features × filter_history_frames`` per class / output, whatever the ``temporal_basis`` — beside ``basis_coefficients``, the raw spline coefficients when ``temporal_basis.type`` is ``'bspline'`` and ``None`` otherwise, and the per-fold ``selected_lambda_smooth`` / ``selected_l2_reg`` regularisation choices — equal to the fixed ``*_fixed`` penalties when ``tune_regularization_bool`` is ``false``, and under a B-spline basis to ``temporal_basis.lambda_smooth_fixed`` and ``0``).
 * **last accepted step** — additionally carries ``final_model_features`` (the cumulative selected set) and ``filter_shapes`` (the per-fold refit filters) of the published model, and ``heldout`` (the development refit scored once on the held-out sessions, ``None`` when the reserve is disabled). In the onset, category and bout-parameter selectors each held-out branch record (``actual`` / ``null``) carries ``heldout_fit_failed`` (bool) and ``heldout_fit_error`` (the exception text, or ``None``): a refit that raised leaves its metrics NaN, sets the flag and is warned about, so a NaN held-out number is never silent. The same two fields are on each held-out record (``heldout['actual']``, ``heldout['null']``) of the onset, binomial-category and bout-parameter univariate results (for bout parameters a failed held-out deviance metric is flagged too). Every modeling pickle is published atomically (written to a temporary sibling, then renamed), so an interrupted write leaves the previous file intact; a failed input-artifact save aborts the extraction.
-* **metadata blocks** — ``_input_metadata`` and ``_univariate_metadata`` carry the upstream extraction / univariate provenance, ``_run_metadata`` the selection config, and ``_consolidation_metadata`` the merge audit.
+* **metadata blocks** — ``_input_metadata`` and ``_univariate_metadata`` carry the upstream extraction / univariate provenance, ``_run_metadata`` the selection config (its ``extra_knobs.step_test`` sub-block names the acceptance rule, the screened features in rank order, statistic, ``alpha``, lag floor, checkpoint interval, worker setting, refit rows and trace sidecar the run used; a resume refuses a checkpoint whose rule differs), and ``_consolidation_metadata`` the merge audit.
 
 Visualise the trajectory with ``plot_model_selection_results`` (binary / regression),
 ``plot_multinomial_selection_trajectory`` (multinomial), or
 ``plot_manifold_selection_trajectory`` (continuous manifold): each reads the
-consolidated ``model_selection_final_*.pkl`` and shows the per-step held-out score
+consolidated ``model_selection_final_*.pkl``, labels every accepted step with its
+shift test's ``p_adjusted`` (``+feature  p=0.0067``) when the step carries one, and shows the per-step held-out score
 gain and the retained-feature filters. Called with no metric arguments, the manifold
 plotter draws the score the run selected on (``_run_metadata['selection_metric']``:
 ``vm_logscore`` on the torus, ``dcor_xy`` on euclidean) and, as percent improvement

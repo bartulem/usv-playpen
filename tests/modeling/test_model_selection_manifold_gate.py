@@ -205,7 +205,7 @@ class TestStepZeroGateBaseline:
         assert versus_draw['ci_low'] > 0.0
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
-    def test_behaviour_free_target_is_rejected_by_the_anchor_gate(self, tmp_path, monkeypatch):
+    def test_behaviour_free_target_is_rejected_by_the_anchor_gate(self, tmp_path):
         """
         End to end on the torus: the univariate ranking comes from a signal-bearing input,
         so the screen passes the first feature, but the selection itself runs on a target
@@ -241,7 +241,11 @@ class TestStepZeroGateBaseline:
         )
         runner = ContinuousModelRunner(ContinuousModelingPipeline(modeling_settings_dict=settings))
         combined = {feature: runner.run_univariate_training(str(signal_pkl), feature) for feature in feature_names}
-        combined['_input_metadata'] = input_md
+        # The univariate stage copies the PICKLE's metadata block verbatim (the builder
+        # copied `input_md` before recording the trace sidecar in it) and the selection
+        # prefers that copy, so take it from the pickle as the dispatcher does.
+        with signal_pkl.open('rb') as fh:
+            combined['_input_metadata'] = pickle.load(fh)['_input_metadata']
         combined_path = tmp_path / 'univariate_combined.pkl'
         with combined_path.open('wb') as fh:
             pickle.dump(combined, fh)
@@ -264,19 +268,14 @@ class TestStepZeroGateBaseline:
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
 
-        gate_calls = []
-        original_bootstrap = model_selection_module._fold_paired_margin_bootstrap
-
-        def recording_bootstrap(*args, **kwargs):
-            """Records the (candidate, baseline) fold bundles of every gate call, then runs the real gate."""
-            gate_calls.append((args[0], args[1]))
-            return original_bootstrap(*args, **kwargs)
-
-        monkeypatch.setattr(model_selection_module, '_fold_paired_margin_bootstrap', recording_bootstrap)
+        # A behaviour-free anchor is accepted only when none of the B = floor(m / alpha)
+        # shifted refits reaches its in-sample gain, i.e. with probability 1 / (B + 1) under
+        # exchangeability: alpha = 0.02 over the m screened candidates (the screen decides
+        # how many of the three) makes that 1 / (floor(m / 0.02) + 1); the seeds fix the outcome.
         continuous_vocal_manifold_model_selection(
             univariate_results_path=str(combined_path), input_data_path=str(free_pkl),
             output_directory=str(ms_dir), settings_path=str(settings_json),
-            use_top_rank_as_anchor=True, p_val=0.5,
+            use_top_rank_as_anchor=True, p_val=0.02,
         )
 
         step_pkls = sorted(ms_dir.glob('model_selection_continuous_manifold_*_step_*.pkl'),
@@ -298,18 +297,26 @@ class TestStepZeroGateBaseline:
         assert step0['_run_metadata']['extra_knobs']['step1_gate_baseline'] == 'null_model_intercept'
         assert step0['_run_metadata']['extra_knobs']['manifold_n_cv_folds'] == settings['model_validation']['manifold_n_cv_folds']
 
-        # The first gate after the per-feature screen is the anchor gate; its baseline is the
-        # training-fold circular mean, one constant prediction per fold.
-        n_screen_calls = len(feature_names)
-        anchor_baseline = gate_calls[n_screen_calls][1]
+        # The stored Step-0 intercept baseline is the training-fold circular mean: one
+        # constant prediction per fold.
         intercept_folds = step0['candidates_summary']['null_model_intercept']['folds']
-        for raw_fold_pred, stored_pred in zip(anchor_baseline['y_pred_xy'], intercept_folds['y_pred_xy'], strict=False):
-            fold_pred = np.asarray(raw_fold_pred)
+        for stored_pred in intercept_folds['y_pred_xy']:
+            fold_pred = np.asarray(stored_pred)
             assert np.all(fold_pred == fold_pred[0])
-            np.testing.assert_array_equal(fold_pred, np.asarray(stored_pred))
+        # The forced anchor was tested by the per-step shift test against the development
+        # intercept baseline, with Bonferroni over every screened feature, and rejected.
+        anchor_test = steps[1]['step_test']
+        assert anchor_test['accepted'] is False
+        screened = steps[1]['_run_metadata']['extra_knobs']['step_test']['screened_features']
+        assert anchor_test['m_candidates'] == len(screened)
+        assert 1 <= len(screened) <= len(feature_names)
+        assert anchor_test['n_refits'] == int(np.floor(len(screened) / 0.02))
+        assert anchor_test['winner'] == next(iter(steps[1]['candidates_summary']))
+        assert np.isfinite(anchor_test['score_incumbent'])
+        assert steps[1]['_run_metadata']['extra_knobs']['step_test']['rule'] == 'shift_refit_bonferroni'
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
-    def test_pure_noise_anchor_ties_the_region_reweighted_intercept(self, tmp_path, monkeypatch):
+    def test_pure_noise_anchor_ties_the_region_reweighted_intercept(self, tmp_path):
         """
         Repro basis: with imbalanced acoustic regions (70% of the USVs in one region, 30% in
         another, at well-separated torus positions) and a target carrying NO behavioural
@@ -347,7 +354,11 @@ class TestStepZeroGateBaseline:
         )
         runner = ContinuousModelRunner(ContinuousModelingPipeline(modeling_settings_dict=settings))
         combined = {feature: runner.run_univariate_training(str(signal_pkl), feature) for feature in feature_names}
-        combined['_input_metadata'] = input_md
+        # The univariate stage copies the PICKLE's metadata block verbatim (the builder
+        # copied `input_md` before recording the trace sidecar in it) and the selection
+        # prefers that copy, so take it from the pickle as the dispatcher does.
+        with signal_pkl.open('rb') as fh:
+            combined['_input_metadata'] = pickle.load(fh)['_input_metadata']
         combined_path = tmp_path / 'univariate_combined.pkl'
         with combined_path.open('wb') as fh:
             pickle.dump(combined, fh)
@@ -372,20 +383,12 @@ class TestStepZeroGateBaseline:
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
 
-        gate_results = []
-        original_bootstrap = model_selection_module._fold_paired_margin_bootstrap
-
-        def recording_bootstrap(*args, **kwargs):
-            """Runs the real gate and records its result dict."""
-            result = original_bootstrap(*args, **kwargs)
-            gate_results.append(result)
-            return result
-
-        monkeypatch.setattr(model_selection_module, '_fold_paired_margin_bootstrap', recording_bootstrap)
+        # See the sibling test: alpha = 0.02 keeps the chance acceptance of a noise anchor at
+        # 1 / (B + 1) = 1 / 151.
         continuous_vocal_manifold_model_selection(
             univariate_results_path=str(combined_path), input_data_path=str(free_pkl),
             output_directory=str(ms_dir), settings_path=str(settings_json),
-            use_top_rank_as_anchor=True, p_val=0.5,
+            use_top_rank_as_anchor=True, p_val=0.02,
         )
 
         step_pkls = sorted(ms_dir.glob('model_selection_continuous_manifold_*_step_*.pkl'),
@@ -394,10 +397,11 @@ class TestStepZeroGateBaseline:
         for path in step_pkls:
             with path.open('rb') as fh:
                 steps.append(pickle.load(fh))
-        # The anchor gate is the first gate after the per-feature screen: margin ~0, rejected.
-        anchor_gate = gate_results[len(feature_names)]
-        assert abs(anchor_gate['mean_margin']) < 0.05
-        assert not anchor_gate['ci_low'] > 0.0
+        # The anchor's in-sample gain over the region-reweighted intercept is matched by the
+        # shifted refits: the shift test rejects it and the selection accepts nothing.
+        anchor_test = steps[1]['step_test']
+        assert anchor_test['accepted'] is False
+        assert anchor_test['k_exceed'] >= 1
         assert steps[-1]['final_model_features'] == []
 
         # Every stored Step-0 intercept prediction is the region-reweighted training-fold mean.

@@ -63,6 +63,7 @@ from .modeling_utils import (
     build_vocal_signal_columns,
     classification_inner_cv_splits,
     concat_two_class_with_labels,
+    cut_history_windows,
     expected_calibration_error,
     format_split_line,
     harmonize_session_columns,
@@ -78,6 +79,8 @@ from .modeling_utils import (
     select_kinematic_columns,
     shuffle_train_test_arrays,
     unroll_history_matrix,
+    valid_window_starts,
+    write_feature_traces,
     zscore_features_across_sessions,
 )
 
@@ -557,6 +560,12 @@ class VocalOnsetModelingPipeline(FeatureZoo):
 
         print("Extracting epochs per session and renaming features...")
         modeling_final_data_dict = {}
+        # The per-step shift test re-cuts a feature's windows from its processed
+        # trace after a circular shift: every session's kept window start frames
+        # (per class) and every feature's processed trace are recorded alongside
+        # the windows (the traces in an HDF5 sidecar next to the pickle).
+        session_window_starts = {}
+        feature_traces = {}
 
         for beh_session_id in tqdm(processed_beh_feature_data_dict.keys(), desc='Extracting Epochs'):
             session_df = processed_beh_feature_data_dict[beh_session_id]
@@ -576,6 +585,21 @@ class VocalOnsetModelingPipeline(FeatureZoo):
 
             history_frames = self.history_frames
             session_sampling_rate = camera_fr_dict[beh_session_id]
+            session_n_frames = int(session_df.height)
+            # Window starts are the same for every column of the session (one
+            # recording length, one set of event times): cut them once.
+            usv_starts, _ = valid_window_starts(
+                np.round(np.asarray(usv_event_times, dtype=float) * session_sampling_rate).astype(int),
+                history_frames, session_n_frames,
+            )
+            no_usv_starts, _ = valid_window_starts(
+                np.round(np.asarray(no_usv_event_times, dtype=float) * session_sampling_rate).astype(int),
+                history_frames, session_n_frames,
+            )
+            session_window_starts[beh_session_id] = {
+                'usv': usv_starts, 'no_usv': no_usv_starts,
+                'n_frames': session_n_frames, 'fps': float(session_sampling_rate),
+            }
 
             for full_column_name in session_df.columns:
 
@@ -597,62 +621,18 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     modeling_final_data_dict[generic_key][beh_session_id] = {}
 
                 # Extract epochs. Events whose full history window does not fit
-                # inside the session recording (s < 0 or e > max_frame_idx) are
-                # dropped at this stage rather than carried forward as NaN rows:
-                # leaving them in would silently produce NaN-valued basis
-                # projections downstream (np.dot propagates NaN), which the
-                # splitting / balancing helpers do not filter out.
+                # inside the session recording were dropped by `valid_window_starts`
+                # above rather than carried forward as NaN rows: leaving them in
+                # would silently produce NaN-valued basis projections downstream
+                # (np.dot propagates NaN), which the splitting / balancing helpers do
+                # not filter out. `cut_history_windows` is the one window cutter the
+                # extraction and the shift test share (NaN -> 0 inside the window).
                 column_data_np = session_df[full_column_name].to_numpy()
-                max_frame_idx = len(column_data_np)
-
-                def _collect_valid_windows(times, *, session_sampling_rate=session_sampling_rate,
-                                           history_frames=history_frames, max_frame_idx=max_frame_idx,
-                                           column_data_np=column_data_np):
-                    """
-                    Cut the history window preceding every event time out of the
-                    session's feature column. A window spans the `history_frames`
-                    frames ending at round(time * session_sampling_rate); windows
-                    reaching outside the recording are dropped (not NaN-padded) and
-                    NaN samples inside kept windows are set to 0.
-
-                    Parameters
-                    ----------
-                    times : np.ndarray
-                        Event times in seconds.
-                    session_sampling_rate : float
-                        Camera sampling rate (fps) of the current session; bound at
-                        definition time to the current loop iteration's value.
-                    history_frames : int
-                        History-window length in frames; bound at definition time.
-                    max_frame_idx : int
-                        Number of frames in the session's feature column; bound at
-                        definition time to the current loop iteration's value.
-                    column_data_np : np.ndarray
-                        The session's feature column; bound at definition time to
-                        the current loop iteration's value.
-
-                    Returns
-                    -------
-                    np.ndarray
-                        Array of shape (n_valid_events, history_frames) in the
-                        column's dtype; (0, history_frames) when no window fits.
-                    """
-                    ends = np.round(times * session_sampling_rate).astype(int)
-                    starts = ends - history_frames
-                    valid_mask = (starts >= 0) & (ends <= max_frame_idx)
-                    if not np.any(valid_mask):
-                        return np.empty((0, history_frames), dtype=column_data_np.dtype)
-                    valid_starts = starts[valid_mask]
-                    valid_ends = ends[valid_mask]
-                    out = np.empty((valid_starts.size, history_frames), dtype=column_data_np.dtype)
-                    for row_idx, (s, e) in enumerate(zip(valid_starts, valid_ends, strict=False)):
-                        chunk = column_data_np[s:e].copy()
-                        chunk[np.isnan(chunk)] = 0.0
-                        out[row_idx, :] = chunk
-                    return out
-
-                usv_feature_arr = _collect_valid_windows(usv_event_times)
-                no_usv_feature_arr = _collect_valid_windows(no_usv_event_times)
+                usv_feature_arr = cut_history_windows(column_data_np, usv_starts, history_frames)
+                no_usv_feature_arr = cut_history_windows(column_data_np, no_usv_starts, history_frames)
+                if generic_key not in feature_traces:
+                    feature_traces[generic_key] = {}
+                feature_traces[generic_key][beh_session_id] = column_data_np
 
                 modeling_final_data_dict[generic_key][beh_session_id]['usv_feature_arr'] = usv_feature_arr
                 modeling_final_data_dict[generic_key][beh_session_id]['no_usv_feature_arr'] = no_usv_feature_arr
@@ -742,6 +722,16 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         input_metadata['n_events_per_session'] = n_events_per_session
         input_metadata['feature_zoo_kept'] = sorted(modeling_final_data_dict.keys())
 
+        # The per-step shift test's inputs: the processed traces and the kept window
+        # start frames per session and class go to an HDF5 sidecar next to the
+        # pickle (one dataset per feature and session, one per session and class);
+        # the metadata records only the sidecar's path, so it stays JSON-like.
+        save_dir.mkdir(parents=True, exist_ok=True)
+        traces_path = save_dir / f"{Path(file_name_).stem}_traces.h5"
+        with atomic_output_path(traces_path) as temporary_traces_path:
+            write_feature_traces(temporary_traces_path, feature_traces, session_window_starts)
+        input_metadata['traces_path'] = str(traces_path)
+
         # Wrap the final data dict in the metadata-injecting helper so
         # the on-disk artifact carries `_input_metadata` alongside the
         # feature data without colliding with any feature key.
@@ -749,10 +739,10 @@ class VocalOnsetModelingPipeline(FeatureZoo):
 
         # A failed save propagates: the run must not finish with no (or a stale)
         # input artifact on disk while reporting success.
-        save_dir.mkdir(parents=True, exist_ok=True)
         with atomic_output_path(save_path) as temporary_path, temporary_path.open('wb') as f:
             pickle.dump(artifact, f)
-        print(f"\n[+] Successfully saved PER-SESSION renamed modeling input data to:\n    {save_path}")
+        print(f"\n[+] Successfully saved PER-SESSION renamed modeling input data to:\n    {save_path}"
+              f"\n    and the processed traces of {len(feature_traces)} feature(s) to:\n    {traces_path}")
 
     def create_data_splits(self, feature_data: dict, strategy_override: str | None = None):
         """

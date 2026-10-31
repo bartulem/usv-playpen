@@ -16,6 +16,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import h5py
 import numpy as np
 from pygam import GAM, LogisticGAM, te
 from scipy.stats import spearmanr
@@ -85,21 +86,26 @@ from .modeling_utils import (
     bounded_test_proportion,
     brier_score_multi,
     classification_inner_cv_splits,
+    cut_history_windows,
     development_heldout_masks,
     expected_calibration_error,
     format_run_header,
     format_run_summary,
     format_selection_step,
     held_out_session_ids_from_metadata,
+    macro_log_likelihood,
     mean_absolute_error_1d,
     null_target_permutation,
-    paired_one_se_improvement,
     pearson_r_safe,
     pool_session_arrays,
+    pool_worker_count,
+    read_feature_trace,
+    read_window_starts,
     root_mean_squared_error,
     safe_confusion_matrix,
     safe_matthews_corrcoef,
     session_grouped_inner_cv,
+    verify_windows_against_traces,
 )
 from .modeling_vocal_categories_multinomial import (
     _balance_multinomial_train_indices,
@@ -108,6 +114,13 @@ from .modeling_vocal_categories_multinomial import (
     get_stratified_group_splits_stable,
 )
 from .modeling_vocal_onsets import VocalOnsetModelingPipeline
+from .step_shift_test import (
+    STEP_TEST_RULE,
+    SelectionPool,
+    pool_context,
+    run_step_shift_test,
+    set_pool_context,
+)
 
 # Human-readable names of the manifold Step-0 strategies (console lines and the run log).
 _STEP0_GATE_LABELS = {
@@ -356,8 +369,8 @@ def _restore_selection_checkpoint(
     step file's ``selected_feature`` is what the live gate accepted (``'null_model_free'``
     for a model-free Step-0 baseline, the anchor for the anchor step, the step winner for a
     forward step) or None when the step rejected its winner and the search finished, which
-    is a valid record of convergence whatever its candidates hold (no candidate left, or
-    every candidate's folds failed: the live run stopped there too). The anchor file stores
+    is a valid record of convergence (a step at which no candidate could be scored writes
+    no file: the live run stops there with an error). The anchor file stores
     the features after acceptance and a forward-step file the features before it, so the
     selected feature is appended only when missing. The incumbent's per-fold scores become
     the reference the next gate compares against. A manifold Step-0 record keeps the
@@ -454,8 +467,14 @@ def _quarantine_stale_step_files(model_selection_dir: Path, prefix: str) -> Path
     stale_files = []
     for path in model_selection_dir.iterdir():
         name = path.name
-        if path.is_file() and name.startswith(prefix) and name.endswith('.pkl') \
-                and name[len(prefix):-len('.pkl')].isdigit():
+        if not (path.is_file() and name.startswith(prefix) and name.endswith('.pkl')):
+            continue
+        stem = name[len(prefix):-len('.pkl')]
+        # Step files are `<prefix><int>.pkl`; a step's interrupted shift-test null is
+        # `<prefix><int>_null_partial.pkl` and belongs to the same run.
+        if stem.endswith('_null_partial'):
+            stem = stem[:-len('_null_partial')]
+        if stem.isdigit():
             stale_files.append(path)
     if not stale_files:
         return None
@@ -513,8 +532,8 @@ def _write_empty_selection(last_file: Path,
         'input_data_path': input_data_path,
     })
     _dump_step_pickle(last_file, wrap_step(data))
-    print(f"\n[EMPTY SELECTION] {label} model selection accepted no feature: no candidate beat the "
-          f"baseline by the 1-SE margin. Recorded final_model_features=[], filter_shapes=[], "
+    print(f"\n[EMPTY SELECTION] {label} model selection accepted no feature: no candidate passed the "
+          f"per-step shift test. Recorded final_model_features=[], filter_shapes=[], "
           f"heldout=None in {last_file}; no final or held-out refit was run.")
 
 
@@ -1072,6 +1091,337 @@ def compute_filter_shapes_per_fold_vocal_onset(
     return final_fold_shapes
 
 
+#: Per-fold metric keys every onset / category candidate fit records, in the order the
+#: step pickles store them.
+_BINARY_FOLD_METRIC_KEYS = ('ll', 'auc', 'score', 'f1', 'recall', 'brier', 'ece', 'mcc',
+                            'confusion_matrix', 'n_iter', 'converged', 'fit_time')
+
+#: Start-frame slot -> pickle array key of the onset pipeline (the trace sidecar lists
+#: the starts under the slot names; the windows live under the array keys).
+_ONSET_WINDOW_SLOTS = {'usv': 'usv_feature_arr', 'no_usv': 'no_usv_feature_arr'}
+
+
+def _step_test_settings(settings: dict, camera_fps: float) -> dict:
+    """
+    Description
+    -----------
+    Reads the per-step shift test's knobs from ``model_params`` (none of them is
+    hard-coded anywhere) and converts the lag floor to frames at the cohort's camera
+    rate.
+
+    Parameters
+    ----------
+    settings (dict)
+        The loaded modeling settings.
+    camera_fps (float)
+        ``io.camera_sampling_rate``; every session's stored frame rate must equal it
+        (checked where the window starts are loaded).
+
+    Returns
+    -------
+    cfg (dict)
+        ``min_lag_seconds``, ``min_lag_frames``, ``checkpoint_every``, ``pool_workers``,
+        ``pool_memory_gb``, ``fit_peak_gb_base``, ``fit_peak_gb_per_term``.
+    """
+
+    model_params = settings['model_params']
+    min_lag_seconds = float(model_params['selection_step_null_min_lag_seconds'])
+    return {
+        'min_lag_seconds': min_lag_seconds,
+        'min_lag_frames': round(min_lag_seconds * float(camera_fps)),
+        'checkpoint_every': int(model_params['selection_step_null_checkpoint_every']),
+        'pool_workers': int(model_params['selection_pool_workers']),
+        'pool_memory_gb': float(model_params['selection_pool_memory_gb']),
+        'fit_peak_gb_base': float(model_params['selection_fit_peak_gb_base']),
+        'fit_peak_gb_per_term': float(model_params['selection_fit_peak_gb_per_term']),
+    }
+
+
+def _require_shift_test_inputs(input_md: dict | None, input_data_path: str, camera_fps: float) -> tuple[str, dict]:
+    """
+    Description
+    -----------
+    The trace sidecar the per-step shift test needs, named in the modeling pickle's
+    ``_input_metadata``, and the per-session window start frames read back from it. A
+    pickle written before the extraction stored them cannot be used under this rule:
+    the run stops here with the instruction to rebuild it, instead of silently falling
+    back to another test. Every session's recorded frame rate must equal the cohort
+    rate the lag floor is converted at.
+
+    Parameters
+    ----------
+    input_md (dict | None)
+        The pickle's ``_input_metadata`` block.
+    input_data_path (str)
+        The pickle, named in the error.
+    camera_fps (float)
+        ``io.camera_sampling_rate``.
+
+    Returns
+    -------
+    traces_path (str)
+        The HDF5 sidecar with the processed per-session traces and the window starts.
+    window_starts (dict)
+        ``{session_id: {slot_name: starts, 'n_frames': T, 'fps': fps}}`` read from it.
+
+    Raises
+    ------
+    ValueError
+        If the path is missing from the metadata, the sidecar is not on disk or holds
+        no window starts, or a session's frame rate differs from ``camera_fps`` by more
+        than 0.5 frames per second.
+    """
+
+    if input_md is None or 'traces_path' not in input_md:
+        msg = (f"{input_data_path} was extracted before the per-step shift test existed: its "
+               f"_input_metadata has no 'traces_path'. Rebuild the modeling input pickle with the "
+               f"current extraction (a one-minute step) and rerun the selection.")
+        raise ValueError(msg)
+    traces_path = str(input_md['traces_path'])
+    if not Path(traces_path).is_file():
+        msg = (f"The trace sidecar recorded in {input_data_path} is not on disk: {traces_path}. "
+               f"Rebuild the modeling input pickle or restore the sidecar next to it.")
+        raise ValueError(msg)
+    window_starts = read_window_starts(traces_path)
+    for session_id, entry in window_starts.items():
+        # The stored rate is the session's recorded frame rate; it may differ from the
+        # nominal cohort rate by a fraction of a frame per second, which moves a 20 s lag
+        # floor by less than a frame. A rate off by more than half a frame per second is
+        # another cohort or a corrupted recording.
+        if abs(float(entry['fps']) - float(camera_fps)) > 0.5:
+            msg = (f"Session {session_id!r} was extracted at {entry['fps']} fps but io.camera_sampling_rate "
+                   f"is {camera_fps}; the shift test's lag floor is converted at one rate.")
+            raise ValueError(msg)
+    return traces_path, window_starts
+
+
+def _require_scored_candidate(step_label: str, n_candidates: int, n_scored: int) -> None:
+    """
+    Description
+    -----------
+    Stops a selection at a step that cannot be decided: candidates were fitted but not
+    one produced a finite cross-validated score (every fold of every candidate failed or
+    diverged), so there is no winner to test. That is a failure of the fits (the per-fold
+    error lines above say which), not a rejection by the data; recording it as "no feature
+    improves prediction" and finishing as an empty selection would hide it. The forced
+    anchor is one candidate.
+
+    Parameters
+    ----------
+    step_label (str)
+        ``'Anchor'`` or ``'Step <k>'``, named in the error.
+    n_candidates (int)
+        Candidates fitted at the step.
+    n_scored (int)
+        Candidates (or, for the anchor, folds) with a finite score.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    RuntimeError
+        When candidates were fitted and none has a finite score.
+    """
+
+    if n_candidates > 0 and n_scored == 0:
+        msg = (f"{step_label}: none of the {n_candidates} candidate(s) produced a valid fold score "
+               f"(every fit failed or diverged; see the per-fold error lines above). The step cannot be "
+               f"decided, so the selection stops here instead of recording a rejection.")
+        raise RuntimeError(msg)
+
+
+def _require_step_test_rule(last_results: dict, checkpoint_path: Path) -> None:
+    """
+    Description
+    -----------
+    Refuses to resume from a step file written under another acceptance rule: a run
+    must be one rule from its first step to its last.
+
+    Parameters
+    ----------
+    last_results (dict)
+        The loaded checkpoint.
+    checkpoint_path (Path)
+        Its path, named in the error.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    ValueError
+        If the checkpoint carries no ``step_test`` tag or another rule.
+    """
+
+    run_md = last_results['_run_metadata'] if '_run_metadata' in last_results else {}
+    knobs = run_md['extra_knobs'] if 'extra_knobs' in run_md else {}
+    recorded = knobs['step_test']['rule'] if 'step_test' in knobs and 'rule' in knobs['step_test'] else None
+    if recorded != STEP_TEST_RULE:
+        msg = (f"{checkpoint_path} was written under step rule {recorded!r}, not {STEP_TEST_RULE!r}. "
+               f"A selection run keeps one rule from start to end: move the old step files out of the "
+               f"output directory (or point the run at an empty one) and start the selection again.")
+        raise ValueError(msg)
+
+
+def _assemble_fold_metrics(fold_results: list, feature: str, keys: tuple,
+                           placeholders: dict | None = None) -> dict:
+    """
+    Description
+    -----------
+    Turns the per-fold worker results of one candidate into the per-fold metric lists
+    the step pickles store, keeping every list aligned across folds: a failed fold is
+    logged and contributes a placeholder, NaN by default (a NaN-filled ``(2, 2)``
+    matrix for ``confusion_matrix``), exactly as the former inline loops did.
+
+    Parameters
+    ----------
+    fold_results (list)
+        One worker result per fold, in fold order (``{'ok': True, <key>: value}`` or
+        ``{'ok': False, 'error': str}``).
+    feature (str)
+        The candidate, for the log line.
+    keys (tuple)
+        Metric keys to collect.
+    placeholders (dict | None)
+        ``{key: callable}`` returning the placeholder of a failed fold for keys whose
+        placeholder is not NaN (the bout-parameter pipeline's empty ``y_true`` /
+        ``y_pred`` arrays and ``converged = False``).
+
+    Returns
+    -------
+    metrics (dict)
+        ``{key: [per-fold values]}``.
+    """
+
+    metrics = {key: [] for key in keys}
+    for fold_i, result in enumerate(fold_results):
+        if result['ok']:
+            for key in keys:
+                metrics[key].append(result[key])
+            continue
+        print(f"    [!] Error fitting {feature} (Fold {fold_i}): {result['error']}")
+        for key in keys:
+            if placeholders is not None and key in placeholders:
+                metrics[key].append(placeholders[key]())
+            elif key == 'confusion_matrix':
+                metrics[key].append(np.full((2, 2), np.nan))
+            else:
+                metrics[key].append(np.nan)
+    return metrics
+
+
+def _onset_candidate_fold(feat: str, fold_i: int) -> dict:
+    """
+    Description
+    -----------
+    One (candidate, fold) fit of the onset selector, run in a pool worker: fits the
+    incumbent features plus ``feat`` on the fold's balanced training rows and scores
+    the fold's test rows. The data comes from the ``'onset_step'`` pool-context entry
+    the selector stores before creating the pool (``cv_folds``, ``session_fold_base``,
+    ``pooled_feature_cache``, ``all_feature_data``, ``current_model_features``, the
+    GAM knobs, ``history_frames``, ``random_seed``, ``decision_threshold``,
+    ``ece_n_bins``). The operations are those of the former inline loop, so the
+    fold scores are the same numbers.
+
+    Parameters
+    ----------
+    feat (str)
+        The candidate feature.
+    fold_i (int)
+        Fold index.
+
+    Returns
+    -------
+    result (dict)
+        ``{'ok': True, <metric key>: value, ...}`` with the keys of
+        ``_BINARY_FOLD_METRIC_KEYS``, or ``{'ok': False, 'error': str}``.
+    """
+
+    ctx = pool_context('onset_step')
+    fold_info = ctx['cv_folds'][fold_i]
+    all_feature_data = ctx['all_feature_data']
+    history_frames = ctx['history_frames']
+    current_model_features = ctx['current_model_features']
+    n_splines_value, n_splines_time = ctx['n_splines_value'], ctx['n_splines_time']
+    gam_kwargs = ctx['gam_kwargs']
+    trial_features = [*current_model_features, feat]
+    gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
+    for i in range(1, len(trial_features)):
+        gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
+    try:
+        X_train_list, X_test_list = [], []
+        if fold_info['type'] == 'session':
+            train_sess, test_sess, idx_p, idx_n, y_tr_fold, y_te_fold, base_train_list, base_test_list = ctx['session_fold_base'][fold_i]
+            X_train_list = list(base_train_list)
+            X_test_list = list(base_test_list)
+            f_p_tr, f_n_tr = pool_session_arrays(all_feature_data[feat], train_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=history_frames)
+            f_p_te, f_n_te = pool_session_arrays(all_feature_data[feat], test_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=history_frames)
+            X_train_list.append(np.concatenate((f_p_tr[idx_p], f_n_tr[idx_n])))
+            X_test_list.append(np.concatenate((f_p_te, f_n_te)))
+        elif fold_info['type'] == 'mixed':
+            train_ix, test_ix = fold_info['train_idx'], fold_info['test_idx']
+            n_pos_total = fold_info['n_pos_total']
+            n_neg_total = fold_info['n_neg_total']
+            y_full = np.concatenate((np.ones(n_pos_total), np.zeros(n_neg_total)))
+            y_tr_all = y_full[train_ix]
+            y_te_fold = y_full[test_ix]
+            pos_positions = np.where(y_tr_all == 1)[0]
+            neg_positions = np.where(y_tr_all == 0)[0]
+            n_tr_keep = min(pos_positions.size, neg_positions.size)
+            if n_tr_keep == 0:
+                msg_0 = "Training fold has no samples in one class after split."
+                raise ValueError(msg_0)
+            fs_rng = np.random.default_rng(ctx['random_seed'] + fold_i)
+            sel_pos = fs_rng.choice(pos_positions.size, n_tr_keep, replace=False)
+            sel_neg = fs_rng.choice(neg_positions.size, n_tr_keep, replace=False)
+            bal_train_local = np.concatenate((pos_positions[sel_pos], neg_positions[sel_neg]))
+            y_tr_fold = np.concatenate((np.ones(n_tr_keep), np.zeros(n_tr_keep)))
+            for f_name in trial_features:
+                X_full = ctx['pooled_feature_cache'][f_name]['X_full']
+                X_tr_all = X_full[train_ix]
+                X_train_list.append(X_tr_all[bal_train_local])
+                X_test_list.append(X_full[test_ix])
+        else:
+            msg = f"Unknown fold type {fold_info['type']!r}."
+            raise ValueError(msg)
+
+        X_tr_gam = get_unrolled_X_for_multivariate(X_train_list, history_frames)
+        X_te_gam = get_unrolled_X_for_multivariate(X_test_list, history_frames)
+        fit_start = time.perf_counter()
+        gam = LogisticGAM(gam_terms, **gam_kwargs).fit(X_tr_gam, np.repeat(y_tr_fold.astype(float), history_frames))
+        fit_time = float(time.perf_counter() - fit_start)
+
+        y_proba_tiled = gam.predict_proba(X_te_gam)
+        y_proba_mean = np.mean(y_proba_tiled.reshape(len(y_te_fold), history_frames), axis=1)
+        result = {'ok': True}
+        result['ll'] = log_loss(y_te_fold.astype(int), np.clip(y_proba_mean, 1e-15, 1 - 1e-15))
+        y_pred_mean = (y_proba_mean >= ctx['decision_threshold']).astype(int)
+        result['score'] = balanced_accuracy_score(y_te_fold, y_pred_mean)
+        result['f1'] = f1_score(y_te_fold, y_pred_mean, zero_division=0)
+        result['recall'] = recall_score(y_te_fold, y_pred_mean, zero_division=0)
+        result['auc'] = roc_auc_score(y_te_fold, y_proba_mean) if len(np.unique(y_te_fold)) > 1 else np.nan
+        result['brier'] = float(brier_score_loss(y_te_fold.astype(int), y_proba_mean))
+        try:
+            y_proba_2d = np.column_stack([1.0 - y_proba_mean, y_proba_mean])
+            result['ece'] = expected_calibration_error(y_te_fold.astype(int), y_pred_mean, y_proba_2d, n_bins=ctx['ece_n_bins'])
+        except Exception:
+            result['ece'] = np.nan
+        result['mcc'] = safe_matthews_corrcoef(y_te_fold.astype(int), y_pred_mean)
+        result['confusion_matrix'] = safe_confusion_matrix(y_te_fold.astype(int), y_pred_mean, labels=np.array([0, 1]))
+        gam_diffs = gam.logs_['diffs']
+        result['n_iter'] = float(len(gam_diffs))
+        result['converged'] = bool(len(gam_diffs) > 0 and len(gam_diffs) < gam_kwargs['max_iter'])
+        result['fit_time'] = fit_time
+        del gam, X_tr_gam, X_te_gam
+        gc.collect()
+        return result
+    except Exception as e:
+        return {'ok': False, 'error': f"{type(e).__name__}: {e}"}
+
+
 def vocal_onset_model_selection(univariate_results_path: str,
                                input_data_path: str,
                                output_directory: str,
@@ -1083,8 +1433,17 @@ def vocal_onset_model_selection(univariate_results_path: str,
     Performs Forward Stepwise Selection to identify the "minimal sufficient set"
     of behavioral features that predict vocal (bout) onset.
 
-    This function implements a rigorous, greedy search strategy using Generalized
-    Additive Models (GAMs) with tensor product interactions. To ensure memory stability,
+    This function implements a greedy search strategy using Generalized
+    Additive Models (GAMs) with tensor product interactions. At every step the
+    cross-validated winner among the remaining candidates is tested with the
+    per-step shift test (``step_shift_test.run_step_shift_test``): the incumbent and
+    the incumbent plus the winner are refit on the balanced development draw, the
+    statistic is the in-sample Bernoulli log-likelihood gain per event, and its null
+    comes from refits after circularly shifting the winner's trace within every
+    development session and re-cutting its history windows at the stored start
+    frames, ``floor(m / alpha)`` times with Bonferroni correction over the ``m``
+    candidates (``alpha = model_params.selection_p_val``). The first step is tested
+    the same way against the constant model. To ensure memory stability,
     filter shapes are NOT calculated during the selection loop. Instead, a single
     refit is performed on the final winning model to extract shapes for visualization,
     which are then appended to the results file of the last *successful* step.
@@ -1199,6 +1558,10 @@ def vocal_onset_model_selection(univariate_results_path: str,
         pipeline.history_frames = int(np.floor(settings['io']['camera_sampling_rate'] * settings['model_params']['filter_history']))
     history_frames = pipeline.history_frames
 
+    camera_fps = float(settings['io']['camera_sampling_rate'])
+    step_cfg = _step_test_settings(settings, camera_fps)
+    traces_path, window_starts = _require_shift_test_inputs(_input_md, input_data_path, camera_fps)
+
     common_sessions = set(all_feature_data[ranked_features[0]].keys())
     for feat in ranked_features[1:]:
         common_sessions = common_sessions.intersection(set(all_feature_data[feat].keys()))
@@ -1220,6 +1583,16 @@ def vocal_onset_model_selection(univariate_results_path: str,
             f"Held-out reserve: {len(held_sessions)} session(s) excluded from "
             f"selection; scored once at finalization."
         )
+
+    # Lag-zero self-check of the shift test's inputs: every stored window of every
+    # screened feature must re-cut exactly from the trace sidecar at its stored start.
+    verify_windows_against_traces(
+        all_feature_data, traces_path, window_starts, _ONSET_WINDOW_SLOTS, history_frames,
+        features=ranked_features, sessions=dev_sessions,
+    )
+    print(f"Shift-test inputs verified: {len(ranked_features)} feature(s) x {len(dev_sessions)} development "
+          f"session(s) re-cut exactly from {Path(traces_path).name}; lag floor "
+          f"{step_cfg['min_lag_seconds']} s = {step_cfg['min_lag_frames']} frames.")
 
     pygam_params = settings['hyperparameters']['classical']['pygam']
     n_splines_time = pygam_params['n_splines_time']
@@ -1261,7 +1634,6 @@ def vocal_onset_model_selection(univariate_results_path: str,
         test_proportion=float(test_prop),
         split_strategy=split_strategy,
         random_seed=int(random_seed),
-        one_se_rule_used=False,
         aic_termination_used=False,
         n_anchor_features=len(ranked_features),
         anchor_feature=anchor_feature,
@@ -1276,6 +1648,19 @@ def vocal_onset_model_selection(univariate_results_path: str,
             'held_out_test_proportion': float(settings['model_validation']['held_out_test_proportion']),
             'held_out_session_ids': list(_held_out_session_ids),
             'n_held_out_sessions': len(held_sessions),
+            # The per-step acceptance rule and its knobs (a resume refuses another rule).
+            'step_test': {
+                'rule': STEP_TEST_RULE,
+                'screened_features': list(ranked_features),
+                'statistic': 'bernoulli_log_likelihood_per_event',
+                'alpha': float(p_val),
+                'min_lag_seconds': step_cfg['min_lag_seconds'],
+                'min_lag_frames': step_cfg['min_lag_frames'],
+                'checkpoint_every': step_cfg['checkpoint_every'],
+                'pool_workers': step_cfg['pool_workers'],
+                'refit_rows': 'balanced_development_draw',
+                'traces_path': traces_path,
+            },
         },
         settings_path=settings_path,
     )
@@ -1346,12 +1731,213 @@ def vocal_onset_model_selection(univariate_results_path: str,
             'X_full': np.concatenate((_X_p, _X_n), axis=0),
         }
 
+    # The development refit the per-step shift test scores on: all development
+    # sessions pooled, the majority class subsampled to the minority count with the
+    # finalization's seed, so the test's models are the models the held-out refit
+    # fits. `pooled_feature_cache` is pooled over `dev_sessions` in that order, which is
+    # what the held-out refit pools too.
+    _dev_n_keep = min(_anchor_n_pos, _anchor_n_neg)
+    _dev_rng = np.random.default_rng(random_seed + n_splits_selection + 1)
+    _dev_idx_p = _dev_rng.choice(_anchor_n_pos, _dev_n_keep, replace=False)
+    _dev_idx_n = _dev_rng.choice(_anchor_n_neg, _dev_n_keep, replace=False)
+    _dev_y = np.concatenate((np.ones(_dev_n_keep), np.zeros(_dev_n_keep)))
+
+    def _onset_development_score(features: list, winner_override: dict | None = None) -> float:
+        """
+        Description
+        -----------
+        In-sample Bernoulli log-likelihood per event (the negative log-loss of the
+        frame-averaged probability) of the model with ``features`` refit on the
+        balanced development draw. With ``winner_override`` the LAST feature's windows
+        are taken from that per-session dict (a shifted null refit) instead of the
+        stored windows. The empty model is the constant p = 0.5, log-likelihood
+        ``-log 2``.
+
+        Parameters
+        ----------
+        features (list)
+            Features of the model, the winner last.
+        winner_override (dict | None)
+            ``{session_id: {'usv_feature_arr': ..., 'no_usv_feature_arr': ...}}``.
+
+        Returns
+        -------
+        score (float)
+            Mean log-likelihood per event on the training rows.
+        """
+
+        if not features:
+            return -float(chance_ll)
+        X_train_list = []
+        for position, f_name in enumerate(features):
+            if winner_override is not None and position == len(features) - 1:
+                X_p, X_n = pool_session_arrays(winner_override, dev_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=history_frames)
+            else:
+                X_p, X_n = pooled_feature_cache[f_name]['X_pos'], pooled_feature_cache[f_name]['X_neg']
+            X_train_list.append(np.concatenate((X_p[_dev_idx_p], X_n[_dev_idx_n])))
+        gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
+        for i in range(1, len(features)):
+            gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
+        X_tr_gam = get_unrolled_X_for_multivariate(X_train_list, history_frames)
+        gam = LogisticGAM(gam_terms, **gam_kwargs).fit(X_tr_gam, np.repeat(_dev_y.astype(float), history_frames))
+        proba = np.mean(gam.predict_proba(X_tr_gam).reshape(len(_dev_y), history_frames), axis=1)
+        return -float(log_loss(_dev_y.astype(int), np.clip(proba, 1e-15, 1 - 1e-15)))
+
+    # Read-only data every pool worker of this run inherits (`_onset_candidate_fold`);
+    # the step-specific entries are added per step before the pool forks.
+    _onset_pool_base = {
+        'cv_folds': cv_folds,
+        'all_feature_data': all_feature_data,
+        'pooled_feature_cache': pooled_feature_cache,
+        'history_frames': history_frames,
+        'n_splines_value': n_splines_value,
+        'n_splines_time': n_splines_time,
+        'gam_kwargs': gam_kwargs,
+        'random_seed': random_seed,
+        'decision_threshold': settings['diagnostics']['binary_decision_threshold'],
+        'ece_n_bins': settings['diagnostics']['ece_n_bins'],
+    }
+
+    def _onset_session_fold_base(incumbent: list) -> dict:
+        """
+        Description
+        -----------
+        The candidate-invariant pieces of every 'session' fold for one step: the
+        anchor pooling, the fold's balanced subsample indices (seeded by fold only, so
+        identical for every candidate) and the incumbent features' pooled and
+        subsampled design columns. ``pool_session_arrays`` is a pure per-feature
+        concatenate, so ``pool(base + [new]) == pool(base) + pool([new])``.
+
+        Parameters
+        ----------
+        incumbent (list)
+            The incumbent features.
+
+        Returns
+        -------
+        base (dict)
+            ``{fold_i: (train_sess, test_sess, idx_p, idx_n, y_tr, y_te, base_train_list,
+            base_test_list)}`` for the 'session' folds.
+        """
+
+        base = {}
+        for fold_i, fold_info in enumerate(cv_folds):
+            if fold_info['type'] != 'session':
+                continue
+            train_sess, test_sess = fold_info['train_sessions'], fold_info['test_sessions']
+            anc_data = all_feature_data[anchor_feature]
+            X_p_tr, X_n_tr = pool_session_arrays(anc_data, train_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=history_frames)
+            trial_rng = np.random.default_rng(random_seed + fold_i)
+            n_k = min(X_p_tr.shape[0], X_n_tr.shape[0])
+            idx_p = trial_rng.choice(X_p_tr.shape[0], n_k, replace=False)
+            idx_n = trial_rng.choice(X_n_tr.shape[0], n_k, replace=False)
+            y_tr_fold = np.concatenate((np.ones(n_k), np.zeros(n_k)))
+            X_p_te_anc, X_n_te_anc = pool_session_arrays(anc_data, test_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=history_frames)
+            y_te_fold = np.concatenate((np.ones(X_p_te_anc.shape[0]), np.zeros(X_n_te_anc.shape[0])))
+            base_train_list, base_test_list = [], []
+            for f_name in incumbent:
+                f_p_tr, f_n_tr = pool_session_arrays(all_feature_data[f_name], train_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=history_frames)
+                f_p_te, f_n_te = pool_session_arrays(all_feature_data[f_name], test_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=history_frames)
+                base_train_list.append(np.concatenate((f_p_tr[idx_p], f_n_tr[idx_n])))
+                base_test_list.append(np.concatenate((f_p_te, f_n_te)))
+            base[fold_i] = (train_sess, test_sess, idx_p, idx_n, y_tr_fold, y_te_fold, base_train_list, base_test_list)
+        return base
+
+    def _onset_fit_candidates(incumbent: list, candidate_features: list) -> dict:
+        """
+        Description
+        -----------
+        Fits every candidate on every fold on top of ``incumbent`` through the
+        selection pool and returns each candidate's per-fold metric lists.
+
+        Parameters
+        ----------
+        incumbent (list)
+            The incumbent features.
+        candidate_features (list)
+            Candidates to score.
+
+        Returns
+        -------
+        per_candidate (dict)
+            ``{feature: {metric key: [per-fold values]}}``.
+        """
+
+        set_pool_context(
+            onset_step={**_onset_pool_base,
+                        'current_model_features': list(incumbent),
+                        'session_fold_base': _onset_session_fold_base(incumbent)},
+            candidate_fold=_onset_candidate_fold,
+        )
+        n_workers = pool_worker_count(step_cfg['pool_workers'], len(incumbent) + 1,
+                                      step_cfg['pool_memory_gb'], step_cfg['fit_peak_gb_base'],
+                                      step_cfg['fit_peak_gb_per_term'])
+        n_folds = len(cv_folds)
+        tasks = [(feat, fold_i) for feat in candidate_features for fold_i in range(n_folds)]
+        pool = SelectionPool(n_workers)
+        try:
+            results = pool.map('candidate_fold', tasks)
+        finally:
+            pool.close()
+        return {feat: _assemble_fold_metrics(results[i * n_folds:(i + 1) * n_folds], feat, _BINARY_FOLD_METRIC_KEYS)
+                for i, feat in enumerate(candidate_features)}
+
+    def _onset_step_test(winner: str, step_index: int, m_candidates: int) -> dict:
+        """
+        Description
+        -----------
+        The per-step shift test of ``winner`` on top of the current incumbent.
+
+        Parameters
+        ----------
+        winner (str)
+            The cross-validated winner.
+        step_index (int)
+            The step.
+        m_candidates (int)
+            Candidates the winner was chosen from (the Bonferroni factor).
+
+        Returns
+        -------
+        step_test (dict)
+            The record of ``run_step_shift_test``.
+        """
+
+        incumbent = list(current_model_features)
+        trial = [*incumbent, winner]
+        incumbent_score = _onset_development_score(incumbent)
+        observed_score = _onset_development_score(trial)
+        winner_traces = {s: read_feature_trace(traces_path, winner, s)
+                         for s in dev_sessions if s in all_feature_data[winner]}
+        n_workers = pool_worker_count(step_cfg['pool_workers'], len(trial),
+                                      step_cfg['pool_memory_gb'], step_cfg['fit_peak_gb_base'],
+                                      step_cfg['fit_peak_gb_per_term'])
+        return run_step_shift_test(
+            n_workers=n_workers,
+            refit_and_score=lambda override: _onset_development_score(trial, override),
+            incumbent_features=incumbent,
+            incumbent_score=incumbent_score,
+            winner=winner,
+            observed_score=observed_score,
+            statistic_name='bernoulli_log_likelihood_per_event',
+            winner_traces=winner_traces,
+            window_starts={s: window_starts[s] for s in winner_traces},
+            slots=_ONSET_WINDOW_SLOTS,
+            history_frames=history_frames,
+            m_candidates=m_candidates,
+            alpha=p_val,
+            min_lag_frames=step_cfg['min_lag_frames'],
+            random_seed=random_seed,
+            step_index=step_index,
+            checkpoint_every=step_cfg['checkpoint_every'],
+            partial_path=model_selection_dir / f"{prefix}{step_index}_null_partial.pkl",
+            label=f"Step {step_index}",
+        )
+
     current_model_features = []
     best_current_score = chance_ll
-    best_current_se = 0.0
-    # Per-fold scores of the incumbent model, kept so the 1SE acceptance test
-    # below can pair them against a candidate's. Before Step 0 the incumbent is
-    # the constant chance floor, which pairs correctly as a scalar.
+    # Per-fold scores of the incumbent model, stored as each step record's
+    # `baseline_folds`. Before Step 0 the incumbent is the constant chance floor.
     best_current_folds = chance_ll
     time_indices = np.arange(history_frames, dtype=float)
     step_counter = 0
@@ -1393,9 +1979,10 @@ def vocal_onset_model_selection(univariate_results_path: str,
         try:
             with Path(model_selection_dir / f"{prefix}{last_step}.pkl").open('rb') as f:
                 last_results = pickle.load(f)
+            _require_step_test_rule(last_results, model_selection_dir / f"{prefix}{last_step}.pkl")
             # Rebuild the state right after `last_step` from its recorded decision
             # (`_restore_selection_checkpoint`); the incumbent's per-fold log-losses are
-            # the reference the next paired-1SE gate compares against.
+            # kept as the step record's baseline.
             state = _restore_selection_checkpoint(
                 last_results, 'mean_ll', 'se_ll', lambda entry: entry['ll'],
             )
@@ -1408,7 +1995,6 @@ def vocal_onset_model_selection(univariate_results_path: str,
             else:
                 current_model_features = state['features']
                 best_current_score = state['score']
-                best_current_se = state['se']
                 best_current_folds = state['folds']
                 step_counter = state['next_step']
                 # A search that had accepted every ranked feature stopped on that, with no
@@ -1434,140 +2020,44 @@ def vocal_onset_model_selection(univariate_results_path: str,
     if use_top_rank_as_anchor and step_counter == 0 and not resume_converged:
         anchor_to_force = ranked_features[0]
         print(format_selection_step('Anchor', feature=anchor_to_force,
-                                    detail='top-ranked; forcing as start'))
-        current_model_features = [anchor_to_force]
-        gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
-        # Per-fold scalar metrics for the anchor. See the function docstring for
-        # the definition of each key. `precision` is not stored (derivable from
-        # the confusion matrix); `brier` / `ece` / `mcc` are added as
-        # calibration and chance-corrected summary scores.
-        metrics = {'ll': [], 'auc': [], 'score': [], 'f1': [], 'recall': [],
-                   'brier': [], 'ece': [], 'mcc': [],
-                   'confusion_matrix': [], 'n_iter': [], 'converged': [], 'fit_time': []}
-
-        for fold_i, fold_info in enumerate(cv_folds):
-            try:
-                X_train_list, X_test_list = [], []
-                if fold_info['type'] == 'session':
-                    train_sess, test_sess = fold_info['train_sessions'], fold_info['test_sessions']
-                    anc_data = all_feature_data[anchor_feature]
-                    X_p_tr, X_n_tr = pool_session_arrays(anc_data, train_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
-                    n_k = min(X_p_tr.shape[0], X_n_tr.shape[0])
-                    anc_rng = np.random.default_rng(random_seed + fold_i)
-                    idx_p = anc_rng.choice(X_p_tr.shape[0], n_k, replace=False)
-                    idx_n = anc_rng.choice(X_n_tr.shape[0], n_k, replace=False)
-                    y_tr_fold = np.concatenate((np.ones(n_k), np.zeros(n_k)))
-                    X_p_te, X_n_te = pool_session_arrays(anc_data, test_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
-                    y_te_fold = np.concatenate((np.ones(X_p_te.shape[0]), np.zeros(X_n_te.shape[0])))
-                    X_train_list.append(np.concatenate((X_p_tr[idx_p], X_n_tr[idx_n])))
-                    X_test_list.append(np.concatenate((X_p_te, X_n_te)))
-                elif fold_info['type'] == 'mixed':
-                    train_ix, test_ix = fold_info['train_idx'], fold_info['test_idx']
-                    n_pos_total = fold_info['n_pos_total']
-                    n_neg_total = fold_info['n_neg_total']
-                    y_full = np.concatenate((np.ones(n_pos_total), np.zeros(n_neg_total)))
-                    # Pull the already-pooled full design matrix from the cache
-                    # instead of rebuilding it on every fold.
-                    X_full = pooled_feature_cache[anchor_to_force]['X_full']
-
-                    X_tr_all = X_full[train_ix]
-                    y_tr_all = y_full[train_ix]
-                    X_te = X_full[test_ix]
-                    y_te_fold = y_full[test_ix]
-
-                    # Balance the training fold 50/50; test preserves natural rate.
-                    X_tr_pos = X_tr_all[y_tr_all == 1]
-                    X_tr_neg = X_tr_all[y_tr_all == 0]
-                    n_tr_keep = min(X_tr_pos.shape[0], X_tr_neg.shape[0])
-                    if n_tr_keep == 0:
-                        msg_0 = "Training fold has no samples in one class after split."
-                        raise ValueError(msg_0)
-                    anc_rng = np.random.default_rng(random_seed + fold_i)
-                    idx_p = anc_rng.choice(X_tr_pos.shape[0], n_tr_keep, replace=False)
-                    idx_n = anc_rng.choice(X_tr_neg.shape[0], n_tr_keep, replace=False)
-                    X_tr_bal = np.concatenate((X_tr_pos[idx_p], X_tr_neg[idx_n]))
-                    y_tr_fold = np.concatenate((np.ones(n_tr_keep), np.zeros(n_tr_keep)))
-
-                    X_train_list.append(X_tr_bal)
-                    X_test_list.append(X_te)
-
-                X_tr_gam = get_unrolled_X_for_multivariate(X_train_list, history_frames)
-                X_te_gam = get_unrolled_X_for_multivariate(X_test_list, history_frames)
-                fit_start = time.perf_counter()
-                gam = LogisticGAM(gam_terms, **gam_kwargs).fit(X_tr_gam, np.repeat(y_tr_fold.astype(float), history_frames))
-                fit_time = float(time.perf_counter() - fit_start)
-
-                y_proba_tiled = gam.predict_proba(X_te_gam)
-                y_proba_mean = np.mean(y_proba_tiled.reshape(len(y_te_fold), history_frames), axis=1)
-                metrics['ll'].append(log_loss(y_te_fold.astype(int), np.clip(y_proba_mean, 1e-15, 1 - 1e-15)))
-
-                y_pred_mean = (y_proba_mean >= settings['diagnostics']['binary_decision_threshold']).astype(int)
-                metrics['score'].append(balanced_accuracy_score(y_te_fold, y_pred_mean))
-                metrics['f1'].append(f1_score(y_te_fold, y_pred_mean, zero_division=0))
-                metrics['recall'].append(recall_score(y_te_fold, y_pred_mean, zero_division=0))
-                metrics['auc'].append(roc_auc_score(y_te_fold, y_proba_mean) if len(np.unique(y_te_fold)) > 1 else np.nan)
-                metrics['brier'].append(float(brier_score_loss(y_te_fold.astype(int), y_proba_mean)))
-                try:
-                    y_proba_2d = np.column_stack([1.0 - y_proba_mean, y_proba_mean])
-                    metrics['ece'].append(expected_calibration_error(y_te_fold.astype(int), y_pred_mean, y_proba_2d, n_bins=settings['diagnostics']['ece_n_bins']))
-                except Exception:
-                    metrics['ece'].append(np.nan)
-                metrics['mcc'].append(safe_matthews_corrcoef(y_te_fold.astype(int), y_pred_mean))
-                metrics['confusion_matrix'].append(safe_confusion_matrix(
-                    y_te_fold.astype(int), y_pred_mean, labels=np.array([0, 1])
-                ))
-                gam_diffs = gam.logs_['diffs']
-                metrics['n_iter'].append(float(len(gam_diffs)))
-                metrics['converged'].append(bool(len(gam_diffs) > 0 and len(gam_diffs) < gam_kwargs['max_iter']))
-                metrics['fit_time'].append(fit_time)
-
-                del gam, X_tr_gam, X_te_gam
-                gc.collect()
-            except Exception as e:
-                print(f"    [!] Error fitting {anchor_to_force} (Fold {fold_i}): {e}")
-                for _k, _k_values in metrics.items():
-                    # Keep the per-fold list lengths aligned across every key.
-                    # `confusion_matrix` stores (2, 2) arrays, so on failure we
-                    # append a NaN-filled (2, 2) placeholder rather than a
-                    # scalar NaN; otherwise np.stack(...) downstream would fail
-                    # on a heterogeneous list.
-                    if _k == 'confusion_matrix':
-                        _k_values.append(np.full((2, 2), np.nan))
-                    else:
-                        _k_values.append(np.nan)
-
+                                    detail='top-ranked; forced as the first candidate, tested against the constant model'))
+        metrics = _onset_fit_candidates([], [anchor_to_force])[anchor_to_force]
         valid_ll = [x for x in metrics['ll'] if np.isfinite(x)]
+        _require_scored_candidate('Anchor', 1, len(valid_ll))
+        step_test = None
         if valid_ll:
-            best_current_score = np.mean(valid_ll)
-            # `np.std([x], ddof=1)` is NaN for a single finite fold (zero divisor);
-            # guard with len > 1 so a one-fold success does not poison the 1SE rule.
-            best_current_se = np.std(valid_ll, ddof=1) / np.sqrt(len(valid_ll)) if len(valid_ll) > 1 else 0.0
-            best_current_folds = metrics['ll']
-
-            # Step 0 Save
-            step_0_metadata = {
-                'step_idx': 0, 'current_features': [anchor_to_force],
-                'baseline_score': chance_ll, 'selected_feature': anchor_to_force,
-                'candidates_summary': {
-                    anchor_to_force: {
-                        'll': metrics['ll'], 'auc': metrics['auc'], 'score': metrics['score'],
-                        'f1': metrics['f1'], 'recall': metrics['recall'],
-                        'brier': metrics['brier'], 'ece': metrics['ece'], 'mcc': metrics['mcc'],
-                        'confusion_matrix': metrics['confusion_matrix'],
-                        'n_iter': metrics['n_iter'], 'converged': metrics['converged'],
-                        'fit_time': metrics['fit_time'],
-                        'mean_ll': best_current_score, 'se_ll': best_current_se
-                    }
+            # The forced anchor is tested like every winner, with Bonferroni over every
+            # screened feature it was forced ahead of.
+            step_test = _onset_step_test(anchor_to_force, 0, len(ranked_features))
+        anchor_accepted = step_test is not None and step_test['accepted']
+        mean_ll = float(np.mean(valid_ll)) if valid_ll else float('nan')
+        se_ll = float(np.std(valid_ll, ddof=1) / np.sqrt(len(valid_ll))) if len(valid_ll) > 1 else 0.0
+        step_0_metadata = {
+            'step_idx': 0,
+            'current_features': [anchor_to_force] if anchor_accepted else [],
+            'baseline_score': chance_ll, 'baseline_folds': chance_ll,
+            'selected_feature': anchor_to_force if anchor_accepted else None,
+            'candidates_summary': {
+                anchor_to_force: {
+                    **{key: metrics[key] for key in _BINARY_FOLD_METRIC_KEYS},
+                    'mean_ll': mean_ll, 'se_ll': se_ll,
                 }
-            }
-            # Reuse the canonical `prefix` derived above so Step 0 and all
-            # subsequent steps share a single filename scheme — the legacy
-            # substring-based `target_sex` path disagreed with the regex-based
-            # `target_condition` and could orphan the Step 0 file from the rest
-            # of the run on selection resume.
-            s0_name = f"{prefix}0.pkl"
-            _dump_step_pickle(model_selection_dir / s0_name, _wrap_step(step_0_metadata))
+            } if valid_ll else {},
+            'step_test': step_test,
+        }
+        s0_name = f"{prefix}0.pkl"
+        _dump_step_pickle(model_selection_dir / s0_name, _wrap_step(step_0_metadata))
+        fname = s0_name
+        if anchor_accepted:
+            print(format_selection_step('Anchor', feature=anchor_to_force, decision='ACCEPT',
+                                        metrics={'LL': mean_ll}))
+            current_model_features = [anchor_to_force]
+            best_current_score, best_current_folds = mean_ll, metrics['ll']
             step_counter = 1
+        else:
+            print(format_selection_step('Anchor', feature=anchor_to_force, decision='REJECT',
+                                        detail='the forced anchor failed the shift test; selection finished'))
+            resume_converged = True
 
     # A resume that restored a converged search skips the loop and finalizes directly.
     while not resume_converged:
@@ -1577,195 +2067,66 @@ def vocal_onset_model_selection(univariate_results_path: str,
             'step_idx': step_counter, 'current_features': list(current_model_features),
             'baseline_score': best_current_score, 'baseline_folds': best_current_folds,
             'candidates_summary': {},
-            'selected_feature': None
+            'selected_feature': None,
+            'step_test': None,
         }
 
-        best_candidate, best_candidate_score, best_candidate_se = None, float('inf'), 0.0
+        candidates_this_step = [feat for feat in ranked_features if feat not in current_model_features]
+        m_candidates = len(candidates_this_step)
+        per_candidate = _onset_fit_candidates(current_model_features, candidates_this_step)
+
+        best_candidate, best_candidate_score = None, float('inf')
         best_candidate_folds = None
-
-        # 'session' folds: the anchor pooling, the fold's balanced subsample indices
-        # (trial_rng is seeded by fold only, so idx_p/idx_n are identical across
-        # candidates), and the base-feature pooled+subsampled design columns are all
-        # candidate-invariant. Precompute them once per fold here; the candidate loop then
-        # pools only the new feature. pool_session_arrays is a pure per-feature
-        # concatenate, so pool(base+[new]) == pool(base)+pool([new]) -- byte-identical.
-        session_fold_base = {}
-        for fold_i, fold_info in enumerate(cv_folds):
-            if fold_info['type'] != 'session':
-                continue
-            train_sess, test_sess = fold_info['train_sessions'], fold_info['test_sessions']
-            anc_data = all_feature_data[anchor_feature]
-            X_p_tr, X_n_tr = pool_session_arrays(anc_data, train_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
-            trial_rng = np.random.default_rng(random_seed + fold_i)
-            n_k = min(X_p_tr.shape[0], X_n_tr.shape[0])
-            idx_p = trial_rng.choice(X_p_tr.shape[0], n_k, replace=False)
-            idx_n = trial_rng.choice(X_n_tr.shape[0], n_k, replace=False)
-            y_tr_fold = np.concatenate((np.ones(n_k), np.zeros(n_k)))
-            X_p_te_anc, X_n_te_anc = pool_session_arrays(anc_data, test_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
-            y_te_fold = np.concatenate((np.ones(X_p_te_anc.shape[0]), np.zeros(X_n_te_anc.shape[0])))
-            base_train_list, base_test_list = [], []
-            for f_name in current_model_features:
-                f_p_tr, f_n_tr = pool_session_arrays(all_feature_data[f_name], train_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
-                f_p_te, f_n_te = pool_session_arrays(all_feature_data[f_name], test_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
-                base_train_list.append(np.concatenate((f_p_tr[idx_p], f_n_tr[idx_n])))
-                base_test_list.append(np.concatenate((f_p_te, f_n_te)))
-            session_fold_base[fold_i] = (train_sess, test_sess, idx_p, idx_n, y_tr_fold, y_te_fold, base_train_list, base_test_list)
-
-        for _i_feat, feat in enumerate(ranked_features):
-            if feat in current_model_features:
-                continue
-            gc.collect()
-            trial_features = [*current_model_features, feat]
-
-            gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
-            for i in range(1, len(trial_features)):
-                gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
-
-            metrics = {'ll': [], 'auc': [], 'score': [], 'f1': [], 'recall': [],
-                       'brier': [], 'ece': [], 'mcc': [],
-                       'confusion_matrix': [], 'n_iter': [], 'converged': [], 'fit_time': []}
-            for fold_i, fold_info in enumerate(cv_folds):
-                try:
-                    X_train_list, X_test_list = [], []
-                    if fold_info['type'] == 'session':
-                        # Anchor pool, balanced subsample indices, and base-feature columns
-                        # were precomputed once per fold above; pool only the new feature
-                        # and append (list() copy so the cached base list is not mutated).
-                        train_sess, test_sess, idx_p, idx_n, y_tr_fold, y_te_fold, base_train_list, base_test_list = session_fold_base[fold_i]
-                        X_train_list = list(base_train_list)
-                        X_test_list = list(base_test_list)
-                        f_p_tr, f_n_tr = pool_session_arrays(all_feature_data[feat], train_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
-                        f_p_te, f_n_te = pool_session_arrays(all_feature_data[feat], test_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
-                        X_train_list.append(np.concatenate((f_p_tr[idx_p], f_n_tr[idx_n])))
-                        X_test_list.append(np.concatenate((f_p_te, f_n_te)))
-                    elif fold_info['type'] == 'mixed':
-                        train_ix, test_ix = fold_info['train_idx'], fold_info['test_idx']
-                        n_pos_total = fold_info['n_pos_total']
-                        n_neg_total = fold_info['n_neg_total']
-                        y_full = np.concatenate((np.ones(n_pos_total), np.zeros(n_neg_total)))
-                        y_tr_all = y_full[train_ix]
-                        y_te_fold = y_full[test_ix]
-
-                        # Determine balanced-train indices once (shared across all trial features).
-                        pos_mask = (y_tr_all == 1)
-                        neg_mask = (y_tr_all == 0)
-                        pos_positions = np.where(pos_mask)[0]
-                        neg_positions = np.where(neg_mask)[0]
-                        n_tr_keep = min(pos_positions.size, neg_positions.size)
-                        if n_tr_keep == 0:
-                            msg_0 = "Training fold has no samples in one class after split."
-                            raise ValueError(msg_0)
-                        fs_rng = np.random.default_rng(random_seed + fold_i)
-                        sel_pos = fs_rng.choice(pos_positions.size, n_tr_keep, replace=False)
-                        sel_neg = fs_rng.choice(neg_positions.size, n_tr_keep, replace=False)
-                        bal_train_local = np.concatenate((pos_positions[sel_pos], neg_positions[sel_neg]))
-                        y_tr_fold = np.concatenate((np.ones(n_tr_keep), np.zeros(n_tr_keep)))
-
-                        for f_name in trial_features:
-                            # Use the pre-pooled cache rather than re-running
-                            # `pool_session_arrays` on every fold for every
-                            # trial feature (the dominant cost of the forward
-                            # loop under 'mixed' strategy).
-                            X_full = pooled_feature_cache[f_name]['X_full']
-                            X_tr_all = X_full[train_ix]
-                            X_train_list.append(X_tr_all[bal_train_local])
-                            X_test_list.append(X_full[test_ix])
-
-                    X_tr_gam = get_unrolled_X_for_multivariate(X_train_list, history_frames)
-                    X_te_gam = get_unrolled_X_for_multivariate(X_test_list, history_frames)
-                    fit_start = time.perf_counter()
-                    gam = LogisticGAM(gam_terms, **gam_kwargs).fit(X_tr_gam, np.repeat(y_tr_fold.astype(float), history_frames))
-                    fit_time = float(time.perf_counter() - fit_start)
-
-                    y_proba_tiled = gam.predict_proba(X_te_gam)
-                    y_proba_mean = np.mean(y_proba_tiled.reshape(len(y_te_fold), history_frames), axis=1)
-                    metrics['ll'].append(log_loss(y_te_fold.astype(int), np.clip(y_proba_mean, 1e-15, 1 - 1e-15)))
-
-                    y_pred_mean = (y_proba_mean >= settings['diagnostics']['binary_decision_threshold']).astype(int)
-                    metrics['score'].append(balanced_accuracy_score(y_te_fold, y_pred_mean))
-                    metrics['f1'].append(f1_score(y_te_fold, y_pred_mean, zero_division=0))
-                    metrics['recall'].append(recall_score(y_te_fold, y_pred_mean, zero_division=0))
-                    metrics['auc'].append(roc_auc_score(y_te_fold, y_proba_mean) if len(np.unique(y_te_fold)) > 1 else np.nan)
-                    metrics['brier'].append(float(brier_score_loss(y_te_fold.astype(int), y_proba_mean)))
-                    try:
-                        y_proba_2d = np.column_stack([1.0 - y_proba_mean, y_proba_mean])
-                        metrics['ece'].append(expected_calibration_error(y_te_fold.astype(int), y_pred_mean, y_proba_2d, n_bins=settings['diagnostics']['ece_n_bins']))
-                    except Exception:
-                        metrics['ece'].append(np.nan)
-                    metrics['mcc'].append(safe_matthews_corrcoef(y_te_fold.astype(int), y_pred_mean))
-                    metrics['confusion_matrix'].append(safe_confusion_matrix(
-                        y_te_fold.astype(int), y_pred_mean, labels=np.array([0, 1])
-                    ))
-                    gam_diffs = gam.logs_['diffs']
-                    metrics['n_iter'].append(float(len(gam_diffs)))
-                    metrics['converged'].append(bool(len(gam_diffs) > 0 and len(gam_diffs) < gam_kwargs['max_iter']))
-                    metrics['fit_time'].append(fit_time)
-
-                    del gam, X_tr_gam, X_te_gam
-                    gc.collect()
-                except Exception as e:
-                    print(f"    [!] Error fitting {feat} (Fold {fold_i}): {e}")
-                    for _k in metrics:
-                        # `confusion_matrix` holds (2, 2) arrays, so on failure
-                        # append a NaN-filled matrix instead of a scalar NaN to
-                        # keep the per-fold list homogeneous for downstream
-                        # np.stack / indexing.
-                        if _k == 'confusion_matrix':
-                            metrics[_k].append(np.full((2, 2), np.nan))
-                        else:
-                            metrics[_k].append(np.nan)
-
+        for feat in candidates_this_step:
+            metrics = per_candidate[feat]
             valid = [x for x in metrics['ll'] if np.isfinite(x)]
-
             if valid:
                 # `np.std([x], ddof=1)` is NaN for a single finite fold (zero divisor);
-                # guard with len > 1 so a one-fold success does not poison the 1SE rule.
+                # guard with len > 1 so a one-fold success keeps a finite SE.
                 mean_ll = np.mean(valid)
                 se_ll = np.std(valid, ddof=1) / np.sqrt(len(valid)) if len(valid) > 1 else 0.0
                 print(format_selection_step(f"Step {step_counter}", feature=feat,
                                             metrics={'LL': mean_ll},
                                             detail=f"range {min(valid):.4f}-{max(valid):.4f}"))
-
                 step_results_metadata['candidates_summary'][feat] = {
-                    'll': metrics['ll'], 'auc': metrics['auc'], 'score': metrics['score'],
-                    'f1': metrics['f1'], 'recall': metrics['recall'],
-                    'brier': metrics['brier'], 'ece': metrics['ece'], 'mcc': metrics['mcc'],
-                    'confusion_matrix': metrics['confusion_matrix'],
-                    'n_iter': metrics['n_iter'], 'converged': metrics['converged'],
-                    'fit_time': metrics['fit_time'],
-                    'mean_ll': mean_ll, 'se_ll': se_ll
+                    **{key: metrics[key] for key in _BINARY_FOLD_METRIC_KEYS},
+                    'mean_ll': mean_ll, 'se_ll': se_ll,
                 }
-
                 if mean_ll < best_candidate_score:
-                    best_candidate_score, best_candidate_se, best_candidate = mean_ll, se_ll, feat
+                    best_candidate_score, best_candidate = mean_ll, feat
                     best_candidate_folds = metrics['ll']
             else:
                 print(format_selection_step(f"Step {step_counter}", feature=feat,
                                             decision='FAILED (no valid scores)'))
 
-        # The 1SE bar is the standard error of the PER-FOLD improvement, not of the
-        # candidate's own scores: the incumbent and the candidate are nested and
-        # scored on the same folds, so their shared fold-difficulty term cancels in
-        # the difference but dominates either score on its own.
-        step_improvement, step_improvement_se = (
-            paired_one_se_improvement(best_candidate_folds, best_current_folds,
-                                      higher_is_better=False)
-            if best_candidate is not None else (float('nan'), 0.0))
+        # The cross-validated winner is tested with the per-step shift test, Bonferroni
+        # over the m candidates of this step; the step is accepted only when no shifted
+        # refit reaches the observed in-sample gain.
+        _require_scored_candidate(f"Step {step_counter}", m_candidates, int(best_candidate is not None))
+        step_test = (_onset_step_test(best_candidate, step_counter, m_candidates)
+                     if best_candidate is not None else None)
+        step_results_metadata['step_test'] = step_test
 
-        if np.isfinite(step_improvement) and step_improvement > step_improvement_se:
+        if step_test is not None and step_test['accepted']:
             print(format_selection_step(f"Step {step_counter}", feature=best_candidate,
-                                        decision='ACCEPT', metrics={'LL': best_candidate_score}))
+                                        decision='ACCEPT',
+                                        metrics={'LL': best_candidate_score,
+                                                 'p_adj': step_test['p_adjusted']}))
             step_results_metadata['selected_feature'] = best_candidate
             current_model_features.append(best_candidate)
 
             fname = f"{prefix}{step_counter}.pkl"
             _dump_step_pickle(model_selection_dir / fname, _wrap_step(step_results_metadata))
 
-            best_current_score, best_current_se, step_counter = best_candidate_score, best_candidate_se, step_counter + 1
+            best_current_score, step_counter = best_candidate_score, step_counter + 1
             best_current_folds = best_candidate_folds
         else:
-            print(format_selection_step(f"Step {step_counter}", decision='REJECT',
-                                        detail='no candidate beat the 1-SE margin; selection finished'))
+            if best_candidate is None:
+                reject_detail = 'no candidate had valid scores; selection finished'
+            else:
+                reject_detail = (f"winner {best_candidate!r} failed the shift test "
+                                 f"(p_adj {step_test['p_adjusted']:.4f} vs alpha {p_val}); selection finished")
+            print(format_selection_step(f"Step {step_counter}", decision='REJECT', detail=reject_detail))
             step_results_metadata['selected_feature'] = None
             fname = f"{prefix}{step_counter}.pkl"
             _dump_step_pickle(model_selection_dir / fname, _wrap_step(step_results_metadata))
@@ -2091,6 +2452,170 @@ def _balance_multivariate_arrays(
     return X_tr_t_bal, X_tr_o_bal, y_target, y_other
 
 
+#: Start-frame slot -> pickle array key of the binary category pipeline.
+_CATEGORY_WINDOW_SLOTS = {'target': 'target_feature_arr', 'other': 'other_feature_arr'}
+
+
+def _category_candidate_fold(feat: str, fold_i: int) -> dict:
+    """
+    Description
+    -----------
+    One (candidate, fold) fit of the binary category selector, run in a pool worker:
+    pools the fold's training and test rows of the incumbent features plus ``feat``
+    ('session' strategy: the incumbent block comes pre-pooled per fold from
+    ``fold_base_pooled``, only the candidate is pooled here; 'mixed' strategy: the
+    rows come from ``pooled_category_cache`` sliced by the fold's indices), balances
+    the training rows 50/50 with the fold's seed, fits the configured engine
+    (``LogisticRegressionCV`` on the basis projection, or ``LogisticGAM`` on the
+    unrolled tensor terms) and scores the test rows at their natural class prior.
+    The data comes from the ``'category_step'`` pool-context entry the selector
+    stores before creating the pool. The operations are those of the former inline
+    loop; a fold the loop used to skip silently (no balanced training rows, or no
+    test rows) is now reported as a failed fold, so every per-fold list keeps one
+    entry per fold.
+
+    Parameters
+    ----------
+    feat (str)
+        The candidate feature.
+    fold_i (int)
+        Fold index.
+
+    Returns
+    -------
+    result (dict)
+        ``{'ok': True, <metric key>: value, ...}`` with the keys of
+        ``_BINARY_FOLD_METRIC_KEYS``, or ``{'ok': False, 'error': str}``.
+    """
+
+    ctx = pool_context('category_step')
+    tr_idx, te_idx = ctx['cv_folds'][fold_i]
+    all_feature_data = ctx['all_feature_data']
+    all_sessions_arr = ctx['all_sessions_arr']
+    history_frames = ctx['history_frames']
+    current_model_features = ctx['current_model_features']
+    model_type = ctx['model_type']
+    random_seed = ctx['random_seed']
+    gam_kwargs = ctx['gam_kwargs']
+    lr_params = ctx['lr_params']
+    basis_matrix = ctx['basis_matrix']
+    n_targ_total = ctx['n_targ_total']
+    trial_feats = [*current_model_features, feat]
+    try:
+        if ctx['split_strategy'] == 'session':
+            # Pool only the new candidate feature; the base features were
+            # pooled once per fold by the selector. List order matches trial_feats
+            # (base first, then the new feat), so this is byte-identical.
+            b_tr_t, b_tr_o, b_te_t, b_te_o = ctx['fold_base_pooled'][fold_i]
+            n_tr_t, n_tr_o = _pool_category_features(all_feature_data, [feat], all_sessions_arr[tr_idx], history_frames)
+            n_te_t, n_te_o = _pool_category_features(all_feature_data, [feat], all_sessions_arr[te_idx], history_frames)
+            X_tr_t_raw, X_tr_o_raw = b_tr_t + n_tr_t, b_tr_o + n_tr_o
+            X_te_t_raw, X_te_o_raw = b_te_t + n_te_t, b_te_o + n_te_o
+            g_tr_t_raw, g_tr_o_raw = _category_row_sessions(all_feature_data, feat, all_sessions_arr[tr_idx])
+        else:
+            # Reassemble the per-trial feature list from the pre-pooled cache so
+            # every fold reuses the same dense (target, other) arrays.
+            pooled_category_cache = ctx['pooled_category_cache']
+            X_all_t_raw = [pooled_category_cache[f]['target'] for f in trial_feats]
+            X_all_o_raw = [pooled_category_cache[f]['other'] for f in trial_feats]
+
+            tr_targ_idx = tr_idx[tr_idx < n_targ_total]
+            tr_other_idx = tr_idx[tr_idx >= n_targ_total] - n_targ_total
+            te_targ_idx = te_idx[te_idx < n_targ_total]
+            te_other_idx = te_idx[te_idx >= n_targ_total] - n_targ_total
+
+            X_tr_t_raw = [x[tr_targ_idx] for x in X_all_t_raw]
+            X_tr_o_raw = [x[tr_other_idx] for x in X_all_o_raw]
+            X_te_t_raw = [x[te_targ_idx] for x in X_all_t_raw]
+            X_te_o_raw = [x[te_other_idx] for x in X_all_o_raw]
+            g_tr_t_raw, g_tr_o_raw = ctx['g_all_targ'][tr_targ_idx], ctx['g_all_other'][tr_other_idx]
+
+        X_tr_t, X_tr_o, y_tr_t, y_tr_o, g_tr_t, g_tr_o = _balance_multivariate_arrays(
+            X_tr_t_raw, X_tr_o_raw, random_seed + fold_i, groups_target=g_tr_t_raw, groups_other=g_tr_o_raw)
+
+        # Test set: natural class prior (no balancing).
+        if not X_tr_t or len(X_te_t_raw) == 0:
+            msg = "fold skipped: no balanced training rows"
+            raise ValueError(msg)
+        n_te_targ = X_te_t_raw[0].shape[0]
+        n_te_other = X_te_o_raw[0].shape[0]
+        if (n_te_targ + n_te_other) == 0:
+            msg = "fold skipped: no test rows"
+            raise ValueError(msg)
+
+        X_tr_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_tr_t, X_tr_o, strict=False)]
+        y_tr = np.concatenate([y_tr_t, y_tr_o])
+        perm = np.random.default_rng(random_seed + fold_i).permutation(len(y_tr))
+        groups_tr = np.concatenate([g_tr_t, g_tr_o])
+
+        X_te_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_te_t_raw, X_te_o_raw, strict=False)]
+        y_te = np.concatenate([np.ones(n_te_targ), np.zeros(n_te_other)]).astype(int)
+
+        if model_type == 'sklearn':
+            X_tr_stacked = np.hstack([np.dot(x[perm], basis_matrix) for x in X_tr_list])
+            X_te_stacked = np.hstack([np.dot(x, basis_matrix) for x in X_te_list])
+
+            model = LogisticRegressionCV(
+                penalty=lr_params['penalty'],
+                Cs=lr_params['cs'],
+                # Inner folds hold out whole training sessions, as the outer folds do.
+                cv=classification_inner_cv_splits(y_tr[perm], groups_tr[perm], lr_params['cv'], random_seed),
+                class_weight='balanced',
+                solver=lr_params['solver'],
+                max_iter=lr_params['max_iter'],
+                random_state=random_seed
+            )
+            fit_start = time.perf_counter()
+            model.fit(X_tr_stacked, y_tr[perm])
+            fit_time = float(time.perf_counter() - fit_start)
+            y_proba = model.predict_proba(X_te_stacked)[:, 1]
+            y_pred = model.predict(X_te_stacked)
+            try:
+                fold_n_iter = float(np.max(model.n_iter_))
+                fold_converged = bool(fold_n_iter < lr_params['max_iter'])
+            except Exception:
+                fold_n_iter, fold_converged = np.nan, False
+        else:
+            gam_terms = te(0, 1, n_splines=[ctx['n_splines_value'], ctx['n_splines_time']])
+            for i in range(1, len(trial_feats)):
+                gam_terms += te(i * 2, i * 2 + 1, n_splines=[ctx['n_splines_value'], ctx['n_splines_time']])
+            X_tr_gam = get_unrolled_X_for_multivariate([x[perm] for x in X_tr_list], history_frames)
+            y_tr_gam = np.repeat(y_tr[perm].astype(float), history_frames)
+            fit_start = time.perf_counter()
+            gam = LogisticGAM(gam_terms, **gam_kwargs).fit(X_tr_gam, y_tr_gam)
+            fit_time = float(time.perf_counter() - fit_start)
+
+            X_te_gam = get_unrolled_X_for_multivariate(X_te_list, history_frames)
+            y_proba_tiled = gam.predict_proba(X_te_gam)
+            y_proba = np.mean(y_proba_tiled.reshape(len(y_te), history_frames), axis=1)
+            y_pred = (y_proba >= ctx['decision_threshold']).astype(int)
+            gam_diffs = gam.logs_['diffs']
+            fold_n_iter = float(len(gam_diffs))
+            fold_converged = bool(len(gam_diffs) > 0 and len(gam_diffs) < gam_kwargs['max_iter'])
+
+        result = {'ok': True}
+        result['ll'] = log_loss(y_te, np.clip(y_proba, 1e-15, 1 - 1e-15))
+        result['auc'] = roc_auc_score(y_te, y_proba)
+        result['f1'] = f1_score(y_te, y_pred)
+        result['recall'] = recall_score(y_te, y_pred, zero_division=0)
+        result['score'] = balanced_accuracy_score(y_te, y_pred)
+        result['brier'] = float(brier_score_loss(y_te, y_proba))
+        try:
+            y_proba_2d = np.column_stack([1.0 - y_proba, y_proba])
+            result['ece'] = expected_calibration_error(y_te, y_pred, y_proba_2d, n_bins=ctx['ece_n_bins'])
+        except Exception:
+            result['ece'] = np.nan
+        result['mcc'] = safe_matthews_corrcoef(y_te, y_pred)
+        result['confusion_matrix'] = safe_confusion_matrix(y_te, y_pred, labels=np.array([0, 1]))
+        result['n_iter'] = fold_n_iter
+        result['converged'] = fold_converged
+        result['fit_time'] = fit_time
+        gc.collect()
+        return result
+    except Exception as e:
+        return {'ok': False, 'error': f"{type(e).__name__}: {e}"}
+
+
 def vocal_category_model_selection(
         univariate_results_path: str,
         input_data_path: str,
@@ -2139,12 +2664,16 @@ def vocal_category_model_selection(
         - Iteratively tests adding every remaining candidate feature.
         - Calculates and saves raw lists of metrics (Log-Loss, AUC, F1,
           Balanced Accuracy, Recall) for every fold for every candidate.
-    5.  Decision rule: Adopts the one-standard-error (1SE) rule, applied to the
-        PAIRED per-fold improvement over the incumbent. The incumbent and the
-        candidate are nested and scored on the same folds, so the fold-difficulty
-        term they share cancels in the difference; taking the SE of either score
-        on its own instead would set the bar far too high and truncate the
-        search early.
+    5.  Decision rule: the cross-validated winner is tested with the per-step
+        shift test (``step_shift_test.run_step_shift_test``): the incumbent and
+        the incumbent plus the winner are refit on the balanced development draw
+        (the held-out refit's draw), the statistic is the in-sample Bernoulli
+        log-likelihood gain per event, its null comes from refits after circularly
+        shifting the winner's trace within every development session and
+        re-cutting its windows at the stored start frames, ``floor(m / alpha)``
+        times with Bonferroni correction over the ``m`` candidates
+        (``alpha = model_params.selection_p_val``). The first step is tested the
+        same way against the constant model.
     6.  Final Refit: Computes filter shapes for visualization depending on the chosen
         engine (back-projection for sklearn, partial dependence for pygam).
 
@@ -2297,6 +2826,18 @@ def vocal_category_model_selection(
     filter_history_sec = settings['model_params']['filter_history']
     history_frames = int(np.floor(camera_rate * filter_history_sec))
 
+    step_cfg = _step_test_settings(settings, float(camera_rate))
+    traces_path, window_starts = _require_shift_test_inputs(_input_md, input_data_path, float(camera_rate))
+    # Lag-zero self-check of the shift test's inputs: every stored window of every
+    # screened feature must re-cut exactly from the trace sidecar at its stored start.
+    verify_windows_against_traces(
+        all_feature_data, traces_path, window_starts, _CATEGORY_WINDOW_SLOTS, history_frames,
+        features=ranked_features, sessions=list(all_sessions_arr),
+    )
+    print(f"Shift-test inputs verified: {len(ranked_features)} feature(s) x {len(all_sessions_arr)} development "
+          f"session(s) re-cut exactly from {Path(traces_path).name}; lag floor "
+          f"{step_cfg['min_lag_seconds']} s = {step_cfg['min_lag_frames']} frames.")
+
     model_ops = settings['model_params']
     model_type = model_ops['model_engine']
     n_splits = settings['model_validation']['n_cv_folds']
@@ -2423,7 +2964,6 @@ def vocal_category_model_selection(
         test_proportion=float(test_prop),
         split_strategy=split_strategy,
         random_seed=int(random_seed),
-        one_se_rule_used=False,
         aic_termination_used=False,
         n_anchor_features=len(ranked_features),
         anchor_feature=ranked_features[0],
@@ -2441,6 +2981,19 @@ def vocal_category_model_selection(
             'held_out_test_proportion': float(settings['model_validation']['held_out_test_proportion']),
             'held_out_session_ids': list(_held_out_session_ids),
             'n_held_out_sessions': int(held_sessions_arr.size),
+            # The per-step acceptance rule and its knobs (a resume refuses another rule).
+            'step_test': {
+                'rule': STEP_TEST_RULE,
+                'screened_features': list(ranked_features),
+                'statistic': 'bernoulli_log_likelihood_per_event',
+                'alpha': float(p_val),
+                'min_lag_seconds': step_cfg['min_lag_seconds'],
+                'min_lag_frames': step_cfg['min_lag_frames'],
+                'checkpoint_every': step_cfg['checkpoint_every'],
+                'pool_workers': step_cfg['pool_workers'],
+                'refit_rows': 'balanced_development_draw',
+                'traces_path': traces_path,
+            },
         },
         settings_path=settings_path,
     )
@@ -2464,9 +3017,9 @@ def vocal_category_model_selection(
                     existing_steps.append(int(f_name.replace(prefix, "").replace(".pkl", "")))
 
     step_counter, current_model_features = 0, []
-    best_current_score, best_current_se = chance_ll, 0.0
-    # Per-fold scores of the incumbent, paired against a candidate's in the 1SE
-    # test below. Before Step 0 the incumbent is the constant chance floor.
+    best_current_score = chance_ll
+    # Per-fold scores of the incumbent, stored as each step record's
+    # `baseline_folds`. Before Step 0 the incumbent is the constant chance floor.
     best_current_folds = chance_ll
     # True when the checkpoint a resume restores ends a finished search: the anchor and
     # the forward loop are skipped and finalization runs.
@@ -2478,9 +3031,10 @@ def vocal_category_model_selection(
         try:
             with Path(model_selection_dir / f"{prefix}{last_step}.pkl").open('rb') as f:
                 last_results = pickle.load(f)
+            _require_step_test_rule(last_results, model_selection_dir / f"{prefix}{last_step}.pkl")
             # Rebuild the state right after `last_step` from its recorded decision
             # (`_restore_selection_checkpoint`); the incumbent's per-fold log-losses are
-            # the reference the next paired-1SE gate compares against.
+            # kept as the step record's baseline.
             state = _restore_selection_checkpoint(
                 last_results, 'mean_ll', 'se_ll', lambda entry: entry['ll'],
             )
@@ -2493,7 +3047,6 @@ def vocal_category_model_selection(
             else:
                 current_model_features = state['features']
                 best_current_score = state['score']
-                best_current_se = state['se']
                 best_current_folds = state['folds']
                 step_counter = state['next_step']
                 # A search that had accepted every ranked feature stopped on that, with no
@@ -2513,152 +3066,319 @@ def vocal_category_model_selection(
     if not existing_steps:
         _quarantine_stale_step_files(model_selection_dir, prefix)
 
+    # The development refit the per-step shift test scores on: every development
+    # session pooled, the majority class subsampled to the minority count with the
+    # held-out refit's seed and draw (`_balance_multivariate_arrays` draws the target
+    # indices first, then the other indices, from one generator), so the test's models
+    # are the models the held-out refit fits. Every feature carries the same rows per
+    # session, so one feature's pooled counts and row sessions serve all.
+    _dev_seed = random_seed + n_splits + 1
+    _dev_pool_cache = {}
+
+    def _category_dev_pool(feature: str) -> tuple:
+        """
+        Description
+        -----------
+        The feature's (target, other) windows pooled over the development sessions,
+        cached per feature.
+
+        Parameters
+        ----------
+        feature (str)
+            Feature key.
+
+        Returns
+        -------
+        X_t, X_o (tuple)
+            ``(n_target, history_frames)`` and ``(n_other, history_frames)`` arrays.
+        """
+
+        if feature not in _dev_pool_cache:
+            t_list, o_list = _pool_category_features(all_feature_data, [feature], all_sessions_arr, history_frames)
+            _dev_pool_cache[feature] = (t_list[0], o_list[0])
+        return _dev_pool_cache[feature]
+
+    _dev_X_t0, _dev_X_o0 = _category_dev_pool(ranked_features[0])
+    _dev_limit = min(_dev_X_t0.shape[0], _dev_X_o0.shape[0])
+    _dev_rng = np.random.default_rng(_dev_seed)
+    _dev_idx_t = _dev_rng.choice(_dev_X_t0.shape[0], _dev_limit, replace=False)
+    _dev_idx_o = _dev_rng.choice(_dev_X_o0.shape[0], _dev_limit, replace=False)
+    _dev_y = np.concatenate([np.ones(_dev_limit), np.zeros(_dev_limit)])
+    _dev_g_t, _dev_g_o = _category_row_sessions(all_feature_data, ranked_features[0], all_sessions_arr)
+    _dev_groups = np.concatenate([_dev_g_t[_dev_idx_t], _dev_g_o[_dev_idx_o]])
+
+    def _category_development_score(features: list, winner_override: dict | None = None) -> float:
+        """
+        Description
+        -----------
+        In-sample Bernoulli log-likelihood per event (the negative log-loss of the
+        per-event probability) of the model with ``features`` refit on the balanced
+        development draw with the configured engine, exactly as the held-out refit
+        fits it. With ``winner_override`` the LAST feature's windows are taken from
+        that per-session dict (a shifted null refit) instead of the stored windows.
+        The empty model is the constant p = 0.5, log-likelihood ``-log 2``.
+
+        Parameters
+        ----------
+        features (list)
+            Features of the model, the winner last.
+        winner_override (dict | None)
+            ``{session_id: {'target_feature_arr': ..., 'other_feature_arr': ...}}``.
+
+        Returns
+        -------
+        score (float)
+            Mean log-likelihood per event on the training rows.
+        """
+
+        if not features:
+            return -float(chance_ll)
+        X_tr_list = []
+        for position, f_name in enumerate(features):
+            if winner_override is not None and position == len(features) - 1:
+                t_list, o_list = _pool_category_features({f_name: winner_override}, [f_name], all_sessions_arr, history_frames)
+                X_t, X_o = t_list[0], o_list[0]
+            else:
+                X_t, X_o = _category_dev_pool(f_name)
+            if X_t.shape[0] != _dev_X_t0.shape[0] or X_o.shape[0] != _dev_X_o0.shape[0]:
+                msg = (f"development pool misalignment for {f_name!r}: ({X_t.shape[0]}, {X_o.shape[0]}) rows "
+                       f"vs ({_dev_X_t0.shape[0]}, {_dev_X_o0.shape[0]}) of the anchor.")
+                raise ValueError(msg)
+            X_tr_list.append(np.concatenate([X_t[_dev_idx_t], X_o[_dev_idx_o]], axis=0))
+        if model_type == 'sklearn':
+            X_tr_stacked = np.hstack([np.dot(x, basis_matrix) for x in X_tr_list])
+            model = LogisticRegressionCV(
+                penalty=lr_params['penalty'],
+                Cs=lr_params['cs'],
+                cv=classification_inner_cv_splits(_dev_y, _dev_groups, lr_params['cv'], random_seed),
+                class_weight='balanced',
+                solver=lr_params['solver'],
+                max_iter=lr_params['max_iter'],
+                random_state=random_seed
+            ).fit(X_tr_stacked, _dev_y)
+            proba = model.predict_proba(X_tr_stacked)[:, 1]
+        else:
+            X_gam_tr = get_unrolled_X_for_multivariate(X_tr_list, history_frames)
+            y_gam_tr = np.repeat(_dev_y.astype(float), history_frames)
+            gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
+            for i in range(1, len(features)):
+                gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
+            gam = LogisticGAM(gam_terms, **gam_kwargs).fit(X_gam_tr, y_gam_tr)
+            proba = np.mean(gam.predict_proba(X_gam_tr).reshape(len(_dev_y), history_frames), axis=1)
+        return -float(log_loss(_dev_y.astype(int), np.clip(proba, 1e-15, 1 - 1e-15)))
+
+    # Read-only data every pool worker of this run inherits (`_category_candidate_fold`);
+    # the step-specific entries are added per step before the pool forks.
+    _category_pool_base = {
+        'cv_folds': cv_folds,
+        'all_feature_data': all_feature_data,
+        'all_sessions_arr': all_sessions_arr,
+        'split_strategy': split_strategy,
+        'pooled_category_cache': pooled_category_cache,
+        'n_targ_total': n_targ_total,
+        'g_all_targ': g_all_targ if split_strategy == 'mixed' else None,
+        'g_all_other': g_all_other if split_strategy == 'mixed' else None,
+        'history_frames': history_frames,
+        'model_type': model_type,
+        'basis_matrix': basis_matrix,
+        'lr_params': lr_params,
+        'n_splines_value': n_splines_value,
+        'n_splines_time': n_splines_time,
+        'gam_kwargs': gam_kwargs,
+        'random_seed': random_seed,
+        'decision_threshold': settings['diagnostics']['binary_decision_threshold'],
+        'ece_n_bins': settings['diagnostics']['ece_n_bins'],
+    }
+
+    def _category_fold_base(incumbent: list) -> list:
+        """
+        Description
+        -----------
+        'session' strategy: the incumbent features pooled once per fold (identical
+        across the candidates of a step), so each worker pools only its candidate.
+        `_pool_category_features` pools each feature independently in list order, so
+        pool(base + [new]) is byte-identical to pool(base) + pool([new]). Empty lists
+        when the incumbent is empty; an empty list for the 'mixed' strategy.
+
+        Parameters
+        ----------
+        incumbent (list)
+            The incumbent features.
+
+        Returns
+        -------
+        fold_base_pooled (list)
+            One ``(b_tr_t, b_tr_o, b_te_t, b_te_o)`` per fold.
+        """
+
+        fold_base_pooled = []
+        if split_strategy == 'session':
+            for tr_idx, te_idx in cv_folds:
+                if incumbent:
+                    b_tr_t, b_tr_o = _pool_category_features(all_feature_data, incumbent, all_sessions_arr[tr_idx], history_frames)
+                    b_te_t, b_te_o = _pool_category_features(all_feature_data, incumbent, all_sessions_arr[te_idx], history_frames)
+                else:
+                    b_tr_t, b_tr_o, b_te_t, b_te_o = [], [], [], []
+                fold_base_pooled.append((b_tr_t, b_tr_o, b_te_t, b_te_o))
+        return fold_base_pooled
+
+    def _category_fit_candidates(incumbent: list, candidate_features: list) -> dict:
+        """
+        Description
+        -----------
+        Fits every candidate on every fold on top of ``incumbent`` through the
+        selection pool and returns each candidate's per-fold metric lists.
+
+        Parameters
+        ----------
+        incumbent (list)
+            The incumbent features.
+        candidate_features (list)
+            Candidates to score.
+
+        Returns
+        -------
+        per_candidate (dict)
+            ``{feature: {metric key: [per-fold values]}}``.
+        """
+
+        set_pool_context(
+            category_step={**_category_pool_base,
+                           'current_model_features': list(incumbent),
+                           'fold_base_pooled': _category_fold_base(incumbent)},
+            candidate_fold=_category_candidate_fold,
+        )
+        n_workers = pool_worker_count(step_cfg['pool_workers'], len(incumbent) + 1,
+                                      step_cfg['pool_memory_gb'], step_cfg['fit_peak_gb_base'],
+                                      step_cfg['fit_peak_gb_per_term'])
+        n_folds = len(cv_folds)
+        tasks = [(feat, fold_i) for feat in candidate_features for fold_i in range(n_folds)]
+        pool = SelectionPool(n_workers)
+        try:
+            results = pool.map('candidate_fold', tasks)
+        finally:
+            pool.close()
+        return {feat: _assemble_fold_metrics(results[i * n_folds:(i + 1) * n_folds], feat, _BINARY_FOLD_METRIC_KEYS)
+                for i, feat in enumerate(candidate_features)}
+
+    def _category_step_test(winner: str, step_index: int, m_candidates: int) -> dict:
+        """
+        Description
+        -----------
+        The per-step shift test of ``winner`` on top of the current incumbent.
+
+        Parameters
+        ----------
+        winner (str)
+            The cross-validated winner.
+        step_index (int)
+            The step.
+        m_candidates (int)
+            Candidates the winner was chosen from (the Bonferroni factor).
+
+        Returns
+        -------
+        step_test (dict)
+            The record of ``run_step_shift_test``.
+        """
+
+        incumbent = list(current_model_features)
+        trial = [*incumbent, winner]
+        incumbent_score = _category_development_score(incumbent)
+        observed_score = _category_development_score(trial)
+        winner_traces = {s: read_feature_trace(traces_path, winner, s)
+                         for s in all_sessions_arr if s in all_feature_data[winner]}
+        n_workers = pool_worker_count(step_cfg['pool_workers'], len(trial),
+                                      step_cfg['pool_memory_gb'], step_cfg['fit_peak_gb_base'],
+                                      step_cfg['fit_peak_gb_per_term'])
+        return run_step_shift_test(
+            n_workers=n_workers,
+            refit_and_score=lambda override: _category_development_score(trial, override),
+            incumbent_features=incumbent,
+            incumbent_score=incumbent_score,
+            winner=winner,
+            observed_score=observed_score,
+            statistic_name='bernoulli_log_likelihood_per_event',
+            winner_traces=winner_traces,
+            window_starts={s: window_starts[s] for s in winner_traces},
+            slots=_CATEGORY_WINDOW_SLOTS,
+            history_frames=history_frames,
+            m_candidates=m_candidates,
+            alpha=p_val,
+            min_lag_frames=step_cfg['min_lag_frames'],
+            random_seed=random_seed,
+            step_index=step_index,
+            checkpoint_every=step_cfg['checkpoint_every'],
+            partial_path=model_selection_dir / f"{prefix}{step_index}_null_partial.pkl",
+            label=f"Step {step_index}",
+        )
+
+    def _category_candidate_record(metrics: dict, mean_ll: float, se_ll: float) -> dict:
+        """
+        Description
+        -----------
+        The per-candidate block of a category step pickle: the per-fold metric lists
+        in the order the pipeline has always stored them, plus the fold-mean and SE.
+
+        Parameters
+        ----------
+        metrics (dict)
+            ``{metric key: [per-fold values]}``.
+        mean_ll (float)
+            Mean held-out log-loss over the finite folds.
+        se_ll (float)
+            Its standard error.
+
+        Returns
+        -------
+        record (dict)
+            The candidate block.
+        """
+
+        return {
+            'll': metrics['ll'], 'auc': metrics['auc'],
+            'f1': metrics['f1'], 'recall': metrics['recall'],
+            'score': metrics['score'],
+            'brier': metrics['brier'], 'ece': metrics['ece'], 'mcc': metrics['mcc'],
+            'confusion_matrix': metrics['confusion_matrix'],
+            'n_iter': metrics['n_iter'], 'converged': metrics['converged'],
+            'fit_time': metrics['fit_time'],
+            'mean_ll': mean_ll, 'se_ll': se_ll
+        }
+
     if use_top_rank_as_anchor and step_counter == 0 and not resume_converged:
         anchor = ranked_features[0]
-        print(format_selection_step('Anchor', feature=anchor, detail='forcing as start'))
-        current_model_features = [anchor]
-        metrics = {'ll': [], 'auc': [], 'score': [], 'f1': [], 'recall': [],
-                   'brier': [], 'ece': [], 'mcc': [],
-                   'confusion_matrix': [], 'n_iter': [], 'converged': [], 'fit_time': []}
-
-        if model_type == 'pygam':
-            gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
-
-        for fold_i, (tr_idx, te_idx) in enumerate(cv_folds):
-            try:
-                if split_strategy == 'session':
-                    X_tr_t_raw, X_tr_o_raw = _pool_category_features(all_feature_data, [anchor], all_sessions_arr[tr_idx], history_frames)
-                    X_te_t_raw, X_te_o_raw = _pool_category_features(all_feature_data, [anchor], all_sessions_arr[te_idx], history_frames)
-                    g_tr_t_raw, g_tr_o_raw = _category_row_sessions(all_feature_data, anchor, all_sessions_arr[tr_idx])
-                else:
-                    # Pull the already-pooled target / other arrays from the
-                    # cache instead of rebuilding them on every fold.
-                    X_all_t_raw = [pooled_category_cache[anchor]['target']]
-                    X_all_o_raw = [pooled_category_cache[anchor]['other']]
-
-                    tr_targ_idx = tr_idx[tr_idx < n_targ_total]
-                    tr_other_idx = tr_idx[tr_idx >= n_targ_total] - n_targ_total
-                    te_targ_idx = te_idx[te_idx < n_targ_total]
-                    te_other_idx = te_idx[te_idx >= n_targ_total] - n_targ_total
-
-                    X_tr_t_raw = [x[tr_targ_idx] for x in X_all_t_raw]
-                    X_tr_o_raw = [x[tr_other_idx] for x in X_all_o_raw]
-                    X_te_t_raw = [x[te_targ_idx] for x in X_all_t_raw]
-                    X_te_o_raw = [x[te_other_idx] for x in X_all_o_raw]
-                    g_tr_t_raw, g_tr_o_raw = g_all_targ[tr_targ_idx], g_all_other[tr_other_idx]
-
-                X_tr_t, X_tr_o, y_tr_t, y_tr_o, g_tr_t, g_tr_o = _balance_multivariate_arrays(
-                    X_tr_t_raw, X_tr_o_raw, random_seed + fold_i, groups_target=g_tr_t_raw, groups_other=g_tr_o_raw)
-
-                # Test set: natural class prior (no balancing).
-                if not X_tr_t or len(X_te_t_raw) == 0:
-                    continue
-                n_te_targ = X_te_t_raw[0].shape[0]
-                n_te_other = X_te_o_raw[0].shape[0]
-                if (n_te_targ + n_te_other) == 0:
-                    continue
-
-                X_tr_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_tr_t, X_tr_o, strict=False)]
-                y_tr = np.concatenate([y_tr_t, y_tr_o])
-                perm = np.random.default_rng(random_seed + fold_i).permutation(len(y_tr))
-                groups_tr = np.concatenate([g_tr_t, g_tr_o])
-
-                X_te_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_te_t_raw, X_te_o_raw, strict=False)]
-                y_te = np.concatenate([np.ones(n_te_targ), np.zeros(n_te_other)]).astype(int)
-
-                if model_type == 'sklearn':
-                    X_tr_stacked = np.hstack([np.dot(x[perm], basis_matrix) for x in X_tr_list])
-                    X_te_stacked = np.hstack([np.dot(x, basis_matrix) for x in X_te_list])
-
-                    model = LogisticRegressionCV(
-                        penalty=lr_params['penalty'],
-                        Cs=lr_params['cs'],
-                        # Inner folds hold out whole training sessions, as the outer folds do.
-                        cv=classification_inner_cv_splits(y_tr[perm], groups_tr[perm], lr_params['cv'], random_seed),
-                        class_weight='balanced',
-                        solver=lr_params['solver'],
-                        max_iter=lr_params['max_iter'],
-                        random_state=random_seed
-                    )
-                    fit_start = time.perf_counter()
-                    model.fit(X_tr_stacked, y_tr[perm])
-                    fit_time = float(time.perf_counter() - fit_start)
-                    y_proba = model.predict_proba(X_te_stacked)[:, 1]
-                    y_pred = model.predict(X_te_stacked)
-                    try:
-                        fold_n_iter = float(np.max(model.n_iter_))
-                        fold_converged = bool(fold_n_iter < lr_params['max_iter'])
-                    except Exception:
-                        fold_n_iter, fold_converged = np.nan, False
-                else:
-                    X_tr_gam = get_unrolled_X_for_multivariate([x[perm] for x in X_tr_list], history_frames)
-                    y_tr_gam = np.repeat(y_tr[perm].astype(float), history_frames)
-                    fit_start = time.perf_counter()
-                    gam = LogisticGAM(gam_terms, **gam_kwargs).fit(X_tr_gam, y_tr_gam)
-                    fit_time = float(time.perf_counter() - fit_start)
-
-                    X_te_gam = get_unrolled_X_for_multivariate(X_te_list, history_frames)
-                    y_proba_tiled = gam.predict_proba(X_te_gam)
-                    y_proba = np.mean(y_proba_tiled.reshape(len(y_te), history_frames), axis=1)
-                    y_pred = (y_proba >= settings['diagnostics']['binary_decision_threshold']).astype(int)
-                    gam_diffs = gam.logs_['diffs']
-                    fold_n_iter = float(len(gam_diffs))
-                    fold_converged = bool(len(gam_diffs) > 0 and len(gam_diffs) < gam_kwargs['max_iter'])
-
-                metrics['ll'].append(log_loss(y_te, np.clip(y_proba, 1e-15, 1 - 1e-15)))
-                metrics['auc'].append(roc_auc_score(y_te, y_proba))
-                metrics['f1'].append(f1_score(y_te, y_pred))
-                metrics['recall'].append(recall_score(y_te, y_pred, zero_division=0))
-                metrics['score'].append(balanced_accuracy_score(y_te, y_pred))
-                metrics['brier'].append(float(brier_score_loss(y_te, y_proba)))
-                try:
-                    y_proba_2d = np.column_stack([1.0 - y_proba, y_proba])
-                    metrics['ece'].append(expected_calibration_error(y_te, y_pred, y_proba_2d, n_bins=settings['diagnostics']['ece_n_bins']))
-                except Exception:
-                    metrics['ece'].append(np.nan)
-                metrics['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
-                metrics['confusion_matrix'].append(safe_confusion_matrix(y_te, y_pred, labels=np.array([0, 1])))
-                metrics['n_iter'].append(fold_n_iter)
-                metrics['converged'].append(fold_converged)
-                metrics['fit_time'].append(fit_time)
-                gc.collect()
-            except Exception as e:
-                print(f"    [!] Error fitting {anchor} (Fold {fold_i}): {e}")
-                for _k, _k_values in metrics.items():
-                    # `confusion_matrix` holds (2, 2) arrays, so on failure we
-                    # append a NaN-filled matrix instead of a scalar NaN to
-                    # keep the per-fold list homogeneous for downstream stacking.
-                    if _k == 'confusion_matrix':
-                        _k_values.append(np.full((2, 2), np.nan))
-                    else:
-                        _k_values.append(np.nan)
-
-        valid = [s for s in metrics['ll'] if np.isfinite(s)]
+        print(format_selection_step('Anchor', feature=anchor,
+                                    detail='top-ranked; forced as the first candidate, tested against the constant model'))
+        metrics = _category_fit_candidates([], [anchor])[anchor]
+        valid = [x for x in metrics['ll'] if np.isfinite(x)]
+        _require_scored_candidate('Anchor', 1, len(valid))
+        step_test = None
         if valid:
-            best_current_score = np.mean(valid)
-            # `np.std([x], ddof=1)` is NaN for a single finite fold (zero divisor);
-            # guard with len > 1 so a one-fold success does not poison the 1SE rule.
-            best_current_se = np.std(valid, ddof=1) / np.sqrt(len(valid)) if len(valid) > 1 else 0.0
-            best_current_folds = metrics['ll']
-            step_results = {
-                'step_idx': 0, 'current_features': list(current_model_features),
-                'baseline_score': best_current_score,
-                'selected_feature': anchor,
-                'candidates_summary': {
-                    anchor: {
-                        'll': metrics['ll'], 'auc': metrics['auc'],
-                        'f1': metrics['f1'], 'recall': metrics['recall'],
-                        'score': metrics['score'],
-                        'brier': metrics['brier'], 'ece': metrics['ece'], 'mcc': metrics['mcc'],
-                        'confusion_matrix': metrics['confusion_matrix'],
-                        'n_iter': metrics['n_iter'], 'converged': metrics['converged'],
-                        'fit_time': metrics['fit_time'],
-                        'mean_ll': best_current_score, 'se_ll': best_current_se
-                    }
-                }
-            }
-            _dump_step_pickle(model_selection_dir / f"{prefix}0.pkl", _wrap_step(step_results))
+            # The forced anchor is tested like every winner, with Bonferroni over every
+            # screened feature it was forced ahead of.
+            step_test = _category_step_test(anchor, 0, len(ranked_features))
+        anchor_accepted = step_test is not None and step_test['accepted']
+        mean_ll = float(np.mean(valid)) if valid else float('nan')
+        se_ll = float(np.std(valid, ddof=1) / np.sqrt(len(valid))) if len(valid) > 1 else 0.0
+        step_results = {
+            'step_idx': 0,
+            'current_features': [anchor] if anchor_accepted else [],
+            'baseline_score': chance_ll, 'baseline_folds': chance_ll,
+            'selected_feature': anchor if anchor_accepted else None,
+            'candidates_summary': {anchor: _category_candidate_record(metrics, mean_ll, se_ll)} if valid else {},
+            'step_test': step_test,
+        }
+        _dump_step_pickle(model_selection_dir / f"{prefix}0.pkl", _wrap_step(step_results))
+        if anchor_accepted:
+            print(format_selection_step('Anchor', feature=anchor, decision='ACCEPT', metrics={'LL': mean_ll}))
+            current_model_features = [anchor]
+            best_current_score, best_current_folds = mean_ll, metrics['ll']
             step_counter = 1
+        else:
+            print(format_selection_step('Anchor', feature=anchor, decision='REJECT',
+                                        detail='the forced anchor failed the shift test; selection finished'))
+            resume_converged = True
 
     print("\n--- Starting Forward Selection ---")
     # A resume that restored a converged search skips the loop and finalizes directly.
@@ -2668,159 +3388,19 @@ def vocal_category_model_selection(
         step_results_metadata = {
             'step_idx': step_counter, 'current_features': list(current_model_features),
             'baseline_score': best_current_score, 'baseline_folds': best_current_folds,
-            'candidates_summary': {}
+            'candidates_summary': {},
+            'selected_feature': None,
+            'step_test': None,
         }
-        best_cand_name, best_cand_score, best_cand_se = None, float('inf'), 0.0
+
+        candidates_this_step = [feat for feat in ranked_features if feat not in current_model_features]
+        m_candidates = len(candidates_this_step)
+        per_candidate = _category_fit_candidates(current_model_features, candidates_this_step)
+
+        best_cand_name, best_cand_score = None, float('inf')
         best_cand_folds = None
-
-        # 'session' branch: pool the already-selected (base) features once per fold here
-        # (identical across candidates within the step), so the candidate loop below only
-        # pools the single new feature. _pool_category_features pools each feature
-        # independently in features_to_load order, so pool(base + [new]) is byte-identical
-        # to pool(base) + pool([new]). Empty when current_model_features is empty (step 0).
-        fold_base_pooled = []
-        if split_strategy == 'session':
-            for tr_idx, te_idx in cv_folds:
-                if current_model_features:
-                    b_tr_t, b_tr_o = _pool_category_features(all_feature_data, current_model_features, all_sessions_arr[tr_idx], history_frames)
-                    b_te_t, b_te_o = _pool_category_features(all_feature_data, current_model_features, all_sessions_arr[te_idx], history_frames)
-                else:
-                    b_tr_t, b_tr_o, b_te_t, b_te_o = [], [], [], []
-                fold_base_pooled.append((b_tr_t, b_tr_o, b_te_t, b_te_o))
-
-        for _i_feat, feat in enumerate(ranked_features):
-            if feat in current_model_features:
-                continue
-            gc.collect()
-            trial_feats = [*current_model_features, feat]
-
-            if model_type == 'pygam':
-                gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
-                for i in range(1, len(trial_feats)):
-                    gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
-
-            metrics = {'ll': [], 'auc': [], 'score': [], 'f1': [], 'recall': [],
-                       'brier': [], 'ece': [], 'mcc': [],
-                       'confusion_matrix': [], 'n_iter': [], 'converged': [], 'fit_time': []}
-
-            for fold_i, (tr_idx, te_idx) in enumerate(cv_folds):
-                try:
-                    if split_strategy == 'session':
-                        # Pool only the new candidate feature; the base features were
-                        # pooled once per fold above. List order matches trial_feats
-                        # (base first, then the new feat), so this is byte-identical.
-                        b_tr_t, b_tr_o, b_te_t, b_te_o = fold_base_pooled[fold_i]
-                        n_tr_t, n_tr_o = _pool_category_features(all_feature_data, [feat], all_sessions_arr[tr_idx], history_frames)
-                        n_te_t, n_te_o = _pool_category_features(all_feature_data, [feat], all_sessions_arr[te_idx], history_frames)
-                        X_tr_t_raw, X_tr_o_raw = b_tr_t + n_tr_t, b_tr_o + n_tr_o
-                        X_te_t_raw, X_te_o_raw = b_te_t + n_te_t, b_te_o + n_te_o
-                        g_tr_t_raw, g_tr_o_raw = _category_row_sessions(all_feature_data, feat, all_sessions_arr[tr_idx])
-                    else:
-                        # Reassemble the per-trial feature list from the
-                        # pre-pooled cache so every fold reuses the same dense
-                        # (target, other) arrays without re-concatenating per
-                        # session on each iteration.
-                        X_all_t_raw = [pooled_category_cache[f]['target'] for f in trial_feats]
-                        X_all_o_raw = [pooled_category_cache[f]['other'] for f in trial_feats]
-
-                        tr_targ_idx = tr_idx[tr_idx < n_targ_total]
-                        tr_other_idx = tr_idx[tr_idx >= n_targ_total] - n_targ_total
-                        te_targ_idx = te_idx[te_idx < n_targ_total]
-                        te_other_idx = te_idx[te_idx >= n_targ_total] - n_targ_total
-
-                        X_tr_t_raw = [x[tr_targ_idx] for x in X_all_t_raw]
-                        X_tr_o_raw = [x[tr_other_idx] for x in X_all_o_raw]
-                        X_te_t_raw = [x[te_targ_idx] for x in X_all_t_raw]
-                        X_te_o_raw = [x[te_other_idx] for x in X_all_o_raw]
-                        g_tr_t_raw, g_tr_o_raw = g_all_targ[tr_targ_idx], g_all_other[tr_other_idx]
-
-                    X_tr_t, X_tr_o, y_tr_t, y_tr_o, g_tr_t, g_tr_o = _balance_multivariate_arrays(
-                        X_tr_t_raw, X_tr_o_raw, random_seed + fold_i, groups_target=g_tr_t_raw, groups_other=g_tr_o_raw)
-
-                    # Test set: natural class prior (no balancing).
-                    if not X_tr_t or len(X_te_t_raw) == 0:
-                        continue
-                    n_te_targ = X_te_t_raw[0].shape[0]
-                    n_te_other = X_te_o_raw[0].shape[0]
-                    if (n_te_targ + n_te_other) == 0:
-                        continue
-
-                    X_tr_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_tr_t, X_tr_o, strict=False)]
-                    y_tr = np.concatenate([y_tr_t, y_tr_o])
-                    perm = np.random.default_rng(random_seed + fold_i).permutation(len(y_tr))
-                    groups_tr = np.concatenate([g_tr_t, g_tr_o])
-
-                    X_te_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_te_t_raw, X_te_o_raw, strict=False)]
-                    y_te = np.concatenate([np.ones(n_te_targ), np.zeros(n_te_other)]).astype(int)
-
-                    if model_type == 'sklearn':
-                        X_tr_stacked = np.hstack([np.dot(x[perm], basis_matrix) for x in X_tr_list])
-                        X_te_stacked = np.hstack([np.dot(x, basis_matrix) for x in X_te_list])
-
-                        model = LogisticRegressionCV(
-                            penalty=lr_params['penalty'],
-                            Cs=lr_params['cs'],
-                            # Inner folds hold out whole training sessions, as the outer folds do.
-                            cv=classification_inner_cv_splits(y_tr[perm], groups_tr[perm], lr_params['cv'], random_seed),
-                            class_weight='balanced',
-                            solver=lr_params['solver'],
-                            max_iter=lr_params['max_iter'],
-                            random_state=random_seed
-                        )
-                        fit_start = time.perf_counter()
-                        model.fit(X_tr_stacked, y_tr[perm])
-                        fit_time = float(time.perf_counter() - fit_start)
-                        y_proba = model.predict_proba(X_te_stacked)[:, 1]
-                        y_pred = model.predict(X_te_stacked)
-                        try:
-                            fold_n_iter = float(np.max(model.n_iter_))
-                            fold_converged = bool(fold_n_iter < lr_params['max_iter'])
-                        except Exception:
-                            fold_n_iter, fold_converged = np.nan, False
-                    else:
-                        X_tr_gam = get_unrolled_X_for_multivariate([x[perm] for x in X_tr_list], history_frames)
-                        y_tr_gam = np.repeat(y_tr[perm].astype(float), history_frames)
-                        fit_start = time.perf_counter()
-                        gam = LogisticGAM(gam_terms, **gam_kwargs).fit(X_tr_gam, y_tr_gam)
-                        fit_time = float(time.perf_counter() - fit_start)
-
-                        X_te_gam = get_unrolled_X_for_multivariate(X_te_list, history_frames)
-                        y_proba_tiled = gam.predict_proba(X_te_gam)
-                        y_proba = np.mean(y_proba_tiled.reshape(len(y_te), history_frames), axis=1)
-                        y_pred = (y_proba >= settings['diagnostics']['binary_decision_threshold']).astype(int)
-                        gam_diffs = gam.logs_['diffs']
-                        fold_n_iter = float(len(gam_diffs))
-                        fold_converged = bool(len(gam_diffs) > 0 and len(gam_diffs) < gam_kwargs['max_iter'])
-
-                    metrics['ll'].append(log_loss(y_te, np.clip(y_proba, 1e-15, 1 - 1e-15)))
-                    metrics['auc'].append(roc_auc_score(y_te, y_proba))
-                    metrics['f1'].append(f1_score(y_te, y_pred))
-                    metrics['recall'].append(recall_score(y_te, y_pred, zero_division=0))
-                    metrics['score'].append(balanced_accuracy_score(y_te, y_pred))
-                    metrics['brier'].append(float(brier_score_loss(y_te, y_proba)))
-                    try:
-                        y_proba_2d = np.column_stack([1.0 - y_proba, y_proba])
-                        metrics['ece'].append(expected_calibration_error(y_te, y_pred, y_proba_2d, n_bins=settings['diagnostics']['ece_n_bins']))
-                    except Exception:
-                        metrics['ece'].append(np.nan)
-                    metrics['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
-                    metrics['confusion_matrix'].append(safe_confusion_matrix(y_te, y_pred, labels=np.array([0, 1])))
-                    metrics['n_iter'].append(fold_n_iter)
-                    metrics['converged'].append(fold_converged)
-                    metrics['fit_time'].append(fit_time)
-                    gc.collect()
-                except Exception as e:
-                    print(f"    [!] Error fitting {feat} (Fold {fold_i}): {e}")
-                    for _k in metrics:
-                        # `confusion_matrix` holds (2, 2) arrays, so on failure
-                        # append a NaN-filled matrix instead of a scalar NaN to
-                        # keep the per-fold list homogeneous for downstream
-                        # np.stack / indexing.
-                        if _k == 'confusion_matrix':
-                            metrics[_k].append(np.full((2, 2), np.nan))
-                        else:
-                            metrics[_k].append(np.nan)
-
+        for feat in candidates_this_step:
+            metrics = per_candidate[feat]
             valid = [x for x in metrics['ll'] if np.isfinite(x)]
             if not valid:
                 print(format_selection_step(f"Step {step_counter}", feature=feat,
@@ -2829,50 +3409,44 @@ def vocal_category_model_selection(
 
             mean_ll = np.mean(valid)
             # `np.std([x], ddof=1)` is NaN for a single finite fold (zero divisor);
-            # guard with len > 1 so a one-fold success does not poison the 1SE rule.
+            # guard with len > 1 so a one-fold success keeps a finite SE.
             se_ll = np.std(valid, ddof=1) / np.sqrt(len(valid)) if len(valid) > 1 else 0.0
             print(format_selection_step(f"Step {step_counter}", feature=feat,
                                         metrics={'LL': mean_ll,
                                                  'AUC': float(np.nanmean(metrics['auc']))}))
 
-            step_results_metadata['candidates_summary'][feat] = {
-                'll': metrics['ll'], 'auc': metrics['auc'],
-                'f1': metrics['f1'], 'recall': metrics['recall'],
-                'score': metrics['score'],
-                'brier': metrics['brier'], 'ece': metrics['ece'], 'mcc': metrics['mcc'],
-                'confusion_matrix': metrics['confusion_matrix'],
-                'n_iter': metrics['n_iter'], 'converged': metrics['converged'],
-                'fit_time': metrics['fit_time'],
-                'mean_ll': mean_ll, 'se_ll': se_ll
-            }
+            step_results_metadata['candidates_summary'][feat] = _category_candidate_record(metrics, mean_ll, se_ll)
             if mean_ll < best_cand_score:
-                best_cand_score, best_cand_se, best_cand_name = mean_ll, se_ll, feat
+                best_cand_score, best_cand_name = mean_ll, feat
                 best_cand_folds = metrics['ll']
 
-        # The 1SE bar is the standard error of the PER-FOLD improvement: incumbent
-        # and candidate are nested and share the same folds, so fold difficulty
-        # cancels in the difference but dominates either score alone.
-        step_improvement, step_improvement_se = (
-            paired_one_se_improvement(best_cand_folds, best_current_folds,
-                                      higher_is_better=False)
-            if best_cand_name else (float('nan'), 0.0))
+        # The cross-validated winner is tested with the per-step shift test, Bonferroni
+        # over the m candidates of this step; the step is accepted only when no shifted
+        # refit reaches the observed in-sample gain.
+        _require_scored_candidate(f"Step {step_counter}", m_candidates, int(best_cand_name is not None))
+        step_test = (_category_step_test(best_cand_name, step_counter, m_candidates)
+                     if best_cand_name is not None else None)
+        step_results_metadata['step_test'] = step_test
 
-        if best_cand_name and np.isfinite(step_improvement) and step_improvement > step_improvement_se:
+        if step_test is not None and step_test['accepted']:
             print(format_selection_step(f"Step {step_counter}", feature=best_cand_name,
-                                        decision='ACCEPT', metrics={'LL': best_cand_score}))
+                                        decision='ACCEPT',
+                                        metrics={'LL': best_cand_score,
+                                                 'p_adj': step_test['p_adjusted']}))
             current_model_features.append(best_cand_name)
             step_results_metadata['selected_feature'] = best_cand_name
             _dump_step_pickle(model_selection_dir / f"{prefix}{step_counter}.pkl", _wrap_step(step_results_metadata))
-            # Track `best_current_se` alongside the score so the 1SE acceptance
-            # test always compares against the *current* accepted model's
-            # sampling variability rather than a stale Step-0 value.
-            best_current_score, best_current_se, step_counter = best_cand_score, best_cand_se, step_counter + 1
+            best_current_score, step_counter = best_cand_score, step_counter + 1
             best_current_folds = best_cand_folds
             if len(current_model_features) == len(ranked_features):
                 break
         else:
-            print(format_selection_step(f"Step {step_counter}", decision='REJECT',
-                                        detail='no candidate beat the 1-SE margin; selection finished'))
+            if best_cand_name is None:
+                reject_detail = 'no candidate had finite folds; selection finished'
+            else:
+                reject_detail = (f"winner {best_cand_name!r} failed the shift test "
+                                 f"(p_adj {step_test['p_adjusted']:.4f} vs alpha {p_val}); selection finished")
+            print(format_selection_step(f"Step {step_counter}", decision='REJECT', detail=reject_detail))
             step_results_metadata['selected_feature'] = None
             _dump_step_pickle(model_selection_dir / f"{prefix}{step_counter}.pkl", _wrap_step(step_results_metadata))
             break
@@ -3092,6 +3666,203 @@ def vocal_category_model_selection(
 
 
 
+#: Per-fold metric keys every bout-parameter candidate fit records (aligned with the
+#: univariate runner), and the placeholders of a failed fold that are not NaN.
+_PARAMS_FOLD_METRIC_KEYS = ('explained_deviance', 'residual_deviance', 'spearman_r', 'pearson_r',
+                            'msle', 'mae', 'rmse', 'y_true', 'y_pred', 'n_iter', 'converged', 'fit_time')
+_PARAMS_FOLD_PLACEHOLDERS = {
+    'y_true': lambda: np.empty((0,), dtype=np.float64),
+    'y_pred': lambda: np.empty((0,), dtype=np.float64),
+    'converged': lambda: False,
+}
+
+#: Start-frame slot -> pickle array key of the bout-parameter pipeline (one global row
+#: array per feature; the starts of a session are those of its rows in row order).
+_PARAMS_WINDOW_SLOTS = {'X': 'X'}
+
+
+def _verify_global_windows_against_traces(feature_data: dict,
+                                          traces_path: str | Path,
+                                          window_starts: dict,
+                                          history_frames: int,
+                                          features: list,
+                                          sessions: list) -> None:
+    """
+    Description
+    -----------
+    The lag-zero self-check of the per-step shift test for the global-row layout of
+    the bout-parameter pipeline (``feature_data[feature]['X']`` holds every session's
+    windows stacked, ``['groups']`` the session of every row): re-cuts every session's
+    rows from the trace sidecar at the stored start frames and requires bit-exact
+    equality, and the same number of rows as stored starts. A mismatch means the
+    pickle, its start frames and the sidecar do not describe one extraction, and the
+    run aborts before any model is fit.
+
+    Parameters
+    ----------
+    feature_data (dict)
+        The modeling pickle's feature dict (metadata blocks stripped).
+    traces_path (str | Path)
+        The HDF5 sidecar.
+    window_starts (dict)
+        ``{session: {'X': (n,) start frames, ...}}`` from ``_input_metadata``.
+    history_frames (int)
+        Window length in frames.
+    features (list)
+        Features to check.
+    sessions (list)
+        Sessions to check.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    ValueError
+        On the first session whose rows do not reproduce.
+    """
+
+    with h5py.File(Path(traces_path), 'r') as handle:
+        for feature in features:
+            X_all = feature_data[feature]['X']
+            groups = feature_data[feature]['groups']
+            for session_id in sessions:
+                rows = np.where(groups == session_id)[0]
+                starts = np.asarray(window_starts[session_id]['X'], dtype=int)
+                if rows.size != starts.size:
+                    msg = (f"_verify_global_windows_against_traces: {feature!r} / {session_id!r}: "
+                           f"{rows.size} stored rows but {starts.size} start frames.")
+                    raise ValueError(msg)
+                if rows.size == 0:
+                    continue
+                column = handle[feature][str(session_id)][()]
+                rebuilt = cut_history_windows(column, starts, history_frames)
+                stored = X_all[rows]
+                if rebuilt.shape != stored.shape or not np.array_equal(rebuilt, stored):
+                    msg = (f"_verify_global_windows_against_traces: {feature!r} / {session_id!r}: rows re-cut "
+                           f"from the trace sidecar at lag 0 do not match the stored rows (shapes "
+                           f"{rebuilt.shape} vs {stored.shape}). The pickle, its start frames and "
+                           f"{traces_path} are not from one extraction.")
+                    raise ValueError(msg)
+
+
+def _params_candidate_fold(feat: str, fold_idx: int) -> dict:
+    """
+    Description
+    -----------
+    One (candidate, fold) fit of the bout-parameter selector, run in a pool worker:
+    stacks the incumbent features' fold rows (pre-sliced per fold by the selector in
+    ``fold_base_X_tr`` / ``fold_base_X_te``, and for the sklearn engine pre-projected
+    in ``fold_base_proj_tr`` / ``fold_base_proj_te``) with the candidate's, fits the
+    configured engine (``GammaRegressor`` under an inner-CV alpha search on the basis
+    projection, or the Gamma ``GAM`` on the unrolled tensor terms) and scores the
+    test rows with the univariate runner's metric set. The data comes from the
+    ``'params_step'`` pool-context entry the selector stores before creating the
+    pool. The operations are those of the former inline loop.
+
+    Parameters
+    ----------
+    feat (str)
+        The candidate feature.
+    fold_idx (int)
+        Fold index.
+
+    Returns
+    -------
+    result (dict)
+        ``{'ok': True, <metric key>: value, ...}`` with the keys of
+        ``_PARAMS_FOLD_METRIC_KEYS``, or ``{'ok': False, 'error': str}``.
+    """
+
+    ctx = pool_context('params_step')
+    tr_idx, te_idx = ctx['cv_folds'][fold_idx]
+    all_feature_data = ctx['all_feature_data']
+    y_global = ctx['y_global']
+    groups_global = ctx['groups_global']
+    history_frames = ctx['history_frames']
+    model_type = ctx['model_type']
+    basis_matrix = ctx['basis_matrix']
+    lr_params = ctx['lr_params']
+    gam_kwargs = ctx['gam_kwargs']
+    current_model_features = ctx['current_model_features']
+    try:
+        trial_tr = ctx['fold_base_X_tr'][fold_idx] + [all_feature_data[feat]['X'][tr_idx]]
+        trial_te = ctx['fold_base_X_te'][fold_idx] + [all_feature_data[feat]['X'][te_idx]]
+        y_tr, y_te = y_global[tr_idx], y_global[te_idx]
+
+        if model_type == 'sklearn':
+            # Project only the new candidate feature; the fixed base projection was
+            # precomputed once per fold by the selector and hstacked on.
+            new_proj_tr = np.dot(all_feature_data[feat]['X'][tr_idx], basis_matrix)
+            new_proj_te = np.dot(all_feature_data[feat]['X'][te_idx], basis_matrix)
+            base_proj_tr = ctx['fold_base_proj_tr'][fold_idx]
+            base_proj_te = ctx['fold_base_proj_te'][fold_idx]
+            X_tr_stacked = np.hstack([base_proj_tr, new_proj_tr]) if base_proj_tr is not None else new_proj_tr
+            X_te_stacked = np.hstack([base_proj_te, new_proj_te]) if base_proj_te is not None else new_proj_te
+
+            # Gamma GLM (log link), matching the anchor fit and the pyGAM branch:
+            # fit and Gamma-deviance score share one likelihood.
+            y_tr_pos = np.maximum(y_tr, 1e-6)
+            fit_start = time.perf_counter()
+            model = GridSearchCV(
+                GammaRegressor(),
+                {'alpha': list(lr_params['alphas'])},
+                cv=session_grouped_inner_cv(groups_global[tr_idx], lr_params['cv']),
+                scoring='neg_mean_gamma_deviance',
+            ).fit(X_tr_stacked, y_tr_pos, groups=groups_global[tr_idx])
+            fit_time = float(time.perf_counter() - fit_start)
+
+            best = model.best_estimator_
+            y_pred = best.predict(X_te_stacked)
+            fold_n_iter = int(np.max(np.atleast_1d(best.n_iter_)))
+            fold_converged = bool(fold_n_iter < best.max_iter)
+        else:
+            gam_terms = te(0, 1, n_splines=[ctx['n_splines_value'], ctx['n_splines_time']])
+            for i in range(1, len(current_model_features) + 1):
+                gam_terms += te(i * 2, i * 2 + 1, n_splines=[ctx['n_splines_value'], ctx['n_splines_time']])
+            X_tr_gam = get_unrolled_X_for_multivariate(trial_tr, history_frames)
+            X_te_gam = get_unrolled_X_for_multivariate(trial_te, history_frames)
+
+            fit_start = time.perf_counter()
+            gam = GAM(gam_terms, distribution='gamma', link='log', **gam_kwargs).fit(X_tr_gam, np.repeat(y_tr + 1e-6, history_frames))
+            fit_time = float(time.perf_counter() - fit_start)
+
+            # Aggregate the H per-frame predictions on the linear-predictor scale.
+            eta_te = np.log(gam.predict_mu(X_te_gam)).reshape(len(y_te), history_frames)
+            y_pred = np.exp(np.mean(eta_te, axis=1))
+            gam_diffs = gam.logs_['diffs']
+            fold_n_iter = float(len(gam_diffs))
+            fold_converged = bool(len(gam_diffs) > 0 and len(gam_diffs) < gam_kwargs['max_iter'])
+
+        y_te_safe = np.maximum(y_te, 1e-6)
+        y_pred_safe = np.maximum(y_pred, 1e-6)
+        y_null_pred = np.full_like(y_te_safe, np.mean(y_te_safe))
+
+        res_dev = mean_gamma_deviance(y_te_safe, y_pred_safe)
+        null_dev = mean_gamma_deviance(y_te_safe, y_null_pred)
+
+        d2 = 0.0 if null_dev == 0 else 1 - (res_dev / null_dev)
+
+        result = {'ok': True}
+        result['residual_deviance'] = res_dev
+        result['explained_deviance'] = d2
+        result['spearman_r'] = spearmanr(y_te, y_pred)[0]
+        result['pearson_r'] = pearson_r_safe(y_te, y_pred)
+        result['msle'] = mean_squared_log_error(y_te_safe, y_pred_safe)
+        result['mae'] = mean_absolute_error_1d(y_te, y_pred)
+        result['rmse'] = root_mean_squared_error(y_te, y_pred)
+        result['y_true'] = y_te_safe
+        result['y_pred'] = y_pred_safe
+        result['n_iter'] = fold_n_iter
+        result['converged'] = fold_converged
+        result['fit_time'] = fit_time
+        gc.collect()
+        return result
+    except Exception as e:
+        return {'ok': False, 'error': f"{type(e).__name__}: {e}"}
+
+
 def bout_parameter_model_selection(
         univariate_results_path: str,
         input_data_path: str,
@@ -3150,12 +3921,16 @@ def bout_parameter_model_selection(
 
     Selection Metric:
     -----------------
-    Explained Deviance (D^2). We select features using the one-standard-error (1SE) rule:
-    a feature is accepted only if its mean PER-FOLD D^2 improvement over the incumbent
-    exceeds the standard error of that improvement. The SE is computed on the per-fold
-    differences, not on the candidate's own per-fold scores: the two models are nested
-    and share the folds, so fold difficulty cancels in the difference while dominating
-    either score alone.
+    Explained Deviance (D^2) ranks the candidates of a step (cross-validated fold
+    mean). The winner is then tested with the per-step shift test
+    (``step_shift_test.run_step_shift_test``): the incumbent and the incumbent plus
+    the winner are refit on all development rows (the held-out refit's rows), the
+    statistic is the in-sample gain in negative mean Gamma deviance per event, its
+    null comes from refits after circularly shifting the winner's trace within every
+    development session and re-cutting its windows at the stored start frames,
+    ``floor(m / alpha)`` times with Bonferroni correction over the ``m`` candidates
+    (``alpha = model_params.selection_p_val``). The first step is tested the same way
+    against the intercept-only model (the training mean).
 
     Data Persistence:
     -----------------
@@ -3310,6 +4085,19 @@ def bout_parameter_model_selection(
             f"Held-out reserve: {len(_held_out_session_ids)} session(s), "
             f"{_held_positions.size} event(s) excluded from selection; scored once at finalization."
         )
+    _dev_session_ids = [str(s_id) for s_id in np.unique(groups_global[_dev_positions])]
+
+    step_cfg = _step_test_settings(settings, float(camera_rate))
+    traces_path, window_starts = _require_shift_test_inputs(_input_md, input_data_path, float(camera_rate))
+    # Lag-zero self-check of the shift test's inputs: every stored row of every
+    # screened feature must re-cut exactly from the trace sidecar at its stored start.
+    _verify_global_windows_against_traces(
+        all_feature_data, traces_path, window_starts, history_frames,
+        features=ranked_features, sessions=_dev_session_ids,
+    )
+    print(f"Shift-test inputs verified: {len(ranked_features)} feature(s) x {len(_dev_session_ids)} development "
+          f"session(s) re-cut exactly from {Path(traces_path).name}; lag floor "
+          f"{step_cfg['min_lag_seconds']} s = {step_cfg['min_lag_frames']} frames.")
 
     print(format_run_header(
         task='SELECTION:PARAMS',
@@ -3427,9 +4215,8 @@ def bout_parameter_model_selection(
     # Resume Logic
     current_model_features = []
     best_current_score = 0.0
-    best_current_se = 0.0
-    # Per-fold scores of the incumbent, paired against a candidate's in the 1SE
-    # test below. Before Step 0 the incumbent is the constant zero-D^2 floor.
+    # Per-fold scores of the incumbent, stored as each step record's
+    # `baseline_folds`. Before Step 0 the incumbent is the constant zero-D^2 floor.
     best_current_folds = 0.0
     # True when the checkpoint a resume restores is a step that rejected its winner: the
     # search had already finished, so the anchor and the forward loop are skipped.
@@ -3452,7 +4239,6 @@ def bout_parameter_model_selection(
         test_proportion=float(test_prop),
         split_strategy=split_strategy,
         random_seed=int(random_seed),
-        one_se_rule_used=False,
         aic_termination_used=False,
         n_anchor_features=len(ranked_features),
         anchor_feature=ranked_features[0],
@@ -3471,6 +4257,19 @@ def bout_parameter_model_selection(
             'held_out_session_ids': list(_held_out_session_ids),
             'n_held_out_sessions': len(_held_out_session_ids),
             'n_held_out_events': int(_held_positions.size),
+            # The per-step acceptance rule and its knobs (a resume refuses another rule).
+            'step_test': {
+                'rule': STEP_TEST_RULE,
+                'screened_features': list(ranked_features),
+                'statistic': 'negative_gamma_deviance_per_event',
+                'alpha': float(p_val),
+                'min_lag_seconds': step_cfg['min_lag_seconds'],
+                'min_lag_frames': step_cfg['min_lag_frames'],
+                'checkpoint_every': step_cfg['checkpoint_every'],
+                'pool_workers': step_cfg['pool_workers'],
+                'refit_rows': 'all_development_rows',
+                'traces_path': traces_path,
+            },
         },
         settings_path=settings_path,
     )
@@ -3489,10 +4288,11 @@ def bout_parameter_model_selection(
         try:
             with Path(model_selection_dir / f"{prefix}{last_step}.pkl").open('rb') as f:
                 last_res = pickle.load(f)
+            _require_step_test_rule(last_res, model_selection_dir / f"{prefix}{last_step}.pkl")
 
             # Rebuild the state right after `last_step` from its recorded decision
-            # (`_restore_selection_checkpoint`); the incumbent's per-fold deviances are the
-            # reference the next paired-1SE gate compares against.
+            # (`_restore_selection_checkpoint`); the incumbent's per-fold deviances are
+            # kept as the step record's baseline.
             state = _restore_selection_checkpoint(
                 last_res, 'mean_explained_deviance', 'se_explained_deviance',
                 lambda entry: entry['explained_deviance'],
@@ -3506,7 +4306,6 @@ def bout_parameter_model_selection(
             else:
                 current_model_features = state['features']
                 best_current_score = state['score']
-                best_current_se = state['se']
                 best_current_folds = state['folds']
                 step_counter = state['next_step']
                 # A search that had accepted every ranked feature stopped on that, with no
@@ -3526,161 +4325,141 @@ def bout_parameter_model_selection(
     if not existing_steps:
         _quarantine_stale_step_files(model_selection_dir, prefix)
 
-    # 5. Auto-Anchor Logic
-    if use_top_rank_as_anchor and step_counter == 0 and not resume_converged:
-        anchor = ranked_features[0]
-        print(format_selection_step('Anchor', feature=anchor, detail='initializing'))
-        # Metric set is aligned with the univariate runner so downstream
-        # plotting / aggregation sees the same keys whether it reads a
-        # univariate or a selection-step pickle.
-        metrics = {
-            'explained_deviance': [], 'residual_deviance': [],
-            'spearman_r': [], 'pearson_r': [],
-            'msle': [], 'mae': [], 'rmse': [],
-            'y_true': [], 'y_pred': [],
-            'n_iter': [], 'converged': [], 'fit_time': []
-        }
+    # The development refit the per-step shift test scores on: every development row
+    # (the held-out refit's rows), with the engine's own fit. The statistic is the
+    # negative mean Gamma deviance per event on those rows; the intercept-only model
+    # (the empty incumbent) predicts the training mean.
+    _y_dev = y_global[_dev_positions]
+    _y_dev_safe = np.maximum(_y_dev, 1e-6)
+    _groups_dev = groups_global[_dev_positions]
 
-        for tr_idx, te_idx in cv_folds:
-            try:
-                X_tr, y_tr = all_feature_data[anchor]['X'][tr_idx], y_global[tr_idx]
-                X_te, y_te = all_feature_data[anchor]['X'][te_idx], y_global[te_idx]
+    def _params_development_design(features: list, winner_override: dict | None = None) -> list:
+        """
+        Description
+        -----------
+        The development rows of every feature of the model, in feature order; with
+        ``winner_override`` the LAST feature's rows are replaced session by session by
+        the windows in that per-session dict (a shifted null refit), scattered into a
+        copy of the stored development design by the rows' sessions.
 
-                if model_type == 'sklearn':
-                    X_tr_proj = np.dot(X_tr, basis_matrix)
-                    X_te_proj = np.dot(X_te, basis_matrix)
+        Parameters
+        ----------
+        features (list)
+            Features of the model, the winner last.
+        winner_override (dict | None)
+            ``{session_id: {'X': (n_rows_of_session, history_frames) windows}}``.
 
-                    # Gamma GLM (log link) — the SAME likelihood as the pyGAM
-                    # branch and the Gamma-deviance score below, so no log-normal
-                    # fit / Gamma score mismatch. The log link targets E[y]
-                    # directly, so no Jensen back-transform correction is needed;
-                    # the L2 penalty is chosen by inner-CV Gamma deviance.
-                    y_tr_pos = np.maximum(y_tr, 1e-6)
-                    fit_start = time.perf_counter()
-                    model = GridSearchCV(
-                        GammaRegressor(),
-                        {'alpha': list(lr_params['alphas'])},
-                        cv=session_grouped_inner_cv(groups_global[tr_idx], lr_params['cv']),
-                        scoring='neg_mean_gamma_deviance',
-                    ).fit(X_tr_proj, y_tr_pos, groups=groups_global[tr_idx])
-                    fit_time = float(time.perf_counter() - fit_start)
+        Returns
+        -------
+        design (list)
+            One ``(n_dev_rows, history_frames)`` array per feature.
+        """
 
-                    best = model.best_estimator_
-                    y_pred = best.predict(X_te_proj)
-                    fold_n_iter = int(np.max(np.atleast_1d(best.n_iter_)))
-                    fold_converged = bool(fold_n_iter < best.max_iter)
-                else:
-                    X_tr_unrolled = np.empty((len(X_tr) * history_frames, 2))
-                    X_tr_unrolled[:, 0] = X_tr.ravel()
-                    X_tr_unrolled[:, 1] = np.tile(np.arange(history_frames), len(X_tr))
+        design = [all_feature_data[f]['X'][_dev_positions] for f in features]
+        if winner_override is not None:
+            X_winner = design[-1].copy()
+            for session_id, entry in winner_override.items():
+                rows = np.where(_groups_dev == session_id)[0]
+                if rows.size != entry['X'].shape[0]:
+                    msg = (f"shift override for {features[-1]!r} / {session_id!r} has {entry['X'].shape[0]} "
+                           f"rows but the development design holds {rows.size}.")
+                    raise ValueError(msg)
+                X_winner[rows] = entry['X']
+            design[-1] = X_winner
+        return design
 
-                    gam = GAM(te(0, 1, n_splines=[n_splines_value, n_splines_time]), distribution='gamma', link='log', **gam_kwargs)
-                    fit_start = time.perf_counter()
-                    gam.fit(X_tr_unrolled, np.repeat(y_tr + 1e-6, history_frames))
-                    fit_time = float(time.perf_counter() - fit_start)
+    def _params_development_score(features: list, winner_override: dict | None = None) -> float:
+        """
+        Description
+        -----------
+        Negative in-sample mean Gamma deviance per event of the model with
+        ``features`` refit on all development rows with the configured engine,
+        exactly as the held-out refit fits it (per-event prediction on the link
+        scale for the GAM). The empty model is the intercept-only model predicting
+        the training mean.
 
-                    X_te_unrolled = np.empty((len(X_te) * history_frames, 2))
-                    X_te_unrolled[:, 0] = X_te.ravel()
-                    X_te_unrolled[:, 1] = np.tile(np.arange(history_frames), len(X_te))
+        Parameters
+        ----------
+        features (list)
+            Features of the model, the winner last.
+        winner_override (dict | None)
+            See ``_params_development_design``.
 
-                    # Aggregate the H per-frame predictions on the linear-predictor (eta = log mu) scale
-                    # before applying the inverse link: exp(mean(eta)) rather than mean(exp(eta)). This
-                    # avoids the Jensen-inequality bias introduced by averaging on the natural (mu) scale,
-                    # which would otherwise over-estimate E[y|X] whenever the per-frame eta have any spread.
-                    eta_te = np.log(gam.predict_mu(X_te_unrolled)).reshape(len(y_te), history_frames)
-                    y_pred = np.exp(np.mean(eta_te, axis=1))
-                    gam_diffs = gam.logs_['diffs']
-                    fold_n_iter = float(len(gam_diffs))
-                    fold_converged = bool(len(gam_diffs) > 0 and len(gam_diffs) < gam_kwargs['max_iter'])
+        Returns
+        -------
+        score (float)
+            ``-mean_gamma_deviance`` on the development rows (higher is better).
+        """
 
-                # Robust Metric Calculation
-                y_te_safe = np.maximum(y_te, 1e-6)
-                y_pred_safe = np.maximum(y_pred, 1e-6)
-                y_null_pred = np.full_like(y_te_safe, np.mean(y_te_safe))
+        if not features:
+            y_null_pred = np.full_like(_y_dev_safe, np.mean(_y_dev_safe))
+            return -float(mean_gamma_deviance(_y_dev_safe, y_null_pred))
+        design = _params_development_design(features, winner_override)
+        if model_type == 'sklearn':
+            X_dev_stacked = np.hstack([np.dot(x, basis_matrix) for x in design])
+            dev_model = GridSearchCV(
+                GammaRegressor(),
+                {'alpha': list(lr_params['alphas'])},
+                cv=session_grouped_inner_cv(_groups_dev, lr_params['cv']),
+                scoring='neg_mean_gamma_deviance',
+            ).fit(X_dev_stacked, _y_dev_safe, groups=_groups_dev)
+            y_pred = dev_model.best_estimator_.predict(X_dev_stacked)
+        else:
+            X_dev_gam = get_unrolled_X_for_multivariate(design, history_frames)
+            y_dev_gam = np.repeat(_y_dev + 1e-6, history_frames)
+            gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
+            for i in range(1, len(features)):
+                gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
+            dev_gam = GAM(gam_terms, distribution='gamma', link='log', **gam_kwargs).fit(X_dev_gam, y_dev_gam)
+            eta_dev = np.log(dev_gam.predict_mu(X_dev_gam)).reshape(len(_y_dev), history_frames)
+            y_pred = np.exp(np.mean(eta_dev, axis=1))
+        return -float(mean_gamma_deviance(_y_dev_safe, np.maximum(y_pred, 1e-6)))
 
-                res_dev = mean_gamma_deviance(y_te_safe, y_pred_safe)
-                null_dev = mean_gamma_deviance(y_te_safe, y_null_pred)
+    # Read-only data every pool worker of this run inherits (`_params_candidate_fold`);
+    # the step-specific entries are added per step before the pool forks.
+    _params_pool_base = {
+        'cv_folds': cv_folds,
+        'all_feature_data': all_feature_data,
+        'y_global': y_global,
+        'groups_global': groups_global,
+        'history_frames': history_frames,
+        'model_type': model_type,
+        'basis_matrix': basis_matrix,
+        'lr_params': lr_params,
+        'n_splines_value': n_splines_value,
+        'n_splines_time': n_splines_time,
+        'gam_kwargs': gam_kwargs,
+    }
 
-                d2 = 0.0 if null_dev == 0 else 1 - (res_dev / null_dev)
+    def _params_fit_candidates(incumbent: list, candidate_features: list) -> dict:
+        """
+        Description
+        -----------
+        Fits every candidate on every fold on top of ``incumbent`` through the
+        selection pool and returns each candidate's per-fold metric lists. The
+        incumbent's fold rows (and, for the sklearn engine, their basis projection)
+        are sliced once per fold here, identically for every candidate of the step.
 
-                metrics['residual_deviance'].append(res_dev)
-                metrics['explained_deviance'].append(d2)
-                metrics['spearman_r'].append(spearmanr(y_te, y_pred)[0])
-                metrics['pearson_r'].append(pearson_r_safe(y_te, y_pred))
-                metrics['msle'].append(mean_squared_log_error(y_te_safe, y_pred_safe))
-                metrics['mae'].append(mean_absolute_error_1d(y_te, y_pred))
-                metrics['rmse'].append(root_mean_squared_error(y_te, y_pred))
-                metrics['y_true'].append(y_te_safe)
-                metrics['y_pred'].append(y_pred_safe)
-                metrics['n_iter'].append(fold_n_iter)
-                metrics['converged'].append(fold_converged)
-                metrics['fit_time'].append(fit_time)
-                gc.collect()
+        Parameters
+        ----------
+        incumbent (list)
+            The incumbent features.
+        candidate_features (list)
+            Candidates to score.
 
-            except Exception as e:
-                print(f"    [!] Error fitting: {e}")
-                # Append shape-preserving placeholders so every per-fold list
-                # stays the same length. y_true / y_pred normally hold test-
-                # fold arrays, so on failure we use empty arrays rather than a
-                # scalar NaN to keep the list homogeneous for stacking.
-                metrics['explained_deviance'].append(np.nan)
-                metrics['residual_deviance'].append(np.nan)
-                metrics['spearman_r'].append(np.nan)
-                metrics['pearson_r'].append(np.nan)
-                metrics['msle'].append(np.nan)
-                metrics['mae'].append(np.nan)
-                metrics['rmse'].append(np.nan)
-                metrics['y_true'].append(np.empty((0,), dtype=np.float64))
-                metrics['y_pred'].append(np.empty((0,), dtype=np.float64))
-                metrics['n_iter'].append(np.nan)
-                metrics['converged'].append(False)
-                metrics['fit_time'].append(np.nan)
+        Returns
+        -------
+        per_candidate (dict)
+            ``{feature: {metric key: [per-fold values]}}``.
+        """
 
-        valid_dev = [m for m in metrics['explained_deviance'] if np.isfinite(m)]
-        if valid_dev:
-            mean_anchor_score = np.mean(valid_dev)
-            if mean_anchor_score > 0:
-                best_current_score = mean_anchor_score
-                # `np.std([x], ddof=1)` is NaN for a single finite fold (zero divisor);
-                # guard with len > 1 so a one-fold success does not poison the 1SE rule.
-                best_current_se = np.std(valid_dev, ddof=1) / np.sqrt(len(valid_dev)) if len(valid_dev) > 1 else 0.0
-                best_current_folds = metrics['explained_deviance']
-                current_model_features = [anchor]
-
-                step_0_res = {
-                    'step_idx': 0, 'current_features': [anchor],
-                    'baseline_score': 0.0,
-                    'selected_feature': anchor,
-                    'candidates_summary': {
-                        anchor: {
-                            **{k: metrics[k] for k in metrics},
-                            'mean_explained_deviance': mean_anchor_score,
-                            'se_explained_deviance': best_current_se
-                        }
-                    }
-                }
-                _dump_step_pickle(model_selection_dir / f"{prefix}0.pkl", _wrap_step(step_0_res))
-                step_counter = 1
-            else:
-                print(format_selection_step('Anchor', feature=anchor, decision='FAILED',
-                                            metrics={'D^2': mean_anchor_score},
-                                            detail='<= 0; reverting to empty start'))
-
-    # 6. Forward Selection Loop
-    print("\n--- Starting Forward Selection ---")
-    # A resume that restored a converged search skips the loop and finalizes directly.
-    while not resume_converged:
         fold_base_X_tr, fold_base_X_te = [], []
         for tr_idx, te_idx in cv_folds:
-            fold_base_X_tr.append([all_feature_data[f]['X'][tr_idx] for f in current_model_features])
-            fold_base_X_te.append([all_feature_data[f]['X'][te_idx] for f in current_model_features])
-
+            fold_base_X_tr.append([all_feature_data[f]['X'][tr_idx] for f in incumbent])
+            fold_base_X_te.append([all_feature_data[f]['X'][te_idx] for f in incumbent])
         # For the sklearn path the basis projection of the already-selected features is
         # identical across every candidate in this step, so project the fixed base once
-        # per fold here instead of re-projecting it inside the candidate loop. `None`
-        # marks the step-0 empty base (np.hstack of [] would raise); the candidate loop
-        # then projects only the new feature and hstacks it on. Byte-identical: hstack is
-        # associative, so hstack([base_proj, new_proj]) == hstack(base_projs + [new_proj]).
+        # per fold here. `None` marks the empty base (np.hstack of [] would raise).
         fold_base_proj_tr, fold_base_proj_te = [], []
         if model_type == 'sklearn':
             for fold_idx in range(len(cv_folds)):
@@ -3688,122 +4467,140 @@ def bout_parameter_model_selection(
                 base_te = fold_base_X_te[fold_idx]
                 fold_base_proj_tr.append(np.hstack([np.dot(x, basis_matrix) for x in base_tr]) if base_tr else None)
                 fold_base_proj_te.append(np.hstack([np.dot(x, basis_matrix) for x in base_te]) if base_te else None)
+        set_pool_context(
+            params_step={**_params_pool_base,
+                         'current_model_features': list(incumbent),
+                         'fold_base_X_tr': fold_base_X_tr, 'fold_base_X_te': fold_base_X_te,
+                         'fold_base_proj_tr': fold_base_proj_tr, 'fold_base_proj_te': fold_base_proj_te},
+            candidate_fold=_params_candidate_fold,
+        )
+        n_workers = pool_worker_count(step_cfg['pool_workers'], len(incumbent) + 1,
+                                      step_cfg['pool_memory_gb'], step_cfg['fit_peak_gb_base'],
+                                      step_cfg['fit_peak_gb_per_term'])
+        n_folds = len(cv_folds)
+        tasks = [(feat, fold_idx) for feat in candidate_features for fold_idx in range(n_folds)]
+        pool = SelectionPool(n_workers)
+        try:
+            results = pool.map('candidate_fold', tasks)
+        finally:
+            pool.close()
+        return {feat: _assemble_fold_metrics(results[i * n_folds:(i + 1) * n_folds], feat,
+                                             _PARAMS_FOLD_METRIC_KEYS, _PARAMS_FOLD_PLACEHOLDERS)
+                for i, feat in enumerate(candidate_features)}
 
-        best_cand, best_cand_score, best_cand_se = None, -float('inf'), 0.0
-        best_cand_folds = None
+    def _params_step_test(winner: str, step_index: int, m_candidates: int) -> dict:
+        """
+        Description
+        -----------
+        The per-step shift test of ``winner`` on top of the current incumbent.
+
+        Parameters
+        ----------
+        winner (str)
+            The cross-validated winner.
+        step_index (int)
+            The step.
+        m_candidates (int)
+            Candidates the winner was chosen from (the Bonferroni factor).
+
+        Returns
+        -------
+        step_test (dict)
+            The record of ``run_step_shift_test``.
+        """
+
+        incumbent = list(current_model_features)
+        trial = [*incumbent, winner]
+        incumbent_score = _params_development_score(incumbent)
+        observed_score = _params_development_score(trial)
+        winner_traces = {s: read_feature_trace(traces_path, winner, s) for s in _dev_session_ids}
+        n_workers = pool_worker_count(step_cfg['pool_workers'], len(trial),
+                                      step_cfg['pool_memory_gb'], step_cfg['fit_peak_gb_base'],
+                                      step_cfg['fit_peak_gb_per_term'])
+        return run_step_shift_test(
+            n_workers=n_workers,
+            refit_and_score=lambda override: _params_development_score(trial, override),
+            incumbent_features=incumbent,
+            incumbent_score=incumbent_score,
+            winner=winner,
+            observed_score=observed_score,
+            statistic_name='negative_gamma_deviance_per_event',
+            winner_traces=winner_traces,
+            window_starts={s: window_starts[s] for s in winner_traces},
+            slots=_PARAMS_WINDOW_SLOTS,
+            history_frames=history_frames,
+            m_candidates=m_candidates,
+            alpha=p_val,
+            min_lag_frames=step_cfg['min_lag_frames'],
+            random_seed=random_seed,
+            step_index=step_index,
+            checkpoint_every=step_cfg['checkpoint_every'],
+            partial_path=model_selection_dir / f"{prefix}{step_index}_null_partial.pkl",
+            label=f"Step {step_index}",
+        )
+
+    # 5. Auto-Anchor Logic
+    if use_top_rank_as_anchor and step_counter == 0 and not resume_converged:
+        anchor = ranked_features[0]
+        print(format_selection_step('Anchor', feature=anchor,
+                                    detail='top-ranked; forced as the first candidate, tested against the intercept-only model'))
+        metrics = _params_fit_candidates([], [anchor])[anchor]
+        valid_dev = [m for m in metrics['explained_deviance'] if np.isfinite(m)]
+        _require_scored_candidate('Anchor', 1, len(valid_dev))
+        step_test = None
+        if valid_dev:
+            # The forced anchor is tested like every winner, with Bonferroni over every
+            # screened feature it was forced ahead of.
+            step_test = _params_step_test(anchor, 0, len(ranked_features))
+        anchor_accepted = step_test is not None and step_test['accepted']
+        mean_anchor_score = float(np.mean(valid_dev)) if valid_dev else float('nan')
+        se_anchor_score = float(np.std(valid_dev, ddof=1) / np.sqrt(len(valid_dev))) if len(valid_dev) > 1 else 0.0
+        step_0_res = {
+            'step_idx': 0,
+            'current_features': [anchor] if anchor_accepted else [],
+            'baseline_score': 0.0, 'baseline_folds': 0.0,
+            'selected_feature': anchor if anchor_accepted else None,
+            'candidates_summary': {
+                anchor: {
+                    **{k: metrics[k] for k in _PARAMS_FOLD_METRIC_KEYS},
+                    'mean_explained_deviance': mean_anchor_score,
+                    'se_explained_deviance': se_anchor_score
+                }
+            } if valid_dev else {},
+            'step_test': step_test,
+        }
+        _dump_step_pickle(model_selection_dir / f"{prefix}0.pkl", _wrap_step(step_0_res))
+        if anchor_accepted:
+            print(format_selection_step('Anchor', feature=anchor, decision='ACCEPT',
+                                        metrics={'D^2': mean_anchor_score}))
+            current_model_features = [anchor]
+            best_current_score, best_current_folds = mean_anchor_score, metrics['explained_deviance']
+            step_counter = 1
+        else:
+            print(format_selection_step('Anchor', feature=anchor, decision='REJECT',
+                                        detail='the forced anchor failed the shift test; selection finished'))
+            resume_converged = True
+
+    # 6. Forward Selection Loop
+    print("\n--- Starting Forward Selection ---")
+    # A resume that restored a converged search skips the loop and finalizes directly.
+    while not resume_converged:
         step_results = {
             'step_idx': step_counter, 'current_features': list(current_model_features),
             'baseline_score': best_current_score, 'baseline_folds': best_current_folds,
             'candidates_summary': {},
-            'selected_feature': None
+            'selected_feature': None,
+            'step_test': None,
         }
 
-        for feat in ranked_features:
-            if feat in current_model_features:
-                continue
-            gc.collect()
+        candidates_this_step = [feat for feat in ranked_features if feat not in current_model_features]
+        m_candidates = len(candidates_this_step)
+        per_candidate = _params_fit_candidates(current_model_features, candidates_this_step)
 
-            metrics = {
-                'explained_deviance': [], 'residual_deviance': [],
-                'spearman_r': [], 'pearson_r': [],
-                'msle': [], 'mae': [], 'rmse': [],
-                'y_true': [], 'y_pred': [],
-                'n_iter': [], 'converged': [], 'fit_time': []
-            }
-
-            if model_type == 'pygam':
-                gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
-                for i in range(1, len(current_model_features) + 1):
-                    gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
-
-            for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
-                try:
-                    trial_tr = fold_base_X_tr[fold_idx] + [all_feature_data[feat]['X'][tr_idx]]
-                    trial_te = fold_base_X_te[fold_idx] + [all_feature_data[feat]['X'][te_idx]]
-                    y_tr, y_te = y_global[tr_idx], y_global[te_idx]
-
-                    if model_type == 'sklearn':
-                        # Project only the new candidate feature; the fixed base
-                        # projection was precomputed once per fold above and hstacked on.
-                        new_proj_tr = np.dot(all_feature_data[feat]['X'][tr_idx], basis_matrix)
-                        new_proj_te = np.dot(all_feature_data[feat]['X'][te_idx], basis_matrix)
-                        base_proj_tr = fold_base_proj_tr[fold_idx]
-                        base_proj_te = fold_base_proj_te[fold_idx]
-                        X_tr_stacked = np.hstack([base_proj_tr, new_proj_tr]) if base_proj_tr is not None else new_proj_tr
-                        X_te_stacked = np.hstack([base_proj_te, new_proj_te]) if base_proj_te is not None else new_proj_te
-
-                        # Gamma GLM (log link), matching the anchor fit and the
-                        # pyGAM branch — fit and Gamma-deviance score share one
-                        # likelihood; no log-normal transform / Jensen correction.
-                        y_tr_pos = np.maximum(y_tr, 1e-6)
-                        fit_start = time.perf_counter()
-                        model = GridSearchCV(
-                            GammaRegressor(),
-                            {'alpha': list(lr_params['alphas'])},
-                            cv=session_grouped_inner_cv(groups_global[tr_idx], lr_params['cv']),
-                            scoring='neg_mean_gamma_deviance',
-                        ).fit(X_tr_stacked, y_tr_pos, groups=groups_global[tr_idx])
-                        fit_time = float(time.perf_counter() - fit_start)
-
-                        best = model.best_estimator_
-                        y_pred = best.predict(X_te_stacked)
-                        fold_n_iter = int(np.max(np.atleast_1d(best.n_iter_)))
-                        fold_converged = bool(fold_n_iter < best.max_iter)
-                    else:
-                        X_tr_gam = get_unrolled_X_for_multivariate(trial_tr, history_frames)
-                        X_te_gam = get_unrolled_X_for_multivariate(trial_te, history_frames)
-
-                        fit_start = time.perf_counter()
-                        gam = GAM(gam_terms, distribution='gamma', link='log', **gam_kwargs).fit(X_tr_gam, np.repeat(y_tr + 1e-6, history_frames))
-                        fit_time = float(time.perf_counter() - fit_start)
-
-                        # Aggregate the H per-frame predictions on the linear-predictor scale (see anchor fit).
-                        eta_te = np.log(gam.predict_mu(X_te_gam)).reshape(len(y_te), history_frames)
-                        y_pred = np.exp(np.mean(eta_te, axis=1))
-                        gam_diffs = gam.logs_['diffs']
-                        fold_n_iter = float(len(gam_diffs))
-                        fold_converged = bool(len(gam_diffs) > 0 and len(gam_diffs) < gam_kwargs['max_iter'])
-
-                    y_te_safe = np.maximum(y_te, 1e-6)
-                    y_pred_safe = np.maximum(y_pred, 1e-6)
-                    y_null_pred = np.full_like(y_te_safe, np.mean(y_te_safe))
-
-                    res_dev = mean_gamma_deviance(y_te_safe, y_pred_safe)
-                    null_dev = mean_gamma_deviance(y_te_safe, y_null_pred)
-
-                    d2 = 0.0 if null_dev == 0 else 1 - (res_dev / null_dev)
-
-                    metrics['residual_deviance'].append(res_dev)
-                    metrics['explained_deviance'].append(d2)
-                    metrics['spearman_r'].append(spearmanr(y_te, y_pred)[0])
-                    metrics['pearson_r'].append(pearson_r_safe(y_te, y_pred))
-                    metrics['msle'].append(mean_squared_log_error(y_te_safe, y_pred_safe))
-                    metrics['mae'].append(mean_absolute_error_1d(y_te, y_pred))
-                    metrics['rmse'].append(root_mean_squared_error(y_te, y_pred))
-                    metrics['y_true'].append(y_te_safe)
-                    metrics['y_pred'].append(y_pred_safe)
-                    metrics['n_iter'].append(fold_n_iter)
-                    metrics['converged'].append(fold_converged)
-                    metrics['fit_time'].append(fit_time)
-
-                    gc.collect()
-                except Exception as e:
-                    print(f"    [!] Error fitting {feat} (Fold {fold_idx}): {e}")
-                    metrics['explained_deviance'].append(np.nan)
-                    metrics['residual_deviance'].append(np.nan)
-                    metrics['spearman_r'].append(np.nan)
-                    metrics['pearson_r'].append(np.nan)
-                    metrics['msle'].append(np.nan)
-                    metrics['mae'].append(np.nan)
-                    metrics['rmse'].append(np.nan)
-                    # Empty arrays rather than scalar NaN so `y_true` /
-                    # `y_pred` stay a list of ndarrays (stackable downstream).
-                    metrics['y_true'].append(np.empty((0,), dtype=np.float64))
-                    metrics['y_pred'].append(np.empty((0,), dtype=np.float64))
-                    metrics['n_iter'].append(np.nan)
-                    metrics['converged'].append(False)
-                    metrics['fit_time'].append(np.nan)
-
+        best_cand, best_cand_score = None, -float('inf')
+        best_cand_folds = None
+        for feat in candidates_this_step:
+            metrics = per_candidate[feat]
             valid = [m for m in metrics['explained_deviance'] if np.isfinite(m)]
             if not valid:
                 print(format_selection_step(f"Step {step_counter}", feature=feat,
@@ -3811,45 +4608,50 @@ def bout_parameter_model_selection(
                 continue
 
             # `np.std([x], ddof=1)` is NaN for a single finite fold (zero divisor);
-            # guard with len > 1 so a one-fold success does not poison the 1SE rule.
+            # guard with len > 1 so a one-fold success keeps a finite SE.
             m_dev = np.mean(valid)
             s_dev = np.std(valid, ddof=1) / np.sqrt(len(valid)) if len(valid) > 1 else 0.0
             print(format_selection_step(f"Step {step_counter}", feature=feat,
                                         metrics={'D^2': m_dev}))
 
             step_results['candidates_summary'][feat] = {
-                **{k: metrics[k] for k in metrics},
+                **{k: metrics[k] for k in _PARAMS_FOLD_METRIC_KEYS},
                 'mean_explained_deviance': m_dev,
                 'se_explained_deviance': s_dev
             }
 
             if m_dev > best_cand_score:
-                best_cand_score, best_cand_se, best_cand = m_dev, s_dev, feat
+                best_cand_score, best_cand = m_dev, feat
                 best_cand_folds = metrics['explained_deviance']
 
-        # The 1SE bar is the standard error of the PER-FOLD improvement: incumbent
-        # and candidate are nested and share the same folds, so fold difficulty
-        # cancels in the difference but dominates either score alone.
-        step_improvement, step_improvement_se = (
-            paired_one_se_improvement(best_cand_folds, best_current_folds,
-                                      higher_is_better=True)
-            if best_cand is not None else (float('nan'), 0.0))
+        # The cross-validated winner is tested with the per-step shift test, Bonferroni
+        # over the m candidates of this step; the step is accepted only when no shifted
+        # refit reaches the observed in-sample gain.
+        _require_scored_candidate(f"Step {step_counter}", m_candidates, int(best_cand is not None))
+        step_test = (_params_step_test(best_cand, step_counter, m_candidates)
+                     if best_cand is not None else None)
+        step_results['step_test'] = step_test
 
-        if np.isfinite(step_improvement) and step_improvement > step_improvement_se:
+        if step_test is not None and step_test['accepted']:
             print(format_selection_step(f"Step {step_counter}", feature=best_cand,
-                                        decision='ACCEPT', metrics={'D^2': best_cand_score}))
+                                        decision='ACCEPT',
+                                        metrics={'D^2': best_cand_score,
+                                                 'p_adj': step_test['p_adjusted']}))
             step_results['selected_feature'] = best_cand
             current_model_features.append(best_cand)
 
             _dump_step_pickle(model_selection_dir / f"{prefix}{step_counter}.pkl", _wrap_step(step_results))
 
             best_current_score = best_cand_score
-            best_current_se = best_cand_se
             best_current_folds = best_cand_folds
             step_counter += 1
         else:
-            print(format_selection_step(f"Step {step_counter}", decision='REJECT',
-                                        detail='no candidate beat the 1-SE margin; selection finished'))
+            if best_cand is None:
+                reject_detail = 'no candidate had finite folds; selection finished'
+            else:
+                reject_detail = (f"winner {best_cand!r} failed the shift test "
+                                 f"(p_adj {step_test['p_adjusted']:.4f} vs alpha {p_val}); selection finished")
+            print(format_selection_step(f"Step {step_counter}", decision='REJECT', detail=reject_detail))
             step_results['selected_feature'] = None
             _dump_step_pickle(model_selection_dir / f"{prefix}{step_counter}.pkl", _wrap_step(step_results))
             break
@@ -4037,6 +4839,316 @@ def bout_parameter_model_selection(
 
 
 
+#: Per-fold scalar metric keys the multinomial selector stores for every candidate.
+_MULTINOMIAL_FOLD_METRIC_KEYS = ('auc', 'score', 'recall', 'f1', 'll', 'brier', 'ece', 'mcc')
+#: Per-fold list keys of a multinomial candidate record besides the metrics.
+_MULTINOMIAL_FOLD_LIST_KEYS = ('weights', 'basis_coefficients', 'intercepts', 'y_true', 'y_pred', 'y_probs',
+                               'test_indices', 'p_train', 'p_test', 'confusion_matrix', 'n_iter', 'converged',
+                               'fit_time', 'selected_lambda_smooth', 'selected_l2_reg', 'hyperparam_grid_audit',
+                               'hyperparams_tuned')
+#: Start-frame slot -> pickle array key of the per-session single-array pipelines
+#: (multinomial, manifold): the starts of a session are those of its ``X`` rows in order.
+_SESSION_WINDOW_SLOTS = {'X': 'X'}
+
+
+def _verify_session_windows_against_traces(feature_data: dict,
+                                           traces_path: str | Path,
+                                           window_starts: dict,
+                                           history_frames: int,
+                                           features: list,
+                                           sessions: list,
+                                           cast_dtype) -> None:
+    """
+    Description
+    -----------
+    The lag-zero self-check of the per-step shift test for the per-session
+    single-array layout of the multinomial and manifold pipelines
+    (``feature_data[feature][session]['X']`` holds the session's windows, cast to
+    ``cast_dtype`` by the extraction): re-cuts every session's windows from the
+    trace sidecar at the stored start frames, casts them the same way and requires
+    bit-exact equality and the same row count as stored starts. A mismatch means
+    the pickle, its start frames and the sidecar do not describe one extraction, and
+    the run aborts before any model is fit.
+
+    Parameters
+    ----------
+    feature_data (dict)
+        The modeling pickle's feature dict (metadata blocks stripped).
+    traces_path (str | Path)
+        The HDF5 sidecar.
+    window_starts (dict)
+        ``{session: {'X': (n,) start frames, ...}}`` from ``_input_metadata``.
+    history_frames (int)
+        Window length in frames (the stored, unbinned window).
+    features (list)
+        Features to check.
+    sessions (list)
+        Sessions to check.
+    cast_dtype
+        The dtype the extraction cast the windows to (``np.float32``).
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    ValueError
+        On the first session whose windows do not reproduce.
+    """
+
+    with h5py.File(Path(traces_path), 'r') as handle:
+        for feature in features:
+            for session_id in sessions:
+                if session_id not in feature_data[feature]:
+                    continue
+                stored = feature_data[feature][session_id]['X']
+                starts = np.asarray(window_starts[session_id]['X'], dtype=int)
+                if stored.shape[0] != starts.size:
+                    msg = (f"_verify_session_windows_against_traces: {feature!r} / {session_id!r}: "
+                           f"{stored.shape[0]} stored rows but {starts.size} start frames.")
+                    raise ValueError(msg)
+                if starts.size == 0:
+                    continue
+                column = handle[feature][str(session_id)][()]
+                rebuilt = cut_history_windows(column, starts, history_frames).astype(cast_dtype)
+                if rebuilt.shape != stored.shape or not np.array_equal(rebuilt, stored):
+                    msg = (f"_verify_session_windows_against_traces: {feature!r} / {session_id!r}: windows "
+                           f"re-cut from the trace sidecar at lag 0 do not match the stored windows (shapes "
+                           f"{rebuilt.shape} vs {stored.shape}). The pickle, its start frames and "
+                           f"{traces_path} are not from one extraction.")
+                    raise ValueError(msg)
+
+
+def _multinomial_empty_cand_data(canonical_classes: np.ndarray, balance_train: bool) -> dict:
+    """
+    Description
+    -----------
+    A fresh, empty results entry for one multinomial candidate: the ``folds`` block of
+    empty per-fold lists (the scalar metrics of ``_MULTINOMIAL_FOLD_METRIC_KEYS`` and
+    the lists of ``_MULTINOMIAL_FOLD_LIST_KEYS``), the ``balanced_train`` flag, the
+    fitted class order (filled by the first successful fold) and the cohort's
+    canonical class order.
+
+    Parameters
+    ----------
+    canonical_classes (np.ndarray)
+        Sorted unique labels of the whole cohort.
+    balance_train (bool)
+        Whether the training folds were class-balanced.
+
+    Returns
+    -------
+    cand_data (dict)
+        ``{'folds': {...}, 'classes': None, 'canonical_classes': ...}``.
+    """
+
+    folds = {'metrics': {m: [] for m in _MULTINOMIAL_FOLD_METRIC_KEYS}}
+    for key in _MULTINOMIAL_FOLD_LIST_KEYS:
+        folds[key] = []
+    folds['balanced_train'] = bool(balance_train)
+    return {'folds': folds, 'classes': None, 'canonical_classes': canonical_classes}
+
+
+def _multinomial_assemble_cand_data(fold_results: list, feature: str, canonical_classes: np.ndarray,
+                                    balance_train: bool, n_splits: int) -> dict:
+    """
+    Description
+    -----------
+    Turns the per-fold worker results of one multinomial candidate into its results
+    entry, keeping every per-fold list aligned: a failed fold is logged and
+    contributes the shape-preserving placeholders the former inline loop appended
+    (NaN metrics, None weights / coefficients / intercepts, empty arrays, NaN class
+    proportions and a NaN ``(K, K)`` confusion matrix, unconverged, NaN
+    hyperparameters and an empty grid audit).
+
+    Parameters
+    ----------
+    fold_results (list)
+        One ``_multinomial_candidate_fold`` result per fold, in fold order.
+    feature (str)
+        The candidate, for the log line.
+    canonical_classes (np.ndarray)
+        Sorted unique labels of the whole cohort.
+    balance_train (bool)
+        Whether the training folds were class-balanced.
+    n_splits (int)
+        Number of folds, for the log line.
+
+    Returns
+    -------
+    cand_data (dict)
+        The candidate's results entry.
+    """
+
+    cand_data = _multinomial_empty_cand_data(canonical_classes, balance_train)
+    folds = cand_data['folds']
+    K = len(canonical_classes)
+    for fold_idx, result in enumerate(fold_results):
+        if result['ok']:
+            fold = result['fold']
+            for key in _MULTINOMIAL_FOLD_METRIC_KEYS:
+                folds['metrics'][key].append(fold['metrics'][key])
+            for key in _MULTINOMIAL_FOLD_LIST_KEYS:
+                folds[key].append(fold[key])
+            if cand_data['classes'] is None:
+                cand_data['classes'] = result['classes']
+            continue
+        print(
+            f"\n    [!] Fold {fold_idx + 1:02d}/{n_splits:02d} failed on +{feature}: {result['error']}",
+            flush=True,
+        )
+        for key in _MULTINOMIAL_FOLD_METRIC_KEYS:
+            folds['metrics'][key].append(np.nan)
+        folds['weights'].append(None)
+        folds['basis_coefficients'].append(None)
+        folds['intercepts'].append(None)
+        folds['y_true'].append(np.empty((0,), dtype=np.int32))
+        folds['y_pred'].append(np.empty((0,), dtype=np.int32))
+        folds['y_probs'].append(np.empty((0, K), dtype=np.float32))
+        folds['test_indices'].append(np.empty((0,), dtype=np.int64))
+        folds['p_train'].append(np.full(K, np.nan, dtype=np.float32))
+        folds['p_test'].append(np.full(K, np.nan, dtype=np.float32))
+        folds['confusion_matrix'].append(np.full((K, K), np.nan))
+        folds['n_iter'].append(np.nan)
+        folds['converged'].append(False)
+        folds['fit_time'].append(np.nan)
+        folds['selected_lambda_smooth'].append(float('nan'))
+        folds['selected_l2_reg'].append(float('nan'))
+        folds['hyperparam_grid_audit'].append({
+            'grid_scores': {}, 'grid_ses': {},
+            'argmax_pair': None,
+            'one_se_applied': False, 'one_se_threshold': None,
+        })
+        folds['hyperparams_tuned'].append(False)
+    return cand_data
+
+
+def _multinomial_candidate_fold(feat: str, fold_idx: int) -> dict:
+    """
+    Description
+    -----------
+    One (candidate, fold) fit of the multinomial selector: fits the incumbent features
+    plus ``feat`` on the fold's (optionally class-balanced) training rows with the
+    JAX ``SmoothMultinomialLogisticRegression`` and scores the fold's test rows. The
+    data comes from the ``'multinomial_step'`` pool-context entry the selector stores
+    before running the fits (``cv_folds``, ``binned_data``, ``y_global``,
+    ``groups_global``, the per-fold cached ``fold_tr_idx_model`` / ``fold_base_tr`` /
+    ``fold_base_te``, ``current_model_features``, the hyperparameter closure
+    ``pick_hyperparams``, ``class_proportions``, the model knobs). The operations are
+    those of the former inline fold body, so the fold scores are the same numbers.
+
+    Parameters
+    ----------
+    feat (str)
+        The candidate feature.
+    fold_idx (int)
+        Fold index.
+
+    Returns
+    -------
+    result (dict)
+        ``{'ok': True, 'fold': {...}, 'classes': model.classes_}`` with one entry per
+        per-fold list of the candidate record, or ``{'ok': False, 'error': str}``.
+    """
+
+    ctx = pool_context('multinomial_step')
+    _, te_idx = ctx['cv_folds'][fold_idx]
+    tr_idx_model = ctx['fold_tr_idx_model'][fold_idx]
+    binned_data = ctx['binned_data']
+    y_global = ctx['y_global']
+    groups_global = ctx['groups_global']
+    hp = ctx['hp']
+    temporal_basis = ctx['temporal_basis']
+    canonical_classes = ctx['canonical_classes']
+    trial_feats = [*ctx['current_model_features'], feat]
+    n_trial_feats = len(trial_feats)
+    try:
+        new_tr = binned_data[feat][tr_idx_model]
+        new_te = binned_data[feat][te_idx]
+        base_tr = ctx['fold_base_tr'][fold_idx]
+        base_te = ctx['fold_base_te'][fold_idx]
+        X_tr_stacked = np.hstack([base_tr, new_tr]) if base_tr is not None else new_tr
+        X_te_stacked = np.hstack([base_te, new_te]) if base_te is not None else new_te
+        y_tr, y_te = y_global[tr_idx_model], y_global[te_idx]
+
+        fold_lambda_smooth, fold_l2_reg, fold_grid_audit, fold_tuned_flag = (
+            ctx['pick_hyperparams'](
+                X_tr_stacked, y_tr, groups_global[tr_idx_model],
+                n_feats_=n_trial_feats,
+                fold_idx_=fold_idx,
+            )
+        )
+
+        model = SmoothMultinomialLogisticRegression(
+            n_features=n_trial_feats, n_time_bins=ctx['n_time_bins'],
+            lambda_smooth=fold_lambda_smooth,
+            l2_reg=fold_l2_reg,
+            smoothness_derivative_order=ctx['smoothness_order'],
+            smoothness_reflective_edges=ctx['reflective_edges'],
+            focal_gamma=ctx['model_focal_gamma'],
+            uniform_class_weights=ctx['model_uniform_weights'],
+            learning_rate=hp['learning_rate'],
+            max_iter=hp['max_iter'],
+            tol=hp['tol'],
+            random_state=hp['random_state'] + fold_idx,
+            _use_lax_loop=ctx['use_lax_loop'],
+        )
+        model.fit(X_tr_stacked, y_tr)
+
+        y_proba = model.predict_proba(X_te_stacked, balanced=hp['balance_predictions_bool'])
+        y_pred = model.predict(X_te_stacked, balanced=hp['balance_predictions_bool'])
+
+        eps = 1e-15
+        y_proba_clipped = np.clip(y_proba, eps, 1 - eps)
+
+        metrics = {}
+        metrics['auc'] = roc_auc_score(y_te, y_proba, multi_class='ovr', average='macro', labels=model.classes_)
+        metrics['score'] = balanced_accuracy_score(y_te, y_pred)
+        metrics['f1'] = f1_score(y_te, y_pred, average='macro', zero_division=0)
+        metrics['recall'] = recall_score(y_te, y_pred, average='macro', zero_division=0)
+        metrics['ll'] = log_loss(y_te, y_proba_clipped, labels=model.classes_)
+
+        # Canonical-ordered probability matrix so Brier / ECE are computed against a
+        # stable column ordering across folds even when a rare class is absent from
+        # `model.classes_`.
+        probs_canonical = align_probs_to_canonical(y_proba, model.classes_, canonical_classes)
+        try:
+            metrics['brier'] = brier_score_multi(y_te, probs_canonical, canonical_classes)
+        except Exception:
+            metrics['brier'] = np.nan
+        try:
+            metrics['ece'] = expected_calibration_error(y_te, y_pred, probs_canonical, n_bins=ctx['ece_n_bins'])
+        except Exception:
+            metrics['ece'] = np.nan
+        metrics['mcc'] = safe_matthews_corrcoef(y_te, y_pred)
+
+        fold = {
+            'metrics': metrics,
+            'weights': (basis_coefficients_to_frames(model.coef_, temporal_basis, n_features=n_trial_feats, axis=1)
+                        if temporal_basis is not None else model.coef_),
+            'basis_coefficients': np.asarray(model.coef_) if temporal_basis is not None else None,
+            'intercepts': model.intercept_,
+            'y_true': y_te,
+            'y_pred': y_pred,
+            'y_probs': y_proba,
+            'test_indices': te_idx,
+            'p_train': ctx['class_proportions'](y_tr),
+            'p_test': ctx['class_proportions'](y_te),
+            'confusion_matrix': safe_confusion_matrix(y_te, y_pred, labels=canonical_classes),
+            'n_iter': int(model.n_iter_),
+            'converged': bool(model.converged_),
+            'fit_time': float(model.fit_time_),
+            'selected_lambda_smooth': fold_lambda_smooth,
+            'selected_l2_reg': fold_l2_reg,
+            'hyperparam_grid_audit': fold_grid_audit,
+            'hyperparams_tuned': fold_tuned_flag,
+        }
+        return {'ok': True, 'fold': fold, 'classes': model.classes_}
+    except Exception as e:
+        return {'ok': False, 'error': f"{type(e).__name__}: {e}"}
+
+
 def multinomial_vocal_category_model_selection(
         univariate_results_path: str,
         input_data_path: str,
@@ -4095,6 +5207,17 @@ def multinomial_vocal_category_model_selection(
         empirical frequency of each USV category in the training set) as the
         absolute baseline. Features must prove they offer predictive power
         above and beyond simply guessing the majority class.
+    5.  Per-step shift test: at every step the cross-validated winner (best mean
+        macro AUC) is tested with ``step_shift_test.run_step_shift_test``. The
+        incumbent and the incumbent plus the winner are refit on the development
+        rows exactly as the held-out refit fits them; the statistic is the gain in
+        the in-sample macro (class-balanced) log-likelihood per event
+        (``modeling_utils.macro_log_likelihood``); its null comes from refits after
+        circularly shifting the winner's processed trace within every development
+        session and re-cutting (and re-binning / re-projecting) its history windows
+        at the stored start frames, ``floor(m / alpha)`` times with Bonferroni
+        correction over the ``m`` candidates of the step. The first feature is
+        tested the same way against the marginal class prior of the refit rows.
 
     Data Persistence:
     -----------------
@@ -4110,9 +5233,9 @@ def multinomial_vocal_category_model_selection(
        at Step 0 current_features is the empty list and this is instead the
        model-free marginal-prior baseline AUC (the `null_model_free` entry).
     - 'candidates_summary' (dict): Maps each tested feature to its detailed results:
-        - 'mean_auc', 'se_auc': Aggregated AUC metrics (reported; the 1SE
-          acceptance test itself uses the per-fold AUCs, paired against the
-          incumbent's).
+        - 'mean_auc', 'se_auc': Aggregated AUC metrics (reported; the ranking
+          uses the mean, the acceptance is the per-step shift test stored under
+          the step's 'step_test').
         - 'classes': Array of original USV category string labels.
         - 'folds': A nested dictionary containing lists (length = n_splits) of:
             * 'metrics': dict of the following per-fold scalars —
@@ -4268,6 +5391,44 @@ def multinomial_vocal_category_model_selection(
     y_global, groups_global = None, None
     n_time_bins = None
 
+    def _multinomial_bin_and_project(X_s: np.ndarray, feat: str) -> np.ndarray:
+        """
+        Description
+        -----------
+        The temporal representation of one session's history windows: the optional
+        `bin_resizing_factor` binning (keeping the MOST RECENT `new_T * bin_size`
+        columns and dropping the oldest `T % bin_size`, exactly as the univariate
+        loader bins: the last column is the frame before onset, so truncating the
+        tail would drop the frames nearest onset and shift the design against the
+        filters) followed by the B-spline projection when a temporal basis is in
+        use. The binning loop below and the per-step shift test's shifted refits
+        both go through this one function, so a shifted window is represented
+        exactly as the stored window it replaces.
+
+        Parameters
+        ----------
+        X_s (np.ndarray)
+            ``(n_rows, history_frames)`` windows of one session.
+        feat (str)
+            The feature, named in the error.
+
+        Returns
+        -------
+        X_s (np.ndarray)
+            ``(n_rows, n_time_bins)`` design rows (before the float32 cast).
+        """
+
+        N, T = X_s.shape
+        if bin_size > 1:
+            new_T = T // bin_size
+            if new_T < 1:
+                msg = f"bin_size={bin_size} exceeds the history window length T={T} for feature '{feat}'."
+                raise ValueError(msg)
+            X_s = X_s[:, T - new_T * bin_size:].reshape(N, new_T, bin_size).mean(axis=2)
+        if temporal_basis is not None:
+            X_s = project_history_onto_basis(X_s, temporal_basis)
+        return X_s
+
     for feat in ranked_features:
         X_list, y_list, g_list = [], [], []
         sessions = sorted(raw_data[feat].keys())
@@ -4275,19 +5436,7 @@ def multinomial_vocal_category_model_selection(
             X_s = raw_data[feat][sess_id]['X']
             y_s = raw_data[feat][sess_id]['y']
 
-            N, T = X_s.shape
-            if bin_size > 1:
-                new_T = T // bin_size
-                if new_T < 1:
-                    msg = f"bin_size={bin_size} exceeds the history window length T={T} for feature '{feat}'."
-                    raise ValueError(msg)
-                # Keep the MOST RECENT `new_T * bin_size` columns (drop the oldest
-                # `T % bin_size`), exactly as the univariate loader bins: the last
-                # column is the frame before onset, so truncating the tail would drop
-                # the frames nearest onset and shift the design against the filters.
-                X_s = X_s[:, T - new_T * bin_size:].reshape(N, new_T, bin_size).mean(axis=2)
-            if temporal_basis is not None:
-                X_s = project_history_onto_basis(X_s, temporal_basis)
+            X_s = _multinomial_bin_and_project(X_s, feat)
 
             X_list.append(X_s)
             y_list.append(y_s)
@@ -4298,6 +5447,23 @@ def multinomial_vocal_category_model_selection(
             y_global = np.concatenate(y_list).astype(np.int32)
             groups_global = np.concatenate(g_list)
             n_time_bins = binned_data[feat].shape[1]
+
+    # The per-step shift test's inputs and their lag-zero self-check: every stored
+    # window of every screened feature and session must re-cut exactly (float32, as
+    # stored) from the trace sidecar at its stored start frame.
+    camera_fps = float(settings['io']['camera_sampling_rate'])
+    step_cfg = _step_test_settings(settings, camera_fps)
+    traces_path, window_starts = _require_shift_test_inputs(_input_md, input_data_path, camera_fps)
+    _all_session_ids = sorted({str(s_id) for feat in ranked_features for s_id in raw_data[feat]})
+    _verify_session_windows_against_traces(
+        raw_data, traces_path, window_starts, history_frames,
+        features=ranked_features, sessions=_all_session_ids, cast_dtype=np.float32,
+    )
+    print(f"Shift-test inputs verified: {len(ranked_features)} feature(s) x {len(_all_session_ids)} "
+          f"session(s) re-cut exactly from {Path(traces_path).name}; lag floor "
+          f"{step_cfg['min_lag_seconds']} s = {step_cfg['min_lag_frames']} frames.")
+    print("JAX selectors run their candidate fits and null refits serially inside the job: XLA's thread "
+          "pool is not fork-safe once the backend has run, and one fit already uses every core.")
 
     del raw_data
     gc.collect()
@@ -4319,6 +5485,7 @@ def multinomial_vocal_category_model_selection(
     _dev_mask, _held_mask = development_heldout_masks(groups_global, _held_out_session_ids)
     _dev_positions = np.where(_dev_mask)[0]
     _held_positions = np.where(_held_mask)[0]
+    _dev_session_ids = [str(s_id) for s_id in np.unique(groups_global[_dev_positions])]
     if _held_positions.size > 0:
         print(
             f"Held-out reserve: {len(_held_out_session_ids)} session(s), "
@@ -4547,10 +5714,9 @@ def multinomial_vocal_category_model_selection(
 
     current_model_features = []
     best_current_score = 0.0
-    best_current_se = 0.0
-    # Per-fold scores of the incumbent, paired against a candidate's in the 1SE
-    # test below. Replaced by the model-free marginal baseline's per-fold AUCs
-    # as soon as that block runs.
+    # Per-fold scores of the incumbent, stored as each step record's `baseline_folds`.
+    # Replaced by the model-free marginal baseline's per-fold AUCs as soon as that
+    # block runs.
     best_current_folds = 0.0
     # True when the checkpoint a resume restores is a step that rejected its winner: the
     # search had already finished, so the anchor and the forward loop are skipped.
@@ -4578,7 +5744,6 @@ def multinomial_vocal_category_model_selection(
         test_proportion=float(test_prop),
         split_strategy=split_strategy,
         random_seed=int(random_seed),
-        one_se_rule_used=False,
         aic_termination_used=False,
         n_anchor_features=len(ranked_features),
         anchor_feature=ranked_features[0],
@@ -4595,6 +5760,19 @@ def multinomial_vocal_category_model_selection(
             'held_out_session_ids': list(_held_out_session_ids),
             'n_held_out_sessions': len(_held_out_session_ids),
             'n_held_out_events': int(_held_positions.size),
+            # The per-step acceptance rule and its knobs (a resume refuses another rule).
+            'step_test': {
+                'rule': STEP_TEST_RULE,
+                'screened_features': list(ranked_features),
+                'statistic': 'macro_log_likelihood_per_event',
+                'alpha': float(p_val),
+                'min_lag_seconds': step_cfg['min_lag_seconds'],
+                'min_lag_frames': step_cfg['min_lag_frames'],
+                'checkpoint_every': step_cfg['checkpoint_every'],
+                'pool_workers': step_cfg['pool_workers'],
+                'refit_rows': 'development_rows_as_held_out_refit',
+                'traces_path': traces_path,
+            },
         },
         settings_path=settings_path,
     )
@@ -4613,10 +5791,11 @@ def multinomial_vocal_category_model_selection(
         try:
             with Path(model_selection_dir / f"{prefix}{last_step}.pkl").open('rb') as f:
                 last_res = pickle.load(f)
+            _require_step_test_rule(last_res, model_selection_dir / f"{prefix}{last_step}.pkl")
 
             # Rebuild the state right after `last_step` from its recorded decision
-            # (`_restore_selection_checkpoint`); the incumbent's per-fold AUCs are the
-            # reference the next paired-1SE gate compares against.
+            # (`_restore_selection_checkpoint`); the incumbent's per-fold AUCs are
+            # kept as the step record's baseline.
             state = _restore_selection_checkpoint(
                 last_res, 'mean_auc', 'se_auc',
                 lambda entry: entry['folds']['metrics']['auc'],
@@ -4630,7 +5809,6 @@ def multinomial_vocal_category_model_selection(
             else:
                 current_model_features = state['features']
                 best_current_score = state['score']
-                best_current_se = state['se']
                 best_current_folds = state['folds']
                 step_counter = state['next_step']
                 # A search that had accepted every ranked feature stopped on that, with no
@@ -4743,173 +5921,276 @@ def multinomial_vocal_category_model_selection(
         # Guard against the all-NaN / single-fold cases the way the manifold
         # baseline does: an empty `valid_auc` would make `np.mean([])` NaN and a
         # single finite fold would make `np.std([x], ddof=1)` NaN (ddof drives the
-        # divisor to zero). Either NaN poisons every subsequent 1SE accept test
-        # (`> NaN` is always False), silently rejecting the anchor and every
-        # forward feature and terminating with an empty model.
+        # divisor to zero); the logged running best must stay finite.
         best_current_score = float(np.mean(valid_auc)) if valid_auc else float('-inf')
-        best_current_se = float(np.std(valid_auc, ddof=1) / np.sqrt(len(valid_auc))) if len(valid_auc) > 1 else 0.0
+        baseline_se_auc = float(np.std(valid_auc, ddof=1) / np.sqrt(len(valid_auc))) if len(valid_auc) > 1 else 0.0
         best_current_folds = baseline_data['folds']['metrics']['auc']
 
         print(format_selection_step('Baseline', detail='model-free marginal prior',
                                     metrics={'AUC': best_current_score}))
 
         baseline_data['mean_auc'] = best_current_score
-        baseline_data['se_auc'] = best_current_se
+        baseline_data['se_auc'] = baseline_se_auc
 
         step_0_res = {
             'step_idx': 0,
             'current_features': [],
             'baseline_score': best_current_score,
             'selected_feature': 'null_model_free',
-            'candidates_summary': {'null_model_free': baseline_data}
+            'candidates_summary': {'null_model_free': baseline_data},
+            'step_test': None,
         }
 
         _dump_step_pickle(model_selection_dir / f"{prefix}0.pkl", _wrap_step(step_0_res))
 
         step_counter = 1
 
+    # The development refit the per-step shift test scores on: exactly the held-out
+    # refit's rows and fit (every development row, class-balanced with the seed
+    # `hp['random_state'] + n_splits + 1` when `balance_train` is on, the same
+    # hyperparameter choice and model kwargs). The statistic is the in-sample macro
+    # (class-balanced) log-likelihood per event on those rows; the empty incumbent is
+    # the marginal class prior of the same rows.
+    _dev_seed_mn = int(hp['random_state']) + n_splits + 1
+    _y_dev_all = y_global[_dev_positions]
+    _groups_dev_all = groups_global[_dev_positions]
+    if balance_train:
+        _dev_train_idx = _balance_multinomial_train_indices(
+            np.arange(len(_y_dev_all)), _y_dev_all, np.random.default_rng(_dev_seed_mn)
+        )
+    else:
+        _dev_train_idx = np.arange(len(_y_dev_all))
+    _y_dev_fit = _y_dev_all[_dev_train_idx]
+    _groups_dev_fit = _groups_dev_all[_dev_train_idx]
+
+    def _multinomial_development_design(features: list, winner_override: dict | None = None) -> np.ndarray:
+        """
+        Description
+        -----------
+        The development design of the model with ``features`` (every development row,
+        features side by side, before the balanced-row selection); with
+        ``winner_override`` the LAST feature's rows are replaced session by session by
+        the raw shifted windows in that per-session dict, binned and projected by
+        ``_multinomial_bin_and_project`` exactly as the stored windows were, and
+        scattered into a copy of the stored development rows by the rows' sessions
+        (a session's development rows are its stored rows in start-frame order).
+
+        Parameters
+        ----------
+        features (list)
+            Features of the model, the winner last.
+        winner_override (dict | None)
+            ``{session_id: {'X': (n_rows_of_session, history_frames) windows}}``.
+
+        Returns
+        -------
+        X_dev (np.ndarray)
+            ``(n_dev_rows, n_features * n_time_bins)`` float32 design.
+        """
+
+        blocks = [binned_data[f][_dev_positions] for f in features]
+        if winner_override is not None:
+            X_winner = blocks[-1].copy()
+            for session_id, entry in winner_override.items():
+                rows = np.where(_groups_dev_all == session_id)[0]
+                shifted = _multinomial_bin_and_project(entry['X'].astype(np.float32), features[-1]).astype(np.float32)
+                if rows.size != shifted.shape[0]:
+                    msg = (f"shift override for {features[-1]!r} / {session_id!r} has {shifted.shape[0]} "
+                           f"rows but the development design holds {rows.size}.")
+                    raise ValueError(msg)
+                X_winner[rows] = shifted
+            blocks[-1] = X_winner
+        return np.hstack(blocks)
+
+    def _multinomial_development_score(features: list, winner_override: dict | None = None) -> float:
+        """
+        Description
+        -----------
+        In-sample macro (class-balanced) log-likelihood per event of the model with
+        ``features`` refit on the development rows exactly as the held-out refit fits
+        it. The empty model is the marginal class prior of the refit rows.
+
+        Parameters
+        ----------
+        features (list)
+            Features of the model, the winner last.
+        winner_override (dict | None)
+            See ``_multinomial_development_design``.
+
+        Returns
+        -------
+        score (float)
+            Mean over present classes of the class-mean log-probability of the true
+            class on the refit rows (higher is better).
+        """
+
+        unique_classes, counts = np.unique(_y_dev_fit, return_counts=True)
+        if not features:
+            class_priors = counts / float(np.sum(counts))
+            return macro_log_likelihood(_y_dev_fit, np.tile(class_priors, (len(_y_dev_fit), 1)), unique_classes)
+        X_dev_fit = _multinomial_development_design(features, winner_override)[_dev_train_idx]
+        dev_lambda_smooth, dev_l2_reg, _, _ = _pick_multinomial_fold_hyperparams(
+            X_dev_fit, _y_dev_fit, _groups_dev_fit, n_feats_=len(features), fold_idx_=n_splits,
+        )
+        dev_model = SmoothMultinomialLogisticRegression(
+            n_features=len(features), n_time_bins=n_time_bins,
+            lambda_smooth=dev_lambda_smooth,
+            l2_reg=dev_l2_reg,
+            smoothness_derivative_order=smoothness_order,
+            smoothness_reflective_edges=reflective_edges,
+            focal_gamma=model_focal_gamma,
+            uniform_class_weights=model_uniform_weights,
+            learning_rate=hp['learning_rate'],
+            max_iter=hp['max_iter'],
+            tol=hp['tol'],
+            random_state=_dev_seed_mn,
+            _use_lax_loop=use_lax_loop_mn,
+        )
+        dev_model.fit(X_dev_fit, _y_dev_fit)
+        y_proba = dev_model.predict_proba(X_dev_fit, balanced=hp['balance_predictions_bool'])
+        return macro_log_likelihood(_y_dev_fit, y_proba, dev_model.classes_)
+
+    # Read-only data the candidate fits read (`_multinomial_candidate_fold`); the
+    # step-specific entries are added per step.
+    _multinomial_pool_base = {
+        'cv_folds': cv_folds,
+        'binned_data': binned_data,
+        'y_global': y_global,
+        'groups_global': groups_global,
+        'n_time_bins': n_time_bins,
+        'hp': hp,
+        'temporal_basis': temporal_basis,
+        'canonical_classes': canonical_classes,
+        'smoothness_order': smoothness_order,
+        'reflective_edges': reflective_edges,
+        'model_focal_gamma': model_focal_gamma,
+        'model_uniform_weights': model_uniform_weights,
+        'use_lax_loop': use_lax_loop_mn,
+        'ece_n_bins': settings['diagnostics']['ece_n_bins'],
+        'pick_hyperparams': _pick_multinomial_fold_hyperparams,
+        'class_proportions': _class_proportions,
+    }
+
+    def _multinomial_fit_candidates(incumbent: list, candidate_features: list) -> dict:
+        """
+        Description
+        -----------
+        Fits every candidate on every fold on top of ``incumbent`` and returns each
+        candidate's results entry. The fold's balanced-train index selection and the
+        incumbent's stacked base block are built once per fold here (they depend on
+        the fold, not on the candidate); the candidate rows are then stacked on.
+
+        Parameters
+        ----------
+        incumbent (list)
+            The incumbent features.
+        candidate_features (list)
+            Candidates to score.
+
+        Returns
+        -------
+        per_candidate (dict)
+            ``{feature: cand_data}``.
+        """
+
+        fold_tr_idx_model, fold_base_tr, fold_base_te = [], [], []
+        for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
+            tr_idx_model = _fold_train_indices_for_model(tr_idx, fold_idx)
+            fold_tr_idx_model.append(tr_idx_model)
+            fold_base_tr.append(
+                np.hstack([binned_data[f][tr_idx_model] for f in incumbent])
+                if incumbent else None
+            )
+            fold_base_te.append(
+                np.hstack([binned_data[f][te_idx] for f in incumbent])
+                if incumbent else None
+            )
+        set_pool_context(
+            multinomial_step={**_multinomial_pool_base,
+                              'current_model_features': list(incumbent),
+                              'fold_tr_idx_model': fold_tr_idx_model,
+                              'fold_base_tr': fold_base_tr, 'fold_base_te': fold_base_te},
+            candidate_fold=_multinomial_candidate_fold,
+        )
+        # The worker count is derived as in the other selectors but the pool runs with
+        # ONE worker: JAX (XLA's thread pool) is not fork-safe once the backend has run
+        # in this process, and a single fit already uses every core.
+        n_workers_requested = pool_worker_count(step_cfg['pool_workers'], len(incumbent) + 1,
+                                                step_cfg['pool_memory_gb'], step_cfg['fit_peak_gb_base'],
+                                                step_cfg['fit_peak_gb_per_term'])
+        del n_workers_requested
+        n_folds = len(cv_folds)
+        tasks = [(feat, fold_idx) for feat in candidate_features for fold_idx in range(n_folds)]
+        pool = SelectionPool(1)
+        try:
+            results = pool.map('candidate_fold', tasks)
+        finally:
+            pool.close()
+        return {feat: _multinomial_assemble_cand_data(results[i * n_folds:(i + 1) * n_folds], feat,
+                                                      canonical_classes, balance_train, n_splits)
+                for i, feat in enumerate(candidate_features)}
+
+    def _multinomial_step_test(winner: str, step_index: int, m_candidates: int) -> dict:
+        """
+        Description
+        -----------
+        The per-step shift test of ``winner`` on top of the current incumbent.
+
+        Parameters
+        ----------
+        winner (str)
+            The cross-validated winner.
+        step_index (int)
+            The step.
+        m_candidates (int)
+            Candidates the winner was chosen from (the Bonferroni factor).
+
+        Returns
+        -------
+        step_test (dict)
+            The record of ``run_step_shift_test``.
+        """
+
+        incumbent = list(current_model_features)
+        trial = [*incumbent, winner]
+        incumbent_score = _multinomial_development_score(incumbent)
+        observed_score = _multinomial_development_score(trial)
+        winner_traces = {s: read_feature_trace(traces_path, winner, s) for s in _dev_session_ids}
+        # JAX is not fork-safe once the backend has run in this process: the null
+        # refits run serially (one worker), see `_multinomial_fit_candidates`.
+        return run_step_shift_test(
+            n_workers=1,
+            refit_and_score=lambda override: _multinomial_development_score(trial, override),
+            incumbent_features=incumbent,
+            incumbent_score=incumbent_score,
+            winner=winner,
+            observed_score=observed_score,
+            statistic_name='macro_log_likelihood_per_event',
+            winner_traces=winner_traces,
+            window_starts={s: window_starts[s] for s in winner_traces},
+            slots=_SESSION_WINDOW_SLOTS,
+            history_frames=history_frames,
+            m_candidates=m_candidates,
+            alpha=p_val,
+            min_lag_frames=step_cfg['min_lag_frames'],
+            random_seed=random_seed,
+            step_index=step_index,
+            checkpoint_every=step_cfg['checkpoint_every'],
+            partial_path=model_selection_dir / f"{prefix}{step_index}_null_partial.pkl",
+            label=f"Step {step_index}",
+        )
+
     # Auto-anchor logic
     if use_top_rank_as_anchor and step_counter == 1 and not resume_converged:
         anchor = ranked_features[0]
-        print(format_selection_step('Anchor', feature=anchor, detail='testing against baseline'))
-
-        cand_data = {
-            'folds': {
-                'metrics': {m: [] for m in
-                            ['auc', 'score', 'recall', 'f1', 'll',
-                             'brier', 'ece', 'mcc']},
-                'weights': [], 'basis_coefficients': [], 'intercepts': [], 'y_true': [], 'y_pred': [], 'y_probs': [], 'test_indices': [],
-                'p_train': [], 'p_test': [],
-                'confusion_matrix': [],
-                'n_iter': [], 'converged': [], 'fit_time': [],
-                'selected_lambda_smooth': [],
-                'selected_l2_reg': [],
-                'hyperparam_grid_audit': [],
-                'hyperparams_tuned': [],
-                'balanced_train': bool(balance_train)
-            },
-            'classes': None,
-            'canonical_classes': canonical_classes
-        }
-
-        for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
-            try:
-                tr_idx_model = _fold_train_indices_for_model(tr_idx, fold_idx)
-                X_tr, X_te = binned_data[anchor][tr_idx_model], binned_data[anchor][te_idx]
-                y_tr, y_te = y_global[tr_idx_model], y_global[te_idx]
-
-                fold_lambda_smooth, fold_l2_reg, fold_grid_audit, fold_tuned_flag = (
-                    _pick_multinomial_fold_hyperparams(
-                        X_tr, y_tr, groups_global[tr_idx_model], n_feats_=1, fold_idx_=fold_idx,
-                    )
-                )
-
-                model = SmoothMultinomialLogisticRegression(
-                    n_features=1, n_time_bins=n_time_bins,
-                    lambda_smooth=fold_lambda_smooth,
-                    l2_reg=fold_l2_reg,
-                    smoothness_derivative_order=smoothness_order,
-                    smoothness_reflective_edges=reflective_edges,
-                    focal_gamma=model_focal_gamma,
-                    uniform_class_weights=model_uniform_weights,
-                    learning_rate=hp['learning_rate'],
-                    max_iter=hp['max_iter'],
-                    tol=hp['tol'],
-                    random_state=hp['random_state'] + fold_idx,
-                    _use_lax_loop=use_lax_loop_mn,
-                )
-                model.fit(X_tr, y_tr)
-
-                y_proba = model.predict_proba(X_te, balanced=hp['balance_predictions_bool'])
-                y_pred = model.predict(X_te, balanced=hp['balance_predictions_bool'])
-
-                eps = 1e-15
-                y_proba_clipped = np.clip(y_proba, eps, 1 - eps)
-
-                f_met = cand_data['folds']['metrics']
-                f_met['auc'].append(roc_auc_score(y_te, y_proba, multi_class='ovr', average='macro', labels=model.classes_))
-                f_met['score'].append(balanced_accuracy_score(y_te, y_pred))
-                f_met['f1'].append(f1_score(y_te, y_pred, average='macro', zero_division=0))
-                f_met['recall'].append(recall_score(y_te, y_pred, average='macro', zero_division=0))
-                f_met['ll'].append(log_loss(y_te, y_proba_clipped, labels=model.classes_))
-
-                # Canonical-ordered probability matrix for Brier / ECE so
-                # missing classes don't misalign columns against `canonical_classes`.
-                probs_canonical = align_probs_to_canonical(
-                    y_proba, model.classes_, canonical_classes
-                )
-                try:
-                    f_met['brier'].append(brier_score_multi(y_te, probs_canonical, canonical_classes))
-                except Exception:
-                    f_met['brier'].append(np.nan)
-                try:
-                    f_met['ece'].append(expected_calibration_error(y_te, y_pred, probs_canonical, n_bins=settings['diagnostics']['ece_n_bins']))
-                except Exception:
-                    f_met['ece'].append(np.nan)
-                f_met['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
-
-                cand_data['folds']['weights'].append(basis_coefficients_to_frames(model.coef_, temporal_basis, n_features=1, axis=1) if temporal_basis is not None else model.coef_)
-                cand_data['folds']['basis_coefficients'].append(np.asarray(model.coef_) if temporal_basis is not None else None)
-                cand_data['folds']['intercepts'].append(model.intercept_)
-                cand_data['folds']['y_true'].append(y_te)
-                cand_data['folds']['y_pred'].append(y_pred)
-                cand_data['folds']['y_probs'].append(y_proba)
-                cand_data['folds']['test_indices'].append(te_idx)
-                cand_data['folds']['p_train'].append(_class_proportions(y_tr))
-                cand_data['folds']['p_test'].append(_class_proportions(y_te))
-                cand_data['folds']['confusion_matrix'].append(
-                    safe_confusion_matrix(y_te, y_pred, labels=canonical_classes)
-                )
-                cand_data['folds']['n_iter'].append(int(model.n_iter_))
-                cand_data['folds']['converged'].append(bool(model.converged_))
-                cand_data['folds']['fit_time'].append(float(model.fit_time_))
-                cand_data['folds']['selected_lambda_smooth'].append(fold_lambda_smooth)
-                cand_data['folds']['selected_l2_reg'].append(fold_l2_reg)
-                cand_data['folds']['hyperparam_grid_audit'].append(fold_grid_audit)
-                cand_data['folds']['hyperparams_tuned'].append(fold_tuned_flag)
-                if cand_data['classes'] is None:
-                    cand_data['classes'] = model.classes_
-            except Exception as e:
-                print(f"    [!] Error fitting anchor: {e}")
-                # Keep every per-fold list aligned on failure so downstream
-                # consumers can safely zip / stack across keys. Metrics get
-                # scalar NaNs; confusion_matrix needs a (K, K) NaN placeholder
-                # (to stay stackable); weights / basis_coefficients / intercepts become None; and
-                # the fold-level data arrays become empty-but-well-shaped.
-                K = len(canonical_classes)
-                for _k, _v in cand_data['folds']['metrics'].items():
-                    _v.append(np.nan)
-                cand_data['folds']['weights'].append(None)
-                cand_data['folds']['basis_coefficients'].append(None)
-                cand_data['folds']['intercepts'].append(None)
-                cand_data['folds']['y_true'].append(np.empty((0,), dtype=np.int32))
-                cand_data['folds']['y_pred'].append(np.empty((0,), dtype=np.int32))
-                cand_data['folds']['y_probs'].append(np.empty((0, K), dtype=np.float32))
-                cand_data['folds']['test_indices'].append(np.empty((0,), dtype=np.int64))
-                cand_data['folds']['p_train'].append(np.full(K, np.nan, dtype=np.float32))
-                cand_data['folds']['p_test'].append(np.full(K, np.nan, dtype=np.float32))
-                cand_data['folds']['confusion_matrix'].append(np.full((K, K), np.nan))
-                cand_data['folds']['n_iter'].append(np.nan)
-                cand_data['folds']['converged'].append(False)
-                cand_data['folds']['fit_time'].append(np.nan)
-                cand_data['folds']['selected_lambda_smooth'].append(float('nan'))
-                cand_data['folds']['selected_l2_reg'].append(float('nan'))
-                cand_data['folds']['hyperparam_grid_audit'].append({
-                    'grid_scores': {}, 'grid_ses': {},
-                    'argmax_pair': None,
-                    'one_se_applied': False, 'one_se_threshold': None,
-                })
-                cand_data['folds']['hyperparams_tuned'].append(False)
-
+        print(format_selection_step('Anchor', feature=anchor,
+                                    detail='top-ranked; forced as the first candidate, tested against the marginal prior'))
+        cand_data = _multinomial_fit_candidates([], [anchor])[anchor]
         valid_auc = [m for m in cand_data['folds']['metrics']['auc'] if np.isfinite(m)]
-        # Surface PARTIAL fold failure. The `else` below already reports the
-        # all-folds-failed case; this warns when SOME folds produced a
-        # non-finite AUC (fit failed / diverged) while others survived, because
-        # that case is otherwise silent — the anchor's mean is quietly averaged
-        # over only the surviving folds and the run still reports success. A
-        # large bad-fold fraction signals numerical instability (e.g. a rare,
-        # heavily inverse-frequency-weighted class fit under near-zero
-        # regularisation) and the anchor score should be read with caution.
+        # Surface PARTIAL fold failure: the anchor's mean is quietly averaged over
+        # only the surviving folds and the run still reports success. A large
+        # bad-fold fraction signals numerical instability (e.g. a rare, heavily
+        # inverse-frequency-weighted class fit under near-zero regularisation).
         _n_anchor_folds = len(cand_data['folds']['metrics']['auc'])
         _n_anchor_bad = _n_anchor_folds - len(valid_auc)
         if 0 < _n_anchor_bad < _n_anchor_folds:
@@ -4919,47 +6200,40 @@ def multinomial_vocal_category_model_selection(
                 f"are dropped from its mean AUC. A large fraction indicates numerical "
                 f"instability — check class balance and the l2 grid floor."
             )
+        _require_scored_candidate('Anchor', 1, len(valid_auc))
+        step_test = None
         if valid_auc:
-            mean_anc_auc = np.mean(valid_auc)
-            # `np.std([x], ddof=1)` is NaN for a single finite fold (zero divisor);
-            # guard with len > 1 so a one-fold success does not poison the 1SE rule.
-            se_anc_auc = np.std(valid_auc, ddof=1) / np.sqrt(len(valid_auc)) if len(valid_auc) > 1 else 0.0
-
+            mean_anc_auc = float(np.mean(valid_auc))
+            se_anc_auc = float(np.std(valid_auc, ddof=1) / np.sqrt(len(valid_auc))) if len(valid_auc) > 1 else 0.0
             cand_data['mean_auc'] = mean_anc_auc
             cand_data['se_auc'] = se_anc_auc
-
-            # The incumbent here is the model-free marginal baseline, which is a
-            # real per-fold model rather than a constant floor, so this comparison
-            # is paired like the forward steps below.
-            anchor_improvement, anchor_improvement_se = paired_one_se_improvement(
-                cand_data['folds']['metrics']['auc'], best_current_folds,
-                higher_is_better=True)
-
-            if np.isfinite(anchor_improvement) and anchor_improvement > anchor_improvement_se:
-                print(format_selection_step('Anchor', feature=anchor, decision='ACCEPT',
-                                            metrics={'AUC': mean_anc_auc}))
-                best_current_score = mean_anc_auc
-                best_current_se = se_anc_auc
-                best_current_folds = cand_data['folds']['metrics']['auc']
-                current_model_features = [anchor]
-
-                step_1_res = {
-                    'step_idx': 1,
-                    'current_features': [anchor],
-                    'baseline_score': best_current_score,
-                    'selected_feature': anchor,
-                    'candidates_summary': {anchor: cand_data}
-                }
-                _dump_step_pickle(model_selection_dir / f"{prefix}1.pkl", _wrap_step(step_1_res))
-                step_counter = 2
-            else:
-                print(format_selection_step(
-                    'Anchor', feature=anchor, decision='REJECT',
-                    detail='failed to beat the model-free baseline; continuing from empty model'))
+            # The forced anchor is tested like every winner, with Bonferroni over every
+            # screened feature it was forced ahead of.
+            step_test = _multinomial_step_test(anchor, 1, len(ranked_features))
+        anchor_accepted = step_test is not None and step_test['accepted']
+        step_1_res = {
+            'step_idx': 1,
+            'current_features': [anchor] if anchor_accepted else [],
+            'baseline_score': best_current_score,
+            'baseline_folds': best_current_folds,
+            'selected_feature': anchor if anchor_accepted else None,
+            'candidates_summary': {anchor: cand_data} if valid_auc else {},
+            'step_test': step_test,
+        }
+        _dump_step_pickle(model_selection_dir / f"{prefix}1.pkl", _wrap_step(step_1_res))
+        if anchor_accepted:
+            print(format_selection_step('Anchor', feature=anchor, decision='ACCEPT',
+                                        metrics={'AUC': cand_data['mean_auc'], 'p_adj': step_test['p_adjusted']}))
+            best_current_score = cand_data['mean_auc']
+            best_current_folds = cand_data['folds']['metrics']['auc']
+            current_model_features = [anchor]
+            step_counter = 2
         else:
-            print(format_selection_step(
-                'Anchor', feature=anchor, decision='FAILED',
-                detail='every fold errored out; continuing from empty model'))
+            print(format_selection_step('Anchor', feature=anchor, decision='REJECT',
+                                        detail=('every fold errored out' if not valid_auc
+                                                else 'the forced anchor failed the shift test')
+                                               + '; selection finished'))
+            resume_converged = True
 
     # Main Forward Selection Loop
     # A resume that restored a converged search skips the loop and finalizes directly.
@@ -4972,194 +6246,17 @@ def multinomial_vocal_category_model_selection(
             'baseline_score': best_current_score,
             'baseline_folds': best_current_folds,
             'candidates_summary': {},
-            'selected_feature': None
+            'selected_feature': None,
+            'step_test': None,
         }
-        best_cand, best_cand_score, best_cand_se = None, 0.0, 0.0
+        candidates_this_step = [feat for feat in ranked_features if feat not in current_model_features]
+        m_candidates = len(candidates_this_step)
+        per_candidate = _multinomial_fit_candidates(current_model_features, candidates_this_step)
+
+        best_cand, best_cand_score = None, 0.0
         best_cand_folds = None
-
-        # The already-selected base block is identical across every candidate in
-        # this step, so build it once per fold here instead of re-hstacking it
-        # inside the candidate loop. `tr_idx_model` (the balanced-train index
-        # selection) depends only on `(tr_idx, fold_idx)` — not on the
-        # candidate — so it is also fold-invariant within the step and cached
-        # alongside. `None` marks the step-0 empty base (np.hstack of [] would
-        # raise); the candidate loop then slices only the new feature and
-        # hstacks it on. Byte-identical: hstack is associative column-wise, so
-        # hstack([base, new]) == hstack(base_cols + [new]). Mirrors the
-        # bout-parameter selector's fold_base_proj caching.
-        fold_tr_idx_model, fold_base_tr, fold_base_te = [], [], []
-        for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
-            tr_idx_model = _fold_train_indices_for_model(tr_idx, fold_idx)
-            fold_tr_idx_model.append(tr_idx_model)
-            fold_base_tr.append(
-                np.hstack([binned_data[f][tr_idx_model] for f in current_model_features])
-                if current_model_features else None
-            )
-            fold_base_te.append(
-                np.hstack([binned_data[f][te_idx] for f in current_model_features])
-                if current_model_features else None
-            )
-
-        for _i_feat, feat in enumerate(ranked_features):
-            if feat in current_model_features:
-                continue
-            gc.collect()
-
-            trial_feats = [*current_model_features, feat]
-            n_trial_feats = len(trial_feats)
-            cand_data = {
-                'folds': {
-                    'metrics': {m: [] for m in
-                                ['auc', 'score', 'recall', 'f1', 'll',
-                                 'brier', 'ece', 'mcc']},
-                    'weights': [], 'basis_coefficients': [], 'intercepts': [], 'y_true': [], 'y_pred': [], 'y_probs': [], 'test_indices': [],
-                    'p_train': [], 'p_test': [],
-                    'confusion_matrix': [],
-                    'n_iter': [], 'converged': [], 'fit_time': [],
-                    'selected_lambda_smooth': [],
-                    'selected_l2_reg': [],
-                    'hyperparam_grid_audit': [],
-                    'hyperparams_tuned': [],
-                    'balanced_train': bool(balance_train)
-                },
-                'classes': None,
-                'canonical_classes': canonical_classes
-            }
-
-            for fold_idx, (_tr_idx, te_idx) in enumerate(cv_folds):
-                try:
-                    # Reuse the per-fold cached balanced-train index and base
-                    # block; project/slice only the new candidate and hstack it
-                    # on. Byte-identical to hstacking the full trial set.
-                    tr_idx_model = fold_tr_idx_model[fold_idx]
-                    new_tr = binned_data[feat][tr_idx_model]
-                    new_te = binned_data[feat][te_idx]
-                    base_tr = fold_base_tr[fold_idx]
-                    base_te = fold_base_te[fold_idx]
-                    X_tr_stacked = np.hstack([base_tr, new_tr]) if base_tr is not None else new_tr
-                    X_te_stacked = np.hstack([base_te, new_te]) if base_te is not None else new_te
-                    y_tr, y_te = y_global[tr_idx_model], y_global[te_idx]
-
-                    # Per-fold hyperparameters. When tuning is off, the
-                    # closure falls back to the fixed centres with the
-                    # standard 1 / sqrt(n_trial_feats) rescale on l2 so
-                    # the summed L2 penalty on `W ** 2` does not grow
-                    # ~linearly with feature count and silently over-
-                    # regularise larger models. When tuning is on, the
-                    # inner CV searches a rescaled l2 grid with the same
-                    # shape.
-                    fold_lambda_smooth, fold_l2_reg, fold_grid_audit, fold_tuned_flag = (
-                        _pick_multinomial_fold_hyperparams(
-                            X_tr_stacked, y_tr, groups_global[tr_idx_model],
-                            n_feats_=n_trial_feats,
-                            fold_idx_=fold_idx,
-                        )
-                    )
-
-                    model = SmoothMultinomialLogisticRegression(
-                        n_features=n_trial_feats, n_time_bins=n_time_bins,
-                        lambda_smooth=fold_lambda_smooth,
-                        l2_reg=fold_l2_reg,
-                        smoothness_derivative_order=smoothness_order,
-                        smoothness_reflective_edges=reflective_edges,
-                        focal_gamma=model_focal_gamma,
-                        uniform_class_weights=model_uniform_weights,
-                        learning_rate=hp['learning_rate'],
-                        max_iter=hp['max_iter'],
-                        tol=hp['tol'],
-                        random_state=hp['random_state'] + fold_idx,
-                        _use_lax_loop=use_lax_loop_mn,
-                    )
-                    model.fit(X_tr_stacked, y_tr)
-
-                    y_proba = model.predict_proba(X_te_stacked, balanced=hp['balance_predictions_bool'])
-                    y_pred = model.predict(X_te_stacked, balanced=hp['balance_predictions_bool'])
-
-                    eps = 1e-15
-                    y_proba_clipped = np.clip(y_proba, eps, 1 - eps)
-
-                    f_met = cand_data['folds']['metrics']
-                    f_met['auc'].append(roc_auc_score(y_te, y_proba, multi_class='ovr', average='macro', labels=model.classes_))
-                    f_met['score'].append(balanced_accuracy_score(y_te, y_pred))
-                    f_met['f1'].append(f1_score(y_te, y_pred, average='macro', zero_division=0))
-                    f_met['recall'].append(recall_score(y_te, y_pred, average='macro', zero_division=0))
-                    f_met['ll'].append(log_loss(y_te, y_proba_clipped, labels=model.classes_))
-
-                    # Canonical-ordered probability matrix so Brier / ECE are
-                    # computed against a stable column ordering across folds
-                    # even when a rare class is absent from `model.classes_`.
-                    probs_canonical = align_probs_to_canonical(
-                        y_proba, model.classes_, canonical_classes
-                    )
-                    try:
-                        f_met['brier'].append(brier_score_multi(y_te, probs_canonical, canonical_classes))
-                    except Exception:
-                        f_met['brier'].append(np.nan)
-                    try:
-                        f_met['ece'].append(expected_calibration_error(y_te, y_pred, probs_canonical, n_bins=settings['diagnostics']['ece_n_bins']))
-                    except Exception:
-                        f_met['ece'].append(np.nan)
-                    f_met['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
-
-                    cand_data['folds']['weights'].append(basis_coefficients_to_frames(model.coef_, temporal_basis, n_features=n_trial_feats, axis=1) if temporal_basis is not None else model.coef_)
-                    cand_data['folds']['basis_coefficients'].append(np.asarray(model.coef_) if temporal_basis is not None else None)
-                    cand_data['folds']['intercepts'].append(model.intercept_)
-                    cand_data['folds']['y_true'].append(y_te)
-                    cand_data['folds']['y_pred'].append(y_pred)
-                    cand_data['folds']['y_probs'].append(y_proba)
-                    cand_data['folds']['test_indices'].append(te_idx)
-                    cand_data['folds']['p_train'].append(_class_proportions(y_tr))
-                    cand_data['folds']['p_test'].append(_class_proportions(y_te))
-                    cand_data['folds']['confusion_matrix'].append(
-                        safe_confusion_matrix(y_te, y_pred, labels=canonical_classes)
-                    )
-                    cand_data['folds']['n_iter'].append(int(model.n_iter_))
-                    cand_data['folds']['converged'].append(bool(model.converged_))
-                    cand_data['folds']['fit_time'].append(float(model.fit_time_))
-                    cand_data['folds']['selected_lambda_smooth'].append(fold_lambda_smooth)
-                    cand_data['folds']['selected_l2_reg'].append(fold_l2_reg)
-                    cand_data['folds']['hyperparam_grid_audit'].append(fold_grid_audit)
-                    cand_data['folds']['hyperparams_tuned'].append(fold_tuned_flag)
-                    if cand_data['classes'] is None:
-                        cand_data['classes'] = model.classes_
-                except Exception as e:
-                    # Log the exception so the silent-failure mode that
-                    # used to bury per-fold JAX / scikit-learn errors
-                    # is no longer invisible. The placeholders below
-                    # still keep per-fold list lengths aligned so the
-                    # downstream aggregation logic does not need to
-                    # special-case missing folds.
-                    print(
-                        f"\n    [!] Fold {fold_idx + 1:02d}/{n_splits:02d} "
-                        f"failed on +{feat}: "
-                        f"{type(e).__name__}: {e}",
-                        flush=True,
-                    )
-                    K = len(canonical_classes)
-                    for _k, _v in cand_data['folds']['metrics'].items():
-                        _v.append(np.nan)
-                    cand_data['folds']['weights'].append(None)
-                    cand_data['folds']['basis_coefficients'].append(None)
-                    cand_data['folds']['intercepts'].append(None)
-                    cand_data['folds']['y_true'].append(np.empty((0,), dtype=np.int32))
-                    cand_data['folds']['y_pred'].append(np.empty((0,), dtype=np.int32))
-                    cand_data['folds']['y_probs'].append(np.empty((0, K), dtype=np.float32))
-                    cand_data['folds']['test_indices'].append(np.empty((0,), dtype=np.int64))
-                    cand_data['folds']['p_train'].append(np.full(K, np.nan, dtype=np.float32))
-                    cand_data['folds']['p_test'].append(np.full(K, np.nan, dtype=np.float32))
-                    cand_data['folds']['confusion_matrix'].append(np.full((K, K), np.nan))
-                    cand_data['folds']['n_iter'].append(np.nan)
-                    cand_data['folds']['converged'].append(False)
-                    cand_data['folds']['fit_time'].append(np.nan)
-                    cand_data['folds']['selected_lambda_smooth'].append(float('nan'))
-                    cand_data['folds']['selected_l2_reg'].append(float('nan'))
-                    cand_data['folds']['hyperparam_grid_audit'].append({
-                        'grid_scores': {}, 'grid_ses': {},
-                        'argmax_pair': None,
-                        'one_se_applied': False, 'one_se_threshold': None,
-                    })
-                    cand_data['folds']['hyperparams_tuned'].append(False)
-
+        for feat in candidates_this_step:
+            cand_data = per_candidate[feat]
             valid_auc = [x for x in cand_data['folds']['metrics']['auc'] if np.isfinite(x)]
             # Surface PARTIAL fold failure for this candidate (some folds
             # diverged, others survived): otherwise the candidate's mean AUC is
@@ -5180,35 +6277,40 @@ def multinomial_vocal_category_model_selection(
 
             mean_auc = np.mean(valid_auc)
             # `np.std([x], ddof=1)` is NaN for a single finite fold (zero divisor);
-            # guard with len > 1 so a one-fold success does not poison the 1SE rule.
+            # guard with len > 1 so a one-fold success keeps a finite SE.
             se_auc = np.std(valid_auc, ddof=1) / np.sqrt(len(valid_auc)) if len(valid_auc) > 1 else 0.0
             print(format_selection_step(f"Step {step_counter}", feature=feat,
                                         metrics={'AUC': mean_auc}))
             cand_data['mean_auc'], cand_data['se_auc'] = mean_auc, se_auc
             step_results['candidates_summary'][feat] = cand_data
             if mean_auc > best_cand_score:
-                best_cand_score, best_cand_se, best_cand = mean_auc, se_auc, feat
+                best_cand_score, best_cand = mean_auc, feat
                 best_cand_folds = cand_data['folds']['metrics']['auc']
 
-        # The 1SE bar is the standard error of the PER-FOLD improvement: incumbent
-        # and candidate are nested and share the same folds, so fold difficulty
-        # cancels in the difference but dominates either score alone.
-        step_improvement, step_improvement_se = (
-            paired_one_se_improvement(best_cand_folds, best_current_folds,
-                                      higher_is_better=True)
-            if best_cand else (float('nan'), 0.0))
+        # The cross-validated winner is tested with the per-step shift test, Bonferroni
+        # over the m candidates of this step; the step is accepted only when no shifted
+        # refit reaches the observed in-sample gain.
+        _require_scored_candidate(f"Step {step_counter}", m_candidates, int(best_cand is not None))
+        step_test = (_multinomial_step_test(best_cand, step_counter, m_candidates)
+                     if best_cand is not None else None)
+        step_results['step_test'] = step_test
 
-        if best_cand and np.isfinite(step_improvement) and step_improvement > step_improvement_se:
+        if step_test is not None and step_test['accepted']:
             print(format_selection_step(f"Step {step_counter}", feature=best_cand,
-                                        decision='ACCEPT', metrics={'AUC': best_cand_score}))
+                                        decision='ACCEPT',
+                                        metrics={'AUC': best_cand_score, 'p_adj': step_test['p_adjusted']}))
             step_results['selected_feature'] = best_cand
             current_model_features.append(best_cand)
             _dump_step_pickle(model_selection_dir / f"{prefix}{step_counter}.pkl", _wrap_step(step_results))
-            best_current_score, best_current_se, step_counter = best_cand_score, best_cand_se, step_counter + 1
+            best_current_score, step_counter = best_cand_score, step_counter + 1
             best_current_folds = best_cand_folds
         else:
-            print(format_selection_step(f"Step {step_counter}", decision='REJECT',
-                                        detail='no candidate beat the 1-SE margin; selection finished'))
+            if best_cand is None:
+                reject_detail = 'no candidate had finite folds; selection finished'
+            else:
+                reject_detail = (f"winner {best_cand!r} failed the shift test "
+                                 f"(p_adj {step_test['p_adjusted']:.4f} vs alpha {p_val}); selection finished")
+            print(format_selection_step(f"Step {step_counter}", decision='REJECT', detail=reject_detail))
             step_results['selected_feature'] = None
             _dump_step_pickle(model_selection_dir / f"{prefix}{step_counter}.pkl", _wrap_step(step_results))
             break
@@ -5462,6 +6564,120 @@ def multinomial_vocal_category_model_selection(
         out_path=str(last_file_path),
     ))
 
+def _manifold_candidate_fold(feat: str, fold_idx: int) -> dict:
+    """
+    Description
+    -----------
+    One (candidate, fold) fit of the continuous manifold selector: fits the incumbent
+    features plus ``feat`` on the fold's training rows with the geometry's JAX
+    regressor (equal-region reweighting on the torus) and scores the fold's test
+    rows with the full metric bundle. The data comes from the ``'manifold_step'``
+    pool-context entry the selector stores before running the fits (``cv_folds``,
+    ``binned_data``, ``y_global``, ``w_global``, ``groups_global``, ``region_global``,
+    the per-fold cached ``fold_base_tr`` / ``fold_base_te``,
+    ``current_model_features``, the hyperparameter closure ``pick_hyperparams``, the
+    regressor class, the scoring knobs and the geodesic context). The operations are
+    those of the former inline fold body, so the fold scores are the same numbers.
+
+    Parameters
+    ----------
+    feat (str)
+        The candidate feature.
+    fold_idx (int)
+        Fold index.
+
+    Returns
+    -------
+    result (dict)
+        ``{'ok': True, 'fold': {...}}`` with one entry per per-fold list of the
+        candidate record, or ``{'ok': False, 'error': str}``.
+    """
+
+    ctx = pool_context('manifold_step')
+    tr_idx, te_idx = ctx['cv_folds'][fold_idx]
+    binned_data = ctx['binned_data']
+    hp = ctx['hp']
+    temporal_basis = ctx['temporal_basis']
+    manifold_metric = ctx['manifold_metric']
+    trial_feats = [*ctx['current_model_features'], feat]
+    n_trial_feats = len(trial_feats)
+    try:
+        new_tr = binned_data[feat][tr_idx]
+        new_te = binned_data[feat][te_idx]
+        base_tr = ctx['fold_base_tr'][fold_idx]
+        base_te = ctx['fold_base_te'][fold_idx]
+        X_tr_stacked = np.hstack([base_tr, new_tr]) if base_tr is not None else new_tr
+        X_te_stacked = np.hstack([base_te, new_te]) if base_te is not None else new_te
+        Y_tr, Y_te = ctx['y_global'][tr_idx], ctx['y_global'][te_idx]
+        w_tr, w_te = ctx['w_global'][tr_idx], ctx['w_global'][te_idx]
+        groups_tr = ctx['groups_global'][tr_idx]
+        region_tr, region_te = ctx['region_global'][tr_idx], ctx['region_global'][te_idx]
+
+        # Equal-region fit reweighting (torus only): weight training rows by inverse
+        # acoustic-region frequency so common regions don't dominate the fit.
+        # Euclidean keeps the raw weights.
+        if manifold_metric == 'torus':
+            w_tr_fit = w_tr * inverse_region_frequency_weights(region_tr)
+        else:
+            w_tr_fit = w_tr
+
+        fold_lambda_smooth, fold_l2_reg, fold_grid_audit, fold_tuned_flag = (
+            ctx['pick_hyperparams'](
+                X_tr_stacked, Y_tr, w_tr, groups_tr,
+                n_feats_=n_trial_feats,
+                fold_idx_=fold_idx,
+                region_tr_=region_tr,
+            )
+        )
+
+        model = ctx['regressor_cls'](
+            n_features=n_trial_feats, n_time_bins=ctx['n_time_bins'],
+            lambda_smooth=fold_lambda_smooth, l2_reg=fold_l2_reg,
+            smoothness_derivative_order=ctx['smoothness_order'],
+            smoothness_reflective_edges=ctx['reflective_edges'],
+            huber_delta=hp['huber_delta'],
+            learning_rate=hp['learning_rate'], max_iter=hp['max_iter'],
+            tol=hp['tol'], random_state=hp['random_state'] + fold_idx,
+            _use_lax_loop=ctx['use_lax_loop'],
+            metric=manifold_metric, period=ctx['manifold_period'],
+        )
+        model.fit(X_tr_stacked, Y_tr, sample_weight=w_tr_fit)
+
+        metrics = model.evaluate_metrics(
+            X_te_stacked, Y_te, weights=w_te,
+            region_labels=region_te, min_region_events=ctx['min_region_events'],
+            kappa=ctx['kappa_frozen'], dcor_n_sub=ctx['dcor_n_sub'], dcor_n_rep=ctx['dcor_n_rep'],
+        )
+        y_pred_xy = model.predict(X_te_stacked, snap=True).astype(np.float32)
+        metrics.update(geodesic_mae_columns(
+            y_pred_xy, Y_te, ctx['geodesic_ctx'],
+            region_labels=region_te, min_region_events=ctx['min_region_events']))
+
+        fold = {
+            'metrics': {_mk: metrics[_mk] for _mk in ctx['metric_keys']},
+            'weights': (basis_coefficients_to_frames(model.coef_, temporal_basis, n_features=n_trial_feats, axis=0)
+                        if temporal_basis is not None else model.coef_),
+            'basis_coefficients': np.asarray(model.coef_) if temporal_basis is not None else None,
+            'intercepts': model.intercept_,
+            'test_indices': te_idx,
+            'y_true': Y_te,
+            'w_test': w_te,
+            'y_pred_xy': y_pred_xy,
+            'n_iter': int(model.n_iter_),
+            'converged': bool(model.converged_),
+            'fit_time': float(model.fit_time_),
+            'selected_lambda_smooth': fold_lambda_smooth,
+            'selected_l2_reg': fold_l2_reg,
+            'hyperparam_grid_audit': fold_grid_audit,
+            'hyperparams_tuned': fold_tuned_flag,
+        }
+        del model, X_tr_stacked, X_te_stacked
+        gc.collect()
+        return {'ok': True, 'fold': fold}
+    except Exception as e:
+        return {'ok': False, 'error': f"{type(e).__name__}: {e}"}
+
+
 def continuous_vocal_manifold_model_selection(
         univariate_results_path: str,
         input_data_path: str,
@@ -5538,11 +6754,20 @@ def continuous_vocal_manifold_model_selection(
        draw stays the gate baseline there. The Step-0 record keeps
        `selected_feature = 'null_model_free'` as its marker and names the gate
        baseline in `baseline_strategy`.
-    6. Fold-grain acceptance. Candidates are RANKED by their mean selection
-       score (higher-is-better on both geometries), but the step winner is
-       ACCEPTED only when its per-fold paired margin over the incumbent has a
-       bootstrap CI lower bound above zero — a gain that is consistent across
-       folds, not merely large on average. See `_fold_paired_margin_bootstrap`.
+    6. Per-step shift test. Candidates are RANKED by their mean selection score
+       (higher-is-better on both geometries); the step winner is then tested with
+       ``step_shift_test.run_step_shift_test``: the incumbent and the incumbent plus
+       the winner are refit on the development rows exactly as the held-out refit
+       fits them, the statistic is the gain in the selection score computed
+       in-sample on those rows (the macro von Mises log-score on the torus, the
+       distance correlation on euclidean), and its null comes from refits after
+       circularly shifting the winner's processed trace within every development
+       session and re-cutting (and re-binning / re-projecting) its history windows
+       at the stored start frames, ``floor(m / alpha)`` times with Bonferroni
+       correction over the ``m`` candidates of the step. The first feature is
+       tested the same way against the Step-0 gate baseline refit on the
+       development rows (the intercept-only circular mean on the torus, the
+       empirical-density draw on euclidean).
 
     Joint per-fold hyperparameter tuning
     ------------------------------------
@@ -5957,6 +7182,44 @@ def continuous_vocal_manifold_model_selection(
     region_global = None
     n_time_bins = None
 
+    def _manifold_bin_and_project(X_s: np.ndarray, feat: str) -> np.ndarray:
+        """
+        Description
+        -----------
+        The temporal representation of one session's history windows: the optional
+        `bin_resizing_factor` binning (keeping the MOST RECENT `new_T * bin_size`
+        columns and dropping the oldest `T % bin_size`, exactly as the univariate
+        loader bins: the last column is the frame before onset, so truncating the
+        tail would drop the frames nearest onset and shift the design against the
+        filters) followed by the B-spline projection when a temporal basis is in
+        use. The binning loop below and the per-step shift test's shifted refits
+        both go through this one function, so a shifted window is represented
+        exactly as the stored window it replaces.
+
+        Parameters
+        ----------
+        X_s (np.ndarray)
+            ``(n_rows, history_frames)`` windows of one session.
+        feat (str)
+            The feature, named in the error.
+
+        Returns
+        -------
+        X_s (np.ndarray)
+            ``(n_rows, n_time_bins)`` design rows (before the float32 cast).
+        """
+
+        N, T = X_s.shape
+        if bin_size > 1:
+            new_T = T // bin_size
+            if new_T < 1:
+                msg = f"bin_size={bin_size} exceeds the history window length T={T} for feature '{feat}'."
+                raise ValueError(msg)
+            X_s = X_s[:, T - new_T * bin_size:].reshape(N, new_T, bin_size).mean(axis=2)
+        if temporal_basis is not None:
+            X_s = project_history_onto_basis(X_s, temporal_basis)
+        return X_s
+
     for feat in ranked_features:
         X_list, y_list, w_list, g_list, region_list = [], [], [], [], []
         sessions = sorted(raw_data[feat].keys())
@@ -5972,19 +7235,7 @@ def continuous_vocal_manifold_model_selection(
             else:
                 region_s = np.full(len(y_s), np.nan, dtype=np.float32)
 
-            N, T = X_s.shape
-            if bin_size > 1:
-                new_T = T // bin_size
-                if new_T < 1:
-                    msg = f"bin_size={bin_size} exceeds the history window length T={T} for feature '{feat}'."
-                    raise ValueError(msg)
-                # Keep the MOST RECENT `new_T * bin_size` columns (drop the oldest
-                # `T % bin_size`), exactly as the univariate loader bins: the last
-                # column is the frame before onset, so truncating the tail would drop
-                # the frames nearest onset and shift the design against the filters.
-                X_s = X_s[:, T - new_T * bin_size:].reshape(N, new_T, bin_size).mean(axis=2)
-            if temporal_basis is not None:
-                X_s = project_history_onto_basis(X_s, temporal_basis)
+            X_s = _manifold_bin_and_project(X_s, feat)
 
             X_list.append(X_s)
             y_list.append(y_s)
@@ -6000,18 +7251,30 @@ def continuous_vocal_manifold_model_selection(
             region_global = np.concatenate(region_list)
             n_time_bins = binned_data[feat].shape[1]
 
+    # The per-step shift test's inputs and their lag-zero self-check: every stored
+    # window of every screened feature and session must re-cut exactly (float32, as
+    # stored) from the trace sidecar at its stored start frame.
+    camera_fps = float(settings['io']['camera_sampling_rate'])
+    step_cfg = _step_test_settings(settings, camera_fps)
+    traces_path, window_starts = _require_shift_test_inputs(_input_md, input_data_path, camera_fps)
+    _all_session_ids = sorted({str(s_id) for feat in ranked_features for s_id in raw_data[feat]})
+    _verify_session_windows_against_traces(
+        raw_data, traces_path, window_starts, history_frames,
+        features=ranked_features, sessions=_all_session_ids, cast_dtype=np.float32,
+    )
+    print(f"Shift-test inputs verified: {len(ranked_features)} feature(s) x {len(_all_session_ids)} "
+          f"session(s) re-cut exactly from {Path(traces_path).name}; lag floor "
+          f"{step_cfg['min_lag_seconds']} s = {step_cfg['min_lag_frames']} frames.")
+    print("JAX selectors run their candidate fits and null refits serially inside the job: XLA's thread "
+          "pool is not fork-safe once the backend has run, and one fit already uses every core.")
+
     del raw_data
     gc.collect()
 
     # `region_global` is aligned to the same full-event index space as
-    # `groups_global` (sorted-session order), so it doubles as the
-    # `event_to_region` map the greedy gate indexes by each fold's test_indices
-    # (the torus screen above built the same map from the same pickle). The gate
-    # bootstraps the margin of the score that ranks the candidates, exactly as the
-    # screen does: the region-balanced (macro) score needs the map, while the
-    # event-weighted (micro) `vm_logscore_pooled` scores without it (None), so a
-    # micro run never accepts or rejects on the macro margin.
-    event_to_region = region_global if SELECTION_SCORE_KEY == 'vm_logscore' else None
+    # `groups_global` (sorted-session order); the fold scoring and the per-step
+    # shift test index it by rows (the torus screen above built the same map from
+    # the same pickle).
     warn_if_no_region_labels(region_global, metric=_selection_manifold_metric,
                              context="continuous manifold model selection")
 
@@ -6023,44 +7286,43 @@ def continuous_vocal_manifold_model_selection(
 
     # Reserve the held-out sessions carved ONCE at extraction time and shipped
     # verbatim in the univariate `_input_metadata.held_out_session_ids`. They are
-    # dropped from every greedy cv_fold, every candidate fit, and (transitively,
-    # because the acceptance bootstrap keys off each fold's `test_indices`) the
-    # forward-selection acceptance gate; the accepted feature set is then refit on
+    # dropped from every greedy cv_fold, every candidate fit, and the per-step shift
+    # test (which refits on the development rows only); the accepted feature set is then refit on
     # the development sessions and scored on this block exactly once in the
     # finalization stage (the honest, selection-leakage-free number). An empty
     # list -- holdout disabled (`held_out_test_proportion=0`) or a pre-v2 pickle
     # without the field -- makes `_dev_mask` all-True and `_held_positions` empty,
     # so the whole path is an exact no-op and legacy inputs still run.
     #
-    # PASS-1 screen (above/below) needs no masking: it recomputes margins from the
+    # PASS-1 screen (above) needs no masking: it recomputes margins from the
     # univariate stage's stored fold predictions, whose `test_indices` already
-    # exclude held-out sessions (carved there too), so the greedy gate's
-    # `event_to_region` map is only ever indexed at development events.
+    # exclude held-out sessions (carved there too), so `region_global` is only ever
+    # indexed at development events by the screen and the fold scoring.
     _held_out_session_ids = held_out_session_ids_from_metadata(_input_md if _input_md is not None else {})
     _dev_mask, _held_mask = development_heldout_masks(groups_global, _held_out_session_ids)
     _dev_positions = np.where(_dev_mask)[0]
     _held_positions = np.where(_held_mask)[0]
+    _dev_session_ids = [str(s_id) for s_id in np.unique(groups_global[_dev_positions])]
     if _held_positions.size > 0:
         print(
             f"Held-out reserve: {len(_held_out_session_ids)} session(s), "
             f"{_held_positions.size} event(s) excluded from selection; scored once at finalization."
         )
 
-    # The fold-grain gate below (both the screen and forward-selection
-    # acceptance) bootstraps the PER-FOLD score margin. Each fold's score is
-    # computed on that fold's held-out test predictions, so it is out-of-sample
-    # regardless of the split strategy. Under `split_strategy='session'` whole
-    # sessions are held out per fold, so there is no within-session leakage.
-    # Under `'mixed'` a session's events are scattered across train and test, so
-    # within-session temporal autocorrelation leaks into every fold's score;
-    # the leakage inflates the `actual` and `null` sides alike and the paired
-    # margin cancels most of it, but the CI is still mildly optimistic. Warn (do
-    # NOT block: 'mixed' stays a valid option), so the choice is deliberate and
-    # visible in the log.
+    # The screen's fold-grain gate bootstraps the PER-FOLD score margin of the
+    # univariate stage's stored predictions, and the candidate ranking uses each
+    # fold's held-out test predictions, so both are out-of-sample regardless of the
+    # split strategy. Under `split_strategy='session'` whole sessions are held out
+    # per fold, so there is no within-session leakage. Under `'mixed'` a session's
+    # events are scattered across train and test, so within-session temporal
+    # autocorrelation leaks into every fold's score; the leakage inflates the
+    # `actual` and `null` sides alike and the paired margin cancels most of it, but
+    # the screen's CI is still mildly optimistic. Warn (do NOT block: 'mixed' stays
+    # a valid option), so the choice is deliberate and visible in the log.
     if split_strategy == 'mixed':
         warnings.warn(
             "continuous_vocal_manifold_model_selection: split_strategy='mixed' "
-            "with the fold-grain acceptance gate. Each fold's score is still "
+            "with the fold-grain screen. Each fold's score is still "
             "out-of-sample, but under 'mixed' a session's events span train and "
             "test, so within-session autocorrelation leaks into both the 'actual' "
             "and 'null' sides; the paired per-fold margin cancels most of it yet "
@@ -6187,6 +7449,14 @@ def continuous_vocal_manifold_model_selection(
     # training-fold intercept-only predictor on the torus, the empirical-density draw on
     # euclidean (where dcor of a constant prediction is degenerate; see Step 0 below).
     step1_gate_baseline = 'null_model_intercept' if manifold_metric == 'torus' else 'null_model_free'
+    # The per-step shift test's statistic: the selection score computed in-sample on
+    # the development refit (the region-balanced or pooled von Mises log-score on
+    # the torus, the distance correlation on euclidean).
+    _step_statistic_name = {
+        'vm_logscore': 'macro_von_mises_logscore',
+        'vm_logscore_pooled': 'pooled_von_mises_logscore',
+        'dcor_xy': 'distance_correlation',
+    }[SELECTION_SCORE_KEY]
 
     current_model_features = []
     # R^2 is higher-is-better, so the pre-Step-0 "best" is `-inf` (any finite
@@ -6223,7 +7493,6 @@ def continuous_vocal_manifold_model_selection(
         test_proportion=float(test_prop),
         split_strategy=split_strategy,
         random_seed=int(random_seed),
-        one_se_rule_used=bool(inner_cv_use_one_se_rule),
         aic_termination_used=False,
         n_anchor_features=len(ranked_features),
         anchor_feature=ranked_features[0],
@@ -6231,6 +7500,9 @@ def continuous_vocal_manifold_model_selection(
         extra_knobs={
             'use_top_rank_as_anchor': bool(use_top_rank_as_anchor),
             'p_val': float(p_val),
+            # The inner-CV regularisation tuner's one-standard-error rule (a parsimony
+            # rule inside the tuner, unrelated to the per-step acceptance test).
+            'inner_cv_use_one_se_rule': bool(inner_cv_use_one_se_rule),
             # The screen's p-value test and the Step-0 strategy the first feature is
             # gated against; a resume refuses a checkpoint written under other rules.
             'screen_p_value_test': 'exact_sign_flip',
@@ -6263,6 +7535,20 @@ def continuous_vocal_manifold_model_selection(
             'held_out_session_ids': list(_held_out_session_ids),
             'n_held_out_sessions': len(_held_out_session_ids),
             'n_held_out_events': int(_held_positions.size),
+            # The per-step acceptance rule and its knobs (a resume refuses another rule).
+            'step_test': {
+                'rule': STEP_TEST_RULE,
+                'screened_features': list(ranked_features),
+                'statistic': _step_statistic_name,
+                'selection_score_key': SELECTION_SCORE_KEY,
+                'alpha': float(p_val),
+                'min_lag_seconds': step_cfg['min_lag_seconds'],
+                'min_lag_frames': step_cfg['min_lag_frames'],
+                'checkpoint_every': step_cfg['checkpoint_every'],
+                'pool_workers': step_cfg['pool_workers'],
+                'refit_rows': 'development_rows_as_held_out_refit',
+                'traces_path': traces_path,
+            },
         },
         settings_path=settings_path,
     )
@@ -6281,6 +7567,7 @@ def continuous_vocal_manifold_model_selection(
         try:
             with Path(model_selection_dir / f"{prefix}{last_step}.pkl").open('rb') as f:
                 last_res = pickle.load(f)
+            _require_step_test_rule(last_res, model_selection_dir / f"{prefix}{last_step}.pkl")
 
             # Metric-compatibility guard: if this checkpoint was scored on a
             # different selection metric (usv_manifold_metric was flipped
@@ -6320,8 +7607,8 @@ def continuous_vocal_manifold_model_selection(
                 existing_steps = []
             else:
                 # Rebuild the state right after `last_step` from its recorded decision
-                # (`_restore_selection_checkpoint`); the incumbent's folds are the
-                # reference the next fold-bootstrap gate compares against.
+                # (`_restore_selection_checkpoint`); the incumbent's folds are kept as
+                # the step record's baseline.
                 state = _restore_selection_checkpoint(
                     last_res, 'mean_r2', 'se_r2', lambda entry: entry['folds'],
                 )
@@ -6584,12 +7871,10 @@ def continuous_vocal_manifold_model_selection(
         print(format_selection_step('Chance floor', detail=f"reported only: {_STEP0_GATE_LABELS['null_model_free']}",
                                     metrics={SELECTION_SCORE_KEY: chance_floor_score}))
 
-        # Fold-grain acceptance reference. The "current model" begins as the Step-0 gate
-        # baseline; a feature (anchor or later candidate) is accepted only when it
-        # improves the PER-FOLD score margin over the current model with a bootstrap CI
-        # that excludes 0 -- a consistent-across-folds improvement -- rather than a bare
-        # 1-SE bump in the absolute score. `best_current_score` is kept purely for the
-        # logged running-best figure; the accept decision is the fold bootstrap.
+        # The "current model" begins as the Step-0 gate baseline; its folds are stored
+        # as the first forward step's `baseline_folds`. `best_current_score` is kept
+        # purely for the logged running-best figure; the accept decision is the
+        # per-step shift test.
         current_model_folds = gate_block['folds']
 
         step_0_res = {
@@ -6604,6 +7889,7 @@ def continuous_vocal_manifold_model_selection(
             'chance_floor_strategy': 'null_model_free',
             'chance_floor_score': chance_floor_score,
             'candidates_summary': step0_blocks,
+            'step_test': None,
         }
 
         _dump_step_pickle(model_selection_dir / f"{prefix}0.pkl", _wrap_step(step_0_res))
@@ -6811,95 +8097,317 @@ def continuous_vocal_manifold_model_selection(
         )
         return lam_sm_win, lam_l2_win, grid_audit_, True
 
+    # The development refit the per-step shift test scores on: exactly the held-out
+    # refit's rows and fit (every development row, the KDE weights times the
+    # equal-region reweighting on the torus, the same hyperparameter choice, the seed
+    # `hp['random_state'] + n_splits + 1`). The statistic is the selection score
+    # computed in-sample on those rows; the empty incumbent is the Step-0 gate
+    # baseline refit on them (the intercept-only circular mean on the torus, the
+    # empirical-density draw on euclidean), scored the same way.
+    _dev_seed = int(hp['random_state']) + n_splits + 1
+    _Y_dev = y_global[_dev_positions]
+    _w_dev = w_global[_dev_positions]
+    _region_dev = region_global[_dev_positions]
+    _groups_dev = groups_global[_dev_positions]
+    if manifold_metric == 'torus':
+        _w_dev_fit = _w_dev * inverse_region_frequency_weights(_region_dev)
+    else:
+        _w_dev_fit = _w_dev
+    _baseline_dev_score = {}
+
+    def _manifold_development_design(features: list, winner_override: dict | None = None) -> np.ndarray:
+        """
+        Description
+        -----------
+        The development design of the model with ``features`` (every development row,
+        features side by side); with ``winner_override`` the LAST feature's rows are
+        replaced session by session by the raw shifted windows in that per-session
+        dict, binned and projected by ``_manifold_bin_and_project`` exactly as the
+        stored windows were, and scattered into a copy of the stored development
+        rows by the rows' sessions (a session's development rows are its stored rows
+        in start-frame order).
+
+        Parameters
+        ----------
+        features (list)
+            Features of the model, the winner last.
+        winner_override (dict | None)
+            ``{session_id: {'X': (n_rows_of_session, history_frames) windows}}``.
+
+        Returns
+        -------
+        X_dev (np.ndarray)
+            ``(n_dev_rows, n_features * n_time_bins)`` float32 design.
+        """
+
+        blocks = [binned_data[f][_dev_positions] for f in features]
+        if winner_override is not None:
+            X_winner = blocks[-1].copy()
+            for session_id, entry in winner_override.items():
+                rows = np.where(_groups_dev == session_id)[0]
+                shifted = _manifold_bin_and_project(entry['X'].astype(np.float32), features[-1]).astype(np.float32)
+                if rows.size != shifted.shape[0]:
+                    msg = (f"shift override for {features[-1]!r} / {session_id!r} has {shifted.shape[0]} "
+                           f"rows but the development design holds {rows.size}.")
+                    raise ValueError(msg)
+                X_winner[rows] = shifted
+            blocks[-1] = X_winner
+        return np.hstack(blocks)
+
+    def _manifold_development_score(features: list, winner_override: dict | None = None) -> float:
+        """
+        Description
+        -----------
+        The selection score (``SELECTION_SCORE_KEY``) computed in-sample on the
+        development rows of the model with ``features`` refit on them exactly as the
+        held-out refit fits it. The empty model is the Step-0 gate baseline refit on
+        the development rows (computed once): the intercept-only circular mean on the
+        torus, the empirical-density draw on euclidean, scored with the same bundle.
+
+        Parameters
+        ----------
+        features (list)
+            Features of the model, the winner last.
+        winner_override (dict | None)
+            See ``_manifold_development_design``.
+
+        Returns
+        -------
+        score (float)
+            The in-sample selection score (higher is better).
+        """
+
+        if not features:
+            if 'score' not in _baseline_dev_score:
+                w_cov = _w_dev / (np.sum(_w_dev) + 1e-12)
+                mu = circular_mean(
+                    _Y_dev, metric=manifold_metric, period=manifold_period,
+                    weights=_w_dev_fit / (np.sum(_w_dev_fit) + 1e-12)
+                )
+                diff_dev = signed_diff(_Y_dev, mu[None, :], metric=manifold_metric, period=manifold_period)
+                cov_dev = (w_cov[:, None] * diff_dev).T @ diff_dev
+                cov_inv = np.linalg.pinv(cov_dev)
+                if step1_gate_baseline == 'null_model_intercept':
+                    dev_pred_xy = np.tile(np.asarray(mu, dtype=np.float32)[None, :], (len(_Y_dev), 1))
+                else:
+                    draw_rng = np.random.default_rng(_dev_seed)
+                    draw_idx = draw_rng.choice(len(_Y_dev), size=len(_Y_dev), replace=True)
+                    dev_pred_xy = _Y_dev[draw_idx].astype(np.float32)
+                bundle = manifold_prediction_metrics(
+                    _Y_dev, dev_pred_xy, _w_dev,
+                    metric=manifold_metric, period=manifold_period,
+                    train_cov_inv=cov_inv, random_state=_dev_seed,
+                    region_labels=_region_dev, min_region_events=_min_region_events,
+                    kappa=kappa_frozen, dcor_n_sub=_dcor_n_sub, dcor_n_rep=_dcor_n_rep,
+                )
+                _baseline_dev_score['score'] = float(bundle[SELECTION_SCORE_KEY])
+            return _baseline_dev_score['score']
+        X_dev = _manifold_development_design(features, winner_override)
+        dev_lambda_smooth, dev_l2_reg, _, _ = _pick_fold_hyperparams(
+            X_dev, _Y_dev, _w_dev, _groups_dev,
+            n_feats_=len(features),
+            fold_idx_=n_splits,
+            region_tr_=_region_dev,
+        )
+        dev_model = manifold_regressor_cls(
+            n_features=len(features), n_time_bins=n_time_bins,
+            lambda_smooth=dev_lambda_smooth, l2_reg=dev_l2_reg,
+            smoothness_derivative_order=smoothness_order,
+            smoothness_reflective_edges=reflective_edges,
+            huber_delta=hp['huber_delta'],
+            learning_rate=hp['learning_rate'], max_iter=hp['max_iter'],
+            tol=hp['tol'], random_state=_dev_seed,
+            _use_lax_loop=use_lax_loop,
+            metric=manifold_metric, period=manifold_period,
+        )
+        dev_model.fit(X_dev, _Y_dev, sample_weight=_w_dev_fit)
+        dev_metrics = dev_model.evaluate_metrics(
+            X_dev, _Y_dev, weights=_w_dev,
+            region_labels=_region_dev, min_region_events=_min_region_events,
+            kappa=kappa_frozen, dcor_n_sub=_dcor_n_sub, dcor_n_rep=_dcor_n_rep,
+        )
+        return float(dev_metrics[SELECTION_SCORE_KEY])
+
+    # Read-only data the candidate fits read (`_manifold_candidate_fold`); the
+    # step-specific entries are added per step.
+    _manifold_pool_base = {
+        'cv_folds': cv_folds,
+        'binned_data': binned_data,
+        'y_global': y_global,
+        'w_global': w_global,
+        'groups_global': groups_global,
+        'region_global': region_global,
+        'n_time_bins': n_time_bins,
+        'hp': hp,
+        'temporal_basis': temporal_basis,
+        'manifold_metric': manifold_metric,
+        'manifold_period': manifold_period,
+        'regressor_cls': manifold_regressor_cls,
+        'smoothness_order': smoothness_order,
+        'reflective_edges': reflective_edges,
+        'use_lax_loop': use_lax_loop,
+        'kappa_frozen': kappa_frozen,
+        'min_region_events': _min_region_events,
+        'dcor_n_sub': _dcor_n_sub,
+        'dcor_n_rep': _dcor_n_rep,
+        'geodesic_ctx': geodesic_ctx,
+        'metric_keys': list(MANIFOLD_METRIC_KEYS),
+        'pick_hyperparams': _pick_fold_hyperparams,
+    }
+
+    def _manifold_assemble_cand_data(fold_results: list, feature: str) -> dict:
+        """
+        Description
+        -----------
+        Turns the per-fold worker results of one manifold candidate into its results
+        entry, keeping every per-fold list aligned: a failed fold is logged and
+        contributes the shape-preserving placeholder of ``_append_failed_fold``.
+
+        Parameters
+        ----------
+        fold_results (list)
+            One ``_manifold_candidate_fold`` result per fold, in fold order.
+        feature (str)
+            The candidate, for the log line.
+
+        Returns
+        -------
+        cand_data (dict)
+            The candidate's results entry.
+        """
+
+        cand_data = _make_manifold_cand_data()
+        for fold_idx, result in enumerate(fold_results):
+            if not result['ok']:
+                print(f"    [!] Error fitting {feature} (Fold {fold_idx}): {result['error']}")
+                _append_failed_fold(cand_data)
+                continue
+            fold = result['fold']
+            for _mk in cand_data['folds']['metrics']:
+                cand_data['folds']['metrics'][_mk].append(fold['metrics'][_mk])
+            for key in ('weights', 'basis_coefficients', 'intercepts', 'test_indices', 'y_true', 'w_test',
+                        'y_pred_xy', 'n_iter', 'converged', 'fit_time', 'selected_lambda_smooth',
+                        'selected_l2_reg', 'hyperparam_grid_audit', 'hyperparams_tuned'):
+                cand_data['folds'][key].append(fold[key])
+        return cand_data
+
+    def _manifold_fit_candidates(incumbent: list, candidate_features: list) -> dict:
+        """
+        Description
+        -----------
+        Fits every candidate on every fold on top of ``incumbent`` and returns each
+        candidate's results entry. The incumbent's stacked base block is built once
+        per fold here (it depends on the fold, not on the candidate); the candidate
+        rows are then stacked on.
+
+        Parameters
+        ----------
+        incumbent (list)
+            The incumbent features.
+        candidate_features (list)
+            Candidates to score.
+
+        Returns
+        -------
+        per_candidate (dict)
+            ``{feature: cand_data}``.
+        """
+
+        fold_base_tr, fold_base_te = [], []
+        for tr_idx, te_idx in cv_folds:
+            fold_base_tr.append(
+                np.hstack([binned_data[f][tr_idx] for f in incumbent])
+                if incumbent else None
+            )
+            fold_base_te.append(
+                np.hstack([binned_data[f][te_idx] for f in incumbent])
+                if incumbent else None
+            )
+        set_pool_context(
+            manifold_step={**_manifold_pool_base,
+                           'current_model_features': list(incumbent),
+                           'fold_base_tr': fold_base_tr, 'fold_base_te': fold_base_te},
+            candidate_fold=_manifold_candidate_fold,
+        )
+        # The worker count is derived as in the other selectors but the pool runs with
+        # ONE worker: JAX (XLA's thread pool) is not fork-safe once the backend has run
+        # in this process, and a single fit already uses every core.
+        n_workers_requested = pool_worker_count(step_cfg['pool_workers'], len(incumbent) + 1,
+                                                step_cfg['pool_memory_gb'], step_cfg['fit_peak_gb_base'],
+                                                step_cfg['fit_peak_gb_per_term'])
+        del n_workers_requested
+        n_folds = len(cv_folds)
+        tasks = [(feat, fold_idx) for feat in candidate_features for fold_idx in range(n_folds)]
+        pool = SelectionPool(1)
+        try:
+            results = pool.map('candidate_fold', tasks)
+        finally:
+            pool.close()
+        return {feat: _manifold_assemble_cand_data(results[i * n_folds:(i + 1) * n_folds], feat)
+                for i, feat in enumerate(candidate_features)}
+
+    def _manifold_step_test(winner: str, step_index: int, m_candidates: int) -> dict:
+        """
+        Description
+        -----------
+        The per-step shift test of ``winner`` on top of the current incumbent.
+
+        Parameters
+        ----------
+        winner (str)
+            The cross-validated winner.
+        step_index (int)
+            The step.
+        m_candidates (int)
+            Candidates the winner was chosen from (the Bonferroni factor).
+
+        Returns
+        -------
+        step_test (dict)
+            The record of ``run_step_shift_test``.
+        """
+
+        incumbent = list(current_model_features)
+        trial = [*incumbent, winner]
+        incumbent_score = _manifold_development_score(incumbent)
+        observed_score = _manifold_development_score(trial)
+        winner_traces = {s: read_feature_trace(traces_path, winner, s) for s in _dev_session_ids}
+        # JAX is not fork-safe once the backend has run in this process: the null
+        # refits run serially (one worker), see `_manifold_fit_candidates`.
+        return run_step_shift_test(
+            n_workers=1,
+            refit_and_score=lambda override: _manifold_development_score(trial, override),
+            incumbent_features=incumbent,
+            incumbent_score=incumbent_score,
+            winner=winner,
+            observed_score=observed_score,
+            statistic_name=_step_statistic_name,
+            winner_traces=winner_traces,
+            window_starts={s: window_starts[s] for s in winner_traces},
+            slots=_SESSION_WINDOW_SLOTS,
+            history_frames=history_frames,
+            m_candidates=m_candidates,
+            alpha=p_val,
+            min_lag_frames=step_cfg['min_lag_frames'],
+            random_seed=random_seed,
+            step_index=step_index,
+            checkpoint_every=step_cfg['checkpoint_every'],
+            partial_path=model_selection_dir / f"{prefix}{step_index}_null_partial.pkl",
+            label=f"Step {step_index}",
+        )
+
     # Auto-anchor logic
     if use_top_rank_as_anchor and step_counter == 1 and not resume_converged:
         anchor = ranked_features[0]
-        print(format_selection_step('Anchor', feature=anchor, detail='testing against baseline'))
-
-        cand_data = _make_manifold_cand_data()
-
-        for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
-            try:
-                X_tr, X_te = binned_data[anchor][tr_idx], binned_data[anchor][te_idx]
-                Y_tr, Y_te = y_global[tr_idx], y_global[te_idx]
-                w_tr, w_te = w_global[tr_idx], w_global[te_idx]
-                groups_tr = groups_global[tr_idx]
-                region_tr, region_te = region_global[tr_idx], region_global[te_idx]
-
-                # Equal-region fit reweighting (torus only): weight training rows
-                # by inverse acoustic-region frequency so common regions don't
-                # dominate the fit. Euclidean keeps the raw weights (byte-identical).
-                if manifold_metric == 'torus':
-                    w_tr_fit = w_tr * inverse_region_frequency_weights(region_tr)
-                else:
-                    w_tr_fit = w_tr
-
-                fold_lambda_smooth, fold_l2_reg, fold_grid_audit, fold_tuned_flag = (
-                    _pick_fold_hyperparams(
-                        X_tr, Y_tr, w_tr, groups_tr,
-                        n_feats_=1,
-                        fold_idx_=fold_idx,
-                        region_tr_=region_tr,
-                    )
-                )
-
-                model = manifold_regressor_cls(
-                    n_features=1, n_time_bins=n_time_bins,
-                    lambda_smooth=fold_lambda_smooth, l2_reg=fold_l2_reg,
-                    smoothness_derivative_order=smoothness_order,
-                    smoothness_reflective_edges=reflective_edges,
-                    huber_delta=hp['huber_delta'],
-                    learning_rate=hp['learning_rate'], max_iter=hp['max_iter'],
-                    tol=hp['tol'], random_state=hp['random_state'] + fold_idx,
-                    _use_lax_loop=use_lax_loop,
-                    metric=manifold_metric, period=manifold_period,
-                )
-                model.fit(X_tr, Y_tr, sample_weight=w_tr_fit)
-
-                metrics = model.evaluate_metrics(
-                    X_te, Y_te, weights=w_te,
-                    region_labels=region_te, min_region_events=_min_region_events,
-                    kappa=kappa_frozen, dcor_n_sub=_dcor_n_sub, dcor_n_rep=_dcor_n_rep,
-                )
-                y_pred_xy = model.predict(X_te, snap=True).astype(np.float32)
-                metrics.update(geodesic_mae_columns(
-                    y_pred_xy, Y_te, geodesic_ctx,
-                    region_labels=region_te, min_region_events=_min_region_events))
-
-                f_met = cand_data['folds']['metrics']
-                for _mk in f_met:
-                    f_met[_mk].append(metrics[_mk])
-
-                cand_data['folds']['weights'].append(basis_coefficients_to_frames(model.coef_, temporal_basis, n_features=1, axis=0) if temporal_basis is not None else model.coef_)
-                cand_data['folds']['basis_coefficients'].append(np.asarray(model.coef_) if temporal_basis is not None else None)
-                cand_data['folds']['intercepts'].append(model.intercept_)
-                cand_data['folds']['test_indices'].append(te_idx)
-                cand_data['folds']['y_true'].append(Y_te)
-                cand_data['folds']['w_test'].append(w_te)
-                cand_data['folds']['y_pred_xy'].append(y_pred_xy)
-                cand_data['folds']['n_iter'].append(int(model.n_iter_))
-                cand_data['folds']['converged'].append(bool(model.converged_))
-                cand_data['folds']['fit_time'].append(float(model.fit_time_))
-                cand_data['folds']['selected_lambda_smooth'].append(fold_lambda_smooth)
-                cand_data['folds']['selected_l2_reg'].append(fold_l2_reg)
-                cand_data['folds']['hyperparam_grid_audit'].append(fold_grid_audit)
-                cand_data['folds']['hyperparams_tuned'].append(fold_tuned_flag)
-
-                del model
-                gc.collect()
-            except Exception as e:
-                print(f"    [!] Error fitting anchor (Fold {fold_idx}): {e}")
-                _append_failed_fold(cand_data)
-
-        _all_anchor_scores = np.asarray(
-            cand_data['folds']['metrics'][SELECTION_SCORE_KEY], dtype=float
-        )
+        print(format_selection_step('Anchor', feature=anchor,
+                                    detail=f"top-ranked; forced as the first candidate, tested against "
+                                           f"{_STEP0_GATE_LABELS[step1_gate_baseline]}"))
+        cand_data = _manifold_fit_candidates([], [anchor])[anchor]
+        _all_anchor_scores = np.asarray(cand_data['folds']['metrics'][SELECTION_SCORE_KEY], dtype=float)
         valid_scores = _all_anchor_scores[np.isfinite(_all_anchor_scores)]
-        # Surface PARTIAL fold failure (some folds non-finite, others fine).
-        # The `else` below reports the all-folds-failed case; this warns on the
-        # otherwise-silent partial case, where the anchor's mean is quietly
-        # averaged over only the surviving folds while the run still reports
-        # success. On the euclidean path this signals iterative-fit
+        # Surface PARTIAL fold failure (some folds non-finite, others fine): the
+        # anchor's mean is quietly averaged over only the surviving folds while the
+        # run still reports success. On the euclidean path this signals iterative-fit
         # divergence (the closed-form torus estimator does not trip it).
         _n_anchor_folds = int(_all_anchor_scores.size)
         _n_anchor_bad = _n_anchor_folds - int(valid_scores.size)
@@ -6910,58 +8418,42 @@ def continuous_vocal_manifold_model_selection(
                 f"(fit failed / diverged); those folds are dropped from its mean. A large "
                 f"fraction indicates numerical instability — check the l2 grid floor."
             )
+        _require_scored_candidate('Anchor', 1, int(valid_scores.size))
+        step_test = None
         if valid_scores.size:
-            mean_anc = float(np.mean(valid_scores))
-            se_anc = (
+            cand_data['mean_r2'] = float(np.mean(valid_scores))
+            cand_data['se_r2'] = (
                 float(np.std(valid_scores, ddof=1) / np.sqrt(valid_scores.size))
                 if valid_scores.size > 1 else 0.0
             )
-
-            cand_data['mean_r2'] = mean_anc
-            cand_data['se_r2'] = se_anc
-
-            # Fold-grain acceptance: accept the anchor only if its PER-FOLD macro
-            # von Mises (torus) / dcor (euclidean) improvement over the current
-            # (baseline) model is consistently positive -- the bootstrap CI lower
-            # bound is > 0 -- so a feature that helps in only one or two folds
-            # cannot pass on the strength of a favourable fold split alone.
-            anchor_improvement = _fold_paired_margin_bootstrap(
-                cand_data['folds'], current_model_folds,
-                metric=_selection_manifold_metric, period=_selection_manifold_period,
-                **_gate_kwargs,
-                random_state=random_seed,
-                event_to_region=event_to_region, min_region_events=_min_region_events,
-                kappa=kappa_frozen,
-            )
-            cand_data['fold_improvement'] = anchor_improvement
-            if anchor_improvement['ci_low'] > 0.0:
-                print(format_selection_step(
-                    'Anchor', feature=anchor, decision='ACCEPT',
-                    metrics={SELECTION_SCORE_KEY: mean_anc},
-                    detail=(f"fold improvement +{anchor_improvement['mean_margin']:.4f} "
-                            f"CI [{anchor_improvement['ci_low']:+.4f}, {anchor_improvement['ci_high']:+.4f}]")))
-                best_current_score = mean_anc
-                current_model_folds = cand_data['folds']
-                current_model_features = [anchor]
-
-                step_1_res = {
-                    'step_idx': 1, 'current_features': [anchor],
-                    'baseline_score': best_current_score, 'selected_feature': anchor,
-                    'candidates_summary': {anchor: cand_data}
-                }
-                _dump_step_pickle(model_selection_dir / f"{prefix}1.pkl", _wrap_step(step_1_res))
-                step_counter = 2
-            else:
-                print(format_selection_step(
-                    'Anchor', feature=anchor, decision='REJECT',
-                    detail=(f"fold-improvement CI includes 0 "
-                            f"(+{anchor_improvement['mean_margin']:.4f} "
-                            f"CI [{anchor_improvement['ci_low']:+.4f}, {anchor_improvement['ci_high']:+.4f}]); "
-                            f"continuing from empty model")))
+            # The forced anchor is tested like every winner, with Bonferroni over every
+            # screened feature it was forced ahead of.
+            step_test = _manifold_step_test(anchor, 1, len(ranked_features))
+        anchor_accepted = step_test is not None and step_test['accepted']
+        step_1_res = {
+            'step_idx': 1,
+            'current_features': [anchor] if anchor_accepted else [],
+            'baseline_score': best_current_score,
+            'baseline_folds': current_model_folds,
+            'selected_feature': anchor if anchor_accepted else None,
+            'candidates_summary': {anchor: cand_data} if valid_scores.size else {},
+            'step_test': step_test,
+        }
+        _dump_step_pickle(model_selection_dir / f"{prefix}1.pkl", _wrap_step(step_1_res))
+        if anchor_accepted:
+            print(format_selection_step(
+                'Anchor', feature=anchor, decision='ACCEPT',
+                metrics={SELECTION_SCORE_KEY: cand_data['mean_r2'], 'p_adj': step_test['p_adjusted']}))
+            best_current_score = cand_data['mean_r2']
+            current_model_folds = cand_data['folds']
+            current_model_features = [anchor]
+            step_counter = 2
         else:
             print(format_selection_step(
-                'Anchor', feature=anchor, decision='FAILED',
-                detail='every fold errored out; continuing from empty model'))
+                'Anchor', feature=anchor, decision='REJECT',
+                detail=('every fold errored out' if not valid_scores.size
+                        else 'the forced anchor failed the shift test') + '; selection finished'))
+            resume_converged = True
 
     # Forward stepwise selection loop
     print("\n--- Starting Forward Selection ---")
@@ -6972,130 +8464,20 @@ def continuous_vocal_manifold_model_selection(
             'step_idx': step_counter, 'current_features': list(current_model_features),
             'baseline_score': best_current_score, 'baseline_folds': current_model_folds,
             'candidates_summary': {},
-            'selected_feature': None
+            'selected_feature': None,
+            'step_test': None,
         }
 
-        # R^2 is higher-is-better; initialise the per-step best score at
+        candidates_this_step = [feat for feat in ranked_features if feat not in current_model_features]
+        m_candidates = len(candidates_this_step)
+        per_candidate = _manifold_fit_candidates(current_model_features, candidates_this_step)
+
+        # The score is higher-is-better; initialise the per-step best score at
         # `-inf` so any finite candidate score is an improvement.
         best_cand, best_cand_score = None, float('-inf')
-
-        # The already-selected base block is identical across every candidate in
-        # this step, so build it once per fold here instead of re-hstacking it
-        # inside the candidate loop. `None` marks the step-0 empty base
-        # (np.hstack of [] would raise); the candidate loop then slices only the
-        # new feature and hstacks it on. Byte-identical: hstack is associative
-        # column-wise, so hstack([base, new]) == hstack(base_cols + [new]).
-        # Mirrors the bout-parameter / multinomial selectors' base caching.
-        fold_base_tr, fold_base_te = [], []
-        for tr_idx, te_idx in cv_folds:
-            fold_base_tr.append(
-                np.hstack([binned_data[f][tr_idx] for f in current_model_features])
-                if current_model_features else None
-            )
-            fold_base_te.append(
-                np.hstack([binned_data[f][te_idx] for f in current_model_features])
-                if current_model_features else None
-            )
-
-        for _i_feat, feat in enumerate(ranked_features):
-            if feat in current_model_features:
-                continue
-            gc.collect()
-
-            trial_feats = [*current_model_features, feat]
-            n_trial_feats = len(trial_feats)
-
-            cand_data = _make_manifold_cand_data()
-
-            for fold_idx, (tr_idx, te_idx) in enumerate(cv_folds):
-                try:
-                    # Reuse the per-fold cached base block; slice only the new
-                    # candidate and hstack it on. Byte-identical to hstacking
-                    # the full trial set.
-                    new_tr = binned_data[feat][tr_idx]
-                    new_te = binned_data[feat][te_idx]
-                    base_tr = fold_base_tr[fold_idx]
-                    base_te = fold_base_te[fold_idx]
-                    X_tr_stacked = np.hstack([base_tr, new_tr]) if base_tr is not None else new_tr
-                    X_te_stacked = np.hstack([base_te, new_te]) if base_te is not None else new_te
-                    Y_tr, Y_te = y_global[tr_idx], y_global[te_idx]
-                    w_tr, w_te = w_global[tr_idx], w_global[te_idx]
-                    groups_tr = groups_global[tr_idx]
-                    region_tr, region_te = region_global[tr_idx], region_global[te_idx]
-
-                    # Equal-region fit reweighting (torus only), as in the anchor.
-                    if manifold_metric == 'torus':
-                        w_tr_fit = w_tr * inverse_region_frequency_weights(region_tr)
-                    else:
-                        w_tr_fit = w_tr
-
-                    # Per-fold hyperparameters. When tuning is off,
-                    # `_pick_fold_hyperparams` returns the fixed centres
-                    # with the standard `1 / sqrt(n_trial_feats)` rescale
-                    # on l2 so larger trial models don't silently get
-                    # over-regularised as the selector grows. When tuning
-                    # is on, the inner CV searches a rescaled grid with
-                    # the same centre structure.
-                    fold_lambda_smooth, fold_l2_reg, fold_grid_audit, fold_tuned_flag = (
-                        _pick_fold_hyperparams(
-                            X_tr_stacked, Y_tr, w_tr, groups_tr,
-                            n_feats_=n_trial_feats,
-                            fold_idx_=fold_idx,
-                            region_tr_=region_tr,
-                        )
-                    )
-
-                    model = manifold_regressor_cls(
-                        n_features=n_trial_feats, n_time_bins=n_time_bins,
-                        lambda_smooth=fold_lambda_smooth, l2_reg=fold_l2_reg,
-                        smoothness_derivative_order=smoothness_order,
-                        smoothness_reflective_edges=reflective_edges,
-                        huber_delta=hp['huber_delta'],
-                        learning_rate=hp['learning_rate'], max_iter=hp['max_iter'],
-                        tol=hp['tol'], random_state=hp['random_state'] + fold_idx,
-                        _use_lax_loop=use_lax_loop,
-                        metric=manifold_metric, period=manifold_period,
-                    )
-                    model.fit(X_tr_stacked, Y_tr, sample_weight=w_tr_fit)
-
-                    metrics = model.evaluate_metrics(
-                        X_te_stacked, Y_te, weights=w_te,
-                        region_labels=region_te, min_region_events=_min_region_events,
-                        kappa=kappa_frozen, dcor_n_sub=_dcor_n_sub, dcor_n_rep=_dcor_n_rep,
-                    )
-                    y_pred_xy = model.predict(X_te_stacked, snap=True).astype(np.float32)
-                    metrics.update(geodesic_mae_columns(
-                    y_pred_xy, Y_te, geodesic_ctx,
-                    region_labels=region_te, min_region_events=_min_region_events))
-
-                    f_met = cand_data['folds']['metrics']
-                    for _mk in f_met:
-                        f_met[_mk].append(metrics[_mk])
-
-                    cand_data['folds']['weights'].append(basis_coefficients_to_frames(model.coef_, temporal_basis, n_features=n_trial_feats, axis=0) if temporal_basis is not None else model.coef_)
-                    cand_data['folds']['basis_coefficients'].append(np.asarray(model.coef_) if temporal_basis is not None else None)
-                    cand_data['folds']['intercepts'].append(model.intercept_)
-                    cand_data['folds']['test_indices'].append(te_idx)
-                    cand_data['folds']['y_true'].append(Y_te)
-                    cand_data['folds']['w_test'].append(w_te)
-                    cand_data['folds']['y_pred_xy'].append(y_pred_xy)
-                    cand_data['folds']['n_iter'].append(int(model.n_iter_))
-                    cand_data['folds']['converged'].append(bool(model.converged_))
-                    cand_data['folds']['fit_time'].append(float(model.fit_time_))
-                    cand_data['folds']['selected_lambda_smooth'].append(fold_lambda_smooth)
-                    cand_data['folds']['selected_l2_reg'].append(fold_l2_reg)
-                    cand_data['folds']['hyperparam_grid_audit'].append(fold_grid_audit)
-                    cand_data['folds']['hyperparams_tuned'].append(fold_tuned_flag)
-
-                    del model, X_tr_stacked, X_te_stacked
-                    gc.collect()
-                except Exception as e:
-                    print(f"    [!] Error fitting {feat} (Fold {fold_idx}): {e}")
-                    _append_failed_fold(cand_data)
-
-            _all_cand_scores = np.asarray(
-                cand_data['folds']['metrics'][SELECTION_SCORE_KEY], dtype=float
-            )
+        for feat in candidates_this_step:
+            cand_data = per_candidate[feat]
+            _all_cand_scores = np.asarray(cand_data['folds']['metrics'][SELECTION_SCORE_KEY], dtype=float)
             valid_scores = _all_cand_scores[np.isfinite(_all_cand_scores)]
             # Surface PARTIAL fold failure for this candidate (some folds
             # diverged, others survived): otherwise the candidate's mean is
@@ -7131,52 +8513,33 @@ def continuous_vocal_manifold_model_selection(
             if mean_score > best_cand_score:
                 best_cand_score, best_cand = mean_score, feat
 
-        # Fold-grain acceptance for the step winner. Candidates were ranked above
-        # by the (cheap) fold-mean score, which is a monotone proxy for the
-        # per-fold improvement: within a step the current-model term is constant,
-        # so the highest-scoring candidate is also the largest-margin one. The
-        # ACCEPT decision then rests on that winner's PER-FOLD macro von Mises
-        # (torus) / dcor (euclidean) improvement over the current model -- the
-        # bootstrap CI lower bound must exceed 0 (a consistent-across-folds gain).
-        # The bootstrap is run once per step (on the winner only) to keep the
-        # cost bounded.
-        step_improvement = None
-        if best_cand is not None:
-            best_cand_folds = step_results['candidates_summary'][best_cand]['folds']
-            step_improvement = _fold_paired_margin_bootstrap(
-                best_cand_folds, current_model_folds,
-                metric=_selection_manifold_metric, period=_selection_manifold_period,
-                **_gate_kwargs,
-                random_state=random_seed,
-                event_to_region=event_to_region, min_region_events=_min_region_events,
-                kappa=kappa_frozen,
-            )
-            step_results['candidates_summary'][best_cand]['fold_improvement'] = step_improvement
+        # The cross-validated winner is tested with the per-step shift test, Bonferroni
+        # over the m candidates of this step; the step is accepted only when no shifted
+        # refit reaches the observed in-sample gain.
+        _require_scored_candidate(f"Step {step_counter}", m_candidates, int(best_cand is not None))
+        step_test = (_manifold_step_test(best_cand, step_counter, m_candidates)
+                     if best_cand is not None else None)
+        step_results['step_test'] = step_test
 
-        if step_improvement is not None and step_improvement['ci_low'] > 0.0:
+        if step_test is not None and step_test['accepted']:
             print(format_selection_step(
                 f"Step {step_counter}", feature=best_cand, decision='ACCEPT',
-                detail=(f"fold improvement +{step_improvement['mean_margin']:.4f} "
-                        f"CI [{step_improvement['ci_low']:+.4f}, {step_improvement['ci_high']:+.4f}]")))
+                metrics={SELECTION_SCORE_KEY: best_cand_score, 'p_adj': step_test['p_adjusted']}))
             step_results['selected_feature'] = best_cand
             current_model_features.append(best_cand)
-            current_model_folds = best_cand_folds
+            current_model_folds = step_results['candidates_summary'][best_cand]['folds']
 
             _dump_step_pickle(model_selection_dir / f"{prefix}{step_counter}.pkl", _wrap_step(step_results))
 
             best_current_score = best_cand_score
             step_counter += 1
         else:
-            if step_improvement is not None:
-                print(format_selection_step(
-                    f"Step {step_counter}", feature=best_cand, decision='REJECT',
-                    detail=(f"fold-improvement CI includes 0 "
-                            f"(+{step_improvement['mean_margin']:.4f} "
-                            f"CI [{step_improvement['ci_low']:+.4f}, {step_improvement['ci_high']:+.4f}]); "
-                            f"selection finished")))
+            if best_cand is None:
+                reject_detail = 'no candidate had finite folds; selection finished'
             else:
-                print(format_selection_step(f"Step {step_counter}", decision='REJECT',
-                                            detail='no candidate improved; selection finished'))
+                reject_detail = (f"winner {best_cand!r} failed the shift test "
+                                 f"(p_adj {step_test['p_adjusted']:.4f} vs alpha {p_val}); selection finished")
+            print(format_selection_step(f"Step {step_counter}", decision='REJECT', detail=reject_detail))
             step_results['selected_feature'] = None
             _dump_step_pickle(model_selection_dir / f"{prefix}{step_counter}.pkl", _wrap_step(step_results))
             break

@@ -33,7 +33,6 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-from numpy.lib.stride_tricks import sliding_window_view
 from pygam import LogisticGAM, te
 from sklearn.linear_model import LogisticRegressionCV
 from sklearn.metrics import (
@@ -72,6 +71,7 @@ from .modeling_utils import (
     build_vocal_signal_columns,
     classification_inner_cv_splits,
     concat_two_class_with_labels,
+    cut_history_windows,
     expected_calibration_error,
     format_split_line,
     harmonize_session_columns,
@@ -86,6 +86,8 @@ from .modeling_utils import (
     select_kinematic_columns,
     shuffle_train_test_arrays,
     unroll_history_matrix,
+    valid_window_starts,
+    write_feature_traces,
     zscore_features_across_sessions,
 )
 
@@ -126,25 +128,12 @@ def _collect_category_windows(times: np.ndarray,
         fully-populated history windows (in `column_data`'s dtype).
     """
 
-    ends = np.round(times * sampling_rate).astype(int)
-    starts = ends - history_frames
-    valid_mask = (starts >= 0) & (ends <= max_frame_idx)
-    if not np.any(valid_mask):
-        return np.empty((0, history_frames), dtype=column_data.dtype)
-    valid_starts = starts[valid_mask]
-    # NaN -> 0 over the whole trace once (matches the old per-chunk
-    # `chunk[np.isnan(chunk)] = 0.0`), then gather every valid history window in
-    # a single fancy-index op instead of slicing row-by-row. Each window has
-    # fixed width `history_frames`, so `sliding_window_view`'s row `s` is exactly
-    # `column_data[s : s + history_frames]` == the old `column_data[s:e]`
-    # (`e == s + history_frames`). `valid_mask` guarantees `0 <= s` and
-    # `e <= max_frame_idx <= len(column_data)`, so every gathered start lies in
-    # the view's legal range and the result is byte-identical to the loop (same
-    # dtype, same NaN treatment). The `.copy()` detaches the gathered rows from
-    # the cleaned-trace buffer.
-    clean = np.nan_to_num(column_data, nan=0.0)
-    windows = sliding_window_view(clean, history_frames)
-    return windows[valid_starts].copy()
+    # One window cutter for every extraction and for the per-step shift test:
+    # `valid_window_starts` keeps the events whose window `[end - history_frames,
+    # end)` lies inside `[0, max_frame_idx]`, `cut_history_windows` gathers the
+    # windows with NaN -> 0 inside each (`(0, history_frames)` when none is kept).
+    starts, _ = valid_window_starts(np.round(times * sampling_rate).astype(int), history_frames, max_frame_idx)
+    return cut_history_windows(column_data, starts, history_frames)
 
 
 class VocalCategoryModelingPipeline(FeatureZoo):
@@ -503,6 +492,12 @@ class VocalCategoryModelingPipeline(FeatureZoo):
 
         print("Extracting epochs...")
         final_data = {}
+        # The per-step shift test re-cuts a feature's windows from its processed
+        # trace after a circular shift: every session's kept window start frames
+        # (per class) and every feature's processed trace are recorded alongside
+        # the windows (the traces in an HDF5 sidecar next to the pickle).
+        session_window_starts = {}
+        feature_traces = {}
         for sess_id in tqdm(processed_beh_data.keys(), desc='Sessions'):
             sess_df = processed_beh_data[sess_id]
             t_name = mouse_names_dict[sess_id][targ_idx]
@@ -517,14 +512,27 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             # to None and only fills them for mice that retain USVs after the
             # noise/history filters. A target mouse that never vocalized in a
             # session therefore leaves the keys present but None; skip it here
-            # so the None never reaches `_collect_category_windows`, where
-            # `np.round(None * sampling_rate)` would raise an uncaught
+            # so the None never reaches `valid_window_starts` below, where
+            # `np.asarray(None, dtype=float) * fps` would raise an uncaught
             # TypeError and abort the whole epoch-extraction loop.
             if target_times is None or other_times is None:
                 continue
 
             fps = cam_fps_dict[sess_id]
             hist_frames = self.history_frames
+            n_frames = int(sess_df.height)
+            # Window starts are the same for every column of the session (one
+            # recording length, one set of event times): cut them once.
+            target_starts, _ = valid_window_starts(
+                np.round(np.asarray(target_times, dtype=float) * fps).astype(int), hist_frames, n_frames,
+            )
+            other_starts, _ = valid_window_starts(
+                np.round(np.asarray(other_times, dtype=float) * fps).astype(int), hist_frames, n_frames,
+            )
+            session_window_starts[sess_id] = {
+                'target': target_starts, 'other': other_starts,
+                'n_frames': n_frames, 'fps': float(fps),
+            }
 
             for col in sess_df.columns:
                 suffix = col.split('.')[-1]
@@ -543,15 +551,19 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                     final_data[gen_key][sess_id] = {}
 
                 col_data = sess_df[col].to_numpy()
-                max_idx = len(col_data)
 
                 # Events whose full history window does not fit inside the
-                # session recording are dropped at extraction time instead of
-                # being carried forward as NaN rows. Downstream pooling /
+                # session recording were dropped by `valid_window_starts` above
+                # instead of being carried forward as NaN rows. Downstream pooling /
                 # balancing helpers do not filter NaN, so leaving them in
-                # would silently corrupt basis projections.
-                t_arr = _collect_category_windows(target_times, col_data, fps, hist_frames, max_idx)
-                o_arr = _collect_category_windows(other_times, col_data, fps, hist_frames, max_idx)
+                # would silently corrupt basis projections. `cut_history_windows` is
+                # the one window cutter the extraction and the shift test share
+                # (NaN -> 0 inside the window).
+                t_arr = cut_history_windows(col_data, target_starts, hist_frames)
+                o_arr = cut_history_windows(col_data, other_starts, hist_frames)
+                if gen_key not in feature_traces:
+                    feature_traces[gen_key] = {}
+                feature_traces[gen_key][sess_id] = col_data
                 final_data[gen_key][sess_id]['target_feature_arr'] = t_arr
                 final_data[gen_key][sess_id]['other_feature_arr'] = o_arr
 
@@ -599,10 +611,20 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         input_metadata['n_events_per_session'] = n_events_per_session
         input_metadata['feature_zoo_kept'] = sorted(final_data.keys())
 
+        # The per-step shift test's inputs: the processed traces and the kept window
+        # start frames per session and class go to an HDF5 sidecar next to the
+        # pickle (one dataset per feature and session, one per session and class);
+        # the metadata records only the sidecar's path, so it stays JSON-like.
+        traces_path = save_dir / f"{Path(fname).stem}_traces.h5"
+        with atomic_output_path(traces_path) as temporary_traces_path:
+            write_feature_traces(temporary_traces_path, feature_traces, session_window_starts)
+        input_metadata['traces_path'] = str(traces_path)
+
         artifact = inject_metadata(final_data, _input_metadata=input_metadata)
         with atomic_output_path(save_path) as temporary_path, temporary_path.open('wb') as f:
             pickle.dump(artifact, f)
-        print(f"\n[+] Successfully saved category input data to:\n    {save_path}")
+        print(f"\n[+] Successfully saved category input data to:\n    {save_path}"
+              f"\n    and the processed traces of {len(feature_traces)} feature(s) to:\n    {traces_path}")
 
     def create_category_splits(self, feature_data: dict, strategy: str = 'actual'):
         """

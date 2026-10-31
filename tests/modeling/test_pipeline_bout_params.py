@@ -83,10 +83,16 @@ import pytest
 mpl.use('Agg')
 
 from tests.modeling._synth import (
+    attach_shift_test_sidecar,
     build_modeling_settings,
     build_session_tree,
     fit_counting_subclass,
     write_session_list_file,
+)
+from usv_playpen.modeling.modeling_utils import (
+    cut_history_windows,
+    read_feature_trace,
+    read_window_starts,
 )
 
 # The modeling import chain pulls optax -> a one-time JAX DeprecationWarning.
@@ -210,6 +216,8 @@ def _build_params_input_pickle(
         }
 
     artifact['_input_metadata'] = {'analysis_tag': 'bout_durations'}
+    attach_shift_test_sidecar(artifact, save_path, history_frames, slots={'X': 'X'}, fps=CAMERA_FPS,
+                              layout='global', seed=seed)
 
     save_path.parent.mkdir(parents=True, exist_ok=True)
     with save_path.open('wb') as fh:
@@ -406,6 +414,20 @@ class TestBoutParameterExtraction:
         assert md['analysis_type'] == 'params'
         assert md['analysis_tag'] == 'bout_durations'
         assert md['analysis_specific']['target_variable'] == 'bout_durations'
+        # The per-step shift test's inputs: the rows of a session in the global ``X``
+        # are its window starts in order, and every row re-cuts exactly from the
+        # session's processed trace in the HDF5 sidecar at lag zero.
+        assert Path(md['traces_path']).is_file()
+        assert Path(md['traces_path']).name == f"{pkls[0].stem}_traces.h5"
+        assert 'window_starts' not in md
+        window_starts = read_window_starts(md['traces_path'])
+        for feat in feature_keys:
+            for sess_id, entry in window_starts.items():
+                rows = np.where(ref_groups == sess_id)[0]
+                assert rows.size == len(entry['X'])
+                rebuilt = cut_history_windows(read_feature_trace(md['traces_path'], feat, sess_id),
+                                              entry['X'], HISTORY_FRAMES)
+                np.testing.assert_array_equal(rebuilt, artifact[feat]['X'][rows])
         # n_events_per_session is backfilled from the anchor feature's groups.
         assert sum(v['bout_onsets'] for v in md['n_events_per_session'].values()) == n_bouts
 

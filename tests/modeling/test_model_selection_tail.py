@@ -58,6 +58,7 @@ import pytest
 mpl.use('Agg')
 
 from tests.modeling._synth import (
+    attach_shift_test_sidecar,
     build_modeling_input_pickle,
     build_modeling_settings,
     build_session_tree,
@@ -79,6 +80,8 @@ with warnings.catch_warnings():
         vocal_category_model_selection,
         vocal_onset_model_selection,
     )
+    from usv_playpen.modeling.modeling_utils import write_feature_traces
+    from usv_playpen.modeling.step_shift_test import STEP_TEST_RULE
 
 
 # Tiny-data geometry. ``HISTORY_FRAMES`` is the column count of every per-event
@@ -234,12 +237,64 @@ def _make_onset_inputs(tmp_path: Path, feature_names, n_sessions=N_SESSIONS,
         n_usv=n_usv,
         n_no_usv=n_no_usv,
         input_metadata={'analysis_tag': 'bout'},
+        fps=CAMERA_FPS,
     )
     ranking_pkl = _write_onset_univariate_ranking(
         save_path=tmp_path / 'univariate_combined.pkl',
         feature_names=feature_names,
     )
     return str(input_pkl), str(ranking_pkl), session_ids
+
+
+def _step_test_run_metadata() -> dict:
+    """
+    Description
+    -----------
+    The smallest ``_run_metadata`` block a hand-written checkpoint needs so that a
+    resume accepts it: the per-step rule tag the selectors require
+    (``extra_knobs.step_test.rule``), without which a checkpoint is refused as written
+    under another acceptance rule.
+
+    Returns
+    -------
+    run_metadata (dict)
+        ``{'extra_knobs': {'step_test': {'rule': STEP_TEST_RULE}}}``.
+    """
+
+    return {'extra_knobs': {'step_test': {'rule': STEP_TEST_RULE}}}
+
+
+def _rejecting_step_test(**kwargs) -> dict:
+    """
+    Description
+    -----------
+    Stand-in for ``run_step_shift_test`` that rejects every winner without running a
+    single shifted refit: a record with one null draw at the observed gain (the first
+    exceedance ends the step). Used by the tests of the control flow around a rejected
+    step, where the draws themselves are not under test.
+
+    Parameters
+    ----------
+    **kwargs
+        The keyword arguments the selectors pass to ``run_step_shift_test``.
+
+    Returns
+    -------
+    record (dict)
+        A rejecting ``step_test`` block.
+    """
+
+    return {
+        'rule': STEP_TEST_RULE, 'statistic': kwargs['statistic_name'], 'winner': kwargs['winner'],
+        'incumbent_features': list(kwargs['incumbent_features']), 'm_candidates': int(kwargs['m_candidates']),
+        'alpha': float(kwargs['alpha']), 'n_refits': int(kwargs['m_candidates'] / kwargs['alpha']),
+        'n_draws_run': 1, 'k_exceed': 1, 'p': 1.0, 'p_adjusted': 1.0, 'accepted': False, 'early_stop': True,
+        't_obs': 0.0, 't_null': np.array([0.0]), 'draw_indices': np.array([0]), 'lags': np.zeros((1, 0), dtype=int),
+        'session_order': [], 'min_lag_frames': int(kwargs['min_lag_frames']),
+        'seed': [int(kwargs['random_seed']), int(kwargs['step_index'])],
+        'score_incumbent': float(kwargs['incumbent_score']), 'score_winner': float(kwargs['observed_score']),
+        'refit_seconds': np.array([0.0]), 'wall_seconds': 0.0,
+    }
 
 
 def _settings_json(tmp_path: Path, settings: dict) -> str:
@@ -425,6 +480,7 @@ class TestBoutOnsetSelectionBranches:
             history_frames=HISTORY_FRAMES,
             n_usv=20, n_no_usv=30,
             input_metadata={'analysis_tag': 'bout'},
+            fps=CAMERA_FPS,
         ))
         ranking_pkl = str(_write_onset_univariate_ranking(
             save_path=tmp_path / 'univariate_combined.pkl',
@@ -497,6 +553,7 @@ class TestBoutOnsetSelectionBranches:
             'candidates_summary': {
                 'self.speed': {'mean_ll': 0.10, 'se_ll': 0.01, 'll': [0.10, 0.10]},
             },
+            '_run_metadata': _step_test_run_metadata(),
         }
         with (ms_dir / f'{prefix}0.pkl').open('wb') as fh:
             pickle.dump(checkpoint, fh)
@@ -516,11 +573,10 @@ class TestBoutOnsetSelectionBranches:
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     def test_all_folds_fail_raises_runtimeerror(self, tmp_path, monkeypatch):
         """
-        Forcing every ``LogisticGAM`` fit to raise makes every selection fold fail
-        (so the anchored Step-0 records no valid log-loss and no step pickle is
-        written), and the final filter-shape refit therefore produces an empty
-        fold list. The caller-side guard raises ``RuntimeError`` rather than
-        silently emitting an artifact with no usable per-fold filter data.
+        Forcing every ``LogisticGAM`` fit to raise makes every fold of the forced
+        anchor fail. A step with no valid fold score cannot be decided, so the
+        selector raises ``RuntimeError`` (naming the folds) instead of recording a
+        rejection and finishing as an empty selection, which would hide the failure.
         """
 
         class _BoomGAM:
@@ -615,6 +671,7 @@ class TestBoutOnsetSelectionBranches:
             history_frames=HISTORY_FRAMES,
             n_usv=24, n_no_usv=40,
             input_metadata=input_md,
+            fps=CAMERA_FPS,
         ))
         ranking_path = tmp_path / 'univariate_combined.pkl'
         _write_onset_univariate_ranking(save_path=ranking_path, feature_names=feature_names)
@@ -669,6 +726,7 @@ class TestBoutOnsetSelectionBranches:
             history_frames=HISTORY_FRAMES,
             n_usv=24, n_no_usv=40,
             input_metadata=input_md,
+            fps=CAMERA_FPS,
         ))
         ranking_path = tmp_path / 'univariate_combined.pkl'
         _write_onset_univariate_ranking(save_path=ranking_path, feature_names=feature_names)
@@ -703,9 +761,13 @@ class TestPooledCacheMisalignment:
         """
         If a non-anchor feature has a different pooled (positive, negative) sample
         count than the anchor, the 'mixed' fold indices would silently misindex
-        it; the selector raises ``ValueError`` at cache-build time. Built by
-        making one feature carry fewer positive events per session than the
-        anchor.
+        it. The per-step shift test's lag-zero re-cut now catches this before any
+        cache is built: every feature's windows must re-cut from its trace at the
+        session's stored start frames, and a feature with fewer windows than
+        starts does not, so the selector raises ``ValueError`` there (the
+        cache-build guard stays behind it as a second line). Built by making one
+        feature carry fewer positive events per session than the anchor, with a
+        sidecar whose start frames are the anchor's.
         """
 
         session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
@@ -720,7 +782,26 @@ class TestPooledCacheMisalignment:
                     'usv_feature_arr': rng.standard_normal((n_usv, HISTORY_FRAMES)),
                     'no_usv_feature_arr': rng.standard_normal((40, HISTORY_FRAMES)),
                 }
-        artifact['_input_metadata'] = {'analysis_tag': 'bout'}
+        # The sidecar: a trace per feature and session that contains the anchor's 24 + 40
+        # windows back to back, so the anchor re-cuts exactly and the short feature cannot.
+        spacing = HISTORY_FRAMES + 1
+        window_starts, traces = {}, {feat: {} for feat in artifact}
+        for sess in session_ids:
+            usv_starts = np.arange(24) * spacing + spacing
+            no_usv_starts = np.arange(40) * spacing + usv_starts[-1] + 2 * spacing
+            n_frames = int(no_usv_starts[-1] + 2 * spacing)
+            window_starts[sess] = {'usv': usv_starts, 'no_usv': no_usv_starts, 'n_frames': n_frames, 'fps': CAMERA_FPS}
+            for feat in artifact:
+                trace = rng.standard_normal(n_frames)
+                for start, window in zip(usv_starts[:artifact[feat][sess]['usv_feature_arr'].shape[0]],
+                                         artifact[feat][sess]['usv_feature_arr'], strict=False):
+                    trace[start:start + HISTORY_FRAMES] = window
+                for start, window in zip(no_usv_starts, artifact[feat][sess]['no_usv_feature_arr'], strict=True):
+                    trace[start:start + HISTORY_FRAMES] = window
+                traces[feat][sess] = trace
+        traces_path = tmp_path / 'modeling_input_traces.h5'
+        write_feature_traces(traces_path, traces, window_starts)
+        artifact['_input_metadata'] = {'analysis_tag': 'bout', 'traces_path': str(traces_path)}
         input_pkl = tmp_path / 'modeling_input.pkl'
         with input_pkl.open('wb') as fh:
             pickle.dump(artifact, fh)
@@ -734,7 +815,7 @@ class TestPooledCacheMisalignment:
                                       split_strategy='mixed', split_num=2)
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
-        with pytest.raises(ValueError, match="misalignment"):
+        with pytest.raises(ValueError, match="do not match the stored windows"):
             vocal_onset_model_selection(
                 univariate_results_path=ranking_pkl,
                 input_data_path=str(input_pkl),
@@ -819,20 +900,26 @@ def _write_category_input_pickle(save_path, feature_names, session_ids,
                 'other_feature_arr': other_arr,
             }
     artifact['_input_metadata'] = _category_input_metadata()
+    attach_shift_test_sidecar(
+        artifact, save_path, HISTORY_FRAMES,
+        slots={'target': 'target_feature_arr', 'other': 'other_feature_arr'}, fps=CAMERA_FPS, seed=seed,
+    )
     save_path.parent.mkdir(parents=True, exist_ok=True)
     with save_path.open('wb') as fh:
         pickle.dump(artifact, fh)
     return save_path
 
 
-def _write_category_ranking(save_path, feature_names, n_folds=4):
+def _write_category_ranking(save_path, feature_names, n_folds=4, input_pickle=None):
     """
     Description
     -----------
     Synthesizes the consolidated univariate ranking pickle the category selector
     screens, with a strong-signal ``actual`` log-loss far below a chance-level
     ``null`` so the Bonferroni screen admits every feature. Carries the reserved
-    ``_input_metadata`` block (the selector prefers it over the input pickle's).
+    ``_input_metadata`` block (the selector prefers it over the input pickle's):
+    copied from ``input_pickle`` when given, as the univariate dispatcher copies
+    it, so the block names the trace sidecar the selector requires.
 
     Parameters
     ----------
@@ -842,6 +929,9 @@ def _write_category_ranking(save_path, feature_names, n_folds=4):
         Feature keys to emit, in desired rank order.
     n_folds (int)
         Per-fold log-loss entry count per branch.
+    input_pickle (str | pathlib.Path | None)
+        The modeling input pickle whose ``_input_metadata`` the ranking carries;
+        ``None`` writes the bare category block (no sidecar).
 
     Returns
     -------
@@ -855,7 +945,11 @@ def _write_category_ranking(save_path, feature_names, n_folds=4):
             'actual': {'ll': np.full(n_folds, 0.20 + 0.01 * f_idx, dtype=float)},
             'null': {'ll': np.full(n_folds, 0.69, dtype=float)},
         }
-    artifact['_input_metadata'] = _category_input_metadata()
+    if input_pickle is None:
+        artifact['_input_metadata'] = _category_input_metadata()
+    else:
+        with Path(input_pickle).open('rb') as fh:
+            artifact['_input_metadata'] = pickle.load(fh)['_input_metadata']
     save_path.parent.mkdir(parents=True, exist_ok=True)
     with save_path.open('wb') as fh:
         pickle.dump(artifact, fh)
@@ -880,7 +974,7 @@ class TestCategorySelectionBranches:
         input_pkl = str(_write_category_input_pickle(
             tmp_path / 'modeling_input.pkl', feature_names, session_ids))
         ranking_pkl = str(_write_category_ranking(
-            tmp_path / 'univariate_combined.pkl', feature_names))
+            tmp_path / 'univariate_combined.pkl', feature_names, input_pickle=input_pkl))
 
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
@@ -908,7 +1002,7 @@ class TestCategorySelectionBranches:
         input_pkl = str(_write_category_input_pickle(
             tmp_path / 'modeling_input.pkl', feature_names, session_ids))
         ranking_pkl = str(_write_category_ranking(
-            tmp_path / 'univariate_combined.pkl', feature_names))
+            tmp_path / 'univariate_combined.pkl', feature_names, input_pickle=input_pkl))
 
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
@@ -966,10 +1060,10 @@ class TestCategorySelectionBranches:
         """
         Forcing ``LogisticRegressionCV.fit`` to raise makes every category
         selection fold fail; the per-fold ``except`` appends NaN placeholders
-        (and a NaN-filled (2, 2) confusion matrix), the anchored Step-0 records no
-        valid log-loss, the forward loop's no-finite-folds skip fires, the REJECT
-        branch persists the (empty-candidate) step pickle, and the final refit then
-        raises the forced failure instead of passing as a finished selection.
+        (and a NaN-filled (2, 2) confusion matrix), so the forced anchor has no
+        valid fold score. Such a step cannot be decided: the selector raises
+        ``RuntimeError`` instead of recording a rejection and passing as a finished
+        (empty) selection.
         """
 
         class _BoomLRCV:
@@ -1026,11 +1120,11 @@ class TestCategorySelectionBranches:
         input_pkl = str(_write_category_input_pickle(
             tmp_path / 'modeling_input.pkl', feature_names, session_ids))
         ranking_pkl = str(_write_category_ranking(
-            tmp_path / 'univariate_combined.pkl', feature_names))
+            tmp_path / 'univariate_combined.pkl', feature_names, input_pickle=input_pkl))
 
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
-        with pytest.raises(RuntimeError, match="forced LRCV failure"):
+        with pytest.raises(RuntimeError, match="valid fold score"):
             vocal_category_model_selection(
                 univariate_results_path=ranking_pkl,
                 input_data_path=input_pkl,
@@ -1039,9 +1133,9 @@ class TestCategorySelectionBranches:
                 use_top_rank_as_anchor=True,
                 p_val=0.5,
             )
-        # Every fold failed -> the forward loop rejects immediately and the
-        # REJECT branch still persists the (empty-candidate) step pickle.
-        assert len(list(ms_dir.glob('model_selection_category_*_step_*.pkl'))) >= 1
+        # The run stopped before any decision: no step file is written, so a rerun
+        # starts fresh instead of resuming a "converged" empty selection.
+        assert list(ms_dir.glob('model_selection_category_*_step_*.pkl')) == []
 
     @pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
     @pytest.mark.filterwarnings("ignore::sklearn.exceptions.UndefinedMetricWarning")
@@ -1061,7 +1155,7 @@ class TestCategorySelectionBranches:
         input_pkl = str(_write_category_input_pickle(
             tmp_path / 'modeling_input.pkl', feature_names, session_ids))
         ranking_pkl = str(_write_category_ranking(
-            tmp_path / 'univariate_combined.pkl', feature_names))
+            tmp_path / 'univariate_combined.pkl', feature_names, input_pickle=input_pkl))
 
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
@@ -1074,6 +1168,7 @@ class TestCategorySelectionBranches:
             'candidates_summary': {
                 'self.speed': {'mean_ll': 0.10, 'se_ll': 0.01, 'll': [0.10, 0.10]},
             },
+            '_run_metadata': _step_test_run_metadata(),
         }
         with (ms_dir / f'{prefix}0.pkl').open('wb') as fh:
             pickle.dump(checkpoint, fh)
@@ -1111,7 +1206,7 @@ class TestCategorySelectionBranches:
         input_pkl = str(_write_category_input_pickle(
             tmp_path / 'modeling_input.pkl', feature_names, session_ids))
         ranking_path = tmp_path / 'univariate_combined.pkl'
-        _write_category_ranking(ranking_path, feature_names)
+        _write_category_ranking(ranking_path, feature_names, input_pickle=input_pkl)
         with ranking_path.open('rb') as fh:
             ranking = pickle.load(fh)
         ranking['_input_metadata']['held_out_session_ids'] = held_ids
@@ -1158,7 +1253,7 @@ class TestCategorySelectionBranches:
         input_pkl = str(_write_category_input_pickle(
             tmp_path / 'modeling_input.pkl', feature_names, session_ids))
         ranking_path = tmp_path / 'univariate_combined.pkl'
-        _write_category_ranking(ranking_path, feature_names)
+        _write_category_ranking(ranking_path, feature_names, input_pickle=input_pkl)
         with ranking_path.open('rb') as fh:
             ranking = pickle.load(fh)
         ranking['_input_metadata']['held_out_session_ids'] = held_ids
@@ -1228,13 +1323,15 @@ def _build_params_input_pickle(save_path, feature_names, session_ids,
             X = X + np.log(y)[:, None] * 0.6
         artifact[feature] = {'X': X.astype(float), 'y': y.copy(), 'groups': groups.copy()}
     artifact['_input_metadata'] = {'analysis_tag': 'bout_durations'}
+    attach_shift_test_sidecar(artifact, save_path, HISTORY_FRAMES, slots={'X': 'X'}, fps=CAMERA_FPS,
+                              layout='global', seed=seed)
     save_path.parent.mkdir(parents=True, exist_ok=True)
     with save_path.open('wb') as fh:
         pickle.dump(artifact, fh)
     return save_path
 
 
-def _write_params_ranking(save_path, feature_names, significant=True, n_folds=4):
+def _write_params_ranking(save_path, feature_names, significant=True, n_folds=4, input_pickle=None):
     """
     Description
     -----------
@@ -1268,7 +1365,13 @@ def _write_params_ranking(save_path, feature_names, significant=True, n_folds=4)
             'actual': {'explained_deviance': actual},
             'null': {'explained_deviance': np.full(n_folds, 0.01, dtype=float)},
         }
-    artifact['_input_metadata'] = {'analysis_tag': 'bout_durations'}
+    if input_pickle is None:
+        artifact['_input_metadata'] = {'analysis_tag': 'bout_durations'}
+    else:
+        # The univariate dispatcher copies the input pickle's block verbatim, and the
+        # selector prefers that copy: it must name the trace sidecar.
+        with Path(input_pickle).open('rb') as fh:
+            artifact['_input_metadata'] = pickle.load(fh)['_input_metadata']
     save_path.parent.mkdir(parents=True, exist_ok=True)
     with save_path.open('wb') as fh:
         pickle.dump(artifact, fh)
@@ -1321,7 +1424,7 @@ class TestBoutParameterSelectionBranches:
         input_pkl = str(_build_params_input_pickle(
             tmp_path / 'modeling_input.pkl', feature_names, session_ids))
         ranking_pkl = str(_write_params_ranking(
-            tmp_path / 'univariate_combined.pkl', feature_names, significant=False))
+            tmp_path / 'univariate_combined.pkl', feature_names, significant=False, input_pickle=input_pkl))
 
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
@@ -1350,7 +1453,7 @@ class TestBoutParameterSelectionBranches:
         input_pkl = str(_build_params_input_pickle(
             tmp_path / 'modeling_input.pkl', feature_names, session_ids))
         ranking_pkl = str(_write_params_ranking(
-            tmp_path / 'univariate_combined.pkl', feature_names))
+            tmp_path / 'univariate_combined.pkl', feature_names, input_pickle=input_pkl))
 
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
@@ -1379,7 +1482,7 @@ class TestBoutParameterSelectionBranches:
         input_pkl = str(_build_params_input_pickle(
             tmp_path / 'modeling_input.pkl', feature_names, session_ids))
         ranking_pkl = str(_write_params_ranking(
-            tmp_path / 'univariate_combined.pkl', feature_names))
+            tmp_path / 'univariate_combined.pkl', feature_names, input_pickle=input_pkl))
 
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
@@ -1410,7 +1513,7 @@ class TestBoutParameterSelectionBranches:
         input_pkl = str(_build_params_input_pickle(
             tmp_path / 'modeling_input.pkl', feature_names, session_ids))
         ranking_pkl = str(_write_params_ranking(
-            tmp_path / 'univariate_combined.pkl', feature_names))
+            tmp_path / 'univariate_combined.pkl', feature_names, input_pickle=input_pkl))
 
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
@@ -1425,6 +1528,7 @@ class TestBoutParameterSelectionBranches:
                 'self.speed': {'mean_explained_deviance': float('nan'),
                                'se_explained_deviance': 0.0},
             },
+            '_run_metadata': _step_test_run_metadata(),
         }
         with (ms_dir / f'{prefix}0.pkl').open('wb') as fh:
             pickle.dump(stale, fh)
@@ -1464,7 +1568,7 @@ class TestBoutParameterSelectionBranches:
         input_pkl = str(_build_params_input_pickle(
             tmp_path / 'modeling_input.pkl', feature_names, session_ids))
         ranking_path = tmp_path / 'univariate_combined.pkl'
-        _write_params_ranking(ranking_path, feature_names)
+        _write_params_ranking(ranking_path, feature_names, input_pickle=input_pkl)
         with ranking_path.open('rb') as fh:
             ranking = pickle.load(fh)
         ranking['_input_metadata']['held_out_session_ids'] = held_ids
@@ -1728,7 +1832,7 @@ class TestResumeEqualsFresh:
         feature_names = ['self.speed', 'other.speed', 'self.neck_elevation']
         session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
         input_pkl = str(_write_category_input_pickle(tmp_path / 'modeling_input.pkl', feature_names, session_ids))
-        ranking_pkl = str(_write_category_ranking(tmp_path / 'univariate_combined.pkl', feature_names))
+        ranking_pkl = str(_write_category_ranking(tmp_path / 'univariate_combined.pkl', feature_names, input_pickle=input_pkl))
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
         settings_path = _settings_json(tmp_path, settings)
@@ -1743,7 +1847,7 @@ class TestResumeEqualsFresh:
         feature_names = ['self.speed', 'other.speed']
         session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
         input_pkl = str(_build_params_input_pickle(tmp_path / 'modeling_input.pkl', feature_names, session_ids))
-        ranking_pkl = str(_write_params_ranking(tmp_path / 'univariate_combined.pkl', feature_names))
+        ranking_pkl = str(_write_params_ranking(tmp_path / 'univariate_combined.pkl', feature_names, input_pickle=input_pkl))
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
         settings_path = _settings_json(tmp_path, settings)
@@ -1758,18 +1862,20 @@ class TestFreshStartQuarantinesStaleSteps:
     next to the new run's, where the highest step index would be read as final."""
 
     def test_helper_moves_only_this_prefix_step_files(self, tmp_path, capsys):
-        """Only ``<prefix><int>.pkl`` files move, into ``stale_<timestamp>/``; other
-        prefixes and non-step files stay, and nothing is deleted."""
+        """Only ``<prefix><int>.pkl`` files and a step's ``<prefix><int>_null_partial.pkl``
+        move, into ``stale_<timestamp>/``; other prefixes and non-step files stay, and
+        nothing is deleted."""
         prefix = 'model_selection_x_step_'
-        for name in (f'{prefix}0.pkl', f'{prefix}7.pkl', 'model_selection_y_step_0.pkl', f'{prefix}notes.pkl'):
+        for name in (f'{prefix}0.pkl', f'{prefix}7.pkl', f'{prefix}7_null_partial.pkl',
+                     'model_selection_y_step_0.pkl', f'{prefix}notes.pkl'):
             (tmp_path / name).write_bytes(b'x')
         stale_dir = ms._quarantine_stale_step_files(tmp_path, prefix)
 
         assert stale_dir is not None
         assert stale_dir.name.startswith('stale_')
-        assert sorted(p.name for p in stale_dir.iterdir()) == [f'{prefix}0.pkl', f'{prefix}7.pkl']
+        assert sorted(p.name for p in stale_dir.iterdir()) == [f'{prefix}0.pkl', f'{prefix}7.pkl', f'{prefix}7_null_partial.pkl']
         assert sorted(p.name for p in tmp_path.glob('*.pkl')) == [f'{prefix}notes.pkl', 'model_selection_y_step_0.pkl']
-        assert 'Moved 2 stale step file(s)' in capsys.readouterr().out
+        assert 'Moved 3 stale step file(s)' in capsys.readouterr().out
         assert ms._quarantine_stale_step_files(tmp_path, prefix) is None
 
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
@@ -1782,7 +1888,7 @@ class TestFreshStartQuarantinesStaleSteps:
         feature_names = ['self.speed', 'other.speed']
         session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
         input_pkl = str(_build_params_input_pickle(tmp_path / 'modeling_input.pkl', feature_names, session_ids))
-        ranking_pkl = str(_write_params_ranking(tmp_path / 'univariate_combined.pkl', feature_names))
+        ranking_pkl = str(_write_params_ranking(tmp_path / 'univariate_combined.pkl', feature_names, input_pickle=input_pkl))
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
         prefix = 'model_selection_bout_durations_unknown_mixed_step_'
@@ -1793,6 +1899,7 @@ class TestFreshStartQuarantinesStaleSteps:
                 'candidates_summary': {'self.speed': {
                     'mean_explained_deviance': float('nan') if step_idx == 5 else 0.9,
                     'se_explained_deviance': 0.0, 'explained_deviance': [0.9, 0.9]}},
+                '_run_metadata': _step_test_run_metadata(),
             }
             with (ms_dir / f'{prefix}{step_idx}.pkl').open('wb') as fh:
                 pickle.dump(stale, fh)
@@ -1828,11 +1935,11 @@ class TestEmptySelectionFinalizes:
     @pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
     @pytest.mark.filterwarnings("ignore::sklearn.exceptions.UndefinedMetricWarning")
     def test_no_accepted_feature_writes_an_empty_final_model(self, tmp_path, monkeypatch, capsys, selector):
-        """With no anchor forced and the 1-SE gate rejecting every candidate, the run
-        ends with ``final_model_features == []``, ``filter_shapes == []`` and
-        ``heldout is None`` in its last step file; running it again resumes and ends
-        the same way."""
-        monkeypatch.setattr(ms, 'paired_one_se_improvement', lambda *_args, **_kwargs: (float('nan'), 0.0))
+        """With no anchor forced and the per-step shift test rejecting every winner, the
+        run ends with ``final_model_features == []``, ``filter_shapes == []`` and
+        ``heldout is None`` in its last step file, the rejecting step carries the test
+        record, and running it again resumes and ends the same way."""
+        monkeypatch.setattr(ms, 'run_step_shift_test', _rejecting_step_test)
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
         feature_names = ['self.speed', 'other.speed']
@@ -1864,7 +1971,7 @@ class TestEmptySelectionFinalizes:
             settings, _ = _build_settings(tmp_path, model_engine='sklearn', split_strategy='mixed', split_num=2)
             settings['model_params']['model_type'] = 'sklearn'
             input_pkl = str(_write_category_input_pickle(tmp_path / 'modeling_input.pkl', feature_names, session_ids))
-            ranking_pkl = str(_write_category_ranking(tmp_path / 'univariate_combined.pkl', feature_names))
+            ranking_pkl = str(_write_category_ranking(tmp_path / 'univariate_combined.pkl', feature_names, input_pickle=input_pkl))
             settings_path = _settings_json(tmp_path, settings)
 
             def run():
@@ -1888,7 +1995,7 @@ class TestEmptySelectionFinalizes:
         else:
             settings = _params_settings(tmp_path, model_engine='sklearn', split_strategy='mixed', split_num=2)
             input_pkl = str(_build_params_input_pickle(tmp_path / 'modeling_input.pkl', feature_names, session_ids))
-            ranking_pkl = str(_write_params_ranking(tmp_path / 'univariate_combined.pkl', feature_names))
+            ranking_pkl = str(_write_params_ranking(tmp_path / 'univariate_combined.pkl', feature_names, input_pickle=input_pkl))
             settings_path = _settings_json(tmp_path, settings)
 
             def run():
@@ -1916,7 +2023,13 @@ class TestEmptySelectionFinalizes:
         assert final['final_model_features'] == []
         assert final['filter_shapes'] == []
         assert final['heldout'] is None
-        assert '[EMPTY SELECTION]' in capsys.readouterr().out
+        assert final['selected_feature'] is None
+        assert final['step_test']['accepted'] is False
+        assert final['step_test']['rule'] == STEP_TEST_RULE
+        assert final['_run_metadata']['extra_knobs']['step_test']['rule'] == STEP_TEST_RULE
+        out = capsys.readouterr().out
+        assert '[EMPTY SELECTION]' in out
+        assert 'no candidate passed the per-step shift test' in out
         run()
         assert 'already converged' in capsys.readouterr().out
         assert self._final_step(ms_dir)['final_model_features'] == []

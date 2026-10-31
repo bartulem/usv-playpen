@@ -1231,7 +1231,6 @@ class TestBuildSelectionMetadata:
             test_proportion=0.2,
             split_strategy='session',
             random_seed=123,
-            one_se_rule_used=True,
             aic_termination_used=False,
             n_anchor_features=4,
             anchor_feature='self.speed',
@@ -1253,7 +1252,7 @@ class TestBuildSelectionMetadata:
         assert md['test_proportion'] == 0.2
         assert md['split_strategy'] == 'session'
         assert md['random_seed'] == 123
-        assert md['one_se_rule_used'] is True
+        assert 'one_se_rule_used' not in md
         assert md['aic_termination_used'] is False
         assert md['n_anchor_features'] == 4
         assert md['anchor_feature'] == 'self.speed'

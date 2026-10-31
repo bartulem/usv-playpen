@@ -1320,6 +1320,54 @@ def _make_feature_pretty(feature_label_overrides: dict | None,
     return _pretty
 
 
+def _step_test_p_adjusted(step: dict) -> float:
+    """
+    Description
+    -----------
+    The Bonferroni-corrected p-value of a step's per-step shift test
+    (``step['step_test']['p_adjusted']``), or NaN for a step pickle without a test
+    record (a run under an earlier acceptance rule, or a step that had no testable
+    winner).
+
+    Parameters
+    ----------
+    step : dict
+        One selection step pickle.
+
+    Returns
+    -------
+    float
+        ``p_adjusted`` or ``nan``.
+    """
+    if 'step_test' not in step or step['step_test'] is None or 'p_adjusted' not in step['step_test']:
+        return float('nan')
+    return float(step['step_test']['p_adjusted'])
+
+
+def _label_with_p(label: str, p_adjusted: float) -> str:
+    """
+    Description
+    -----------
+    Appends the step test's adjusted p-value to a trajectory tick label when it is
+    finite (``"+feature  p=0.0067"``), leaves the label alone otherwise.
+
+    Parameters
+    ----------
+    label : str
+        The feature label.
+    p_adjusted : float
+        ``p_adjusted`` of the step, or NaN.
+
+    Returns
+    -------
+    str
+        The annotated label.
+    """
+    if not np.isfinite(p_adjusted):
+        return label
+    return f"{label}  p={p_adjusted:.3g}"
+
+
 def plot_model_selection_results(
         selection_results_path: str,
         metric_secondary: str | None = None,
@@ -1525,6 +1573,7 @@ def plot_model_selection_results(
         steps_data.append({
             'step_idx': i,
             'feature_name': best_feat,
+            'p_adjusted': _step_test_p_adjusted(data),
             'prim_scores': np.array(winner_data[primary_metric]),
             'prim_mean': best_prim_mean,
             'sec_scores': _sec_raw,
@@ -1756,7 +1805,7 @@ def plot_model_selection_results(
                      va='center', fontsize=7, color=NEUTRAL_COLOR, style='italic')
 
     ytick_positions = list(y_positions)
-    ytick_labels = [f"+{_pretty(d['feature_name'])}" for d in steps_data]
+    ytick_labels = [_label_with_p(f"+{_pretty(d['feature_name'])}", d['p_adjusted']) for d in steps_data]
     if rejection_row is not None:
         ytick_positions.append(rej_y)
         ytick_labels.append(f"+{_pretty(rejection_row['feature_name'])}")
@@ -2797,6 +2846,7 @@ def plot_multinomial_selection_trajectory(
         sec_vals = sec_vals[np.isfinite(sec_vals)]
         steps_data.append({
             'feature_name': winner,
+            'p_adjusted': _step_test_p_adjusted(s),
             'prim_mean': _fold_mean(fm, metric_primary),
             'sec_mean': _fold_mean(fm, metric_secondary),
             'sec_vals': sec_vals,
@@ -3006,7 +3056,7 @@ def plot_multinomial_selection_trajectory(
                          color=NEUTRAL_COLOR, style='italic')
 
     ytick_positions = list(y_positions)
-    ytick_labels = [f"+{_pretty(d['feature_name'])}" for d in steps_data]
+    ytick_labels = [_label_with_p(f"+{_pretty(d['feature_name'])}", d['p_adjusted']) for d in steps_data]
     if rejection_row is not None:
         ytick_positions.append(rej_y)
         ytick_labels.append(f"+{_pretty(rejection_row['feature_name'])}")
@@ -4095,6 +4145,7 @@ def plot_manifold_selection_trajectory(
         fm = wd['folds']['metrics']
         steps_data.append({
             'feature_name': winner,
+            'p_adjusted': _step_test_p_adjusted(s),
             'prim_mean': _fold_mean(fm, metric_primary),
         })
 
@@ -4271,7 +4322,7 @@ def plot_manifold_selection_trajectory(
                              color=NEUTRAL_COLOR, style='italic')
 
     ytick_positions = list(y_positions)
-    ytick_labels = [f"+{_pretty(d['feature_name'])}" for d in steps_data]
+    ytick_labels = [_label_with_p(f"+{_pretty(d['feature_name'])}", d['p_adjusted']) for d in steps_data]
     if rejection_row is not None:
         ytick_positions.append(rej_y)
         ytick_labels.append(f"+{_pretty(rejection_row['feature_name'])}")

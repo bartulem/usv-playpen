@@ -79,11 +79,16 @@ import pytest
 mpl.use('Agg')
 
 from tests.modeling._synth import (
+    attach_shift_test_sidecar,
     build_behavioral_features_csv,
     build_modeling_settings,
     build_track_h5,
     fit_counting_subclass,
     write_session_list_file,
+)
+from usv_playpen.modeling.modeling_utils import (
+    read_window_starts,
+    verify_windows_against_traces,
 )
 
 # The modeling import chain pulls optax -> a one-time JAX DeprecationWarning.
@@ -413,8 +418,13 @@ def _write_category_input_pickle(
                 'other_feature_arr': other_arr,
             }
 
+    attach_shift_test_sidecar(
+        artifact, save_path, history_frames,
+        slots={'target': 'target_feature_arr', 'other': 'other_feature_arr'}, fps=CAMERA_FPS, seed=seed,
+    )
     if input_metadata is not None:
-        artifact['_input_metadata'] = input_metadata
+        # The caller's block plus the sidecar fields the attach wrote.
+        artifact['_input_metadata'] = {**input_metadata, **artifact['_input_metadata']}
 
     save_path.parent.mkdir(parents=True, exist_ok=True)
     with save_path.open('wb') as fh:
@@ -540,6 +550,19 @@ def _extract_category_input(settings, save_dir, target_category=TARGET_CATEGORY)
     assert len(pkls) == 1, f"expected exactly one input pickle, got {pkls}"
     with pkls[0].open('rb') as fh:
         artifact = pickle.load(fh)
+    # The per-step shift test's inputs written by every extraction: the processed
+    # traces in the HDF5 sidecar next to the pickle and the window starts per session
+    # and class; every stored window re-cuts exactly at lag zero.
+    md = artifact['_input_metadata']
+    feature_keys = sorted(key for key in artifact if key != '_input_metadata')
+    sessions = sorted(artifact[feature_keys[0]].keys())
+    assert Path(md['traces_path']).name == f"{pkls[0].stem}_traces.h5"
+    assert 'window_starts' not in md
+    verify_windows_against_traces(
+        {key: artifact[key] for key in feature_keys}, md['traces_path'], read_window_starts(md['traces_path']),
+        {'target': 'target_feature_arr', 'other': 'other_feature_arr'}, pipeline.history_frames,
+        feature_keys, sessions,
+    )
     return pkls[0], artifact
 
 

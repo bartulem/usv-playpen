@@ -60,6 +60,10 @@ from tests.modeling._synth import (
     build_session_tree,
     write_session_list_file,
 )
+from usv_playpen.modeling.modeling_utils import (
+    read_window_starts,
+    verify_windows_against_traces,
+)
 
 # The modeling import chain pulls optax -> a one-time JAX DeprecationWarning.
 # Guard the top-level imports so collection does not trip ``filterwarnings =
@@ -302,6 +306,21 @@ class TestOnsetInputExtraction:
         assert md['analysis_type'] == 'onset'
         assert md['analysis_tag'] == 'bout_onset'
         assert sorted(md['feature_zoo_kept']) == feature_keys
+        # The per-step shift test's inputs: the processed traces in the HDF5 sidecar
+        # next to the pickle and the kept window start frames per session and class;
+        # every stored window re-cuts exactly from its trace at lag zero.
+        assert Path(md['traces_path']).is_file()
+        assert Path(md['traces_path']).name == f"{pkls[0].stem}_traces.h5"
+        assert 'window_starts' not in md
+        window_starts = read_window_starts(md['traces_path'])
+        assert set(window_starts) >= set(sessions)
+        for sess in sessions:
+            assert window_starts[sess]['fps'] == CAMERA_FPS
+            assert window_starts[sess]['n_frames'] >= HISTORY_FRAMES
+        verify_windows_against_traces(
+            {key: artifact[key] for key in feature_keys}, md['traces_path'], window_starts,
+            {'usv': 'usv_feature_arr', 'no_usv': 'no_usv_feature_arr'}, HISTORY_FRAMES, feature_keys, sessions,
+        )
 
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
@@ -350,6 +369,7 @@ class TestUnivariateDispatcher:
             n_usv=40,
             n_no_usv=60,
             input_metadata={'analysis_tag': 'bout'},
+            fps=CAMERA_FPS,
         ))
 
         out_dir = tmp_path / 'univariate'
@@ -419,6 +439,7 @@ class TestModelSelection:
             n_usv=40,
             n_no_usv=60,
             input_metadata={'analysis_tag': 'bout'},
+            fps=CAMERA_FPS,
         ))
 
         combined_path, per_feature = _run_univariate_and_consolidate(
@@ -485,6 +506,7 @@ class TestModelSelection:
             n_usv=20,
             n_no_usv=30,
             input_metadata={'analysis_tag': 'bout'},
+            fps=CAMERA_FPS,
         ))
 
         combined_path, _ = _run_univariate_and_consolidate(
@@ -540,6 +562,7 @@ class TestModelSelectionDispatcher:
             n_usv=40,
             n_no_usv=60,
             input_metadata={'analysis_tag': 'bout'},
+            fps=CAMERA_FPS,
         ))
 
         combined_path, _ = _run_univariate_and_consolidate(

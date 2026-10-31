@@ -19,10 +19,15 @@ path validation, error reporting, and specific argument routing for:
 Computational Strategy:
 -----------------------
 - Forward Stepwise Search: Implements a greedy algorithm that iteratively adds
-  features, accepting a step only when the candidate beats the incumbent on the
-  PAIRED per-fold improvement: by the 1-Standard-Error (1SE) rule for the onset,
-  category, params and multinomial targets, by a fold-bootstrap confidence
-  interval on the paired margin for the continuous manifold target.
+  features. At every step the cross-validated winner among the remaining
+  candidates is tested with the per-step shift test (`step_shift_test`): the
+  incumbent and the incumbent plus the winner are refit on the development
+  draw, the in-sample log-likelihood gain is compared with refits after
+  circularly shifting the winner's trace within every development session,
+  floor(m / alpha) times with Bonferroni correction over the m candidates
+  (`model_params.selection_p_val`), and the step is accepted only when no
+  shifted refit reaches the observed gain. The first feature is tested the
+  same way against the constant model.
 - Decoupled Orchestration: The dispatcher handles CLI argument parsing and
   filesystem validation, while the heavy algorithmic logic is imported from
   the project's 'model_selection.py' module.
@@ -238,7 +243,10 @@ if __name__ == "__main__":
 
     # Logic Flags
     parser.add_argument('--anchor', action='store_true',
-                        help='If set, initializes Step 0 with the top-ranked univariate feature.')
+                        help='If set, forces the top-ranked univariate feature as the first candidate '
+                             '(Step 0); it is tested like every other winner and a rejection ends '
+                             'the search with the empty model. Off by default: the first candidate '
+                             'is the cross-validated winner among all screened features.')
 
     args = parser.parse_args()
     sys.exit(dispatch_model_selection(args))

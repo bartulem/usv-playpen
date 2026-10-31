@@ -66,12 +66,18 @@ import pytest
 mpl.use('Agg')
 
 from tests.modeling._synth import (
+    attach_shift_test_sidecar,
     build_behavioral_features_csv,
     build_modeling_settings,
     build_track_h5,
     write_session_list_file,
 )
 from usv_playpen.modeling.modeling_bases_functions import gam_bspline_basis
+from usv_playpen.modeling.modeling_utils import (
+    cut_history_windows,
+    read_feature_trace,
+    read_window_starts,
+)
 
 # The modeling import chain pulls optax -> a one-time JAX DeprecationWarning.
 # Guard the top-level imports so collection does not trip ``filterwarnings =
@@ -517,6 +523,7 @@ def build_multinomial_input_pickle(
             'usv_category_column_name': 'qlvm_category',
         },
     }
+    attach_shift_test_sidecar(artifact, save_path, history_frames, slots={'X': 'X'}, fps=CAMERA_FPS, seed=seed)
 
     save_path.parent.mkdir(parents=True, exist_ok=True)
     with save_path.open('wb') as fh:
@@ -690,6 +697,18 @@ class TestMultinomialInputExtraction:
         assert md['analysis_type'] == 'multinomial'
         assert md['analysis_tag'] == 'multinomial_qlvm_category'
         assert sorted(md['feature_zoo_kept']) == feature_keys
+        # The per-step shift test's inputs: every session's float32 windows re-cut
+        # exactly from its processed trace in the HDF5 sidecar at the stored starts.
+        assert Path(md['traces_path']).is_file()
+        assert Path(md['traces_path']).name == f"{pkls[0].stem}_traces.h5"
+        assert 'window_starts' not in md
+        window_starts = read_window_starts(md['traces_path'])
+        for feat in feature_keys:
+            for sess in sessions:
+                entry = window_starts[sess]
+                rebuilt = cut_history_windows(read_feature_trace(md['traces_path'], feat, sess),
+                                              entry['X'], HISTORY_FRAMES).astype(np.float32)
+                np.testing.assert_array_equal(rebuilt, artifact[feat][sess]['X'])
         spec = md['analysis_specific']
         assert spec['usv_category_number'] >= N_CATEGORIES
         assert spec['usv_category_number'] == observed_classes.size
@@ -1113,7 +1132,7 @@ class TestMultinomialModelSelection:
             settings_path=str(settings_json),
             output_directory=str(ms_dir),
             use_top_rank_as_anchor=True,
-            p_val=0.05,
+            p_val=0.5,
         )
 
         step_pkls = sorted(ms_dir.glob('model_selection_multinomial_*_step_*.pkl'))
@@ -1186,7 +1205,7 @@ class TestMultinomialModelSelection:
             multinomial_vocal_category_model_selection(
                 univariate_results_path=univ_pkl, input_data_path=input_pkl,
                 settings_path=str(settings_json), output_directory=str(ms_dir),
-                use_top_rank_as_anchor=True, p_val=0.05,
+                use_top_rank_as_anchor=True, p_val=0.5,
             )
 
         def _steps():
@@ -1287,7 +1306,7 @@ class TestMultinomialModelSelection:
         ms_dir.mkdir()
         multinomial_vocal_category_model_selection(
             univariate_results_path=univ_pkl, input_data_path=input_pkl, settings_path=str(settings_json),
-            output_directory=str(ms_dir), use_top_rank_as_anchor=True, p_val=0.05,
+            output_directory=str(ms_dir), use_top_rank_as_anchor=True, p_val=0.5,
         )
 
         checked = 0
@@ -1367,7 +1386,7 @@ class TestMultinomialModelSelection:
             settings_path=str(settings_json),
             output_directory=str(ms_dir),
             use_top_rank_as_anchor=True,
-            p_val=0.05,
+            p_val=0.5,
         )
 
         step_pkls = sorted(ms_dir.glob('model_selection_multinomial_*_step_*.pkl'))
@@ -1425,6 +1444,9 @@ class TestMultinomialModelSelection:
             for sess in session_ids:
                 artifact[feature][sess]['X'] = np.zeros_like(artifact[feature][sess]['X'])
         artifact['_input_metadata']['held_out_session_ids'] = [session_ids[-1]]
+        # The windows changed, so the trace sidecar is rebuilt from them (the selector
+        # re-cuts every stored window from the traces before fitting).
+        attach_shift_test_sidecar(artifact, input_pkl_path, HISTORY_FRAMES, slots={'X': 'X'}, fps=CAMERA_FPS)
         with input_pkl_path.open('wb') as fh:
             pickle.dump(artifact, fh)
         univ_pkl = str(build_univariate_ranking_pickle(
@@ -1444,7 +1466,7 @@ class TestMultinomialModelSelection:
             settings_path=str(settings_json),
             output_directory=str(ms_dir),
             use_top_rank_as_anchor=False,
-            p_val=0.05,
+            p_val=0.5,
         )
 
         step0_pkl = sorted(ms_dir.glob('model_selection_multinomial_*_step_0.pkl'))

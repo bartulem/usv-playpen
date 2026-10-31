@@ -54,6 +54,8 @@ import h5py
 import numpy as np
 import polars as pls
 
+from usv_playpen.modeling.modeling_utils import write_feature_traces
+
 # Canonical location of the shipped settings JSON, resolved relative to the
 # installed package so the synthetic settings inherit every real key.
 _SETTINGS_JSON = (
@@ -509,6 +511,7 @@ def build_modeling_settings(
         test_proportion: float = 0.3,
         random_seed: int = 0,
         csv_separator: str = ',',
+        step_null_min_lag_seconds: float = 0.2,
 ) -> dict:
     """
     Description
@@ -517,6 +520,11 @@ def build_modeling_settings(
     returns a deep-copied, *trimmed and shrunk* variant suitable for a tiny
     end-to-end smoke run. The real JSON is the source of truth for every key
     (so no schema drift), and only the following are overridden:
+
+      - ``model_params.selection_step_null_min_lag_seconds`` -> a floor the
+        tiny synthetic sessions can honour (``step_null_min_lag_seconds``), and
+        ``model_params.selection_pool_workers`` -> 1 so every selection fit and
+        every shifted null refit runs in the test process (no forked pool).
 
       - ``io.session_list_file`` / ``io.save_directory`` -> caller's tmp paths.
       - ``io.camera_sampling_rate`` / ``io.csv_separator``.
@@ -579,6 +587,9 @@ def build_modeling_settings(
         Global / estimator seed.
     csv_separator (str)
         CSV field separator the loaders use.
+    step_null_min_lag_seconds (float)
+        Lag floor of the per-step shift test in seconds; every synthetic session
+        must be at least twice this long.
 
     Returns
     -------
@@ -608,6 +619,8 @@ def build_modeling_settings(
     mp['model_target_vocal_type'] = 'bout_onset'
     mp['model_predictor_mouse_index'] = 1
     mp['usv_per_bout_floor'] = 2
+    mp['selection_step_null_min_lag_seconds'] = step_null_min_lag_seconds
+    mp['selection_pool_workers'] = 1
 
     # The data-splitting dials moved out of `model_params` into the
     # `model_validation` block (the modeling code now reads them exclusively from
@@ -661,6 +674,148 @@ def build_modeling_settings(
     return settings
 
 
+def attach_shift_test_sidecar(
+        artifact: dict,
+        pickle_path: Path,
+        history_frames: int,
+        slots: dict,
+        fps: float,
+        layout: str = 'per_session',
+        min_lag_frames: int = 30,
+        seed: int = 0,
+) -> dict:
+    """
+    Description
+    -----------
+    Makes a synthetic modeling artifact usable by the per-step shift test: for every
+    feature and session it synthesizes a processed trace that CONTAINS the artifact's
+    stored windows at assigned start frames (noise elsewhere), writes the traces and
+    the per-session window starts to the HDF5 sidecar ``<pickle stem>_traces.h5`` next
+    to ``pickle_path`` and records ``traces_path`` in the artifact's
+    ``_input_metadata`` (created when absent). Re-cutting the windows from the traces
+    at lag zero reproduces the stored windows exactly, which is what the selectors
+    verify before fitting; float32 windows are embedded in a float64 trace and come
+    back exact after the selectors' float32 cast.
+
+    The windows of one session are laid out back to back (one noise frame between
+    them, the slots interleaved in a seeded random order so that a circular shift maps
+    a window onto a mixture of the other slots' windows and noise rather than onto one
+    class) after a leading pad of ``max(min_lag_frames, history_frames) + 1`` frames
+    and before the same trailing pad, so every session is at least
+    ``2 * min_lag_frames`` long and the shift test always has an admissible lag. Every
+    feature of a session gets the same starts (the real extraction cuts every feature
+    at the same event times), so the per-slot window counts must agree across
+    features.
+
+    Parameters
+    ----------
+    artifact (dict)
+        ``{feature: ...}`` plus an optional ``_input_metadata`` block. With
+        ``layout='per_session'`` each feature holds ``{session: {array_key: (n, H)}}``
+        for the array keys in ``slots``; with ``layout='global'`` each feature holds
+        ``{'X': (N, H), 'groups': (N,)}`` and the rows of a session are the rows whose
+        group equals it, in row order.
+    pickle_path (pathlib.Path)
+        Where the artifact will be pickled; the sidecar is placed next to it.
+    history_frames (int)
+        Window length in frames.
+    slots (dict)
+        ``{slot_name: array_key}``: the start lists are stored under the slot names,
+        the windows live under the array keys (``{'usv': 'usv_feature_arr', 'no_usv':
+        'no_usv_feature_arr'}``, ``{'target': 'target_feature_arr', 'other':
+        'other_feature_arr'}``, ``{'X': 'X'}``).
+    fps (float)
+        Frame rate recorded per session (must match ``io.camera_sampling_rate`` of
+        the settings the selector runs with, within half a frame per second).
+    layout (str)
+        ``'per_session'`` or ``'global'``.
+    min_lag_frames (int)
+        Smallest lag floor (in frames) the padded sessions must admit.
+    seed (int)
+        Seed of the noise the traces are filled with.
+
+    Returns
+    -------
+    artifact (dict)
+        The same dict, with ``_input_metadata['traces_path']`` set.
+    """
+
+    rng = np.random.default_rng(seed)
+    history_frames = int(history_frames)
+    pad = max(int(min_lag_frames), history_frames) + 1
+    features = [key for key in artifact if key != '_input_metadata']
+    if not features:
+        msg = "attach_shift_test_sidecar: the artifact holds no feature."
+        raise ValueError(msg)
+
+    def _windows_of(feature: str, session_id: str) -> dict:
+        """
+        Description
+        -----------
+        The stored windows of one feature and session, per slot name, as ``(n, H)``
+        float64 arrays (``(0, H)`` for an absent or empty slot).
+
+        Parameters
+        ----------
+        feature (str)
+            Feature key.
+        session_id (str)
+            Session id.
+
+        Returns
+        -------
+        by_slot (dict)
+            ``{slot_name: (n, H) array}``.
+        """
+
+        by_slot = {}
+        for slot_name, array_key in slots.items():
+            if layout == 'global':
+                rows = np.asarray(artifact[feature]['groups']) == session_id
+                windows = np.asarray(artifact[feature][array_key])[rows]
+            else:
+                windows = artifact[feature][session_id][array_key]
+                windows = np.empty((0, history_frames)) if windows is None else np.asarray(windows)
+            by_slot[slot_name] = windows.reshape(windows.shape[0], history_frames)
+        return by_slot
+
+    if layout == 'global':
+        session_ids = list(dict.fromkeys(np.asarray(artifact[features[0]]['groups']).tolist()))
+    else:
+        session_ids = list(artifact[features[0]].keys())
+
+    window_starts, traces = {}, {feature: {} for feature in features}
+    for session_id in session_ids:
+        counts = {slot_name: windows.shape[0] for slot_name, windows in _windows_of(features[0], session_id).items()}
+        n_total = sum(counts.values())
+        n_frames = pad + n_total * (history_frames + 1) + pad
+        order = [(slot_name, index) for slot_name in slots for index in range(counts[slot_name])]
+        rng.shuffle(order)
+        starts = {slot_name: np.zeros(counts[slot_name], dtype=int) for slot_name in slots}
+        for position, (slot_name, index) in enumerate(order):
+            starts[slot_name][index] = pad + position * (history_frames + 1)
+        window_starts[session_id] = {**starts, 'n_frames': int(n_frames), 'fps': float(fps)}
+        for feature in features:
+            by_slot = _windows_of(feature, session_id)
+            trace = rng.standard_normal(n_frames)
+            for slot_name, windows in by_slot.items():
+                if windows.shape[0] != counts[slot_name]:
+                    msg = (f"attach_shift_test_sidecar: {feature!r} / {session_id!r} / {slot_name!r} holds "
+                           f"{windows.shape[0]} windows but {features[0]!r} holds {counts[slot_name]}.")
+                    raise ValueError(msg)
+                for start, window in zip(starts[slot_name], windows, strict=True):
+                    trace[start:start + history_frames] = np.asarray(window, dtype=np.float64)
+            traces[feature][session_id] = trace
+
+    traces_path = pickle_path.with_name(f"{pickle_path.stem}_traces.h5")
+    traces_path.parent.mkdir(parents=True, exist_ok=True)
+    write_feature_traces(traces_path, traces, window_starts)
+    if '_input_metadata' not in artifact or artifact['_input_metadata'] is None:
+        artifact['_input_metadata'] = {}
+    artifact['_input_metadata']['traces_path'] = str(traces_path)
+    return artifact
+
+
 def build_modeling_input_pickle(
         save_path: Path,
         feature_names: list[str],
@@ -670,6 +825,8 @@ def build_modeling_input_pickle(
         n_no_usv: int = 80,
         input_metadata: dict | None = None,
         seed: int = 0,
+        fps: float = 150.0,
+        with_sidecar: bool = True,
 ) -> Path:
     """
     Description
@@ -708,9 +865,17 @@ def build_modeling_input_pickle(
     n_no_usv (int)
         Negative (No-USV) events per session.
     input_metadata (dict or None)
-        Optional ``_input_metadata`` block; omitted when ``None``.
+        Optional ``_input_metadata`` block; with ``with_sidecar`` the block is
+        created when ``None`` and always carries ``traces_path`` (the sidecar holds the starts).
     seed (int)
         Base seed for the per-cell RNG.
+    fps (float)
+        Frame rate recorded with the window starts (must match the settings'
+        ``io.camera_sampling_rate`` the selector runs with).
+    with_sidecar (bool)
+        Write the trace sidecar and the shift-test metadata fields
+        (``attach_shift_test_sidecar``); ``False`` writes a pickle of the form the
+        extraction produced before the per-step shift test existed.
 
     Returns
     -------
@@ -739,6 +904,11 @@ def build_modeling_input_pickle(
 
     if input_metadata is not None:
         artifact['_input_metadata'] = input_metadata
+    if with_sidecar:
+        attach_shift_test_sidecar(
+            artifact, save_path, history_frames,
+            slots={'usv': 'usv_feature_arr', 'no_usv': 'no_usv_feature_arr'}, fps=fps, seed=seed,
+        )
 
     save_path.parent.mkdir(parents=True, exist_ok=True)
     with save_path.open('wb') as fh:

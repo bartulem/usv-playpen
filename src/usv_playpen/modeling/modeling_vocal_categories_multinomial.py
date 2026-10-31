@@ -72,6 +72,7 @@ from .modeling_utils import (
     align_probs_to_canonical,
     brier_score_multi,
     build_vocal_signal_columns,
+    cut_history_windows,
     development_heldout_masks,
     expected_calibration_error,
     format_split_line,
@@ -85,6 +86,8 @@ from .modeling_utils import (
     safe_matthews_corrcoef,
     seeded_session_holdout,
     select_kinematic_columns,
+    valid_window_starts,
+    write_feature_traces,
     zscore_features_across_sessions,
 )
 
@@ -1216,6 +1219,12 @@ class MultinomialModelingPipeline(FeatureZoo):
         # slice epochs and save to disk
         print("Extracting epochs and saving to disk...")
         final_data = {}
+        # The per-step shift test re-cuts a feature's windows from its processed
+        # trace after a circular shift: every session's window start frames and
+        # every feature's processed trace are recorded alongside the windows (the
+        # traces in an HDF5 sidecar next to the pickle).
+        session_window_starts = {}
+        feature_traces = {}
 
         for sess_id, targets in tqdm(multinomial_targets.items(), desc='Slicing Epochs'):
             if sess_id not in processed_beh_data:
@@ -1228,9 +1237,20 @@ class MultinomialModelingPipeline(FeatureZoo):
             onsets = targets['onsets']
             labels = targets['labels']
 
-            slice_starts = onsets - self.history_frames
-            slice_ends = onsets
-            num_samples = len(onsets)
+            # A window spans the `history_frames` frames ending at the onset frame
+            # (exclusive). The onset filter above (`history_frames <= f_idx <=
+            # height - 1`) already keeps only in-bounds windows, so every onset must
+            # be valid here; a drop would misalign `labels` with the rows.
+            session_n_frames = int(sess_df.height)
+            window_starts, window_valid = valid_window_starts(onsets, self.history_frames, session_n_frames)
+            if not np.all(window_valid):
+                msg = (f"Session {sess_id!r}: {int((~window_valid).sum())} onset(s) fall outside the "
+                       f"processed feature trace ({session_n_frames} frames) although the onset filter "
+                       f"kept them; labels and windows would misalign.")
+                raise ValueError(msg)
+            session_window_starts[sess_id] = {
+                'X': window_starts, 'n_frames': session_n_frames, 'fps': float(cam_fps_dict[sess_id]),
+            }
 
             for col_name in sess_df.columns:
                 suffix = col_name.split('.')[-1]
@@ -1244,15 +1264,14 @@ class MultinomialModelingPipeline(FeatureZoo):
                 if feat_key not in final_data:
                     final_data[feat_key] = {}
 
-                X_arr = np.empty((num_samples, self.history_frames), dtype=np.float32)
                 col_values = sess_df[col_name].to_numpy()
-
-                for i in range(num_samples):
-                    s, e = slice_starts[i], slice_ends[i]
-                    chunk = col_values[s:e]
-                    if np.isnan(chunk).any():
-                        chunk = np.nan_to_num(chunk, nan=0.0)
-                    X_arr[i, :] = chunk
+                # `cut_history_windows` is the one window cutter the extraction and
+                # the shift test share (NaN -> 0 inside the window); the windows are
+                # stored in float32 as before, the trace in the column's own dtype.
+                X_arr = cut_history_windows(col_values, window_starts, self.history_frames).astype(np.float32)
+                if feat_key not in feature_traces:
+                    feature_traces[feat_key] = {}
+                feature_traces[feat_key][sess_id] = col_values
 
                 final_data[feat_key][sess_id] = {
                     'X': X_arr,
@@ -1299,12 +1318,22 @@ class MultinomialModelingPipeline(FeatureZoo):
         save_path = save_dir / fname
 
         input_metadata['feature_zoo_kept'] = sorted(final_data.keys())
+
+        # The per-step shift test's inputs: the processed traces and the window
+        # start frames per session go to an HDF5 sidecar next to the pickle (one
+        # dataset per feature and session, one per session); the metadata records
+        # only the sidecar's path, so it stays JSON-like.
+        traces_path = save_dir / f"{Path(fname).stem}_traces.h5"
+        with atomic_output_path(traces_path) as temporary_traces_path:
+            write_feature_traces(temporary_traces_path, feature_traces, session_window_starts)
+        input_metadata['traces_path'] = str(traces_path)
+
         artifact = inject_metadata(final_data, _input_metadata=input_metadata)
 
         print(f"Saving extraction results to:\n{save_path} ...")
         with atomic_output_path(save_path) as temporary_path, temporary_path.open('wb') as f:
             pickle.dump(artifact, f)
-        print("[+] Save Complete.")
+        print(f"[+] Save Complete. Processed traces of {len(feature_traces)} feature(s) written to:\n{traces_path}")
 
 
 class MultinomialModelRunner:
