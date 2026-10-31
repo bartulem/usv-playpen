@@ -79,11 +79,23 @@ from pathlib import Path
 
 from .. import __version__
 
+#: Reserved top-level key of a modeling input pickle holding the per-step shift
+#: test's processed traces, ``{feature: {session: (n_frames,) trace}}``.
+FEATURE_TRACES_KEY = '_feature_traces'
+
+#: Reserved top-level key of a modeling input pickle holding the per-session window
+#: start frames, ``{session: {slot: (n,) int64 starts, 'n_frames': int, 'fps': float}}``.
+WINDOW_STARTS_KEY = '_window_starts'
+
 #: Reserved top-level keys inside any modeling artifact. Behavioral feature
 #: names are forbidden from starting with `_` so a feature key can never
-#: collide with one of these metadata blocks.
+#: collide with one of these blocks. The first four are metadata blocks; the
+#: last two are the per-step shift test's arrays, which only a modeling input
+#: pickle carries (they are listed here so every feature loop that filters on
+#: this tuple skips them, and so ``inject_metadata`` accepts them).
 RESERVED_METADATA_KEYS = ('_input_metadata', '_run_metadata',
-                          '_univariate_metadata', '_consolidation_metadata')
+                          '_univariate_metadata', '_consolidation_metadata',
+                          FEATURE_TRACES_KEY, WINDOW_STARTS_KEY)
 
 #: File-name globs of a consolidated model-selection artifact, as
 #: `load_selection_results` scans a directory for them: the two names
@@ -95,9 +107,11 @@ CONSOLIDATED_SELECTION_PATTERNS = ('model_selection_final_*.pkl', 'legacy_select
 #: Schema version per metadata block. Bump the corresponding entry whenever
 #: the on-disk shape of that block changes incompatibly.
 SCHEMA_VERSIONS = {
-    # input bumped when the extractions started storing the window start frames and
-    # the trace sidecar path the per-step shift test re-cuts windows from.
-    'input': 3,
+    # input bumped to 3 when the extractions started storing the window start frames
+    # and the processed traces the per-step shift test re-cuts windows from (then in an
+    # HDF5 file next to the pickle, named by `traces_path`), and to 4 when both moved
+    # into the pickle itself (`_feature_traces`, `_window_starts`; no `traces_path`).
+    'input': 4,
     # run/selection bumped when the torus manifold selection score changed from
     # distance correlation to the macro von Mises log-likelihood (the numeric key
     # `dcor_xy` is reused but its torus semantics differ), with equal-region fit

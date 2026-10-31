@@ -85,10 +85,10 @@ from .modeling_utils import (
     seeded_session_holdout,
     select_kinematic_columns,
     session_grouped_inner_cv,
+    shift_test_inputs_block,
     spearman_r_safe,
     unroll_history_matrix,
     valid_window_starts,
-    write_feature_traces,
     zscore_features_across_sessions,
 )
 from .modeling_vocal_onsets import VocalOnsetModelingPipeline
@@ -437,7 +437,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         # The per-step shift test re-cuts a feature's windows from its processed
         # trace after a circular shift: every session's kept window start frames
         # and every feature's processed trace are recorded alongside the windows
-        # (the traces in an HDF5 sidecar next to the pickle). This pipeline stores
+        # (under the pickle's `_feature_traces` and `_window_starts`). This pipeline stores
         # one global row set per feature; the rows of session `sess_id` are exactly
         # `groups == sess_id`, in the order of that session's `valid_starts`.
         session_window_starts = {}
@@ -606,19 +606,14 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         input_metadata['n_events_per_session'] = n_events_per_session
         input_metadata['feature_zoo_kept'] = sorted(final_data_dict.keys())
 
-        # The per-step shift test's inputs: the processed traces and the kept window
-        # start frames per session go to an HDF5 sidecar next to the pickle (one
-        # dataset per feature and session, one per session); the metadata records
-        # only the sidecar's path, so it stays JSON-like.
-        traces_path = save_dir / f"{Path(fname).stem}_traces.h5"
-        with atomic_output_path(traces_path) as temporary_traces_path:
-            write_feature_traces(temporary_traces_path, feature_traces, session_window_starts)
-        input_metadata['traces_path'] = str(traces_path)
-
-        artifact = inject_metadata(final_data_dict, _input_metadata=input_metadata)
+        # The per-step shift test's inputs (the processed per-session traces the
+        # windows were cut from and the kept window start frames) are stored in the
+        # same pickle under two reserved keys, next to `_input_metadata`.
+        artifact = inject_metadata(final_data_dict, _input_metadata=input_metadata,
+                                   **shift_test_inputs_block(feature_traces, session_window_starts))
         with atomic_output_path(save_path) as temporary_path, temporary_path.open('wb') as f:
             pickle.dump(artifact, f)
-        print(f"[+] Saved: {save_path}\n    and the processed traces of {len(feature_traces)} feature(s) to: {traces_path}")
+        print(f"[+] Saved: {save_path}\n    with the processed traces of {len(feature_traces)} feature(s) inside it.")
 
     def create_data_splits(self, feature_data: dict, strategy_override: str | None = None):
         """

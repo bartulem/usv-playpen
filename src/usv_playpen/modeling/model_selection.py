@@ -16,7 +16,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-import h5py
 import numpy as np
 from pygam import GAM, LogisticGAM, te
 from scipy.stats import spearmanr
@@ -65,7 +64,9 @@ from .modeling_bases_functions import (
     resolve_temporal_basis,
 )
 from .modeling_metadata import (
+    FEATURE_TRACES_KEY,
     RESERVED_METADATA_KEYS,
+    WINDOW_STARTS_KEY,
     build_selection_metadata,
     inject_metadata,
 )
@@ -99,8 +100,6 @@ from .modeling_utils import (
     pearson_r_safe,
     pool_session_arrays,
     pool_worker_count,
-    read_feature_trace,
-    read_window_starts,
     root_mean_squared_error,
     safe_confusion_matrix,
     safe_matthews_corrcoef,
@@ -487,6 +486,47 @@ def _quarantine_stale_step_files(model_selection_dir: Path, prefix: str) -> Path
     return stale_dir
 
 
+def _final_step_file(model_selection_dir: Path, prefix: str, step_counter: int,
+                     has_accepted: bool) -> Path:
+    """
+    Description
+    -----------
+    Returns the step file that receives the selection's final result
+    (``final_model_features``, ``filter_shapes``, ``heldout`` and the provenance
+    paths). Every selector follows one rule: the result goes on the LAST ACCEPTED
+    step, the step whose winner completed the published model, never on the
+    rejecting step that ended the search. The arithmetic follows from how the loop
+    counts: an accepted step advances ``step_counter`` and a rejected one does not,
+    so after the loop (and after a resume, which restores ``step_counter`` from the
+    checkpoint) the last accepted step is always ``step_counter - 1``, whether the
+    search ended on a rejection or by accepting every ranked feature. The manifold
+    and multinomial selectors write an accepted Step-0 baseline, so for them this
+    is also where an empty selection lands. A selector without a baseline step
+    that accepted nothing has no accepted step at all; its empty result goes on the
+    step the run ended on (``step_counter``, the rejecting step).
+
+    Parameters
+    ----------
+    model_selection_dir (pathlib.Path)
+        The directory holding the step files.
+    prefix (str)
+        The step-file name prefix (the file is ``f"{prefix}{step}.pkl"``).
+    step_counter (int)
+        The selector's step counter after the loop (or the restored resume).
+    has_accepted (bool)
+        True when the run accepted at least one step (a feature, or the manifold /
+        multinomial Step-0 baseline).
+
+    Returns
+    -------
+    last_file (pathlib.Path)
+        The step file to finalize.
+    """
+
+    step = step_counter - 1 if has_accepted else step_counter
+    return model_selection_dir / f"{prefix}{step}.pkl"
+
+
 def _write_empty_selection(last_file: Path,
                            wrap_step: Callable[[dict], dict],
                            univariate_results_path: str,
@@ -497,15 +537,16 @@ def _write_empty_selection(last_file: Path,
     -----------
     Finalizes a selection that accepted no feature (no anchor forced and the first
     forward step rejected every candidate). There is no model to refit, so the
-    per-fold filter-shape refit and the held-out refit are skipped, and the last
-    step file records the empty result explicitly: ``final_model_features = []``,
+    per-fold filter-shape refit and the held-out refit are skipped, and the
+    rejecting step file records the empty result explicitly: ``final_model_features = []``,
     ``filter_shapes = []`` and ``heldout = None``. A rerun resumes that converged
     checkpoint and lands here again, writing the same result instead of crashing.
 
     Parameters
     ----------
     last_file (pathlib.Path)
-        The step file the run wrote last (the rejecting step).
+        The step file chosen by ``_final_step_file`` (the rejecting step: the run
+        accepted nothing).
     wrap_step (Callable[[dict], dict])
         The selector's metadata wrapper (re-injects the reserved metadata blocks).
     univariate_results_path (str)
@@ -1096,7 +1137,7 @@ def compute_filter_shapes_per_fold_vocal_onset(
 _BINARY_FOLD_METRIC_KEYS = ('ll', 'auc', 'score', 'f1', 'recall', 'brier', 'ece', 'mcc',
                             'confusion_matrix', 'n_iter', 'converged', 'fit_time')
 
-#: Start-frame slot -> pickle array key of the onset pipeline (the trace sidecar lists
+#: Start-frame slot -> pickle array key of the onset pipeline (``_window_starts`` lists
 #: the starts under the slot names; the windows live under the array keys).
 _ONSET_WINDOW_SLOTS = {'usv': 'usv_feature_arr', 'no_usv': 'no_usv_feature_arr'}
 
@@ -1137,21 +1178,22 @@ def _step_test_settings(settings: dict, camera_fps: float) -> dict:
     }
 
 
-def _require_shift_test_inputs(input_md: dict | None, input_data_path: str, camera_fps: float) -> tuple[str, dict]:
+def _require_shift_test_inputs(input_data: dict, input_data_path: str, camera_fps: float) -> tuple[dict, dict]:
     """
     Description
     -----------
-    The trace sidecar the per-step shift test needs, named in the modeling pickle's
-    ``_input_metadata``, and the per-session window start frames read back from it. A
-    pickle written before the extraction stored them cannot be used under this rule:
-    the run stops here with the instruction to rebuild it, instead of silently falling
-    back to another test. Every session's recorded frame rate must equal the cohort
-    rate the lag floor is converted at.
+    Takes the per-step shift test's inputs out of the loaded modeling pickle: the
+    processed per-session feature traces (``_feature_traces``) and the per-session
+    window start frames (``_window_starts``), both popped so the remaining dict holds
+    feature data only. A pickle written before the extraction stored them cannot be
+    used under this rule: the run stops here with the instruction to rebuild it,
+    instead of silently falling back to another test. Every session's recorded frame
+    rate must equal the cohort rate the lag floor is converted at.
 
     Parameters
     ----------
-    input_md (dict | None)
-        The pickle's ``_input_metadata`` block.
+    input_data (dict)
+        The loaded modeling input pickle; both keys are removed from it in place.
     input_data_path (str)
         The pickle, named in the error.
     camera_fps (float)
@@ -1159,30 +1201,26 @@ def _require_shift_test_inputs(input_md: dict | None, input_data_path: str, came
 
     Returns
     -------
-    traces_path (str)
-        The HDF5 sidecar with the processed per-session traces and the window starts.
+    feature_traces (dict)
+        ``{feature: {session_id: (n_frames,) trace}}``.
     window_starts (dict)
-        ``{session_id: {slot_name: starts, 'n_frames': T, 'fps': fps}}`` read from it.
+        ``{session_id: {slot_name: starts, 'n_frames': T, 'fps': fps}}``.
 
     Raises
     ------
     ValueError
-        If the path is missing from the metadata, the sidecar is not on disk or holds
-        no window starts, or a session's frame rate differs from ``camera_fps`` by more
-        than 0.5 frames per second.
+        If either key is missing from the pickle, or a session's frame rate differs
+        from ``camera_fps`` by more than 0.5 frames per second.
     """
 
-    if input_md is None or 'traces_path' not in input_md:
-        msg = (f"{input_data_path} was extracted before the per-step shift test existed: its "
-               f"_input_metadata has no 'traces_path'. Rebuild the modeling input pickle with the "
-               f"current extraction (a one-minute step) and rerun the selection.")
+    missing = [key for key in (FEATURE_TRACES_KEY, WINDOW_STARTS_KEY) if key not in input_data]
+    if missing:
+        msg = (f"{input_data_path} holds no {' / '.join(repr(key) for key in missing)}: it was extracted "
+               f"before the per-step shift test's inputs were stored in the pickle. Rebuild the modeling "
+               f"input pickle with the current extraction (a one-minute step) and rerun the selection.")
         raise ValueError(msg)
-    traces_path = str(input_md['traces_path'])
-    if not Path(traces_path).is_file():
-        msg = (f"The trace sidecar recorded in {input_data_path} is not on disk: {traces_path}. "
-               f"Rebuild the modeling input pickle or restore the sidecar next to it.")
-        raise ValueError(msg)
-    window_starts = read_window_starts(traces_path)
+    feature_traces = input_data.pop(FEATURE_TRACES_KEY)
+    window_starts = input_data.pop(WINDOW_STARTS_KEY)
     for session_id, entry in window_starts.items():
         # The stored rate is the session's recorded frame rate; it may differ from the
         # nominal cohort rate by a fraction of a frame per second, which moves a 20 s lag
@@ -1192,7 +1230,7 @@ def _require_shift_test_inputs(input_md: dict | None, input_data_path: str, came
             msg = (f"Session {session_id!r} was extracted at {entry['fps']} fps but io.camera_sampling_rate "
                    f"is {camera_fps}; the shift test's lag floor is converted at one rate.")
             raise ValueError(msg)
-    return traces_path, window_starts
+    return feature_traces, window_starts
 
 
 def _require_scored_candidate(step_label: str, n_candidates: int, n_scored: int) -> None:
@@ -1560,7 +1598,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
 
     camera_fps = float(settings['io']['camera_sampling_rate'])
     step_cfg = _step_test_settings(settings, camera_fps)
-    traces_path, window_starts = _require_shift_test_inputs(_input_md, input_data_path, camera_fps)
+    feature_traces, window_starts = _require_shift_test_inputs(all_feature_data, input_data_path, camera_fps)
 
     common_sessions = set(all_feature_data[ranked_features[0]].keys())
     for feat in ranked_features[1:]:
@@ -1585,13 +1623,13 @@ def vocal_onset_model_selection(univariate_results_path: str,
         )
 
     # Lag-zero self-check of the shift test's inputs: every stored window of every
-    # screened feature must re-cut exactly from the trace sidecar at its stored start.
+    # screened feature must re-cut exactly from the pickle's stored trace at its stored start.
     verify_windows_against_traces(
-        all_feature_data, traces_path, window_starts, _ONSET_WINDOW_SLOTS, history_frames,
+        all_feature_data, feature_traces, window_starts, _ONSET_WINDOW_SLOTS, history_frames,
         features=ranked_features, sessions=dev_sessions,
     )
     print(f"Shift-test inputs verified: {len(ranked_features)} feature(s) x {len(dev_sessions)} development "
-          f"session(s) re-cut exactly from {Path(traces_path).name}; lag floor "
+          f"session(s) re-cut exactly from the stored traces; lag floor "
           f"{step_cfg['min_lag_seconds']} s = {step_cfg['min_lag_frames']} frames.")
 
     pygam_params = settings['hyperparameters']['classical']['pygam']
@@ -1659,7 +1697,6 @@ def vocal_onset_model_selection(univariate_results_path: str,
                 'checkpoint_every': step_cfg['checkpoint_every'],
                 'pool_workers': step_cfg['pool_workers'],
                 'refit_rows': 'balanced_development_draw',
-                'traces_path': traces_path,
             },
         },
         settings_path=settings_path,
@@ -1907,7 +1944,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
         trial = [*incumbent, winner]
         incumbent_score = _onset_development_score(incumbent)
         observed_score = _onset_development_score(trial)
-        winner_traces = {s: read_feature_trace(traces_path, winner, s)
+        winner_traces = {s: feature_traces[winner][str(s)]
                          for s in dev_sessions if s in all_feature_data[winner]}
         n_workers = pool_worker_count(step_cfg['pool_workers'], len(trial),
                                       step_cfg['pool_memory_gb'], step_cfg['fit_peak_gb_base'],
@@ -2000,9 +2037,6 @@ def vocal_onset_model_selection(univariate_results_path: str,
                 # A search that had accepted every ranked feature stopped on that, with no
                 # rejecting step; it is converged too.
                 resume_converged = state['converged'] or len(current_model_features) == len(ranked_features)
-                # Finalization reads the step file the loop last wrote (`fname`); a converged
-                # resume skips the loop, so it points at the restored checkpoint.
-                fname = f"{prefix}{last_step}.pkl"
                 if resume_converged:
                     print(f"[RESUME] Step {last_step}: selection already converged on "
                           f"{current_model_features}; finalizing.")
@@ -2047,7 +2081,6 @@ def vocal_onset_model_selection(univariate_results_path: str,
         }
         s0_name = f"{prefix}0.pkl"
         _dump_step_pickle(model_selection_dir / s0_name, _wrap_step(step_0_metadata))
-        fname = s0_name
         if anchor_accepted:
             print(format_selection_step('Anchor', feature=anchor_to_force, decision='ACCEPT',
                                         metrics={'LL': mean_ll}))
@@ -2136,7 +2169,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
             break
 
     print("\n--- Final Model Fit for Visualization (per-fold) ---")
-    last_file = model_selection_dir / fname
+    last_file = _final_step_file(model_selection_dir, prefix, step_counter, bool(current_model_features))
 
     if not current_model_features:
         _write_empty_selection(last_file, _wrap_step, univariate_results_path, input_data_path, 'onset')
@@ -2827,15 +2860,15 @@ def vocal_category_model_selection(
     history_frames = int(np.floor(camera_rate * filter_history_sec))
 
     step_cfg = _step_test_settings(settings, float(camera_rate))
-    traces_path, window_starts = _require_shift_test_inputs(_input_md, input_data_path, float(camera_rate))
+    feature_traces, window_starts = _require_shift_test_inputs(all_feature_data, input_data_path, float(camera_rate))
     # Lag-zero self-check of the shift test's inputs: every stored window of every
-    # screened feature must re-cut exactly from the trace sidecar at its stored start.
+    # screened feature must re-cut exactly from the pickle's stored trace at its stored start.
     verify_windows_against_traces(
-        all_feature_data, traces_path, window_starts, _CATEGORY_WINDOW_SLOTS, history_frames,
+        all_feature_data, feature_traces, window_starts, _CATEGORY_WINDOW_SLOTS, history_frames,
         features=ranked_features, sessions=list(all_sessions_arr),
     )
     print(f"Shift-test inputs verified: {len(ranked_features)} feature(s) x {len(all_sessions_arr)} development "
-          f"session(s) re-cut exactly from {Path(traces_path).name}; lag floor "
+          f"session(s) re-cut exactly from the stored traces; lag floor "
           f"{step_cfg['min_lag_seconds']} s = {step_cfg['min_lag_frames']} frames.")
 
     model_ops = settings['model_params']
@@ -2992,7 +3025,6 @@ def vocal_category_model_selection(
                 'checkpoint_every': step_cfg['checkpoint_every'],
                 'pool_workers': step_cfg['pool_workers'],
                 'refit_rows': 'balanced_development_draw',
-                'traces_path': traces_path,
             },
         },
         settings_path=settings_path,
@@ -3286,7 +3318,7 @@ def vocal_category_model_selection(
         trial = [*incumbent, winner]
         incumbent_score = _category_development_score(incumbent)
         observed_score = _category_development_score(trial)
-        winner_traces = {s: read_feature_trace(traces_path, winner, s)
+        winner_traces = {s: feature_traces[winner][str(s)]
                          for s in all_sessions_arr if s in all_feature_data[winner]}
         n_workers = pool_worker_count(step_cfg['pool_workers'], len(trial),
                                       step_cfg['pool_memory_gb'], step_cfg['fit_peak_gb_base'],
@@ -3454,9 +3486,7 @@ def vocal_category_model_selection(
     print("\n--- Final Refit for Visualization (CV-based) ---")
     # No blanket except: a failed final refit or save must stop the run loudly, not
     # pass as a finished selection with no final model.
-    last_file = model_selection_dir / f"{prefix}{step_counter}.pkl"
-    if not last_file.exists():
-        last_file = model_selection_dir / f"{prefix}{step_counter - 1}.pkl"
+    last_file = _final_step_file(model_selection_dir, prefix, step_counter, bool(current_model_features))
 
     if not current_model_features:
         _write_empty_selection(last_file, _wrap_step, univariate_results_path, input_data_path, 'category')
@@ -3682,7 +3712,7 @@ _PARAMS_WINDOW_SLOTS = {'X': 'X'}
 
 
 def _verify_global_windows_against_traces(feature_data: dict,
-                                          traces_path: str | Path,
+                                          feature_traces: dict,
                                           window_starts: dict,
                                           history_frames: int,
                                           features: list,
@@ -3693,19 +3723,19 @@ def _verify_global_windows_against_traces(feature_data: dict,
     The lag-zero self-check of the per-step shift test for the global-row layout of
     the bout-parameter pipeline (``feature_data[feature]['X']`` holds every session's
     windows stacked, ``['groups']`` the session of every row): re-cuts every session's
-    rows from the trace sidecar at the stored start frames and requires bit-exact
+    rows from the pickle's stored traces at the stored start frames and requires bit-exact
     equality, and the same number of rows as stored starts. A mismatch means the
-    pickle, its start frames and the sidecar do not describe one extraction, and the
+    stored windows, start frames and traces do not describe one extraction, and the
     run aborts before any model is fit.
 
     Parameters
     ----------
     feature_data (dict)
         The modeling pickle's feature dict (metadata blocks stripped).
-    traces_path (str | Path)
-        The HDF5 sidecar.
+    feature_traces (dict)
+        ``{feature: {session: (n_frames,) trace}}`` (the pickle's ``_feature_traces``).
     window_starts (dict)
-        ``{session: {'X': (n,) start frames, ...}}`` from ``_input_metadata``.
+        ``{session: {'X': (n,) start frames, ...}}`` (the pickle's ``_window_starts``).
     history_frames (int)
         Window length in frames.
     features (list)
@@ -3723,28 +3753,27 @@ def _verify_global_windows_against_traces(feature_data: dict,
         On the first session whose rows do not reproduce.
     """
 
-    with h5py.File(Path(traces_path), 'r') as handle:
-        for feature in features:
-            X_all = feature_data[feature]['X']
-            groups = feature_data[feature]['groups']
-            for session_id in sessions:
-                rows = np.where(groups == session_id)[0]
-                starts = np.asarray(window_starts[session_id]['X'], dtype=int)
-                if rows.size != starts.size:
-                    msg = (f"_verify_global_windows_against_traces: {feature!r} / {session_id!r}: "
-                           f"{rows.size} stored rows but {starts.size} start frames.")
-                    raise ValueError(msg)
-                if rows.size == 0:
-                    continue
-                column = handle[feature][str(session_id)][()]
-                rebuilt = cut_history_windows(column, starts, history_frames)
-                stored = X_all[rows]
-                if rebuilt.shape != stored.shape or not np.array_equal(rebuilt, stored):
-                    msg = (f"_verify_global_windows_against_traces: {feature!r} / {session_id!r}: rows re-cut "
-                           f"from the trace sidecar at lag 0 do not match the stored rows (shapes "
-                           f"{rebuilt.shape} vs {stored.shape}). The pickle, its start frames and "
-                           f"{traces_path} are not from one extraction.")
-                    raise ValueError(msg)
+    for feature in features:
+        X_all = feature_data[feature]['X']
+        groups = feature_data[feature]['groups']
+        for session_id in sessions:
+            rows = np.where(groups == session_id)[0]
+            starts = np.asarray(window_starts[session_id]['X'], dtype=int)
+            if rows.size != starts.size:
+                msg = (f"_verify_global_windows_against_traces: {feature!r} / {session_id!r}: "
+                       f"{rows.size} stored rows but {starts.size} start frames.")
+                raise ValueError(msg)
+            if rows.size == 0:
+                continue
+            column = feature_traces[feature][str(session_id)]
+            rebuilt = cut_history_windows(column, starts, history_frames)
+            stored = X_all[rows]
+            if rebuilt.shape != stored.shape or not np.array_equal(rebuilt, stored):
+                msg = (f"_verify_global_windows_against_traces: {feature!r} / {session_id!r}: rows re-cut "
+                       f"from the stored trace at lag 0 do not match the stored rows (shapes "
+                       f"{rebuilt.shape} vs {stored.shape}). The stored windows, start frames and "
+                       f"traces are not from one extraction.")
+                raise ValueError(msg)
 
 
 def _params_candidate_fold(feat: str, fold_idx: int) -> dict:
@@ -4088,15 +4117,15 @@ def bout_parameter_model_selection(
     _dev_session_ids = [str(s_id) for s_id in np.unique(groups_global[_dev_positions])]
 
     step_cfg = _step_test_settings(settings, float(camera_rate))
-    traces_path, window_starts = _require_shift_test_inputs(_input_md, input_data_path, float(camera_rate))
+    feature_traces, window_starts = _require_shift_test_inputs(all_feature_data, input_data_path, float(camera_rate))
     # Lag-zero self-check of the shift test's inputs: every stored row of every
-    # screened feature must re-cut exactly from the trace sidecar at its stored start.
+    # screened feature must re-cut exactly from the pickle's stored trace at its stored start.
     _verify_global_windows_against_traces(
-        all_feature_data, traces_path, window_starts, history_frames,
+        all_feature_data, feature_traces, window_starts, history_frames,
         features=ranked_features, sessions=_dev_session_ids,
     )
     print(f"Shift-test inputs verified: {len(ranked_features)} feature(s) x {len(_dev_session_ids)} development "
-          f"session(s) re-cut exactly from {Path(traces_path).name}; lag floor "
+          f"session(s) re-cut exactly from the stored traces; lag floor "
           f"{step_cfg['min_lag_seconds']} s = {step_cfg['min_lag_frames']} frames.")
 
     print(format_run_header(
@@ -4268,7 +4297,6 @@ def bout_parameter_model_selection(
                 'checkpoint_every': step_cfg['checkpoint_every'],
                 'pool_workers': step_cfg['pool_workers'],
                 'refit_rows': 'all_development_rows',
-                'traces_path': traces_path,
             },
         },
         settings_path=settings_path,
@@ -4513,7 +4541,7 @@ def bout_parameter_model_selection(
         trial = [*incumbent, winner]
         incumbent_score = _params_development_score(incumbent)
         observed_score = _params_development_score(trial)
-        winner_traces = {s: read_feature_trace(traces_path, winner, s) for s in _dev_session_ids}
+        winner_traces = {s: feature_traces[winner][str(s)] for s in _dev_session_ids}
         n_workers = pool_worker_count(step_cfg['pool_workers'], len(trial),
                                       step_cfg['pool_memory_gb'], step_cfg['fit_peak_gb_base'],
                                       step_cfg['fit_peak_gb_per_term'])
@@ -4663,9 +4691,7 @@ def bout_parameter_model_selection(
     print("\n--- Final Model Fit for Visualization (CV-based) ---")
     # No blanket except: a failed final refit or save must stop the run loudly, not
     # pass as a finished selection with no final model.
-    last_file = model_selection_dir / f"{prefix}{step_counter}.pkl"
-    if not last_file.exists():
-        last_file = model_selection_dir / f"{prefix}{step_counter - 1}.pkl"
+    last_file = _final_step_file(model_selection_dir, prefix, step_counter, bool(current_model_features))
 
     if not current_model_features:
         _write_empty_selection(last_file, _wrap_step, univariate_results_path, input_data_path, 'params')
@@ -4852,7 +4878,7 @@ _SESSION_WINDOW_SLOTS = {'X': 'X'}
 
 
 def _verify_session_windows_against_traces(feature_data: dict,
-                                           traces_path: str | Path,
+                                           feature_traces: dict,
                                            window_starts: dict,
                                            history_frames: int,
                                            features: list,
@@ -4865,19 +4891,19 @@ def _verify_session_windows_against_traces(feature_data: dict,
     single-array layout of the multinomial and manifold pipelines
     (``feature_data[feature][session]['X']`` holds the session's windows, cast to
     ``cast_dtype`` by the extraction): re-cuts every session's windows from the
-    trace sidecar at the stored start frames, casts them the same way and requires
+    pickle's stored traces at the stored start frames, casts them the same way and requires
     bit-exact equality and the same row count as stored starts. A mismatch means
-    the pickle, its start frames and the sidecar do not describe one extraction, and
+    the stored windows, start frames and traces do not describe one extraction, and
     the run aborts before any model is fit.
 
     Parameters
     ----------
     feature_data (dict)
         The modeling pickle's feature dict (metadata blocks stripped).
-    traces_path (str | Path)
-        The HDF5 sidecar.
+    feature_traces (dict)
+        ``{feature: {session: (n_frames,) trace}}`` (the pickle's ``_feature_traces``).
     window_starts (dict)
-        ``{session: {'X': (n,) start frames, ...}}`` from ``_input_metadata``.
+        ``{session: {'X': (n,) start frames, ...}}`` (the pickle's ``_window_starts``).
     history_frames (int)
         Window length in frames (the stored, unbinned window).
     features (list)
@@ -4897,27 +4923,26 @@ def _verify_session_windows_against_traces(feature_data: dict,
         On the first session whose windows do not reproduce.
     """
 
-    with h5py.File(Path(traces_path), 'r') as handle:
-        for feature in features:
-            for session_id in sessions:
-                if session_id not in feature_data[feature]:
-                    continue
-                stored = feature_data[feature][session_id]['X']
-                starts = np.asarray(window_starts[session_id]['X'], dtype=int)
-                if stored.shape[0] != starts.size:
-                    msg = (f"_verify_session_windows_against_traces: {feature!r} / {session_id!r}: "
-                           f"{stored.shape[0]} stored rows but {starts.size} start frames.")
-                    raise ValueError(msg)
-                if starts.size == 0:
-                    continue
-                column = handle[feature][str(session_id)][()]
-                rebuilt = cut_history_windows(column, starts, history_frames).astype(cast_dtype)
-                if rebuilt.shape != stored.shape or not np.array_equal(rebuilt, stored):
-                    msg = (f"_verify_session_windows_against_traces: {feature!r} / {session_id!r}: windows "
-                           f"re-cut from the trace sidecar at lag 0 do not match the stored windows (shapes "
-                           f"{rebuilt.shape} vs {stored.shape}). The pickle, its start frames and "
-                           f"{traces_path} are not from one extraction.")
-                    raise ValueError(msg)
+    for feature in features:
+        for session_id in sessions:
+            if session_id not in feature_data[feature]:
+                continue
+            stored = feature_data[feature][session_id]['X']
+            starts = np.asarray(window_starts[session_id]['X'], dtype=int)
+            if stored.shape[0] != starts.size:
+                msg = (f"_verify_session_windows_against_traces: {feature!r} / {session_id!r}: "
+                       f"{stored.shape[0]} stored rows but {starts.size} start frames.")
+                raise ValueError(msg)
+            if starts.size == 0:
+                continue
+            column = feature_traces[feature][str(session_id)]
+            rebuilt = cut_history_windows(column, starts, history_frames).astype(cast_dtype)
+            if rebuilt.shape != stored.shape or not np.array_equal(rebuilt, stored):
+                msg = (f"_verify_session_windows_against_traces: {feature!r} / {session_id!r}: windows "
+                       f"re-cut from the stored trace at lag 0 do not match the stored windows (shapes "
+                       f"{rebuilt.shape} vs {stored.shape}). The stored windows, start frames and "
+                       f"traces are not from one extraction.")
+                raise ValueError(msg)
 
 
 def _multinomial_empty_cand_data(canonical_classes: np.ndarray, balance_train: bool) -> dict:
@@ -5450,17 +5475,17 @@ def multinomial_vocal_category_model_selection(
 
     # The per-step shift test's inputs and their lag-zero self-check: every stored
     # window of every screened feature and session must re-cut exactly (float32, as
-    # stored) from the trace sidecar at its stored start frame.
+    # stored) from the pickle's stored trace at its stored start frame.
     camera_fps = float(settings['io']['camera_sampling_rate'])
     step_cfg = _step_test_settings(settings, camera_fps)
-    traces_path, window_starts = _require_shift_test_inputs(_input_md, input_data_path, camera_fps)
+    feature_traces, window_starts = _require_shift_test_inputs(raw_data, input_data_path, camera_fps)
     _all_session_ids = sorted({str(s_id) for feat in ranked_features for s_id in raw_data[feat]})
     _verify_session_windows_against_traces(
-        raw_data, traces_path, window_starts, history_frames,
+        raw_data, feature_traces, window_starts, history_frames,
         features=ranked_features, sessions=_all_session_ids, cast_dtype=np.float32,
     )
     print(f"Shift-test inputs verified: {len(ranked_features)} feature(s) x {len(_all_session_ids)} "
-          f"session(s) re-cut exactly from {Path(traces_path).name}; lag floor "
+          f"session(s) re-cut exactly from the stored traces; lag floor "
           f"{step_cfg['min_lag_seconds']} s = {step_cfg['min_lag_frames']} frames.")
     print("JAX selectors run their candidate fits and null refits serially inside the job: XLA's thread "
           "pool is not fork-safe once the backend has run, and one fit already uses every core.")
@@ -5771,7 +5796,6 @@ def multinomial_vocal_category_model_selection(
                 'checkpoint_every': step_cfg['checkpoint_every'],
                 'pool_workers': step_cfg['pool_workers'],
                 'refit_rows': 'development_rows_as_held_out_refit',
-                'traces_path': traces_path,
             },
         },
         settings_path=settings_path,
@@ -6155,7 +6179,7 @@ def multinomial_vocal_category_model_selection(
         trial = [*incumbent, winner]
         incumbent_score = _multinomial_development_score(incumbent)
         observed_score = _multinomial_development_score(trial)
-        winner_traces = {s: read_feature_trace(traces_path, winner, s) for s in _dev_session_ids}
+        winner_traces = {s: feature_traces[winner][str(s)] for s in _dev_session_ids}
         # JAX is not fork-safe once the backend has run in this process: the null
         # refits run serially (one worker), see `_multinomial_fit_candidates`.
         return run_step_shift_test(
@@ -6322,7 +6346,8 @@ def multinomial_vocal_category_model_selection(
     print("\n--- Finalizing Results for Visualization ---")
     # No blanket except: a failed final refit or save must stop the run loudly, not
     # pass as a finished selection with no final model.
-    last_file_path = model_selection_dir / f"{prefix}{max(0, step_counter - 1)}.pkl"
+    # Step 0 is the accepted null_model_free baseline, so an empty selection lands there.
+    last_file_path = _final_step_file(model_selection_dir, prefix, step_counter, True)
     with Path(last_file_path).open('rb') as f:
         step_data = pickle.load(f)
 
@@ -7253,17 +7278,17 @@ def continuous_vocal_manifold_model_selection(
 
     # The per-step shift test's inputs and their lag-zero self-check: every stored
     # window of every screened feature and session must re-cut exactly (float32, as
-    # stored) from the trace sidecar at its stored start frame.
+    # stored) from the pickle's stored trace at its stored start frame.
     camera_fps = float(settings['io']['camera_sampling_rate'])
     step_cfg = _step_test_settings(settings, camera_fps)
-    traces_path, window_starts = _require_shift_test_inputs(_input_md, input_data_path, camera_fps)
+    feature_traces, window_starts = _require_shift_test_inputs(raw_data, input_data_path, camera_fps)
     _all_session_ids = sorted({str(s_id) for feat in ranked_features for s_id in raw_data[feat]})
     _verify_session_windows_against_traces(
-        raw_data, traces_path, window_starts, history_frames,
+        raw_data, feature_traces, window_starts, history_frames,
         features=ranked_features, sessions=_all_session_ids, cast_dtype=np.float32,
     )
     print(f"Shift-test inputs verified: {len(ranked_features)} feature(s) x {len(_all_session_ids)} "
-          f"session(s) re-cut exactly from {Path(traces_path).name}; lag floor "
+          f"session(s) re-cut exactly from the stored traces; lag floor "
           f"{step_cfg['min_lag_seconds']} s = {step_cfg['min_lag_frames']} frames.")
     print("JAX selectors run their candidate fits and null refits serially inside the job: XLA's thread "
           "pool is not fork-safe once the backend has run, and one fit already uses every core.")
@@ -7547,7 +7572,6 @@ def continuous_vocal_manifold_model_selection(
                 'checkpoint_every': step_cfg['checkpoint_every'],
                 'pool_workers': step_cfg['pool_workers'],
                 'refit_rows': 'development_rows_as_held_out_refit',
-                'traces_path': traces_path,
             },
         },
         settings_path=settings_path,
@@ -8371,7 +8395,7 @@ def continuous_vocal_manifold_model_selection(
         trial = [*incumbent, winner]
         incumbent_score = _manifold_development_score(incumbent)
         observed_score = _manifold_development_score(trial)
-        winner_traces = {s: read_feature_trace(traces_path, winner, s) for s in _dev_session_ids}
+        winner_traces = {s: feature_traces[winner][str(s)] for s in _dev_session_ids}
         # JAX is not fork-safe once the backend has run in this process: the null
         # refits run serially (one worker), see `_manifold_fit_candidates`.
         return run_step_shift_test(
@@ -8550,9 +8574,8 @@ def continuous_vocal_manifold_model_selection(
     print("\n--- Finalizing Results ---")
     # No blanket except: a failed final refit or save must stop the run loudly, not
     # pass as a finished selection with no final model.
-    last_file_path = model_selection_dir / f"{prefix}{step_counter}.pkl"
-    if not last_file_path.exists():
-        last_file_path = model_selection_dir / f"{prefix}{step_counter - 1}.pkl"
+    # Step 0 is the accepted gate baseline, so an empty selection lands there.
+    last_file_path = _final_step_file(model_selection_dir, prefix, step_counter, True)
 
     with Path(last_file_path).open('rb') as f:
         step_data = pickle.load(f)

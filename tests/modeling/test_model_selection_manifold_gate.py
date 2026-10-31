@@ -241,9 +241,8 @@ class TestStepZeroGateBaseline:
         )
         runner = ContinuousModelRunner(ContinuousModelingPipeline(modeling_settings_dict=settings))
         combined = {feature: runner.run_univariate_training(str(signal_pkl), feature) for feature in feature_names}
-        # The univariate stage copies the PICKLE's metadata block verbatim (the builder
-        # copied `input_md` before recording the trace sidecar in it) and the selection
-        # prefers that copy, so take it from the pickle as the dispatcher does.
+        # The univariate stage copies the PICKLE's metadata block verbatim and the
+        # selection prefers that copy, so take it from the pickle as the dispatcher does.
         with signal_pkl.open('rb') as fh:
             combined['_input_metadata'] = pickle.load(fh)['_input_metadata']
         combined_path = tmp_path / 'univariate_combined.pkl'
@@ -284,8 +283,10 @@ class TestStepZeroGateBaseline:
         for path in step_pkls:
             with path.open('rb') as fh:
                 steps.append(pickle.load(fh))
-        # The selection accepted nothing: the behaviour-free anchor was rejected.
-        assert steps[-1]['final_model_features'] == []
+        # The selection accepted nothing: the behaviour-free anchor was rejected, so the
+        # empty result sits on the accepted Step-0 baseline and on no other step file.
+        assert steps[0]['final_model_features'] == []
+        assert all('final_model_features' not in step for step in steps[1:])
         assert all(step['selected_feature'] in ('null_model_free', None) for step in steps)
 
         step0 = steps[0]
@@ -354,9 +355,8 @@ class TestStepZeroGateBaseline:
         )
         runner = ContinuousModelRunner(ContinuousModelingPipeline(modeling_settings_dict=settings))
         combined = {feature: runner.run_univariate_training(str(signal_pkl), feature) for feature in feature_names}
-        # The univariate stage copies the PICKLE's metadata block verbatim (the builder
-        # copied `input_md` before recording the trace sidecar in it) and the selection
-        # prefers that copy, so take it from the pickle as the dispatcher does.
+        # The univariate stage copies the PICKLE's metadata block verbatim and the
+        # selection prefers that copy, so take it from the pickle as the dispatcher does.
         with signal_pkl.open('rb') as fh:
             combined['_input_metadata'] = pickle.load(fh)['_input_metadata']
         combined_path = tmp_path / 'univariate_combined.pkl'
@@ -402,7 +402,8 @@ class TestStepZeroGateBaseline:
         anchor_test = steps[1]['step_test']
         assert anchor_test['accepted'] is False
         assert anchor_test['k_exceed'] >= 1
-        assert steps[-1]['final_model_features'] == []
+        assert steps[0]['final_model_features'] == []
+        assert all('final_model_features' not in step for step in steps[1:])
 
         # Every stored Step-0 intercept prediction is the region-reweighted training-fold mean.
         y_all = np.vstack([artifact[feature_names[0]][sess]['Y'] for sess in sorted(session_ids)]).astype(np.float64)

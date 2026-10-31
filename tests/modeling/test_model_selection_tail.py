@@ -58,7 +58,7 @@ import pytest
 mpl.use('Agg')
 
 from tests.modeling._synth import (
-    attach_shift_test_sidecar,
+    attach_shift_test_inputs,
     build_modeling_input_pickle,
     build_modeling_settings,
     build_session_tree,
@@ -80,7 +80,7 @@ with warnings.catch_warnings():
         vocal_category_model_selection,
         vocal_onset_model_selection,
     )
-    from usv_playpen.modeling.modeling_utils import write_feature_traces
+    from usv_playpen.modeling.modeling_utils import shift_test_inputs_block
     from usv_playpen.modeling.step_shift_test import STEP_TEST_RULE
 
 
@@ -766,8 +766,8 @@ class TestPooledCacheMisalignment:
         session's stored start frames, and a feature with fewer windows than
         starts does not, so the selector raises ``ValueError`` there (the
         cache-build guard stays behind it as a second line). Built by making one
-        feature carry fewer positive events per session than the anchor, with a
-        sidecar whose start frames are the anchor's.
+        feature carry fewer positive events per session than the anchor, with
+        stored start frames that are the anchor's.
         """
 
         session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
@@ -782,7 +782,7 @@ class TestPooledCacheMisalignment:
                     'usv_feature_arr': rng.standard_normal((n_usv, HISTORY_FRAMES)),
                     'no_usv_feature_arr': rng.standard_normal((40, HISTORY_FRAMES)),
                 }
-        # The sidecar: a trace per feature and session that contains the anchor's 24 + 40
+        # The stored traces: one per feature and session, containing the anchor's 24 + 40
         # windows back to back, so the anchor re-cuts exactly and the short feature cannot.
         spacing = HISTORY_FRAMES + 1
         window_starts, traces = {}, {feat: {} for feat in artifact}
@@ -799,9 +799,8 @@ class TestPooledCacheMisalignment:
                 for start, window in zip(no_usv_starts, artifact[feat][sess]['no_usv_feature_arr'], strict=True):
                     trace[start:start + HISTORY_FRAMES] = window
                 traces[feat][sess] = trace
-        traces_path = tmp_path / 'modeling_input_traces.h5'
-        write_feature_traces(traces_path, traces, window_starts)
-        artifact['_input_metadata'] = {'analysis_tag': 'bout', 'traces_path': str(traces_path)}
+        artifact.update(shift_test_inputs_block(traces, window_starts))
+        artifact['_input_metadata'] = {'analysis_tag': 'bout'}
         input_pkl = tmp_path / 'modeling_input.pkl'
         with input_pkl.open('wb') as fh:
             pickle.dump(artifact, fh)
@@ -900,8 +899,8 @@ def _write_category_input_pickle(save_path, feature_names, session_ids,
                 'other_feature_arr': other_arr,
             }
     artifact['_input_metadata'] = _category_input_metadata()
-    attach_shift_test_sidecar(
-        artifact, save_path, HISTORY_FRAMES,
+    attach_shift_test_inputs(
+        artifact, HISTORY_FRAMES,
         slots={'target': 'target_feature_arr', 'other': 'other_feature_arr'}, fps=CAMERA_FPS, seed=seed,
     )
     save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -919,7 +918,7 @@ def _write_category_ranking(save_path, feature_names, n_folds=4, input_pickle=No
     ``null`` so the Bonferroni screen admits every feature. Carries the reserved
     ``_input_metadata`` block (the selector prefers it over the input pickle's):
     copied from ``input_pickle`` when given, as the univariate dispatcher copies
-    it, so the block names the trace sidecar the selector requires.
+    it.
 
     Parameters
     ----------
@@ -931,7 +930,7 @@ def _write_category_ranking(save_path, feature_names, n_folds=4, input_pickle=No
         Per-fold log-loss entry count per branch.
     input_pickle (str | pathlib.Path | None)
         The modeling input pickle whose ``_input_metadata`` the ranking carries;
-        ``None`` writes the bare category block (no sidecar).
+        ``None`` writes the bare category block.
 
     Returns
     -------
@@ -1323,8 +1322,8 @@ def _build_params_input_pickle(save_path, feature_names, session_ids,
             X = X + np.log(y)[:, None] * 0.6
         artifact[feature] = {'X': X.astype(float), 'y': y.copy(), 'groups': groups.copy()}
     artifact['_input_metadata'] = {'analysis_tag': 'bout_durations'}
-    attach_shift_test_sidecar(artifact, save_path, HISTORY_FRAMES, slots={'X': 'X'}, fps=CAMERA_FPS,
-                              layout='global', seed=seed)
+    attach_shift_test_inputs(artifact, HISTORY_FRAMES, slots={'X': 'X'}, fps=CAMERA_FPS,
+                             layout='global', seed=seed)
     save_path.parent.mkdir(parents=True, exist_ok=True)
     with save_path.open('wb') as fh:
         pickle.dump(artifact, fh)
@@ -1369,7 +1368,7 @@ def _write_params_ranking(save_path, feature_names, significant=True, n_folds=4,
         artifact['_input_metadata'] = {'analysis_tag': 'bout_durations'}
     else:
         # The univariate dispatcher copies the input pickle's block verbatim, and the
-        # selector prefers that copy: it must name the trace sidecar.
+        # selector prefers that copy.
         with Path(input_pickle).open('rb') as fh:
             artifact['_input_metadata'] = pickle.load(fh)['_input_metadata']
     save_path.parent.mkdir(parents=True, exist_ok=True)

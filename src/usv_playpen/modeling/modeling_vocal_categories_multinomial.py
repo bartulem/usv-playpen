@@ -86,8 +86,8 @@ from .modeling_utils import (
     safe_matthews_corrcoef,
     seeded_session_holdout,
     select_kinematic_columns,
+    shift_test_inputs_block,
     valid_window_starts,
-    write_feature_traces,
     zscore_features_across_sessions,
 )
 
@@ -1222,7 +1222,7 @@ class MultinomialModelingPipeline(FeatureZoo):
         # The per-step shift test re-cuts a feature's windows from its processed
         # trace after a circular shift: every session's window start frames and
         # every feature's processed trace are recorded alongside the windows (the
-        # traces in an HDF5 sidecar next to the pickle).
+        # pickle's `_feature_traces` and `_window_starts`).
         session_window_starts = {}
         feature_traces = {}
 
@@ -1319,21 +1319,16 @@ class MultinomialModelingPipeline(FeatureZoo):
 
         input_metadata['feature_zoo_kept'] = sorted(final_data.keys())
 
-        # The per-step shift test's inputs: the processed traces and the window
-        # start frames per session go to an HDF5 sidecar next to the pickle (one
-        # dataset per feature and session, one per session); the metadata records
-        # only the sidecar's path, so it stays JSON-like.
-        traces_path = save_dir / f"{Path(fname).stem}_traces.h5"
-        with atomic_output_path(traces_path) as temporary_traces_path:
-            write_feature_traces(temporary_traces_path, feature_traces, session_window_starts)
-        input_metadata['traces_path'] = str(traces_path)
-
-        artifact = inject_metadata(final_data, _input_metadata=input_metadata)
+        # The per-step shift test's inputs (the processed per-session traces the
+        # windows were cut from and the kept window start frames) are stored in the
+        # same pickle under two reserved keys, next to `_input_metadata`.
+        artifact = inject_metadata(final_data, _input_metadata=input_metadata,
+                                   **shift_test_inputs_block(feature_traces, session_window_starts))
 
         print(f"Saving extraction results to:\n{save_path} ...")
         with atomic_output_path(save_path) as temporary_path, temporary_path.open('wb') as f:
             pickle.dump(artifact, f)
-        print(f"[+] Save Complete. Processed traces of {len(feature_traces)} feature(s) written to:\n{traces_path}")
+        print(f"[+] Save Complete. Processed traces of {len(feature_traces)} feature(s) stored in the pickle.")
 
 
 class MultinomialModelRunner:

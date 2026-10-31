@@ -5,8 +5,8 @@ Tests of the per-step shift test of forward feature selection and its plumbing.
 Covered:
 
 * the window helpers the extractions and the test share (``valid_window_starts``,
-  ``cut_history_windows``, ``circular_shift_trace``) and the trace sidecar
-  (``write_feature_traces`` / ``read_feature_trace`` / ``verify_windows_against_traces``);
+  ``cut_history_windows``, ``circular_shift_trace``) and the shift-test inputs stored in
+  the pickle (``shift_test_inputs_block`` / ``verify_windows_against_traces``);
 * the test's arithmetic (``shift_refit_count``, ``bonferroni_permutation_p``,
   ``draw_session_shift_lags``, ``macro_log_likelihood``, ``pool_worker_count``);
 * ``SelectionPool`` (serial path, early stop, fork pool on Linux);
@@ -15,7 +15,7 @@ Covered:
 * the onset selector's guards (``_require_shift_test_inputs``, ``_require_step_test_rule``,
   ``_quarantine_stale_step_files``, ``_assemble_fold_metrics``, ``_step_test_settings``);
 * an end-to-end ``vocal_onset_model_selection`` on a tiny synthetic cohort whose windows are cut
-  from stored traces, including a resume and the refusal of a pickle without the sidecar.
+  from stored traces, including a resume and the refusal of a pickle without stored traces.
 """
 
 from __future__ import annotations
@@ -30,7 +30,6 @@ import textwrap
 import warnings
 from pathlib import Path
 
-import h5py
 import numpy as np
 import pytest
 from sklearn.linear_model import LogisticRegression
@@ -41,7 +40,12 @@ from tests.modeling._synth import (
     write_session_list_file,
 )
 from usv_playpen.modeling import modeling_utils as mu
-from usv_playpen.modeling.modeling_metadata import SCHEMA_VERSIONS
+from usv_playpen.modeling.modeling_metadata import (
+    FEATURE_TRACES_KEY,
+    RESERVED_METADATA_KEYS,
+    SCHEMA_VERSIONS,
+    WINDOW_STARTS_KEY,
+)
 
 # The modeling import chain pulls optax -> a one-time JAX DeprecationWarning; the
 # suite escalates warnings to errors, so the import is guarded here as the other
@@ -279,7 +283,7 @@ def _run_toy_shift_test(tmp_path: Path, *, traces: dict, starts: dict, windows: 
 
 
 # ---------------------------------------------------------------------------------
-# window helpers and the trace sidecar
+# window helpers and the stored shift-test inputs
 # ---------------------------------------------------------------------------------
 
 class TestWindowHelpers:
@@ -326,85 +330,80 @@ class TestWindowHelpers:
         assert np.array_equal(mu.circular_shift_trace(trace, 0), trace)
 
 
-class TestTraceSidecar:
-    """``write_feature_traces`` / ``read_feature_trace`` / ``verify_windows_against_traces``."""
+class TestShiftTestInputs:
+    """``shift_test_inputs_block`` / ``verify_windows_against_traces``."""
 
-    def test_round_trip_and_attributes(self, tmp_path):
-        """Traces and window starts come back bit-exact per feature, session and slot, with the attributes."""
+    def test_block_layout_dtypes_and_pickle_round_trip(self, tmp_path):
+        """The block holds every trace and start bit-exact under the two reserved keys, the starts as
+        int64 with the session attributes, and survives a pickle round trip unchanged."""
 
         rng = np.random.default_rng(1)
         traces = {'self.speed': {'a': rng.standard_normal(50), 'b': rng.standard_normal(70)},
                   'head-head': {'a': rng.standard_normal(50), 'b': rng.standard_normal(70)}}
         window_starts = {'a': {'usv': [3, 20], 'no_usv': [], 'n_frames': 50, 'fps': 12.0},
                          'b': {'usv': np.array([5]), 'no_usv': np.array([30, 41, 52]), 'n_frames': 70, 'fps': 12.0}}
-        path = tmp_path / 'traces.h5'
-        mu.write_feature_traces(path, traces, window_starts)
+        block = mu.shift_test_inputs_block(traces, window_starts)
+        assert set(block) == {FEATURE_TRACES_KEY, WINDOW_STARTS_KEY}
+        assert FEATURE_TRACES_KEY in RESERVED_METADATA_KEYS
+        assert WINDOW_STARTS_KEY in RESERVED_METADATA_KEYS
+        path = tmp_path / 'artifact.pkl'
+        with path.open('wb') as handle:
+            pickle.dump(block, handle)
+        with path.open('rb') as handle:
+            read_back = pickle.load(handle)
         for feature, by_session in traces.items():
             for session_id, column in by_session.items():
-                assert np.array_equal(mu.read_feature_trace(path, feature, session_id), column)
-        with h5py.File(path, 'r') as handle:
-            assert handle['head-head']['b'].attrs['n_frames'] == 70
-            assert handle['head-head']['b'].attrs['fps'] == 12.0
-            assert set(handle[mu.WINDOW_STARTS_GROUP]) == {'a', 'b'}
-        read_back = mu.read_window_starts(path)
-        assert set(read_back) == {'a', 'b'}
+                assert np.array_equal(read_back[FEATURE_TRACES_KEY][feature][session_id], column)
+        starts_back = read_back[WINDOW_STARTS_KEY]
+        assert set(starts_back) == {'a', 'b'}
         for session_id, entry in window_starts.items():
-            assert set(read_back[session_id]) == {'usv', 'no_usv', 'n_frames', 'fps'}
-            assert read_back[session_id]['n_frames'] == entry['n_frames']
-            assert read_back[session_id]['fps'] == entry['fps']
+            assert set(starts_back[session_id]) == {'usv', 'no_usv', 'n_frames', 'fps'}
+            assert starts_back[session_id]['n_frames'] == entry['n_frames']
+            assert starts_back[session_id]['fps'] == entry['fps']
             for slot in ('usv', 'no_usv'):
-                assert read_back[session_id][slot].dtype == np.int64
-                assert np.array_equal(read_back[session_id][slot], np.asarray(entry[slot], dtype=np.int64))
-        # the pickle's metadata block never carries the starts: the sidecar alone does
-        assert isinstance(read_back['a']['usv'], np.ndarray)
+                assert starts_back[session_id][slot].dtype == np.int64
+                assert np.array_equal(starts_back[session_id][slot], np.asarray(entry[slot], dtype=np.int64))
 
-    def test_write_refuses_reserved_key_and_unknown_session(self, tmp_path):
-        """A feature named like the start group, or a trace of a session without starts, is refused."""
+    def test_block_refuses_reserved_key_unknown_session_and_wrong_length(self):
+        """A feature named like a reserved key, a trace of a session without starts, or a trace whose
+        length is not the session's frame count is refused."""
 
         starts = {'a': {'X': [1], 'n_frames': 10, 'fps': 12.0}}
-        with pytest.raises(ValueError, match='reserved'):
-            mu.write_feature_traces(tmp_path / 'r.h5', {mu.WINDOW_STARTS_GROUP: {'a': np.zeros(10)}}, starts)
+        for reserved in (FEATURE_TRACES_KEY, WINDOW_STARTS_KEY):
+            with pytest.raises(ValueError, match='reserved'):
+                mu.shift_test_inputs_block({reserved: {'a': np.zeros(10)}}, starts)
         with pytest.raises(ValueError, match='no window starts'):
-            mu.write_feature_traces(tmp_path / 'u.h5', {'f': {'a': np.zeros(10), 'b': np.zeros(10)}}, starts)
+            mu.shift_test_inputs_block({'f': {'a': np.zeros(10), 'b': np.zeros(10)}}, starts)
+        with pytest.raises(ValueError, match='frames'):
+            mu.shift_test_inputs_block({'f': {'a': np.zeros(11)}}, starts)
 
-    def test_read_window_starts_refuses_sidecar_without_starts(self, tmp_path):
-        """A sidecar holding traces only (written before the starts moved into it) is refused."""
-
-        path = tmp_path / 'old.h5'
-        with h5py.File(path, 'w') as handle:
-            handle.create_group('f').create_dataset('a', data=np.zeros(10))
-        with pytest.raises(ValueError, match='predates'):
-            mu.read_window_starts(path)
-
-    def test_verify_passes_on_consistent_data(self, tmp_path):
+    def test_verify_passes_on_consistent_data(self):
         """Windows cut from the stored traces at the stored starts verify at lag zero."""
 
         rng = np.random.default_rng(2)
         traces, starts, windows = _toy_sessions(rng, n_sessions=2, n_frames=500, history_frames=8, n_events=10)
-        path = tmp_path / 'traces.h5'
-        mu.write_feature_traces(path, {'f': traces},
-                                {s: {**starts[s], 'n_frames': len(t), 'fps': 12.0} for s, t in traces.items()})
-        mu.verify_windows_against_traces({'f': windows}, path, starts, ONSET_SLOTS, 8,
+        mu.verify_windows_against_traces({'f': windows}, {'f': traces}, starts, ONSET_SLOTS, 8,
                                          features=['f'], sessions=sorted(traces))
 
-    def test_verify_raises_on_modified_window_and_count_mismatch(self, tmp_path):
-        """A changed stored window, or starts without windows, abort the check."""
+    def test_verify_raises_on_modified_window_count_mismatch_and_missing_trace(self):
+        """A changed stored window, starts without windows, or a feature without a stored trace abort
+        the check."""
 
         rng = np.random.default_rng(3)
         traces, starts, windows = _toy_sessions(rng, n_sessions=2, n_frames=500, history_frames=8, n_events=10)
-        path = tmp_path / 'traces.h5'
-        mu.write_feature_traces(path, {'f': traces},
-                                {s: {**starts[s], 'n_frames': len(t), 'fps': 12.0} for s, t in traces.items()})
         tampered = {'f': {s: {k: v.copy() for k, v in e.items()} for s, e in windows.items()}}
         tampered['f']['session_0']['usv_feature_arr'][0, 0] += 1e-6
         with pytest.raises(ValueError, match='do not match the stored windows'):
-            mu.verify_windows_against_traces(tampered, path, starts, ONSET_SLOTS, 8,
+            mu.verify_windows_against_traces(tampered, {'f': traces}, starts, ONSET_SLOTS, 8,
                                              features=['f'], sessions=['session_0', 'session_1'])
         emptied = {'f': {s: {k: v.copy() for k, v in e.items()} for s, e in windows.items()}}
         emptied['f']['session_1']['no_usv_feature_arr'] = np.empty((0, 8))
         with pytest.raises(ValueError, match='stores no windows'):
-            mu.verify_windows_against_traces(emptied, path, starts, ONSET_SLOTS, 8,
+            mu.verify_windows_against_traces(emptied, {'f': traces}, starts, ONSET_SLOTS, 8,
                                              features=['f'], sessions=['session_0', 'session_1'])
+        with pytest.raises(ValueError, match='stores no trace'):
+            mu.verify_windows_against_traces({'f': windows}, {'g': traces}, starts, ONSET_SLOTS, 8,
+                                             features=['f'], sessions=['session_0'])
 
 
 # ---------------------------------------------------------------------------------
@@ -820,30 +819,24 @@ class TestSelectorGuards:
         settings['model_params']['selection_step_null_min_lag_seconds'] = 0.1
         assert ms._step_test_settings(settings, 12.0)['min_lag_frames'] == 1
 
-    def test_require_shift_test_inputs(self, tmp_path):
-        """A missing path, a missing sidecar, a sidecar without starts and an fps mismatch each raise."""
+    def test_require_shift_test_inputs(self):
+        """A pickle without either stored key and an fps mismatch each raise; a complete pickle hands
+        both blocks back and loses them, so only feature data and metadata remain."""
 
-        with pytest.raises(ValueError, match='traces_path'):
-            ms._require_shift_test_inputs(None, 'old.pkl', 12.0)
-        with pytest.raises(ValueError, match='traces_path'):
-            ms._require_shift_test_inputs({'analysis_type': 'onset'}, 'old.pkl', 12.0)
-        with pytest.raises(ValueError, match='not on disk'):
-            ms._require_shift_test_inputs({'traces_path': str(tmp_path / 'absent.h5')}, 'x.pkl', 12.0)
-        traces_only = tmp_path / 'traces_only.h5'
-        with h5py.File(traces_only, 'w') as handle:
-            handle.create_group('f').create_dataset('s', data=np.zeros(10))
-        with pytest.raises(ValueError, match='predates'):
-            ms._require_shift_test_inputs({'traces_path': str(traces_only)}, 'x.pkl', 12.0)
-        mismatch = tmp_path / 'mismatch.h5'
-        mu.write_feature_traces(mismatch, {'f': {'s': np.zeros(10)}},
-                                {'s': {'usv': [], 'no_usv': [], 'n_frames': 10, 'fps': 30.0}})
+        with pytest.raises(ValueError, match='Rebuild the modeling input pickle'):
+            ms._require_shift_test_inputs({'_input_metadata': {'analysis_type': 'onset'}}, 'old.pkl', 12.0)
+        with pytest.raises(ValueError, match=WINDOW_STARTS_KEY):
+            ms._require_shift_test_inputs({FEATURE_TRACES_KEY: {}}, 'old.pkl', 12.0)
+        mismatch = mu.shift_test_inputs_block({'f': {'s': np.zeros(10)}},
+                                              {'s': {'usv': [], 'no_usv': [], 'n_frames': 10, 'fps': 30.0}})
         with pytest.raises(ValueError, match='fps'):
-            ms._require_shift_test_inputs({'traces_path': str(mismatch)}, 'x.pkl', 12.0)
-        sidecar = tmp_path / 'traces.h5'
+            ms._require_shift_test_inputs(mismatch, 'x.pkl', 12.0)
         starts = {'s': {'usv': [2, 5], 'no_usv': [], 'n_frames': 10, 'fps': 12.0}}
-        mu.write_feature_traces(sidecar, {'f': {'s': np.zeros(10)}}, starts)
-        traces_path, window_starts = ms._require_shift_test_inputs({'traces_path': str(sidecar)}, 'x.pkl', 12.0)
-        assert traces_path == str(sidecar)
+        loaded = {'f': {'s': {}}, '_input_metadata': {'analysis_type': 'onset'},
+                  **mu.shift_test_inputs_block({'f': {'s': np.arange(10.0)}}, starts)}
+        feature_traces, window_starts = ms._require_shift_test_inputs(loaded, 'x.pkl', 12.0)
+        assert set(loaded) == {'f', '_input_metadata'}
+        assert np.array_equal(feature_traces['f']['s'], np.arange(10.0))
         assert set(window_starts) == {'s'}
         assert np.array_equal(window_starts['s']['usv'], [2, 5])
         assert window_starts['s']['no_usv'].size == 0
@@ -894,14 +887,12 @@ class TestSelectorGuards:
 # end-to-end onset selection
 # ---------------------------------------------------------------------------------
 
-def _onset_input_metadata(session_ids: list, held_out: list, feature_names: list,
-                          traces_path: Path | None) -> dict:
+def _onset_input_metadata(session_ids: list, held_out: list, feature_names: list) -> dict:
     """
     Description
     -----------
     The ``_input_metadata`` block of the toy onset pickle, in the shape the onset
-    extraction writes (schema version 3 with the sidecar fields, or without them to
-    mimic an older pickle).
+    extraction writes.
 
     Parameters
     ----------
@@ -911,8 +902,6 @@ def _onset_input_metadata(session_ids: list, held_out: list, feature_names: list
         Reserved sessions.
     feature_names (list)
         Generic feature keys.
-    traces_path (pathlib.Path | None)
-        Sidecar path, or None to omit the sidecar field.
 
     Returns
     -------
@@ -920,7 +909,7 @@ def _onset_input_metadata(session_ids: list, held_out: list, feature_names: list
         The metadata block.
     """
 
-    input_md = {
+    return {
         '_schema_version': SCHEMA_VERSIONS['input'],
         'analysis_type': 'onset',
         'analysis_tag': 'bout_onset',
@@ -930,18 +919,15 @@ def _onset_input_metadata(session_ids: list, held_out: list, feature_names: list
         'filter_history_frames': HISTORY_FRAMES,
         'camera_sampling_rate_hz': CAMERA_FPS,
     }
-    if traces_path is not None:
-        input_md['traces_path'] = str(traces_path)
-    return input_md
 
 
-def _build_onset_cohort(tmp_path: Path, feature_names: list, with_sidecar: bool = True,
+def _build_onset_cohort(tmp_path: Path, feature_names: list, with_shift_test_inputs: bool = True,
                         seed: int = 0) -> tuple[str, str, list]:
     """
     Description
     -----------
     Writes a toy onset modeling pickle whose windows are cut from stored traces at
-    stored start frames (plus the HDF5 sidecar), and a univariate ranking that lets
+    stored start frames (traces and starts stored in the pickle), and a univariate ranking that lets
     every feature through the screen. The first feature carries a strong class signal,
     the second a weaker one, the third none.
 
@@ -951,8 +937,8 @@ def _build_onset_cohort(tmp_path: Path, feature_names: list, with_sidecar: bool 
         Scratch directory.
     feature_names (list)
         Three generic feature keys.
-    with_sidecar (bool)
-        False writes the pickle without ``traces_path`` (an old pickle).
+    with_shift_test_inputs (bool)
+        False writes the pickle without the stored traces and starts (an old pickle).
     seed (int)
         Seed of the toy data.
 
@@ -989,11 +975,9 @@ def _build_onset_cohort(tmp_path: Path, feature_names: list, with_sidecar: bool 
                 'usv_feature_arr': mu.cut_history_windows(trace, chosen[labels == 1], HISTORY_FRAMES),
                 'no_usv_feature_arr': mu.cut_history_windows(trace, chosen[labels == 0], HISTORY_FRAMES),
             }
-    traces_path = tmp_path / 'modeling_input_traces.h5'
-    mu.write_feature_traces(traces_path, traces_by_feature, starts_by_session)
-    artifact['_input_metadata'] = _onset_input_metadata(
-        session_ids, [session_ids[-1]], feature_names, traces_path if with_sidecar else None,
-    )
+    if with_shift_test_inputs:
+        artifact.update(mu.shift_test_inputs_block(traces_by_feature, starts_by_session))
+    artifact['_input_metadata'] = _onset_input_metadata(session_ids, [session_ids[-1]], feature_names)
     input_pkl = tmp_path / 'modeling_input.pkl'
     with input_pkl.open('wb') as handle:
         pickle.dump(artifact, handle)
@@ -1142,8 +1126,9 @@ class TestOnsetSelectionEndToEnd:
         if len(steps) < len(feature_names):
             assert steps[-1]['selected_feature'] is None
 
-        final = steps[-1]
-        assert 'final_model_features' in final
+        # The final result sits on the last accepted step and on no other step file.
+        final = [step for step in steps if step['selected_feature'] is not None][-1]
+        assert [step['step_idx'] for step in steps if 'final_model_features' in step] == [final['step_idx']]
         assert 'filter_shapes' in final
         assert 'heldout' in final
         accepted = [step['selected_feature'] for step in steps if step['selected_feature'] is not None]
@@ -1161,7 +1146,8 @@ class TestOnsetSelectionEndToEnd:
         assert '[RESUME]' in capsys.readouterr().out
         resumed = _load_steps(ms_dir)
         assert len(resumed) == len(steps)
-        assert resumed[-1]['final_model_features'] == final['final_model_features']
+        resumed_final = [step for step in resumed if step['selected_feature'] is not None][-1]
+        assert resumed_final['final_model_features'] == final['final_model_features']
 
     @pytest.mark.filterwarnings('ignore:Bitwise inversion:DeprecationWarning')
     def test_forced_anchor_is_tested(self, tmp_path):
@@ -1186,11 +1172,12 @@ class TestOnsetSelectionEndToEnd:
         assert anchor['current_features'] == [feature_names[0]]
         assert anchor['candidates_summary'][feature_names[0]]['mean_ll'] < np.log(2)
 
-    def test_pickle_without_sidecar_is_refused(self, tmp_path):
-        """A modeling pickle extracted before the sidecar existed stops the run with an instruction."""
+    def test_pickle_without_stored_traces_is_refused(self, tmp_path):
+        """A modeling pickle extracted before the traces were stored in it stops the run with an
+        instruction."""
 
         feature_names = ['self.speed', 'other.speed', 'self.neck_elevation']
-        input_pkl, ranking_pkl, _ = _build_onset_cohort(tmp_path, feature_names, with_sidecar=False)
+        input_pkl, ranking_pkl, _ = _build_onset_cohort(tmp_path, feature_names, with_shift_test_inputs=False)
         _, settings_path = _onset_settings(tmp_path)
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()

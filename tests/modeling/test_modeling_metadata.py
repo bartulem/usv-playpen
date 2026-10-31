@@ -526,12 +526,14 @@ class TestMiscHelpers:
         assert re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z', _utcnow_iso())
 
     def test_reserved_keys_constant_shape(self):
-        """The reserved-key tuple is the canonical 4-block set the
-        splitters key off."""
+        """The reserved-key tuple is the canonical set the splitters key off:
+        the 4 metadata blocks plus the per-step shift test's two array entries
+        of a modeling input pickle."""
 
         assert set(RESERVED_METADATA_KEYS) == {
             '_input_metadata', '_run_metadata',
             '_univariate_metadata', '_consolidation_metadata',
+            '_feature_traces', '_window_starts',
         }
 
 

@@ -98,7 +98,6 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-import h5py
 import numpy as np
 import polars as pls
 from numpy.lib.stride_tricks import sliding_window_view
@@ -118,6 +117,7 @@ from .modeling_collinearity_audit import (
     audit_predictor_timescales,
 )
 from .modeling_cross_session_normalization import zscore_different_sessions_together
+from .modeling_metadata import FEATURE_TRACES_KEY, WINDOW_STARTS_KEY
 
 
 def prepare_modeling_sessions(modeling_settings: dict) -> list:
@@ -1754,146 +1754,78 @@ def pool_worker_count(requested_workers: int,
     return max(1, min(requested_workers, by_memory))
 
 
-#: Reserved group of the trace sidecar that holds the per-session window start frames
-#: (no behavioral feature key starts with an underscore).
-WINDOW_STARTS_GROUP = '_window_starts'
-
 #: Keys of a window-start entry that are session attributes, not start-frame slots.
 _WINDOW_STARTS_ATTRS = ('n_frames', 'fps')
 
 
-def write_feature_traces(path: str | Path,
-                         traces: dict,
-                         window_starts: dict) -> None:
+def shift_test_inputs_block(traces: dict,
+                            window_starts: dict) -> dict:
     """
     Description
     -----------
-    Writes the per-step shift test's inputs into an HDF5 sidecar next to the modeling
-    pickle: the processed per-session feature traces an extraction cut its windows
-    from, one dataset per ``/<feature>/<session>`` in the trace's own dtype, and the
-    start frame of every kept window, one dataset per
-    ``/_window_starts/<session>/<slot>`` under the pipeline's slot names, with the
-    trace length and the camera frame rate as attributes of every trace dataset and of
-    every session's start group. The windows themselves stay in the pickle, so every
-    reader of the pickle is unchanged, and the pickle's ``_input_metadata`` records
-    only the sidecar's path: that block stays JSON-like, as the consolidators compare
-    it leaf by leaf with ``!=`` and an array-valued leaf would break them. The
-    per-step shift test reads one feature's traces back (``read_feature_trace``) and
-    re-cuts shifted windows at the stored starts (``read_window_starts``).
+    Builds the two reserved top-level pickle entries the per-step shift test reads:
+    the processed per-session feature traces an extraction cut its windows from
+    (``_feature_traces``, ``{feature: {session: (n_frames,) trace}}`` in the trace's
+    own dtype) and the start frame of every kept window
+    (``_window_starts``, ``{session: {slot: (n,) int64 starts, 'n_frames': int,
+    'fps': float}}`` under the pipeline's slot names). They are stored next to the
+    windows and ``_input_metadata`` in the same pickle, so the pickle is the single
+    file a selection needs; they are not inside ``_input_metadata``, which stays
+    JSON-like because the consolidators compare it leaf by leaf with ``!=`` and an
+    array-valued leaf would break them. The per-step shift test shifts one feature's
+    traces and re-cuts windows at the stored starts.
 
     Parameters
     ----------
-    path (str | Path)
-        Destination ``.h5`` file (overwritten).
     traces (dict)
         ``{feature: {session_id: (n_frames,) np.ndarray}}``.
     window_starts (dict)
         ``{session_id: {slot_name: (n,) start frames, 'n_frames': int, 'fps': float}}``
-        for every session a trace is written for (``usv`` / ``no_usv``, ``target`` /
+        for every session a trace is stored for (``usv`` / ``no_usv``, ``target`` /
         ``other`` or ``X`` slots).
 
     Returns
     -------
-    None
+    block (dict)
+        ``{FEATURE_TRACES_KEY: traces, WINDOW_STARTS_KEY: starts}``, ready to be
+        merged into the artifact dict.
 
     Raises
     ------
     ValueError
-        If a feature key equals the reserved start group's name, or a trace's session
-        has no window-start entry.
+        If a feature key is a reserved key, a trace's session has no window-start
+        entry, or a trace's length differs from its session's ``n_frames``.
     """
 
-    path = Path(path)
-    if WINDOW_STARTS_GROUP in traces:
-        msg = f"write_feature_traces: the feature key {WINDOW_STARTS_GROUP!r} is reserved for the window starts."
-        raise ValueError(msg)
-    with h5py.File(path, 'w') as handle:
-        for feature, by_session in traces.items():
-            group = handle.create_group(feature)
-            for session_id, column in by_session.items():
-                if session_id not in window_starts:
-                    msg = f"write_feature_traces: {feature!r} has a trace for {session_id!r} but no window starts."
-                    raise ValueError(msg)
-                dataset = group.create_dataset(str(session_id), data=np.asarray(column))
-                dataset.attrs['n_frames'] = int(window_starts[session_id]['n_frames'])
-                dataset.attrs['fps'] = float(window_starts[session_id]['fps'])
-        starts_group = handle.create_group(WINDOW_STARTS_GROUP)
-        for session_id, entry in window_starts.items():
-            session_group = starts_group.create_group(str(session_id))
-            session_group.attrs['n_frames'] = int(entry['n_frames'])
-            session_group.attrs['fps'] = float(entry['fps'])
-            for slot_name, starts in entry.items():
-                if slot_name in _WINDOW_STARTS_ATTRS:
-                    continue
-                session_group.create_dataset(str(slot_name), data=np.asarray(starts, dtype=np.int64))
-
-
-def read_window_starts(path: str | Path) -> dict:
-    """
-    Description
-    -----------
-    Reads the per-session window start frames back from the HDF5 sidecar written by
-    ``write_feature_traces``, in the layout the extractions built them in.
-
-    Parameters
-    ----------
-    path (str | Path)
-        The sidecar file.
-
-    Returns
-    -------
-    window_starts (dict)
-        ``{session_id: {slot_name: (n,) int64 start frames, 'n_frames': int, 'fps': float}}``.
-
-    Raises
-    ------
-    ValueError
-        If the sidecar holds no window-start group (written before the starts moved
-        into it).
-    """
-
-    window_starts = {}
-    with h5py.File(Path(path), 'r') as handle:
-        if WINDOW_STARTS_GROUP not in handle:
-            msg = (f"{path} holds no {WINDOW_STARTS_GROUP!r} group: the sidecar predates the window starts "
-                   f"being stored in it. Rebuild the modeling input pickle with the current extraction.")
+    for reserved in (FEATURE_TRACES_KEY, WINDOW_STARTS_KEY):
+        if reserved in traces:
+            msg = f"shift_test_inputs_block: the feature key {reserved!r} is reserved."
             raise ValueError(msg)
-        for session_id, session_group in handle[WINDOW_STARTS_GROUP].items():
-            entry = {slot_name: session_group[slot_name][()] for slot_name in session_group}
-            entry['n_frames'] = int(session_group.attrs['n_frames'])
-            entry['fps'] = float(session_group.attrs['fps'])
-            window_starts[session_id] = entry
-    return window_starts
-
-
-def read_feature_trace(path: str | Path, feature: str, session_id: str) -> np.ndarray:
-    """
-    Description
-    -----------
-    Reads one session's processed trace of one feature from the HDF5 sidecar written by
-    ``write_feature_traces``.
-
-    Parameters
-    ----------
-    path (str | Path)
-        The sidecar file.
-    feature (str)
-        Generic feature key (``'self.speed'``, ``'head-head'``, ...).
-    session_id (str)
-        Session id.
-
-    Returns
-    -------
-    column (np.ndarray)
-        ``(n_frames,)`` trace.
-    """
-
-    with h5py.File(Path(path), 'r') as handle:
-        return handle[feature][str(session_id)][()]
+    stored_traces = {}
+    for feature, by_session in traces.items():
+        stored_traces[feature] = {}
+        for session_id, raw_column in by_session.items():
+            if session_id not in window_starts:
+                msg = f"shift_test_inputs_block: {feature!r} has a trace for {session_id!r} but no window starts."
+                raise ValueError(msg)
+            column = np.asarray(raw_column)
+            if column.shape != (int(window_starts[session_id]['n_frames']),):
+                msg = (f"shift_test_inputs_block: {feature!r} / {session_id!r} trace has shape {column.shape}, "
+                       f"but the session has {int(window_starts[session_id]['n_frames'])} frames.")
+                raise ValueError(msg)
+            stored_traces[feature][str(session_id)] = column
+    stored_starts = {}
+    for session_id, entry in window_starts.items():
+        stored_entry = {slot_name: np.asarray(starts, dtype=np.int64)
+                        for slot_name, starts in entry.items() if slot_name not in _WINDOW_STARTS_ATTRS}
+        stored_entry['n_frames'] = int(entry['n_frames'])
+        stored_entry['fps'] = float(entry['fps'])
+        stored_starts[str(session_id)] = stored_entry
+    return {FEATURE_TRACES_KEY: stored_traces, WINDOW_STARTS_KEY: stored_starts}
 
 
 def verify_windows_against_traces(feature_data: dict,
-                                  traces_path: str | Path,
+                                  feature_traces: dict,
                                   window_starts: dict,
                                   slots: dict,
                                   history_frames: int,
@@ -1903,20 +1835,20 @@ def verify_windows_against_traces(feature_data: dict,
     Description
     -----------
     The lag-zero self-check of the per-step shift test: re-cuts every stored window of
-    every listed feature and session from the trace sidecar at the stored start
-    frames and requires bit-exact equality with the windows in the pickle. A mismatch
-    means the sidecar, the starts and the windows do not describe the same extraction
-    and the run aborts before any model is fit.
+    every listed feature and session from the pickle's stored traces at the stored
+    start frames and requires bit-exact equality with the windows in the pickle. A
+    mismatch means the traces, the starts and the windows do not describe the same
+    extraction and the run aborts before any model is fit.
 
     Parameters
     ----------
     feature_data (dict)
         The modeling pickle's feature dict ``{feature: {session: {slot: windows}}}``
         (metadata blocks stripped).
-    traces_path (str | Path)
-        The HDF5 sidecar.
+    feature_traces (dict)
+        ``{feature: {session: (n_frames,) trace}}`` (the pickle's ``_feature_traces``).
     window_starts (dict)
-        ``{session: {slot_name: (n,) start frames}}`` from the sidecar (``read_window_starts``).
+        ``{session: {slot_name: (n,) start frames}}`` (the pickle's ``_window_starts``).
     slots (dict)
         ``{slot_name: array_key}`` mapping each start list to the pickle key holding
         its windows (``{'usv': 'usv_feature_arr', 'no_usv': 'no_usv_feature_arr'}``).
@@ -1934,31 +1866,35 @@ def verify_windows_against_traces(feature_data: dict,
     Raises
     ------
     ValueError
-        On the first window that does not reproduce.
+        On a missing trace or the first window that does not reproduce.
     """
 
-    with h5py.File(Path(traces_path), 'r') as handle:
-        for feature in features:
-            for session_id in sessions:
-                if session_id not in feature_data[feature]:
-                    continue
-                column = handle[feature][str(session_id)][()]
-                for slot_name, array_key in slots.items():
-                    stored = feature_data[feature][session_id][array_key]
-                    starts = np.asarray(window_starts[session_id][slot_name], dtype=int)
-                    if stored is None or stored.size == 0:
-                        if starts.size != 0:
-                            msg = (f"verify_windows_against_traces: {feature!r} / {session_id!r} / "
-                                   f"{slot_name!r} stores no windows but {starts.size} start frames.")
-                            raise ValueError(msg)
-                        continue
-                    rebuilt = cut_history_windows(column, starts, history_frames)
-                    if rebuilt.shape != stored.shape or not np.array_equal(rebuilt, stored):
+    for feature in features:
+        for session_id in sessions:
+            if session_id not in feature_data[feature]:
+                continue
+            if feature not in feature_traces or str(session_id) not in feature_traces[feature]:
+                msg = (f"verify_windows_against_traces: the pickle stores no trace for {feature!r} / "
+                       f"{session_id!r}. Rebuild the modeling input pickle with the current extraction.")
+                raise ValueError(msg)
+            column = feature_traces[feature][str(session_id)]
+            for slot_name, array_key in slots.items():
+                stored = feature_data[feature][session_id][array_key]
+                starts = np.asarray(window_starts[session_id][slot_name], dtype=int)
+                if stored is None or stored.size == 0:
+                    if starts.size != 0:
                         msg = (f"verify_windows_against_traces: {feature!r} / {session_id!r} / "
-                               f"{slot_name!r}: windows re-cut from the trace sidecar at lag 0 do not "
-                               f"match the stored windows (shapes {rebuilt.shape} vs {stored.shape}). "
-                               f"The pickle, its start frames and {traces_path} are not from one extraction.")
+                               f"{slot_name!r} stores no windows but {starts.size} start frames.")
                         raise ValueError(msg)
+                    continue
+                rebuilt = cut_history_windows(column, starts, history_frames)
+                if rebuilt.shape != stored.shape or not np.array_equal(rebuilt, stored):
+                    msg = (f"verify_windows_against_traces: {feature!r} / {session_id!r} / "
+                           f"{slot_name!r}: windows re-cut from the stored trace at lag 0 do not "
+                           f"match the stored windows (shapes {rebuilt.shape} vs {stored.shape}). "
+                           f"The windows, the start frames and the traces in the pickle are not from "
+                           f"one extraction.")
+                    raise ValueError(msg)
 
 
 def brier_score_multi(y_true: np.ndarray,

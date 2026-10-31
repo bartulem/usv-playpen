@@ -61,16 +61,15 @@ import pytest
 mpl.use('Agg')
 
 from tests.modeling._synth import (
-    attach_shift_test_sidecar,
+    attach_shift_test_inputs,
     build_modeling_settings,
     build_session_tree,
     write_session_list_file,
 )
 from usv_playpen.modeling.modeling_bases_functions import gam_bspline_basis
+from usv_playpen.modeling.modeling_metadata import FEATURE_TRACES_KEY, WINDOW_STARTS_KEY
 from usv_playpen.modeling.modeling_utils import (
     cut_history_windows,
-    read_feature_trace,
-    read_window_starts,
 )
 
 # The modeling import chain pulls optax -> a one-time JAX DeprecationWarning.
@@ -245,9 +244,7 @@ def _build_signal_continuous_pickle(
     input_metadata (dict)
         The reserved ``_input_metadata`` block. Must carry
         ``analysis_specific.usv_category_column_name`` so the selector can
-        build its per-step filename prefix. The builder adds ``traces_path`` to
-        this dict in place (the univariate stand-ins reuse it as the copy the
-        univariate stage would carry).
+        build its per-step filename prefix.
     n_per_session (int)
         Number of vocal events per session.
     seed (int)
@@ -306,11 +303,7 @@ def _build_signal_continuous_pickle(
             artifact[feature][sess]['w'] = w
 
     artifact['_input_metadata'] = dict(input_metadata)
-    attach_shift_test_sidecar(artifact, save_path, history_frames, slots={'X': 'X'}, fps=CAMERA_FPS, seed=seed)
-    # The univariate stage copies the pickle's metadata block verbatim, and the tests
-    # hand ``input_metadata`` to their univariate stand-ins as that copy: record the
-    # sidecar in the caller's dict too, so the stand-in carries it like the real one.
-    input_metadata['traces_path'] = artifact['_input_metadata']['traces_path']
+    attach_shift_test_inputs(artifact, history_frames, slots={'X': 'X'}, fps=CAMERA_FPS, seed=seed)
 
     save_path.parent.mkdir(parents=True, exist_ok=True)
     with save_path.open('wb') as fh:
@@ -392,15 +385,15 @@ class TestContinuousInputExtraction:
         # category column, which stays recorded in analysis_specific
         assert md['analysis_tag'] == 'manifold_qlvm'
         # The per-step shift test's inputs: every session's float32 windows re-cut
-        # exactly from its processed trace in the HDF5 sidecar at the stored starts.
-        assert Path(md['traces_path']).is_file()
-        assert Path(md['traces_path']).name == f"{pkls[0].stem}_traces.h5"
+        # exactly from its processed trace stored in the pickle at the stored starts.
+        assert 'traces_path' not in md
+        assert not list(pkls[0].parent.glob('*_traces.h5'))
         assert 'window_starts' not in md
-        window_starts = read_window_starts(md['traces_path'])
+        window_starts = artifact[WINDOW_STARTS_KEY]
         for feat in feature_keys:
             for sess in sessions:
                 entry = window_starts[sess]
-                rebuilt = cut_history_windows(read_feature_trace(md['traces_path'], feat, sess),
+                rebuilt = cut_history_windows(artifact[FEATURE_TRACES_KEY][feat][sess],
                                               entry['X'], HISTORY_FRAMES).astype(np.float32)
                 np.testing.assert_array_equal(rebuilt, artifact[feat][sess]['X'])
         spec = md['analysis_specific']
@@ -1010,8 +1003,15 @@ class TestManifoldModelSelection:
         )
         step_pkls = sorted(ms_dir.glob('model_selection_continuous_manifold_*_step_*.pkl'))
         assert step_pkls, "expected at least the Step-0 pickle"
-        with step_pkls[-1].open('rb') as fh:
-            final_step = pickle.load(fh)
+        # The final result sits on the last accepted step, the one step file carrying it.
+        finals = []
+        for path in step_pkls:
+            with path.open('rb') as fh:
+                step = pickle.load(fh)
+            if 'final_model_features' in step:
+                finals.append(step)
+        assert len(finals) == 1
+        final_step = finals[0]
         knobs = final_step['_run_metadata']['extra_knobs']
         assert knobs['n_held_out_sessions'] > 0
         assert len(knobs['held_out_session_ids']) == knobs['n_held_out_sessions']
@@ -1824,8 +1824,14 @@ class TestManifoldModelSelection:
             """
 
             steps = sorted(ms_dir.glob('*_step_*.pkl'), key=lambda path: int(path.stem.rsplit('_', 1)[-1]))
-            with steps[-1].open('rb') as fh:
-                return pickle.load(fh)['final_model_features'], len(steps)
+            finals = []
+            for path in steps:
+                with path.open('rb') as fh:
+                    step = pickle.load(fh)
+                if 'final_model_features' in step:
+                    finals.append(step['final_model_features'])
+            assert len(finals) == 1
+            return finals[0], len(steps)
 
         _run()
         fresh_features, fresh_n_steps = _final_features()

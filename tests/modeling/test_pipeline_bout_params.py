@@ -83,16 +83,15 @@ import pytest
 mpl.use('Agg')
 
 from tests.modeling._synth import (
-    attach_shift_test_sidecar,
+    attach_shift_test_inputs,
     build_modeling_settings,
     build_session_tree,
     fit_counting_subclass,
     write_session_list_file,
 )
+from usv_playpen.modeling.modeling_metadata import FEATURE_TRACES_KEY, WINDOW_STARTS_KEY
 from usv_playpen.modeling.modeling_utils import (
     cut_history_windows,
-    read_feature_trace,
-    read_window_starts,
 )
 
 # The modeling import chain pulls optax -> a one-time JAX DeprecationWarning.
@@ -216,8 +215,8 @@ def _build_params_input_pickle(
         }
 
     artifact['_input_metadata'] = {'analysis_tag': 'bout_durations'}
-    attach_shift_test_sidecar(artifact, save_path, history_frames, slots={'X': 'X'}, fps=CAMERA_FPS,
-                              layout='global', seed=seed)
+    attach_shift_test_inputs(artifact, history_frames, slots={'X': 'X'}, fps=CAMERA_FPS,
+                             layout='global', seed=seed)
 
     save_path.parent.mkdir(parents=True, exist_ok=True)
     with save_path.open('wb') as fh:
@@ -416,16 +415,16 @@ class TestBoutParameterExtraction:
         assert md['analysis_specific']['target_variable'] == 'bout_durations'
         # The per-step shift test's inputs: the rows of a session in the global ``X``
         # are its window starts in order, and every row re-cuts exactly from the
-        # session's processed trace in the HDF5 sidecar at lag zero.
-        assert Path(md['traces_path']).is_file()
-        assert Path(md['traces_path']).name == f"{pkls[0].stem}_traces.h5"
+        # session's processed trace stored in the pickle at lag zero.
+        assert 'traces_path' not in md
+        assert not list(pkls[0].parent.glob('*_traces.h5'))
         assert 'window_starts' not in md
-        window_starts = read_window_starts(md['traces_path'])
+        window_starts = artifact[WINDOW_STARTS_KEY]
         for feat in feature_keys:
             for sess_id, entry in window_starts.items():
                 rows = np.where(ref_groups == sess_id)[0]
                 assert rows.size == len(entry['X'])
-                rebuilt = cut_history_windows(read_feature_trace(md['traces_path'], feat, sess_id),
+                rebuilt = cut_history_windows(artifact[FEATURE_TRACES_KEY][feat][sess_id],
                                               entry['X'], HISTORY_FRAMES)
                 np.testing.assert_array_equal(rebuilt, artifact[feat]['X'][rows])
         # n_events_per_session is backfilled from the anchor feature's groups.
@@ -662,9 +661,11 @@ class TestBoutParameterModelSelection:
         assert len(step_pkls) >= 1, "expected at least one forward-selection step pickle"
 
         accepted_counts = []
+        steps = []
         for p in step_pkls:
             with p.open('rb') as fh:
                 step = pickle.load(fh)
+            steps.append(step)
             assert 'current_features' in step
             assert 'baseline_score' in step
             assert 'candidates_summary' in step
@@ -674,13 +675,12 @@ class TestBoutParameterModelSelection:
         assert min(accepted_counts) >= 1
         assert accepted_counts == sorted(accepted_counts)
 
-        # The terminal step pickle is augmented in-place with the CV-based
-        # final-model filter shapes for visualization.
-        with step_pkls[-1].open('rb') as fh:
-            terminal = pickle.load(fh)
-        assert 'final_model_features' in terminal
-        assert 'filter_shapes' in terminal
-        assert len(terminal['filter_shapes']) >= 1
+        # The last accepted step pickle (never a rejecting step) is augmented in place
+        # with the CV-based final-model filter shapes for visualization.
+        final = [step for step in steps if step['selected_feature'] is not None][-1]
+        assert [step['step_idx'] for step in steps if 'final_model_features' in step] == [final['step_idx']]
+        assert 'filter_shapes' in final
+        assert len(final['filter_shapes']) >= 1
 
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     @pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")

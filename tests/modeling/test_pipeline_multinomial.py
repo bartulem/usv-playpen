@@ -66,17 +66,16 @@ import pytest
 mpl.use('Agg')
 
 from tests.modeling._synth import (
-    attach_shift_test_sidecar,
+    attach_shift_test_inputs,
     build_behavioral_features_csv,
     build_modeling_settings,
     build_track_h5,
     write_session_list_file,
 )
 from usv_playpen.modeling.modeling_bases_functions import gam_bspline_basis
+from usv_playpen.modeling.modeling_metadata import FEATURE_TRACES_KEY, WINDOW_STARTS_KEY
 from usv_playpen.modeling.modeling_utils import (
     cut_history_windows,
-    read_feature_trace,
-    read_window_starts,
 )
 
 # The modeling import chain pulls optax -> a one-time JAX DeprecationWarning.
@@ -523,7 +522,7 @@ def build_multinomial_input_pickle(
             'usv_category_column_name': 'qlvm_category',
         },
     }
-    attach_shift_test_sidecar(artifact, save_path, history_frames, slots={'X': 'X'}, fps=CAMERA_FPS, seed=seed)
+    attach_shift_test_inputs(artifact, history_frames, slots={'X': 'X'}, fps=CAMERA_FPS, seed=seed)
 
     save_path.parent.mkdir(parents=True, exist_ok=True)
     with save_path.open('wb') as fh:
@@ -698,15 +697,15 @@ class TestMultinomialInputExtraction:
         assert md['analysis_tag'] == 'multinomial_qlvm_category'
         assert sorted(md['feature_zoo_kept']) == feature_keys
         # The per-step shift test's inputs: every session's float32 windows re-cut
-        # exactly from its processed trace in the HDF5 sidecar at the stored starts.
-        assert Path(md['traces_path']).is_file()
-        assert Path(md['traces_path']).name == f"{pkls[0].stem}_traces.h5"
+        # exactly from its processed trace stored in the pickle at the stored starts.
+        assert 'traces_path' not in md
+        assert not list(pkls[0].parent.glob('*_traces.h5'))
         assert 'window_starts' not in md
-        window_starts = read_window_starts(md['traces_path'])
+        window_starts = artifact[WINDOW_STARTS_KEY]
         for feat in feature_keys:
             for sess in sessions:
                 entry = window_starts[sess]
-                rebuilt = cut_history_windows(read_feature_trace(md['traces_path'], feat, sess),
+                rebuilt = cut_history_windows(artifact[FEATURE_TRACES_KEY][feat][sess],
                                               entry['X'], HISTORY_FRAMES).astype(np.float32)
                 np.testing.assert_array_equal(rebuilt, artifact[feat][sess]['X'])
         spec = md['analysis_specific']
@@ -1444,9 +1443,9 @@ class TestMultinomialModelSelection:
             for sess in session_ids:
                 artifact[feature][sess]['X'] = np.zeros_like(artifact[feature][sess]['X'])
         artifact['_input_metadata']['held_out_session_ids'] = [session_ids[-1]]
-        # The windows changed, so the trace sidecar is rebuilt from them (the selector
+        # The windows changed, so the stored traces are rebuilt from them (the selector
         # re-cuts every stored window from the traces before fitting).
-        attach_shift_test_sidecar(artifact, input_pkl_path, HISTORY_FRAMES, slots={'X': 'X'}, fps=CAMERA_FPS)
+        attach_shift_test_inputs(artifact, HISTORY_FRAMES, slots={'X': 'X'}, fps=CAMERA_FPS)
         with input_pkl_path.open('wb') as fh:
             pickle.dump(artifact, fh)
         univ_pkl = str(build_univariate_ranking_pickle(

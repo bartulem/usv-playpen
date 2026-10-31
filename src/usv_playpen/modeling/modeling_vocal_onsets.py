@@ -77,10 +77,10 @@ from .modeling_utils import (
     safe_matthews_corrcoef,
     seeded_session_holdout,
     select_kinematic_columns,
+    shift_test_inputs_block,
     shuffle_train_test_arrays,
     unroll_history_matrix,
     valid_window_starts,
-    write_feature_traces,
     zscore_features_across_sessions,
 )
 
@@ -563,7 +563,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         # The per-step shift test re-cuts a feature's windows from its processed
         # trace after a circular shift: every session's kept window start frames
         # (per class) and every feature's processed trace are recorded alongside
-        # the windows (the traces in an HDF5 sidecar next to the pickle).
+        # the windows (under the pickle's `_feature_traces` and `_window_starts`).
         session_window_starts = {}
         feature_traces = {}
 
@@ -722,27 +722,22 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         input_metadata['n_events_per_session'] = n_events_per_session
         input_metadata['feature_zoo_kept'] = sorted(modeling_final_data_dict.keys())
 
-        # The per-step shift test's inputs: the processed traces and the kept window
-        # start frames per session and class go to an HDF5 sidecar next to the
-        # pickle (one dataset per feature and session, one per session and class);
-        # the metadata records only the sidecar's path, so it stays JSON-like.
         save_dir.mkdir(parents=True, exist_ok=True)
-        traces_path = save_dir / f"{Path(file_name_).stem}_traces.h5"
-        with atomic_output_path(traces_path) as temporary_traces_path:
-            write_feature_traces(temporary_traces_path, feature_traces, session_window_starts)
-        input_metadata['traces_path'] = str(traces_path)
 
         # Wrap the final data dict in the metadata-injecting helper so
         # the on-disk artifact carries `_input_metadata` alongside the
-        # feature data without colliding with any feature key.
-        artifact = inject_metadata(modeling_final_data_dict, _input_metadata=input_metadata)
+        # feature data without colliding with any feature key. The per-step shift
+        # test's inputs (the processed per-session traces the windows were cut from
+        # and the kept window start frames) go in under two more reserved keys.
+        artifact = inject_metadata(modeling_final_data_dict, _input_metadata=input_metadata,
+                                   **shift_test_inputs_block(feature_traces, session_window_starts))
 
         # A failed save propagates: the run must not finish with no (or a stale)
         # input artifact on disk while reporting success.
         with atomic_output_path(save_path) as temporary_path, temporary_path.open('wb') as f:
             pickle.dump(artifact, f)
         print(f"\n[+] Successfully saved PER-SESSION renamed modeling input data to:\n    {save_path}"
-              f"\n    and the processed traces of {len(feature_traces)} feature(s) to:\n    {traces_path}")
+              f"\n    with the processed traces of {len(feature_traces)} feature(s) inside it.")
 
     def create_data_splits(self, feature_data: dict, strategy_override: str | None = None):
         """

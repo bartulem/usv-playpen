@@ -358,10 +358,9 @@ class TestManifoldFoldFailure:
         combined = {}
         for feature in feature_names:
             combined[feature] = runner.run_univariate_training(input_pkl, feature)
-        # The univariate stage copies the PICKLE's metadata block verbatim (the
-        # builder copied `input_md` before recording the trace sidecar in it), and
-        # the selection prefers that copy, so take it from the pickle as the
-        # dispatcher does.
+        # The univariate stage copies the PICKLE's metadata block verbatim and the
+        # selection prefers that copy, so take it from the pickle as the dispatcher
+        # does.
         with Path(input_pkl).open('rb') as fh:
             combined['_input_metadata'] = pickle.load(fh)['_input_metadata']
         combined_path = tmp_path / 'univariate_combined.pkl'
@@ -421,10 +420,9 @@ class TestManifoldFoldFailure:
         ))
         runner = ContinuousModelRunner(ContinuousModelingPipeline(modeling_settings_dict=settings))
         combined = {feature: runner.run_univariate_training(input_pkl, feature) for feature in feature_names}
-        # The univariate stage copies the PICKLE's metadata block verbatim (the
-        # builder copied `input_md` before recording the trace sidecar in it), and
-        # the selection prefers that copy, so take it from the pickle as the
-        # dispatcher does.
+        # The univariate stage copies the PICKLE's metadata block verbatim and the
+        # selection prefers that copy, so take it from the pickle as the dispatcher
+        # does.
         with Path(input_pkl).open('rb') as fh:
             combined['_input_metadata'] = pickle.load(fh)['_input_metadata']
         combined_path = tmp_path / 'univariate_combined.pkl'

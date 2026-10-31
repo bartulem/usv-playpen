@@ -54,7 +54,7 @@ import h5py
 import numpy as np
 import polars as pls
 
-from usv_playpen.modeling.modeling_utils import write_feature_traces
+from usv_playpen.modeling.modeling_utils import shift_test_inputs_block
 
 # Canonical location of the shipped settings JSON, resolved relative to the
 # installed package so the synthetic settings inherit every real key.
@@ -674,9 +674,8 @@ def build_modeling_settings(
     return settings
 
 
-def attach_shift_test_sidecar(
+def attach_shift_test_inputs(
         artifact: dict,
-        pickle_path: Path,
         history_frames: int,
         slots: dict,
         fps: float,
@@ -689,10 +688,10 @@ def attach_shift_test_sidecar(
     -----------
     Makes a synthetic modeling artifact usable by the per-step shift test: for every
     feature and session it synthesizes a processed trace that CONTAINS the artifact's
-    stored windows at assigned start frames (noise elsewhere), writes the traces and
-    the per-session window starts to the HDF5 sidecar ``<pickle stem>_traces.h5`` next
-    to ``pickle_path`` and records ``traces_path`` in the artifact's
-    ``_input_metadata`` (created when absent). Re-cutting the windows from the traces
+    stored windows at assigned start frames (noise elsewhere) and stores the traces
+    and the per-session window starts in the artifact under the reserved keys
+    ``_feature_traces`` and ``_window_starts``, as the extractions do. Re-cutting the
+    windows from the traces
     at lag zero reproduces the stored windows exactly, which is what the selectors
     verify before fitting; float32 windows are embedded in a float64 trace and come
     back exact after the selectors' float32 cast.
@@ -715,8 +714,6 @@ def attach_shift_test_sidecar(
         for the array keys in ``slots``; with ``layout='global'`` each feature holds
         ``{'X': (N, H), 'groups': (N,)}`` and the rows of a session are the rows whose
         group equals it, in row order.
-    pickle_path (pathlib.Path)
-        Where the artifact will be pickled; the sidecar is placed next to it.
     history_frames (int)
         Window length in frames.
     slots (dict)
@@ -737,15 +734,15 @@ def attach_shift_test_sidecar(
     Returns
     -------
     artifact (dict)
-        The same dict, with ``_input_metadata['traces_path']`` set.
+        The same dict, with ``_feature_traces`` and ``_window_starts`` set.
     """
 
     rng = np.random.default_rng(seed)
     history_frames = int(history_frames)
     pad = max(int(min_lag_frames), history_frames) + 1
-    features = [key for key in artifact if key != '_input_metadata']
+    features = [key for key in artifact if not key.startswith('_')]
     if not features:
-        msg = "attach_shift_test_sidecar: the artifact holds no feature."
+        msg = "attach_shift_test_inputs: the artifact holds no feature."
         raise ValueError(msg)
 
     def _windows_of(feature: str, session_id: str) -> dict:
@@ -800,19 +797,14 @@ def attach_shift_test_sidecar(
             trace = rng.standard_normal(n_frames)
             for slot_name, windows in by_slot.items():
                 if windows.shape[0] != counts[slot_name]:
-                    msg = (f"attach_shift_test_sidecar: {feature!r} / {session_id!r} / {slot_name!r} holds "
+                    msg = (f"attach_shift_test_inputs: {feature!r} / {session_id!r} / {slot_name!r} holds "
                            f"{windows.shape[0]} windows but {features[0]!r} holds {counts[slot_name]}.")
                     raise ValueError(msg)
                 for start, window in zip(starts[slot_name], windows, strict=True):
                     trace[start:start + history_frames] = np.asarray(window, dtype=np.float64)
             traces[feature][session_id] = trace
 
-    traces_path = pickle_path.with_name(f"{pickle_path.stem}_traces.h5")
-    traces_path.parent.mkdir(parents=True, exist_ok=True)
-    write_feature_traces(traces_path, traces, window_starts)
-    if '_input_metadata' not in artifact or artifact['_input_metadata'] is None:
-        artifact['_input_metadata'] = {}
-    artifact['_input_metadata']['traces_path'] = str(traces_path)
+    artifact.update(shift_test_inputs_block(traces, window_starts))
     return artifact
 
 
@@ -826,7 +818,7 @@ def build_modeling_input_pickle(
         input_metadata: dict | None = None,
         seed: int = 0,
         fps: float = 150.0,
-        with_sidecar: bool = True,
+        with_shift_test_inputs: bool = True,
 ) -> Path:
     """
     Description
@@ -865,16 +857,15 @@ def build_modeling_input_pickle(
     n_no_usv (int)
         Negative (No-USV) events per session.
     input_metadata (dict or None)
-        Optional ``_input_metadata`` block; with ``with_sidecar`` the block is
-        created when ``None`` and always carries ``traces_path`` (the sidecar holds the starts).
+        Optional ``_input_metadata`` block.
     seed (int)
         Base seed for the per-cell RNG.
     fps (float)
         Frame rate recorded with the window starts (must match the settings'
         ``io.camera_sampling_rate`` the selector runs with).
-    with_sidecar (bool)
-        Write the trace sidecar and the shift-test metadata fields
-        (``attach_shift_test_sidecar``); ``False`` writes a pickle of the form the
+    with_shift_test_inputs (bool)
+        Store the shift test's traces and window starts in the pickle
+        (``attach_shift_test_inputs``); ``False`` writes a pickle of the form the
         extraction produced before the per-step shift test existed.
 
     Returns
@@ -904,9 +895,9 @@ def build_modeling_input_pickle(
 
     if input_metadata is not None:
         artifact['_input_metadata'] = input_metadata
-    if with_sidecar:
-        attach_shift_test_sidecar(
-            artifact, save_path, history_frames,
+    if with_shift_test_inputs:
+        attach_shift_test_inputs(
+            artifact, history_frames,
             slots={'usv': 'usv_feature_arr', 'no_usv': 'no_usv_feature_arr'}, fps=fps, seed=seed,
         )
 

@@ -3175,17 +3175,19 @@ differ only in *what gets predicted*:
         modeling_settings_dict=None
     ).extract_and_save_continuous_data()
 
-Every extraction call writes four artifacts to ``io.save_directory``:
+Every extraction call writes three artifacts to ``io.save_directory``:
 
 - the modeling-input pickle (filename embeds the cohort label and a
-  timestamp);
-- a paired ``*_traces.h5`` sidecar holding every feature's processed
-  per-session trace (one HDF5 dataset per ``/<feature>/<session>``, with the
-  trace length and camera rate as attributes) and the start frame of every
-  kept history window (one dataset per ``/_window_starts/<session>/<slot>``,
-  with the same two attributes on the session group), which the per-step
-  shift test of :ref:`model selection <modeling-model-selection>` re-cuts
-  shifted windows from; the pickle names it in ``_input_metadata.traces_path``;
+  timestamp). Next to the feature windows and ``_input_metadata`` it holds
+  two reserved top-level entries that the per-step shift test of
+  :ref:`model selection <modeling-model-selection>` re-cuts shifted windows
+  from: ``_feature_traces``, every feature's processed per-session trace
+  (``{feature: {session: (n_frames,) array}}``), and ``_window_starts``, the
+  start frame of every kept history window
+  (``{session: {slot: (n,) int64 array, 'n_frames': int, 'fps': float}}``).
+  These make the pickle roughly 0.6–3.4 GB larger than the windows alone
+  (one float64 value per frame, feature and session); every feature loop
+  skips them, as it skips the metadata blocks;
 - a paired ``*_collinearity.pkl`` predictor-collinearity audit;
 - a paired ``*_timescales.pkl`` predictor-timescale audit.
 
@@ -3232,7 +3234,6 @@ provenance, for example:
         "vocal_predictor_type": "categories_rate", "vocal_predictor_classes": [["usv"]], "vocal_predictor_partner_only": true,
         "filter_history_seconds": 4, "filter_history_frames": 600,
         "ibi_thresholds": {"male": 0.42, "female": 0.55},
-        "traces_path": "/mnt/falkner/Bartul/modeling/modeling_<...>_traces.h5",
         "analysis_specific": { "...": "..." },
         "git_commit": "...", "settings_sha256": "...", "created_utc": "...", "package_version": "..."
     }
@@ -3242,7 +3243,7 @@ provenance, for example:
 * **behavioral features** — ``feature_zoo_full`` (everything requested) vs ``feature_zoo_kept`` (what survived the collinearity / timescale audits).
 * **vocal-input shape** — ``vocal_predictor_type``, ``vocal_predictor_classes``, ``vocal_predictor_partner_only``, ``vocal_predictor_smoothing_sd``.
 * **temporal frame** — ``filter_history_seconds`` / ``filter_history_frames`` (the history window), and ``ibi_thresholds`` (the per-sex bout-gap thresholds derived from the mixture model).
-* **shift-test inputs** — ``traces_path``, the ``*_traces.h5`` sidecar above. Besides the traces it holds, per session, the start frame of every kept history window under the pipeline's slot names (``/_window_starts/<session>/<slot>``: ``usv`` / ``no_usv`` for the onset pipeline, ``target`` / ``other`` for the binomial category pipeline, ``X`` for the bout-parameter, multinomial and manifold pipelines, whose per-session rows are stored in that order; for the bout-parameter pipeline the global ``X`` rows of a session are the rows with ``groups == session``) plus the session's trace length ``n_frames`` and its ``fps``, which must lie within half a frame per second of ``io.camera_sampling_rate``. The starts live in the sidecar, not in this block, which stays JSON-like for the consolidators' leaf-by-leaf comparison. A selection run re-cuts every stored window from the sidecar at these starts at lag zero and must reproduce the pickle exactly before any model is fit.
+* **shift-test inputs** — not in this block: the pickle's ``_feature_traces`` and ``_window_starts`` entries above. ``_window_starts`` lists, per session, the start frame of every kept history window under the pipeline's slot names (``usv`` / ``no_usv`` for the onset pipeline, ``target`` / ``other`` for the binomial category pipeline, ``X`` for the bout-parameter, multinomial and manifold pipelines, whose per-session rows are stored in that order; for the bout-parameter pipeline the global ``X`` rows of a session are the rows with ``groups == session``) plus the session's trace length ``n_frames`` and its ``fps``, which must lie within half a frame per second of ``io.camera_sampling_rate``. They sit outside ``_input_metadata``, which stays JSON-like for the consolidators' leaf-by-leaf comparison. A selection run re-cuts every stored window from the stored traces at these starts at lag zero and must reproduce the pickle exactly before any model is fit.
 * **analysis_specific** — the per-pipeline knobs (differs by pipeline; listed just below).
 * **run provenance** — ``git_commit`` / ``git_dirty``, ``settings_sha256``, ``created_utc``, ``package_version``, so any result traces back to exact code and settings.
 
@@ -3566,9 +3567,8 @@ targets, the Benjamini–Hochberg ``q`` on the manifold).
      feature carries its ``p``, ``p_adjusted``, ``B``, ``m`` and ``k`` in the step
      record's ``step_test`` block.
    * **Inputs and their check.** The extraction stores each session's kept window
-     start frames and the processed per-session traces in the
-     ``<pickle stem>_traces.h5`` sidecar named in ``_input_metadata.traces_path``
-     (the starts under ``/_window_starts/<session>/<slot>``). A selection run first re-cuts every stored
+     start frames and the processed per-session traces in the modeling pickle
+     itself (``_window_starts`` and ``_feature_traces``). A selection run first re-cuts every stored
      window of every screened feature at lag zero and requires bit-exact equality
      with the pickle; a pickle extracted before these fields existed stops the run
      with the instruction to rebuild it (a one-minute step).
@@ -3581,7 +3581,7 @@ targets, the Benjamini–Hochberg ``q`` on the manifold).
      rule (``'shift_refit_bonferroni'``), the screened features in rank order
      (``screened_features``, the Bonferroni factor of the first step), the
      statistic, ``alpha``, the lag floor, the checkpoint interval, the worker
-     setting, the refit rows and the sidecar path; a resume refuses a checkpoint
+     setting and the refit rows; a resume refuses a checkpoint
      written under another rule and tells the user to move the old step files out
      of the directory.
    * **An undecidable step is an error, not a rejection.** A candidate whose
@@ -3784,8 +3784,8 @@ hoisted metadata blocks:
 * **``steps``** — an ordered list, one entry per forward-selection step. ``step_idx`` is the iteration, ``current_features`` are those already chosen, ``baseline_score`` is their held-out score (the chance floor at step 0), ``baseline_folds`` is the same model's PER-FOLD scores, and ``selected_feature`` is the feature accepted this step (``None`` marks the final, rejected step). ``baseline_folds`` is kept as the incumbent's per-fold record (the incumbent and the candidate are nested and scored on the same folds); the acceptance decision itself is the ``step_test`` block. For the multinomial and manifold selectors, step 0's ``selected_feature`` is the sentinel ``'null_model_free'``. The manifold Step-0 record also names the strategy the first feature is gated against in ``baseline_strategy`` (``'null_model_intercept'`` on the torus, ``'null_model_free'`` on euclidean), lists that strategy first in its ``candidates_summary``, and stores the empirical-density draw's fold-mean score separately as ``chance_floor_score`` (``chance_floor_strategy`` ``'null_model_free'``); ``baseline_score`` is the gate baseline's score. A resume refuses a manifold checkpoint whose ``_run_metadata.extra_knobs`` does not record the same ``step1_gate_baseline``, ``screen_p_value_test`` (``'exact_sign_flip'``) and ``manifold_n_cv_folds`` and starts fresh.
 * **``step_test``** — the per-step shift test (:ref:`model selection <modeling-model-selection>`) of the step's winner (a step at which no candidate returned a finite score stops the run with an error instead of writing a record): ``rule`` (``'shift_refit_bonferroni'``), ``statistic`` (the pipeline's per-event score, e.g. ``'bernoulli_log_likelihood_per_event'``) and ``statistic_family``, ``winner``, ``incumbent_features``, ``m_candidates`` (the Bonferroni factor), ``alpha``, ``n_refits`` (``B = floor(m / alpha)``), ``n_draws_run`` (``B`` on an accepted step, fewer on a rejected one), ``k_exceed``, ``p``, ``p_adjusted``, ``accepted``, ``early_stop``, ``t_obs`` (the observed in-sample gain), ``t_null`` (the gain of every draw run, in draw order), ``draw_indices``, ``lags`` (one row per draw, one column per development session in ``session_order``), ``min_lag_frames``, ``seed`` (``[random_seed, step_idx]``), ``score_incumbent`` and ``score_winner`` (the two development refits' scores), ``refit_seconds`` per draw and ``wall_seconds``. A step 0 written with ``--anchor`` carries the forced feature's test, with ``m_candidates`` equal to every screened feature.
 * **``candidates_summary``** — under each step, every candidate feature tested that step mapped to its per-fold metrics. For the discrete / regression targets these are flat per-fold arrays (``ll``, ``auc``, ``score``, ``f1``, ``brier``, ``ece``, ``mcc``, ``confusion_matrix``, ``n_iter`` / ``converged`` / ``fit_time``) plus aggregate ``mean_ll`` / ``se_ll``; the multinomial and manifold selectors nest these under a ``folds.metrics`` sub-dict (with ``y_true`` / ``y_pred`` / ``y_probs`` / ``classes``, the per-fold ``weights`` — always on the frame axis, ``n_features × filter_history_frames`` per class / output, whatever the ``temporal_basis`` — beside ``basis_coefficients``, the raw spline coefficients when ``temporal_basis.type`` is ``'bspline'`` and ``None`` otherwise, and the per-fold ``selected_lambda_smooth`` / ``selected_l2_reg`` regularisation choices — equal to the fixed ``*_fixed`` penalties when ``tune_regularization_bool`` is ``false``, and under a B-spline basis to ``temporal_basis.lambda_smooth_fixed`` and ``0``).
-* **last accepted step** — additionally carries ``final_model_features`` (the cumulative selected set) and ``filter_shapes`` (the per-fold refit filters) of the published model, and ``heldout`` (the development refit scored once on the held-out sessions, ``None`` when the reserve is disabled). In the onset, category and bout-parameter selectors each held-out branch record (``actual`` / ``null``) carries ``heldout_fit_failed`` (bool) and ``heldout_fit_error`` (the exception text, or ``None``): a refit that raised leaves its metrics NaN, sets the flag and is warned about, so a NaN held-out number is never silent. The same two fields are on each held-out record (``heldout['actual']``, ``heldout['null']``) of the onset, binomial-category and bout-parameter univariate results (for bout parameters a failed held-out deviance metric is flagged too). Every modeling pickle is published atomically (written to a temporary sibling, then renamed), so an interrupted write leaves the previous file intact; a failed input-artifact save aborts the extraction.
-* **metadata blocks** — ``_input_metadata`` and ``_univariate_metadata`` carry the upstream extraction / univariate provenance, ``_run_metadata`` the selection config (its ``extra_knobs.step_test`` sub-block names the acceptance rule, the screened features in rank order, statistic, ``alpha``, lag floor, checkpoint interval, worker setting, refit rows and trace sidecar the run used; a resume refuses a checkpoint whose rule differs), and ``_consolidation_metadata`` the merge audit.
+* **last accepted step** — additionally carries ``final_model_features`` (the cumulative selected set) and ``filter_shapes`` (the per-fold refit filters) of the published model, and ``heldout`` (the development refit scored once on the held-out sessions, ``None`` when the reserve is disabled). Every selector writes these to the last accepted step only, never to the rejecting step that ended the search, so exactly one step file carries them. A run that accepted no feature records ``final_model_features = []`` on its accepted Step-0 baseline in the manifold and multinomial selectors (whose ``heldout`` then scores that baseline), and on the rejecting step in the onset, category and bout-parameter selectors, which have no baseline step (there ``filter_shapes = []`` and ``heldout = None``). In the onset, category and bout-parameter selectors each held-out branch record (``actual`` / ``null``) carries ``heldout_fit_failed`` (bool) and ``heldout_fit_error`` (the exception text, or ``None``): a refit that raised leaves its metrics NaN, sets the flag and is warned about, so a NaN held-out number is never silent. The same two fields are on each held-out record (``heldout['actual']``, ``heldout['null']``) of the onset, binomial-category and bout-parameter univariate results (for bout parameters a failed held-out deviance metric is flagged too). Every modeling pickle is published atomically (written to a temporary sibling, then renamed), so an interrupted write leaves the previous file intact; a failed input-artifact save aborts the extraction.
+* **metadata blocks** — ``_input_metadata`` and ``_univariate_metadata`` carry the upstream extraction / univariate provenance, ``_run_metadata`` the selection config (its ``extra_knobs.step_test`` sub-block names the acceptance rule, the screened features in rank order, statistic, ``alpha``, lag floor, checkpoint interval, worker setting and refit rows the run used; a resume refuses a checkpoint whose rule differs), and ``_consolidation_metadata`` the merge audit.
 
 Visualise the trajectory with ``plot_model_selection_results`` (binary / regression),
 ``plot_multinomial_selection_trajectory`` (multinomial), or

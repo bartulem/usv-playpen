@@ -60,8 +60,8 @@ from tests.modeling._synth import (
     build_session_tree,
     write_session_list_file,
 )
+from usv_playpen.modeling.modeling_metadata import FEATURE_TRACES_KEY, WINDOW_STARTS_KEY
 from usv_playpen.modeling.modeling_utils import (
-    read_window_starts,
     verify_windows_against_traces,
 )
 
@@ -306,19 +306,19 @@ class TestOnsetInputExtraction:
         assert md['analysis_type'] == 'onset'
         assert md['analysis_tag'] == 'bout_onset'
         assert sorted(md['feature_zoo_kept']) == feature_keys
-        # The per-step shift test's inputs: the processed traces in the HDF5 sidecar
-        # next to the pickle and the kept window start frames per session and class;
+        # The per-step shift test's inputs: the processed traces stored in the pickle
+        # (`_feature_traces`) and the kept window start frames per session and class;
         # every stored window re-cuts exactly from its trace at lag zero.
-        assert Path(md['traces_path']).is_file()
-        assert Path(md['traces_path']).name == f"{pkls[0].stem}_traces.h5"
+        assert 'traces_path' not in md
+        assert not list(pkls[0].parent.glob('*_traces.h5'))
         assert 'window_starts' not in md
-        window_starts = read_window_starts(md['traces_path'])
+        window_starts = artifact[WINDOW_STARTS_KEY]
         assert set(window_starts) >= set(sessions)
         for sess in sessions:
             assert window_starts[sess]['fps'] == CAMERA_FPS
             assert window_starts[sess]['n_frames'] >= HISTORY_FRAMES
         verify_windows_against_traces(
-            {key: artifact[key] for key in feature_keys}, md['traces_path'], window_starts,
+            {key: artifact[key] for key in feature_keys}, artifact[FEATURE_TRACES_KEY], window_starts,
             {'usv': 'usv_feature_arr', 'no_usv': 'no_usv_feature_arr'}, HISTORY_FRAMES, feature_keys, sessions,
         )
 
