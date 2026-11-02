@@ -405,6 +405,7 @@ def build_input_metadata(modeling_settings: dict,
                          n_sessions_used: int,
                          session_ids: list,
                          n_events_per_session: dict,
+                         sessions_without_events: list,
                          feature_zoo_full: list,
                          feature_zoo_kept: list,
                          dyadic_engagement_features_used: list,
@@ -479,6 +480,12 @@ def build_input_metadata(modeling_settings: dict,
         Mapping `session_id -> int` of pooled event counts. The
         downstream consolidators do not use this field; it is provided
         purely for inspection / re-balancing.
+    sessions_without_events : list of str
+        Basenames of the sessions that loaded with two tracked mice and
+        behavioral features but contributed no event (the target mouse has
+        no usable vocalization), and were therefore dropped before the
+        held-out draw, the cross-session normalization and the counts above.
+        `session_ids` and `n_sessions_used` never include them.
     feature_zoo_full : list of str
         Generic feature names in the project zoo *before* any
         per-pipeline filtering.
@@ -564,6 +571,7 @@ def build_input_metadata(modeling_settings: dict,
         'n_sessions_used': int(n_sessions_used),
         'session_ids': list(session_ids),
         'n_events_per_session': dict(n_events_per_session),
+        'sessions_without_events': sorted(str(session_id) for session_id in sessions_without_events),
         'held_out_session_ids': list(held_out_session_ids) if held_out_session_ids is not None else [],
 
         # Behavioral feature provenance
@@ -728,6 +736,14 @@ def build_run_metadata(modeling_settings: dict,
     elif analysis_type == 'continuous':
         jax_block = jax_root['manifold_regression']
         jax_kind = 'manifold_regression'
+    elif analysis_type in ('onset', 'category') and model_params['model_engine'] == 'jax':
+        # The two-class engine: the multinomial model with two classes, on its own block.
+        jax_block = jax_root['binary_logistic']
+        jax_kind = 'binary_logistic'
+    elif analysis_type == 'params' and model_params['model_engine'] == 'jax':
+        msg = ("the 'jax' model_engine is a two-class engine (onset and category tasks); the "
+               "bout-parameter regression runs on 'sklearn' or 'pygam'.")
+        raise ValueError(msg)
     else:
         jax_block = None
         jax_kind = None
@@ -765,8 +781,9 @@ def build_run_metadata(modeling_settings: dict,
                 'smoothness_derivative_order': int(jax_block['smoothness_derivative_order']),
                 'smoothness_reflective_edges': True,
             }
-        if jax_kind == 'multinomial_logistic':
+        if jax_kind in ('multinomial_logistic', 'binary_logistic'):
             metadata['jax_hyperparameters']['focal_loss_gamma'] = float(jax_block['focal_loss_gamma'])
+        if jax_kind == 'multinomial_logistic':
             metadata['jax_hyperparameters']['balance_predictions_bool'] = bool(jax_block['balance_predictions_bool'])
             metadata['jax_hyperparameters']['balance_train_bool'] = bool(jax_block['balance_train_bool'])
         if jax_block['tune_regularization_bool']:

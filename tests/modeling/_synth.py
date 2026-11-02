@@ -666,6 +666,15 @@ def build_modeling_settings(
     gam['n_splines_value'] = 4
     gam['max_iterations'] = 20
     gam['lam_penalty'] = 0.6
+    # The two-class JAX engine (`model_engine == 'jax'`): the raw-frame basis and a short
+    # optimizer so the synthetic histories (a few frames) fit in a moment; the shipped 20-spline
+    # basis needs a wider window than the synth cohorts carry.
+    binary = settings['hyperparameters']['linear_models']['binary_logistic']
+    binary['temporal_basis']['type'] = 'none'
+    binary['learning_rate'] = 0.05
+    binary['max_iter'] = 60
+    binary['tol'] = 0.01
+    binary['use_lax_loop'] = False
 
     for basis_cfg in settings['hyperparameters']['basis_functions'].values():
         if 'plot_bool' in basis_cfg:
@@ -974,3 +983,31 @@ def fit_counting_subclass(base_cls: type, fail_after: int | None = None) -> tupl
     _CountingEstimator.__name__ = base_cls.__name__
     _CountingEstimator.__qualname__ = base_cls.__qualname__
     return _CountingEstimator, counter
+
+
+def drop_emitter_rows(session_root: Path, emitter: str) -> int:
+    """
+    Description
+    -----------
+    Removes every row of ``emitter`` from a synthetic session's USV summary, leaving the
+    partner's rows, so the session loads with two tracked mice but gives the target mouse no
+    vocalization (the extractions' ``sessions_without_events`` case).
+
+    Parameters
+    ----------
+    session_root (Path)
+        The session ROOT directory (``build_session_tree`` layout).
+    emitter (str)
+        The mouse whose rows are dropped.
+
+    Returns
+    -------
+    n_dropped (int)
+        Rows removed.
+    """
+
+    csv_path = next((session_root / 'audio').rglob('*_usv_summary.csv'))
+    summary = pls.read_csv(csv_path)
+    kept = summary.filter(pls.col('emitter') != emitter)
+    kept.write_csv(csv_path)
+    return summary.height - kept.height

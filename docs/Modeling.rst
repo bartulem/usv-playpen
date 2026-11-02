@@ -223,7 +223,7 @@ cross-validation and held-out-test settings live in their own
      - ``'raised_cosine'``, ``'bspline'``, ``'laplacian_pyramid'``, ``'identity'``
    * - :ref:`model_engine <mp-model-engine>`
      - ``'pygam'``
-     - ``'pygam'``, ``'sklearn'``
+     - ``'pygam'``, ``'sklearn'``, ``'jax'``
    * - :ref:`model_predictor_mouse_index <mp-model-predictor-mouse-index>`
      - ``1``
      - ``0``, ``1``
@@ -323,13 +323,14 @@ cross-validation and held-out-test settings live in their own
 .. _mp-model-engine:
 
 ``model_engine``
-   Univariate model backend.
+   The model the two-class tasks (every onset mode and the binomial category) are fitted with, in the univariate screen and in the forward selection.
 
    :Options:
       * ``'pygam'`` — tensor-product-spline GAM (a generalized additive model)
       * ``'sklearn'`` — basis-projected linear model
+      * ``'jax'`` — the two-class JAX engine: the multinomial category model with two classes, a smooth logistic regression on the B-spline lag basis, penalties and optimizer of :ref:`hyperparameters.linear_models.binary_logistic <mhp-lin-binary-logistic>`
    :Default: ``'pygam'``
-   :Notes: the multinomial category and acoustic-manifold targets always run the JAX estimators and ignore it. The model selections raise on any other value.
+   :Notes: the engine chooses the model only. The task's design is the same under every engine: training folds balanced to 50/50, test folds at their natural class prior, a label-shuffled null, the same metrics, the same per-step shift test; so the selection's screen reads the ``'jax'`` engine's ``actual`` / ``null`` log-losses unchanged. ``'jax'`` applies to the onset task in any ``model_target_vocal_type`` and to the binomial ``category`` task; the bout-parameter regression (``params``) refuses it. Its candidate fits and null refits run serially inside the job (XLA's thread pool is not fork-safe once the backend has run). The multinomial category and acoustic-manifold targets always run their own JAX estimators and ignore this key. The onset and category selections implement all three engines and raise on any other value.
 
 .. _mp-model-predictor-mouse-index:
 
@@ -1721,14 +1722,34 @@ continuous manifold target, consumed by ``NeuralContinuousCNNRunner`` (see
    :Default: ``20``, ``30000``, ``200``, ``0.05`` and ``0`` (in the order listed in the heading)
    :Notes: the five values are stored with the derived geometry (``cluster_geometry``).
 
-**hyperparameters.linear_models** — the two JAX linear models,
+**hyperparameters.linear_models** — the three JAX linear models,
 ``manifold_regression`` (continuous manifold position: the Huber coordinate
-regression on euclidean, the closed-form torus-embedding regression on the torus)
-and ``multinomial_logistic`` (vocal categories). The two blocks share their core
+regression on euclidean, the closed-form torus-embedding regression on the torus),
+``multinomial_logistic`` (vocal categories) and ``binary_logistic`` (the two-class
+engine of the onset and binomial-category tasks, read when
+:ref:`model_engine <mp-model-engine>` is ``'jax'``). The blocks share their core
 keys; the multinomial block adds the class-balance and focal-loss keys and an
 ``inner_cv_scoring_metric`` that the manifold block does not carry, because a
 manifold fit's inner-CV objective is geometry-determined (the macro von Mises
 log-score ``vm_logscore`` on the torus, ``dcor_xy`` on euclidean).
+
+.. _mhp-lin-binary-logistic:
+
+The ``binary_logistic`` block is the multinomial block without its class-balance
+keys: the two-class tasks balance every training fold to 50/50 themselves (and
+score the test fold at its natural prior), so the fit uses uniform class weights
+and the block's ``focal_loss_gamma`` (shipped ``0``, plain cross-entropy; two
+balanced classes need no focal down-weighting). Its B-spline basis, penalties,
+lag-varying ridge and optimizer keys are the multinomial block's, with the same
+shipped values. Regularization tuning is not implemented for this engine:
+``tune_regularization_bool`` must be ``false`` (a ``true`` is refused before any
+fit), and the ``tune_regularization_params`` sub-block is carried for schema
+parity only. The L2 strength is rescaled by ``1 / sqrt(n_features)`` as the
+multinomial selector does, so a larger model is not over-regularized by its
+column count. The fitted log-odds filter of each feature (the positive-class
+weight row minus the negative-class row, mapped from the basis to the frame
+axis) is what the univariate pickles store as ``filter_shapes`` and
+``coefs_projected``, and what the selection's per-fold filter shapes carry.
 
 .. code-block:: json
 
@@ -1786,6 +1807,37 @@ log-score ``vm_logscore`` on the torus, ``dcor_xy`` on euclidean).
             "verbose": false,
             "use_lax_loop": true,
             "focal_loss_gamma": 0.5,
+            "tune_regularization_bool": false,
+            "tune_regularization_params": {
+                "lambda_smooth_decades_each_side": 0,
+                "l2_reg_decades_each_side": 4,
+                "inner_cv_folds": 5,
+                "inner_cv_scoring_metric": "auc",
+                "inner_cv_use_one_se_rule": false,
+                "inner_max_iter": 2500
+            }
+        },
+        "binary_logistic": {
+            "bin_resizing_factor": 1,
+            "lambda_smooth_fixed": 1.0,
+            "l2_reg_fixed": 0.01,
+            "smoothness_derivative_order": 1,
+            "temporal_basis": {
+                "type": "bspline",
+                "n_splines": 20,
+                "spline_order": 3,
+                "lambda_smooth_fixed": 1e-5,
+                "l2_reg_fixed": 1e-5,
+                "l2_lag_alpha": 100,
+                "lambda_smooth_decades_each_side": 2
+            },
+            "learning_rate": 0.005,
+            "max_iter": 20000,
+            "tol": 1e-3,
+            "random_state": 0,
+            "verbose": false,
+            "use_lax_loop": true,
+            "focal_loss_gamma": 0.0,
             "tune_regularization_bool": false,
             "tune_regularization_params": {
                 "lambda_smooth_decades_each_side": 0,
@@ -2042,10 +2094,10 @@ log-score ``vm_logscore`` on the torus, ``dcor_xy`` on euclidean).
 .. _mhp-lin-focal-loss-gamma:
 
 ``focal_loss_gamma``
-   ``multinomial_logistic`` only: the focal-loss focusing exponent ``(1 - p_t) ** gamma`` that down-weights easy examples (``0`` is plain class-weighted cross-entropy).
+   ``multinomial_logistic`` and ``binary_logistic``: the focal-loss focusing exponent ``(1 - p_t) ** gamma`` that down-weights easy examples (``0`` is plain class-weighted cross-entropy; plain cross-entropy with uniform class weights in the two-class engine, whose training rows are balanced).
 
    :Options: a non-negative float (not validated); ``0`` turns the focal modulation off
-   :Default: ``0.5``
+   :Default: ``0.5`` in ``multinomial_logistic``, ``0`` in ``binary_logistic``
    :Notes: the value is not read when ``balance_train_bool`` is ``true`` (the fit then uses ``0``). The base is clamped at ``max(1 - p_t, 1e-7)``: for ``gamma < 1`` the modulator's derivative is infinite at ``p_t = 1``, which float32 reaches exactly once an event's logit margin exceeds about 17; without the clamp one saturated event turned the whole gradient NaN and ended the fit, with it a saturated event contributes nothing to the gradient and the loss is unchanged everywhere else.
 
 .. _mhp-lin-tune-regularization-bool:
@@ -3228,6 +3280,7 @@ provenance, for example:
         "experimental_condition": "intact_partners",
         "session_ids": ["20230119_155302", "..."],
         "n_events_per_session": {"20230119_155302": {"usv": 41, "no_usv": 380}},
+        "sessions_without_events": [],
         "predictor_idx": 1, "predictor_mouse_sex": "female",
         "target_idx": 0, "target_mouse_sex": "male",
         "feature_zoo_full": ["speed", "..."], "feature_zoo_kept": ["speed", "..."],
@@ -3238,7 +3291,7 @@ provenance, for example:
         "git_commit": "...", "settings_sha256": "...", "created_utc": "...", "package_version": "..."
     }
 
-* **cohort / scope** — ``experimental_condition`` (the cohort label), ``session_ids``, and ``n_events_per_session`` (how many positive / negative events each session contributed).
+* **cohort / scope** — ``experimental_condition`` (the cohort label), ``session_ids`` and ``n_sessions_used`` (the sessions the per-feature arrays hold), ``n_events_per_session`` (how many positive / negative events each session contributed), and ``sessions_without_events`` (sessions that loaded with two tracked mice and behavioral features but whose target mouse had no usable vocalization; every pipeline drops them before the held-out draw and the cross-session normalization, so they never enter ``session_ids``).
 * **mouse roles** — ``predictor_idx`` / ``target_idx`` and their sexes.
 * **behavioral features** — ``feature_zoo_full`` (everything requested) vs ``feature_zoo_kept`` (what survived the collinearity / timescale audits).
 * **vocal-input shape** — ``vocal_predictor_type``, ``vocal_predictor_classes``, ``vocal_predictor_partner_only``, ``vocal_predictor_smoothing_sd``.

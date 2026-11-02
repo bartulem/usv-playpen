@@ -31,6 +31,12 @@ from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.preprocessing import LabelBinarizer
 from sklearn.utils.validation import check_array, check_is_fitted, check_X_y
 
+from .modeling_bases_functions import (
+    basis_coefficients_to_frames,
+    project_history_onto_basis,
+    resolve_temporal_basis,
+)
+
 
 def _multinomial_loss_static(
         params,
@@ -1125,3 +1131,214 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         indices = np.argmax(probs, axis=1)
 
         return self.classes_[indices]
+
+
+#: The settings block of the two-class engine (``hyperparameters.linear_models.binary_logistic``),
+#: read by the onset and binomial-category pipelines when ``model_params.model_engine`` is ``'jax'``.
+BINARY_LOGISTIC_BLOCK = 'binary_logistic'
+
+
+def binary_logistic_basis(block: dict, history_frames: int) -> tuple[np.ndarray | None, dict]:
+    """
+    Description
+    -----------
+    The temporal basis and the effective hyperparameters of the two-class engine.
+
+    The two-class engine is :class:`SmoothMultinomialLogisticRegression` with two classes -- a
+    smooth logistic regression on the same B-spline lag basis, penalties and optimizer as the
+    multinomial category model -- read from its own settings block,
+    ``hyperparameters.linear_models.binary_logistic``. The basis and the penalties the fit uses are
+    resolved exactly as for the multinomial block (:func:`resolve_temporal_basis`). Regularization
+    tuning is not implemented for this engine: the block's ``tune_regularization_bool`` must be false.
+
+    Parameters
+    ----------
+    block (dict)
+        The ``binary_logistic`` settings block.
+    history_frames (int)
+        Frames of the history window (the length of every feature's filter).
+
+    Returns
+    -------
+    basis (np.ndarray | None)
+        ``(history_frames, n_splines)`` projection basis, or None for ``temporal_basis.type 'none'``.
+    hp (dict)
+        The effective hyperparameter block (``resolve_temporal_basis``).
+
+    Raises
+    ------
+    ValueError
+        ``tune_regularization_bool`` is true.
+    """
+
+    if block['tune_regularization_bool']:
+        msg = ("hyperparameters.linear_models.binary_logistic.tune_regularization_bool is not implemented for "
+               "the two-class engine; set it to false and choose the penalties directly.")
+        raise ValueError(msg)
+    return resolve_temporal_basis(block, history_frames)
+
+
+def binary_logistic_design(windows: list, basis: np.ndarray | None) -> np.ndarray:
+    """
+    Description
+    -----------
+    The design matrix of a two-class fit: every feature's history windows, projected onto the
+    basis, stacked feature by feature.
+
+    Parameters
+    ----------
+    windows (list)
+        One ``(n_events, history_frames)`` array per feature, all with the same rows.
+    basis (np.ndarray | None)
+        ``(history_frames, n_basis)`` basis, or None to keep the raw frames.
+
+    Returns
+    -------
+    design (np.ndarray)
+        ``(n_events, n_features * n_columns)`` float32 design, feature blocks in the order of
+        ``windows``.
+    """
+
+    columns = [project_history_onto_basis(np.asarray(window), basis) if basis is not None
+               else np.asarray(window) for window in windows]
+    return np.hstack(columns).astype(np.float32)
+
+
+def fit_binary_logistic(design: np.ndarray, labels: np.ndarray, n_features: int, hp: dict,
+                        random_state: int) -> SmoothMultinomialLogisticRegression:
+    """
+    Description
+    -----------
+    Fit the two-class engine on balanced training rows.
+
+    The rows are the pipeline's balanced training draw, so the classes get uniform weights (an
+    already balanced batch must not be re-weighted) and the focal exponent is the block's
+    ``focal_loss_gamma`` (``0`` is plain cross-entropy). The L2 strength is rescaled by
+    ``1 / sqrt(n_features)``, as the multinomial selector does, so a larger model is not
+    over-regularized by its column count.
+
+    Parameters
+    ----------
+    design (np.ndarray)
+        ``(n_events, n_features * n_columns)`` design (:func:`binary_logistic_design`).
+    labels (np.ndarray)
+        ``(n_events,)`` labels, 1 for the positive class and 0 for the negative; both must be present.
+    n_features (int)
+        Number of feature blocks in ``design``.
+    hp (dict)
+        The effective hyperparameter block (:func:`binary_logistic_basis`).
+    random_state (int)
+        Seed of the optimizer's initialization.
+
+    Returns
+    -------
+    model (SmoothMultinomialLogisticRegression)
+        The fitted two-class model; ``classes_`` is ``[0, 1]``.
+
+    Raises
+    ------
+    ValueError
+        The training rows hold one class only, or the design width is not a multiple of ``n_features``.
+    """
+
+    if design.shape[1] % n_features != 0:
+        msg = f"design width {design.shape[1]} is not a multiple of n_features={n_features}."
+        raise ValueError(msg)
+    labels = np.asarray(labels).astype(int)
+    if np.unique(labels).size != 2:
+        msg = "the two-class engine needs both classes in the training rows."
+        raise ValueError(msg)
+    model = SmoothMultinomialLogisticRegression(
+        n_features=int(n_features),
+        n_time_bins=int(design.shape[1] // n_features),
+        lambda_smooth=float(hp['lambda_smooth_fixed']),
+        l2_reg=float(hp['l2_reg_fixed']) / np.sqrt(n_features),
+        smoothness_derivative_order=int(hp['smoothness_derivative_order']),
+        smoothness_reflective_edges=bool(hp['smoothness_reflective_edges']),
+        focal_gamma=float(hp['focal_loss_gamma']),
+        uniform_class_weights=True,
+        learning_rate=float(hp['learning_rate']),
+        max_iter=int(hp['max_iter']),
+        tol=float(hp['tol']),
+        random_state=int(random_state),
+        verbose=bool(hp['verbose']),
+        _use_lax_loop=bool(hp['use_lax_loop']),
+    )
+    model.fit(design, labels)
+    return model
+
+
+def binary_logistic_probability(model: SmoothMultinomialLogisticRegression, design: np.ndarray) -> np.ndarray:
+    """
+    Description
+    -----------
+    The fitted model's probability of the positive class per row.
+
+    Parameters
+    ----------
+    model (SmoothMultinomialLogisticRegression)
+        A model from :func:`fit_binary_logistic`.
+    design (np.ndarray)
+        ``(n_events, n_features * n_columns)`` design.
+
+    Returns
+    -------
+    probability (np.ndarray)
+        ``(n_events,)`` probability of class 1.
+    """
+
+    return model.predict_proba(design)[:, 1]
+
+
+def binary_logistic_coefficients(model: SmoothMultinomialLogisticRegression) -> np.ndarray:
+    """
+    Description
+    -----------
+    The two-class model's log-odds coefficients in the fitted column space.
+
+    A two-class softmax has one weight row per class; the log-odds of the positive class is their
+    difference, so that difference is the model's filter in the basis (or raw-frame) space.
+
+    Parameters
+    ----------
+    model (SmoothMultinomialLogisticRegression)
+        A model from :func:`fit_binary_logistic`.
+
+    Returns
+    -------
+    coefficients (np.ndarray)
+        ``(n_features * n_columns,)`` log-odds coefficients, feature blocks in design order.
+    """
+
+    return np.asarray(model.coef_[1] - model.coef_[0], dtype=np.float64)
+
+
+def binary_logistic_filter_shapes(model: SmoothMultinomialLogisticRegression, basis: np.ndarray | None,
+                                  n_features: int, history_frames: int) -> np.ndarray:
+    """
+    Description
+    -----------
+    The two-class model's per-feature log-odds filters on the frame axis.
+
+    Parameters
+    ----------
+    model (SmoothMultinomialLogisticRegression)
+        A model from :func:`fit_binary_logistic`.
+    basis (np.ndarray | None)
+        The basis the design was projected onto, or None for raw frames.
+    n_features (int)
+        Number of feature blocks in the design.
+    history_frames (int)
+        Frames of the history window.
+
+    Returns
+    -------
+    shapes (np.ndarray)
+        ``(n_features, history_frames)`` filters, one row per feature in design order.
+    """
+
+    coefficients = binary_logistic_coefficients(model)
+    if basis is None:
+        return coefficients.reshape(int(n_features), int(history_frames))
+    frames = basis_coefficients_to_frames(coefficients[None, :], basis, int(n_features), axis=1)
+    return frames.reshape(int(n_features), int(history_frames))

@@ -1036,3 +1036,49 @@ class TestDispatcherCLI:
         assert calls['target_variable'] == resolve_modeling_setting('model_params', 'model_target_variable')
         assert calls['p_val'] == resolve_modeling_setting('model_params', 'selection_p_val')
         assert calls['use_top_rank_as_anchor'] is True
+
+
+class TestJaxEngineRouting:
+    """``model_engine == 'jax'``: the two-class engine's univariate routes."""
+
+    def test_onset_jax_route(self, tmp_path, mocker):
+        """The ``onset`` + jax route fits via ``_run_model_for_feature_jax`` and
+        passes no basis (the engine resolves its own from its settings block)."""
+        settings = _settings(tmp_path, model_engine='jax')
+        mocker.patch.object(uni.json, 'load', return_value=settings)
+        inp = _input_pickle(tmp_path, ['self.speed'])
+
+        fake_pipeline = mocker.MagicMock()
+        fake_pipeline.history_frames = 4
+        fake_pipeline._run_model_for_feature_jax.return_value = (
+            'self.speed', {'auc': 0.55})
+        mocker.patch.object(uni, 'VocalOnsetModelingPipeline',
+                            return_value=fake_pipeline)
+        mocker.patch.object(uni, 'get_basis_matrix_standardized',
+                            return_value=None)
+
+        uni.dispatch_univariate_job(_uni_args('onset', 0, inp, tmp_path / 'out'))
+        fake_pipeline._run_model_for_feature_jax.assert_called_once()
+        fake_pipeline._run_model_for_feature_sklearn.assert_not_called()
+        fake_pipeline._run_model_for_feature_pygam.assert_not_called()
+
+    def test_params_jax_is_refused(self, tmp_path, mocker, capsys):
+        """The bout-parameter regression has no two-class engine: ``params`` + jax
+        is refused before any fit, reported as ``FATAL ERROR``, and writes nothing."""
+        settings = _settings(tmp_path, model_engine='jax')
+        mocker.patch.object(uni.json, 'load', return_value=settings)
+        inp = _input_pickle(tmp_path, ['self.speed'], analysis_type='params')
+        out_dir = tmp_path / 'out'
+
+        fake_pipeline = mocker.MagicMock()
+        fake_pipeline.history_frames = 4
+        mocker.patch.object(uni, 'BoutParameterPipeline', return_value=fake_pipeline)
+        mocker.patch.object(uni, 'get_basis_matrix_standardized', return_value=None)
+
+        uni.dispatch_univariate_job(_uni_args('params', 0, inp, out_dir))
+        out = capsys.readouterr().out
+        assert 'FATAL ERROR' in out
+        assert 'two-class engine' in out
+        fake_pipeline._run_model_for_feature_pygam.assert_not_called()
+        fake_pipeline._run_model_for_feature_sklearn.assert_not_called()
+        assert not list(out_dir.glob('univariate_*.pkl'))

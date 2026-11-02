@@ -48,6 +48,15 @@ from tqdm import tqdm
 
 from ..analyses.compute_behavioral_features import FeatureZoo
 from ..os_utils import atomic_output_path
+from .jax_multinomial_logistic_regression import (
+    BINARY_LOGISTIC_BLOCK,
+    binary_logistic_basis,
+    binary_logistic_coefficients,
+    binary_logistic_design,
+    binary_logistic_filter_shapes,
+    binary_logistic_probability,
+    fit_binary_logistic,
+)
 from .load_input_files import (
     CATEGORY_VOCAL_INFIX,
     VOCAL_TRACE_NAMES,
@@ -315,8 +324,33 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         # out too, under every trace name it can carry.
         category_self_exclude = tuple(f"{name}{CATEGORY_VOCAL_INFIX}{target_category}" for name in VOCAL_TRACE_NAMES)
 
+        # Sessions whose target mouse has no usable USV (`find_usv_categories` leaves its
+        # 'target_events' / 'other_events' None) contribute no window; they are dropped here,
+        # before the held-out draw and the cross-session normalization, and recorded in the
+        # metadata as `sessions_without_events`, so `session_ids` and `n_sessions_used` are the
+        # sessions the per-feature arrays hold.
+        sessions_without_events = []
         for sess_id in list(beh_data_dict.keys()):
             if sess_id not in mouse_names_dict or len(mouse_names_dict[sess_id]) < 2:
+                continue
+            t_name = mouse_names_dict[sess_id][targ_idx]
+            if (sess_id not in usv_data_dict or t_name not in usv_data_dict[sess_id]
+                    or usv_data_dict[sess_id][t_name]['target_events'] is None
+                    or usv_data_dict[sess_id][t_name]['other_events'] is None):
+                sessions_without_events.append(sess_id)
+        if sessions_without_events:
+            print(f"[warn] {len(sessions_without_events)} session(s) without a usable target USV dropped: "
+                  f"{sorted(sessions_without_events)}")
+        two_mouse_sessions = [sess_id for sess_id in beh_data_dict
+                              if sess_id in mouse_names_dict and len(mouse_names_dict[sess_id]) >= 2]
+        if not two_mouse_sessions or set(sessions_without_events) >= set(two_mouse_sessions):
+            print("No valid data extracted. Aborting save.")
+            return
+
+        for sess_id in list(beh_data_dict.keys()):
+            if sess_id not in mouse_names_dict or len(mouse_names_dict[sess_id]) < 2:
+                continue
+            if sess_id in sessions_without_events:
                 continue
 
             current_df = beh_data_dict[sess_id]
@@ -442,6 +476,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             n_sessions_used=len(processed_beh_data),
             session_ids=_sorted_session_ids,
             n_events_per_session={},
+            sessions_without_events=sorted(sessions_without_events),
             held_out_session_ids=held_out_session_ids,
             feature_zoo_full=derive_feature_zoo_full(self.modeling_settings),
             feature_zoo_kept=feature_zoo_kept_md,
@@ -867,6 +902,14 @@ class VocalCategoryModelingPipeline(FeatureZoo):
 
         # Strict lookup, no .get()
         model_type = self.modeling_settings['model_params']['model_engine']
+        binary_basis, binary_hp = None, None
+        if model_type == 'jax':
+            # The two-class JAX engine resolves its own basis from its settings block; the
+            # dispatcher's `basis_matrix` is None for every engine but sklearn.
+            binary_basis, binary_hp = binary_logistic_basis(
+                self.modeling_settings['hyperparameters']['linear_models'][BINARY_LOGISTIC_BLOCK],
+                self.history_frames)
+            basis_matrix = binary_basis
         n_splits = self.modeling_settings['model_validation']['n_cv_folds']
 
         # Scalar per-split metrics. `precision` is dropped because it is
@@ -889,8 +932,12 @@ class VocalCategoryModelingPipeline(FeatureZoo):
 
         results['actual']['filter_shapes'] = np.full((n_splits, self.history_frames), np.nan)
 
-        n_bases = basis_matrix.shape[1] if basis_matrix is not None else 0
-        if model_type == 'sklearn':
+        # The jax engine's raw-frame basis (`temporal_basis.type 'none'`) projects nothing, so its
+        # coefficients are one per frame.
+        n_bases = (basis_matrix.shape[1] if basis_matrix is not None
+                   else (self.history_frames if model_type == 'jax' else 0))
+        if model_type in ('sklearn', 'jax'):
+            # `optimal_C` is kept for schema parity on the jax engine (no C grid; stays NaN).
             results['actual']['coefs_projected'] = np.full((n_splits, n_bases), np.nan)
             results['actual']['optimal_C'] = np.full(n_splits, np.nan)
 
@@ -992,6 +1039,20 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                             filter_shape_actual = np.dot(lr_actual.coef_, basis_matrix.T).ravel()
                             results['actual']['filter_shapes'][split_idx, :] = filter_shape_actual
 
+                    elif model_type == 'jax':
+                        X_tr_p = binary_logistic_design([X_tr], binary_basis)
+                        X_te_p = binary_logistic_design([X_te], binary_basis)
+                        jax_model = fit_binary_logistic(
+                            X_tr_p, y_tr, 1, binary_hp,
+                            (self.modeling_settings['model_validation']['random_seed'] or 0) + split_idx)
+                        y_prob = binary_logistic_probability(jax_model, X_te_p)
+                        y_pred = (y_prob >= self.modeling_settings['diagnostics']['binary_decision_threshold']).astype(int)
+                        fold_n_iter = float(jax_model.n_iter_)
+                        fold_converged = bool(jax_model.converged_)
+                        if strat == 'actual':
+                            results['actual']['coefs_projected'][split_idx, :] = binary_logistic_coefficients(jax_model)
+                            results['actual']['filter_shapes'][split_idx, :] = binary_logistic_filter_shapes(
+                                jax_model, binary_basis, 1, self.history_frames)[0]
                     elif model_type == 'pygam':
                         # The pyGAM engine fits per-frame rows: each window is
                         # unrolled into `history_frames` (value, time) rows and
@@ -1138,7 +1199,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                 rec['converged'] = np.nan
                 rec['fit_time'] = np.nan
                 rec['filter_shapes'] = np.full(self.history_frames, np.nan)
-                if model_type == 'sklearn':
+                if model_type in ('sklearn', 'jax'):
                     rec['coefs_projected'] = np.full(n_bases, np.nan)
                     rec['optimal_C'] = np.nan
                 rec['n_held_out_sessions'] = len(held_sessions)
@@ -1199,6 +1260,20 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                                 rec['coefs_projected'] = lr.coef_.flatten()
                                 rec['optimal_C'] = float(lr.C_[0])
                                 rec['filter_shapes'] = np.dot(lr.coef_, basis_matrix.T).ravel()
+                        elif model_type == 'jax':
+                            X_tr_p = binary_logistic_design([X_train_dev], binary_basis)
+                            X_te_p = binary_logistic_design([X_test_held], binary_basis)
+                            jax_model = fit_binary_logistic(
+                                X_tr_p, y_tr, 1, binary_hp,
+                                (self.modeling_settings['model_validation']['random_seed'] or 0) + n_splits)
+                            y_prob = binary_logistic_probability(jax_model, X_te_p)
+                            y_pred = (y_prob >= self.modeling_settings['diagnostics']['binary_decision_threshold']).astype(int)
+                            rec['n_iter'] = float(jax_model.n_iter_)
+                            rec['converged'] = float(bool(jax_model.converged_))
+                            if branch == 'actual':
+                                rec['coefs_projected'] = binary_logistic_coefficients(jax_model)
+                                rec['filter_shapes'] = binary_logistic_filter_shapes(
+                                    jax_model, binary_basis, 1, self.history_frames)[0]
                         else:
                             X_tr_gam = unroll_history_matrix(X_train_dev)
                             X_te_gam = unroll_history_matrix(X_test_held)

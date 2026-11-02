@@ -64,6 +64,7 @@ from tests.modeling._synth import (
     attach_shift_test_inputs,
     build_modeling_settings,
     build_session_tree,
+    drop_emitter_rows,
     write_session_list_file,
 )
 from usv_playpen.modeling.modeling_bases_functions import gam_bspline_basis
@@ -2998,3 +2999,31 @@ class TestManifoldReleaseGuards:
             np.testing.assert_allclose(basis @ coefficients, weights, rtol=1e-5, atol=1e-9)
         assert results['null_model_free']['heldout']['basis_coefficients'] is None
         assert results['null_model_free']['heldout']['hyperparams_tuned'] is False
+
+
+class TestSessionsWithoutEvents:
+    """A session whose target mouse has no USV with a manifold position is dropped before the
+    held-out draw and the normalization, and recorded in the metadata."""
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    def test_session_without_target_usvs_is_dropped_and_recorded(self, tmp_path):
+        """With the male's USV rows removed from one session, the continuous extraction writes
+        no arrays for it, lists it under ``sessions_without_events``, and ``session_ids`` /
+        ``n_sessions_used`` / the held-out draw cover only the sessions with data."""
+        settings, save_dir = _build_manifold_settings(tmp_path)
+        session_root = next(tmp_path.rglob('session_0'))
+        assert drop_emitter_rows(session_root, 's0_m_male') > 0
+        ContinuousModelingPipeline(modeling_settings_dict=settings).extract_and_save_continuous_data()
+        pkls = list(save_dir.glob('modeling_manifold_*.pkl'))
+        assert len(pkls) == 1
+        with pkls[0].open('rb') as fh:
+            artifact = pickle.load(fh)
+        metadata = artifact['_input_metadata']
+        anchor = sorted(k for k in artifact if not k.startswith('_'))[0]
+        data_sessions = set(artifact[anchor].keys())
+        assert 'session_0' not in data_sessions
+        assert len(data_sessions) >= 1
+        assert metadata['sessions_without_events'] == ['session_0']
+        assert metadata['n_sessions_used'] == len(data_sessions)
+        assert set(metadata['session_ids']) == data_sessions
+        assert 'session_0' not in metadata['held_out_session_ids']

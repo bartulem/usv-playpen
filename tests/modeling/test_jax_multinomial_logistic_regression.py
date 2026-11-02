@@ -34,6 +34,12 @@ with warnings.catch_warnings():
     from usv_playpen.modeling.jax_multinomial_logistic_regression import (
         SmoothMultinomialLogisticRegression,
         _multinomial_loss_static,
+        binary_logistic_basis,
+        binary_logistic_coefficients,
+        binary_logistic_design,
+        binary_logistic_filter_shapes,
+        binary_logistic_probability,
+        fit_binary_logistic,
     )
 
 
@@ -648,3 +654,152 @@ class TestFocalSaturation:
         model = SmoothMultinomialLogisticRegression(**{**_fit_kwargs(X.shape[1]), "focal_gamma": 0.5}).fit(X, y)
         assert np.all(np.isfinite(model.coef_))
         assert float(np.mean(model.predict(X) == y)) > 0.9
+
+
+def _binary_block(basis_type: str = 'bspline', n_splines: int = 6, tune: bool = False) -> dict:
+    """
+    Description
+    -----------
+    A small ``binary_logistic`` settings block for the two-class helpers: the shipped keys with a
+    short optimizer and a few splines, so a synthetic fit takes a moment.
+
+    Parameters
+    ----------
+    basis_type (str)
+        ``'bspline'`` or ``'none'``.
+    n_splines (int)
+        Splines of the B-spline basis.
+    tune (bool)
+        The ``tune_regularization_bool`` flag.
+
+    Returns
+    -------
+    block (dict)
+        The settings block.
+    """
+
+    return {
+        'bin_resizing_factor': 1,
+        'lambda_smooth_fixed': 1e-3,
+        'l2_reg_fixed': 1e-3,
+        'smoothness_derivative_order': 1,
+        'temporal_basis': {'type': basis_type, 'n_splines': n_splines, 'spline_order': 3,
+                           'lambda_smooth_fixed': 1e-5, 'l2_reg_fixed': 1e-5, 'l2_lag_alpha': 0,
+                           'lambda_smooth_decades_each_side': 2},
+        'learning_rate': 0.05,
+        'max_iter': 300,
+        'tol': 1e-6,
+        'random_state': 0,
+        'verbose': False,
+        'use_lax_loop': False,
+        'focal_loss_gamma': 0.0,
+        'tune_regularization_bool': tune,
+        'tune_regularization_params': {'lambda_smooth_decades_each_side': 0, 'l2_reg_decades_each_side': 0,
+                                       'inner_cv_folds': 2, 'inner_cv_scoring_metric': 'auc',
+                                       'inner_cv_use_one_se_rule': False, 'inner_max_iter': 20},
+    }
+
+
+def _planted_two_class(history_frames: int = 24, n_per_class: int = 60, seed: int = 0) -> tuple:
+    """
+    Description
+    -----------
+    Two-class windows whose positive class carries a planted late-lag ramp on one feature and
+    nothing on a second, noise-only feature.
+
+    Parameters
+    ----------
+    history_frames (int)
+        Frames per window.
+    n_per_class (int)
+        Windows per class.
+    seed (int)
+        Generator seed.
+
+    Returns
+    -------
+    windows (list)
+        ``[signal, noise]`` arrays of shape ``(2 * n_per_class, history_frames)``.
+    labels (np.ndarray)
+        ``(2 * n_per_class,)`` labels, positives first.
+    ramp (np.ndarray)
+        The planted ``(history_frames,)`` ramp.
+    """
+
+    rng = np.random.default_rng(seed)
+    ramp = np.linspace(0.0, 1.0, history_frames) ** 2
+    signal = rng.standard_normal((2 * n_per_class, history_frames))
+    signal[:n_per_class] += 1.5 * ramp
+    noise = rng.standard_normal((2 * n_per_class, history_frames))
+    labels = np.concatenate([np.ones(n_per_class), np.zeros(n_per_class)])
+    return [signal, noise], labels, ramp
+
+
+class TestBinaryLogisticHelpers:
+    """The two-class convenience layer the onset and category pipelines fit the JAX engine through."""
+
+    def test_basis_has_one_row_per_frame_and_tuning_is_refused(self):
+        """The B-spline block resolves to a ``(history_frames, n_splines)`` basis with the
+        basis-level penalties; the raw-frame block resolves to no basis; a block that asks for
+        regularization tuning is refused."""
+        basis, hp = binary_logistic_basis(_binary_block('bspline', n_splines=6), 24)
+        assert basis.shape == (24, 6)
+        assert hp['lambda_smooth_fixed'] == 1e-5
+        assert hp['smoothness_derivative_order'] == 2
+        none_basis, none_hp = binary_logistic_basis(_binary_block('none'), 24)
+        assert none_basis is None
+        assert none_hp['smoothness_reflective_edges'] is True
+        with pytest.raises(ValueError, match="tune_regularization_bool"):
+            binary_logistic_basis(_binary_block('bspline', tune=True), 24)
+
+    def test_design_stacks_feature_blocks_in_order(self):
+        """The design is float32, one block of ``n_basis`` columns per feature in the order given,
+        and the raw-frame design keeps every frame; a window of the wrong length is refused."""
+        windows, _labels, _ramp = _planted_two_class()
+        basis, _hp = binary_logistic_basis(_binary_block('bspline', n_splines=6), 24)
+        design = binary_logistic_design(windows, basis)
+        assert design.dtype == np.float32
+        assert design.shape == (120, 12)
+        np.testing.assert_allclose(design[:, :6], (windows[0] @ basis).astype(np.float32))
+        raw = binary_logistic_design(windows, None)
+        assert raw.shape == (120, 48)
+        with pytest.raises(ValueError, match="frames"):
+            binary_logistic_design([windows[0][:, :10]], basis)
+
+    def test_fit_recovers_the_planted_filter_on_the_signal_feature(self):
+        """A planted ramp on the first feature is recovered as a positively correlated log-odds filter
+        there, the noise feature's filter stays small, positives score above one half, and the
+        filter shapes are the basis image of the fitted coefficients."""
+        windows, labels, ramp = _planted_two_class()
+        basis, hp = binary_logistic_basis(_binary_block('bspline', n_splines=6), 24)
+        design = binary_logistic_design(windows, basis)
+        model = fit_binary_logistic(design, labels, 2, hp, 0)
+        assert list(model.classes_) == [0, 1]
+        shapes = binary_logistic_filter_shapes(model, basis, 2, 24)
+        assert shapes.shape == (2, 24)
+        assert np.corrcoef(shapes[0], ramp)[0, 1] > 0.8
+        assert np.abs(shapes[1]).max() < np.abs(shapes[0]).max()
+        coefficients = binary_logistic_coefficients(model)
+        np.testing.assert_allclose(shapes[0], basis @ coefficients[:6], rtol=1e-5, atol=1e-6)
+        probability = binary_logistic_probability(model, design)
+        assert probability.shape == (120,)
+        assert probability[labels == 1].mean() > 0.5 > probability[labels == 0].mean()
+
+    def test_raw_frame_filter_shapes_are_the_coefficients(self):
+        """Without a basis the filter of each feature is its block of coefficients, one per frame."""
+        windows, labels, _ramp = _planted_two_class(history_frames=12, n_per_class=30)
+        _basis, hp = binary_logistic_basis(_binary_block('none'), 12)
+        model = fit_binary_logistic(binary_logistic_design(windows, None), labels, 2, hp, 1)
+        shapes = binary_logistic_filter_shapes(model, None, 2, 12)
+        np.testing.assert_allclose(shapes.ravel(), binary_logistic_coefficients(model))
+
+    def test_fit_refuses_one_class_rows_and_a_ragged_design(self):
+        """Training rows of one class, or a design whose width is not a multiple of the feature
+        count, are refused before any fit."""
+        windows, labels, _ramp = _planted_two_class(history_frames=12, n_per_class=20)
+        _basis, hp = binary_logistic_basis(_binary_block('none'), 12)
+        design = binary_logistic_design(windows, None)
+        with pytest.raises(ValueError, match="both classes"):
+            fit_binary_logistic(design, np.ones_like(labels), 2, hp, 0)
+        with pytest.raises(ValueError, match="multiple"):
+            fit_binary_logistic(design[:, :23], labels, 2, hp, 0)

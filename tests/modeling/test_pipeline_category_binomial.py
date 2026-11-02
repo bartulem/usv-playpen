@@ -83,6 +83,7 @@ from tests.modeling._synth import (
     build_behavioral_features_csv,
     build_modeling_settings,
     build_track_h5,
+    drop_emitter_rows,
     fit_counting_subclass,
     write_session_list_file,
 )
@@ -1627,3 +1628,116 @@ def test_binomial_extraction_without_labels_fails_before_loading(tmp_path, mocke
             target_category=1)
     assert 'vocal_features.usv_category_column_name' in str(excinfo.value)
     prepare.assert_not_called()
+
+
+class TestJaxCategoryEngine:
+    """The binomial category task on the ``jax`` engine: univariate runner and forward selection."""
+
+    def test_category_jax_runner_produces_split_metrics(self, tmp_path):
+        """
+        ``_run_modeling_category`` on the jax engine resolves its own raw-frame
+        basis (the synth settings), fits the two-class JAX model per split for the
+        actual and null passes, and writes per-split metrics, filter shapes and
+        projected coefficients of the frame width, with ``optimal_C`` kept NaN.
+        """
+        settings, _ = _build_category_settings(
+            tmp_path, model_engine='jax', split_strategy='mixed', split_num=2,
+        )
+        feature_data = {}
+        session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
+        rng = np.random.default_rng(0)
+        for sess in session_ids:
+            feature_data[sess] = {
+                'target_feature_arr': (0.9 + rng.standard_normal((20, HISTORY_FRAMES))).astype(float),
+                'other_feature_arr': (-0.9 + rng.standard_normal((60, HISTORY_FRAMES))).astype(float),
+            }
+        pipeline = VocalCategoryModelingPipeline(modeling_settings_dict=settings)
+        fn, res = pipeline._run_modeling_category('self.speed', feature_data, basis_matrix=None)
+        assert fn == 'self.speed'
+        n_folds = settings['model_validation']['n_cv_folds']
+        for metric in ('ll', 'auc', 'score', 'brier', 'mcc', 'f1', 'recall', 'n_iter', 'converged'):
+            assert res['actual'][metric].shape == (n_folds,)
+            assert res['null'][metric].shape == (n_folds,)
+        assert res['actual']['filter_shapes'].shape == (n_folds, HISTORY_FRAMES)
+        assert res['actual']['coefs_projected'].shape == (n_folds, HISTORY_FRAMES)
+        assert np.isnan(res['actual']['optimal_C']).all()
+        assert np.isfinite(res['actual']['ll']).all()
+        assert np.isfinite(res['actual']['filter_shapes']).all()
+        # A strong planted offset: the positive class is scored above the negative one.
+        assert np.nanmean(res['actual']['auc']) > 0.7
+
+    @pytest.mark.filterwarnings("ignore::sklearn.exceptions.UndefinedMetricWarning")
+    def test_category_selection_runs_end_to_end_on_the_jax_engine(self, tmp_path, monkeypatch):
+        """
+        ``vocal_category_model_selection`` on the jax engine runs the univariate
+        screen, the anchored step, the greedy search with its per-step shift test
+        and the final per-fold filter-shape refit on the two-class JAX model,
+        writing step pickles of the documented structure whose filter shapes are
+        one ``HISTORY_FRAMES``-long filter per accepted feature.
+        """
+        settings, _ = _build_category_settings(
+            tmp_path, model_engine='jax', model_type='jax',
+            split_strategy='mixed', split_num=2,
+        )
+        feature_keys = ['self.speed', 'other.speed', 'self.neck_elevation']
+        session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
+        input_pkl = _write_category_input_pickle(
+            save_path=tmp_path / 'modeling_input.pkl',
+            feature_names=feature_keys,
+            session_ids=session_ids,
+            history_frames=HISTORY_FRAMES,
+            input_metadata=_category_input_metadata(),
+        )
+        combined_path, per_feature = _run_univariate_category_and_consolidate(
+            settings=settings,
+            input_pkl=str(input_pkl),
+            feature_names=feature_keys,
+            out_dir=tmp_path / 'univariate',
+            monkeypatch=monkeypatch,
+        )
+        assert len(per_feature) == len(feature_keys)
+        settings_json = tmp_path / 'settings.json'
+        settings_json.write_text(json.dumps(settings))
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+        vocal_category_model_selection(
+            univariate_results_path=str(combined_path),
+            input_data_path=str(input_pkl),
+            settings_path=str(settings_json),
+            output_directory=str(ms_dir),
+            use_top_rank_as_anchor=True,
+            p_val=0.5,
+        )
+        step_pkls = sorted(ms_dir.glob('model_selection_category_*_step_*.pkl'))
+        assert len(step_pkls) >= 1, "expected at least one forward-selection step pickle"
+        with step_pkls[-1].open('rb') as fh:
+            final = pickle.load(fh)
+        assert 'current_features' in final
+        assert len(final['current_features']) >= 1
+        for fold_shapes in final['filter_shapes']:
+            for feature in final['current_features']:
+                assert fold_shapes[feature].shape == (HISTORY_FRAMES,)
+                assert np.isfinite(fold_shapes[feature]).all()
+
+
+class TestSessionsWithoutEvents:
+    """A session whose target mouse has no usable USV is dropped before the held-out draw and the
+    normalization, and recorded in the metadata."""
+
+    def test_session_without_target_usvs_is_dropped_and_recorded(self, tmp_path):
+        """With the male's USV rows removed from one session, the category extraction writes no
+        arrays for it, lists it under ``sessions_without_events``, and ``session_ids`` /
+        ``n_sessions_used`` / the held-out draw cover only the sessions with data."""
+        settings, save_dir = _build_category_settings(tmp_path, model_engine='sklearn')
+        session_root = next(tmp_path.rglob('session_0'))
+        assert drop_emitter_rows(session_root, 's0_m_male') > 0
+        _pkl_path, artifact = _extract_category_input(settings, save_dir)
+        metadata = artifact['_input_metadata']
+        anchor = sorted(k for k in artifact if not k.startswith('_'))[0]
+        data_sessions = set(artifact[anchor].keys())
+        assert 'session_0' not in data_sessions
+        assert len(data_sessions) >= 1
+        assert metadata['sessions_without_events'] == ['session_0']
+        assert metadata['n_sessions_used'] == len(data_sessions)
+        assert set(metadata['session_ids']) == data_sessions
+        assert 'session_0' not in metadata['held_out_session_ids']

@@ -1172,11 +1172,25 @@ class ContinuousModelingPipeline(FeatureZoo):
             raise ValueError(msg)
 
 
+        # Sessions that loaded with two mice but whose target has no USV with a manifold
+        # position inside the window contribute no row; they are dropped here, before the
+        # held-out draw and the cross-session normalization, and recorded in the metadata as
+        # `sessions_without_events`, so `session_ids` and `n_sessions_used` are the sessions
+        # the per-feature arrays hold.
+        sessions_without_events = sorted(
+            sess_id for sess_id in beh_data_dict
+            if sess_id in mouse_names_dict and len(mouse_names_dict[sess_id]) >= 2
+            and sess_id not in continuous_targets_dict)
+        if sessions_without_events:
+            print(f"[warn] {len(sessions_without_events)} session(s) without a usable target USV dropped: "
+                  f"{sessions_without_events}")
         print("Filtering features and injecting vocal history...")
         processed_beh_data = {}
 
         for sess_id in list(beh_data_dict.keys()):
             if sess_id not in mouse_names_dict or len(mouse_names_dict[sess_id]) < 2:
+                continue
+            if sess_id not in continuous_targets_dict:
                 continue
 
             current_df = beh_data_dict[sess_id]
@@ -1331,6 +1345,7 @@ class ContinuousModelingPipeline(FeatureZoo):
             n_sessions_used=len(processed_beh_data),
             session_ids=_sorted_session_ids,
             n_events_per_session=n_events_per_session_md,
+            sessions_without_events=sessions_without_events,
             held_out_session_ids=held_out_session_ids,
             feature_zoo_full=derive_feature_zoo_full(self.modeling_settings),
             feature_zoo_kept=feature_zoo_kept_md,

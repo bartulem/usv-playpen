@@ -379,6 +379,8 @@ def dispatch_univariate_job(args: argparse.Namespace) -> int:
 
                 if settings['model_params']['model_engine'] == 'sklearn':
                     fn, res = pipeline._run_model_for_feature_sklearn(feature_name, feat_data, basis, held_out_session_ids=held_out_ids)
+                elif settings['model_params']['model_engine'] == 'jax':
+                    fn, res = pipeline._run_model_for_feature_jax(feature_name, feat_data, held_out_session_ids=held_out_ids)
                 else:
                     fn, res = pipeline._run_model_for_feature_pygam(feature_name, feat_data, None, held_out_session_ids=held_out_ids)
 
@@ -390,6 +392,10 @@ def dispatch_univariate_job(args: argparse.Namespace) -> int:
 
             elif args.analysis_type == 'params':
 
+                if settings['model_params']['model_engine'] == 'jax':
+                    msg = ("the 'jax' model_engine is a two-class engine (onset and category tasks); the "
+                           "bout-parameter regression runs on 'sklearn' or 'pygam'.")
+                    raise ValueError(msg)
                 pipeline = BoutParameterPipeline(modeling_settings_dict=settings)
                 basis = get_basis_matrix_standardized(settings, pipeline.history_frames, args.output_dir)
 

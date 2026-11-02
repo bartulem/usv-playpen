@@ -38,6 +38,15 @@ from tqdm import tqdm
 
 from ..analyses.compute_behavioral_features import FeatureZoo
 from ..os_utils import atomic_output_path
+from .jax_multinomial_logistic_regression import (
+    BINARY_LOGISTIC_BLOCK,
+    binary_logistic_basis,
+    binary_logistic_coefficients,
+    binary_logistic_design,
+    binary_logistic_filter_shapes,
+    binary_logistic_probability,
+    fit_binary_logistic,
+)
 from .load_input_files import (
     epoch_class_labels,
     find_onset_epochs,
@@ -509,6 +518,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             n_sessions_used=len(processed_beh_feature_data_dict),
             session_ids=_sorted_session_ids,
             n_events_per_session={},  # populated below after epoch slicing
+            sessions_without_events=sorted(sessions_to_remove),
             held_out_session_ids=held_out_session_ids,
             feature_zoo_full=derive_feature_zoo_full(self.modeling_settings),
             feature_zoo_kept=feature_zoo_kept_md,
@@ -1350,6 +1360,333 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                         print(f"  ERROR during held-out {branch} fit/predict for {feature_name}: {e}")
                         # Record the failure explicitly so a NaN held-out score is never
                         # mistaken for a fitted one.
+                        rec['heldout_fit_failed'] = True
+                        rec['heldout_fit_error'] = f"{type(e).__name__}: {e}"
+            results['heldout'] = heldout
+
+        if not split_has_data:
+            print(f"  --- No valid splits processed for feature: {feature_name} ---")
+
+        return feature_name, results
+
+    def _run_model_for_feature_jax(self,
+                                   feature_name: str,
+                                   feature_data: dict,
+                                   held_out_session_ids: list | None = None
+                                   ) -> tuple[str, dict]:
+        """
+        Executes a univariate two-class analysis for a single feature with the JAX engine.
+
+        The engine is the multinomial category model with two classes
+        (``SmoothMultinomialLogisticRegression``): a smooth logistic regression on the B-spline
+        lag basis, penalties and optimizer of ``hyperparameters.linear_models.binary_logistic``.
+        The experimental design is the onset task's, shared with the sklearn and pygam engines:
+        ``create_data_splits`` balances every training fold to 50/50 and keeps the test fold at
+        its natural class prior, the null refits the same model on a reproducibly label-shuffled
+        copy of the training target, and the metrics are those of the other engines, so the
+        selection's screen reads this engine's ``actual`` / ``null`` log-losses unchanged.
+
+        The computational workflow includes:
+        1.  Resolves the basis and the effective penalties from the ``binary_logistic`` block
+            (``binary_logistic_basis``; tuning is refused).
+        2.  Projects every training and test window onto the basis (``binary_logistic_design``).
+        3.  Fits the two-class model on the balanced training rows (``fit_binary_logistic``) and
+            scores the natural-prior test rows at ``diagnostics.binary_decision_threshold``.
+        4.  Stores the log-odds coefficients (positive-class row minus negative-class row) in the
+            basis space and mapped back to the frame axis as the filter shape.
+        5.  Refits on the label-shuffled target for the ``null`` branch, seeded per split.
+
+        Parameters
+        ----------
+        feature_name : str
+            The identifier for the feature being modeled (e.g., 'self.speed', 'other.usv_cat_1').
+        feature_data : dict
+            A nested dictionary containing session-specific NumPy arrays for positive
+            ('usv_feature_arr') and negative ('no_usv_feature_arr') class samples.
+        held_out_session_ids : list or None, optional
+            Session IDs reserved at extraction time as the held-out test set
+            (passed by the dispatcher). They are excluded from every CV split; the
+            model is refit once on all development sessions and scored on these
+            sessions, the result stored under a top-level ``'heldout'`` key of the
+            results dictionary. None or an empty list disables the held-out
+            evaluation (no ``'heldout'`` key is written).
+
+        Returns
+        -------
+        tuple[str, dict]
+            The feature name and a results dictionary with the ``'actual'`` and ``'null'``
+            branches of the sklearn engine (``filter_shapes``, ``coefs_projected``, ``score``,
+            ``recall``, ``f1``, ``auc``, ``ll``, ``deviance_explained``, ``brier``, ``ece``,
+            ``mcc``, ``confusion_matrix``, ``n_iter``, ``converged``, ``fit_time`` per split;
+            ``optimal_C`` is kept for schema parity and stays NaN, the engine has no C grid),
+            ``split_sizes``, and, when ``held_out_session_ids`` is non-empty and the pooled data
+            is not degenerate, a top-level ``'heldout'`` record of the same shape as the sklearn
+            engine's (``n_held_out_sessions``, ``n_held_out_events``, ``heldout_fit_failed``,
+            ``heldout_fit_error`` included).
+        """
+
+        block = self.modeling_settings['hyperparameters']['linear_models'][BINARY_LOGISTIC_BLOCK]
+        basis, hp = binary_logistic_basis(block, self.history_frames)
+        n_splits = self.modeling_settings['model_validation']['n_cv_folds']
+        history_frames = self.history_frames
+        n_bases = basis.shape[1] if basis is not None else history_frames
+        base_seed = self.modeling_settings['model_validation']['random_seed'] or 0
+        ece_n_bins = self.modeling_settings['diagnostics']['ece_n_bins']
+        decision_threshold = self.modeling_settings['diagnostics']['binary_decision_threshold']
+
+        def _scalar():
+            """
+            Allocate one per-split scalar metric array.
+
+            Parameters
+            ----------
+            None
+
+            Returns
+            -------
+            np.ndarray
+                Float array of shape (n_splits,) filled with NaN.
+            """
+            return np.full(n_splits, np.nan)
+
+        def _make_branch():
+            """
+            Allocate the NaN-filled per-split results container of one branch
+            ('actual' or 'null') of the two-class run, with the sklearn engine's keys.
+
+            Parameters
+            ----------
+            None
+
+            Returns
+            -------
+            dict
+                Keys `filter_shapes` (n_splits, history_frames), `coefs_projected`
+                (n_splits, n_bases), `confusion_matrix` (n_splits, 2, 2) and the
+                per-split scalar metrics `optimal_C`, `score`, `recall`, `f1`,
+                `auc`, `ll`, `deviance_explained`, `brier`, `ece`, `mcc`,
+                `n_iter`, `converged`, `fit_time` (each (n_splits,)), all NaN.
+            """
+            return {
+                'filter_shapes': np.full((n_splits, history_frames), np.nan),
+                'coefs_projected': np.full((n_splits, n_bases), np.nan),
+                'optimal_C': _scalar(),
+                'score': _scalar(), 'recall': _scalar(),
+                'f1': _scalar(), 'auc': _scalar(),
+                'll': _scalar(), 'deviance_explained': _scalar(),
+                'brier': _scalar(), 'ece': _scalar(), 'mcc': _scalar(),
+                'confusion_matrix': np.full((n_splits, 2, 2), np.nan),
+                'n_iter': _scalar(), 'converged': _scalar(), 'fit_time': _scalar()
+            }
+
+        def _score(record: dict, y_true: np.ndarray, proba: np.ndarray, pred: np.ndarray) -> None:
+            """
+            Fill one record (a per-split slot or the held-out record) with the two-class
+            metrics of the sklearn engine: balanced accuracy, recall, F1, MCC, the confusion
+            matrix, and, when both classes are present, AUC, log-loss, deviance explained
+            against the ln 2 balanced-coin floor, Brier and ECE.
+
+            Parameters
+            ----------
+            record (dict)
+                A mapping from metric key to a writable slot (``_Slot``).
+            y_true (np.ndarray)
+                Test labels.
+            proba (np.ndarray)
+                Predicted probability of the positive class.
+            pred (np.ndarray)
+                Predicted labels at the decision threshold.
+
+            Returns
+            -------
+            None
+            """
+            y_int = y_true.astype(int)
+            record['score'] = balanced_accuracy_score(y_int, pred)
+            record['recall'] = recall_score(y_int, pred, zero_division=0.0)
+            record['f1'] = f1_score(y_int, pred, average='binary', zero_division=0.0)
+            record['mcc'] = safe_matthews_corrcoef(y_int, pred)
+            record['confusion_matrix'] = safe_confusion_matrix(y_int, pred, labels=np.array([0, 1]))
+            if len(np.unique(y_int)) > 1:
+                record['auc'] = roc_auc_score(y_int, proba)
+                clipped = np.clip(proba, 1e-15, 1 - 1e-15)
+                record['ll'] = log_loss(y_int, clipped)
+                record['deviance_explained'] = 1.0 - record['ll'] / np.log(2)
+                record['brier'] = float(brier_score_loss(y_int, proba))
+                try:
+                    proba_2d = np.column_stack([1.0 - proba, proba])
+                    record['ece'] = expected_calibration_error(y_int, pred, proba_2d, n_bins=ece_n_bins)
+                except Exception as e:
+                    print(f"[warn] fold diagnostic metric could not be recorded: {e}")
+
+        class _Slot(dict):
+            """
+            A view of one split's slot in a branch: ``slot[key] = value`` writes
+            ``branch[key][split_idx]``, so ``_score`` fills per-split arrays and the
+            scalar held-out record through the same code.
+
+            Parameters
+            ----------
+            branch (dict)
+                The per-split arrays of one branch.
+            split_idx (int)
+                The split written.
+            """
+
+            def __init__(self, branch: dict, split_idx: int) -> None:
+                super().__init__()
+                self.branch = branch
+                self.split_idx = split_idx
+
+            def __setitem__(self, key, value) -> None:
+                self.branch[key][self.split_idx] = value
+
+            def __getitem__(self, key):
+                return self.branch[key][self.split_idx]
+
+        results = {
+            'actual': _make_branch(),
+            'null': _make_branch(),
+            'split_sizes': {'train': [], 'test': []}
+        }
+
+        held_out_session_ids = held_out_session_ids if held_out_session_ids is not None else []
+        _held_set = set(held_out_session_ids)
+        dev_sessions = [s for s in feature_data if s not in _held_set]
+        held_sessions = [s for s in feature_data if s in _held_set]
+        dev_feature_data = {s: feature_data[s] for s in dev_sessions}
+        if held_sessions:
+            print(
+                f"Held-out reserve: {len(held_sessions)} session(s) excluded from "
+                f"CV; scored once after the fold loop."
+            )
+
+        split_has_data = False
+        for split_idx, (X_train, y_train, X_test, y_test, _groups_train) in enumerate(
+                self.create_data_splits(dev_feature_data)):
+            if split_idx >= n_splits:
+                break
+            if X_train.shape[0] == 0 or X_test.shape[0] == 0:
+                continue
+            split_has_data = True
+            results['split_sizes']['train'].append(X_train.shape[0])
+            results['split_sizes']['test'].append(X_test.shape[0])
+
+            design_train = binary_logistic_design([X_train], basis)
+            design_test = binary_logistic_design([X_test], basis)
+            # Seeded per-split Generator so the label shuffle is reproducible and independent
+            # of any ambient global RNG state (the same seeding as the sklearn engine).
+            shuffle_rng = np.random.default_rng(base_seed + split_idx + 1)
+            y_train_null = y_train[null_target_permutation(y_train.shape[0], shuffle_rng)]
+            for branch, y_fit in (('actual', y_train), ('null', y_train_null)):
+                try:
+                    fit_start = time.perf_counter()
+                    model = fit_binary_logistic(design_train, y_fit, 1, hp, base_seed + split_idx)
+                    fit_time = float(time.perf_counter() - fit_start)
+                    proba = binary_logistic_probability(model, design_test)
+                    pred = (proba >= decision_threshold).astype(int)
+                    record = results[branch]
+                    record['coefs_projected'][split_idx, :] = binary_logistic_coefficients(model)
+                    record['filter_shapes'][split_idx, :] = binary_logistic_filter_shapes(
+                        model, basis, 1, history_frames)[0]
+                    record['n_iter'][split_idx] = float(model.n_iter_)
+                    record['converged'][split_idx] = float(bool(model.converged_))
+                    record['fit_time'][split_idx] = fit_time
+                    _score(_Slot(record, split_idx), y_test, proba, pred)
+                except Exception as e:
+                    print(f"  ERROR during {branch.upper()} model fit/predict for {feature_name}, split {split_idx}: {e}")
+
+            print(format_split_line(split_idx + 1, n_splits, {
+                'ACTUAL': {'AUC': results['actual']['auc'][split_idx],
+                           'LL': results['actual']['ll'][split_idx],
+                           'Brier': results['actual']['brier'][split_idx]},
+                'NULL': {'AUC': results['null']['auc'][split_idx],
+                         'LL': results['null']['ll'][split_idx],
+                         'Brier': results['null']['brier'][split_idx]},
+            }))
+
+        results['split_sizes']['train'] = np.array(results['split_sizes']['train'])
+        results['split_sizes']['test'] = np.array(results['split_sizes']['test'])
+
+        # Honest held-out score. Refit on ALL development sessions (balanced training,
+        # mirroring the 'session' fold) and score once on the reserved held-out sessions at
+        # their natural class prior, for both the real-label model and a shuffled-label null.
+        if held_sessions:
+            X_pos_dev, X_neg_dev, g_pos_dev, g_neg_dev = pool_session_arrays(
+                feature_data, dev_sessions, pos_key="usv_feature_arr",
+                neg_key="no_usv_feature_arr", n_frames=history_frames, return_groups=True
+            )
+            X_pos_held, X_neg_held = pool_session_arrays(
+                feature_data, held_sessions, pos_key="usv_feature_arr",
+                neg_key="no_usv_feature_arr", n_frames=history_frames
+            )
+            X_pos_dev_bal, X_neg_dev_bal, _g_pos_bal, _g_neg_bal = balance_two_class_arrays(
+                X_pos_dev, X_neg_dev,
+                np.random.default_rng(base_seed + n_splits + 2),
+                groups_pos=g_pos_dev, groups_neg=g_neg_dev)
+            n_held_events = int(X_pos_held.shape[0] + X_neg_held.shape[0])
+
+            def _empty_heldout_rec():
+                """
+                Build one NaN-filled held-out record ('actual' or 'null') that the
+                held-out refit fills in when the data allow it.
+
+                Parameters
+                ----------
+                None
+
+                Returns
+                -------
+                dict
+                    The per-split metric keys as scalars (`filter_shapes` a
+                    length-history_frames NaN array, `confusion_matrix` a (2, 2)
+                    NaN array, the rest NaN) plus `n_held_out_sessions`,
+                    `n_held_out_events`, `heldout_fit_failed` (False until the
+                    held-out refit raises) and `heldout_fit_error` (None, or the
+                    exception type and message of the failed refit).
+                """
+                return {
+                    'filter_shapes': np.full(history_frames, np.nan),
+                    'coefs_projected': np.full(n_bases, np.nan),
+                    'optimal_C': np.nan,
+                    'score': np.nan, 'recall': np.nan, 'f1': np.nan, 'auc': np.nan,
+                    'll': np.nan, 'deviance_explained': np.nan,
+                    'brier': np.nan, 'ece': np.nan, 'mcc': np.nan,
+                    'confusion_matrix': np.full((2, 2), np.nan),
+                    'n_iter': np.nan, 'converged': np.nan, 'fit_time': np.nan,
+                    'n_held_out_sessions': len(held_sessions),
+                    'n_held_out_events': n_held_events,
+                    'heldout_fit_failed': False,
+                    'heldout_fit_error': None,
+                }
+
+            heldout = {'actual': _empty_heldout_rec(), 'null': _empty_heldout_rec()}
+            if (X_pos_dev_bal.shape[0] > 0 and X_pos_held.shape[0] > 0
+                    and X_neg_held.shape[0] > 0):
+                X_train_dev, y_train_dev = concat_two_class_with_labels(X_pos_dev_bal, X_neg_dev_bal)
+                X_test_held, y_test_held = concat_two_class_with_labels(X_pos_held, X_neg_held)
+                design_dev = binary_logistic_design([X_train_dev], basis)
+                design_held = binary_logistic_design([X_test_held], basis)
+                # Distinct-but-deterministic seed for the held-out null permutation;
+                # offset the fold seeds by `n_splits` so it never collides with a fold.
+                held_rng = np.random.default_rng(base_seed + n_splits + 1)
+                for branch in ('actual', 'null'):
+                    y_train_use = (y_train_dev if branch == 'actual'
+                                   else y_train_dev[null_target_permutation(y_train_dev.shape[0], held_rng)])
+                    rec = heldout[branch]
+                    try:
+                        fit_start = time.perf_counter()
+                        model = fit_binary_logistic(design_dev, y_train_use, 1, hp, base_seed + n_splits)
+                        rec['fit_time'] = float(time.perf_counter() - fit_start)
+                        proba = binary_logistic_probability(model, design_held)
+                        pred = (proba >= decision_threshold).astype(int)
+                        rec['coefs_projected'] = binary_logistic_coefficients(model)
+                        rec['filter_shapes'] = binary_logistic_filter_shapes(model, basis, 1, history_frames)[0]
+                        rec['n_iter'] = float(model.n_iter_)
+                        rec['converged'] = float(bool(model.converged_))
+                        _score(rec, y_test_held, proba, pred)
+                    except Exception as e:
+                        print(f"  ERROR during held-out {branch} fit/predict for {feature_name}: {e}")
                         rec['heldout_fit_failed'] = True
                         rec['heldout_fit_error'] = f"{type(e).__name__}: {e}"
             results['heldout'] = heldout

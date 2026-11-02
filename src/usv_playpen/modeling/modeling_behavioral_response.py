@@ -1112,6 +1112,7 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
             n_sessions_used=len(processed_beh_feature_data_dict),
             session_ids=sorted(processed_beh_feature_data_dict),
             n_events_per_session={},
+            sessions_without_events=sorted(sessions_to_remove),
             feature_zoo_full=derive_feature_zoo_full(self.modeling_settings),
             feature_zoo_kept=sorted(revised_behavioral_predictors),  # suffixes, not columns
             dyadic_engagement_features_used=list(kin_settings['dyadic_engagement']),
@@ -1450,6 +1451,10 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
         print("=" * 70)
 
         contributing_sessions = sorted(anchors_per_session)
+        # Sessions that loaded but anchored no row join the event-less list.
+        input_metadata['sessions_without_events'] = sorted(
+            set(input_metadata['sessions_without_events'])
+            | (set(input_metadata['session_ids']) - set(contributing_sessions)))
         input_metadata['session_ids'] = contributing_sessions
         input_metadata['n_sessions_used'] = len(contributing_sessions)
         input_metadata['n_events_per_session'] = anchors_per_session

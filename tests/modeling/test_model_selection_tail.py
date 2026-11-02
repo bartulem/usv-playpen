@@ -62,6 +62,7 @@ from tests.modeling._synth import (
     build_modeling_input_pickle,
     build_modeling_settings,
     build_session_tree,
+    fit_counting_subclass,
     write_session_list_file,
 )
 
@@ -625,7 +626,7 @@ class TestBoutOnsetSelectionBranches:
 
         monkeypatch.setattr(ms, 'LogisticGAM', _BoomGAM)
 
-        settings, _ = _build_settings(tmp_path, model_engine='sklearn',
+        settings, _ = _build_settings(tmp_path, model_engine='pygam',
                                       split_strategy='mixed', split_num=2)
         feature_names = ['self.speed', 'other.speed']
         input_pkl, ranking_pkl, _ = _make_onset_inputs(tmp_path, feature_names)
@@ -2032,3 +2033,164 @@ class TestEmptySelectionFinalizes:
         run()
         assert 'already converged' in capsys.readouterr().out
         assert self._final_step(ms_dir)['final_model_features'] == []
+
+
+class TestJaxEngineSelection:
+    """``vocal_onset_model_selection`` on the ``jax`` engine: the two-class JAX model through every
+    engine site (candidate folds, the per-step shift test's refits, the per-fold filter shapes
+    and the held-out refit)."""
+
+    def test_onset_selection_runs_end_to_end_on_the_jax_engine(self, tmp_path):
+        """
+        With ``model_engine == 'jax'`` and a held-out reserve, the selector runs
+        the anchored step and the forward search on the JAX engine, serially,
+        writes step pickles whose per-fold filter shapes are one
+        ``HISTORY_FRAMES``-long filter per accepted feature, records the engine
+        and its effective block in the run metadata, and scores the reserved
+        sessions once.
+        """
+        settings, _ = _build_settings(tmp_path, model_engine='jax',
+                                      split_strategy='mixed', split_num=2)
+        settings['model_validation']['held_out_test_proportion'] = 0.25
+        feature_names = ['self.speed', 'other.speed']
+        session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
+        held_ids = session_ids[-1:]
+        input_md = {'analysis_tag': 'bout', 'session_ids': session_ids,
+                    'held_out_session_ids': held_ids}
+        input_pkl = str(build_modeling_input_pickle(
+            save_path=tmp_path / 'modeling_input.pkl',
+            feature_names=feature_names,
+            session_ids=session_ids,
+            history_frames=HISTORY_FRAMES,
+            n_usv=24, n_no_usv=40,
+            input_metadata=input_md,
+            fps=CAMERA_FPS,
+        ))
+        ranking_path = tmp_path / 'univariate_combined.pkl'
+        _write_onset_univariate_ranking(save_path=ranking_path, feature_names=feature_names)
+        with ranking_path.open('rb') as fh:
+            ranking = pickle.load(fh)
+        ranking['_input_metadata'] = input_md
+        with ranking_path.open('wb') as fh:
+            pickle.dump(ranking, fh)
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+        vocal_onset_model_selection(
+            univariate_results_path=str(ranking_path),
+            input_data_path=input_pkl,
+            settings_path=_settings_json(tmp_path, settings),
+            output_directory=str(ms_dir),
+            use_top_rank_as_anchor=True,
+            p_val=0.5,
+        )
+        step_pkls = sorted(ms_dir.glob('*step*.pkl'))
+        assert step_pkls
+        with step_pkls[-1].open('rb') as fh:
+            final = pickle.load(fh)
+        assert final['heldout'] is not None
+        assert final['heldout']['n_held_out_sessions'] == 1
+        assert final['heldout']['n_held_out_events'] > 0
+        assert np.isfinite(final['heldout']['actual']['ll'])
+        assert final['heldout']['actual']['heldout_fit_failed'] is False
+        for fold_shapes in final['filter_shapes']:
+            for feature in final['current_features']:
+                assert fold_shapes[feature].shape == (HISTORY_FRAMES,)
+                assert np.isfinite(fold_shapes[feature]).all()
+        knobs = json.dumps(final['_run_metadata'], default=str)
+        assert '"model_engine": "jax"' in knobs
+        assert '"binary_logistic"' in knobs
+
+
+class TestSklearnEngineSelection:
+    """``vocal_onset_model_selection`` on the ``sklearn`` engine: the basis-projected
+    ``LogisticRegressionCV`` through every engine site, with session-grouped inner folds."""
+
+    @pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
+    @pytest.mark.parametrize('split_strategy', ['mixed', 'session'])
+    def test_onset_selection_runs_end_to_end_on_the_sklearn_engine(self, tmp_path, monkeypatch, split_strategy):
+        """
+        With ``model_engine == 'sklearn'`` the selector fits ``LogisticRegressionCV``
+        on the raised-cosine projection at every site -- candidate folds, the
+        per-step shift test's refits, the per-fold filter shapes and the held-out
+        refit -- and never the GAM: every fit is counted on both classes. The step
+        pickles carry one ``HISTORY_FRAMES``-long filter per accepted feature, the
+        run metadata records the engine with its basis and logistic settings, and
+        the reserved sessions are scored once. Both split strategies are run, since
+        the inner folds' session groups come from the pooled rows under 'mixed'
+        and from the fold's balanced draw under 'session'.
+        """
+        settings, _ = _build_settings(tmp_path, model_engine='sklearn',
+                                      split_strategy=split_strategy, split_num=2)
+        settings['model_validation']['held_out_test_proportion'] = 0.25
+        feature_names = ['self.speed', 'other.speed']
+        session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
+        held_ids = session_ids[-1:]
+        input_md = {'analysis_tag': 'bout', 'session_ids': session_ids,
+                    'held_out_session_ids': held_ids}
+        input_pkl = str(build_modeling_input_pickle(
+            save_path=tmp_path / 'modeling_input.pkl',
+            feature_names=feature_names,
+            session_ids=session_ids,
+            history_frames=HISTORY_FRAMES,
+            n_usv=24, n_no_usv=40,
+            input_metadata=input_md,
+            fps=CAMERA_FPS,
+        ))
+        ranking_path = tmp_path / 'univariate_combined.pkl'
+        _write_onset_univariate_ranking(save_path=ranking_path, feature_names=feature_names)
+        with ranking_path.open('rb') as fh:
+            ranking = pickle.load(fh)
+        ranking['_input_metadata'] = input_md
+        with ranking_path.open('wb') as fh:
+            pickle.dump(ranking, fh)
+        logistic_cls, logistic_counter = fit_counting_subclass(ms.LogisticRegressionCV)
+        gam_cls, gam_counter = fit_counting_subclass(ms.LogisticGAM)
+        monkeypatch.setattr(ms, 'LogisticRegressionCV', logistic_cls)
+        monkeypatch.setattr(ms, 'LogisticGAM', gam_cls)
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+        vocal_onset_model_selection(
+            univariate_results_path=str(ranking_path),
+            input_data_path=input_pkl,
+            settings_path=_settings_json(tmp_path, settings),
+            output_directory=str(ms_dir),
+            use_top_rank_as_anchor=True,
+            p_val=0.5,
+        )
+        assert logistic_counter['n'] > 0
+        assert gam_counter['n'] == 0
+        step_pkls = sorted(ms_dir.glob('*step*.pkl'))
+        assert step_pkls
+        with step_pkls[-1].open('rb') as fh:
+            final = pickle.load(fh)
+        assert final['heldout']['n_held_out_sessions'] == 1
+        assert np.isfinite(final['heldout']['actual']['ll'])
+        assert final['heldout']['actual']['heldout_fit_failed'] is False
+        assert len(final['filter_shapes']) >= 1
+        for fold_shapes in final['filter_shapes']:
+            for feature in final['current_features']:
+                assert fold_shapes[feature].shape == (HISTORY_FRAMES,)
+                assert np.isfinite(fold_shapes[feature]).all()
+        knobs = json.dumps(final['_run_metadata'], default=str)
+        assert '"model_engine": "sklearn"' in knobs
+        assert '"sklearn_logistic"' in knobs
+        assert '"basis_function": "raised_cosine"' in knobs
+
+    def test_unknown_engine_is_refused(self, tmp_path):
+        """An engine that is none of sklearn, pygam or jax is refused before any fit."""
+        settings, _ = _build_settings(tmp_path, model_engine='sklearn',
+                                      split_strategy='mixed', split_num=2)
+        settings['model_params']['model_engine'] = 'abacus'
+        feature_names = ['self.speed', 'other.speed']
+        input_pkl, ranking_pkl, _ = _make_onset_inputs(tmp_path, feature_names)
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+        with pytest.raises(ValueError, match="model_engine"):
+            vocal_onset_model_selection(
+                univariate_results_path=ranking_pkl,
+                input_data_path=input_pkl,
+                settings_path=_settings_json(tmp_path, settings),
+                output_directory=str(ms_dir),
+                use_top_rank_as_anchor=True,
+                p_val=0.5,
+            )

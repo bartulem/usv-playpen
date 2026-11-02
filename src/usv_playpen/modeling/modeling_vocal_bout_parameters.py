@@ -389,6 +389,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             n_sessions_used=len(processed_beh_feature_data_dict),
             session_ids=_sorted_session_ids,
             n_events_per_session={},
+            sessions_without_events=sorted(sessions_to_remove),
             held_out_session_ids=held_out_session_ids,
             feature_zoo_full=derive_feature_zoo_full(self.modeling_settings),
             feature_zoo_kept=feature_zoo_kept_md,

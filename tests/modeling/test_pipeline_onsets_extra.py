@@ -1035,3 +1035,59 @@ def test_onset_target_category_without_labels_fails_before_loading(tmp_path, moc
         VocalOnsetModelingPipeline(modeling_settings_dict=settings).extract_and_save_modeling_input_data()
     assert 'vocal_features.usv_category_column_name' in str(excinfo.value)
     prepare.assert_not_called()
+
+
+class TestJaxEngine:
+    """The ``jax`` engine's univariate runner: the two-class JAX model on the onset task's design."""
+
+    def test_jax_runner_mixed_strategy_produces_split_metrics(self, tmp_path):
+        """
+        The JAX runner follows the onset task's design (balanced training folds,
+        natural-prior test folds, a label-shuffled null) and writes the sklearn
+        engine's record layout: per-split scalar metrics sized to ``split_num``,
+        per-split filter shapes sized to ``HISTORY_FRAMES``, projected coefficients
+        of the raw-frame width (the synth settings use the frame basis), optimizer
+        diagnostics, and ``optimal_C`` left NaN (the engine has no C grid).
+        """
+        pipeline = _pipeline(tmp_path, model_engine='jax', split_strategy='mixed', split_num=2)
+        feature_data = _make_feature_data(
+            [f'session_{i}' for i in range(3)], n_usv=24, n_no_usv=60,
+        )
+        feat_name, results = pipeline._run_model_for_feature_jax(
+            feature_name='self.speed', feature_data=feature_data,
+        )
+        assert feat_name == 'self.speed'
+        for branch in ('actual', 'null'):
+            for metric in ('ll', 'auc', 'score', 'brier', 'ece', 'mcc', 'n_iter', 'converged', 'fit_time'):
+                assert results[branch][metric].shape == (2,)
+            assert results[branch]['filter_shapes'].shape == (2, HISTORY_FRAMES)
+            assert results[branch]['coefs_projected'].shape == (2, HISTORY_FRAMES)
+            assert np.isnan(results[branch]['optimal_C']).all()
+        assert np.isfinite(results['actual']['auc']).all()
+        assert np.isfinite(results['actual']['ll']).all()
+        assert np.isfinite(results['actual']['filter_shapes']).all()
+        assert 'heldout' not in results
+
+    def test_jax_runner_holdout_populates_heldout_branch(self, tmp_path):
+        """
+        With a non-empty ``held_out_session_ids`` the JAX runner refits on the
+        balanced development pool and scores once on the reserved sessions, for
+        the real-label model and a shuffled-label null, recording the reserved
+        session and event counts and a finite fitted log-loss.
+        """
+        pipeline = _pipeline(tmp_path, model_engine='jax', split_strategy='mixed', split_num=2)
+        session_ids = [f'session_{i}' for i in range(4)]
+        feature_data = _make_feature_data(session_ids, n_usv=24, n_no_usv=60)
+        feat_name, results = pipeline._run_model_for_feature_jax(
+            feature_name='self.speed', feature_data=feature_data,
+            held_out_session_ids=session_ids[3:],
+        )
+        assert feat_name == 'self.speed'
+        held = results['heldout']
+        for branch in ('actual', 'null'):
+            assert held[branch]['n_held_out_sessions'] == 1
+            assert held[branch]['n_held_out_events'] > 0
+            assert held[branch]['heldout_fit_failed'] is False
+        assert np.isfinite(held['actual']['ll'])
+        assert np.isfinite(held['actual']['auc'])
+        assert held['actual']['filter_shapes'].shape == (HISTORY_FRAMES,)

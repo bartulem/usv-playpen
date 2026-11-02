@@ -38,7 +38,15 @@ from sklearn.model_selection import (
 )
 
 from ..os_utils import atomic_output_path
-from .jax_multinomial_logistic_regression import SmoothMultinomialLogisticRegression
+from .jax_multinomial_logistic_regression import (
+    BINARY_LOGISTIC_BLOCK,
+    SmoothMultinomialLogisticRegression,
+    binary_logistic_basis,
+    binary_logistic_design,
+    binary_logistic_filter_shapes,
+    binary_logistic_probability,
+    fit_binary_logistic,
+)
 from .load_input_files import load_pickle_modeling_data, onset_target_tag
 from .manifold_metric import (
     _fit_von_mises_kappa,
@@ -951,12 +959,22 @@ def compute_filter_shapes_per_fold_vocal_onset(
         gam_kwargs: dict,
         random_seed: int,
         time_indices: np.ndarray,
+        model_type: str = 'pygam',
+        binary_basis: np.ndarray | None = None,
+        binary_hp: dict | None = None,
+        basis_matrix: np.ndarray | None = None,
+        lr_params: dict | None = None,
+        pooled_groups: np.ndarray | None = None,
 ) -> list[dict]:
     """
     Description
     -----------
-    Refit the final multivariate ``LogisticGAM`` once per CV fold
-    and extract the per-feature temporal-filter shape for that fold.
+    Refit the final multivariate model once per CV fold and extract the per-feature
+    temporal-filter shape for that fold: the ``LogisticGAM`` partial-dependence
+    difference, with ``model_type == 'jax'`` the two-class JAX model's log-odds
+    filters mapped from its B-spline basis to the frame axis, or with
+    ``model_type == 'sklearn'`` the ``LogisticRegressionCV`` coefficients of each
+    feature mapped through the projection basis.
 
     The bout-onset selector's final-refit block is this helper's
     single caller; the loop is factored out here purely for
@@ -1015,6 +1033,19 @@ def compute_filter_shapes_per_fold_vocal_onset(
         Vector ``np.arange(history_frames, dtype=float)`` used to
         construct the partial-dependence base grid. Passed in to
         avoid re-allocating it per call.
+    model_type : str
+        ``'jax'`` fits the two-class JAX model; any other value the GAM.
+    binary_basis : np.ndarray or None
+        The JAX engine's ``(history_frames, n_splines)`` basis (``binary_logistic_basis``).
+    binary_hp : dict or None
+        The JAX engine's effective hyperparameter block.
+    basis_matrix : np.ndarray or None
+        The sklearn engine's ``(history_frames, n_bases)`` projection basis.
+    lr_params : dict or None
+        The sklearn engine's ``LogisticRegressionCV`` settings block.
+    pooled_groups : np.ndarray or None
+        The session of every pooled row (``X_full`` order), for the sklearn engine's
+        inner folds under the 'mixed' strategy.
 
     Returns
     -------
@@ -1034,13 +1065,16 @@ def compute_filter_shapes_per_fold_vocal_onset(
             if fold_info['type'] == 'session':
                 train_sess = fold_info['train_sessions']
                 for feat in current_model_features:
-                    _X_p, _X_n = pool_session_arrays(
+                    _X_p, _X_n, _g_p, _g_n = pool_session_arrays(
                         all_feature_data[feat],
                         train_sess,
                         pos_key="usv_feature_arr",
                         neg_key="no_usv_feature_arr",
                         n_frames=history_frames,
+                        return_groups=True,
                     )
+                    if not X_p_per_feat:
+                        g_p_fold, g_n_fold = _g_p, _g_n
                     X_p_per_feat.append(_X_p)
                     X_n_per_feat.append(_X_n)
             elif fold_info['type'] == 'mixed':
@@ -1056,6 +1090,9 @@ def compute_filter_shapes_per_fold_vocal_onset(
                     X_tr_all = X_full_feat[train_ix]
                     X_p_per_feat.append(X_tr_all[y_tr_all == 1])
                     X_n_per_feat.append(X_tr_all[y_tr_all == 0])
+                if model_type == 'sklearn':
+                    g_tr_all = pooled_groups[train_ix]
+                    g_p_fold, g_n_fold = g_tr_all[y_tr_all == 1], g_tr_all[y_tr_all == 0]
             else:
                 print(
                     f"    [!] Unknown fold type {fold_info['type']!r} "
@@ -1084,6 +1121,24 @@ def compute_filter_shapes_per_fold_vocal_onset(
                 for X_p, X_n in zip(X_p_per_feat, X_n_per_feat, strict=False)
             ]
             y_fold = np.concatenate((np.ones(n_k), np.zeros(n_k)))
+            if model_type == 'sklearn':
+                groups_fold = np.concatenate((g_p_fold[idx_p], g_n_fold[idx_n]))
+                model = _classical_logistic_fit(X_list_fold, y_fold, groups_fold, basis_matrix, lr_params,
+                                                random_seed)
+                final_fold_shapes.append(_classical_logistic_filters(model, basis_matrix, current_model_features))
+                del model
+                gc.collect()
+                continue
+            if model_type == 'jax':
+                design = binary_logistic_design(X_list_fold, binary_basis)
+                jax_model = fit_binary_logistic(design, y_fold, len(current_model_features), binary_hp,
+                                                random_seed + fold_idx)
+                shapes = binary_logistic_filter_shapes(jax_model, binary_basis,
+                                                       len(current_model_features), history_frames)
+                final_fold_shapes.append({f_name: shapes[k] for k, f_name in enumerate(current_model_features)})
+                del jax_model, design
+                gc.collect()
+                continue
 
             X_gam_tr = get_unrolled_X_for_multivariate(
                 X_list_fold, history_frames
@@ -1351,6 +1406,130 @@ def _assemble_fold_metrics(fold_results: list, feature: str, keys: tuple,
     return metrics
 
 
+def _classical_logistic_setup(settings: dict, history_frames: int) -> tuple[np.ndarray, dict]:
+    """
+    Description
+    -----------
+    The sklearn engine's temporal basis and logistic-regression settings for a two-class
+    selection (onset or binomial category): the basis named by
+    ``model_params.model_basis_function`` built at ``history_frames`` (the univariate
+    dispatcher's construction), and ``hyperparameters.classical.logistic_regression``.
+
+    Parameters
+    ----------
+    settings (dict)
+        The modeling settings.
+    history_frames (int)
+        Frames of the history window (the basis' row count).
+
+    Returns
+    -------
+    basis_matrix (np.ndarray)
+        ``(history_frames, n_bases)`` projection basis.
+    lr_params (dict)
+        The ``LogisticRegressionCV`` settings block.
+
+    Raises
+    ------
+    ValueError
+        An unknown ``model_basis_function``.
+    """
+
+    basis_type = settings['model_params']['model_basis_function']
+    if basis_type == 'raised_cosine':
+        p = settings['hyperparameters']['basis_functions']['raised_cosine']
+        kp = int(np.floor(history_frames * p['kpeaks_proportion']))
+        basis_matrix = raised_cosine(neye=p['neye'], ncos=p['ncos'], kpeaks=[0, kp], b=p['b'], w=history_frames)
+    elif basis_type == 'bspline':
+        p = settings['hyperparameters']['basis_functions']['bspline']
+        deg = p['degree']
+        max_k = max(0, history_frames - deg)
+        knots = np.linspace(0, max_k, p['n_splines'] - deg + 1).astype(int)
+        basis_matrix = _normalizecols(bsplines(width=history_frames, positions=knots, degree=deg))
+    elif basis_type == 'laplacian_pyramid':
+        p = settings['hyperparameters']['basis_functions']['laplacian_pyramid']
+        basis_matrix = _normalizecols(laplacian_pyramid(width=history_frames, levels=p['levels'], step=p['step'], fwhm=p['fwhm']))
+    elif basis_type == 'identity':
+        basis_matrix = identity(width=history_frames)
+    else:
+        msg = (f"model_basis_function must be 'raised_cosine', 'bspline', 'laplacian_pyramid' or 'identity'; "
+               f"got {basis_type!r}.")
+        raise ValueError(msg)
+    lr_params = settings['hyperparameters']['classical']['logistic_regression']
+    print(f"Engine: Sklearn LogisticRegressionCV with '{basis_type}' projection.")
+    return basis_matrix, lr_params
+
+
+def _classical_logistic_fit(X_train_list: list, y_train: np.ndarray, groups_train: np.ndarray,
+                            basis_matrix: np.ndarray, lr_params: dict, random_seed: int) -> LogisticRegressionCV:
+    """
+    Description
+    -----------
+    One fit of the sklearn engine: every feature's windows projected onto the basis and stacked
+    feature by feature, then ``LogisticRegressionCV`` with class balancing and inner folds that
+    hold out whole training sessions (``classification_inner_cv_splits``), as the outer folds do.
+
+    Parameters
+    ----------
+    X_train_list (list)
+        One ``(n_rows, history_frames)`` array per feature, all with the same rows.
+    y_train (np.ndarray)
+        ``(n_rows,)`` labels.
+    groups_train (np.ndarray)
+        ``(n_rows,)`` session id per row, for the inner folds.
+    basis_matrix (np.ndarray)
+        ``(history_frames, n_bases)`` projection basis.
+    lr_params (dict)
+        The ``LogisticRegressionCV`` settings block.
+    random_seed (int)
+        Seed of the inner folds and the solver.
+
+    Returns
+    -------
+    model (LogisticRegressionCV)
+        The fitted model.
+    """
+
+    X_train_stacked = np.hstack([np.dot(x, basis_matrix) for x in X_train_list])
+    return LogisticRegressionCV(
+        penalty=lr_params['penalty'],
+        Cs=lr_params['cs'],
+        cv=classification_inner_cv_splits(y_train, groups_train, lr_params['cv'], random_seed),
+        class_weight='balanced',
+        solver=lr_params['solver'],
+        max_iter=lr_params['max_iter'],
+        random_state=random_seed
+    ).fit(X_train_stacked, y_train)
+
+
+def _classical_logistic_filters(model: LogisticRegressionCV, basis_matrix: np.ndarray, feature_names: list) -> dict:
+    """
+    Description
+    -----------
+    The sklearn engine's per-feature filters on the frame axis: each feature's block of basis
+    coefficients mapped through the basis.
+
+    Parameters
+    ----------
+    model (LogisticRegressionCV)
+        A model from :func:`_classical_logistic_fit`.
+    basis_matrix (np.ndarray)
+        The basis the design was projected onto.
+    feature_names (list)
+        The features, in design order.
+
+    Returns
+    -------
+    filters (dict)
+        Feature name to its ``(history_frames,)`` filter.
+    """
+
+    coefs = model.coef_.flatten()
+    n_bases = basis_matrix.shape[1]
+    return {f_name: np.dot(coefs[k * n_bases:(k + 1) * n_bases], basis_matrix.T).flatten()
+            for k, f_name in enumerate(feature_names)}
+
+
 def _onset_candidate_fold(feat: str, fold_i: int) -> dict:
     """
     Description
@@ -1392,7 +1571,7 @@ def _onset_candidate_fold(feat: str, fold_i: int) -> dict:
     try:
         X_train_list, X_test_list = [], []
         if fold_info['type'] == 'session':
-            train_sess, test_sess, idx_p, idx_n, y_tr_fold, y_te_fold, base_train_list, base_test_list = ctx['session_fold_base'][fold_i]
+            train_sess, test_sess, idx_p, idx_n, y_tr_fold, y_te_fold, base_train_list, base_test_list, groups_tr = ctx['session_fold_base'][fold_i]
             X_train_list = list(base_train_list)
             X_test_list = list(base_test_list)
             f_p_tr, f_n_tr = pool_session_arrays(all_feature_data[feat], train_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=history_frames)
@@ -1417,6 +1596,7 @@ def _onset_candidate_fold(feat: str, fold_i: int) -> dict:
             sel_neg = fs_rng.choice(neg_positions.size, n_tr_keep, replace=False)
             bal_train_local = np.concatenate((pos_positions[sel_pos], neg_positions[sel_neg]))
             y_tr_fold = np.concatenate((np.ones(n_tr_keep), np.zeros(n_tr_keep)))
+            groups_tr = ctx['pooled_groups_full'][train_ix][bal_train_local]
             for f_name in trial_features:
                 X_full = ctx['pooled_feature_cache'][f_name]['X_full']
                 X_tr_all = X_full[train_ix]
@@ -1426,14 +1606,41 @@ def _onset_candidate_fold(feat: str, fold_i: int) -> dict:
             msg = f"Unknown fold type {fold_info['type']!r}."
             raise ValueError(msg)
 
-        X_tr_gam = get_unrolled_X_for_multivariate(X_train_list, history_frames)
-        X_te_gam = get_unrolled_X_for_multivariate(X_test_list, history_frames)
-        fit_start = time.perf_counter()
-        gam = LogisticGAM(gam_terms, **gam_kwargs).fit(X_tr_gam, np.repeat(y_tr_fold.astype(float), history_frames))
-        fit_time = float(time.perf_counter() - fit_start)
+        if ctx['model_type'] == 'sklearn':
+            basis_matrix, lr_params = ctx['basis_matrix'], ctx['lr_params']
+            fit_start = time.perf_counter()
+            model = _classical_logistic_fit(X_train_list, y_tr_fold, groups_tr, basis_matrix, lr_params,
+                                            ctx['random_seed'])
+            fit_time = float(time.perf_counter() - fit_start)
+            y_proba_mean = model.predict_proba(np.hstack([np.dot(x, basis_matrix) for x in X_test_list]))[:, 1]
+            try:
+                n_iter_fit = float(np.max(model.n_iter_))
+                converged_fit = bool(n_iter_fit < lr_params['max_iter'])
+            except Exception:
+                n_iter_fit, converged_fit = np.nan, False
+        elif ctx['model_type'] == 'jax':
+            design_train = binary_logistic_design(X_train_list, ctx['binary_basis'])
+            design_test = binary_logistic_design(X_test_list, ctx['binary_basis'])
+            fit_start = time.perf_counter()
+            jax_model = fit_binary_logistic(design_train, y_tr_fold, len(trial_features), ctx['binary_hp'],
+                                            ctx['random_seed'] + fold_i)
+            fit_time = float(time.perf_counter() - fit_start)
+            y_proba_mean = binary_logistic_probability(jax_model, design_test)
+            n_iter_fit = float(jax_model.n_iter_)
+            converged_fit = bool(jax_model.converged_)
+        else:
+            X_tr_gam = get_unrolled_X_for_multivariate(X_train_list, history_frames)
+            X_te_gam = get_unrolled_X_for_multivariate(X_test_list, history_frames)
+            fit_start = time.perf_counter()
+            gam = LogisticGAM(gam_terms, **gam_kwargs).fit(X_tr_gam, np.repeat(y_tr_fold.astype(float), history_frames))
+            fit_time = float(time.perf_counter() - fit_start)
 
-        y_proba_tiled = gam.predict_proba(X_te_gam)
-        y_proba_mean = np.mean(y_proba_tiled.reshape(len(y_te_fold), history_frames), axis=1)
+            y_proba_tiled = gam.predict_proba(X_te_gam)
+            y_proba_mean = np.mean(y_proba_tiled.reshape(len(y_te_fold), history_frames), axis=1)
+            gam_diffs = gam.logs_['diffs']
+            n_iter_fit = float(len(gam_diffs))
+            converged_fit = bool(len(gam_diffs) > 0 and len(gam_diffs) < gam_kwargs['max_iter'])
+            del gam, X_tr_gam, X_te_gam
         result = {'ok': True}
         result['ll'] = log_loss(y_te_fold.astype(int), np.clip(y_proba_mean, 1e-15, 1 - 1e-15))
         y_pred_mean = (y_proba_mean >= ctx['decision_threshold']).astype(int)
@@ -1449,11 +1656,9 @@ def _onset_candidate_fold(feat: str, fold_i: int) -> dict:
             result['ece'] = np.nan
         result['mcc'] = safe_matthews_corrcoef(y_te_fold.astype(int), y_pred_mean)
         result['confusion_matrix'] = safe_confusion_matrix(y_te_fold.astype(int), y_pred_mean, labels=np.array([0, 1]))
-        gam_diffs = gam.logs_['diffs']
-        result['n_iter'] = float(len(gam_diffs))
-        result['converged'] = bool(len(gam_diffs) > 0 and len(gam_diffs) < gam_kwargs['max_iter'])
+        result['n_iter'] = n_iter_fit
+        result['converged'] = converged_fit
         result['fit_time'] = fit_time
-        del gam, X_tr_gam, X_te_gam
         gc.collect()
         return result
     except Exception as e:
@@ -1642,6 +1847,25 @@ def vocal_onset_model_selection(univariate_results_path: str,
         'tol': float(pygam_params['tol_val']),
         'lam': lam_penalty
     }
+    # The engine: 'jax' fits the two-class JAX model (the multinomial model with two classes) on
+    # its B-spline lag basis from `hyperparameters.linear_models.binary_logistic`, 'sklearn' the
+    # basis-projected LogisticRegressionCV, 'pygam' the tensor-product-spline LogisticGAM above.
+    # The rows, folds, balanced draws, scores and the per-step shift test are the same for all three.
+    model_type = settings['model_params']['model_engine']
+    binary_basis, binary_hp, basis_matrix, lr_params = None, None, None, None
+    if model_type == 'jax':
+        binary_basis, binary_hp = binary_logistic_basis(
+            settings['hyperparameters']['linear_models'][BINARY_LOGISTIC_BLOCK], history_frames)
+        print("Engine: JAX two-class smooth logistic regression on the B-spline lag basis. Candidate fits "
+              "and null refits run serially inside the job: XLA's thread pool is not fork-safe once the "
+              "backend has run, and one fit already uses every core.")
+    elif model_type == 'sklearn':
+        basis_matrix, lr_params = _classical_logistic_setup(settings, history_frames)
+    elif model_type == 'pygam':
+        print("Engine: PyGAM LogisticGAM with Tensor Splines.")
+    else:
+        msg = "model_engine in settings must be 'sklearn', 'pygam' or 'jax'."
+        raise ValueError(msg)
 
     split_strategy = settings['model_validation']['split_strategy']
     n_splits_selection = settings['model_validation']['n_cv_folds']
@@ -1681,6 +1905,11 @@ def vocal_onset_model_selection(univariate_results_path: str,
             'p_val': float(p_val),
             'n_splines_time': int(n_splines_time),
             'n_splines_value': int(n_splines_value),
+            # The engine and, for 'jax', the effective two-class block (None for the GAM).
+            'model_engine': model_type,
+            'binary_logistic': dict(binary_hp) if binary_hp is not None else None,
+            'sklearn_logistic': ({'basis_function': settings['model_params']['model_basis_function'],
+                                  'logistic_regression': dict(lr_params)} if lr_params is not None else None),
             # Held-out provenance (also in the embedded `_input_metadata` sibling);
             # duplicated here so the selection run-metadata is self-describing.
             'held_out_test_proportion': float(settings['model_validation']['held_out_test_proportion']),
@@ -1773,11 +2002,18 @@ def vocal_onset_model_selection(univariate_results_path: str,
     # finalization's seed, so the test's models are the models the held-out refit
     # fits. `pooled_feature_cache` is pooled over `dev_sessions` in that order, which is
     # what the held-out refit pools too.
+    # The session of every pooled row (positives first, then negatives, the `X_full` order), for
+    # the sklearn engine's session-grouped inner folds.
+    _, _, _g_p_anchor, _g_n_anchor = pool_session_arrays(
+        all_feature_data[anchor_feature], dev_sessions, pos_key="usv_feature_arr",
+        neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames, return_groups=True)
+    pooled_groups_full = np.concatenate((_g_p_anchor, _g_n_anchor))
     _dev_n_keep = min(_anchor_n_pos, _anchor_n_neg)
     _dev_rng = np.random.default_rng(random_seed + n_splits_selection + 1)
     _dev_idx_p = _dev_rng.choice(_anchor_n_pos, _dev_n_keep, replace=False)
     _dev_idx_n = _dev_rng.choice(_anchor_n_neg, _dev_n_keep, replace=False)
     _dev_y = np.concatenate((np.ones(_dev_n_keep), np.zeros(_dev_n_keep)))
+    _dev_groups = np.concatenate((_g_p_anchor[_dev_idx_p], _g_n_anchor[_dev_idx_n]))
 
     def _onset_development_score(features: list, winner_override: dict | None = None) -> float:
         """
@@ -1812,6 +2048,16 @@ def vocal_onset_model_selection(univariate_results_path: str,
             else:
                 X_p, X_n = pooled_feature_cache[f_name]['X_pos'], pooled_feature_cache[f_name]['X_neg']
             X_train_list.append(np.concatenate((X_p[_dev_idx_p], X_n[_dev_idx_n])))
+        if model_type == 'jax':
+            design = binary_logistic_design(X_train_list, binary_basis)
+            model = fit_binary_logistic(design, _dev_y, len(features), binary_hp,
+                                        random_seed + n_splits_selection + 1)
+            proba = binary_logistic_probability(model, design)
+            return -float(log_loss(_dev_y.astype(int), np.clip(proba, 1e-15, 1 - 1e-15)))
+        if model_type == 'sklearn':
+            model = _classical_logistic_fit(X_train_list, _dev_y, _dev_groups, basis_matrix, lr_params, random_seed)
+            proba = model.predict_proba(np.hstack([np.dot(x, basis_matrix) for x in X_train_list]))[:, 1]
+            return -float(log_loss(_dev_y.astype(int), np.clip(proba, 1e-15, 1 - 1e-15)))
         gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
         for i in range(1, len(features)):
             gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
@@ -1833,6 +2079,12 @@ def vocal_onset_model_selection(univariate_results_path: str,
         'random_seed': random_seed,
         'decision_threshold': settings['diagnostics']['binary_decision_threshold'],
         'ece_n_bins': settings['diagnostics']['ece_n_bins'],
+        'model_type': model_type,
+        'binary_basis': binary_basis,
+        'binary_hp': binary_hp,
+        'basis_matrix': basis_matrix,
+        'lr_params': lr_params,
+        'pooled_groups_full': pooled_groups_full,
     }
 
     def _onset_session_fold_base(incumbent: list) -> dict:
@@ -1854,7 +2106,8 @@ def vocal_onset_model_selection(univariate_results_path: str,
         -------
         base (dict)
             ``{fold_i: (train_sess, test_sess, idx_p, idx_n, y_tr, y_te, base_train_list,
-            base_test_list)}`` for the 'session' folds.
+            base_test_list, groups_tr)}`` for the 'session' folds; ``groups_tr`` is the session of
+            every balanced training row (the sklearn engine's inner folds).
         """
 
         base = {}
@@ -1863,12 +2116,13 @@ def vocal_onset_model_selection(univariate_results_path: str,
                 continue
             train_sess, test_sess = fold_info['train_sessions'], fold_info['test_sessions']
             anc_data = all_feature_data[anchor_feature]
-            X_p_tr, X_n_tr = pool_session_arrays(anc_data, train_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=history_frames)
+            X_p_tr, X_n_tr, g_p_tr, g_n_tr = pool_session_arrays(anc_data, train_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=history_frames, return_groups=True)
             trial_rng = np.random.default_rng(random_seed + fold_i)
             n_k = min(X_p_tr.shape[0], X_n_tr.shape[0])
             idx_p = trial_rng.choice(X_p_tr.shape[0], n_k, replace=False)
             idx_n = trial_rng.choice(X_n_tr.shape[0], n_k, replace=False)
             y_tr_fold = np.concatenate((np.ones(n_k), np.zeros(n_k)))
+            groups_tr_fold = np.concatenate((g_p_tr[idx_p], g_n_tr[idx_n]))
             X_p_te_anc, X_n_te_anc = pool_session_arrays(anc_data, test_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=history_frames)
             y_te_fold = np.concatenate((np.ones(X_p_te_anc.shape[0]), np.zeros(X_n_te_anc.shape[0])))
             base_train_list, base_test_list = [], []
@@ -1877,7 +2131,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
                 f_p_te, f_n_te = pool_session_arrays(all_feature_data[f_name], test_sess, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=history_frames)
                 base_train_list.append(np.concatenate((f_p_tr[idx_p], f_n_tr[idx_n])))
                 base_test_list.append(np.concatenate((f_p_te, f_n_te)))
-            base[fold_i] = (train_sess, test_sess, idx_p, idx_n, y_tr_fold, y_te_fold, base_train_list, base_test_list)
+            base[fold_i] = (train_sess, test_sess, idx_p, idx_n, y_tr_fold, y_te_fold, base_train_list, base_test_list, groups_tr_fold)
         return base
 
     def _onset_fit_candidates(incumbent: list, candidate_features: list) -> dict:
@@ -1906,9 +2160,10 @@ def vocal_onset_model_selection(univariate_results_path: str,
                         'session_fold_base': _onset_session_fold_base(incumbent)},
             candidate_fold=_onset_candidate_fold,
         )
-        n_workers = pool_worker_count(step_cfg['pool_workers'], len(incumbent) + 1,
-                                      step_cfg['pool_memory_gb'], step_cfg['fit_peak_gb_base'],
-                                      step_cfg['fit_peak_gb_per_term'])
+        n_workers = (1 if model_type == 'jax' else
+                     pool_worker_count(step_cfg['pool_workers'], len(incumbent) + 1,
+                                       step_cfg['pool_memory_gb'], step_cfg['fit_peak_gb_base'],
+                                       step_cfg['fit_peak_gb_per_term']))
         n_folds = len(cv_folds)
         tasks = [(feat, fold_i) for feat in candidate_features for fold_i in range(n_folds)]
         pool = SelectionPool(n_workers)
@@ -1946,9 +2201,10 @@ def vocal_onset_model_selection(univariate_results_path: str,
         observed_score = _onset_development_score(trial)
         winner_traces = {s: feature_traces[winner][str(s)]
                          for s in dev_sessions if s in all_feature_data[winner]}
-        n_workers = pool_worker_count(step_cfg['pool_workers'], len(trial),
-                                      step_cfg['pool_memory_gb'], step_cfg['fit_peak_gb_base'],
-                                      step_cfg['fit_peak_gb_per_term'])
+        n_workers = (1 if model_type == 'jax' else
+                     pool_worker_count(step_cfg['pool_workers'], len(trial),
+                                       step_cfg['pool_memory_gb'], step_cfg['fit_peak_gb_base'],
+                                       step_cfg['fit_peak_gb_per_term']))
         return run_step_shift_test(
             n_workers=n_workers,
             refit_and_score=lambda override: _onset_development_score(trial, override),
@@ -2213,6 +2469,12 @@ def vocal_onset_model_selection(univariate_results_path: str,
         gam_kwargs=gam_kwargs,
         random_seed=random_seed,
         time_indices=time_indices,
+        model_type=model_type,
+        binary_basis=binary_basis,
+        binary_hp=binary_hp,
+        basis_matrix=basis_matrix,
+        lr_params=lr_params,
+        pooled_groups=pooled_groups_full,
     )
 
     if not final_fold_shapes:
@@ -2245,7 +2507,9 @@ def vocal_onset_model_selection(univariate_results_path: str,
         p_dev_by_feat, n_dev_by_feat, test_by_feat = [], [], []
         n_p_held = n_n_held = None
         for f_name in current_model_features:
-            p_dev, n_dev = pool_session_arrays(all_feature_data[f_name], dev_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=history_frames)
+            p_dev, n_dev, g_p_dev_f, g_n_dev_f = pool_session_arrays(all_feature_data[f_name], dev_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=history_frames, return_groups=True)
+            if not p_dev_by_feat:
+                g_p_dev, g_n_dev = g_p_dev_f, g_n_dev_f
             p_held, n_held = pool_session_arrays(all_feature_data[f_name], held_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=history_frames)
             p_dev_by_feat.append(p_dev)
             n_dev_by_feat.append(n_dev)
@@ -2270,6 +2534,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
             held_rng = np.random.default_rng(random_seed + n_splits_selection + 1)
             idx_p = held_rng.choice(p_dev_by_feat[0].shape[0], n_keep, replace=False)
             idx_n = held_rng.choice(n_dev_by_feat[0].shape[0], n_keep, replace=False)
+            groups_dev = np.concatenate((g_p_dev[idx_p], g_n_dev[idx_n]))
             X_train_list = [
                 np.concatenate((p_dev_by_feat[k][idx_p], n_dev_by_feat[k][idx_n]))
                 for k in range(len(current_model_features))
@@ -2284,11 +2549,23 @@ def vocal_onset_model_selection(univariate_results_path: str,
                        'deviance_explained': np.nan, 'brier': np.nan,
                        'heldout_fit_failed': False, 'heldout_fit_error': None}
                 try:
-                    gam = LogisticGAM(gam_terms_final, **gam_kwargs).fit(
-                        X_tr_gam, np.repeat(y_tr_use.astype(float), history_frames)
-                    )
-                    y_proba_tiled = gam.predict_proba(X_te_gam)
-                    y_proba_mean = np.mean(y_proba_tiled.reshape(len(y_held_test), history_frames), axis=1)
+                    if model_type == 'sklearn':
+                        model = _classical_logistic_fit(X_train_list, y_tr_use, groups_dev, basis_matrix,
+                                                        lr_params, random_seed)
+                        y_proba_mean = model.predict_proba(
+                            np.hstack([np.dot(x, basis_matrix) for x in test_by_feat]))[:, 1]
+                    elif model_type == 'jax':
+                        jax_model = fit_binary_logistic(
+                            binary_logistic_design(X_train_list, binary_basis), y_tr_use,
+                            len(current_model_features), binary_hp, random_seed + n_splits_selection + 1)
+                        y_proba_mean = binary_logistic_probability(
+                            jax_model, binary_logistic_design(test_by_feat, binary_basis))
+                    else:
+                        gam = LogisticGAM(gam_terms_final, **gam_kwargs).fit(
+                            X_tr_gam, np.repeat(y_tr_use.astype(float), history_frames)
+                        )
+                        y_proba_tiled = gam.predict_proba(X_te_gam)
+                        y_proba_mean = np.mean(y_proba_tiled.reshape(len(y_held_test), history_frames), axis=1)
                     y_pred_mean = (y_proba_mean >= settings['diagnostics']['binary_decision_threshold']).astype(int)
                     rec['ll'] = log_loss(y_te_int, np.clip(y_proba_mean, 1e-15, 1 - 1e-15))
                     rec['deviance_explained'] = 1.0 - rec['ll'] / np.log(2)
@@ -2608,6 +2885,17 @@ def _category_candidate_fold(feat: str, fold_i: int) -> dict:
                 fold_converged = bool(fold_n_iter < lr_params['max_iter'])
             except Exception:
                 fold_n_iter, fold_converged = np.nan, False
+        elif model_type == 'jax':
+            X_tr_stacked = binary_logistic_design([x[perm] for x in X_tr_list], ctx['binary_basis'])
+            X_te_stacked = binary_logistic_design(X_te_list, ctx['binary_basis'])
+            fit_start = time.perf_counter()
+            jax_model = fit_binary_logistic(X_tr_stacked, y_tr[perm], len(trial_feats), ctx['binary_hp'],
+                                            random_seed + fold_i)
+            fit_time = float(time.perf_counter() - fit_start)
+            y_proba = binary_logistic_probability(jax_model, X_te_stacked)
+            y_pred = (y_proba >= ctx['decision_threshold']).astype(int)
+            fold_n_iter = float(jax_model.n_iter_)
+            fold_converged = bool(jax_model.converged_)
         else:
             gam_terms = te(0, 1, n_splines=[ctx['n_splines_value'], ctx['n_splines_time']])
             for i in range(1, len(trial_feats)):
@@ -2883,28 +3171,11 @@ def vocal_category_model_selection(
     n_splines_time = 0
     n_splines_value = 0
     lr_params = {}
+    binary_basis, binary_hp = None, None
 
     # Initialize Engine Logic
     if model_type == 'sklearn':
-        basis_type = model_ops['model_basis_function']
-        if basis_type == 'raised_cosine':
-            p = settings['hyperparameters']['basis_functions']['raised_cosine']
-            kp = int(np.floor(history_frames * p['kpeaks_proportion']))
-            basis_matrix = raised_cosine(neye=p['neye'], ncos=p['ncos'], kpeaks=[0, kp], b=p['b'], w=history_frames)
-        elif basis_type == 'bspline':
-            p = settings['hyperparameters']['basis_functions']['bspline']
-            deg = p['degree']
-            max_k = max(0, history_frames - deg)
-            knots = np.linspace(0, max_k, p['n_splines'] - deg + 1).astype(int)
-            basis_matrix = _normalizecols(bsplines(width=history_frames, positions=knots, degree=deg))
-        elif basis_type == 'laplacian_pyramid':
-            p = settings['hyperparameters']['basis_functions']['laplacian_pyramid']
-            basis_matrix = _normalizecols(laplacian_pyramid(width=history_frames, levels=p['levels'], step=p['step'], fwhm=p['fwhm']))
-        elif basis_type == 'identity':
-            basis_matrix = identity(width=history_frames)
-
-        lr_params = settings['hyperparameters']['classical']['logistic_regression']
-        print(f"Engine: Sklearn LogisticRegressionCV with '{basis_type}' projection.")
+        basis_matrix, lr_params = _classical_logistic_setup(settings, history_frames)
 
     elif model_type == 'pygam':
         pygam_params = settings['hyperparameters']['classical']['pygam']
@@ -2916,8 +3187,17 @@ def vocal_category_model_selection(
             'lam': pygam_params['lam_penalty']
         }
         print("Engine: PyGAM LogisticGAM with Tensor Splines.")
+    elif model_type == 'jax':
+        # The two-class JAX engine: the multinomial model with two classes on its B-spline lag
+        # basis, from `hyperparameters.linear_models.binary_logistic`. Rows, folds, balanced
+        # draws, scores and the per-step shift test are those of the other engines.
+        binary_basis, binary_hp = binary_logistic_basis(
+            settings['hyperparameters']['linear_models'][BINARY_LOGISTIC_BLOCK], history_frames)
+        print("Engine: JAX two-class smooth logistic regression on the B-spline lag basis. Candidate fits "
+              "and null refits run serially inside the job: XLA's thread pool is not fork-safe once the "
+              "backend has run, and one fit already uses every core.")
     else:
-        msg = "model_engine in settings must be either 'sklearn' or 'pygam'."
+        msg = "model_engine in settings must be 'sklearn', 'pygam' or 'jax'."
         raise ValueError(msg)
 
     print(format_run_header(
@@ -3189,6 +3469,11 @@ def vocal_category_model_selection(
                 random_state=random_seed
             ).fit(X_tr_stacked, _dev_y)
             proba = model.predict_proba(X_tr_stacked)[:, 1]
+        elif model_type == 'jax':
+            design = binary_logistic_design(X_tr_list, binary_basis)
+            jax_model = fit_binary_logistic(design, _dev_y, len(features), binary_hp,
+                                            random_seed + n_splits + 1)
+            proba = binary_logistic_probability(jax_model, design)
         else:
             X_gam_tr = get_unrolled_X_for_multivariate(X_tr_list, history_frames)
             y_gam_tr = np.repeat(_dev_y.astype(float), history_frames)
@@ -3214,6 +3499,8 @@ def vocal_category_model_selection(
         'model_type': model_type,
         'basis_matrix': basis_matrix,
         'lr_params': lr_params,
+        'binary_basis': binary_basis,
+        'binary_hp': binary_hp,
         'n_splines_value': n_splines_value,
         'n_splines_time': n_splines_time,
         'gam_kwargs': gam_kwargs,
@@ -3280,9 +3567,10 @@ def vocal_category_model_selection(
                            'fold_base_pooled': _category_fold_base(incumbent)},
             candidate_fold=_category_candidate_fold,
         )
-        n_workers = pool_worker_count(step_cfg['pool_workers'], len(incumbent) + 1,
-                                      step_cfg['pool_memory_gb'], step_cfg['fit_peak_gb_base'],
-                                      step_cfg['fit_peak_gb_per_term'])
+        n_workers = (1 if model_type == 'jax' else
+                     pool_worker_count(step_cfg['pool_workers'], len(incumbent) + 1,
+                                       step_cfg['pool_memory_gb'], step_cfg['fit_peak_gb_base'],
+                                       step_cfg['fit_peak_gb_per_term']))
         n_folds = len(cv_folds)
         tasks = [(feat, fold_i) for feat in candidate_features for fold_i in range(n_folds)]
         pool = SelectionPool(n_workers)
@@ -3320,9 +3608,10 @@ def vocal_category_model_selection(
         observed_score = _category_development_score(trial)
         winner_traces = {s: feature_traces[winner][str(s)]
                          for s in all_sessions_arr if s in all_feature_data[winner]}
-        n_workers = pool_worker_count(step_cfg['pool_workers'], len(trial),
-                                      step_cfg['pool_memory_gb'], step_cfg['fit_peak_gb_base'],
-                                      step_cfg['fit_peak_gb_per_term'])
+        n_workers = (1 if model_type == 'jax' else
+                     pool_worker_count(step_cfg['pool_workers'], len(trial),
+                                       step_cfg['pool_memory_gb'], step_cfg['fit_peak_gb_base'],
+                                       step_cfg['fit_peak_gb_per_term']))
         return run_step_shift_test(
             n_workers=n_workers,
             refit_and_score=lambda override: _category_development_score(trial, override),
@@ -3547,7 +3836,14 @@ def vocal_category_model_selection(
                 fold_res[f_name] = np.dot(feat_coefs, basis_matrix.T).flatten()
 
             final_fold_shapes.append(fold_res)
-
+        elif model_type == 'jax':
+            design = binary_logistic_design(X_tr_list, binary_basis)
+            jax_model = fit_binary_logistic(design, y_tr, len(current_model_features), binary_hp,
+                                            random_seed + fold_idx)
+            shapes = binary_logistic_filter_shapes(jax_model, binary_basis, len(current_model_features),
+                                                   history_frames)
+            final_fold_shapes.append({f_name: shapes[k] for k, f_name in enumerate(current_model_features)})
+            del jax_model, design
         else:
             X_gam_tr = get_unrolled_X_for_multivariate(X_tr_list, history_frames)
             y_gam_tr = np.repeat(y_tr.astype(float), history_frames)
@@ -3637,6 +3933,12 @@ def vocal_category_model_selection(
                         ).fit(X_tr_stacked, y_tr)
                         y_prob = model.predict_proba(X_te_stacked)[:, 1]
                         y_pred = model.predict(X_te_stacked)
+                    elif model_type == 'jax':
+                        jax_model = fit_binary_logistic(
+                            binary_logistic_design(X_tr_list, binary_basis), y_tr,
+                            len(current_model_features), binary_hp, random_seed + n_splits + 1)
+                        y_prob = binary_logistic_probability(jax_model, binary_logistic_design(X_te_list, binary_basis))
+                        y_pred = (y_prob >= settings['diagnostics']['binary_decision_threshold']).astype(int)
                     else:
                         X_gam_tr = get_unrolled_X_for_multivariate(X_tr_list, history_frames)
                         y_gam_tr = np.repeat(y_tr.astype(float), history_frames)
@@ -4177,7 +4479,8 @@ def bout_parameter_model_selection(
             'lam': pygam_params['lam_penalty']
         }
     else:
-        msg = "model_engine in settings must be either 'sklearn' or 'pygam'."
+        msg = ("model_engine in settings must be 'sklearn' or 'pygam' for the bout-parameter regression; "
+               "'jax' is a two-class engine (onset and category tasks).")
         raise ValueError(msg)
 
     # 3. Target Quantile Binning for Stratification

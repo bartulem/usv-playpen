@@ -686,6 +686,30 @@ def _full_modeling_settings(model_engine='sklearn',
                         'inner_max_iter': 150,
                     },
                 },
+                'binary_logistic': {
+                    'bin_resizing_factor': 1,
+                    'lambda_smooth_fixed': 0.03,
+                    'l2_reg_fixed': 0.003,
+                    'smoothness_derivative_order': 1,
+                    'learning_rate': 0.02,
+                    'max_iter': 700,
+                    'tol': 1e-7,
+                    'random_state': 3,
+                    'use_lax_loop': True,
+                    'tune_regularization_bool': tune_regularization,
+                    'temporal_basis': {'type': 'bspline', 'n_splines': 20, 'spline_order': 3,
+                                       'lambda_smooth_fixed': 1e-5, 'l2_reg_fixed': 1e-5, 'l2_lag_alpha': 100,
+                                       'lambda_smooth_decades_each_side': 2},
+                    'focal_loss_gamma': 0.0,
+                    'tune_regularization_params': {
+                        'lambda_smooth_decades_each_side': 0,
+                        'l2_reg_decades_each_side': 4,
+                        'inner_cv_folds': 5,
+                        'inner_cv_scoring_metric': 'auc',
+                        'inner_cv_use_one_se_rule': False,
+                        'inner_max_iter': 2500,
+                    },
+                },
             },
         },
     }
@@ -730,6 +754,7 @@ def _input_builder_kwargs(modeling_settings, analysis_specific=None,
         'n_sessions_used': 3,
         'session_ids': ['s1', 's2', 's3'],
         'n_events_per_session': {'s1': 10, 's2': 20, 's3': 30},
+        'sessions_without_events': [],
         'feature_zoo_full': ['self.speed', 'other.speed'],
         'feature_zoo_kept': ['self.speed'],
         'dyadic_engagement_features_used': ['orofacial-sei'],
@@ -944,6 +969,7 @@ class TestBuildInputMetadata:
         assert md['n_sessions_used'] == 3
         assert md['session_ids'] == ['s1', 's2', 's3']
         assert md['n_events_per_session'] == {'s1': 10, 's2': 20, 's3': 30}
+        assert md['sessions_without_events'] == []
         # Behavioral feature provenance.
         assert md['feature_zoo_full'] == ['self.speed', 'other.speed']
         assert md['feature_zoo_kept'] == ['self.speed']
@@ -1278,3 +1304,58 @@ class TestBuildSelectionMetadata:
         p.write_bytes(b'{"a": 2}\n')
         md = self._build(mocker, settings_path=str(p))
         assert md['settings_sha256'] == hashlib.sha256(b'{"a": 2}\n').hexdigest()
+
+
+class TestBinaryLogisticRunMetadata:
+    """``model_engine == 'jax'`` on the two-class tasks records the ``binary_logistic`` block."""
+
+    def _build(self, settings, analysis_type, mocker):
+        """Patch git info and call ``build_run_metadata`` with stable outer-loop arguments."""
+        mocker.patch(
+            'usv_playpen.modeling.modeling_metadata.get_git_commit_info',
+            return_value={'commit': 'gitsha', 'dirty': False},
+        )
+        return build_run_metadata(
+            modeling_settings=settings,
+            analysis_type=analysis_type,
+            null_strategy='y_permutation',
+            n_outer_folds=5,
+            split_strategy='mixed',
+        )
+
+    @pytest.mark.parametrize('analysis_type', ['onset', 'category'])
+    def test_two_class_tasks_emit_the_binary_block(self, mocker, analysis_type):
+        """``onset`` and ``category`` on the jax engine emit a ``jax_hyperparameters`` block of kind
+        ``binary_logistic`` with the block's values, its B-spline effective penalty and the focal
+        exponent, and neither the sklearn nor the pygam block, nor the multinomial balance flags."""
+        settings = _full_modeling_settings(model_engine='jax')
+        md = self._build(settings, analysis_type, mocker)
+        assert md['model_engine'] == 'jax'
+        assert 'sklearn_hyperparameters' not in md
+        assert 'pygam_hyperparameters' not in md
+        jax = md['jax_hyperparameters']
+        assert jax['jax_block_kind'] == 'binary_logistic'
+        assert jax['lambda_smooth_fixed'] == 0.03
+        assert jax['l2_reg_fixed'] == 0.003
+        assert jax['learning_rate'] == 0.02
+        assert jax['max_iter'] == 700
+        assert jax['random_state'] == 3
+        assert jax['focal_loss_gamma'] == 0.0
+        assert jax['effective_penalty'] == {'lambda_smooth': 1e-5, 'l2_reg': 1e-5,
+                                            'smoothness_derivative_order': 2,
+                                            'smoothness_reflective_edges': False}
+        assert 'balance_train_bool' not in jax
+        assert 'balance_predictions_bool' not in jax
+
+    def test_params_on_the_jax_engine_raises(self, mocker):
+        """The bout-parameter regression has no two-class engine; the run block refuses it."""
+        settings = _full_modeling_settings(model_engine='jax')
+        with pytest.raises(ValueError, match="two-class engine"):
+            self._build(settings, 'params', mocker)
+
+    def test_other_engines_do_not_emit_the_binary_block(self, mocker):
+        """``onset`` on pygam keeps its pygam block and emits no JAX block."""
+        settings = _full_modeling_settings(model_engine='pygam')
+        md = self._build(settings, 'onset', mocker)
+        assert 'jax_hyperparameters' not in md
+        assert 'pygam_hyperparameters' in md
