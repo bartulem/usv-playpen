@@ -4333,11 +4333,12 @@ Each task then runs ``run`` on the manifest index ``SLURM_ARRAY_TASK_ID`` (plus 
 array submitted in chunks): the unit's encoding folds as separate processes, ``--parallel-folds`` at a
 time, their combination, then occurrence, identity and the nested decoding on both targets, then gating,
 with ``--n-workers`` processes for the nulls. The cluster script
-``/mnt/falkner/Bartul/neural_modeling/cluster/neural_modeling_cohort.sh`` wraps it (8 CPUs, 24 h):
+*usv_playpen/other/cluster/usv_playpen/neural_modeling_cohort.sh* wraps it (8 CPUs, 16 GB, 24 h; set ``EXPERIMENTER_ID``,
+``USV_PLAYPEN_PATH`` and the e-mail at its top):
 
 .. code-block:: bash
 
-    sbatch --array=0-2648%50 neural_modeling_cohort.sh /mnt/falkner/Bartul/neural_modeling/cohort_<date>
+    sbatch --array=0-<N-1>%50 neural_modeling_cohort.sh <output_dir>
 
 A run resumes: a fold file or a result-file section already written under the same settings hash is kept,
 so a task that timed out is simply resubmitted, and once a vocal step is recomputed every later step is
