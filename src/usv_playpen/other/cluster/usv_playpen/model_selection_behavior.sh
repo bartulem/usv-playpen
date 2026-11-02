@@ -26,7 +26,7 @@ ANALYSIS_TYPE=$1
 EXPERIMENTER_ID="Name"
 USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen/"
 UNIVARIATE_PATH="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/modeling/cluster/univariate_results_multi_file/univariate_results.pkl"
-INPUT_DATA="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/modeling/modeling_manifold_qlvm_category_<cohort>_<YYYYMMDD_HHMMSS>.pkl"  # the analysis's extraction pickle; its *_traces.h5 sidecar must sit next to it
+INPUT_DATA="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/modeling/modeling_manifold_qlvm_category_<cohort>_<YYYYMMDD_HHMMSS>.pkl"  # the analysis's extraction pickle; it carries the processed traces the per-step shift test re-cuts
 OUTPUT_DIR="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/modeling/cluster/model_selection_multi_file"
 
 mkdir -p logs
