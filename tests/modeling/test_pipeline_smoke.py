@@ -184,6 +184,7 @@ def _run_univariate_and_consolidate(settings, input_pkl, feature_names, out_dir,
     for feature_idx in range(len(feature_names)):
         univ_dispatcher.dispatch_univariate_job(
             argparse.Namespace(
+                settings=None,
                 analysis_type='onset',
                 feature_idx=feature_idx,
                 input_data=input_pkl,
@@ -379,6 +380,7 @@ class TestUnivariateDispatcher:
         for feature_idx in range(len(feature_names)):
             status = univ_dispatcher.dispatch_univariate_job(
                 argparse.Namespace(
+                    settings=None,
                     analysis_type='onset',
                     feature_idx=feature_idx,
                     input_data=input_pkl,
@@ -391,6 +393,7 @@ class TestUnivariateDispatcher:
         assert len(per_feature) == len(feature_names)
         # a failed task (here an out-of-range feature index) reports a non-zero status
         assert univ_dispatcher.dispatch_univariate_job(argparse.Namespace(
+            settings=None,
             analysis_type='onset', feature_idx=len(feature_names),
             input_data=input_pkl, output_dir=str(out_dir),
         )) == 1
@@ -608,6 +611,7 @@ class TestModelSelectionDispatcher:
         ms_dir.mkdir()
         ms_dispatcher.dispatch_model_selection(
             argparse.Namespace(
+                settings=None,
                 analysis_type='onset',
                 univariate_path=str(combined_path),
                 input_path=input_pkl,

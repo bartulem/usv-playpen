@@ -3777,7 +3777,8 @@ for the inner-loop parallelism):
     python -m usv_playpen.modeling.main_univariate_dispatcher
     python -m usv_playpen.modeling.main_model_selection_dispatcher
 
-The dispatchers read the same ``modeling_settings.json`` and write one
+The dispatchers read the same ``modeling_settings.json`` (the one shipped with
+the package, or the file named by ``--settings``) and write one
 per-feature / per-step pickle each. ``--analysis_type`` must name the pipeline
 that built the input pickle (recorded in its ``_input_metadata.analysis_type``):
 bout onset and bout offset inputs are ``onset``, bout durations ``params``. A

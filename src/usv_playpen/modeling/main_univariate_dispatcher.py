@@ -260,9 +260,10 @@ def dispatch_univariate_job(args: argparse.Namespace) -> int:
     print(f"--- USV Univariate Dispatcher | Task: {args.analysis_type.upper()} ---")
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
-    # Auto-resolve the settings JSON relative to this module — it ships
-    # with the package at `<pkg>/_parameter_settings/modeling_settings.json`.
-    settings_path = str(Path(__file__).resolve().parent.parent / '_parameter_settings' / 'modeling_settings.json')
+    # The settings JSON: `--settings` when given, otherwise the one that ships with the
+    # package at `<pkg>/_parameter_settings/modeling_settings.json`.
+    settings_path = (str(args.settings) if args.settings is not None
+                     else str(Path(__file__).resolve().parent.parent / '_parameter_settings' / 'modeling_settings.json'))
 
     # 1. Load Experimental Configuration
     try:
@@ -530,6 +531,11 @@ if __name__ == "__main__":
         '--output_dir',
         required=True,
         help="Directory where the individual feature pickle will be saved."
+    )
+    parser.add_argument(
+        '--settings',
+        default=None,
+        help="Path to a modeling_settings.json; default is the one shipped with the package."
     )
 
     args = parser.parse_args()

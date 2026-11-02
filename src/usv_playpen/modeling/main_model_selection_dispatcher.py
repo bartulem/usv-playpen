@@ -127,9 +127,9 @@ def dispatch_model_selection(args: argparse.Namespace) -> int:
     print(f"--- USV Model Selection Dispatcher | Task: {args.analysis_type.upper()} ---")
     print(f"[{datetime.now()}] Univariate Source: {Path(args.univariate_path).name}")
 
-    # Auto-resolve the settings JSON relative to this module — it ships
-    # with the package at `<pkg>/_parameter_settings/modeling_settings.json`.
-    settings_path = str(_SETTINGS_PATH)
+    # The settings JSON: `--settings` when given, otherwise the one that ships with the
+    # package at `<pkg>/_parameter_settings/modeling_settings.json`.
+    settings_path = str(args.settings) if args.settings is not None else str(_SETTINGS_PATH)
 
     # 1. Mount Point Verification
     validate_paths(
@@ -240,6 +240,8 @@ if __name__ == "__main__":
 
     parser.add_argument('--output_dir', type=str, required=True,
                         help='Directory where step-wise results will be saved.')
+    parser.add_argument('--settings', type=str, default=None,
+                        help='Path to a modeling_settings.json; default is the one shipped with the package.')
 
     # Logic Flags
     parser.add_argument('--anchor', action='store_true',

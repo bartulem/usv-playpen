@@ -623,6 +623,7 @@ def _run_univariate_category_and_consolidate(
     for feat in feature_names:
         univ_dispatcher.dispatch_univariate_job(
             argparse.Namespace(
+                settings=None,
                 analysis_type='category',
                 feature_idx=name_to_idx[feat],
                 input_data=input_pkl,
@@ -767,6 +768,7 @@ class TestUnivariateCategoryDispatcher:
         for feature_idx in range(len(feature_keys)):
             univ_dispatcher.dispatch_univariate_job(
                 argparse.Namespace(
+                    settings=None,
                     analysis_type='category',
                     feature_idx=feature_idx,
                     input_data=str(input_pkl),
@@ -824,6 +826,7 @@ class TestUnivariateCategoryDispatcher:
 
         univ_dispatcher.dispatch_univariate_job(
             argparse.Namespace(
+                settings=None,
                 analysis_type='category',
                 feature_idx=0,
                 input_data=str(input_pkl),
@@ -1153,6 +1156,7 @@ class TestModelSelectionDispatcherCategory:
         ms_dir.mkdir()
         ms_dispatcher.dispatch_model_selection(
             argparse.Namespace(
+                settings=None,
                 analysis_type='category',
                 univariate_path=str(combined_path),
                 input_path=str(input_pkl),

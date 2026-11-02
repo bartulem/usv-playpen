@@ -329,6 +329,7 @@ def _run_univariate_and_consolidate(settings, input_pkl, feature_names, out_dir,
     for feature_idx in range(len(feature_names)):
         univ_dispatcher.dispatch_univariate_job(
             argparse.Namespace(
+                settings=None,
                 analysis_type='params',
                 feature_idx=feature_idx,
                 input_data=input_pkl,
@@ -501,6 +502,7 @@ class TestUnivariateParamsDispatcher:
         for feature_idx in range(len(feature_names)):
             univ_dispatcher.dispatch_univariate_job(
                 argparse.Namespace(
+                    settings=None,
                     analysis_type='params',
                     feature_idx=feature_idx,
                     input_data=input_pkl,
@@ -569,6 +571,7 @@ class TestUnivariateParamsDispatcher:
         for feature_idx in range(len(feature_names)):
             univ_dispatcher.dispatch_univariate_job(
                 argparse.Namespace(
+                    settings=None,
                     analysis_type='params',
                     feature_idx=feature_idx,
                     input_data=input_pkl,
@@ -814,6 +817,7 @@ class TestBoutParameterSelectionDispatcher:
         ms_dir.mkdir()
         ms_dispatcher.dispatch_model_selection(
             argparse.Namespace(
+                settings=None,
                 analysis_type='params',
                 univariate_path=str(combined_path),
                 input_path=input_pkl,

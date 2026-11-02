@@ -1554,6 +1554,7 @@ class TestMultinomialModelSelection:
         ms_dir.mkdir()
         ms_dispatcher.dispatch_model_selection(
             argparse.Namespace(
+                settings=None,
                 analysis_type='multinomial',
                 univariate_path=univ_pkl,
                 input_path=input_pkl,

@@ -175,6 +175,7 @@ def _uni_args(analysis_type, feature_idx, input_path, output_dir):
         feature_idx=feature_idx,
         input_data=str(input_path),
         output_dir=str(output_dir),
+        settings=None,
     )
 
 
@@ -211,6 +212,7 @@ def _sel_args(analysis_type, tmp_path, **overrides):
         input_path=str(inp),
         output_dir=str(tmp_path / 'out'),
         anchor=True,
+        settings=None,
     )
     for k, v in overrides.items():
         setattr(ns, k, v)
@@ -1082,3 +1084,39 @@ class TestJaxEngineRouting:
         fake_pipeline._run_model_for_feature_pygam.assert_not_called()
         fake_pipeline._run_model_for_feature_sklearn.assert_not_called()
         assert not list(out_dir.glob('univariate_*.pkl'))
+
+
+class TestSettingsArgument:
+    """``--settings`` points both dispatchers at a settings file other than the shipped one."""
+
+    def test_univariate_dispatcher_reads_the_given_settings_file(self, tmp_path, mocker):
+        """A ``settings`` path on the namespace is the file the univariate dispatcher loads; the
+        routed pipeline is built from it (here: the jax engine from that file, not the shipped
+        pygam default)."""
+        settings = _settings(tmp_path, model_engine='jax')
+        settings_file = tmp_path / 'custom_settings.json'
+        settings_file.write_text(json.dumps(settings))
+        inp = _input_pickle(tmp_path, ['self.speed'])
+        fake_pipeline = mocker.MagicMock()
+        fake_pipeline.history_frames = 4
+        fake_pipeline._run_model_for_feature_jax.return_value = ('self.speed', {'auc': 0.55})
+        pipeline_cls = mocker.patch.object(uni, 'VocalOnsetModelingPipeline', return_value=fake_pipeline)
+        mocker.patch.object(uni, 'get_basis_matrix_standardized', return_value=None)
+        args = _uni_args('onset', 0, inp, tmp_path / 'out')
+        args.settings = str(settings_file)
+        uni.dispatch_univariate_job(args)
+        assert pipeline_cls.call_args.kwargs['modeling_settings_dict']['model_params']['model_engine'] == 'jax'
+        fake_pipeline._run_model_for_feature_jax.assert_called_once()
+
+    def test_selection_dispatcher_forwards_the_given_settings_file(self, tmp_path, mocker):
+        """A ``settings`` path on the namespace reaches the selector as ``settings_path``."""
+        settings = json.loads(REPO_SETTINGS.read_text())
+        settings_file = tmp_path / 'custom_settings.json'
+        settings_file.write_text(json.dumps(settings))
+        selector = mocker.patch.object(sel, 'vocal_onset_model_selection')
+        args = _sel_args('onset', tmp_path)
+        _typed_pickle(Path(args.univariate_path), 'onset')
+        _typed_pickle(Path(args.input_path), 'onset')
+        args.settings = str(settings_file)
+        sel.dispatch_model_selection(args)
+        assert selector.call_args.kwargs['settings_path'] == str(settings_file)
