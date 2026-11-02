@@ -257,7 +257,7 @@ def _category_unit(n_sessions: int = 3, per_session: int = 150, seed: int = 0) -
     settings = _shipped_settings()
     codes, kept, values = category_codes(labels)
     folds = category_context(codes, session_index[kept], starts[kept],
-                             int(settings["data_sufficiency"]["single_session_blocks"]))
+                             int(settings["cohort"]["single_session_blocks"]))
     section = category_gain(counts[kept], codes, folds, settings["vocal_decoding"], with_detail=True)
     section["categories"] = values.tolist()
     events = {"category_labels": labels, "counts": counts, "session_index": session_index,
@@ -626,7 +626,7 @@ def _vocal_unit(seed: int = 0) -> tuple[dict, dict, dict, dict, dict]:
     events["occurrence_windows"] = {"counts": window_counts, "labels": window_labels,
                                     "session_index": window_sessions}
     events["session_ids"] = list(SESSION_IDS)
-    period = settings["vocalization_settings"]["torus_period"]
+    period = settings["vocalizations"]["torus_period"]
     n_coefficients = fourier_basis(torus_grid(2, period)[0], settings["vocal_decoding"]["tuning_surface"]["fourier_k"],
                                    period).shape[1] + 1
     identity_manifold = {"gain": 0.03, "alphas": [0.25, 0.5, 0.5], "null": rng.normal(0.0, 0.002, 200),
@@ -868,7 +868,7 @@ def _uneven_category_unit(sizes: list, seed: int = 0) -> tuple[dict, dict, dict]
     settings = _shipped_settings()
     codes, kept, values = category_codes(labels)
     folds = category_context(codes, session_index[kept], starts[kept],
-                             int(settings["data_sufficiency"]["single_session_blocks"]))
+                             int(settings["cohort"]["single_session_blocks"]))
     section = category_gain(counts[kept], codes, folds, settings["vocal_decoding"], with_detail=True)
     section["categories"] = values.tolist()
     events = {"category_labels": labels, "counts": counts, "session_index": session_index,
@@ -1002,7 +1002,7 @@ class TestEntryPoint:
         catalog = tmp_path / "unit_catalog.csv"
         catalog.write_text(f"mouse_id,rec_date,unit_id,brain_area\n181316_0,20250919,{uid[18:]},PAG\n")
         settings = _shipped_settings()
-        settings["data_roots"]["catalog_path"] = str(catalog)
+        settings["paths"]["catalog_path"] = str(catalog)
         settings_path = tmp_path / "settings.json"
         settings_path.write_text(json.dumps(settings))
         results = tmp_path / "results"
@@ -1086,7 +1086,7 @@ class TestHelpers:
 
     def test_kinematic_encoding_holds_only_below_the_level(self):
         """The held-out quiet p must be finite and below fdr_q for the encoding to hold."""
-        settings = {"significance": {"fdr_q": 0.05}}
+        settings = {"inference": {"fdr_q": 0.05}}
         assert kinematic_encoding_holds({"quiet_p": 0.01}, settings)
         assert not kinematic_encoding_holds({"quiet_p": 0.05}, settings)
         assert not kinematic_encoding_holds({"quiet_p": float("nan")}, settings)
@@ -1550,7 +1550,7 @@ class TestVocalPanels:
         """Bars are the fold-mean rates divided by the window width; each fold is named by its held-out session."""
         _events, vocal, _manifold, _multinomial, settings = _vocal_unit()
         section = vocal["identity_multinomial"]
-        width = settings["vocalization_settings"]["spike_window"]["width_seconds"]
+        width = settings["vocalizations"]["spike_window"]["width_seconds"]
         figure, axis = plt.subplots()
         draw_category_rates(axis, section, settings, SESSION_IDS)
         expected = np.mean([fold["rates"] for fold in section["per_fold"]], axis=0) / width
@@ -1777,7 +1777,7 @@ class TestEndToEnd:
         catalog = tmp_path / "unit_catalog.csv"
         catalog.write_text("mouse_id,rec_date,unit_id,brain_area\n"
                            + "".join(f"181316_0,20250919,{uid[18:]},PAG\n" for uid in uids))
-        settings["data_roots"]["catalog_path"] = str(catalog)
+        settings["paths"]["catalog_path"] = str(catalog)
         settings_path = tmp_path / "settings.json"
         settings_path.write_text(json.dumps(settings))
         sha = compute_settings_sha256(settings)
@@ -1998,7 +1998,7 @@ class TestCommandLine:
         catalog = tmp_path / "unit_catalog.csv"
         catalog.write_text(f"mouse_id,rec_date,unit_id,brain_area\n181316_0,20250919,{uid[18:]},PAG\n")
         settings = _shipped_settings()
-        settings["data_roots"]["catalog_path"] = str(catalog)
+        settings["paths"]["catalog_path"] = str(catalog)
         settings_path = tmp_path / "settings.json"
         settings_path.write_text(json.dumps(settings))
         _write_pickle(tmp_path / "results" / f"{uid}.pkl", {"provenance": {"settings_sha256": "0" * 64}})

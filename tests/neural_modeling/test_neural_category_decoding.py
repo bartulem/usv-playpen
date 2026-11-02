@@ -9,6 +9,7 @@ decoding's categorical form: the behaviour tilt of the prior and the nested gain
 
 from __future__ import annotations
 
+import copy
 from typing import ClassVar
 
 import numpy as np
@@ -22,6 +23,7 @@ from usv_playpen.neural_modeling.neural_category_decoding import (
     category_nested_gain,
     category_posterior,
     category_rates,
+    check_category_surface,
     decoding_spike_sufficiency,
     tilted_category_prior,
     tuned_category_amplitude,
@@ -33,7 +35,6 @@ SETTINGS = {"category_surface": {"ridge_selection": {"mode": "count_normalized_f
                                  "amplitude_calibration": {"enabled": True,
                                                            "mode": "train_tuned_inner_loso",
                                                            "alpha_grid": [0.1, 0.25, 0.5, 1.0]},
-                                 "category_column": "qlvm_category",
                                  "min_train_events": 20,
                                  "min_test_events": 5,
                                  "mean_count_floor": 1e-3}}
@@ -300,7 +301,7 @@ class TestSpikeSufficiency:
     gate therefore protects every analysis that reads the gain rather than the p-value.
     """
 
-    SETTINGS: ClassVar[dict] = {"data_sufficiency": {"min_decoding_spikes": 50}}
+    SETTINGS: ClassVar[dict] = {"cohort": {"min_decoding_spikes": 50}}
 
     def test_a_well_firing_unit_is_sufficient(self):
         """200 spikes against a 50-spike floor must be sufficient, with the count recorded and no reason given."""
@@ -320,7 +321,7 @@ class TestSpikeSufficiency:
     def test_the_count_is_reported_even_when_the_gate_is_off(self):
         """The standing rule: the quantity is recorded whether or not anything gates on it."""
         v = decoding_spike_sufficiency(np.array([1.0, 1.0]),
-                                       {"data_sufficiency": {"min_decoding_spikes": None}})
+                                       {"cohort": {"min_decoding_spikes": None}})
         assert v["sufficient"]
         assert v["n_spikes"] == 2
         assert v["threshold"] is None
@@ -465,3 +466,44 @@ class TestNestedGain:
         nested = category_nested_gain(counts, labels, folds, SETTINGS, tilts, kappas)
         assert nested["kappas"] == kappas
         assert [fold["kappa"] for fold in nested["per_fold"]] == kappas
+
+
+class TestCategorySurfaceDeclaration:
+    """The ridge and amplitude-calibration modes of ``category_surface`` are refused when they name a rule
+    the categorical decoder does not implement, as ``tuning_surface``'s are for the torus decoder."""
+
+    def test_the_implemented_modes_are_accepted(self):
+        """The module's settings name the implemented rules, so the check passes silently."""
+        check_category_surface(SETTINGS["category_surface"])
+
+    @pytest.mark.parametrize(("path", "bad"), [(("ridge_selection", "mode"), "cross_validated"),
+                                               (("amplitude_calibration", "mode"), "fixed")])
+    def test_an_unimplemented_mode_is_refused(self, path, bad):
+        """
+        Description
+        -----------
+        Either mode naming another rule must raise before any scoring, inside ``category_gain`` too.
+
+        Parameters
+        ----------
+        path (tuple)
+            The ``(sub-block, key)`` changed.
+        bad (str)
+            The unimplemented value.
+
+        Returns
+        -------
+        None
+        """
+        settings = copy.deepcopy(SETTINGS)
+        settings["category_surface"][path[0]][path[1]] = bad
+        with pytest.raises(ValueError, match="mode"):
+            check_category_surface(settings["category_surface"])
+        with pytest.raises(ValueError, match="mode"):
+            category_gain(np.ones(4), np.array([0, 1, 0, 1]), [], settings)
+
+    def test_a_disabled_calibration_does_not_need_its_mode(self):
+        """With the calibration off its mode is never used, so an unimplemented one is not an error."""
+        settings = copy.deepcopy(SETTINGS)
+        settings["category_surface"]["amplitude_calibration"].update({"enabled": False, "mode": "fixed"})
+        check_category_surface(settings["category_surface"])

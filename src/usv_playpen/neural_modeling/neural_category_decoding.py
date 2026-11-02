@@ -41,7 +41,7 @@ def decoding_spike_sufficiency(counts: np.ndarray, settings: dict) -> dict:
     counts (np.ndarray)
         Spike count per scored event.
     settings (dict)
-        Full neural-modeling settings; reads ``data_sufficiency.min_decoding_spikes``.
+        Full neural-modeling settings; reads ``cohort.min_decoding_spikes``.
 
     Returns
     -------
@@ -49,7 +49,7 @@ def decoding_spike_sufficiency(counts: np.ndarray, settings: dict) -> dict:
         ``n_spikes``, ``threshold``, ``sufficient`` and a ``reason`` when it is not.
     """
 
-    threshold = settings["data_sufficiency"]["min_decoding_spikes"]
+    threshold = settings["cohort"]["min_decoding_spikes"]
     total = int(np.asarray(counts).sum())
     if threshold is None:
         return {"n_spikes": total, "threshold": None, "sufficient": True, "reason": None}
@@ -250,7 +250,7 @@ def category_context(labels: np.ndarray, session_index: np.ndarray, event_times:
         for its inner splits (:func:`neural_vocal_decoding.inner_rotation_splits`). The per-unit
         dispatcher always passes it; ``None`` leaves such a fold without inner splits.
     single_session_blocks (int)
-        Blocks a single training session is cut into (``data_sufficiency.single_session_blocks``).
+        Blocks a single training session is cut into (``cohort.single_session_blocks``).
 
     Returns
     -------
@@ -343,6 +343,44 @@ def tuned_category_amplitude(counts: np.ndarray, labels: np.ndarray, fold: dict,
     return best_alpha
 
 
+def check_category_surface(surface: dict) -> None:
+    """
+    Description
+    -----------
+    Refuse a ``category_surface`` block that declares a ridge or amplitude-calibration mode this module
+    does not implement, as :func:`neural_vocal_decoding.decode_gain` refuses one for ``tuning_surface``.
+
+    The categorical surface implements one ridge rule, a fixed ridge scaled by the training count
+    (``'count_normalized_fixed'``), and one amplitude calibration, tuned by inner leave-one-session-out
+    on the training sessions alone (``'train_tuned_inner_loso'``). Without the check, a settings file
+    could declare another mode and be reported as having run it.
+
+    Parameters
+    ----------
+    surface (dict)
+        The ``vocal_decoding.category_surface`` block.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    ValueError
+        If either mode names anything else (the calibration mode only while the calibration is enabled).
+    """
+
+    if surface["ridge_selection"]["mode"] != "count_normalized_fixed":
+        msg = (f"category_gain implements the fixed count-normalized ridge only; "
+               f"category_surface.ridge_selection.mode is {surface['ridge_selection']['mode']!r}.")
+        raise ValueError(msg)
+    calibration = surface["amplitude_calibration"]
+    if calibration["enabled"] and calibration["mode"] != "train_tuned_inner_loso":
+        msg = (f"the categorical amplitude calibration is tuned by inner LOSO on the training sessions "
+               f"only; category_surface.amplitude_calibration.mode is {calibration['mode']!r}.")
+        raise ValueError(msg)
+
+
 def category_gain(counts: np.ndarray, labels: np.ndarray, folds: list, settings: dict,
                   permutation: np.ndarray = None, with_detail: bool = False,
                   prior_tilts: list | None = None) -> dict:
@@ -384,6 +422,7 @@ def category_gain(counts: np.ndarray, labels: np.ndarray, folds: list, settings:
     """
 
     surface = settings["category_surface"]
+    check_category_surface(surface)
     mean_count_floor = surface["mean_count_floor"]
     ridge_frac = surface["ridge_selection"]["ridge_frac"]
     scored = counts if permutation is None else counts[permutation]

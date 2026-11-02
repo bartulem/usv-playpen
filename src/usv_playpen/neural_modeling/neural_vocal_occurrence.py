@@ -143,7 +143,7 @@ def occurrence_context(labels: np.ndarray, session_index: np.ndarray, event_time
     event_times (np.ndarray)
         Left edge of each window in seconds, used to order a single training session into blocks.
     single_session_blocks (int)
-        Blocks a single training session is cut into (``data_sufficiency.single_session_blocks``).
+        Blocks a single training session is cut into (``cohort.single_session_blocks``).
 
     Returns
     -------

@@ -5,14 +5,14 @@ Run the cohort-scale behaviour control: select its features once, then fit it on
 Both stages run once per cohort, not once per unit. The per-unit nested decoding reads what this
 writes and refuses to run on an artifact that disagrees with its settings.
 
-``fit`` fits the control for one target (``--target``, default ``vocalization_settings.vocal_target``):
+``fit`` fits the control for one target (``--target``, default ``vocalizations.vocal_target``):
 the torus regression for ``"manifold"``, the behavioural modelling's multinomial logistic regression
 for ``"multinomial"``, on the features frozen at ``nested_vocal_decoding.reduced_model_features[target]``,
 and writes it to ``behaviour_control_model_path[target]``. Every unit is decoded on both targets, so
 both controls must be fitted, one run each.
 
 ``select`` runs this package's own forward selection for the torus control. The shipped feature sets
-come from the behavioural modelling's selections instead (``data.behaviour_selection_result_path``
+come from the behavioural modelling's selections instead (``paths.behaviour_selection_result_path``
 points at them), so ``select`` takes an explicit ``--output`` and never writes onto that path. After a
 selection the settings' ``reduced_model_features`` must be updated by hand, so the behaviour the
 neuron is measured against never changes as a side effect of a re-run.
@@ -35,6 +35,7 @@ import numpy as np
 
 from .behaviour_control_model import (
     assemble_cohort,
+    behaviour_history_lags,
     fit_category_control_models,
     fit_control_models,
     select_control_features,
@@ -87,7 +88,7 @@ def session_directories(settings: dict, excluded_days: list) -> list:
     """
 
     directories = []
-    for list_file in settings["data"]["session_list_files"]:
+    for list_file in settings["paths"]["session_list_files"]:
         for line in pathlib.Path(list_file).read_text().splitlines():
             entry = line.strip()
             if entry and pathlib.Path(entry).name[:8] not in excluded_days:
@@ -122,7 +123,7 @@ def main(message_output=print) -> None:
                         help="recording days to leave out entirely, as eight-character keys")
     parser.add_argument("--target", choices=("manifold", "multinomial"), default=None,
                         help="which target's control to select or fit; default is "
-                             "vocalization_settings.vocal_target")
+                             "vocalizations.vocal_target")
     arguments = parser.parse_args()
 
     settings = load_settings(arguments.settings)
@@ -133,12 +134,9 @@ def main(message_output=print) -> None:
         msg = "the select stage runs the torus control's selection; set vocal_target to 'manifold'."
         raise ValueError(msg)
     if arguments.stage == "select" and arguments.output is None:
-        msg = ("the select stage needs --output: data.behaviour_selection_result_path names the "
+        msg = ("the select stage needs --output: paths.behaviour_selection_result_path names the "
                "behavioural modelling's selection, which must not be overwritten.")
         raise ValueError(msg)
-    # History length of the behaviour design, in tracking frames (600 = 4 s at 150 fps); recorded in the
-    # artifact, so the per-unit nested decoding reads it back from there rather than from settings.
-    n_lags = int(settings["nested_vocal_decoding"]["behaviour_control_n_lags"])
     # Resolve the feature set before the (slow) assembly, so a missing or drifted selection artifact
     # fails early. The select stage tolerates a missing file, since it is about to write one, and uses
     # the frozen list as its independent reference.
@@ -146,6 +144,10 @@ def main(message_output=print) -> None:
                 else reduced_model_features(settings, target, require_selection_file=False))
 
     directories = session_directories(settings, list(arguments.exclude_days))
+    # History length of the behaviour design, in tracking frames: the per-unit side's
+    # floor(history_pre_seconds * fps), 600 = 4 s at 150 fps. Recorded in the artifact, which the per-unit
+    # nested decoding checks against the unit's own design.
+    n_lags = behaviour_history_lags(settings, directories)
     message_output(f"{len(directories)} sessions listed"
           f"{f', excluding {list(arguments.exclude_days)}' if arguments.exclude_days else ''}",
           flush=True)
@@ -189,7 +191,7 @@ def main(message_output=print) -> None:
         return
 
     destination = (arguments.output if arguments.output is not None
-                   else settings["nested_vocal_decoding"]["behaviour_control_model_path"][target])
+                   else settings["paths"]["behaviour_control_model_path"][target])
     if target == "multinomial":
         artifact = fit_category_control_models(cohort, features, settings, n_lags)
         write_control_model(artifact, destination)

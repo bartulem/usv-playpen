@@ -88,6 +88,11 @@ def load_settings(settings_path: str | None = None) -> dict:
     -----------
     Read the neural-modeling settings, defaulting to the shipped file next to the package.
 
+    Every p-value in the package is empirical, from circular-shift or permutation draws, topped up along
+    ``inference.escalation_ladder`` (empty in the shipped settings). ``inference.pvalue_method``
+    names that procedure, so any other value is refused here, where every dispatcher and the
+    consolidator read their settings.
+
     Parameters
     ----------
     settings_path (str)
@@ -97,13 +102,24 @@ def load_settings(settings_path: str | None = None) -> dict:
     -------
     settings (dict)
         The parsed settings.
+
+    Raises
+    ------
+    ValueError
+        If ``inference.pvalue_method`` is not ``'empirical_escalated'``.
     """
 
     path = (pathlib.Path(settings_path) if settings_path
             else pathlib.Path(__file__).parent.parent / "_parameter_settings"
             / "neural_modeling_settings.json")
     with pathlib.Path(path).open() as settings_file:
-        return json.load(settings_file)
+        settings = json.load(settings_file)
+    if settings["inference"]["pvalue_method"] != "empirical_escalated":
+        msg = (f"inference.pvalue_method = {settings['inference']['pvalue_method']!r} is not "
+               f"implemented; every p-value is empirical, escalated along inference.escalation_ladder "
+               f"('empirical_escalated').")
+        raise ValueError(msg)
+    return settings
 
 
 def focal_vocal_frames(session: dict, session_id: str, data_root: str, mouse_id: str, fps: float,
@@ -138,7 +154,7 @@ def focal_vocal_frames(session: dict, session_id: str, data_root: str, mouse_id:
     n_lags (int)
         History length in frames.
     vocal_settings (dict)
-        The ``vocalization_settings`` block: the exclusion flags (``'analysed'`` scope) and
+        The ``vocalizations`` block: the exclusion flags (``'analysed'`` scope) and
         ``vocal_emitter``.
 
     Returns
@@ -364,8 +380,8 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
     # decides whose vocalizations are scored.
     per_session = assemble_unit_sessions(unit, data_root, settings["kinematic_features"],
                                          encoding["history_pre_seconds"], encoding["clean_post_seconds"],
-                                         settings["vocalization_settings"]["clean_against"],
-                                         settings["vocalization_settings"])
+                                         settings["vocalizations"]["clean_against"],
+                                         settings["vocalizations"])
     fps = per_session[sessions[0]]["fps"]
     # `history_pre_seconds` is the filter length, the quiet window's backward guard and the gap of the
     # single-session block split, so changing it redefines all three.
@@ -373,14 +389,14 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
     feature_names = list(per_session[sessions[0]]["feature_names"])
     # Seeded from the test session id (crc32, not the per-process salted hash()), so a fold is
     # reproducible however it was run.
-    rng = np.random.default_rng(settings["null"]["shuffle_seed"] + crc32(test_id.encode()) % 10_000)
+    rng = np.random.default_rng(settings["inference"]["shuffle_seed"] + crc32(test_id.encode()) % 10_000)
 
     # The test session's transfer frames are computed before the pool split, since both no-model
     # returns below report them.
     session = per_session[test_id]
     transfer_settings = settings["kinematic_encoding"]["transfer"]
     vocal_frames, pointer, gaps = focal_vocal_frames(session, test_id, data_root, unit["mouse_id"],
-                                                     fps, n_lags, settings["vocalization_settings"])
+                                                     fps, n_lags, settings["vocalizations"])
     # Clipped to the window: a bout window reaches back before a block's first vocalization.
     vocal_frames = frames_in_window(transfer_frames(vocal_frames, pointer, fps, session["n_frames"], n_lags,
                                                     session["quiet"], encoding["clean_post_seconds"],
@@ -393,7 +409,7 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
         # frame's lags reach a training block. The final model is still fitted on the whole session.
         required_gap = float(encoding["history_pre_seconds"])
         blocks = quiet_block_sessions(per_session[pool_ids[0]], pool_ids[0],
-                                      settings["data_sufficiency"]["single_session_blocks"],
+                                      settings["cohort"]["single_session_blocks"],
                                       int(np.ceil(required_gap * fps / 2.0)))
         if len(blocks) < 2:
             message_output(f"    NO MODEL: {pool_ids[0]} yields {len(blocks)} usable quiet blocks")
@@ -433,8 +449,9 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
         selected, path = forward_select(inner_sessions, inner_ids, survivors, n_lags, rng, settings,
                                         feature_names, message_output)
     if not selected:
+        # The path is kept: a first step rejected by its shift test is recorded with its test.
         return write_fold_artifact(
-            {"fold_index": fold_index, "test_id": test_id, "selected": [], "path": [],
+            {"fold_index": fold_index, "test_id": test_id, "selected": [], "path": path,
              "no_model": True, "quiet_score": 0.0, "quiet_slope": np.nan,
              "quiet_p": 1.0, "quiet_at_floor": False,
              "eta_vocal": np.zeros(0), "labels_vocal": np.zeros(0), "pointer": pointer,
@@ -459,14 +476,14 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
         """Fresh quiet-null draws for the escalation ladder; the generator carries on where it left off."""
         return frozen_null_scores(eta_quiet, session["quiet"], session["spike_frames"],
                                   session["n_frames"], fps, count, rng,
-                                  settings["null"]["shuffle_guard_seconds"],
+                                  settings["inference"]["shuffle_guard_seconds"],
                                   encoding["solver"]["calibration_steps"],
                                   encoding["solver"]["null_calibration_bins"], encoding["calibration"],
                                   encoding["null_block_megabytes"])
 
-    quiet_null = draw_quiet_null(settings["null"]["n_shuffles"])
+    quiet_null = draw_quiet_null(settings["inference"]["n_shuffles"])
     quiet_p, quiet_at_floor, quiet_null = escalated_empirical_pvalue(
-        quiet_score, draw_quiet_null, settings["significance"]["escalation_ladder"], quiet_null,
+        quiet_score, draw_quiet_null, settings["inference"]["escalation_ladder"], quiet_null,
         message_output)
     vocal = score_fold(estimator, session, selected, vocal_frames, n_lags, base_rate, encoding,
                        linear_predictor_at_frames, transfer_settings)
@@ -478,7 +495,7 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
     for other_id in [s for s in sessions if s in set(unit["vocal_sessions"])]:
         other_frames, other_pointer, other_gaps = focal_vocal_frames(
             per_session[other_id], other_id, data_root, unit["mouse_id"], fps, n_lags,
-            settings["vocalization_settings"])
+            settings["vocalizations"])
         other_frames = frames_in_window(
             transfer_frames(other_frames, other_pointer, fps, per_session[other_id]["n_frames"], n_lags,
                             per_session[other_id]["quiet"], encoding["clean_post_seconds"], transfer_settings),
@@ -658,8 +675,8 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
     sessions = unit["courtship_sessions"]
     per_session = assemble_unit_sessions(unit, data_root, settings["kinematic_features"],
                                          encoding["history_pre_seconds"], encoding["clean_post_seconds"],
-                                         settings["vocalization_settings"]["clean_against"],
-                                         settings["vocalization_settings"])
+                                         settings["vocalizations"]["clean_against"],
+                                         settings["vocalizations"])
     fps = per_session[sessions[0]]["fps"]
     n_lags = int(np.floor(encoding["history_pre_seconds"] * fps))
     feature_names = list(per_session[sessions[0]]["feature_names"])
@@ -684,7 +701,7 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
         required_gap = float(encoding["history_pre_seconds"])
         gap_frames = int(np.ceil(required_gap * fps / 2.0))
         blocks = quiet_block_sessions(per_session[fit_ids[0]], fit_ids[0],
-                                      settings["data_sufficiency"]["single_session_blocks"],
+                                      settings["cohort"]["single_session_blocks"],
                                       gap_frames)
         if len(blocks) < 2:
             message_output(f"    NO MODEL: {fit_ids[0]} yields {len(blocks)} usable quiet blocks")
@@ -719,6 +736,17 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
 
     selected, path = forward_select(inner_sessions, inner_ids, survivors, n_lags, rng, settings,
                                     feature_names, message_output)
+    if not selected:
+        # Survivors, but no accepted step (the first winner's score was not positive, or its shift test
+        # rejected it). Written with the screen table and the path, as for a unit with no survivor.
+        message_output("    NO MODEL: forward selection accepted no feature")
+        result = {"unit_id": unit["unit_id"], "no_model": True, "quiet_p": 1.0, "transfer_p": np.nan,
+                  "held_out": held_out, "fit_sessions": fit_ids, "spike_counts": spike_counts,
+                  "sparsest_session": sparsest, "inner_split": "blocks" if len(fit_ids) == 1 else "sessions",
+                  "screen": screen_rows, "path": path, "n_lags": n_lags, "fps": fps}
+        written = write_unit_section(output_directory, unit, "kinematic_encoding", result, settings)
+        message_output(f"    wrote {written.name} [kinematic_encoding, single-split, no model]")
+        return result
     estimator, base_rate = fit_quiet_model(per_session, fit_ids, selected, n_lags, rng, encoding,
                                            message_output)
     final_converged = bool(estimator.converged_)
@@ -737,14 +765,14 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
         """Fresh quiet-null draws for the escalation ladder; the generator carries on where it left off."""
         return frozen_null_scores(eta_quiet, session["quiet"], session["spike_frames"],
                                   session["n_frames"], fps, count, rng,
-                                  settings["null"]["shuffle_guard_seconds"],
+                                  settings["inference"]["shuffle_guard_seconds"],
                                   encoding["solver"]["calibration_steps"],
                                   encoding["solver"]["null_calibration_bins"], encoding["calibration"],
                                   encoding["null_block_megabytes"])
 
-    quiet_null = draw_quiet_null(settings["null"]["n_shuffles"])
+    quiet_null = draw_quiet_null(settings["inference"]["n_shuffles"])
     quiet_p, quiet_at_floor, quiet_null = escalated_empirical_pvalue(
-        quiet_score, draw_quiet_null, settings["significance"]["escalation_ladder"], quiet_null,
+        quiet_score, draw_quiet_null, settings["inference"]["escalation_ladder"], quiet_null,
         message_output)
     message_output(f"  QUIET  {held_out}: score {quiet_score:+.5f} (slope {quiet_slope:+.3f}) "
                    f"| p {quiet_p:.4e}{' (at floor)' if quiet_at_floor else ''}")
@@ -756,7 +784,7 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
     for session_id in vocal_ids:
         frames, pointer, gaps = focal_vocal_frames(per_session[session_id], session_id, data_root,
                                                    unit["mouse_id"], fps, n_lags,
-                                                   settings["vocalization_settings"])
+                                                   settings["vocalizations"])
         frames = frames_in_window(transfer_frames(frames, pointer, fps, per_session[session_id]["n_frames"], n_lags,
                                                   per_session[session_id]["quiet"], encoding["clean_post_seconds"],
                                                   transfer_settings),
@@ -772,7 +800,7 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
     if not final_converged:
         message_output("    [!] FINAL MODEL DID NOT CONVERGE -- treat every number here as provisional")
     # Printed, not stored: an uncorrected reading against a bare threshold (see `combine`).
-    level = float(settings["significance"]["fdr_q"])
+    level = float(settings["inference"]["fdr_q"])
     quiet_significant = quiet_p < level
     transfer_significant = transfer["p"] < level
     if quiet_significant and transfer_significant and transfer["slope"] > 0:
@@ -910,8 +938,8 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
 
     per_session = assemble_unit_sessions(unit, data_root, settings["kinematic_features"],
                                          encoding["history_pre_seconds"], encoding["clean_post_seconds"],
-                                         settings["vocalization_settings"]["clean_against"],
-                                         settings["vocalization_settings"])
+                                         settings["vocalizations"]["clean_against"],
+                                         settings["vocalizations"])
     fps = per_session[sessions[0]]["fps"]
     n_lags = int(np.floor(encoding["history_pre_seconds"] * fps))
     feature_names = list(per_session[sessions[0]]["feature_names"])
@@ -992,12 +1020,12 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
         band = filter_band(per_session,
                            [s for s in sessions if s != representative_id],
                            representative_features, n_lags,
-                           np.random.default_rng(settings["null"]["shuffle_seed"] + 977),
+                           np.random.default_rng(settings["inference"]["shuffle_seed"] + 977),
                            encoding, band_settings["n_resamples"], message_output)
 
     # A reading of these numbers is printed for a single unit and not stored: it compares raw p-values
     # to a bare threshold, and correction needs the cohort.
-    level = float(settings["significance"]["fdr_q"])
+    level = float(settings["inference"]["fdr_q"])
     quiet_significant = quiet_p < level
     transfer_significant = transfer["p"] < level
     if quiet_significant and transfer_significant and transfer["slope"] > 0:
@@ -1092,10 +1120,10 @@ def build_unit_record(unit_id: str, mouse_id: str, rec_date: int, sessions: list
         (session or block identifiers), ``block_split`` and ``emitter_usvs_per_session``.
     """
 
-    sufficiency = settings["data_sufficiency"]
+    sufficiency = settings["cohort"]
     onsets = focal_usv_onsets(sessions, data_root, dict.fromkeys(sessions, mouse_id),
-                              settings["vocalization_settings"]["vocal_emitter"],
-                              settings["vocalization_settings"])
+                              settings["vocalizations"]["vocal_emitter"],
+                              settings["vocalizations"])
     counts = {**{session_id: (0 if entry is None else int(entry[0].size)) for session_id, entry in onsets.items()},
               **block_usv_counts(onsets, sufficiency["single_session_blocks"],
                                  settings["kinematic_encoding"]["history_pre_seconds"])}

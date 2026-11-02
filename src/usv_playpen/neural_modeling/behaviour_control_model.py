@@ -118,6 +118,55 @@ def control_estimator(n_features: int, n_lags: int, settings: dict) -> NestedTor
         random_state=nested["random_state"])
 
 
+def behaviour_history_lags(settings: dict, session_directories: list) -> int:
+    """
+    Description
+    -----------
+    History length of the behaviour design, in tracking frames: ``floor(history_pre_seconds * fps)``.
+
+    The behaviour control is applied to histories the per-unit side builds at exactly this length
+    (``kinematic_encoding.history_pre_seconds`` at the session's camera rate), so the length is derived
+    from the same setting rather than declared a second time. Each session's measured camera rate differs
+    slightly (about 150.06-150.11 fps), so the lag count is computed per session, as the unit side does,
+    and every listed session must give the same count; otherwise one design would hold histories of
+    different lengths.
+
+    Parameters
+    ----------
+    settings (dict)
+        The whole neural-modelling settings dict; ``kinematic_encoding.history_pre_seconds`` and
+        ``paths.data_root`` are read.
+    session_directories (list)
+        Full paths of the sessions the control is built from.
+
+    Returns
+    -------
+    n_lags (int)
+        History length in tracking frames (600 for 4 s at 150 fps).
+
+    Raises
+    ------
+    ValueError
+        If no session is listed, or the sessions' camera rates give different lag counts.
+    """
+
+    if not session_directories:
+        msg = "no session is listed, so the camera rate behind the behaviour history is unknown."
+        raise ValueError(msg)
+    data_root = settings["paths"]["data_root"]
+    history_seconds = settings["kinematic_encoding"]["history_pre_seconds"]
+    lags = {}
+    for directory in session_directories:
+        session_id = pathlib.Path(directory).name
+        lags[session_id] = int(np.floor(history_seconds * session_timebase(data_root, session_id)[1]))
+    distinct = sorted(set(lags.values()))
+    if len(distinct) != 1:
+        msg = (f"the listed sessions' camera rates give history lengths of {distinct} frames for "
+               f"{history_seconds} s; one design cannot hold histories of different lengths.")
+        raise ValueError(msg)
+    return distinct[0]
+
+
 def session_vocalization_design(session_directory: str, settings: dict, n_lags: int) -> dict:
     """
     Description
@@ -127,15 +176,15 @@ def session_vocalization_design(session_directory: str, settings: dict, n_lags: 
     The vocalizations kept are the rows the per-unit analysis scores, so the control is trained on the
     population it is later applied to. Two filters, with the two scopes the unit side uses:
 
-    - the analysed set is ``filter_vocalizations(usv, vocalization_settings, "analysed")`` restricted to
-      ``vocalization_settings.vocal_emitter`` (``'self'``, ``'partner'``, or ``'all'`` for no emitter
+    - the analysed set is ``filter_vocalizations(usv, vocalizations, "analysed")`` restricted to
+      ``vocalizations.vocal_emitter`` (``'self'``, ``'partner'``, or ``'all'`` for no emitter
       filter) -- noise rows are never vocalizations and squeaks are a different vocal type with their
       own coordinates, so neither is a training row;
-    - the intrusion guard is ``filter_vocalizations(usv, vocalization_settings, "guard")`` over every
+    - the intrusion guard is ``filter_vocalizations(usv, vocalizations, "guard")`` over every
       emitter -- noise never intrudes, and a squeak intrudes when ``squeaks_block_quiet`` says it does.
 
     A vocalization is then dropped when another one from the guard set intrudes on its pre-window
-    (``vocalization_settings.spike_window.pre_offset_seconds``), when its torus position or region
+    (``vocalizations.spike_window.pre_offset_seconds``), when its torus position or region
     label is missing, or when the history a prediction needs runs off the start of the session. The
     history window ends at the frame before onset (``onset_history_anchor_frames``), the same anchor the
     nested decoding uses for the unit-side histories.
@@ -157,12 +206,12 @@ def session_vocalization_design(session_directory: str, settings: dict, n_lags: 
     """
 
     session_id = pathlib.Path(session_directory).name
-    data_root = settings["data_roots"]["data_root"]
-    position_columns = settings["vocal_decoding"]["usv_manifold_column_names"]
-    region_column = settings["nested_vocal_decoding"]["region_label_column"]
-    vocal_settings = settings["vocalization_settings"]
+    data_root = settings["paths"]["data_root"]
+    position_columns = settings["vocalizations"]["usv_manifold_column_names"]
+    region_column = settings["vocalizations"]["category_column"]
+    vocal_settings = settings["vocalizations"]
     window = vocal_settings["spike_window"]
-    minimum = settings["data_sufficiency"]["min_emitter_usvs_per_session"]
+    minimum = settings["cohort"]["min_emitter_usvs_per_session"]
 
     track_names, _frame_rate, _n_frames = session_timebase(data_root, session_id)
     if len(track_names) != 2:
@@ -178,8 +227,8 @@ def session_vocalization_design(session_directory: str, settings: dict, n_lags: 
     absent = [column for column in (*position_columns, region_column) if column not in usv.columns]
     if absent:
         msg = (f"{session_id}: usv_summary lacks {absent}. Reconcile "
-               f"vocal_decoding.usv_manifold_column_names and "
-               f"nested_vocal_decoding.region_label_column with the summary's "
+               f"vocalizations.usv_manifold_column_names and "
+               f"vocalizations.category_column with the summary's "
                f"columns.")
         raise KeyError(msg)
 
@@ -547,7 +596,7 @@ def load_control_model(settings: dict, target: str) -> dict:
 
     check_target(target)
     path = pathlib.Path(configure_path(
-        settings["nested_vocal_decoding"]["behaviour_control_model_path"][target]))
+        settings["paths"]["behaviour_control_model_path"][target]))
     if not path.exists():
         msg = (f"behaviour control model not found at {path}; fit it once with the behaviour-control "
                f"dispatcher before running the nested decoding.")
@@ -907,23 +956,20 @@ def category_control_estimator(n_features: int, basis: np.ndarray, block: dict,
         _use_lax_loop=bool(block["use_lax_loop"]))
 
 
-def category_labels(cohort: dict, settings: dict) -> np.ndarray:
+def category_labels(cohort: dict) -> np.ndarray:
     """
     Description
     -----------
     The categorical control's target: the cohort's acoustic category per USV.
 
-    The cohort assembly carries the ``nested_vocal_decoding.region_label_column`` labels; the
-    categorical decoder of the per-unit run reads ``vocal_decoding.category_surface.category_column``.
-    The two must name the same column, or the control would predict one category system while the
-    neuron is decoded on another.
+    The cohort assembly carries the ``vocalizations.category_column`` labels, the same column
+    the per-unit categorical decoder reads, so the control predicts exactly the category system the
+    neuron is decoded on.
 
     Parameters
     ----------
     cohort (dict)
         From :func:`assemble_cohort`.
-    settings (dict)
-        The whole neural-modelling settings dict.
 
     Returns
     -------
@@ -931,13 +977,6 @@ def category_labels(cohort: dict, settings: dict) -> np.ndarray:
         Integer category label per USV.
     """
 
-    region_column = settings["nested_vocal_decoding"]["region_label_column"]
-    category_column = settings["vocal_decoding"]["category_surface"]["category_column"]
-    if region_column != category_column:
-        msg = (f"nested_vocal_decoding.region_label_column ({region_column!r}) and "
-               f"vocal_decoding.category_surface.category_column ({category_column!r}) differ; the "
-               f"categorical control must predict the categories the neuron is decoded on.")
-        raise ValueError(msg)
     return np.asarray(cohort["regions"]).astype(np.int64)
 
 
@@ -1020,7 +1059,7 @@ def fit_category_control_models(cohort: dict, feature_names: list, settings: dic
         counts, ``converged`` per day and ``settings_sha256``.
     """
 
-    labels = category_labels(cohort, settings)
+    labels = category_labels(cohort)
     days = cohort["days"]
     classes = np.unique(labels)
     columns = feature_columns(cohort["feature_names"], feature_names, n_lags)

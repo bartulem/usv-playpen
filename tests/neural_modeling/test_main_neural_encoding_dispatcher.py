@@ -294,7 +294,8 @@ def _install_fold_stubs(
     screen_rows (list)
         What ``screen_features`` returns.
     selected (list)
-        The feature indices ``forward_select`` selects.
+        The feature indices ``forward_select`` selects; empty stands for a selection whose first step
+        was rejected, and the stub then returns a one-step ``REJECT`` path.
     blocks (dict)
         What ``quiet_block_sessions`` returns; ``None`` leaves it returning no blocks.
     converged (bool)
@@ -316,7 +317,12 @@ def _install_fold_stubs(
         "transfer_frames": lambda call: np.asarray(call[0][0]),
         "quiet_block_sessions": {} if blocks is None else blocks,
         "screen_features": screen_rows,
-        "forward_select": (list(selected), [{"step": 1, "feature": selected[0]}]),
+        "forward_select": (
+            list(selected),
+            [{"step": 1, "feature": selected[0]}]
+            if selected
+            else [{"step": 0, "candidate": "f0", "decision": "REJECT"}],
+        ),
         "fit_quiet_model": (_estimator(len(selected), converged), 0.05),
         "linear_predictor_at_frames": lambda call: np.linspace(
             -1.0, 1.0, call[0][3].size
@@ -553,7 +559,7 @@ class TestFocalVocalFrames:
         monkeypatch (pytest.MonkeyPatch)
             Replaces the USV table loader.
         emitter (str)
-            ``vocalization_settings.vocal_emitter``.
+            ``vocalizations.vocal_emitter``.
         frames (list)
             Expected flattened vocal frames.
         pointer (list)
@@ -578,7 +584,7 @@ class TestFocalVocalFrames:
         monkeypatch.setattr(
             enc, "load_session_usvs", _recording_stub(calls, "load_session_usvs", table)
         )
-        vocal_settings = _settings()["vocalization_settings"]
+        vocal_settings = _settings()["vocalizations"]
         vocal_settings["vocal_emitter"] = emitter
         session = {"n_frames": N_FRAMES, "track_names": ["m1", "f1"]}
 
@@ -630,7 +636,7 @@ class TestFocalVocalFrames:
             "m1",
             FPS,
             N_LAGS,
-            _settings()["vocalization_settings"],
+            _settings()["vocalizations"],
         )
         assert frames.size == 0
         assert gaps.size == 0
@@ -672,7 +678,7 @@ class TestRunFold:
         Fold 1 of a three-session unit holds out ``s1`` and screens, selects and fits on ``s0`` and
         ``s2``. Every stage must receive the settings values it is documented to read, the escalation
         ladder must top the quiet null up through the SAME draw closure (9 draws, then 10 more), the
-        generator must be seeded from ``null.shuffle_seed`` and the held-out session id, the model must be
+        generator must be seeded from ``inference.shuffle_seed`` and the held-out session id, the model must be
         carried onto exactly the vocal-eligible sessions, and the artifact must land at
         ``<output>/<unit_uid>_fold1.npz`` with the documented keys.
 
@@ -689,9 +695,9 @@ class TestRunFold:
         """
         settings = _settings()
         settings["kinematic_encoding"]["clean_post_seconds"] = 1.5
-        settings["null"]["n_shuffles"] = 9
-        settings["null"]["shuffle_seed"] = 123
-        settings["significance"]["escalation_ladder"] = [19]
+        settings["inference"]["n_shuffles"] = 9
+        settings["inference"]["shuffle_seed"] = 123
+        settings["inference"]["escalation_ladder"] = [19]
         per_session = _per_session(
             {"s0": 300, "s1": 200, "s2": 250}, {"s0": 30, "s1": 20, "s2": 25}
         )
@@ -714,8 +720,8 @@ class TestRunFold:
             settings["kinematic_features"],
             settings["kinematic_encoding"]["history_pre_seconds"],
             1.5,
-            settings["vocalization_settings"]["clean_against"],
-            settings["vocalization_settings"],
+            settings["vocalizations"]["clean_against"],
+            settings["vocalizations"],
         )
         screen_args = calls["screen_features"][0][0]
         assert screen_args[1] == ["s0", "s2"]
@@ -732,7 +738,7 @@ class TestRunFold:
 
         null_calls = [call[0] for call in calls["frozen_null_scores"]]
         assert [args[5] for args in null_calls] == [9, 10]
-        assert null_calls[0][7] == settings["null"]["shuffle_guard_seconds"]
+        assert null_calls[0][7] == settings["inference"]["shuffle_guard_seconds"]
         assert (
             null_calls[0][8]
             == settings["kinematic_encoding"]["solver"]["calibration_steps"]
@@ -753,7 +759,7 @@ class TestRunFold:
             "s0",
             "s1",
         ]
-        assert calls["focal_vocal_frames"][0][0][6] is settings["vocalization_settings"]
+        assert calls["focal_vocal_frames"][0][0][6] is settings["vocalizations"]
         # the run-up is the quiet rule's forward guard, so the window and the quiet set cannot overlap
         assert all(
             call[0][6] == settings["kinematic_encoding"]["clean_post_seconds"]
@@ -804,7 +810,7 @@ class TestRunFold:
         None
         """
         settings = _settings()
-        settings["null"]["n_shuffles"] = 5
+        settings["inference"]["n_shuffles"] = 5
         per_session = _per_session(
             {"s0": 300, "s1": 200, "s2": 250}, {"s0": 30, "s1": 20, "s2": 25}
         )
@@ -834,7 +840,7 @@ class TestRunFold:
         Description
         -----------
         A two-session unit leaves one pool session. Its inner split comes from
-        ``data_sufficiency.single_session_blocks`` contiguous blocks separated by half the
+        ``cohort.single_session_blocks`` contiguous blocks separated by half the
         history (``ceil(4 s * 10 fps / 2) = 20`` frames per end); with fewer than two usable blocks the
         fold has no model, and that fold must STILL be written -- ``combine`` demands a file for every
         fold -- without ever screening.
@@ -851,7 +857,7 @@ class TestRunFold:
         None
         """
         settings = _settings()
-        settings["data_sufficiency"]["single_session_blocks"] = 3
+        settings["cohort"]["single_session_blocks"] = 3
         per_session = _per_session({"s0": 300, "s1": 200}, {"s0": 30, "s1": 20})
         calls = _install_fold_stubs(
             monkeypatch, per_session, [], [0], blocks={"s0#0": per_session["s0"]}
@@ -899,7 +905,7 @@ class TestRunFold:
         None
         """
         settings = _settings()
-        settings["null"]["n_shuffles"] = 5
+        settings["inference"]["n_shuffles"] = 5
         per_session = _per_session({"s0": 300, "s1": 200}, {"s0": 30, "s1": 20})
         blocks = {"s0#0": per_session["s0"], "s0#1": per_session["s0"]}
         calls = _install_fold_stubs(
@@ -945,7 +951,7 @@ class TestRunFold:
         None
         """
         settings = _settings()
-        settings["null"]["n_shuffles"] = 5
+        settings["inference"]["n_shuffles"] = 5
         per_session = _per_session(
             {"s0": 300, "s1": 200, "s2": 250}, {"s0": 30, "s1": 20, "s2": 25}
         )
@@ -969,6 +975,46 @@ class TestRunFold:
         assert artifact["path"] == []
         assert artifact["no_model"] is True
         assert artifact["best_screened"] is True
+
+    def test_a_fold_whose_selection_accepts_nothing_keeps_its_path_and_has_no_model(
+        self, tmp_path, monkeypatch
+    ):
+        """
+        Description
+        -----------
+        Features survive the screen but forward selection accepts none (its first step's shift test
+        rejected the winner). Nothing is fitted, the fold is a no-model fold, and the rejected step is
+        kept in the stored path so the reason is on record.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Output directory for the fold file.
+        monkeypatch (pytest.MonkeyPatch)
+            Installs the stubs.
+
+        Returns
+        -------
+        None
+        """
+        per_session = _per_session(
+            {"s0": 300, "s1": 200, "s2": 250}, {"s0": 30, "s1": 20, "s2": 25}
+        )
+        rows = _screen_rows((True, False, False), (0.03, 0.01, 0.0))
+        calls = _install_fold_stubs(monkeypatch, per_session, rows, [])
+        artifact = enc.run_fold(
+            _unit(["s0", "s1", "s2"], ["s0"]),
+            0,
+            _settings(),
+            "/data",
+            str(tmp_path),
+            lambda _text: None,
+        )
+        assert "forward_select" in calls
+        assert "fit_quiet_model" not in calls
+        assert artifact["no_model"] is True
+        assert artifact["selected"] == []
+        assert artifact["path"] == [{"step": 0, "candidate": "f0", "decision": "REJECT"}]
 
     def test_with_no_scorable_feature_the_fold_writes_its_screen_and_no_model(
         self, tmp_path, monkeypatch
@@ -1038,7 +1084,7 @@ class TestCombine:
         None
         """
         settings = _settings()
-        settings["null"]["n_shuffles"] = 5
+        settings["inference"]["n_shuffles"] = 5
         settings["kinematic_encoding"]["filter_band"]["n_resamples"] = 4
         per_session = _per_session(
             {"s0": 300, "s1": 200, "s2": 250}, {"s0": 30, "s1": 20, "s2": 25}
@@ -1395,7 +1441,7 @@ class TestCombine:
         Description
         -----------
         The uncorrected reading printed for a single unit compares both p-values to
-        ``significance.fdr_q`` (0.05) and the transfer slope to zero; each of its four outcomes must be
+        ``inference.fdr_q`` (0.05) and the transfer slope to zero; each of its four outcomes must be
         reachable, and none of them may be persisted.
 
         Parameters
@@ -1463,7 +1509,7 @@ class TestRunSingle:
         -----------
         ``s0`` has the most quiet anchors but the fewest spikes, so it is never the scoring session; of
         the rest, ``s2`` has the most anchors and is held out. Selection and the fit run on ``s0`` and
-        ``s1``, the generator is seeded from the unit id, the quiet null takes ``null.n_shuffles`` draws,
+        ``s1``, the generator is seeded from the unit id, the quiet null takes ``inference.n_shuffles`` draws,
         only the vocal-eligible sessions (``s0``, ``s2``) are scored for the transfer, and the section is
         merged into the unit file. The quiet p sits at the floor of the draws taken, so 199 draws make it
         significant at ``fdr_q`` and 9 do not, which reaches every printed reading.
@@ -1475,7 +1521,7 @@ class TestRunSingle:
         monkeypatch (pytest.MonkeyPatch)
             Installs the stubs.
         n_shuffles (int)
-            ``null.n_shuffles``.
+            ``inference.n_shuffles``.
         transfer_p (float)
             The pooled transfer p-value.
         transfer_slope (float)
@@ -1488,7 +1534,7 @@ class TestRunSingle:
         None
         """
         settings = _settings()
-        settings["null"]["n_shuffles"] = n_shuffles
+        settings["inference"]["n_shuffles"] = n_shuffles
         per_session = _per_session(
             {"s0": 400, "s1": 200, "s2": 300}, {"s0": 10, "s1": 40, "s2": 30}
         )
@@ -1562,7 +1608,7 @@ class TestRunSingle:
         None
         """
         settings = _settings()
-        settings["null"]["n_shuffles"] = 5
+        settings["inference"]["n_shuffles"] = 5
         per_session = _per_session({"s0": 300, "s1": 200}, {"s0": 30, "s1": 20})
         blocks = {"s1#0": per_session["s1"], "s1#1": per_session["s1"]}
         calls = _install_fold_stubs(
@@ -1587,7 +1633,7 @@ class TestRunSingle:
         assert artifact["inner_split"] == "blocks"
         assert calls["quiet_block_sessions"][0][0][1:] == (
             "s1",
-            settings["data_sufficiency"]["single_session_blocks"],
+            settings["cohort"]["single_session_blocks"],
             20,
         )
         assert calls["screen_features"][0][0][1] == ["s1#0", "s1#1"]
@@ -1669,6 +1715,43 @@ class TestRunSingle:
         assert "forward_select" not in calls
         assert "fit_quiet_model" not in calls
 
+    def test_survivors_with_nothing_accepted_return_no_model(self, tmp_path, monkeypatch):
+        """
+        Description
+        -----------
+        Features survive the screen but forward selection accepts none (its first step's shift test
+        rejected the winner). ``run_single`` must write the no-model result, with the screen table and
+        the rejected path, and never fit a final model on an empty feature set.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Output directory for the unit file.
+        monkeypatch (pytest.MonkeyPatch)
+            Installs the stubs.
+
+        Returns
+        -------
+        None
+        """
+        per_session = _per_session(
+            {"s0": 300, "s1": 200, "s2": 250}, {"s0": 30, "s1": 20, "s2": 25}
+        )
+        calls = _install_fold_stubs(
+            monkeypatch, per_session, _screen_rows((True, True, False), (0.03, 0.02, 0.0)), []
+        )
+        unit = _unit(["s0", "s1", "s2"], ["s0"])
+        result = enc.run_single(unit, _settings(), "/data", str(tmp_path), lambda _text: None)
+        section = read_unit_artifact(str(tmp_path), unit["unit_uid"])["kinematic_encoding"]
+        assert "forward_select" in calls
+        assert "fit_quiet_model" not in calls
+        assert result["no_model"] is True
+        assert section["no_model"] is True
+        assert section["quiet_p"] == 1.0
+        assert np.isnan(section["transfer_p"])
+        assert section["path"] == [{"step": 0, "candidate": "f0", "decision": "REJECT"}]
+        assert len(section["screen"]) == 3
+
     def test_a_no_model_single_result_is_written_to_the_unit_file(
         self, tmp_path, monkeypatch
     ):
@@ -1731,7 +1814,7 @@ class TestCommandLine:
         tmp_path (pathlib.Path)
             Directory for the settings file.
         threshold (int)
-            ``data_sufficiency.min_emitter_usvs_per_session`` written to the settings file.
+            ``cohort.min_emitter_usvs_per_session`` written to the settings file.
 
         Returns
         -------
@@ -1739,8 +1822,8 @@ class TestCommandLine:
             Path of the written settings file, and the recording dict.
         """
         settings = _settings()
-        settings["data_sufficiency"]["min_emitter_usvs_per_session"] = threshold
-        settings["vocalization_settings"]["vocal_emitter"] = "partner"
+        settings["cohort"]["min_emitter_usvs_per_session"] = threshold
+        settings["vocalizations"]["vocal_emitter"] = "partner"
         settings_path = tmp_path / "settings.json"
         settings_path.write_text(json.dumps(settings))
         calls = collections.defaultdict(list)
@@ -1823,7 +1906,7 @@ class TestCommandLine:
         unit, fold, settings, data_root, output_directory = calls["run_fold"][0][0]
         assert fold == 1
         assert (data_root, output_directory) == ("/data", "/out")
-        assert settings["data_sufficiency"]["min_emitter_usvs_per_session"] == 10
+        assert settings["cohort"]["min_emitter_usvs_per_session"] == 10
         assert unit["vocal_sessions"] == ["s0", "s1"]
         assert unit["unit_uid"] == "m1_20250101_imec0_cl0001_ch001_good"
         assert unit["rec_date"] == 20250101
@@ -2011,3 +2094,35 @@ class TestOneSessionUnitRecord:
         assert unit["block_split"] == {"n_blocks": 5}
         assert unit["vocal_sessions"] == ["s0#block2"]
         assert [unit["emitter_usvs_per_session"][f"s0#block{index}"] for index in range(5)] == [2, 1, 25, 0, 1]
+
+
+class TestLoadSettings:
+    """``load_settings`` is where every dispatcher and the consolidator read their settings, so it refuses
+    a p-value method the package does not implement."""
+
+    def test_the_shipped_settings_load(self):
+        """The shipped file declares the implemented method and loads unchanged."""
+        assert enc.load_settings(None)["inference"]["pvalue_method"] == "empirical_escalated"
+
+    def test_another_pvalue_method_is_refused(self, tmp_path):
+        """
+        Description
+        -----------
+        A settings file declaring, e.g., a parametric tail fit must raise on load, since every p-value
+        is computed empirically whatever the file says.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Where the modified settings file is written.
+
+        Returns
+        -------
+        None
+        """
+        settings = _settings()
+        settings["inference"]["pvalue_method"] = "gpd_tail"
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps(settings))
+        with pytest.raises(ValueError, match="pvalue_method"):
+            enc.load_settings(str(path))

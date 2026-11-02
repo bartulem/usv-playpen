@@ -15,7 +15,7 @@ point-regression form (:func:`nested_scores`, :class:`NestedTorusRegression`) is
 fine-position descriptor and is never a route to passing.
 
 The behaviour control's features are read from the selection result for the run's target
-(``vocalization_settings.vocal_target``) and checked against the frozen list in settings
+(``vocalizations.vocal_target``) and checked against the frozen list in settings
 (:func:`reduced_model_features`). Scoring uses the macro von Mises log-score. The categorical
 counterpart of the posterior statistic lives in ``neural_category_decoding``.
 The neuron enters as one per-session z-scored count rather than a lagged spike history, so the test
@@ -152,7 +152,7 @@ class NestedTorusRegression(SmoothTorusManifoldRegression):
 
 #: The two decoded targets. Every unit is decoded on both, each against its own behaviour control, so
 #: the neuron is always tested on the target the behavioural model predicts: the torus position, or the
-#: category. ``vocalization_settings.vocal_target`` names the one the claims use.
+#: category. ``vocalizations.vocal_target`` names the one the claims use.
 VOCAL_TARGETS = ("manifold", "multinomial")
 
 
@@ -183,7 +183,7 @@ def vocal_target(settings: dict) -> str:
     """
     Description
     -----------
-    The target the claims use, ``vocalization_settings.vocal_target``, refused unless it is one of
+    The target the claims use, ``vocalizations.vocal_target``, refused unless it is one of
     :data:`VOCAL_TARGETS`.
 
     Every unit is decoded on both targets regardless; this setting picks which one's identity and
@@ -201,9 +201,9 @@ def vocal_target(settings: dict) -> str:
         ``"manifold"`` or ``"multinomial"``.
     """
 
-    target = settings["vocalization_settings"]["vocal_target"]
+    target = settings["vocalizations"]["vocal_target"]
     if target not in VOCAL_TARGETS:
-        msg = f"vocalization_settings.vocal_target must be one of {list(VOCAL_TARGETS)}; got {target!r}."
+        msg = f"vocalizations.vocal_target must be one of {list(VOCAL_TARGETS)}; got {target!r}."
         raise ValueError(msg)
     return target
 
@@ -243,13 +243,16 @@ def reduced_model_features(settings: dict, target: str, require_selection_file: 
     the behaviour the neuron is measured against. Both settings are dicts keyed by target.
 
     Two artifact shapes are accepted: a cohort selection's ``selected_features``, or a behavioural
-    selection's ``steps`` (its last step's ``current_features``). Only feature names are taken from a
-    behavioural selection; the control itself is always fitted in domain by ``fit_control_models``.
+    selection's ``steps``. A behavioural selection writes its result, ``final_model_features``, to
+    exactly one step, the last accepted one, and that list is read. A step's ``current_features`` is
+    not the result: it is the model the step started from, before its winner was added. Only feature
+    names are taken from a behavioural selection; the control itself is always fitted in domain by
+    ``fit_control_models``.
 
     Parameters
     ----------
     settings (dict)
-        The whole neural-modelling settings dict; ``data.behaviour_selection_result_path`` and
+        The whole neural-modelling settings dict; ``paths.behaviour_selection_result_path`` and
         ``nested_vocal_decoding.reduced_model_features`` are read at the target's key.
     target (str)
         One of :data:`VOCAL_TARGETS`.
@@ -265,7 +268,7 @@ def reduced_model_features(settings: dict, target: str, require_selection_file: 
 
     check_target(target)
     frozen = list(settings["nested_vocal_decoding"]["reduced_model_features"][target])
-    path = pathlib.Path(configure_path(settings["data"]["behaviour_selection_result_path"][target]))
+    path = pathlib.Path(configure_path(settings["paths"]["behaviour_selection_result_path"][target]))
     if not path.exists():
         if require_selection_file:
             msg = (f"behaviour selection result not found at {path}; it defines the nested decoding's reduced "
@@ -280,11 +283,16 @@ def reduced_model_features(settings: dict, target: str, require_selection_file: 
     elif "steps" in selection:
         # A behavioural-modelling selection: only its feature names are adopted, never its
         # coefficients, since the control is fitted in domain by `fit_control_models`.
-        selected = list(selection["steps"][-1]["current_features"])
+        carriers = [step for step in selection["steps"] if "final_model_features" in step]
+        if len(carriers) != 1:
+            msg = (f"{path.name} has {len(carriers)} steps carrying 'final_model_features'; a behavioural "
+                   f"selection writes its result to exactly one step (the last accepted one).")
+            raise ValueError(msg)
+        selected = list(carriers[0]["final_model_features"])
     else:
         msg = (f"{path.name} is neither a cohort selection result ('selected_features') nor a "
                f"behavioural-modelling selection ('steps'). Point "
-               f"data.behaviour_selection_result_path[{target!r}] at the artifact written by "
+               f"paths.behaviour_selection_result_path[{target!r}] at the artifact written by "
                f"behaviour_control_model.select_control_features, or at a behavioural selection "
                f"whose feature set is being adopted.")
         raise ValueError(msg)
@@ -603,6 +611,7 @@ IMPLEMENTED_NESTED_OPTIONS = {
     ("behaviour_prior", "form"): ("von_mises",),
     ("behaviour_prior", "concentration"): ("train_residuals", "train_tuned_inner_loso"),
     ("discrimination_null", "method"): ("within_session_pair_permutation",),
+    ("discrimination_null", "sided"): ("one_sided_upper",),
 }
 
 
@@ -613,7 +622,7 @@ def nested_settings(settings: dict) -> dict:
     The ``nested_vocal_decoding`` block with the shared manifold period merged in, validated.
 
     The torus period is a property of the QLVM manifold and lives in the shared
-    ``vocalization_settings`` block; it is merged here so this module's functions can take one block.
+    ``vocalizations`` block; it is merged here so this module's functions can take one block.
 
     Parameters
     ----------
@@ -628,7 +637,7 @@ def nested_settings(settings: dict) -> dict:
     """
 
     block = dict(settings["nested_vocal_decoding"])
-    block["torus_period"] = settings["vocalization_settings"]["torus_period"]
+    block["torus_period"] = settings["vocalizations"]["torus_period"]
     check_settings(block)
     return block
 

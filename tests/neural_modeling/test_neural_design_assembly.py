@@ -288,7 +288,7 @@ class TestAssembleUnitVocalEvents:
                 (300.0, 300.1, "male", 0.50, 0.60)]
         unit = self._build(tmp_path, usvs=usvs, spike_seconds=np.array([99.98, 299.97]))
         settings = self._settings()
-        settings["vocalization_settings"]["vocal_emitter"] = "all"
+        settings["vocalizations"]["vocal_emitter"] = "all"
         events = assemble_unit_vocal_events(unit, str(tmp_path), settings, 0.05, 0.05)
         assert events["positions"][:, 0].tolist() == [0.10, 0.30, 0.50]
         np.testing.assert_allclose(events["vocalization_start"], [100.0, 200.0, 300.0])
@@ -431,7 +431,7 @@ class TestAssembleUnitVocalEvents:
         usvs = [(100.0, 100.1, "male", 0.10, 0.20)]
         unit = self._build(tmp_path, usvs=usvs, spike_seconds=np.array([99.98]))
         settings = self._settings()
-        settings["vocal_decoding"]["usv_manifold_column_names"] = ["qlvm_dim1", "qlvm_dim2"]
+        settings["vocalizations"]["usv_manifold_column_names"] = ["qlvm_dim1", "qlvm_dim2"]
         with pytest.raises(KeyError, match="qlvm_dim1"):
             assemble_unit_vocal_events(unit, str(tmp_path), settings, 0.05, 0.05)
 
@@ -475,20 +475,20 @@ class TestAssembleUnitVocalEvents:
         assert events["silent_gap"][2] == pytest.approx(1.40)
 
     def test_clean_against_selects_whose_usvs_contaminate(self, tmp_path):
-        """`vocalization_settings.clean_against` was read nowhere: every window was judged against every emitter, so
+        """`vocalizations.clean_against` was read nowhere: every window was judged against every emitter, so
         setting it to a mouse index changed nothing at all."""
         usvs = [(100.00, 100.10, "female", 0.90, 0.90),   # partner USV, 20 ms before the focal one
                  (100.12, 100.22, "male", 0.50, 0.60)]
         unit = self._build(tmp_path, usvs=usvs, spike_seconds=np.array([99.98]))
 
         against_all = self._settings()
-        assert against_all["vocalization_settings"]["clean_against"] == "all"
-        assert against_all["vocalization_settings"]["vocal_emitter"] == "self"
+        assert against_all["vocalizations"]["clean_against"] == "all"
+        assert against_all["vocalizations"]["vocal_emitter"] == "self"
         strict = assemble_unit_vocal_events(unit, str(tmp_path), against_all, 0.05, 0.05)
         assert strict["positions"].shape[0] == 0          # the partner's USV contaminates it
 
         against_self = self._settings()
-        against_self["vocalization_settings"]["clean_against"] = "self"    # only the recorded animal's own USVs
+        against_self["vocalizations"]["clean_against"] = "self"    # only the recorded animal's own USVs
         loose = assemble_unit_vocal_events(unit, str(tmp_path), against_self, 0.05, 0.05)
         assert loose["positions"].shape[0] == 1
 
@@ -516,7 +516,7 @@ class TestSettingsInvariants:
         same window, and the nested decoding
         has its own block, so a window inside `vocal_decoding` could not serve it."""
         settings = _load_settings()
-        window = settings["vocalization_settings"]["spike_window"]
+        window = settings["vocalizations"]["spike_window"]
         assert set(window) == {"pre_offset_seconds", "width_seconds"}
         assert window["pre_offset_seconds"] == 0.05
         assert window["width_seconds"] == 0.10
@@ -535,7 +535,7 @@ class TestSettingsInvariants:
 
         The two numbers stay independent rather than collapsing into one duration precisely so this
         choice has to be made explicitly."""
-        window = _load_settings()["vocalization_settings"]["spike_window"]
+        window = _load_settings()["vocalizations"]["spike_window"]
         assert window["width_seconds"] > window["pre_offset_seconds"]
         inside = window["width_seconds"] - window["pre_offset_seconds"]
         assert inside == pytest.approx(0.05)
@@ -547,19 +547,46 @@ class TestSettingsInvariants:
         `category_surface` DOES belong here: the categorical decode is the same claim's axis on a
         different target -- same events, same window, same folds, same currency and the same permutation
         draws -- so it is a vocal-decoding axis rather than a separate analysis. Which target is decoded is
-        `vocalization_settings.vocal_target`, shared with the nested decoding's behaviour control."""
+        `vocalizations.vocal_target`, shared with the nested decoding's behaviour control."""
         settings = _load_settings()
         assert set(settings["vocal_decoding"]) == {
-            "require_clean_prevocal_bool", "usv_manifold_column_names",
-            "max_quiet_tiles_per_session", "vocal_occurrence", "geodesic_metrics", "tuning_surface",
+            "require_clean_prevocal_bool",
+            "max_quiet_tiles_per_session", "vocal_occurrence", "tuning_surface",
             "category_surface", "discrimination_null", "record_overdispersion_index"}
-        assert settings["vocalization_settings"]["vocal_target"] in ("manifold", "multinomial")
+        assert settings["vocalizations"]["vocal_target"] in ("manifold", "multinomial")
         assert set(settings["nested_vocal_decoding"]) == {
-            "behaviour_control", "reduced_model_features", "behaviour_control_model_path",
-            "category_control", "vm_score_mode", "region_label_column", "min_region_events", "lambda_smooth", "l2_reg",
+            "behaviour_control", "reduced_model_features",
+            "category_control", "vm_score_mode", "min_region_events", "lambda_smooth", "l2_reg",
             "smoothness_derivative_order", "huber_delta", "learning_rate", "max_iter", "tol", "random_state",
-            "behaviour_control_n_lags", "sigma_floor", "prevocal_window_n_bins", "rate_transform",
+            "sigma_floor", "prevocal_window_n_bins", "rate_transform",
             "rate_basis", "statistic", "discrimination_null", "behaviour_prior"}
+
+    def test_the_file_is_laid_out_in_pipeline_order(self):
+        """
+        Description
+        -----------
+        The settings file reads top to bottom as the run does: every input path first, then which units
+        enter and how much data each must carry, the shared predictor and vocalization definitions, the
+        analyses in the order they run, and last the inference shared by all of them. Every input path
+        lives in ``paths``, and the null draws and the multiple-comparison settings in ``inference``.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        settings = _load_settings()
+        assert list(settings) == ["paths", "cohort", "kinematic_features", "vocalizations", "kinematic_encoding",
+                                  "vocal_decoding", "nested_vocal_decoding", "vocal_gating", "inference"]
+        assert set(settings["paths"]) == {"data_root", "catalog_path", "session_list_files",
+                                          "behaviour_selection_result_path", "behaviour_control_model_path"}
+        assert set(settings["inference"]) == {"n_shuffles", "shuffle_guard_seconds", "shuffle_seed",
+                                              "screen_n_shuffles", "pvalue_method", "fdr_method", "fdr_q",
+                                              "escalation_ladder", "include_single_session_units"}
+        assert settings["vocalizations"]["usv_manifold_column_names"] == ["qlvm1", "qlvm2"]
 
     def test_the_nested_decoding_matches_the_behavioural_model_where_it_must(self):
         """The nested decoding is "the behavioural model plus the neuron", so the control has to be fitted
@@ -593,23 +620,25 @@ class TestSettingsInvariants:
                              "min_baseline_tiles"}
         assert set(settings["vocal_gating"]) >= {"min_vocal_spikes", "min_feature_iqr_vocal"}
 
-    def test_the_sufficiency_block_holds_only_live_keys(self):
-        """Every key here is read by something -- unlike the block that previously carried the name.
+    def test_the_cohort_block_holds_only_live_keys(self):
+        """Every key here is read by something: which units enter (area, quality, somatic, pooling of areas)
+        and how much data each must carry.
 
         `min_decoding_spikes` is read by `neural_category_decoding.decoding_spike_sufficiency`. It was
         added because the decoding axes had NO spike gate at all: measured over 1,231 units, sd(gain)
         runs 0.029 below 50 spikes against 0.014 above, and a unit with under 25 spikes returned a gain
         of 0.70 -- three times the cohort's strongest tuned unit."""
-        assert set(_load_settings()["data_sufficiency"]) == {
+        assert set(_load_settings()["cohort"]) == {
+            "brain_areas", "area_mode", "pool_areas", "quality", "somatic",
             "min_courtship_sessions", "min_emitter_usvs_per_session", "min_vocal_sessions",
             "min_decoding_spikes", "single_session_blocks"}
 
     def test_the_session_gate_is_named_for_the_emitter_it_follows(self):
-        """The gate counts USVs from whoever `vocalization_settings.vocal_emitter` names, so a name
+        """The gate counts USVs from whoever `vocalizations.vocal_emitter` names, so a name
         saying `focal` would misdescribe it for two of that knob's three values -- reading as correct
         while gating on the partner."""
         settings = _load_settings()
-        assert settings["data_sufficiency"]["min_emitter_usvs_per_session"] == 20
+        assert settings["cohort"]["min_emitter_usvs_per_session"] == 20
         assert not any("focal" in key for block in settings.values()
                        if isinstance(block, dict) for key in block)
 
@@ -623,7 +652,7 @@ class TestSettingsInvariants:
         assert "calib_n_steps" not in settings["vocal_gating"]["solver"]
         assert "calib_n_steps" not in settings["vocal_decoding"]["vocal_occurrence"]
         assert "min_focal_usvs" not in settings["vocal_decoding"]
-        assert "decorrelation_lag_seconds" not in settings["null"]
+        assert "decorrelation_lag_seconds" not in settings["inference"]
 
     def test_the_neural_kinematic_features_still_equal_the_behavioural_ones(self):
         """The nested decoding asks whether a neuron adds beyond behaviour, where "behaviour" is the feature set the
@@ -669,7 +698,7 @@ class TestFocalVocalFrames:
     @pytest.mark.parametrize(("emitter", "expected_starts"), [("self", [100.0]), ("partner", [200.0]),
                                                               ("all", [100.0, 200.0])])
     def test_the_transfer_frames_follow_vocal_emitter(self, tmp_path, emitter, expected_starts):
-        """The transfer frames read ``vocalization_settings.vocal_emitter`` exactly as the vocal-side
+        """The transfer frames read ``vocalizations.vocal_emitter`` exactly as the vocal-side
         assembler does, so pointing it at the partner (or at every emitter) moves the transfer and the
         vocal decoding together; they used to match the unit's own mouse unconditionally."""
         _write_session(tmp_path, "20250101_000000", self.UNIT, n_frames=150000, frame_rate=150.0,
@@ -828,7 +857,7 @@ class TestOneQuietDefinition:
                   / "neural_modeling" / "main_neural_encoding_dispatcher.py").read_text()
         # every assemble_unit_sessions call site must hand it the shared anchors values
         assert source.count("assemble_unit_sessions(") == source.count(
-            'settings["vocalization_settings"]["clean_against"]')
+            'settings["vocalizations"]["clean_against"]')
 
 
 class TestVocalSessionScope:
@@ -1511,7 +1540,7 @@ class TestAssembleUnitSessions:
             1.0,
             0.5,
             "all",
-            copy.deepcopy(settings["vocalization_settings"]),
+            copy.deepcopy(settings["vocalizations"]),
         )
         assert sorted(per_session) == self.SESSIONS
         speed = np.concatenate(
@@ -1572,7 +1601,7 @@ class TestAssembleUnitSessions:
             1.0,
             0.5,
             "self",
-            copy.deepcopy(settings["vocalization_settings"]),
+            copy.deepcopy(settings["vocalizations"]),
         )
         expected_quiet = np.r_[np.arange(10, 45), np.arange(63, 195)]
         for session_id in self.SESSIONS:

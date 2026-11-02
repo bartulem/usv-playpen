@@ -110,13 +110,13 @@ def check_inputs(settings: dict) -> list:
         Human-readable descriptions of the missing inputs; empty when all exist.
     """
 
-    required = {"unit catalog (data_roots.catalog_path)": settings["data_roots"]["catalog_path"],
-                "data root (data_roots.data_root)": settings["data_roots"]["data_root"]}
+    required = {"unit catalog (paths.catalog_path)": settings["paths"]["catalog_path"],
+                "data root (paths.data_root)": settings["paths"]["data_root"]}
     for target in VOCAL_TARGETS:
-        required[f"{target} behaviour control (nested_vocal_decoding.behaviour_control_model_path)"] = (
-            settings["nested_vocal_decoding"]["behaviour_control_model_path"][target])
-        required[f"{target} behaviour selection (data.behaviour_selection_result_path)"] = (
-            settings["data"]["behaviour_selection_result_path"][target])
+        required[f"{target} behaviour control (paths.behaviour_control_model_path)"] = (
+            settings["paths"]["behaviour_control_model_path"][target])
+        required[f"{target} behaviour selection (paths.behaviour_selection_result_path)"] = (
+            settings["paths"]["behaviour_selection_result_path"][target])
     return [f"{name}: {path}" for name, path in required.items()
             if not pathlib.Path(configure_path(path)).exists()]
 

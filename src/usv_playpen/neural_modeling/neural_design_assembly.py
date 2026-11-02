@@ -412,7 +412,7 @@ def load_session_usvs(data_root: str, session_id: str, csv_sep: str = ",") -> pl
     Description
     -----------
     Read a session's ``<session>_usv_summary.csv`` (carries ``start``/``stop``/``emitter``, the QLVM
-    columns named by ``vocal_decoding.usv_manifold_column_names``, and raw acoustics).
+    columns named by ``vocalizations.usv_manifold_column_names``, and raw acoustics).
 
     Parameters
     ----------
@@ -455,7 +455,7 @@ def filter_vocalizations(usv_df: pls.DataFrame, vocal_settings: dict, scope: str
     usv_df (pls.DataFrame)
         A session's USV summary, as ``load_session_usvs`` returns it.
     vocal_settings (dict)
-        The ``vocalization_settings`` block, carrying the three exclusion flags.
+        The ``vocalizations`` block, carrying the three exclusion flags.
     scope (str)
         ``'analysed'`` for the USVs an analysis scores, ``'guard'`` for the set that decides
         cleanliness.
@@ -480,7 +480,7 @@ def filter_vocalizations(usv_df: pls.DataFrame, vocal_settings: dict, scope: str
     for column, _flag in wanted:
         # Fail loudly: a summary predating the classifier would otherwise pass unfiltered.
         if column not in usv_df.columns:
-            msg = (f"vocalization_settings asks to exclude '{column}' but the usv_summary has no such "
+            msg = (f"vocalizations asks to exclude '{column}' but the usv_summary has no such "
                    f"column. Available: {usv_df.columns}.")
             raise KeyError(msg)
 
@@ -827,7 +827,7 @@ def assemble_unit_sessions(
         vocal-side assembler is given, so one quiet definition serves the kinematic encoding and the
         vocal-decoding negatives.
     vocal_settings (dict)
-        The ``vocalization_settings`` block; its exclusion flags decide which summary rows the quiet
+        The ``vocalizations`` block; its exclusion flags decide which summary rows the quiet
         guard counts (``filter_vocalizations`` at ``'guard'`` scope).
 
     Returns
@@ -978,7 +978,7 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
     ``[onset - pre_offset, onset - pre_offset + width)``, a peri-onset window under the shipped
     settings. The negatives are disjoint quiet tiles of the same width under the quiet-anchor
     definition, capped per session at ``max_quiet_tiles_per_session``. Whose USVs count as
-    contamination is ``vocalization_settings.clean_against`` for both. Both decoding axes receive the
+    contamination is ``vocalizations.clean_against`` for both. Both decoding axes receive the
     same positive events. USVs with a missing torus position are dropped and counted.
 
     For a unit tested on blocks, each block is a session here: its events are the USVs whose onset lies
@@ -994,7 +994,7 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
         The ``Data`` root.
     settings (dict)
         The whole neural-modeling settings dict; ``vocal_decoding``, ``kinematic_encoding``,
-        ``vocalization_settings`` and ``null`` blocks are read.
+        ``vocalizations`` and ``inference`` blocks are read.
     pre_offset (float)
         How far before onset the spike window starts, in seconds.
     width (float)
@@ -1005,8 +1005,8 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
     events (dict)
         ``positions``, ``session_index``, ``counts``, ``region_labels`` (the acoustic region per
         event, NaN where the summary carries no such column), ``category_labels`` (the acoustic
-        category the multinomial identity decoder targets, ``vocal_decoding.category_surface.
-        category_column``, NaN where absent), ``silent_gap``, ``vocalization_start``,
+        category the multinomial identity decoder targets, NaN where absent; both are read from
+        ``vocalizations.category_column``), ``silent_gap``, ``vocalization_start``,
         ``vocalization_stop`` at vocalization grain; ``occurrence_windows`` (``counts``, ``labels``, ``session_index``, plus the window ``edges`` and
         their ``width``, which the circular-shift null needs to recount both classes from a shifted
         train) over positives and tiles
@@ -1016,15 +1016,17 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
 
     decoding = settings["vocal_decoding"]
     encoding = settings["kinematic_encoding"]
-    position_columns = decoding["usv_manifold_column_names"]
+    position_columns = settings["vocalizations"]["usv_manifold_column_names"]
     tiles_cap = decoding["max_quiet_tiles_per_session"]
     history_pre_seconds = encoding["history_pre_seconds"]
     clean_post_seconds = encoding["clean_post_seconds"]
-    region_column = settings["nested_vocal_decoding"]["region_label_column"]
-    category_column = decoding["category_surface"]["category_column"]
-    vocal_emitter = settings["vocalization_settings"]["vocal_emitter"]
-    clean_against = settings["vocalization_settings"]["clean_against"]
-    rng = np.random.default_rng(settings["null"]["shuffle_seed"])
+    # One summary column defines the acoustic category everywhere: the regions of the nested decoding's
+    # macro score and the target of the categorical identity decoder.
+    region_column = settings["vocalizations"]["category_column"]
+    category_column = settings["vocalizations"]["category_column"]
+    vocal_emitter = settings["vocalizations"]["vocal_emitter"]
+    clean_against = settings["vocalizations"]["clean_against"]
+    rng = np.random.default_rng(settings["inference"]["shuffle_seed"])
 
     session_ids: list[str] = []
     positions_parts, counts_parts, gaps_parts, region_parts, category_parts = [], [], [], [], []
@@ -1055,12 +1057,12 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
 
         # `clean_against` governs the tile guard and the prevocal filter alike.
         guard_names = emitter_names(track_names, unit["mouse_id"], clean_against)
-        guard_table = filter_vocalizations(usv, settings["vocalization_settings"], "guard")
+        guard_table = filter_vocalizations(usv, settings["vocalizations"], "guard")
         guard = guard_table if not guard_names else guard_table.filter(
             guard_table["emitter"].is_in(guard_names))
         all_starts = guard["start"].to_numpy().astype(np.float64)
         all_stops = guard["stop"].to_numpy().astype(np.float64)
-        analysed = filter_vocalizations(usv, settings["vocalization_settings"], "analysed")
+        analysed = filter_vocalizations(usv, settings["vocalizations"], "analysed")
         focal = analysed.filter(analysed["emitter"].is_in(focal_names)) if focal_names else analysed
         focal_starts = focal["start"].to_numpy().astype(np.float64)
         focal_stops = focal["stop"].to_numpy().astype(np.float64)

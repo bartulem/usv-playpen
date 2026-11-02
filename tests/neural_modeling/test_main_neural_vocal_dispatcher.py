@@ -130,7 +130,7 @@ class TestParallelNullsAreExact:
         counts = generator.poisson(np.exp(1.4 * shape - 1.4 * shape.max() + np.log(3.0))).astype(float)
         decoding = copy.deepcopy(_settings()["vocal_decoding"])
         decoding["tuning_surface"].update({"grid_n": 24, "kde_bandwidth": 0.10})
-        folds = decoding_context(positions, sessions, decoding, _settings()["vocalization_settings"]["torus_period"])
+        folds = decoding_context(positions, sessions, decoding, _settings()["vocalizations"]["torus_period"])
 
         serial = permutation_null(lambda permutation: decode_gain(counts, folds, decoding, permutation)["gain"],
                                   sessions, 5, 11)
@@ -547,7 +547,7 @@ def _fast_decoding_settings() -> dict:
     settings["vocal_decoding"]["tuning_surface"].update(
         {"grid_n": 24, "kde_bandwidth": 0.10}
     )
-    settings["null"]["shuffle_seed"] = 11
+    settings["inference"]["shuffle_seed"] = 11
     return settings
 
 
@@ -656,10 +656,10 @@ class TestTheAnalysisSteps:
         """
         events = _vocal_events()
         settings = _settings()
-        settings["null"].update(
+        settings["inference"].update(
             {"n_shuffles": 6, "shuffle_seed": 7, "shuffle_guard_seconds": 15.0}
         )
-        settings["significance"]["escalation_ladder"] = [10]
+        settings["inference"]["escalation_ladder"] = [10]
         spawned = _inline_pools(monkeypatch)
         calls = collections.defaultdict(list)
         monkeypatch.setattr(
@@ -693,7 +693,7 @@ class TestTheAnalysisSteps:
         )
         windows = events["occurrence_windows"]
         folds = occurrence_context(windows["labels"], windows["session_index"], windows["edges"],
-                                   settings["data_sufficiency"]["single_session_blocks"])
+                                   settings["cohort"]["single_session_blocks"])
         serial = vocal_occurrence_shift_null(
             windows,
             trains,
@@ -729,7 +729,7 @@ class TestTheAnalysisSteps:
         Description
         -----------
         The identity null must take ``vocal_decoding.discrimination_null.n_permutations`` draws seeded from
-        ``null.shuffle_seed`` and equal the serial ``permutation_null`` value for value; the section must
+        ``inference.shuffle_seed`` and equal the serial ``permutation_null`` value for value; the section must
         carry the flagged descriptors the settings ask for and the per-session event counts, and land in
         the unit file.
 
@@ -758,7 +758,7 @@ class TestTheAnalysisSteps:
             events["positions"],
             events["session_index"],
             decoding,
-            settings["vocalization_settings"]["torus_period"],
+            settings["vocalizations"]["torus_period"],
         )
         serial = permutation_null(
             lambda permutation: decode_gain(
@@ -812,7 +812,7 @@ class TestTheAnalysisSteps:
 
         codes, kept, values = category_codes(events["category_labels"])
         folds = category_context(codes, events["session_index"][kept], events["vocalization_start"][kept],
-                                 settings["data_sufficiency"]["single_session_blocks"])
+                                 settings["cohort"]["single_session_blocks"])
         serial = permutation_null(
             lambda permutation: category_gain(events["counts"][kept], codes, folds, settings["vocal_decoding"],
                                               permutation)["gain"],
@@ -864,7 +864,7 @@ class TestTheAnalysisSteps:
 
         monkeypatch.setattr(vocal, "decoding_context", recording)
         vocal.run_vocalization_identity(UNIT, events, settings, "manifold", str(tmp_path), 1, _quiet)
-        blocks = settings["data_sufficiency"]["single_session_blocks"]
+        blocks = settings["cohort"]["single_session_blocks"]
         assert all(len(fold["inner_splits"]) == blocks for fold in built[0])
 
     @pytest.mark.parametrize("target", ["category", "MANIFOLD"])
@@ -959,7 +959,7 @@ class TestTheAnalysisSteps:
         assert calls["nested_scores"][0][1]["reduced_predicted"] is reduced
         assert (
             calls["pooled_macro_score"][0][0][3]["torus_period"]
-            == settings["vocalization_settings"]["torus_period"]
+            == settings["vocalizations"]["torus_period"]
         )
 
         decoding = settings["vocal_decoding"]
@@ -968,7 +968,7 @@ class TestTheAnalysisSteps:
             positions,
             design["session_index"],
             decoding,
-            settings["vocalization_settings"]["torus_period"],
+            settings["vocalizations"]["torus_period"],
         )
         kappas, priors = behaviour_priors(
             folds, control_block["predicted_positions"], positions, nested
@@ -1069,7 +1069,7 @@ class TestTheAnalysisSteps:
         session_index = events["session_index"][kept][labelled]
         decoding = settings["vocal_decoding"]
         folds = category_context(codes, session_index, np.asarray(events["vocalization_start"])[kept][labelled],
-                                 int(settings["data_sufficiency"]["single_session_blocks"]))
+                                 int(settings["cohort"]["single_session_blocks"]))
         kappas, tilts = category_behaviour_tilts(
             folds, codes, log_evidence, settings["nested_vocal_decoding"]["behaviour_prior"]["kappa_grid"])
         observed = category_nested_gain(counts, codes, folds, decoding, tilts, kappas)
@@ -1269,7 +1269,7 @@ class TestVocalGatingRun:
         """
         settings = _settings()
         settings["vocal_gating"]["min_feature_iqr_vocal"] = 0.5
-        settings["null"]["shuffle_seed"] = 5
+        settings["inference"]["shuffle_seed"] = 5
         calls = self._install(monkeypatch)
 
         payload = vocal.run_vocal_gating(
@@ -1278,13 +1278,13 @@ class TestVocalGatingRun:
 
         universe_call = calls["gating_universe"][0]
         assert universe_call[0][3] is settings["vocal_gating"]
-        assert universe_call[0][4] is settings["vocalization_settings"]
+        assert universe_call[0][4] is settings["vocalizations"]
         assert universe_call[1] == {"seed": 5}
         null_calls = calls["gating_null"]
         assert [call[0][1] for call in null_calls] == [0, 1]
         assert [call[1]["seed"] for call in null_calls] == [5, 5 + 2000]
         assert all(
-            call[0][3:5] == (settings["null"]["shuffle_guard_seconds"], 2000)
+            call[0][3:5] == (settings["inference"]["shuffle_guard_seconds"], 2000)
             for call in null_calls
         )
         assert payload["per_feature"]["f2"] == {
@@ -1430,7 +1430,7 @@ class TestRunVocalOrder:
         None
         """
         settings = _settings()
-        settings["vocalization_settings"]["spike_window"] = {
+        settings["vocalizations"]["spike_window"] = {
             "pre_offset_seconds": 0.07,
             "width_seconds": 0.2,
         }
@@ -1618,7 +1618,7 @@ class TestRunVocalOrder:
         None
         """
         settings = _settings()
-        settings["vocalization_settings"]["vocal_target"] = "multinomial"
+        settings["vocalizations"]["vocal_target"] = "multinomial"
         calls = self._install(monkeypatch)
         monkeypatch.setattr(vocal, "run_vocalization_identity", _recording_stub(
             calls, "run_vocalization_identity",
@@ -1647,7 +1647,7 @@ class TestRunVocalOrder:
         None
         """
         settings = _settings()
-        settings["vocalization_settings"]["vocal_target"] = "categories"
+        settings["vocalizations"]["vocal_target"] = "categories"
         calls = self._install(monkeypatch)
         with pytest.raises(ValueError, match="vocal_target"):
             vocal.run_vocal(UNIT, settings, "/data", str(tmp_path), 1, vocal.VOCAL_STEPS, _quiet)
@@ -1682,7 +1682,7 @@ class TestNotVocalTestable:
                      "run_nested_vocal_decoding", "run_vocal_gating"):
             monkeypatch.setattr(vocal, name, _recording_stub(calls, name, {}))
         settings = _settings()
-        settings["data_sufficiency"]["min_vocal_sessions"] = 2
+        settings["cohort"]["min_vocal_sessions"] = 2
         unit = {**UNIT, "courtship_sessions": [f"s0#block{i}" for i in range(5)], "vocal_sessions": ["s0#block0"]}
 
         vocal.run_vocal(unit, settings, "/data", str(tmp_path), 1, vocal.VOCAL_STEPS, _quiet)
@@ -1823,7 +1823,7 @@ class TestVocalCommandLine:
         None
         """
         settings = _settings()
-        settings["data_sufficiency"]["min_emitter_usvs_per_session"] = 3
+        settings["cohort"]["min_emitter_usvs_per_session"] = 3
         settings_path = tmp_path / "settings.json"
         settings_path.write_text(json.dumps(settings))
         calls = self._install(monkeypatch)

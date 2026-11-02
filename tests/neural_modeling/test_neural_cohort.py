@@ -215,7 +215,7 @@ class TestShippedSettings:
         one courtship session (a one-session unit is tested on blocks), so the cohort a run uses is the
         intended one."""
         with SETTINGS_PATH.open() as handle:
-            sufficiency = json.load(handle)["data_sufficiency"]
+            sufficiency = json.load(handle)["cohort"]
         assert sufficiency["min_emitter_usvs_per_session"] == 20
         assert sufficiency["min_vocal_sessions"] == 2
         assert sufficiency["min_courtship_sessions"] == 1
@@ -225,8 +225,8 @@ class TestShippedSettings:
         only discards anchors. A key here could therefore only mislead, so there must not be one."""
         with SETTINGS_PATH.open() as handle:
             settings = json.load(handle)
-        assert "block_cv_gap_seconds" not in settings["data_sufficiency"]
-        assert settings["data_sufficiency"]["single_session_blocks"] == 5
+        assert "block_cv_gap_seconds" not in settings["cohort"]
+        assert settings["cohort"]["single_session_blocks"] == 5
 
     def test_the_filter_band_knob_is_absent_until_the_band_is_built(self):
         """The reported filter band is a RESAMPLING of the representative model's quiet anchors with
@@ -535,12 +535,12 @@ class TestBuildCohortManifest:
         with SETTINGS_PATH.open() as handle:
             shipped = json.load(handle)
         settings = copy.deepcopy(shipped)
-        settings["data"]["session_list_files"] = [str(tmp_path / "intact.txt"), str(tmp_path / "mute.txt")]
-        settings["data_roots"]["catalog_path"] = str(catalog)
-        settings["data_roots"]["data_root"] = str(data_root)
-        settings["data_sufficiency"]["min_emitter_usvs_per_session"] = 2
-        settings["data_sufficiency"]["min_courtship_sessions"] = 2
-        settings["vocalization_settings"]["vocal_emitter"] = "self"
+        settings["paths"]["session_list_files"] = [str(tmp_path / "intact.txt"), str(tmp_path / "mute.txt")]
+        settings["paths"]["catalog_path"] = str(catalog)
+        settings["paths"]["data_root"] = str(data_root)
+        settings["cohort"]["min_emitter_usvs_per_session"] = 2
+        settings["cohort"]["min_courtship_sessions"] = 2
+        settings["vocalizations"]["vocal_emitter"] = "self"
 
         manifest = build_cohort_manifest(settings)
         assert [unit["unit_uid"] for unit in manifest] == ["m1_20250101_u1"]
@@ -550,7 +550,7 @@ class TestBuildCohortManifest:
         assert unit["vocal_sessions"] == [SESSION_A]
         assert unit["vocal_testable"] is False
         assert unit["rec_date"] == 20250101
-        assert shipped["data_sufficiency"]["min_emitter_usvs_per_session"] == 20
+        assert shipped["cohort"]["min_emitter_usvs_per_session"] == 20
 
 
 class TestBlockUnits:

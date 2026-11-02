@@ -48,7 +48,7 @@ def wrapped_square_distance(points: np.ndarray, nodes: np.ndarray, period: float
     nodes (np.ndarray)
         ``(n_nodes, 2)`` positions.
     period (float)
-        Per-axis wrap period of the torus (``vocalization_settings.torus_period``).
+        Per-axis wrap period of the torus (``vocalizations.torus_period``).
 
     Returns
     -------
@@ -324,7 +324,7 @@ def inner_rotation_splits(train_sessions: list, rows_by_session: dict, event_tim
         Time of each event in seconds (onset, or window left edge), used only to order the events of a
         single training session; ``None`` disables the single-session fallback.
     single_session_blocks (int)
-        Blocks a single training session is cut into (``data_sufficiency.single_session_blocks``).
+        Blocks a single training session is cut into (``cohort.single_session_blocks``).
 
     Returns
     -------
@@ -376,14 +376,14 @@ def decoding_context(positions: np.ndarray, session_index: np.ndarray, settings:
     settings (dict)
         The ``vocal_decoding`` block; ``tuning_surface`` supplies grid, bandwidth, basis and mask knobs.
     period (float)
-        Per-axis wrap period of the torus (``vocalization_settings.torus_period``). It is stored on
+        Per-axis wrap period of the torus (``vocalizations.torus_period``). It is stored on
         each fold so the scorer uses the period the geometry was built with.
     event_times (np.ndarray)
         Onset time of each event in seconds, used to cut a fold's single training session into blocks
         for its inner splits. The per-unit dispatcher always passes it; ``None`` leaves such a fold
         without inner splits.
     single_session_blocks (int)
-        Blocks a single training session is cut into (``data_sufficiency.single_session_blocks``).
+        Blocks a single training session is cut into (``cohort.single_session_blocks``).
 
     Returns
     -------
@@ -818,7 +818,7 @@ def bump_basis_gain(counts: np.ndarray, positions: np.ndarray, session_index: np
         Onset time of each event in seconds, passed to :func:`decoding_context` for the inner splits
         of a fold with a single training session; ``None`` leaves such a fold without them.
     single_session_blocks (int)
-        Blocks a single training session is cut into (``data_sufficiency.single_session_blocks``).
+        Blocks a single training session is cut into (``cohort.single_session_blocks``).
 
     Returns
     -------
@@ -858,7 +858,7 @@ def basis_context(positions: np.ndarray, session_index: np.ndarray, settings: di
         Onset time of each event in seconds, passed to :func:`decoding_context` for the inner splits
         of a fold with a single training session; ``None`` leaves such a fold without them.
     single_session_blocks (int)
-        Blocks a single training session is cut into (``data_sufficiency.single_session_blocks``).
+        Blocks a single training session is cut into (``cohort.single_session_blocks``).
 
     Returns
     -------
@@ -880,6 +880,46 @@ def basis_context(positions: np.ndarray, session_index: np.ndarray, settings: di
         return decode_gain(counts, folds, local, permutation, with_detail)
 
     return folds, score
+
+
+#: The identity axis's null, as ``vocal_decoding.discrimination_null`` must declare it: counts permuted
+#: across events within each session (positions or categories stay with their events), and the
+#: one-sided upper p of the observed gain among the draws.
+IDENTITY_NULL = {"method": "within_session_position_permutation", "sided": "one_sided_upper"}
+
+
+def check_identity_null(decoding: dict) -> None:
+    """
+    Description
+    -----------
+    Refuse a ``vocal_decoding.discrimination_null`` block that declares a null this package does not run.
+
+    The identity null permutes the unit's counts across events within each session, leaving every
+    event's position (or category) and fold in place, and the p-value is the one-sided upper tail of the
+    observed gain among the draws. ``method`` and ``sided`` name that procedure (:data:`IDENTITY_NULL`);
+    unchecked, they could declare another one and be reported as such.
+
+    Parameters
+    ----------
+    decoding (dict)
+        The ``vocal_decoding`` block.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    ValueError
+        If ``method`` or ``sided`` names anything else.
+    """
+
+    for key, implemented in IDENTITY_NULL.items():
+        declared = decoding["discrimination_null"][key]
+        if declared != implemented:
+            msg = (f"vocal_decoding.discrimination_null.{key} = {declared!r} is not implemented; the "
+                   f"identity null is {implemented!r}.")
+            raise ValueError(msg)
 
 
 def left_tail_anti_alignment(null: np.ndarray, observed: float) -> dict:
@@ -945,7 +985,7 @@ def flagged_descriptors(counts: np.ndarray, positions: np.ndarray, session_index
         Onset time of each event in seconds, passed to :func:`decoding_context` for the inner splits
         of a fold with a single training session; ``None`` leaves such a fold without them.
     single_session_blocks (int)
-        Blocks a single training session is cut into (``data_sufficiency.single_session_blocks``).
+        Blocks a single training session is cut into (``cohort.single_session_blocks``).
 
     Returns
     -------

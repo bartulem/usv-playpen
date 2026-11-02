@@ -110,7 +110,7 @@ class TestBookkeeping:
     def test_a_fold_is_current_only_under_its_own_settings(self, tmp_path):
         """A fold file written under other settings, or absent, must be re-run."""
         settings, other = load_settings(), load_settings()
-        other["null"]["shuffle_seed"] = int(other["null"]["shuffle_seed"]) + 1
+        other["inference"]["shuffle_seed"] = int(other["inference"]["shuffle_seed"]) + 1
         assert not fold_is_current(str(tmp_path), RECORD, 0, settings)
         write_fold_artifact({"fold_index": 0, "no_model": True}, RECORD, 0, str(tmp_path), settings,
                             message_output=lambda *_a: None)
@@ -137,11 +137,11 @@ class TestBookkeeping:
     def test_missing_inputs_are_named(self, tmp_path):
         """Every absent input is reported before an array is launched."""
         settings = load_settings()
-        settings["data_roots"]["catalog_path"] = str(tmp_path / "absent_catalog.csv")
-        settings["data_roots"]["data_root"] = str(tmp_path)
+        settings["paths"]["catalog_path"] = str(tmp_path / "absent_catalog.csv")
+        settings["paths"]["data_root"] = str(tmp_path)
         for target in ("manifold", "multinomial"):
-            settings["nested_vocal_decoding"]["behaviour_control_model_path"][target] = str(tmp_path)
-            settings["data"]["behaviour_selection_result_path"][target] = str(tmp_path)
+            settings["paths"]["behaviour_control_model_path"][target] = str(tmp_path)
+            settings["paths"]["behaviour_selection_result_path"][target] = str(tmp_path)
         missing = check_inputs(settings)
         assert len(missing) == 1
         assert "unit catalog" in missing[0]

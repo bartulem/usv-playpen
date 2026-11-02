@@ -408,7 +408,7 @@ def kinematic_encoding_holds(encoding: dict, settings: dict) -> bool:
     -----------
     Whether the unit's kinematic encoding is significant on HELD-OUT data -- the quiet test of the
     representative model against its shift null, at the uncorrected level the pipeline's per-unit reading
-    uses (``significance.fdr_q``). This, not whether some fold's screen let a feature through, decides how
+    uses (``inference.fdr_q``). This, not whether some fold's screen let a feature through, decides how
     the unit is drawn: a feature that passes one fold's screen inside its training sessions and then fails
     the held-out session is not a kinematic feature of the unit.
 
@@ -425,7 +425,7 @@ def kinematic_encoding_holds(encoding: dict, settings: dict) -> bool:
         True when the held-out quiet p is below the level.
     """
 
-    return bool(np.isfinite(encoding["quiet_p"]) and encoding["quiet_p"] < settings["significance"]["fdr_q"])
+    return bool(np.isfinite(encoding["quiet_p"]) and encoding["quiet_p"] < settings["inference"]["fdr_q"])
 
 
 def feature_label(feature_name: str) -> str:
@@ -662,7 +662,7 @@ def tuning_data(unit_uid: str, paths: FigurePaths, identity: dict, encoding: dic
             return pickle.load(cache_file)
 
     kinematic = settings["kinematic_encoding"]
-    vocalization = settings["vocalization_settings"]
+    vocalization = settings["vocalizations"]
     per_session = assemble_unit_sessions(identity, str(paths.data_root), settings["kinematic_features"],
                                          kinematic["history_pre_seconds"], kinematic["clean_post_seconds"],
                                          vocalization["clean_against"],
@@ -787,7 +787,7 @@ def rate_trace_data(unit_uid: str, paths: FigurePaths, identity: dict, encoding:
         with cache_path.open("rb") as cache_file:
             return pickle.load(cache_file)
     kinematic = settings["kinematic_encoding"]
-    vocalization = settings["vocalization_settings"]
+    vocalization = settings["vocalizations"]
     per_session = assemble_unit_sessions(identity, str(paths.data_root), settings["kinematic_features"],
                                          kinematic["history_pre_seconds"], kinematic["clean_post_seconds"],
                                          vocalization["clean_against"],
@@ -1023,7 +1023,7 @@ def draw_rate_traces(quiet_axis, vocal_axis, data: dict, settings: dict) -> None
     """
 
     fps = data["fps"]
-    guard = float(settings["null"]["shuffle_guard_seconds"])
+    guard = float(settings["inference"]["shuffle_guard_seconds"])
     rng = np.random.default_rng(RATE_NULL_SEED)
 
     def summary(label, spikes, frames, probability, n_frames):
@@ -1149,7 +1149,7 @@ def session_trace_data(unit_uid: str, paths: FigurePaths, identity: dict, settin
         with cache_path.open("rb") as cache_file:
             return pickle.load(cache_file)
     kinematic = settings["kinematic_encoding"]
-    vocalization = settings["vocalization_settings"]
+    vocalization = settings["vocalizations"]
     per_session = assemble_unit_sessions(identity, str(paths.data_root), settings["kinematic_features"],
                                          kinematic["history_pre_seconds"], kinematic["clean_post_seconds"],
                                          vocalization["clean_against"],
@@ -1245,7 +1245,7 @@ def session_overlap(entry: dict, settings: dict, rng) -> dict:
         sigma = sigma_ms / 1000.0 * fps
         return masked_smooth(spikes * fps, has, sigma), masked_smooth(probability * fps, has, sigma)
 
-    guard = float(settings["null"]["shuffle_guard_seconds"])
+    guard = float(settings["inference"]["shuffle_guard_seconds"])
     shifts = [int(np.rint(sample_circular_shift(rng, n_frames, fps, guard) * fps)) for _ in range(RATE_NULL_DRAWS)]
     metrics = {"session_id": entry["session_id"], "features": " + ".join(entry["features"])}
     drawn = None
@@ -1879,8 +1879,9 @@ def draw_selection(axis, forward_path: list, fold_scores: dict, title: str | Non
     axis (matplotlib.axes.Axes)
         Target axis.
     forward_path (list)
-        The representative fold's forward path: ``step``, ``candidate``, ``decision``, ``mean``,
-        ``improvement``, ``standard_error``.
+        The representative fold's forward path: ``step``, ``candidate``, ``decision``, ``mean`` and
+        ``improvement`` (paths written before the per-step shift test carry ``'ANCHOR'`` on their
+        first step, which is drawn as accepted without a gain).
     fold_scores (dict)
         Step to rebuilt inner-fold scores.
     title (str)
@@ -2151,7 +2152,7 @@ def gating_proximity_data(unit_uid: str, paths: FigurePaths, identity: dict, set
             return pickle.load(cache_file)
 
     kinematic = settings["kinematic_encoding"]
-    vocalization = settings["vocalization_settings"]
+    vocalization = settings["vocalizations"]
     per_session = assemble_unit_sessions(identity, str(paths.data_root), settings["kinematic_features"],
                                          kinematic["history_pre_seconds"], kinematic["clean_post_seconds"],
                                          vocalization["clean_against"],
@@ -2188,7 +2189,7 @@ def gating_proximity_data(unit_uid: str, paths: FigurePaths, identity: dict, set
         focal = usvs.filter(usvs["emitter"] == identity["mouse_id"])
         starts = focal["start"].to_numpy()
         stops = focal["stop"].to_numpy()
-        categories = focal[settings["nested_vocal_decoding"]["region_label_column"]].to_numpy()
+        categories = focal[settings["vocalizations"]["category_column"]].to_numpy()
         for start, stop, category in zip(starts, stops, categories, strict=True):
             first = int(np.floor(start * fps))
             last = int(np.ceil(stop * fps))
@@ -2506,7 +2507,7 @@ def vocal_event_data(unit_uid: str, paths: FigurePaths, identity: dict, settings
         with cache_path.open("rb") as cache_file:
             return pickle.load(cache_file)
 
-    window = settings["vocalization_settings"]["spike_window"]
+    window = settings["vocalizations"]["spike_window"]
     events = assemble_unit_vocal_events(identity, str(paths.data_root), copy.deepcopy(settings),
                                         window["pre_offset_seconds"], window["width_seconds"])
     paths.cache_directory.mkdir(parents=True, exist_ok=True)
@@ -2629,13 +2630,13 @@ def draw_tuning_map(axis, identity_section: dict, events: dict, settings: dict) 
 
     surface_settings = settings["vocal_decoding"]["tuning_surface"]
     grid_n = surface_settings["grid_n"]
-    grid, _cell = torus_grid(grid_n, settings["vocalization_settings"]["torus_period"])
-    basis = fourier_basis(grid, surface_settings["fourier_k"], settings["vocalization_settings"]["torus_period"])
+    grid, _cell = torus_grid(grid_n, settings["vocalizations"]["torus_period"])
+    basis = fourier_basis(grid, surface_settings["fourier_k"], settings["vocalizations"]["torus_period"])
     surfaces = [np.exp(np.clip(fold["alpha"] * (basis @ np.asarray(fold["coefficients"])[:-1]), -10.0, 5.0))
                 for fold in identity_section["per_fold"]]
     surface = grid_image(np.mean(surfaces, axis=0), grid_n)
 
-    occupancy = torus_occupancy(events["positions"], grid, surface_settings["kde_bandwidth"], settings["vocalization_settings"]["torus_period"])
+    occupancy = torus_occupancy(events["positions"], grid, surface_settings["kde_bandwidth"], settings["vocalizations"]["torus_period"])
     surface = np.where(grid_image(occupancy, grid_n) >= surface_settings["decode_grid_min_occupancy"],
                        surface, np.nan)
     colormap = plt.get_cmap(SEQUENTIAL_CMAP).copy()
@@ -2683,7 +2684,7 @@ def draw_category_rates(axis, identity_section: dict, settings: dict, session_id
     None
     """
 
-    width = float(settings["vocalization_settings"]["spike_window"]["width_seconds"])
+    width = float(settings["vocalizations"]["spike_window"]["width_seconds"])
     categories = [float(value) for value in identity_section["categories"]]
     rates = np.asarray([fold["rates"] for fold in identity_section["per_fold"]], dtype=np.float64) / width
     positions = np.arange(len(categories))
@@ -2737,7 +2738,7 @@ def category_label_points(positions: np.ndarray, labels: np.ndarray, categories:
     """
 
     surface_settings = settings["vocal_decoding"]["tuning_surface"]
-    period = settings["vocalization_settings"]["torus_period"]
+    period = settings["vocalizations"]["torus_period"]
     grid, _cell = torus_grid(ERROR_DISPLAY_POINTS, period)
     delta = (grid[:, None, :] - positions[None, :, :] + 0.5 * period) % period - 0.5 * period
     weights = np.exp(-0.5 * np.sum(delta ** 2, axis=2) / ERROR_SIGMA ** 2)
@@ -2875,7 +2876,7 @@ def category_confusion(unit_uid: str, events: dict, identity_section: dict, sett
     counts = np.asarray(events["counts"], dtype=np.float64)[kept]
     session_index = np.asarray(events["session_index"])[kept]
     folds = category_context(codes, session_index, np.asarray(events["vocalization_start"])[kept],
-                             int(settings["data_sufficiency"]["single_session_blocks"]))
+                             int(settings["cohort"]["single_session_blocks"]))
     n_categories = values.size
     log_ratio = np.full((codes.size, n_categories), np.nan)
     stored = iter(identity_section["per_fold"])
@@ -3046,7 +3047,7 @@ def nested_event_data(unit_uid: str, paths: FigurePaths, identity: dict, setting
 
     nested = nested_settings(settings)
     kinematic = settings["kinematic_encoding"]
-    vocalization = settings["vocalization_settings"]
+    vocalization = settings["vocalizations"]
     window = vocalization["spike_window"]
     events = assemble_unit_vocal_events(identity, str(paths.data_root), copy.deepcopy(settings),
                                         window["pre_offset_seconds"], window["width_seconds"])
@@ -3063,9 +3064,9 @@ def nested_event_data(unit_uid: str, paths: FigurePaths, identity: dict, setting
     positions = np.asarray(design["positions"], dtype=np.float64)
     session_index = np.asarray(design["session_index"])
     folds = decoding_context(positions, session_index, settings["vocal_decoding"],
-                             settings["vocalization_settings"]["torus_period"],
+                             settings["vocalizations"]["torus_period"],
                              np.asarray(events["vocalization_start"])[design["kept"]],
-                             int(settings["data_sufficiency"]["single_session_blocks"]))
+                             int(settings["cohort"]["single_session_blocks"]))
     kappas, priors = behaviour_priors(folds, design["behaviour_control"]["predicted_positions"],
                                       positions, nested)
     session_ids = list(events["session_ids"])
@@ -3128,7 +3129,7 @@ def category_nested_event_data(unit_uid: str, paths: FigurePaths, identity: dict
 
     nested = nested_settings(settings)
     kinematic = settings["kinematic_encoding"]
-    vocalization = settings["vocalization_settings"]
+    vocalization = settings["vocalizations"]
     window = vocalization["spike_window"]
     events = assemble_unit_vocal_events(identity, str(paths.data_root), copy.deepcopy(settings),
                                         window["pre_offset_seconds"], window["width_seconds"])
@@ -3147,7 +3148,7 @@ def category_nested_event_data(unit_uid: str, paths: FigurePaths, identity: dict
     log_evidence = np.log(np.maximum(evidence[labelled][:, columns], 1e-300))
     session_index = np.asarray(design["session_index"])[labelled]
     times = np.asarray(events["vocalization_start"])[design["kept"]][labelled]
-    folds = category_context(codes, session_index, times, int(settings["data_sufficiency"]["single_session_blocks"]))
+    folds = category_context(codes, session_index, times, int(settings["cohort"]["single_session_blocks"]))
     kappas, tilts = category_behaviour_tilts(folds, codes, log_evidence, nested["behaviour_prior"]["kappa_grid"])
     surface = settings["vocal_decoding"]["category_surface"]
     session_ids = list(events["session_ids"])
@@ -3426,14 +3427,14 @@ def smoothed_manifold_field(positions: np.ndarray, values: np.ndarray, settings:
 
     surface_settings = settings["vocal_decoding"]["tuning_surface"]
     grid_n = ERROR_DISPLAY_POINTS
-    period = settings["vocalization_settings"]["torus_period"]
+    period = settings["vocalizations"]["torus_period"]
     grid, _cell = torus_grid(grid_n, period)
     delta = (grid[:, None, :] - positions[None, :, :] + 0.5 * period) % period - 0.5 * period
     weights = np.exp(-0.5 * np.sum(delta ** 2, axis=2) / ERROR_SIGMA ** 2)
     totals = weights.sum(axis=1)
     field = np.divide(weights @ values, totals, out=np.full(grid.shape[0], np.nan),
                       where=totals > 0.0)
-    occupancy = torus_occupancy(positions, grid, surface_settings["kde_bandwidth"], settings["vocalization_settings"]["torus_period"])
+    occupancy = torus_occupancy(positions, grid, surface_settings["kde_bandwidth"], settings["vocalizations"]["torus_period"])
     shown = occupancy >= surface_settings["decode_grid_min_occupancy"]
     field[~shown] = np.nan
 
@@ -3567,8 +3568,8 @@ def draw_call_density(axis, positions: np.ndarray, settings: dict) -> None:
     """
 
     surface_settings = settings["vocal_decoding"]["tuning_surface"]
-    grid, _cell = torus_grid(ERROR_DISPLAY_POINTS, settings["vocalization_settings"]["torus_period"])
-    occupancy = torus_occupancy(np.asarray(positions), grid, surface_settings["kde_bandwidth"], settings["vocalization_settings"]["torus_period"])
+    grid, _cell = torus_grid(ERROR_DISPLAY_POINTS, settings["vocalizations"]["torus_period"])
+    occupancy = torus_occupancy(np.asarray(positions), grid, surface_settings["kde_bandwidth"], settings["vocalizations"]["torus_period"])
     field = grid_image(occupancy, ERROR_DISPLAY_POINTS)
     # A short colour-bar label: the long one ran vertically almost into the next panel, and the title
     # plus this docstring already say the weighting is the tuning surface's own KDE occupancy.
@@ -4221,7 +4222,7 @@ def unit_brain_areas(catalog_path: str, unit_uids: list) -> dict:
     Parameters
     ----------
     catalog_path (str)
-        The unit catalog (``data_roots.catalog_path``).
+        The unit catalog (``paths.catalog_path``).
     unit_uids (list)
         Units to look up.
 
@@ -4283,7 +4284,7 @@ def plot_neural_modeling_units(results_directory: str, output_directory: str, da
     paths = FigurePaths(results_directory=results, data_root=pathlib.Path(data_root),
                         cache_directory=output_directory / f"cache_{shipped_sha[:12]}")
     uids = list(unit_uids) if unit_uids else sorted(path.stem for path in results.glob("*.pkl"))
-    brain_areas = unit_brain_areas(settings["data_roots"]["catalog_path"], uids)
+    brain_areas = unit_brain_areas(settings["paths"]["catalog_path"], uids)
     written = []
     for unit_uid in uids:
         region = brain_areas[unit_uid]

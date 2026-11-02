@@ -46,6 +46,7 @@ from usv_playpen.neural_modeling.behaviour_control_model import (
     EMBEDDING_COLUMNS,
     apply_behaviour_control,
     assemble_cohort,
+    behaviour_history_lags,
     category_control_evidence,
     control_estimator,
     control_predictions,
@@ -527,7 +528,7 @@ class TestControlEstimator:
         block["lambda_smooth"] = 3.0
         block["l2_reg"] = 0.2
         block["smoothness_derivative_order"] = 2
-        settings["vocalization_settings"]["torus_period"] = 2.0
+        settings["vocalizations"]["torus_period"] = 2.0
         model = control_estimator(3, 4, settings)
         assert model.lambda_smooth == 3.0
         assert model.l2_reg == 0.2
@@ -667,7 +668,7 @@ class TestLoadControlModel:
         ``ValueError`` ("behaviour control drift") instead of being applied."""
         path = tmp_path / "control.pkl"
         write_control_model(artifact, str(path))
-        settings["nested_vocal_decoding"]["behaviour_control_model_path"]["manifold"] = str(path)
+        settings["paths"]["behaviour_control_model_path"]["manifold"] = str(path)
         settings["nested_vocal_decoding"]["reduced_model_features"]["manifold"] = ["nose-nose"]
         with pytest.raises(ValueError, match="behaviour control drift"):
             load_control_model(settings, "manifold")
@@ -677,7 +678,7 @@ class TestLoadControlModel:
         drift guard does not refuse a valid control."""
         path = tmp_path / "control.pkl"
         write_control_model(artifact, str(path))
-        settings["nested_vocal_decoding"]["behaviour_control_model_path"]["manifold"] = str(path)
+        settings["paths"]["behaviour_control_model_path"]["manifold"] = str(path)
         settings["nested_vocal_decoding"]["reduced_model_features"]["manifold"] = list(
             artifact["features"])
         assert load_control_model(settings, "manifold")["features"] == artifact["features"]
@@ -713,7 +714,7 @@ class TestLoadControlModel:
     def test_a_missing_control_names_the_dispatcher(self, settings: dict, tmp_path) -> None:
         """A missing control file must raise ``FileNotFoundError`` naming the behaviour-control dispatcher, so the
         reader knows which job produces it."""
-        settings["nested_vocal_decoding"]["behaviour_control_model_path"]["manifold"] = str(
+        settings["paths"]["behaviour_control_model_path"]["manifold"] = str(
             tmp_path / "absent.pkl")
         with pytest.raises(FileNotFoundError, match="behaviour-control dispatcher"):
             load_control_model(settings, "manifold")
@@ -729,12 +730,17 @@ class TestReducedModelFeaturesRepoint:
 
     def test_a_behavioural_selection_feature_set_is_adopted(self, settings: dict,
                                                             tmp_path) -> None:
-        """The last forward step's `current_features` is the selected set."""
+        """The selected set is the `final_model_features` of the one step that carries it -- here the
+        last step, which was accepted, so its `current_features` (the model BEFORE its winner) lacks
+        the last feature and must not be read."""
         path = tmp_path / "behavioural.pkl"
         chosen = ["allo_yaw-head", "self.neck_elevation", "head-head"]
-        path.write_bytes(pickle.dumps({"steps": [{"current_features": chosen[:1]},
-                                                 {"current_features": chosen}]}))
-        settings["data"]["behaviour_selection_result_path"]["manifold"] = str(path)
+        path.write_bytes(pickle.dumps({"steps": [
+            {"selected_feature": chosen[0], "current_features": []},
+            {"selected_feature": chosen[1], "current_features": chosen[:1]},
+            {"selected_feature": chosen[2], "current_features": chosen[:2],
+             "final_model_features": chosen}]}))
+        settings["paths"]["behaviour_selection_result_path"]["manifold"] = str(path)
         settings["nested_vocal_decoding"]["reduced_model_features"]["manifold"] = chosen
         assert reduced_model_features(settings, "manifold") == chosen
 
@@ -742,17 +748,49 @@ class TestReducedModelFeaturesRepoint:
                                                             tmp_path) -> None:
         """Adopting a feature set must not let a re-selection silently redefine the control."""
         path = tmp_path / "behavioural.pkl"
-        path.write_bytes(pickle.dumps({"steps": [{"current_features": ["head-head"]}]}))
-        settings["data"]["behaviour_selection_result_path"]["manifold"] = str(path)
+        path.write_bytes(pickle.dumps({"steps": [{"current_features": [],
+                                                  "final_model_features": ["head-head"]}]}))
+        settings["paths"]["behaviour_selection_result_path"]["manifold"] = str(path)
         settings["nested_vocal_decoding"]["reduced_model_features"]["manifold"] = ["nose-nose"]
         with pytest.raises(ValueError, match="behaviour selection drift"):
+            reduced_model_features(settings, "manifold")
+
+    @pytest.mark.parametrize("n_carriers", [0, 2])
+    def test_a_selection_without_exactly_one_result_step_is_refused(self, settings: dict, tmp_path,
+                                                                     n_carriers: int) -> None:
+        """
+        Description
+        -----------
+        A behavioural selection writes ``final_model_features`` to exactly one step. None (an
+        unfinished run) or two (an ambiguous file) must raise rather than guess which list is meant.
+
+        Parameters
+        ----------
+        settings (dict)
+            The shipped settings.
+        tmp_path (pathlib.Path)
+            Where the fake selection is written.
+        n_carriers (int)
+            How many steps carry ``final_model_features``.
+
+        Returns
+        -------
+        None
+        """
+        steps = [{"current_features": []}, {"current_features": ["head-head"]}]
+        for step in steps[:n_carriers]:
+            step["final_model_features"] = ["head-head"]
+        path = tmp_path / "behavioural.pkl"
+        path.write_bytes(pickle.dumps({"steps": steps}))
+        settings["paths"]["behaviour_selection_result_path"]["manifold"] = str(path)
+        with pytest.raises(ValueError, match="carrying 'final_model_features'"):
             reduced_model_features(settings, "manifold")
 
     def test_an_unrecognised_artifact_is_refused(self, settings: dict, tmp_path) -> None:
         """Neither shape present would otherwise raise an unhelpful KeyError deep in the reader."""
         path = tmp_path / "mystery.pkl"
         path.write_bytes(pickle.dumps({"something_else": ["a"]}))
-        settings["data"]["behaviour_selection_result_path"]["manifold"] = str(path)
+        settings["paths"]["behaviour_selection_result_path"]["manifold"] = str(path)
         with pytest.raises(ValueError, match="neither a cohort selection result"):
             reduced_model_features(settings, "manifold")
 
@@ -762,7 +800,7 @@ class TestReducedModelFeaturesRepoint:
         path = tmp_path / "selection.pkl"
         chosen = ["nose-nose", "other.speed", "allo_yaw-nose"]
         path.write_bytes(pickle.dumps({"selected_features": chosen}))
-        settings["data"]["behaviour_selection_result_path"]["manifold"] = str(path)
+        settings["paths"]["behaviour_selection_result_path"]["manifold"] = str(path)
         settings["nested_vocal_decoding"]["reduced_model_features"]["manifold"] = chosen
         assert reduced_model_features(settings, "manifold") == chosen
 
@@ -770,7 +808,7 @@ class TestReducedModelFeaturesRepoint:
         """Freezing alone lets the control drift; reading alone lets a re-run redefine the claim."""
         path = tmp_path / "selection.pkl"
         path.write_bytes(pickle.dumps({"selected_features": ["nose-nose"]}))
-        settings["data"]["behaviour_selection_result_path"]["manifold"] = str(path)
+        settings["paths"]["behaviour_selection_result_path"]["manifold"] = str(path)
         settings["nested_vocal_decoding"]["reduced_model_features"]["manifold"] = ["other.speed"]
         with pytest.raises(ValueError, match="behaviour selection drift"):
             reduced_model_features(settings, "manifold")
@@ -837,7 +875,7 @@ class TestSessionVocalizationDesign:
         settings (dict)
             The shipped settings, adjusted in place for the synthetic session.
         emitter (str)
-            ``vocalization_settings.vocal_emitter``.
+            ``vocalizations.vocal_emitter``.
 
         Returns
         -------
@@ -850,9 +888,9 @@ class TestSessionVocalizationDesign:
                                (80.0, 80.1, "female", False, False),
                                (99.97, 99.99, "male", True, False),   # noise just before 100 s
                                (100.0, 100.1, "male", False, False)])
-        settings["data_roots"]["data_root"] = str(tmp_path)
-        settings["data_sufficiency"]["min_emitter_usvs_per_session"] = 1
-        settings["vocalization_settings"]["vocal_emitter"] = emitter
+        settings["paths"]["data_root"] = str(tmp_path)
+        settings["cohort"]["min_emitter_usvs_per_session"] = 1
+        settings["vocalizations"]["vocal_emitter"] = emitter
         frames = pls.DataFrame({"f": np.arange(self.N_FRAMES, dtype=np.float64)})
         monkeypatch.setattr(control_module, "build_zscored_feature_frames",
                             lambda **_kwargs: ({self.SESSION: frames}, {self.SESSION: self.FPS}, {}, {}))
@@ -925,9 +963,9 @@ class TestSessionVocalizationDesign:
                 (70.12, 70.2, "male", False, False, 0.2), (89.9, 89.95, "female", False, False, 0.2),
                 (90.0, 90.1, "male", False, False, 0.6), (100.1, 100.2, "male", False, False, 0.2)]
         self._write(tmp_path, [row[:5] for row in rows], first_coordinates=[row[5] for row in rows])
-        settings["data_roots"]["data_root"] = str(tmp_path)
-        settings["data_sufficiency"]["min_emitter_usvs_per_session"] = 6
-        settings["vocalization_settings"]["vocal_emitter"] = "self"
+        settings["paths"]["data_root"] = str(tmp_path)
+        settings["cohort"]["min_emitter_usvs_per_session"] = 6
+        settings["vocalizations"]["vocal_emitter"] = "self"
         series = np.arange(1000, dtype=np.float64)
         series[10] = np.nan
         frames = pls.DataFrame({"f": series})
@@ -1020,7 +1058,7 @@ class TestSessionVocalizationDesign:
         None
         """
         self._write_tracking_only(tmp_path, [b"male", b"female", b"third"])
-        settings["data_roots"]["data_root"] = str(tmp_path)
+        settings["paths"]["data_root"] = str(tmp_path)
         block = session_vocalization_design(str(tmp_path / self.SESSION), settings, 5)
         assert block == {"session_id": self.SESSION, "reason": "3 tracked animals"}
 
@@ -1044,7 +1082,7 @@ class TestSessionVocalizationDesign:
         None
         """
         self._write_tracking_only(tmp_path, [b"male", b"female"])
-        settings["data_roots"]["data_root"] = str(tmp_path)
+        settings["paths"]["data_root"] = str(tmp_path)
         block = session_vocalization_design(str(tmp_path / self.SESSION), settings, 5)
         assert set(block) == {"session_id", "reason"}
         assert block["reason"].startswith("usv_summary not found")
@@ -1071,7 +1109,7 @@ class TestSessionVocalizationDesign:
         self._write(tmp_path, [(50.0, 50.1, "male", False, False)])
         summary = tmp_path / self.SESSION / "audio" / f"{self.SESSION}_usv_summary.csv"
         pls.read_csv(summary).drop("qlvm2").write_csv(summary)
-        settings["data_roots"]["data_root"] = str(tmp_path)
+        settings["paths"]["data_root"] = str(tmp_path)
         with pytest.raises(KeyError, match=re.escape("usv_summary lacks ['qlvm2']")):
             session_vocalization_design(str(tmp_path / self.SESSION), settings, 5)
 
@@ -1101,9 +1139,9 @@ class TestSessionVocalizationDesign:
                                (70.0, 70.1, "male", False, True),
                                (80.0, 80.1, "female", False, False),
                                (100.0, 100.1, "male", False, False)])
-        settings["data_roots"]["data_root"] = str(tmp_path)
-        settings["data_sufficiency"]["min_emitter_usvs_per_session"] = 3
-        settings["vocalization_settings"]["vocal_emitter"] = "self"
+        settings["paths"]["data_root"] = str(tmp_path)
+        settings["cohort"]["min_emitter_usvs_per_session"] = 3
+        settings["vocalizations"]["vocal_emitter"] = "self"
         block = session_vocalization_design(str(tmp_path / self.SESSION), settings, 5)
         assert block == {"session_id": self.SESSION, "reason": "2 emitter vocalizations"}
 
@@ -1130,8 +1168,8 @@ class TestSessionVocalizationDesign:
         None
         """
         self._write(tmp_path, [(50.0, 50.1, "male", False, False), (100.0, 100.1, "male", False, False)])
-        settings["data_roots"]["data_root"] = str(tmp_path)
-        settings["data_sufficiency"]["min_emitter_usvs_per_session"] = 1
+        settings["paths"]["data_root"] = str(tmp_path)
+        settings["cohort"]["min_emitter_usvs_per_session"] = 1
         frames = pls.DataFrame({"f": np.arange(self.N_FRAMES, dtype=np.float64)})
         monkeypatch.setattr(control_module, "build_zscored_feature_frames",
                             lambda **_kwargs: ({self.SESSION: frames}, {self.SESSION: self.FPS}, {}, {}))
@@ -1150,7 +1188,7 @@ class TestLegacyCountKeys:
                                                                      "no_behaviour": -3.5}}}
         path = tmp_path / "control.pkl"
         write_control_model(old, str(path))
-        settings["nested_vocal_decoding"]["behaviour_control_model_path"]["manifold"] = str(path)
+        settings["paths"]["behaviour_control_model_path"]["manifold"] = str(path)
         settings["nested_vocal_decoding"]["reduced_model_features"]["manifold"] = list(
             artifact["features"])
         loaded = load_control_model(settings, "manifold")
@@ -1930,6 +1968,64 @@ class TestSelectControlFeatures:
         assert pooled == pytest.approx(macro_reference(predicted, positions, regions), abs=1e-9)
 
 
+class TestBehaviourHistoryLags:
+    """The control's history length is derived from the encoding's ``history_pre_seconds``, never declared
+    a second time."""
+
+    def test_the_lag_count_is_the_history_at_the_shared_camera_rate(self, settings: dict,
+                                                                     monkeypatch) -> None:
+        """
+        Description
+        -----------
+        Sessions whose measured camera rates differ slightly, as the real ones do (150.056-150.106 fps),
+        all give ``floor(4 * rate) = 600`` lags with a 4 s history, the count the per-unit side builds,
+        so they are accepted together.
+
+        Parameters
+        ----------
+        settings (dict)
+            The shipped settings.
+        monkeypatch (pytest.MonkeyPatch)
+            Replaces ``session_timebase`` with per-session rates near 150 fps.
+
+        Returns
+        -------
+        None
+        """
+        rates = {"20250101_1": 150.056, "20250102_1": 150.1056, "20250103_1": 150.0}
+        monkeypatch.setattr(control_module, "session_timebase", lambda _root, session: (["a", "b"], rates[session], 1000))
+        settings["kinematic_encoding"]["history_pre_seconds"] = 4.0
+        assert behaviour_history_lags(settings, ["/d/20250101_1", "/d/20250102_1", "/d/20250103_1"]) == 600
+
+    def test_sessions_at_different_camera_rates_are_refused(self, settings: dict, monkeypatch) -> None:
+        """
+        Description
+        -----------
+        150 and 120 fps give 600 and 480 lags for 4 s, so a session list mixing them must raise rather
+        than build histories of two lengths.
+
+        Parameters
+        ----------
+        settings (dict)
+            The shipped settings.
+        monkeypatch (pytest.MonkeyPatch)
+            Replaces ``session_timebase`` with a rate that depends on the session.
+
+        Returns
+        -------
+        None
+        """
+        rates = {"20250101_1": 150.0, "20250102_1": 120.0}
+        monkeypatch.setattr(control_module, "session_timebase", lambda _root, session: (["a", "b"], rates[session], 1000))
+        with pytest.raises(ValueError, match="history lengths"):
+            behaviour_history_lags(settings, ["/d/20250101_1", "/d/20250102_1"])
+
+    def test_an_empty_session_list_is_refused(self, settings: dict) -> None:
+        """With no session the camera rate, and so the lag count, is unknown."""
+        with pytest.raises(ValueError, match="no session is listed"):
+            behaviour_history_lags(settings, [])
+
+
 class TestAssembleCohort:
     """Per-session blocks are stacked in order, each USV keeps its day, and a bad cohort is refused."""
 
@@ -2116,7 +2212,7 @@ def category_settings(settings: dict) -> dict:
     settings (dict)
         The same dict, modified in place.
     """
-    settings["vocalization_settings"]["vocal_target"] = "multinomial"
+    settings["vocalizations"]["vocal_target"] = "multinomial"
     block = settings["nested_vocal_decoding"]["category_control"]
     block["temporal_basis"]["n_splines"] = 4
     block["max_iter"] = 1500
@@ -2215,14 +2311,6 @@ class TestCategoryControl:
         with pytest.raises(ValueError, match="occur only on day"):
             fit_category_control_models(cohort, ["signal"], settings, CATEGORY_N_LAGS)
 
-    def test_the_label_columns_must_agree(self, settings: dict) -> None:
-        """The control must predict the category system the neuron is decoded on."""
-        settings = category_settings(settings)
-        settings["vocal_decoding"]["category_surface"]["category_column"] = "vae_category"
-        with pytest.raises(ValueError, match="must predict the categories"):
-            fit_category_control_models(category_cohort(0, planted=True), ["signal"], settings,
-                                        CATEGORY_N_LAGS)
-
     def test_a_unit_whose_day_the_control_saw_is_refused(self, settings: dict) -> None:
         """Evidence is only ever drawn from the fold that held the unit's day out."""
         settings = category_settings(settings)
@@ -2251,7 +2339,7 @@ class TestControlTargets:
         """A torus control cannot be loaded for the categorical target."""
         path = tmp_path / "control.pkl"
         write_control_model({**artifact, "target": "manifold"}, str(path))
-        settings["nested_vocal_decoding"]["behaviour_control_model_path"]["multinomial"] = str(path)
+        settings["paths"]["behaviour_control_model_path"]["multinomial"] = str(path)
         settings["nested_vocal_decoding"]["reduced_model_features"]["multinomial"] = list(
             artifact["features"])
         with pytest.raises(ValueError, match="target mismatch"):
@@ -2262,16 +2350,16 @@ class TestControlTargets:
         """Controls fitted before the categorical one existed carry no target and were all torus."""
         path = tmp_path / "control.pkl"
         write_control_model(artifact, str(path))
-        settings["nested_vocal_decoding"]["behaviour_control_model_path"]["manifold"] = str(path)
+        settings["paths"]["behaviour_control_model_path"]["manifold"] = str(path)
         settings["nested_vocal_decoding"]["reduced_model_features"]["manifold"] = list(artifact["features"])
         assert load_control_model(settings, "manifold")["target"] == "manifold"
 
     def test_each_target_reads_its_own_feature_list(self, settings: dict) -> None:
         """The frozen list follows the target asked for, whatever ``vocal_target`` says, with no selection
         file needed to read it."""
-        settings["data"]["behaviour_selection_result_path"] = {"manifold": "/absent/a.pkl",
+        settings["paths"]["behaviour_selection_result_path"] = {"manifold": "/absent/a.pkl",
                                                                "multinomial": "/absent/b.pkl"}
-        settings["vocalization_settings"]["vocal_target"] = "manifold"
+        settings["vocalizations"]["vocal_target"] = "manifold"
         manifold = reduced_model_features(settings, "manifold", require_selection_file=False)
         multinomial = reduced_model_features(settings, "multinomial", require_selection_file=False)
         assert manifold == settings["nested_vocal_decoding"]["reduced_model_features"]["manifold"]

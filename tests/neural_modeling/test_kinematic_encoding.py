@@ -2,7 +2,8 @@
 @author: bartulem
 Unit tests for the selection, null and readout functions of ``kinematic_encoding``.
 
-Coverage: the per-feature screen (``screen_features``), greedy forward selection (``forward_select``), the
+Coverage: the per-feature screen (``screen_features``), greedy forward selection (``forward_select``) and
+its per-step shift test (``step_shift_test``, ``in_sample_pool_score``), the
 frozen-filter shift null (``frozen_null_scores``), the shape descriptors of a fitted filter
 (``filter_descriptors``), the spike-triggered average (``spike_triggered_average``), and the guards and
 corner paths of ``fit_quiet_model`` that the other test files leave untouched. Every test is built
@@ -10,7 +11,7 @@ around a synthetic case whose answer is known in advance: a Bernoulli unit drive
 some feature columns and blind to the others, a unit whose tuning flips sign between sessions, labels
 that are independent of the frozen predictor, a hand-built filter, and spikes planted at a known lag.
 The settings are the shipped ``neural_modeling_settings.json``, deep-copied and shrunk (fewer splines,
-fewer shuffles, a shorter guard band, a liberal screen alpha matched to the small shuffle count) so
+fewer shuffles, a shorter guard band, liberal screen and step-test alphas matched to the small draw counts) so
 each test runs in a few seconds.
 """
 
@@ -25,6 +26,7 @@ import pytest
 
 from usv_playpen.modeling.jax_group_elastic_net import GroupElasticNetGLM
 from usv_playpen.modeling.modeling_bases_functions import gam_bspline_basis
+from usv_playpen.modeling.modeling_utils import draw_session_shift_lags
 from usv_playpen.neural_modeling import kinematic_encoding
 from usv_playpen.neural_modeling.deviance_metrics import (
     frozen_model_null_scores,
@@ -38,11 +40,13 @@ from usv_playpen.neural_modeling.kinematic_encoding import (
     fit_quiet_model,
     forward_select,
     frozen_null_scores,
+    in_sample_pool_score,
     lag_basis,
     linear_predictor_at_frames,
     quiet_block_sessions,
     screen_features,
     spike_triggered_average,
+    step_shift_test,
 )
 from usv_playpen.neural_modeling.neural_design_assembly import (
     lagged_design,
@@ -65,6 +69,7 @@ FPS = 30.0
 N_LAGS = 15
 N_FRAMES = 9000
 SCREEN_SHUFFLES = 40
+STEP_ALPHA = 0.1
 FEATURE_NAMES = ["planted_strong", "planted_weak", "noise"]
 NULL_CALIBRATION = {"scheme": "crossfit", "n_blocks": 5}
 
@@ -99,7 +104,9 @@ def _settings() -> dict:
     and the screen draws ``SCREEN_SHUFFLES`` shuffles with ``screen_alpha`` raised to 0.3. The last pair
     goes together: with 40 draws an empirical p floors at 1/41 = 0.0244, and the Bonferroni threshold
     ``screen_alpha / n_features`` = 0.3 / 3 = 0.1 sits above that floor, so a genuinely driven feature
-    can pass while the threshold still rejects most of the null.
+    can pass while the threshold still rejects most of the null. The per-step shift test runs at
+    ``step_test_alpha`` 0.1, so a step chosen from ``m`` candidates refits ``floor(m / 0.1) = 10 m``
+    shifted copies of its winner rather than the shipped ``100 m``.
 
     Parameters
     ----------
@@ -119,8 +126,9 @@ def _settings() -> dict:
     encoding["solver"]["max_iter"] = 2000
     encoding["solver"]["null_calibration_bins"] = 0
     encoding["feature_selection"]["screen_alpha"] = 0.3
-    settings["null"]["screen_n_shuffles"] = SCREEN_SHUFFLES
-    settings["null"]["shuffle_guard_seconds"] = 10.0
+    encoding["feature_selection"]["step_test_alpha"] = STEP_ALPHA
+    settings["inference"]["screen_n_shuffles"] = SCREEN_SHUFFLES
+    settings["inference"]["shuffle_guard_seconds"] = 10.0
     return settings
 
 
@@ -368,49 +376,91 @@ class TestScreenFeatures:
 
 
 class TestForwardSelect:
-    """Greedy forward selection on pool quiet anchors under the paired 1SE acceptance rule."""
+    """Greedy forward selection on pool quiet anchors, each step decided by its per-step shift test."""
 
     def test_the_planted_features_are_selected_strongest_first(self, selected):
-        """The strongly driven column anchors the model, the weakly driven one is accepted next, and the
-        blind column is rejected, which ends the search."""
+        """The strongly driven column is the first winner, the weakly driven one is accepted next, and the
+        blind column is rejected, which ends the search. The first step is tested like every other."""
         assert selected["selected"] == [0, 1]
         assert [step["decision"] for step in selected["path"]] == [
-            "ANCHOR",
+            "ACCEPT",
             "ACCEPT",
             "REJECT",
         ]
         assert [step["candidate"] for step in selected["path"]] == FEATURE_NAMES
         assert [step["step"] for step in selected["path"]] == [0, 1, 2]
 
-    def test_each_decision_follows_the_paired_improvement_and_its_se(self, selected):
-        """The accepted step improves on its incumbent by more than the SE of the paired per-fold
-        differences, the rejected one does not, and both are recomputable from the stored fold scores."""
-        anchor, accepted, rejected = selected["path"]
-        assert np.isnan(anchor["improvement"])
-        assert np.isnan(anchor["standard_error"])
-        for step, incumbent in ((accepted, anchor), (rejected, accepted)):
-            differences = np.asarray(step["fold_scores"]) - np.asarray(
-                incumbent["fold_scores"]
-            )
-            assert step["improvement"] == pytest.approx(differences.mean())
-            assert step["standard_error"] == pytest.approx(
-                differences.std(ddof=1) / np.sqrt(differences.size)
-            )
+    def test_each_decision_is_its_shift_test_on_the_bonferroni_draw_count(self, selected):
+        """
+        Description
+        -----------
+        Step ``s`` chooses its winner from the ``3 - s`` remaining candidates, so its test runs
+        ``B = floor(m / alpha)`` draws. The accepted steps ran all ``B`` with no draw at or above
+        ``T_obs``, giving ``p = 1 / (B + 1)`` and ``p_adj = m p``. The rejected step stopped at its first
+        exceedance: exactly one draw, the last one run, reached ``T_obs``. Every step's decision is its
+        test's, and the incumbent of each test is the model accepted so far.
+
+        Parameters
+        ----------
+        selected (dict)
+            The module-scoped selection result.
+
+        Returns
+        -------
+        None
+        """
+        for step in selected["path"]:
+            test = step["step_test"]
+            m = 3 - step["step"]
+            n_refits = int(np.floor(m / STEP_ALPHA))
+            assert test["rule"] == "shift_refit_bonferroni"
+            assert test["m_candidates"] == m
+            assert test["n_refits"] == n_refits
+            assert test["winner"] == step["candidate"]
+            assert test["incumbent_features"] == FEATURE_NAMES[: step["step"]]
+            assert test["t_obs"] == pytest.approx(test["score_winner"] - test["score_incumbent"])
+            assert test["t_null"].shape == (test["n_draws_run"],)
+            assert (step["decision"] == "ACCEPT") is test["accepted"]
+        for step in selected["path"][:2]:
+            test = step["step_test"]
+            assert test["n_draws_run"] == test["n_refits"]
+            assert test["k_exceed"] == 0
+            assert np.all(test["t_null"] < test["t_obs"])
+            assert test["p"] == pytest.approx(1.0 / (test["n_refits"] + 1))
+            assert test["p_adjusted"] == pytest.approx(test["m_candidates"] * test["p"])
+            assert test["p_adjusted"] < STEP_ALPHA
+        rejected = selected["path"][2]["step_test"]
+        assert rejected["k_exceed"] == 1
+        assert rejected["t_null"][-1] >= rejected["t_obs"]
+        assert np.all(rejected["t_null"][:-1] < rejected["t_obs"])
+        assert rejected["early_stop"] is (rejected["n_draws_run"] < rejected["n_refits"])
+        assert selected["path"][0]["step_test"]["score_incumbent"] == 0.0
+
+    def test_the_stored_gain_is_the_fold_mean_gain_over_the_incumbent(self, selected):
+        """The descriptive ``improvement`` is the winner's fold-mean held-out score minus the incumbent's;
+        the first step's incumbent is the empty model, whose held-out score is 0."""
+        path = selected["path"]
+        assert path[0]["improvement"] == pytest.approx(path[0]["mean"])
+        for step, incumbent in ((path[1], path[0]), (path[2], path[1])):
+            assert step["improvement"] == pytest.approx(step["mean"] - incumbent["mean"])
+        for step in path:
             assert step["mean"] == pytest.approx(np.mean(step["fold_scores"]))
-        assert accepted["improvement"] > accepted["standard_error"] > 0.0
-        assert rejected["improvement"] <= rejected["standard_error"]
-        assert accepted["mean"] > anchor["mean"] > 0.0
+        assert path[1]["mean"] > path[0]["mean"] > 0.0
 
     def test_progress_lines_name_each_step(self, selected):
-        """One line per path step, carrying the step's decision and candidate."""
-        assert len(selected["messages"]) == len(selected["path"])
-        for line, step in zip(selected["messages"], selected["path"], strict=True):
+        """One selection line per path step, carrying the step's decision and candidate, and one line
+        announcing and one deciding each step's shift test."""
+        lines = [line for line in selected["messages"] if line.lstrip().startswith("select step")]
+        assert len(lines) == len(selected["path"])
+        for line, step in zip(lines, selected["path"], strict=True):
             assert step["decision"] in line
             assert step["candidate"] in line
+        tests = [line for line in selected["messages"] if line.lstrip().startswith("step test")]
+        assert len(tests) == 2 * len(selected["path"])
 
     def test_a_pure_noise_unit_selects_nothing(self):
-        """A unit blind to every column has no feature with a positive mean held-out score, so selection
-        returns an empty model and an empty path rather than anchoring on noise."""
+        """A unit blind to every column ends with an empty model: either no first winner scores above 0 on
+        held-out sessions and nothing is tested, or the first winner is tested and rejected."""
         pool = {
             f"s{index}": _planted_session(40 + index, [0.0, 0.0, 0.0])
             for index in range(3)
@@ -426,10 +476,12 @@ class TestForwardSelect:
             message_output=_silent,
         )
         assert chosen == []
-        assert path == []
+        assert len(path) <= 1
+        assert all(step["decision"] == "REJECT" for step in path)
 
-    def test_a_single_survivor_is_anchored_without_a_search(self, planted_pool):
-        """With one survivor there is nothing to add: it is anchored and the path holds only the anchor."""
+    def test_a_single_survivor_is_tested_and_accepted_alone(self, planted_pool):
+        """With one survivor there is nothing to add after it: it is tested once, against the empty model
+        with ``m = 1``, and the path holds only that step."""
         chosen, path = forward_select(
             planted_pool,
             list(planted_pool),
@@ -442,9 +494,92 @@ class TestForwardSelect:
         )
         assert chosen == [1]
         assert len(path) == 1
-        assert path[0]["decision"] == "ANCHOR"
+        assert path[0]["decision"] == "ACCEPT"
         assert path[0]["candidate"] == "planted_weak"
         assert path[0]["mean"] > 0.0
+        assert path[0]["step_test"]["m_candidates"] == 1
+
+
+class TestStepShiftTest:
+    """The per-step shift test: the winner alone is circularly shifted in every pool session and M + W is
+    refitted on each draw."""
+
+    def test_a_noisy_copy_of_the_incumbent_is_rejected(self, planted_pool):
+        """
+        Description
+        -----------
+        The planted case that rules out a frozen-filter version of the test. Column 3 is the driven column
+        0 plus independent noise (0.1 of its SD): it is strongly correlated with the incumbent but carries
+        nothing about the spikes beyond it, so H0 holds. A frozen M + W filter shares its load between the
+        two columns, and shifting the copy breaks that split, which would pass the copy at the smallest
+        attainable p. Refitting on each draw lets the shifted fit hand the load back to column 0, so the
+        null matches the observed gain and the copy is rejected.
+
+        Parameters
+        ----------
+        planted_pool (dict)
+            The module-scoped planted sessions.
+
+        Returns
+        -------
+        None
+        """
+        generator = np.random.default_rng(77)
+        pool = {}
+        for session_id, session in planted_pool.items():
+            column = session["feature_time_series"][:, 0]
+            copy_column = column + generator.normal(0.0, 0.1 * column.std(), column.size)
+            pool[session_id] = {
+                **session,
+                "feature_time_series": np.column_stack([session["feature_time_series"], copy_column]),
+            }
+        record = step_shift_test(
+            pool, list(pool), [0], 3, N_LAGS, 1, _settings(), 5, 1,
+            [*FEATURE_NAMES, "copy_of_strong"], message_output=_silent,
+        )
+        assert record["accepted"] is False
+        assert record["k_exceed"] == 1
+        assert record["incumbent_features"] == ["planted_strong"]
+
+    def test_each_draw_shifts_by_its_own_reproducible_lags(self, planted_pool):
+        """
+        Description
+        -----------
+        Draw ``b`` takes one lag per pool session from the generator seeded ``[seed, step, b]``, each in
+        ``[guard, T - guard]`` frames. The stored lags must be exactly those, in pool order, so any draw
+        can be rebuilt on its own.
+
+        Parameters
+        ----------
+        planted_pool (dict)
+            The module-scoped planted sessions.
+
+        Returns
+        -------
+        None
+        """
+        settings = _settings()
+        record = step_shift_test(
+            planted_pool, list(planted_pool), [], 0, N_LAGS, 1, settings, 11, 0,
+            FEATURE_NAMES, message_output=_silent,
+        )
+        min_lag = round(settings["inference"]["shuffle_guard_seconds"] * FPS)
+        assert record["min_lag_frames"] == min_lag
+        assert record["session_order"] == list(planted_pool)
+        assert record["lags"].shape == (record["n_draws_run"], len(planted_pool))
+        lengths = dict.fromkeys(planted_pool, N_FRAMES)
+        for draw in range(record["n_draws_run"]):
+            expected = draw_session_shift_lags(np.random.default_rng([11, 0, draw]), lengths, min_lag)
+            assert list(record["lags"][draw]) == [expected[session_id] for session_id in planted_pool]
+        assert np.all(record["lags"] >= min_lag)
+        assert np.all(record["lags"] <= N_FRAMES - min_lag)
+        assert record["seed"] == [11, 0]
+
+    def test_the_empty_model_scores_zero(self, planted_pool):
+        """The empty model's constant predictor explains no deviance and cannot be calibrated, so its pool
+        score is 0 by definition."""
+        assert in_sample_pool_score(planted_pool, list(planted_pool), None, [], N_LAGS,
+                                    _settings()["kinematic_encoding"]) == 0.0
 
 
 class TestFrozenNullScores:
@@ -1688,8 +1823,9 @@ class TestScreenAndSelectionScoring:
         -----------
         A fit that exhausts its iteration cap must be announced where the caller collects progress, not
         on standard output and not by crashing. With the solver capped at one iteration, every inner-fold
-        fit (two folds of a two-session pool) is unconverged, so the sink handed to the screen or to
-        selection must receive one non-convergence warning per fit.
+        fit (two folds of a two-session pool) is unconverged, and so is every fit of selection's shift
+        test, so the sink handed to the screen or to selection must receive one non-convergence warning
+        per fit.
 
         Parameters
         ----------
@@ -1718,8 +1854,9 @@ class TestScreenAndSelectionScoring:
                 message_output=messages.append,
             )
             assert row["converged"] is False
+            expected = 2
         else:
-            forward_select(
+            _chosen, path = forward_select(
                 pool,
                 ["a", "b"],
                 [0],
@@ -1729,8 +1866,12 @@ class TestScreenAndSelectionScoring:
                 ["driven"],
                 message_output=messages.append,
             )
+            # Two inner-fold fits, then the step test's fit of M + W and one refit per draw run.
+            test = path[0]["step_test"]
+            assert test["n_unconverged_fits"] == 1 + test["n_draws_run"]
+            expected = 2 + test["n_unconverged_fits"]
         warnings = [line for line in messages if "FIT DID NOT CONVERGE" in line]
-        assert len(warnings) == 2
+        assert len(warnings) == expected
 
     def test_every_converged_step_is_recorded_as_converged(self, selected):
         """
@@ -1759,7 +1900,7 @@ class TestScreenAndSelectionScoring:
         -----------
         A step is converged only if ALL of its inner-fold fits converged. Marking the fit of one fold
         (trained on ``s1``, validated on ``s0``) as unconverged while the other fold converges must flag
-        the anchor step unconverged.
+        the first step unconverged.
 
         Parameters
         ----------
@@ -1843,9 +1984,8 @@ class TestScreenAndSelectionScoring:
         """
         Description
         -----------
-        The anchor is the survivor with the highest mean held-out score, whatever order the survivors are
-        offered in: offering the weak column first must still anchor on the strong one and then accept the
-        weak one.
+        The first winner is the survivor with the highest mean held-out score, whatever order the
+        survivors are offered in: offering the weak column first must still start from the strong one.
 
         Parameters
         ----------
@@ -1879,7 +2019,7 @@ class TestScreenAndSelectionScoring:
         When no remaining candidate has a finite mean score, the search ends and selection still returns
         its model and path. Making every multi-feature predictor constant (a predictor with no spread
         scores NaN) leaves the anchor without a scorable candidate, so the result must be the anchor
-        alone with a one-step path.
+        alone with a one-step path, its first step accepted by its shift test.
 
         Parameters
         ----------
@@ -1950,7 +2090,7 @@ class TestScreenAndSelectionScoring:
         )
         assert chosen == [0]
         assert len(path) == 1
-        assert path[0]["decision"] == "ANCHOR"
+        assert path[0]["decision"] == "ACCEPT"
 
 
 class TestBlockResampleAnchors:

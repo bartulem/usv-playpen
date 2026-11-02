@@ -1,25 +1,26 @@
 {
-  "data": {
+  "paths": {
+    "data_root": "/mnt/falkner/Bartul/Data",
+    "catalog_path": "/mnt/falkner/Bartul/EPHYS/unit_catalog.csv",
     "session_list_files": [
       "/mnt/falkner/Bartul/modeling/input_files/ephys_courtship_intact_partners_sessions_list.txt",
       "/mnt/falkner/Bartul/modeling/input_files/ephys_courtship_mute_female_sessions_list.txt"
     ],
     "behaviour_selection_result_path": {
-      "manifold": "/mnt/falkner/Bartul/modeling/model_selection_results/model_selection_final_ephys_male_all_partners_manifold_qlvm_session_20261026_205129Z.pkl",
-      "multinomial": "/mnt/falkner/Bartul/modeling/model_selection_results/model_selection_final_ephys_male_all_partners_multinomial_qlvm_category_session_20261026_203704Z.pkl"
+      "manifold": "/mnt/falkner/Bartul/modeling/model_selection_results/model_selection_final_ephys_male_all_partners_manifold_qlvm_session_20261031_084027Z.pkl",
+      "multinomial": "/mnt/falkner/Bartul/modeling/model_selection_results/model_selection_final_ephys_male_all_partners_multinomial_qlvm_category_session_20261031_082614Z.pkl"
     },
+    "behaviour_control_model_path": {
+      "manifold": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_model_ephys_manifold.pkl",
+      "multinomial": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_model_ephys_multinomial.pkl"
+    }
+  },
+  "cohort": {
     "brain_areas": ["PAG"],
     "area_mode": "include",
     "pool_areas": false,
     "quality": ["good"],
-    "somatic": "somatic"
-  },
-  "data_roots": {
-    "ephys_root": "/mnt/falkner/Bartul/EPHYS",
-    "catalog_path": "/mnt/falkner/Bartul/EPHYS/unit_catalog.csv",
-    "data_root": "/mnt/falkner/Bartul/Data"
-  },
-  "data_sufficiency": {
+    "somatic": "somatic",
     "min_courtship_sessions": 1,
     "min_emitter_usvs_per_session": 20,
     "min_vocal_sessions": 2,
@@ -62,7 +63,7 @@
       "back_yaw": 0.5
     }
   },
-  "vocalization_settings": {
+  "vocalizations": {
     "vocal_emitter": "self",
     "clean_against": "all",
     "exclude_noise": true,
@@ -73,20 +74,18 @@
       "width_seconds": 0.1
     },
     "torus_period": 1.0,
-    "vocal_target": "manifold"
+    "vocal_target": "manifold",
+    "category_column": "qlvm_category",
+    "usv_manifold_column_names": ["qlvm1", "qlvm2"]
   },
   "kinematic_encoding": {
     "history_pre_seconds": 4.0,
     "clean_post_seconds": 4.0,
-    "bin_resize_factor": 1,
     "smoothness_order": 1,
-    "include_spike_history": false,
-    "spike_history_window_seconds": 0.1,
     "filter_band": {
       "compute": true,
       "n_resamples": 10
     },
-    "subsample_negatives": true,
     "negatives_per_positive": 10,
     "calibration": {
       "scheme": "crossfit",
@@ -96,7 +95,7 @@
       "compute": true,
       "indicator_scale": 10.0,
       "max_sweeps": 30,
-      "tolerance": 1e-4,
+      "tolerance": 0.0001,
       "newton_max_steps": 25,
       "newton_step_tolerance": 1e-10
     },
@@ -108,7 +107,8 @@
     "feature_selection": {
       "screen_alpha": 0.01,
       "selection_method": "forward_d2",
-      "acceptance_rule": "paired_1se",
+      "acceptance_rule": "shift_refit_bonferroni",
+      "step_test_alpha": 0.01,
       "screen_require_positive_slope": true
     },
     "solver": {
@@ -123,8 +123,7 @@
       "universe": "bout_window",
       "inter_bout_threshold_seconds": 0.1155,
       "grain": "count",
-      "bin_seconds": 0.1,
-      "null_block_megabytes": 64
+      "bin_seconds": 0.1
     },
     "subsampling_correction": "log_prior_offset",
     "temporal_basis": {
@@ -142,31 +141,8 @@
     "chunk_rows": 4000,
     "null_block_megabytes": 32
   },
-  "vocal_gating": {
-    "vocal_window": "during_vocalization",
-    "require_vocal_tuning": true,
-    "vocal_tuning_alpha": 0.01,
-    "ridge_frac": 0.02,
-    "max_quiet_frames_per_session": 12000,
-    "quiet_zeros_per_spike": 40,
-    "min_vocal_spikes": null,
-    "min_feature_iqr_vocal": null,
-    "require_interaction_gt_vocal": true,
-    "interaction_gt_vocal_alpha": 0.01,
-    "feature_main_alpha": 0.01,
-    "content_gating_compute": false,
-    "gating_screen_n_shuffles": 2000,
-    "screen_alpha": 0.01,
-    "sign_ridge_frac": 0.1,
-    "borderline_sigma_flag": 5.0,
-    "solver": {
-      "irls_n_steps": 30,
-      "calibration_steps": 40
-    }
-  },
   "vocal_decoding": {
     "require_clean_prevocal_bool": true,
-    "usv_manifold_column_names": ["qlvm1", "qlvm2"],
     "max_quiet_tiles_per_session": 5000,
     "vocal_occurrence": {
       "ridge_frac": 0.02,
@@ -175,13 +151,6 @@
         "alpha_grid": [0.1, 0.25, 0.5, 0.75, 1.0, 1.5]
       },
       "mean_count_floor": 0.001
-    },
-    "geodesic_metrics": {
-      "compute": true,
-      "grid_n_per_dim": 40,
-      "graph_k": 8,
-      "density_exponent": 1.0,
-      "decoder_weights_npz_path": "/mnt/falkner/Bartul/spectrograms/qlvm/qmc_decoder_weights.npz"
     },
     "tuning_surface": {
       "tuning_basis": "fourier",
@@ -219,7 +188,6 @@
         "mode": "train_tuned_inner_loso",
         "alpha_grid": [0.1, 0.25, 0.5, 0.75, 1.0, 1.5]
       },
-      "category_column": "qlvm_category",
       "min_train_events": 20,
       "min_test_events": 5,
       "mean_count_floor": 0.001
@@ -228,7 +196,6 @@
       "method": "within_session_position_permutation",
       "n_permutations": 1000,
       "sided": "one_sided_upper",
-      "pass_rule": "gain_gt_zero_and_exact_p",
       "record_left_tail_anti_alignment": true,
       "n_permutations_category_grain": 5000
     },
@@ -237,23 +204,17 @@
   "nested_vocal_decoding": {
     "behaviour_control": "rich",
     "reduced_model_features": {
-      "manifold": ["head-head"],
+      "manifold": ["head-head", "other.ego_yaw"],
       "multinomial": [
         "allo_yaw-head",
         "head-head",
         "other.speed",
-        "self.back_pitch"
+        "self.back_pitch",
+        "self.speed"
       ]
-    },
-    "behaviour_control_model_path": {
-      "manifold": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_model_ephys_manifold.pkl",
-      "multinomial": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_model_ephys_multinomial.pkl"
     },
     "category_control": {
       "bin_resizing_factor": 1,
-      "lambda_smooth_fixed": 1.0,
-      "l2_reg_fixed": 0.01,
-      "smoothness_derivative_order": 1,
       "temporal_basis": {
         "type": "bspline",
         "n_splines": 20,
@@ -263,10 +224,7 @@
         "l2_lag_alpha": 100,
         "lambda_smooth_decades_each_side": 2
       },
-      "tune_regularization_params": {
-        "lambda_smooth_decades_each_side": 0,
-        "l2_reg_decades_each_side": 4
-      },
+      "tune_regularization_params": {},
       "focal_loss_gamma": 0.5,
       "learning_rate": 0.005,
       "max_iter": 20000,
@@ -275,7 +233,6 @@
       "use_lax_loop": true
     },
     "vm_score_mode": "macro",
-    "region_label_column": "qlvm_category",
     "min_region_events": 20,
     "lambda_smooth": 1.0,
     "l2_reg": 0.01,
@@ -283,9 +240,8 @@
     "huber_delta": 1.0,
     "learning_rate": 0.001,
     "max_iter": 5000,
-    "tol": 1e-4,
+    "tol": 0.0001,
     "random_state": 0,
-    "behaviour_control_n_lags": 600,
     "sigma_floor": 0.05,
     "prevocal_window_n_bins": 1,
     "rate_transform": "none",
@@ -302,29 +258,37 @@
       "sided": "one_sided_upper"
     }
   },
-  "null": {
+  "vocal_gating": {
+    "vocal_window": "during_vocalization",
+    "require_vocal_tuning": true,
+    "vocal_tuning_alpha": 0.01,
+    "ridge_frac": 0.02,
+    "max_quiet_frames_per_session": 12000,
+    "quiet_zeros_per_spike": 40,
+    "min_vocal_spikes": null,
+    "min_feature_iqr_vocal": null,
+    "require_interaction_gt_vocal": true,
+    "interaction_gt_vocal_alpha": 0.01,
+    "feature_main_alpha": 0.01,
+    "content_gating_compute": false,
+    "gating_screen_n_shuffles": 2000,
+    "screen_alpha": 0.01,
+    "sign_ridge_frac": 0.1,
+    "borderline_sigma_flag": 5.0,
+    "solver": {
+      "irls_n_steps": 30,
+      "calibration_steps": 40
+    }
+  },
+  "inference": {
     "n_shuffles": 1000,
     "shuffle_guard_seconds": 20.0,
     "shuffle_seed": 0,
-    "screen_n_shuffles": 2000
-  },
-  "significance": {
+    "screen_n_shuffles": 2000,
     "pvalue_method": "empirical_escalated",
     "fdr_method": "bh",
     "fdr_q": 0.05,
     "escalation_ladder": [],
-    "report_bh_floor_requirement": true,
     "include_single_session_units": false
-  },
-  "robustness": {
-    "decode_raw_acoustics": true,
-    "raw_acoustic_features": [
-      "duration",
-      "mean_freq_hz",
-      "peak_freq_hz",
-      "freq_bandwidth_hz"
-    ],
-    "time_in_session_nuisance": false,
-    "shift_range_check": false
   }
 }

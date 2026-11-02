@@ -9,8 +9,8 @@ cannot be made from one unit. This module makes those decisions once, over the w
 - it collects one p-value per test per unit (quiet encoding, transfer with its slope, vocal occurrence,
   vocalization identity, nested decoding, vocal gating), treating a test that did not run as missing,
   never as failed;
-- it applies the Benjamini-Hochberg (or Benjamini-Yekutieli) procedure at ``significance.fdr_q`` to each
-  test over the units where it ran, within each brain area unless ``data.pool_areas`` pools them;
+- it applies the Benjamini-Hochberg (or Benjamini-Yekutieli) procedure at ``inference.fdr_q`` to each
+  test over the units where it ran, within each brain area unless ``cohort.pool_areas`` pools them;
 - it forms the conjunction p-value ``max(p_quiet, p_transfer, p_identity, p_nested)`` and corrects it
   once;
 - it assigns each unit one of six categories by priority, with the transformation category defined by
@@ -19,13 +19,13 @@ cannot be made from one unit. This module makes those decisions once, over the w
   share of units each requirement of the conjunction removes, and the correlation of the tests' z-scores.
 
 Identity and the nested decoding are stored per target (``<analysis>_<target>``). The target named by
-``vocalization_settings.vocal_target`` supplies the corrected identity and nested p-values; both
+``vocalizations.vocal_target`` supplies the corrected identity and nested p-values; both
 targets' p-values, effect sizes and behaviour gains are carried in the table as uncorrected
 descriptors (``p_identity_<target>`` and the like), so the claims can be re-read on the other target
 by re-running only this step.
 
 Units recorded in one session (tested on blocks of it) are excluded from every correction unless
-``significance.include_single_session_units`` admits them; they are listed either way.
+``inference.include_single_session_units`` admits them; they are listed either way.
 
 Exports :func:`unit_row`, :func:`fdr_reject`, :func:`classify_unit`, :func:`correlation_matrix`,
 :func:`consolidate` and the
@@ -183,7 +183,7 @@ def unit_row(record: dict, artifact: dict, target: str) -> dict:
         The unit's result file, as :func:`neural_artifacts.read_unit_artifact` returns it; empty when the
         unit was never run.
     target (str)
-        The target whose identity and nested sections are tested (``vocalization_settings.vocal_target``).
+        The target whose identity and nested sections are tested (``vocalizations.vocal_target``).
 
     Returns
     -------
@@ -291,7 +291,7 @@ def fdr_reject(p_values: np.ndarray, q: float, method: str) -> np.ndarray:
     """
 
     if method not in FDR_METHODS:
-        msg = f"significance.fdr_method must be one of {list(FDR_METHODS)}; got {method!r}."
+        msg = f"inference.fdr_method must be one of {list(FDR_METHODS)}; got {method!r}."
         raise ValueError(msg)
     values = np.asarray(p_values, dtype=np.float64)
     m = int(np.isfinite(values).sum())
@@ -524,9 +524,9 @@ def consolidate(cohort: list, artifacts: dict, settings: dict) -> tuple[pls.Data
     -----------
     Correct every test across units, test the conjunction, and classify each unit.
 
-    Units are grouped by brain area unless ``data.pool_areas`` pools them, and each group is corrected on
+    Units are grouped by brain area unless ``cohort.pool_areas`` pools them, and each group is corrected on
     its own, so one area's count never depends on how many units of another were run. Single-session
-    units enter the correction only when ``significance.include_single_session_units`` admits them; when
+    units enter the correction only when ``inference.include_single_session_units`` admits them; when
     excluded they are still listed, with every pass state and category left empty.
 
     Parameters
@@ -536,9 +536,9 @@ def consolidate(cohort: list, artifacts: dict, settings: dict) -> tuple[pls.Data
     artifacts (dict)
         ``{unit_uid: result file}``; a unit without one is listed as having no results.
     settings (dict)
-        Full neural-modeling settings; reads ``significance.fdr_q``, ``significance.fdr_method``,
-        ``significance.include_single_session_units``, ``data.pool_areas`` and
-        ``vocalization_settings.vocal_target``.
+        Full neural-modeling settings; reads ``inference.fdr_q``, ``inference.fdr_method``,
+        ``inference.include_single_session_units``, ``cohort.pool_areas`` and
+        ``vocalizations.vocal_target``.
 
     Returns
     -------
@@ -548,7 +548,7 @@ def consolidate(cohort: list, artifacts: dict, settings: dict) -> tuple[pls.Data
         ``{correction group: report}`` (see :func:`_area_report`), plus ``excluded_single_session``.
     """
 
-    significance = settings["significance"]
+    significance = settings["inference"]
     q, method = float(significance["fdr_q"]), significance["fdr_method"]
     include_single = bool(significance["include_single_session_units"])
     target = vocal_target(settings)
@@ -558,7 +558,7 @@ def consolidate(cohort: list, artifacts: dict, settings: dict) -> tuple[pls.Data
         conjunction = [row[f"p_{test}"] for test in CONJUNCTION_TESTS]
         row["p_conjunction"] = float(max(conjunction)) if np.isfinite(conjunction).all() else float("nan")
         row["corrected"] = include_single or not row["single_session"]
-        row["group"] = "pooled" if settings["data"]["pool_areas"] else row["brain_area"]
+        row["group"] = "pooled" if settings["cohort"]["pool_areas"] else row["brain_area"]
 
     draws = _draw_counts(artifacts, target)
     out, report = [], {}

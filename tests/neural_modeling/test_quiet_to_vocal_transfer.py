@@ -42,7 +42,7 @@ from usv_playpen.neural_modeling.quiet_to_vocal_transfer import (
 FPS = 100.0
 TRANSFER = {"calibration_grain": "pooled_across_folds", "d2_reference_rate": "scored_frames",
             "universe": "bout_window", "inter_bout_threshold_seconds": 0.2,
-            "grain": "count", "bin_seconds": 0.1, "null_block_megabytes": 64.0}
+            "grain": "count", "bin_seconds": 0.1}
 
 
 def spans(usvs: list, fps: float = FPS) -> tuple[np.ndarray, np.ndarray]:
@@ -286,10 +286,10 @@ class TestCountGrainCombine:
         model = FrameFilterModel(filters, -2.0, True, 1)
         transfer = {**TRANSFER, "grain": grain, "universe": "usv_span"}
         encoding = {"chunk_rows": 2000, "solver": {"calibration_steps": 30}, "transfer": transfer,
-                    "calibration": {"scheme": "crossfit", "n_blocks": 5}}
-        settings = {"kinematic_encoding": encoding, "null": {"n_shuffles": 60, "shuffle_guard_seconds": 1.0,
-                                                             "shuffle_seed": 0},
-                    "significance": {"escalation_ladder": []}}
+                    "calibration": {"scheme": "crossfit", "n_blocks": 5}, "null_block_megabytes": 32}
+        settings = {"kinematic_encoding": encoding,
+                    "inference": {"n_shuffles": 60, "shuffle_guard_seconds": 1.0, "shuffle_seed": 0,
+                                  "escalation_ladder": []}}
         frames = {sid: np.arange(1500, 5500) for sid in sessions}
         results = [score_fold(model, sessions[sid], [0], frames[sid], cls.N_LAGS, 0.1, encoding,
                               linear_predictor_at_frames, transfer) for sid in sessions]
@@ -367,10 +367,10 @@ class TestCountGrainCombine:
         model = FrameFilterModel(filters, -2.0, True, 1)
         transfer = {**TRANSFER, "grain": "count", "universe": "usv_span"}
         encoding = {"chunk_rows": 2000, "solver": {"calibration_steps": 30}, "transfer": transfer,
-                    "calibration": {"scheme": "crossfit", "n_blocks": 5}}
-        settings = {"kinematic_encoding": encoding, "null": {"n_shuffles": 20, "shuffle_guard_seconds": 1.0,
-                                                             "shuffle_seed": 0},
-                    "significance": {"escalation_ladder": []}}
+                    "calibration": {"scheme": "crossfit", "n_blocks": 5}, "null_block_megabytes": 32}
+        settings = {"kinematic_encoding": encoding,
+                    "inference": {"n_shuffles": 20, "shuffle_guard_seconds": 1.0, "shuffle_seed": 0,
+                                  "escalation_ladder": []}}
         frames = {sid: np.arange(1500, 5500) for sid in sessions}
         results = [score_fold(model, sessions[sid], [0], frames[sid], self.N_LAGS, 0.1, encoding,
                               linear_predictor_at_frames, transfer) for sid in sessions]
@@ -397,8 +397,7 @@ class TestCountGrainCombine:
         def null_with(block_megabytes):
             """The 10-draw pooled null under a given memory budget."""
             return pooled_transfer_null(results, sessions, list(sessions), frames, 10, 0, 1.0, 30,
-                                        {**transfer, "null_block_megabytes": block_megabytes},
-                                        encoding["calibration"])
+                                        transfer, encoding["calibration"], block_megabytes)
 
         whole = null_with(64.0)
         blocked = null_with(total_frames * 8 * 3 / (1024 * 1024))
@@ -421,6 +420,5 @@ class TestShippedTransferSettings:
             assert json.load(handle)["kinematic_encoding"]["clean_post_seconds"] == 4.0
         assert block["bin_seconds"] == 0.1
         assert block["inter_bout_threshold_seconds"] == pytest.approx(0.1155, abs=1e-4)
-        assert block["null_block_megabytes"] == 64
         assert set(block) == {"calibration_grain", "d2_reference_rate", "universe",
-                              "inter_bout_threshold_seconds", "grain", "bin_seconds", "null_block_megabytes"}
+                              "inter_bout_threshold_seconds", "grain", "bin_seconds"}

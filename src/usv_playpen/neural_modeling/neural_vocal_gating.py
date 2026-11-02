@@ -376,7 +376,7 @@ def gating_verdict(observed: dict, interaction_null: np.ndarray, difference_null
 
     bonferroni = settings_bonferroni_bar(settings, n_features)
     interaction_ok = p_interaction <= bonferroni
-    # Three separate within-unit alphas, none of which is the cohort FDR level `significance.fdr_q`.
+    # Three separate within-unit alphas, none of which is the cohort FDR level `inference.fdr_q`.
     difference_ok = ((p_difference <= settings["interaction_gt_vocal_alpha"])
                      if settings["require_interaction_gt_vocal"] else True)
     main_present = p_main <= settings["feature_main_alpha"]
@@ -543,7 +543,7 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
     settings (dict)
         The ``vocal_gating`` block.
     vocal_settings (dict)
-        The ``vocalization_settings`` block, for the emitter.
+        The ``vocalizations`` block, for the emitter.
     seed (int)
         Subsampling seed.
 

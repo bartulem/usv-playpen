@@ -359,7 +359,7 @@ class TestSelectionGuards:
             ``{"kinematic_encoding": {"feature_selection": ...}}``.
         """
         selection = {"screen_alpha": 0.01, "selection_method": "forward_d2",
-                     "acceptance_rule": "paired_1se", **overrides}
+                     "acceptance_rule": "shift_refit_bonferroni", "step_test_alpha": 0.01, **overrides}
         return {"kinematic_encoding": {"feature_selection": selection}}
 
     def test_an_unimplemented_selection_method_is_refused(self):
@@ -370,10 +370,11 @@ class TestSelectionGuards:
                            message_output=lambda *_a: None)
 
     def test_an_unimplemented_acceptance_rule_is_refused(self):
-        """Declaring an acceptance rule other than the paired 1SE must raise before any fitting."""
-        with pytest.raises(ValueError, match="paired"):
+        """Declaring an acceptance rule other than the per-step shift test must raise before any fitting,
+        the retired paired 1SE rule included."""
+        with pytest.raises(ValueError, match="shift_refit_bonferroni"):
             forward_select({}, ["a", "b"], [0], 5, np.random.default_rng(0),
-                           self._settings(acceptance_rule="unpaired_1se"), ["f"],
+                           self._settings(acceptance_rule="paired_1se"), ["f"],
                            message_output=lambda *_a: None)
 
     def test_the_shipped_settings_declare_what_the_code_implements(self):
@@ -383,7 +384,8 @@ class TestSelectionGuards:
               / "_parameter_settings" / "neural_modeling_settings.json").open() as handle:
             selection = json.load(handle)["kinematic_encoding"]["feature_selection"]
         assert selection["selection_method"] == "forward_d2"
-        assert selection["acceptance_rule"] == "paired_1se"
+        assert selection["acceptance_rule"] == "shift_refit_bonferroni"
+        assert selection["step_test_alpha"] == 0.01
         # the stability-selection knobs described a method that was rejected before it was built
         for gone in ("stability_selection", "pi_threshold", "n_bootstraps", "subsample_size",
                      "lambda_group_path"):
@@ -555,7 +557,7 @@ class TestFoldsWithoutAModel:
         unit = {"unit_id": self.UNIT_ID, "unit_uid": self.UNIT_UID, "mouse_id": "m",
                 "rec_date": 20250101, "courtship_sessions": sessions, "vocal_sessions": sessions}
         other = load_settings()
-        other["null"]["shuffle_seed"] = int(other["null"]["shuffle_seed"]) + 1
+        other["inference"]["shuffle_seed"] = int(other["inference"]["shuffle_seed"]) + 1
         for fold_index, session in enumerate(sessions):
             write_fold_artifact(self._no_model_fold(fold_index, session), unit, fold_index, str(tmp_path),
                                 other, message_output=lambda *_a: None)
@@ -758,8 +760,7 @@ class TestTransferGuards:
         assert encoding["feature_selection"]["screen_require_positive_slope"] is True
         assert "require_positive_slope" not in encoding["transfer"]
         assert set(encoding["transfer"]) == {"calibration_grain", "d2_reference_rate", "universe",
-                                             "inter_bout_threshold_seconds", "grain", "bin_seconds",
-                                             "null_block_megabytes"}
+                                             "inter_bout_threshold_seconds", "grain", "bin_seconds"}
 
 
 class TestTemporalBasis:

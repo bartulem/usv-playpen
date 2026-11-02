@@ -272,7 +272,8 @@ def score_fold(estimator, session: dict, feature_indices: list, vocal_frames: np
 def pooled_transfer_null(fold_results: list, per_session: dict, session_ids: list,
                          vocal_frames_by_session: dict, n_shuffles: int, seed: int,
                          guard_seconds: float, calibration_steps: int,
-                         transfer_settings: dict, calibration: dict) -> np.ndarray:
+                         transfer_settings: dict, calibration: dict,
+                         null_block_megabytes: float) -> np.ndarray:
     """
     Description
     -----------
@@ -302,11 +303,13 @@ def pooled_transfer_null(fold_results: list, per_session: dict, session_ids: lis
         Newton iterations per calibration refit.
     transfer_settings (dict)
         The ``kinematic_encoding.transfer`` settings block; under the count grain each draw recounts
-        the spikes per bin of the shifted train and re-scores the Poisson pooled calibration. Under the
-        frame grain ``null_block_megabytes`` is the memory budget for one block of draws' label matrix;
-        it sets only how many draws run together, not the scores.
+        the spikes per bin of the shifted train and re-scores the Poisson pooled calibration.
     calibration (dict)
         The ``kinematic_encoding.calibration`` settings block, passed to the scorer.
+    null_block_megabytes (float)
+        ``kinematic_encoding.null_block_megabytes``, the same budget the quiet nulls use. Under the frame
+        grain it is the memory budget for one block of draws' label matrix; it sets only how many draws
+        run together, not the scores. The count grain does not use it.
 
     Returns
     -------
@@ -345,7 +348,7 @@ def pooled_transfer_null(fold_results: list, per_session: dict, session_ids: lis
     # matrix grows without bound with the draw count. Each session keeps one generator across chunks,
     # so the shifts are exactly those an unchunked run would draw.
     total_frames = max(int(eta.size), 1)
-    block_bytes = int(transfer_settings["null_block_megabytes"] * 1024 * 1024)
+    block_bytes = int(null_block_megabytes * 1024 * 1024)
     chunk = int(max(1, min(n_shuffles, block_bytes // (total_frames * 8))))
     generators = [np.random.default_rng(seed + index) for index in range(len(session_ids))]
 
@@ -506,16 +509,17 @@ def combine_folds(fold_results: list, per_session: dict, session_ids: list,
     def draw_transfer_null(count):
         """Fresh pooled-null draws; the seed advances so escalation never repeats a shift sequence."""
         nonlocal escalation_round
-        seed = int(settings["null"]["shuffle_seed"]) + 1_000_003 * escalation_round
+        seed = int(settings["inference"]["shuffle_seed"]) + 1_000_003 * escalation_round
         escalation_round += 1
         return pooled_transfer_null(fold_results, per_session, session_ids, vocal_frames_by_session,
-                                    count, seed, settings["null"]["shuffle_guard_seconds"],
+                                    count, seed, settings["inference"]["shuffle_guard_seconds"],
                                     calibration_steps, transfer_settings,
-                                    settings["kinematic_encoding"]["calibration"])
+                                    settings["kinematic_encoding"]["calibration"],
+                                    settings["kinematic_encoding"]["null_block_megabytes"])
 
-    null = draw_transfer_null(settings["null"]["n_shuffles"])
+    null = draw_transfer_null(settings["inference"]["n_shuffles"])
     p_value, at_floor, null = escalated_empirical_pvalue(
-        score, draw_transfer_null, settings["significance"]["escalation_ladder"], null,
+        score, draw_transfer_null, settings["inference"]["escalation_ladder"], null,
         message_output)
     n_frames_total = int(sum(result["n_frames"] for result in fold_results))
     unit_label = (f"{labels.size} bins of {width} frames over {n_frames_total} frames" if grain == "count"

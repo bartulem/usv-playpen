@@ -12,7 +12,8 @@ The module provides:
   predictor (:func:`linear_predictor_at_frames`);
 - the per-feature screen against each feature's own circular-shift null (:func:`screen_features`,
   :func:`frozen_null_scores`);
-- greedy forward selection with the paired one-standard-error rule (:func:`forward_select`);
+- greedy forward selection, each step decided by the per-step shift test (:func:`forward_select`,
+  :func:`step_shift_test`, :func:`in_sample_pool_score`);
 - the inner splits (:func:`inner_folds`, and :func:`quiet_block_sessions` for a single-session pool);
 - the stored descriptors: the block-resampled filter band, filter shape summaries and the spike-triggered
   average.
@@ -20,11 +21,19 @@ The module provides:
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 
 from ..modeling.jax_group_elastic_net import GroupElasticNetGLM
 from ..modeling.modeling_bases_functions import gam_bspline_basis
-from ..modeling.modeling_utils import paired_one_se_improvement
+from ..modeling.modeling_utils import (
+    bonferroni_permutation_p,
+    circular_shift_trace,
+    draw_session_shift_lags,
+    shift_refit_count,
+)
+from ..modeling.step_shift_test import STEP_TEST_RULE
 from .deviance_metrics import (
     finite_mean,
     frozen_model_null_scores,
@@ -185,7 +194,7 @@ def quiet_block_sessions(session: dict, session_id: str, n_blocks: int, gap_fram
     -----------
     Split one session's quiet anchors into contiguous time blocks presented as pseudo-sessions.
 
-    The inner split for a pool of one session (``data_sufficiency.single_session_blocks``).
+    The inner split for a pool of one session (``cohort.single_session_blocks``).
     The blocks look exactly like sessions, so ``inner_folds``, ``fit_quiet_model`` and the screen run over
     them unchanged. Blocks are contiguous because the kinematics are autocorrelated, and each is trimmed by
     ``gap_frames`` (derived from the history length) at both ends, so a validation frame's history cannot
@@ -500,7 +509,7 @@ def screen_features(per_session: dict, pool_session_ids: list, n_lags: int, rng,
     model's output to the labels, so a negatively tuned unit still gives a positive slope; a negative one
     means the learned relationship flipped on the validation session.
 
-    The screen uses its own shuffle count (``null.screen_n_shuffles``, 2,000), because an empirical p
+    The screen uses its own shuffle count (``inference.screen_n_shuffles``, 2,000), because an empirical p
     floors at ``1 / (n + 1)`` and must clear the Bonferroni bar ``screen_alpha / n_features`` (5.26e-4 for
     19 features at 0.01). The test session is never touched.
 
@@ -552,7 +561,7 @@ def screen_features(per_session: dict, pool_session_ids: list, n_lags: int, rng,
             fold_slopes.append(slope)
             fold_nulls.append(frozen_null_scores(
                 eta, session["quiet"], session["spike_frames"], session["n_frames"], session["fps"],
-                settings["null"]["screen_n_shuffles"], rng, settings["null"]["shuffle_guard_seconds"],
+                settings["inference"]["screen_n_shuffles"], rng, settings["inference"]["shuffle_guard_seconds"],
                 encoding["solver"]["calibration_steps"],
                 encoding["solver"]["null_calibration_bins"], encoding["calibration"],
                 encoding["null_block_megabytes"]))
@@ -573,16 +582,214 @@ def screen_features(per_session: dict, pool_session_ids: list, n_lags: int, rng,
     return rows
 
 
+def in_sample_pool_score(per_session: dict, pool_session_ids: list, estimator, feature_indices: list,
+                         n_lags: int, encoding_settings: dict) -> float:
+    """
+    Description
+    -----------
+    In-sample calibrated D2 of a model fitted on the whole pool, scored on every pool session's quiet
+    anchors at once. This is the statistic of the per-step shift test (:func:`step_shift_test`).
+
+    Every pool quiet anchor is scored, not only the subsampled ones the fit saw. The calibration refit
+    (:func:`deviance_metrics.frozen_model_score`) gives each pool session its own group, so a session's
+    baseline is recalibrated on its own anchors, as the per-session intercepts of the fit allow. The
+    empty model scores 0 by definition: its constant predictor explains no deviance, and a constant
+    cannot be calibrated.
+
+    Parameters
+    ----------
+    per_session (dict)
+        Assembled session data (sessions or quiet-block pseudo-sessions).
+    pool_session_ids (list)
+        The pool sessions the model was fitted on and is scored on.
+    estimator (object | None)
+        The fitted model exposing ``predict_eta``, or None for the empty model.
+    feature_indices (list)
+        Column indices the model was fitted on, in the same order.
+    n_lags (int)
+        History length in frames.
+    encoding_settings (dict)
+        The ``kinematic_encoding`` settings block.
+
+    Returns
+    -------
+    score (float)
+        The in-sample calibrated D2 over the pool (0.0 for the empty model).
+    """
+
+    if estimator is None:
+        return 0.0
+    etas, labels, groups = [], [], []
+    for group, session_id in enumerate(pool_session_ids):
+        session = per_session[session_id]
+        etas.append(linear_predictor_at_frames(estimator, session["feature_time_series"], feature_indices,
+                                               session["quiet"], n_lags, encoding_settings["chunk_rows"]))
+        labels.append(spike_labels_at_frames(session["spike_frames"], session["quiet"], session["n_frames"]))
+        groups.append(np.full(session["quiet"].size, group, dtype=np.int64))
+    return float(frozen_model_score(np.concatenate(etas), np.concatenate(labels), np.concatenate(groups),
+                                    encoding_settings["solver"]["calibration_steps"], "bernoulli", 1.0,
+                                    encoding_settings["calibration"])[0])
+
+
+def step_shift_test(per_session: dict, pool_session_ids: list, incumbent: list, winner: int, n_lags: int,
+                    m_candidates: int, settings: dict, seed: int, step_index: int, feature_names: list,
+                    message_output=print) -> dict:
+    """
+    Description
+    -----------
+    The per-step shift test of forward selection: does the step's winner W improve on the incumbent model
+    M by more than a copy of W that has lost its alignment with the spikes would?
+
+    The test is the behavioural pipelines' per-step shift test (Nevjen & Dunn 2024, CSBonf), on this
+    model's own statistic:
+
+    1. M and M + W are each fitted on ALL pool sessions. The observed gain is
+       ``T_obs = S(M + W) - S(M)``, where ``S`` is :func:`in_sample_pool_score` (0 for an empty M).
+    2. Null draw ``b`` circularly shifts W's trace -- and only W's -- within every pool session, each by
+       its own lag drawn uniformly from ``[guard, T_s - guard]`` frames (``inference.shuffle_guard_seconds``).
+       M + W_shifted is refitted on the pool and scored the same way: ``T_b = S(M + W_shifted) - S(M)``.
+       Shifting W keeps its autocorrelation and its correlation structure within the trace, but breaks its
+       alignment with the spikes and with M's features, so the null is what W adds by chance alone, given M.
+    3. ``B = floor(m / alpha)`` draws, ``m`` being the number of candidates the winner was chosen from.
+       ``p = (1 + k) / (B + 1)`` with ``k`` the number of draws with ``T_b >= T_obs``, and
+       ``p_adj = min(1, m p)``. ``p_adj < alpha`` exactly when ``k = 0``, so the step is accepted only when
+       no draw reaches ``T_obs``. Draws stop at the first draw that does (the step is rejected); an accepted
+       step runs all ``B``.
+
+    Every fit in the test (M, M + W and every draw) uses the same generator seed, so every fit sees the
+    same subsampled anchors: the anchors depend only on the quiet frames and the spikes, never on the
+    features. Draw ``b`` takes its lags from the seed ``[seed, step_index, b]``, so a draw is reproducible
+    on its own.
+
+    The test refits on purpose. Scoring frozen held-out filters on a shifted W (no refit) is
+    anti-conservative when W is correlated with M: the frozen M + W filter has learned to share the load
+    between W and M, and shifting W breaks that split, so the null sits far below zero. A noisy copy of
+    the incumbent's own feature then passes with the smallest attainable p, although it adds nothing.
+
+    Parameters
+    ----------
+    per_session (dict)
+        Assembled session data (sessions or quiet-block pseudo-sessions).
+    pool_session_ids (list)
+        The pool sessions: every fit and every score of the test uses all of them.
+    incumbent (list)
+        Feature indices of M, in the order accepted (empty for the first step).
+    winner (int)
+        Feature index of W.
+    n_lags (int)
+        History length in frames.
+    m_candidates (int)
+        Number of candidates the winner was chosen from (the Bonferroni factor).
+    settings (dict)
+        Full neural-modeling settings.
+    seed (int)
+        The selection's seed; the fit seed is ``[seed, step_index]`` and draw ``b`` uses
+        ``[seed, step_index, b]``.
+    step_index (int)
+        The step of forward selection.
+    feature_names (list)
+        Feature names, indexed as the columns are.
+    message_output (Callable)
+        Where progress is reported.
+
+    Returns
+    -------
+    record (dict)
+        ``rule``, ``statistic``, ``winner``, ``incumbent_features``, ``m_candidates``, ``alpha``,
+        ``n_refits`` (B), ``n_draws_run``, ``k_exceed``, ``p``, ``p_adjusted``, ``accepted``,
+        ``early_stop``, ``t_obs``, ``t_null`` (``(n_draws_run,)`` in draw order), ``lags``
+        (``(n_draws_run, n_sessions)`` frames), ``session_order``, ``min_lag_frames``, ``seed``,
+        ``score_incumbent``, ``score_winner``, ``refit_seconds`` (``(n_draws_run,)``),
+        ``n_unconverged_fits`` and ``wall_seconds``.
+    """
+
+    started = time.perf_counter()
+    encoding = settings["kinematic_encoding"]
+    alpha = float(encoding["feature_selection"]["step_test_alpha"])
+    n_refits = shift_refit_count(m_candidates, alpha)
+    fps = float(per_session[pool_session_ids[0]]["fps"])
+    min_lag_frames = round(float(settings["inference"]["shuffle_guard_seconds"]) * fps)
+    session_order = list(pool_session_ids)
+    session_lengths = {session_id: int(per_session[session_id]["n_frames"]) for session_id in session_order}
+    columns = [*incumbent, winner]
+    unconverged = [0]
+
+    def fit(sessions: dict, feature_indices: list):
+        """One pool fit with the test's fixed seed, so every fit sees the same subsampled anchors."""
+        estimator, _base_rate = fit_quiet_model(sessions, session_order, feature_indices, n_lags,
+                                                np.random.default_rng([seed, step_index]), encoding,
+                                                message_output)
+        unconverged[0] += int(not estimator.converged_)
+        return estimator
+
+    score_incumbent = in_sample_pool_score(per_session, session_order, fit(per_session, incumbent)
+                                           if incumbent else None, incumbent, n_lags, encoding)
+    score_winner = in_sample_pool_score(per_session, session_order, fit(per_session, columns), columns,
+                                        n_lags, encoding)
+    t_obs = score_winner - score_incumbent
+    message_output(f"    step test {step_index}: winner {feature_names[winner]} vs incumbent "
+                   f"{[feature_names[index] for index in incumbent]}; T_obs {t_obs:+.5f}; m {m_candidates}, "
+                   f"alpha {alpha:g}, B {n_refits}")
+
+    t_null, lags, refit_seconds = [], [], []
+    for draw in range(n_refits):
+        draw_started = time.perf_counter()
+        draw_lags = draw_session_shift_lags(np.random.default_rng([seed, step_index, draw]), session_lengths,
+                                            min_lag_frames)
+        shifted = dict(per_session)
+        for session_id in session_order:
+            series = per_session[session_id]["feature_time_series"].copy()
+            series[:, winner] = circular_shift_trace(series[:, winner], draw_lags[session_id])
+            shifted[session_id] = {**per_session[session_id], "feature_time_series": series}
+        t_null.append(in_sample_pool_score(shifted, session_order, fit(shifted, columns), columns, n_lags,
+                                           encoding) - score_incumbent)
+        lags.append([draw_lags[session_id] for session_id in session_order])
+        refit_seconds.append(time.perf_counter() - draw_started)
+        if t_null[-1] >= t_obs:
+            break
+
+    t_null = np.asarray(t_null, dtype=np.float64)
+    n_draws_run = int(t_null.size)
+    k_exceed = int(np.sum(t_null >= t_obs))
+    p_value, p_adjusted = bonferroni_permutation_p(k_exceed, n_draws_run, m_candidates)
+    accepted = bool(k_exceed == 0 and n_draws_run == n_refits)
+    message_output(f"    step test {step_index}: {'ACCEPT' if accepted else 'REJECT'} -- {k_exceed} of "
+                   f"{n_draws_run} draws at/above T_obs (max null gain {np.max(t_null):+.5f}); p {p_value:.5f}, "
+                   f"Bonferroni x{m_candidates} {p_adjusted:.5f} vs alpha {alpha:g}"
+                   f"{'' if unconverged[0] == 0 else f' | {unconverged[0]} UNCONVERGED fit(s)'}")
+    return {"rule": STEP_TEST_RULE, "statistic": "in_sample_calibrated_d2",
+            "winner": feature_names[winner], "incumbent_features": [feature_names[index] for index in incumbent],
+            "m_candidates": int(m_candidates), "alpha": alpha, "n_refits": int(n_refits),
+            "n_draws_run": n_draws_run, "k_exceed": k_exceed, "p": p_value, "p_adjusted": p_adjusted,
+            "accepted": accepted, "early_stop": bool(k_exceed >= 1 and n_draws_run < n_refits),
+            "t_obs": float(t_obs), "t_null": t_null,
+            "lags": np.asarray(lags, dtype=np.int64).reshape(n_draws_run, len(session_order)),
+            "session_order": session_order, "min_lag_frames": int(min_lag_frames),
+            "seed": [int(seed), int(step_index)], "score_incumbent": float(score_incumbent),
+            "score_winner": float(score_winner), "refit_seconds": np.asarray(refit_seconds, dtype=np.float64),
+            "n_unconverged_fits": int(unconverged[0]), "wall_seconds": float(time.perf_counter() - started)}
+
+
 def forward_select(per_session: dict, pool_session_ids: list, survivors: list, n_lags: int, rng,
                    settings: dict, feature_names: list, message_output=print) -> tuple:
     """
     Description
     -----------
     Greedy forward selection over the surviving features, on pool quiet anchors, stopping at the first
-    rejection.
+    rejected step.
 
-    A candidate is accepted when its mean paired per-fold improvement exceeds the standard error of those
-    paired differences. Pairing cancels the session-to-session variation both models share.
+    Each step has two parts:
+
+    1. The winner: every remaining candidate is added to the incumbent model M and scored under the inner
+       leave-one-pool-session-out split (calibrated D2 on the held-out pool session). The candidate with
+       the best fold-mean score is the step's winner W. The first step starts from the empty model, and a
+       first winner whose fold-mean score is not positive ends selection with nothing selected.
+    2. The decision: W is accepted when it passes the per-step shift test (:func:`step_shift_test`) at
+       ``feature_selection.step_test_alpha``, Bonferroni-corrected over the ``m`` candidates it was chosen
+       from. Every step is tested, the first included: a feature passing the screen is not by itself a
+       reason to keep it in the model.
+
+    Selection stops at the first rejected step or when no candidate is left.
 
     Parameters
     ----------
@@ -595,7 +802,8 @@ def forward_select(per_session: dict, pool_session_ids: list, survivors: list, n
     n_lags (int)
         History length in frames.
     rng (np.random.Generator)
-        Seeded generator.
+        Seeded generator. The inner-fold fits draw their subsamples from it. The shift tests are seeded by
+        one integer from a child generator spawned from it, which does not advance its stream.
     settings (dict)
         Full neural-modeling settings.
     feature_names (list)
@@ -608,9 +816,11 @@ def forward_select(per_session: dict, pool_session_ids: list, survivors: list, n
     selected (list)
         Chosen feature indices, in the order accepted.
     path (list)
-        One dict per step: ``step``, ``candidate``, ``mean``, ``fold_scores``, ``improvement``,
-        ``standard_error``,
-        ``decision``.
+        One dict per tested step: ``step``, ``candidate``, ``mean`` (the winner's fold-mean held-out
+        score), ``fold_scores``, ``improvement`` (its fold-mean gain over the incumbent's, descriptive
+        only; the incumbent of the first step is the empty model, whose held-out score is 0),
+        ``decision`` (``'ACCEPT'`` or ``'REJECT'``), ``converged`` (every inner-fold fit of the winner)
+        and ``step_test`` (the :func:`step_shift_test` record).
     """
 
     encoding = settings["kinematic_encoding"]
@@ -620,12 +830,15 @@ def forward_select(per_session: dict, pool_session_ids: list, survivors: list, n
         msg = (f"forward_select implements greedy forward selection by held-out D2 only; "
                f"selection_method is {selection['selection_method']!r}.")
         raise ValueError(msg)
-    if selection["acceptance_rule"] != "paired_1se":
-        msg = (f"the acceptance rule is the codebase's paired one-standard-error rule -- a candidate "
-               f"must beat the incumbent by more than the SE of the PAIRED per-fold differences; "
-               f"acceptance_rule is {selection['acceptance_rule']!r}.")
+    if selection["acceptance_rule"] != STEP_TEST_RULE:
+        msg = (f"the acceptance rule is the per-step shift test ({STEP_TEST_RULE!r}): each step's winner "
+               f"is refitted against circularly shifted copies of itself and accepted when no shifted "
+               f"refit reaches its in-sample gain; acceptance_rule is {selection['acceptance_rule']!r}.")
         raise ValueError(msg)
     folds = inner_folds(pool_session_ids)
+    # The tests' seed comes from a spawned child generator, which leaves the stream of `rng` untouched, so
+    # the inner-fold fits draw exactly the subsamples they would draw without the tests.
+    test_seed = int(rng.spawn(1)[0].integers(0, 2 ** 32))
 
     def fold_scores(columns):
         """Per-inner-fold score vector for a candidate feature set, and whether every fit converged."""
@@ -645,25 +858,10 @@ def forward_select(per_session: dict, pool_session_ids: list, survivors: list, n
                                              encoding["calibration"])[0])
         return np.asarray(values, dtype=np.float64), converged
 
-    scored = [(feature, *fold_scores([feature])) for feature in survivors]
-    scored = [(feature, values, converged) for feature, values, converged in scored
-              if finite_mean(values) > 0]
-    if not scored:
-        return [], []
-    anchor, incumbent_scores, anchor_converged = max(scored, key=lambda item: finite_mean(item[1]))
-    incumbent_mean = finite_mean(incumbent_scores)
-    selected = [anchor]
-    # Each step keeps the per-inner-fold scores it was decided on.
-    path = [{"step": 0, "candidate": feature_names[anchor], "mean": incumbent_mean,
-             "improvement": np.nan, "standard_error": np.nan, "decision": "ANCHOR",
-             "converged": anchor_converged,
-             "fold_scores": [float(value) for value in incumbent_scores]}]
-    message_output(f"    select step 0  ANCHOR {feature_names[anchor]:<32} score {incumbent_mean:+.5f} "
-                   f"| per fold {np.array2string(incumbent_scores, precision=4)}"
-                   f"{'' if anchor_converged else ' | UNCONVERGED'}")
-
-    remaining = [feature for feature in survivors if feature != anchor]
-    step = 1
+    selected, path = [], []
+    incumbent_mean = 0.0
+    remaining = list(survivors)
+    step = 0
     while remaining:
         best_feature, best_mean, best_scores, best_converged = None, -np.inf, None, True
         for feature in remaining:
@@ -671,25 +869,27 @@ def forward_select(per_session: dict, pool_session_ids: list, survivors: list, n
             mean = finite_mean(values)
             if np.isfinite(mean) and mean > best_mean:
                 best_feature, best_mean, best_scores, best_converged = feature, mean, values, converged
-        if best_feature is None:
+        if best_feature is None or (step == 0 and best_mean <= 0):
             break
-        improvement, standard_error = paired_one_se_improvement(best_scores, incumbent_scores)
-        accept = np.isfinite(improvement) and improvement > standard_error
+        record = step_shift_test(per_session, pool_session_ids, selected, best_feature, n_lags, len(remaining),
+                                 settings, test_seed, step, feature_names, message_output)
+        accept = record["accepted"]
         path.append({"step": step, "candidate": feature_names[best_feature], "mean": best_mean,
-                     "improvement": improvement, "standard_error": standard_error,
+                     "improvement": best_mean - incumbent_mean,
                      "decision": "ACCEPT" if accept else "REJECT", "converged": best_converged,
-                     "fold_scores": [float(value) for value in best_scores]})
+                     "fold_scores": [float(value) for value in best_scores], "step_test": record})
         message_output(f"    select step {step}  {'ACCEPT' if accept else 'REJECT'} "
-                       f"{feature_names[best_feature]:<32} score {best_mean:+.5f} | paired improvement "
-                       f"{improvement:+.5f} vs its SE {standard_error:.5f}"
-                       f"{'' if best_converged else ' | UNCONVERGED'}")
+                       f"{feature_names[best_feature]:<32} score {best_mean:+.5f} | per fold "
+                       f"{np.array2string(best_scores, precision=4)} | shift-test p_adj "
+                       f"{record['p_adjusted']:.4f}{'' if best_converged else ' | UNCONVERGED'}")
         if not accept:
             break
         selected.append(best_feature)
         remaining.remove(best_feature)
-        incumbent_scores, incumbent_mean = best_scores, best_mean
+        incumbent_mean = best_mean
         step += 1
     return selected, path
+
 
 def block_resample_anchors(anchors: np.ndarray, block_frames: int, rng) -> np.ndarray:
     """

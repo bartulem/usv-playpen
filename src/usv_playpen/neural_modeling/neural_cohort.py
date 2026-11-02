@@ -11,14 +11,14 @@ A unit is kept when its area, quality and somatic flag pass and it appears in at
 - ``courtship_sessions`` — every courtship session the unit was recorded in, used by the kinematic
   encoding, which is fitted on silence.
 - ``vocal_sessions``     — the subset with at least ``min_emitter_usvs_per_session`` analysed USVs
-  (noise and squeaks excluded) from the emitter ``vocalization_settings.vocal_emitter`` names, used
+  (noise and squeaks excluded) from the emitter ``vocalizations.vocal_emitter`` names, used
   by everything scored on vocalizations.
 
 A ``unit_uid`` is single-``rec_date``, so its sessions are same-day blocks and every
 leave-one-session-out rotation is within-day.
 
 A unit recorded in a single courtship session has no session to hold out, so that session is split
-into ``data_sufficiency.single_session_blocks`` contiguous blocks of equal duration, separated by
+into ``cohort.single_session_blocks`` contiguous blocks of equal duration, separated by
 ``kinematic_encoding.history_pre_seconds``, and each block stands in for a session in both sets
 (``<session>#block<i>``). The record's ``block_split`` says which regime a unit is tested in.
 
@@ -165,7 +165,7 @@ def focal_usv_onsets(session_ids, data_root: str, mouse_by_session: dict,
     vocal_emitter (str)
         Whose USVs are the events: ``'self'`` | ``'partner'`` | ``'all'``.
     vocal_settings (dict)
-        The ``vocalization_settings`` block, which defines the analysed USVs.
+        The ``vocalizations`` block, which defines the analysed USVs.
 
     Returns
     -------
@@ -202,7 +202,7 @@ def block_usv_counts(onsets: dict, n_blocks: int, gap_seconds: float) -> dict:
     onsets (dict)
         From :func:`focal_usv_onsets`.
     n_blocks (int)
-        Blocks per session (``data_sufficiency.single_session_blocks``).
+        Blocks per session (``cohort.single_session_blocks``).
     gap_seconds (float)
         Separation between neighbouring blocks (``kinematic_encoding.history_pre_seconds``).
 
@@ -248,7 +248,7 @@ def emitter_usv_counts(session_ids, data_root: str, mouse_by_session: dict,
     vocal_emitter (str)
         Whose USVs are the events: ``'self'`` | ``'partner'`` | ``'all'``.
     vocal_settings (dict)
-        The ``vocalization_settings`` block, which defines the analysed USVs.
+        The ``vocalizations`` block, which defines the analysed USVs.
 
     Returns
     -------
@@ -277,7 +277,7 @@ def unit_session_sets(sessions: list, emitter_counts: dict, n_blocks: int,
         Analysed emitter USVs per session and, for a one-session unit, per block
         (:func:`emitter_usv_counts`, :func:`block_usv_counts`).
     n_blocks (int)
-        Blocks a single session is split into (``data_sufficiency.single_session_blocks``).
+        Blocks a single session is split into (``cohort.single_session_blocks``).
     min_emitter_usvs_per_session (int)
         USVs a session or block needs before anything scored on vocalizations may use it.
 
@@ -417,9 +417,8 @@ def build_cohort_manifest(settings: dict) -> list[dict]:
     Parameters
     ----------
     settings (dict)
-        The whole neural-modeling settings dict; the ``data``, ``data_sufficiency``,
-        ``vocalization_settings``, ``data_roots`` and ``kinematic_encoding`` (for the block gap)
-        blocks are read.
+        The whole neural-modeling settings dict; the ``paths``, ``cohort``, ``vocalizations`` and
+        ``kinematic_encoding`` (for the block gap) blocks are read.
 
     Returns
     -------
@@ -427,32 +426,32 @@ def build_cohort_manifest(settings: dict) -> list[dict]:
         The manifest, one record per unit.
     """
 
-    # `data` says which data the run draws on, `data_sufficiency` how much of it a unit must carry.
-    data_settings = settings["data"]
-    sufficiency = settings["data_sufficiency"]
-    session_ids = load_courtship_session_ids(data_settings["session_list_files"])
-    catalog_path = settings["data_roots"]["catalog_path"]
+    # `paths` says which data the run draws on; `cohort` which units it keeps and how much data a unit
+    # must carry.
+    cohort_settings = settings["cohort"]
+    session_ids = load_courtship_session_ids(settings["paths"]["session_list_files"])
+    catalog_path = settings["paths"]["catalog_path"]
     mouse_by_session = recorded_mouse_by_session(catalog_path)
     onsets = focal_usv_onsets(session_ids & set(mouse_by_session),
-                              settings["data_roots"]["data_root"], mouse_by_session,
-                              settings["vocalization_settings"]["vocal_emitter"],
-                              settings["vocalization_settings"])
+                              settings["paths"]["data_root"], mouse_by_session,
+                              settings["vocalizations"]["vocal_emitter"],
+                              settings["vocalizations"])
     # Per-block counts for every session, since which sessions hold a one-session unit is decided below.
     counts = {**{session_id: (0 if entry is None else int(entry[0].size)) for session_id, entry in onsets.items()},
-              **block_usv_counts(onsets, sufficiency["single_session_blocks"],
+              **block_usv_counts(onsets, cohort_settings["single_session_blocks"],
                                  settings["kinematic_encoding"]["history_pre_seconds"])}
     return select_cohort(
         catalog_path=catalog_path,
         courtship_session_ids=session_ids,
-        brain_areas=data_settings["brain_areas"],
-        area_mode=data_settings["area_mode"],
-        quality=data_settings["quality"],
-        somatic=data_settings["somatic"],
-        min_courtship_sessions=sufficiency["min_courtship_sessions"],
+        brain_areas=cohort_settings["brain_areas"],
+        area_mode=cohort_settings["area_mode"],
+        quality=cohort_settings["quality"],
+        somatic=cohort_settings["somatic"],
+        min_courtship_sessions=cohort_settings["min_courtship_sessions"],
         emitter_counts=counts,
-        min_emitter_usvs_per_session=sufficiency["min_emitter_usvs_per_session"],
-        min_vocal_sessions=sufficiency["min_vocal_sessions"],
-        single_session_blocks=sufficiency["single_session_blocks"],
+        min_emitter_usvs_per_session=cohort_settings["min_emitter_usvs_per_session"],
+        min_vocal_sessions=cohort_settings["min_vocal_sessions"],
+        single_session_blocks=cohort_settings["single_session_blocks"],
     )
 
 

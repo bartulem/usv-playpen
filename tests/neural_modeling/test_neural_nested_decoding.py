@@ -66,7 +66,7 @@ SETTINGS_PATH = (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_play
                  / "_parameter_settings" / "neural_modeling_settings.json")
 with SETTINGS_PATH.open() as _settings_file:
     # The shipped torus period every analysis of the manifold reads.
-    PERIOD = json.load(_settings_file)["vocalization_settings"]["torus_period"]
+    PERIOD = json.load(_settings_file)["vocalizations"]["torus_period"]
 
 
 def _settings() -> dict:
@@ -243,7 +243,7 @@ class TestTheBehaviourControl:
     shape and the control is always refitted in domain. An externally chosen set also carries NO
     selection optimism, since those features were never chosen on this preparation."""
 
-    FROZEN: ClassVar[list[str]] = ["head-head"]
+    FROZEN: ClassVar[list[str]] = ["head-head", "other.ego_yaw"]
 
     @staticmethod
     def _fake_selection(tmp_path, features):
@@ -281,7 +281,8 @@ class TestTheBehaviourControl:
         tmp_path (pathlib.Path)
             Directory the pickle is written to.
         features (list[str])
-            The final step's feature names; the first step holds only the first of them.
+            The selection's result. The first step adds the first of them, the last step adds the
+            rest and carries them as ``final_model_features``.
 
         Returns
         -------
@@ -290,21 +291,22 @@ class TestTheBehaviourControl:
         """
         path = tmp_path / "behavioural_selection.pkl"
         with path.open("wb") as handle:
-            pickle.dump({"steps": [{"current_features": list(features[:1])},
-                                   {"current_features": list(features)}]}, handle)
+            pickle.dump({"steps": [{"current_features": []},
+                                   {"current_features": list(features[:1]),
+                                    "final_model_features": list(features)}]}, handle)
         return path
 
     def test_a_behavioural_selection_feature_set_is_adopted(self, tmp_path):
-        """The last forward step's `current_features` defines the set; coefficients are never read."""
+        """The step carrying `final_model_features` defines the set; coefficients are never read."""
         settings = _settings()
-        settings["data"]["behaviour_selection_result_path"]["manifold"] = str(
+        settings["paths"]["behaviour_selection_result_path"]["manifold"] = str(
             self._behavioural_selection(tmp_path, self.FROZEN))
         assert reduced_model_features(settings, "manifold") == self.FROZEN
 
     def test_a_behavioural_selection_is_drift_checked_too(self, tmp_path):
         """Accepting the shape must not exempt it from the freeze."""
         settings = _settings()
-        settings["data"]["behaviour_selection_result_path"]["manifold"] = str(
+        settings["paths"]["behaviour_selection_result_path"]["manifold"] = str(
             self._behavioural_selection(tmp_path, [*self.FROZEN, "self.speed"]))
         with pytest.raises(ValueError, match="behaviour selection drift"):
             reduced_model_features(settings, "manifold")
@@ -315,7 +317,7 @@ class TestTheBehaviourControl:
         with path.open("wb") as handle:
             pickle.dump({"something_else": ["a"]}, handle)
         settings = _settings()
-        settings["data"]["behaviour_selection_result_path"]["manifold"] = str(path)
+        settings["paths"]["behaviour_selection_result_path"]["manifold"] = str(path)
         with pytest.raises(ValueError, match="neither a cohort selection result"):
             reduced_model_features(settings, "manifold")
 
@@ -327,7 +329,7 @@ class TestTheBehaviourControl:
     def test_a_matching_file_returns_the_selection_order(self, tmp_path):
         """A selection file agreeing with the freeze returns the features in selection order."""
         settings = _settings()
-        settings["data"]["behaviour_selection_result_path"]["manifold"] = str(
+        settings["paths"]["behaviour_selection_result_path"]["manifold"] = str(
             self._fake_selection(tmp_path, self.FROZEN))
         assert reduced_model_features(settings, "manifold") == self.FROZEN
 
@@ -335,7 +337,7 @@ class TestTheBehaviourControl:
         """A selection file disagreeing with the freeze must raise rather than silently redefine the
         control."""
         settings = _settings()
-        settings["data"]["behaviour_selection_result_path"]["manifold"] = str(
+        settings["paths"]["behaviour_selection_result_path"]["manifold"] = str(
             self._fake_selection(tmp_path, [*self.FROZEN, "self.speed"]))
         with pytest.raises(ValueError, match="behaviour selection drift"):
             reduced_model_features(settings, "manifold")
@@ -344,7 +346,7 @@ class TestTheBehaviourControl:
         """An absent selection file raises by default and falls back to the frozen list only when
         ``require_selection_file=False``."""
         settings = _settings()
-        settings["data"]["behaviour_selection_result_path"]["manifold"] = str(tmp_path / "absent.pkl")
+        settings["paths"]["behaviour_selection_result_path"]["manifold"] = str(tmp_path / "absent.pkl")
         with pytest.raises(FileNotFoundError, match="behaviour selection result not found"):
             reduced_model_features(settings, "manifold")
         assert reduced_model_features(settings, "manifold", require_selection_file=False) == self.FROZEN
@@ -352,7 +354,7 @@ class TestTheBehaviourControl:
     def test_a_present_file_is_checked_even_when_the_file_is_optional(self, tmp_path):
         """`require_selection_file=False` tolerates ABSENCE, never disagreement."""
         settings = _settings()
-        settings["data"]["behaviour_selection_result_path"]["manifold"] = str(
+        settings["paths"]["behaviour_selection_result_path"]["manifold"] = str(
             self._fake_selection(tmp_path, ["something.else"]))
         with pytest.raises(ValueError, match="behaviour selection drift"):
             reduced_model_features(settings, "manifold", require_selection_file=False)
@@ -361,7 +363,7 @@ class TestTheBehaviourControl:
         """Reading the control must not modify the frozen list in the caller's settings."""
         settings = _settings()
         original = copy.deepcopy(settings["nested_vocal_decoding"]["reduced_model_features"])
-        settings["data"]["behaviour_selection_result_path"]["manifold"] = str(
+        settings["paths"]["behaviour_selection_result_path"]["manifold"] = str(
             self._fake_selection(tmp_path, self.FROZEN))
         reduced_model_features(settings, "manifold")
         assert settings["nested_vocal_decoding"]["reduced_model_features"] == original
@@ -711,7 +713,7 @@ class TestSettingsAreNotHardCoded:
         """It is a property of the MANIFOLD, so every analysis sees one value; duplicating it into two
         blocks is exactly the drift this audit was about."""
         settings = _settings()
-        assert "torus_period" in settings["vocalization_settings"]
+        assert "torus_period" in settings["vocalizations"]
         assert "torus_period" not in settings["nested_vocal_decoding"]
 
     def test_the_vocal_decoding_reads_the_period_it_is_given(self):
@@ -729,13 +731,13 @@ class TestSettingsAreNotHardCoded:
         assert folds[0]["grid_positions"].max() > 1.0
 
     def test_both_decodings_receive_the_shared_period_from_settings(self):
-        """Every decoding_context call in the dispatcher hands it `vocalization_settings.torus_period`,
+        """Every decoding_context call in the dispatcher hands it `vocalizations.torus_period`,
         the same key the nested decoding's block carries, so the two cannot disagree on the period."""
         source = (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen" / "neural_modeling"
                   / "main_neural_vocal_dispatcher.py").read_text()
         n_contexts = source.count("decoding_context(")
         assert n_contexts >= 2
-        assert source.count('settings["vocalization_settings"]["torus_period"]') >= n_contexts
+        assert source.count('settings["vocalizations"]["torus_period"]') >= n_contexts
 
     def test_the_sigma_floor_is_a_setting_not_a_default(self):
         """The vocal-occurrence axis takes it as a required parameter from settings; the nested decoding hard-coded the
@@ -1065,7 +1067,8 @@ class TestPosteriorNested:
     @pytest.mark.parametrize(("path", "bad"), [(("statistic",), "point_regression"),
                                            (("behaviour_prior", "form"), "kde"),
                                            (("behaviour_prior", "concentration"), "cohort_fit"),
-                                           (("discrimination_null", "method"), "circular_shift")])
+                                           (("discrimination_null", "method"), "circular_shift"),
+                                           (("discrimination_null", "sided"), "two_sided")])
     def test_unimplemented_posterior_options_are_refused(self, path, bad):
         """Each named posterior option that is not implemented must raise in ``check_settings``."""
         block = copy.deepcopy(self.NESTED)

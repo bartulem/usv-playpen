@@ -28,6 +28,7 @@ from usv_playpen.neural_modeling.neural_vocal_decoding import (
     bump_basis,
     bump_basis_gain,
     bump_nodes,
+    check_identity_null,
     decode_gain,
     decoding_context,
     flagged_descriptors,
@@ -45,8 +46,8 @@ from usv_playpen.neural_modeling.neural_vocal_decoding import (
 SETTINGS_PATH = (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"
                  / "_parameter_settings" / "neural_modeling_settings.json")
 with SETTINGS_PATH.open() as _settings_file:
-    # The shipped torus period (`vocalization_settings.torus_period`) the dispatcher threads in.
-    PERIOD = json.load(_settings_file)["vocalization_settings"]["torus_period"]
+    # The shipped torus period (`vocalizations.torus_period`) the dispatcher threads in.
+    PERIOD = json.load(_settings_file)["vocalizations"]["torus_period"]
 
 
 def _settings(**surface_overrides) -> dict:
@@ -706,3 +707,35 @@ class TestInnerRotationSplits:
         assert inner_rotation_splits([0], {0: np.arange(6)}, None, 5) == []
         assert inner_rotation_splits([0], {0: np.arange(1)}, np.zeros(1), 5) == []
         assert inner_rotation_splits([0], {0: np.arange(6)}, np.arange(6.0), 1) == []
+
+
+class TestIdentityNullDeclaration:
+    """``method`` and ``sided`` of ``vocal_decoding.discrimination_null`` name the null the package runs;
+    any other value is refused rather than reported as having run."""
+
+    def test_the_shipped_declaration_is_accepted(self):
+        """The shipped block names the implemented null, so the check passes silently."""
+        check_identity_null(_settings())
+
+    @pytest.mark.parametrize(("key", "bad"), [("method", "circular_shift"), ("sided", "two_sided")])
+    def test_an_unimplemented_declaration_is_refused(self, key, bad):
+        """
+        Description
+        -----------
+        Declaring another permutation scheme or a two-sided p must raise, naming the key.
+
+        Parameters
+        ----------
+        key (str)
+            The ``discrimination_null`` key changed.
+        bad (str)
+            The unimplemented value.
+
+        Returns
+        -------
+        None
+        """
+        block = _settings()
+        block["discrimination_null"][key] = bad
+        with pytest.raises(ValueError, match=f"discrimination_null.{key}"):
+            check_identity_null(block)

@@ -4200,30 +4200,30 @@ key by key under :ref:`modeling-neural-settings`. Paths in it ship with the lite
 
 The cohort
 ~~~~~~~~~~
-The cohort is built from the unit catalog (``data_roots.catalog_path``) by
-``neural_cohort.build_cohort_manifest``: units in ``data.brain_areas`` (PAG by default), of the listed
-``data.quality`` and ``data.somatic`` class, recorded in at least ``data_sufficiency.min_courtship_sessions``
-of the courtship sessions named in ``data.session_list_files``. With the shipped settings this gives
+The cohort is built from the unit catalog (``paths.catalog_path``) by
+``neural_cohort.build_cohort_manifest``: units in ``cohort.brain_areas`` (PAG by default), of the listed
+``cohort.quality`` and ``cohort.somatic`` class, recorded in at least ``cohort.min_courtship_sessions``
+of the courtship sessions named in ``paths.session_list_files``. With the shipped settings this gives
 2,649 PAG units, 124 of them recorded in a single session.
 
 A unit's sessions are split into two sets. Every courtship session serves the kinematic encoding, which is
 fitted on silence; a session serves the vocal analyses only if the male emitted at least
-``data_sufficiency.min_emitter_usvs_per_session`` USVs in it, and a unit with fewer than
+``cohort.min_emitter_usvs_per_session`` USVs in it, and a unit with fewer than
 ``min_vocal_sessions`` such sessions is kept and flagged rather than dropped, so the denominators the
 cohort fractions are reported against never shrink silently.
 
-A unit recorded in one session is analysed on ``data_sufficiency.single_session_blocks`` blocks of equal
+A unit recorded in one session is analysed on ``cohort.single_session_blocks`` blocks of equal
 duration, which stand in for sessions in every analysis (each block has its own baseline and its own vocal
 floor, and the time within ``kinematic_encoding.history_pre_seconds`` of a block boundary is dropped). Such
 units are listed in the cohort table but left out of the cross-unit corrections by default
-(``significance.include_single_session_units``).
+(``inference.include_single_session_units``).
 
 The behaviour controls
 ~~~~~~~~~~~~~~~~~~~~~~
 The nested decoding measures each neuron against a behaviour model of the USV, one per target, fitted
 once for the whole cohort and held out by recording day, so a unit's own USVs never train the model it is
 compared with. Their features are those the behavioural modelling's selections chose on the ephys
-courtship sessions (``data.behaviour_selection_result_path``, frozen in
+courtship sessions (``paths.behaviour_selection_result_path``, frozen in
 ``nested_vocal_decoding.reduced_model_features``). Fit both before any unit runs:
 
 .. code-block:: bash
@@ -4231,8 +4231,10 @@ courtship sessions (``data.behaviour_selection_result_path``, frozen in
     python -m usv_playpen.neural_modeling.main_behaviour_control_dispatcher --stage fit --target manifold
     python -m usv_playpen.neural_modeling.main_behaviour_control_dispatcher --stage fit --target multinomial
 
-Each run writes ``nested_vocal_decoding.behaviour_control_model_path[target]``; ``--n-workers`` (``6``)
-sets the processes and ``--exclude-days`` leaves recording days out. The per-unit decoding refuses a
+Each run writes ``paths.behaviour_control_model_path[target]``; ``--n-workers`` (``6``)
+sets the processes and ``--exclude-days`` leaves recording days out. The behaviour history is
+``kinematic_encoding.history_pre_seconds`` at the sessions' camera rate (600 frames for 4 s at 150 fps), the
+same length the per-unit side builds; it is computed per session from that session's measured rate, and every listed session must give the same count. The per-unit decoding refuses a
 control fitted for the other target or on other features. ``--stage select --output <file>`` runs this
 package's own forward selection for the torus control; it never writes onto the settings' selection path,
 and the frozen feature list is only changed by hand.
@@ -4244,7 +4246,7 @@ behavioural feature, each feature's history expanded on a spline lag basis (``te
 on quiet frames only: frames with no USV from any emitter in the 4 s before or the
 ``clean_post_seconds`` (4 s) after. Each session in turn is held out (an outer fold); inside the remaining
 sessions, every feature is screened alone against a circular-shift null at a Bonferroni level
-(``feature_selection.screen_alpha`` over the feature count, ``null.screen_n_shuffles`` draws), and the
+(``feature_selection.screen_alpha`` over the feature count, ``inference.screen_n_shuffles`` draws), and the
 survivors are added by forward selection with a paired one-standard-error rule.
 
 One fold's model represents the unit: the fold whose held-out quiet score is the median (ties broken by
@@ -4263,13 +4265,13 @@ band and the spike-triggered average, and every fold's screen, selection path an
 Vocal occurrence
 ~~~~~~~~~~~~~~~~
 Vocal occurrence is a two-class decoder of the spike count in the window given by
-``vocalization_settings.spike_window`` (from 50 ms before each USV onset, 100 ms wide) against quiet tiles
+``vocalizations.spike_window`` (from 50 ms before each USV onset, 100 ms wide) against quiet tiles
 of the same width, under an equal prior. Each class has a Poisson rate shrunk toward the pooled rate, the
 contrast between them is tuned on the training sessions (``vocal_decoding.vocal_occurrence``), and the
 statistic is the held-out, class-balanced gain in nats per window, whose ceiling is ``log 2``.
 
-Its null circularly shifts each session's spike train within ``null.shuffle_guard_seconds`` of either end,
-recounts both classes and refits everything, ``null.n_shuffles`` (1,000) times. The section stores the
+Its null circularly shifts each session's spike train within ``inference.shuffle_guard_seconds`` of either end,
+recounts both classes and refits everything, ``inference.n_shuffles`` (1,000) times. The section stores the
 gain, the area under the ROC curve, the response sign (elevated or suppressed firing), the per-fold values
 and the null.
 
@@ -4283,7 +4285,7 @@ gain of that posterior over the training occupancy prior, in nats per USV.
 
 Its null permutes the spike counts against the USVs within each session, which breaks only the pairing
 under test; it is exact, and runs ``discrimination_null.n_permutations`` (1,000) draws on the torus and
-``n_permutations_category_grain`` (5,000) on categories. ``vocalization_settings.vocal_target`` names the
+``n_permutations_category_grain`` (5,000) on categories. ``vocalizations.vocal_target`` names the
 target whose identity p-value decides whether vocal gating runs and which the consolidation corrects; the
 other target is kept as an uncorrected descriptor, so switching needs only the consolidation re-run.
 
@@ -4392,8 +4394,8 @@ would be uncorrected by construction.
 Cohort consolidation
 ~~~~~~~~~~~~~~~~~~~~
 Once the units have run, ``consolidate_neural_modeling_results`` reads every result file, corrects each
-test across units with ``significance.fdr_method`` at ``significance.fdr_q`` (within each brain area
-unless ``data.pool_areas``), and assigns each unit one of six categories:
+test across units with ``inference.fdr_method`` at ``inference.fdr_q`` (within each brain area
+unless ``cohort.pool_areas``), and assigns each unit one of six categories:
 ``Transformation``, ``Relay``, ``Regime-switching``, ``Vocal``, ``Kinematic`` or ``None``:
 
 .. code-block:: bash
@@ -4443,23 +4445,30 @@ code implements and raise on any other, so a declared alternative can never run 
 the default in disguise. All durations are in seconds, all frame counts in
 tracking frames (150 fps), and all torus coordinates in units of the period.
 
+The file reads in pipeline order: every input path first (``paths``), then which units
+enter (``cohort``), the shared predictor and vocalization definitions
+(``kinematic_features``, ``vocalizations``), the analyses in the order they run
+(``kinematic_encoding``, ``vocal_decoding``, ``nested_vocal_decoding``, ``vocal_gating``),
+and the inference shared by all of them (``inference``) last.
+
 How the dispatchers run a unit and the cohort is described under :ref:`modeling-neural`.
 
-**data** — which sessions and units the run draws on.
+**paths** — where the run reads every input: the session data tree, the unit catalog, the session lists, the behavioural selection results and the fitted behaviour controls.
 
 .. code-block:: json
 
-    "data": {
+    "paths": {
+        "data_root": "/mnt/falkner/Bartul/Data",
+        "catalog_path": "/mnt/falkner/Bartul/EPHYS/unit_catalog.csv",
         "session_list_files": ["/mnt/falkner/Bartul/modeling/input_files/ephys_courtship_intact_partners_sessions_list.txt", "/mnt/falkner/Bartul/modeling/input_files/ephys_courtship_mute_female_sessions_list.txt"],
         "behaviour_selection_result_path": {
-            "manifold": "/mnt/falkner/Bartul/modeling/model_selection_results/model_selection_final_ephys_male_all_partners_manifold_qlvm_session_20261026_205129Z.pkl",
-            "multinomial": "/mnt/falkner/Bartul/modeling/model_selection_results/model_selection_final_ephys_male_all_partners_multinomial_qlvm_category_session_20261026_203704Z.pkl"
+            "manifold": "/mnt/falkner/Bartul/modeling/model_selection_results/model_selection_final_ephys_male_all_partners_manifold_qlvm_session_20261031_084027Z.pkl",
+            "multinomial": "/mnt/falkner/Bartul/modeling/model_selection_results/model_selection_final_ephys_male_all_partners_multinomial_qlvm_category_session_20261031_082614Z.pkl"
         },
-        "brain_areas": ["PAG"],
-        "area_mode": "include",
-        "pool_areas": false,
-        "quality": ["good"],
-        "somatic": "somatic"
+        "behaviour_control_model_path": {
+            "manifold": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_model_ephys_manifold.pkl",
+            "multinomial": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_model_ephys_multinomial.pkl"
+        }
     }
 
 .. list-table::
@@ -4470,130 +4479,23 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
    * - Setting
      - Default
      - Options
-   * - :ref:`session_list_files <nm-data-session-list-files>`
-     - two lists, see JSON above
-     - list of paths to text files
-   * - :ref:`behaviour_selection_result_path <nm-data-behaviour-selection-result-path>`
-     - one path per target, see JSON above
-     - ``{'manifold': path, 'multinomial': path}``
-   * - :ref:`brain_areas <nm-data-brain-areas>`
-     - ``["PAG"]``
-     - list of ``brain_area`` labels
-   * - :ref:`area_mode <nm-data-brain-areas>`
-     - ``'include'``
-     - ``'include'``, ``'exclude'``, ``'all'``
-   * - :ref:`pool_areas <nm-data-pool-areas>`
-     - ``false``
-     - ``true``, ``false``
-   * - :ref:`quality <nm-data-quality>`
-     - ``["good"]``
-     - list of ``cluster_group`` labels
-   * - :ref:`somatic <nm-data-somatic>`
-     - ``'somatic'``
-     - ``'somatic'``, ``'non_somatic'``, ``'both'``
-
-.. _nm-data-session-list-files:
-
-``session_list_files``
-   Text files listing one session directory per line; the union is the courtship cohort.
-
-   :Options: a list of paths to text files
-   :Default: the intact-partner and the mute-female ephys lists (see the JSON above)
-
-.. _nm-data-behaviour-selection-result-path:
-
-``behaviour_selection_result_path``
-   Per target (``'manifold'``, ``'multinomial'``), the selection whose feature set defines the behaviour control, read back to check the frozen ``reduced_model_features`` against.
-
-   :Options: a dictionary with one path per target, each either a behavioural-modelling selection (its last forward step's ``current_features``; only the names are adopted, never the coefficients) or the pickle ``main_behaviour_control_dispatcher --stage select --output <file>`` writes
-   :Default: the behavioural modelling's manifold and multinomial selections on the ephys courtship sessions, both partner conditions pooled (see the JSON above)
-   :Notes: the shipped selections chose ``head-head`` alone (manifold) and ``allo_yaw-head``, ``head-head``, ``other.speed``, ``self.back_pitch`` (multinomial). The select stage never writes to this path.
-
-.. _nm-data-brain-areas:
-
-``brain_areas`` / ``area_mode``
-   The unit catalog's ``brain_area`` filter.
-
-   :Options:
-      * ``brain_areas`` — a list of ``brain_area`` labels
-      * ``area_mode`` — ``'include'`` keeps the listed areas, ``'exclude'`` drops them, ``'all'`` ignores the list
-   :Default: ``["PAG"]`` and ``'include'``
-
-.. _nm-data-pool-areas:
-
-``pool_areas``
-   Whether the cross-unit corrections pool every brain area of the cohort into one group or correct each area on its own.
-
-   :Options:
-      * ``true`` — one correction over all areas
-      * ``false`` — one correction per area, so one area's count never depends on how many units of another were run
-   :Default: ``false``
-
-.. _nm-data-quality:
-
-``quality``
-   The allowed ``cluster_group`` labels of the unit catalog.
-
-   :Options: a list of ``cluster_group`` labels
-   :Default: ``["good"]``
-
-.. _nm-data-somatic:
-
-``somatic``
-   Which units pass the catalog's somatic waveform classification.
-
-   :Options:
-      * ``'somatic'`` — somatic units only
-      * ``'non_somatic'`` — non-somatic units only
-      * ``'both'`` — both
-   :Default: ``'somatic'``
-
-**data_roots** — where the run reads its inputs.
-
-.. code-block:: json
-
-    "data_roots": {
-        "ephys_root": "/mnt/falkner/Bartul/EPHYS",
-        "catalog_path": "/mnt/falkner/Bartul/EPHYS/unit_catalog.csv",
-        "data_root": "/mnt/falkner/Bartul/Data"
-    }
-
-.. list-table::
-   :header-rows: 1
-   :widths: 44 16 40
-   :class: settings-glance
-
-   * - Setting
-     - Default
-     - Options
-   * - :ref:`ephys_root <nm-data-roots-ephys-root>`
-     - path, see JSON above
-     - path to a directory (not read here)
-   * - :ref:`catalog_path <nm-data-roots-catalog-path>`
-     - path, see JSON above
-     - path to a CSV file
-   * - :ref:`data_root <nm-data-roots-data-root>`
+   * - :ref:`data_root <nm-paths-data-root>`
      - path, see JSON above
      - path to a directory
+   * - :ref:`catalog_path <nm-paths-catalog-path>`
+     - path, see JSON above
+     - path to a CSV file
+   * - :ref:`session_list_files <nm-paths-session-list-files>`
+     - two lists, see JSON above
+     - list of paths to text files
+   * - :ref:`behaviour_selection_result_path <nm-paths-behaviour-selection-result-path>`
+     - one path per target, see JSON above
+     - ``{'manifold': path, 'multinomial': path}``
+   * - :ref:`behaviour_control_model_path <nm-paths-behaviour-control-model-path>`
+     - one path per target, see JSON above
+     - paths to the fitted artifacts
 
-.. _nm-data-roots-ephys-root:
-
-``ephys_root``
-   The EPHYS tree.
-
-   :Options: a path to a directory
-   :Default: the lab EPHYS tree (see the JSON above)
-   :Notes: declared for completeness, the neural modeling code itself reads none of it (the anatomy and catalog tools take it from the analyses settings).
-
-.. _nm-data-roots-catalog-path:
-
-``catalog_path``
-   The unit catalog (``unit_catalog.csv``) the cohort is selected from and the recorded animal of each session is resolved from.
-
-   :Options: a path to a CSV file
-   :Default: ``unit_catalog.csv`` in the EPHYS tree (see the JSON above)
-
-.. _nm-data-roots-data-root:
+.. _nm-paths-data-root:
 
 ``data_root``
    The session data tree (tracking, USV summaries, spikes).
@@ -4602,11 +4504,55 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
    :Default: the lab session data tree (see the JSON above)
    :Notes: the encoding and vocal dispatchers take it on the command line instead (``--data-root``, required); the behaviour control reads it from here.
 
-**data_sufficiency** — how much data a unit must carry to be analysed. A unit failing the vocal floors is kept and flagged, not dropped, so the denominators the fractions are reported against do not shrink silently.
+.. _nm-paths-catalog-path:
+
+``catalog_path``
+   The unit catalog (``unit_catalog.csv``) the cohort is selected from and the recorded animal of each session is resolved from.
+
+   :Options: a path to a CSV file
+   :Default: ``unit_catalog.csv`` in the EPHYS tree (see the JSON above)
+
+.. _nm-paths-session-list-files:
+
+``session_list_files``
+   Text files listing one session directory per line; the union is the courtship cohort.
+
+   :Options: a list of paths to text files
+   :Default: the intact-partner and the mute-female ephys lists (see the JSON above)
+
+.. _nm-paths-behaviour-selection-result-path:
+
+``behaviour_selection_result_path``
+   Per target (``'manifold'``, ``'multinomial'``), the selection whose feature set defines the behaviour control, read back to check the frozen ``reduced_model_features`` against.
+
+   :Options: a dictionary with one path per target, each either a behavioural-modelling selection (its ``final_model_features``, read from the one step that carries it, the last accepted one; only the names are adopted, never the coefficients) or the pickle ``main_behaviour_control_dispatcher --stage select --output <file>`` writes
+   :Default: the behavioural modelling's manifold and multinomial selections on the ephys courtship sessions, both partner conditions pooled (see the JSON above)
+   :Notes: the shipped selections chose ``head-head`` alone (manifold) and ``allo_yaw-head``, ``head-head``, ``other.speed``, ``self.back_pitch`` (multinomial). The select stage never writes to this path.
+
+.. _nm-paths-behaviour-control-model-path:
+
+``behaviour_control_model_path``
+   The cohort-fitted behaviour-control artifact per target (``main_behaviour_control_dispatcher --stage fit --target manifold`` and ``--target multinomial``).
+
+   :Options: a dictionary with one path per target
+   :Default: see the JSON above
+   :Notes:
+      * **Both needed** — every unit is decoded on both targets; ``--target`` defaults to ``vocalizations.vocal_target``.
+      * **Agreement** — the decoding refuses an artifact fitted for the other target or on other features.
+      * **Rows** — the control is fitted on exactly the vocalization rows the per-unit analysis scores: the ``'analysed'`` set of ``vocalizations`` (noise and squeak rows removed) restricted to ``vocal_emitter`` (``'all'`` applies no emitter filter), with a vocalization dropped when one from the ``'guard'`` set intrudes on its ``spike_window.pre_offset_seconds`` pre-window.
+      * **History end** — every behaviour history, at fit and at application, ends at the frame before onset (``round(start × fps) − 1``).
+      * **Old artifacts** — an artifact fitted before 2026-10-18 was trained on the unfiltered summary with histories one frame earlier than the unit side used, and must be refitted. The artifact's counts are stored as ``n_vocalizations`` (top level and per day); an older artifact's ``n_calls`` is read under that name.
+
+**cohort** — which units enter, and how much data each must carry to be analysed. A unit failing the vocal floors is kept and flagged, not dropped, so the denominators the fractions are reported against do not shrink silently.
 
 .. code-block:: json
 
-    "data_sufficiency": {
+    "cohort": {
+        "brain_areas": ["PAG"],
+        "area_mode": "include",
+        "pool_areas": false,
+        "quality": ["good"],
+        "somatic": "somatic",
         "min_courtship_sessions": 1,
         "min_emitter_usvs_per_session": 20,
         "min_vocal_sessions": 2,
@@ -4622,23 +4568,77 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
    * - Setting
      - Default
      - Options
-   * - :ref:`min_courtship_sessions <nm-data-sufficiency-min-courtship-sessions>`
+   * - :ref:`brain_areas <nm-cohort-brain-areas>`
+     - ``["PAG"]``
+     - list of ``brain_area`` labels
+   * - :ref:`area_mode <nm-cohort-brain-areas>`
+     - ``'include'``
+     - ``'include'``, ``'exclude'``, ``'all'``
+   * - :ref:`pool_areas <nm-cohort-pool-areas>`
+     - ``false``
+     - ``true``, ``false``
+   * - :ref:`quality <nm-cohort-quality>`
+     - ``["good"]``
+     - list of ``cluster_group`` labels
+   * - :ref:`somatic <nm-cohort-somatic>`
+     - ``'somatic'``
+     - ``'somatic'``, ``'non_somatic'``, ``'both'``
+   * - :ref:`min_courtship_sessions <nm-cohort-min-courtship-sessions>`
      - ``1``
      - integer >= 1
-   * - :ref:`min_emitter_usvs_per_session <nm-data-sufficiency-min-emitter-usvs-per-session>`
+   * - :ref:`min_emitter_usvs_per_session <nm-cohort-min-emitter-usvs-per-session>`
      - ``20``
      - integer >= 0
-   * - :ref:`min_vocal_sessions <nm-data-sufficiency-min-vocal-sessions>`
+   * - :ref:`min_vocal_sessions <nm-cohort-min-vocal-sessions>`
      - ``2``
      - integer >= 2
-   * - :ref:`min_decoding_spikes <nm-data-sufficiency-min-decoding-spikes>`
+   * - :ref:`min_decoding_spikes <nm-cohort-min-decoding-spikes>`
      - ``50``
      - integer >= 0
-   * - :ref:`single_session_blocks <nm-data-sufficiency-single-session-blocks>`
+   * - :ref:`single_session_blocks <nm-cohort-single-session-blocks>`
      - ``5``
      - integer > 0
 
-.. _nm-data-sufficiency-min-courtship-sessions:
+.. _nm-cohort-brain-areas:
+
+``brain_areas`` / ``area_mode``
+   The unit catalog's ``brain_area`` filter.
+
+   :Options:
+      * ``brain_areas`` — a list of ``brain_area`` labels
+      * ``area_mode`` — ``'include'`` keeps the listed areas, ``'exclude'`` drops them, ``'all'`` ignores the list
+   :Default: ``["PAG"]`` and ``'include'``
+
+.. _nm-cohort-pool-areas:
+
+``pool_areas``
+   Whether the cross-unit corrections pool every brain area of the cohort into one group or correct each area on its own.
+
+   :Options:
+      * ``true`` — one correction over all areas
+      * ``false`` — one correction per area, so one area's count never depends on how many units of another were run
+   :Default: ``false``
+
+.. _nm-cohort-quality:
+
+``quality``
+   The allowed ``cluster_group`` labels of the unit catalog.
+
+   :Options: a list of ``cluster_group`` labels
+   :Default: ``["good"]``
+
+.. _nm-cohort-somatic:
+
+``somatic``
+   Which units pass the catalog's somatic waveform classification.
+
+   :Options:
+      * ``'somatic'`` — somatic units only
+      * ``'non_somatic'`` — non-somatic units only
+      * ``'both'`` — both
+   :Default: ``'somatic'``
+
+.. _nm-cohort-min-courtship-sessions:
 
 ``min_courtship_sessions``
    Courtship sessions a unit must appear in.
@@ -4647,7 +4647,7 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
    :Default: ``1``
    :Notes: a unit recorded in a single session is tested on blocks of it (``single_session_blocks``); with two or more it is tested across sessions.
 
-.. _nm-data-sufficiency-min-emitter-usvs-per-session:
+.. _nm-cohort-min-emitter-usvs-per-session:
 
 ``min_emitter_usvs_per_session``
    Focal USVs a session (or, for a one-session unit, a block) needs before any vocalization-scored analysis (or the behaviour-control cohort) may use it.
@@ -4655,7 +4655,7 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
    :Options: a non-negative integer
    :Default: ``20``
 
-.. _nm-data-sufficiency-min-vocal-sessions:
+.. _nm-cohort-min-vocal-sessions:
 
 ``min_vocal_sessions``
    Vocal-eligible sessions (or blocks) a unit needs for the vocal-side leave-one-session-out rotation.
@@ -4663,7 +4663,7 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
    :Options: an integer; at least ``2`` for the rotation to run
    :Default: ``2``
 
-.. _nm-data-sufficiency-min-decoding-spikes:
+.. _nm-cohort-min-decoding-spikes:
 
 ``min_decoding_spikes``
    Total spikes across the scored events below which the category decoding reports the unit as not decodable.
@@ -4671,7 +4671,7 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
    :Options: a non-negative integer
    :Default: ``50``
 
-.. _nm-data-sufficiency-single-session-blocks:
+.. _nm-cohort-single-session-blocks:
 
 ``single_session_blocks``
    Blocks a single session is split into, used in two places.
@@ -4741,11 +4741,11 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
    :Options: as in the modeling block; ``smooth_abs_features`` maps a feature to its smoothing ``ε`` in the feature's own units
    :Default: see the JSON above
 
-**vocalization_settings** — which vocalizations count, whose, and the window spikes are counted in.
+**vocalizations** — which vocalizations count, whose, the window spikes are counted in, and the summary columns each USV's torus position and category are read from.
 
 .. code-block:: json
 
-    "vocalization_settings": {
+    "vocalizations": {
         "vocal_emitter": "self",
         "clean_against": "all",
         "exclude_noise": true,
@@ -4756,7 +4756,9 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
             "width_seconds": 0.1
         },
         "torus_period": 1.0,
-        "vocal_target": "manifold"
+        "vocal_target": "manifold",
+        "category_column": "qlvm_category",
+        "usv_manifold_column_names": ["qlvm1", "qlvm2"]
     }
 
 .. list-table::
@@ -4767,35 +4769,41 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
    * - Setting
      - Default
      - Options
-   * - :ref:`vocal_emitter <nm-vocalization-settings-vocal-emitter>`
+   * - :ref:`vocal_emitter <nm-vocalizations-vocal-emitter>`
      - ``'self'``
      - ``'self'``, ``'partner'``, ``'all'``
-   * - :ref:`clean_against <nm-vocalization-settings-clean-against>`
+   * - :ref:`clean_against <nm-vocalizations-clean-against>`
      - ``'all'``
      - ``'all'``, ``'self'``, ``'partner'``
-   * - :ref:`exclude_noise <nm-vocalization-settings-exclude-noise>`
+   * - :ref:`exclude_noise <nm-vocalizations-exclude-noise>`
      - ``true``
      - ``true``, ``false``
-   * - :ref:`exclude_squeaks <nm-vocalization-settings-exclude-squeaks>`
+   * - :ref:`exclude_squeaks <nm-vocalizations-exclude-squeaks>`
      - ``true``
      - ``true``, ``false``
-   * - :ref:`squeaks_block_quiet <nm-vocalization-settings-squeaks-block-quiet>`
+   * - :ref:`squeaks_block_quiet <nm-vocalizations-squeaks-block-quiet>`
      - ``true``
      - ``true``, ``false``
-   * - :ref:`spike_window.pre_offset_seconds <nm-vocalization-settings-spike-window>`
+   * - :ref:`spike_window.pre_offset_seconds <nm-vocalizations-spike-window>`
      - ``0.05``
      - seconds >= 0
-   * - :ref:`spike_window.width_seconds <nm-vocalization-settings-spike-window>`
+   * - :ref:`spike_window.width_seconds <nm-vocalizations-spike-window>`
      - ``0.1``
      - seconds > 0
-   * - :ref:`torus_period <nm-vocalization-settings-torus-period>`
+   * - :ref:`torus_period <nm-vocalizations-torus-period>`
      - ``1.0``
      - number > 0
-   * - :ref:`vocal_target <nm-vocalization-settings-vocal-target>`
+   * - :ref:`vocal_target <nm-vocalizations-vocal-target>`
      - ``'manifold'``
      - ``'manifold'``, ``'multinomial'``
+   * - :ref:`category_column <nm-vocalizations-category-column>`
+     - ``'qlvm_category'``
+     - a USV summary column
+   * - :ref:`usv_manifold_column_names <nm-vocalizations-usv-manifold-column-names>`
+     - ``["qlvm1", "qlvm2"]``
+     - two summary column names
 
-.. _nm-vocalization-settings-vocal-emitter:
+.. _nm-vocalizations-vocal-emitter:
 
 ``vocal_emitter``
    Whose USVs are the analysed vocalizations.
@@ -4807,7 +4815,7 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
    :Default: ``'self'``
    :Notes: one key drives every analysis -- the vocal decoding's events, the kinematic encoding's transfer frames, the gating's vocal frames and the behaviour control's training rows -- so moving to the partner moves them together.
 
-.. _nm-vocalization-settings-clean-against:
+.. _nm-vocalizations-clean-against:
 
 ``clean_against``
    Whose vocalizations make a frame unclean (non-quiet).
@@ -4818,7 +4826,7 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
       * ``'partner'`` — only the partner's vocalizations
    :Default: ``'all'``
 
-.. _nm-vocalization-settings-exclude-noise:
+.. _nm-vocalizations-exclude-noise:
 
 ``exclude_noise``
    Drop the segments ``detect-usv-noise`` flagged as noise everywhere, including from the quiet guard (a microphone artefact must not veto a silent frame).
@@ -4826,7 +4834,7 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
    :Options: ``true`` or ``false``
    :Default: ``true``
 
-.. _nm-vocalization-settings-exclude-squeaks:
+.. _nm-vocalizations-exclude-squeaks:
 
 ``exclude_squeaks``
    Drop squeak-bearing segments from the analysed vocalization set (a squeak is out of distribution for the USV map).
@@ -4834,7 +4842,7 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
    :Options: ``true`` or ``false``
    :Default: ``true``
 
-.. _nm-vocalization-settings-squeaks-block-quiet:
+.. _nm-vocalizations-squeaks-block-quiet:
 
 ``squeaks_block_quiet``
    Whether a squeak still makes the surrounding frames non-quiet even when excluded from the analysed set.
@@ -4843,7 +4851,7 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
    :Default: ``true`` (quiet means the animal made no sound of any kind)
    :Notes: measured exposure (2026-09-30): 3.5% noise and 7.3% squeaks across the behavioural courtship sessions, 0.8–1.5% of focal USVs on the ephys days.
 
-.. _nm-vocalization-settings-spike-window:
+.. _nm-vocalizations-spike-window:
 
 ``spike_window``
    The per-event spike count window: it opens ``pre_offset_seconds`` before the USV onset and spans ``width_seconds``, so it covers the pre-motor lead and the start of the USV.
@@ -4853,7 +4861,7 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
       * ``width_seconds`` — the window's length in seconds
    :Default: ``0.05`` and ``0.1``
 
-.. _nm-vocalization-settings-torus-period:
+.. _nm-vocalizations-torus-period:
 
 ``torus_period``
    The QLVM manifold's wrap period, shared by every analysis.
@@ -4862,7 +4870,7 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
    :Default: ``1.0``
    :Notes: a property of the manifold, so it lives here once rather than in each block. The vocalization-identity decoder and the nested decoding both read it from here.
 
-.. _nm-vocalization-settings-vocal-target:
+.. _nm-vocalizations-vocal-target:
 
 ``vocal_target``
    Which target the claims use.
@@ -4873,6 +4881,23 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
    :Default: ``'manifold'``
    :Notes: every unit is decoded on BOTH targets, each written as its own section of the unit's result file (``vocalization_identity_manifold``, ``vocalization_identity_multinomial``, ``nested_vocal_decoding_manifold``, ``nested_vocal_decoding_multinomial``). This key picks which target's identity p-value decides whether vocal gating runs, and which target's identity and nested p-values the cohort consolidation corrects; the other target's p-values and effect sizes are carried in the cohort table as uncorrected descriptors. Changing it needs only the consolidation re-run, not the units.
 
+.. _nm-vocalizations-category-column:
+
+``category_column``
+   The USV summary column holding each USV's acoustic category.
+
+   :Options: a column of the session's USV summary
+   :Default: ``'qlvm_category'``
+   :Notes: one column defines the category everywhere: the target of the categorical identity decoder (``vocal_decoding.category_surface``), the regions over which the nested decoding's macro score averages, and the target of the categorical behaviour control. A summary lacking it is refused by the behaviour control; on the unit side the affected events are dropped and counted.
+
+.. _nm-vocalizations-usv-manifold-column-names:
+
+``usv_manifold_column_names``
+   The summary columns holding a USV's torus position.
+
+   :Options: a list of the two summary column names of the torus coordinates
+   :Default: ``['qlvm1', 'qlvm2']`` (the regular map)
+
 **kinematic_encoding** — the quiet-period kinematic encoding model (per-frame Bernoulli spike GLM of the behavioural history) and its transfer into vocal periods.
 
 .. code-block:: json
@@ -4880,15 +4905,11 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
     "kinematic_encoding": {
         "history_pre_seconds": 4.0,
         "clean_post_seconds": 4.0,
-        "bin_resize_factor": 1,
         "smoothness_order": 1,
-        "include_spike_history": false,
-        "spike_history_window_seconds": 0.1,
         "filter_band": {
             "compute": true,
             "n_resamples": 10
         },
-        "subsample_negatives": true,
         "negatives_per_positive": 10,
         "calibration": {
             "scheme": "crossfit",
@@ -4910,7 +4931,8 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
         "feature_selection": {
             "screen_alpha": 0.01,
             "selection_method": "forward_d2",
-            "acceptance_rule": "paired_1se",
+            "acceptance_rule": "shift_refit_bonferroni",
+            "step_test_alpha": 0.01,
             "screen_require_positive_slope": true
         },
         "solver": {
@@ -4925,8 +4947,7 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
             "universe": "bout_window",
             "inter_bout_threshold_seconds": 0.1155,
             "grain": "count",
-            "bin_seconds": 0.1,
-            "null_block_megabytes": 64
+            "bin_seconds": 0.1
         },
         "subsampling_correction": "log_prior_offset",
         "temporal_basis": {
@@ -4959,27 +4980,15 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
    * - :ref:`clean_post_seconds <nm-kinematic-encoding-clean-post-seconds>`
      - ``4.0``
      - seconds >= 0
-   * - :ref:`bin_resize_factor <nm-kinematic-encoding-unread-keys>`
-     - ``1``
-     - not read
    * - :ref:`smoothness_order <nm-kinematic-encoding-smoothness-order>`
      - ``1``
      - integer >= 1
-   * - :ref:`include_spike_history <nm-kinematic-encoding-unread-keys>`
-     - ``false``
-     - not read
-   * - :ref:`spike_history_window_seconds <nm-kinematic-encoding-unread-keys>`
-     - ``0.1``
-     - not read
    * - :ref:`filter_band.compute <nm-kinematic-encoding-filter-band>`
      - ``true``
      - ``true``, ``false``
    * - :ref:`filter_band.n_resamples <nm-kinematic-encoding-filter-band>`
      - ``10``
      - integer > 0
-   * - :ref:`subsample_negatives <nm-kinematic-encoding-unread-keys>`
-     - ``true``
-     - not read
    * - :ref:`negatives_per_positive <nm-kinematic-encoding-negatives-per-positive>`
      - ``10``
      - integer > 0
@@ -5023,8 +5032,11 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
      - ``'forward_d2'``
      - ``'forward_d2'`` only
    * - :ref:`feature_selection.acceptance_rule <nm-kinematic-encoding-feature-selection>`
-     - ``'paired_1se'``
-     - ``'paired_1se'`` only
+     - ``'shift_refit_bonferroni'``
+     - ``'shift_refit_bonferroni'`` only
+   * - :ref:`feature_selection.step_test_alpha <nm-kinematic-encoding-feature-selection>`
+     - ``0.01``
+     - number in ``(0, 1)``
    * - :ref:`feature_selection.screen_require_positive_slope <nm-kinematic-encoding-feature-selection>`
      - ``true``
      - ``true``, ``false``
@@ -5058,9 +5070,6 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
    * - :ref:`transfer.bin_seconds <nm-kinematic-encoding-transfer>`
      - ``0.1``
      - seconds > 0
-   * - :ref:`transfer.null_block_megabytes <nm-kinematic-encoding-transfer>`
-     - ``64``
-     - MB > 0
    * - :ref:`subsampling_correction <nm-kinematic-encoding-subsampling-correction>`
      - ``'log_prior_offset'``
      - ``'log_prior_offset'`` only
@@ -5118,15 +5127,6 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
    :Options: a non-negative number of seconds
    :Default: ``4.0``
    :Notes: the transfer's run-up before each bout is this same length, so no frame of a run-up can be a quiet anchor.
-
-.. _nm-kinematic-encoding-unread-keys:
-
-``bin_resize_factor`` / ``include_spike_history`` / ``spike_history_window_seconds`` / ``subsample_negatives``
-   Declared but read by no current code.
-
-   :Options: none (the keys are not read)
-   :Default: ``1``, ``false``, ``0.1`` and ``true``
-   :Notes: the model runs at the tracking frame rate, without spike history, and always subsamples the negatives by ``negatives_per_positive``.
 
 .. _nm-kinematic-encoding-smoothness-order:
 
@@ -5197,14 +5197,45 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
 
 ``feature_selection``
    Features are screened one at a time against the circular-shift null, then added by forward selection.
+   Each step of forward selection has a winner and a decision:
+
+   1. **Winner.** Every remaining candidate is added to the current model M and scored under the inner
+      leave-one-pool-session-out split (calibrated D2 on the held-out pool session). The best fold-mean
+      score is the step's winner W. The first step starts from the empty model; a first winner whose
+      fold-mean score is not positive ends selection with nothing selected.
+   2. **Decision: the per-step shift test**, the same test the behavioural model selection uses (CSBonf,
+      Nevjen & Dunn 2024), on this model's own statistic. M and M + W are fitted on all pool sessions, and
+      the observed gain ``T_obs`` is the in-sample calibrated D2 of M + W minus that of M, scored on every
+      pool quiet anchor with one calibration group per session (the empty model scores 0). Each null
+      draw circularly shifts W's trace, and only W's, within every pool session by its own lag in
+      ``[g, T_s - g]``, where ``g`` is ``inference.shuffle_guard_seconds``. M + W is refitted on the shifted
+      data and its gain is scored the same way. With ``m`` candidates at the step, ``B = floor(m /
+      step_test_alpha)`` draws are run, ``p = (1 + k) / (B + 1)`` and ``p_adj = min(1, m p)``, where
+      ``k`` counts the draws whose gain reaches ``T_obs``. ``p_adj < step_test_alpha`` exactly when ``k =
+      0``. So W is accepted only when no shifted refit reaches its gain, and the draws stop at the first
+      one that does.
+
+   Every step is tested, the first included, and selection stops at the first rejected step. All fits of
+   one test use the same seed, so they see the same subsampled anchors; draw ``b`` of step ``s`` takes its
+   lags from the seed ``[seed, s, b]``. Each path step stores its test record under ``step_test`` (the
+   null gains, the lags, ``k``, ``p``, ``p_adj`` and timings).
+
+   The test refits on every draw. A cheaper version that shifts W through the frozen held-out M + W
+   filters is anti-conservative when W is correlated with M. On two units, a noisy copy of the
+   incumbent's own feature passed that version at its smallest attainable p, while the refitting test
+   rejected it.
 
    :Options:
       * ``screen_alpha`` — the screen's family-wise level; the Bonferroni bar is ``screen_alpha / n_features``
       * ``screen_require_positive_slope`` — ``true`` or ``false``: whether the screen also requires a positive calibration slope
-      * ``selection_method`` — ``'forward_d2'`` (forward selection on held-out explained deviance)
-      * ``acceptance_rule`` — ``'paired_1se'`` (a step is accepted when its paired gain exceeds one paired standard error)
-   :Default: ``0.01``, ``true``, ``'forward_d2'`` and ``'paired_1se'``
-   :Notes: both names (``selection_method``, ``acceptance_rule``) accept only the implemented value.
+      * ``selection_method`` — ``'forward_d2'`` (the winner of a step is the best held-out explained deviance)
+      * ``acceptance_rule`` — ``'shift_refit_bonferroni'`` (the per-step shift test above)
+      * ``step_test_alpha`` — the level of each step's test, before the Bonferroni factor ``m``
+   :Default: ``0.01``, ``true``, ``'forward_d2'``, ``'shift_refit_bonferroni'`` and ``0.01``
+   :Notes: both names (``selection_method``, ``acceptance_rule``) accept only the implemented value. An
+      accepted step costs ``B`` refits of M + W on the whole pool. On the two units piloted, one refit took
+      2–11 s, so an accepted step took about 0.25–1.7 h per outer fold; a rejected step usually stops
+      after a few draws.
 
 .. _nm-kinematic-encoding-solver:
 
@@ -5230,9 +5261,8 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
       * ``inter_bout_threshold_seconds`` — bouts are split where the inter-USV gap reaches this
       * ``grain`` — ``'count'`` scores spike counts in ``bin_seconds`` bins rather than per frame; ``'frame'`` scores per frame
       * ``bin_seconds`` — the count bin width
-      * ``null_block_megabytes`` — the memory budget for one block of pooled null draws under the ``'frame'`` grain
    :Default: ``'pooled_across_folds'``, ``'scored_frames'``, ``'bout_window'``, ``0.1155``, ``'count'``, ``0.1`` and ``64``
-   :Notes: ``null_block_megabytes`` is a memory bound only (the null scores do not depend on it). ``calibration_grain`` and ``d2_reference_rate`` accept only the implemented value. ``'usv_span'`` is accepted by the code (``TRANSFER_UNIVERSES`` in ``quiet_to_vocal_transfer``) but was not described here before.
+   :Notes: ``calibration_grain`` and ``d2_reference_rate`` accept only the implemented value. ``'usv_span'`` is accepted by the code (``TRANSFER_UNIVERSES`` in ``quiet_to_vocal_transfer``) but was not described here before.
 
 .. _nm-kinematic-encoding-subsampling-correction:
 
@@ -5279,11 +5309,531 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
 .. _nm-kinematic-encoding-null-block-megabytes:
 
 ``null_block_megabytes``
-   Memory budget, in MB, for the label matrix of one block of circular-shift null draws.
+   Memory budget, in MB, for the label matrix of one block of circular-shift null draws: the quiet nulls
+   of the screen and the held-out quiet score, and the pooled transfer null under the ``'frame'`` grain
+   (the ``'count'`` grain does not use it).
 
    :Options: a positive number; fractions of a MB are fine
    :Default: ``32``
    :Notes: the batched calibration holds a few such arrays at once. A memory bound only: the null scores do not depend on it.
+
+**vocal_decoding** — the vocal-occurrence axis (does the unit fire before a USV?) and the vocalization-identity axis (does its count say WHICH USV, as a torus position or a category?).
+
+.. code-block:: json
+
+    "vocal_decoding": {
+        "require_clean_prevocal_bool": true,
+        "max_quiet_tiles_per_session": 5000,
+        "vocal_occurrence": {
+            "ridge_frac": 0.02,
+            "amplitude_calibration": {
+                "enabled": true,
+                "alpha_grid": [0.1, 0.25, 0.5, 0.75, 1.0, 1.5]
+            },
+            "mean_count_floor": 0.001
+        },
+        "tuning_surface": {
+            "tuning_basis": "fourier",
+            "fourier_k": 2,
+            "bump_grid_n": 10,
+            "bump_sigma": 0.1,
+            "min_basis_occupancy": 5.0,
+            "decode_grid_min_occupancy": 1.0,
+            "grid_n": 60,
+            "kde_bandwidth": 0.03,
+            "likelihood_family": "poisson",
+            "session_rate_offsets": true,
+            "solver": {
+                "irls_n_steps": 50
+            },
+            "ridge_selection": {
+                "mode": "count_normalized_fixed",
+                "ridge_frac": 0.02
+            },
+            "amplitude_calibration": {
+                "enabled": true,
+                "mode": "train_tuned_inner_loso",
+                "alpha_grid": [0.1, 0.25, 0.5, 0.75, 1.0, 1.5],
+                "alpha_min": 0.0
+            },
+            "record_bump_basis_gain": true
+        },
+        "category_surface": {
+            "ridge_selection": {
+                "mode": "count_normalized_fixed",
+                "ridge_frac": 0.02
+            },
+            "amplitude_calibration": {
+                "enabled": true,
+                "mode": "train_tuned_inner_loso",
+                "alpha_grid": [0.1, 0.25, 0.5, 0.75, 1.0, 1.5]
+            },
+            "min_train_events": 20,
+            "min_test_events": 5,
+            "mean_count_floor": 0.001
+        },
+        "discrimination_null": {
+            "method": "within_session_position_permutation",
+            "n_permutations": 1000,
+            "sided": "one_sided_upper",
+            "record_left_tail_anti_alignment": true,
+            "n_permutations_category_grain": 5000
+        },
+        "record_overdispersion_index": true
+    }
+
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`require_clean_prevocal_bool <nm-vocal-decoding-require-clean-prevocal-bool>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`max_quiet_tiles_per_session <nm-vocal-decoding-max-quiet-tiles-per-session>`
+     - ``5000``
+     - tiles per session
+   * - :ref:`vocal_occurrence.ridge_frac <nm-vocal-decoding-vocal-occurrence>`
+     - ``0.02``
+     - fraction of the training count
+   * - :ref:`vocal_occurrence.amplitude_calibration.enabled <nm-vocal-decoding-vocal-occurrence>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`vocal_occurrence.amplitude_calibration.alpha_grid <nm-vocal-decoding-vocal-occurrence>`
+     - ``[0.1, 0.25, 0.5, 0.75, 1.0, 1.5]``
+     - list of amplitudes
+   * - :ref:`vocal_occurrence.mean_count_floor <nm-vocal-decoding-vocal-occurrence>`
+     - ``0.001``
+     - small positive number
+   * - :ref:`tuning_surface.tuning_basis <nm-vocal-decoding-tuning-surface>`
+     - ``'fourier'``
+     - ``'fourier'``, ``'bumps'``
+   * - :ref:`tuning_surface.fourier_k <nm-vocal-decoding-tuning-surface>`
+     - ``2``
+     - harmonics per axis
+   * - :ref:`tuning_surface.bump_grid_n <nm-vocal-decoding-tuning-surface>`
+     - ``10``
+     - bump nodes per axis
+   * - :ref:`tuning_surface.bump_sigma <nm-vocal-decoding-tuning-surface>`
+     - ``0.1``
+     - bump width
+   * - :ref:`tuning_surface.min_basis_occupancy <nm-vocal-decoding-tuning-surface>`
+     - ``5.0``
+     - kernel-weighted events
+   * - :ref:`tuning_surface.decode_grid_min_occupancy <nm-vocal-decoding-tuning-surface>`
+     - ``1.0``
+     - KDE training occupancy
+   * - :ref:`tuning_surface.grid_n <nm-vocal-decoding-tuning-surface>`
+     - ``60``
+     - decoding cells per axis
+   * - :ref:`tuning_surface.kde_bandwidth <nm-vocal-decoding-tuning-surface>`
+     - ``0.03``
+     - KDE bandwidth
+   * - :ref:`tuning_surface.likelihood_family <nm-vocal-decoding-tuning-surface>`
+     - ``'poisson'``
+     - ``'poisson'`` (only value)
+   * - :ref:`tuning_surface.session_rate_offsets <nm-vocal-decoding-tuning-surface>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`tuning_surface.solver.irls_n_steps <nm-vocal-decoding-tuning-surface>`
+     - ``50``
+     - IRLS iterations
+   * - :ref:`tuning_surface.ridge_selection.mode <nm-vocal-decoding-tuning-surface>`
+     - ``'count_normalized_fixed'``
+     - ``'count_normalized_fixed'`` (only value)
+   * - :ref:`tuning_surface.ridge_selection.ridge_frac <nm-vocal-decoding-tuning-surface>`
+     - ``0.02``
+     - fraction of the training spike count
+   * - :ref:`tuning_surface.amplitude_calibration.enabled <nm-vocal-decoding-tuning-surface>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`tuning_surface.amplitude_calibration.mode <nm-vocal-decoding-tuning-surface>`
+     - ``'train_tuned_inner_loso'``
+     - ``'train_tuned_inner_loso'`` (only value)
+   * - :ref:`tuning_surface.amplitude_calibration.alpha_grid <nm-vocal-decoding-tuning-surface>`
+     - ``[0.1, 0.25, 0.5, 0.75, 1.0, 1.5]``
+     - list of amplitudes
+   * - :ref:`tuning_surface.amplitude_calibration.alpha_min <nm-vocal-decoding-tuning-surface>`
+     - ``0.0``
+     - smallest allowed grid value
+   * - :ref:`tuning_surface.record_bump_basis_gain <nm-vocal-decoding-tuning-surface>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`category_surface.ridge_selection.mode <nm-vocal-decoding-category-surface>`
+     - ``'count_normalized_fixed'``
+     - as ``tuning_surface``
+   * - :ref:`category_surface.ridge_selection.ridge_frac <nm-vocal-decoding-category-surface>`
+     - ``0.02``
+     - as ``tuning_surface``
+   * - :ref:`category_surface.amplitude_calibration.enabled <nm-vocal-decoding-category-surface>`
+     - ``true``
+     - as ``tuning_surface``
+   * - :ref:`category_surface.amplitude_calibration.mode <nm-vocal-decoding-category-surface>`
+     - ``'train_tuned_inner_loso'``
+     - as ``tuning_surface``
+   * - :ref:`category_surface.amplitude_calibration.alpha_grid <nm-vocal-decoding-category-surface>`
+     - ``[0.1, 0.25, 0.5, 0.75, 1.0, 1.5]``
+     - as ``tuning_surface``
+   * - :ref:`category_surface.min_train_events <nm-vocal-decoding-category-surface>`
+     - ``20``
+     - events per split
+   * - :ref:`category_surface.min_test_events <nm-vocal-decoding-category-surface>`
+     - ``5``
+     - events per split
+   * - :ref:`category_surface.mean_count_floor <nm-vocal-decoding-category-surface>`
+     - ``0.001``
+     - small positive number
+   * - :ref:`discrimination_null.method <nm-vocal-decoding-discrimination-null>`
+     - ``'within_session_position_permutation'``
+     - ``'within_session_position_permutation'`` only
+   * - :ref:`discrimination_null.n_permutations <nm-vocal-decoding-discrimination-null>`
+     - ``1000``
+     - number of permutation draws
+   * - :ref:`discrimination_null.sided <nm-vocal-decoding-discrimination-null>`
+     - ``'one_sided_upper'``
+     - ``'one_sided_upper'`` only
+   * - :ref:`discrimination_null.record_left_tail_anti_alignment <nm-vocal-decoding-discrimination-null>`
+     - ``true``
+     - ``true``, ``false``
+   * - :ref:`discrimination_null.n_permutations_category_grain <nm-vocal-decoding-discrimination-null>`
+     - ``5000``
+     - number of permutation draws
+   * - :ref:`record_overdispersion_index <nm-vocal-decoding-record-overdispersion-index>`
+     - ``true``
+     - ``true``, ``false``
+
+.. _nm-vocal-decoding-require-clean-prevocal-bool:
+
+``require_clean_prevocal_bool``
+   Whether to drop an event when another vocalization intrudes on its pre-vocal window.
+
+   :Options:
+      * ``true`` — drop such an event
+      * ``false`` — keep it
+   :Default: ``true``
+
+.. _nm-vocal-decoding-max-quiet-tiles-per-session:
+
+``max_quiet_tiles_per_session``
+   Cap on the quiet tiles that serve as the vocal-occurrence negatives.
+
+   :Options: a number of tiles per session
+   :Default: ``5000`` per session
+
+.. _nm-vocal-decoding-vocal-occurrence:
+
+``vocal_occurrence``
+   The two-class decoder of the vocal-occurrence axis (peri-onset window against quiet tile, equal prior).
+
+   :Options:
+      * ``ridge_frac`` — shrinks the two class rates toward their pooled rate by this fraction of the training spike count
+      * ``amplitude_calibration`` — when ``enabled``, the contrast between the classes is tuned over ``alpha_grid`` on the training sessions (or, for a single training session, contiguous blocks of it); when disabled it is 1
+      * ``mean_count_floor`` — bounds a session's quiet level from below, so a unit silent in quiet tiles stays finite
+   :Default: ``ridge_frac`` ``0.02``, ``amplitude_calibration`` enabled over ``[0.1, 0.25, 0.5, 0.75, 1.0, 1.5]``, ``mean_count_floor`` ``0.001``
+   :Notes: the held-out session's quiet level is cross-fitted over ``kinematic_encoding.calibration.n_blocks`` blocks.
+
+.. _nm-vocal-decoding-tuning-surface:
+
+``tuning_surface``
+   The Poisson tuning surface over the torus.
+
+   :Options:
+      * ``tuning_basis`` — ``'fourier'``: a Fourier basis with ``fourier_k`` harmonics per axis; ``'bumps'``: a local basis of ``bump_grid_n`` nodes per axis of width ``bump_sigma``, kept where the kernel-weighted training occupancy reaches ``min_basis_occupancy`` events
+      * ``fourier_k`` — Fourier harmonics per axis
+      * ``bump_grid_n`` / ``bump_sigma`` / ``min_basis_occupancy`` — the bump basis's nodes per axis, node width and occupancy floor (events)
+      * ``grid_n`` — decoding runs on a grid of this many cells per axis, restricted to cells whose training occupancy (a KDE of bandwidth ``kde_bandwidth``) reaches ``decode_grid_min_occupancy``
+      * ``likelihood_family`` — ``'poisson'`` (the only implemented value)
+      * ``session_rate_offsets`` — ``true`` adds per-session rate offsets
+      * ``solver.irls_n_steps`` — IRLS iterations of the surface fit
+      * ``ridge_selection`` — ``mode`` ``'count_normalized_fixed'`` (the only implemented value; the ridge is ``ridge_frac`` × the training spike count)
+      * ``amplitude_calibration`` — when ``enabled``, a likelihood-sharpening amplitude is tuned over ``alpha_grid`` by inner leave-one-session-out on the training sessions, or by leave-one-block-out over ``cohort.single_session_blocks`` contiguous blocks when a fold has a single training session (``mode`` ``'train_tuned_inner_loso'``, the only implemented value; ``alpha_min`` is the smallest grid value allowed), and when disabled the amplitude is 1
+      * ``record_bump_basis_gain`` — also record the bump-basis gain beside the Fourier one
+   :Default: ``tuning_basis`` ``'fourier'``, ``fourier_k`` ``2``, ``bump_grid_n`` ``10``, ``bump_sigma`` ``0.1``, ``min_basis_occupancy`` ``5.0``, ``grid_n`` ``60``, ``kde_bandwidth`` ``0.03``, ``decode_grid_min_occupancy`` ``1.0``, ``likelihood_family`` ``'poisson'``, ``session_rate_offsets`` ``true``, ``solver.irls_n_steps`` ``50``, ``ridge_selection.ridge_frac`` ``0.02``, ``alpha_min`` ``0.0``, ``record_bump_basis_gain`` ``true``; the rest as in the JSON above
+
+.. _nm-vocal-decoding-category-surface:
+
+``category_surface``
+   The same decoder over the QLVM categories, run for the ``'multinomial'`` target on every unit.
+
+   :Options:
+      * ``ridge_selection`` / ``amplitude_calibration`` — as in ``tuning_surface`` above, including the guard: a ``mode`` other than the implemented one is refused
+      * the category of each USV is read from ``vocalizations.category_column``
+      * ``min_train_events`` / ``min_test_events`` — an outer or inner split with fewer training or test events than these is skipped, too few for a stable per-category rate or a meaningful held-out score
+      * ``mean_count_floor`` — the lower bound on a session's mean spike count when the held-out level correction is formed, so a session with no spikes gives a posterior equal to the prior (zero gain) rather than ``0 · log 0`` = NaN; a positive number, small against any real session's mean count
+   :Default: ``min_train_events`` ``20``, ``min_test_events`` ``5``, ``mean_count_floor`` ``0.001``; the rest as in the JSON above
+
+.. _nm-vocal-decoding-discrimination-null:
+
+``discrimination_null``
+   The exact within-session permutation null of the identity axis.
+
+   :Options:
+      * ``n_permutations`` — the number of permutation draws
+      * ``record_left_tail_anti_alignment`` — record the left-tail statistics
+      * ``n_permutations_category_grain`` — the number of permutation draws of the identity null on the categorical target (``vocal_target`` ``'multinomial'``); ``n_permutations`` is the torus target's
+      * ``method`` — ``'within_session_position_permutation'``, the only implemented null: the unit's counts are permuted across events within each session, every event keeping its position (or category) and fold; any other value is refused
+      * ``sided`` — ``'one_sided_upper'``, the only implemented tail (the p-value is the upper tail of the observed gain among the draws); any other value is refused
+   :Default: ``n_permutations`` ``1000``, ``record_left_tail_anti_alignment`` ``true``, ``n_permutations_category_grain`` ``5000``; the rest as in the JSON above
+
+.. _nm-vocal-decoding-record-overdispersion-index:
+
+``record_overdispersion_index``
+   Record the count overdispersion index with each decoding.
+
+   :Options:
+      * ``true`` — record it
+      * ``false`` — do not
+   :Default: ``true``
+   :Notes:
+      * **Definition** — the index is the mean Pearson dispersion ``(count − expected)² / expected`` of the held-out events, where an event's expected count is the calibrated surface rate the decoder scored it with (the centred surface shape times the tuned amplitude, at the held-out session's mean-count level) read at the event's own grid cell, so an untuned Poisson unit gives about ``1``.
+      * **Also stored** — the decoding also stores ``nats_per_spike`` (the summed finite per-event gain divided by the spikes of those same events) and ``min_leave_one_fold_out`` (the smallest pooled gain with one fold left out, over the folds whose left-out gain is finite).
+
+**nested_vocal_decoding** — does the neuron add information about a USV's identity beyond the cohort behaviour control? Run on both targets for every unit, each against its own control (the kinematics are assembled once and each target's design is built on its own control's features). The behaviour control sets the decoder's prior (on the torus its predicted position, on categories its probabilities, tilted by a tuned concentration; ``category_control`` below), and the statistic is what the neuron adds under that prior, in nats per USV; on the torus, a REDUCED and a FULL torus regression (behaviour alone, behaviour plus the neuron's count) compared on the held-out macro von Mises log-score are kept as a descriptor (``point_regression``).
+
+.. code-block:: json
+
+    "nested_vocal_decoding": {
+        "behaviour_control": "rich",
+        "reduced_model_features": {
+            "manifold": ["head-head", "other.ego_yaw"],
+            "multinomial": ["allo_yaw-head", "head-head", "other.speed", "self.back_pitch", "self.speed"]
+        },
+        "category_control": {
+            "bin_resizing_factor": 1,
+            "temporal_basis": {"type": "bspline", "n_splines": 20, "spline_order": 3, "lambda_smooth_fixed": 1e-05,
+                               "l2_reg_fixed": 1e-05, "l2_lag_alpha": 100, "lambda_smooth_decades_each_side": 2},
+            "tune_regularization_params": {},
+            "focal_loss_gamma": 0.5,
+            "learning_rate": 0.005,
+            "max_iter": 20000,
+            "tol": 0.001,
+            "random_state": 0,
+            "use_lax_loop": true
+        },
+        "vm_score_mode": "macro",
+        "min_region_events": 20,
+        "lambda_smooth": 1.0,
+        "l2_reg": 0.01,
+        "smoothness_derivative_order": 1,
+        "huber_delta": 1.0,
+        "learning_rate": 0.001,
+        "max_iter": 5000,
+        "tol": 0.0001,
+        "random_state": 0,
+        "sigma_floor": 0.05,
+        "prevocal_window_n_bins": 1,
+        "rate_transform": "none",
+        "rate_basis": "linear",
+        "statistic": "posterior",
+        "behaviour_prior": {
+            "form": "von_mises",
+            "concentration": "train_tuned_inner_loso",
+            "kappa_grid": [0.0, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0]
+        },
+        "discrimination_null": {
+            "method": "within_session_pair_permutation",
+            "n_permutations": 1000,
+            "sided": "one_sided_upper"
+        }
+    }
+
+.. list-table::
+   :header-rows: 1
+   :widths: 44 16 40
+   :class: settings-glance
+
+   * - Setting
+     - Default
+     - Options
+   * - :ref:`behaviour_control <nm-nested-behaviour-control>`
+     - ``'rich'``
+     - ``'rich'`` (only value)
+   * - :ref:`reduced_model_features <nm-nested-reduced-model-features>`
+     - one list per target, see JSON above
+     - the frozen feature lists
+   * - :ref:`category_control <nm-nested-category-control>`
+     - see JSON above
+     - the multinomial model's settings
+   * - :ref:`vm_score_mode <nm-nested-vm-score-mode>`
+     - ``'macro'``
+     - ``'macro'`` (only value)
+   * - :ref:`min_region_events <nm-nested-region-labels>`
+     - ``20``
+     - events per region
+   * - :ref:`lambda_smooth <nm-nested-regressor-penalties>`
+     - ``1.0``
+     - smoothness strength
+   * - :ref:`l2_reg <nm-nested-regressor-penalties>`
+     - ``0.01``
+     - ridge strength
+   * - :ref:`smoothness_derivative_order <nm-nested-regressor-penalties>`
+     - ``1``
+     - finite-difference order
+   * - :ref:`huber_delta <nm-nested-optimiser>`
+     - ``1.0``
+     - torus units (inert)
+   * - :ref:`learning_rate <nm-nested-optimiser>`
+     - ``0.001``
+     - Adam step size (inert)
+   * - :ref:`max_iter <nm-nested-optimiser>`
+     - ``5000``
+     - step cap (inert)
+   * - :ref:`tol <nm-nested-optimiser>`
+     - ``0.0001``
+     - tolerance (inert)
+   * - :ref:`random_state <nm-nested-optimiser>`
+     - ``0``
+     - seed (inert)
+   * - :ref:`sigma_floor <nm-nested-sigma-floor>`
+     - ``0.05``
+     - standard-deviation floor
+   * - :ref:`prevocal_window_n_bins <nm-nested-neuron-column>`
+     - ``1``
+     - ``1`` (only value)
+   * - :ref:`rate_transform <nm-nested-neuron-column>`
+     - ``'none'``
+     - ``'none'`` (only value)
+   * - :ref:`rate_basis <nm-nested-neuron-column>`
+     - ``'linear'``
+     - ``'linear'`` (only value)
+   * - :ref:`statistic <nm-nested-neuron-column>`
+     - ``'posterior'``
+     - ``'posterior'`` (only value)
+   * - :ref:`behaviour_prior.form <nm-nested-behaviour-prior>`
+     - ``'von_mises'``
+     - ``'von_mises'``
+   * - :ref:`behaviour_prior.concentration <nm-nested-behaviour-prior>`
+     - ``'train_tuned_inner_loso'``
+     - ``'train_tuned_inner_loso'``, ``'train_residuals'``
+   * - :ref:`behaviour_prior.kappa_grid <nm-nested-behaviour-prior>`
+     - ``[0.0, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0]``
+     - list of concentrations
+   * - :ref:`discrimination_null.method <nm-nested-discrimination-null>`
+     - ``'within_session_pair_permutation'``
+     - ``'within_session_pair_permutation'`` (only value)
+   * - :ref:`discrimination_null.n_permutations <nm-nested-discrimination-null>`
+     - ``1000``
+     - number of permutation draws
+   * - :ref:`discrimination_null.sided <nm-nested-discrimination-null>`
+     - ``'one_sided_upper'``
+     - ``'one_sided_upper'`` (only value)
+
+.. _nm-nested-behaviour-control:
+
+``behaviour_control``
+   Which behaviour control the REDUCED model uses.
+
+   :Options: ``'rich'`` — the full 4 s behaviour window (the only implemented value)
+   :Default: ``'rich'``
+
+.. _nm-nested-reduced-model-features:
+
+``reduced_model_features``
+   The frozen behaviour-control feature list, per target.
+
+   :Options: a dictionary with one list of behaviour feature names per target
+   :Default: ``["head-head", "other.ego_yaw"]`` (manifold) and ``["allo_yaw-head", "head-head", "other.speed", "self.back_pitch", "self.speed"]`` (multinomial), the 2026-10-31 selections on the ephys cohort (every step accepted by the per-step shift test)
+   :Notes: each list is asserted against that target's selection result file, so a re-run of the selection cannot silently redefine the behaviour the neuron is measured against.
+
+.. _nm-nested-category-control:
+
+``category_control``
+   The categorical behaviour control's model: a copy of the behavioural modelling's ``hyperparameters.linear_models.multinomial_logistic`` block, resolved by that pipeline's own ``resolve_temporal_basis``.
+
+   :Options: the multinomial logistic regression on a 20-spline lag basis with the lag-varying ridge (``temporal_basis``), a focal loss (``focal_loss_gamma``) and the Adam solver settings
+   :Default: see the JSON above
+   :Notes:
+      * its probabilities enter each unit base-rate free and tilt the category prior with a concentration tuned per fold from ``behaviour_prior.kappa_grid``.
+      * The B-spline basis is required, and under it ``resolve_temporal_basis`` takes the penalties from ``temporal_basis`` (``lambda_smooth_fixed``, ``l2_reg_fixed``, second-order smoothness). The behavioural block's top-level ``lambda_smooth_fixed``, ``l2_reg_fixed`` and ``smoothness_derivative_order`` would be overwritten, so they are not carried here.
+      * The control is never tuned. ``tune_regularization_params`` stays an empty dict only because ``resolve_temporal_basis`` writes into it, and ``temporal_basis.lambda_smooth_decades_each_side`` is read by that function but has no effect without tuning.
+
+.. _nm-nested-vm-score-mode:
+
+``vm_score_mode``
+   The held-out von Mises score the REDUCED and FULL models are compared on.
+
+   :Options: ``'macro'`` — the region-balanced von Mises score (the only implemented value)
+   :Default: ``'macro'``
+
+.. _nm-nested-region-labels:
+
+``min_region_events``
+   The acoustic regions of the macro score.
+
+   :Options: the minimum events a region needs to enter the macro score; the regions are the categories in ``vocalizations.category_column``
+   :Default: ``20``
+
+.. _nm-nested-regressor-penalties:
+
+``lambda_smooth`` / ``l2_reg`` / ``smoothness_derivative_order``
+   The torus regressor's penalties.
+
+   :Options:
+      * ``lambda_smooth`` — temporal smoothness (behaviour blocks only)
+      * ``l2_reg`` — uniform ridge
+      * ``smoothness_derivative_order`` — finite-difference order of the smoothness penalty
+   :Default: ``1.0``, ``0.01`` and ``1``
+
+.. _nm-nested-optimiser:
+
+``huber_delta`` / ``learning_rate`` / ``max_iter`` / ``tol`` / ``random_state``
+   The regressor's optimiser.
+
+   :Options:
+      * ``huber_delta`` — Huber transition point, in torus units
+      * ``learning_rate`` — initial Adam step size, cosine-decayed to zero
+      * ``max_iter`` — step cap
+      * ``tol`` — parameter-change convergence tolerance
+      * ``random_state`` — initialisation seed
+   :Default: ``1.0``, ``0.001``, ``5000``, ``1e-4`` and ``0``
+   :Notes: these are the values the regressor used before they became settings; the shipped torus regressor is fitted in closed form, where the optimiser keys are inert.
+
+.. _nm-nested-sigma-floor:
+
+``sigma_floor``
+   Floor on the standard deviation z-scoring the neuron's count column.
+
+   :Options: a standard-deviation floor
+   :Default: ``0.05``
+   :Notes: so a unit silent in quiet tiles cannot produce an exploding column.
+
+.. _nm-nested-neuron-column:
+
+``prevocal_window_n_bins`` / ``rate_transform`` / ``rate_basis`` / ``statistic``
+   How the neuron enters the FULL model: as ONE z-scored pre-vocal count, and the tested statistic is the posterior form.
+
+   :Options:
+      * ``prevocal_window_n_bins`` — ``1`` bin
+      * ``rate_transform`` — ``'none'``, no transform
+      * ``rate_basis`` — ``'linear'``, a linear column
+      * ``statistic`` — ``'posterior'``, the posterior form
+   :Default: ``1``, ``'none'``, ``'linear'`` and ``'posterior'``
+   :Notes: each accepts only that value.
+
+.. _nm-nested-behaviour-prior:
+
+``behaviour_prior``
+   The von Mises behaviour prior of the posterior statistic.
+
+   :Options:
+      * ``form`` — ``'von_mises'``
+      * ``concentration`` — ``'train_tuned_inner_loso'`` picks it from ``kappa_grid`` by inner leave-one-session-out on the training sessions; ``'train_residuals'`` fits it on the training residuals
+      * ``kappa_grid`` — the candidate concentrations
+   :Default: ``form`` ``'von_mises'``, ``concentration`` ``'train_tuned_inner_loso'``, ``kappa_grid`` as in the JSON above
+
+.. _nm-nested-discrimination-null:
+
+``discrimination_null``
+   The within-session pair permutation null.
+
+   :Options:
+      * ``method`` — ``'within_session_pair_permutation'`` (the only implemented value)
+      * ``n_permutations`` — the number of permutation draws
+      * ``sided`` — ``'one_sided_upper'`` (the only implemented value: the upper tail of the observed added gain among the draws)
+   :Default: ``method`` ``'within_session_pair_permutation'``, ``n_permutations`` ``1000``, ``sided`` ``'one_sided_upper'``
 
 **vocal_gating** — is a unit's vocal response gated on a behavioural feature (a feature × vocalization interaction in a contemporaneous logistic model, quiet frames guard-banded and the peri-vocal zone dropped)?
 
@@ -5488,690 +6038,19 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
       * ``calibration_steps`` — iterations of each calibration refit
    :Default: ``irls_n_steps`` ``30``, ``calibration_steps`` ``40``
 
-**vocal_decoding** — the vocal-occurrence axis (does the unit fire before a USV?) and the vocalization-identity axis (does its count say WHICH USV, as a torus position or a category?).
+**inference** — the circular-shift and permutation null draws shared by every analysis, and the cohort-level multiplicity control. The circular-shift null (shared by the kinematic encoding, the transfer, the gating and the vocal-occurrence axis) shifts the spike train, preserving its rate and burstiness while destroying its alignment with behaviour.
 
 .. code-block:: json
 
-    "vocal_decoding": {
-        "require_clean_prevocal_bool": true,
-        "usv_manifold_column_names": ["qlvm1", "qlvm2"],
-        "max_quiet_tiles_per_session": 5000,
-        "vocal_occurrence": {
-            "ridge_frac": 0.02,
-            "amplitude_calibration": {
-                "enabled": true,
-                "alpha_grid": [0.1, 0.25, 0.5, 0.75, 1.0, 1.5]
-            },
-            "mean_count_floor": 0.001
-        },
-        "geodesic_metrics": {
-            "compute": true,
-            "grid_n_per_dim": 40,
-            "graph_k": 8,
-            "density_exponent": 1.0,
-            "decoder_weights_npz_path": "/mnt/falkner/Bartul/spectrograms/qlvm/qmc_decoder_weights.npz"
-        },
-        "tuning_surface": {
-            "tuning_basis": "fourier",
-            "fourier_k": 2,
-            "bump_grid_n": 10,
-            "bump_sigma": 0.1,
-            "min_basis_occupancy": 5.0,
-            "decode_grid_min_occupancy": 1.0,
-            "grid_n": 60,
-            "kde_bandwidth": 0.03,
-            "likelihood_family": "poisson",
-            "session_rate_offsets": true,
-            "solver": {
-                "irls_n_steps": 50
-            },
-            "ridge_selection": {
-                "mode": "count_normalized_fixed",
-                "ridge_frac": 0.02
-            },
-            "amplitude_calibration": {
-                "enabled": true,
-                "mode": "train_tuned_inner_loso",
-                "alpha_grid": [0.1, 0.25, 0.5, 0.75, 1.0, 1.5],
-                "alpha_min": 0.0
-            },
-            "record_bump_basis_gain": true
-        },
-        "category_surface": {
-            "ridge_selection": {
-                "mode": "count_normalized_fixed",
-                "ridge_frac": 0.02
-            },
-            "amplitude_calibration": {
-                "enabled": true,
-                "mode": "train_tuned_inner_loso",
-                "alpha_grid": [0.1, 0.25, 0.5, 0.75, 1.0, 1.5]
-            },
-            "category_column": "qlvm_category",
-            "min_train_events": 20,
-            "min_test_events": 5,
-            "mean_count_floor": 0.001
-        },
-        "discrimination_null": {
-            "method": "within_session_position_permutation",
-            "n_permutations": 1000,
-            "sided": "one_sided_upper",
-            "pass_rule": "gain_gt_zero_and_exact_p",
-            "record_left_tail_anti_alignment": true,
-            "n_permutations_category_grain": 5000
-        },
-        "record_overdispersion_index": true
-    }
-
-.. list-table::
-   :header-rows: 1
-   :widths: 44 16 40
-   :class: settings-glance
-
-   * - Setting
-     - Default
-     - Options
-   * - :ref:`require_clean_prevocal_bool <nm-vocal-decoding-require-clean-prevocal-bool>`
-     - ``true``
-     - ``true``, ``false``
-   * - :ref:`usv_manifold_column_names <nm-vocal-decoding-usv-manifold-column-names>`
-     - ``["qlvm1", "qlvm2"]``
-     - two summary column names
-   * - :ref:`max_quiet_tiles_per_session <nm-vocal-decoding-max-quiet-tiles-per-session>`
-     - ``5000``
-     - tiles per session
-   * - :ref:`vocal_occurrence.ridge_frac <nm-vocal-decoding-vocal-occurrence>`
-     - ``0.02``
-     - fraction of the training count
-   * - :ref:`vocal_occurrence.amplitude_calibration.enabled <nm-vocal-decoding-vocal-occurrence>`
-     - ``true``
-     - ``true``, ``false``
-   * - :ref:`vocal_occurrence.amplitude_calibration.alpha_grid <nm-vocal-decoding-vocal-occurrence>`
-     - ``[0.1, 0.25, 0.5, 0.75, 1.0, 1.5]``
-     - list of amplitudes
-   * - :ref:`vocal_occurrence.mean_count_floor <nm-vocal-decoding-vocal-occurrence>`
-     - ``0.001``
-     - small positive number
-   * - :ref:`geodesic_metrics.compute <nm-vocal-decoding-geodesic-metrics>`
-     - ``true``
-     - declared, not read
-   * - :ref:`geodesic_metrics.grid_n_per_dim <nm-vocal-decoding-geodesic-metrics>`
-     - ``40``
-     - declared, not read
-   * - :ref:`geodesic_metrics.graph_k <nm-vocal-decoding-geodesic-metrics>`
-     - ``8``
-     - declared, not read
-   * - :ref:`geodesic_metrics.density_exponent <nm-vocal-decoding-geodesic-metrics>`
-     - ``1.0``
-     - declared, not read
-   * - :ref:`geodesic_metrics.decoder_weights_npz_path <nm-vocal-decoding-geodesic-metrics>`
-     - path (see JSON above)
-     - declared, not read
-   * - :ref:`tuning_surface.tuning_basis <nm-vocal-decoding-tuning-surface>`
-     - ``'fourier'``
-     - ``'fourier'``, ``'bumps'``
-   * - :ref:`tuning_surface.fourier_k <nm-vocal-decoding-tuning-surface>`
-     - ``2``
-     - harmonics per axis
-   * - :ref:`tuning_surface.bump_grid_n <nm-vocal-decoding-tuning-surface>`
-     - ``10``
-     - bump nodes per axis
-   * - :ref:`tuning_surface.bump_sigma <nm-vocal-decoding-tuning-surface>`
-     - ``0.1``
-     - bump width
-   * - :ref:`tuning_surface.min_basis_occupancy <nm-vocal-decoding-tuning-surface>`
-     - ``5.0``
-     - kernel-weighted events
-   * - :ref:`tuning_surface.decode_grid_min_occupancy <nm-vocal-decoding-tuning-surface>`
-     - ``1.0``
-     - KDE training occupancy
-   * - :ref:`tuning_surface.grid_n <nm-vocal-decoding-tuning-surface>`
-     - ``60``
-     - decoding cells per axis
-   * - :ref:`tuning_surface.kde_bandwidth <nm-vocal-decoding-tuning-surface>`
-     - ``0.03``
-     - KDE bandwidth
-   * - :ref:`tuning_surface.likelihood_family <nm-vocal-decoding-tuning-surface>`
-     - ``'poisson'``
-     - ``'poisson'`` (only value)
-   * - :ref:`tuning_surface.session_rate_offsets <nm-vocal-decoding-tuning-surface>`
-     - ``true``
-     - ``true``, ``false``
-   * - :ref:`tuning_surface.solver.irls_n_steps <nm-vocal-decoding-tuning-surface>`
-     - ``50``
-     - IRLS iterations
-   * - :ref:`tuning_surface.ridge_selection.mode <nm-vocal-decoding-tuning-surface>`
-     - ``'count_normalized_fixed'``
-     - ``'count_normalized_fixed'`` (only value)
-   * - :ref:`tuning_surface.ridge_selection.ridge_frac <nm-vocal-decoding-tuning-surface>`
-     - ``0.02``
-     - fraction of the training spike count
-   * - :ref:`tuning_surface.amplitude_calibration.enabled <nm-vocal-decoding-tuning-surface>`
-     - ``true``
-     - ``true``, ``false``
-   * - :ref:`tuning_surface.amplitude_calibration.mode <nm-vocal-decoding-tuning-surface>`
-     - ``'train_tuned_inner_loso'``
-     - ``'train_tuned_inner_loso'`` (only value)
-   * - :ref:`tuning_surface.amplitude_calibration.alpha_grid <nm-vocal-decoding-tuning-surface>`
-     - ``[0.1, 0.25, 0.5, 0.75, 1.0, 1.5]``
-     - list of amplitudes
-   * - :ref:`tuning_surface.amplitude_calibration.alpha_min <nm-vocal-decoding-tuning-surface>`
-     - ``0.0``
-     - smallest allowed grid value
-   * - :ref:`tuning_surface.record_bump_basis_gain <nm-vocal-decoding-tuning-surface>`
-     - ``true``
-     - ``true``, ``false``
-   * - :ref:`category_surface.ridge_selection.mode <nm-vocal-decoding-category-surface>`
-     - ``'count_normalized_fixed'``
-     - as ``tuning_surface``
-   * - :ref:`category_surface.ridge_selection.ridge_frac <nm-vocal-decoding-category-surface>`
-     - ``0.02``
-     - as ``tuning_surface``
-   * - :ref:`category_surface.amplitude_calibration.enabled <nm-vocal-decoding-category-surface>`
-     - ``true``
-     - as ``tuning_surface``
-   * - :ref:`category_surface.amplitude_calibration.mode <nm-vocal-decoding-category-surface>`
-     - ``'train_tuned_inner_loso'``
-     - as ``tuning_surface``
-   * - :ref:`category_surface.amplitude_calibration.alpha_grid <nm-vocal-decoding-category-surface>`
-     - ``[0.1, 0.25, 0.5, 0.75, 1.0, 1.5]``
-     - as ``tuning_surface``
-   * - :ref:`category_surface.category_column <nm-vocal-decoding-category-surface>`
-     - ``'qlvm_category'``
-     - a USV summary column
-   * - :ref:`category_surface.min_train_events <nm-vocal-decoding-category-surface>`
-     - ``20``
-     - events per split
-   * - :ref:`category_surface.min_test_events <nm-vocal-decoding-category-surface>`
-     - ``5``
-     - events per split
-   * - :ref:`category_surface.mean_count_floor <nm-vocal-decoding-category-surface>`
-     - ``0.001``
-     - small positive number
-   * - :ref:`discrimination_null.method <nm-vocal-decoding-discrimination-null>`
-     - ``'within_session_position_permutation'``
-     - declared, not read
-   * - :ref:`discrimination_null.n_permutations <nm-vocal-decoding-discrimination-null>`
-     - ``1000``
-     - number of permutation draws
-   * - :ref:`discrimination_null.sided <nm-vocal-decoding-discrimination-null>`
-     - ``'one_sided_upper'``
-     - declared, not read
-   * - :ref:`discrimination_null.pass_rule <nm-vocal-decoding-discrimination-null>`
-     - ``'gain_gt_zero_and_exact_p'``
-     - declared, not read
-   * - :ref:`discrimination_null.record_left_tail_anti_alignment <nm-vocal-decoding-discrimination-null>`
-     - ``true``
-     - ``true``, ``false``
-   * - :ref:`discrimination_null.n_permutations_category_grain <nm-vocal-decoding-discrimination-null>`
-     - ``5000``
-     - declared, not read
-   * - :ref:`record_overdispersion_index <nm-vocal-decoding-record-overdispersion-index>`
-     - ``true``
-     - ``true``, ``false``
-
-.. _nm-vocal-decoding-require-clean-prevocal-bool:
-
-``require_clean_prevocal_bool``
-   Whether to drop an event when another vocalization intrudes on its pre-vocal window.
-
-   :Options:
-      * ``true`` — drop such an event
-      * ``false`` — keep it
-   :Default: ``true``
-
-.. _nm-vocal-decoding-usv-manifold-column-names:
-
-``usv_manifold_column_names``
-   The summary columns holding a USV's torus position.
-
-   :Options: a list of the two summary column names of the torus coordinates
-   :Default: ``['qlvm1', 'qlvm2']`` (the regular map)
-
-.. _nm-vocal-decoding-max-quiet-tiles-per-session:
-
-``max_quiet_tiles_per_session``
-   Cap on the quiet tiles that serve as the vocal-occurrence negatives.
-
-   :Options: a number of tiles per session
-   :Default: ``5000`` per session
-
-.. _nm-vocal-decoding-vocal-occurrence:
-
-``vocal_occurrence``
-   The two-class decoder of the vocal-occurrence axis (peri-onset window against quiet tile, equal prior).
-
-   :Options:
-      * ``ridge_frac`` — shrinks the two class rates toward their pooled rate by this fraction of the training spike count
-      * ``amplitude_calibration`` — when ``enabled``, the contrast between the classes is tuned over ``alpha_grid`` on the training sessions (or, for a single training session, contiguous blocks of it); when disabled it is 1
-      * ``mean_count_floor`` — bounds a session's quiet level from below, so a unit silent in quiet tiles stays finite
-   :Default: ``ridge_frac`` ``0.02``, ``amplitude_calibration`` enabled over ``[0.1, 0.25, 0.5, 0.75, 1.0, 1.5]``, ``mean_count_floor`` ``0.001``
-   :Notes: the held-out session's quiet level is cross-fitted over ``kinematic_encoding.calibration.n_blocks`` blocks.
-
-.. _nm-vocal-decoding-geodesic-metrics:
-
-``geodesic_metrics``
-   Declared but read by no current neural code.
-
-   :Options: the sub-keys ``compute``, ``grid_n_per_dim``, ``graph_k``, ``density_exponent`` and ``decoder_weights_npz_path``, none of which has an effect
-   :Default: as in the JSON above
-
-.. _nm-vocal-decoding-tuning-surface:
-
-``tuning_surface``
-   The Poisson tuning surface over the torus.
-
-   :Options:
-      * ``tuning_basis`` — ``'fourier'``: a Fourier basis with ``fourier_k`` harmonics per axis; ``'bumps'``: a local basis of ``bump_grid_n`` nodes per axis of width ``bump_sigma``, kept where the kernel-weighted training occupancy reaches ``min_basis_occupancy`` events
-      * ``fourier_k`` — Fourier harmonics per axis
-      * ``bump_grid_n`` / ``bump_sigma`` / ``min_basis_occupancy`` — the bump basis's nodes per axis, node width and occupancy floor (events)
-      * ``grid_n`` — decoding runs on a grid of this many cells per axis, restricted to cells whose training occupancy (a KDE of bandwidth ``kde_bandwidth``) reaches ``decode_grid_min_occupancy``
-      * ``likelihood_family`` — ``'poisson'`` (the only implemented value)
-      * ``session_rate_offsets`` — ``true`` adds per-session rate offsets
-      * ``solver.irls_n_steps`` — IRLS iterations of the surface fit
-      * ``ridge_selection`` — ``mode`` ``'count_normalized_fixed'`` (the only implemented value; the ridge is ``ridge_frac`` × the training spike count)
-      * ``amplitude_calibration`` — when ``enabled``, a likelihood-sharpening amplitude is tuned over ``alpha_grid`` by inner leave-one-session-out on the training sessions, or by leave-one-block-out over ``data_sufficiency.single_session_blocks`` contiguous blocks when a fold has a single training session (``mode`` ``'train_tuned_inner_loso'``, the only implemented value; ``alpha_min`` is the smallest grid value allowed), and when disabled the amplitude is 1
-      * ``record_bump_basis_gain`` — also record the bump-basis gain beside the Fourier one
-   :Default: ``tuning_basis`` ``'fourier'``, ``fourier_k`` ``2``, ``bump_grid_n`` ``10``, ``bump_sigma`` ``0.1``, ``min_basis_occupancy`` ``5.0``, ``grid_n`` ``60``, ``kde_bandwidth`` ``0.03``, ``decode_grid_min_occupancy`` ``1.0``, ``likelihood_family`` ``'poisson'``, ``session_rate_offsets`` ``true``, ``solver.irls_n_steps`` ``50``, ``ridge_selection.ridge_frac`` ``0.02``, ``alpha_min`` ``0.0``, ``record_bump_basis_gain`` ``true``; the rest as in the JSON above
-
-.. _nm-vocal-decoding-category-surface:
-
-``category_surface``
-   The same decoder over the QLVM categories, run for the ``'multinomial'`` target on every unit.
-
-   :Options:
-      * ``ridge_selection`` / ``amplitude_calibration`` — as in ``tuning_surface`` above
-      * ``category_column`` — the USV summary column holding each USV's category
-      * ``min_train_events`` / ``min_test_events`` — an outer or inner split with fewer training or test events than these is skipped, too few for a stable per-category rate or a meaningful held-out score
-      * ``mean_count_floor`` — the lower bound on a session's mean spike count when the held-out level correction is formed, so a session with no spikes gives a posterior equal to the prior (zero gain) rather than ``0 · log 0`` = NaN; a positive number, small against any real session's mean count
-   :Default: ``min_train_events`` ``20``, ``min_test_events`` ``5``, ``mean_count_floor`` ``0.001``; the rest as in the JSON above
-
-.. _nm-vocal-decoding-discrimination-null:
-
-``discrimination_null``
-   The exact within-session permutation null of the identity axis.
-
-   :Options:
-      * ``n_permutations`` — the number of permutation draws
-      * ``record_left_tail_anti_alignment`` — record the left-tail statistics
-      * ``method``, ``sided``, ``pass_rule`` and ``n_permutations_category_grain`` — declared but read by no current code
-   :Default: ``n_permutations`` ``1000``, ``record_left_tail_anti_alignment`` ``true``; the rest as in the JSON above
-
-.. _nm-vocal-decoding-record-overdispersion-index:
-
-``record_overdispersion_index``
-   Record the count overdispersion index with each decoding.
-
-   :Options:
-      * ``true`` — record it
-      * ``false`` — do not
-   :Default: ``true``
-   :Notes:
-      * **Definition** — the index is the mean Pearson dispersion ``(count − expected)² / expected`` of the held-out events, where an event's expected count is the calibrated surface rate the decoder scored it with (the centred surface shape times the tuned amplitude, at the held-out session's mean-count level) read at the event's own grid cell, so an untuned Poisson unit gives about ``1``.
-      * **Also stored** — the decoding also stores ``nats_per_spike`` (the summed finite per-event gain divided by the spikes of those same events) and ``min_leave_one_fold_out`` (the smallest pooled gain with one fold left out, over the folds whose left-out gain is finite).
-
-**nested_vocal_decoding** — does the neuron add information about a USV's identity beyond the cohort behaviour control? Run on both targets for every unit, each against its own control (the kinematics are assembled once and each target's design is built on its own control's features). The behaviour control sets the decoder's prior (on the torus its predicted position, on categories its probabilities, tilted by a tuned concentration; ``category_control`` below), and the statistic is what the neuron adds under that prior, in nats per USV; on the torus, a REDUCED and a FULL torus regression (behaviour alone, behaviour plus the neuron's count) compared on the held-out macro von Mises log-score are kept as a descriptor (``point_regression``).
-
-.. code-block:: json
-
-    "nested_vocal_decoding": {
-        "behaviour_control": "rich",
-        "reduced_model_features": {
-            "manifold": ["head-head"],
-            "multinomial": ["allo_yaw-head", "head-head", "other.speed", "self.back_pitch"]
-        },
-        "behaviour_control_model_path": {
-            "manifold": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_model_ephys_manifold.pkl",
-            "multinomial": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_model_ephys_multinomial.pkl"
-        },
-        "category_control": {
-            "bin_resizing_factor": 1,
-            "lambda_smooth_fixed": 1.0,
-            "l2_reg_fixed": 0.01,
-            "smoothness_derivative_order": 1,
-            "temporal_basis": {"type": "bspline", "n_splines": 20, "spline_order": 3, "lambda_smooth_fixed": 1e-05,
-                               "l2_reg_fixed": 1e-05, "l2_lag_alpha": 100, "lambda_smooth_decades_each_side": 2},
-            "tune_regularization_params": {"lambda_smooth_decades_each_side": 0, "l2_reg_decades_each_side": 4},
-            "focal_loss_gamma": 0.5,
-            "learning_rate": 0.005,
-            "max_iter": 20000,
-            "tol": 0.001,
-            "random_state": 0,
-            "use_lax_loop": true
-        },
-        "vm_score_mode": "macro",
-        "region_label_column": "qlvm_category",
-        "min_region_events": 20,
-        "lambda_smooth": 1.0,
-        "l2_reg": 0.01,
-        "smoothness_derivative_order": 1,
-        "huber_delta": 1.0,
-        "learning_rate": 0.001,
-        "max_iter": 5000,
-        "tol": 0.0001,
-        "random_state": 0,
-        "behaviour_control_n_lags": 600,
-        "sigma_floor": 0.05,
-        "prevocal_window_n_bins": 1,
-        "rate_transform": "none",
-        "rate_basis": "linear",
-        "statistic": "posterior",
-        "behaviour_prior": {
-            "form": "von_mises",
-            "concentration": "train_tuned_inner_loso",
-            "kappa_grid": [0.0, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0]
-        },
-        "discrimination_null": {
-            "method": "within_session_pair_permutation",
-            "n_permutations": 1000,
-            "sided": "one_sided_upper"
-        }
-    }
-
-.. list-table::
-   :header-rows: 1
-   :widths: 44 16 40
-   :class: settings-glance
-
-   * - Setting
-     - Default
-     - Options
-   * - :ref:`behaviour_control <nm-nested-behaviour-control>`
-     - ``'rich'``
-     - ``'rich'`` (only value)
-   * - :ref:`reduced_model_features <nm-nested-reduced-model-features>`
-     - one list per target, see JSON above
-     - the frozen feature lists
-   * - :ref:`behaviour_control_model_path <nm-nested-behaviour-control-model-path>`
-     - one path per target, see JSON above
-     - paths to the fitted artifacts
-   * - :ref:`category_control <nm-nested-category-control>`
-     - see JSON above
-     - the multinomial model's settings
-   * - :ref:`vm_score_mode <nm-nested-vm-score-mode>`
-     - ``'macro'``
-     - ``'macro'`` (only value)
-   * - :ref:`region_label_column <nm-nested-region-labels>`
-     - ``'qlvm_category'``
-     - summary column name
-   * - :ref:`min_region_events <nm-nested-region-labels>`
-     - ``20``
-     - events per region
-   * - :ref:`lambda_smooth <nm-nested-regressor-penalties>`
-     - ``1.0``
-     - smoothness strength
-   * - :ref:`l2_reg <nm-nested-regressor-penalties>`
-     - ``0.01``
-     - ridge strength
-   * - :ref:`smoothness_derivative_order <nm-nested-regressor-penalties>`
-     - ``1``
-     - finite-difference order
-   * - :ref:`huber_delta <nm-nested-optimiser>`
-     - ``1.0``
-     - torus units (inert)
-   * - :ref:`learning_rate <nm-nested-optimiser>`
-     - ``0.001``
-     - Adam step size (inert)
-   * - :ref:`max_iter <nm-nested-optimiser>`
-     - ``5000``
-     - step cap (inert)
-   * - :ref:`tol <nm-nested-optimiser>`
-     - ``0.0001``
-     - tolerance (inert)
-   * - :ref:`random_state <nm-nested-optimiser>`
-     - ``0``
-     - seed (inert)
-   * - :ref:`behaviour_control_n_lags <nm-nested-behaviour-control-n-lags>`
-     - ``600``
-     - tracking frames
-   * - :ref:`sigma_floor <nm-nested-sigma-floor>`
-     - ``0.05``
-     - standard-deviation floor
-   * - :ref:`prevocal_window_n_bins <nm-nested-neuron-column>`
-     - ``1``
-     - ``1`` (only value)
-   * - :ref:`rate_transform <nm-nested-neuron-column>`
-     - ``'none'``
-     - ``'none'`` (only value)
-   * - :ref:`rate_basis <nm-nested-neuron-column>`
-     - ``'linear'``
-     - ``'linear'`` (only value)
-   * - :ref:`statistic <nm-nested-neuron-column>`
-     - ``'posterior'``
-     - ``'posterior'`` (only value)
-   * - :ref:`behaviour_prior.form <nm-nested-behaviour-prior>`
-     - ``'von_mises'``
-     - ``'von_mises'``
-   * - :ref:`behaviour_prior.concentration <nm-nested-behaviour-prior>`
-     - ``'train_tuned_inner_loso'``
-     - ``'train_tuned_inner_loso'``, ``'train_residuals'``
-   * - :ref:`behaviour_prior.kappa_grid <nm-nested-behaviour-prior>`
-     - ``[0.0, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0]``
-     - list of concentrations
-   * - :ref:`discrimination_null.method <nm-nested-discrimination-null>`
-     - ``'within_session_pair_permutation'``
-     - ``'within_session_pair_permutation'`` (only value)
-   * - :ref:`discrimination_null.n_permutations <nm-nested-discrimination-null>`
-     - ``1000``
-     - number of permutation draws
-   * - :ref:`discrimination_null.sided <nm-nested-discrimination-null>`
-     - ``'one_sided_upper'``
-     - declared, not read
-
-.. _nm-nested-behaviour-control:
-
-``behaviour_control``
-   Which behaviour control the REDUCED model uses.
-
-   :Options: ``'rich'`` — the full 4 s behaviour window (the only implemented value)
-   :Default: ``'rich'``
-
-.. _nm-nested-reduced-model-features:
-
-``reduced_model_features``
-   The frozen behaviour-control feature list, per target.
-
-   :Options: a dictionary with one list of behaviour feature names per target
-   :Default: ``["head-head"]`` (manifold) and ``["allo_yaw-head", "head-head", "other.speed", "self.back_pitch"]`` (multinomial)
-   :Notes: each list is asserted against that target's selection result file, so a re-run of the selection cannot silently redefine the behaviour the neuron is measured against.
-
-.. _nm-nested-behaviour-control-model-path:
-
-``behaviour_control_model_path``
-   The cohort-fitted behaviour-control artifact per target (``main_behaviour_control_dispatcher --stage fit --target manifold`` and ``--target multinomial``).
-
-   :Options: a dictionary with one path per target
-   :Default: see the JSON above
-   :Notes:
-      * **Both needed** — every unit is decoded on both targets; ``--target`` defaults to ``vocalization_settings.vocal_target``.
-      * **Agreement** — the decoding refuses an artifact fitted for the other target or on other features.
-      * **Rows** — the control is fitted on exactly the vocalization rows the per-unit analysis scores: the ``'analysed'`` set of ``vocalization_settings`` (noise and squeak rows removed) restricted to ``vocal_emitter`` (``'all'`` applies no emitter filter), with a vocalization dropped when one from the ``'guard'`` set intrudes on its ``spike_window.pre_offset_seconds`` pre-window.
-      * **History end** — every behaviour history, at fit and at application, ends at the frame before onset (``round(start × fps) − 1``).
-      * **Old artifacts** — an artifact fitted before 2026-10-18 was trained on the unfiltered summary with histories one frame earlier than the unit side used, and must be refitted. The artifact's counts are stored as ``n_vocalizations`` (top level and per day); an older artifact's ``n_calls`` is read under that name.
-
-.. _nm-nested-category-control:
-
-``category_control``
-   The categorical behaviour control's model: a copy of the behavioural modelling's ``hyperparameters.linear_models.multinomial_logistic`` block, resolved by that pipeline's own ``resolve_temporal_basis``.
-
-   :Options: the multinomial logistic regression on a 20-spline lag basis with the lag-varying ridge (``temporal_basis``), a focal loss (``focal_loss_gamma``) and the Adam solver settings
-   :Default: see the JSON above
-   :Notes: its probabilities enter each unit base-rate free and tilt the category prior with a concentration tuned per fold from ``behaviour_prior.kappa_grid``.
-
-.. _nm-nested-vm-score-mode:
-
-``vm_score_mode``
-   The held-out von Mises score the REDUCED and FULL models are compared on.
-
-   :Options: ``'macro'`` — the region-balanced von Mises score (the only implemented value)
-   :Default: ``'macro'``
-
-.. _nm-nested-region-labels:
-
-``region_label_column`` / ``min_region_events``
-   The acoustic regions of the macro score.
-
-   :Options:
-      * ``region_label_column`` — the summary column holding the acoustic-region labels of the macro score
-      * ``min_region_events`` — the minimum events a region needs to enter it
-   :Default: ``qlvm_category`` and ``20``
-
-.. _nm-nested-regressor-penalties:
-
-``lambda_smooth`` / ``l2_reg`` / ``smoothness_derivative_order``
-   The torus regressor's penalties.
-
-   :Options:
-      * ``lambda_smooth`` — temporal smoothness (behaviour blocks only)
-      * ``l2_reg`` — uniform ridge
-      * ``smoothness_derivative_order`` — finite-difference order of the smoothness penalty
-   :Default: ``1.0``, ``0.01`` and ``1``
-
-.. _nm-nested-optimiser:
-
-``huber_delta`` / ``learning_rate`` / ``max_iter`` / ``tol`` / ``random_state``
-   The regressor's optimiser.
-
-   :Options:
-      * ``huber_delta`` — Huber transition point, in torus units
-      * ``learning_rate`` — initial Adam step size, cosine-decayed to zero
-      * ``max_iter`` — step cap
-      * ``tol`` — parameter-change convergence tolerance
-      * ``random_state`` — initialisation seed
-   :Default: ``1.0``, ``0.001``, ``5000``, ``1e-4`` and ``0``
-   :Notes: these are the values the regressor used before they became settings; the shipped torus regressor is fitted in closed form, where the optimiser keys are inert.
-
-.. _nm-nested-behaviour-control-n-lags:
-
-``behaviour_control_n_lags``
-   History length of the behaviour design, in tracking frames.
-
-   :Options: a number of tracking frames
-   :Default: ``600`` (= 4 s at 150 fps)
-   :Notes: used by ``main_behaviour_control_dispatcher`` for both stages; the fitted artifact records it, and the per-unit decoding reads it from there.
-
-.. _nm-nested-sigma-floor:
-
-``sigma_floor``
-   Floor on the standard deviation z-scoring the neuron's count column.
-
-   :Options: a standard-deviation floor
-   :Default: ``0.05``
-   :Notes: so a unit silent in quiet tiles cannot produce an exploding column.
-
-.. _nm-nested-neuron-column:
-
-``prevocal_window_n_bins`` / ``rate_transform`` / ``rate_basis`` / ``statistic``
-   How the neuron enters the FULL model: as ONE z-scored pre-vocal count, and the tested statistic is the posterior form.
-
-   :Options:
-      * ``prevocal_window_n_bins`` — ``1`` bin
-      * ``rate_transform`` — ``'none'``, no transform
-      * ``rate_basis`` — ``'linear'``, a linear column
-      * ``statistic`` — ``'posterior'``, the posterior form
-   :Default: ``1``, ``'none'``, ``'linear'`` and ``'posterior'``
-   :Notes: each accepts only that value.
-
-.. _nm-nested-behaviour-prior:
-
-``behaviour_prior``
-   The von Mises behaviour prior of the posterior statistic.
-
-   :Options:
-      * ``form`` — ``'von_mises'``
-      * ``concentration`` — ``'train_tuned_inner_loso'`` picks it from ``kappa_grid`` by inner leave-one-session-out on the training sessions; ``'train_residuals'`` fits it on the training residuals
-      * ``kappa_grid`` — the candidate concentrations
-   :Default: ``form`` ``'von_mises'``, ``concentration`` ``'train_tuned_inner_loso'``, ``kappa_grid`` as in the JSON above
-
-.. _nm-nested-discrimination-null:
-
-``discrimination_null``
-   The within-session pair permutation null.
-
-   :Options:
-      * ``method`` — ``'within_session_pair_permutation'`` (the only implemented value)
-      * ``n_permutations`` — the number of permutation draws
-      * ``sided`` — declared but not read
-   :Default: ``method`` ``'within_session_pair_permutation'``, ``n_permutations`` ``1000``, ``sided`` ``'one_sided_upper'``
-
-**null** — the circular-shift null shared by the kinematic encoding, the transfer, the gating and the vocal-occurrence axis (the spike train is shifted, preserving its rate and burstiness while destroying its alignment with behaviour).
-
-.. code-block:: json
-
-    "null": {
+    "inference": {
         "n_shuffles": 1000,
         "shuffle_guard_seconds": 20.0,
         "shuffle_seed": 0,
-        "screen_n_shuffles": 2000
-    }
-
-.. list-table::
-   :header-rows: 1
-   :widths: 44 16 40
-   :class: settings-glance
-
-   * - Setting
-     - Default
-     - Options
-   * - :ref:`n_shuffles <nm-null-n-shuffles>`
-     - ``1000``
-     - base number of shift draws
-   * - :ref:`shuffle_guard_seconds <nm-null-shuffle-guard-seconds>`
-     - ``20.0``
-     - seconds
-   * - :ref:`shuffle_seed <nm-null-shuffle-seed>`
-     - ``0``
-     - integer seed
-   * - :ref:`screen_n_shuffles <nm-null-screen-n-shuffles>`
-     - ``2000``
-     - number of screen draws
-
-.. _nm-null-n-shuffles:
-
-``n_shuffles``
-   Base number of shift draws.
-
-   :Options: a number of draws
-   :Default: ``1000``
-   :Notes: the empirical p-value floors at ``1 / (n + 1)`` and escalation adds draws where the cohort's Benjamini–Hochberg bar requires them.
-
-.. _nm-null-shuffle-guard-seconds:
-
-``shuffle_guard_seconds``
-   The shift lag is drawn from ``[guard, duration - guard]``.
-
-   :Options: a number of seconds
-   :Default: ``20.0``
-   :Notes: the range is the full wrap minus a band where the shifted train is nearly back in register (the statistic's decorrelation lag was measured at 2.2 s).
-
-.. _nm-null-shuffle-seed:
-
-``shuffle_seed``
-   Base seed of every shift draw.
-
-   :Options: an integer seed
-   :Default: ``0``
-   :Notes: each test derives its own stream from it.
-
-.. _nm-null-screen-n-shuffles:
-
-``screen_n_shuffles``
-   Draws of the feature screen.
-
-   :Options: a number of draws, whose floor must lie below the screen's Bonferroni bar
-   :Default: ``2000``
-   :Notes: the screen's Bonferroni bar ``screen_alpha / n_features`` needs a floor below it.
-
-**significance** — cohort-level multiplicity control.
-
-.. code-block:: json
-
-    "significance": {
+        "screen_n_shuffles": 2000,
         "pvalue_method": "empirical_escalated",
         "fdr_method": "bh",
         "fdr_q": 0.05,
         "escalation_ladder": [],
-        "report_bh_floor_requirement": true,
         "include_single_session_units": false
     }
 
@@ -6183,34 +6062,80 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
    * - Setting
      - Default
      - Options
-   * - :ref:`pvalue_method <nm-significance-declared>`
+   * - :ref:`n_shuffles <nm-inference-n-shuffles>`
+     - ``1000``
+     - base number of shift draws
+   * - :ref:`shuffle_guard_seconds <nm-inference-shuffle-guard-seconds>`
+     - ``20.0``
+     - seconds
+   * - :ref:`shuffle_seed <nm-inference-shuffle-seed>`
+     - ``0``
+     - integer seed
+   * - :ref:`screen_n_shuffles <nm-inference-screen-n-shuffles>`
+     - ``2000``
+     - number of screen draws
+   * - :ref:`pvalue_method <nm-inference-pvalue-method>`
      - ``'empirical_escalated'``
-     - declared, not read
-   * - :ref:`fdr_method <nm-significance-fdr-method>`
+     - ``'empirical_escalated'`` only
+   * - :ref:`fdr_method <nm-inference-fdr-method>`
      - ``'bh'``
      - ``'bh'``, ``'by'``
-   * - :ref:`fdr_q <nm-significance-fdr-q>`
+   * - :ref:`fdr_q <nm-inference-fdr-q>`
      - ``0.05``
      - false-discovery rate
-   * - :ref:`escalation_ladder <nm-significance-escalation-ladder>`
+   * - :ref:`escalation_ladder <nm-inference-escalation-ladder>`
      - ``[]``
      - list of draw counts
-   * - :ref:`report_bh_floor_requirement <nm-significance-declared>`
-     - ``true``
-     - declared, not read
-   * - :ref:`include_single_session_units <nm-significance-include-single-session-units>`
+   * - :ref:`include_single_session_units <nm-inference-include-single-session-units>`
      - ``false``
      - ``true``, ``false``
 
-.. _nm-significance-fdr-q:
+.. _nm-inference-n-shuffles:
 
-``fdr_q``
-   The false-discovery rate of the cross-unit correction.
+``n_shuffles``
+   Base number of shift draws.
 
-   :Options: a false-discovery rate
-   :Default: ``0.05``
+   :Options: a number of draws
+   :Default: ``1000``
+   :Notes: the empirical p-value floors at ``1 / (n + 1)`` and escalation adds draws where the cohort's Benjamini–Hochberg bar requires them.
 
-.. _nm-significance-fdr-method:
+.. _nm-inference-shuffle-guard-seconds:
+
+``shuffle_guard_seconds``
+   The shift lag is drawn from ``[guard, duration - guard]``.
+
+   :Options: a number of seconds
+   :Default: ``20.0``
+   :Notes: the range is the full wrap minus a band where the shifted train is nearly back in register (the statistic's decorrelation lag was measured at 2.2 s).
+
+.. _nm-inference-shuffle-seed:
+
+``shuffle_seed``
+   Base seed of every shift draw.
+
+   :Options: an integer seed
+   :Default: ``0``
+   :Notes: each test derives its own stream from it.
+
+.. _nm-inference-screen-n-shuffles:
+
+``screen_n_shuffles``
+   Draws of the feature screen.
+
+   :Options: a number of draws, whose floor must lie below the screen's Bonferroni bar
+   :Default: ``2000``
+   :Notes: the screen's Bonferroni bar ``screen_alpha / n_features`` needs a floor below it.
+
+.. _nm-inference-pvalue-method:
+
+``pvalue_method``
+   How every p-value of the package is computed.
+
+   :Options: ``'empirical_escalated'`` — the empirical p over circular-shift or permutation draws, ``(1 + k) / (n + 1)``, topped up along ``escalation_ladder`` when it sits on its floor; the only implemented value
+   :Default: ``'empirical_escalated'``
+   :Notes: any other value is refused when the settings are loaded. The consolidation always reports each test's Benjamini–Hochberg floor requirement (the former ``report_bh_floor_requirement`` switch had no effect and was removed).
+
+.. _nm-inference-fdr-method:
 
 ``fdr_method``
    The cross-unit correction applied by ``consolidate_neural_modeling_results``.
@@ -6220,16 +6145,20 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
       * ``'by'`` — Benjamini–Yekutieli, valid under any dependence between units
    :Default: ``'bh'``
 
-.. _nm-significance-include-single-session-units:
+.. _nm-inference-fdr-q:
 
-``include_single_session_units``
-   Whether units recorded in one session (tested on blocks of it) enter the cross-unit corrections.
+``fdr_q``
+   The false-discovery rate of the cross-unit correction.
 
-   :Options: ``true`` or ``false``
-   :Default: ``false``
-   :Notes: they are listed in the cohort table either way; the default excludes them until the block procedure's validation study is done.
+   :Options: a false-discovery rate
+   :Default: ``0.05``
+   :Notes: the same value is also used, uncorrected, as a per-unit threshold in two places that make no
+      stored decision: the reading printed at the end of a unit's kinematic-encoding run
+      (quiet and transfer ``p`` below ``fdr_q``), and the figure code's choice of how to draw a unit's
+      kinematic encoding (``kinematic_encoding_holds``: quiet ``p`` below ``fdr_q``). Neither replaces
+      the cross-unit correction, which ``consolidate_neural_modeling_results`` applies.
 
-.. _nm-significance-escalation-ladder:
+.. _nm-inference-escalation-ladder:
 
 ``escalation_ladder``
    Draw counts to escalate floor-tied p-values through (accumulating, not restarting).
@@ -6240,69 +6169,14 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
    :Default: ``[]``
    :Notes: each rung counts FINITE draws only, as only finite draws enter the p-value.
 
-.. _nm-significance-declared:
+.. _nm-inference-include-single-session-units:
 
-``pvalue_method`` / ``report_bh_floor_requirement``
-   Declared but read by no current code.
+``include_single_session_units``
+   Whether units recorded in one session (tested on blocks of it) enter the cross-unit corrections.
 
-   :Options: no effect; p-values are always empirical with escalation, and the consolidation always reports each test's floor requirement
-   :Default: ``'empirical_escalated'`` and ``true``
-
-**robustness** — planned robustness checks; every key is declared but read by no current code.
-
-.. code-block:: json
-
-    "robustness": {
-        "decode_raw_acoustics": true,
-        "raw_acoustic_features": ["duration", "mean_freq_hz", "peak_freq_hz", "freq_bandwidth_hz"],
-        "time_in_session_nuisance": false,
-        "shift_range_check": false
-    }
-
-.. list-table::
-   :header-rows: 1
-   :widths: 44 16 40
-   :class: settings-glance
-
-   * - Setting
-     - Default
-     - Options
-   * - :ref:`decode_raw_acoustics <nm-robustness-raw-acoustics>`
-     - ``true``
-     - declared, not read
-   * - :ref:`raw_acoustic_features <nm-robustness-raw-acoustics>`
-     - see JSON above
-     - declared, not read
-   * - :ref:`time_in_session_nuisance <nm-robustness-time-in-session-nuisance>`
-     - ``false``
-     - declared, not read
-   * - :ref:`shift_range_check <nm-robustness-shift-range-check>`
-     - ``false``
-     - declared, not read
-
-.. _nm-robustness-raw-acoustics:
-
-``decode_raw_acoustics`` / ``raw_acoustic_features``
-   Decode the raw acoustic features listed instead of the torus position.
-
-   :Options: planned; declared but read by no current code
-   :Default: ``true`` and ``["duration", "mean_freq_hz", "peak_freq_hz", "freq_bandwidth_hz"]``
-
-.. _nm-robustness-time-in-session-nuisance:
-
-``time_in_session_nuisance``
-   Add time-in-session as a nuisance covariate.
-
-   :Options: planned; declared but read by no current code
+   :Options: ``true`` or ``false``
    :Default: ``false``
-
-.. _nm-robustness-shift-range-check:
-
-``shift_range_check``
-   Repeat the null with a restricted shift range.
-
-   :Options: planned; declared but read by no current code
-   :Default: ``false``
+   :Notes: they are listed in the cohort table either way; the default excludes them until the block procedure's validation study is done.
 
 Notebook
 --------

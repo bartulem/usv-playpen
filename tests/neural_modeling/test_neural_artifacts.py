@@ -93,7 +93,7 @@ class TestMergedFile:
         different configurations would be indistinguishable in the provenance."""
         settings = _settings()
         before = build_provenance(settings)["settings_sha256"]
-        settings["significance"]["fdr_q"] = 0.1
+        settings["inference"]["fdr_q"] = 0.1
         assert build_provenance(settings)["settings_sha256"] != before
 
     def test_a_missing_file_reads_as_empty_rather_than_raising(self, tmp_path):
@@ -174,7 +174,7 @@ class TestSectionProvenance:
         """A later write under new settings must not make an earlier section look current: the file-level
         provenance names only the last writer, the per-section record names each."""
         old, new = _settings(), _settings()
-        new["null"]["shuffle_seed"] = int(new["null"]["shuffle_seed"]) + 1
+        new["inference"]["shuffle_seed"] = int(new["inference"]["shuffle_seed"]) + 1
         write_unit_section(str(tmp_path), UNIT, "vocal_occurrence", {"p": 0.01}, old)
         write_unit_section(str(tmp_path), UNIT, "vocal_gating", {"ran": False}, new)
         artifact = read_unit_artifact(str(tmp_path), UNIT["unit_uid"])

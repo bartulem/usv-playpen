@@ -98,8 +98,8 @@ def _artifact(p: float = 1e-3, slope: float = 0.4, gating=None, null_draws: int 
             "vocal_gating": gating if gating is not None else {"ran": False, "reason": "no_vocal_tuning"}}
 
 
-SETTINGS = {"significance": {"fdr_q": 0.05, "fdr_method": "bh", "include_single_session_units": False},
-            "data": {"pool_areas": False}, "vocalization_settings": {"vocal_target": "manifold"}}
+SETTINGS = {"inference": {"fdr_q": 0.05, "fdr_method": "bh", "include_single_session_units": False},
+            "cohort": {"pool_areas": False}, "vocalizations": {"vocal_target": "manifold"}}
 
 
 class TestUnitRow:
@@ -246,7 +246,7 @@ class TestConsolidate:
         table, report = consolidate(cohort, artifacts, SETTINGS)
         assert table.filter(table["unit_uid"] == "pag0")["pass_quiet"][0] is True
         assert set(report) >= {"PAG", "VTA"}
-        pooled, _ = consolidate(cohort, artifacts, {**SETTINGS, "data": {"pool_areas": True}})
+        pooled, _ = consolidate(cohort, artifacts, {**SETTINGS, "cohort": {"pool_areas": True}})
         assert pooled.filter(pooled["unit_uid"] == "pag0")["pass_quiet"][0] is False
 
     def test_the_conjunction_is_the_largest_component(self):
@@ -263,7 +263,7 @@ class TestConsolidate:
         artifact = _artifact(p=1e-3)
         manifold, _ = consolidate([_record("u")], {"u": artifact}, SETTINGS)
         multinomial, _ = consolidate([_record("u")], {"u": artifact},
-                                     {**SETTINGS, "vocalization_settings": {"vocal_target": "multinomial"}})
+                                     {**SETTINGS, "vocalizations": {"vocal_target": "multinomial"}})
         assert manifold["category"][0] == "Transformation"
         assert multinomial["p_conjunction"][0] == pytest.approx(0.6)
         assert multinomial["category"][0] != "Transformation"
@@ -275,7 +275,7 @@ class TestConsolidate:
         table, report = consolidate(cohort, artifacts, SETTINGS)
         assert report["excluded_single_session"] == ["block"]
         assert table.filter(table["unit_uid"] == "block")["category"][0] is None
-        admitted = {**SETTINGS, "significance": {**SETTINGS["significance"], "include_single_session_units": True}}
+        admitted = {**SETTINGS, "inference": {**SETTINGS["inference"], "include_single_session_units": True}}
         table, report = consolidate(cohort, artifacts, admitted)
         assert report["excluded_single_session"] == []
         assert table.filter(table["unit_uid"] == "block")["category"][0] == "Transformation"
