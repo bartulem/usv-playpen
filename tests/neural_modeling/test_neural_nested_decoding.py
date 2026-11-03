@@ -49,6 +49,7 @@ with warnings.catch_warnings():
         nested_scores,
         nested_settings,
         no_behaviour_predictions,
+        onset_nested_design,
         pooled_macro_score,
         posterior_nested_gain,
         reduced_model_features,
@@ -1078,3 +1079,65 @@ class TestPosteriorNested:
         target[path[-1]] = bad
         with pytest.raises(ValueError, match="not implemented"):
             check_settings(block)
+
+
+class TestOnsetNestedDesign:
+    """The onset test's behaviour design: every occurrence window's history, anchored at its centre."""
+
+    N_LAGS, FPS, PRE = 4, 10.0, 0.05
+
+    def _events(self):
+        """
+        Description
+        -----------
+        Two sessions of occurrence windows: per session two USV windows (edges 0.95 and 4.95 s, so
+        centres 1.0 and 5.0 s) and two quiet tiles (edges 20.0 and 30.0 s), plus one tile at 0.05 s whose
+        history runs off the start of the session.
+
+        Parameters
+        ----------
+        None.
+
+        Returns
+        -------
+        events (dict)
+            ``occurrence_windows`` and ``session_ids``.
+        """
+
+        edges = np.array([0.95, 4.95, 20.0, 30.0, 0.05])
+        labels = np.array([1.0, 1.0, 0.0, 0.0, 0.0])
+        return {"session_ids": ["s0", "s1"],
+                "occurrence_windows": {"edges": np.tile(edges, 2), "labels": np.tile(labels, 2),
+                                       "session_index": np.repeat([0, 1], edges.size),
+                                       "counts": np.arange(2 * edges.size, dtype=float), "width": 0.1}}
+
+    def test_every_window_is_anchored_at_the_frame_before_its_centre(self):
+        """USV windows and tiles alike read their history up to the frame before ``edge + pre_offset``
+        (``rint((edge + pre_offset) * fps) - 1``); the window whose history does not fit is dropped and
+        counted, and the kept rows' counts, labels, slots and edges travel with the design."""
+        events = self._events()
+        per_session = TestNestedDesign._per_session(events["session_ids"], ["a", "b"], n_frames=400, fps=self.FPS)
+        design = onset_nested_design(events, per_session, ["b", "a"], self.N_LAGS, self.PRE)
+        windows = events["occurrence_windows"]
+        expected_kept = np.array([0, 1, 2, 3, 5, 6, 7, 8])
+        np.testing.assert_array_equal(design["kept"], expected_kept)
+        anchors = np.rint((windows["edges"][expected_kept] + self.PRE) * self.FPS).astype(int) - 1
+        # Feature ``b`` (index 1 in the canonical order) first, its last lag column at the anchor.
+        np.testing.assert_allclose(design["behaviour"][:, self.N_LAGS - 1], 1000 + anchors)
+        np.testing.assert_allclose(design["behaviour"][:, 2 * self.N_LAGS - 1], anchors)
+        np.testing.assert_array_equal(design["labels"], windows["labels"][expected_kept])
+        np.testing.assert_array_equal(design["counts"], windows["counts"][expected_kept])
+        np.testing.assert_array_equal(design["session_index"], windows["session_index"][expected_kept])
+        np.testing.assert_array_equal(design["edges"], windows["edges"][expected_kept])
+        assert design["per_session"]["s0"] == {"n_windows_offered": 5, "n_windows_with_full_history": 4,
+                                               "n_dropped_short_history": 1}
+        assert design["feature_names"] == ["b", "a"]
+
+    def test_missing_features_and_an_empty_list_are_refused(self):
+        """A session lacking a control feature, or no feature at all, raises before any row is built."""
+        events = self._events()
+        per_session = TestNestedDesign._per_session(events["session_ids"], ["a"])
+        with pytest.raises(ValueError, match="not in the assembled"):
+            onset_nested_design(events, per_session, ["zzz"], self.N_LAGS, self.PRE)
+        with pytest.raises(ValueError, match="at least one"):
+            onset_nested_design(events, per_session, [], self.N_LAGS, self.PRE)

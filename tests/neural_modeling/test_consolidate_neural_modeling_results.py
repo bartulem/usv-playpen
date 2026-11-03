@@ -95,6 +95,8 @@ def _artifact(p: float = 1e-3, slope: float = 0.4, gating=None, null_draws: int 
                                                   "n_permutations": 5000},
             "nested_vocal_decoding_multinomial": {"p": 0.6, "z": -0.2, "added": -0.001, "n_permutations": 1000,
                                                   "behaviour_over_no_behaviour": 0.03},
+            "nested_vocal_decoding_onset": {"p": p, "z": 6.0, "added": 0.015, "n_shuffles": 1000,
+                                            "behaviour_over_no_behaviour": 0.02, "target": "onset"},
             "vocal_gating": gating if gating is not None else {"ran": False, "reason": "no_vocal_tuning"}}
 
 
@@ -382,3 +384,34 @@ class TestGapsAndCommandLine:
             stored = pickle.load(handle)
         assert stored["unit_settings_sha256"] == ["a" * 64, "b" * 64]
         assert "different settings" in capsys.readouterr().out
+
+
+class TestNestedOnset:
+    """The nested onset test is read, corrected and reported, but stays out of the conjunction."""
+
+    def test_the_onset_section_feeds_its_own_test(self):
+        """``p_nested_onset`` and its effect come from ``nested_vocal_decoding_onset``; a missing section
+        is ``not_run``."""
+        row = unit_row(_record("u"), _artifact(p=2e-3), "manifold")
+        assert row["p_nested_onset"] == pytest.approx(2e-3)
+        assert row["z_nested_onset"] == 6.0
+        assert row["nested_onset_effect"] == 0.015
+        artifact = _artifact()
+        del artifact["nested_vocal_decoding_onset"]
+        row = unit_row(_record("u"), artifact, "manifold")
+        assert np.isnan(row["p_nested_onset"])
+        assert row["reason_nested_onset"] == "not_run"
+
+    def test_it_is_corrected_and_a_modifier_but_not_part_of_the_conjunction(self):
+        """A unit failing only the onset nested test is still a Transformation; the test's pass state is
+        corrected per group and carried as the ``nested_onset`` modifier."""
+        strong = _artifact(p=1e-3)
+        strong["nested_vocal_decoding_onset"]["p"] = 0.9
+        table, report = consolidate([_record("u")], {"u": strong}, SETTINGS)
+        row = table.row(0, named=True)
+        assert row["category"] == "Transformation"
+        assert row["pass_nested_onset"] is False
+        assert row["nested_onset"] is False
+        assert report["PAG"]["tests"]["nested_onset"]["n_tested"] == 1
+        assert report["PAG"]["tests"]["nested_onset"]["n_draws"] == 1000
+        assert "nested_onset" in TESTS

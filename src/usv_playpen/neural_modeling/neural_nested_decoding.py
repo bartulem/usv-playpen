@@ -154,6 +154,11 @@ class NestedTorusRegression(SmoothTorusManifoldRegression):
 #: the neuron is always tested on the target the behavioural model predicts: the torus position, or the
 #: category. ``vocalizations.vocal_target`` names the one the claims use.
 VOCAL_TARGETS = ("manifold", "multinomial")
+#: The targets a cohort behaviour control exists for: the two vocal targets and the onset (occurrence)
+#: axis, whose control predicts peri-onset window against quiet tile.
+CONTROL_TARGETS = (*VOCAL_TARGETS, "onset")
+#: The section the nested onset test is written as.
+NESTED_ONSET_SECTION = "nested_vocal_decoding_onset"
 
 
 def check_target(target: str) -> str:
@@ -175,6 +180,34 @@ def check_target(target: str) -> str:
 
     if target not in VOCAL_TARGETS:
         msg = f"vocal target must be one of {list(VOCAL_TARGETS)}; got {target!r}."
+        raise ValueError(msg)
+    return target
+
+
+def check_control_target(target: str) -> str:
+    """
+    Description
+    -----------
+    Refuse a behaviour-control target that is not one of :data:`CONTROL_TARGETS`.
+
+    Parameters
+    ----------
+    target (str)
+        The requested control target.
+
+    Returns
+    -------
+    target (str)
+        The same value, once accepted.
+
+    Raises
+    ------
+    ValueError
+        The target is not one of :data:`CONTROL_TARGETS`.
+    """
+
+    if target not in CONTROL_TARGETS:
+        msg = f"behaviour control target must be one of {list(CONTROL_TARGETS)}; got {target!r}."
         raise ValueError(msg)
     return target
 
@@ -266,7 +299,7 @@ def reduced_model_features(settings: dict, target: str, require_selection_file: 
         The behaviour control's feature names, in selection order.
     """
 
-    check_target(target)
+    check_control_target(target)
     frozen = list(settings["nested_vocal_decoding"]["reduced_model_features"][target])
     path = pathlib.Path(configure_path(settings["paths"]["behaviour_selection_result_path"][target]))
     if not path.exists():
@@ -917,3 +950,85 @@ def no_behaviour_predictions(design: dict, settings: dict, n_lags: int) -> np.nd
         train = np.flatnonzero(session_index != held_out)
         predicted[test] = _fit_predict(blank, None, positions, weights, train, test, n_lags, n_features, settings)
     return predicted
+
+
+def onset_nested_design(events: dict, per_session: dict, feature_names: list, n_lags: int,
+                        pre_offset: float) -> dict:
+    """
+    Description
+    -----------
+    Build the nested onset test's behaviour design: the kinematic history behind every occurrence
+    window, USV windows and quiet tiles alike.
+
+    Rows are the occurrence decoder's windows (``events["occurrence_windows"]``). Every window's
+    history ends at the frame before its centre, ``edge + pre_offset`` (``onset_history_anchor_frames``):
+    for a USV window that is the onset itself, the anchor the content controls use; for a quiet tile it
+    is the tile's centre, so the two classes differ only in the USV at the end of the history. Windows
+    whose history runs off the start of the session are dropped, and the kept rows' counts, labels,
+    session slots and edges are returned beside the design so the decoder and the control see the same
+    windows.
+
+    Parameters
+    ----------
+    events (dict)
+        From ``assemble_unit_vocal_events``: ``occurrence_windows`` and ``session_ids``.
+    per_session (dict)
+        From ``assemble_unit_sessions``: per session ``feature_time_series``, ``feature_names``,
+        ``fps`` and ``n_frames``.
+    feature_names (list)
+        The behaviour control's features, in order.
+    n_lags (int)
+        History length in frames.
+    pre_offset (float)
+        ``vocalizations.spike_window.pre_offset_seconds``: how far before a window's centre its left
+        edge lies.
+
+    Returns
+    -------
+    design (dict)
+        ``behaviour`` ``(n_kept, n_features * n_lags)``, ``kept`` (index into the occurrence windows),
+        ``counts``, ``labels``, ``session_index``, ``edges`` (the kept windows'), ``feature_names`` and
+        ``per_session`` counts of windows offered versus kept.
+
+    Raises
+    ------
+    ValueError
+        No feature, or a session lacks one of the features.
+    """
+
+    if not feature_names:
+        msg = "onset_nested_design needs at least one behavioural feature."
+        raise ValueError(msg)
+    windows = events["occurrence_windows"]
+    edges = np.asarray(windows["edges"], dtype=np.float64)
+    session_index = np.asarray(windows["session_index"])
+    behaviour_parts, keep_parts = [], []
+    bookkeeping: dict = {}
+    for slot, session_id in enumerate(events["session_ids"]):
+        session = per_session[session_id]
+        available = list(session["feature_names"])
+        missing = [name for name in feature_names if name not in available]
+        if missing:
+            msg = (f"{session_id}: behaviour control features {missing} are not in the assembled "
+                   f"feature set. Available: {available}.")
+            raise ValueError(msg)
+        columns = [available.index(name) for name in feature_names]
+        series = np.asarray(session["feature_time_series"], dtype=np.float64)[:, columns]
+        rows = np.flatnonzero(session_index == slot)
+        frames = onset_history_anchor_frames(edges[rows] + float(pre_offset), session["fps"])
+        usable = (frames >= n_lags - 1) & (frames < session["n_frames"])
+        kept_rows, kept_frames = rows[usable], frames[usable]
+        behaviour_parts.append(lagged_design(series, kept_frames, n_lags)
+                               if kept_frames.size else np.empty((0, len(columns) * n_lags)))
+        keep_parts.append(kept_rows)
+        bookkeeping[session_id] = {"n_windows_offered": int(rows.size),
+                                   "n_windows_with_full_history": int(kept_rows.size),
+                                   "n_dropped_short_history": int(rows.size - kept_rows.size)}
+    kept = np.concatenate(keep_parts) if keep_parts else np.empty(0, dtype=np.int64)
+    behaviour = (np.vstack(behaviour_parts) if behaviour_parts
+                 else np.empty((0, len(feature_names) * n_lags)))
+    return {"behaviour": behaviour, "kept": kept,
+            "counts": np.asarray(windows["counts"], dtype=np.float64)[kept],
+            "labels": np.asarray(windows["labels"], dtype=np.float64)[kept],
+            "session_index": session_index[kept], "edges": edges[kept],
+            "feature_names": list(feature_names), "per_session": bookkeeping}

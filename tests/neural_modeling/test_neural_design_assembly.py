@@ -556,7 +556,7 @@ class TestSettingsInvariants:
         assert settings["vocalizations"]["vocal_target"] in ("manifold", "multinomial")
         assert set(settings["nested_vocal_decoding"]) == {
             "behaviour_control", "reduced_model_features",
-            "category_control", "vm_score_mode", "min_region_events", "lambda_smooth", "l2_reg",
+            "category_control", "onset_control", "vm_score_mode", "min_region_events", "lambda_smooth", "l2_reg",
             "smoothness_derivative_order", "huber_delta", "learning_rate", "max_iter", "tol", "random_state",
             "sigma_floor", "prevocal_window_n_bins", "rate_transform",
             "rate_basis", "statistic", "discrimination_null", "behaviour_prior"}

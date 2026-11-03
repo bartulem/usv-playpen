@@ -8,11 +8,13 @@
     ],
     "behaviour_selection_result_path": {
       "manifold": "/mnt/falkner/Bartul/modeling/model_selection_results/model_selection_final_ephys_male_all_partners_manifold_qlvm_session_20261031_084027Z.pkl",
-      "multinomial": "/mnt/falkner/Bartul/modeling/model_selection_results/model_selection_final_ephys_male_all_partners_multinomial_qlvm_category_session_20261031_082614Z.pkl"
+      "multinomial": "/mnt/falkner/Bartul/modeling/model_selection_results/model_selection_final_ephys_male_all_partners_multinomial_qlvm_category_session_20261031_082614Z.pkl",
+      "onset": "/mnt/falkner/Bartul/modeling/model_selection_results/model_selection_final_ephys_male_all_partners_individual_usv+overlap_session_20261103_000304Z.pkl"
     },
     "behaviour_control_model_path": {
       "manifold": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_model_ephys_manifold.pkl",
-      "multinomial": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_model_ephys_multinomial.pkl"
+      "multinomial": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_model_ephys_multinomial.pkl",
+      "onset": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_model_ephys_onset.pkl"
     }
   },
   "cohort": {
@@ -211,6 +213,15 @@
         "other.speed",
         "self.back_pitch",
         "self.speed"
+      ],
+      "onset": [
+        "head-head",
+        "self.speed",
+        "allo_yaw-head",
+        "self.neck_elevation",
+        "self.back_pitch",
+        "self.ego_yaw",
+        "self.allo_roll"
       ]
     },
     "category_control": {
@@ -226,6 +237,25 @@
       },
       "tune_regularization_params": {},
       "focal_loss_gamma": 0.5,
+      "learning_rate": 0.005,
+      "max_iter": 20000,
+      "tol": 0.001,
+      "random_state": 0,
+      "use_lax_loop": true
+    },
+    "onset_control": {
+      "bin_resizing_factor": 1,
+      "temporal_basis": {
+        "type": "bspline",
+        "n_splines": 20,
+        "spline_order": 3,
+        "lambda_smooth_fixed": 1e-5,
+        "l2_reg_fixed": 1e-5,
+        "l2_lag_alpha": 100,
+        "lambda_smooth_decades_each_side": 2
+      },
+      "tune_regularization_params": {},
+      "focal_loss_gamma": 0.0,
       "learning_rate": 0.005,
       "max_iter": 20000,
       "tol": 0.001,

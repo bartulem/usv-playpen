@@ -25,9 +25,12 @@ from usv_playpen.neural_modeling.neural_vocal_occurrence import (
     class_balanced_mean,
     counts_in_windows,
     held_out_quiet_levels,
+    nested_onset_statistic,
     occurrence_context,
     occurrence_log_posterior,
     occurrence_rates,
+    onset_behaviour_tilts,
+    onset_log_prior,
     quiet_tile_edges,
     session_quiet_levels,
     vocal_occurrence_shift_null,
@@ -469,3 +472,85 @@ class TestVocalOccurrenceShiftNull:
             usvs_only[mask & (windows["labels"] == 1)] = recounted[windows["labels"][mask] == 1]
         assert drawn == pytest.approx(self._score(windows, both), rel=0, abs=0)
         assert self._score(windows, usvs_only) != pytest.approx(drawn)
+
+
+class TestOnsetPrior:
+    """The nested onset test's behaviour prior: the equal prior tilted by the control's log-odds."""
+
+    def test_kappa_zero_is_the_equal_prior_and_the_tilt_is_a_distribution(self):
+        """At ``kappa = 0`` every window's prior is the equal prior; at any ``kappa`` the two columns
+        exponentiate to one and the onset column is the logistic of ``kappa * log_odds``."""
+        log_odds = np.linspace(-4.0, 4.0, 9)
+        equal = onset_log_prior(log_odds, 0.0)
+        np.testing.assert_allclose(equal, EQUAL_PRIOR_LOG)
+        tilted = onset_log_prior(log_odds, 1.5)
+        np.testing.assert_allclose(np.exp(tilted).sum(axis=1), 1.0)
+        np.testing.assert_allclose(np.exp(tilted[:, 1]), 1.0 / (1.0 + np.exp(-1.5 * log_odds)))
+
+    def test_noise_odds_take_kappa_zero_and_informative_odds_a_positive_kappa(self):
+        """The per-fold concentration is tuned on the training sessions' inner splits: log-odds that know
+        nothing leave the equal prior (the grid's first value), log-odds that track the labels tilt it."""
+        counts, labels, sessions, times = _unit(2.0)
+        folds = occurrence_context(labels, sessions, times, 5)
+        generator = np.random.default_rng(1)
+        grid = [0.0, 0.25, 0.5, 1.0, 2.0]
+        kappas, priors = onset_behaviour_tilts(folds, labels, generator.normal(size=labels.size), grid)
+        assert kappas == [0.0] * len(folds)
+        assert all(prior.shape == (labels.size, 2) for prior in priors)
+        informative = 3.0 * (labels - 0.5) + generator.normal(size=labels.size)
+        kappas, priors = onset_behaviour_tilts(folds, labels, informative, grid)
+        assert all(kappa > 0 for kappa in kappas)
+        with pytest.raises(ValueError, match="non-negative"):
+            onset_behaviour_tilts(folds, labels, informative, [-1.0, 0.0])
+
+    def test_zero_odds_reduce_the_nested_statistic_to_the_occurrence_statistic(self):
+        """With no behaviour evidence the tuned prior is the equal prior, so ``added`` is the occurrence
+        gain, behaviour buys nothing and ``full_over_no_behaviour`` equals ``added``."""
+        counts, labels, sessions, times = _unit(2.0)
+        folds = occurrence_context(labels, sessions, times, 5)
+        kappas, priors = onset_behaviour_tilts(folds, labels, np.zeros(labels.size), [0.0, 0.5, 1.0])
+        nested = nested_onset_statistic(counts, labels, sessions, times, folds, AXIS, CROSSFIT, priors, kappas)
+        plain = vocal_occurrence_statistic(counts, labels, sessions, times, folds, AXIS, CROSSFIT)
+        assert nested["added"] == pytest.approx(plain["gain"])
+        assert nested["added_uncalibrated"] == pytest.approx(plain["gain_uncalibrated"])
+        assert nested["behaviour_over_no_behaviour"] == pytest.approx(0.0)
+        assert nested["full_over_no_behaviour"] == pytest.approx(nested["added"])
+        assert nested["kappas"] == [0.0] * len(folds)
+        assert all(entry["kappa"] == 0.0 and "added" in entry and "gain" not in entry
+                   for entry in nested["per_fold"])
+
+    def test_an_informative_prior_buys_behaviour_gain_and_leaves_less_to_add(self):
+        """Log-odds that track the labels raise ``behaviour_over_no_behaviour`` above zero, lower what
+        the neuron can still add, and the two sum to ``full_over_no_behaviour``."""
+        counts, labels, sessions, times = _unit(2.0)
+        folds = occurrence_context(labels, sessions, times, 5)
+        informative = 3.0 * (labels - 0.5) + np.random.default_rng(2).normal(size=labels.size)
+        kappas, priors = onset_behaviour_tilts(folds, labels, informative, [0.0, 0.5, 1.0, 2.0])
+        nested = nested_onset_statistic(counts, labels, sessions, times, folds, AXIS, CROSSFIT, priors, kappas)
+        plain = vocal_occurrence_statistic(counts, labels, sessions, times, folds, AXIS, CROSSFIT)
+        assert nested["behaviour_over_no_behaviour"] > 0.2
+        assert nested["added"] < plain["gain"]
+        assert nested["full_over_no_behaviour"] == pytest.approx(nested["added"]
+                                                                 + nested["behaviour_over_no_behaviour"])
+        assert np.isfinite(nested["auroc"])
+
+    def test_the_shift_null_carries_the_priors_and_the_equal_prior_path_is_unchanged(self):
+        """A per-fold prior rides through the shift null unchanged across draws; an equal prior gives the
+        same draws as no prior at all."""
+        counts, labels, sessions, times = _unit(1.0, n_sessions=2, n_positive=40, n_negative=40)
+        generator = np.random.default_rng(4)
+        duration = float(times.max() + 10.0)
+        windows = {"counts": counts, "labels": labels, "session_index": sessions, "edges": times, "width": 0.5}
+        trains = {slot: np.sort(generator.uniform(0.0, duration, 400)) for slot in (0, 1)}
+        durations = {0: duration, 1: duration}
+        folds = occurrence_context(labels, sessions, times, 5)
+        equal = [onset_log_prior(np.zeros(labels.size), 0.0) for _fold in folds]
+        plain = vocal_occurrence_shift_null(windows, trains, durations, 0, 3, 9, 2.0, folds, AXIS, CROSSFIT)
+        same = vocal_occurrence_shift_null(windows, trains, durations, 0, 3, 9, 2.0, folds, AXIS, CROSSFIT, equal)
+        np.testing.assert_allclose(same, plain)
+        informative = 3.0 * (labels - 0.5)
+        _kappas, priors = onset_behaviour_tilts(folds, labels, informative, [0.0, 1.0])
+        tilted = vocal_occurrence_shift_null(windows, trains, durations, 0, 3, 9, 2.0, folds, AXIS, CROSSFIT,
+                                             priors)
+        assert tilted.shape == (3,)
+        assert np.isfinite(tilted).all()

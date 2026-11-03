@@ -32,6 +32,7 @@ from .behaviour_control_model import (
     apply_behaviour_control,
     category_control_evidence,
     load_control_model,
+    onset_control_log_odds,
 )
 from .main_neural_encoding_dispatcher import build_unit_record, load_settings
 from .neural_artifacts import read_unit_artifact, write_unit_section
@@ -50,12 +51,14 @@ from .neural_design_assembly import (
     worker_process_context,
 )
 from .neural_nested_decoding import (
+    NESTED_ONSET_SECTION,
     VOCAL_TARGETS,
     behaviour_priors,
     nested_design,
     nested_scores,
     nested_settings,
     no_behaviour_predictions,
+    onset_nested_design,
     pooled_macro_score,
     posterior_nested_gain,
     reduced_model_features,
@@ -81,7 +84,9 @@ from .neural_vocal_gating import (
     should_run_gating,
 )
 from .neural_vocal_occurrence import (
+    nested_onset_statistic,
     occurrence_context,
+    onset_behaviour_tilts,
     vocal_occurrence_shift_null,
     vocal_occurrence_statistic,
 )
@@ -331,6 +336,85 @@ def category_nested_null_chunk(start: int, n_draws: int) -> np.ndarray:
                                             state["decoding"], state["tilts"], state["kappas"],
                                             permutation)["added"]
     return values
+
+
+def onset_nested_null_chunk(start: int, n_draws: int) -> np.ndarray:
+    """
+    Description
+    -----------
+    One worker's share of the nested onset statistic's null: the occurrence shift null -- each
+    session's spike train circularly shifted, both classes recounted, the decoder refit -- with every
+    fold's behaviour prior held in place, so only the neuron's alignment to the windows moves.
+
+    Parameters
+    ----------
+    start (int)
+        Global index of this chunk's first draw.
+    n_draws (int)
+        Draws to produce.
+
+    Returns
+    -------
+    values (np.ndarray)
+        Added scores under shifted spike trains.
+    """
+
+    state = _WORKER
+    return vocal_occurrence_shift_null(state["occurrence_windows"], state["spike_seconds"], state["durations"],
+                                       start, n_draws, state["seed"], state["guard_seconds"], state["folds"],
+                                       state["axis"], state["crossfit_blocks"], state["log_priors"])
+
+
+def onset_nested_payload(result: dict, design: dict, session_ids: list, null: np.ndarray, p_value: float,
+                         at_floor: bool, behaviour_control: dict) -> dict:
+    """
+    Description
+    -----------
+    The nested section for the onset axis: the statistic with its null and p-value, the behaviour
+    prior's concentrations, and the control's provenance. Metrics and p-values only, no verdict.
+
+    Parameters
+    ----------
+    result (dict)
+        From ``nested_onset_statistic`` on the observed pass.
+    design (dict)
+        From ``onset_nested_design``; its ``labels`` and ``per_session`` are summarised.
+    session_ids (list)
+        Session id per slot, to name each fold's held-out session.
+    null (np.ndarray)
+        The shift null of ``added``.
+    p_value, at_floor (float, bool)
+        From the empirical test.
+    behaviour_control (dict)
+        The control's ``features``, ``held_out_day`` and ``settings_sha256``.
+
+    Returns
+    -------
+    payload (dict)
+        The section as written.
+    """
+
+    per_fold = [{**{key: value for key, value in fold.items() if key != "session"},
+                 "held_out_session": session_ids[int(fold["session"])]}
+                for fold in result["per_fold"]]
+    labels = np.asarray(design["labels"], dtype=np.float64)
+    return {"target": "onset", "added": result["added"], "added_uncalibrated": result["added_uncalibrated"],
+            "behaviour_over_no_behaviour": result["behaviour_over_no_behaviour"],
+            "full_over_no_behaviour": result["full_over_no_behaviour"],
+            "auroc": result["auroc"], "log_rate_ratio": result["log_rate_ratio"],
+            "response_sign": result["response_sign"],
+            "n_folds_positive": result["n_folds_positive"],
+            "min_leave_one_fold_out": result["min_leave_one_fold_out"],
+            "n_windows": result["n_windows"], "n_vocal_windows": int((labels > 0.5).sum()),
+            "n_quiet_windows": int((labels < 0.5).sum()),
+            "n_dropped_short_history": int(sum(entry["n_dropped_short_history"]
+                                               for entry in design["per_session"].values())),
+            "alphas": result["alphas"], "kappas": result["kappas"], "per_fold": per_fold,
+            "null": null, "p": p_value, "at_floor": at_floor, "z": null_z(result["added"], null),
+            "n_shuffles": int(null.size),
+            "behaviour_control": {"features": list(behaviour_control["features"]),
+                                  "held_out_day": behaviour_control["held_out_day"],
+                                  "settings_sha256": behaviour_control["settings_sha256"]}}
 
 
 def category_nested_payload(result: dict, session_ids: list, null: np.ndarray, p_value: float,
@@ -840,11 +924,15 @@ def run_nested_vocal_decoding(unit: dict, events: dict, settings: dict, data_roo
     designs = {target: nested_design(events, per_session, reduced_model_features(settings, target), history_lags,
                                      nested["sigma_floor"])
                for target in VOCAL_TARGETS}
+    onset_design = onset_nested_design(events, per_session, reduced_model_features(settings, "onset"), history_lags,
+                                       settings["vocalizations"]["spike_window"]["pre_offset_seconds"])
     del per_session
     return {"manifold": run_manifold_nested_decoding(unit, events, designs["manifold"], settings, output_directory,
                                                      n_workers, message_output),
             "multinomial": run_category_nested_decoding(unit, events, designs["multinomial"], settings,
-                                                        output_directory, n_workers, message_output)}
+                                                        output_directory, n_workers, message_output),
+            "onset": run_onset_nested_decoding(unit, events, onset_design, settings, data_root, output_directory,
+                                               n_workers, message_output)}
 
 
 def run_manifold_nested_decoding(unit: dict, events: dict, design: dict, settings: dict, output_directory: str,
@@ -1012,6 +1100,84 @@ def run_category_nested_decoding(unit: dict, events: dict, design: dict, setting
                    f"| {null.size:,} draws")
     write_unit_section(output_directory, unit, section, payload, settings)
     message_output(f"    wrote [{section}] for {unit['unit_uid']}")
+    return payload
+
+
+def run_onset_nested_decoding(unit: dict, events: dict, design: dict, settings: dict, data_root: str,
+                              output_directory: str, n_workers: int, message_output=print) -> dict:
+    """
+    Description
+    -----------
+    The nested decoding on the onset axis for one unit: does the neuron add information about whether
+    a USV is being initiated beyond the cohort behaviour control? Written as section
+    ``nested_vocal_decoding_onset``.
+
+    The occurrence decoder's fixed equal prior is replaced, window by window, by the onset control's
+    base-rate-free log-odds at a concentration tuned per fold on the training sessions alone
+    (``onset_behaviour_tilts``); the statistic is the class-balanced held-out gain of the posterior over
+    that prior (``nested_onset_statistic``), and the null is the occurrence shift null with the priors
+    held in place.
+
+    Parameters
+    ----------
+    unit (dict)
+        The unit record.
+    events (dict)
+        Output of ``assemble_unit_vocal_events``.
+    design (dict)
+        Output of ``onset_nested_design`` on the control's features.
+    settings (dict)
+        Full neural-modeling settings.
+    data_root (str)
+        The ``Data`` root.
+    output_directory (str)
+        Where the unit's result file lives.
+    n_workers (int)
+        Worker processes for the null.
+    message_output (Callable)
+        Where progress is reported.
+
+    Returns
+    -------
+    payload (dict)
+        The section as written.
+    """
+
+    nested = nested_settings(settings)
+    axis = settings["vocal_decoding"]["vocal_occurrence"]
+    control = load_control_model(settings, "onset")
+    held_out_day = str(unit["rec_date"])
+    log_odds = onset_control_log_odds(control, held_out_day, design["behaviour"], settings)
+    windows = {"counts": design["counts"], "labels": design["labels"], "session_index": design["session_index"],
+               "edges": design["edges"], "width": events["occurrence_windows"]["width"]}
+    crossfit_blocks = int(settings["kinematic_encoding"]["calibration"]["n_blocks"])
+    folds = occurrence_context(windows["labels"], windows["session_index"], windows["edges"],
+                               int(settings["cohort"]["single_session_blocks"]))
+    kappas, log_priors = onset_behaviour_tilts(folds, windows["labels"], log_odds,
+                                               nested["behaviour_prior"]["kappa_grid"])
+    result = nested_onset_statistic(windows["counts"], windows["labels"], windows["session_index"],
+                                    windows["edges"], folds, axis, crossfit_blocks, log_priors, kappas)
+    message_output(f"  NESTED DECODING (onset)  added {result['added']:+.6f} nats/window over "
+                   f"{windows['counts'].size} windows | behaviour over no behaviour "
+                   f"{result['behaviour_over_no_behaviour']:+.6f} | kappas {result['kappas']}")
+    state = {"occurrence_windows": windows, "spike_seconds": session_spike_seconds(events, data_root, unit),
+             "durations": session_durations(events), "seed": int(settings["inference"]["shuffle_seed"]),
+             "guard_seconds": settings["inference"]["shuffle_guard_seconds"], "folds": folds, "axis": axis,
+             "crossfit_blocks": crossfit_blocks, "log_priors": log_priors}
+    with spawn_pool(n_workers, state) as pool:
+        draw_more = parallel_draw_more(pool, onset_nested_null_chunk, n_workers)
+        null = draw_more(settings["inference"]["n_shuffles"])
+        p_value, at_floor, null = escalated_empirical_pvalue(result["added"], draw_more,
+                                                             settings["inference"]["escalation_ladder"],
+                                                             null, message_output)
+    behaviour_control = {"features": control["features"], "held_out_day": held_out_day,
+                         "settings_sha256": control["settings_sha256"]}
+    payload = onset_nested_payload(result, design, events["session_ids"], null, p_value, at_floor,
+                                   behaviour_control)
+    message_output(f"    null z {payload['z']:+.1f} | p {p_value:.4e}{' (at floor)' if at_floor else ''} "
+                   f"| {null.size:,} draws")
+    write_unit_section(output_directory, unit, NESTED_ONSET_SECTION, payload, settings)
+    message_output(f"    wrote [{NESTED_ONSET_SECTION}] for {unit['unit_uid']}")
     return payload
 
 

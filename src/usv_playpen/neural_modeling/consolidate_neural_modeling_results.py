@@ -46,12 +46,17 @@ from ..os_utils import atomic_output_path
 from .main_neural_encoding_dispatcher import load_settings
 from .neural_artifacts import build_provenance, read_unit_artifact
 from .neural_cohort import build_cohort_manifest
-from .neural_nested_decoding import VOCAL_TARGETS, target_section, vocal_target
+from .neural_nested_decoding import (
+    NESTED_ONSET_SECTION,
+    VOCAL_TARGETS,
+    target_section,
+    vocal_target,
+)
 from .neural_significance import benjamini_hochberg
 from .shift_null_inference import bh_floor_requirement
 
 #: The tests corrected across units, in report order, with the section and key each p-value is read from.
-TESTS = ("quiet", "transfer", "occurrence", "identity", "nested", "gating")
+TESTS = ("quiet", "transfer", "occurrence", "identity", "nested", "nested_onset", "gating")
 
 #: The components of the conjunction test. Occurrence and gating are reported but not required.
 CONJUNCTION_TESTS = ("quiet", "transfer", "identity", "nested")
@@ -218,7 +223,8 @@ def unit_row(record: dict, artifact: dict, target: str) -> dict:
 
     for test, name, effect in (("occurrence", "vocal_occurrence", "gain"),
                                ("identity", target_section("vocalization_identity", target), "gain"),
-                               ("nested", target_section("nested_vocal_decoding", target), "added")):
+                               ("nested", target_section("nested_vocal_decoding", target), "added"),
+                               ("nested_onset", NESTED_ONSET_SECTION, "added")):
         section = _section(artifact, name)
         if _ran(section):
             row[f"p_{test}"] = _number(section, "p")
@@ -357,7 +363,8 @@ def classify_unit(passes: dict, slope: float, conjunction: bool) -> tuple[str, d
     separately = t_plus and passes["identity"] is True and passes["nested"] is True
     modifiers = {"encoding_state": ("T+" if t_plus else "T-" if t_minus else "kinematic_only" if quiet else "none"),
                  "vocal_tests_passed": "+".join(vocal_pass) if vocal_pass else "none",
-                 "nested": passes["nested"], "transfers": transfer, "gated": passes["gating"],
+                 "nested": passes["nested"], "nested_onset": passes["nested_onset"], "transfers": transfer,
+                 "gated": passes["gating"],
                  "separate_pass_conjunction_fail": bool(separately and category != "Transformation")}
     return category, modifiers
 
@@ -414,6 +421,7 @@ def _draw_counts(artifacts: dict, target: str) -> dict:
         for test, name, key in (("occurrence", "vocal_occurrence", "n_shuffles"),
                                 ("identity", target_section("vocalization_identity", target), "n_permutations"),
                                 ("nested", target_section("nested_vocal_decoding", target), "n_permutations"),
+                                ("nested_onset", NESTED_ONSET_SECTION, "n_shuffles"),
                                 ("gating", "vocal_gating", "n_draws")):
             section = _section(artifact, name)
             if _ran(section) and key in section:

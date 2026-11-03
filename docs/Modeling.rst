@@ -4278,12 +4278,17 @@ The nested decoding measures each neuron against a behaviour model of the USV, o
 once for the whole cohort and held out by recording day, so a unit's own USVs never train the model it is
 compared with. Their features are those the behavioural modelling's selections chose on the ephys
 courtship sessions (``paths.behaviour_selection_result_path``, frozen in
-``nested_vocal_decoding.reduced_model_features``). Fit both before any unit runs:
+``nested_vocal_decoding.reduced_model_features``). The onset axis has a control of the same kind
+(``--target onset``): the two-class model of the behavioural modelling's ``jax`` engine, fitted on the
+cohort's clean USV onsets against the quiet tiles the per-unit occurrence decoder itself scores (its
+features from the behavioural ``individual`` onset selection on the ephys cohort). Fit all three before
+any unit runs:
 
 .. code-block:: bash
 
     python -m usv_playpen.neural_modeling.main_behaviour_control_dispatcher --stage fit --target manifold
     python -m usv_playpen.neural_modeling.main_behaviour_control_dispatcher --stage fit --target multinomial
+    python -m usv_playpen.neural_modeling.main_behaviour_control_dispatcher --stage fit --target onset
 
 Each run writes ``paths.behaviour_control_model_path[target]``; ``--n-workers`` (``6``)
 sets the processes and ``--exclude-days`` leaves recording days out. The behaviour history is
@@ -4435,6 +4440,7 @@ which is what a resumed run and the consolidation check:
         "vocalization_identity_multinomial": {"...": "..."},
         "nested_vocal_decoding_manifold": {"added": "...", "p": "...", "...": "..."},
         "nested_vocal_decoding_multinomial": {"...": "..."},
+        "nested_vocal_decoding_onset": {"added": "...", "p": "...", "kappas": ["..."], "...": "..."},
         "vocal_gating": {"p_unit": "...", "per_feature": {"...": "..."}},
         "kinematic_encoding_folds": {"folds": [{"test_id": "...", "selected": "...", "...": "..."}]},
         "provenance": {"settings_sha256": "...", "git_commit": "...", "...": "..."},
@@ -4460,7 +4466,9 @@ unless ``cohort.pool_areas``), and assigns each unit one of six categories:
         --output-directory /mnt/falkner/Bartul/neural_modeling/cohort_<date>/consolidated
 
 A Transformation unit passes the conjunction test (the largest of its quiet, transfer, identity and
-nested p-values, corrected like the others) with a positive transfer slope. The step writes
+nested p-values, corrected like the others) with a positive transfer slope. The nested onset test
+(``nested_vocal_decoding_onset``) is corrected and reported beside them as ``nested_onset``, a modifier
+rather than a component of the conjunction. The step writes
 ``neural_cohort_table.csv`` (one row per unit: every p-value, effect, pass and reason) and
 ``neural_cohort_report.pkl`` (per group: units tested and excluded, floor requirements, category counts,
 the correlation of the tests' z-scores, and the settings hashes found among the unit files).
@@ -4518,11 +4526,13 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
         "session_list_files": ["/mnt/falkner/Bartul/modeling/input_files/ephys_courtship_intact_partners_sessions_list.txt", "/mnt/falkner/Bartul/modeling/input_files/ephys_courtship_mute_female_sessions_list.txt"],
         "behaviour_selection_result_path": {
             "manifold": "/mnt/falkner/Bartul/modeling/model_selection_results/model_selection_final_ephys_male_all_partners_manifold_qlvm_session_20261031_084027Z.pkl",
-            "multinomial": "/mnt/falkner/Bartul/modeling/model_selection_results/model_selection_final_ephys_male_all_partners_multinomial_qlvm_category_session_20261031_082614Z.pkl"
+            "multinomial": "/mnt/falkner/Bartul/modeling/model_selection_results/model_selection_final_ephys_male_all_partners_multinomial_qlvm_category_session_20261031_082614Z.pkl",
+            "onset": "/mnt/falkner/Bartul/modeling/model_selection_results/model_selection_final_ephys_male_all_partners_individual_usv+overlap_session_20261103_000304Z.pkl"
         },
         "behaviour_control_model_path": {
             "manifold": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_model_ephys_manifold.pkl",
-            "multinomial": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_model_ephys_multinomial.pkl"
+            "multinomial": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_model_ephys_multinomial.pkl",
+            "onset": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_model_ephys_onset.pkl"
         }
     }
 
@@ -4578,21 +4588,22 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
 .. _nm-paths-behaviour-selection-result-path:
 
 ``behaviour_selection_result_path``
-   Per target (``'manifold'``, ``'multinomial'``), the selection whose feature set defines the behaviour control, read back to check the frozen ``reduced_model_features`` against.
+   Per control target (``'manifold'``, ``'multinomial'``, ``'onset'``), the selection whose feature set defines the behaviour control, read back to check the frozen ``reduced_model_features`` against.
 
    :Options: a dictionary with one path per target, each either a behavioural-modelling selection (its ``final_model_features``, read from the one step that carries it, the last accepted one; only the names are adopted, never the coefficients) or the pickle ``main_behaviour_control_dispatcher --stage select --output <file>`` writes
    :Default: the behavioural modelling's manifold and multinomial selections on the ephys courtship sessions, both partner conditions pooled (see the JSON above)
-   :Notes: the shipped selections chose ``head-head`` alone (manifold) and ``allo_yaw-head``, ``head-head``, ``other.speed``, ``self.back_pitch`` (multinomial). The select stage never writes to this path.
+   :Notes: the shipped selections chose ``head-head`` alone (manifold) and ``allo_yaw-head``, ``head-head``, ``other.speed``, ``self.back_pitch`` (multinomial). The ``'onset'`` entry names the behavioural ``individual``-mode onset selection on the ephys cohort run on the ``jax`` engine (run 2026-11-02; 100-fold screen, 18 of 19 features passed, then a 10-fold selection). The select stage never writes to this path.
 
 .. _nm-paths-behaviour-control-model-path:
 
 ``behaviour_control_model_path``
-   The cohort-fitted behaviour-control artifact per target (``main_behaviour_control_dispatcher --stage fit --target manifold`` and ``--target multinomial``).
+   The cohort-fitted behaviour-control artifact per control target (``main_behaviour_control_dispatcher --stage fit --target manifold``, ``--target multinomial`` and ``--target onset``).
 
-   :Options: a dictionary with one path per target
+   :Options: a dictionary with one path per control target
    :Default: see the JSON above
    :Notes:
-      * **Both needed** — every unit is decoded on both targets; ``--target`` defaults to ``vocalizations.vocal_target``.
+      * **All three needed** — every unit is decoded on both vocal targets and tested on the onset axis; ``--target`` defaults to ``vocalizations.vocal_target``.
+      * **Onset rows** — the onset control is fitted on the occurrence decoder's two classes: the clean USV onsets above (label 1) and the quiet tiles of ``vocal_decoding`` (the spike window's width, tiled through the gaps between vocalizations of every emitter guard-banded by ``kinematic_encoding.history_pre_seconds`` and ``clean_post_seconds``, capped per session at ``max_quiet_tiles_per_session`` by a draw seeded with ``inference.shuffle_seed``; label 0). A tile's history ends at the frame before its centre, ``edge + pre_offset_seconds``, so every window's history ends at its centre and the classes differ only in the USV at the end.
       * **Agreement** — the decoding refuses an artifact fitted for the other target or on other features.
       * **Rows** — the control is fitted on exactly the vocalization rows the per-unit analysis scores: the ``'analysed'`` set of ``vocalizations`` (noise and squeak rows removed) restricted to ``vocal_emitter`` (``'all'`` applies no emitter filter), with a vocalization dropped when one from the ``'guard'`` set intrudes on its ``spike_window.pre_offset_seconds`` pre-window.
       * **History end** — every behaviour history, at fit and at application, ends at the frame before onset (``round(start × fps) − 1``).
@@ -5646,7 +5657,7 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
       * **Definition** — the index is the mean Pearson dispersion ``(count − expected)² / expected`` of the held-out events, where an event's expected count is the calibrated surface rate the decoder scored it with (the centred surface shape times the tuned amplitude, at the held-out session's mean-count level) read at the event's own grid cell, so an untuned Poisson unit gives about ``1``.
       * **Also stored** — the decoding also stores ``nats_per_spike`` (the summed finite per-event gain divided by the spikes of those same events) and ``min_leave_one_fold_out`` (the smallest pooled gain with one fold left out, over the folds whose left-out gain is finite).
 
-**nested_vocal_decoding** — does the neuron add information about a USV's identity beyond the cohort behaviour control? Run on both targets for every unit, each against its own control (the kinematics are assembled once and each target's design is built on its own control's features). The behaviour control sets the decoder's prior (on the torus its predicted position, on categories its probabilities, tilted by a tuned concentration; ``category_control`` below), and the statistic is what the neuron adds under that prior, in nats per USV; on the torus, a REDUCED and a FULL torus regression (behaviour alone, behaviour plus the neuron's count) compared on the held-out macro von Mises log-score are kept as a descriptor (``point_regression``).
+**nested_vocal_decoding** — does the neuron add information about a USV's identity beyond the cohort behaviour control? Run on both targets for every unit, each against its own control (the kinematics are assembled once and each target's design is built on its own control's features), and, as ``nested_vocal_decoding_onset``, on the onset axis: the occurrence decoder's fixed equal prior is replaced by the onset control's base-rate-free log-odds at a concentration tuned per fold (``behaviour_prior.kappa_grid``), the statistic is what the neuron adds over that prior in nats per window, and the null is the occurrence shift null with the priors held in place. The behaviour control sets the decoder's prior (on the torus its predicted position, on categories its probabilities, tilted by a tuned concentration; ``category_control`` below), and the statistic is what the neuron adds under that prior, in nats per USV; on the torus, a REDUCED and a FULL torus regression (behaviour alone, behaviour plus the neuron's count) compared on the held-out macro von Mises log-score are kept as a descriptor (``point_regression``).
 
 .. code-block:: json
 
@@ -5654,7 +5665,8 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
         "behaviour_control": "rich",
         "reduced_model_features": {
             "manifold": ["head-head", "other.ego_yaw"],
-            "multinomial": ["allo_yaw-head", "head-head", "other.speed", "self.back_pitch", "self.speed"]
+            "multinomial": ["allo_yaw-head", "head-head", "other.speed", "self.back_pitch", "self.speed"],
+            "onset": ["head-head", "self.speed", "allo_yaw-head", "self.neck_elevation", "self.back_pitch", "self.ego_yaw", "self.allo_roll"]
         },
         "category_control": {
             "bin_resizing_factor": 1,
@@ -5662,6 +5674,18 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
                                "l2_reg_fixed": 1e-05, "l2_lag_alpha": 100, "lambda_smooth_decades_each_side": 2},
             "tune_regularization_params": {},
             "focal_loss_gamma": 0.5,
+            "learning_rate": 0.005,
+            "max_iter": 20000,
+            "tol": 0.001,
+            "random_state": 0,
+            "use_lax_loop": true
+        },
+        "onset_control": {
+            "bin_resizing_factor": 1,
+            "temporal_basis": {"type": "bspline", "n_splines": 20, "spline_order": 3, "lambda_smooth_fixed": 1e-05,
+                               "l2_reg_fixed": 1e-05, "l2_lag_alpha": 100, "lambda_smooth_decades_each_side": 2},
+            "tune_regularization_params": {},
+            "focal_loss_gamma": 0.0,
             "learning_rate": 0.005,
             "max_iter": 20000,
             "tol": 0.001,
@@ -5710,6 +5734,9 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
      - one list per target, see JSON above
      - the frozen feature lists
    * - :ref:`category_control <nm-nested-category-control>`
+     - see JSON above
+     - the multinomial block's keys
+   * - :ref:`onset_control <nm-nested-onset-control>`
      - see JSON above
      - the multinomial model's settings
    * - :ref:`vm_score_mode <nm-nested-vm-score-mode>`
@@ -5789,8 +5816,8 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
 ``reduced_model_features``
    The frozen behaviour-control feature list, per target.
 
-   :Options: a dictionary with one list of behaviour feature names per target
-   :Default: ``["head-head", "other.ego_yaw"]`` (manifold) and ``["allo_yaw-head", "head-head", "other.speed", "self.back_pitch", "self.speed"]`` (multinomial), the 2026-10-31 selections on the ephys cohort (every step accepted by the per-step shift test)
+   :Options: a dictionary with one list of behaviour feature names per control target (``'manifold'``, ``'multinomial'``, ``'onset'``)
+   :Default: ``["head-head", "other.ego_yaw"]`` (manifold) and ``["allo_yaw-head", "head-head", "other.speed", "self.back_pitch", "self.speed"]`` (multinomial), the 2026-10-31 selections on the ephys cohort (every step accepted by the per-step shift test); ``["head-head", "self.speed", "allo_yaw-head", "self.neck_elevation", "self.back_pitch", "self.ego_yaw", "self.allo_roll"]`` for ``'onset'``, the 2026-11-02 ``individual``-mode onset selection on the ephys cohort under the ``jax`` engine (seven steps accepted by the per-step shift test, the eighth rejected); an empty list makes the nested onset step refuse to run
    :Notes: each list is asserted against that target's selection result file, so a re-run of the selection cannot silently redefine the behaviour the neuron is measured against.
 
 .. _nm-nested-category-control:
@@ -5867,6 +5894,15 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
       * ``statistic`` — ``'posterior'``, the posterior form
    :Default: ``1``, ``'none'``, ``'linear'`` and ``'posterior'``
    :Notes: each accepts only that value.
+
+.. _nm-nested-onset-control:
+
+``onset_control``
+   The onset behaviour control's model: the two-class model of the behavioural modelling's ``jax`` engine (``hyperparameters.linear_models.binary_logistic``), resolved by that pipeline's own ``resolve_temporal_basis``; the ``category_control`` block's keys and values with ``focal_loss_gamma`` ``0`` (plain cross-entropy; the per-unit prior tunes its own concentration, so the control's calibration is not relied on). Class imbalance between a session's USVs and its capped tiles is handled by the model's class weights, and the log-odds the units read are base-rate-free.
+
+   :Options: the ``category_control`` keys
+   :Default: see the JSON above
+   :Notes: the values are those of the behavioural ``binary_logistic`` block the onset selection ran with (basis, penalties, no tuning, plain cross-entropy, optimiser), so the control is fitted as the same model that selected its features; they equal ``category_control`` except for ``focal_loss_gamma``. The ``select`` stage of the control dispatcher does not run this target (its features come from the behavioural selection).
 
 .. _nm-nested-behaviour-prior:
 

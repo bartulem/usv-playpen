@@ -46,6 +46,7 @@ from usv_playpen.neural_modeling.behaviour_control_model import (
     EMBEDDING_COLUMNS,
     apply_behaviour_control,
     assemble_cohort,
+    balanced_log_score_gain,
     behaviour_history_lags,
     category_control_evidence,
     control_estimator,
@@ -53,17 +54,21 @@ from usv_playpen.neural_modeling.behaviour_control_model import (
     feature_columns,
     fit_category_control_models,
     fit_control_models,
+    fit_onset_control_models,
     held_out_by_day,
     load_control_model,
     macro_one_versus_rest_auc,
+    onset_control_log_odds,
     paired_gain,
     pooled_macro,
     select_control_features,
+    session_onset_design,
     session_vocalization_design,
     torus_embedding,
     upgrade_legacy_counts,
     write_control_model,
 )
+from usv_playpen.neural_modeling.deviance_metrics import area_under_roc
 from usv_playpen.neural_modeling.neural_design_assembly import (
     onset_history_anchor_frames,
 )
@@ -2367,8 +2372,215 @@ class TestControlTargets:
         assert manifold != multinomial
 
     def test_an_unknown_target_is_refused(self, settings: dict) -> None:
-        """A target outside ``VOCAL_TARGETS`` is refused before any file is read."""
-        with pytest.raises(ValueError, match="vocal target must be one of"):
+        """A target outside ``CONTROL_TARGETS`` is refused before any file is read."""
+        with pytest.raises(ValueError, match="behaviour control target must be one of"):
             reduced_model_features(settings, "categories", require_selection_file=False)
-        with pytest.raises(ValueError, match="vocal target must be one of"):
+        with pytest.raises(ValueError, match="behaviour control target must be one of"):
             load_control_model(settings, "categories")
+
+
+def onset_settings(settings: dict) -> dict:
+    """
+    Description
+    -----------
+    The shipped settings set up for the onset control on the tiny synthetic cohort: a four-spline basis
+    (the cohort's histories are eight frames long) and a short optimiser run, so a fold fits in about a
+    second.
+
+    Parameters
+    ----------
+    settings (dict)
+        The shipped settings, a fresh copy.
+
+    Returns
+    -------
+    settings (dict)
+        The same dict, modified in place.
+    """
+
+    block = settings["nested_vocal_decoding"]["onset_control"]
+    block["temporal_basis"]["n_splines"] = 4
+    block["max_iter"] = 1500
+    return settings
+
+
+def onset_cohort(seed: int, planted: bool, per_day: int = 90) -> dict:
+    """
+    Description
+    -----------
+    A tiny cohort in the shape ``assemble_onset_cohort`` returns, whose class is KNOWN from one
+    feature: when ``planted`` a row is a USV onset (label 1) when ``signal`` is positive, with a tenth
+    of the labels flipped; when not, the label is a coin independent of every feature.
+
+    Parameters
+    ----------
+    seed (int)
+        Seed of the ``numpy`` generator.
+    planted (bool)
+        Whether ``signal`` drives the label.
+    per_day (int)
+        Rows per recording day.
+
+    Returns
+    -------
+    cohort (dict)
+        ``design`` (float32, ``(n, 3 * CATEGORY_N_LAGS)``), ``labels``, ``days``, ``session_ids``,
+        ``feature_names``, ``per_session`` and ``skipped``.
+    """
+
+    generator = np.random.default_rng(seed)
+    n_rows = len(SYNTHETIC_DAYS) * per_day
+    base = generator.uniform(-1.0, 1.0, (n_rows, len(SYNTHETIC_FEATURES)))
+    design = np.repeat(base, CATEGORY_N_LAGS, axis=1) + generator.normal(
+        0.0, 0.05, (n_rows, len(SYNTHETIC_FEATURES) * CATEGORY_N_LAGS))
+    if planted:
+        labels = (base[:, 0] > 0.0).astype(np.float64)
+        flip = generator.random(n_rows) < 0.1
+        labels[flip] = 1.0 - labels[flip]
+    else:
+        labels = (generator.random(n_rows) < 0.4).astype(np.float64)
+    days = np.repeat(SYNTHETIC_DAYS, per_day)
+    return {"design": design.astype(np.float32), "labels": labels, "days": days,
+            "session_ids": [f"{day}_120000" for day in SYNTHETIC_DAYS],
+            "feature_names": list(SYNTHETIC_FEATURES),
+            "per_session": {f"{day}_120000": {"n_positive": int((labels[days == day] == 1).sum()),
+                                              "n_tiles": int((labels[days == day] == 0).sum()),
+                                              "n_tiles_before_cap": int((labels[days == day] == 0).sum())}
+                            for day in SYNTHETIC_DAYS},
+            "skipped": {}}
+
+
+class TestOnsetControl:
+    """The onset axis's cohort control: a two-class fit per held-out day on clean onsets against tiles."""
+
+    def test_a_planted_label_is_predicted_out_of_day(self, settings: dict) -> None:
+        """A label driven by ``signal`` is recovered on every held-out day; the artifact names the onset
+        target, the two classes, and one fold per day."""
+        settings = onset_settings(settings)
+        fitted = fit_onset_control_models(onset_cohort(0, planted=True), ["signal", "noise_a"], settings,
+                                          CATEGORY_N_LAGS)
+        assert fitted["target"] == "onset"
+        assert fitted["classes"].tolist() == [0, 1]
+        assert fitted["held_out_auc"] > 0.85
+        assert all(day["auc"] > 0.75 for day in fitted["per_day"].values())
+        assert fitted["held_out_log_score_gain"] > 0.0
+        assert sorted(fitted["coefficients"]) == SYNTHETIC_DAYS
+        assert fitted["n_vocalizations"] + fitted["n_tiles"] == 4 * 90
+
+    def test_no_plant_predicts_at_chance(self, settings: dict) -> None:
+        """A coin label leaves the held-out AUROC at one half and the log-score gain at or below zero."""
+        settings = onset_settings(settings)
+        fitted = fit_onset_control_models(onset_cohort(1, planted=False), ["signal", "noise_a"], settings,
+                                          CATEGORY_N_LAGS)
+        assert abs(fitted["held_out_auc"] - 0.5) < 0.08
+        assert fitted["held_out_log_score_gain"] < 0.02
+
+    def test_the_stored_folds_reproduce_the_held_out_log_odds(self, settings: dict) -> None:
+        """Each day's stored fold gives that day's rows the log-odds the fit scored them with, so the
+        per-day AUROC is reproduced from the artifact alone."""
+        settings = onset_settings(settings)
+        cohort = onset_cohort(2, planted=True)
+        features = ["signal", "noise_a"]
+        fitted = fit_onset_control_models(cohort, features, settings, CATEGORY_N_LAGS)
+        columns = feature_columns(cohort["feature_names"], features, CATEGORY_N_LAGS)
+        for day in SYNTHETIC_DAYS:
+            rows = np.flatnonzero(cohort["days"] == day)
+            log_odds = onset_control_log_odds(fitted, day, cohort["design"][rows][:, columns], settings)
+            assert log_odds.shape == (rows.size,)
+            probability = 1.0 / (1.0 + np.exp(-log_odds))
+            auc = area_under_roc(probability, cohort["labels"][rows])
+            assert auc == pytest.approx(fitted["per_day"][day]["auc"], abs=1e-6)
+            assert balanced_log_score_gain(log_odds, cohort["labels"][rows]) == pytest.approx(
+                fitted["per_day"][day]["log_score_gain"], abs=1e-9)
+
+    def test_a_day_with_one_class_in_training_is_refused(self, settings: dict) -> None:
+        """Holding out a day must leave both classes in the training rows."""
+        settings = onset_settings(settings)
+        cohort = onset_cohort(3, planted=True)
+        cohort["labels"][cohort["days"] != SYNTHETIC_DAYS[0]] = 1.0
+        with pytest.raises(ValueError, match="one class only"):
+            fit_onset_control_models(cohort, ["signal"], settings, CATEGORY_N_LAGS)
+
+    def test_the_wrong_artifact_or_a_seen_day_is_refused(self, settings: dict) -> None:
+        """A multinomial artifact, a day the control saw, or a design of the wrong width is refused."""
+        settings = onset_settings(settings)
+        artifact = {"target": "onset", "features": ["signal"], "n_lags": CATEGORY_N_LAGS,
+                    "classes": np.array([0, 1]), "coefficients": {"20250101": {}}}
+        with pytest.raises(ValueError, match="needs an onset control"):
+            onset_control_log_odds({**artifact, "target": "multinomial"}, "20250101", np.zeros((3, 8)), settings)
+        with pytest.raises(KeyError, match="no fold for day"):
+            onset_control_log_odds(artifact, "20250109", np.zeros((3, 8)), settings)
+        with pytest.raises(ValueError, match="columns but the control"):
+            onset_control_log_odds(artifact, "20250101", np.zeros((3, 5)), settings)
+
+    def test_the_onset_control_is_loaded_at_its_own_key_and_checked(self, settings: dict, tmp_path) -> None:
+        """``load_control_model(settings, "onset")`` reads ``paths.behaviour_control_model_path.onset`` and
+        checks the artifact's features against ``reduced_model_features.onset``."""
+        settings = onset_settings(settings)
+        fitted = fit_onset_control_models(onset_cohort(4, planted=True), ["signal"], settings, CATEGORY_N_LAGS)
+        path = tmp_path / "onset_control.pkl"
+        write_control_model(fitted, str(path))
+        settings["paths"]["behaviour_control_model_path"]["onset"] = str(path)
+        settings["nested_vocal_decoding"]["reduced_model_features"]["onset"] = ["signal"]
+        loaded = load_control_model(settings, "onset")
+        assert loaded["target"] == "onset"
+        assert loaded["features"] == ["signal"]
+        settings["nested_vocal_decoding"]["reduced_model_features"]["onset"] = ["signal", "noise_a"]
+        with pytest.raises(ValueError, match="drift"):
+            load_control_model(settings, "onset")
+
+
+class TestSessionOnsetDesign:
+    """The per-session onset-control rows: clean USV onsets against quiet tiles, histories at the centre."""
+
+    def test_onsets_and_tiles_are_anchored_at_their_window_centres(self, monkeypatch, tmp_path, settings) -> None:
+        """The recorded male's clean USVs are the positives (a noise row and the partner's USV are not),
+        the tiles are the occurrence decoder's quiet tiles, and every row's history ends at the frame
+        before its window's centre: the onset for a USV, ``edge + pre_offset`` for a tile."""
+        writer = TestSessionVocalizationDesign()
+        session = writer.SESSION
+        writer._write(tmp_path, [(50.0, 50.1, "male", False, False),
+                                 (60.0, 60.1, "male", True, False),    # noise: never a vocalization
+                                 (80.0, 80.1, "female", False, False),  # the partner's
+                                 (100.0, 100.1, "male", False, False)])
+        settings["paths"]["data_root"] = str(tmp_path)
+        settings["cohort"]["min_emitter_usvs_per_session"] = 1
+        settings["vocalizations"]["vocal_emitter"] = "self"
+        settings["vocal_decoding"]["max_quiet_tiles_per_session"] = 25
+        frames = pls.DataFrame({"f": np.arange(writer.N_FRAMES, dtype=np.float64)})
+        monkeypatch.setattr(control_module, "build_zscored_feature_frames",
+                            lambda **_kwargs: ({session: frames}, {session: writer.FPS}, {}, {}))
+        n_lags = 5
+        block = session_onset_design(str(tmp_path / session), settings, n_lags)
+        assert "reason" not in block
+        assert block["n_positive"] == 2
+        assert 0 < block["n_tiles"] <= 25
+        assert block["n_tiles_before_cap"] >= block["n_tiles"]
+        assert block["labels"].tolist() == [1.0] * 2 + [0.0] * block["n_tiles"]
+        window = settings["vocalizations"]["spike_window"]
+        last_lag = block["design"][:, n_lags - 1]
+        np.testing.assert_allclose(last_lag[:2], onset_history_anchor_frames(np.array([50.0, 100.0]), writer.FPS))
+        tile_anchors = last_lag[2:]
+        # Every tile sits outside the 4 s / 4 s guard band around the vocalizations of EVERY emitter
+        # (the noise row at 60 s is not a vocalization and bands nothing): its window ends at least
+        # clean_post_seconds before any start and begins at least history_pre_seconds after any stop.
+        encoding = settings["kinematic_encoding"]
+        centres = (tile_anchors + 1) / writer.FPS
+        assert np.any(np.abs(centres - 60.0) < encoding["clean_post_seconds"])
+        for start, stop in ((50.0, 50.1), (80.0, 80.1), (100.0, 100.1)):
+            assert np.all((centres + window["width_seconds"] - window["pre_offset_seconds"]
+                           <= start - encoding["clean_post_seconds"] + 1e-6)
+                          | (centres - window["pre_offset_seconds"] >= stop + encoding["history_pre_seconds"] - 1e-6))
+        assert block["feature_names"] == ["f"]
+
+    def test_a_session_with_one_tracked_animal_is_skipped(self, tmp_path, settings) -> None:
+        """A session without two tracks contributes nothing, with the reason recorded."""
+        settings["paths"]["data_root"] = str(tmp_path)
+        writer = TestSessionVocalizationDesign()
+        writer._write(tmp_path, [(50.0, 50.1, "male", False, False)])
+        video = tmp_path / writer.SESSION / "video" / f"{writer.SESSION}_cam"
+        with h5py.File(video / f"{writer.SESSION}_points3d_translated_rotated_metric.h5", "a") as handle:
+            del handle["track_names"]
+            handle.create_dataset("track_names", data=np.array([b"male"], dtype="S6"))
+        block = session_onset_design(str(tmp_path / writer.SESSION), settings, 5)
+        assert block["reason"] == "1 tracked animals"

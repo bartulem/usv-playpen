@@ -65,7 +65,9 @@ with warnings.catch_warnings():
     )
     from usv_playpen.neural_modeling.neural_vocal_occurrence import (
         counts_in_windows,
+        nested_onset_statistic,
         occurrence_context,
+        onset_behaviour_tilts,
         vocal_occurrence_shift_null,
     )
 
@@ -1110,13 +1112,16 @@ class TestTheAnalysisSteps:
         """
         events = _vocal_events()
         settings = _fast_decoding_settings()
-        features = {"manifold": ["head-head"], "multinomial": ["allo_yaw-head", "other.speed"]}
+        features = {"manifold": ["head-head"], "multinomial": ["allo_yaw-head", "other.speed"],
+                    "onset": ["head-head", "self.speed"]}
         calls = collections.defaultdict(list)
         stubs = {"assemble_unit_sessions": {"s0": {"fps": 10.0}},
                  "reduced_model_features": lambda call: features[call[0][1]],
                  "nested_design": lambda call: {"features": call[0][2]},
+                 "onset_nested_design": lambda call: {"onset_features": call[0][2]},
                  "run_manifold_nested_decoding": {"added": 0.01},
-                 "run_category_nested_decoding": {"added": 0.02}}
+                 "run_category_nested_decoding": {"added": 0.02},
+                 "run_onset_nested_decoding": {"added": 0.03}}
         for name, result in stubs.items():
             monkeypatch.setattr(vocal, name, _recording_stub(calls, name, result))
 
@@ -1133,7 +1138,13 @@ class TestTheAnalysisSteps:
         assert calls["run_manifold_nested_decoding"][0][0][1] is events
         assert calls["run_manifold_nested_decoding"][0][0][2] == {"features": ["head-head"]}
         assert calls["run_category_nested_decoding"][0][0][2] == {"features": ["allo_yaw-head", "other.speed"]}
-        assert payloads == {"manifold": {"added": 0.01}, "multinomial": {"added": 0.02}}
+        # The onset design is built once at every occurrence window's centre, on the onset control's
+        # features, and handed to the onset step with the data root.
+        assert calls["onset_nested_design"][0][0][2:] == (
+            features["onset"], 40, settings["vocalizations"]["spike_window"]["pre_offset_seconds"])
+        assert calls["run_onset_nested_decoding"][0][0][2] == {"onset_features": ["head-head", "self.speed"]}
+        assert calls["run_onset_nested_decoding"][0][0][4] == "/data"
+        assert payloads == {"manifold": {"added": 0.01}, "multinomial": {"added": 0.02}, "onset": {"added": 0.03}}
 
 
 def _gating_universe() -> dict:
@@ -1918,3 +1929,81 @@ class TestVocalCommandLine:
         captured = capsys.readouterr()
         assert "worker pool died" in captured.err
         assert "finished in" not in captured.out
+
+
+class TestTheOnsetNestedStep:
+    """The nested decoding on the onset axis: the occurrence decoder with the control's prior."""
+
+    def test_the_onset_nested_step_tilts_the_occurrence_prior_with_the_control(self, tmp_path, monkeypatch):
+        """
+        The step loads the onset control, asks it for log-odds at the unit's windows on the unit's day,
+        tunes the prior's concentration per fold, scores the posterior over that prior, and tests it
+        against the occurrence shift null with the priors held in place; the written section carries
+        the statistic, the null, the concentrations and the control's provenance.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Output directory for the unit file.
+        monkeypatch (pytest.MonkeyPatch)
+            Installs the in-process pool and the stubs for the control and the spike loader.
+
+        Returns
+        -------
+        None
+        """
+
+        events = _vocal_events()
+        settings = _settings()
+        settings["inference"].update({"n_shuffles": 4, "shuffle_seed": 7, "shuffle_guard_seconds": 15.0})
+        settings["inference"]["escalation_ladder"] = []
+        spawned = _inline_pools(monkeypatch)
+        windows = events["occurrence_windows"]
+        kept = np.arange(3, windows["counts"].size)
+        design = {"behaviour": np.zeros((kept.size, 3)), "kept": kept, "counts": windows["counts"][kept],
+                  "labels": windows["labels"][kept], "session_index": windows["session_index"][kept],
+                  "edges": windows["edges"][kept], "feature_names": ["head-head"],
+                  "per_session": {s: {"n_windows_offered": 120, "n_windows_with_full_history": 119,
+                                      "n_dropped_short_history": 1} for s in events["session_ids"]}}
+        generator = np.random.default_rng(5)
+        log_odds = 2.0 * (design["labels"] - 0.5) + generator.normal(size=kept.size)
+        artifact = {"target": "onset", "features": ["head-head"], "settings_sha256": "abc123"}
+        calls = collections.defaultdict(list)
+        for name, result in (("load_control_model", artifact), ("onset_control_log_odds", log_odds)):
+            monkeypatch.setattr(vocal, name, _recording_stub(calls, name, result))
+        monkeypatch.setattr(vocal, "load_unit_spike_frames",
+                            _recording_stub(calls, "load", lambda call: (events["spike_seconds"][call[0][1]], None)))
+        payload = vocal.run_onset_nested_decoding(UNIT, events, design, settings, "/data", str(tmp_path), 2, _quiet)
+        assert calls["load_control_model"][0][0] == (settings, "onset")
+        assert calls["onset_control_log_odds"][0][0][1] == "20250101"
+        assert calls["onset_control_log_odds"][0][0][2] is design["behaviour"]
+        axis = settings["vocal_decoding"]["vocal_occurrence"]
+        crossfit = settings["kinematic_encoding"]["calibration"]["n_blocks"]
+        folds = occurrence_context(design["labels"], design["session_index"], design["edges"],
+                                   settings["cohort"]["single_session_blocks"])
+        kappas, priors = onset_behaviour_tilts(folds, design["labels"], log_odds,
+                                               settings["nested_vocal_decoding"]["behaviour_prior"]["kappa_grid"])
+        observed = nested_onset_statistic(design["counts"], design["labels"], design["session_index"],
+                                          design["edges"], folds, axis, crossfit, priors, kappas)
+        n_workers, state = spawned[0]
+        assert n_workers == 2
+        assert state["log_priors"] is priors or all(np.allclose(a, b) for a, b in zip(state["log_priors"], priors))
+        trains = dict(enumerate(events["spike_seconds"][s] for s in events["session_ids"]))
+        serial = vocal_occurrence_shift_null({**{k: design[k] for k in ("counts", "labels", "session_index", "edges")},
+                                              "width": windows["width"]},
+                                             trains, state["durations"], 0, 4, 7, 15.0, folds, axis, crossfit,
+                                             priors)
+        assert payload["target"] == "onset"
+        assert payload["added"] == pytest.approx(observed["added"])
+        assert payload["behaviour_over_no_behaviour"] == pytest.approx(observed["behaviour_over_no_behaviour"])
+        assert payload["behaviour_over_no_behaviour"] > 0.0
+        assert payload["kappas"] == kappas
+        np.testing.assert_allclose(payload["null"], serial)
+        assert payload["n_shuffles"] == 4
+        assert payload["n_vocal_windows"] + payload["n_quiet_windows"] == kept.size
+        assert payload["n_dropped_short_history"] == 3
+        assert payload["per_fold"][0]["held_out_session"] in events["session_ids"]
+        assert payload["behaviour_control"] == {"features": ["head-head"], "held_out_day": "20250101",
+                                                "settings_sha256": "abc123"}
+        stored = read_unit_artifact(str(tmp_path), UNIT["unit_uid"])
+        assert stored["nested_vocal_decoding_onset"]["added"] == payload["added"]

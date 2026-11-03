@@ -35,9 +35,11 @@ import numpy as np
 
 from .behaviour_control_model import (
     assemble_cohort,
+    assemble_onset_cohort,
     behaviour_history_lags,
     fit_category_control_models,
     fit_control_models,
+    fit_onset_control_models,
     select_control_features,
     write_control_model,
 )
@@ -121,7 +123,7 @@ def main(message_output=print) -> None:
     parser.add_argument("--n-workers", type=int, default=6)
     parser.add_argument("--exclude-days", nargs="*", default=[],
                         help="recording days to leave out entirely, as eight-character keys")
-    parser.add_argument("--target", choices=("manifold", "multinomial"), default=None,
+    parser.add_argument("--target", choices=("manifold", "multinomial", "onset"), default=None,
                         help="which target's control to select or fit; default is "
                              "vocalizations.vocal_target")
     arguments = parser.parse_args()
@@ -153,11 +155,21 @@ def main(message_output=print) -> None:
           flush=True)
 
     started = time.time()
-    cohort = assemble_cohort(directories, settings, n_lags, arguments.n_workers)
-    for session_id, reason in cohort["skipped"].items():
-        message_output(f"  skipped {session_id}: {reason}", flush=True)
-    message_output(f"{len(cohort['session_ids'])} sessions, {cohort['positions'].shape[0]:,} USVs, "
-          f"{len(cohort['feature_names'])} features ({time.time() - started:.0f} s)", flush=True)
+    if target == "onset":
+        # The onset control is trained on the occurrence decoder's own two classes: clean USV onsets
+        # against quiet tiles, assembled per session as the per-unit side assembles them.
+        cohort = assemble_onset_cohort(directories, settings, n_lags, arguments.n_workers)
+        for session_id, reason in cohort["skipped"].items():
+            message_output(f"  skipped {session_id}: {reason}", flush=True)
+        message_output(f"{len(cohort['session_ids'])} sessions, {int((cohort['labels'] == 1).sum()):,} USV onsets "
+                       f"and {int((cohort['labels'] == 0).sum()):,} quiet tiles, "
+                       f"{len(cohort['feature_names'])} features ({time.time() - started:.0f} s)", flush=True)
+    else:
+        cohort = assemble_cohort(directories, settings, n_lags, arguments.n_workers)
+        for session_id, reason in cohort["skipped"].items():
+            message_output(f"  skipped {session_id}: {reason}", flush=True)
+        message_output(f"{len(cohort['session_ids'])} sessions, {cohort['positions'].shape[0]:,} USVs, "
+              f"{len(cohort['feature_names'])} features ({time.time() - started:.0f} s)", flush=True)
 
     if arguments.stage == "select":
         cache = pathlib.Path(arguments.design_cache if arguments.design_cache is not None
@@ -192,6 +204,20 @@ def main(message_output=print) -> None:
 
     destination = (arguments.output if arguments.output is not None
                    else settings["paths"]["behaviour_control_model_path"][target])
+    if target == "onset":
+        artifact = fit_onset_control_models(cohort, features, settings, n_lags)
+        write_control_model(artifact, destination)
+        message_output(f"\nFITTED {target} {artifact['features']} over {len(artifact['coefficients'])} "
+                       f"held-out days", flush=True)
+        message_output(f"  AUROC {artifact['held_out_auc']:.4f} (chance 0.5)   class-balanced log-score gain "
+                       f"over the equal prior {artifact['held_out_log_score_gain']:+.5f}", flush=True)
+        for day, scores in sorted(artifact["per_day"].items()):
+            message_output(f"    {day}  onsets={scores['n_vocalizations']:>6,} tiles={scores['n_tiles']:>6,}  "
+                           f"AUROC {scores['auc']:.4f}  {scores['log_score_gain']:+.5f}  "
+                           f"{'converged' if artifact['coefficients'][day]['converged'] else 'NOT CONVERGED'}",
+                           flush=True)
+        message_output(f"  -> {destination}", flush=True)
+        return
     if target == "multinomial":
         artifact = fit_category_control_models(cohort, features, settings, n_lags)
         write_control_model(artifact, destination)

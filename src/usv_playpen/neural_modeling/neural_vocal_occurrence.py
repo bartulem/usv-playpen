@@ -305,11 +305,12 @@ def occurrence_rates(counts: np.ndarray, labels: np.ndarray, levels: np.ndarray,
 
 
 def occurrence_log_posterior(counts: np.ndarray, rates: np.ndarray, levels: np.ndarray,
-                             alpha: float) -> np.ndarray:
+                             alpha: float, log_prior: np.ndarray | None = None) -> np.ndarray:
     """
     Description
     -----------
-    Log posterior of the two classes for each window, under the fixed equal prior.
+    Log posterior of the two classes for each window, under the fixed equal prior or, when
+    ``log_prior`` is given, under each window's own prior (the nested onset test's behaviour prior).
 
     ``alpha`` scales each class's log-rate deviation from the mean of the two, tempering the contrast
     without changing its level or its direction (0 returns the prior, 1 the training fit as is); the
@@ -325,6 +326,8 @@ def occurrence_log_posterior(counts: np.ndarray, rates: np.ndarray, levels: np.n
         Quiet level per scored window.
     alpha (float)
         Amplitude calibration, ``>= 0``.
+    log_prior (np.ndarray | None)
+        ``(n_windows, 2)`` log prior per scored window, quiet first; None is the equal prior.
 
     Returns
     -------
@@ -337,7 +340,7 @@ def occurrence_log_posterior(counts: np.ndarray, rates: np.ndarray, levels: np.n
     tilted = np.exp(centre + alpha * (log_rates - centre))
     expected = levels[:, None] * tilted[None, :]
     log_likelihood = counts[:, None] * np.log(expected) - expected
-    log_joint = log_likelihood + EQUAL_PRIOR_LOG
+    log_joint = log_likelihood + (EQUAL_PRIOR_LOG if log_prior is None else np.asarray(log_prior, dtype=np.float64))
     return log_joint - logsumexp(log_joint, axis=1, keepdims=True)
 
 
@@ -372,7 +375,8 @@ def class_balanced_mean(values: np.ndarray, labels: np.ndarray) -> float:
 
 def score_split(counts: np.ndarray, labels: np.ndarray, session_index: np.ndarray, event_times: np.ndarray,
                 train_rows: np.ndarray, test_rows: np.ndarray, alpha: float, ridge_fraction: float,
-                mean_count_floor: float, crossfit_blocks: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+                mean_count_floor: float, crossfit_blocks: int,
+                log_prior: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Description
     -----------
@@ -400,6 +404,8 @@ def score_split(counts: np.ndarray, labels: np.ndarray, session_index: np.ndarra
         Lower bound on a quiet level.
     crossfit_blocks (int)
         Cross-fitting blocks for the scored windows' quiet level.
+    log_prior (np.ndarray | None)
+        ``(n_windows, 2)`` log prior per window of the whole set, quiet first; None is the equal prior.
 
     Returns
     -------
@@ -416,14 +422,17 @@ def score_split(counts: np.ndarray, labels: np.ndarray, session_index: np.ndarra
     rates = occurrence_rates(counts[train_rows], labels[train_rows], train_levels, ridge)
     test_levels = held_out_quiet_levels(counts, labels, event_times, test_rows, crossfit_blocks,
                                         mean_count_floor)
-    log_posterior = occurrence_log_posterior(counts[test_rows], rates, test_levels, alpha)
+    prior_rows = None if log_prior is None else np.asarray(log_prior, dtype=np.float64)[test_rows]
+    log_posterior = occurrence_log_posterior(counts[test_rows], rates, test_levels, alpha, prior_rows)
     truth = (labels[test_rows] > 0.5).astype(np.int64)
-    gain = log_posterior[np.arange(truth.size), truth] - EQUAL_PRIOR_LOG
+    log_prior_truth = (EQUAL_PRIOR_LOG if prior_rows is None else prior_rows[np.arange(truth.size), truth])
+    gain = log_posterior[np.arange(truth.size), truth] - log_prior_truth
     return gain, np.exp(log_posterior[:, 1]), rates
 
 
 def tuned_occurrence_amplitude(counts: np.ndarray, labels: np.ndarray, session_index: np.ndarray,
-                               event_times: np.ndarray, fold: dict, axis: dict, crossfit_blocks: int) -> float:
+                               event_times: np.ndarray, fold: dict, axis: dict, crossfit_blocks: int,
+                               log_prior: np.ndarray | None = None) -> float:
     """
     Description
     -----------
@@ -450,6 +459,8 @@ def tuned_occurrence_amplitude(counts: np.ndarray, labels: np.ndarray, session_i
         The ``vocal_decoding.vocal_occurrence`` block.
     crossfit_blocks (int)
         Cross-fitting blocks for a scored session's quiet level.
+    log_prior (np.ndarray | None)
+        ``(n_windows, 2)`` log prior per window, quiet first; None is the equal prior.
 
     Returns
     -------
@@ -466,7 +477,7 @@ def tuned_occurrence_amplitude(counts: np.ndarray, labels: np.ndarray, session_i
         for inner_train, inner_test in fold["inner_splits"]:
             gain, _probability, _rates = score_split(counts, labels, session_index, event_times, inner_train,
                                                      inner_test, alpha, axis["ridge_frac"],
-                                                     axis["mean_count_floor"], crossfit_blocks)
+                                                     axis["mean_count_floor"], crossfit_blocks, log_prior)
             score = class_balanced_mean(gain, labels[inner_test])
             if np.isfinite(score):
                 scores.append(score)
@@ -476,7 +487,8 @@ def tuned_occurrence_amplitude(counts: np.ndarray, labels: np.ndarray, session_i
 
 
 def vocal_occurrence_statistic(counts: np.ndarray, labels: np.ndarray, session_index: np.ndarray,
-                               event_times: np.ndarray, folds: list, axis: dict, crossfit_blocks: int) -> dict:
+                               event_times: np.ndarray, folds: list, axis: dict, crossfit_blocks: int,
+                               log_prior_by_fold: list | None = None) -> dict:
     """
     Description
     -----------
@@ -504,6 +516,9 @@ def vocal_occurrence_statistic(counts: np.ndarray, labels: np.ndarray, session_i
         The ``vocal_decoding.vocal_occurrence`` block.
     crossfit_blocks (int)
         Cross-fitting blocks for a held-out session's quiet level.
+    log_prior_by_fold (list | None)
+        One ``(n_windows, 2)`` log prior per fold (the nested onset test's tuned behaviour prior), quiet
+        first; None scores every fold against the equal prior.
 
     Returns
     -------
@@ -516,16 +531,17 @@ def vocal_occurrence_statistic(counts: np.ndarray, labels: np.ndarray, session_i
     uncalibrated = np.full(counts.size, np.nan)
     probability = np.full(counts.size, np.nan)
     per_fold, log_ratios = [], []
-    for fold in folds:
+    for fold_index, fold in enumerate(folds):
+        log_prior = None if log_prior_by_fold is None else log_prior_by_fold[fold_index]
         alpha = tuned_occurrence_amplitude(counts, labels, session_index, event_times, fold, axis,
-                                           crossfit_blocks)
+                                           crossfit_blocks, log_prior)
         test_rows = fold["test_rows"]
         gain, fold_probability, rates = score_split(counts, labels, session_index, event_times, fold["train_rows"],
                                                     test_rows, alpha, axis["ridge_frac"],
-                                                    axis["mean_count_floor"], crossfit_blocks)
+                                                    axis["mean_count_floor"], crossfit_blocks, log_prior)
         raw, _probability, _rates = score_split(counts, labels, session_index, event_times, fold["train_rows"],
                                                 test_rows, 1.0, axis["ridge_frac"], axis["mean_count_floor"],
-                                                crossfit_blocks)
+                                                crossfit_blocks, log_prior)
         per_window[test_rows], uncalibrated[test_rows], probability[test_rows] = gain, raw, fold_probability
         log_ratio = float(np.log(rates[1] / rates[0]))
         log_ratios.append(log_ratio)
@@ -557,7 +573,7 @@ def vocal_occurrence_statistic(counts: np.ndarray, labels: np.ndarray, session_i
 
 def vocal_occurrence_shift_null(occurrence_windows: dict, spike_seconds: dict, durations: dict, start: int,
                                 n_draws: int, seed: int, guard_seconds: float, folds: list, axis: dict,
-                                crossfit_blocks: int) -> np.ndarray:
+                                crossfit_blocks: int, log_prior_by_fold: list | None = None) -> np.ndarray:
     """
     Description
     -----------
@@ -596,6 +612,8 @@ def vocal_occurrence_shift_null(occurrence_windows: dict, spike_seconds: dict, d
         The ``vocal_decoding.vocal_occurrence`` block.
     crossfit_blocks (int)
         Cross-fitting blocks for a held-out session's quiet level.
+    log_prior_by_fold (list | None)
+        One ``(n_windows, 2)`` log prior per fold, held fixed across draws; None is the equal prior.
 
     Returns
     -------
@@ -614,5 +632,160 @@ def vocal_occurrence_shift_null(occurrence_windows: dict, spike_seconds: dict, d
             counts[mask] = counts_in_windows(shifted, occurrence_windows["edges"][mask], occurrence_windows["width"])
         values[draw] = vocal_occurrence_statistic(counts, occurrence_windows["labels"],
                                                   occurrence_windows["session_index"], occurrence_windows["edges"],
-                                                  folds, axis, crossfit_blocks)["gain"]
+                                                  folds, axis, crossfit_blocks, log_prior_by_fold)["gain"]
     return values
+
+
+def onset_log_prior(log_odds: np.ndarray, kappa: float) -> np.ndarray:
+    """
+    Description
+    -----------
+    The behaviour-conditioned prior of the nested onset test: the equal prior tilted by the onset
+    control's base-rate-free log-odds at concentration ``kappa``, so ``p(onset) = sigmoid(kappa *
+    log_odds)``. ``kappa = 0`` is the occurrence decoder's own equal prior, ``kappa = 1`` Bayes' rule
+    with the control's odds taken at face value.
+
+    Parameters
+    ----------
+    log_odds (np.ndarray)
+        ``(n_windows,)`` log-odds of onset against quiet from the behaviour control.
+    kappa (float)
+        Concentration, ``>= 0``.
+
+    Returns
+    -------
+    log_prior (np.ndarray)
+        ``(n_windows, 2)`` log prior per window, quiet first.
+    """
+
+    tilted = float(kappa) * np.asarray(log_odds, dtype=np.float64)
+    return np.column_stack([-np.logaddexp(0.0, tilted), -np.logaddexp(0.0, -tilted)])
+
+
+def onset_behaviour_tilts(folds: list, labels: np.ndarray, log_odds: np.ndarray, kappa_grid: list) -> tuple:
+    """
+    Description
+    -----------
+    The onset control's log-odds as a per-window tilt of the equal prior, with one concentration tuned
+    per fold on its training sessions alone.
+
+    For each candidate concentration the inner splits of the fold score the tilted prior by the
+    class-balanced mean, over the inner held-out windows, of ``log prior(true class) - log 1/2`` --
+    what the behaviour alone buys over the equal prior, with no spikes involved -- and the best mean
+    is kept; ties go to the first (smallest) candidate. The grid is non-negative, so the evidence can
+    be declined but never inverted. A fold without inner splits takes the grid's first value. Mirrors
+    ``neural_category_decoding.category_behaviour_tilts``.
+
+    Parameters
+    ----------
+    folds (list)
+        From :func:`occurrence_context`.
+    labels (np.ndarray)
+        1 for a peri-onset window, 0 for a quiet tile.
+    log_odds (np.ndarray)
+        ``(n_windows,)`` log-odds of onset against quiet from the behaviour control.
+    kappa_grid (list)
+        Candidate concentrations, all ``>= 0`` (``nested_vocal_decoding.behaviour_prior.kappa_grid``).
+
+    Returns
+    -------
+    kappas, log_priors (tuple)
+        One concentration per fold, and one ``(n_windows, 2)`` log prior per fold
+        (:func:`onset_log_prior` at that fold's concentration).
+
+    Raises
+    ------
+    ValueError
+        A negative concentration in the grid.
+    """
+
+    grid = [float(k) for k in kappa_grid]
+    if any(k < 0 for k in grid):
+        msg = f"kappa_grid must be non-negative; got {grid}."
+        raise ValueError(msg)
+    log_odds = np.asarray(log_odds, dtype=np.float64)
+    truth = (np.asarray(labels, dtype=np.float64) > 0.5).astype(np.int64)
+    kappas, priors = [], []
+    for fold in folds:
+        kappa = grid[0]
+        if fold["inner_splits"]:
+            best = -np.inf
+            for candidate in grid:
+                prior = onset_log_prior(log_odds, candidate)
+                held_in = []
+                for _train_rows, test_rows in fold["inner_splits"]:
+                    gain = prior[test_rows, truth[test_rows]] - EQUAL_PRIOR_LOG
+                    score = class_balanced_mean(gain, labels[test_rows])
+                    if np.isfinite(score):
+                        held_in.append(score)
+                if held_in and float(np.mean(held_in)) > best:
+                    best, kappa = float(np.mean(held_in)), candidate
+        kappas.append(kappa)
+        priors.append(onset_log_prior(log_odds, kappa))
+    return kappas, priors
+
+
+def nested_onset_statistic(counts: np.ndarray, labels: np.ndarray, session_index: np.ndarray,
+                           event_times: np.ndarray, folds: list, axis: dict, crossfit_blocks: int,
+                           log_priors: list, kappas: list) -> dict:
+    """
+    Description
+    -----------
+    The nested statistic for the onset axis: what the neuron adds, in nats per window, once the
+    behaviour control has already tilted the prior.
+
+    It is :func:`vocal_occurrence_statistic` with each fold's equal prior replaced by its tuned
+    behaviour prior (:func:`onset_behaviour_tilts`), so ``added`` is the class-balanced mean of
+    ``log posterior(truth | neuron, behaviour) - log prior(truth | behaviour)`` over the held-out windows
+    of every fold. Reported beside it: ``behaviour_over_no_behaviour`` (``log prior(truth | behaviour)
+    - log 1/2``, what behaviour alone buys) and ``full_over_no_behaviour`` (the sum). A circular shift
+    of the spike train recounts the windows and leaves the priors in place, so the first is invariant
+    under the null and only ``added`` is tested.
+
+    Parameters
+    ----------
+    counts (np.ndarray)
+        Spike count per window.
+    labels (np.ndarray)
+        1 for a peri-onset window, 0 for a quiet tile.
+    session_index (np.ndarray)
+        Session id per window.
+    event_times (np.ndarray)
+        Left edge of each window in seconds.
+    folds (list)
+        From :func:`occurrence_context`.
+    axis (dict)
+        The ``vocal_decoding.vocal_occurrence`` block.
+    crossfit_blocks (int)
+        Cross-fitting blocks for a held-out session's quiet level.
+    log_priors (list)
+        One ``(n_windows, 2)`` log prior per fold, from :func:`onset_behaviour_tilts`.
+    kappas (list)
+        The concentration each prior was built with.
+
+    Returns
+    -------
+    result (dict)
+        The keys of :func:`vocal_occurrence_statistic` with ``gain`` renamed ``added`` (and
+        ``gain_uncalibrated`` ``added_uncalibrated``), each ``per_fold`` entry carrying its ``kappa``,
+        plus ``behaviour_over_no_behaviour``, ``full_over_no_behaviour`` and ``kappas``.
+    """
+
+    full = vocal_occurrence_statistic(counts, labels, session_index, event_times, folds, axis, crossfit_blocks,
+                                      log_priors)
+    truth = (np.asarray(labels, dtype=np.float64) > 0.5).astype(np.int64)
+    behaviour_over = np.full(truth.size, np.nan, dtype=np.float64)
+    for fold, prior in zip(folds, log_priors, strict=True):
+        test_rows = fold["test_rows"]
+        behaviour_over[test_rows] = prior[test_rows, truth[test_rows]] - EQUAL_PRIOR_LOG
+    scored = np.isfinite(behaviour_over)
+    behaviour_gain = class_balanced_mean(behaviour_over[scored], labels[scored]) if scored.any() else float("nan")
+    per_fold = [{**entry, "kappa": float(kappa)} for entry, kappa in zip(full["per_fold"], kappas, strict=True)]
+    for entry in per_fold:
+        entry["added"] = entry.pop("gain")
+    result = {key: value for key, value in full.items() if key not in ("gain", "gain_uncalibrated", "per_fold")}
+    result.update({"added": full["gain"], "added_uncalibrated": full["gain_uncalibrated"], "per_fold": per_fold,
+                   "kappas": [float(kappa) for kappa in kappas],
+                   "behaviour_over_no_behaviour": behaviour_gain,
+                   "full_over_no_behaviour": full["gain"] + behaviour_gain})
+    return result

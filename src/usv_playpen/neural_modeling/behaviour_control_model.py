@@ -17,6 +17,12 @@ recomputes. :func:`apply_behaviour_control` swaps a unit's raw behaviour block f
 sine/cosine columns of the control's prediction from the fold that did not see the unit's day. Torus
 positions and region labels are read from the ``Data`` tree summaries through ``load_session_usvs``.
 
+The onset axis has its own control too (:func:`fit_onset_control_models`): the same two-class
+model, fitted on the cohort's clean USV onsets against quiet tiles assembled exactly as the per-unit
+occurrence decoder assembles them (:func:`assemble_onset_cohort`), held out by recording day, and
+entering each unit as the base-rate-free log-odds of onset against quiet at the unit's own windows
+(:func:`onset_control_log_odds`).
+
 The categorical target has its own control (:func:`fit_category_control_models`): the behavioural
 modelling's multinomial logistic regression (``SmoothMultinomialLogisticRegression`` on the same
 B-spline lag basis, penalties and focal loss as that pipeline, from
@@ -42,8 +48,10 @@ from ..modeling.modeling_bases_functions import (
 )
 from ..modeling.modeling_metadata import compute_settings_sha256
 from ..os_utils import configure_path
+from .deviance_metrics import area_under_roc
 from .neural_design_assembly import (
     build_zscored_feature_frames,
+    clean_window_mask,
     emitter_names,
     filter_vocalizations,
     lagged_design,
@@ -54,11 +62,12 @@ from .neural_design_assembly import (
 )
 from .neural_nested_decoding import (
     NestedTorusRegression,
-    check_target,
+    check_control_target,
     inverse_region_frequency_weights,
     macro_von_mises_logscore,
     nested_settings,
 )
+from .neural_vocal_occurrence import quiet_tile_edges
 
 
 def torus_embedding(positions: np.ndarray) -> np.ndarray:
@@ -594,7 +603,7 @@ def load_control_model(settings: dict, target: str) -> dict:
         ``n_vocalizations`` (:func:`upgrade_legacy_counts`).
     """
 
-    check_target(target)
+    check_control_target(target)
     path = pathlib.Path(configure_path(
         settings["paths"]["behaviour_control_model_path"][target]))
     if not path.exists():
@@ -1160,3 +1169,417 @@ def category_control_evidence(artifact: dict, held_out_day: str, design: np.ndar
     model.classes_ = np.asarray(artifact["classes"])
     projected = project_category_design(np.asarray(design, dtype=np.float64), n_features, basis)
     return model.predict_proba(projected.astype(np.float32), balanced=True)
+
+
+def session_onset_design(session_directory: str, settings: dict, n_lags: int) -> dict:
+    """
+    Description
+    -----------
+    One session's onset-control rows: the recorded animal's clean USV onsets (label 1) and the quiet
+    tiles (label 0), each with the kinematic history behind it.
+
+    Both classes are the per-unit occurrence decoder's own (``neural_design_assembly.assemble_unit_vocal_events``):
+    a USV is kept when nothing from the guard set intrudes on its pre-onset window
+    (``vocalizations.spike_window.pre_offset_seconds``), and the tiles are the windows of the spike
+    window's width tiled through the gaps between guard-banded vocalizations of every emitter
+    (:func:`neural_vocal_occurrence.quiet_tile_edges`, with the kinematic encoding's
+    ``history_pre_seconds`` and ``clean_post_seconds``), capped per session at
+    ``vocal_decoding.max_quiet_tiles_per_session`` by a draw seeded with ``inference.shuffle_seed``.
+    A USV's history ends at the frame before its onset (``onset_history_anchor_frames``); a tile's
+    history ends at the frame before ``tile_edge + pre_offset_seconds``, the tile's centre, so every
+    window's history ends at its centre, positive or tile, and the classes differ only in the USV at
+    the end. Rows whose history runs off the start of the session are dropped.
+
+    Parameters
+    ----------
+    session_directory (str)
+        Full path to the session directory.
+    settings (dict)
+        The whole neural-modelling settings dict.
+    n_lags (int)
+        History length in frames.
+
+    Returns
+    -------
+    block (dict)
+        ``session_id``, ``design`` (float32, USVs first then tiles), ``labels`` (1 / 0),
+        ``feature_names``, ``n_kept``, ``n_positive``, ``n_tiles`` and ``n_tiles_before_cap``; or
+        ``session_id`` and ``reason`` when the session contributes nothing.
+    """
+
+    session_id = pathlib.Path(session_directory).name
+    data_root = settings["paths"]["data_root"]
+    vocal_settings = settings["vocalizations"]
+    window = vocal_settings["spike_window"]
+    encoding = settings["kinematic_encoding"]
+    minimum = settings["cohort"]["min_emitter_usvs_per_session"]
+    tiles_cap = settings["vocal_decoding"]["max_quiet_tiles_per_session"]
+    track_names, frame_rate, n_frames = session_timebase(data_root, session_id)
+    if len(track_names) != 2:
+        return {"session_id": session_id, "reason": f"{len(track_names)} tracked animals"}
+    recorded = track_names[0]
+    try:
+        usv = load_session_usvs(data_root, session_id)
+    except FileNotFoundError as error:
+        return {"session_id": session_id, "reason": str(error)}
+    guard = filter_vocalizations(usv, vocal_settings, "guard")
+    all_starts = guard["start"].to_numpy().astype(np.float64)
+    all_stops = guard["stop"].to_numpy().astype(np.float64)
+    analysed = filter_vocalizations(usv, vocal_settings, "analysed")
+    focal_names = emitter_names(track_names, recorded, vocal_settings["vocal_emitter"])
+    focal = analysed.filter(analysed["emitter"].is_in(focal_names)) if focal_names else analysed
+    if focal.height < minimum:
+        return {"session_id": session_id, "reason": f"{focal.height} emitter vocalizations"}
+    starts = focal["start"].to_numpy().astype(np.float64)
+    frames, camera, _names, _suffixes = build_zscored_feature_frames(
+        session_dirs=[session_directory], kinematic_features=settings["kinematic_features"],
+        recorded_mouse_id=recorded)
+    frame_df = frames[session_id]
+    feature_series = np.nan_to_num(frame_df.to_numpy().astype(np.float64), nan=0.0)
+    fps = camera[session_id]
+    n_series = feature_series.shape[0]
+    clean = (clean_window_mask(starts, all_starts, all_stops, window["pre_offset_seconds"])
+             if settings["vocal_decoding"]["require_clean_prevocal_bool"]
+             else np.ones(starts.size, dtype=bool))
+    onset_anchors = onset_history_anchor_frames(starts, fps)
+    keep_onsets = clean & (onset_anchors >= n_lags - 1) & (onset_anchors < n_series)
+    duration = float(n_frames) / float(frame_rate)
+    tile_edges = quiet_tile_edges(all_starts, all_stops, duration, window["width_seconds"],
+                                  encoding["history_pre_seconds"], encoding["clean_post_seconds"])
+    n_tiles_before_cap = int(tile_edges.size)
+    if tiles_cap is not None and tile_edges.size > tiles_cap:
+        generator = np.random.default_rng(int(settings["inference"]["shuffle_seed"]))
+        tile_edges = np.sort(generator.choice(tile_edges, int(tiles_cap), replace=False))
+    tile_anchors = onset_history_anchor_frames(tile_edges + window["pre_offset_seconds"], fps)
+    keep_tiles = (tile_anchors >= n_lags - 1) & (tile_anchors < n_series)
+    n_positive, n_tiles = int(keep_onsets.sum()), int(keep_tiles.sum())
+    if n_positive == 0 or n_tiles == 0:
+        return {"session_id": session_id,
+                "reason": f"{n_positive} clean onsets and {n_tiles} quiet tiles with a full history"}
+    design = np.vstack([lagged_design(feature_series, onset_anchors[keep_onsets], n_lags),
+                        lagged_design(feature_series, tile_anchors[keep_tiles], n_lags)]).astype(np.float32)
+    return {"session_id": session_id, "design": design,
+            "labels": np.concatenate([np.ones(n_positive), np.zeros(n_tiles)]),
+            "feature_names": list(frame_df.columns), "n_kept": n_positive + n_tiles,
+            "n_positive": n_positive, "n_tiles": n_tiles, "n_tiles_before_cap": n_tiles_before_cap}
+
+
+def _assemble_one_onset(arguments: tuple) -> dict:
+    """
+    Description
+    -----------
+    Worker shim so the per-session onset assembly can be mapped over a process pool.
+
+    Parameters
+    ----------
+    arguments (tuple)
+        ``(session_directory, settings, n_lags)``.
+
+    Returns
+    -------
+    block (dict)
+        As :func:`session_onset_design`.
+    """
+
+    session_directory, settings, n_lags = arguments
+    return session_onset_design(session_directory, settings, n_lags)
+
+
+def assemble_onset_cohort(session_directories: list, settings: dict, n_lags: int,
+                          n_workers: int) -> dict:
+    """
+    Description
+    -----------
+    Every listed session's clean USV onsets and quiet tiles with their histories, stacked, with the
+    recording day recorded per row.
+
+    Parameters
+    ----------
+    session_directories (list)
+        Full paths to the session directories.
+    settings (dict)
+        The whole neural-modelling settings dict.
+    n_lags (int)
+        History length in frames.
+    n_workers (int)
+        Worker processes for the per-session assembly.
+
+    Returns
+    -------
+    cohort (dict)
+        ``design``, ``labels``, ``days``, ``session_ids``, ``feature_names``, ``per_session`` (the
+        positive and tile counts per session) and ``skipped`` (session id to reason).
+
+    Raises
+    ------
+    ValueError
+        No session contributes, or two sessions disagree on the feature set.
+    """
+
+    blocks, skipped = [], {}
+    with ProcessPoolExecutor(max_workers=n_workers, mp_context=worker_process_context()) as pool:
+        for block in pool.map(_assemble_one_onset, [(directory, settings, n_lags)
+                                                    for directory in session_directories]):
+            if "reason" in block:
+                skipped[block["session_id"]] = block["reason"]
+            else:
+                blocks.append(block)
+    if not blocks:
+        msg = f"no session contributes to the onset control; skipped: {skipped}"
+        raise ValueError(msg)
+    feature_names = blocks[0]["feature_names"]
+    for block in blocks[1:]:
+        if block["feature_names"] != feature_names:
+            msg = (f"{block['session_id']} assembled features {block['feature_names']}, "
+                   f"{blocks[0]['session_id']} {feature_names}.")
+            raise ValueError(msg)
+    return {"design": np.vstack([block["design"] for block in blocks]),
+            "labels": np.concatenate([block["labels"] for block in blocks]),
+            "days": np.concatenate([np.full(block["n_kept"], block["session_id"][:8]) for block in blocks]),
+            "session_ids": [block["session_id"] for block in blocks],
+            "feature_names": feature_names,
+            "per_session": {block["session_id"]: {"n_positive": block["n_positive"], "n_tiles": block["n_tiles"],
+                                                  "n_tiles_before_cap": block["n_tiles_before_cap"]}
+                            for block in blocks},
+            "skipped": skipped}
+
+
+def onset_control_basis(settings: dict, n_lags: int) -> tuple[np.ndarray, dict]:
+    """
+    Description
+    -----------
+    The onset control's B-spline lag basis and effective penalty block, resolved by the behavioural
+    modelling's ``resolve_temporal_basis`` from ``nested_vocal_decoding.onset_control``.
+
+    Parameters
+    ----------
+    settings (dict)
+        The whole neural-modelling settings dict.
+    n_lags (int)
+        History length in frames.
+
+    Returns
+    -------
+    basis (np.ndarray)
+        ``(n_lags, n_splines)`` projection basis.
+    block (dict)
+        The effective settings block.
+    """
+
+    basis, block = resolve_temporal_basis(settings["nested_vocal_decoding"]["onset_control"], int(n_lags))
+    if basis is None:
+        msg = "nested_vocal_decoding.onset_control.temporal_basis.type must be 'bspline'."
+        raise ValueError(msg)
+    return basis, block
+
+
+def onset_control_estimator(n_features: int, basis: np.ndarray, block: dict,
+                            random_state: int) -> SmoothMultinomialLogisticRegression:
+    """
+    Description
+    -----------
+    The unfitted two-class estimator of the onset control: the category control's model with two
+    classes, so a smooth logistic regression on the basis coefficients. Class imbalance (one tile cap
+    against the session's USVs) is handled inside the loss by the model's class weights; the
+    predictions the per-unit test reads are base-rate-free in any case.
+
+    Parameters
+    ----------
+    n_features (int)
+        Number of behaviour features.
+    basis (np.ndarray)
+        The projection basis; its column count is the number of coefficients per feature.
+    block (dict)
+        The effective settings block from :func:`onset_control_basis`.
+    random_state (int)
+        Seed of the fit.
+
+    Returns
+    -------
+    model (SmoothMultinomialLogisticRegression)
+        The unfitted estimator.
+    """
+
+    return SmoothMultinomialLogisticRegression(
+        n_features=int(n_features), n_time_bins=int(basis.shape[1]),
+        lambda_smooth=float(block["lambda_smooth_fixed"]), l2_reg=float(block["l2_reg_fixed"]),
+        smoothness_derivative_order=int(block["smoothness_derivative_order"]),
+        smoothness_reflective_edges=bool(block["smoothness_reflective_edges"]),
+        focal_gamma=float(block["focal_loss_gamma"]), uniform_class_weights=False,
+        learning_rate=float(block["learning_rate"]), max_iter=int(block["max_iter"]),
+        tol=float(block["tol"]), random_state=int(random_state),
+        _use_lax_loop=bool(block["use_lax_loop"]))
+
+
+def balanced_log_score_gain(log_odds: np.ndarray, labels: np.ndarray) -> float:
+    """
+    Description
+    -----------
+    The class-balanced log-score of base-rate-free onset log-odds over the equal prior: the mean,
+    over the two classes, of each class's mean ``log p(true class) - log 1/2``, in nats per window;
+    zero for a control that knows nothing.
+
+    Parameters
+    ----------
+    log_odds (np.ndarray)
+        ``(n,)`` log-odds of onset against quiet.
+    labels (np.ndarray)
+        ``(n,)`` labels, 1 for a USV onset and 0 for a quiet tile.
+
+    Returns
+    -------
+    gain (float)
+        The class-balanced gain; NaN when a class is absent.
+    """
+
+    log_odds = np.asarray(log_odds, dtype=np.float64)
+    labels = np.asarray(labels, dtype=np.float64) > 0.5
+    log_p1 = -np.logaddexp(0.0, -log_odds)
+    log_p0 = -np.logaddexp(0.0, log_odds)
+    if not labels.any() or labels.all():
+        return float("nan")
+    positive = float(np.mean(log_p1[labels]) - np.log(0.5))
+    negative = float(np.mean(log_p0[~labels]) - np.log(0.5))
+    return 0.5 * (positive + negative)
+
+
+def fit_onset_control_models(cohort: dict, feature_names: list, settings: dict, n_lags: int) -> dict:
+    """
+    Description
+    -----------
+    Fit the onset control once per held-out recording day and return the artifact payload.
+
+    The estimator is the two-class model of :func:`onset_control_estimator`, fitted on every day but
+    the held-out one on the cohort's clean USV onsets against quiet tiles. Only each fold's ``coef_``,
+    ``intercept_``, ``log_priors_`` and ``classes_`` are kept. Two held-out scores are reported, per
+    day and pooled, neither of which the per-unit statistic uses: the AUROC of the base-rate-free
+    onset probability (chance 0.5) and the class-balanced log-score gain over the equal prior
+    (:func:`balanced_log_score_gain`). The per-unit prior tunes its own concentration on the control's
+    log-odds (``neural_vocal_occurrence.onset_behaviour_tilts``), so neither score is a calibration.
+
+    Parameters
+    ----------
+    cohort (dict)
+        From :func:`assemble_onset_cohort`.
+    feature_names (list)
+        The control's features, a subset of the cohort's canonical feature list.
+    settings (dict)
+        The whole neural-modelling settings dict.
+    n_lags (int)
+        History length in frames.
+
+    Returns
+    -------
+    artifact (dict)
+        ``target`` (``"onset"``), ``features``, ``n_lags``, ``classes`` (``[0, 1]``), ``coefficients``
+        (day to ``{coef, intercept, log_priors, converged, n_iter}``), ``held_out_auc``,
+        ``held_out_log_score_gain``, ``per_day``, counts, ``session_ids``, ``skipped`` and
+        ``settings_sha256``.
+
+    Raises
+    ------
+    ValueError
+        A held-out day leaves a training set with one class only.
+    """
+
+    labels = np.asarray(cohort["labels"], dtype=np.int64)
+    days = cohort["days"]
+    classes = np.array([0, 1])
+    columns = feature_columns(cohort["feature_names"], feature_names, n_lags)
+    basis, block = onset_control_basis(settings, n_lags)
+    design = project_category_design(cohort["design"][:, columns].astype(np.float64),
+                                     len(feature_names), basis).astype(np.float32)
+    coefficients, per_day = {}, {}
+    log_odds = np.full(labels.size, np.nan)
+    for held_out in np.unique(days):
+        test = np.flatnonzero(days == held_out)
+        train = np.flatnonzero(days != held_out)
+        if np.unique(labels[train]).size != 2:
+            msg = f"holding out day {held_out} leaves training rows of one class only."
+            raise ValueError(msg)
+        model = onset_control_estimator(len(feature_names), basis, block, int(block["random_state"]))
+        model.fit(design[train], labels[train])
+        if not np.array_equal(model.classes_, classes):
+            msg = f"fold {held_out} fitted classes {model.classes_.tolist()}, expected [0, 1]."
+            raise ValueError(msg)
+        balanced = model.predict_proba(design[test], balanced=True)
+        log_odds[test] = (np.log(np.maximum(balanced[:, 1], 1e-300))
+                          - np.log(np.maximum(balanced[:, 0], 1e-300)))
+        coefficients[str(held_out)] = {"coef": np.asarray(model.coef_).copy(),
+                                       "intercept": np.asarray(model.intercept_).copy(),
+                                       "log_priors": np.asarray(model.log_priors_).copy(),
+                                       "converged": bool(model.converged_),
+                                       "n_iter": int(model.n_iter_)}
+        per_day[str(held_out)] = {
+            "n_vocalizations": int((labels[test] == 1).sum()), "n_tiles": int((labels[test] == 0).sum()),
+            "auc": area_under_roc(balanced[:, 1], labels[test].astype(np.float64)),
+            "log_score_gain": balanced_log_score_gain(log_odds[test], labels[test])}
+    probability = 1.0 / (1.0 + np.exp(-log_odds))
+    return {"target": "onset", "features": list(feature_names), "n_lags": int(n_lags),
+            "classes": classes, "coefficients": coefficients,
+            "held_out_auc": area_under_roc(probability, labels.astype(np.float64)),
+            "held_out_log_score_gain": balanced_log_score_gain(log_odds, labels),
+            "per_day": per_day, "n_vocalizations": int((labels == 1).sum()), "n_tiles": int((labels == 0).sum()),
+            "per_session": dict(cohort["per_session"]),
+            "session_ids": list(cohort["session_ids"]), "skipped": dict(cohort["skipped"]),
+            "settings_sha256": compute_settings_sha256(settings)}
+
+
+def onset_control_log_odds(artifact: dict, held_out_day: str, design: np.ndarray, settings: dict) -> np.ndarray:
+    """
+    Description
+    -----------
+    The onset control's base-rate-free log-odds of onset against quiet for a unit's windows, from the
+    fold that did not see that unit's day.
+
+    ``predict_proba(balanced=True)`` removes the training log-priors from the logits, so the log-odds
+    carry the behaviour's evidence and not the cohort's USV-to-tile ratio; the per-unit test supplies
+    its own equal prior and tunes how strongly the evidence tilts it.
+
+    Parameters
+    ----------
+    artifact (dict)
+        From :func:`load_control_model`, an ``"onset"`` control.
+    held_out_day (str)
+        The unit's recording date, as the eight-character day key.
+    design (np.ndarray)
+        ``(n, n_features * n_lags)`` histories for the unit's windows, in the artifact's feature order.
+    settings (dict)
+        The whole neural-modelling settings dict.
+
+    Returns
+    -------
+    log_odds (np.ndarray)
+        ``(n,)`` log-odds of onset against quiet.
+
+    Raises
+    ------
+    ValueError
+        The artifact is not an onset control, or the design's width disagrees with it.
+    KeyError
+        The control carries no fold for the unit's day.
+    """
+
+    if artifact["target"] != "onset":
+        msg = f"onset_control_log_odds needs an onset control; got {artifact['target']!r}."
+        raise ValueError(msg)
+    if held_out_day not in artifact["coefficients"]:
+        msg = (f"the behaviour control carries no fold for day {held_out_day}; it was fitted over "
+               f"{sorted(artifact['coefficients'])}. A unit's own day must be held out.")
+        raise KeyError(msg)
+    n_features = len(artifact["features"])
+    expected = n_features * artifact["n_lags"]
+    if design.shape[1] != expected:
+        msg = (f"the unit's behaviour block has {design.shape[1]} columns but the control was fitted on "
+               f"{n_features} features x {artifact['n_lags']} lags = {expected}.")
+        raise ValueError(msg)
+    basis, block = onset_control_basis(settings, artifact["n_lags"])
+    fold = artifact["coefficients"][held_out_day]
+    model = onset_control_estimator(n_features, basis, block, int(block["random_state"]))
+    model.coef_ = np.asarray(fold["coef"])
+    model.intercept_ = np.asarray(fold["intercept"])
+    model.log_priors_ = np.asarray(fold["log_priors"])
+    model.classes_ = np.asarray(artifact["classes"])
+    projected = project_category_design(np.asarray(design, dtype=np.float64), n_features, basis)
+    balanced = model.predict_proba(projected.astype(np.float32), balanced=True)
+    return (np.log(np.maximum(balanced[:, 1], 1e-300)) - np.log(np.maximum(balanced[:, 0], 1e-300)))
