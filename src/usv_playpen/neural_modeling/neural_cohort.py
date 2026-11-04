@@ -25,7 +25,6 @@ into ``cohort.single_session_blocks`` contiguous blocks of equal duration, separ
 - `load_courtship_session_ids`  — session IDs from the session-list files.
 - `recorded_mouse_by_session`   — the recorded mouse per session, from the catalog.
 - `focal_usv_onsets`            — onsets of the analysed emitter USVs per session, with its timebase.
-- `emitter_usv_counts`          — analysed emitter USVs per session.
 - `block_usv_counts`            — analysed emitter USVs per block of each session.
 - `unit_session_sets`           — a unit's two session sets, as sessions or as blocks.
 - `select_cohort`               — the unit filters and both session sets.
@@ -152,7 +151,8 @@ def focal_usv_onsets(session_ids, data_root: str, mouse_by_session: dict,
 
     The recorded animal is resolved by name from the session's ``track_names``, and only analysed USVs
     (noise and squeaks excluded) are kept, so a session cannot qualify on events no analysis scores. A
-    session whose tracking or summary file is missing maps to ``None`` rather than raising.
+    session whose tracking or summary file is missing raises, naming the session: counting it as
+    a silent animal would drop it from every vocal set unseen.
 
     Parameters
     ----------
@@ -170,7 +170,7 @@ def focal_usv_onsets(session_ids, data_root: str, mouse_by_session: dict,
     Returns
     -------
     onsets (dict)
-        ``{session_id: (onsets_seconds, frame_rate, n_frames) | None}``.
+        ``{session_id: (onsets_seconds, frame_rate, n_frames)}``.
     """
 
     onsets: dict = {}
@@ -180,9 +180,11 @@ def focal_usv_onsets(session_ids, data_root: str, mouse_by_session: dict,
             # Only the USVs the analyses score (noise and squeaks excluded).
             usv = filter_vocalizations(load_session_usvs(data_root, session_id), vocal_settings,
                                        "analysed")
-        except FileNotFoundError:
-            onsets[session_id] = None
-            continue
+        except FileNotFoundError as error:
+            # A listed session without its tracking or USV file is a data problem, not a silent animal:
+            # swallowing it would count 0 USVs and drop the session from every vocal set unseen.
+            msg = f"session {session_id} is listed for the cohort but a file it needs is missing: {error}"
+            raise FileNotFoundError(msg) from error
         names = emitter_names(track_names, mouse_by_session[session_id], vocal_emitter)
         focal = usv.filter(usv["emitter"].is_in(names)) if usv.height and names else usv
         onsets[session_id] = (focal["start"].to_numpy().astype(np.float64), float(frame_rate), int(n_frames))
@@ -209,55 +211,17 @@ def block_usv_counts(onsets: dict, n_blocks: int, gap_seconds: float) -> dict:
     Returns
     -------
     counts (dict)
-        ``{block_id: n_usvs}``; a session without files gives zero for each of its blocks.
+        ``{block_id: n_usvs}``.
     """
 
     counts: dict = {}
     for session_id, entry in onsets.items():
         block_ids = session_block_ids(session_id, n_blocks)
-        if entry is None:
-            counts.update(dict.fromkeys(block_ids, 0))
-            continue
         starts, frame_rate, n_frames = entry
         for block_id, (low, high) in zip(block_ids, block_window_frames(n_frames, frame_rate, n_blocks,
                                                                          gap_seconds), strict=True):
             counts[block_id] = int(((starts >= low / frame_rate) & (starts < high / frame_rate)).sum())
     return counts
-
-
-def emitter_usv_counts(session_ids, data_root: str, mouse_by_session: dict,
-                     vocal_emitter: str, vocal_settings: dict) -> dict:
-    """
-    Description
-    -----------
-    Count the recorded animal's own vocalizations in each session.
-
-    Computed once per session and shared across the cohort. The recorded animal is resolved by name
-    from the session's ``track_names``, and only analysed USVs (noise and squeaks excluded) are
-    counted, so a session cannot qualify on events no analysis scores. A session whose tracking or
-    summary file is missing counts as zero rather than raising.
-
-    Parameters
-    ----------
-    session_ids (Iterable[str])
-        Session-directory basenames.
-    data_root (str)
-        The ``Data`` root.
-    mouse_by_session (dict)
-        ``{session_id: mouse_id}`` from :func:`recorded_mouse_by_session`.
-    vocal_emitter (str)
-        Whose USVs are the events: ``'self'`` | ``'partner'`` | ``'all'``.
-    vocal_settings (dict)
-        The ``vocalizations`` block, which defines the analysed USVs.
-
-    Returns
-    -------
-    counts (dict)
-        ``{session_id: n_focal_usvs}``.
-    """
-
-    onsets = focal_usv_onsets(session_ids, data_root, mouse_by_session, vocal_emitter, vocal_settings)
-    return {session_id: (0 if entry is None else int(entry[0].size)) for session_id, entry in onsets.items()}
 
 
 def unit_session_sets(sessions: list, emitter_counts: dict, n_blocks: int,
@@ -275,7 +239,7 @@ def unit_session_sets(sessions: list, emitter_counts: dict, n_blocks: int,
         The unit's courtship sessions, in time order.
     emitter_counts (dict)
         Analysed emitter USVs per session and, for a one-session unit, per block
-        (:func:`emitter_usv_counts`, :func:`block_usv_counts`).
+        (:func:`focal_usv_onsets` counted per session, :func:`block_usv_counts`).
     n_blocks (int)
         Blocks a single session is split into (``cohort.single_session_blocks``).
     min_emitter_usvs_per_session (int)
@@ -347,7 +311,7 @@ def select_cohort(
     min_courtship_sessions (int)
         Minimum courtship sessions the unit must appear in.
     emitter_counts (dict)
-        ``{session_id: n_usvs}`` from :func:`emitter_usv_counts`, merged with ``{block_id: n_usvs}`` from
+        ``{session_id: n_usvs}`` counted from :func:`focal_usv_onsets`, merged with ``{block_id: n_usvs}`` from
         :func:`block_usv_counts`.
     min_emitter_usvs_per_session (int)
         Focal USVs a session (or block) needs before anything scored on vocalizations may use it.
@@ -437,7 +401,7 @@ def build_cohort_manifest(settings: dict) -> list[dict]:
                               settings["vocalizations"]["vocal_emitter"],
                               settings["vocalizations"])
     # Per-block counts for every session, since which sessions hold a one-session unit is decided below.
-    counts = {**{session_id: (0 if entry is None else int(entry[0].size)) for session_id, entry in onsets.items()},
+    counts = {**{session_id: int(entry[0].size) for session_id, entry in onsets.items()},
               **block_usv_counts(onsets, cohort_settings["single_session_blocks"],
                                  settings["kinematic_encoding"]["history_pre_seconds"])}
     return select_cohort(

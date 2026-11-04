@@ -13,13 +13,19 @@
 # Usage:
 #   1. plan once (writes <output_dir>/cohort_manifest.json and prints the array range):
 #        python -m usv_playpen.neural_modeling.main_neural_cohort_dispatcher plan --output-directory <output_dir>
-#   2. submit, capping concurrent tasks with %N:
-#        sbatch --array=0-<N-1>%50 neural_modeling_cohort.sh <output_dir>
+#   2. submit from a directory holding a logs/ subdirectory (SLURM opens the --output/--error files below
+#      before this script runs, so the mkdir further down cannot create it in time), capping concurrent
+#      tasks with %N:
+#        mkdir -p logs && sbatch --array=0-<N-1>%50 neural_modeling_cohort.sh <output_dir>
+#      Each task runs under the settings file the manifest was planned with (the shipped one when `plan`
+#      was given none) and reads the data from DATA_ROOT below, which must be the data root `plan` used
+#      (paths.data_root); --mail-type=FAIL mails once per failed task.
 #      Arrays larger than the cluster's MaxArraySize are submitted in chunks with an offset:
 #        INDEX_OFFSET=1000 sbatch --array=0-999%50 neural_modeling_cohort.sh <output_dir>
 #
 # A task that times out can simply be resubmitted with the same index: folds and sections already written
-# under the same settings are kept.
+# under the same settings are kept (a fold cut off mid-run is run again whole), and each fold log is
+# appended to, so the earlier attempt's log stays above the new one.
 #
 # Monitor the run (counts done / running / failed / not started, failed stages, median stage minutes):
 #   python -m usv_playpen.neural_modeling.main_neural_cohort_dispatcher status \

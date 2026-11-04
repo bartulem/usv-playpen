@@ -550,7 +550,10 @@ def behaviour_priors(folds: list, predicted_positions: np.ndarray, positions: np
         kappa, log_prior = behaviour_prior_log_density(fold, predicted_positions, positions,
                                                        nested["torus_period"], nested)
         kappas.append(kappa)
-        priors.append(log_prior)
+        # Stored in single precision: one (n_events, n_cells) prior per fold is copied into every null
+        # worker, which at six folds of 6,000 events is about 1 GB per worker in double precision. The
+        # observed statistic and every null draw read these same arrays, so they stay exchangeable.
+        priors.append(np.asarray(log_prior, dtype=np.float32))
     return kappas, priors
 
 
@@ -621,10 +624,12 @@ def posterior_nested_gain(counts: np.ndarray, folds: list, decoding: dict, prior
                "per_fold": per_fold, "alphas": full["alphas"], "ridges": full["ridges"],
                "kappas": kappas,
                "behaviour_over_no_behaviour": behaviour_gain,
-               "full_over_no_behaviour": full["gain"] + behaviour_gain}
+               "full_over_no_behaviour": full["gain"] + behaviour_gain,
+               # what the behaviour prior alone scored per event, beside what the neuron added to it
+               "per_event_behaviour_over": behaviour_over}
     detail = {key: full[key] for key in ("per_event_gain", "decode_error", "posterior_entropy",
                                           "mean_decode_error", "mean_posterior_entropy",
-                                          "overdispersion_index") if key in full}
+                                          "overdispersion_index", "decoded_positions") if key in full}
     return {**renamed, **detail}
 
 

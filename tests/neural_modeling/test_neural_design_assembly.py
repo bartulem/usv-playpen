@@ -748,6 +748,7 @@ class TestQuietSideKeepsEverySession:
             """
             seen["dirs"] = list(session_dirs)
             seen["mouse"] = kwargs["recorded_mouse_id"]
+            # Nothing loaded: the assembler then refuses, which is after the call this test inspects.
             return {}, {}, {}, {}
 
         monkeypatch.setattr(
@@ -755,12 +756,66 @@ class TestQuietSideKeepsEverySession:
         unit = {"unit_id": self.UNIT, "mouse_id": "male",
                 "courtship_sessions": ["s_rich", "s_thin"],
                 "vocal_sessions": ["s_rich"]}
-        assemble_unit_sessions(unit, "/data", {}, 4.0, 2.0, "all", VOCAL_SETTINGS)
+        with pytest.raises(FileNotFoundError, match="s_rich"):
+            assemble_unit_sessions(unit, "/data", {}, 4.0, 2.0, "all", VOCAL_SETTINGS)
 
         assert seen["dirs"] == ["/data/s_rich", "/data/s_thin"]
         assert "/data/s_thin" in seen["dirs"]        # the thin session is FITTED on, not dropped
         # the `self.` role comes from the unit's own mouse, not a configured slot index
         assert seen["mouse"] == "male"
+
+    def test_per_session_standardisation_loads_each_session_alone(self, monkeypatch):
+        """``standardise='per_session'`` hands the loader one session at a time, so each session is
+        z-scored on its own statistics (the behaviour controls' convention), and the results are merged."""
+        seen = []
+
+        def _spy(session_dirs, **_kwargs):
+            """
+            Description
+            -----------
+            Stand-in for ``build_zscored_feature_frames`` that records each call's session directories
+            and returns one empty-but-keyed entry per directory, so the merge can be checked.
+
+            Parameters
+            ----------
+            session_dirs (list[str])
+                Session directories the assembler asked for.
+            **_kwargs (dict)
+                Remaining keyword arguments (unused).
+
+            Returns
+            -------
+            containers (tuple[dict, dict, dict, dict])
+                Feature frames, frame rates and track names keyed by session id, plus suffixes.
+            """
+            seen.append(list(session_dirs))
+            ids = [directory.rsplit("/", 1)[-1] for directory in session_dirs]
+            return ({sid: pls.DataFrame({"f": [0.0, 1.0]}) for sid in ids}, dict.fromkeys(ids, 10.0),
+                    {sid: ["male", "female"] for sid in ids}, {})
+
+        monkeypatch.setattr(
+            "usv_playpen.neural_modeling.neural_design_assembly.build_zscored_feature_frames", _spy)
+        monkeypatch.setattr("usv_playpen.neural_modeling.neural_design_assembly.load_unit_spike_frames",
+                            lambda *_args: (np.zeros(0), np.zeros(0, dtype=np.int64)))
+        monkeypatch.setattr("usv_playpen.neural_modeling.neural_design_assembly.load_session_usvs",
+                            lambda *_args: pls.DataFrame({"start": [], "stop": [], "emitter": [],
+                                                          "noise": [], "squeak": []}).cast(
+                                {"start": pls.Float64, "stop": pls.Float64, "emitter": pls.Utf8,
+                                 "noise": pls.Boolean, "squeak": pls.Boolean}))
+        unit = {"unit_id": self.UNIT, "mouse_id": "male", "courtship_sessions": ["s_rich", "s_thin"],
+                "vocal_sessions": ["s_rich"], "block_split": None}
+        per_session = assemble_unit_sessions(unit, "/data", {}, 4.0, 2.0, "all", VOCAL_SETTINGS,
+                                             standardise="per_session")
+
+        assert seen == [["/data/s_rich"], ["/data/s_thin"]]
+        assert sorted(per_session) == ["s_rich", "s_thin"]
+
+    def test_an_unknown_standardisation_is_refused(self):
+        """Only the two documented conventions exist; anything else is refused before any loading."""
+        unit = {"unit_id": self.UNIT, "mouse_id": "male", "courtship_sessions": ["s_rich"],
+                "vocal_sessions": ["s_rich"], "block_split": None}
+        with pytest.raises(ValueError, match="standardise must be one of"):
+            assemble_unit_sessions(unit, "/data", {}, 4.0, 2.0, "all", VOCAL_SETTINGS, standardise="unit")
 
 
 class TestSelfAndPartnerAreResolvedByName:
@@ -1506,10 +1561,71 @@ class TestAssembleUnitSessions:
         unit = {
             "unit_id": self.UNIT,
             "mouse_id": "male",
-            "courtship_sessions": [*self.SESSIONS, "20250101_020000"],
+            "courtship_sessions": list(self.SESSIONS),
             "vocal_sessions": list(self.SESSIONS),
         }
         return unit, frames
+
+    def test_a_session_without_behavioural_features_is_refused_by_name(self, tmp_path):
+        """
+        Description
+        -----------
+        A courtship session whose behavioural features could not be loaded (here 20250101_020000, written
+        with tracking and spikes but no features) stops the assembly and names the session, instead of
+        being skipped and resurfacing later as a KeyError on the session id.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Root the session trees are written under.
+
+        Returns
+        -------
+        None
+        """
+        unit, _frames = self._unit(tmp_path)
+        unit["courtship_sessions"] = [*self.SESSIONS, "20250101_020000"]
+        settings = _load_settings()
+        with pytest.raises(FileNotFoundError, match="20250101_020000"):
+            assemble_unit_sessions(unit, str(tmp_path), settings["kinematic_features"], 1.0, 0.5, "all",
+                                   settings["vocalizations"])
+
+    def test_per_session_standardisation_matches_the_control_side_build(self, tmp_path):
+        """
+        Description
+        -----------
+        The nested decoding feeds the cohort behaviour controls the unit's kinematics z-scored per
+        session, because each control was fitted on sessions built one at a time. The unit-side arrays
+        under ``standardise='per_session'`` must therefore equal, column for column, what the control's
+        own assembly builds from that session alone; the pooled arrays (the unit's own kinematic model)
+        must differ when the sessions' feature distributions differ. This is the cross-module check that
+        would have caught the controls being applied on a scale they were not fitted on.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Root the session trees are written under.
+
+        Returns
+        -------
+        None
+        """
+        unit, _frames = self._unit(tmp_path)
+        settings = _load_settings()
+        common = (unit, str(tmp_path), settings["kinematic_features"], 1.0, 0.5, "all",
+                  copy.deepcopy(settings["vocalizations"]))
+        per_session = assemble_unit_sessions(*common, standardise="per_session")
+        pooled = assemble_unit_sessions(*common, standardise="pooled")
+        differs = False
+        for session_id in self.SESSIONS:
+            alone, _rates, _names, _suffixes = build_zscored_feature_frames(
+                session_dirs=[str(tmp_path / session_id)], kinematic_features=settings["kinematic_features"],
+                recorded_mouse_id=unit["mouse_id"])
+            expected = np.nan_to_num(alone[session_id].to_numpy().astype(np.float64), nan=0.0)
+            np.testing.assert_allclose(per_session[session_id]["feature_time_series"], expected)
+            assert list(per_session[session_id]["feature_names"]) == list(alone[session_id].columns)
+            differs = differs or not np.allclose(pooled[session_id]["feature_time_series"], expected)
+        assert differs
 
     def test_rows_units_and_quiet_frames_line_up(self, tmp_path):
         """
@@ -1519,8 +1635,7 @@ class TestAssembleUnitSessions:
         male USV forbids frames 45-62, the female USV 115-134 and the recording edges
         0-9 and 195-199, while the noise row forbids nothing; spike frames are
         ``round(seconds * fps)``; the feature time series is the pooled z-score with the
-        out-of-range frame imputed to 0; and the session without behavioural features is
-        absent.
+        out-of-range frame imputed to 0.
 
         Parameters
         ----------

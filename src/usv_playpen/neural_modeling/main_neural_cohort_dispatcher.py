@@ -52,11 +52,16 @@ from .main_neural_encoding_dispatcher import (
     load_settings,
     read_fold_artifact,
 )
-from .main_neural_vocal_dispatcher import TARGET_STEPS, VOCAL_STEPS, run_vocal
-from .neural_artifacts import build_provenance, read_unit_artifact, section_is_current
+from .main_neural_vocal_dispatcher import VOCAL_STEPS, run_vocal, step_sections
+from .neural_artifacts import (
+    build_provenance,
+    current_git_commit,
+    read_unit_artifact,
+    section_is_current,
+)
 from .neural_cohort import build_cohort_manifest, summarize_cohort
 from .neural_design_assembly import source_session
-from .neural_nested_decoding import VOCAL_TARGETS, target_section
+from .neural_nested_decoding import CONTROL_TARGETS
 
 MANIFEST_NAME = "cohort_manifest.json"
 # The environment variables that cap a numerical library's thread pool, set for each fold process so
@@ -96,8 +101,8 @@ def check_inputs(settings: dict) -> list:
     Description
     -----------
     The inputs every unit needs that a cohort run cannot recover from if missing, checked once before the
-    array is launched: the unit catalog, the data root, and both targets' behaviour-control and selection
-    files.
+    array is launched: the unit catalog, the data root, and every control target's (manifold,
+    multinomial, onset) behaviour-control and selection files.
 
     Parameters
     ----------
@@ -112,7 +117,7 @@ def check_inputs(settings: dict) -> list:
 
     required = {"unit catalog (paths.catalog_path)": settings["paths"]["catalog_path"],
                 "data root (paths.data_root)": settings["paths"]["data_root"]}
-    for target in VOCAL_TARGETS:
+    for target in CONTROL_TARGETS:
         required[f"{target} behaviour control (paths.behaviour_control_model_path)"] = (
             settings["paths"]["behaviour_control_model_path"][target])
         required[f"{target} behaviour selection (paths.behaviour_selection_result_path)"] = (
@@ -196,26 +201,6 @@ def load_manifest(manifest_path: str, settings: dict) -> dict:
     return manifest
 
 
-def step_sections(step: str) -> list:
-    """
-    Description
-    -----------
-    The result-file sections one vocal step writes: one per target for the per-target steps, else one.
-
-    Parameters
-    ----------
-    step (str)
-        One of ``VOCAL_STEPS``.
-
-    Returns
-    -------
-    sections (list)
-        Section names.
-    """
-
-    return [target_section(step, target) for target in VOCAL_TARGETS] if step in TARGET_STEPS else [step]
-
-
 def pending_vocal_steps(artifact: dict, settings: dict) -> tuple:
     """
     Description
@@ -269,7 +254,9 @@ def fold_is_current(output_directory: str, unit: dict, fold_index: int, settings
     stored = read_fold_artifact(output_directory, unit, fold_index)
     if stored is None:
         return False
-    return "settings_sha256" in stored and str(stored["settings_sha256"]) == compute_settings_sha256(settings)
+    # The same settings and the same code, as for a section (`section_is_current`).
+    return ("settings_sha256" in stored and str(stored["settings_sha256"]) == compute_settings_sha256(settings)
+            and "git_commit" in stored and str(stored["git_commit"]) == current_git_commit())
 
 
 def slurm_variable(name: str) -> str | None:
@@ -531,7 +518,10 @@ def run_folds(unit: dict, folds: list, output_directory: str, data_root: str, se
         while waiting and len(running) < parallel_folds:
             fold_index = waiting.pop(0)
             log_path = log_directory / f"{unit['unit_uid']}_fold{fold_index}.log"
-            log_handle = log_path.open("w")
+            # Appended, so a resubmission keeps the timed-out attempt's log above the new one.
+            log_handle = log_path.open("a")
+            log_handle.write(f"===== fold {fold_index} attempt started {datetime.now(UTC).isoformat()} =====\n")
+            log_handle.flush()
             process = subprocess.Popen([*base, "--fold", str(fold_index)], stdout=log_handle,
                                        stderr=subprocess.STDOUT, env=environment)
             running[fold_index] = (process, log_handle, time.time(), log_path)
@@ -645,6 +635,67 @@ def run_unit(record: dict, settings: dict, settings_path: str | None, data_root:
     """
 
     log = timestamped(message_output)
+    # The status file is opened before anything that can fail, and every exception that escapes the stage
+    # handlers below closes it as failed: a task that raised must never read as "running" forever, or as
+    # never started.
+    provenance = build_provenance(settings)
+    header = {**(task or {}), "brain_area": record["brain_area"], "settings_sha256": provenance["settings_sha256"],
+              "git_commit": provenance["git_commit"], "n_workers": n_workers, "parallel_folds": parallel_folds}
+    status = UnitStatus(output_directory, record["unit_uid"], header)
+    try:
+        return run_unit_stages(record, settings, settings_path, data_root, output_directory, n_workers,
+                               parallel_folds, record["block_split"], provenance, task, status, log)
+    except Exception as error:
+        traceback.print_exc()
+        log(f"UNIT {record['unit_uid']} FAILED outside a stage: {error!r}")
+        status.stage("setup", "failed", None, repr(error))
+        status.finish(False)
+        raise
+
+
+def run_unit_stages(record: dict, settings: dict, settings_path: str | None, data_root: str,
+                    output_directory: str, n_workers: int, parallel_folds: int, block_split, provenance: dict,
+                    task: dict | None, status, log) -> bool:
+    """
+    Description
+    -----------
+    The body of :func:`run_unit`: rebuild and check the unit record, then run the encoding stage and every
+    pending vocal step, each recorded in ``status``. Exceptions inside a stage are caught and recorded by
+    that stage; anything else propagates to :func:`run_unit`, which closes the status as failed.
+
+    Parameters
+    ----------
+    record (dict)
+        The unit's manifest record.
+    settings (dict)
+        Full neural-modeling settings.
+    settings_path (str | None)
+        The settings file, handed to the fold processes.
+    data_root (str)
+        The ``Data`` root.
+    output_directory (str)
+        Shared results directory.
+    n_workers (int)
+        Processes for the vocal nulls.
+    parallel_folds (int)
+        Encoding folds run at once.
+    block_split
+        The record's ``block_split`` (None for a unit tested on sessions).
+    provenance (dict)
+        From ``build_provenance``.
+    task (dict | None)
+        Task facts for the header (index, host, job and array ids); None records none.
+    status (UnitStatus)
+        The unit's open status file.
+    log (Callable)
+        The timestamped progress reporter.
+
+    Returns
+    -------
+    succeeded (bool)
+        False when any stage failed.
+    """
+
     unit = build_unit_record(record["unit_id"], record["mouse_id"], int(record["rec_date"]),
                              record["recorded_sessions"], data_root, settings)
     for key in ("courtship_sessions", "vocal_sessions"):
@@ -654,14 +705,14 @@ def run_unit(record: dict, settings: dict, settings_path: str | None, data_root:
             raise ValueError(msg)
     unit["recorded_sessions"] = list(record["recorded_sessions"])
     unit["brain_area"] = record["brain_area"]
-    provenance = build_provenance(settings)
-    header = {**(task or {}), "brain_area": unit["brain_area"], "settings_sha256": provenance["settings_sha256"],
-              "git_commit": provenance["git_commit"], "n_workers": n_workers, "parallel_folds": parallel_folds}
-    status = UnitStatus(output_directory, unit["unit_uid"], header)
+    # The rest of the manifest record, so the unit file's identity block carries everything the cohort
+    # table groups or filters by without reopening the manifest.
+    for key in ("cluster_group", "somatic", "vocal_testable", "n_courtship_sessions", "n_vocal_sessions"):
+        unit[key] = record[key]
     rule = "=" * 100
     log(rule)
     log(f"UNIT {unit['unit_uid']} | {unit['brain_area']}"
-        f"{' | block split ' + str(record['block_split']) if record['block_split'] else ''}")
+        f"{' | block split ' + str(block_split) if block_split else ''}")
     log(f"  courtship sessions ({len(unit['courtship_sessions'])}): {', '.join(unit['courtship_sessions'])}")
     log(f"  vocal sessions ({len(unit['vocal_sessions'])}): {', '.join(unit['vocal_sessions'])}")
     log(f"  settings {provenance['settings_sha256'][:12]} | commit {str(provenance['git_commit'])[:12]}"
@@ -820,7 +871,8 @@ def main() -> int:
     run_parser.add_argument("--data-root", dest="data_root", required=True)
     run_parser.add_argument("--n-workers", dest="n_workers", type=int, required=True)
     run_parser.add_argument("--parallel-folds", dest="parallel_folds", type=int, default=1)
-    run_parser.add_argument("--settings-path", dest="settings_path", default=None)
+    run_parser.add_argument("--settings-path", dest="settings_path", default=None,
+                            help="settings file; default is the one the manifest was planned under")
     status_parser = commands.add_parser("status", help="summarise a cohort run from its status files")
     status_parser.add_argument("--manifest", required=True)
     status_parser.add_argument("--output-directory", dest="output_directory", required=True)
@@ -832,6 +884,11 @@ def main() -> int:
     if args.command == "status":
         cohort_status(args.manifest, configure_path(args.output_directory))
         return 0
+    if args.settings_path is None:
+        # A run uses the settings its manifest was planned under unless told otherwise, so a cohort planned
+        # with a custom settings file cannot be launched with the shipped one by omission.
+        planned = json.loads(pathlib.Path(configure_path(args.manifest)).read_text())
+        args.settings_path = planned["settings_path"] if "settings_path" in planned else None
     settings = load_settings(args.settings_path)
     manifest = load_manifest(args.manifest, settings)
     index = args.index if args.index is not None else int(os.environ["SLURM_ARRAY_TASK_ID"]) + args.index_offset

@@ -1715,7 +1715,7 @@ The check (``check_store_map_provenance``) reads the store's provenance group of
       --fps                 Video frames per second.
 
 ``neural-modeling-figures``
-``neural-modeling-figures`` draws the per-unit result pages of the neural modeling (``visualizations.neural_modeling_plots``): one page per unit from its merged result file (``<unit_uid>.pkl``), plus the per-session trace pages for a unit whose kinematic encoding holds on held-out data. Every number a panel reports is read from the result file; what the file leaves out (event assemblies, designs, predictions) is rebuilt from the session data, checked against the stored values, and cached under ``<output-directory>/cache_<settings hash>``. A result file written under other settings than ``--settings-path`` (the shipped file by default) is skipped and reported. Each unit's brain area, for the page title, is read from the unit catalog (``data_roots.catalog_path``).
+``neural-modeling-figures`` draws the per-unit result pages of the neural modeling (``visualizations.neural_modeling_plots``): one page per unit from its merged result file (``<unit_uid>.pkl``), plus the per-session trace pages for a unit whose kinematic encoding holds on held-out data. Every number a panel reports is read from the result file; what the file leaves out (event assemblies, designs, predictions) is rebuilt from the session data, checked against the stored values, and cached under ``<output-directory>/cache_<settings hash>``. A result file written under other settings than ``--settings-path`` (the shipped file by default) is skipped and reported. Each unit's brain area, for the page title, is read from the unit catalog (``paths.catalog_path``).
 
 .. code-block:: text
 

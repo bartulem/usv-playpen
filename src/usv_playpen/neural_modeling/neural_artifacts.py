@@ -16,6 +16,7 @@ Exports :func:`write_unit_section`, :func:`read_unit_artifact`, :func:`unit_arti
 
 from __future__ import annotations
 
+import functools
 import pathlib
 import pickle
 
@@ -197,6 +198,27 @@ def write_unit_section(output_directory: str, unit: dict, section: str, payload:
     return path
 
 
+@functools.lru_cache(maxsize=1)
+def current_git_commit() -> str:
+    """
+    Description
+    -----------
+    The commit of the code running now, read once per process (it cannot change while the process runs),
+    so the resume checks can compare it against every stored section and fold without a git call each.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    commit (str)
+        The commit hash, or ``'unknown'`` outside a git checkout.
+    """
+
+    return str(get_git_commit_info()["commit"])
+
+
 def section_is_current(artifact: dict, section: str, settings: dict) -> bool:
     """
     Description
@@ -222,6 +244,11 @@ def section_is_current(artifact: dict, section: str, settings: dict) -> bool:
         True when the section exists and its recorded settings hash is these settings'.
     """
 
-    if section not in artifact or section not in artifact.get("section_provenance", {}):
+    if (section not in artifact or "section_provenance" not in artifact
+            or section not in artifact["section_provenance"]):
         return False
-    return artifact["section_provenance"][section]["settings_sha256"] == compute_settings_sha256(settings)
+    # Current means the same settings AND the same code: a fix landing between a task's attempts must
+    # recompute what the older code wrote, not keep it beside sections from the newer code.
+    provenance = artifact["section_provenance"][section]
+    return (provenance["settings_sha256"] == compute_settings_sha256(settings)
+            and str(provenance["git_commit"]) == current_git_commit())

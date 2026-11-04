@@ -461,8 +461,9 @@ class TestFoldsWithoutAModel:
                 "path": [{"step": 0, "candidate": names[0], "decision": "ANCHOR"}],
                 "screen": [{"feature": index, "survived": True} for index in indices],
                 "coefficients": rng.normal(size=len(indices) * cls.N_LAGS), "intercept": -3.5,
-                "quiet_score": 0.03, "quiet_p": 1e-5, "quiet_metrics": {"auroc": 0.7},
-                "fit_seconds": 9.0, "n_iter": 2500}
+                "quiet_score": 0.03, "quiet_p": 1e-5, "quiet_slope": 1.1, "quiet_at_floor": False,
+                "quiet_metrics": {"auroc": 0.7}, "fit_seconds": 9.0, "n_iter": 2500,
+                "final_fit_converged": True}
 
     @staticmethod
     def _no_model_fold(fold_index, test_id):

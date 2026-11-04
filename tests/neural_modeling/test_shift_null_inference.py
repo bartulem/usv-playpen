@@ -134,6 +134,37 @@ class TestEscalationLadder:
         assert p_value == pytest.approx(1.0 / 100_001.0)
         assert at_floor
 
+    def test_a_rung_already_met_is_skipped_not_a_stop(self):
+        """A ladder whose first rung is at or below the draws in hand (here 1,000 of 1,000) must still
+        climb to the next rung; the old loop stopped at the first satisfied rung and never escalated."""
+        generator = np.random.default_rng(6)
+        calls = []
+
+        def draw_more(count):
+            """
+            Description
+            -----------
+            Records the requested top-up size and returns that many standard-normal null draws.
+
+            Parameters
+            ----------
+            count (int)
+                Number of extra null draws the ladder requests.
+
+            Returns
+            -------
+            draws (np.ndarray)
+                ``count`` draws from the enclosing generator.
+            """
+            calls.append(count)
+            return generator.normal(size=count)
+
+        _p_value, _at_floor, null = escalated_empirical_pvalue(
+            9.0, draw_more, [1_000, 10_000], generator.normal(size=1000), message_output=lambda _m: None)
+
+        assert calls == [9_000]
+        assert null.size == 10_000
+
     def test_an_unremarkable_observation_never_escalates(self):
         """An observation off the floor at the initial 1,000 draws must never request more, so the expensive
         top-ups are spent only on units that could clear BH."""

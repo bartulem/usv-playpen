@@ -4,10 +4,10 @@ Unit tests for ``usv_playpen.neural_modeling.neural_vocal_occurrence``.
 
 Coverage: the window counting and quiet tiling, the per-session and cross-fitted quiet levels, the class
 rates and the equal-prior posterior, the class-balanced leave-one-session-out decoding gain, and its
-circular-shift null. The properties asserted are the ones the design turns on -- tiles never overlap a
+block-jitter null. The properties asserted are the ones the design turns on -- tiles never overlap a
 guarded USV, a held-out window never sets its own quiet level, the gain does not depend on how many quiet
-tiles were drawn and is bounded by log 2, it is sign-free so suppressed units are not penalised, and the
-null recounts both classes and refits.
+tiles were drawn and is bounded by log 2, it is sign-free so suppressed units are not penalised, the null
+recounts both classes and refits, and a slow rate trend shared with the USVs' timing does not pass.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from usv_playpen.neural_modeling.deviance_metrics import (
 )
 from usv_playpen.neural_modeling.neural_vocal_occurrence import (
     EQUAL_PRIOR_LOG,
+    block_jitter_spike_times,
     class_balanced_mean,
     counts_in_windows,
     held_out_quiet_levels,
@@ -33,10 +34,9 @@ from usv_playpen.neural_modeling.neural_vocal_occurrence import (
     onset_log_prior,
     quiet_tile_edges,
     session_quiet_levels,
-    vocal_occurrence_shift_null,
+    vocal_occurrence_jitter_null,
     vocal_occurrence_statistic,
 )
-from usv_playpen.neural_modeling.shift_null_inference import shift_range_seconds
 
 AXIS = {"ridge_frac": 0.02, "amplitude_calibration": {"enabled": True, "alpha_grid": [0.1, 0.25, 0.5, 0.75, 1.0, 1.5]},
         "mean_count_floor": 1e-3}
@@ -333,12 +333,42 @@ class TestVocalOccurrenceStatistic:
             occurrence_context(np.array([0.0, 2.0, 1.0, 0.0]), np.array([0, 0, 1, 1]), np.arange(4.0), 5)
 
 
-class TestVocalOccurrenceShiftNull:
-    """The null the vocal-occurrence axis is tested against: shift each session's spike train, recount BOTH
-    classes, refit. Seeded per draw, which is what lets draws be split across workers and topped up by the
-    escalation ladder."""
+class TestBlockJitterSpikeTimes:
+    """The block-jitter surrogate: spikes circularly shifted inside consecutive blocks, each block by its
+    own offset, so every block keeps its spike count and every spike stays in its block."""
 
-    GUARD = 20.0
+    def test_every_spike_stays_in_its_block_and_every_block_keeps_its_count(self):
+        """Blocks of 2 s over a 9.5 s session (the last block 1.5 s long): the surrogate has the same
+        number of spikes in every block as the train, each spike lies inside the block it started in,
+        the output is sorted, and the same generator seed gives the same surrogate."""
+        generator = np.random.default_rng(0)
+        train = np.sort(generator.uniform(0.0, 9.5, 400))
+        jittered = block_jitter_spike_times(train, 9.5, 2.0, np.random.default_rng(3))
+        edges = np.array([0.0, 2.0, 4.0, 6.0, 8.0, 9.5])
+        np.testing.assert_array_equal(np.histogram(jittered, edges)[0], np.histogram(train, edges)[0])
+        assert np.all(np.diff(jittered) >= 0.0)
+        assert jittered.min() >= 0.0
+        assert jittered.max() < 9.5
+        np.testing.assert_array_equal(jittered, block_jitter_spike_times(train, 9.5, 2.0,
+                                                                          np.random.default_rng(3)))
+        assert not np.array_equal(jittered, train)
+
+    def test_relative_timing_inside_a_block_is_kept_up_to_the_wrap(self):
+        """Spikes 0.1 s apart inside one block keep that spacing after the shift unless the wrap separates
+        them, in which case the spacing is the block length minus the original gap."""
+        train = np.array([10.2, 10.3, 10.4])
+        jittered = block_jitter_spike_times(train, 20.0, 2.0, np.random.default_rng(5))
+        gaps = np.sort(np.diff(np.sort(jittered)))
+        assert all(np.isclose(gap, 0.1) or np.isclose(gap, 1.8) for gap in gaps)
+        assert np.all((jittered >= 10.0) & (jittered < 12.0))
+
+
+class TestVocalOccurrenceJitterNull:
+    """The null the vocal-occurrence axis is tested against: replace each session's spike train with a
+    block-jitter surrogate, recount BOTH classes, refit. Seeded per draw, which is what lets draws be split
+    across workers and topped up by the escalation ladder."""
+
+    BLOCK = 2.0
 
     @staticmethod
     def _unit(n_sessions=2, duration=300.0, n_usvs=60, n_tiles=120, width=0.1, seed=0):
@@ -346,7 +376,7 @@ class TestVocalOccurrenceShiftNull:
         Description
         -----------
         Builds a unit with uniform background spikes plus a three-spike burst inside every peri-onset window,
-        so the spikes are ALIGNED to its USVs -- exactly what a circular shift should destroy.
+        so the spikes are ALIGNED to its USVs -- exactly what a block jitter should destroy.
 
         Parameters
         ----------
@@ -394,7 +424,7 @@ class TestVocalOccurrenceShiftNull:
         """
         Description
         -----------
-        Runs ``vocal_occurrence_shift_null`` with folds built from the windows and the module settings.
+        Runs ``vocal_occurrence_jitter_null`` with folds built from the windows and the module settings.
 
         Parameters
         ----------
@@ -417,8 +447,8 @@ class TestVocalOccurrenceShiftNull:
             The ``n_draws`` null statistics.
         """
         folds = occurrence_context(windows["labels"], windows["session_index"], windows["edges"], 5)
-        return vocal_occurrence_shift_null(windows, spikes, durations, start, n_draws, seed, self.GUARD, folds,
-                                           AXIS, CROSSFIT)
+        return vocal_occurrence_jitter_null(windows, spikes, durations, start, n_draws, seed, self.BLOCK, folds,
+                                            AXIS, CROSSFIT)
 
     def _score(self, windows, counts):
         """
@@ -449,29 +479,73 @@ class TestVocalOccurrenceShiftNull:
                                 self._null(windows, spikes, durations, 2, 4)])
         np.testing.assert_array_equal(whole, split)
 
-    def test_a_shift_destroys_real_alignment(self):
-        """A unit whose spikes are aligned to its USVs must score above every one of 25 shift-null draws."""
+    def test_a_jitter_destroys_real_alignment(self):
+        """A unit whose spikes are aligned to its USVs must score above every one of 25 jitter-null draws."""
         windows, spikes, durations = self._unit(seed=1)
         observed = self._score(windows, windows["counts"])
         null = self._null(windows, spikes, durations, 0, 25)
         assert observed > float(null.max())
 
     def test_both_classes_are_recounted(self):
-        """Freezing the quiet tiles and shifting only the USVs would be a different null. A draw must equal
+        """Freezing the quiet tiles and jittering only the USVs would be a different null. A draw must equal
         the recount-BOTH reference built from the same generator, and differ from the USVs-only one."""
         windows, spikes, durations = self._unit(seed=2)
         drawn = self._null(windows, spikes, durations, 0, 1)[0]
         generator = np.random.default_rng(7)
         both, usvs_only = windows["counts"].copy(), windows["counts"].copy()
         for slot in sorted(spikes):
-            low, high = shift_range_seconds(durations[slot], self.GUARD)
-            shifted = np.sort((spikes[slot] + generator.uniform(low, high)) % durations[slot])
+            shifted = block_jitter_spike_times(spikes[slot], durations[slot], self.BLOCK, generator)
             mask = windows["session_index"] == slot
             recounted = counts_in_windows(shifted, windows["edges"][mask], windows["width"])
             both[mask] = recounted
             usvs_only[mask & (windows["labels"] == 1)] = recounted[windows["labels"][mask] == 1]
         assert drawn == pytest.approx(self._score(windows, both), rel=0, abs=0)
         assert self._score(windows, usvs_only) != pytest.approx(drawn)
+
+
+    def test_a_slow_trend_shared_with_the_usvs_does_not_pass(self):
+        """
+        Description
+        -----------
+        The failure the block jitter exists for. In every session the USVs fall in the first third and the
+        unit's rate falls from 6 Hz to 1 Hz over the session, with no spike locked to any USV. A
+        whole-session circular shift moves the high-rate stretch away from the USVs, so the observed gain
+        beats every one of 40 shift draws; the 2 s block jitter keeps the trend in every draw, so the same
+        gain sits inside its null.
+        """
+        generator = np.random.default_rng(11)
+        duration, width = 600.0, 0.1
+        counts, labels, sessions, edges, spikes, durations = [], [], [], [], {}, {}
+        for slot in range(3):
+            usv_edges = np.sort(generator.uniform(10.0, duration / 3.0, 150))
+            tile_edges = np.sort(generator.uniform(10.0, duration - 10.0, 300))
+            grid = np.arange(0.0, duration, 0.01)
+            rate = 6.0 - 5.0 * grid / duration
+            fired = grid[generator.uniform(size=grid.size) < rate * 0.01]
+            train = np.sort(fired + generator.uniform(0.0, 0.01, fired.size))
+            spikes[slot], durations[slot] = train, duration
+            window_edges = np.concatenate([usv_edges, tile_edges])
+            counts.append(counts_in_windows(train, window_edges, width))
+            labels.append(np.concatenate([np.ones(usv_edges.size), np.zeros(tile_edges.size)]))
+            sessions.append(np.full(window_edges.size, slot))
+            edges.append(window_edges)
+        windows = {"counts": np.concatenate(counts), "labels": np.concatenate(labels),
+                   "session_index": np.concatenate(sessions), "edges": np.concatenate(edges), "width": width}
+        folds = occurrence_context(windows["labels"], windows["session_index"], windows["edges"], 5)
+        observed = self._score(windows, windows["counts"])
+        shift_null = np.empty(40)
+        for draw in range(40):
+            draw_generator = np.random.default_rng(100 + draw)
+            shifted_counts = np.empty_like(windows["counts"])
+            for slot, train in spikes.items():
+                shifted = np.sort((train + draw_generator.uniform(20.0, duration - 20.0)) % duration)
+                mask = windows["session_index"] == slot
+                shifted_counts[mask] = counts_in_windows(shifted, windows["edges"][mask], width)
+            shift_null[draw] = self._score(windows, shifted_counts)
+        jitter_null = vocal_occurrence_jitter_null(windows, spikes, durations, 0, 40, 3, self.BLOCK, folds, AXIS,
+                                                   CROSSFIT)
+        assert observed > float(shift_null.max())
+        assert np.mean(jitter_null >= observed) > 0.05
 
 
 class TestOnsetPrior:
@@ -490,7 +564,7 @@ class TestOnsetPrior:
     def test_noise_odds_take_kappa_zero_and_informative_odds_a_positive_kappa(self):
         """The per-fold concentration is tuned on the training sessions' inner splits: log-odds that know
         nothing leave the equal prior (the grid's first value), log-odds that track the labels tilt it."""
-        counts, labels, sessions, times = _unit(2.0)
+        _counts, labels, sessions, times = _unit(2.0)
         folds = occurrence_context(labels, sessions, times, 5)
         generator = np.random.default_rng(1)
         grid = [0.0, 0.25, 0.5, 1.0, 2.0]
@@ -534,8 +608,8 @@ class TestOnsetPrior:
                                                                  + nested["behaviour_over_no_behaviour"])
         assert np.isfinite(nested["auroc"])
 
-    def test_the_shift_null_carries_the_priors_and_the_equal_prior_path_is_unchanged(self):
-        """A per-fold prior rides through the shift null unchanged across draws; an equal prior gives the
+    def test_the_jitter_null_carries_the_priors_and_the_equal_prior_path_is_unchanged(self):
+        """A per-fold prior rides through the jitter null unchanged across draws; an equal prior gives the
         same draws as no prior at all."""
         counts, labels, sessions, times = _unit(1.0, n_sessions=2, n_positive=40, n_negative=40)
         generator = np.random.default_rng(4)
@@ -545,12 +619,12 @@ class TestOnsetPrior:
         durations = {0: duration, 1: duration}
         folds = occurrence_context(labels, sessions, times, 5)
         equal = [onset_log_prior(np.zeros(labels.size), 0.0) for _fold in folds]
-        plain = vocal_occurrence_shift_null(windows, trains, durations, 0, 3, 9, 2.0, folds, AXIS, CROSSFIT)
-        same = vocal_occurrence_shift_null(windows, trains, durations, 0, 3, 9, 2.0, folds, AXIS, CROSSFIT, equal)
+        plain = vocal_occurrence_jitter_null(windows, trains, durations, 0, 3, 9, 2.0, folds, AXIS, CROSSFIT)
+        same = vocal_occurrence_jitter_null(windows, trains, durations, 0, 3, 9, 2.0, folds, AXIS, CROSSFIT, equal)
         np.testing.assert_allclose(same, plain)
         informative = 3.0 * (labels - 0.5)
         _kappas, priors = onset_behaviour_tilts(folds, labels, informative, [0.0, 1.0])
-        tilted = vocal_occurrence_shift_null(windows, trains, durations, 0, 3, 9, 2.0, folds, AXIS, CROSSFIT,
+        tilted = vocal_occurrence_jitter_null(windows, trains, durations, 0, 3, 9, 2.0, folds, AXIS, CROSSFIT,
                                              priors)
         assert tilted.shape == (3,)
         assert np.isfinite(tilted).all()

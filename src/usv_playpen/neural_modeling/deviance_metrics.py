@@ -94,7 +94,6 @@ def bernoulli_deviance(eta: np.ndarray, y: np.ndarray) -> float:
     return float(2.0 * np.sum(np.logaddexp(0.0, eta) - y * eta))
 
 
-
 def area_under_roc(scores: np.ndarray, labels: np.ndarray) -> float:
     """
     Description
@@ -517,6 +516,7 @@ def batched_calibrated_explained_deviance(eta: np.ndarray, labels: np.ndarray,
     scores[valid] = 1.0 - model_deviance[valid] / baseline[valid]
     return scores
 
+
 def binned_calibrated_explained_deviance(eta: np.ndarray, labels: np.ndarray, n_steps: int,
                                          n_bins: int) -> np.ndarray:
     """
@@ -610,6 +610,7 @@ def binned_calibrated_explained_deviance(eta: np.ndarray, labels: np.ndarray, n_
     valid = usable & (baseline > 0)
     scores[valid] = 1.0 - model_deviance[valid] / baseline[valid]
     return scores
+
 
 def pooled_calibrated_explained_deviance(eta: np.ndarray, y: np.ndarray, session_index: np.ndarray,
                                          n_steps: int) -> tuple[float, float]:

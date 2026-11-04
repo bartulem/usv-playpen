@@ -16,6 +16,7 @@ import pickle
 import sys
 
 import numpy as np
+import polars as pls
 import pytest
 
 from usv_playpen.neural_modeling import (
@@ -267,8 +268,42 @@ class TestConsolidate:
         multinomial, _ = consolidate([_record("u")], {"u": artifact},
                                      {**SETTINGS, "vocalizations": {"vocal_target": "multinomial"}})
         assert manifold["category"][0] == "Transformation"
-        assert multinomial["p_conjunction"][0] == pytest.approx(0.6)
+        # The categorical nested test added -0.001: a non-positive effect fails the conjunction outright.
+        assert multinomial["p_conjunction"][0] == pytest.approx(1.0)
         assert multinomial["category"][0] != "Transformation"
+
+    def test_a_decoding_with_a_non_positive_effect_never_passes(self):
+        """A floored p with a gain at or below zero is a fail for identity, nested and nested onset alike,
+        and it fails the conjunction; occurrence follows the same rule."""
+        artifact = _artifact(p=1e-3)
+        artifact["vocalization_identity_manifold"]["gain"] = -0.02
+        artifact["nested_vocal_decoding_onset"]["added"] = 0.0
+        table, _ = consolidate([_record("u")], {"u": artifact}, SETTINGS)
+        assert table["pass_identity"][0] is False
+        assert table["pass_nested_onset"][0] is False
+        assert table["pass_nested"][0] is True
+        assert table["p_conjunction"][0] == pytest.approx(1.0)
+        assert table["category"][0] != "Transformation"
+
+    def test_a_best_screened_only_unit_enters_quiet_as_a_fail_and_transfer_as_untested(self):
+        """Whatever descriptive p-values a no-model section carries, the corrections read quiet 1.0 and
+        transfer NaN, so a maximum over the screened features never enters a correction."""
+        artifact = _artifact(p=1e-3)
+        artifact["kinematic_encoding"].update({"no_model": True, "best_screened_only": True})
+        table, _ = consolidate([_record("u")], {"u": artifact}, SETTINGS)
+        assert table["p_quiet"][0] == 1.0
+        assert np.isnan(table["p_transfer"][0])
+        assert table["reason_transfer"][0] == "no_model"
+
+    def test_a_group_without_any_nested_result_still_reports(self):
+        """When no unit in a group carries a nested result the modifier column is Null-typed; the report
+        must still be built rather than fail on the comparison."""
+        artifact = _artifact(p=1e-3)
+        for name in ("nested_vocal_decoding_manifold", "nested_vocal_decoding_multinomial",
+                     "nested_vocal_decoding_onset"):
+            artifact[name] = {"ran": False, "reason": "not_vocal_testable"}
+        _, report = consolidate([_record("u")], {"u": artifact}, SETTINGS)
+        assert report["PAG"]["transformation_where_behaviour_uninformative"] == 0
 
     def test_single_session_units_are_listed_but_not_corrected_by_default(self):
         """Excluded by default, admitted by the switch; listed either way."""
@@ -415,3 +450,96 @@ class TestNestedOnset:
         assert report["PAG"]["tests"]["nested_onset"]["n_tested"] == 1
         assert report["PAG"]["tests"]["nested_onset"]["n_draws"] == 1000
         assert "nested_onset" in TESTS
+
+
+class TestStaleSections:
+    """Sections written under other settings than the consolidation's are refused, not silently mixed."""
+
+    def test_a_section_under_another_hash_is_listed(self):
+        """A section whose provenance hash differs, or a section without provenance in a file that records
+        per-section provenance, is stale; a file without per-section provenance is not judged."""
+        settings = {"x": 1}
+        current = consolidation.compute_settings_sha256(settings)
+        artifacts = {"u0": {"identity": {}, "vocal_occurrence": {}, "vocal_gating": {},
+                            "section_provenance": {"vocal_occurrence": {"settings_sha256": current},
+                                                   "vocal_gating": {"settings_sha256": "0" * 64}}},
+                     "u1": {"identity": {}, "vocal_occurrence": {}},
+                     "u2": {}}
+        assert consolidation.stale_sections(artifacts, settings) == {"u0": ["vocal_gating"]}
+
+
+class TestDescriptors:
+    """The cohort table carries the descriptors the figures read beside the p-values."""
+
+    def test_identity_draws_and_model_descriptors_are_columns(self):
+        """Probe and date come from the record; draw counts from the stored nulls and sections; the
+        gating z is the winning feature's sigma margin."""
+        artifact = _artifact(p=1e-3, gating={"ran": True, "p_unit": 1e-3, "p_unit_feature": "f0",
+                                             "p_unit_at_floor": False, "n_features_tested": 3,
+                                             "per_feature": {"f0": {"sigma_margin": 7.5}}})
+        artifact["kinematic_encoding"].update({"selected": ["head-head", "self.speed"],
+                                               "spike_counts_per_session": {"s0": {"spikes": 100,
+                                                                                    "quiet_spikes": 60}}})
+        record = {**_record("u"), "unit_id": "imec1_cl0401_ch220_good", "mouse_id": "m1", "rec_date": 20250919}
+        table, _ = consolidate([record], {"u": artifact}, SETTINGS)
+        assert table["probe"][0] == "imec1"
+        assert table["rec_date"][0] == 20250919
+        assert table["n_selected"][0] == 2
+        assert table["selected_features"][0] == "head-head+self.speed"
+        assert table["n_draws_quiet"][0] == 1000
+        assert table["n_draws_occurrence"][0] == 1000
+        assert table["n_spikes_total"][0] == 100
+        assert table["z_gating"][0] == 7.5
+        assert table["gating_n_features_tested"][0] == 3
+
+
+class TestStaleSectionsOnTheCommandLine:
+    """The command refuses stale sections by default and excludes them only when told to."""
+
+    def _run(self, tmp_path, monkeypatch, extra: list) -> int:
+        """
+        Description
+        -----------
+        Run the command on one unit whose gating section was written under other settings.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Results and output directory.
+        monkeypatch (pytest.MonkeyPatch)
+            Installs the stubs.
+        extra (list)
+            Extra command-line arguments.
+
+        Returns
+        -------
+        status (int)
+            The command's exit status.
+        """
+        settings = {**SETTINGS, "nested_vocal_decoding": {}}
+        current = consolidation.compute_settings_sha256(settings)
+        artifact = _artifact(p=1e-3, gating={"ran": True, "p_unit": 1e-3, "p_unit_feature": "f0",
+                                             "p_unit_at_floor": False})
+        artifact["section_provenance"] = {name: {"settings_sha256": current} for name in artifact}
+        artifact["section_provenance"]["vocal_gating"] = {"settings_sha256": "0" * 64}
+        self.artifact = artifact
+        monkeypatch.setattr(consolidation, "build_cohort_manifest", lambda _settings: [_record("u")])
+        monkeypatch.setattr(consolidation, "read_unit_artifact", lambda _directory, _uid: artifact)
+        monkeypatch.setattr(consolidation, "load_settings", lambda _path: settings)
+        monkeypatch.setattr(consolidation, "build_provenance", lambda _settings: {"settings_sha256": current})
+        monkeypatch.setattr(sys, "argv", ["consolidate", "--results-directory", str(tmp_path),
+                                          "--output-directory", str(tmp_path / "out"), *extra])
+        return consolidation.main()
+
+    def test_a_stale_section_stops_the_step(self, tmp_path, monkeypatch, capsys):
+        """Without the flag the command returns 1 and writes nothing."""
+        assert self._run(tmp_path, monkeypatch, []) == 1
+        assert not (tmp_path / "out" / "neural_cohort_table.csv").exists()
+        assert "--allow-stale-sections" in capsys.readouterr().out
+
+    def test_the_flag_excludes_the_stale_section_with_its_reason(self, tmp_path, monkeypatch):
+        """With the flag the stale section is excluded as not run, reason ``stale_settings``."""
+        assert self._run(tmp_path, monkeypatch, ["--allow-stale-sections"]) == 0
+        assert self.artifact["vocal_gating"] == {"ran": False, "reason": "stale_settings"}
+        table = pls.read_csv(tmp_path / "out" / "neural_cohort_table.csv")
+        assert table["reason_gating"][0] == "stale_settings"

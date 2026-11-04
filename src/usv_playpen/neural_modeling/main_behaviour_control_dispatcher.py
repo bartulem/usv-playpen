@@ -7,9 +7,10 @@ writes and refuses to run on an artifact that disagrees with its settings.
 
 ``fit`` fits the control for one target (``--target``, default ``vocalizations.vocal_target``):
 the torus regression for ``"manifold"``, the behavioural modelling's multinomial logistic regression
-for ``"multinomial"``, on the features frozen at ``nested_vocal_decoding.reduced_model_features[target]``,
-and writes it to ``behaviour_control_model_path[target]``. Every unit is decoded on both targets, so
-both controls must be fitted, one run each.
+for ``"multinomial"`` and its two-class form for ``"onset"``, on the features frozen at
+``nested_vocal_decoding.reduced_model_features[target]``, and writes it to
+``behaviour_control_model_path[target]`` with the days it left out (``--exclude-days``). Every unit runs
+the nested decoding on all three, so all three controls must be fitted, one run each.
 
 ``select`` runs this package's own forward selection for the torus control. The shipped feature sets
 come from the behavioural modelling's selections instead (``paths.behaviour_selection_result_path``
@@ -20,6 +21,7 @@ neuron is measured against never changes as a side effect of a re-run.
 Usage:
     python -m usv_playpen.neural_modeling.main_behaviour_control_dispatcher --stage fit --target manifold
     python -m usv_playpen.neural_modeling.main_behaviour_control_dispatcher --stage fit --target multinomial
+    python -m usv_playpen.neural_modeling.main_behaviour_control_dispatcher --stage fit --target onset
     python -m usv_playpen.neural_modeling.main_behaviour_control_dispatcher --stage select --output <file>
 """
 
@@ -129,7 +131,8 @@ def main(message_output=print) -> None:
     arguments = parser.parse_args()
 
     settings = load_settings(arguments.settings)
-    # Every unit is decoded on both targets, so both controls are fitted, one run each; the settings
+    # Every unit runs the nested decoding on all three targets, so all three controls are fitted, one run
+    # each; the settings
     # are not edited, so the artifact's settings hash matches the shipped file.
     target = arguments.target if arguments.target is not None else vocal_target(settings)
     if arguments.stage == "select" and target != "manifold":
@@ -206,6 +209,8 @@ def main(message_output=print) -> None:
                    else settings["paths"]["behaviour_control_model_path"][target])
     if target == "onset":
         artifact = fit_onset_control_models(cohort, features, settings, n_lags)
+        # The days left out of this fit, so the artifact says which days it can serve.
+        artifact["excluded_days"] = sorted(str(day) for day in arguments.exclude_days)
         write_control_model(artifact, destination)
         message_output(f"\nFITTED {target} {artifact['features']} over {len(artifact['coefficients'])} "
                        f"held-out days", flush=True)
@@ -220,6 +225,8 @@ def main(message_output=print) -> None:
         return
     if target == "multinomial":
         artifact = fit_category_control_models(cohort, features, settings, n_lags)
+        # The days left out of this fit, so the artifact says which days it can serve.
+        artifact["excluded_days"] = sorted(str(day) for day in arguments.exclude_days)
         write_control_model(artifact, destination)
         message_output(f"\nFITTED {target} {artifact['features']} over {len(artifact['coefficients'])} "
                        f"held-out days", flush=True)
@@ -234,6 +241,8 @@ def main(message_output=print) -> None:
         return
 
     artifact = fit_control_models(cohort, features, settings, n_lags)
+    # The days left out of this fit, so the artifact says which days it can serve.
+    artifact["excluded_days"] = sorted(str(day) for day in arguments.exclude_days)
     write_control_model(artifact, destination)
     message_output(f"\nFITTED {artifact['features']} over {len(artifact['coefficients'])} held-out days",
           flush=True)

@@ -198,7 +198,7 @@ PANEL_TITLE_SIZE = 7
 # figure, never narrower panels or stretched rows.
 REFERENCE_FIGURE_WIDTH = 2.6 * 5
 # Where a filter panel's spike-triggered-average inset sits, per unit and feature. An override rather than
-# a heuristic because the corner is an aesthetic call the data cannot settle: on the VTA unit's speed
+# a heuristic because the corner is an aesthetic USV the data cannot settle: on the VTA unit's speed
 # filter the upper right and upper left are BOTH completely free, so any automatic rule picks one of them
 # arbitrarily. Anything not listed falls back to `freest_corner`.
 # Where the session legend sits in the vocalizing panel, per unit; anything unlisted uses the upper left.
@@ -2113,18 +2113,18 @@ def gating_proximity_data(unit_uid: str, paths: FigurePaths, identity: dict, set
     """
     Description
     -----------
-    Per-call and per-quiet-frame firing against inter-animal distance, for the gating panels.
+    Per-USV and per-quiet-frame firing against inter-animal distance, for the gating panels.
 
-    Model-free throughout: a call's rate is the spikes in ``[start, stop]`` over its own duration, counted
+    Model-free throughout: a USV's rate is the spikes in ``[start, stop]`` over its own duration, counted
     from spike TIMES rather than binned frames, and a quiet frame's rate is its 0/1 label. Distance is read
     from the raw (unscaled) behavioural features, so the axis is in centimetres rather than SDs, and is
-    taken at each call's onset frame.
+    taken at each USV's onset frame.
 
     Distance comes in two rulers, both kept, because they are not interchangeable and each answers to
     something different. ``head`` is the distance between the animals' HEAD points (the ``space``
     coordinates, the Head node in cm); ``nose`` is the model's own ``nose-nose`` feature. Two mice side by
     side with their heads 2 cm apart can have noses pointing away from each other, so the nose-tip
-    distance mixes proximity with head orientation: measured on cl0633 it ranks the calls at Spearman
+    distance mixes proximity with head orientation: measured on cl0633 it ranks the USVs at Spearman
     -0.41 against -0.54 for head points. The head ruler is the cleaner description of proximity; the nose
     ruler is what the gating statistic was computed on.
 
@@ -2142,11 +2142,11 @@ def gating_proximity_data(unit_uid: str, paths: FigurePaths, identity: dict, set
     Returns
     -------
     data (dict)
-        ``call_distance`` and ``quiet_distance``, each a dict of ``head`` and ``nose`` arrays; ``call_rate``
-        and ``call_category`` per focal call; ``quiet_label`` per quiet anchor; and ``fps``.
+        ``usv_distance`` and ``quiet_distance``, each a dict of ``head`` and ``nose`` arrays; ``usv_rate``
+        and ``usv_category`` per focal USV; ``quiet_label`` per quiet anchor; and ``fps``.
     """
 
-    cache_path = paths.cache_directory / f"{unit_uid}_gating_proximity.pkl"
+    cache_path = paths.cache_directory / f"{unit_uid}_gating_proximity_usv.pkl"
     if cache_path.exists():
         with cache_path.open("rb") as cache_file:
             return pickle.load(cache_file)
@@ -2161,8 +2161,8 @@ def gating_proximity_data(unit_uid: str, paths: FigurePaths, identity: dict, set
     raw, _camera_rates, track_names = load_behavioral_feature_data(
         behavior_file_paths=[str(paths.data_root / session) for session in sessions], csv_sep=",")
 
-    call_rate, call_category, quiet_label = [], [], []
-    call_distance = {"head": [], "nose": []}
+    usv_rate, usv_category, quiet_label = [], [], []
+    usv_distance = {"head": [], "nose": []}
     quiet_distance = {"head": [], "nose": []}
     fps = float(per_session[sessions[0]]["fps"])
     for session_id in sessions:
@@ -2197,25 +2197,25 @@ def gating_proximity_data(unit_uid: str, paths: FigurePaths, identity: dict, set
             if last <= first or last > session["n_frames"] or not finite_frame[onset]:
                 continue
             for ruler, values in distances.items():
-                call_distance[ruler].append(values[onset])
-            # Counted from spike TIMES over the call's own span. Binning the frames instead rounds the
-            # span outward to whole frames, catching spikes just outside the call -- 9.32 Hz against
+                usv_distance[ruler].append(values[onset])
+            # Counted from spike TIMES over the USV's own span. Binning the frames instead rounds the
+            # span outward to whole frames, catching spikes just outside the USV -- 9.32 Hz against
             # 8.52 Hz on cl0633, which is a tenth of the effect being measured.
-            call_rate.append((np.searchsorted(spike_seconds, stop) - np.searchsorted(spike_seconds, start))
+            usv_rate.append((np.searchsorted(spike_seconds, stop) - np.searchsorted(spike_seconds, start))
                              / (stop - start))
             # A USV with no torus position has no category either (4 of 2,437 focal USVs on this day).
             # It keeps its rate and distance -- the gate curves need neither -- and is left out of the
             # by-category panel only.
-            call_category.append(float(category) if np.isfinite(category) else np.nan)
+            usv_category.append(float(category) if np.isfinite(category) else np.nan)
 
         anchors = session["quiet"][finite_frame[session["quiet"]]]
         for ruler, values in distances.items():
             quiet_distance[ruler].append(values[anchors])
         quiet_label.append(occupancy[anchors].astype(np.float64))
 
-    data = {"call_distance": {ruler: np.asarray(values) for ruler, values in call_distance.items()},
+    data = {"usv_distance": {ruler: np.asarray(values) for ruler, values in usv_distance.items()},
             "quiet_distance": {ruler: np.concatenate(values) for ruler, values in quiet_distance.items()},
-            "call_rate": np.asarray(call_rate), "call_category": np.asarray(call_category),
+            "usv_rate": np.asarray(usv_rate), "usv_category": np.asarray(usv_category),
             "quiet_label": np.concatenate(quiet_label), "fps": fps}
     paths.cache_directory.mkdir(parents=True, exist_ok=True)
     with cache_path.open("wb") as cache_file:
@@ -2230,7 +2230,7 @@ def quantile_distance_bins(data: dict, ruler: str) -> np.ndarray:
     Equal-count partner-distance bin edges, for the gate CURVE.
 
     A line plot draws each point at its bin's median distance, so unequal bin widths mislead nobody and
-    equal counts put the resolution where the calls are: half of them fall within 6 cm, where the gate
+    equal counts put the resolution where the USVs are: half of them fall within 6 cm, where the gate
     does all of its work. This is the wrong choice for the heatmap -- see :func:`distance_bins` -- and the
     right one here.
 
@@ -2247,7 +2247,7 @@ def quantile_distance_bins(data: dict, ruler: str) -> np.ndarray:
         ``N_GATE_BINS + 1`` edges.
     """
 
-    return np.quantile(data["call_distance"][ruler], np.linspace(0.0, 1.0, N_GATE_BINS + 1))
+    return np.quantile(data["usv_distance"][ruler], np.linspace(0.0, 1.0, N_GATE_BINS + 1))
 
 
 def draw_gating_verdict(axis, gating: dict) -> None:
@@ -2260,7 +2260,7 @@ def draw_gating_verdict(axis, gating: dict) -> None:
     or by MULTIPLYING? Both bars are INCREMENTS in one nested chain -- the grey is what vocalizing adds
     with the feature already in the model, the coloured is what their product adds with both main effects
     already in -- so they are the same kind of quantity and the picture is the comparison. A unit that
-    simply fires to calls has a long grey bar and a stub beside it; a unit whose vocal response is gated
+    simply fires to USVs has a long grey bar and a stub beside it; a unit whose vocal response is gated
     by the feature has a product term that rivals the plain vocal response, and the coloured bar
     overtakes the grey one. Red marks exactly that, which is the sub-analysis's verdict, met by ONE
     feature of nineteen on the calibration unit.
@@ -2322,9 +2322,9 @@ def draw_gate(axis, data: dict, ruler: str) -> None:
     """
     Description
     -----------
-    Firing rate against inter-animal distance, during calls and on quiet frames.
+    Firing rate against inter-animal distance, during USVs and on quiet frames.
 
-    This is the gate itself, with no model in it: during calls the unit fires hard when the animals are
+    This is the gate itself, with no model in it: during USVs the unit fires hard when the animals are
     close and falls silent as they separate, while on quiet frames it is near zero at every distance except
     at near contact.
 
@@ -2342,18 +2342,18 @@ def draw_gate(axis, data: dict, ruler: str) -> None:
     None
     """
 
-    distance = data["call_distance"][ruler]
+    distance = data["usv_distance"][ruler]
     edges = quantile_distance_bins(data, ruler)
-    call_bin = np.clip(np.digitize(distance, edges[1:-1]), 0, edges.size - 2)
+    usv_bin = np.clip(np.digitize(distance, edges[1:-1]), 0, edges.size - 2)
     quiet_bin = np.clip(np.digitize(data["quiet_distance"][ruler], edges[1:-1]), 0, edges.size - 2)
     centres, during, quiet = [], [], []
     for index in range(edges.size - 1):
-        calls = call_bin == index
+        USVs = usv_bin == index
         frames = quiet_bin == index
-        centres.append(np.median(distance[calls]) if np.any(calls) else np.nan)
-        during.append(data["call_rate"][calls].mean() if np.any(calls) else np.nan)
+        centres.append(np.median(distance[USVs]) if np.any(USVs) else np.nan)
+        during.append(data["usv_rate"][USVs].mean() if np.any(USVs) else np.nan)
         quiet.append(data["quiet_label"][frames].mean() * data["fps"] if np.any(frames) else np.nan)
-    correlation = spearmanr(distance, data["call_rate"])
+    correlation = spearmanr(distance, data["usv_rate"])
 
     axis.plot(centres, during, color=VOCAL_COLOR, linewidth=1.2, marker="o", markersize=3,
               label="during USVs")
@@ -2369,9 +2369,9 @@ def draw_gate_by_category(axis, data: dict, ruler: str) -> None:
     """
     Description
     -----------
-    During-call firing by acoustic category, split into close and far calls.
+    During-USV firing by acoustic category, split into close and far USVs.
 
-    A unit that coded call TYPE would show a category running high at both distances; a gate shows every
+    A unit that coded USV TYPE would show a category running high at both distances; a gate shows every
     category higher when close, which is what separates the two readings.
 
     Parameters
@@ -2388,14 +2388,14 @@ def draw_gate_by_category(axis, data: dict, ruler: str) -> None:
     None
     """
 
-    split = float(np.median(data["call_distance"][ruler]))
-    close = data["call_distance"][ruler] <= split
-    categories = sorted({int(value) for value in data["call_category"] if np.isfinite(value)})
+    split = float(np.median(data["usv_distance"][ruler]))
+    close = data["usv_distance"][ruler] <= split
+    categories = sorted({int(value) for value in data["usv_category"] if np.isfinite(value)})
     positions = np.arange(len(categories))
     for offset, (mask, color, name) in enumerate(((close, VOCAL_COLOR, f"close (<={split:.0f} cm)"),
                                                   (~close, lighten(VOCAL_COLOR, 0.55), "far"))):
-        heights = [data["call_rate"][mask & (data["call_category"] == category)].mean()
-                   if np.any(mask & (data["call_category"] == category)) else np.nan
+        heights = [data["usv_rate"][mask & (data["usv_category"] == category)].mean()
+                   if np.any(mask & (data["usv_category"] == category)) else np.nan
                    for category in categories]
         axis.bar(positions + 0.42 * offset - 0.21, heights, width=0.4, color=color, edgecolor="none",
                  label=name)
@@ -2411,7 +2411,7 @@ def draw_gate_heatmap(axis, data: dict, ruler: str) -> None:
     """
     Description
     -----------
-    During-call firing over distance and acoustic category, as a heatmap.
+    During-USV firing over distance and acoustic category, as a heatmap.
 
     Banding by column rather than by row is the statement: distance organises the response and category
     does not.
@@ -2430,20 +2430,20 @@ def draw_gate_heatmap(axis, data: dict, ruler: str) -> None:
     None
     """
 
-    distance = data["call_distance"][ruler]
+    distance = data["usv_distance"][ruler]
     edges = quantile_distance_bins(data, ruler)
-    call_bin = np.clip(np.digitize(distance, edges[1:-1]), 0, edges.size - 2)
-    categories = sorted({int(value) for value in data["call_category"] if np.isfinite(value)})
+    usv_bin = np.clip(np.digitize(distance, edges[1:-1]), 0, edges.size - 2)
+    categories = sorted({int(value) for value in data["usv_category"] if np.isfinite(value)})
     grid = np.full((len(categories), edges.size - 1), np.nan)  # empty cells drawn as zero, see below
     labels = []
     for column in range(edges.size - 1):
-        in_bin = call_bin == column
+        in_bin = usv_bin == column
         labels.append(f"{np.median(distance[in_bin]):.0f}" if np.any(in_bin) else "")
         for row, category in enumerate(categories):
-            cell = in_bin & (data["call_category"] == category)
+            cell = in_bin & (data["usv_category"] == category)
             if np.any(cell):
-                grid[row, column] = data["call_rate"][cell].mean()
-    # A cell with no call of that category at that distance is drawn as zero rather than as missing. It
+                grid[row, column] = data["usv_rate"][cell].mean()
+    # A cell with no USV of that category at that distance is drawn as zero rather than as missing. It
     # only ever happens far out, where every populated cell is zero anyway, so a gap in the colour there
     # says less than it costs in attention.
     #
@@ -2478,7 +2478,7 @@ def vocal_event_data(unit_uid: str, paths: FigurePaths, identity: dict, settings
     """
     Description
     -----------
-    The per-call and per-window arrays the vocal panels draw, rebuilt from the design and cached.
+    The per-USV and per-window arrays the vocal panels draw, rebuilt from the design and cached.
 
     Only the event assembly is rebuilt. Every number the panels report -- scores, nulls, per-fold detail,
     the fitted tuning coefficients -- is read from the stored sections, and the assembly is what the
@@ -2498,7 +2498,7 @@ def vocal_event_data(unit_uid: str, paths: FigurePaths, identity: dict, settings
     Returns
     -------
     events (dict)
-        As ``assemble_unit_vocal_events``: per-call ``counts``, ``positions``, ``session_index`` and the
+        As ``assemble_unit_vocal_events``: per-USV ``counts``, ``positions``, ``session_index`` and the
         ``occurrence_windows`` block of counts and vocal/quiet labels.
     """
 
@@ -2548,7 +2548,7 @@ def draw_occurrence_tuning(axis, occurrence: dict, windows: dict, session_ids: l
         Session names, indexed as ``session_index``.
     legend_at (str)
         Where the session legend goes. It has to move per unit: the curve's shape decides which corner is
-        free, and a unit that fires rarely outside calls rises far earlier than one that does not.
+        free, and a unit that fires rarely outside USVs rises far earlier than one that does not.
 
     Returns
     -------
@@ -2590,7 +2590,7 @@ def draw_occurrence_tuning(axis, occurrence: dict, windows: dict, session_ids: l
     # The fitted slope is not repeated here -- the score panel beside this one reports it.
     axis.legend(frameon=False, fontsize=5, loc=legend_at, title="session", title_fontsize=5)
     # Sensitivity, which the panel otherwise hides: it plots P(vocal | count), so a unit that fires on
-    # half its calls and almost never otherwise looks as convincing as one that fires on nearly all of
+    # half its USVs and almost never otherwise looks as convincing as one that fires on nearly all of
     # them. The score already reflects the difference -- both average over every window -- but neither
     # number says which of the two a unit is.
     vocal_rows = labels > 0.5
@@ -2610,7 +2610,7 @@ def draw_tuning_map(axis, identity_section: dict, events: dict, settings: dict) 
 
     Drawn from the stored Fourier coefficients and each fold's amplitude, so no decoder is refitted: the
     surface is ``exp(alpha * basis(x) . beta)``, the same construction the decoder inverts. Cells where no
-    training call ever fell are left blank, since the decoder masks them too.
+    training USV ever fell are left blank, since the decoder masks them too.
 
     Parameters
     ----------
@@ -2619,7 +2619,7 @@ def draw_tuning_map(axis, identity_section: dict, events: dict, settings: dict) 
     identity_section (dict)
         The pickle's ``vocalization_identity`` section.
     events (dict)
-        Assembled events, for the calls that define occupancy.
+        Assembled events, for the USVs that define occupancy.
     settings (dict)
         The run's settings.
 
@@ -2840,7 +2840,7 @@ def category_confusion(unit_uid: str, events: dict, identity_section: dict, sett
     averaged by true category: how far the neuron moves the decoder from the prior, toward or away from
     each category, for USVs of each true category.
 
-    No refit. The events, codes and folds are the dispatcher's ``run_vocalization_identity`` calls in the
+    No refit. The events, codes and folds are the dispatcher's ``run_vocalization_identity`` steps in the
     same order; each fold's posterior is ``category_posterior`` with that fold's stored ``rates`` and
     ``alpha`` and the exposure the decoder computes. The rebuild must reproduce the stored per-USV gain
     (log posterior minus log prior at the true category) to ``CATEGORY_REBUILD_TOLERANCE``, or nothing is
@@ -2970,9 +2970,9 @@ def draw_per_event_gain(axis, identity_section: dict, title: str = "Decoding voc
     """
     Description
     -----------
-    Distribution of the per-call decoding gain, so a result carried by a handful of calls is visible.
+    Distribution of the per-USV decoding gain, so a result carried by a handful of USVs is visible.
 
-    The tested number is the mean of these, and a mean says nothing about whether the calls agree. The
+    The tested number is the mean of these, and a mean says nothing about whether the USVs agree. The
     share above zero and the median against the mean do.
 
     Parameters
@@ -2987,7 +2987,7 @@ def draw_per_event_gain(axis, identity_section: dict, title: str = "Decoding voc
     None
     """
 
-    # The permuted distribution is NOT drawn beside this one. Permuting positions leaves nearly every call
+    # The permuted distribution is NOT drawn beside this one. Permuting positions leaves nearly every USV
     # at no gain, so at this resolution the null is a spike hidden under the observed peak -- it carries
     # no width to compare against. The tested comparison lives in the score panel to the right, where the
     # null is a distribution of means and has a scale worth seeing.
@@ -3014,7 +3014,7 @@ def nested_event_data(unit_uid: str, paths: FigurePaths, identity: dict, setting
     the USV positions the maps are drawn on, and the behaviour prior's own gain at every USV.
 
     Everything TESTED is read from the section. What is rebuilt here is the event assembly, the cohort
-    control's prediction for each USV and the behaviour prior built from it -- the same calls the
+    control's prediction for each USV and the behaviour prior built from it -- the same USVs the
     dispatcher makes, in the same order, so the per-USV arrays line up with the section's
     ``per_event_gain`` row for row. Two things are checked rather than assumed: the rebuilt
     concentrations must equal the stored ``kappas`` fold for fold, and the rebuilt behaviour rung is
@@ -3054,7 +3054,7 @@ def nested_event_data(unit_uid: str, paths: FigurePaths, identity: dict, setting
     per_session = assemble_unit_sessions(identity, str(paths.data_root), settings["kinematic_features"],
                                          kinematic["history_pre_seconds"], kinematic["clean_post_seconds"],
                                          vocalization["clean_against"],
-                                         vocalization)
+                                         vocalization, standardise="per_session")
     fps = float(per_session[identity["courtship_sessions"][0]]["fps"])
     design = nested_design(events, per_session, reduced_model_features(settings, "manifold"),
                            int(np.floor(kinematic["history_pre_seconds"] * fps)), nested["sigma_floor"])
@@ -3096,7 +3096,7 @@ def category_nested_event_data(unit_uid: str, paths: FigurePaths, identity: dict
     The categorical counterpart of :func:`nested_event_data`: per scored USV, its torus position and the
     behaviour prior's own gain, rebuilt and cached.
 
-    The calls are the dispatcher's ``run_category_nested_decoding`` in the same order -- event assembly,
+    The steps are the dispatcher's ``run_category_nested_decoding`` in the same order -- event assembly,
     the design on the categorical control's features, the held-out day's base-rate-free category
     probabilities, the unit's category codes, the folds and the tuned tilts -- so the per-USV arrays line
     up row for row with the section's ``per_event_gain``. The behaviour gain at a USV is the log of the
@@ -3303,12 +3303,12 @@ def draw_nested_ladder(axis, nested: dict, rebuilt: dict, title: str = "Predicti
 
 # Set by SIGNAL, not by nominal resolution. Effective resolution is sqrt(n / N_eff), and sigma 0.03
 # delivers the ruled 10x10 (11.0 cells per dimension) where 0.05 delivers about 6x6 -- but a permutation
-# test over the per-call values, shuffled across calls and smoothed identically, says the finer setting
+# test over the per-USV values, shuffled across USVs and smoothed identically, says the finer setting
 # is mostly noise: the share of the map's spatial variance that shuffling does NOT reproduce runs 43.5%
 # at sigma 0.03 against 71.7% at 0.05 and 82.1% at 0.08 (cl0401). Resolution the data cannot support is
 # not resolution, and it reads as patchiness a viewer will try to interpret.
 ERROR_SIGMA = 0.05
-ERROR_MIN_EFFECTIVE_CALLS = 10.0
+ERROR_MIN_EFFECTIVE_USVS = 10.0
 # The gain panels follow the behavioural torus filter atlas: the shared diverging colormap of the
 # visualization settings on main, and a symmetric limit set by EACH panel's own peak rounded up to one
 # significant figure. A fixed +/-0.1 clipped 12-64% of every rendered field (peaks 0.19-0.66 nats per
@@ -3378,7 +3378,7 @@ def smoothed_manifold_field(positions: np.ndarray, values: np.ndarray, settings:
     """
     Description
     -----------
-    A wrapped-Gaussian local average of a per-call value, on the SAME grid and mask as the tuning map.
+    A wrapped-Gaussian local average of a per-USV value, on the SAME grid and mask as the tuning map.
 
     Sharing the grid is not tidiness. Built on its own grid this panel put its white stretches in
     different places from the tuning map beside it, which invites the reader to compare two pictures of
@@ -3388,16 +3388,16 @@ def smoothed_manifold_field(positions: np.ndarray, values: np.ndarray, settings:
     The VALUES are smoothed at ``ERROR_SIGMA``, which is set to deliver the ruled 10x10 resolution --
     see its note; it is measured, not derived from the cell width. The MASK is the tuning surface's own
     occupancy rule, which is the more permissive of the two candidates. MEASURED on the example units,
-    that permissiveness costs little: 1% of shown points fall below ten effective calls and none below
-    five, with a median of 68 and 117. ``ERROR_MIN_EFFECTIVE_CALLS`` records the threshold that was
+    that permissiveness costs little: 1% of shown points fall below ten effective USVs and none below
+    five, with a median of 68 and 117. ``ERROR_MIN_EFFECTIVE_USVS`` records the threshold that was
     checked against.
 
     Parameters
     ----------
     positions (np.ndarray)
-        ``(n, 2)`` true torus positions of the calls.
+        ``(n, 2)`` true torus positions of the USVs.
     values (np.ndarray)
-        ``(n,)`` the per-call quantity to average.
+        ``(n,)`` the per-USV quantity to average.
     settings (dict)
         The run's settings, for the tuning surface's grid and occupancy rule.
 
@@ -3496,7 +3496,7 @@ def draw_manifold_field(axis, field: np.ndarray, colormap: str, label: str, titl
         Centre the scale on zero, so the sign reads off the colour.
     signal_share (float)
         The fraction of the field's spatial variance that shuffling does not reproduce, printed in the
-        corner, or None for a panel that is not an estimate of anything (the call density is not).
+        corner, or None for a panel that is not an estimate of anything (the USV density is not).
     show_y_label (bool)
         Only the leftmost of the three manifold panels carries it; on the others it collided with the
         neighbour's colour bar, and all three share one acoustic dimension anyway.
@@ -3539,7 +3539,7 @@ def draw_manifold_field(axis, field: np.ndarray, colormap: str, label: str, titl
     axis.set_title(title, loc="left", fontsize=PANEL_TITLE_SIZE)
 
 
-def draw_call_density(axis, positions: np.ndarray, settings: dict) -> None:
+def draw_usv_density(axis, positions: np.ndarray, settings: dict) -> None:
     """
     Description
     -----------
@@ -3686,7 +3686,7 @@ def draw_nested_row(figure, cell, unit_uid: str, paths: FigurePaths, identity: d
     # so calling it something else read as a different measure.
     axis.set_ylabel("Δ log-likelihood (nats / USV)")
 
-    draw_call_density(figure.add_subplot(columns[2]), rebuilt["positions"], settings)
+    draw_usv_density(figure.add_subplot(columns[2]), rebuilt["positions"], settings)
     suffix = "" if target == "manifold" else " (category)"
     draw_gain_map(figure.add_subplot(columns[3]), rebuilt["positions"], rebuilt["behaviour_gain"],
                   f"Behavior model gain landscape{suffix}", settings)
@@ -3695,19 +3695,114 @@ def draw_nested_row(figure, cell, unit_uid: str, paths: FigurePaths, identity: d
                   f"Neuron-added gain landscape{suffix}", settings)
 
 
+def onset_per_fold_behaviour_over(nested_onset: dict, session_ids: list) -> np.ndarray:
+    """
+    Description
+    -----------
+    The onset behaviour rung per held-out session, read from the stored per-window values: the
+    class-balanced mean (USV windows and quiet windows weighted equally) of what the onset control's prior
+    alone scored over the equal prior, on the windows of each fold's held-out session.
+
+    Parameters
+    ----------
+    nested_onset (dict)
+        The pickle's ``nested_vocal_decoding_onset`` section.
+    session_ids (list)
+        The unit's vocal sessions in slot order (the occurrence section's ``session_ids``).
+
+    Returns
+    -------
+    per_fold (np.ndarray)
+        One value per fold, in ``per_fold`` order.
+    """
+
+    windows = nested_onset["windows"]
+    labels = np.asarray(windows["labels"], dtype=np.float64)
+    slots = np.asarray(windows["session_index"])
+    behaviour = np.asarray(nested_onset["per_window_behaviour_over"], dtype=np.float64)
+    values = []
+    for fold in nested_onset["per_fold"]:
+        rows = (slots == session_ids.index(str(fold["held_out_session"]))) & np.isfinite(behaviour)
+        class_means = [behaviour[rows & (labels > 0.5)], behaviour[rows & (labels < 0.5)]]
+        values.append(float(np.mean([part.mean() for part in class_means])) if all(part.size for part in class_means)
+                      else float("nan"))
+    return np.asarray(values, dtype=np.float64)
+
+
+def draw_onset_nested_row(figure, cell, nested_onset: dict, occurrence: dict) -> None:
+    """
+    Description
+    -----------
+    The nested onset test as one row: the ladder (equal prior, the onset control's prior, the control's
+    prior and the neuron), the neuron's added information against its circular-shift null, and how well
+    each model alone separates the unit's USV windows from its quiet tiles (AUROC of the onset control's
+    log-odds, of the neuron's occurrence decoder, and of the two together). Every number is read from the
+    result file; nothing is rebuilt.
+
+    Parameters
+    ----------
+    figure (matplotlib.figure.Figure)
+        The page.
+    cell (matplotlib.gridspec.SubplotSpec)
+        The row's slot.
+    nested_onset (dict)
+        The pickle's ``nested_vocal_decoding_onset`` section.
+    occurrence (dict)
+        The pickle's ``vocal_occurrence`` section (its ``session_ids`` and AUROC).
+
+    Returns
+    -------
+    None
+    """
+
+    widths, gap = gridspec_widths(REFERENCE_FIGURE_WIDTH * subplot_span(), [1.0, 0.7, 0.8], 0.5)
+    columns = row_cells(cell, widths, [gap] * 2, figure.get_figwidth() * subplot_span())
+    rebuilt = {"per_fold_behaviour_over": onset_per_fold_behaviour_over(nested_onset,
+                                                                        list(occurrence["session_ids"]))}
+    ladder_axis = figure.add_subplot(columns[0])
+    draw_nested_ladder(ladder_axis, nested_onset, rebuilt, "Predicting USV onset")
+    ladder_axis.set_ylabel("Δ log-likelihood (nats / window)")
+
+    null = np.asarray(nested_onset["null"])
+    axis = figure.add_subplot(columns[1])
+    per_fold_added = [fold["added"] for fold in nested_onset["per_fold"]]
+    draw_score(axis, per_fold_added, nested_onset["added"], null,
+               f"{format_p(nested_onset['p'], nested_onset['at_floor'], null.size)}",
+               f"{nested_onset['n_vocal_windows']:,} USVs, {nested_onset['n_quiet_windows']:,} tiles",
+               per_fold_added, "per fold", "Onset model", QUIET_COLOR)
+    axis.set_ylabel("Δ log-likelihood (nats / window)")
+
+    axis = figure.add_subplot(columns[2])
+    bars = [("behavior", float(nested_onset["control_auroc_on_windows"]), ADDITIVE_COLOR),
+            ("neuron", float(occurrence["auroc"]), VOCAL_COLOR),
+            ("both", float(nested_onset["auroc"]), QUIET_COLOR)]
+    positions = np.arange(len(bars))
+    axis.bar(positions, [value for _name, value, _color in bars], color=[color for *_rest, color in bars],
+             edgecolor=TEXT_COLOR, linewidth=0.5, width=0.6)
+    for position, (_name, value, _color) in zip(positions, bars, strict=True):
+        axis.annotate(f"{value:.3f}", xy=(position, value), xytext=(0, 2), textcoords="offset points",
+                      fontsize=5, color=TEXT_COLOR, ha="center", va="bottom")
+    axis.axhline(0.5, color=REFERENCE_COLOR, linewidth=0.6, linestyle=":", zorder=0)
+    axis.set_xticks(positions)
+    axis.set_xticklabels([name for name, _value, _color in bars], fontsize=6)
+    axis.set_ylim(0.4, 1.05)
+    axis.set_ylabel("AUROC, USV vs quiet")
+    axis.set_title("Separating onsets from quiet", loc="left", fontsize=PANEL_TITLE_SIZE)
+
+
 def draw_vocal_row(figure, cell, unit_uid: str, paths: FigurePaths, identity: dict, vocal: dict, settings: dict) -> None:
     """
     Description
     -----------
-    The vocal row: does the unit predict that a call is coming, and which call it will be.
+    The vocal row: does the unit predict that a USV is coming, and which USV it will be.
 
     Five panels, left to right -- the occurrence relationship and its score against the shift null, then
-    the identity tuning map, its per-call spread, and its score against the permutation null. The two
+    the identity tuning map, its per-USV spread, and its score against the permutation null. The two
     score panels keep the grammar of the kinematic row's: observed beside its null, with the per-fold
     spread as an inset.
 
-    Both axes are measured on the same window, which runs from 50 ms before a call's start to 50 ms
-    after, so roughly half of it lies INSIDE the call. Neither is purely predictive and neither should be
+    Both axes are measured on the same window, which runs from 50 ms before a USV's start to 50 ms
+    after, so roughly half of it lies INSIDE the USV. Neither is purely predictive and neither should be
     described as such.
 
     Parameters
@@ -3893,6 +3988,7 @@ def model_figure(unit_uid: str, paths: FigurePaths, region: str, identity: dict,
     show_category = show_vocal and "identity_multinomial" in vocal
     nested = vocal["nested_manifold"] if show_vocal and "nested_manifold" in vocal else None
     nested_category = vocal["nested_multinomial"] if show_vocal and "nested_multinomial" in vocal else None
+    nested_onset = vocal["nested_onset"] if show_vocal and "nested_onset" in vocal else None
     show_tuning = not untuned and not show_gating
     span = subplot_span()
     reference = REFERENCE_FIGURE_WIDTH * span
@@ -3920,7 +4016,7 @@ def model_figure(unit_uid: str, paths: FigurePaths, region: str, identity: dict,
     # Category rows sit under their torus counterparts (user-ruled 2026-10-28).
     heights = ([1.0] + [0.75] * len(kinematic_rows) + ([0.95] if show_vocal else [])
                + ([0.95] if show_category else []) + ([0.95] if nested else [])
-               + ([0.95] if nested_category else []))
+               + ([0.95] if nested_category else []) + ([0.95] if nested_onset else []))
     vocal_row = 1 + len(kinematic_rows)
     height = 5.6 + 3.1 * (len(heights) - 2)
     figure = plt.figure(figsize=(total / span, height))
@@ -3943,7 +4039,13 @@ def model_figure(unit_uid: str, paths: FigurePaths, region: str, identity: dict,
     quiet_folds = [(k, s) for k, s in enumerate(encoding["quiet_score_per_fold"])
                    if untuned or not encoding["no_model_per_fold"][k]]
     quiet_null = np.asarray(encoding["quiet_null"])
-    quiet_text = (f"{format_p(encoding['quiet_p'], encoding['quiet_at_floor'], quiet_null.size)}\n"
+    # A best-screened-only unit has no model: its tested p-values are 1.0 and NaN, and the panels show the
+    # descriptive fit's own p-values instead, labelled as not a test.
+    described = screened_only(encoding) and "best_screened_quiet_p" in encoding
+    quiet_p, quiet_floor = ((encoding["best_screened_quiet_p"], encoding["best_screened_quiet_at_floor"])
+                            if described else (encoding["quiet_p"], encoding["quiet_at_floor"]))
+    quiet_text = (f"{'screened, not a test: ' if described else ''}"
+                  f"{format_p(quiet_p, quiet_floor, quiet_null.size)}\n"
                   f"AUROC {encoding['quiet_metrics']['auroc']:.2f}")
     quiet_slopes = [m["calibration_slope"] for k, m in enumerate(encoding["quiet_metrics_per_fold"])
                     if m is not None and (untuned or not encoding["no_model_per_fold"][k])]
@@ -3957,7 +4059,10 @@ def model_figure(unit_uid: str, paths: FigurePaths, region: str, identity: dict,
     vocal_slopes = [entry["slope"] for entry in encoding["transfer_leave_one_session_out"].values()]
     vocal_aurocs = [entry["auroc"] for entry in encoding["transfer_per_session"]]
     vocal_weights = [entry["n_frames"] for entry in encoding["transfer_per_session"]]
-    vocal_text = (f"{format_p(encoding['transfer_p'], encoding['transfer_at_floor'], transfer_null.size)}\n"
+    transfer_p, transfer_floor = ((encoding["best_screened_transfer_p"], encoding["best_screened_transfer_at_floor"])
+                                  if described else (encoding["transfer_p"], encoding["transfer_at_floor"]))
+    vocal_text = (f"{'screened, not a test: ' if described else ''}"
+                  f"{format_p(transfer_p, transfer_floor, transfer_null.size)}\n"
                   f"AUROC {np.average(vocal_aurocs, weights=vocal_weights):.2f} "
                   f"[{min(vocal_aurocs):.2f}-{max(vocal_aurocs):.2f}]")
     # Drop-one scores, not per-fold: the bar is the POOLED transfer, and each of these is that same
@@ -4001,7 +4106,7 @@ def model_figure(unit_uid: str, paths: FigurePaths, region: str, identity: dict,
         draw_gate_by_category(figure.add_subplot(bottom[3]), proximity, GATING_RULER)
         draw_gate_heatmap(figure.add_subplot(bottom[4]), proximity, GATING_RULER)
     # Both curves are referenced to their own regime's mean rate, which is exactly what hides how much
-    # harder the unit fires during calls. That level is stored per session as the ratio of the vocal-frame
+    # harder the unit fires during USVs. That level is stored per session as the ratio of the vocal-frame
     # rate to the quiet rate the model was fitted on, and it rides in the legend rather than in a verdict:
     # a unit can fire far above its quiet rate while ordering frames no better than chance.
     ratios = [entry["level"]["rate_ratio"] for entry in encoding["transfer_per_session"]]
@@ -4067,6 +4172,9 @@ def model_figure(unit_uid: str, paths: FigurePaths, region: str, identity: dict,
         next_row += 1
     if nested_category:
         draw_nested_row(figure, outer[next_row], unit_uid, paths, identity, nested_category, settings, "multinomial")
+        next_row += 1
+    if nested_onset:
+        draw_onset_nested_row(figure, outer[next_row], nested_onset, vocal["occurrence"])
 
     banner = (f"  |  NO KINEMATIC FEATURE HOLDS ON HELD-OUT DATA (quiet p {encoding['quiet_p']:.2f}): panels "
               f"describe screened features, not a validated model") if untuned else ""
@@ -4311,6 +4419,11 @@ def plot_neural_modeling_units(results_directory: str, output_directory: str, da
                 section = nested_section(unit, unit_uid, target)
                 if section is not None:
                     vocal[f"nested_{target}"] = section
+            # The onset row reads only stored values, so it needs a section that ran and stored them.
+            onset = unit["nested_vocal_decoding_onset"] if "nested_vocal_decoding_onset" in unit else None
+            if (onset is not None and ("ran" not in onset or bool(onset["ran"]))
+                    and "per_window_behaviour_over" in onset):
+                vocal["nested_onset"] = onset
         if not encoding["no_model"] or screened_only(encoding):
             figure = model_figure(unit_uid, paths, region, unit["identity"], encoding, settings, gating, vocal)
         else:

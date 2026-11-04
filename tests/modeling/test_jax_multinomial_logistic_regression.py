@@ -335,6 +335,39 @@ class TestBalancedPrediction:
         preds = model.predict(X, balanced=True)
         assert set(np.unique(preds)).issubset({0, 1, 2})
 
+    def test_balanced_log_odds_are_centred_under_class_weights(self):
+        """A class-weighted fit on pure-noise features gives balanced log-odds centred on zero.
+
+        The softened inverse-frequency weights make the intercept absorb only half the log class ratio,
+        so subtracting the plain class frequencies would leave a constant tilt of half the log ratio
+        toward the rarer class; subtracting the effective (weighted) prior removes it."""
+
+        rng = np.random.default_rng(4)
+        n_rare, n_common, n_inputs = 100, 1000, 3
+        X = rng.standard_normal((n_rare + n_common, n_inputs))
+        y = np.concatenate([np.ones(n_rare, dtype=int), np.zeros(n_common, dtype=int)])
+        kwargs = _fit_kwargs(n_inputs)
+        kwargs.update(uniform_class_weights=False, l2_reg=1e-2)
+        model = SmoothMultinomialLogisticRegression(**kwargs).fit(X, y)
+        proba = model.predict_proba(X, balanced=True)
+        log_odds = np.log(proba[:, 1]) - np.log(proba[:, 0])
+        half_log_ratio = 0.5 * np.log(n_common / n_rare)
+        assert abs(float(log_odds.mean())) < 0.25
+        plain = (X @ model.coef_.T + model.intercept_ - model.log_priors_)
+        plain_log_odds = plain[:, 1] - plain[:, 0]
+        assert abs(float(plain_log_odds.mean()) - half_log_ratio) < 0.25
+        weighted_counts = model.class_weights_ * np.bincount(y)
+        np.testing.assert_allclose(model.effective_log_priors_,
+                                   np.log(weighted_counts / weighted_counts.sum() + 1e-8), atol=1e-5)
+
+    def test_effective_prior_equals_plain_prior_under_uniform_weights(self):
+        """With uniform class weights the effective prior is the plain class frequency."""
+
+        X, y = _make_imbalanced_3class()
+        model = SmoothMultinomialLogisticRegression(**_fit_kwargs(X.shape[1])).fit(X, y)
+        np.testing.assert_allclose(model.class_weights_, np.ones(3), atol=1e-6)
+        np.testing.assert_allclose(model.effective_log_priors_, model.log_priors_, atol=1e-5)
+
 
 class TestClassWeightingBranches:
     """The softened inverse-frequency class weights and the binary two-column expansion."""

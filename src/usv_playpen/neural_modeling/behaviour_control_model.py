@@ -18,8 +18,10 @@ sine/cosine columns of the control's prediction from the fold that did not see t
 positions and region labels are read from the ``Data`` tree summaries through ``load_session_usvs``.
 
 The onset axis has its own control too (:func:`fit_onset_control_models`): the same two-class
-model, fitted on the cohort's clean USV onsets against quiet tiles assembled exactly as the per-unit
-occurrence decoder assembles them (:func:`assemble_onset_cohort`), held out by recording day, and
+model, fitted on the cohort's clean USV onsets against quiet tiles placed by the per-unit occurrence
+decoder's rule (the same tile width, guard bands and per-session cap; which tiles a capped session keeps is
+drawn per session here, so it need not be the same subset a unit's run keeps) (:func:`assemble_onset_cohort`),
+held out by recording day, and
 entering each unit as the base-rate-free log-odds of onset against quiet at the unit's own windows
 (:func:`onset_control_log_odds`).
 
@@ -47,8 +49,9 @@ from ..modeling.modeling_bases_functions import (
     resolve_temporal_basis,
 )
 from ..modeling.modeling_metadata import compute_settings_sha256
-from ..os_utils import configure_path
+from ..os_utils import atomic_output_path, configure_path
 from .deviance_metrics import area_under_roc
+from .neural_artifacts import build_provenance
 from .neural_design_assembly import (
     build_zscored_feature_frames,
     clean_window_mask,
@@ -328,6 +331,7 @@ def assemble_cohort(session_directories: list, settings: dict, n_lags: int,
             "regions": np.concatenate([block["regions"] for block in blocks]),
             "days": np.concatenate([np.full(block["n_kept"], block["session_id"][:8])
                                     for block in blocks]),
+            "sessions": np.concatenate([np.full(block["n_kept"], block["session_id"]) for block in blocks]),
             "session_ids": [block["session_id"] for block in blocks],
             "feature_names": feature_names, "skipped": skipped}
 
@@ -423,6 +427,35 @@ def pooled_macro(predicted: np.ndarray, positions: np.ndarray, regions: np.ndarr
                                           min_region_events=nested["min_region_events"]))
 
 
+def cohort_sessions(cohort: dict, days: np.ndarray) -> np.ndarray | None:
+    """
+    Description
+    -----------
+    The session of every cohort row, for the stored held-out predictions; None for a cohort assembled
+    without per-row sessions (only the day is then known).
+
+    Parameters
+    ----------
+    cohort (dict)
+        From one of the cohort assemblers.
+    days (np.ndarray)
+        The cohort's per-row day, whose length the sessions must match.
+
+    Returns
+    -------
+    sessions (np.ndarray | None)
+        Per-row session ids, or None.
+    """
+
+    if "sessions" not in cohort:
+        return None
+    sessions = np.asarray(cohort["sessions"])
+    if sessions.size != np.asarray(days).size:
+        msg = f"the cohort carries {sessions.size} row sessions for {np.asarray(days).size} rows."
+        raise ValueError(msg)
+    return sessions
+
+
 def fit_control_models(cohort: dict, feature_names: list, settings: dict, n_lags: int) -> dict:
     """
     Description
@@ -483,7 +516,12 @@ def fit_control_models(cohort: dict, feature_names: list, settings: dict, n_lags
             "no_behaviour_score": pooled_macro(no_behaviour, positions, regions, settings),
             "per_day": per_day, "n_vocalizations": int(positions.shape[0]),
             "session_ids": list(cohort["session_ids"]), "skipped": dict(cohort["skipped"]),
-            "settings_sha256": compute_settings_sha256(settings)}
+            # every held-out row, so the control's calibration and its per-region and per-session scores can be
+            # audited without refitting
+            "held_out_predictions": {"predicted_positions": predicted, "no_behaviour": no_behaviour,
+                                     "positions": positions, "regions": regions, "days": days,
+                                     "sessions": cohort_sessions(cohort, days)},
+            "settings_sha256": compute_settings_sha256(settings), "provenance": build_provenance(settings)}
 
 
 def feature_columns(canonical: list, wanted: list, n_lags: int) -> np.ndarray:
@@ -535,7 +573,9 @@ def write_control_model(artifact: dict, path: str) -> None:
 
     destination = pathlib.Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with destination.open("wb") as handle:
+    # Published atomically, as the unit files are: a fit interrupted mid-write never leaves a truncated
+    # control where a complete one stood.
+    with atomic_output_path(destination) as temporary, pathlib.Path(temporary).open("wb") as handle:
         pickle.dump(artifact, handle)
 
 
@@ -594,7 +634,7 @@ def load_control_model(settings: dict, target: str) -> dict:
     settings (dict)
         The whole neural-modelling settings dict.
     target (str)
-        ``"manifold"`` or ``"multinomial"``.
+        ``"manifold"``, ``"multinomial"`` or ``"onset"``.
 
     Returns
     -------
@@ -1038,8 +1078,8 @@ def fit_category_control_models(cohort: dict, feature_names: list, settings: dic
 
     The estimator is the behavioural modelling's multinomial logistic regression on the B-spline lag
     basis (:func:`category_control_estimator`), fitted on every day but the held-out one. Only each
-    fold's ``coef_``, ``intercept_``, ``log_priors_`` and ``classes_`` are kept, since those are all a
-    prediction needs.
+    fold's ``coef_``, ``intercept_``, ``log_priors_``, ``class_weights_``, ``effective_log_priors_`` and
+    ``classes_`` are kept, since those are all a prediction needs.
 
     Two held-out scores are reported, per day and pooled, neither of which the per-unit statistic
     uses: the macro one-versus-rest AUROC of the base-rate-free probabilities (the behavioural
@@ -1102,12 +1142,19 @@ def fit_category_control_models(cohort: dict, feature_names: list, settings: dic
         coefficients[str(held_out)] = {"coef": np.asarray(model.coef_).copy(),
                                        "intercept": np.asarray(model.intercept_).copy(),
                                        "log_priors": np.asarray(model.log_priors_).copy(),
+                                       "class_weights": np.asarray(model.class_weights_).copy(),
+                                       "effective_log_priors": np.asarray(model.effective_log_priors_).copy(),
                                        "converged": bool(model.converged_),
                                        "n_iter": int(model.n_iter_)}
         per_day[str(held_out)] = {
             "n_vocalizations": int(test.size),
             "auc": macro_one_versus_rest_auc(balanced[test], labels[test], classes),
-            "log_score_gain": float(np.mean(gain[test]))}
+            "log_score_gain": float(np.mean(gain[test])),
+            "class_counts": np.bincount(np.searchsorted(classes, labels[test]), minlength=classes.size).tolist(),
+            # one-versus-rest AUROC per category (NaN where the day holds none of it, or only it)
+            "auc_per_class": [area_under_roc(balanced[test][:, index], (labels[test] == value).astype(np.float64))
+                              if np.any(labels[test] == value) and not np.all(labels[test] == value)
+                              else float("nan") for index, value in enumerate(classes)]}
 
     return {"target": "multinomial", "features": list(feature_names), "n_lags": int(n_lags),
             "classes": classes, "coefficients": coefficients,
@@ -1115,7 +1162,46 @@ def fit_category_control_models(cohort: dict, feature_names: list, settings: dic
             "held_out_log_score_gain": float(np.mean(gain)),
             "per_day": per_day, "n_vocalizations": int(labels.size),
             "session_ids": list(cohort["session_ids"]), "skipped": dict(cohort["skipped"]),
-            "settings_sha256": compute_settings_sha256(settings)}
+            "held_out_predictions": {"probabilities": balanced, "log_score_gain": gain, "labels": labels,
+                                     "days": days, "sessions": cohort_sessions(cohort, days)},
+            "settings_sha256": compute_settings_sha256(settings), "provenance": build_provenance(settings)}
+
+
+def restore_fitted_control(model: SmoothMultinomialLogisticRegression, fold: dict, classes: np.ndarray) -> None:
+    """
+    Description
+    -----------
+    Put a stored fold's fitted state back on an unfitted control estimator, so it predicts as the fold did.
+
+    A fold record carries ``coef``, ``intercept``, ``log_priors``, ``class_weights`` and
+    ``effective_log_priors``; the last is what ``predict_proba(balanced=True)`` subtracts, so a record
+    written before it was stored (a fit whose balanced prediction subtracted the plain class frequencies)
+    is refused rather than applied with a tilted prior.
+
+    Parameters
+    ----------
+    model (SmoothMultinomialLogisticRegression)
+        The unfitted estimator of the fold's target.
+    fold (dict)
+        The stored fold record (``artifact["coefficients"][day]``).
+    classes (np.ndarray)
+        The artifact's class labels, in the layout of ``coef``.
+
+    Returns
+    -------
+    None
+    """
+
+    if "effective_log_priors" not in fold:
+        msg = ("the control's fold record has no 'effective_log_priors': it was fitted before the balanced "
+               "prediction subtracted the prior a class-weighted fit absorbs; refit the control.")
+        raise KeyError(msg)
+    model.coef_ = np.asarray(fold["coef"])
+    model.intercept_ = np.asarray(fold["intercept"])
+    model.log_priors_ = np.asarray(fold["log_priors"])
+    model.class_weights_ = np.asarray(fold["class_weights"])
+    model.effective_log_priors_ = np.asarray(fold["effective_log_priors"])
+    model.classes_ = classes
 
 
 def category_control_evidence(artifact: dict, held_out_day: str, design: np.ndarray,
@@ -1126,7 +1212,8 @@ def category_control_evidence(artifact: dict, held_out_day: str, design: np.ndar
     The categorical control's base-rate-free category probabilities for a unit's USVs, from the fold
     that did not see that unit's day.
 
-    ``predict_proba(balanced=True)`` removes the training log-priors from the logits, so the result
+    ``predict_proba(balanced=True)`` removes the prior the fit absorbed from the logits (the training
+    category frequencies as weighted by the class weights, ``effective_log_priors_``), so the result
     carries the behaviour's evidence about the category and not the cohort's category frequencies;
     the per-unit prior supplies its own frequencies.
 
@@ -1163,10 +1250,7 @@ def category_control_evidence(artifact: dict, held_out_day: str, design: np.ndar
     basis, block = category_control_basis(settings, artifact["n_lags"])
     fold = artifact["coefficients"][held_out_day]
     model = category_control_estimator(n_features, basis, block, int(block["random_state"]))
-    model.coef_ = np.asarray(fold["coef"])
-    model.intercept_ = np.asarray(fold["intercept"])
-    model.log_priors_ = np.asarray(fold["log_priors"])
-    model.classes_ = np.asarray(artifact["classes"])
+    restore_fitted_control(model, fold, np.asarray(artifact["classes"]))
     projected = project_category_design(np.asarray(design, dtype=np.float64), n_features, basis)
     return model.predict_proba(projected.astype(np.float32), balanced=True)
 
@@ -1241,8 +1325,12 @@ def session_onset_design(session_directory: str, settings: dict, n_lags: int) ->
     clean = (clean_window_mask(starts, all_starts, all_stops, window["pre_offset_seconds"])
              if settings["vocal_decoding"]["require_clean_prevocal_bool"]
              else np.ones(starts.size, dtype=bool))
+    # The unit side builds its USV windows from its USV events, which drop a USV without a torus position,
+    # so the control drops the same USVs: it is trained on exactly the onsets the units score.
+    has_position = np.isfinite(focal.select(vocal_settings["usv_manifold_column_names"]).to_numpy()
+                               .astype(np.float64)).all(axis=1)
     onset_anchors = onset_history_anchor_frames(starts, fps)
-    keep_onsets = clean & (onset_anchors >= n_lags - 1) & (onset_anchors < n_series)
+    keep_onsets = clean & has_position & (onset_anchors >= n_lags - 1) & (onset_anchors < n_series)
     duration = float(n_frames) / float(frame_rate)
     tile_edges = quiet_tile_edges(all_starts, all_stops, duration, window["width_seconds"],
                                   encoding["history_pre_seconds"], encoding["clean_post_seconds"])
@@ -1336,6 +1424,7 @@ def assemble_onset_cohort(session_directories: list, settings: dict, n_lags: int
     return {"design": np.vstack([block["design"] for block in blocks]),
             "labels": np.concatenate([block["labels"] for block in blocks]),
             "days": np.concatenate([np.full(block["n_kept"], block["session_id"][:8]) for block in blocks]),
+            "sessions": np.concatenate([np.full(block["n_kept"], block["session_id"]) for block in blocks]),
             "session_ids": [block["session_id"] for block in blocks],
             "feature_names": feature_names,
             "per_session": {block["session_id"]: {"n_positive": block["n_positive"], "n_tiles": block["n_tiles"],
@@ -1451,7 +1540,8 @@ def fit_onset_control_models(cohort: dict, feature_names: list, settings: dict, 
 
     The estimator is the two-class model of :func:`onset_control_estimator`, fitted on every day but
     the held-out one on the cohort's clean USV onsets against quiet tiles. Only each fold's ``coef_``,
-    ``intercept_``, ``log_priors_`` and ``classes_`` are kept. Two held-out scores are reported, per
+    ``intercept_``, ``log_priors_``, ``class_weights_``, ``effective_log_priors_`` and ``classes_`` are
+    kept. Two held-out scores are reported, per
     day and pooled, neither of which the per-unit statistic uses: the AUROC of the base-rate-free
     onset probability (chance 0.5) and the class-balanced log-score gain over the equal prior
     (:func:`balanced_log_score_gain`). The per-unit prior tunes its own concentration on the control's
@@ -1508,6 +1598,8 @@ def fit_onset_control_models(cohort: dict, feature_names: list, settings: dict, 
         coefficients[str(held_out)] = {"coef": np.asarray(model.coef_).copy(),
                                        "intercept": np.asarray(model.intercept_).copy(),
                                        "log_priors": np.asarray(model.log_priors_).copy(),
+                                       "class_weights": np.asarray(model.class_weights_).copy(),
+                                       "effective_log_priors": np.asarray(model.effective_log_priors_).copy(),
                                        "converged": bool(model.converged_),
                                        "n_iter": int(model.n_iter_)}
         per_day[str(held_out)] = {
@@ -1522,7 +1614,9 @@ def fit_onset_control_models(cohort: dict, feature_names: list, settings: dict, 
             "per_day": per_day, "n_vocalizations": int((labels == 1).sum()), "n_tiles": int((labels == 0).sum()),
             "per_session": dict(cohort["per_session"]),
             "session_ids": list(cohort["session_ids"]), "skipped": dict(cohort["skipped"]),
-            "settings_sha256": compute_settings_sha256(settings)}
+            "held_out_predictions": {"log_odds": log_odds, "labels": labels, "days": days,
+                                     "sessions": cohort_sessions(cohort, days)},
+            "settings_sha256": compute_settings_sha256(settings), "provenance": build_provenance(settings)}
 
 
 def onset_control_log_odds(artifact: dict, held_out_day: str, design: np.ndarray, settings: dict) -> np.ndarray:
@@ -1532,7 +1626,9 @@ def onset_control_log_odds(artifact: dict, held_out_day: str, design: np.ndarray
     The onset control's base-rate-free log-odds of onset against quiet for a unit's windows, from the
     fold that did not see that unit's day.
 
-    ``predict_proba(balanced=True)`` removes the training log-priors from the logits, so the log-odds
+    ``predict_proba(balanced=True)`` removes the prior the fit absorbed from the logits (the training
+    class frequencies as weighted by the class weights, ``effective_log_priors_``; under the softened
+    inverse-frequency weights that is half the log USV-to-tile ratio, not all of it), so the log-odds
     carry the behaviour's evidence and not the cohort's USV-to-tile ratio; the per-unit test supplies
     its own equal prior and tunes how strongly the evidence tilts it.
 
@@ -1576,10 +1672,7 @@ def onset_control_log_odds(artifact: dict, held_out_day: str, design: np.ndarray
     basis, block = onset_control_basis(settings, artifact["n_lags"])
     fold = artifact["coefficients"][held_out_day]
     model = onset_control_estimator(n_features, basis, block, int(block["random_state"]))
-    model.coef_ = np.asarray(fold["coef"])
-    model.intercept_ = np.asarray(fold["intercept"])
-    model.log_priors_ = np.asarray(fold["log_priors"])
-    model.classes_ = np.asarray(artifact["classes"])
+    restore_fitted_control(model, fold, np.asarray(artifact["classes"]))
     projected = project_category_design(np.asarray(design, dtype=np.float64), n_features, basis)
     balanced = model.predict_proba(projected.astype(np.float32), balanced=True)
     return (np.log(np.maximum(balanced[:, 1], 1e-300)) - np.log(np.maximum(balanced[:, 0], 1e-300)))

@@ -68,7 +68,7 @@ with warnings.catch_warnings():
         nested_onset_statistic,
         occurrence_context,
         onset_behaviour_tilts,
-        vocal_occurrence_shift_null,
+        vocal_occurrence_jitter_null,
     )
 
 SETTINGS_PATH = (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"
@@ -92,10 +92,14 @@ def _settings() -> dict:
     Returns
     -------
     settings (dict)
-        The parsed ``neural_modeling_settings.json``.
+        The parsed ``neural_modeling_settings.json``, with both escalation ladders emptied so a test sees
+        the base draw counts unless it sets a ladder itself.
     """
     with SETTINGS_PATH.open() as handle:
-        return json.load(handle)
+        settings = json.load(handle)
+    settings["inference"]["escalation_ladder"] = []
+    settings["vocal_gating"]["escalation_ladder"] = []
+    return settings
 
 
 def _quiet(*_args, **_kwargs) -> None:
@@ -153,17 +157,20 @@ class TestTheWrittenSections:
         draws = np.zeros(4)
         observed = {"f0": {"feature_main": -3.0, "vocal_main": 400.0, "interaction": 560.0,
                            "additive": 420.0, "baseline": 9000.0, "quiet_baseline": 700.0,
-                           "interaction_minus_vocal": 160.0, "gating_sign": 1.0}}
+                           "interaction_minus_vocal": 160.0, "gating_sign": 1.0,
+                           "interaction_coefficient": 0.4, "per_fold": {"interaction": [12.0, 9.0]}}}
         nulls = {"f0": {"interaction": draws, "vocal_main": draws, "feature_main": draws, "difference": draws}}
         verdicts = {"f0": {"label": "GATE", "p_interaction": 5e-4, "p_interaction_gt_vocal": 5e-4,
                            "p_feature_main_quiet": 0.4, "sigma_margin": 12.0, "borderline": False,
-                           "bonferroni_bar": 5e-4}}
+                           "bonferroni_bar": 5e-4, "n_draws": 4}}
         unit_p = {"p_unit": 5e-4, "feature": "f0", "label": "GATE", "at_floor": True}
         payload = vocal.vocal_gating_payload(["f0", "f1"], observed, nulls, verdicts, unit_p,
                                        {"f1": "not_testable"}, 2000)
         assert decision_key_paths(payload) == []
-        assert payload["per_feature"]["f1"] == {"tested": False, "reason": "not_testable"}
+        assert payload["per_feature"]["f1"] == {"tested": False, "reason": "not_testable", "vocal_iqr": None}
         assert payload["per_feature"]["f0"]["p_interaction"] == 5e-4
+        assert payload["per_feature"]["f0"]["per_fold"] == {"interaction": [12.0, 9.0]}
+        assert payload["n_features_tested"] == 1
         assert payload["p_unit_feature"] == "f0"
         write_unit_section(str(tmp_path), UNIT, "vocal_gating", payload, _settings())
 
@@ -213,7 +220,9 @@ class TestTheGatingSwitch:
 
         monkeypatch.setattr(vocal, "assemble_unit_sessions", refuse)
         payload = vocal.run_vocal_gating(UNIT, _settings(), "unused", str(tmp_path), 1, 0.2, 0.3, _quiet)
-        assert payload == {"ran": False, "reason": "no_vocal_tuning"}
+        assert {key: value for key, value in payload.items() if key != "seconds"} == {
+            "ran": False, "reason": "no_vocal_tuning"}
+        assert payload["seconds"] >= 0.0
         assert read_unit_artifact(str(tmp_path), UNIT["unit_uid"])["vocal_gating"] == payload
 
     def test_the_threshold_is_read_not_assumed(self, tmp_path, monkeypatch):
@@ -476,7 +485,8 @@ def _vocal_events() -> dict:
     events (dict)
         ``counts``, ``positions``, ``session_index``, ``session_ids``, ``per_session`` (durations),
         ``occurrence_windows``, ``spike_seconds`` (the trains, keyed by session id, for the loader stub),
-        ``vocalization_start`` and ``category_labels`` (four categories by the first torus coordinate).
+        ``vocalization_start``, ``vocalization_stop`` and ``category_labels`` (four categories by the first
+        torus coordinate).
     """
     generator = np.random.default_rng(3)
     n_sessions, per_session, width, duration = 3, 120, 0.1, 300.0
@@ -505,6 +515,7 @@ def _vocal_events() -> dict:
         window_labels.append(np.concatenate([np.ones(40), np.zeros(80)]))
         window_sessions.append(np.full(120, slot))
         window_edges.append(edges)
+    starts = np.concatenate([np.sort(generator.uniform(5.0, duration - 5.0, per_session)) for _ in session_ids])
     return {
         "counts": counts,
         "positions": positions,
@@ -522,8 +533,8 @@ def _vocal_events() -> dict:
         },
         "spike_seconds": trains,
         # Onsets in time order within each session, and an acoustic category per USV.
-        "vocalization_start": np.concatenate([np.sort(generator.uniform(5.0, duration - 5.0, per_session))
-                                              for _ in session_ids]),
+        "vocalization_start": starts,
+        "vocalization_stop": starts + 0.05,
         "category_labels": (np.floor(positions[:, 0] * 4.0) + 1.0).astype(np.float64),
     }
 
@@ -634,16 +645,17 @@ class TestTheAnalysisSteps:
     """Each analysis end to end, in process: the state its null receives, the null itself, and the
     section it writes."""
 
-    def test_vocal_occurrence_null_is_the_serial_shift_null_continued_by_escalation(
+    def test_vocal_occurrence_null_is_the_serial_jitter_null_continued_by_escalation(
         self, tmp_path, monkeypatch
     ):
         """
         Description
         -----------
-        The occurrence null must be built from the settings' seed, guard, occurrence block and
+        The occurrence null must be built from the settings' seed, jitter block, occurrence block and
         cross-fitting blocks, with folds over the windows, spike trains loaded per session by name, and topped up by the escalation ladder from where it
-        stopped -- so 6 draws plus 4 more equal the serial ``vocal_occurrence_shift_null`` over draws
-        0..9. The section lands in the unit file with the sensitivity fractions computed from the windows.
+        stopped -- so 6 draws plus 4 more equal the serial ``vocal_occurrence_jitter_null`` over draws
+        0..9. The section lands in the unit file with the sensitivity fractions computed from the windows
+        and records the null's kind and block length.
 
         Parameters
         ----------
@@ -661,6 +673,7 @@ class TestTheAnalysisSteps:
         settings["inference"].update(
             {"n_shuffles": 6, "shuffle_seed": 7, "shuffle_guard_seconds": 15.0}
         )
+        settings["vocal_decoding"]["vocal_occurrence"]["null_jitter_block_seconds"] = 3.0
         settings["inference"]["escalation_ladder"] = [10]
         spawned = _inline_pools(monkeypatch)
         calls = collections.defaultdict(list)
@@ -679,7 +692,8 @@ class TestTheAnalysisSteps:
         axis = settings["vocal_decoding"]["vocal_occurrence"]
         n_workers, state = spawned[0]
         assert n_workers == 3
-        assert (state["seed"], state["guard_seconds"]) == (7, 15.0)
+        assert (state["seed"], state["jitter_block_seconds"]) == (7, 3.0)
+        assert "guard_seconds" not in state
         assert state["axis"] is axis
         assert state["crossfit_blocks"] == settings["kinematic_encoding"]["calibration"]["n_blocks"]
         assert state["durations"] == {0: 300.0, 1: 300.0, 2: 300.0}
@@ -696,20 +710,21 @@ class TestTheAnalysisSteps:
         windows = events["occurrence_windows"]
         folds = occurrence_context(windows["labels"], windows["session_index"], windows["edges"],
                                    settings["cohort"]["single_session_blocks"])
-        serial = vocal_occurrence_shift_null(
+        serial = vocal_occurrence_jitter_null(
             windows,
             trains,
             state["durations"],
             0,
             10,
             7,
-            15.0,
+            3.0,
             folds,
             axis,
             settings["kinematic_encoding"]["calibration"]["n_blocks"],
         )
         np.testing.assert_array_equal(payload["null"], serial)
         assert payload["n_shuffles"] == 10
+        assert (payload["null_kind"], payload["null_jitter_block_seconds"]) == ("block_jitter", 3.0)
         assert payload["at_floor"]
         assert payload["p"] == pytest.approx(1.0 / 11.0)
         windows = events["occurrence_windows"]
@@ -922,6 +937,7 @@ class TestTheAnalysisSteps:
             "session_index": events["session_index"][kept],
             "kept": kept,
             "region_labels": np.tile(np.arange(6.0), kept.size // 6 + 1)[: kept.size],
+            "per_session": {s: {"n_dropped_short_history": 0} for s in events["session_ids"]},
         }
         controlled = {**design, "behaviour_control": control_block}
         regression = {
@@ -1047,7 +1063,8 @@ class TestTheAnalysisSteps:
         generator = np.random.default_rng(5)
         evidence = generator.dirichlet(np.ones(classes.size), kept.size)
         design = {"behaviour": np.zeros((kept.size, 3)), "session_index": events["session_index"][kept],
-                  "kept": kept, "positions": events["positions"][kept]}
+                  "kept": kept, "positions": events["positions"][kept],
+                  "per_session": {s: {"n_dropped_short_history": 0} for s in events["session_ids"]}}
         artifact = {"target": "multinomial", "features": ["allo_yaw-head"], "classes": classes,
                     "settings_sha256": "abc123"}
         calls = collections.defaultdict(list)
@@ -1132,6 +1149,8 @@ class TestTheAnalysisSteps:
         assert calls["assemble_unit_sessions"][0][0][1:5] == (
             "/data", settings["kinematic_features"], encoding["history_pre_seconds"],
             encoding["clean_post_seconds"])
+        # The controls were fitted on per-session z-scores, so their inputs are standardised the same way.
+        assert calls["assemble_unit_sessions"][0][1] == {"standardise": "per_session"}
         floor = nested_settings(settings)["sigma_floor"]
         assert [call[0][2:] for call in calls["nested_design"]] == [
             (features[target], 40, floor) for target in VOCAL_TARGETS]
@@ -1173,9 +1192,12 @@ def _gating_universe() -> dict:
         "vocal": np.concatenate([np.ones(100), np.zeros(100)]),
         "spikes": generator.poisson(1.0, 200),
         "spikes_quiet": np.ones(100),
-        "session_index": np.zeros(200, dtype=int),
-        "session_quiet": np.zeros(100, dtype=int),
+        # Two sessions, both with quiet frames: every term is scored leave-one-session-out.
+        "session_index": np.repeat([0, 1], 100),
+        "session_quiet": np.repeat([0, 1], 50),
         "fit_rows": None,
+        "per_session": {0: {"n_vocal_frames": 50, "n_quiet_frames_fitted": 50},
+                        1: {"n_vocal_frames": 50, "n_quiet_frames_fitted": 50}},
     }
 
 
@@ -1206,6 +1228,8 @@ def _gating_statistic(call: tuple) -> dict:
         "quiet_baseline": 70.0,
         "interaction_minus_vocal": 5.0 + spread,
         "gating_sign": 1.0,
+        "interaction_coefficient": 0.3,
+        "per_fold": {"feature_main": [], "vocal_main": [], "interaction": [], "additive": []},
     }
 
 
@@ -1246,14 +1270,81 @@ class TestVocalGatingRun:
             "feature_gating_statistic",
             _recording_stub(calls, "statistic", _gating_statistic),
         )
-        zeros = {
-            key: np.zeros(2000)
-            for key in ("interaction", "vocal_main", "feature_main", "difference")
-        }
         monkeypatch.setattr(
-            vocal, "gating_null", _recording_stub(calls, "gating_null", zeros)
+            vocal,
+            "gating_null",
+            _recording_stub(calls, "gating_null",
+                            lambda call: {key: np.zeros(int(call[0][4]))
+                                          for key in ("interaction", "vocal_main", "feature_main", "difference")}),
         )
         return calls
+
+    def test_a_unit_with_one_quiet_session_is_written_not_testable(self, tmp_path, monkeypatch):
+        """
+        Description
+        -----------
+        The quiet main effect is scored leave-one-session-out on quiet frames only. A unit whose quiet
+        frames all sit in one session (a dense block unit) cannot be scored, so the section is written
+        as not run with the reason and the counts, and no null is drawn.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Output directory for the unit file.
+        monkeypatch (pytest.MonkeyPatch)
+            Installs the stubs.
+
+        Returns
+        -------
+        None
+        """
+        calls = self._install(monkeypatch)
+        universe = _gating_universe()
+        universe["session_quiet"] = np.zeros(100, dtype=int)
+        monkeypatch.setattr(vocal, "gating_universe", _recording_stub(calls, "gating_universe", universe))
+
+        payload = vocal.run_vocal_gating(UNIT, _settings(), "/data", str(tmp_path), 2, 0.001, 0.5, _quiet)
+
+        assert payload["ran"] is False
+        assert payload["reason"] == "fewer_than_two_quiet_sessions"
+        assert (payload["n_sessions"], payload["n_quiet_sessions"]) == (2, 1)
+        assert "gating_null" not in calls
+        assert read_unit_artifact(str(tmp_path), UNIT["unit_uid"])["vocal_gating"]["reason"] == (
+            "fewer_than_two_quiet_sessions")
+
+    def test_features_at_the_floor_are_escalated_and_the_floor_follows_their_draws(self, tmp_path, monkeypatch):
+        """
+        Description
+        -----------
+        Every interaction beats its all-zero null, so both tested features sit at the 2,000-draw floor; the
+        ladder tops each up to 20,000 draws, continuing its own stream from draw 2,000, and the p-values and
+        the unit's floor are then those of 20,000 draws.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Output directory for the unit file.
+        monkeypatch (pytest.MonkeyPatch)
+            Installs the stubs.
+
+        Returns
+        -------
+        None
+        """
+        settings = _settings()
+        settings["vocal_gating"]["min_feature_iqr_vocal"] = 0.5
+        settings["vocal_gating"]["escalation_ladder"] = [20000]
+        calls = self._install(monkeypatch)
+
+        payload = vocal.run_vocal_gating(UNIT, settings, "/data", str(tmp_path), 2, 0.001, 0.5, _quiet)
+
+        more = [call for call in calls["gating_null"] if "start" in call[1] and call[1]["start"]]
+        assert sorted((call[0][1], call[1]["start"], call[0][4]) for call in more) == [(0, 2000, 18000),
+                                                                                      (1, 2000, 18000)]
+        assert payload["per_feature"]["f0"]["n_draws"] == 20000
+        assert payload["per_feature"]["f0"]["p_interaction"] == pytest.approx(1.0 / 20001.0)
+        assert payload["p_unit"] == pytest.approx(2.0 / 20001.0)
+        assert payload["p_unit_at_floor"] is True
 
     def test_a_tuned_unit_tests_every_identifiable_feature_and_stores_no_decisions(
         self, tmp_path, monkeypatch
@@ -1280,6 +1371,7 @@ class TestVocalGatingRun:
         """
         settings = _settings()
         settings["vocal_gating"]["min_feature_iqr_vocal"] = 0.5
+        settings["vocal_gating"]["escalation_ladder"] = []
         settings["inference"]["shuffle_seed"] = 5
         calls = self._install(monkeypatch)
 
@@ -1293,15 +1385,21 @@ class TestVocalGatingRun:
         assert universe_call[1] == {"seed": 5}
         null_calls = calls["gating_null"]
         assert [call[0][1] for call in null_calls] == [0, 1]
-        assert [call[1]["seed"] for call in null_calls] == [5, 5 + 2000]
+        # one seed stream per feature: the base seed, with the feature index inside the generator's seed
+        assert [call[1]["seed"] for call in null_calls] == [5, 5]
         assert all(
             call[0][3:5] == (settings["inference"]["shuffle_guard_seconds"], 2000)
             for call in null_calls
         )
+        # f2 is constant during vocal frames: zero spread, recorded beside its reason.
         assert payload["per_feature"]["f2"] == {
             "tested": False,
             "reason": "not_testable",
+            "vocal_iqr": 0.0,
         }
+        assert payload["n_features_tested"] == 2
+        assert payload["bonferroni_bar"] == pytest.approx(settings["vocal_gating"]["screen_alpha"] / 2)
+        assert payload["per_session"] == _gating_universe()["per_session"]
         assert payload["per_feature"]["f0"]["p_interaction"] == pytest.approx(
             1.0 / 2001.0
         )
@@ -1806,7 +1904,7 @@ class TestVocalCommandLine:
         unit, settings, data_root, output_directory, n_workers, steps = calls[
             "run_vocal"
         ][0][0]
-        assert settings == _settings()
+        assert settings == json.loads(SETTINGS_PATH.read_text())
         assert unit["vocal_sessions"] == ["s0"]
         assert unit["unit_uid"] == "m_20250101_imec1_cl0000_ch000_good"
         assert (data_root, output_directory, n_workers) == ("/data", "/out", 3)
@@ -1956,6 +2054,7 @@ class TestTheOnsetNestedStep:
         events = _vocal_events()
         settings = _settings()
         settings["inference"].update({"n_shuffles": 4, "shuffle_seed": 7, "shuffle_guard_seconds": 15.0})
+        settings["vocal_decoding"]["vocal_occurrence"]["null_jitter_block_seconds"] = 3.0
         settings["inference"]["escalation_ladder"] = []
         spawned = _inline_pools(monkeypatch)
         windows = events["occurrence_windows"]
@@ -1987,12 +2086,15 @@ class TestTheOnsetNestedStep:
                                           design["edges"], folds, axis, crossfit, priors, kappas)
         n_workers, state = spawned[0]
         assert n_workers == 2
-        assert state["log_priors"] is priors or all(np.allclose(a, b) for a, b in zip(state["log_priors"], priors))
+        assert state["log_priors"] is priors or all(np.allclose(a, b)
+                                                    for a, b in zip(state["log_priors"], priors, strict=True))
         trains = dict(enumerate(events["spike_seconds"][s] for s in events["session_ids"]))
-        serial = vocal_occurrence_shift_null({**{k: design[k] for k in ("counts", "labels", "session_index", "edges")},
-                                              "width": windows["width"]},
-                                             trains, state["durations"], 0, 4, 7, 15.0, folds, axis, crossfit,
-                                             priors)
+        serial = vocal_occurrence_jitter_null({**{k: design[k] for k in ("counts", "labels", "session_index", "edges")},
+                                               "width": windows["width"]},
+                                              trains, state["durations"], 0, 4, 7, 3.0, folds, axis, crossfit,
+                                              priors)
+        assert payload["null_kind"] == "block_jitter"
+        assert payload["null_jitter_block_seconds"] == 3.0
         assert payload["target"] == "onset"
         assert payload["added"] == pytest.approx(observed["added"])
         assert payload["behaviour_over_no_behaviour"] == pytest.approx(observed["behaviour_over_no_behaviour"])
@@ -2007,3 +2109,30 @@ class TestTheOnsetNestedStep:
                                                 "settings_sha256": "abc123"}
         stored = read_unit_artifact(str(tmp_path), UNIT["unit_uid"])
         assert stored["nested_vocal_decoding_onset"]["added"] == payload["added"]
+
+
+class TestSpikeFloor:
+    """``cohort.min_decoding_spikes``: a content decoding below the floor is given no statistic."""
+
+    def test_below_the_floor_the_payload_says_why_and_how_many(self):
+        """Fewer spikes than the floor across the scored events gives a not-run payload carrying the
+        total and the floor; at or above it there is none."""
+        settings = {"cohort": {"min_decoding_spikes": 50}}
+        payload = vocal.spike_floor_payload(np.full(10, 4.0), settings)
+        assert payload == {"ran": False, "reason": "too_few_spikes", "n_spikes": 40, "threshold": 50}
+        assert vocal.spike_floor_payload(np.full(10, 5.0), settings) is None
+
+    def test_identity_below_the_floor_draws_no_null_and_gating_reads_it_as_untuned(self, tmp_path):
+        """The identity section is written as not run before any null is drawn, and the p and draws gating
+        reads from it are NaN and None, so the unit is untuned rather than an error."""
+        events = _vocal_events()
+        events["counts"] = np.zeros_like(np.asarray(events["counts"], dtype=np.float64))
+        settings = _fast_decoding_settings()
+        settings["cohort"]["min_decoding_spikes"] = 1
+        payload = vocal.run_vocalization_identity(UNIT, events, settings, "manifold", str(tmp_path), 1, _quiet)
+        assert payload["reason"] == "too_few_spikes"
+        stored = read_unit_artifact(str(tmp_path), UNIT["unit_uid"])["vocalization_identity_manifold"]
+        assert stored == payload
+        p_value, draws = vocal.section_p_and_draws(stored, "n_permutations")
+        assert np.isnan(p_value)
+        assert draws is None

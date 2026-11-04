@@ -40,6 +40,7 @@ import polars as pls
 import pytest
 from click.testing import CliRunner
 from matplotlib.colors import to_hex
+from matplotlib.gridspec import GridSpec
 
 from usv_playpen.modeling.modeling_metadata import compute_settings_sha256
 from usv_playpen.neural_modeling.deviance_metrics import finite_mean
@@ -79,7 +80,6 @@ from usv_playpen.visualizations.neural_modeling_plots import (
     check_nested_rebuild,
     class_traces,
     crossfitted_probability,
-    draw_call_density,
     draw_category_confusion,
     draw_category_rates,
     draw_category_scatter,
@@ -92,6 +92,7 @@ from usv_playpen.visualizations.neural_modeling_plots import (
     draw_manifold_field,
     draw_nested_ladder,
     draw_occurrence_tuning,
+    draw_onset_nested_row,
     draw_per_event_gain,
     draw_rate_traces,
     draw_score,
@@ -99,6 +100,7 @@ from usv_playpen.visualizations.neural_modeling_plots import (
     draw_selection,
     draw_tuning,
     draw_tuning_map,
+    draw_usv_density,
     feature_color,
     feature_label,
     format_p,
@@ -117,6 +119,7 @@ from usv_playpen.visualizations.neural_modeling_plots import (
     neural_modeling_figures_cli,
     no_model_figure,
     one_significant_figure_ceiling,
+    onset_per_fold_behaviour_over,
     overlap_metrics,
     overlap_with_null,
     per_fold_transfer,
@@ -528,7 +531,7 @@ def _proximity(seed: int = 0) -> dict:
     Returns
     -------
     data (dict)
-        ``call_distance``, ``quiet_distance``, ``call_rate``, ``call_category``, ``quiet_label`` and ``fps``.
+        ``usv_distance``, ``quiet_distance``, ``usv_rate``, ``usv_category``, ``quiet_label`` and ``fps``.
     """
 
     rng = np.random.default_rng(seed)
@@ -536,10 +539,10 @@ def _proximity(seed: int = 0) -> dict:
     category = rng.integers(1, 5, 400).astype(np.float64)
     category[0] = np.nan
     quiet_head = rng.uniform(1.0, 30.0, 3000)
-    return {"call_distance": {"head": head, "nose": 1.1 * head},
+    return {"usv_distance": {"head": head, "nose": 1.1 * head},
             "quiet_distance": {"head": quiet_head, "nose": 1.1 * quiet_head},
-            "call_rate": 30.0 * np.exp(-head / 5.0) + rng.uniform(0.0, 0.5, head.size),
-            "call_category": category, "quiet_label": (rng.uniform(size=3000) < 0.02).astype(np.float64),
+            "usv_rate": 30.0 * np.exp(-head / 5.0) + rng.uniform(0.0, 0.5, head.size),
+            "usv_category": category, "quiet_label": (rng.uniform(size=3000) < 0.02).astype(np.float64),
             "fps": FPS}
 
 
@@ -773,7 +776,7 @@ def _write_caches(cache_directory, unit_uid: str, n_features: int, vocal_unit: t
     """
 
     _write_pickle(cache_directory / f"{unit_uid}_tuning_bout_window.pkl", _tuning_cache(n_features))
-    _write_pickle(cache_directory / f"{unit_uid}_gating_proximity.pkl", _proximity())
+    _write_pickle(cache_directory / f"{unit_uid}_gating_proximity_usv.pkl", _proximity())
     _write_pickle(cache_directory / f"{unit_uid}_session_traces_v2_crossfit.pkl", _session_traces(n_trace_sessions))
     if vocal_unit is not None:
         events, _vocal, rebuilt_manifold, rebuilt_multinomial, _settings = vocal_unit
@@ -1325,7 +1328,7 @@ class TestRebuildCaches:
         (tuning_data, "{uid}_tuning_usv_span.pkl", True),
         (rate_trace_data, "{uid}_rate_trace_v2_crossfit.pkl", True),
         (session_trace_data, "{uid}_session_traces_v2_crossfit.pkl", False),
-        (gating_proximity_data, "{uid}_gating_proximity.pkl", False),
+        (gating_proximity_data, "{uid}_gating_proximity_usv.pkl", False),
         (vocal_event_data, "{uid}_vocal_events.pkl", False),
         (nested_event_data, "{uid}_nested_events_manifold.pkl", False),
         (category_nested_event_data, "{uid}_nested_events_multinomial.pkl", False),
@@ -1492,8 +1495,8 @@ class TestGatingPanels:
     def test_gate_heatmap_shades_along_distance(self):
         """One row per category, shaded along distance, with a colour bar; an empty cell is drawn as zero."""
         data = _proximity()
-        far = data["call_distance"]["nose"] > np.quantile(data["call_distance"]["nose"], 0.8)
-        data["call_category"][far & (data["call_category"] == 4.0)] = 3.0
+        far = data["usv_distance"]["nose"] > np.quantile(data["usv_distance"]["nose"], 0.8)
+        data["usv_category"][far & (data["usv_category"] == 4.0)] = 3.0
         figure, axis = plt.subplots()
         draw_gate_heatmap(axis, data, "nose")
         image = axis.get_images()[0]
@@ -1612,7 +1615,7 @@ class TestManifoldPanels:
         rng = np.random.default_rng(2)
         positions = rng.uniform(0.0, 0.5, size=(200, 2))
         figure, (density_axis, gain_axis) = plt.subplots(1, 2)
-        draw_call_density(density_axis, positions, settings)
+        draw_usv_density(density_axis, positions, settings)
         values = rng.normal(0.0, 0.1, 200)
         values[:3] = np.nan
         draw_gain_map(gain_axis, positions, values, "gain landscape", settings)
@@ -1963,14 +1966,14 @@ class TestRebuildBodies:
         monkeypatch.setattr(neural_modeling_plots, "load_session_usvs", lambda *_args: usvs)
         paths = _paths(tmp_path)
         data = gating_proximity_data(UNIT_UID, paths, identity, _shipped_settings())
-        assert np.allclose(data["call_rate"], [4.0, 5.0] * 3)
-        assert np.array_equal(data["call_category"], [2.0, np.nan] * 3, equal_nan=True)
-        assert np.allclose(data["call_distance"]["head"], [partner_x[500], partner_x[1000]] * 3)
-        assert np.allclose(data["call_distance"]["nose"], 2.0 * data["call_distance"]["head"])
+        assert np.allclose(data["usv_rate"], [4.0, 5.0] * 3)
+        assert np.array_equal(data["usv_category"], [2.0, np.nan] * 3, equal_nan=True)
+        assert np.allclose(data["usv_distance"]["head"], [partner_x[500], partner_x[1000]] * 3)
+        assert np.allclose(data["usv_distance"]["nose"], 2.0 * data["usv_distance"]["head"])
         n_quiet = sum(int(np.sum(np.isfinite(partner_x[session["quiet"]]))) for session in per_session.values())
         assert data["quiet_distance"]["head"].size == n_quiet == data["quiet_label"].size
         assert data["fps"] == FPS
-        assert (paths.cache_directory / f"{UNIT_UID}_gating_proximity.pkl").exists()
+        assert (paths.cache_directory / f"{UNIT_UID}_gating_proximity_usv.pkl").exists()
 
     def test_vocal_event_data_assembles_once(self, tmp_path, monkeypatch):
         """The events are assembled and cached on the first call and read back on the second."""
@@ -2007,3 +2010,54 @@ class TestCommandLine:
             "--data-root", str(tmp_path), "--unit-uid", uid, "--settings-path", str(settings_path)])
         assert result.exit_code == 0
         assert "SKIPPED" in result.output
+
+
+class TestOnsetNestedRow:
+    """The onset nested row is drawn from stored values alone."""
+
+    @staticmethod
+    def _sections():
+        """
+        Description
+        -----------
+        A stored onset nested section over two sessions and its occurrence section, with per-window
+        behaviour scores that differ by class and session.
+
+        Parameters
+        ----------
+        None.
+
+        Returns
+        -------
+        sections (tuple[dict, dict])
+            The onset nested section and the occurrence section.
+        """
+        labels = np.tile(np.concatenate([np.ones(10), np.zeros(30)]), 2)
+        slots = np.repeat([0, 1], 40)
+        behaviour = np.where(labels > 0.5, 0.4, 0.2) + 0.1 * slots
+        onset = {"added": 0.05, "behaviour_over_no_behaviour": 0.35, "full_over_no_behaviour": 0.40,
+                 "kappas": [1.0, 1.0], "auroc": 0.95, "control_auroc_on_windows": 0.9, "p": 1e-3,
+                 "at_floor": True, "null": np.random.default_rng(0).normal(0.0, 0.01, 1000),
+                 "n_vocal_windows": 20, "n_quiet_windows": 60,
+                 "per_fold": [{"held_out_session": "s0", "added": 0.04},
+                              {"held_out_session": "s1", "added": 0.06}],
+                 "windows": {"labels": labels, "session_index": slots},
+                 "per_window_behaviour_over": behaviour}
+        occurrence = {"session_ids": ["s0", "s1"], "auroc": 0.8}
+        return onset, occurrence
+
+    def test_the_per_fold_behaviour_rung_is_class_balanced_per_session(self):
+        """Each fold's rung is the mean of its session's USV-window mean and quiet-window mean."""
+        onset, occurrence = self._sections()
+        values = onset_per_fold_behaviour_over(onset, occurrence["session_ids"])
+        np.testing.assert_allclose(values, [0.3, 0.4])
+
+    def test_the_row_draws_three_panels(self):
+        """Ladder, score against the null and the three AUROCs, with nothing rebuilt."""
+        onset, occurrence = self._sections()
+        figure = plt.figure(figsize=(10.0, 3.0))
+        cell = GridSpec(1, 1, figure=figure)[0]
+        draw_onset_nested_row(figure, cell, onset, occurrence)
+        assert len(figure.axes) == 3
+        assert figure.axes[2].get_title(loc="left") == "Separating onsets from quiet"
+        plt.close(figure)

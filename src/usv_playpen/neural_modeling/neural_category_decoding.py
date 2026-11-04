@@ -430,6 +430,11 @@ def category_gain(counts: np.ndarray, labels: np.ndarray, folds: list, settings:
     entropy = np.full(counts.size, np.nan)
     uncalibrated = np.full(counts.size, np.nan)
     per_fold = []
+    prior_underflow = 0
+    # The full held-out log posterior over categories per event, kept only with the detail (never in a
+    # null draw), so a confusion matrix and per-category log-scores need no refit.
+    log_posterior = (np.full((counts.size, int(folds[0]["n_categories"])), np.nan)
+                     if with_detail and folds else None)
 
     for fold_index, fold in enumerate(folds):
         train_rows, test_rows = fold["train_rows"], fold["test_rows"]
@@ -443,12 +448,15 @@ def category_gain(counts: np.ndarray, labels: np.ndarray, folds: list, settings:
                     / max(float(scored[train_rows].mean()), mean_count_floor))
         truth = labels[test_rows]
         prior = tilted_category_prior(fold["prior"], None if tilt is None else tilt[test_rows])
-        log_prior_at_truth = np.log(prior[truth] if prior.ndim == 1
-                                    else prior[np.arange(truth.size), truth])
+        prior_at_truth = prior[truth] if prior.ndim == 1 else prior[np.arange(truth.size), truth]
+        prior_underflow += int((prior_at_truth <= 0.0).sum())
+        log_prior_at_truth = np.log(prior_at_truth)
 
         posterior = category_posterior(scored[test_rows], rates, prior, alpha, exposure,
                                        mean_count_floor)
         per_event[test_rows] = posterior[np.arange(truth.size), truth] - log_prior_at_truth
+        if log_posterior is not None:
+            log_posterior[test_rows] = posterior
         entropy[test_rows] = -np.sum(np.exp(posterior) * posterior, axis=1)
         raw = category_posterior(scored[test_rows], rates, prior, 1.0, exposure,
                                  mean_count_floor)
@@ -456,11 +464,15 @@ def category_gain(counts: np.ndarray, labels: np.ndarray, folds: list, settings:
 
         per_fold.append({"held_out": fold["held_out"], "n_events": int(test_rows.size),
                          "gain": float(np.nanmean(per_event[test_rows])), "alpha": float(alpha),
-                         "ridge": float(ridge), "rates": rates.tolist()})
+                         "ridge": float(ridge), "rates": rates.tolist(),
+                         # the training class counts behind the fold's prior
+                         "train_class_counts": np.bincount(labels[train_rows],
+                                                           minlength=int(fold["n_categories"])).tolist()})
 
     finite = np.isfinite(per_event)
     gain = float(np.mean(per_event[finite])) if finite.any() else float("nan")
-    total_spikes = float(counts.sum())
+    # Nats per spike as the torus decoder defines it: the scored events' summed gain over their spikes.
+    scored_spikes = float(counts[finite].sum())
     dropped = []
     for fold in folds:
         rest = np.setdiff1d(np.arange(counts.size), fold["test_rows"], assume_unique=False)
@@ -470,9 +482,12 @@ def category_gain(counts: np.ndarray, labels: np.ndarray, folds: list, settings:
     result = {"gain": gain,
               "gain_uncalibrated": (float(np.mean(uncalibrated[np.isfinite(uncalibrated)]))
                                     if np.isfinite(uncalibrated).any() else float("nan")),
-              "nats_per_spike": (gain * counts.size / total_spikes if total_spikes > 0
+              "nats_per_spike": (float(per_event[finite].sum()) / scored_spikes if scored_spikes > 0
                                  else float("nan")),
-              "n_masked": int((~finite).sum()),
+              # Events the posterior could not score, split by cause: a prior that underflowed to zero at
+              # the true category (a strong tilt against it) rather than a geometric drop.
+              "n_masked": int((~finite).sum() - prior_underflow),
+              "n_prior_underflow": int(prior_underflow),
               "n_folds_positive": int(sum(1 for f in per_fold if f["gain"] > 0)),
               "min_leave_one_fold_out": float(np.nanmin(dropped)) if dropped else float("nan"),
               "per_fold": per_fold,
@@ -480,6 +495,11 @@ def category_gain(counts: np.ndarray, labels: np.ndarray, folds: list, settings:
               "ridges": [f["ridge"] for f in per_fold]}
     if with_detail:
         result.update({"per_event_gain": per_event, "posterior_entropy": entropy,
+                       "log_posterior": log_posterior,
+                       "predicted_category": (np.where(np.isfinite(log_posterior).all(axis=1),
+                                                       np.argmax(np.nan_to_num(log_posterior, nan=-np.inf),
+                                                                 axis=1), -1)
+                                              if log_posterior is not None else None),
                        "mean_posterior_entropy": (float(np.mean(entropy[np.isfinite(entropy)]))
                                                   if np.isfinite(entropy).any() else float("nan"))})
     return result
@@ -627,5 +647,8 @@ def category_nested_gain(counts: np.ndarray, labels: np.ndarray, folds: list, se
               "full_over_no_behaviour": full["gain"] + behaviour_gain}
     if with_detail:
         result.update({key: full[key] for key in ("per_event_gain", "posterior_entropy",
-                                                  "mean_posterior_entropy")})
+                                                  "mean_posterior_entropy", "log_posterior",
+                                                  "predicted_category", "n_prior_underflow")})
+        # what the behaviour prior alone scored per event, beside what the neuron added to it
+        result["per_event_behaviour_over"] = behaviour_over
     return result

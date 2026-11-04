@@ -34,7 +34,7 @@ from usv_playpen.neural_modeling.neural_cohort import (
     _area_pass,
     block_usv_counts,
     build_cohort_manifest,
-    emitter_usv_counts,
+    focal_usv_onsets,
     load_courtship_session_ids,
     recorded_mouse_by_session,
     select_cohort,
@@ -435,13 +435,13 @@ def _write_tree(root: pathlib.Path) -> None:
     _write_session(root, SESSION_MISSING, ["m1", "f1"], None)
 
 
-class TestEmitterUsvCounts:
+class TestFocalUsvCounts:
 
     """Per-session focal counts match a hand count on a tiny synthetic tree."""
     @pytest.mark.parametrize(("vocal_emitter", "expected"), [
-        ("self", {SESSION_A: 3, SESSION_B: 1, SESSION_EMPTY: 0, SESSION_MISSING: 0}),
-        ("partner", {SESSION_A: 2, SESSION_B: 1, SESSION_EMPTY: 0, SESSION_MISSING: 0}),
-        ("all", {SESSION_A: 5, SESSION_B: 2, SESSION_EMPTY: 0, SESSION_MISSING: 0}),
+        ("self", {SESSION_A: 3, SESSION_B: 1, SESSION_EMPTY: 0}),
+        ("partner", {SESSION_A: 2, SESSION_B: 1, SESSION_EMPTY: 0}),
+        ("all", {SESSION_A: 5, SESSION_B: 2, SESSION_EMPTY: 0}),
     ])
     def test_counts_match_the_hand_count(self, tmp_path, vocal_emitter, expected):
         """
@@ -449,8 +449,8 @@ class TestEmitterUsvCounts:
         -----------
         The counts must be the analysed-set rows (noise and squeak dropped) from the emitter the spec names,
         with the recorded animal resolved by NAME from the session-to-mouse map (``SESSION_B`` stores it in
-        track slot 1), an empty summary counting 0 and a session without a summary counting 0 instead of
-        raising. The returned keys must be every requested session, whatever order they were passed in.
+        track slot 1), and an empty summary counting 0. The returned keys must be every requested session,
+        whatever order they were passed in.
 
         Parameters
         ----------
@@ -466,29 +466,34 @@ class TestEmitterUsvCounts:
         None
         """
         _write_tree(tmp_path)
-        mouse = dict.fromkeys((SESSION_A, SESSION_B, SESSION_EMPTY, SESSION_MISSING), "m1")
-        counts = emitter_usv_counts({SESSION_B, SESSION_MISSING, SESSION_A, SESSION_EMPTY}, str(tmp_path),
-                                    mouse, vocal_emitter, SETTINGS_VOCAL)
-        assert counts == expected
+        mouse = dict.fromkeys((SESSION_A, SESSION_B, SESSION_EMPTY), "m1")
+        onsets = focal_usv_onsets({SESSION_B, SESSION_A, SESSION_EMPTY}, str(tmp_path), mouse, vocal_emitter,
+                                  SETTINGS_VOCAL)
+        assert {session_id: int(entry[0].size) for session_id, entry in onsets.items()} == expected
 
-    def test_a_session_without_tracking_counts_zero(self, tmp_path):
+    @pytest.mark.parametrize("session_id", [SESSION_MISSING, SESSION_NEVER])
+    def test_a_listed_session_with_a_missing_file_is_refused_by_name(self, tmp_path, session_id):
         """
         Description
         -----------
-        A session listed but never processed (no directory at all) must count zero rather than abort the
-        manifest, and must not need an entry in the session-to-mouse map (the lookup happens only after the
-        files are found).
+        A listed session whose usv summary (``SESSION_MISSING``) or whole directory (``SESSION_NEVER``) is
+        missing is a data problem: counting it as a silent animal would drop it from every vocal set unseen,
+        so the manifest build stops and names the session.
 
         Parameters
         ----------
         tmp_path (pathlib.Path)
-            The (empty) data root.
+            The synthetic data root.
+        session_id (str)
+            The session with the missing file.
 
         Returns
         -------
         None
         """
-        assert emitter_usv_counts([SESSION_NEVER], str(tmp_path), {}, "self", SETTINGS_VOCAL) == {SESSION_NEVER: 0}
+        _write_tree(tmp_path)
+        with pytest.raises(FileNotFoundError, match=session_id):
+            focal_usv_onsets({session_id}, str(tmp_path), {session_id: "m1"}, "self", SETTINGS_VOCAL)
 
 
 class TestBuildCohortManifest:
@@ -561,11 +566,10 @@ class TestBlockUnits:
 
     def test_block_counts_assign_each_usv_by_onset_and_drop_the_gaps(self):
         """At 10 fps a 1000-frame session gives windows of [0, 18), [22, 38), ... seconds, so the USVs at
-        18.1 s and 21.0 s fall in the gap and count for no block; a session without files counts zero."""
-        onsets = {"s": (np.array([1.0, 17.9, 18.1, 21.0, 99.0]), 10.0, 1000), "gone": None}
+        18.1 s and 21.0 s fall in the gap and count for no block."""
+        onsets = {"s": (np.array([1.0, 17.9, 18.1, 21.0, 99.0]), 10.0, 1000)}
         counts = block_usv_counts(onsets, 5, 4.0)
         assert [counts[f"s#block{index}"] for index in range(5)] == [2, 0, 0, 0, 1]
-        assert [counts[f"gone#block{index}"] for index in range(5)] == [0, 0, 0, 0, 0]
 
     def test_a_one_session_unit_is_tested_on_blocks_with_a_per_block_vocal_floor(self):
         """Every block is a courtship block; only the blocks reaching 20 USVs are vocal blocks."""

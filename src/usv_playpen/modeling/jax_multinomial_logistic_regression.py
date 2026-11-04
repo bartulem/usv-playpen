@@ -551,9 +551,16 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
     intercept_ : np.ndarray, shape (n_classes,)
         Learned per-class biases. Initialised from the log class prior.
     log_priors_ : np.ndarray, shape (n_classes,)
-        `log(count_c / N + eps)` captured at fit time; used by
-        `predict_proba(balanced=True)` to neutralise the base-rate
-        contribution absorbed into the intercept during fitting.
+        `log(count_c / N + eps)` captured at fit time; the intercepts are
+        initialised from it.
+    class_weights_ : np.ndarray, shape (n_classes,)
+        The per-class loss weights the fit used (unit mean): all ones under
+        `uniform_class_weights`, else the softened inverse frequencies.
+    effective_log_priors_ : np.ndarray, shape (n_classes,)
+        `log(w_c count_c / sum(w count) + eps)`, the prior the weighted loss
+        makes the intercepts absorb; equals `log_priors_` under uniform class
+        weights. `predict_proba(balanced=True)` subtracts it to neutralise the
+        base-rate contribution absorbed into the intercept during fitting.
     classes_ : np.ndarray
         Ordered class labels in the layout used by `coef_` columns.
     lb_ : sklearn.preprocessing.LabelBinarizer
@@ -961,6 +968,13 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         total_samples = Y_j.shape[0]
         priors = class_counts / total_samples
         log_priors = jnp.log(priors + 1e-8)
+        # The prior the fitted intercepts actually absorb. Weighting class c's rows by w_c in the loss
+        # is equivalent to fitting under the prior w_c * n_c / sum(w n), not n_c / N: an intercept-only
+        # fit lands at log(w_c n_c) + const, so the softened inverse-frequency weights leave only half
+        # the log class ratio in the intercept. `predict_proba(balanced=True)` must subtract this
+        # effective prior, or a class-weighted fit keeps a constant tilt toward the rarer classes.
+        effective_priors = c_weights * class_counts / (jnp.sum(c_weights * class_counts) + 1e-12)
+        effective_log_priors = jnp.log(effective_priors + 1e-8)
 
         # Pass log_priors into the initialization
         rng = jax.random.PRNGKey(self.random_state)
@@ -1058,6 +1072,8 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         self.coef_ = np.array(params[0].T)
         self.intercept_ = np.array(params[1])
         self.log_priors_ = np.array(log_priors)
+        self.class_weights_ = np.array(c_weights)
+        self.effective_log_priors_ = np.array(effective_log_priors)
         # Expose fit-time diagnostics so callers can persist per-fold convergence
         # evidence alongside the learned weights — the most common silent-failure
         # mode for this estimator is hitting `max_iter` without converging.
@@ -1077,13 +1093,15 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         X : np.ndarray
             Input data, shape (n_samples, n_features * n_time_bins).
         balanced : bool, default=False
-            If True, subtracts the stored training log-priors (`self.log_priors_`)
-            from the logits before the softmax. This cleanly neutralizes the
-            base-rate contribution that the intercept absorbed during fitting,
-            so the returned probabilities reflect the learned feature-to-class
-            evidence as if every category were equally likely a priori. Zeroing
-            the full intercept would be unsafe because, after training, it also
-            carries residual weight adjustments beyond the pure log-prior.
+            If True, subtracts the prior the fit absorbed (`self.effective_log_priors_`:
+            the class frequencies weighted by the class weights, which equal the
+            plain frequencies `self.log_priors_` only when the class weights are
+            uniform) from the logits before the softmax. This neutralizes the
+            base-rate contribution the intercept absorbed during fitting, so the
+            returned probabilities reflect the learned feature-to-class evidence
+            as if every category were equally likely a priori. Zeroing the full
+            intercept would be unsafe because, after training, it also carries
+            residual weight adjustments beyond the pure log-prior.
 
         Returns
         -------
@@ -1093,11 +1111,11 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
             will sum to 1 for each sample.
         """
 
-        check_is_fitted(self, ['coef_', 'intercept_', 'log_priors_'])
+        check_is_fitted(self, ['coef_', 'intercept_', 'effective_log_priors_'])
         X = check_array(X)
 
         if balanced:
-            logits = np.dot(X, self.coef_.T) + self.intercept_ - self.log_priors_
+            logits = np.dot(X, self.coef_.T) + self.intercept_ - self.effective_log_priors_
         else:
             logits = np.dot(X, self.coef_.T) + self.intercept_
 

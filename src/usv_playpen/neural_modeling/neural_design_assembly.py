@@ -438,6 +438,10 @@ def load_session_usvs(data_root: str, session_id: str, csv_sep: str = ",") -> pl
 
 VOCALIZATION_SCOPES = ("analysed", "guard")
 
+# How a unit's feature frames are z-scored: across its sessions together (its own kinematic model) or each
+# session alone (the convention the cohort behaviour controls were fitted under).
+STANDARDISATIONS = ("pooled", "per_session")
+
 
 def filter_vocalizations(usv_df: pls.DataFrame, vocal_settings: dict, scope: str) -> pls.DataFrame:
     """
@@ -795,15 +799,18 @@ def assemble_unit_sessions(
         clean_post_seconds: float,
         clean_against,
         vocal_settings: dict,
+        standardise: str = "pooled",
 ) -> dict:
     """
     Description
     -----------
-    Assemble, for every session of a cohort unit, the arrays the encoder needs: the pooled-z-scored
-    per-frame feature time series (NaNs imputed to 0), the integer spike-frame train, the quiet anchor
-    frames and the session's track names (which the transfer resolves its emitter against). Features
-    are z-scored across all the unit's sessions together; they are same-day blocks with the same mice,
-    so feature columns align across them.
+    Assemble, for every session of a cohort unit, the arrays the encoder needs: the z-scored per-frame
+    feature time series (NaNs imputed to 0), the integer spike-frame train, the quiet anchor frames and
+    the session's track names (which the transfer resolves its emitter against). Under ``'pooled'`` the
+    features are z-scored across all the unit's sessions together (they are same-day blocks with the
+    same mice, so feature columns align across them), which is what the unit's own kinematic model is
+    fitted on; under ``'per_session'`` each session is z-scored alone, which is how the cohort behaviour
+    controls were fitted and therefore what their inputs must be when a control is applied to the unit.
 
     For a unit tested on blocks of one session, every block shares that session's arrays and differs
     only in its ``window`` and in its quiet anchors, which are clipped to the window. The spike train and
@@ -829,6 +836,9 @@ def assemble_unit_sessions(
     vocal_settings (dict)
         The ``vocalizations`` block; its exclusion flags decide which summary rows the quiet
         guard counts (``filter_vocalizations`` at ``'guard'`` scope).
+    standardise (str)
+        ``'pooled'`` (z-score across the unit's sessions together) or ``'per_session'`` (each session
+        alone, the behaviour controls' convention).
 
     Returns
     -------
@@ -837,18 +847,38 @@ def assemble_unit_sessions(
         track_names, window}}``, keyed by the unit's session or block identifiers.
     """
 
+    if standardise not in STANDARDISATIONS:
+        msg = f"standardise must be one of {STANDARDISATIONS}; got {standardise!r}."
+        raise ValueError(msg)
     # Blocks of one session load that session once.
     source_ids = list(dict.fromkeys(source_session(s) for s in unit["courtship_sessions"]))
     session_dirs = [f"{data_root}/{s}" for s in source_ids]
-    feats, cam_fr, names, _suffixes = build_zscored_feature_frames(
-        session_dirs=session_dirs, kinematic_features=kinematic_features,
-        recorded_mouse_id=unit["mouse_id"],
-    )
+    if standardise == "pooled":
+        feats, cam_fr, names, _suffixes = build_zscored_feature_frames(
+            session_dirs=session_dirs, kinematic_features=kinematic_features,
+            recorded_mouse_id=unit["mouse_id"],
+        )
+    else:
+        # One build per session: the z-scoring inside pools over the sessions it is handed, so handing
+        # it one session at a time standardises each on its own statistics, as the control fits did.
+        feats, cam_fr, names = {}, {}, {}
+        for session_dir in session_dirs:
+            one_feats, one_cam_fr, one_names, _suffixes = build_zscored_feature_frames(
+                session_dirs=[session_dir], kinematic_features=kinematic_features,
+                recorded_mouse_id=unit["mouse_id"],
+            )
+            feats.update(one_feats)
+            cam_fr.update(one_cam_fr)
+            names.update(one_names)
 
     per_source: dict = {}
     for session_id in source_ids:
         if session_id not in feats:
-            continue
+            # The loader only warns about a session it could not read; silently skipping it would surface
+            # later as a KeyError on the session id, far from the cause.
+            msg = (f"no behavioural features were loaded for session {session_id} of unit {unit['unit_id']} "
+                   f"(features CSV or tracking file missing under {data_root}/{session_id}).")
+            raise FileNotFoundError(msg)
         feat_df = feats[session_id]
         feature_names = feat_df.columns
         feature_ts = np.nan_to_num(feat_df.to_numpy().astype(np.float64), nan=0.0)
@@ -881,7 +911,8 @@ def assemble_unit_sessions(
     for session_id in unit["courtship_sessions"]:
         source_id = source_session(session_id)
         if source_id not in per_source:
-            continue
+            msg = f"session {source_id} of unit {unit['unit_id']} was not assembled; see the loader's warnings."
+            raise FileNotFoundError(msg)
         entry = per_source[source_id]
         window = session_window(unit, session_id, entry["n_frames"], entry["fps"], history_pre_seconds)
         per_session[session_id] = {**entry, "quiet": frames_in_window(entry["quiet"], window),

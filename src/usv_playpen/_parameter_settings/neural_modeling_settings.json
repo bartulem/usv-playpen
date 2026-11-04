@@ -152,7 +152,8 @@
         "enabled": true,
         "alpha_grid": [0.1, 0.25, 0.5, 0.75, 1.0, 1.5]
       },
-      "mean_count_floor": 0.001
+      "mean_count_floor": 0.001,
+      "null_jitter_block_seconds": 2.0
     },
     "tuning_surface": {
       "tuning_basis": "fourier",
@@ -160,7 +161,7 @@
       "bump_grid_n": 10,
       "bump_sigma": 0.1,
       "min_basis_occupancy": 5.0,
-      "decode_grid_min_occupancy": 1.0,
+      "decode_grid_min_occupancy": 0.5,
       "grid_n": 60,
       "kde_bandwidth": 0.03,
       "likelihood_family": "poisson",
@@ -302,6 +303,7 @@
     "feature_main_alpha": 0.01,
     "content_gating_compute": false,
     "gating_screen_n_shuffles": 2000,
+    "escalation_ladder": [20000],
     "screen_alpha": 0.01,
     "sign_ridge_frac": 0.1,
     "borderline_sigma_flag": 5.0,
@@ -318,7 +320,7 @@
     "pvalue_method": "empirical_escalated",
     "fdr_method": "bh",
     "fdr_q": 0.05,
-    "escalation_ladder": [],
+    "escalation_ladder": [10000],
     "include_single_session_units": false
   }
 }

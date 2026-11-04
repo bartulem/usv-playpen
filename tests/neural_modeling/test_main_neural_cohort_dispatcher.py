@@ -41,11 +41,13 @@ from usv_playpen.neural_modeling.main_neural_cohort_dispatcher import (
     timestamped,
 )
 from usv_playpen.neural_modeling.main_neural_encoding_dispatcher import (
+    fold_artifact_path,
     load_settings,
     write_fold_artifact,
 )
 from usv_playpen.neural_modeling.main_neural_vocal_dispatcher import VOCAL_STEPS
 from usv_playpen.neural_modeling.neural_artifacts import (
+    current_git_commit,
     read_unit_artifact,
     write_unit_section,
 )
@@ -54,7 +56,9 @@ RECORD = {"unit_uid": "m1_20250101_imec0_cl0001_ch001_good", "unit_id": "imec0_c
           "mouse_id": "m1", "rec_date": 20250101, "brain_area": "PAG", "block_split": None,
           "courtship_sessions": ["20250101_100000", "20250101_110000"],
           "vocal_sessions": ["20250101_100000", "20250101_110000"],
-          "recorded_sessions": ["20250101_100000", "20250101_110000"]}
+          "recorded_sessions": ["20250101_100000", "20250101_110000"],
+          "cluster_group": "good", "somatic": True, "vocal_testable": True,
+          "n_courtship_sessions": 2, "n_vocal_sessions": 2}
 
 
 def _all_sections(settings: dict) -> dict:
@@ -77,7 +81,8 @@ def _all_sections(settings: dict) -> dict:
     sections = [section for step in VOCAL_STEPS for section in step_sections(step)]
     sha = compute_settings_sha256(settings)
     return {**{section: {} for section in sections},
-            "section_provenance": {section: {"settings_sha256": sha} for section in sections}}
+            "section_provenance": {section: {"settings_sha256": sha, "git_commit": current_git_commit()}
+                                   for section in sections}}
 
 
 class TestBookkeeping:
@@ -89,10 +94,17 @@ class TestBookkeeping:
         assert recorded_sessions(record) == ["20250101_100000"]
 
     def test_per_target_steps_write_one_section_per_target(self):
-        """Identity and the nested decoding write both targets' sections; occurrence and gating write one."""
+        """Identity writes both content targets' sections, the nested decoding those two and the onset
+        section; occurrence and gating write one. A resume that forgot the onset section would keep a
+        task killed between the multinomial and onset writes "current" forever."""
         assert step_sections("vocalization_identity") == ["vocalization_identity_manifold",
                                                           "vocalization_identity_multinomial"]
+        assert step_sections("nested_vocal_decoding") == ["nested_vocal_decoding_manifold",
+                                                          "nested_vocal_decoding_multinomial",
+                                                          "nested_vocal_decoding_onset"]
         assert step_sections("vocal_occurrence") == ["vocal_occurrence"]
+        with pytest.raises(ValueError, match="unknown vocal step"):
+            step_sections("vocal_dancing")
 
     def test_nothing_is_pending_when_every_section_is_current(self):
         """A finished unit must not be recomputed."""
@@ -118,11 +130,22 @@ class TestBookkeeping:
         assert not fold_is_current(str(tmp_path), RECORD, 0, other)
 
 
+    def test_a_fold_written_by_other_code_is_re_run(self, tmp_path):
+        """A fold archived under these settings but by another commit is stale: a fix landing between a
+        task's attempts must recompute what the older code wrote."""
+        settings = load_settings()
+        write_unit_section(str(tmp_path), RECORD, "kinematic_encoding_folds",
+                           {"folds": [{"fold_index": 0, "settings_sha256": compute_settings_sha256(settings),
+                                       "git_commit": "0" * 40}]},
+                           settings)
+        assert not fold_is_current(str(tmp_path), RECORD, 0, settings)
+
     def test_an_archived_fold_counts_as_current(self, tmp_path):
         """A fold archived into the result file by combine must not be re-run on resumption."""
         settings = load_settings()
         write_unit_section(str(tmp_path), RECORD, "kinematic_encoding_folds",
-                           {"folds": [{"fold_index": 0, "settings_sha256": compute_settings_sha256(settings)}]},
+                           {"folds": [{"fold_index": 0, "settings_sha256": compute_settings_sha256(settings),
+                                       "git_commit": current_git_commit()}]},
                            settings)
         assert fold_is_current(str(tmp_path), RECORD, 0, settings)
         assert not fold_is_current(str(tmp_path), RECORD, 1, settings)
@@ -487,3 +510,44 @@ class TestFoldsAndCommandLine:
         monkeypatch.setattr(sys, "argv", [*run_arguments, "--index", "5"])
         assert cohort_dispatcher.main() == 0
         assert "outside the manifest" in capsys.readouterr().out
+
+
+class TestInterruptedWrites:
+    """A task killed mid-write, or failing before its stages, must leave a resumable and truthful state."""
+
+    def test_an_unreadable_fold_file_is_stale_not_fatal(self, tmp_path):
+        """A truncated fold file (an interrupted write of an older version) is re-run rather than read."""
+        settings = load_settings()
+        path = fold_artifact_path(str(tmp_path), RECORD, 0)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"PK\x03\x04truncated")
+        assert not fold_is_current(str(tmp_path), RECORD, 0, settings)
+
+    def test_a_fold_file_is_published_whole(self, tmp_path):
+        """The fold is written to a temporary sibling and renamed, so no temporary file is left behind and
+        the published file reads back."""
+        settings = load_settings()
+        write_fold_artifact({"fold_index": 0, "no_model": True}, RECORD, 0, str(tmp_path), settings,
+                            message_output=lambda *_a: None)
+        path = fold_artifact_path(str(tmp_path), RECORD, 0)
+        assert path.exists()
+        assert [p.name for p in path.parent.iterdir() if ".tmp-" in p.name] == []
+        assert fold_is_current(str(tmp_path), RECORD, 0, settings)
+
+    def test_a_unit_failing_before_its_stages_is_closed_as_failed(self, tmp_path, monkeypatch):
+        """A refusal raised while the record is rebuilt (here, the data changed after planning) leaves a
+        status file that says failed, never one stuck at running or no file at all."""
+        def refuse(*_args):
+            """Stand-in for ``build_unit_record`` that refuses the unit."""
+            msg = "the data changed after planning -- re-plan"
+            raise ValueError(msg)
+
+        monkeypatch.setattr(cohort_dispatcher, "build_unit_record", refuse)
+        record = {**RECORD, "unit_uid": "u_fail", "brain_area": "PAG", "block_split": None,
+                  "recorded_sessions": ["s0"]}
+        with pytest.raises(ValueError, match="re-plan"):
+            cohort_dispatcher.run_unit(record, load_settings(), None, "/data", str(tmp_path), 1, 1,
+                                       message_output=lambda *_a: None)
+        stored = json.loads((tmp_path / "status" / "u_fail.json").read_text())
+        assert stored["state"] == "failed"
+        assert stored["stages"]["setup"]["state"] == "failed"

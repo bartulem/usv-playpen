@@ -167,6 +167,7 @@ def lag_basis(n_lags: int, temporal_basis: dict) -> np.ndarray | None:
         basis = basis / np.sqrt(1.0 + alpha * lag_fraction ** 2)[None, :]
     return basis / float(basis.sum(axis=0).mean())
 
+
 def inner_folds(pool_session_ids: list) -> list:
     """
     Description
@@ -230,6 +231,7 @@ def quiet_block_sessions(session: dict, session_id: str, n_blocks: int, gap_fram
         blocks[f"{session_id}#block{index}"] = {**session, "quiet": trimmed}
     return blocks
 
+
 def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices: list, n_lags: int,
                     rng, encoding_settings: dict, message_output=print) -> tuple:
     """
@@ -279,6 +281,7 @@ def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices:
     columns = list(feature_indices)
     design_blocks, label_blocks, offset_blocks, owner_blocks = [], [], [], []
     n_positive_total, n_negative_total = 0, 0
+    composition = []
     per_session_cap = max(int(encoding_settings["max_train_total"] / max(len(train_session_ids), 1)), 1)
     for position, session_id in enumerate(train_session_ids):
         session = per_session[session_id]
@@ -291,6 +294,9 @@ def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices:
         owner_blocks.append(np.full(anchors.size, position))
         n_positive_total += n_positive
         n_negative_total += n_negative
+        composition.append({"session": str(session_id), "n_quiet_anchors": int(np.asarray(session["quiet"]).size),
+                            "n_positive": int(n_positive), "n_negative": int(n_negative),
+                            "n_rows_kept": int(anchors.size), "n_positive_kept": int(np.sum(labels > 0))})
 
     design = np.vstack(design_blocks)
     labels_all, offsets_all = np.concatenate(label_blocks), np.concatenate(offset_blocks)
@@ -386,7 +392,16 @@ def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices:
                        f"iterate and every score derived from it is provisional")
 
     denominator = max(n_positive_total + n_negative_total, 1)
-    return estimator, float(min(max(n_positive_total / denominator, 1e-6), 1.0 - 1e-6))
+    base_rate = float(min(max(n_positive_total / denominator, 1e-6), 1.0 - 1e-6))
+    # What the fit was trained on, carried on the estimator so a caller can persist it: per session the
+    # quiet anchors, the spikes and silences among them before subsampling, and the rows kept after it;
+    # the per-session cap and whether any session hit it; the session baselines and the base rate.
+    estimator.training_set_ = {"per_session": composition, "per_session_cap": int(per_session_cap),
+                               "cap_reached": bool(any(entry["n_rows_kept"] >= per_session_cap
+                                                       for entry in composition)),
+                               "session_baselines": [float(value) for value in deltas],
+                               "base_rate": base_rate, "n_rows": int(labels_all.size)}
+    return estimator, base_rate
 
 
 def linear_predictor_at_frames(estimator, feature_time_series: np.ndarray, feature_indices: list,
@@ -494,6 +509,42 @@ def frozen_null_scores(eta: np.ndarray, frames: np.ndarray, spike_frames: np.nda
     return null
 
 
+def aggregate_fold_nulls(fold_scores: np.ndarray, fold_nulls: list) -> np.ndarray:
+    """
+    Description
+    -----------
+    The screen's cross-fold null for one feature: the per-draw mean of the folds' frozen-filter nulls
+    over the folds whose observed score is finite, which matches the observed statistic (the finite
+    mean of the fold scores). A draw that is NaN in some kept folds averages the others; a draw NaN in
+    every kept fold stays NaN and leaves the p-value's draw count. A plain mean over every fold would
+    pair an observed mean over K-1 folds with a null over K (too tight when one fold's held-out session
+    has no quiet spikes) and let a single NaN draw in one fold remove the whole draw, which for a sparse
+    unit can push the finite count below what the Bonferroni bar needs.
+
+    Parameters
+    ----------
+    fold_scores (np.ndarray)
+        The observed held-out score per inner fold.
+    fold_nulls (list)
+        One ``(n_draws,)`` null per inner fold, in the same order.
+
+    Returns
+    -------
+    null (np.ndarray)
+        The ``(n_draws,)`` aggregated null; all NaN when no fold has a finite score.
+    """
+
+    kept = [np.asarray(null, dtype=np.float64) for score, null in zip(fold_scores, fold_nulls, strict=True)
+            if np.isfinite(score)]
+    if not kept:
+        return np.full(np.asarray(fold_nulls[0]).shape, np.nan, dtype=np.float64)
+    stacked = np.vstack(kept)
+    finite = np.isfinite(stacked)
+    counts = finite.sum(axis=0)
+    sums = np.where(finite, stacked, 0.0).sum(axis=0)
+    return np.where(counts > 0, sums / np.maximum(counts, 1), np.nan)
+
+
 def screen_features(per_session: dict, pool_session_ids: list, n_lags: int, rng, settings: dict,
                     feature_names: list, message_output=print) -> list:
     """
@@ -534,7 +585,8 @@ def screen_features(per_session: dict, pool_session_ids: list, n_lags: int, rng,
     -------
     rows (list)
         One dict per feature: ``feature``, ``name``, ``score``, ``slope``, ``p``, ``at_floor``,
-        ``survived``, ``converged``, and the per-inner-fold ``fold_scores`` and ``fold_slopes``.
+        ``survived``, ``converged``, the aggregated ``null`` with its ``n_finite_draws``
+        (:func:`aggregate_fold_nulls`), and the per-inner-fold ``fold_scores`` and ``fold_slopes``.
     """
 
     encoding = settings["kinematic_encoding"]
@@ -567,12 +619,15 @@ def screen_features(per_session: dict, pool_session_ids: list, n_lags: int, rng,
                 encoding["null_block_megabytes"]))
         score = finite_mean(np.asarray(fold_scores))
         slope = finite_mean(np.asarray(fold_slopes))
-        p_value, at_floor = empirical_pvalue(np.vstack(fold_nulls).mean(axis=0), score)
+        null = aggregate_fold_nulls(np.asarray(fold_scores), fold_nulls)
+        p_value, at_floor = empirical_pvalue(null, score)
         slope_ok = (not require_positive_slope) or (np.isfinite(slope) and slope > 0)
         survived = bool(score > 0 and slope_ok and np.isfinite(p_value) and p_value < threshold)
         rows.append({"feature": feature, "name": feature_names[feature], "score": score, "slope": slope,
                      "p": p_value, "at_floor": at_floor, "survived": survived,
                      "converged": bool(np.all(fold_converged)),
+                     # The null itself, so a per-feature z and the draw attrition can be read later.
+                     "null": null, "n_finite_draws": int(np.isfinite(null).sum()),
                      # Per-fold values show whether the folds agreed; the decision uses the mean.
                      "fold_scores": [float(value) for value in fold_scores],
                      "fold_slopes": [float(value) for value in fold_slopes]})
@@ -745,14 +800,16 @@ def step_shift_test(per_session: dict, pool_session_ids: list, incumbent: list, 
                                            encoding) - score_incumbent)
         lags.append([draw_lags[session_id] for session_id in session_order])
         refit_seconds.append(time.perf_counter() - draw_started)
-        if t_null[-1] >= t_obs:
+        # A draw counts as reaching T_obs unless it is finite and below it, so a NaN refit (or a NaN
+        # T_obs) is an exceedance that stops the test, never a silent pass.
+        if not t_null[-1] < t_obs:
             break
 
     t_null = np.asarray(t_null, dtype=np.float64)
     n_draws_run = int(t_null.size)
-    k_exceed = int(np.sum(t_null >= t_obs))
+    k_exceed = int(np.sum(~(t_null < t_obs)))
     p_value, p_adjusted = bonferroni_permutation_p(k_exceed, n_draws_run, m_candidates)
-    accepted = bool(k_exceed == 0 and n_draws_run == n_refits)
+    accepted = bool(np.isfinite(t_obs) and k_exceed == 0 and n_draws_run == n_refits)
     message_output(f"    step test {step_index}: {'ACCEPT' if accepted else 'REJECT'} -- {k_exceed} of "
                    f"{n_draws_run} draws at/above T_obs (max null gain {np.max(t_null):+.5f}); p {p_value:.5f}, "
                    f"Bonferroni x{m_candidates} {p_adjusted:.5f} vs alpha {alpha:g}"
@@ -819,8 +876,9 @@ def forward_select(per_session: dict, pool_session_ids: list, survivors: list, n
         One dict per tested step: ``step``, ``candidate``, ``mean`` (the winner's fold-mean held-out
         score), ``fold_scores``, ``improvement`` (its fold-mean gain over the incumbent's, descriptive
         only; the incumbent of the first step is the empty model, whose held-out score is 0),
-        ``decision`` (``'ACCEPT'`` or ``'REJECT'``), ``converged`` (every inner-fold fit of the winner)
-        and ``step_test`` (the :func:`step_shift_test` record).
+        ``decision`` (``'ACCEPT'`` or ``'REJECT'``), ``converged`` (every inner-fold fit of the winner),
+        ``step_test`` (the :func:`step_shift_test` record) and ``candidates`` (every candidate scored at
+        the step: ``feature``, ``name``, ``mean``, ``fold_scores``, ``converged``).
     """
 
     encoding = settings["kinematic_encoding"]
@@ -864,9 +922,14 @@ def forward_select(per_session: dict, pool_session_ids: list, survivors: list, n
     step = 0
     while remaining:
         best_feature, best_mean, best_scores, best_converged = None, -np.inf, None, True
+        # Every candidate's held-out scores at this step, not only the winner's: the runner-up margin and
+        # the whole trajectory cost a refit of every candidate on every inner fold to recover.
+        candidates = []
         for feature in remaining:
             values, converged = fold_scores([*selected, feature])
             mean = finite_mean(values)
+            candidates.append({"feature": int(feature), "name": feature_names[feature], "mean": float(mean),
+                               "fold_scores": [float(value) for value in values], "converged": bool(converged)})
             if np.isfinite(mean) and mean > best_mean:
                 best_feature, best_mean, best_scores, best_converged = feature, mean, values, converged
         if best_feature is None or (step == 0 and best_mean <= 0):
@@ -877,7 +940,8 @@ def forward_select(per_session: dict, pool_session_ids: list, survivors: list, n
         path.append({"step": step, "candidate": feature_names[best_feature], "mean": best_mean,
                      "improvement": best_mean - incumbent_mean,
                      "decision": "ACCEPT" if accept else "REJECT", "converged": best_converged,
-                     "fold_scores": [float(value) for value in best_scores], "step_test": record})
+                     "fold_scores": [float(value) for value in best_scores], "step_test": record,
+                     "candidates": candidates})
         message_output(f"    select step {step}  {'ACCEPT' if accept else 'REJECT'} "
                        f"{feature_names[best_feature]:<32} score {best_mean:+.5f} | per fold "
                        f"{np.array2string(best_scores, precision=4)} | shift-test p_adj "

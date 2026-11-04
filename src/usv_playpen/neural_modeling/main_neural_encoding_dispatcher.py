@@ -23,12 +23,14 @@ import pathlib
 import sys
 import time
 import traceback
+import zipfile
 from datetime import datetime
 from zlib import crc32
 
 import numpy as np
 
 from ..modeling.modeling_metadata import compute_settings_sha256
+from ..os_utils import atomic_output_path
 from .deviance_metrics import encoding_metrics, frozen_model_score
 from .kinematic_encoding import (
     filter_band,
@@ -41,7 +43,7 @@ from .kinematic_encoding import (
     screen_features,
     spike_triggered_average,
 )
-from .neural_artifacts import read_unit_artifact, write_unit_section
+from .neural_artifacts import current_git_commit, read_unit_artifact, write_unit_section
 from .neural_cohort import block_usv_counts, focal_usv_onsets, unit_session_sets
 from .neural_design_assembly import (
     BLOCK_TAG,
@@ -55,7 +57,12 @@ from .neural_design_assembly import (
     spike_labels_at_frames,
     vocal_span_frames,
 )
-from .quiet_to_vocal_transfer import combine_folds, score_fold, transfer_frames
+from .quiet_to_vocal_transfer import (
+    combine_folds,
+    score_fold,
+    transfer_frames,
+    untested_transfer,
+)
 from .shift_null_inference import escalated_empirical_pvalue
 
 
@@ -242,12 +249,19 @@ def read_fold_artifact(output_directory: str, unit: dict, fold_index: int) -> di
     Returns
     -------
     artifact (dict | None)
-        The fold's artifact, or None when it exists in neither place.
+        The fold's artifact, or None when it exists in neither place or its ``.npz`` file cannot be read.
     """
 
     path = fold_artifact_path(output_directory, unit, fold_index)
     if path.exists():
-        return dict(np.load(path, allow_pickle=True))
+        try:
+            # Read through a handle the block closes, so a failed read leaks no open file.
+            with path.open("rb") as handle, np.load(handle, allow_pickle=True) as stored_fold:
+                return dict(stored_fold)
+        except (OSError, ValueError, EOFError, zipfile.BadZipFile):
+            # A file left unreadable by an interrupted write of an older version: the fold is stale and is
+            # run again, which overwrites it.
+            return None
     stored = read_unit_artifact(output_directory, unit["unit_uid"])
     if FOLDS_SECTION in stored and fold_index < len(stored[FOLDS_SECTION]["folds"]):
         return dict(stored[FOLDS_SECTION]["folds"][fold_index])
@@ -262,7 +276,7 @@ def archive_folds(unit: dict, folds: list, settings: dict, output_directory: str
     Move the unit's fold artifacts into its result file and delete the ``.npz`` files, so a finished
     unit is one file.
 
-    Called by :func:`combine` once the ``kinematic_encoding`` section is written. The section is written
+    Used by :func:`combine` once the ``kinematic_encoding`` section is written. The section is written
     before any file is deleted, so an interruption leaves the folds in one place or the other, never
     nowhere. The folds stay readable through :func:`read_fold_artifact` (a later re-combine, the
     resume check of the cohort runner, the figures).
@@ -330,10 +344,14 @@ def write_fold_artifact(artifact: dict, unit: dict, fold_index: int, output_dire
     """
 
     artifact["settings_sha256"] = compute_settings_sha256(settings)
+    artifact["git_commit"] = current_git_commit()
     destination = fold_artifact_path(output_directory, unit, fold_index)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(destination, **{key: np.asarray(value, dtype=object) if isinstance(value, (list, dict))
-                             else value for key, value in artifact.items()})
+    # Published atomically through a file handle (``np.savez`` given a path would append ``.npz`` to the
+    # temporary name): a fold killed mid-write leaves no truncated file for a resumed run to trip on.
+    with atomic_output_path(destination) as temporary, pathlib.Path(temporary).open("wb") as handle:
+        np.savez(handle, **{key: np.asarray(value, dtype=object) if isinstance(value, (list, dict))
+                            else value for key, value in artifact.items()})
     message_output(f"    wrote {destination.name}")
     return artifact
 
@@ -370,6 +388,7 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
         Everything the combine step needs from this fold.
     """
 
+    fold_started = time.time()
     encoding = settings["kinematic_encoding"]
     sessions = unit["courtship_sessions"]
     test_id = sessions[fold_index]
@@ -424,8 +443,10 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
         message_output(f"    one pool session: inner split is {len(blocks)} contiguous quiet blocks "
                        f"with a {required_gap:g} s gap")
 
+    screen_started = time.time()
     screen_rows = screen_features(inner_sessions, inner_ids, n_lags, rng, settings, feature_names,
                                   message_output)
+    screen_seconds = time.time() - screen_started
     survivors = [row["feature"] for row in screen_rows if row["survived"]]
     message_output(f"    survivors: {len(survivors)}/{len(screen_rows)}")
 
@@ -445,9 +466,11 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
 
     selected = [best_screened["feature"]] if best_screened is not None else []
     path = []
+    selection_started = time.time()
     if survivors:
         selected, path = forward_select(inner_sessions, inner_ids, survivors, n_lags, rng, settings,
                                         feature_names, message_output)
+    selection_seconds = time.time() - selection_started
     if not selected:
         # The path is kept: a first step rejected by its shift test is recorded with its test.
         return write_fold_artifact(
@@ -455,7 +478,9 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
              "no_model": True, "quiet_score": 0.0, "quiet_slope": np.nan,
              "quiet_p": 1.0, "quiet_at_floor": False,
              "eta_vocal": np.zeros(0), "labels_vocal": np.zeros(0), "pointer": pointer,
-             "gaps": gaps, "screen": screen_rows, "best_screened": False},
+             "gaps": gaps, "screen": screen_rows, "best_screened": False,
+             "timing_seconds": {"screen": screen_seconds, "selection": selection_seconds,
+                                "fold": time.time() - fold_started}},
             unit, fold_index, output_directory, settings, message_output)
     fit_started = time.time()
     estimator, base_rate = fit_quiet_model(per_session, pool_ids, selected, n_lags, rng, encoding,
@@ -472,6 +497,7 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
                                                   np.zeros(labels_quiet.size, dtype=np.int64),
                                                   encoding["solver"]["calibration_steps"], "bernoulli", 1.0,
                                                   encoding["calibration"])
+
     def draw_quiet_null(count):
         """Fresh quiet-null draws for the escalation ladder; the generator carries on where it left off."""
         return frozen_null_scores(eta_quiet, session["quiet"], session["spike_frames"],
@@ -493,11 +519,13 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
     # so every session is held out for it. Only vocal sessions are scored.
     vocal_everywhere = []
     for other_id in [s for s in sessions if s in set(unit["vocal_sessions"])]:
+        # Each session's own frame rate: a unit's sessions can differ by a fraction of a frame per second.
+        other_fps = per_session[other_id]["fps"]
         other_frames, other_pointer, other_gaps = focal_vocal_frames(
-            per_session[other_id], other_id, data_root, unit["mouse_id"], fps, n_lags,
+            per_session[other_id], other_id, data_root, unit["mouse_id"], other_fps, n_lags,
             settings["vocalizations"])
         other_frames = frames_in_window(
-            transfer_frames(other_frames, other_pointer, fps, per_session[other_id]["n_frames"], n_lags,
+            transfer_frames(other_frames, other_pointer, other_fps, per_session[other_id]["n_frames"], n_lags,
                             per_session[other_id]["quiet"], encoding["clean_post_seconds"], transfer_settings),
             per_session[other_id]["window"])
         scored = score_fold(estimator, per_session[other_id], selected, other_frames, n_lags,
@@ -529,7 +557,11 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
                 "gaps": gaps, "vocal_frames": vocal_frames, "screen": screen_rows,
                 "fold_vocal_score": vocal["fold_score"], "fold_vocal_slope": vocal["fold_slope"],
                 "auroc_vocal": vocal["auroc"], "spike_rate_vocal": vocal["spike_rate"],
-                "final_fit_converged": final_converged, "vocal_everywhere": vocal_everywhere}
+                "final_fit_converged": final_converged, "vocal_everywhere": vocal_everywhere,
+                # what the final model was trained on, and where the fold's time went
+                "training_set": estimator.training_set_,
+                "timing_seconds": {"screen": screen_seconds, "selection": selection_seconds,
+                                   "final_fit": final_fit_seconds, "fold": time.time() - fold_started}}
     return write_fold_artifact(artifact, unit, fold_index, output_directory, settings, message_output)
 
 
@@ -570,6 +602,7 @@ def representative_fold(artifacts: list) -> int:
     lower, upper = ordered[len(ordered) // 2 - 1], ordered[len(ordered) // 2]
     return max((lower, upper), key=lambda index: int(artifacts[index]["vocal_frames"].size))
 
+
 def per_fold_roster(artifacts: list, n_lags: int) -> dict:
     """
     Description
@@ -577,8 +610,11 @@ def per_fold_roster(artifacts: list, n_lags: int) -> dict:
     Everything the rotation produced per fold, as parallel lists indexed by fold, ready to persist.
 
     Every fold is listed, including folds that found no model, so position ``i`` in every list is fold
-    ``i``, which holds out ``courtship_sessions[i]``. A no-model fold records its quiet p as 1.0, its
-    fit-only entries as ``None`` (``nan`` for the fit time), and keeps its screen table.
+    ``i``, which holds out ``courtship_sessions[i]``. A no-model fold records its quiet p as 1.0 and
+    keeps its screen table; one that found nothing to fit records its fit-only entries as ``None``
+    (``nan`` for the fit time), while one that fitted its best screened feature for description only
+    (``best_screened``) keeps that fit's filter, metrics, time and iterations, with its descriptive p
+    under ``best_screened_quiet_p_per_fold`` rather than ``quiet_p_per_fold``.
 
     Every fold's filter is kept, reshaped to ``(n_features, n_lags)`` with its feature names and held-out
     session, since folds select different features and filters cannot be recovered without refitting.
@@ -593,27 +629,45 @@ def per_fold_roster(artifacts: list, n_lags: int) -> dict:
     Returns
     -------
     roster (dict)
-        ``no_model_per_fold``, ``selected_per_fold``, ``screen_per_fold``, ``forward_path_per_fold``,
-        ``quiet_score_per_fold``, ``quiet_p_per_fold``, ``quiet_metrics_per_fold``,
-        ``fit_seconds_per_fold``, ``n_iter_per_fold`` and ``filters_per_fold``, each a list with one
-        entry per fold. A ``filters_per_fold`` entry carries ``fold_index``, ``test_session``,
+        ``no_model_per_fold``, ``best_screened_per_fold``, ``selected_per_fold``, ``screen_per_fold``,
+        ``forward_path_per_fold``, ``quiet_score_per_fold``, ``quiet_p_per_fold``,
+        ``best_screened_quiet_p_per_fold``, ``quiet_slope_per_fold``, ``quiet_at_floor_per_fold``,
+        ``final_fit_converged_per_fold``, ``training_set_per_fold`` (the final fit's training-set
+        composition), ``timing_per_fold`` (screen, selection, final fit and whole-fold seconds),
+        ``quiet_metrics_per_fold``, ``fit_seconds_per_fold``, ``n_iter_per_fold`` and
+        ``filters_per_fold``, each a list with one entry per fold. A ``filters_per_fold`` entry carries ``fold_index``, ``test_session``,
         ``features``, ``feature_indices``, ``filter`` and ``intercept``.
     """
 
-    roster = {key: [] for key in ("no_model_per_fold", "selected_per_fold", "screen_per_fold",
-                                  "forward_path_per_fold", "quiet_score_per_fold", "quiet_p_per_fold",
+    roster = {key: [] for key in ("no_model_per_fold", "best_screened_per_fold", "selected_per_fold",
+                                  "screen_per_fold", "forward_path_per_fold", "quiet_score_per_fold",
+                                  "quiet_p_per_fold", "best_screened_quiet_p_per_fold",
+                                  "quiet_slope_per_fold", "quiet_at_floor_per_fold",
+                                  "final_fit_converged_per_fold", "training_set_per_fold", "timing_per_fold",
                                   "quiet_metrics_per_fold", "fit_seconds_per_fold", "n_iter_per_fold",
                                   "filters_per_fold")}
     for artifact in artifacts:
         no_model = bool(artifact["no_model"])
+        best_screened = "best_screened" in artifact and bool(artifact["best_screened"])
         fold = {"fold_index": int(artifact["fold_index"]), "test_session": str(artifact["test_id"])}
         roster["no_model_per_fold"].append(no_model)
+        roster["best_screened_per_fold"].append(best_screened)
         roster["selected_per_fold"].append([str(name) for name in artifact["selected"]])
         roster["screen_per_fold"].append(list(artifact["screen"]))
         roster["forward_path_per_fold"].append(list(artifact["path"]))
         roster["quiet_score_per_fold"].append(float(artifact["quiet_score"]))
-        if no_model:
-            roster["quiet_p_per_fold"].append(1.0)
+        roster["quiet_p_per_fold"].append(1.0 if no_model else float(artifact["quiet_p"]))
+        roster["best_screened_quiet_p_per_fold"].append(float(artifact["quiet_p"]) if best_screened
+                                                        else float("nan"))
+        # A fold that found nothing to fit need not carry a slope; every model fold does.
+        roster["quiet_slope_per_fold"].append(float(artifact["quiet_slope"]) if "quiet_slope" in artifact
+                                              else float("nan"))
+        roster["quiet_at_floor_per_fold"].append(False if no_model else bool(artifact["quiet_at_floor"]))
+        roster["timing_per_fold"].append(dict(unwrap_stored(artifact["timing_seconds"]))
+                                         if "timing_seconds" in artifact else None)
+        if no_model and not best_screened:
+            roster["final_fit_converged_per_fold"].append(None)
+            roster["training_set_per_fold"].append(None)
             roster["quiet_metrics_per_fold"].append(None)
             roster["fit_seconds_per_fold"].append(float("nan"))
             roster["n_iter_per_fold"].append(None)
@@ -621,7 +675,9 @@ def per_fold_roster(artifacts: list, n_lags: int) -> dict:
                                                "filter": None, "intercept": None})
             continue
         indices = [int(index) for index in artifact["selected_indices"]]
-        roster["quiet_p_per_fold"].append(float(artifact["quiet_p"]))
+        roster["final_fit_converged_per_fold"].append(bool(artifact["final_fit_converged"]))
+        roster["training_set_per_fold"].append(dict(unwrap_stored(artifact["training_set"]))
+                                               if "training_set" in artifact else None)
         roster["quiet_metrics_per_fold"].append(dict(unwrap_stored(artifact["quiet_metrics"])))
         roster["fit_seconds_per_fold"].append(float(artifact["fit_seconds"]))
         roster["n_iter_per_fold"].append(int(artifact["n_iter"]))
@@ -718,7 +774,8 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
         message_output(f"    one fit session: inner split is {len(blocks)} contiguous quiet blocks "
                        f"with a {required_gap:g} s gap (>= history {encoding['history_pre_seconds']:g} s)")
 
-    rng = np.random.default_rng(crc32(unit["unit_id"].encode()) & 0xFFFFFFFF)
+    # Seeded as a fold is (`run_fold`): the shared shuffle seed plus a unit-specific offset.
+    rng = np.random.default_rng(settings["inference"]["shuffle_seed"] + crc32(unit["unit_id"].encode()) % 10_000)
     screen_rows = screen_features(inner_sessions, inner_ids, n_lags, rng, settings, feature_names,
                                   message_output)
     survivors = [row["feature"] for row in screen_rows if row["survived"]]
@@ -761,6 +818,7 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
                                                   np.zeros(labels_quiet.size, dtype=np.int64),
                                                   encoding["solver"]["calibration_steps"], "bernoulli", 1.0,
                                                   encoding["calibration"])
+
     def draw_quiet_null(count):
         """Fresh quiet-null draws for the escalation ladder; the generator carries on where it left off."""
         return frozen_null_scores(eta_quiet, session["quiet"], session["spike_frames"],
@@ -782,10 +840,11 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
     vocal_ids = [s for s in sessions if s in set(unit["vocal_sessions"])]
     transfer_settings = settings["kinematic_encoding"]["transfer"]
     for session_id in vocal_ids:
+        session_fps = per_session[session_id]["fps"]
         frames, pointer, gaps = focal_vocal_frames(per_session[session_id], session_id, data_root,
-                                                   unit["mouse_id"], fps, n_lags,
+                                                   unit["mouse_id"], session_fps, n_lags,
                                                    settings["vocalizations"])
-        frames = frames_in_window(transfer_frames(frames, pointer, fps, per_session[session_id]["n_frames"], n_lags,
+        frames = frames_in_window(transfer_frames(frames, pointer, session_fps, per_session[session_id]["n_frames"], n_lags,
                                                   per_session[session_id]["quiet"], encoding["clean_post_seconds"],
                                                   transfer_settings),
                                   per_session[session_id]["window"])
@@ -794,8 +853,12 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
                             encoding, linear_predictor_at_frames, transfer_settings)
         result["pointer"], result["gaps"] = pointer, gaps
         vocal_results.append(result)
-    transfer = combine_folds(vocal_results, per_session, vocal_ids, vocal_frames_by_session, settings,
-                             message_output)
+    if vocal_results:
+        transfer = combine_folds(vocal_results, per_session, vocal_ids, vocal_frames_by_session, settings,
+                                 message_output)
+    else:
+        message_output("  TRANSFER untested: the unit has no vocal session to score its model on")
+        transfer = untested_transfer(settings, "no_vocal_session")
 
     if not final_converged:
         message_output("    [!] FINAL MODEL DID NOT CONVERGE -- treat every number here as provisional")
@@ -838,6 +901,7 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
     written = write_unit_section(output_directory, unit, "kinematic_encoding", artifact, settings)
     message_output(f"    wrote {written.name} [kinematic_encoding, single-split]")
     return artifact
+
 
 def spike_counts_per_session(per_session: dict) -> dict:
     """
@@ -918,8 +982,10 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
             msg = f"fold artifact missing: {fold_artifact_path(output_directory, unit, fold_index)}"
             raise FileNotFoundError(msg)
         # Folds made under other settings would be combined into a result labelled with these ones.
-        if "settings_sha256" not in artifact or str(artifact["settings_sha256"]) != compute_settings_sha256(settings):
-            msg = f"fold {fold_index} of {unit['unit_uid']} was written under other settings; re-run that fold"
+        if ("settings_sha256" not in artifact or str(artifact["settings_sha256"]) != compute_settings_sha256(settings)
+                or "git_commit" not in artifact or str(artifact["git_commit"]) != current_git_commit()):
+            msg = (f"fold {fold_index} of {unit['unit_uid']} was written under other settings or by other code; "
+                   f"re-run that fold")
             raise ValueError(msg)
         loaded.append(artifact)
     # Shallow copies: the description-only path below replaces `no_model` in them, and the archived
@@ -945,27 +1011,13 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
     feature_names = list(per_session[sessions[0]]["feature_names"])
     spike_counts = spike_counts_per_session(per_session)
 
-    fold_results, vocal_frames_by_session, scored_ids = [], {}, []
-    for artifact in artifacts:
-        test_id = str(artifact["test_id"])
-        if bool(artifact["no_model"]):
-            continue
-        fold_results.append({"eta": artifact["eta_vocal"], "labels": artifact["labels_vocal"],
-                             "fold_score": float(artifact["fold_vocal_score"]),
-                             "fold_slope": float(artifact["fold_vocal_slope"]),
-                             "auroc": float(artifact["auroc_vocal"]),
-                             "spike_rate": float(artifact["spike_rate_vocal"]),
-                             "n_frames": int(artifact["labels_vocal"].size)})
-        vocal_frames_by_session[test_id] = artifact["vocal_frames"]
-        scored_ids.append(test_id)
-
-    if not fold_results:
+    if all(bool(artifact["no_model"]) for artifact in artifacts):
         message_output("no fold produced a model; unit fails at the screen")
         # Written, not only returned: quiet p 1.0, transfer p NaN and no_model, with the per-fold
         # screen tables, so an untuned unit is never a missing value in the cohort table.
         result = {"unit_id": unit["unit_id"], "no_model": True, "no_scoreable_fold": False,
                   "quiet_p": 1.0, "transfer_p": np.nan, "spike_counts_per_session": spike_counts,
-                  "n_lags": n_lags, "fps": fps, **per_fold_roster(artifacts, n_lags)}
+                  "n_lags": n_lags, "fps": fps, **per_fold_roster(loaded, n_lags)}
         written = write_unit_section(output_directory, unit, "kinematic_encoding", result, settings)
         archive_folds(unit, loaded, settings, output_directory, message_output)
         message_output(f"    wrote {written.name} [kinematic_encoding, no model]")
@@ -984,7 +1036,7 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
                   "best_screened_only": screened_only, "no_scoreable_fold": True,
                   "quiet_p": np.nan, "transfer_p": np.nan, "spike_counts_per_session": spike_counts,
                   "n_lags": n_lags, "fps": fps,
-                  **per_fold_roster(artifacts, n_lags)}
+                  **per_fold_roster(loaded, n_lags)}
         written = write_unit_section(output_directory, unit, "kinematic_encoding", result, settings)
         archive_folds(unit, loaded, settings, output_directory, message_output)
         message_output(f"    wrote {written.name} [kinematic_encoding, no scoreable fold]")
@@ -1008,8 +1060,14 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
     vocal_frames_by_session = {str(entry["session_id"]): entry["frames"] for entry in everywhere}
     fold_results = [{key: value for key, value in entry.items()
                      if key not in ("session_id", "frames")} for entry in everywhere]
-    transfer = combine_folds(fold_results, per_session, scored_ids, vocal_frames_by_session, settings,
-                             message_output)
+    if fold_results:
+        transfer = combine_folds(fold_results, per_session, scored_ids, vocal_frames_by_session, settings,
+                                 message_output)
+    else:
+        # A unit with no vocal session (every session below the USV floor) keeps its quiet test and is
+        # untested on transfer: there is no vocal frame to score the model on.
+        message_output("  TRANSFER untested: the unit has no vocal session to score its model on")
+        transfer = untested_transfer(settings, "no_vocal_session")
 
     # The filter band needs refits of the representative model, so it is computed and stored here.
     band = None
@@ -1051,21 +1109,37 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
                                    representative_features, n_lags, encoding["chunk_rows"])
            if representative_features else None)
 
+    # A best-screened-only unit has no model: its quiet and transfer p-values are description only (a
+    # maximum over every screened feature, then pooled) and must never enter a correction, so the
+    # tested keys carry quiet p 1.0 and transfer p NaN, as every other no-model path writes them, and
+    # the descriptive values move to their own keys.
     result = {"unit_id": unit["unit_id"], "no_model": screened_only,
               "best_screened_only": screened_only, "no_scoreable_fold": False,
               "spike_counts_per_session": spike_counts,
               "quiet_score": quiet_score, "quiet_slope": float(chosen_artifact["quiet_slope"]),
-              "quiet_p": quiet_p, "quiet_at_floor": quiet_at_floor, "quiet_null": quiet_null,
+              "quiet_p": 1.0 if screened_only else quiet_p,
+              "quiet_at_floor": False if screened_only else quiet_at_floor, "quiet_null": quiet_null,
               "quiet_score_fold_average": quiet_mean_across_folds,
+              "best_screened_quiet_p": quiet_p if screened_only else float("nan"),
+              "best_screened_quiet_at_floor": quiet_at_floor if screened_only else False,
               "transfer_score": transfer["score"], "transfer_slope": transfer["slope"],
-              "transfer_p": transfer["p"], "transfer_at_floor": transfer["at_floor"],
+              "transfer_p": np.nan if screened_only else transfer["p"],
+              "transfer_at_floor": False if screened_only else transfer["at_floor"],
+              "best_screened_transfer_p": transfer["p"] if screened_only else float("nan"),
+              "best_screened_transfer_at_floor": transfer["at_floor"] if screened_only else False,
               "transfer_null": transfer["null"], "transfer_n_frames": transfer["n_frames"],
               "transfer_n_bins": transfer["n_bins"], "transfer_bin_width_frames": transfer["bin_width_frames"],
               "transfer_grain": transfer["grain"], "transfer_universe": transfer["universe"],
               "transfer_leave_one_session_out": transfer["leave_one_session_out"],
               "transfer_min_leave_one_session_out": transfer["min_leave_one_session_out"],
               "transfer_left_out_sessions": transfer["left_out_sessions"],
+              "transfer_reason": transfer["reason"] if "reason" in transfer else None,
               "transfer_per_session": fold_results, "transfer_session_ids": scored_ids,
+              # The frames each session's transfer arrays (eta, labels) are aligned to.
+              "transfer_frames_per_session": vocal_frames_by_session,
+              "final_fit_converged": bool(chosen_artifact["final_fit_converged"]),
+              "training_set": (dict(unwrap_stored(chosen_artifact["training_set"]))
+                               if "training_set" in chosen_artifact else None),
               "n_lags": n_lags, "fps": fps,
               "representative_fold": int(chosen_artifact["fold_index"]),
               "representative_session": str(chosen_artifact["test_id"]),
@@ -1076,7 +1150,7 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
               "filter_intercept": float(chosen_artifact["intercept"]),
               "filter_descriptors": descriptors, "spike_triggered_average": sta,
               "quiet_metrics": dict(unwrap_stored(chosen_artifact["quiet_metrics"])),
-              **per_fold_roster(artifacts, n_lags)}
+              **per_fold_roster(loaded, n_lags)}
 
     # Merged into the unit's own file, which the other analyses write their own sections into.
     written = write_unit_section(output_directory, unit, "kinematic_encoding", result, settings)

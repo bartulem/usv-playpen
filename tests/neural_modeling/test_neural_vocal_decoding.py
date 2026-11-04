@@ -260,6 +260,33 @@ class TestDecodeGain:
         assert abs(flat_gain) < 0.02
         assert tuned_gain > flat_gain
 
+    def test_a_training_set_without_spikes_does_not_make_the_fit_singular(self):
+        """The ridge scales with the training spikes; with none it used to be zero, and a fit with fewer
+        rows than basis columns then raised a singular-matrix error that lost the unit's identity, nested
+        and gating sections. The floored ridge keeps the fit defined."""
+        counts, positions, sessions = _tuned_unit(n_sessions=2, per_session=8)
+        counts = np.zeros_like(counts)
+        folds = decoding_context(positions, sessions, SETTINGS, PERIOD)
+        result = decode_gain(counts, folds, SETTINGS)
+        assert set(result) >= {"gain", "n_masked", "per_fold"}
+
+    def test_single_precision_priors_give_the_double_precision_gain(self):
+        """Behaviour priors are stored in single precision; a prior far below the single-precision range
+        at an event's true cell must still give a finite gain, the same as the double-precision prior
+        gives, instead of an underflow to zero whose log turns the gain into +inf."""
+        counts, positions, sessions = _tuned_unit()
+        folds = decoding_context(positions, sessions, SETTINGS, PERIOD)
+        priors = []
+        for fold in folds:
+            log_prior = np.tile(np.asarray(fold["log_prior"], dtype=np.float64), (counts.size, 1))
+            log_prior[:, ::2] = np.log(1e-300)  # far below float32's smallest positive number
+            priors.append(log_prior)
+        double = decode_gain(counts, folds, SETTINGS, log_prior_events=priors)
+        single = decode_gain(counts, folds, SETTINGS, log_prior_events=[p.astype(np.float32) for p in priors])
+        assert np.isfinite(single["gain"])
+        assert single["n_masked"] == double["n_masked"]
+        assert single["gain"] == pytest.approx(double["gain"], rel=1e-4)
+
     def test_alpha_zero_reduces_the_decoder_to_the_prior(self):
         """With the shape switched off the posterior IS the prior, so the gain must vanish. This is what
         makes `alpha >= 0` a guarantee that a reversed map can be ignored but never inverted."""

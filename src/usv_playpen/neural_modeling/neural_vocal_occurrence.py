@@ -9,11 +9,13 @@ the identity decoders: one Poisson rate per class, relative to each session's qu
 training sessions; an amplitude calibration tuned on the training sessions alone; and a posterior over
 the two classes under a fixed equal prior. The statistic is the held-out gain, the log posterior of the
 true class minus log 1/2, averaged over each class separately and then across the two, in nats per
-window. The null circularly shifts each session's spike train, recounts both classes and refits.
+window. The null replaces each session's spike train with a block-jitter surrogate (spikes circularly
+shifted within consecutive blocks of ``null_jitter_block_seconds``), recounts both classes and refits, so
+only alignment finer than a block is tested.
 
 Exports: ``counts_in_windows``, ``quiet_tile_edges``, ``occurrence_context``, ``occurrence_rates``,
 ``occurrence_log_posterior``, ``held_out_quiet_levels``, ``tuned_occurrence_amplitude``,
-``vocal_occurrence_statistic`` and ``vocal_occurrence_shift_null``.
+``vocal_occurrence_statistic``, ``block_jitter_spike_times`` and ``vocal_occurrence_jitter_null``.
 """
 
 from __future__ import annotations
@@ -23,7 +25,6 @@ from scipy.special import logsumexp
 
 from .deviance_metrics import area_under_roc, contiguous_blocks
 from .neural_vocal_decoding import inner_rotation_splits
-from .shift_null_inference import shift_range_seconds
 
 #: The occurrence prior is fixed at one half for each class. The number of quiet tiles is set by the
 #: subsampling cap, so their observed share is arbitrary and would otherwise set the prior.
@@ -132,7 +133,7 @@ def occurrence_context(labels: np.ndarray, session_index: np.ndarray, event_time
     Each fold holds out one session and carries the inner splits its amplitude calibration is tuned on
     (:func:`neural_vocal_decoding.inner_rotation_splits`): the other training sessions in turn, or
     contiguous blocks of a single training session. The folds are shared by the observed fit and every
-    null draw, since a circular shift changes the counts and nothing else.
+    null draw, since a jitter surrogate changes the counts and nothing else.
 
     Parameters
     ----------
@@ -568,26 +569,74 @@ def vocal_occurrence_statistic(counts: np.ndarray, labels: np.ndarray, session_i
             "min_leave_one_fold_out": float(np.nanmin(dropped)) if np.isfinite(dropped).any() else float("nan"),
             "n_windows": int(counts.size),
             "alphas": [entry["alpha"] for entry in per_fold],
-            "per_fold": per_fold}
+            "per_fold": per_fold,
+            # Per window, aligned to the windows handed in: the calibrated log-score gain over the prior
+            # and the held-out probability of a USV, so a per-USV response and the calibration can be
+            # read without a refit.
+            "per_window_gain": per_window, "per_window_probability": probability}
 
 
-def vocal_occurrence_shift_null(occurrence_windows: dict, spike_seconds: dict, durations: dict, start: int,
-                                n_draws: int, seed: int, guard_seconds: float, folds: list, axis: dict,
-                                crossfit_blocks: int, log_prior_by_fold: list | None = None) -> np.ndarray:
+def block_jitter_spike_times(spike_seconds: np.ndarray, duration: float, block_seconds: float,
+                             generator: np.random.Generator) -> np.ndarray:
     """
     Description
     -----------
-    Null draws of the vocal-occurrence statistic: circularly shift each session's spike train, recount BOTH
-    classes at the same window positions, and refit the decoder.
+    One block-jitter surrogate of a session's spike train: the session is cut into consecutive blocks of
+    ``block_seconds`` from its start (the last block is whatever remains), and the spikes inside each block
+    are circularly shifted within that block by the block's own uniform offset.
 
-    Both classes are recounted from the shifted train, so the shift breaks only the alignment of spikes
-    to vocal onsets while the unit's bursting and slow rate structure travel with it.
-    Each session is shifted independently, by an amount drawn uniformly from ``shift_range_seconds``,
-    and the shifted times wrap around the session. The amplitude search and the cross-fitted quiet
-    levels are redone in every draw.
+    Every block keeps its own spike count, so the train's rate profile on every time scale longer than a
+    block is unchanged: slow drift, and any rate change that follows the session's vocal-dense periods,
+    travel with the surrogate. Inside a block the spikes keep their relative timing, except where the
+    shift wraps them past the block's end. What the surrogate breaks is only the alignment of spikes to
+    events on scales finer than a block. This is the interval-jitter idea of Amarasingham, Harrison,
+    Hatsopoulos and Geman (2012, J Neurophysiol 107:517-531), applied as a within-block circular shift.
 
-    Each draw has its own generator, seeded ``seed + start + draw``, so draws ``[start, start + n_draws)``
-    are the same however the range is partitioned across workers.
+    Parameters
+    ----------
+    spike_seconds (np.ndarray)
+        The session's spike times in seconds, within ``[0, duration)``.
+    duration (float)
+        Session duration in seconds.
+    block_seconds (float)
+        Block length in seconds, positive.
+    generator (np.random.Generator)
+        Source of the per-block offsets; one offset is drawn per block, blocks in time order.
+
+    Returns
+    -------
+    jittered (np.ndarray)
+        The surrogate spike times, ascending, each inside the block it started in.
+    """
+
+    times = np.asarray(spike_seconds, dtype=np.float64)
+    n_blocks = int(np.ceil(float(duration) / float(block_seconds)))
+    block_start = np.arange(n_blocks, dtype=np.float64) * float(block_seconds)
+    block_length = np.minimum(float(block_seconds), float(duration) - block_start)
+    offsets = generator.uniform(0.0, 1.0, n_blocks) * block_length
+    block = np.clip(np.floor(times / float(block_seconds)).astype(np.int64), 0, n_blocks - 1)
+    within = np.mod(times - block_start[block] + offsets[block], block_length[block])
+    return np.sort(block_start[block] + within)
+
+
+def vocal_occurrence_jitter_null(occurrence_windows: dict, spike_seconds: dict, durations: dict, start: int,
+                                 n_draws: int, seed: int, block_seconds: float, folds: list, axis: dict,
+                                 crossfit_blocks: int, log_prior_by_fold: list | None = None) -> np.ndarray:
+    """
+    Description
+    -----------
+    Null draws of the vocal-occurrence statistic: replace each session's spike train with a block-jitter
+    surrogate (:func:`block_jitter_spike_times`), recount BOTH classes at the same window positions, and
+    refit the decoder.
+
+    The block jitter keeps every rate change slower than ``block_seconds`` and breaks only the finer
+    alignment of spikes to the windows, so the test credits onset-locked firing and nothing slower, such
+    as a rate that follows the session's vocal-dense periods.
+
+    Both classes are recounted from the surrogate. The amplitude search and the cross-fitted quiet levels
+    are redone in every draw. Each draw has its own generator, seeded ``seed + start + draw``, which draws
+    the block offsets session by session in the order of ``spike_seconds``, so draws
+    ``[start, start + n_draws)`` are the same however the range is partitioned across workers.
 
     Parameters
     ----------
@@ -597,15 +646,15 @@ def vocal_occurrence_shift_null(occurrence_windows: dict, spike_seconds: dict, d
     spike_seconds (dict)
         ``{session slot: sorted spike times in seconds}``, slots as in ``occurrence_windows["session_index"]``.
     durations (dict)
-        ``{session slot: session duration in seconds}``, the wrap-around length.
+        ``{session slot: session duration in seconds}``, the length the blocks tile.
     start (int)
         Global index of the first draw, so a continuation never repeats earlier draws.
     n_draws (int)
         How many draws to make.
     seed (int)
         Base seed.
-    guard_seconds (float)
-        Minimum shift away from either end of the session.
+    block_seconds (float)
+        ``vocal_decoding.vocal_occurrence.null_jitter_block_seconds``: the jitter block length, positive.
     folds (list)
         Output of :func:`occurrence_context`.
     axis (dict)
@@ -619,22 +668,29 @@ def vocal_occurrence_shift_null(occurrence_windows: dict, spike_seconds: dict, d
     -------
     null (np.ndarray)
         ``n_draws`` values of ``gain``.
+
+    Raises
+    ------
+    ValueError
+        If ``block_seconds`` is not positive.
     """
 
+    if not float(block_seconds) > 0.0:
+        msg = f"null_jitter_block_seconds must be positive; got {block_seconds!r}."
+        raise ValueError(msg)
     values = np.empty(int(n_draws), dtype=np.float64)
     for draw in range(int(n_draws)):
         generator = np.random.default_rng(seed + start + draw)
         counts = np.empty_like(occurrence_windows["counts"])
         for slot, train in spike_seconds.items():
-            low, high = shift_range_seconds(durations[slot], guard_seconds)
-            shifted = np.sort((train + generator.uniform(low, high)) % durations[slot])
+            jittered = block_jitter_spike_times(train, durations[slot], block_seconds, generator)
             mask = occurrence_windows["session_index"] == slot
-            counts[mask] = counts_in_windows(shifted, occurrence_windows["edges"][mask], occurrence_windows["width"])
+            counts[mask] = counts_in_windows(jittered, occurrence_windows["edges"][mask],
+                                             occurrence_windows["width"])
         values[draw] = vocal_occurrence_statistic(counts, occurrence_windows["labels"],
                                                   occurrence_windows["session_index"], occurrence_windows["edges"],
                                                   folds, axis, crossfit_blocks, log_prior_by_fold)["gain"]
     return values
-
 
 def onset_log_prior(log_odds: np.ndarray, kappa: float) -> np.ndarray:
     """
@@ -738,8 +794,8 @@ def nested_onset_statistic(counts: np.ndarray, labels: np.ndarray, session_index
     behaviour prior (:func:`onset_behaviour_tilts`), so ``added`` is the class-balanced mean of
     ``log posterior(truth | neuron, behaviour) - log prior(truth | behaviour)`` over the held-out windows
     of every fold. Reported beside it: ``behaviour_over_no_behaviour`` (``log prior(truth | behaviour)
-    - log 1/2``, what behaviour alone buys) and ``full_over_no_behaviour`` (the sum). A circular shift
-    of the spike train recounts the windows and leaves the priors in place, so the first is invariant
+    - log 1/2``, what behaviour alone buys) and ``full_over_no_behaviour`` (the sum). A block-jitter
+    surrogate of the spike train recounts the windows and leaves the priors in place, so the first is invariant
     under the null and only ``added`` is tested.
 
     Parameters
@@ -787,5 +843,7 @@ def nested_onset_statistic(counts: np.ndarray, labels: np.ndarray, session_index
     result.update({"added": full["gain"], "added_uncalibrated": full["gain_uncalibrated"], "per_fold": per_fold,
                    "kappas": [float(kappa) for kappa in kappas],
                    "behaviour_over_no_behaviour": behaviour_gain,
-                   "full_over_no_behaviour": full["gain"] + behaviour_gain})
+                   "full_over_no_behaviour": full["gain"] + behaviour_gain,
+                   # what the behaviour prior alone scored per window, beside what the neuron added to it
+                   "per_window_behaviour_over": behaviour_over})
     return result

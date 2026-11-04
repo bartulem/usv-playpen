@@ -58,10 +58,13 @@ def _settings() -> dict:
     Returns
     -------
     settings (dict)
-        The parsed ``neural_modeling_settings.json``.
+        The parsed ``neural_modeling_settings.json``, with the escalation ladder emptied so a test sees the
+        base draw counts unless it sets a ladder itself.
     """
     with SETTINGS_PATH.open() as handle:
-        return copy.deepcopy(json.load(handle))
+        settings = copy.deepcopy(json.load(handle))
+    settings["inference"]["escalation_ladder"] = []
+    return settings
 
 
 def _unit(sessions: list, vocal_sessions: list) -> dict:
@@ -187,7 +190,8 @@ def _estimator(n_selected: int, converged: bool = True) -> types.SimpleNamespace
     Description
     -----------
     A fitted-estimator stand-in carrying exactly the attributes the dispatcher reads: a flat filter of
-    ``n_selected * 40`` weights, an intercept, an iteration count and a convergence flag.
+    ``n_selected * 40`` weights, an intercept, an iteration count, a convergence flag and the training-set
+    record ``fit_quiet_model`` attaches.
 
     Parameters
     ----------
@@ -199,13 +203,15 @@ def _estimator(n_selected: int, converged: bool = True) -> types.SimpleNamespace
     Returns
     -------
     estimator (types.SimpleNamespace)
-        ``coef_``, ``intercept_``, ``n_iter_``, ``converged_``.
+        ``coef_``, ``intercept_``, ``n_iter_``, ``converged_``, ``training_set_``.
     """
     return types.SimpleNamespace(
         coef_=np.linspace(-1.0, 1.0, n_selected * N_LAGS),
         intercept_=-2.5,
         n_iter_=17,
         converged_=converged,
+        training_set_={"per_session": [], "per_session_cap": 1, "cap_reached": False,
+                       "session_baselines": [0.0], "base_rate": 0.01, "n_rows": 0},
     )
 
 
@@ -1382,9 +1388,71 @@ class TestCombine:
         assert result["representative_fold"] == 2
         assert result["no_model"] is True
         assert result["best_screened_only"] is True
-        assert result["no_model_per_fold"] == [False, False, False]
+        # The tested keys never carry the description-only p-values: quiet fails, transfer is untested.
+        assert result["quiet_p"] == 1.0
+        assert result["quiet_at_floor"] is False
+        assert np.isnan(result["transfer_p"])
+        assert result["transfer_at_floor"] is False
+        assert result["best_screened_quiet_p"] == 0.001
+        assert np.isfinite(result["best_screened_transfer_p"])
+        # The roster reads the folds as they were written: no model, best screened feature fitted.
+        assert result["no_model_per_fold"] == [True, True, True]
+        assert result["best_screened_per_fold"] == [True, True, True]
+        assert result["quiet_p_per_fold"] == [1.0, 1.0, 1.0]
+        assert result["best_screened_quiet_p_per_fold"] == [0.001, 0.001, 0.001]
+        assert all(entry["filter"] is not None for entry in result["filters_per_fold"])
         assert any("NO FOLD SELECTED A MODEL" in text for text in messages)
         assert any("best SCREENED feature only" in text for text in messages)
+
+    def test_a_unit_without_a_vocal_session_keeps_its_quiet_test_and_is_untested_on_transfer(
+        self, tmp_path, monkeypatch
+    ):
+        """
+        Description
+        -----------
+        A unit whose every session fell below the USV floor has no vocal frame to score its model on.
+        Its folds succeed, so ``combine`` must write the quiet result with ``transfer_p`` NaN and the
+        reason, instead of handing an empty fold list to the transfer combiner (which read its first
+        element and crashed, and crashed again on every resubmission).
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Output directory.
+        monkeypatch (pytest.MonkeyPatch)
+            Fixture used to stub the dispatcher's dependencies.
+
+        Returns
+        -------
+        None
+        """
+
+        unit = _unit(["s0", "s1", "s2"], [])
+        for fold_index, (session_id, score) in enumerate(
+            zip(["s0", "s1", "s2"], [0.1, 0.3, 0.2], strict=True)
+        ):
+            artifact = _toy_fold_artifact(fold_index, session_id, score, 0.001, 30)
+            artifact["vocal_everywhere"] = []
+            enc.write_fold_artifact(
+                artifact, unit, fold_index, str(tmp_path), _settings(), lambda _text: None
+            )
+        calls = collections.defaultdict(list)
+        _combine_stubs(
+            monkeypatch, calls, _per_session({"s0": 300}, {"s0": 30}), 0.001, 0.2
+        )
+        messages = []
+
+        result = enc.combine(unit, _settings(), "/data", str(tmp_path), messages.append)
+
+        assert "combine_folds" not in calls
+        assert result["no_model"] is False
+        assert result["quiet_p"] == 0.001
+        assert np.isnan(result["transfer_p"])
+        assert result["transfer_at_floor"] is False
+        assert result["transfer_reason"] == "no_vocal_session"
+        assert result["transfer_session_ids"] == []
+        assert result["transfer_per_session"] == []
+        assert any("TRANSFER untested" in text for text in messages)
 
     def test_the_filter_band_is_skipped_when_its_setting_is_off(
         self, tmp_path, monkeypatch
@@ -1560,7 +1628,7 @@ class TestRunSingle:
         screen_args = calls["screen_features"][0][0]
         assert screen_args[1] == ["s0", "s1"]
         expected_rng = np.random.default_rng(
-            crc32(unit["unit_id"].encode()) & 0xFFFFFFFF
+            settings["inference"]["shuffle_seed"] + crc32(unit["unit_id"].encode()) % 10_000
         )
         assert screen_args[3].bit_generator.state == expected_rng.bit_generator.state
         assert calls["fit_quiet_model"][0][0][1] == ["s0", "s1"]
@@ -2077,7 +2145,7 @@ class TestCommandLine:
         -------
         None
         """
-        assert enc.load_settings(None) == _settings()
+        assert enc.load_settings(None) == json.loads(SETTINGS_PATH.read_text())
 
 
 class TestOneSessionUnitRecord:

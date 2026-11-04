@@ -23,6 +23,7 @@ from .deviance_metrics import (
     area_under_roc,
     encoding_metrics,
     explained_deviance_vs_reference_rate,
+    finite_min,
     frozen_model_score,
     groups_left_out,
     pooled_calibrated_explained_deviance,
@@ -47,8 +48,10 @@ def transfer_frames(span_frames: np.ndarray, pointer: np.ndarray, fps: float, n_
 
     ``"usv_span"`` keeps every frame inside one of the recorded animal's USVs. ``"bout_window"`` groups
     the USVs into bouts (consecutive USVs closer than ``inter_bout_threshold_seconds``, single-USV bouts
-    included) and keeps the union of ``[bout start - run_up_seconds, bout end]``. Frames without a full
-    history and every quiet anchor are removed, so no frame is both fitted and scored.
+    included) and keeps the union of ``[bout start - run_up_seconds, bout end]``. Because every bout
+    carries the run-up, two bouts closer than ``run_up_seconds`` give the same union split or not, so the
+    threshold changes the frames only across longer gaps. Frames without a full history and every quiet
+    anchor are removed, so no frame is both fitted and scored.
 
     The run-up is the quiet rule's forward guard (``kinematic_encoding.clean_post_seconds``), passed in by
     the caller rather than set separately: a quiet anchor admits no vocalization within that long after it,
@@ -502,7 +505,8 @@ def combine_folds(fold_results: list, per_session: dict, session_ids: list,
                                          settings["kinematic_encoding"]["calibration"]).items()}
     leave_one_session_out = leave_one_session_out_scores(eta, labels, session_index, session_ids,
                                                          calibration_steps, scorer)
-    min_leave_one_session_out = (min(entry["score"] for entry in leave_one_session_out.values())
+    # `finite_min`, not Python's `min`: a NaN re-pool would make the minimum depend on session order.
+    min_leave_one_session_out = (finite_min([entry["score"] for entry in leave_one_session_out.values()])
                                  if leave_one_session_out else float("nan"))
     escalation_round = 0
 
@@ -549,3 +553,33 @@ def combine_folds(fold_results: list, per_session: dict, session_ids: list,
             "folds": [{key: value for key, value in result.items()
                        if key not in ("eta", "labels", "bin_eta", "bin_counts")}
                       for result in fold_results]}
+
+
+def untested_transfer(settings: dict, reason: str) -> dict:
+    """
+    Description
+    -----------
+    The transfer result of a unit whose model could not be scored on any vocal frame: every key of
+    :func:`combine_folds` with no value (NaN statistics, no null, no sessions) and the ``reason``, so
+    the unit's section is written with ``transfer_p`` NaN, which the consolidation reads as untested
+    rather than failed, and the reason is stored beside it.
+
+    Parameters
+    ----------
+    settings (dict)
+        Full neural-modeling settings (``kinematic_encoding.transfer`` names the grain and universe).
+    reason (str)
+        Why there was nothing to score, e.g. ``'no_vocal_session'``.
+
+    Returns
+    -------
+    transfer (dict)
+        The empty transfer result.
+    """
+
+    transfer_settings = settings["kinematic_encoding"]["transfer"]
+    return {"score": float("nan"), "slope": float("nan"), "p": float("nan"), "at_floor": False,
+            "n_frames": 0, "n_bins": 0, "bin_width_frames": 0, "grain": transfer_settings["grain"],
+            "universe": transfer_settings["universe"], "null": np.zeros(0, dtype=np.float64),
+            "leave_one_session_out": {}, "min_leave_one_session_out": float("nan"),
+            "left_out_sessions": {}, "folds": [], "reason": reason}

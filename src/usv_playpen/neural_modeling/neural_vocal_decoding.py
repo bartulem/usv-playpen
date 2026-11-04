@@ -268,7 +268,6 @@ def poisson_tuning_fit(basis: np.ndarray, counts: np.ndarray, ridge: float, n_st
     return beta
 
 
-
 def session_exposure_offsets(counts: np.ndarray, session_index: np.ndarray) -> np.ndarray:
     """
     Description
@@ -540,8 +539,11 @@ def score_events(beta: np.ndarray, rows: np.ndarray, counts: np.ndarray, fold: d
 
     loglik = (scored_counts[:, None] * log_rate[None, :] - rate[None, :]
               - gammaln(scored_counts + 1.0)[:, None])
+    # Double precision whatever the stored priors are: they are kept in single precision to bound the null
+    # workers' memory, and a small prior exponentiated in single precision underflows to zero, whose log
+    # would turn the event's gain into +inf.
     log_prior = (fold["log_prior"][None, :] if log_prior_events is None
-                 else np.asarray(log_prior_events)[rows])
+                 else np.asarray(log_prior_events)[rows].astype(np.float64))
     posterior = log_prior + loglik
     posterior -= posterior.max(axis=1, keepdims=True)
     density = np.exp(posterior)
@@ -550,7 +552,7 @@ def score_events(beta: np.ndarray, rows: np.ndarray, counts: np.ndarray, fold: d
     cells = truth_cell[rows]
     at_truth = density[np.arange(scored_counts.size), cells]
     prior_at_truth = (fold["masked_prior"][cells] if log_prior_events is None
-                      else np.exp(log_prior[np.arange(scored_counts.size), cells]))
+                      else np.exp(log_prior[np.arange(scored_counts.size), cells]))  # float64 (above)
     outside = ~fold["mask"][cells]
 
     posterior_log = np.log(np.clip(at_truth, 1e-300, None))
@@ -634,7 +636,9 @@ def tuned_amplitude(counts: np.ndarray, fold: dict, basis: np.ndarray, truth_cel
         inner_betas.append((poisson_tuning_fit(basis[inner_train], counts[inner_train], ridge,
                                                n_steps, offsets), inner_test))
 
-    best_alpha, best_gain = float(alpha_grid[0]), -np.inf
+    # The fallback, when no inner score is finite, is the grid point nearest 1.0 (no recalibration), as
+    # the other tuners do.
+    best_alpha, best_gain = float(min(alpha_grid, key=lambda value: abs(float(value) - 1.0))), -np.inf
     for candidate in alpha_grid:
         scores = [finite_mean(score_events(beta, inner_test, counts, fold, truth_cell,
                                            float(candidate), log_prior_events=log_prior_events))
@@ -719,6 +723,7 @@ def decode_gain(counts: np.ndarray, folds: list, settings: dict,
     uncalibrated = np.full(counts.size, np.nan, dtype=np.float64)
     decode_error = np.full(counts.size, np.nan, dtype=np.float64)
     posterior_entropy = np.full(counts.size, np.nan, dtype=np.float64)
+    decoded_positions = np.full((counts.size, 2), np.nan, dtype=np.float64)
     per_fold, n_masked, dispersion = [], 0, []
 
     for fold_index, fold in enumerate(folds):
@@ -728,7 +733,10 @@ def decode_gain(counts: np.ndarray, folds: list, settings: dict,
         prior = (None if log_prior_events is None
                  else np.asarray(log_prior_events[fold_index])[order])
         train_rows, test_rows = fold["train_rows"], fold["test_rows"]
-        ridge = ridge_fraction * float(counts[train_rows].sum())
+        # The ridge scales with the training spikes; a training set with none would set it to zero and
+        # leave a singular normal equation when the rows are fewer than the basis columns, so the scale
+        # is floored at one spike (the fold's rates are then all floor, which the score reflects).
+        ridge = ridge_fraction * max(float(counts[train_rows].sum()), 1.0)
 
         alpha = tuned_amplitude(counts, fold, basis, truth_cell, ridge, alpha_grid, n_steps,
                                 surface["session_rate_offsets"], log_prior_events=prior)
@@ -742,6 +750,7 @@ def decode_gain(counts: np.ndarray, folds: list, settings: dict,
             calibrated[test_rows] = fold_gains
             decode_error[test_rows] = fold_detail["decode_error"]
             posterior_entropy[test_rows] = fold_detail["posterior_entropy"]
+            decoded_positions[test_rows] = fold_detail["decoded"]
             # Pearson dispersion of the held-out counts around the calibrated rate at each event's
             # cell: a check on the Poisson likelihood (about 1 for an untuned Poisson unit)
             expected = surface_rate(beta, fold, alpha, counts[test_rows])[truth_cell[test_rows]]
@@ -783,6 +792,8 @@ def decode_gain(counts: np.ndarray, folds: list, settings: dict,
             "ridges": [f["ridge"] for f in per_fold],
             **({"per_event_gain": calibrated, "decode_error": decode_error,
                 "posterior_entropy": posterior_entropy,
+                # the posterior's circular mean per event, so decoded-against-true maps need no refit
+                "decoded_positions": decoded_positions,
                 "mean_decode_error": finite_mean(decode_error),
                 "mean_posterior_entropy": finite_mean(posterior_entropy),
                 **({"overdispersion_index": finite_mean(np.asarray(dispersion))}

@@ -26,7 +26,6 @@ from usv_playpen.neural_modeling.neural_vocal_gating import (
     check_settings,
     feature_gating_statistic,
     gating_null,
-    gating_survivors,
     gating_terms,
     gating_unit_pvalue,
     gating_universe,
@@ -34,6 +33,7 @@ from usv_playpen.neural_modeling.neural_vocal_gating import (
     loso_added_deviance,
     settings_bonferroni_bar,
     should_run_gating,
+    vocal_frame_correlations,
 )
 
 SETTINGS_PATH = (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"
@@ -362,81 +362,22 @@ class TestImplementedOptions:
             check_settings(settings)
 
 
-class TestSurvivorReporting:
-    """All survivors are reported with their collinearity, rather than forward-selected to a minimal
-    set -- under collinearity a greedy search is knife-edge, and which proxy it keeps is unstable
-    rather than meaningful. Feature identity is DESCRIPTION here, so a stable description beats an
-    unstable selection."""
+class TestVocalFrameCorrelations:
+    """The features' correlations during vocal frames, stored for every feature."""
 
-    @staticmethod
-    def _verdicts(labels_and_margins):
-        """
-        Description
-        -----------
-        Build per-feature verdicts carrying only a label and a sigma margin.
-
-        Parameters
-        ----------
-        labels_and_margins (list[tuple[str, str, float]])
-            ``(feature_name, label, sigma_margin)`` per feature.
-
-        Returns
-        -------
-        per_feature (dict)
-            ``{feature_name: {"label": ..., "sigma_margin": ...}}``.
-        """
-        return {name: {"label": label, "sigma_margin": margin}
-                for name, label, margin in labels_and_margins}
-
-    def test_only_gated_labels_survive(self):
-        """Only ``GATE`` and ``GATE+silentME`` count as survivors; ``int<vocal`` and ``ns`` do not."""
-        per_feature = self._verdicts([("a", "GATE", 40.0), ("b", "int<vocal", 30.0),
-                                      ("c", "ns", 1.0), ("d", "GATE+silentME", 20.0)])
-        values = {name: np.arange(10.0) for name in per_feature}
-        summary = gating_survivors(per_feature, values)
-        assert summary["survivors"] == ["a", "d"]
-        assert summary["n_survivors"] == 2
-
-    def test_survivors_are_ordered_strongest_first(self):
-        """Survivors are listed by descending sigma margin, so the first one named is the strongest."""
-        per_feature = self._verdicts([("weak", "GATE", 6.0), ("strong", "GATE", 46.0)])
-        values = {name: np.arange(10.0) for name in per_feature}
-        assert gating_survivors(per_feature, values)["survivors"] == ["strong", "weak"]
-
-    def test_collinear_survivors_are_flagged_by_their_correlation(self):
-        """Four survivors correlating at 0.9 are one story told four ways; the reader needs to see
-        that without the pipeline having committed to which one is 'the' feature."""
-        rng = np.random.default_rng(0)
-        base = rng.normal(size=400)
-        per_feature = self._verdicts([("x", "GATE", 40.0), ("x_proxy", "GATE", 38.0)])
-        values = {"x": base, "x_proxy": base + 0.05 * rng.normal(size=400)}
-        summary = gating_survivors(per_feature, values)
-        assert summary["max_abs_correlation"] > 0.9
-        assert "x|x_proxy" in summary["correlations"]
-
-    def test_independent_survivors_are_not_flagged(self):
-        """Uncorrelated survivors report a small maximum correlation, so the collinearity flag does not
-        fire on noise."""
-        rng = np.random.default_rng(1)
-        per_feature = self._verdicts([("x", "GATE", 40.0), ("y", "GATE", 38.0)])
-        values = {"x": rng.normal(size=400), "y": rng.normal(size=400)}
-        assert abs(gating_survivors(per_feature, values)["max_abs_correlation"]) < 0.3
-
-    def test_a_flat_feature_gives_nan_rather_than_a_spurious_correlation(self):
-        """A zero-variance feature has an undefined correlation, reported as NaN rather than 0 or 1."""
-        per_feature = self._verdicts([("x", "GATE", 40.0), ("flat", "GATE", 38.0)])
-        values = {"x": np.arange(50.0), "flat": np.zeros(50)}
-        assert np.isnan(gating_survivors(per_feature, values)["correlations"]["x|flat"])
-
-    def test_no_survivors_reports_cleanly(self):
-        """With no survivor the list is empty and the maximum correlation NaN, rather than an error."""
-        summary = gating_survivors(self._verdicts([("a", "ns", 1.0)]), {"a": np.arange(10.0)})
-        assert summary["survivors"] == []
-        assert np.isnan(summary["max_abs_correlation"])
-
-    def test_the_forward_selection_knob_is_gone(self):
-        """`forward_stop_gain` configured a greedy search that is no longer performed."""
-        assert "forward_stop_gain" not in _gating()
+    def test_correlations_are_taken_over_vocal_frames_only(self):
+        """Two features identical during vocal frames and opposite during quiet ones correlate at +1, and a
+        feature constant during vocal frames has NaN correlations."""
+        generator = np.random.default_rng(3)
+        shared = generator.normal(size=50)
+        vocal = np.concatenate([np.ones(50), np.zeros(50)])
+        a = np.concatenate([shared, generator.normal(size=50)])
+        b = np.concatenate([shared, -a[50:]])
+        flat = np.concatenate([np.ones(50), generator.normal(size=50)])
+        correlation = vocal_frame_correlations(np.column_stack([a, b, flat]), vocal)
+        assert correlation[0, 1] == pytest.approx(1.0)
+        assert np.isnan(correlation[0, 2])
+        assert np.isnan(correlation[2, 2])
 
 
 VOCAL_SETTINGS = {"vocal_emitter": "self", "exclude_noise": True, "exclude_squeaks": True,
@@ -878,7 +819,8 @@ class TestTheUnitPvalue:
             ``{feature_name: {...}}`` with those four fields.
         """
         return {name: {"label": label, "sigma_margin": margin,
-                       "p_interaction": p_int, "p_interaction_gt_vocal": p_diff}
+                       "p_interaction": p_int, "p_interaction_gt_vocal": p_diff,
+                       "n_draws": _gating()["gating_screen_n_shuffles"]}
                 for name, label, margin, p_int, p_diff in rows}
 
     def test_it_is_the_max_of_the_two_conditions(self):

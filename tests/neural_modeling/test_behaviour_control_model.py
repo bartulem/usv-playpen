@@ -2324,6 +2324,16 @@ class TestCategoryControl:
         with pytest.raises(KeyError, match="no fold for day"):
             category_control_evidence(artifact, "20250102", np.zeros((2, CATEGORY_N_LAGS)), settings)
 
+    def test_a_fold_fitted_before_the_effective_prior_was_stored_is_refused(self, settings: dict) -> None:
+        """A fold record without ``effective_log_priors`` would be applied with a tilted prior, so it is
+        refused with the instruction to refit."""
+        settings = category_settings(settings)
+        fold = {"coef": np.zeros((3, 20)), "intercept": np.zeros(3), "log_priors": np.full(3, np.log(1 / 3))}
+        artifact = {"target": "multinomial", "features": ["signal"], "n_lags": CATEGORY_N_LAGS,
+                    "classes": np.array([1, 2, 3]), "coefficients": {"20250101": fold}}
+        with pytest.raises(KeyError, match="refit the control"):
+            category_control_evidence(artifact, "20250101", np.zeros((2, CATEGORY_N_LAGS)), settings)
+
     def test_the_macro_auroc_matches_scikit_learn(self) -> None:
         """The one-versus-rest macro AUROC equals scikit-learn's, ties included."""
         generator = np.random.default_rng(4)
@@ -2572,6 +2582,23 @@ class TestSessionOnsetDesign:
                            <= start - encoding["clean_post_seconds"] + 1e-6)
                           | (centres - window["pre_offset_seconds"] >= stop + encoding["history_pre_seconds"] - 1e-6))
         assert block["feature_names"] == ["f"]
+
+    def test_a_usv_without_a_torus_position_is_not_an_onset_row(self, monkeypatch, tmp_path, settings) -> None:
+        """The unit side's USV windows come from its USV events, which drop a USV without a torus position;
+        the control drops it too, so it is trained only on onsets a unit can score."""
+        writer = TestSessionVocalizationDesign()
+        session = writer.SESSION
+        writer._write(tmp_path, [(50.0, 50.1, "male", False, False), (100.0, 100.1, "male", False, False)],
+                      first_coordinates=[0.2, float("nan")])
+        settings["paths"]["data_root"] = str(tmp_path)
+        settings["cohort"]["min_emitter_usvs_per_session"] = 1
+        settings["vocalizations"]["vocal_emitter"] = "self"
+        frames = pls.DataFrame({"f": np.arange(writer.N_FRAMES, dtype=np.float64)})
+        monkeypatch.setattr(control_module, "build_zscored_feature_frames",
+                            lambda **_kwargs: ({session: frames}, {session: writer.FPS}, {}, {}))
+        block = session_onset_design(str(tmp_path / session), settings, 5)
+        assert block["n_positive"] == 1
+        np.testing.assert_allclose(block["design"][0, 4], onset_history_anchor_frames(np.array([50.0]), writer.FPS))
 
     def test_a_session_with_one_tracked_animal_is_skipped(self, tmp_path, settings) -> None:
         """A session without two tracks contributes nothing, with the reason recorded."""

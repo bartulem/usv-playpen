@@ -34,6 +34,7 @@ from usv_playpen.neural_modeling.deviance_metrics import (
 )
 from usv_playpen.neural_modeling.kinematic_encoding import (
     FrameFilterModel,
+    aggregate_fold_nulls,
     block_resample_anchors,
     filter_band,
     filter_descriptors,
@@ -540,6 +541,35 @@ class TestStepShiftTest:
         assert record["accepted"] is False
         assert record["k_exceed"] == 1
         assert record["incumbent_features"] == ["planted_strong"]
+
+    def test_a_nan_statistic_is_never_accepted(self, planted_pool, monkeypatch):
+        """
+        Description
+        -----------
+        A NaN pool score (observed or refit) compared with ``>=`` is never an exceedance, so the old count
+        accepted a step whose statistic was undefined. Now an undefined draw stops the test as an
+        exceedance and a NaN observed gain is rejected.
+
+        Parameters
+        ----------
+        planted_pool (dict)
+            The module-scoped planted sessions.
+        monkeypatch (pytest.MonkeyPatch)
+            Replaces the pool score with NaN.
+
+        Returns
+        -------
+        None
+        """
+        monkeypatch.setattr("usv_playpen.neural_modeling.kinematic_encoding.in_sample_pool_score",
+                            lambda *_args, **_kwargs: float("nan"))
+        record = step_shift_test(
+            planted_pool, list(planted_pool), [], 0, N_LAGS, 1, _settings(), 5, 0,
+            FEATURE_NAMES, message_output=_silent,
+        )
+        assert record["accepted"] is False
+        assert record["n_draws_run"] == 1
+        assert record["k_exceed"] == 1
 
     def test_each_draw_shifts_by_its_own_reproducible_lags(self, planted_pool):
         """
@@ -2278,3 +2308,34 @@ class TestReadoutEdgeCases:
         np.testing.assert_allclose(sta["difference"], np.zeros((2, 5)))
         assert sta["n_spikes"] == 1
         assert sta["n_anchors"] == 1
+
+
+class TestAggregateFoldNulls:
+    """The screen's cross-fold null follows the folds its observed statistic averages over."""
+
+    def test_a_fold_with_a_nan_score_is_left_out_of_the_null(self):
+        """The observed score is the finite mean over folds, so a fold whose score is NaN must not
+        tighten the null by entering its average."""
+        scores = np.array([0.1, np.nan, 0.3])
+        nulls = [np.array([1.0, 2.0, 3.0]), np.array([100.0, 100.0, 100.0]), np.array([3.0, 4.0, 5.0])]
+        np.testing.assert_allclose(aggregate_fold_nulls(scores, nulls), [2.0, 3.0, 4.0])
+
+    def test_a_nan_draw_in_one_fold_averages_the_others(self):
+        """One NaN draw no longer removes the draw: the finite folds carry it."""
+        scores = np.array([0.1, 0.3])
+        nulls = [np.array([1.0, np.nan, 3.0]), np.array([3.0, 4.0, 5.0])]
+        np.testing.assert_allclose(aggregate_fold_nulls(scores, nulls), [2.0, 4.0, 4.0])
+
+    def test_a_draw_nan_in_every_kept_fold_stays_nan(self):
+        """A draw with no finite value anywhere is NaN and leaves the p-value's count."""
+        scores = np.array([0.1, 0.3])
+        nulls = [np.array([1.0, np.nan]), np.array([3.0, np.nan])]
+        result = aggregate_fold_nulls(scores, nulls)
+        assert result[0] == 2.0
+        assert np.isnan(result[1])
+
+    def test_no_finite_fold_gives_an_all_nan_null(self):
+        """With no scoreable fold there is no null, only its shape."""
+        result = aggregate_fold_nulls(np.array([np.nan, np.nan]), [np.ones(4), np.ones(4)])
+        assert result.shape == (4,)
+        assert np.all(np.isnan(result))

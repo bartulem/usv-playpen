@@ -1,8 +1,9 @@
 """
 @author: bartulem
 The vocal analyses for one unit, in one job: vocal occurrence, vocalization identity, nested vocal
-decoding, then vocal gating. Identity and the nested decoding run on both targets, the USV's torus
-position and its acoustic category, each written as its own section (``<analysis>_<target>``);
+decoding, then vocal gating. Identity and the nested decoding run on both content targets, the USV's
+torus position and its acoustic category, each written as its own section (``<analysis>_<target>``), and
+the nested decoding also on the onset axis (``nested_vocal_decoding_onset``);
 ``vocalizations.vocal_target`` names the one whose identity p-value decides vocal gating.
 
 Each analysis is a single held-out computation per unit whose cost sits in its null, and they run in
@@ -22,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 import traceback
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
@@ -34,6 +36,7 @@ from .behaviour_control_model import (
     load_control_model,
     onset_control_log_odds,
 )
+from .deviance_metrics import area_under_roc
 from .main_neural_encoding_dispatcher import build_unit_record, load_settings
 from .neural_artifacts import read_unit_artifact, write_unit_section
 from .neural_category_decoding import (
@@ -42,6 +45,7 @@ from .neural_category_decoding import (
     category_context,
     category_gain,
     category_nested_gain,
+    decoding_spike_sufficiency,
 )
 from .neural_design_assembly import (
     assemble_unit_sessions,
@@ -77,17 +81,20 @@ from .neural_vocal_decoding import (
 from .neural_vocal_gating import check_settings as check_gating_settings
 from .neural_vocal_gating import (
     feature_gating_statistic,
+    gating_feature_at_floor,
     gating_null,
     gating_unit_pvalue,
     gating_universe,
     gating_verdict,
+    settings_bonferroni_bar,
     should_run_gating,
+    vocal_frame_correlations,
 )
 from .neural_vocal_occurrence import (
     nested_onset_statistic,
     occurrence_context,
     onset_behaviour_tilts,
-    vocal_occurrence_shift_null,
+    vocal_occurrence_jitter_null,
     vocal_occurrence_statistic,
 )
 from .shift_null_inference import escalated_empirical_pvalue
@@ -97,6 +104,38 @@ VOCAL_STEPS = ("vocal_occurrence", "vocalization_identity", "nested_vocal_decodi
 
 # The steps that run once per target (``VOCAL_TARGETS``), each target written as ``<step>_<target>``.
 TARGET_STEPS = ("vocalization_identity", "nested_vocal_decoding")
+
+
+def step_sections(step: str) -> list:
+    """
+    Description
+    -----------
+    The result-file sections one vocal step writes: one per content target for the per-target steps,
+    plus the onset section for the nested decoding, else the step's own name. Every writer of a step's
+    "not run" payloads and every resume check reads this list, so a step is current only when all of
+    its sections are.
+
+    Parameters
+    ----------
+    step (str)
+        One of ``VOCAL_STEPS``.
+
+    Returns
+    -------
+    sections (list)
+        Section names.
+    """
+
+    if step not in VOCAL_STEPS:
+        msg = f"unknown vocal step {step!r}; choose from {list(VOCAL_STEPS)}"
+        raise ValueError(msg)
+    if step not in TARGET_STEPS:
+        return [step]
+    sections = [target_section(step, target) for target in VOCAL_TARGETS]
+    if step == "nested_vocal_decoding":
+        sections.append(NESTED_ONSET_SECTION)
+    return sections
+
 
 # State handed to each worker once, by the pool initializer, rather than pickled with every task.
 _WORKER: dict = {}
@@ -190,6 +229,125 @@ def parallel_draw_more(pool: ProcessPoolExecutor, chunk_function, n_workers: int
     return draw_more
 
 
+def spike_floor_payload(counts: np.ndarray, settings: dict) -> dict | None:
+    """
+    Description
+    -----------
+    The "not run" payload of a content decoding (identity or nested, either target) whose scored events
+    hold fewer spikes than ``cohort.min_decoding_spikes``, or None when the unit fires enough.
+
+    Below the floor the permutation null still protects the p-value, but the gain is unstable (its
+    standard deviation roughly doubles), so the unit is given no statistic rather than a noisy one; the
+    spike total and the floor are stored, so the cohort table counts it under its own reason.
+
+    Parameters
+    ----------
+    counts (np.ndarray)
+        Spike count per scored event.
+    settings (dict)
+        Full neural-modeling settings.
+
+    Returns
+    -------
+    payload (dict | None)
+        ``{"ran": False, "reason": "too_few_spikes", "n_spikes", "threshold"}``, or None.
+    """
+
+    sufficiency = decoding_spike_sufficiency(counts, settings)
+    if sufficiency["sufficient"]:
+        return None
+    return {"ran": False, "reason": "too_few_spikes", "n_spikes": sufficiency["n_spikes"],
+            "threshold": sufficiency["threshold"]}
+
+
+def write_not_run(output_directory: str, unit: dict, section: str, payload: dict, settings: dict,
+                  message_output=print) -> dict:
+    """
+    Description
+    -----------
+    Write a section as not run, report why, and hand the payload back to the step.
+
+    Parameters
+    ----------
+    output_directory (str)
+        Where the unit's result file lives.
+    unit (dict)
+        The unit record.
+    section (str)
+        The section name.
+    payload (dict)
+        The ``{"ran": False, "reason": ...}`` payload.
+    settings (dict)
+        Full neural-modeling settings.
+    message_output (Callable)
+        Where progress is reported.
+
+    Returns
+    -------
+    payload (dict)
+        The section as written.
+    """
+
+    write_unit_section(output_directory, unit, section, payload, settings)
+    message_output(f"  {section} not run: {payload['reason']}"
+                   + (f" ({payload['n_spikes']} spikes, floor {payload['threshold']})"
+                      if "n_spikes" in payload else ""))
+    return payload
+
+
+def usv_event_keys(events: dict) -> dict:
+    """
+    Description
+    -----------
+    The per-USV keys every USV-grain array of the vocal sections is indexed by: the session slot, the
+    onset and offset in seconds, the acoustic category and the torus position, in event order. Stored once
+    per unit (in the occurrence section), so ``per_event_gain`` and the nested sections' ``kept`` masks
+    can be joined to individual USVs without re-assembling the events.
+
+    Parameters
+    ----------
+    events (dict)
+        Output of ``assemble_unit_vocal_events``.
+
+    Returns
+    -------
+    keys (dict)
+        ``session_index``, ``onset_seconds``, ``offset_seconds``, ``category``, ``positions``, ``counts``.
+    """
+
+    return {"session_index": np.asarray(events["session_index"]),
+            "onset_seconds": np.asarray(events["vocalization_start"], dtype=np.float64),
+            "offset_seconds": np.asarray(events["vocalization_stop"], dtype=np.float64),
+            "category": np.asarray(events["category_labels"], dtype=np.float64),
+            "positions": np.asarray(events["positions"], dtype=np.float64),
+            "counts": np.asarray(events["counts"], dtype=np.float64)}
+
+
+def section_p_and_draws(section: dict, draw_key: str) -> tuple:
+    """
+    Description
+    -----------
+    A vocal section's p-value and draw count, as vocal gating reads them: NaN and None for a section
+    written as not run (e.g. too few spikes), which gating treats as untuned.
+
+    Parameters
+    ----------
+    section (dict)
+        The section's payload.
+    draw_key (str)
+        The key holding its draw count (``n_shuffles`` or ``n_permutations``).
+
+    Returns
+    -------
+    p_and_draws (tuple)
+        ``(p, n_draws)``.
+    """
+
+    if "ran" in section and not bool(section["ran"]):
+        return float("nan"), None
+    return float(section["p"]), int(section[draw_key])
+
+
 def null_z(observed: float, null: np.ndarray) -> float:
     """
     Description
@@ -209,8 +367,12 @@ def null_z(observed: float, null: np.ndarray) -> float:
         The standardized distance.
     """
 
-    spread = float(np.std(null))
-    return float((observed - float(np.mean(null))) / spread) if spread > 0 else float("nan")
+    values = np.asarray(null, dtype=np.float64)
+    values = values[np.isfinite(values)]
+    if values.size < 2 or not np.isfinite(observed):
+        return float("nan")
+    spread = float(np.std(values))
+    return float((observed - float(np.mean(values))) / spread) if spread > 0 else float("nan")
 
 
 def vocalization_identity_null_chunk(start: int, n_draws: int) -> np.ndarray:
@@ -252,7 +414,7 @@ def vocal_occurrence_null_chunk(start: int, n_draws: int) -> np.ndarray:
     Description
     -----------
     Vocal-occurrence null draws ``[start, start + n_draws)``; see
-    ``neural_vocal_occurrence.vocal_occurrence_shift_null``.
+    ``neural_vocal_occurrence.vocal_occurrence_jitter_null``.
 
     Parameters
     ----------
@@ -264,13 +426,13 @@ def vocal_occurrence_null_chunk(start: int, n_draws: int) -> np.ndarray:
     Returns
     -------
     null (np.ndarray)
-        Occurrence gains under circularly shifted spike trains.
+        Occurrence gains under block-jittered spike trains.
     """
 
     state = _WORKER
-    return vocal_occurrence_shift_null(state["occurrence_windows"], state["spike_seconds"], state["durations"],
-                                       start, n_draws, state["seed"], state["guard_seconds"], state["folds"],
-                                       state["axis"], state["crossfit_blocks"])
+    return vocal_occurrence_jitter_null(state["occurrence_windows"], state["spike_seconds"], state["durations"],
+                                        start, n_draws, state["seed"], state["jitter_block_seconds"],
+                                        state["folds"], state["axis"], state["crossfit_blocks"])
 
 
 def posterior_nested_null_chunk(start: int, n_draws: int) -> np.ndarray:
@@ -342,9 +504,10 @@ def onset_nested_null_chunk(start: int, n_draws: int) -> np.ndarray:
     """
     Description
     -----------
-    One worker's share of the nested onset statistic's null: the occurrence shift null -- each
-    session's spike train circularly shifted, both classes recounted, the decoder refit -- with every
-    fold's behaviour prior held in place, so only the neuron's alignment to the windows moves.
+    One worker's share of the nested onset statistic's null: the occurrence jitter null -- each
+    session's spike train replaced by a block-jitter surrogate, both classes recounted, the decoder refit
+    -- with every fold's behaviour prior held in place, so only the neuron's alignment to the windows
+    moves.
 
     Parameters
     ----------
@@ -356,13 +519,14 @@ def onset_nested_null_chunk(start: int, n_draws: int) -> np.ndarray:
     Returns
     -------
     values (np.ndarray)
-        Added scores under shifted spike trains.
+        Added scores under block-jittered spike trains.
     """
 
     state = _WORKER
-    return vocal_occurrence_shift_null(state["occurrence_windows"], state["spike_seconds"], state["durations"],
-                                       start, n_draws, state["seed"], state["guard_seconds"], state["folds"],
-                                       state["axis"], state["crossfit_blocks"], state["log_priors"])
+    return vocal_occurrence_jitter_null(state["occurrence_windows"], state["spike_seconds"], state["durations"],
+                                        start, n_draws, state["seed"], state["jitter_block_seconds"],
+                                        state["folds"], state["axis"], state["crossfit_blocks"],
+                                        state["log_priors"])
 
 
 def onset_nested_payload(result: dict, design: dict, session_ids: list, null: np.ndarray, p_value: float,
@@ -410,8 +574,13 @@ def onset_nested_payload(result: dict, design: dict, session_ids: list, null: np
             "n_dropped_short_history": int(sum(entry["n_dropped_short_history"]
                                                for entry in design["per_session"].values())),
             "alphas": result["alphas"], "kappas": result["kappas"], "per_fold": per_fold,
+            # per window, aligned to `windows`: the neuron's added log-score, its held-out probability,
+            # and what the behaviour prior alone scored
+            "per_window_added": result["per_window_gain"],
+            "per_window_probability": result["per_window_probability"],
+            "per_window_behaviour_over": result["per_window_behaviour_over"],
             "null": null, "p": p_value, "at_floor": at_floor, "z": null_z(result["added"], null),
-            "n_shuffles": int(null.size),
+            "n_shuffles": int(np.isfinite(null).sum()), "null_kind": "block_jitter",
             "behaviour_control": {"features": list(behaviour_control["features"]),
                                   "held_out_day": behaviour_control["held_out_day"],
                                   "settings_sha256": behaviour_control["settings_sha256"]}}
@@ -452,9 +621,12 @@ def category_nested_payload(result: dict, session_ids: list, null: np.ndarray, p
 
     per_fold = [{"held_out_session": session_ids[int(fold["held_out"])], "n_events": fold["n_events"],
                  "added": fold["added"], "alpha": fold["alpha"], "ridge": fold["ridge"],
-                 "kappa": fold["kappa"], "rates": fold["rates"]}
+                 "kappa": fold["kappa"], "rates": fold["rates"],
+                 "train_class_counts": fold["train_class_counts"]}
                 for fold in result["per_fold"]]
-    detail = {key: result[key] for key in ("per_event_gain", "posterior_entropy", "mean_posterior_entropy")
+    detail = {key: result[key] for key in ("per_event_gain", "posterior_entropy", "mean_posterior_entropy",
+                                           "log_posterior", "predicted_category", "n_prior_underflow",
+                                           "per_event_behaviour_over")
               if key in result}
     return {"target": "multinomial", "added": result["added"],
             "added_uncalibrated": result["added_uncalibrated"],
@@ -468,7 +640,7 @@ def category_nested_payload(result: dict, session_ids: list, null: np.ndarray, p
             "per_fold": per_fold, "alphas": result["alphas"], "ridges": result["ridges"],
             "kappas": result["kappas"], "categories": list(categories), **detail,
             "null": null, "p": p_value, "at_floor": at_floor, "z": null_z(result["added"], null),
-            "n_permutations": int(null.size),
+            "n_permutations": int(np.isfinite(null).sum()),
             "behaviour_control": {"features": list(behaviour_control["features"]),
                                   "held_out_day": behaviour_control["held_out_day"],
                                   "settings_sha256": behaviour_control["settings_sha256"]}}
@@ -513,7 +685,8 @@ def posterior_nested_payload(posterior: dict, regression: dict, no_behaviour: fl
                 for fold in posterior["per_fold"]]
     detail = {key: posterior[key] for key in ("per_event_gain", "decode_error", "posterior_entropy",
                                                "mean_decode_error", "mean_posterior_entropy",
-                                               "overdispersion_index") if key in posterior}
+                                               "overdispersion_index", "decoded_positions",
+                                               "per_event_behaviour_over") if key in posterior}
     return {"target": "manifold", "added": posterior["added"],
             "added_uncalibrated": posterior["added_uncalibrated"],
             "nats_per_spike": posterior["nats_per_spike"],
@@ -525,7 +698,7 @@ def posterior_nested_payload(posterior: dict, regression: dict, no_behaviour: fl
             "per_fold": per_fold, "alphas": posterior["alphas"], "ridges": posterior["ridges"],
             "kappas": posterior["kappas"], **detail,
             "null": null, "p": p_value, "at_floor": at_floor, "z": null_z(posterior["added"], null),
-            "n_permutations": int(null.size),
+            "n_permutations": int(np.isfinite(null).sum()),
             # the point-regression form: a fine-position descriptor, observed only, with no null
             "point_regression": {"added": regression["added"], "reduced": regression["reduced"],
                                  "full": regression["full"], "no_behaviour": no_behaviour,
@@ -570,8 +743,31 @@ def vocal_gating_feature_job(feature_index: int) -> tuple:
                                         universe["session_index"], universe["session_quiet"], settings,
                                         universe["fit_rows"])
     null = gating_null(universe, feature_index, settings, state["guard_seconds"], state["n_draws"],
-                       seed=state["seed"] + feature_index * state["n_draws"])
+                       seed=state["seed"])
     return feature_index, observed, null
+
+
+def vocal_gating_more_draws_job(request: tuple) -> tuple:
+    """
+    Description
+    -----------
+    Worker task for the gating escalation: more null draws for one feature, continuing its seed stream.
+
+    Parameters
+    ----------
+    request (tuple)
+        ``(feature_index, start, n_draws)``: the feature, the index of its first new draw, how many.
+
+    Returns
+    -------
+    result (tuple)
+        ``(feature_index, null)``, ``null`` as :func:`gating_null` returns it.
+    """
+
+    feature_index, start, n_draws = request
+    state = _WORKER
+    return feature_index, gating_null(state["universe"], feature_index, state["settings"], state["guard_seconds"],
+                                      int(n_draws), seed=state["seed"], start=int(start))
 
 
 def session_spike_seconds(events: dict, data_root: str, unit: dict) -> dict:
@@ -649,16 +845,21 @@ def vocalization_identity_payload(identity: dict, null: np.ndarray, p_value: flo
         The section.
     """
 
+    # Draw counts and the mid-p use the finite draws only, as the p-value does.
+    finite_draws = int(np.isfinite(null).sum())
     exceed = int(np.sum(null >= identity["gain"]))
-    return {**identity, "null": null, "p": p_value, "at_floor": at_floor, "n_permutations": int(null.size),
-            "exceed_count": exceed, "mid_p": (0.5 + exceed) / (1.0 + null.size),
-            "z": null_z(identity["gain"], null), "n_events": int(events["counts"].size),
+    # The scored events: every USV for the torus, the labelled ones for the categories.
+    n_scored = int(events["counts"].size) - (int(identity["n_unlabelled"]) if "n_unlabelled" in identity else 0)
+    return {**identity, "null": null, "p": p_value, "at_floor": at_floor, "n_permutations": finite_draws,
+            "exceed_count": exceed, "mid_p": (0.5 + exceed) / (1.0 + finite_draws),
+            "z": null_z(identity["gain"], null), "n_events": n_scored,
             "per_session_counts": {session_id: int(events["counts"][events["session_index"] == slot].sum())
                                    for slot, session_id in enumerate(events["session_ids"])}}
 
 
 def vocal_gating_payload(feature_names: list, observed: dict, nulls: dict, verdicts: dict, unit_p: dict,
-                   reasons: dict, n_draws: int) -> dict:
+                   reasons: dict, n_draws: int, spreads: dict | None = None, universe_bookkeeping=None,
+                   n_vocal_spikes: int | None = None, bonferroni_bar: float | None = None) -> dict:
     """
     Description
     -----------
@@ -683,6 +884,14 @@ def vocal_gating_payload(feature_names: list, observed: dict, nulls: dict, verdi
         ``{feature: reason}`` for the features NOT tested.
     n_draws (int)
         Shuffles per feature.
+    spreads (dict | None)
+        ``{feature: interquartile range during vocal frames}`` for every feature considered.
+    universe_bookkeeping (dict | None)
+        The universe's per-session counts (vocal and quiet frames, spikes, USVs, exclusions).
+    n_vocal_spikes (int | None)
+        Spikes in the unit's vocal frames.
+    bonferroni_bar (float | None)
+        The within-unit Bonferroni bar for the features tested.
 
     Returns
     -------
@@ -693,7 +902,8 @@ def vocal_gating_payload(feature_names: list, observed: dict, nulls: dict, verdi
     per_feature = {}
     for name in feature_names:
         if name in reasons:
-            per_feature[name] = {"tested": False, "reason": reasons[name]}
+            per_feature[name] = {"tested": False, "reason": reasons[name],
+                                 "vocal_iqr": None if spreads is None else spreads[name]}
             continue
         statistic, null, verdict = observed[name], nulls[name], verdicts[name]
         per_feature[name] = {"tested": True,
@@ -707,15 +917,23 @@ def vocal_gating_payload(feature_names: list, observed: dict, nulls: dict, verdi
                              "quiet_baseline": statistic["quiet_baseline"],
                              "interaction_minus_vocal": statistic["interaction_minus_vocal"],
                              "gating_sign": statistic["gating_sign"],
+                             "interaction_coefficient": statistic["interaction_coefficient"],
+                             # each term's leave-one-session-out added deviance per held-out session
+                             "per_fold": statistic["per_fold"],
+                             "vocal_iqr": None if spreads is None else spreads[name],
                              "null_interaction": null["interaction"], "null_vocal_main": null["vocal_main"],
                              "null_feature_main": null["feature_main"], "null_difference": null["difference"],
                              "p_interaction": verdict["p_interaction"],
                              "p_interaction_gt_vocal": verdict["p_interaction_gt_vocal"],
                              "p_feature_main_quiet": verdict["p_feature_main_quiet"],
-                             "sigma_margin": verdict["sigma_margin"]}
+                             "sigma_margin": verdict["sigma_margin"],
+                             # this feature's own draw count (above n_draws when it was escalated)
+                             "n_draws": verdict["n_draws"]}
     return {"ran": True, "reason": None, "n_draws": int(n_draws), "per_feature": per_feature,
             "p_unit": unit_p["p_unit"], "p_unit_feature": unit_p["feature"],
-            "p_unit_at_floor": unit_p["at_floor"]}
+            "p_unit_at_floor": unit_p["at_floor"],
+            "n_features_tested": len(observed), "bonferroni_bar": bonferroni_bar,
+            "n_vocal_spikes": n_vocal_spikes, "per_session": universe_bookkeeping}
 
 
 def run_vocal_occurrence(unit: dict, events: dict, settings: dict, data_root: str, output_directory: str,
@@ -727,8 +945,9 @@ def run_vocal_occurrence(unit: dict, events: dict, settings: dict, data_root: st
     silence, in a way that transfers across sessions? Written as its own section.
 
     The statistic is the held-out, class-balanced gain of a two-class Bayesian decoder (peri-onset
-    window against quiet tile, equal prior), tested against circular shifts of the spike train that
-    recount both classes and refit.
+    window against quiet tile, equal prior), tested against block-jitter surrogates of the spike train
+    (spikes circularly shifted within consecutive ``null_jitter_block_seconds`` blocks) that recount both
+    classes and refit.
 
     Parameters
     ----------
@@ -753,6 +972,7 @@ def run_vocal_occurrence(unit: dict, events: dict, settings: dict, data_root: st
         The section as written.
     """
 
+    step_started = time.perf_counter()
     axis = settings["vocal_decoding"]["vocal_occurrence"]
     windows = events["occurrence_windows"]
     crossfit_blocks = int(settings["kinematic_encoding"]["calibration"]["n_blocks"])
@@ -762,7 +982,7 @@ def run_vocal_occurrence(unit: dict, events: dict, settings: dict, data_root: st
                                             windows["edges"], folds, axis, crossfit_blocks)
     state = {"occurrence_windows": windows, "spike_seconds": session_spike_seconds(events, data_root, unit),
              "durations": session_durations(events), "seed": int(settings["inference"]["shuffle_seed"]),
-             "guard_seconds": settings["inference"]["shuffle_guard_seconds"], "folds": folds, "axis": axis,
+             "jitter_block_seconds": float(axis["null_jitter_block_seconds"]), "folds": folds, "axis": axis,
              "crossfit_blocks": crossfit_blocks}
     with spawn_pool(n_workers, state) as pool:
         draw_more = parallel_draw_more(pool, vocal_occurrence_null_chunk, n_workers)
@@ -773,17 +993,29 @@ def run_vocal_occurrence(unit: dict, events: dict, settings: dict, data_root: st
     # Sensitivity beside the discrimination: whether a unit fires weakly on most USVs or strongly on
     # a few, which the averaged statistic and AUROC cannot tell apart.
     vocal_rows = windows["labels"] > 0.5
-    occurrence.update({"null": null, "p": p_value, "at_floor": at_floor, "n_shuffles": int(null.size),
+    occurrence.update({"null": null, "p": p_value, "at_floor": at_floor, "n_shuffles": int(np.isfinite(null).sum()),
+                       "null_kind": "block_jitter", "null_jitter_block_seconds": float(axis["null_jitter_block_seconds"]),
                        "z": null_z(occurrence["gain"], null),
                        "fraction_vocal_windows_with_spike":
                            float(np.mean(windows["counts"][vocal_rows] > 0)),
                        "fraction_quiet_windows_with_spike":
                            float(np.mean(windows["counts"][~vocal_rows] > 0)),
                        "median_spikes_per_vocal_window":
-                           float(np.median(windows["counts"][vocal_rows]))})
+                           float(np.median(windows["counts"][vocal_rows])),
+                       # The windows the per-window arrays align to, and the assembly's bookkeeping (per
+                       # session: duration, window, USVs and tiles kept, USVs dropped by each filter).
+                       "windows": {"counts": windows["counts"], "labels": windows["labels"],
+                                   "session_index": windows["session_index"], "edges": windows["edges"],
+                                   "width": windows["width"]},
+                       "session_ids": list(events["session_ids"]),
+                       "assembly": events["per_session"],
+                       # One row per USV event, in the order every USV-grain array of the identity and
+                       # nested sections is indexed by: session slot, onset and offset, category, position.
+                       "usv_events": usv_event_keys(events)})
     message_output(f"  VOCAL OCCURRENCE  gain {occurrence['gain']:+.6f} "
                    f"| AUROC {occurrence['auroc']:.3f} | z {occurrence['z']:+.1f} | p {p_value:.4e}"
                    f"{' (at floor)' if at_floor else ''} | {null.size:,} draws")
+    occurrence["seconds"] = time.perf_counter() - step_started
     write_unit_section(output_directory, unit, "vocal_occurrence", occurrence, settings)
     message_output(f"    wrote [vocal_occurrence] for {unit['unit_uid']}")
     return occurrence
@@ -827,6 +1059,7 @@ def run_vocalization_identity(unit: dict, events: dict, settings: dict, target: 
         The section as written.
     """
 
+    step_started = time.perf_counter()
     decoding = settings["vocal_decoding"]
     check_identity_null(decoding)
     section = target_section("vocalization_identity", target)
@@ -837,6 +1070,9 @@ def run_vocalization_identity(unit: dict, events: dict, settings: dict, target: 
         # events in masked cells.
         codes, kept, values = category_codes(events["category_labels"])
         counts = np.asarray(events["counts"], dtype=np.float64)[kept]
+        insufficient = spike_floor_payload(counts, settings)
+        if insufficient is not None:
+            return write_not_run(output_directory, unit, section, insufficient, settings, message_output)
         session_index = np.asarray(events["session_index"])[kept]
         folds = category_context(codes, session_index, np.asarray(events["vocalization_start"])[kept],
                                  single_session_blocks)
@@ -847,6 +1083,9 @@ def run_vocalization_identity(unit: dict, events: dict, settings: dict, target: 
                  "session_index": session_index, "seed": int(settings["inference"]["shuffle_seed"])}
     else:
         counts, session_index = events["counts"], events["session_index"]
+        insufficient = spike_floor_payload(counts, settings)
+        if insufficient is not None:
+            return write_not_run(output_directory, unit, section, insufficient, settings, message_output)
         folds = decoding_context(events["positions"], session_index, decoding, period, events["vocalization_start"],
                                  single_session_blocks)
         identity = decode_gain(counts, folds, decoding, with_detail=True)
@@ -870,6 +1109,7 @@ def run_vocalization_identity(unit: dict, events: dict, settings: dict, target: 
     identity = vocalization_identity_payload(identity, null, p_value, at_floor, events)
     message_output(f"  VOCALIZATION IDENTITY ({target})  gain {identity['gain']:+.5f} | z {identity['z']:+.1f} "
                    f"| p {p_value:.4e}{' (at floor)' if at_floor else ''} | {null.size:,} draws")
+    identity["seconds"] = time.perf_counter() - step_started
     write_unit_section(output_directory, unit, section, identity, settings)
     message_output(f"    wrote [{section}] for {unit['unit_uid']}")
     return identity
@@ -880,14 +1120,16 @@ def run_nested_vocal_decoding(unit: dict, events: dict, settings: dict, data_roo
     """
     Description
     -----------
-    Nested vocal decoding for one unit, on both targets: does the neuron add vocalization-identity
-    information beyond the behaviour control fitted for that target?
+    Nested vocal decoding for one unit, on both content targets and on the onset axis: does the neuron
+    add vocalization-identity (or onset) information beyond the behaviour control fitted for that target?
 
-    The unit's kinematics are assembled once, and each target's design is built from them on its own
-    control's features (the torus and categorical controls were selected separately and use different
-    features). The kinematic data are released before either null starts. Each target is then written
-    as its own section, ``nested_vocal_decoding_<target>``, by :func:`run_manifold_nested_decoding` and
-    :func:`run_category_nested_decoding`.
+    The unit's kinematics are assembled once, z-scored per session as the controls were fitted (the
+    unit's own kinematic model pools its sessions; a control's inputs must be on the scale it was
+    fitted on), and each target's design is built from them on its own control's features (the torus,
+    categorical and onset controls were selected separately and use different features). The kinematic
+    data are released before any null starts. Each target is then written as its own section,
+    ``nested_vocal_decoding_<target>``, by :func:`run_manifold_nested_decoding`,
+    :func:`run_category_nested_decoding` and :func:`run_onset_nested_decoding`.
 
     Parameters
     ----------
@@ -918,7 +1160,7 @@ def run_nested_vocal_decoding(unit: dict, events: dict, settings: dict, data_roo
     per_session = assemble_unit_sessions(unit, data_root, settings["kinematic_features"],
                                          encoding["history_pre_seconds"], encoding["clean_post_seconds"],
                                          settings["vocalizations"]["clean_against"],
-                                         settings["vocalizations"])
+                                         settings["vocalizations"], standardise="per_session")
     fps = per_session[unit["courtship_sessions"][0]]["fps"]
     history_lags = int(np.floor(encoding["history_pre_seconds"] * fps))
     designs = {target: nested_design(events, per_session, reduced_model_features(settings, target), history_lags,
@@ -973,6 +1215,7 @@ def run_manifold_nested_decoding(unit: dict, events: dict, design: dict, setting
         The section as written.
     """
 
+    step_started = time.perf_counter()
     nested = nested_settings(settings)
     section = target_section("nested_vocal_decoding", "manifold")
     # The behaviour control is fitted at cohort scale and enters as its prediction.
@@ -990,6 +1233,9 @@ def run_manifold_nested_decoding(unit: dict, events: dict, design: dict, setting
     # full kinematic history).
     decoding = settings["vocal_decoding"]
     counts = np.asarray(events["counts"], dtype=np.float64)[design["kept"]]
+    insufficient = spike_floor_payload(counts, settings)
+    if insufficient is not None:
+        return write_not_run(output_directory, unit, section, insufficient, settings, message_output)
     folds = decoding_context(design["positions"], design["session_index"], decoding,
                              settings["vocalizations"]["torus_period"],
                              np.asarray(events["vocalization_start"])[design["kept"]],
@@ -1011,8 +1257,15 @@ def run_manifold_nested_decoding(unit: dict, events: dict, design: dict, setting
                                                              null, message_output)
     payload = posterior_nested_payload(posterior, regression, no_behaviour, events["session_ids"], null,
                                        p_value, at_floor, design["behaviour_control"])
+    # Which USV events were scored (a full kinematic history), the control's prediction for each, and the
+    # design's per-session drop counts, so every per-event array joins to the occurrence section's
+    # `usv_events` and the control can be audited on this unit without a refit.
+    payload.update({"kept": np.asarray(design["kept"]),
+                    "control_predicted_positions": np.asarray(design["behaviour_control"]["predicted_positions"]),
+                    "design_per_session": design["per_session"]})
     message_output(f"    null z {payload['z']:+.1f} | p {p_value:.4e}{' (at floor)' if at_floor else ''} "
                    f"| {null.size:,} draws")
+    payload["seconds"] = time.perf_counter() - step_started
     write_unit_section(output_directory, unit, section, payload, settings)
     message_output(f"    wrote [{section}] for {unit['unit_uid']}")
     return payload
@@ -1055,6 +1308,7 @@ def run_category_nested_decoding(unit: dict, events: dict, design: dict, setting
         The section as written.
     """
 
+    step_started = time.perf_counter()
     nested = nested_settings(settings)
     decoding = settings["vocal_decoding"]
     section = target_section("nested_vocal_decoding", "multinomial")
@@ -1072,6 +1326,9 @@ def run_category_nested_decoding(unit: dict, events: dict, design: dict, setting
     columns = [classes.index(float(v)) for v in values]
     log_evidence = np.log(np.maximum(evidence[labelled][:, columns], 1e-300))
     counts = np.asarray(events["counts"], dtype=np.float64)[design["kept"]][labelled]
+    insufficient = spike_floor_payload(counts, settings)
+    if insufficient is not None:
+        return write_not_run(output_directory, unit, section, insufficient, settings, message_output)
     session_index = np.asarray(design["session_index"])[labelled]
     times = np.asarray(events["vocalization_start"])[design["kept"]][labelled]
     folds = category_context(codes, session_index, times,
@@ -1096,8 +1353,13 @@ def run_category_nested_decoding(unit: dict, events: dict, design: dict, setting
                          "settings_sha256": control["settings_sha256"]}
     payload = category_nested_payload(result, events["session_ids"], null, p_value, at_floor,
                                       behaviour_control, values.tolist(), int((~labelled).sum()))
+    # The scored subset (kept with a full history, then labelled), the control's log evidence for each
+    # scored USV over the unit's categories, and the design's per-session drop counts.
+    payload.update({"kept": np.asarray(design["kept"]), "labelled": np.asarray(labelled),
+                    "control_log_evidence": log_evidence, "design_per_session": design["per_session"]})
     message_output(f"    null z {payload['z']:+.1f} | p {p_value:.4e}{' (at floor)' if at_floor else ''} "
                    f"| {null.size:,} draws")
+    payload["seconds"] = time.perf_counter() - step_started
     write_unit_section(output_directory, unit, section, payload, settings)
     message_output(f"    wrote [{section}] for {unit['unit_uid']}")
     return payload
@@ -1143,6 +1405,7 @@ def run_onset_nested_decoding(unit: dict, events: dict, design: dict, settings: 
         The section as written.
     """
 
+    step_started = time.perf_counter()
     nested = nested_settings(settings)
     axis = settings["vocal_decoding"]["vocal_occurrence"]
     control = load_control_model(settings, "onset")
@@ -1162,7 +1425,7 @@ def run_onset_nested_decoding(unit: dict, events: dict, design: dict, settings: 
                    f"{result['behaviour_over_no_behaviour']:+.6f} | kappas {result['kappas']}")
     state = {"occurrence_windows": windows, "spike_seconds": session_spike_seconds(events, data_root, unit),
              "durations": session_durations(events), "seed": int(settings["inference"]["shuffle_seed"]),
-             "guard_seconds": settings["inference"]["shuffle_guard_seconds"], "folds": folds, "axis": axis,
+             "jitter_block_seconds": float(axis["null_jitter_block_seconds"]), "folds": folds, "axis": axis,
              "crossfit_blocks": crossfit_blocks, "log_priors": log_priors}
     with spawn_pool(n_workers, state) as pool:
         draw_more = parallel_draw_more(pool, onset_nested_null_chunk, n_workers)
@@ -1174,8 +1437,18 @@ def run_onset_nested_decoding(unit: dict, events: dict, design: dict, settings: 
                          "settings_sha256": control["settings_sha256"]}
     payload = onset_nested_payload(result, design, events["session_ids"], null, p_value, at_floor,
                                    behaviour_control)
+    # The control's base-rate-free log-odds per window and how well they alone separate the unit's windows,
+    # the windows' identity, and the design's per-session drop counts.
+    payload.update({"null_jitter_block_seconds": float(axis["null_jitter_block_seconds"]),
+                    "control_log_odds": np.asarray(log_odds),
+                    "control_auroc_on_windows": area_under_roc(np.asarray(log_odds), windows["labels"]),
+                    "kept": np.asarray(design["kept"]),
+                    "windows": {"labels": windows["labels"], "session_index": windows["session_index"],
+                                "edges": windows["edges"], "counts": windows["counts"]},
+                    "design_per_session": design["per_session"]})
     message_output(f"    null z {payload['z']:+.1f} | p {p_value:.4e}{' (at floor)' if at_floor else ''} "
                    f"| {null.size:,} draws")
+    payload["seconds"] = time.perf_counter() - step_started
     write_unit_section(output_directory, unit, NESTED_ONSET_SECTION, payload, settings)
     message_output(f"    wrote [{NESTED_ONSET_SECTION}] for {unit['unit_uid']}")
     return payload
@@ -1220,6 +1493,7 @@ def run_vocal_gating(unit: dict, settings: dict, data_root: str, output_director
         The section as written.
     """
 
+    step_started = time.perf_counter()
     gating = settings["vocal_gating"]
     check_gating_settings(gating)
     alpha = gating["vocal_tuning_alpha"]
@@ -1230,6 +1504,7 @@ def run_vocal_gating(unit: dict, settings: dict, data_root: str, output_director
         run, reason = should_run_gating(occurrence_tuned, identity_tuned, 0, 0.0, gating)
         if not run:
             payload = {"ran": False, "reason": reason}
+            payload["seconds"] = time.perf_counter() - step_started
             write_unit_section(output_directory, unit, "vocal_gating", payload, settings)
             message_output(f"  VOCAL GATING  not run: {reason}")
             return payload
@@ -1244,11 +1519,27 @@ def run_vocal_gating(unit: dict, settings: dict, data_root: str, output_director
                                seed=seed)
     del per_session
     names = list(universe["feature_names"])
+    # Every term is scored leave-one-session-out, the feature's quiet main effect on quiet frames only, so
+    # a unit needs two sessions (or blocks) in the universe and two that carry quiet frames. A dense block
+    # unit can have none of the latter; it is written as not testable rather than raising mid-null.
+    n_universe_sessions = int(np.unique(universe["session_index"]).size)
+    n_quiet_sessions = int(np.unique(universe["session_quiet"]).size)
+    if n_universe_sessions < 2 or n_quiet_sessions < 2:
+        payload = {"ran": False, "reason": ("fewer_than_two_sessions" if n_universe_sessions < 2
+                                            else "fewer_than_two_quiet_sessions"),
+                   "n_sessions": n_universe_sessions, "n_quiet_sessions": n_quiet_sessions,
+                   "per_session": universe["per_session"]}
+        payload["seconds"] = time.perf_counter() - step_started
+        write_unit_section(output_directory, unit, "vocal_gating", payload, settings)
+        message_output(f"  VOCAL GATING  not run: {payload['reason']} ({n_universe_sessions} sessions, "
+                       f"{n_quiet_sessions} with quiet frames)")
+        return payload
     n_vocal_spikes = int(np.sum(universe["spikes"][universe["vocal"] > 0]))
-    reasons, tested = {}, []
+    reasons, tested, spreads = {}, [], {}
     for index, name in enumerate(names):
         values = universe["features"][universe["vocal"] > 0, index]
         spread = float(np.subtract(*np.percentile(values, [75, 25]))) if values.size else 0.0
+        spreads[name] = spread
         run, reason = should_run_gating(occurrence_tuned, identity_tuned, n_vocal_spikes, spread, gating)
         if run:
             tested.append(index)
@@ -1256,13 +1547,18 @@ def run_vocal_gating(unit: dict, settings: dict, data_root: str, output_director
             reasons[name] = reason
     if not tested:
         unit_reason = "not_testable" if "not_testable" in reasons.values() else "no_vocal_tuning"
-        payload = {"ran": False, "reason": unit_reason, "per_feature": {name: {"tested": False,
-                                                                                "reason": reasons[name]}
-                                                                         for name in names}}
+        payload = {"ran": False, "reason": unit_reason,
+                   "per_feature": {name: {"tested": False, "reason": reasons[name], "vocal_iqr": spreads[name]}
+                                   for name in names},
+                   "n_vocal_spikes": n_vocal_spikes, "per_session": universe["per_session"]}
+        payload["seconds"] = time.perf_counter() - step_started
         write_unit_section(output_directory, unit, "vocal_gating", payload, settings)
         message_output(f"  VOCAL GATING  not run: {unit_reason}")
         return payload
 
+    # Whether the shuffle count can reach the Bonferroni bar for this many features is settled before
+    # the nulls are drawn, not after hours of them.
+    bonferroni_bar = settings_bonferroni_bar(gating, len(tested))
     n_draws = int(gating["gating_screen_n_shuffles"])
     state = {"universe": universe, "settings": gating, "seed": seed, "n_draws": n_draws,
              "guard_seconds": settings["inference"]["shuffle_guard_seconds"]}
@@ -1274,6 +1570,25 @@ def run_vocal_gating(unit: dict, settings: dict, data_root: str, output_director
             observed[name], nulls[name] = statistic, null
             verdicts[name] = gating_verdict(statistic, null["interaction"], null["difference"],
                                             null["feature_main"], gating, len(tested))
+        # Escalation: a feature beaten by every draw sits at its floor, which only more draws can lower. Each
+        # rung tops those features up to the rung's total, continuing their own seed streams, and recomputes
+        # their verdicts; a feature that lifts off the floor is left where it is.
+        for target in gating["escalation_ladder"]:
+            floored = [name for name in verdicts if gating_feature_at_floor(verdicts[name], gating)]
+            if not floored:
+                break
+            requests = [(names.index(name), nulls[name]["interaction"].size,
+                         int(target) - nulls[name]["interaction"].size)
+                        for name in floored if int(target) > nulls[name]["interaction"].size]
+            if not requests:
+                continue
+            message_output(f"    escalating {len(requests)} feature(s) at the floor to {int(target):,} draws")
+            for index, extra in pool.map(vocal_gating_more_draws_job, requests):
+                name = names[index]
+                nulls[name] = {key: np.concatenate([nulls[name][key], extra[key]]) for key in nulls[name]}
+                verdicts[name] = gating_verdict(observed[name], nulls[name]["interaction"],
+                                                nulls[name]["difference"], nulls[name]["feature_main"],
+                                                gating, len(tested))
     unit_p = gating_unit_pvalue(verdicts, gating)
     for name in sorted(verdicts, key=lambda feature: -verdicts[feature]["sigma_margin"]):
         verdict = verdicts[name]
@@ -1281,7 +1596,13 @@ def run_vocal_gating(unit: dict, settings: dict, data_root: str, output_director
                        f"vocal {observed[name]['vocal_main']:+9.1f} p_int {verdict['p_interaction']:.1e} "
                        f"p_d>b {verdict['p_interaction_gt_vocal']:.1e} sigma {verdict['sigma_margin']:+6.1f} "
                        f"| {verdict['label']} (uncorrected, not persisted)")
-    payload = vocal_gating_payload(names, observed, nulls, verdicts, unit_p, reasons, n_draws)
+    payload = vocal_gating_payload(names, observed, nulls, verdicts, unit_p, reasons, n_draws, spreads,
+                                   universe["per_session"], n_vocal_spikes, bonferroni_bar)
+    # Every feature's correlation with every other during vocal frames, ordered as `feature_names`, so the
+    # collinearity among whichever features pass the cohort correction can be read without the universe.
+    payload.update({"feature_names": names,
+                    "vocal_frame_correlation": vocal_frame_correlations(universe["features"], universe["vocal"])})
+    payload["seconds"] = time.perf_counter() - step_started
     write_unit_section(output_directory, unit, "vocal_gating", payload, settings)
     message_output(f"    unit p {unit_p['p_unit']:.4e} from {unit_p['feature']} | wrote [vocal_gating]")
     return payload
@@ -1326,16 +1647,16 @@ def run_vocal(unit: dict, settings: dict, data_root: str, output_directory: str,
     Run the requested vocal analyses for one unit, in order.
 
     The USV-grain event set is assembled once and shared by occurrence, identity and the nested
-    decoding. Identity and the nested decoding run on both targets (:data:`VOCAL_TARGETS`), each
-    target written as its own section. Vocal gating uses the occurrence p-value and the identity
+    decoding. Identity runs on both content targets (:data:`VOCAL_TARGETS`) and the nested decoding on
+    those and on the onset axis, each written as its own section (:func:`step_sections`). Vocal gating uses the occurrence p-value and the identity
     p-value of ``vocalizations.vocal_target``, computed in this job or read from the unit's
     result file, and refuses to run if one is missing or was computed from too few draws to clear the
     activation threshold.
 
     A unit with fewer vocal sessions (or blocks) than ``cohort.min_vocal_sessions`` cannot be
     tested on the vocal side: every analysis here holds out a vocal session, and with one there is
-    nothing left to train on. Each requested section (both targets' sections for identity and the
-    nested decoding) is then written as ``{"ran": False, "reason":
+    nothing left to train on. Each requested section (every section :func:`step_sections` lists for the
+    step) is then written as ``{"ran": False, "reason":
     "not_vocal_testable", "n_vocal_sessions": ...}`` and nothing is fitted, so the unit is recorded
     rather than missing.
 
@@ -1373,8 +1694,7 @@ def run_vocal(unit: dict, settings: dict, data_root: str, output_directory: str,
         message_output(f"  NOT VOCAL-TESTABLE: {n_vocal_sessions} vocal session(s), "
                        f"{settings['cohort']['min_vocal_sessions']} required; sections written as not run")
         for step in [s for s in VOCAL_STEPS if s in steps]:
-            sections = ([target_section(step, t) for t in VOCAL_TARGETS] if step in TARGET_STEPS else [step])
-            for section in sections:
+            for section in step_sections(step):
                 write_unit_section(output_directory, unit, section,
                                    {"ran": False, "reason": "not_vocal_testable",
                                     "n_vocal_sessions": n_vocal_sessions}, settings)
@@ -1394,8 +1714,8 @@ def run_vocal(unit: dict, settings: dict, data_root: str, output_directory: str,
         for each_target in VOCAL_TARGETS:
             identity = run_vocalization_identity(unit, events, settings, each_target, output_directory, n_workers,
                                                  message_output)
-            results[target_section("vocalization_identity", each_target)] = (identity["p"],
-                                                                             identity["n_permutations"])
+            results[target_section("vocalization_identity", each_target)] = section_p_and_draws(
+                identity, "n_permutations")
     if "nested_vocal_decoding" in steps:
         run_nested_vocal_decoding(unit, events, settings, data_root, output_directory, n_workers, message_output)
     if "vocal_gating" in steps:
@@ -1408,10 +1728,12 @@ def run_vocal(unit: dict, settings: dict, data_root: str, output_directory: str,
                 msg = (f"vocal gating needs {section}'s p-value, and {unit['unit_uid']} has no {section} "
                        f"section in {output_directory}; run {step} first")
                 raise ValueError(msg)
-            results[section] = (stored[section]["p"], stored[section][draw_key])
+            results[section] = section_p_and_draws(stored[section], draw_key)
+        # A section written as not run (too few spikes) has no draws to check, and its NaN p is untuned.
         check_tuning_threshold_is_reachable(settings["vocal_gating"]["vocal_tuning_alpha"],
                                             {section: results[section][1]
-                                             for section in ("vocal_occurrence", identity_section)})
+                                             for section in ("vocal_occurrence", identity_section)
+                                             if results[section][1] is not None})
         run_vocal_gating(unit, settings, data_root, output_directory, n_workers, results["vocal_occurrence"][0],
                          results[identity_section][0], message_output)
 

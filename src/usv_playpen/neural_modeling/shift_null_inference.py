@@ -145,12 +145,17 @@ def escalated_empirical_pvalue(observed: float, draw_more, ladder: list, initial
     for target in ladder:
         # Only finite draws count toward a rung's target, as only they enter the p-value.
         n_finite = int(np.isfinite(null).sum())
-        if not at_floor or target <= n_finite:
+        if not at_floor:
             break
+        if target <= n_finite:
+            # A rung already met (a ladder starting at or below the draws in hand) is skipped, not
+            # a stop: the next rung still tops up.
+            continue
         message_output(f"      escalating {n_finite} -> {target} finite draws (p at the {p_value:.3e} floor)")
         null = np.concatenate([null, np.asarray(draw_more(target - n_finite), dtype=np.float64)])
         p_value, at_floor = empirical_pvalue(null, observed)
     return p_value, at_floor, null
+
 
 def bh_floor_requirement(n_tests: int, fdr_q: float, n_shuffles: int) -> float:
     """

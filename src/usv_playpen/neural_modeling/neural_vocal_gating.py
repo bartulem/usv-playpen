@@ -320,6 +320,8 @@ def feature_gating_statistic(feature_vocal: np.ndarray, feature_quiet: np.ndarra
             "quiet_baseline": main["baseline"],
             "interaction_minus_vocal": interaction["added"] - vocal_main["added"],
             "gating_sign": float(np.sign(coefficients[-1])),
+            # the strongly ridged interaction coefficient itself (its sign is ``gating_sign``)
+            "interaction_coefficient": float(coefficients[-1]),
             "per_fold": {"feature_main": main["per_fold"], "vocal_main": vocal_main["per_fold"],
                          "interaction": interaction["per_fold"], "additive": additive["per_fold"]}}
 
@@ -396,7 +398,9 @@ def gating_verdict(observed: dict, interaction_null: np.ndarray, difference_null
             "p_feature_main_quiet": p_main,
             "sigma_margin": float(margin),
             "borderline": bool(interaction_ok and margin < settings["borderline_sigma_flag"]),
-            "bonferroni_bar": bonferroni}
+            "bonferroni_bar": bonferroni,
+            # the draws behind these p-values: the shuffle count, or more once the feature was escalated
+            "n_draws": int(np.asarray(interaction_null).size)}
 
 
 def settings_bonferroni_bar(settings: dict, n_features: int) -> float:
@@ -433,52 +437,37 @@ def settings_bonferroni_bar(settings: dict, n_features: int) -> float:
     return bar
 
 
-def gating_survivors(per_feature: dict, feature_values_vocal: dict) -> dict:
+def vocal_frame_correlations(features: np.ndarray, vocal: np.ndarray) -> np.ndarray:
     """
     Description
     -----------
-    The features that passed, with their pairwise correlations.
-
-    All survivors are reported rather than a forward-selected subset, since under collinearity which
-    of several correlated features a greedy search keeps is unstable. The correlations are measured
-    during vocal frames, where ``delta_f`` is identified.
+    The pairwise Pearson correlations of every feature during vocal frames, the only frames where the
+    gating interaction is identified and so the only place collinearity among gated features can confound
+    it. Stored for all features, so the correlations among whichever features pass the cohort correction
+    can be read afterwards; a feature constant during vocal frames has NaN correlations.
 
     Parameters
     ----------
-    per_feature (dict)
-        ``{feature: verdict dict}`` from :func:`gating_verdict`.
-    feature_values_vocal (dict)
-        ``{feature: values on VOCAL frames}``, aligned across features.
+    features (np.ndarray)
+        ``(n_frames, n_features)`` feature values over the gating universe.
+    vocal (np.ndarray)
+        The universe's vocal indicator per frame.
 
     Returns
     -------
-    summary (dict)
-        ``survivors`` (labelled GATE or GATE+silentME, strongest first by sigma margin),
-        ``correlations`` (pairwise, among survivors only), and ``max_abs_correlation``.
+    correlation (np.ndarray)
+        ``(n_features, n_features)`` correlations during vocal frames.
     """
 
-    survivors = [name for name, verdict in per_feature.items()
-                 if verdict["label"] in ("GATE", "GATE+silentME")]
-    survivors.sort(key=lambda name: -per_feature[name]["sigma_margin"])
-
-    correlations: dict = {}
-    strongest = 0.0
-    for i, first in enumerate(survivors):
-        for second in survivors[i + 1:]:
-            a = np.asarray(feature_values_vocal[first], dtype=np.float64)
-            b = np.asarray(feature_values_vocal[second], dtype=np.float64)
-            if a.size < 2 or np.std(a) == 0.0 or np.std(b) == 0.0:
-                value = float("nan")
-            else:
-                value = float(np.corrcoef(a, b)[0, 1])
-            correlations[f"{first}|{second}"] = value
-            if np.isfinite(value):
-                strongest = max(strongest, abs(value))
-
-    return {"survivors": survivors,
-            "n_survivors": len(survivors),
-            "correlations": correlations,
-            "max_abs_correlation": strongest if correlations else float("nan")}
+    values = np.asarray(features, dtype=np.float64)[np.asarray(vocal) > 0]
+    centred = values - values.mean(axis=0)
+    spread = np.sqrt(np.sum(centred ** 2, axis=0))
+    correlation = np.full((values.shape[1], values.shape[1]), np.nan)
+    varying = spread > 0
+    if varying.any():
+        normalised = centred[:, varying] / spread[varying]
+        correlation[np.ix_(varying, varying)] = normalised.T @ normalised
+    return correlation
 
 
 def quiet_subsample_rows(quiet_labels: np.ndarray, zeros_per_spike: int, rng) -> np.ndarray:
@@ -670,7 +659,7 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
 
 
 def gating_null(universe: dict, feature_index: int, settings: dict, guard_seconds: float,
-                n_draws: int, seed: int = 0) -> dict:
+                n_draws: int, seed: int = 0, start: int = 0) -> dict:
     """
     Description
     -----------
@@ -694,7 +683,10 @@ def gating_null(universe: dict, feature_index: int, settings: dict, guard_second
     n_draws (int)
         Shuffles.
     seed (int)
-        Base seed; each draw advances it.
+        Base seed. Draw ``d`` of feature ``f`` uses the generator seeded ``(seed, f, d)``, so every
+        feature has its own stream and a feature's null can be extended without reusing another's draws.
+    start (int)
+        Index of the first draw, so an escalation continues a feature's stream instead of repeating it.
 
     Returns
     -------
@@ -713,7 +705,7 @@ def gating_null(universe: dict, feature_index: int, settings: dict, guard_second
     values = {key: np.empty(n_draws, dtype=np.float64)
               for key in ("interaction", "vocal_main", "feature_main", "difference")}
     for draw in range(n_draws):
-        rng = np.random.default_rng(seed + draw)
+        rng = np.random.default_rng((int(seed), int(feature_index), int(start + draw)))
         spikes = np.empty(frames.size, dtype=np.float64)
         quiet_feature_parts, quiet_spike_parts, quiet_index_parts = [], [], []
         for slot, train in universe["spike_frames"].items():
@@ -741,6 +733,33 @@ def gating_null(universe: dict, feature_index: int, settings: dict, guard_second
         values["feature_main"][draw] = drawn["feature_main"]
         values["difference"][draw] = drawn["interaction_minus_vocal"]
     return values
+
+
+def gating_feature_at_floor(verdict: dict, settings: dict) -> bool:
+    """
+    Description
+    -----------
+    Whether a feature's conjunction p-value sits at the floor of its own null, so only more draws could
+    lower it: the interaction (and, when required, the interaction-over-vocal condition) beaten by every
+    draw. Such features are the ones the gating escalation ladder tops up.
+
+    Parameters
+    ----------
+    verdict (dict)
+        From :func:`gating_verdict`.
+    settings (dict)
+        The ``vocal_gating`` block.
+
+    Returns
+    -------
+    at_floor (bool)
+        True when the feature's conjunction p equals ``1 / (n_draws + 1)``.
+    """
+
+    floor = 1.0 / (float(verdict["n_draws"]) + 1.0)
+    conjunction = (max(verdict["p_interaction"], verdict["p_interaction_gt_vocal"])
+                   if settings["require_interaction_gt_vocal"] else verdict["p_interaction"])
+    return bool(np.isclose(conjunction, floor))
 
 
 def gating_unit_pvalue(per_feature: dict, settings: dict) -> dict:
@@ -786,7 +805,8 @@ def gating_unit_pvalue(per_feature: dict, settings: dict) -> dict:
     best = min(per_feature, key=lambda name: (conjunction(per_feature[name]),
                                               -per_feature[name]["sigma_margin"]))
     best_p = conjunction(per_feature[best])
-    floor = 1.0 / (float(settings["gating_screen_n_shuffles"]) + 1.0)
+    # The floor of the best feature's own null, which escalation can have deepened beyond the shuffle count.
+    floor = 1.0 / (float(per_feature[best]["n_draws"]) + 1.0)
     return {"p_unit": float(min(1.0, len(per_feature) * best_p)),
             "feature": best,
             "label": per_feature[best]["label"],
