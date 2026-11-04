@@ -318,6 +318,7 @@ def plot_feature_ranking(
     results_path = pathlib.Path(results_file_loc)
     with pathlib.Path(results_path).open('rb') as f:
         modeling_data = pickle.load(f)
+    feature_pretty = _univariate_feature_pretty(modeling_data)
 
     fname_str = results_path.name
     if '_male_' in fname_str:
@@ -470,9 +471,10 @@ def plot_feature_ranking(
 
         ax.set_xlabel('Behavioral Feature', fontsize=12, color=TEXT_COLOR)
         ax.set_xticks(np.arange(0.25, (0.25 * len(feats_sorted)) + 0.25, 0.25))
-        ax.set_xticklabels(feats_sorted, rotation=60, ha='right', fontsize=6, color=TEXT_COLOR)
+        ax.set_xticklabels([feature_pretty(str(name)) for name in feats_sorted], rotation=60, ha='right',
+                           fontsize=6, color=TEXT_COLOR)
 
-        ax.set_ylabel(f'{metric_label} (Held-out Data)', fontsize=12, color=TEXT_COLOR)
+        ax.set_ylabel(f'{metric_label} (held-out)', fontsize=12, color=TEXT_COLOR)
         ax.tick_params(axis='both', colors=TEXT_COLOR)
         ax.minorticks_off()
 
@@ -692,6 +694,7 @@ def plot_significant_filters_grid(
         ignore_features: list | None = None,
         metric: str = 'auc',
         p_val_threshold: float = 0.01,
+        filter_label: str = 'Partial dependence (ΔP)',
         save_plot: bool = False,
         output_dir: str | None = None,
         message_output: Callable = print,
@@ -704,9 +707,12 @@ def plot_significant_filters_grid(
     on a specified metric, and plots their temporal filters (kernels) with
     99% confidence intervals in a small-multiples grid. Each filter is
     baseline-corrected by subtracting its value at the leftmost time bin so
-    all kernels start at zero and can be visually compared on a shared
-    Y-axis. The filter history length (seconds) is inferred from the filename
-    by matching `histNs` and defaults to 4.0 seconds if not present.
+    all kernels start at zero, and each panel takes its own Y-axis range (the
+    band with a 10% margin, zero always in view). Panel titles carry the
+    feature's display name with the metric in parentheses; the first column
+    carries the Y label and the lowest panel of each column the X label. The
+    filter history length (seconds) is inferred from the filename by matching
+    `histNs` and defaults to 4.0 seconds if not present.
 
     Parameters
     ----------
@@ -722,6 +728,11 @@ def plot_significant_filters_grid(
         The family-wise alpha level for significance testing. This value is
         Bonferroni-corrected by the number of valid features found in the
         file.
+    filter_label : str, default 'Partial dependence (ΔP)'
+        Y-axis label of the first column. The default is the model-selection
+        figures' label for a binary target's filters (the change in predicted
+        probability); a regression target's filters are a change in the
+        predicted quantity, e.g. 'Partial dependence (Δ duration)'.
     save_plot : bool, default False
         Whether to save the generated SVG plot to disk.
     output_dir : str, optional
@@ -755,6 +766,7 @@ def plot_significant_filters_grid(
     except FileNotFoundError:
         message_output(f"Error: File not found at {results_file_loc}")
         return None
+    feature_pretty = _univariate_feature_pretty(modeling_data)
 
     dyadic_color = DYADIC_COLOR
     fname_str = pathlib.Path(results_file_loc).name
@@ -853,7 +865,6 @@ def plot_significant_filters_grid(
     message_output(f"Found {n_significant} significant features.")
 
     plot_data = []
-    all_y_values = []
 
     hist_sec_match = re.search(r"hist(\d+\.?\d*)s", results_file_loc)
     filter_history_sec = float(hist_sec_match.group(1)) if hist_sec_match else 4.0
@@ -870,9 +881,6 @@ def plot_significant_filters_grid(
         filter_mean_corrected = regression_filter_mean - baseline_offset
         ci_lower_corrected = filter_ci_lower - baseline_offset
         ci_upper_corrected = filter_ci_upper - baseline_offset
-
-        all_y_values.extend(ci_lower_corrected)
-        all_y_values.extend(ci_upper_corrected)
 
         if any(x in beh_feature for x in DYADIC_KEYWORDS):
             c = dyadic_color
@@ -897,13 +905,16 @@ def plot_significant_filters_grid(
     ncols = 4
     nrows = math.ceil(n_significant / ncols)
 
+    # Each panel sets its own y-range (filters differ by an order of magnitude across features, and a shared
+    # axis flattens the weak ones); the constrained layout keeps every title clear of the row above.
     fig_grid, axes_grid = plt.subplots(
         nrows=nrows,
         ncols=ncols,
         figsize=(ncols * 2.5, nrows * 2.0),
         dpi=_FIGURE_DPI,
         sharex=True,
-        sharey=True
+        sharey=False,
+        layout='constrained'
     )
 
     fig_grid.patch.set_facecolor('#FFFFFF')
@@ -911,14 +922,6 @@ def plot_significant_filters_grid(
     if nrows == 1 and ncols == 1:
         axes_grid = np.array([axes_grid])
     axes_grid = axes_grid.flatten()
-
-    global_ymin = np.nanmin(all_y_values)
-    global_ymax = np.nanmax(all_y_values)
-    y_range = global_ymax - global_ymin
-    global_ymin -= y_range * 0.1
-    global_ymax += y_range * 0.1
-
-    axes_grid[0].set_ylim(global_ymin, global_ymax)
 
     for i, data in enumerate(plot_data):
         ax = axes_grid[i]
@@ -935,7 +938,16 @@ def plot_significant_filters_grid(
         ax.fill_between(time_axis_sec, data['lower'], data['upper'], color=data['color'], alpha=0.3, lw=0)
 
         ax.axhline(0, color=REFERENCE_LINE_COLOR, linestyle='--', lw=0.7)
-        ax.set_title(f"{data['name']}\n{metric.upper()}: {data['metric_val']:.2f}", fontsize=8, color='#000000')
+        metric_short = _METRIC_SHORT_NAMES[metric] if metric in _METRIC_SHORT_NAMES else metric.upper()
+        ax.set_title(f"{feature_pretty(str(data['name']))} ({metric_short}: {data['metric_val']:.3f})", fontsize=8,
+                     color=TEXT_COLOR)
+        # This panel's own y-range: its confidence band with a 10% margin, the zero line always in view.
+        low = min(float(np.nanmin(data['lower'])), 0.0)
+        high = max(float(np.nanmax(data['upper'])), 0.0)
+        margin = 0.1 * (high - low) if high > low else 1.0
+        ax.set_ylim(low - margin, high + margin)
+        if i % ncols == 0:
+            ax.set_ylabel(filter_label, fontsize=8, color=TEXT_COLOR)
 
         tick_locs = [-filter_history_sec, -filter_history_sec / 2, 0.0]
         ax.set_xticks(tick_locs)
@@ -957,6 +969,7 @@ def plot_significant_filters_grid(
 
         if is_bottom:
             ax.tick_params(labelbottom=True)
+            ax.set_xlabel('Time before event (s)', fontsize=8, color=TEXT_COLOR)
 
     if save_plot:
         if output_dir is None:
@@ -1318,6 +1331,35 @@ def _make_feature_pretty(feature_label_overrides: dict | None,
         return FeatureZoo.resolve_feature_label(fname, self_sex, other_sex)
 
     return _pretty
+
+
+def _univariate_feature_pretty(modeling_data: dict):
+    """
+    Description
+    -----------
+    The display-label function for a consolidated univariate artifact: the canonical feature labels
+    (``FeatureZoo.resolve_feature_label``), filled with the cohort sexes from the artifact's
+    ``_input_metadata`` (so ``self.speed`` reads "male speed" in a male-target cohort and "female speed"
+    in a female-target one). An artifact without the block falls back to the literal "self" / "other".
+
+    Parameters
+    ----------
+    modeling_data : dict
+        The loaded univariate artifact.
+
+    Returns
+    -------
+    callable
+        ``_pretty(fname: str) -> str``.
+    """
+
+    metadata = {"_input_metadata": modeling_data["_input_metadata"]} if "_input_metadata" in modeling_data else None
+    return _make_feature_pretty(None, metadata)
+
+
+# Short metric names for panel titles, e.g. "inter-partner distance (LL: 0.584)".
+_METRIC_SHORT_NAMES = {"ll": "LL", "auc": "AUC", "score": "BA", "explained_deviance": "D²", "d2": "D²",
+                       "spearman_r": "ρ", "pearson_r": "r"}
 
 
 def _step_test_p_adjusted(step: dict) -> float:

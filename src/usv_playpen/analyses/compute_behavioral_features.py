@@ -1437,6 +1437,9 @@ class FeatureZoo:
         "back_yaw": "back yaw",
         "body_dir": "body direction",
         "tail_curvature": "tail curvature",
+        # vocal-rate predictors (smoothed USV / squeak density of one mouse)
+        "usv_rate": "USV rate",
+        "squeak_rate": "squeak rate",
         # dyadic distances (sex-neutral)
         "nose-nose": "partner distance",
         "head-head": "inter-partner distance",

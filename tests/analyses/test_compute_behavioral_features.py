@@ -96,11 +96,18 @@ class TestResolveFeatureLabel:
         assert FeatureZoo.resolve_feature_label('allo_yaw-nose') == 'self-partner yaw'
 
     def test_unknown_key_returns_verbatim(self):
-        """A key outside the zoo (e.g. a vocal predictor) is returned
-        unchanged so the caller never crashes."""
+        """A key outside the zoo is returned unchanged so the caller never crashes."""
 
-        assert FeatureZoo.resolve_feature_label('usv_rate', 'male', 'female') == 'usv_rate'
+        assert FeatureZoo.resolve_feature_label('not_a_feature', 'male', 'female') == 'not_a_feature'
         assert FeatureZoo.resolve_feature_label('self.not_a_feature', 'male') == 'self.not_a_feature'
+
+    def test_vocal_rate_predictors_carry_the_partners_sex(self):
+        """The partner's vocal-rate predictors read with the partner's sex word, as every per-mouse
+        feature does: a male cohort's ``other.squeak_rate`` is the female's squeak rate, a female
+        cohort's ``other.usv_rate`` the male's USV rate."""
+
+        assert FeatureZoo.resolve_feature_label('other.squeak_rate', 'male', 'female') == 'female squeak rate'
+        assert FeatureZoo.resolve_feature_label('other.usv_rate', 'female', 'male') == 'male USV rate'
 
 
 class TestFeatureDisplayNamesCompleteness:
