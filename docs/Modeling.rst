@@ -4507,8 +4507,9 @@ Cohort consolidation
 ~~~~~~~~~~~~~~~~~~~~
 Once the units have run, ``consolidate_neural_modeling_results`` reads every result file, corrects each
 test across units with ``inference.fdr_method`` at ``inference.fdr_q`` (within each brain area
-unless ``cohort.pool_areas``), and assigns each unit one of six categories:
-``Transformation``, ``Relay``, ``Regime-switching``, ``Vocal``, ``Kinematic`` or ``None``:
+unless ``cohort.pool_areas``), and assigns each unit one of seven categories, the first whose rule it
+meets: ``Transformation``, ``Conditional``, ``Behavior-mediated``, ``Remapping``, ``Vocal``,
+``Behavioral feedback`` or ``None``:
 
 .. code-block:: bash
 
@@ -4516,18 +4517,33 @@ unless ``cohort.pool_areas``), and assigns each unit one of six categories:
         --results-directory /mnt/falkner/Bartul/neural_modeling/cohort_<date> \
         --output-directory /mnt/falkner/Bartul/neural_modeling/cohort_<date>/consolidated
 
-A Transformation unit passes the conjunction test (the largest of its quiet, transfer, identity and
-nested p-values, corrected like the others) with a positive transfer slope. A decoding test (occurrence,
-identity, nested, nested onset) passes only with a positive effect as well: a gain at or below zero fails
-however small its p, and fails the conjunction. The nested onset test (``nested_vocal_decoding_onset``) is
-corrected and reported beside them as ``nested_onset``, a modifier rather than a component of the
-conjunction. The unit list is the run's own ``cohort_manifest.json`` when the results directory holds one
+Below, T+ means the quiet encoding and the transfer both pass with a positive slope, and a vocal test is
+any of occurrence, nested onset, identity and nested. The rules, in priority order:
+
+1. ``Transformation``: a conjunction is rejected with a positive transfer slope. There are two, each the
+   largest of its components' p-values and corrected like a test: content
+   (``p_conjunction_content``: quiet, transfer, nested) and onset (``p_conjunction_onset``: quiet,
+   transfer, nested onset). Subclasses ``content`` and ``onset``. Whether the marginal decoding
+   (identity, occurrence) also passed is noted in ``marginal_decoding``; it is not required.
+2. ``Conditional``: the vocal gating test passes.
+3. ``Behavior-mediated``: T+ and a vocal test passes. The nested test failed, could not run, or passed on
+   its own while its conjunction was not rejected (``separate_pass_conjunction_fail``).
+4. ``Remapping``: the quiet encoding passes and either the transfer passes with a negative slope, or it
+   fails or is missing (``remapping_transfer_missing``) while a vocal test passes.
+5. ``Vocal``: the quiet encoding does not pass and a vocal test does. Subclasses, one per aspect that
+   passes: ``onset`` or ``onset_beyond_behavior``, ``content`` or ``content_beyond_behavior``.
+6. ``Behavioral feedback``: the quiet encoding passes. Subclasses ``transferring`` (T+) and ``quiet_only``.
+7. ``None``: nothing passes.
+
+A test that could not run is neither a pass nor a fail, so a rule needing it is not met (Remapping's
+missing transfer excepted). A decoding test passes only with a positive effect as well: a gain at or below
+zero fails however small its p, and fails its conjunction. The unit list is the run's own ``cohort_manifest.json`` when the results directory holds one
 (otherwise it is rebuilt from the settings), and a section written under other settings than the
 consolidation's stops the step unless ``--allow-stale-sections`` excludes it (reason ``stale_settings``).
 The step writes ``neural_cohort_table.csv`` (one row per unit: every p-value, z, effect, pass and reason,
 plus descriptors: mouse, date, probe, cluster group, draw counts and floor flags per test, the selected
 features, AUROCs, kappas, spike counts and the gating breadth) and ``neural_cohort_report.pkl`` (per group:
-units tested and excluded, floor requirements, category counts, the correlation of the tests' z-scores, and
+units tested and excluded, floor requirements, category and subclass counts, the correlation of the tests' z-scores, and
 the settings hashes found among the unit files).
 
 Figures

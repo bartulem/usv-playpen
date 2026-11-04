@@ -24,6 +24,7 @@ from usv_playpen.neural_modeling import (
 )
 from usv_playpen.neural_modeling.consolidate_neural_modeling_results import (
     CATEGORIES,
+    CONJUNCTIONS,
     TESTS,
     classify_unit,
     consolidate,
@@ -185,7 +186,7 @@ class TestFdrReject:
 
 
 class TestClassifyUnit:
-    """The six categories, first match wins."""
+    """The seven categories, first match wins, with their subclasses and modifiers."""
 
     @staticmethod
     def _passes(**states) -> dict:
@@ -206,35 +207,119 @@ class TestClassifyUnit:
         """
         return {**dict.fromkeys(TESTS, False), **states}
 
-    def test_transformation_is_the_conjunction_with_a_positive_slope(self):
-        """The conjunction test decides Transformation; a negative slope makes the same unit Regime-switching."""
-        passes = self._passes(quiet=True, transfer=True, identity=True, nested=True)
-        assert classify_unit(passes, 0.4, True)[0] == "Transformation"
-        assert classify_unit(passes, -0.4, True)[0] == "Regime-switching"
+    @staticmethod
+    def _rejected(*branches) -> dict:
+        """
+        Description
+        -----------
+        The conjunction states with only the given branches rejected.
 
-    def test_passing_each_test_but_not_the_conjunction_is_flagged(self):
-        """Four separate passes without the conjunction fall through to Vocal and are flagged."""
-        passes = self._passes(quiet=True, transfer=True, identity=True, nested=True)
-        category, modifiers = classify_unit(passes, 0.4, False)
-        assert category == "Vocal"
+        Parameters
+        ----------
+        *branches (str)
+            The rejected branches (``content``, ``onset``).
+
+        Returns
+        -------
+        conjunctions (dict)
+            ``{branch: bool}``.
+        """
+        return {branch: branch in branches for branch in CONJUNCTIONS}
+
+    def test_transformation_is_a_rejected_conjunction_with_a_positive_slope(self):
+        """Either branch's conjunction makes a Transformation, with the branches as subclasses; a negative
+        slope makes the same unit Remapping."""
+        passes = self._passes(quiet=True, transfer=True, nested=True, nested_onset=True)
+        category, modifiers = classify_unit(passes, 0.4, self._rejected("content", "onset"))
+        assert category == "Transformation"
+        assert modifiers["subclasses"] == "content+onset"
+        assert classify_unit(passes, 0.4, self._rejected("onset"))[1]["subclasses"] == "onset"
+        assert classify_unit(passes, -0.4, self._rejected("content"))[0] == "Remapping"
+
+    def test_the_marginal_decoding_is_a_note_not_a_requirement(self):
+        """A content Transformation needs no identity pass; whether identity passed is noted."""
+        without = self._passes(quiet=True, transfer=True, nested=True)
+        with_identity = self._passes(quiet=True, transfer=True, nested=True, identity=True)
+        assert classify_unit(without, 0.4, self._rejected("content"))[1]["marginal_decoding"] == "none"
+        assert classify_unit(with_identity, 0.4, self._rejected("content"))[1]["marginal_decoding"] == "content"
+        assert classify_unit(without, 0.4, self._rejected())[1]["marginal_decoding"] is None
+
+    def test_conditional_outranks_everything_below_transformation(self):
+        """A gated unit is Conditional whatever else it passes, unless a conjunction is rejected."""
+        passes = self._passes(quiet=True, transfer=True, occurrence=True, nested=False, gating=True)
+        assert classify_unit(passes, 0.4, self._rejected())[0] == "Conditional"
+        assert classify_unit(self._passes(identity=True, gating=True), float("nan"),
+                             self._rejected())[0] == "Conditional"
+        passes = self._passes(quiet=True, transfer=True, nested=True, gating=True)
+        assert classify_unit(passes, 0.4, self._rejected("content"))[0] == "Transformation"
+
+    @pytest.mark.parametrize("nested", [False, None])
+    def test_behavior_mediated_takes_a_failed_or_missing_nested_test(self, nested):
+        """T+ with a vocal pass and no rejected conjunction is Behavior-mediated, whether the nested test
+        failed or could not run."""
+        passes = self._passes(quiet=True, transfer=True, identity=True, nested=nested)
+        category, modifiers = classify_unit(passes, 0.4, self._rejected())
+        assert category == "Behavior-mediated"
+        assert not modifiers["separate_pass_conjunction_fail"]
+
+    def test_a_separate_pass_without_its_conjunction_is_behavior_mediated_and_flagged(self):
+        """Components that each pass while their conjunction is not rejected give Behavior-mediated, flagged."""
+        passes = self._passes(quiet=True, transfer=True, nested=True)
+        category, modifiers = classify_unit(passes, 0.4, self._rejected())
+        assert category == "Behavior-mediated"
         assert modifiers["separate_pass_conjunction_fail"]
 
-    def test_relay_needs_a_failed_nested_test_not_a_missing_one(self):
-        """A missing nested test is neither a pass nor a failure, so the unit is Vocal, not Relay."""
-        relay = self._passes(quiet=True, transfer=True, occurrence=True, nested=False)
-        missing = self._passes(quiet=True, transfer=True, occurrence=True, nested=None)
-        assert classify_unit(relay, 0.4, False)[0] == "Relay"
-        assert classify_unit(missing, 0.4, False)[0] == "Vocal"
+    @pytest.mark.parametrize("transfer", [False, None])
+    def test_remapping_takes_a_lost_transfer_with_a_vocal_signal(self, transfer):
+        """Quiet with a failed or missing transfer and a vocal pass is Remapping; the missing case is flagged."""
+        passes = self._passes(quiet=True, transfer=transfer, occurrence=True)
+        category, modifiers = classify_unit(passes, float("nan"), self._rejected())
+        assert category == "Remapping"
+        assert modifiers["remapping_transfer_missing"] is (transfer is None)
 
-    @pytest.mark.parametrize(("states", "category"), [({"nested": True}, "Vocal"), ({"quiet": True}, "Kinematic"),
-                                                      ({}, "None")])
-    def test_the_remaining_rules(self, states, category):
-        """Nested alone is Vocal, quiet alone Kinematic, nothing None."""
-        assert classify_unit(self._passes(**states), float("nan"), False)[0] == category
+    def test_a_negative_slope_is_remapping_without_any_vocal_signal(self):
+        """A transfer with a negative slope is Remapping even when no vocal test passes."""
+        passes = self._passes(quiet=True, transfer=True)
+        assert classify_unit(passes, -0.3, self._rejected())[0] == "Remapping"
+
+    @pytest.mark.parametrize(("states", "subclasses"), [
+        ({"occurrence": True}, "onset"),
+        ({"occurrence": True, "nested_onset": True}, "onset_beyond_behavior"),
+        ({"identity": True}, "content"),
+        ({"nested": True}, "content_beyond_behavior"),
+        ({"occurrence": True, "identity": True, "nested": True}, "onset+content_beyond_behavior"),
+    ])
+    def test_vocal_subclasses_combine_and_the_nested_test_replaces_its_marginal(self, states, subclasses):
+        """A vocal unit without quiet tuning carries one subclass per aspect that passes."""
+        category, modifiers = classify_unit(self._passes(**states), float("nan"), self._rejected())
+        assert category == "Vocal"
+        assert modifiers["subclasses"] == subclasses
+
+    def test_a_missing_quiet_test_still_allows_vocal(self):
+        """A unit whose kinematic encoding never ran is not quiet-tuned, so a vocal pass makes it Vocal."""
+        assert classify_unit(self._passes(quiet=None, transfer=None, identity=True), float("nan"),
+                             self._rejected())[0] == "Vocal"
+
+    @pytest.mark.parametrize(("states", "slope", "subclasses"), [
+        ({"quiet": True}, float("nan"), "quiet_only"),
+        ({"quiet": True, "transfer": True}, 0.3, "transferring"),
+    ])
+    def test_behavioral_feedback_has_two_forms(self, states, slope, subclasses):
+        """Quiet tuning with no vocal signal: quiet only, or transferring with a positive slope."""
+        category, modifiers = classify_unit(self._passes(**states), slope, self._rejected())
+        assert category == "Behavioral feedback"
+        assert modifiers["subclasses"] == subclasses
+
+    def test_nothing_passing_is_none(self):
+        """No test passing gives None, with no subclass."""
+        category, modifiers = classify_unit(self._passes(), float("nan"), self._rejected())
+        assert category == "None"
+        assert modifiers["subclasses"] == ""
 
     def test_every_category_is_named(self):
-        """The rules use exactly the six declared categories."""
-        assert CATEGORIES == ("Transformation", "Relay", "Regime-switching", "Vocal", "Kinematic", "None")
+        """The rules use exactly the seven declared categories, in priority order."""
+        assert CATEGORIES == ("Transformation", "Conditional", "Behavior-mediated", "Remapping", "Vocal",
+                              "Behavioral feedback", "None")
 
 
 class TestConsolidate:
@@ -252,25 +337,29 @@ class TestConsolidate:
         pooled, _ = consolidate(cohort, artifacts, {**SETTINGS, "cohort": {"pool_areas": True}})
         assert pooled.filter(pooled["unit_uid"] == "pag0")["pass_quiet"][0] is False
 
-    def test_the_conjunction_is_the_largest_component(self):
-        """The conjunction p-value is the largest of quiet, transfer, identity and nested; occurrence is not in it."""
+    def test_each_conjunction_is_the_largest_of_its_components(self):
+        """Content is the largest of quiet, transfer and nested, onset of quiet, transfer and nested onset;
+        the marginal decodings are in neither."""
         artifact = _artifact(p=1e-3)
-        artifact["vocalization_identity_manifold"]["p"] = 0.03
+        artifact["nested_vocal_decoding_manifold"]["p"] = 0.03
+        artifact["nested_vocal_decoding_onset"]["p"] = 0.02
+        artifact["vocalization_identity_manifold"]["p"] = 0.9
         artifact["vocal_occurrence"]["p"] = 0.9
         table, _ = consolidate([_record("u")], {"u": artifact}, SETTINGS)
-        assert table["p_conjunction"][0] == pytest.approx(0.03)
+        assert table["p_conjunction_content"][0] == pytest.approx(0.03)
+        assert table["p_conjunction_onset"][0] == pytest.approx(0.02)
 
     def test_switching_the_target_needs_only_the_consolidation(self):
         """The same result files classify differently under the other target: here the categorical
-        identity and nested tests fail, so the unit is no longer a Transformation."""
+        nested test fails, so the unit loses its content branch."""
         artifact = _artifact(p=1e-3)
         manifold, _ = consolidate([_record("u")], {"u": artifact}, SETTINGS)
         multinomial, _ = consolidate([_record("u")], {"u": artifact},
                                      {**SETTINGS, "vocalizations": {"vocal_target": "multinomial"}})
         assert manifold["category"][0] == "Transformation"
         # The categorical nested test added -0.001: a non-positive effect fails the conjunction outright.
-        assert multinomial["p_conjunction"][0] == pytest.approx(1.0)
-        assert multinomial["category"][0] != "Transformation"
+        assert multinomial["p_conjunction_content"][0] == pytest.approx(1.0)
+        assert "content" not in multinomial["subclasses"][0]
 
     def test_a_decoding_with_a_non_positive_effect_never_passes(self):
         """A floored p with a gain at or below zero is a fail for identity, nested and nested onset alike,
@@ -282,8 +371,8 @@ class TestConsolidate:
         assert table["pass_identity"][0] is False
         assert table["pass_nested_onset"][0] is False
         assert table["pass_nested"][0] is True
-        assert table["p_conjunction"][0] == pytest.approx(1.0)
-        assert table["category"][0] != "Transformation"
+        assert table["p_conjunction_onset"][0] == pytest.approx(1.0)
+        assert table["subclasses"][0] == "content"
 
     def test_a_best_screened_only_unit_enters_quiet_as_a_fail_and_transfer_as_untested(self):
         """Whatever descriptive p-values a no-model section carries, the corrections read quiet 1.0 and
@@ -422,7 +511,7 @@ class TestGapsAndCommandLine:
 
 
 class TestNestedOnset:
-    """The nested onset test is read, corrected and reported, but stays out of the conjunction."""
+    """The nested onset test is read, corrected and reported, and makes the onset conjunction."""
 
     def test_the_onset_section_feeds_its_own_test(self):
         """``p_nested_onset`` and its effect come from ``nested_vocal_decoding_onset``; a missing section
@@ -437,14 +526,15 @@ class TestNestedOnset:
         assert np.isnan(row["p_nested_onset"])
         assert row["reason_nested_onset"] == "not_run"
 
-    def test_it_is_corrected_and_a_modifier_but_not_part_of_the_conjunction(self):
-        """A unit failing only the onset nested test is still a Transformation; the test's pass state is
-        corrected per group and carried as the ``nested_onset`` modifier."""
+    def test_failing_it_removes_only_the_onset_branch(self):
+        """A unit failing only the onset nested test is still a content Transformation; the test's pass
+        state is corrected per group and carried as the ``nested_onset`` modifier."""
         strong = _artifact(p=1e-3)
         strong["nested_vocal_decoding_onset"]["p"] = 0.9
         table, report = consolidate([_record("u")], {"u": strong}, SETTINGS)
         row = table.row(0, named=True)
         assert row["category"] == "Transformation"
+        assert row["subclasses"] == "content"
         assert row["pass_nested_onset"] is False
         assert row["nested_onset"] is False
         assert report["PAG"]["tests"]["nested_onset"]["n_tested"] == 1
