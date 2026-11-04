@@ -67,6 +67,7 @@ with warnings.catch_warnings():
     from usv_playpen.modeling import main_model_selection_dispatcher as sel
     from usv_playpen.modeling import main_univariate_dispatcher as uni
     from usv_playpen.modeling import model_selection as msrc
+    from usv_playpen.modeling import modeling_metadata as mmeta
     from usv_playpen.os_utils import resolve_modeling_setting
 
 REPO_SETTINGS = Path(__file__).resolve().parents[2] / 'src' / 'usv_playpen' / '_parameter_settings' / 'modeling_settings.json'
@@ -345,6 +346,91 @@ class TestBasisMatrix:
 
 # dispatch_univariate_job
 
+
+class TestSettingsFingerprintAtLoad:
+    """A run records the fingerprint of the settings it read, not of the file when the run ends."""
+
+    def test_fingerprint_is_of_the_bytes_read_not_of_a_later_edit(self, tmp_path):
+        """
+        Description
+        -----------
+        ``load_settings_with_sha256`` parses and hashes one read of the file: its
+        hash equals the path hash of the unchanged file, and stays the hash of
+        the settings it returned after the file is edited, while the path hash
+        then reports the edit. ``build_run_metadata`` records a passed
+        ``settings_sha256`` as is instead of re-hashing the path.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Directory for the settings file.
+
+        Returns
+        -------
+        None
+        """
+
+        path = tmp_path / 'modeling_settings.json'
+        path.write_text(json.dumps(_settings(tmp_path)))
+        settings, at_load = mmeta.load_settings_with_sha256(str(path))
+        assert at_load == mmeta.compute_settings_sha256(str(path))
+        assert at_load == mmeta.compute_settings_sha256(path.read_bytes())
+        assert settings == json.loads(path.read_text())
+        edited = dict(settings)
+        edited['model_params'] = {**settings['model_params'], 'selection_pool_workers': 4}
+        path.write_text(json.dumps(edited))
+        assert mmeta.compute_settings_sha256(str(path)) != at_load
+        run_md = mmeta.build_run_metadata(settings, 'onset', 'y_permutation', 3, 'session',
+                                          settings_path=str(path), settings_sha256=at_load)
+        assert run_md['settings_sha256'] == at_load
+
+    def test_univariate_job_records_the_fingerprint_taken_at_load(self, tmp_path, mocker):
+        """
+        Description
+        -----------
+        The univariate dispatcher fingerprints the bytes it parsed at startup and
+        records that fingerprint in the per-feature pickle's ``_run_metadata``, so
+        an edit to the settings file while the fit runs (here: during the fit)
+        does not change what the result records.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Directory for the settings file, the input pickle and the output.
+        mocker (pytest_mock.MockerFixture)
+            Stands in for the pipeline; its fit edits the settings file.
+
+        Returns
+        -------
+        None
+        """
+
+        path = tmp_path / 'modeling_settings.json'
+        settings = _settings(tmp_path, model_engine='sklearn')
+        path.write_text(json.dumps(settings))
+        at_start = mmeta.compute_settings_sha256(str(path))
+
+        def _fit_while_the_file_is_edited(*_args, **_kwargs):
+            edited = {**settings, 'model_params': {**settings['model_params'], 'selection_pool_workers': 4}}
+            path.write_text(json.dumps(edited))
+            return 'self.speed', {'auc': 0.7}
+
+        fake_pipeline = mocker.MagicMock()
+        fake_pipeline.history_frames = 4
+        fake_pipeline._run_model_for_feature_sklearn.side_effect = _fit_while_the_file_is_edited
+        mocker.patch.object(uni, 'VocalOnsetModelingPipeline', return_value=fake_pipeline)
+        mocker.patch.object(uni, 'get_basis_matrix_standardized', return_value=np.eye(4))
+        inp = _input_pickle(tmp_path, ['self.speed', 'other.speed'])
+        out_dir = tmp_path / 'out'
+        args = _uni_args('onset', 0, inp, out_dir)
+        args.settings = str(path)
+        uni.dispatch_univariate_job(args)
+
+        assert mmeta.compute_settings_sha256(str(path)) != at_start
+        written = list(out_dir.glob('univariate_bout_0000_*.pkl'))
+        assert len(written) == 1
+        with written[0].open('rb') as fh:
+            assert pickle.load(fh)['_run_metadata']['settings_sha256'] == at_start
 
 class TestDispatchUnivariate:
     """``dispatch_univariate_job``: settings, feature mapping, routing, output and failure modes."""
@@ -717,10 +803,11 @@ class TestDispatchModelSelection:
         ('multinomial', 'multinomial_vocal_category_model_selection'),
         ('continuous', 'continuous_vocal_manifold_model_selection'),
     ])
-    def test_significance_and_target_come_from_the_settings_file(self, tmp_path, mocker, analysis_type, selector):
-        """``selection_p_val`` and ``model_target_variable`` are read from the
-        settings file the dispatcher resolves, never from hard-coded CLI defaults:
-        a settings file carrying 0.05 and 'mean_mask_complexity' reaches the selector."""
+    def test_significance_comes_from_the_settings_file_and_the_target_does_not(self, tmp_path, mocker,
+                                                                                analysis_type, selector):
+        """``selection_p_val`` is read from the settings file the dispatcher resolves, never from a
+        hard-coded CLI default: a settings file carrying 0.05 reaches the selector. No selector is
+        handed a target from the settings: each reads the target of its input pickle itself."""
 
         settings = json.loads(REPO_SETTINGS.read_text())
         settings['model_params']['selection_p_val'] = 0.05
@@ -733,8 +820,7 @@ class TestDispatchModelSelection:
         kwargs = spy.call_args.kwargs
         assert kwargs['p_val'] == 0.05
         assert kwargs['settings_path'] == str(settings_file)
-        if analysis_type == 'params':
-            assert kwargs['target_variable'] == 'mean_mask_complexity'
+        assert 'target_variable' not in kwargs
 
     def test_category_route(self, tmp_path, mocker):
         """The ``category`` route calls ``vocal_category_model_selection``."""
@@ -743,17 +829,15 @@ class TestDispatchModelSelection:
         sel.dispatch_model_selection(_sel_args('category', tmp_path))
         spy.assert_called_once()
 
-    def test_params_route_threads_target_variable(self, tmp_path, mocker, capsys):
-        """The ``params`` route forwards the settings' ``model_target_variable`` to
-        ``bout_parameter_model_selection`` and echoes it."""
+    def test_params_route(self, tmp_path, mocker):
+        """The ``params`` route calls ``bout_parameter_model_selection`` without a target: the
+        selector reads the regression target from the input pickle."""
 
         spy = mocker.patch.object(sel, 'bout_parameter_model_selection')
         args = _sel_args('params', tmp_path)
         sel.dispatch_model_selection(args)
         spy.assert_called_once()
-        target_variable = resolve_modeling_setting('model_params', 'model_target_variable')
-        assert spy.call_args.kwargs['target_variable'] == target_variable
-        assert target_variable in capsys.readouterr().out
+        assert 'target_variable' not in spy.call_args.kwargs
 
     def test_multinomial_route(self, tmp_path, mocker):
         """The ``multinomial`` route calls the multinomial selector."""
@@ -945,6 +1029,195 @@ class TestRequireAnalysisType:
                 f"but this is the 'onset' model selection") in capsys.readouterr().out
 
 
+# _require_same_extraction / _require_target_settings (the selectors' pairing and target guards)
+
+
+def _extraction_pickle(path, created_utc, analysis_specific=None):
+    """
+    Description
+    -----------
+    Write a tiny ``'onset'`` pickle whose ``_input_metadata`` records one
+    extraction: its creation time, settings hash, tag, condition, sessions and
+    held-out sessions, plus an optional ``analysis_specific`` block. Two files
+    written with the same arguments look like a univariate file and the input
+    pickle it was made from.
+
+    Parameters
+    ----------
+    path (pathlib.Path)
+        Destination of the pickle.
+    created_utc (str)
+        The extraction's creation time; a different value makes a different extraction.
+    analysis_specific (dict | None)
+        The block the onset extraction records its target in; omitted when None.
+
+    Returns
+    -------
+    path (pathlib.Path)
+        The written path.
+    """
+
+    metadata = {'analysis_type': 'onset', 'analysis_tag': 'onset_tag', 'created_utc': created_utc,
+                'settings_sha256': 'abc', 'experimental_condition': 'male_intact_partner',
+                'session_ids': ['s1', 's2', 's3'], 'held_out_session_ids': ['s3']}
+    if analysis_specific is not None:
+        metadata['analysis_specific'] = analysis_specific
+    with path.open('wb') as fh:
+        pickle.dump({'self.speed': {}, '_input_metadata': metadata}, fh)
+    return path
+
+
+class TestRequireSameExtraction:
+    """``model_selection._require_same_extraction``: a univariate file and an input pickle
+    from different extractions are refused at load time."""
+
+    def test_identical_legacy_and_partial_blocks_pass(self):
+        """
+        Description
+        -----------
+        Identical identity fields pass, a sequence stored as a tuple or an array
+        compares equal to the same list, and the cases that cannot be checked
+        pass: no univariate block, no input block, and a field only one block has.
+
+        Returns
+        -------
+        None
+        """
+
+        block = {'created_utc': 't0', 'session_ids': ['a', 'b'], 'analysis_tag': 'x'}
+        assert msrc._require_same_extraction(block, {'_input_metadata': dict(block)}, 'u.pkl', 'i.pkl') is None
+        assert msrc._require_same_extraction(
+            block, {'_input_metadata': {**block, 'session_ids': np.array(['a', 'b'])}}, 'u.pkl', 'i.pkl') is None
+        assert msrc._require_same_extraction(None, {'_input_metadata': block}, 'u.pkl', 'i.pkl') is None
+        assert msrc._require_same_extraction(block, {'self.speed': {}}, 'u.pkl', 'i.pkl') is None
+        assert msrc._require_same_extraction({'created_utc': 't0'}, {'_input_metadata': {'analysis_tag': 'y'}},
+                                             'u.pkl', 'i.pkl') is None
+
+    def test_differing_fields_are_all_named(self):
+        """
+        Description
+        -----------
+        Every identity field that differs is named in one ``ValueError``, with
+        both files: a scalar field shows both values, a session list its two
+        lengths, and a list of the same length but other sessions says so.
+
+        Returns
+        -------
+        None
+        """
+
+        univariate = {'created_utc': 't0', 'analysis_tag': 'bout_durations', 'session_ids': ['a', 'b'],
+                      'held_out_session_ids': ['a']}
+        loaded = {'_input_metadata': {'created_utc': 't1', 'analysis_tag': 'bout_offset_usv+overlap',
+                                      'session_ids': ['a', 'b', 'c'], 'held_out_session_ids': ['b']}}
+        with pytest.raises(ValueError, match=r"^u\.pkl was not built from i\.pkl") as caught:
+            msrc._require_same_extraction(univariate, loaded, 'u.pkl', 'i.pkl')
+        message = str(caught.value)
+        assert message.startswith("u.pkl was not built from i.pkl: their extraction metadata differ "
+                                  "(univariate vs input) in created_utc: 't0' vs 't1'; ")
+        assert "analysis_tag: 'bout_durations' vs 'bout_offset_usv+overlap'" in message
+        assert "session_ids: 2 vs 3 sessions;" in message
+        assert "held_out_session_ids: 1 vs 1 sessions (same count, different sessions)" in message
+        assert message.endswith("Pass the input pickle the univariate run was made from.")
+
+    def test_onset_selection_refuses_an_input_pickle_from_another_extraction(self, tmp_path, mocker, capsys):
+        """
+        Description
+        -----------
+        Through the real dispatcher and onset selection: a univariate file and an
+        input pickle of the same analysis type but different extractions stop the
+        run at load time, before any step pickle is written.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Per-test scratch directory for the settings, pickles and output.
+        mocker (pytest_mock.MockerFixture)
+            Repoints the dispatcher's settings path at the synthetic settings.
+        capsys (pytest.CaptureFixture)
+            Captures the printed failure.
+
+        Returns
+        -------
+        None
+        """
+
+        settings_file = tmp_path / 'modeling_settings.json'
+        settings_file.write_text(json.dumps(_settings(tmp_path)))
+        mocker.patch.object(sel, '_SETTINGS_PATH', settings_file)
+        univ = _extraction_pickle(tmp_path / 'univariate_extraction.pkl', '2026-10-31T05:32:30Z')
+        inp = _extraction_pickle(tmp_path / 'input_extraction.pkl', '2026-10-31T05:24:17Z')
+        args = _sel_args('onset', tmp_path, univariate_path=str(univ), input_path=str(inp))
+        assert sel.dispatch_model_selection(args) == 1
+        assert (f"{univ} was not built from {inp}: their extraction metadata differ (univariate vs input) in "
+                f"created_utc: '2026-10-31T05:32:30Z' vs '2026-10-31T05:24:17Z'") in capsys.readouterr().out
+        assert not list((tmp_path / 'out').glob('model_selection_*.pkl'))
+
+
+class TestTargetFromInputPickle:
+    """The selections take their target and history length from the input pickle's
+    ``_input_metadata`` (``model_selection._recorded_input_field``), never from the settings."""
+
+    def test_reads_nested_fields_and_refuses_missing_ones(self):
+        """
+        Description
+        -----------
+        A recorded field is returned as stored, at any depth; a pickle with no
+        metadata, or without the field, is refused with a ``ValueError`` naming the
+        file and the dotted path, rather than completed from the settings.
+
+        Returns
+        -------
+        None
+        """
+
+        md = {'filter_history_frames': 600,
+              'analysis_specific': {'model_target_vocal_type': 'individual',
+                                    'onset_target_classes': ['squeak', 'overlap']}}
+        assert msrc._recorded_input_field(md, ('filter_history_frames',), 'i.pkl') == 600
+        assert msrc._recorded_input_field(md, ('analysis_specific', 'onset_target_classes'),
+                                          'i.pkl') == ['squeak', 'overlap']
+        with pytest.raises(ValueError, match=r"^i\.pkl does not record _input_metadata\.analysis_specific"
+                                             r"\.target_variable, which the selection reads its target from"):
+            msrc._recorded_input_field(md, ('analysis_specific', 'target_variable'), 'i.pkl')
+        with pytest.raises(ValueError, match=r"^i\.pkl does not record _input_metadata\.filter_history_frames"):
+            msrc._recorded_input_field(None, ('filter_history_frames',), 'i.pkl')
+
+    def test_onset_selection_refuses_a_pickle_that_does_not_record_its_target(self, tmp_path, mocker, capsys):
+        """
+        Description
+        -----------
+        Through the real dispatcher and onset selection: a matched univariate file
+        and input pickle whose metadata carries no ``analysis_specific`` block stop
+        the run at load time, before any step pickle is written, whatever the
+        settings say.
+
+        Parameters
+        ----------
+        tmp_path (pathlib.Path)
+            Per-test scratch directory for the settings, pickles and output.
+        mocker (pytest_mock.MockerFixture)
+            Repoints the dispatcher's settings path at the synthetic settings.
+        capsys (pytest.CaptureFixture)
+            Captures the printed failure.
+
+        Returns
+        -------
+        None
+        """
+
+        settings_file = tmp_path / 'modeling_settings.json'
+        settings_file.write_text(json.dumps(_settings(tmp_path)))
+        mocker.patch.object(sel, '_SETTINGS_PATH', settings_file)
+        univ = _extraction_pickle(tmp_path / 'univariate_extraction.pkl', 't0')
+        inp = _extraction_pickle(tmp_path / 'input_extraction.pkl', 't0')
+        args = _sel_args('onset', tmp_path, univariate_path=str(univ), input_path=str(inp))
+        assert sel.dispatch_model_selection(args) == 1
+        assert (f"{inp} does not record _input_metadata.analysis_specific.model_target_vocal_type"
+                in capsys.readouterr().out)
+        assert not list((tmp_path / 'out').glob('model_selection_*.pkl'))
+
+
 # Module-level CLI (`python -m ...`) entry points
 
 
@@ -993,7 +1266,7 @@ class TestDispatcherCLI:
     def test_selection_main_parses_and_dispatches(self, tmp_path, monkeypatch):
         """The selection ``__main__`` block parses its flags (including
         the ``--anchor`` store-true) and routes to the selector with the
-        settings' ``model_target_variable`` and ``selection_p_val``, patched
+        settings' ``selection_p_val`` and no target, patched
         here at its source module so the fresh import resolves to the spy."""
 
         calls = {}
@@ -1035,7 +1308,7 @@ class TestDispatcherCLI:
             runpy.run_module('usv_playpen.modeling.main_model_selection_dispatcher',
                              run_name='__main__')
         assert exc.value.code == 0
-        assert calls['target_variable'] == resolve_modeling_setting('model_params', 'model_target_variable')
+        assert 'target_variable' not in calls
         assert calls['p_val'] == resolve_modeling_setting('model_params', 'selection_p_val')
         assert calls['use_top_rank_as_anchor'] is True
 

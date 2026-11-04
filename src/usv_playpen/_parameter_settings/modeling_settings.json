@@ -21,7 +21,7 @@
     "selection_pool_workers": 0,
     "selection_pool_memory_gb": 0,
     "selection_fit_peak_gb_base": 2,
-    "selection_fit_peak_gb_per_term": 4,
+    "selection_fit_peak_gb_per_million_row_terms": 3.0,
     "selection_effect_floor": 0.1,
     "selection_n_bootstrap": 1000,
     "selection_ci_level": 0.99,

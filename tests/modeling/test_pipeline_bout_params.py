@@ -87,6 +87,7 @@ from tests.modeling._synth import (
     build_modeling_settings,
     build_session_tree,
     fit_counting_subclass,
+    selection_input_metadata,
     write_session_list_file,
 )
 from usv_playpen.modeling.modeling_metadata import FEATURE_TRACES_KEY, WINDOW_STARTS_KEY
@@ -214,7 +215,7 @@ def _build_params_input_pickle(
             'groups': groups.copy(),
         }
 
-    artifact['_input_metadata'] = {'analysis_tag': 'bout_durations'}
+    artifact['_input_metadata'] = selection_input_metadata({'analysis_tag': 'bout_durations'}, 'params', history_frames)
     attach_shift_test_inputs(artifact, history_frames, slots={'X': 'X'}, fps=CAMERA_FPS,
                              layout='global', seed=seed)
 
@@ -655,7 +656,6 @@ class TestBoutParameterModelSelection:
             input_data_path=input_pkl,
             settings_path=str(settings_json),
             output_directory=str(ms_dir),
-            target_variable='bout_durations',
             use_top_rank_as_anchor=True,
             p_val=0.5,
         )
@@ -736,7 +736,6 @@ class TestBoutParameterModelSelection:
             input_data_path=input_pkl,
             settings_path=str(settings_json),
             output_directory=str(ms_dir),
-            target_variable='bout_durations',
             use_top_rank_as_anchor=True,
             p_val=0.5,
         )
@@ -824,7 +823,6 @@ class TestBoutParameterSelectionDispatcher:
                 output_dir=str(ms_dir),
                 anchor=True,
                 pval=0.5,
-                target_variable='bout_durations',
             )
         )
 

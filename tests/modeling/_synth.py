@@ -817,6 +817,47 @@ def attach_shift_test_inputs(
     return artifact
 
 
+def selection_input_metadata(input_metadata: dict | None, analysis_type: str, history_frames: int) -> dict:
+    """
+    Description
+    -----------
+    Completes a toy pickle's ``_input_metadata`` with the fields the model selections
+    read their target and history length from (they never take these from the
+    settings): ``filter_history_frames`` and, under ``analysis_specific``, the target
+    of the analysis. A field the caller already set is kept. The defaults are the
+    values the synthetic settings describe (``'bout_onset'`` with ``["usv"]`` for
+    onset, ``'bout_durations'`` for the bout parameters), so step-file names are the
+    ones those settings produced.
+
+    Parameters
+    ----------
+    input_metadata (dict | None)
+        The caller's block, or None for none.
+    analysis_type (str)
+        ``'onset'``, ``'category'`` or ``'params'``.
+    history_frames (int)
+        The windows' history length in frames.
+
+    Returns
+    -------
+    input_metadata (dict)
+        A new block with the selection fields present.
+    """
+
+    completed = dict(input_metadata) if input_metadata is not None else {}
+    if 'filter_history_frames' not in completed:
+        completed['filter_history_frames'] = int(history_frames)
+    specific = dict(completed['analysis_specific']) if 'analysis_specific' in completed else {}
+    defaults = {'onset': {'model_target_vocal_type': 'bout_onset', 'onset_target_classes': ['usv']},
+                'params': {'target_variable': 'bout_durations'},
+                'category': {}}[analysis_type]
+    for key, value in defaults.items():
+        if key not in specific:
+            specific[key] = value
+    completed['analysis_specific'] = specific
+    return completed
+
+
 def build_modeling_input_pickle(
         save_path: Path,
         feature_names: list[str],
@@ -902,8 +943,7 @@ def build_modeling_input_pickle(
                 'no_usv_feature_arr': no_usv_arr,
             }
 
-    if input_metadata is not None:
-        artifact['_input_metadata'] = input_metadata
+    artifact['_input_metadata'] = selection_input_metadata(input_metadata, 'onset', history_frames)
     if with_shift_test_inputs:
         attach_shift_test_inputs(
             artifact, history_frames,

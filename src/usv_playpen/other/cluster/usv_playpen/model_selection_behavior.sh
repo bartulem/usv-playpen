@@ -13,13 +13,16 @@
 #
 # ONE job runs the whole selection: the candidate x fold fits of every step AND
 # the shifted refits of the per-step test, through a forked process pool inside
-# this job. The pool's worker count is min(selection_pool_workers, memory /
-# (selection_fit_peak_gb_base + selection_fit_peak_gb_per_term * n_terms)); with
-# the shipped 0 / 0 the CPUs and the memory are read from this job's
+# this job. The pool's worker count is min(selection_pool_workers, (memory - the
+# job's own resident memory) / (selection_fit_peak_gb_base +
+# selection_fit_peak_gb_per_million_row_terms * million rows * n_terms)), where the
+# rows are the development events times the history frames (one row per event per
+# frame); with the shipped 0 / 0 the CPUs and the memory are read from this job's
 # SLURM_CPUS_PER_TASK and SLURM_MEM_PER_NODE, so --cpus-per-task and --mem above
-# are what sets them (96 GB: 6 workers at 3 tensor terms, 2 at 9, at the measured
-# pygam peaks of 13 GB and 36 GB). A job that ends mid-step is resumed by
-# resubmitting it: finished steps and checkpointed null draws are reused.
+# are what sets them (96 GB, 2.5 million rows: about 5 workers at 2 tensor terms,
+# 2 at 6). A job that ends mid-step is resumed by resubmitting it with the same
+# output directory and the same target settings: finished steps and checkpointed
+# null draws are reused.
 ANALYSIS_TYPE=$1
 
 # Define core variables
@@ -32,12 +35,13 @@ OUTPUT_DIR="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/modeling/cluster/model_select
 mkdir -p logs
 
 # The level of the per-step shift test and of the univariate screen, the test's
-# lag floor and checkpoint interval, the pool knobs, and the bout-parameter
-# regression target are read by the dispatcher and the selectors from
-# modeling_settings.json (model_params.selection_p_val,
+# lag floor and checkpoint interval, and the pool knobs are read by the dispatcher
+# and the selectors from modeling_settings.json (model_params.selection_p_val,
 # model_params.selection_step_null_*, model_params.selection_pool_*,
-# model_params.selection_fit_peak_gb_*, model_params.model_target_variable);
-# set them there, not here.
+# model_params.selection_fit_peak_gb_*); set them there, not here. What is
+# selected for (the onset mode, classes and category, the bout-parameter target)
+# and the history length are taken from INPUT_DATA's own metadata, so they always
+# match the extraction; the settings' target keys apply at extraction only.
 #
 # The search starts from the empty model and tests the cross-validated winner of
 # every step, the first included. Passing --anchor to the dispatcher would force
@@ -50,7 +54,7 @@ case $ANALYSIS_TYPE in
     ;;
 
   params)
-    echo "Configuring BOUT PARAMETER stepwise selection (target: model_params.model_target_variable)..."
+    echo "Configuring BOUT PARAMETER stepwise selection (target: read from the input pickle)..."
     ;;
 
   *)

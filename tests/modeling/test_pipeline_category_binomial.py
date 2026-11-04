@@ -85,6 +85,7 @@ from tests.modeling._synth import (
     build_track_h5,
     drop_emitter_rows,
     fit_counting_subclass,
+    selection_input_metadata,
     write_session_list_file,
 )
 from usv_playpen.modeling.modeling_metadata import FEATURE_TRACES_KEY, WINDOW_STARTS_KEY
@@ -423,8 +424,7 @@ def _write_category_input_pickle(
         artifact, history_frames,
         slots={'target': 'target_feature_arr', 'other': 'other_feature_arr'}, fps=CAMERA_FPS, seed=seed,
     )
-    if input_metadata is not None:
-        artifact['_input_metadata'] = dict(input_metadata)
+    artifact['_input_metadata'] = selection_input_metadata(input_metadata, 'category', history_frames)
 
     save_path.parent.mkdir(parents=True, exist_ok=True)
     with save_path.open('wb') as fh:

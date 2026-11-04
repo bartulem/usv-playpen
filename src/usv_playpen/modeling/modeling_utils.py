@@ -100,6 +100,7 @@ from pathlib import Path
 
 import numpy as np
 import polars as pls
+import psutil
 from numpy.lib.stride_tricks import sliding_window_view
 from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import confusion_matrix, matthews_corrcoef
@@ -1703,18 +1704,30 @@ def macro_log_likelihood(y_true: np.ndarray,
 
 def pool_worker_count(requested_workers: int,
                       n_terms: int,
+                      fit_rows: int,
                       memory_gb: float,
                       peak_gb_base: float,
-                      peak_gb_per_term: float) -> int:
+                      peak_gb_per_million_row_terms: float) -> int:
     """
     Description
     -----------
     Number of worker processes the selection pool may run at once: the requested
     count (``0`` = every CPU of the SLURM task, or every CPU of the machine off the
-    cluster), capped by the memory one fit of the current model size peaks at.
-    The peak is modelled as ``peak_gb_base + peak_gb_per_term * n_terms`` from the
-    measured pygam peaks (13 GB at 3 terms, 36 GB at 9 terms); the memory budget is
-    ``memory_gb`` (``0`` = the SLURM job's memory, or no cap off the cluster).
+    cluster), capped by the memory one fit peaks at.
+
+    A pygam fit's peak grows with its design: the selection unrolls every event's
+    history into one row per frame, so a fit on ``fit_rows`` rows with ``n_terms``
+    tensor terms peaks at about
+    ``peak_gb_base + peak_gb_per_million_row_terms * (fit_rows / 1e6) * n_terms``
+    GB. Measured on single fits with the selection's terms and solver settings, the
+    fit adds 2.5-2.65 GB per million row-terms, the same for the logistic model and
+    the bout parameters' gamma model (0.5-2 million rows, 1-3 terms); the earlier onset measurement on 1.47 million rows (13 GB at 3
+    terms, 36 GB at 9) sits at 2.7-2.95 with the process's own overhead included.
+
+    The budget is ``memory_gb`` (``0`` = the SLURM job's memory, or the machine's
+    physical memory off the cluster) minus what the calling process already holds:
+    the workers are forked from it and share its pages, so its resident memory is
+    charged once, and only the fits come on top of it.
 
     Parameters
     ----------
@@ -1722,13 +1735,18 @@ def pool_worker_count(requested_workers: int,
         ``model_params.selection_pool_workers`` (0 = all available CPUs).
     n_terms (int)
         Number of tensor terms of the models the pool is about to fit.
+    fit_rows (int)
+        Rows of the largest design the pool will fit: the development events times
+        the history frames, which every per-step test refit uses and every
+        cross-validation fold's training set is a subset of.
     memory_gb (float)
         ``model_params.selection_pool_memory_gb`` (0 = read ``SLURM_MEM_PER_NODE``,
         or the machine's physical memory when that is unset).
     peak_gb_base (float)
-        ``model_params.selection_fit_peak_gb_base``.
-    peak_gb_per_term (float)
-        ``model_params.selection_fit_peak_gb_per_term``.
+        ``model_params.selection_fit_peak_gb_base``: per-worker memory that does not
+        grow with the design.
+    peak_gb_per_million_row_terms (float)
+        ``model_params.selection_fit_peak_gb_per_million_row_terms``.
 
     Returns
     -------
@@ -1747,12 +1765,13 @@ def pool_worker_count(requested_workers: int,
             memory_gb = float(slurm_mem) / 1024.0
         else:
             # Off the cluster the budget is the machine's physical memory: with no
-            # cap, every CPU would get a worker and a 13-36 GB fit each.
+            # cap, every CPU would get a worker and a multi-GB fit each.
             memory_gb = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') / 1024.0 ** 3
-    peak = float(peak_gb_base) + float(peak_gb_per_term) * max(int(n_terms), 1)
-    by_memory = int(np.floor(memory_gb / peak))
+    available_gb = memory_gb - psutil.Process().memory_info().rss / 1024.0 ** 3
+    peak = (float(peak_gb_base)
+            + float(peak_gb_per_million_row_terms) * (float(fit_rows) / 1e6) * max(int(n_terms), 1))
+    by_memory = int(np.floor(available_gb / peak)) if peak > 0.0 else requested_workers
     return max(1, min(requested_workers, by_memory))
-
 
 #: Keys of a window-start entry that are session attributes, not start-frame slots.
 _WINDOW_STARTS_ATTRS = ('n_frames', 'fps')

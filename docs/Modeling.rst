@@ -187,7 +187,7 @@ cross-validation and held-out-test settings live in their own
         "selection_pool_workers": 0,
         "selection_pool_memory_gb": 0,
         "selection_fit_peak_gb_base": 2,
-        "selection_fit_peak_gb_per_term": 4,
+        "selection_fit_peak_gb_per_million_row_terms": 3.0,
         "selection_effect_floor": 0.1,
         "selection_n_bootstrap": 1000,
         "selection_ci_level": 0.99,
@@ -251,8 +251,8 @@ cross-validation and held-out-test settings live in their own
    * - :ref:`selection_fit_peak_gb_base <mp-selection-pool>`
      - ``2``
      - GB >= 0
-   * - :ref:`selection_fit_peak_gb_per_term <mp-selection-pool>`
-     - ``4``
+   * - :ref:`selection_fit_peak_gb_per_million_row_terms <mp-selection-pool>`
+     - ``3.0``
      - GB >= 0
    * - :ref:`selection_effect_floor <mp-manifold-gate>`
      - ``0.1``
@@ -295,7 +295,7 @@ cross-validation and held-out-test settings live in their own
 
    :Options: any positive number of seconds (not validated)
    :Default: ``4``
-   :Notes: multiplied by ``camera_sampling_rate`` to give the window in frames.
+   :Notes: multiplied by ``camera_sampling_rate`` to give the window in frames. The model selection does not read this setting: it takes the history length the input pickle was extracted with (``_input_metadata.filter_history_frames``).
 
 .. _mp-mixture-model:
 
@@ -352,7 +352,7 @@ cross-validation and held-out-test settings live in their own
       * ``'state'`` — the session is sampled on a regular ``filter_history``-spaced time grid and each sample labelled vocal / silent by whether a vocalization of the ``onset_target_classes`` occupies it, with no clean-history requirement
       * ``'bout_offset'`` — the END of a bout against an interior USV of a bout that continued; configured by the ``bout_offset`` block, see :ref:`Bout offsets <modeling-bout-offsets>`
    :Default: ``'bout_onset'``
-   :Notes: any other value raises ``ValueError``.
+   :Notes: any other value raises ``ValueError``. The model selection does not read this setting: it takes the value the input pickle was extracted with from its ``_input_metadata``, so a selection always fits the target of the data it is given.
 
 .. _mp-model-target-variable:
 
@@ -365,7 +365,7 @@ cross-validation and held-out-test settings live in their own
       * ``'mean_mask_complexity'`` — per-USV mean spectrogram-mask complexity
       * ``'total_mask_complexity'`` — spectrogram-mask complexity summed over the bout
    :Default: ``'bout_durations'``
-   :Notes: the model-selection dispatcher (``main_model_selection_dispatcher``) reads it from here for the ``params`` selection; it is not a command-line flag. Any other value raises ``KeyError`` at extraction.
+   :Notes: it is not a command-line flag. Any other value raises ``KeyError`` at extraction. The model selection does not read this setting: it takes the value the input pickle was extracted with from its ``_input_metadata``, so a selection always fits the target of the data it is given.
 
 .. _mp-selection-p-val:
 
@@ -394,17 +394,18 @@ cross-validation and held-out-test settings live in their own
 
 .. _mp-selection-pool:
 
-``selection_pool_workers`` / ``selection_pool_memory_gb`` / ``selection_fit_peak_gb_base`` / ``selection_fit_peak_gb_per_term``
+``selection_pool_workers`` / ``selection_pool_memory_gb`` / ``selection_fit_peak_gb_base`` / ``selection_fit_peak_gb_per_million_row_terms``
    The process pool one selection job fits through: the candidate x fold fits of every step and the shifted refits of its test run as independent single-thread tasks in forked worker processes (``step_shift_test.SelectionPool``), the same fits with the same seeds as a serial run.
 
    :Options:
       * ``selection_pool_workers`` — worker processes; ``0`` reads ``SLURM_CPUS_PER_TASK`` (every CPU of the machine off the cluster); an integer >= 0 (not validated)
       * ``selection_pool_memory_gb`` — the memory budget the worker count is capped by; ``0`` reads the job's ``SLURM_MEM_PER_NODE``, or the machine's physical memory off the cluster; GB >= 0 (not validated)
-      * ``selection_fit_peak_gb_base`` / ``selection_fit_peak_gb_per_term`` — the peak memory of one pygam fit, modelled as ``base + per_term * n_terms`` GB with ``n_terms`` the number of tensor terms of the models about to be fit; GB >= 0 (not validated)
-   :Default: ``0``, ``0``, ``2`` and ``4``
+      * ``selection_fit_peak_gb_base`` / ``selection_fit_peak_gb_per_million_row_terms`` — the peak memory of one pygam fit, modelled as ``base + rate * (rows / 1e6) * n_terms`` GB, with ``rows`` the unrolled rows of the largest design the pool fits (the development events times the history frames: one row per event per frame) and ``n_terms`` the number of tensor terms of the models about to be fit; GB >= 0 (not validated)
+   :Default: ``0``, ``0``, ``2`` and ``3.0``
    :Notes:
-      * ``workers = min(selection_pool_workers, floor(memory / (base + per_term * n_terms)))``, at least 1, recomputed at every step as the model grows (``modeling_utils.pool_worker_count``).
-      * The shipped peaks come from measured pygam fits on 1.47 million unrolled rows: 13 GB at 3 terms and 36 GB at 9 terms. A 96 GB job runs 6 workers at 3 terms and 2 at 9.
+      * ``workers = min(selection_pool_workers, floor((memory - resident) / (base + rate * rows / 1e6 * n_terms)))``, at least 1, recomputed at every step as the model grows (``modeling_utils.pool_worker_count``). ``resident`` is the selection process's own memory when the pool starts: the workers are forked from it and share its pages, so it is charged once.
+      * The rate is measured: a single GAM fit with the selection's terms and solver settings adds 2.5–2.65 GB per million rows per term, the same for the logistic model (onset, category) and the gamma model (bout parameters) (0.5–2 million rows, 1–3 terms), linear in both; the earlier onset measurement on 1.47 million rows (13 GB at 3 terms, 36 GB at 9) gives 2.7–2.95 with the process's own overhead. ``3.0`` covers both. The design size varies several-fold between targets (about 0.8 million rows for the female squeak onset to 4.4 million for male bout durations), so a fixed per-term peak cannot fit them all: under the earlier ``base + 4 GB * n_terms`` model, a bout-duration job (3.5 million rows, one term) and a bout-offset job (2.5 million rows, two terms) ran out of 96 GB.
+      * A 96 GB job on 2.5 million rows runs about 5 workers at 2 terms and 1–2 at 6.
       * BLAS threads inside a worker are capped at one: pygam's dense QR gains at most 1.3x from threads, so cores go to workers, not threads.
       * A pool requested in a process where JAX has already initialized a backend (a notebook that ran a JAX model earlier, for instance) runs serially and prints that it did: a fork after that point can deadlock. The multinomial and manifold selectors run their fits serially for the same reason.
 
@@ -482,7 +483,7 @@ cross-validation and held-out-test settings live in their own
       * ``null`` — all categories pooled
       * one integer label of ``usv_category_column_name`` — ``1``–``4`` for ``qlvm_category`` (1 is the category with the most USVs); a set value needs a non-null ``usv_category_column_name``
    :Default: ``null``
-   :Notes: read only in ``'individual'`` mode, ignored with a warning otherwise. See the single-category note under :ref:`Modeling input data <modeling-extract>`.
+   :Notes: read only in ``'individual'`` mode, ignored with a warning otherwise. See the single-category note under :ref:`Modeling input data <modeling-extract>`. The model selection does not read this setting: it takes the value the input pickle was extracted with from its ``_input_metadata``, so a selection always fits the target of the data it is given.
 
 .. _mp-onset-target-classes:
 
@@ -509,6 +510,7 @@ cross-validation and held-out-test settings live in their own
       * **Bouts** — vocalizations of the other classes neither join nor split a bout; the bout-parameter and behavioral-response pipelines group their bouts from the same classes, so a bout is the same in every model.
       * **Silence** — silence is not class-specific: a negative window, and a ``'bout_onset'`` positive's clean history, must both be free of every vocalization of the target mouse (any class) and of every vocalization assigned to no animal, so the two groups are built under one rule whatever the target. A negative window needs exactly the clean history a ``'bout_onset'`` positive needs, ``filter_history`` of silence before its end and nothing more: window ends are tiled every ``filter_history`` from the start of each clean zone, so the first negative after a vocalization ends ``filter_history`` after its stop, the earliest point a positive is clean; a squeak-bearing segment blocks the union of the segment and its squeak extent (``os_utils.vocal_occupancy_times``), which may reach past the segment, so every summary needs ``squeak_start`` / ``squeak_end``.
       * **Order and naming** — noise segments are removed first in every case when ``vocal_features.exclude_noise_usvs`` is ``true``. Applied before ``onset_target_category``; any list other than ``["usv"]`` is embedded in the ``analysis_tag`` (e.g. ``individual_squeak``, ``bout_onset_usv+overlap``).
+      * **Model selection** — the selection does not read this setting: it takes the classes the input pickle was extracted with from its ``_input_metadata``, so a selection always fits, and names its step files after, the target of the data it is given.
 
 **model_validation** — the held-out test set and cross-validation splitting.
 
@@ -4268,7 +4270,8 @@ cohort fractions are reported against never shrink silently.
 
 A unit recorded in one session is analysed on ``cohort.single_session_blocks`` blocks of equal
 duration, which stand in for sessions in every analysis (each block has its own baseline and its own vocal
-floor, and the time within ``kinematic_encoding.history_pre_seconds`` of a block boundary is dropped). Such
+floor, and half of ``kinematic_encoding.history_pre_seconds`` on each side of a block boundary is dropped,
+so neighbouring blocks are separated by the full history). Such
 units are listed in the cohort table but left out of the cross-unit corrections by default
 (``inference.include_single_session_units``).
 
@@ -4280,7 +4283,7 @@ compared with. Their features are those the behavioural modelling's selections c
 courtship sessions (``paths.behaviour_selection_result_path``, frozen in
 ``nested_vocal_decoding.reduced_model_features``). The onset axis has a control of the same kind
 (``--target onset``): the two-class model of the behavioural modelling's ``jax`` engine, fitted on the
-cohort's clean USV onsets against the quiet tiles the per-unit occurrence decoder itself scores (its
+cohort's clean USV onsets that carry a torus position (the ones the units' occurrence windows hold) against the quiet tiles the per-unit occurrence decoder itself scores (its
 features from the behavioural ``individual`` onset selection on the ephys cohort). Fit all three before
 any unit runs:
 
@@ -4306,7 +4309,11 @@ on quiet frames only: frames with no USV from any emitter in the 4 s before or t
 ``clean_post_seconds`` (4 s) after. Each session in turn is held out (an outer fold); inside the remaining
 sessions, every feature is screened alone against a circular-shift null at a Bonferroni level
 (``feature_selection.screen_alpha`` over the feature count, ``inference.screen_n_shuffles`` draws), and the
-survivors are added by forward selection with a paired one-standard-error rule.
+survivors are added by forward selection, each step's winner accepted only by the per-step shift-refit
+test (``feature_selection.acceptance_rule`` ``shift_refit_bonferroni``: B = floor(m / ``step_test_alpha``)
+refits with the winner circularly shifted, Bonferroni over the step's m candidates). Every candidate's
+held-out scores at every step, the step test's full record and the screen's aggregated null per feature
+are stored with the fold.
 
 One fold's model represents the unit: the fold whose held-out quiet score is the median (ties broken by
 the larger number of vocal frames). Its quiet p-value scores the frozen model on its held-out session's
@@ -4329,10 +4336,15 @@ of the same width, under an equal prior. Each class has a Poisson rate shrunk to
 contrast between them is tuned on the training sessions (``vocal_decoding.vocal_occurrence``), and the
 statistic is the held-out, class-balanced gain in nats per window, whose ceiling is ``log 2``.
 
-Its null circularly shifts each session's spike train within ``inference.shuffle_guard_seconds`` of either end,
-recounts both classes and refits everything, ``inference.n_shuffles`` (1,000) times. The section stores the
-gain, the area under the ROC curve, the response sign (elevated or suppressed firing), the per-fold values
-and the null.
+Its null is block jitter: each session is cut into consecutive blocks of
+``vocal_decoding.vocal_occurrence.null_jitter_block_seconds`` (2 s), the spikes inside each block are
+circularly shifted within it by the block's own uniform offset, both classes are recounted and everything is
+refit, ``inference.n_shuffles`` (1,000) times. Every rate change slower than a block travels with the
+surrogate, so the test credits only firing aligned to the onsets more finely than a block. A whole-session
+circular shift is not used here: the recorded animal vocalises mostly early in a session and many units fire
+faster early, and that shared slow trend passed units with no relation to the USVs. The section stores the
+gain, the area under the ROC curve, the response sign (elevated or suppressed firing), the per-fold values,
+the null and its kind and block length (``null_kind``, ``null_jitter_block_seconds``).
 
 Vocalization identity
 ~~~~~~~~~~~~~~~~~~~~~
@@ -4371,7 +4383,7 @@ frames inside the male's USVs and on quiet frames (frames near a USV but in neit
 measures each term's held-out added deviance.
 
 The interaction is the gate. Each feature is tested against ``gating_screen_n_shuffles`` (2,000) circular
-shifts, and its p-value requires both that the interaction beats the null and that it exceeds the
+shifts (topped up to 20,000 for a feature beaten by every draw, ``escalation_ladder``), and its p-value requires both that the interaction beats the null and that it exceeds the
 vocalization term (``require_interaction_gt_vocal``). The unit's p-value is the Bonferroni adjustment of
 its best feature over the features tested. The section stores every feature's terms, nulls and p-values,
 but no labels: whether a unit counts as gated is decided at the cohort step.
@@ -4379,9 +4391,10 @@ but no labels: whether a unit counts as gated is decided at the cohort step.
 Running the cohort on the cluster
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 ``main_neural_cohort_dispatcher`` runs the whole cohort as one SLURM array, one unit per task. ``plan``
-builds the cohort, checks that the unit catalog, the data root and both targets' behaviour-control and
-selection files exist, and writes ``cohort_manifest.json`` (the settings hash and one record per unit),
-printing the array range:
+builds the cohort (stopping, with the session named, if a listed session lacks its tracking or USV summary
+file), checks that the unit catalog, the data root and every control target's (manifold, multinomial,
+onset) behaviour-control and selection files exist, and writes ``cohort_manifest.json`` (the settings hash,
+the settings path and one record per unit), printing the array range:
 
 .. code-block:: bash
 
@@ -4390,19 +4403,26 @@ printing the array range:
 
 Each task then runs ``run`` on the manifest index ``SLURM_ARRAY_TASK_ID`` (plus ``--index-offset`` for an
 array submitted in chunks): the unit's encoding folds as separate processes, ``--parallel-folds`` at a
-time, their combination, then occurrence, identity and the nested decoding on both targets, then gating,
-with ``--n-workers`` processes for the nulls. The cluster script
+time, their combination, then occurrence, identity, the nested decoding (manifold, multinomial and onset),
+then gating, with ``--n-workers`` processes for the nulls. ``run`` uses the settings file the manifest was
+planned under unless ``--settings-path`` names another. The cluster script
 *usv_playpen/other/cluster/usv_playpen/neural_modeling_cohort.sh* wraps it (8 CPUs, 16 GB, 24 h; set ``EXPERIMENTER_ID``,
-``USV_PLAYPEN_PATH`` and the e-mail at its top):
+``USV_PLAYPEN_PATH`` and the e-mail at its top; its ``DATA_ROOT`` must be the data root ``plan`` used).
+SLURM opens the script's ``logs/`` output files before the script runs, so submit from a directory that
+already holds ``logs/``:
 
 .. code-block:: bash
 
-    sbatch --array=0-<N-1>%50 neural_modeling_cohort.sh <output_dir>
+    mkdir -p logs && sbatch --array=0-<N-1>%50 neural_modeling_cohort.sh <output_dir>
 
-A run resumes: a fold file or a result-file section already written under the same settings hash is kept,
+A run resumes: a fold file or a result-file section already written under the same settings hash and by the
+same git commit is kept (a fix landing between attempts recomputes what the older code wrote),
 so a task that timed out is simply resubmitted, and once a vocal step is recomputed every later step is
-too. A manifest planned under other settings, or a unit whose session sets changed after planning, is
-refused rather than run.
+too. Fold files are published atomically, and one left unreadable by an interrupted write is run again.
+Fold logs are appended to, so a resubmission keeps the earlier attempt's log. A manifest planned under
+other settings, or a unit whose session sets changed after planning, is refused rather than run; a unit
+that fails outside its stages (such a refusal included) is marked failed in its status file, never left
+``running``.
 
 Each task's log is a timestamped timeline: a header (unit, area, sessions, settings hash, commit, host,
 job), each fold's start and end with a heartbeat every 10 minutes naming the step each running fold is on,
@@ -4434,7 +4454,8 @@ which is what a resumed run and the consolidation check:
     {
         "identity": {"unit_uid": "...", "brain_area": "PAG", "courtship_sessions": ["..."],
                      "vocal_sessions": ["..."], "block_split": None, "...": "..."},
-        "kinematic_encoding": {"quiet_p": "...", "transfer_p": "...", "transfer_slope": "...", "...": "..."},
+        "kinematic_encoding": {"quiet_p": "...", "transfer_p": "...", "transfer_slope": "...", "no_model": "...",
+                               "best_screened_only": "...", "best_screened_quiet_p": "...", "...": "..."},
         "vocal_occurrence": {"gain": "...", "p": "...", "null": "<array>", "...": "..."},
         "vocalization_identity_manifold": {"gain": "...", "p": "...", "per_fold": ["..."], "...": "..."},
         "vocalization_identity_multinomial": {"...": "..."},
@@ -4447,10 +4468,40 @@ which is what a resumed run and the consolidation check:
         "section_provenance": {"<section>": {"settings_sha256": "...", "...": "..."}}
     }
 
-A section that did not run is written as ``{"ran": False, "reason": ...}`` (for example
-``not_vocal_testable``), so an absent result is never ambiguous. Payloads are refused if they carry a
-decision-shaped key (``verdict``, ``passed``, ``significant`` and the like): a verdict stored per unit
-would be uncorrected by construction.
+A section that did not run is written as ``{"ran": False, "reason": ...}`` (``not_vocal_testable``,
+``too_few_spikes`` for a content decoding below ``cohort.min_decoding_spikes``, ``no_vocal_tuning`` /
+``not_testable`` / ``fewer_than_two_sessions`` / ``fewer_than_two_quiet_sessions`` for vocal gating), so an
+absent result is never ambiguous. A unit whose screen passes nothing in any fold still has its best screened
+feature fitted for description: its ``kinematic_encoding`` section then carries ``no_model`` and
+``best_screened_only`` True, a tested ``quiet_p`` of 1.0 and ``transfer_p`` NaN, and the descriptive
+values under ``best_screened_quiet_p`` and ``best_screened_transfer_p``. A unit with no vocal session keeps
+its quiet test and is untested on transfer (``transfer_p`` NaN, ``transfer_reason`` ``no_vocal_session``).
+Payloads are refused if they carry a decision-shaped key (``verdict``, ``passed``, ``significant`` and the
+like): a verdict stored per unit would be uncorrected by construction.
+
+Beyond the statistics, nulls and p-values, the sections store what a later analysis would otherwise need a
+refit to recover:
+
+* ``kinematic_encoding``: every candidate's per-fold held-out scores at every selection step
+  (``forward_path_per_fold[i][step]["candidates"]``), each screen row's aggregated null and finite-draw count,
+  the final fit's training-set composition per session (quiet anchors, spikes and silences before and after
+  subsampling, the per-session cap and the session baselines), per-fold quiet slopes, floor flags,
+  convergence and stage timings, and the frames each session's transfer arrays align to.
+* ``vocal_occurrence``: the per-window gain and held-out probability, the windows themselves, the event
+  assembly's per-session bookkeeping (USVs kept and dropped by each filter, tiles), and ``usv_events``, one
+  row per USV (session slot, onset, offset, category, torus position, count) that every USV-grain array of
+  the identity and nested sections is indexed by.
+* ``vocalization_identity_<target>``: the decoded torus position per USV, or the full per-USV log posterior
+  over categories with the predicted category and the training class counts per fold.
+* ``nested_vocal_decoding_<target>``: the ``kept`` (and, for categories, ``labelled``) masks into
+  ``usv_events``, the control's per-USV prediction (torus position or category log evidence), the
+  behaviour prior's own per-USV log-score, and the design's per-session drop counts.
+* ``nested_vocal_decoding_onset``: the control's log-odds per window and their AUROC on the unit's windows,
+  the per-window added log-score, probability and behaviour log-score, and the windows.
+* ``vocal_gating``: each term's added deviance per held-out session, the ridged interaction coefficient,
+  every feature's vocal-frame spread, the correlation of every feature with every other during vocal
+  frames, the universe's per-session counts, the number of features tested and the Bonferroni bar.
+* every vocal section: its wall time in ``seconds``.
 
 Cohort consolidation
 ~~~~~~~~~~~~~~~~~~~~
@@ -4466,12 +4517,18 @@ unless ``cohort.pool_areas``), and assigns each unit one of six categories:
         --output-directory /mnt/falkner/Bartul/neural_modeling/cohort_<date>/consolidated
 
 A Transformation unit passes the conjunction test (the largest of its quiet, transfer, identity and
-nested p-values, corrected like the others) with a positive transfer slope. The nested onset test
-(``nested_vocal_decoding_onset``) is corrected and reported beside them as ``nested_onset``, a modifier
-rather than a component of the conjunction. The step writes
-``neural_cohort_table.csv`` (one row per unit: every p-value, effect, pass and reason) and
-``neural_cohort_report.pkl`` (per group: units tested and excluded, floor requirements, category counts,
-the correlation of the tests' z-scores, and the settings hashes found among the unit files).
+nested p-values, corrected like the others) with a positive transfer slope. A decoding test (occurrence,
+identity, nested, nested onset) passes only with a positive effect as well: a gain at or below zero fails
+however small its p, and fails the conjunction. The nested onset test (``nested_vocal_decoding_onset``) is
+corrected and reported beside them as ``nested_onset``, a modifier rather than a component of the
+conjunction. The unit list is the run's own ``cohort_manifest.json`` when the results directory holds one
+(otherwise it is rebuilt from the settings), and a section written under other settings than the
+consolidation's stops the step unless ``--allow-stale-sections`` excludes it (reason ``stale_settings``).
+The step writes ``neural_cohort_table.csv`` (one row per unit: every p-value, z, effect, pass and reason,
+plus descriptors: mouse, date, probe, cluster group, draw counts and floor flags per test, the selected
+features, AUROCs, kappas, spike counts and the gating breadth) and ``neural_cohort_report.pkl`` (per group:
+units tested and excluded, floor requirements, category counts, the correlation of the tests' z-scores, and
+the settings hashes found among the unit files).
 
 Figures
 ~~~~~~~
@@ -4501,7 +4558,13 @@ behaviour control) read one settings file,
 (``main_neural_encoding_dispatcher``, ``main_neural_vocal_dispatcher``,
 ``main_neural_cohort_dispatcher``) take ``--settings-path``, and
 ``main_behaviour_control_dispatcher`` takes ``--settings``, to point at another copy
-(default: the shipped file). Every key is read strictly (a missing key raises
+(default: the shipped file). Further flags: ``main_neural_encoding_dispatcher --single`` selects
+and fits once on one split (a quick look at one unit, not the cluster path);
+``main_neural_vocal_dispatcher --only <step> ...`` runs a subset of the vocal steps (``vocal_occurrence``,
+``vocalization_identity``, ``nested_vocal_decoding``, ``vocal_gating``); and
+``main_behaviour_control_dispatcher --design-cache <file>`` names where the ``select`` stage writes the
+assembled cohort design for its workers to memory-map (default ``behaviour_control_design.npy`` in the
+working directory). Every key is read strictly (a missing key raises
 ``KeyError``); keys that name a design alternative (``selection_method``,
 ``calibration_grain``, ``vm_score_mode`` and the like) accept only the value the
 code implements and raise on any other, so a declared alternative can never run as
@@ -4732,7 +4795,11 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
 .. _nm-cohort-min-decoding-spikes:
 
 ``min_decoding_spikes``
-   Total spikes across the scored events below which the category decoding reports the unit as not decodable.
+   Total spikes across the scored events below which a content decoding is given no statistic: vocalization
+   identity and the nested decoding, on both targets, write their section as ``{"ran": False, "reason":
+   "too_few_spikes", "n_spikes", "threshold"}`` before any null is drawn. The permutation null would still
+   protect the p-value, but below this count the gain is unstable. Vocal gating reads a section written this
+   way as untuned.
 
    :Options: a non-negative integer
    :Default: ``50``
@@ -4748,7 +4815,7 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
       * **One-session units** — a unit recorded in one session is split into this many blocks of equal duration, separated by ``kinematic_encoding.history_pre_seconds`` (whatever lies within it of a boundary is dropped); the blocks stand in for sessions in every analysis, each with its own baseline and its own 20-USV vocal floor.
       * **Two-session units** — when an outer fold leaves a single training session, the inner split for screening and selection uses this many contiguous quiet-anchor blocks of it.
 
-**kinematic_features** — the behavioural feature zoo, with exactly the meaning of the modeling block of the same name (see the ``kinematic_features`` bullets of *Modeling settings* above); the neural design assembly reuses the modeling column selection and pooled z-scoring, so the features match the behavioural models exactly.
+**kinematic_features** — the behavioural feature zoo, with exactly the meaning of the modeling block of the same name (see the ``kinematic_features`` bullets of *Modeling settings* above); the neural design assembly reuses the modeling column selection and z-scoring, so the features match the behavioural models exactly. The unit's own kinematic model (and vocal gating) sees the features z-scored across the unit's sessions together; the nested decoding, which feeds them to the cohort behaviour controls, z-scores each session alone, because that is how the controls were fitted.
 
 .. code-block:: json
 
@@ -5324,10 +5391,10 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
       * ``calibration_grain`` — ``'pooled_across_folds'`` concatenates the held-out predictions and calibrates once (averaging per-fold scores let a small fold dominate)
       * ``d2_reference_rate`` — ``'scored_frames'`` scores explained deviance against the vocal frames' own rate
       * ``universe`` — ``'bout_window'`` scores each bout from ``clean_post_seconds`` before its first USV to its end; ``'usv_span'`` scores only the frames inside the USVs themselves
-      * ``inter_bout_threshold_seconds`` — bouts are split where the inter-USV gap reaches this
+      * ``inter_bout_threshold_seconds`` — bouts are split where the inter-USV gap reaches this; under ``'bout_window'`` any gap shorter than the ``clean_post_seconds`` run-up yields the same scored frames whatever the threshold, because the next bout's run-up covers it
       * ``grain`` — ``'count'`` scores spike counts in ``bin_seconds`` bins rather than per frame; ``'frame'`` scores per frame
       * ``bin_seconds`` — the count bin width
-   :Default: ``'pooled_across_folds'``, ``'scored_frames'``, ``'bout_window'``, ``0.1155``, ``'count'``, ``0.1`` and ``64``
+   :Default: ``'pooled_across_folds'``, ``'scored_frames'``, ``'bout_window'``, ``0.1155``, ``'count'`` and ``0.1``
    :Notes: ``calibration_grain`` and ``d2_reference_rate`` accept only the implemented value. ``'usv_span'`` is accepted by the code (``TRANSFER_UNIVERSES`` in ``quiet_to_vocal_transfer``) but was not described here before.
 
 .. _nm-kinematic-encoding-subsampling-correction:
@@ -5396,7 +5463,8 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
                 "enabled": true,
                 "alpha_grid": [0.1, 0.25, 0.5, 0.75, 1.0, 1.5]
             },
-            "mean_count_floor": 0.001
+            "mean_count_floor": 0.001,
+            "null_jitter_block_seconds": 2.0
         },
         "tuning_surface": {
             "tuning_basis": "fourier",
@@ -5404,7 +5472,7 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
             "bump_grid_n": 10,
             "bump_sigma": 0.1,
             "min_basis_occupancy": 5.0,
-            "decode_grid_min_occupancy": 1.0,
+            "decode_grid_min_occupancy": 0.5,
             "grid_n": 60,
             "kde_bandwidth": 0.03,
             "likelihood_family": "poisson",
@@ -5474,6 +5542,9 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
    * - :ref:`vocal_occurrence.mean_count_floor <nm-vocal-decoding-vocal-occurrence>`
      - ``0.001``
      - small positive number
+   * - :ref:`vocal_occurrence.null_jitter_block_seconds <nm-vocal-decoding-vocal-occurrence>`
+     - ``2.0``
+     - positive number of seconds
    * - :ref:`tuning_surface.tuning_basis <nm-vocal-decoding-tuning-surface>`
      - ``'fourier'``
      - ``'fourier'``, ``'bumps'``
@@ -5490,7 +5561,7 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
      - ``5.0``
      - kernel-weighted events
    * - :ref:`tuning_surface.decode_grid_min_occupancy <nm-vocal-decoding-tuning-surface>`
-     - ``1.0``
+     - ``0.5``
      - KDE training occupancy
    * - :ref:`tuning_surface.grid_n <nm-vocal-decoding-tuning-surface>`
      - ``60``
@@ -5598,8 +5669,9 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
       * ``ridge_frac`` — shrinks the two class rates toward their pooled rate by this fraction of the training spike count
       * ``amplitude_calibration`` — when ``enabled``, the contrast between the classes is tuned over ``alpha_grid`` on the training sessions (or, for a single training session, contiguous blocks of it); when disabled it is 1
       * ``mean_count_floor`` — bounds a session's quiet level from below, so a unit silent in quiet tiles stays finite
-   :Default: ``ridge_frac`` ``0.02``, ``amplitude_calibration`` enabled over ``[0.1, 0.25, 0.5, 0.75, 1.0, 1.5]``, ``mean_count_floor`` ``0.001``
-   :Notes: the held-out session's quiet level is cross-fitted over ``kinematic_encoding.calibration.n_blocks`` blocks.
+      * ``null_jitter_block_seconds`` — block length of the occurrence and nested onset nulls: the spikes inside each consecutive block of this many seconds are circularly shifted within it, so rate changes slower than a block are kept and only finer alignment to the onsets is tested
+   :Default: ``ridge_frac`` ``0.02``, ``amplitude_calibration`` enabled over ``[0.1, 0.25, 0.5, 0.75, 1.0, 1.5]``, ``mean_count_floor`` ``0.001``, ``null_jitter_block_seconds`` ``2.0``
+   :Notes: the held-out session's quiet level is cross-fitted over ``kinematic_encoding.calibration.n_blocks`` blocks. The block length sets what counts as onset-locked: a block well above the 100 ms window keeps the unit's local rate in the null, and a block well below the minutes over which units drift keeps that drift out of the test. On real spike trains of another animal and day placed on one male's sessions, 4 of 12 passed at p 0.01 under the whole-session circular shift and none of 12 at p 0.05 under block jitter at 1, 2, 5 or 10 s, while the four real vocal units and a planted onset unit stayed at the p floor at every block length.
 
 .. _nm-vocal-decoding-tuning-surface:
 
@@ -5610,14 +5682,14 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
       * ``tuning_basis`` — ``'fourier'``: a Fourier basis with ``fourier_k`` harmonics per axis; ``'bumps'``: a local basis of ``bump_grid_n`` nodes per axis of width ``bump_sigma``, kept where the kernel-weighted training occupancy reaches ``min_basis_occupancy`` events
       * ``fourier_k`` — Fourier harmonics per axis
       * ``bump_grid_n`` / ``bump_sigma`` / ``min_basis_occupancy`` — the bump basis's nodes per axis, node width and occupancy floor (events)
-      * ``grid_n`` — decoding runs on a grid of this many cells per axis, restricted to cells whose training occupancy (a KDE of bandwidth ``kde_bandwidth``) reaches ``decode_grid_min_occupancy``
+      * ``grid_n`` — decoding runs on a grid of this many cells per axis, restricted to cells whose training occupancy (a KDE of bandwidth ``kde_bandwidth``) reaches ``decode_grid_min_occupancy``; at ``0.5`` a single training USV (whose own cell receives at least 0.93) unmasks its cell and those within about two cells of it, where at ``1.0`` a cell needed two nearby USVs and units with sparse training sessions lost up to 83% of their scored USVs
       * ``likelihood_family`` — ``'poisson'`` (the only implemented value)
       * ``session_rate_offsets`` — ``true`` adds per-session rate offsets
       * ``solver.irls_n_steps`` — IRLS iterations of the surface fit
       * ``ridge_selection`` — ``mode`` ``'count_normalized_fixed'`` (the only implemented value; the ridge is ``ridge_frac`` × the training spike count)
       * ``amplitude_calibration`` — when ``enabled``, a likelihood-sharpening amplitude is tuned over ``alpha_grid`` by inner leave-one-session-out on the training sessions, or by leave-one-block-out over ``cohort.single_session_blocks`` contiguous blocks when a fold has a single training session (``mode`` ``'train_tuned_inner_loso'``, the only implemented value; ``alpha_min`` is the smallest grid value allowed), and when disabled the amplitude is 1
       * ``record_bump_basis_gain`` — also record the bump-basis gain beside the Fourier one
-   :Default: ``tuning_basis`` ``'fourier'``, ``fourier_k`` ``2``, ``bump_grid_n`` ``10``, ``bump_sigma`` ``0.1``, ``min_basis_occupancy`` ``5.0``, ``grid_n`` ``60``, ``kde_bandwidth`` ``0.03``, ``decode_grid_min_occupancy`` ``1.0``, ``likelihood_family`` ``'poisson'``, ``session_rate_offsets`` ``true``, ``solver.irls_n_steps`` ``50``, ``ridge_selection.ridge_frac`` ``0.02``, ``alpha_min`` ``0.0``, ``record_bump_basis_gain`` ``true``; the rest as in the JSON above
+   :Default: ``tuning_basis`` ``'fourier'``, ``fourier_k`` ``2``, ``bump_grid_n`` ``10``, ``bump_sigma`` ``0.1``, ``min_basis_occupancy`` ``5.0``, ``grid_n`` ``60``, ``kde_bandwidth`` ``0.03``, ``decode_grid_min_occupancy`` ``0.5``, ``likelihood_family`` ``'poisson'``, ``session_rate_offsets`` ``true``, ``solver.irls_n_steps`` ``50``, ``ridge_selection.ridge_frac`` ``0.02``, ``alpha_min`` ``0.0``, ``record_bump_basis_gain`` ``true``; the rest as in the JSON above
 
 .. _nm-vocal-decoding-category-surface:
 
@@ -5657,7 +5729,7 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
       * **Definition** — the index is the mean Pearson dispersion ``(count − expected)² / expected`` of the held-out events, where an event's expected count is the calibrated surface rate the decoder scored it with (the centred surface shape times the tuned amplitude, at the held-out session's mean-count level) read at the event's own grid cell, so an untuned Poisson unit gives about ``1``.
       * **Also stored** — the decoding also stores ``nats_per_spike`` (the summed finite per-event gain divided by the spikes of those same events) and ``min_leave_one_fold_out`` (the smallest pooled gain with one fold left out, over the folds whose left-out gain is finite).
 
-**nested_vocal_decoding** — does the neuron add information about a USV's identity beyond the cohort behaviour control? Run on both targets for every unit, each against its own control (the kinematics are assembled once and each target's design is built on its own control's features), and, as ``nested_vocal_decoding_onset``, on the onset axis: the occurrence decoder's fixed equal prior is replaced by the onset control's base-rate-free log-odds at a concentration tuned per fold (``behaviour_prior.kappa_grid``), the statistic is what the neuron adds over that prior in nats per window, and the null is the occurrence shift null with the priors held in place. The behaviour control sets the decoder's prior (on the torus its predicted position, on categories its probabilities, tilted by a tuned concentration; ``category_control`` below), and the statistic is what the neuron adds under that prior, in nats per USV; on the torus, a REDUCED and a FULL torus regression (behaviour alone, behaviour plus the neuron's count) compared on the held-out macro von Mises log-score are kept as a descriptor (``point_regression``).
+**nested_vocal_decoding** — does the neuron add information about a USV's identity beyond the cohort behaviour control? Run on both targets for every unit, each against its own control (the kinematics are assembled once and each target's design is built on its own control's features), and, as ``nested_vocal_decoding_onset``, on the onset axis: the occurrence decoder's fixed equal prior is replaced by the onset control's base-rate-free log-odds at a concentration tuned per fold (``behaviour_prior.kappa_grid``), the statistic is what the neuron adds over that prior in nats per window, and the null is the occurrence block-jitter null with the priors held in place. The behaviour control sets the decoder's prior (on the torus its predicted position, on categories its probabilities, tilted by a tuned concentration; ``category_control`` below), and the statistic is what the neuron adds under that prior, in nats per USV; on the torus, a REDUCED and a FULL torus regression (behaviour alone, behaviour plus the neuron's count) compared on the held-out macro von Mises log-score are kept as a descriptor (``point_regression``).
 
 .. code-block:: json
 
@@ -5828,7 +5900,7 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
    :Options: the multinomial logistic regression on a 20-spline lag basis with the lag-varying ridge (``temporal_basis``), a focal loss (``focal_loss_gamma``) and the Adam solver settings
    :Default: see the JSON above
    :Notes:
-      * its probabilities enter each unit base-rate free and tilt the category prior with a concentration tuned per fold from ``behaviour_prior.kappa_grid``.
+      * its probabilities enter each unit base-rate free and tilt the category prior with a concentration tuned per fold from ``behaviour_prior.kappa_grid``. Base-rate free means the prior the class-weighted fit absorbed (``effective_log_priors_``, the category frequencies as weighted in the loss) is removed from the logits, not the plain frequencies, which under the softened inverse-frequency weights would leave half the log frequency ratio as a tilt toward the rarer categories.
       * The B-spline basis is required, and under it ``resolve_temporal_basis`` takes the penalties from ``temporal_basis`` (``lambda_smooth_fixed``, ``l2_reg_fixed``, second-order smoothness). The behavioural block's top-level ``lambda_smooth_fixed``, ``l2_reg_fixed`` and ``smoothness_derivative_order`` would be overwritten, so they are not carried here.
       * The control is never tuned. ``tune_regularization_params`` stays an empty dict only because ``resolve_temporal_basis`` writes into it, and ``temporal_basis.lambda_smooth_decades_each_side`` is read by that function but has no effect without tuning.
 
@@ -5898,7 +5970,7 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
 .. _nm-nested-onset-control:
 
 ``onset_control``
-   The onset behaviour control's model: the two-class model of the behavioural modelling's ``jax`` engine (``hyperparameters.linear_models.binary_logistic``), resolved by that pipeline's own ``resolve_temporal_basis``; the ``category_control`` block's keys and values with ``focal_loss_gamma`` ``0`` (plain cross-entropy; the per-unit prior tunes its own concentration, so the control's calibration is not relied on). Class imbalance between a session's USVs and its capped tiles is handled by the model's class weights, and the log-odds the units read are base-rate-free.
+   The onset behaviour control's model: the two-class model of the behavioural modelling's ``jax`` engine (``hyperparameters.linear_models.binary_logistic``), resolved by that pipeline's own ``resolve_temporal_basis``; the ``category_control`` block's keys and values with ``focal_loss_gamma`` ``0`` (plain cross-entropy; the per-unit prior tunes its own concentration, so the control's calibration is not relied on). Class imbalance between a session's USVs and its capped tiles is handled by the model's class weights, and the log-odds the units read are base-rate-free: the prior the weighted fit absorbed (``effective_log_priors_``, the class frequencies as weighted in the loss) is removed from the logits, not the plain class frequencies, which under the softened inverse-frequency weights would leave half the log tile-to-USV ratio in every log-odds.
 
    :Options: the ``category_control`` keys
    :Default: see the JSON above
@@ -5944,6 +6016,7 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
         "feature_main_alpha": 0.01,
         "content_gating_compute": false,
         "gating_screen_n_shuffles": 2000,
+        "escalation_ladder": [20000],
         "screen_alpha": 0.01,
         "sign_ridge_frac": 0.1,
         "borderline_sigma_flag": 5.0,
@@ -6000,6 +6073,9 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
    * - :ref:`gating_screen_n_shuffles <nm-vocal-gating-screen>`
      - ``2000``
      - number of circular-shift draws
+   * - :ref:`escalation_ladder <nm-vocal-gating-screen>`
+     - ``[20000]``
+     - draw totals a feature at its floor is topped up to
    * - :ref:`screen_alpha <nm-vocal-gating-screen>`
      - ``0.01``
      - significance level (Bonferroni-divided)
@@ -6099,7 +6175,8 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
    :Options:
       * ``gating_screen_n_shuffles`` — the number of circular-shift draws; a draw count whose ``1 / (n + 1)`` floor cannot clear the Bonferroni bar raises
       * ``screen_alpha`` — the family-wise level, divided by the number of features
-   :Default: ``2000`` and ``0.01``
+      * ``escalation_ladder`` — draw totals a feature whose conjunction p sits at its floor (beaten by every draw) is topped up to, continuing that feature's own seed stream; a rung already met is skipped
+   :Default: ``2000``, ``0.01`` and ``[20000]``
    :Notes: each tested unit carries one p for the cohort correction: the smallest per-feature conjunction p (``max(p_interaction, p_interaction_gt_vocal)``, or ``p_interaction`` alone when ``require_interaction_gt_vocal`` is false) times the number of features tested, capped at 1 (``p_unit``). Every tested unit carries it, survivor or not; only a unit with no tested feature has a NaN ``p_unit``, so the cohort Benjamini–Hochberg runs over all tested units.
 
 .. _nm-vocal-gating-sign-ridge-frac:
@@ -6129,7 +6206,7 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
       * ``calibration_steps`` — iterations of each calibration refit
    :Default: ``irls_n_steps`` ``30``, ``calibration_steps`` ``40``
 
-**inference** — the circular-shift and permutation null draws shared by every analysis, and the cohort-level multiplicity control. The circular-shift null (shared by the kinematic encoding, the transfer, the gating and the vocal-occurrence axis) shifts the spike train, preserving its rate and burstiness while destroying its alignment with behaviour.
+**inference** — the circular-shift and permutation null draws shared by every analysis, and the cohort-level multiplicity control. The circular-shift null (shared by the kinematic encoding, the transfer and the gating) shifts the spike train, preserving its rate and burstiness while destroying its alignment with behaviour. The vocal-occurrence axis and the nested onset test use a block-jitter null instead (``vocal_decoding.vocal_occurrence.null_jitter_block_seconds``), with the same ``n_shuffles``, ``shuffle_seed`` and escalation ladder.
 
 .. code-block:: json
 
@@ -6141,7 +6218,7 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
         "pvalue_method": "empirical_escalated",
         "fdr_method": "bh",
         "fdr_q": 0.05,
-        "escalation_ladder": [],
+        "escalation_ladder": [10000],
         "include_single_session_units": false
     }
 
@@ -6175,7 +6252,7 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
      - ``0.05``
      - false-discovery rate
    * - :ref:`escalation_ladder <nm-inference-escalation-ladder>`
-     - ``[]``
+     - ``[10000]``
      - list of draw counts
    * - :ref:`include_single_session_units <nm-inference-include-single-session-units>`
      - ``false``
@@ -6257,8 +6334,8 @@ How the dispatchers run a unit and the cohort is described under :ref:`modeling-
    :Options:
       * ``[]`` — runs the base count only
       * a list of draw counts — the rungs floor-tied p-values escalate through
-   :Default: ``[]``
-   :Notes: each rung counts FINITE draws only, as only finite draws enter the p-value.
+   :Default: ``[10000]``
+   :Notes: each rung counts FINITE draws only, as only finite draws enter the p-value. A rung already met is skipped, not a stop. Applies to every per-unit test with a single null (quiet, transfer, occurrence, identity, nested, nested onset); a unit whose p-value sits at the 1,000-draw floor is topped up to 10,000 draws in the same run, which lowers its floor from 1/1,001 to 1/10,001 and the number of floor-tied units BH needs before it can reject any from about 51 to about 5 (for 2,525 units at ``q`` 0.05). Only floor-tied units pay the extra draws. Gating has its own ladder (``vocal_gating.escalation_ladder``).
 
 .. _nm-inference-include-single-session-units:
 

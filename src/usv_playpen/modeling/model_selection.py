@@ -120,7 +120,6 @@ from .modeling_vocal_categories_multinomial import (
     _tune_multinomial_regularization,
     get_stratified_group_splits_stable,
 )
-from .modeling_vocal_onsets import VocalOnsetModelingPipeline
 from .step_shift_test import (
     STEP_TEST_RULE,
     SelectionPool,
@@ -239,6 +238,140 @@ def _require_analysis_type(loaded: dict, expected: str, source: str) -> None:
                f"'{expected}' files.")
         raise ValueError(msg)
 
+
+#: ``_input_metadata`` fields that identify one extraction: two files whose values
+#: agree on all of these were cut from the same modeling-input pickle.
+_EXTRACTION_IDENTITY_FIELDS = ('created_utc', 'settings_sha256', 'analysis_tag', 'experimental_condition',
+                               'session_ids', 'held_out_session_ids')
+
+
+def _comparable(value):
+    """
+    Description
+    -----------
+    Returns a metadata value in a form ``!=`` compares element by element: a
+    list, tuple or array becomes a plain list, anything else is returned as is.
+
+    Parameters
+    ----------
+    value
+        One ``_input_metadata`` value.
+
+    Returns
+    -------
+    The value, with a sequence turned into a list.
+    """
+
+    if isinstance(value, (list, tuple, np.ndarray)):
+        return np.asarray(value).tolist()
+    return value
+
+
+def _require_same_extraction(univariate_input_md: dict | None,
+                             input_data: dict,
+                             univariate_path: str,
+                             input_path: str) -> None:
+    """
+    Description
+    -----------
+    Refuses a univariate results file and a modeling-input pickle that were not
+    built from the same extraction. The consolidated univariate file carries a
+    verbatim copy of its input pickle's ``_input_metadata``, and the selection
+    takes that copy (its held-out session list among it) in preference to the
+    input pickle's own block. ``_require_analysis_type`` cannot tell two
+    extractions of one analysis type apart (a bout-onset univariate file and a
+    bout-offset input pickle are both ``'onset'``), and the lag-zero window check
+    only compares the input pickle with itself, so a mismatched pair would run to
+    the end: the screen ranking and the held-out reserve would come from one
+    extraction and the fits from another. This check compares the fields that
+    identify an extraction (``_EXTRACTION_IDENTITY_FIELDS``: its creation time,
+    settings hash, analysis tag, experimental condition, sessions and held-out
+    sessions) and stops at load time, naming every field that differs. A field
+    either file lacks (a legacy artifact) is not compared, and a file without an
+    ``_input_metadata`` block passes.
+
+    Parameters
+    ----------
+    univariate_input_md (dict | None)
+        The ``_input_metadata`` block of the consolidated univariate file, or
+        None when the file has none.
+    input_data (dict)
+        The dict ``pickle.load`` returned for the modeling-input pickle, still
+        holding its ``_input_metadata`` key.
+    univariate_path (str)
+        The univariate file's path, named in the error.
+    input_path (str)
+        The input pickle's path, named in the error.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    ValueError
+        If any identity field present in both blocks differs.
+    """
+
+    if univariate_input_md is None or '_input_metadata' not in input_data:
+        return
+    input_md = input_data['_input_metadata']
+    differing = [field for field in _EXTRACTION_IDENTITY_FIELDS
+                 if field in univariate_input_md and field in input_md
+                 and _comparable(univariate_input_md[field]) != _comparable(input_md[field])]
+    if differing:
+        shown = []
+        for field in differing:
+            if field in ('session_ids', 'held_out_session_ids'):
+                shown.append(f"{field}: {len(univariate_input_md[field])} vs {len(input_md[field])} sessions"
+                             f"{' (same count, different sessions)' if len(univariate_input_md[field]) == len(input_md[field]) else ''}")
+            else:
+                shown.append(f"{field}: '{univariate_input_md[field]}' vs '{input_md[field]}'")
+        msg = (f"{univariate_path} was not built from {input_path}: their extraction metadata differ "
+               f"(univariate vs input) in {'; '.join(shown)}. Pass the input pickle the univariate run "
+               f"was made from.")
+        raise ValueError(msg)
+
+
+def _recorded_input_field(input_md: dict | None, keys: tuple, input_path: str):
+    """
+    Description
+    -----------
+    Reads one field of the modeling-input pickle's ``_input_metadata``: the
+    target, classes, category and history length a selection runs on are the
+    ones the pickle was extracted with, never values from the settings file,
+    which can describe another extraction. A pickle that does not record the
+    field (an artifact older than the field) is refused rather than completed
+    from the settings.
+
+    Parameters
+    ----------
+    input_md (dict | None)
+        The harvested ``_input_metadata`` block, or None when the pickle has none.
+    keys (tuple)
+        The path to the field, e.g. ``('analysis_specific', 'onset_target_classes')``.
+    input_path (str)
+        The input pickle's path, named in the error.
+
+    Returns
+    -------
+    value
+        The recorded value.
+
+    Raises
+    ------
+    ValueError
+        If the pickle has no metadata or does not record the field.
+    """
+
+    value = input_md
+    for key in keys:
+        if not isinstance(value, dict) or key not in value:
+            msg = (f"{input_path} does not record _input_metadata.{'.'.join(keys)}, which the selection reads "
+                   f"its target from. Re-extract the modeling input with the current pipeline.")
+            raise ValueError(msg)
+        value = value[key]
+    return value
 
 def _dump_step_pickle(path: str | Path, payload: Any) -> None:
     """
@@ -1217,7 +1350,7 @@ def _step_test_settings(settings: dict, camera_fps: float) -> dict:
     -------
     cfg (dict)
         ``min_lag_seconds``, ``min_lag_frames``, ``checkpoint_every``, ``pool_workers``,
-        ``pool_memory_gb``, ``fit_peak_gb_base``, ``fit_peak_gb_per_term``.
+        ``pool_memory_gb``, ``fit_peak_gb_base``, ``fit_peak_gb_per_million_row_terms``.
     """
 
     model_params = settings['model_params']
@@ -1229,7 +1362,7 @@ def _step_test_settings(settings: dict, camera_fps: float) -> dict:
         'pool_workers': int(model_params['selection_pool_workers']),
         'pool_memory_gb': float(model_params['selection_pool_memory_gb']),
         'fit_peak_gb_base': float(model_params['selection_fit_peak_gb_base']),
-        'fit_peak_gb_per_term': float(model_params['selection_fit_peak_gb_per_term']),
+        'fit_peak_gb_per_million_row_terms': float(model_params['selection_fit_peak_gb_per_million_row_terms']),
     }
 
 
@@ -1771,7 +1904,21 @@ def vocal_onset_model_selection(univariate_results_path: str,
     # step pickle below via `_wrap_step`.
     _require_analysis_type(univariate_data, 'onset', univariate_results_path)
     _require_analysis_type(all_feature_data, 'onset', input_data_path)
+    _require_same_extraction(univariate_data['_input_metadata'] if '_input_metadata' in univariate_data else None,
+                             all_feature_data, univariate_results_path, input_data_path)
     _input_md, _univariate_md = _harvest_upstream_metadata(univariate_data, all_feature_data)
+    # The target is the one the pickle was extracted for: its mode, its classes, its category (recorded
+    # only when one was active) and its history length.
+    prediction_mode = _recorded_input_field(_input_md, ('analysis_specific', 'model_target_vocal_type'),
+                                            input_data_path)
+    onset_target_classes = list(_recorded_input_field(_input_md, ('analysis_specific', 'onset_target_classes'),
+                                                      input_data_path))
+    _analysis_specific = _recorded_input_field(_input_md, ('analysis_specific',), input_data_path)
+    onset_cat = (_analysis_specific['onset_target_category'] if 'onset_target_category' in _analysis_specific
+                 else None)
+    history_frames = int(_recorded_input_field(_input_md, ('filter_history_frames',), input_data_path))
+    print(f"Target (from the input pickle): {prediction_mode}, classes {onset_target_classes}"
+          f"{f', category {onset_cat}' if onset_cat is not None else ''}; history {history_frames} frames.")
 
     # Filter feature-level candidates *after* metadata extraction so the
     # iteration only sees behavioral-feature keys.
@@ -1796,10 +1943,6 @@ def vocal_onset_model_selection(univariate_results_path: str,
         print("No significant features found. Aborting.")
         return
 
-    pipeline = VocalOnsetModelingPipeline(modeling_settings_dict=settings)
-    if not hasattr(pipeline, 'history_frames'):
-        pipeline.history_frames = int(np.floor(settings['io']['camera_sampling_rate'] * settings['model_params']['filter_history']))
-    history_frames = pipeline.history_frames
 
     camera_fps = float(settings['io']['camera_sampling_rate'])
     step_cfg = _step_test_settings(settings, camera_fps)
@@ -1944,7 +2087,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
         # 50/50 inside the loop; test retains the natural class prior. Pool over
         # DEVELOPMENT sessions only so the mixed-fold event indices never reference
         # a held-out row (the pooled-feature cache below is keyed to the same set).
-        X_p_all, X_n_all = pool_session_arrays(all_feature_data[anchor_feature], dev_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
+        X_p_all, X_n_all = pool_session_arrays(all_feature_data[anchor_feature], dev_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=history_frames)
         n_pos_total = X_p_all.shape[0]
         n_neg_total = X_n_all.shape[0]
         y_full = np.concatenate((np.ones(n_pos_total), np.zeros(n_neg_total)))
@@ -1971,7 +2114,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
             dev_sessions,
             pos_key="usv_feature_arr",
             neg_key="no_usv_feature_arr",
-            n_frames=pipeline.history_frames,
+            n_frames=history_frames,
         )
         if _anchor_n_pos is None:
             _anchor_n_pos, _anchor_n_neg = _X_p.shape[0], _X_n.shape[0]
@@ -2006,7 +2149,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
     # the sklearn engine's session-grouped inner folds.
     _, _, _g_p_anchor, _g_n_anchor = pool_session_arrays(
         all_feature_data[anchor_feature], dev_sessions, pos_key="usv_feature_arr",
-        neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames, return_groups=True)
+        neg_key="no_usv_feature_arr", n_frames=history_frames, return_groups=True)
     pooled_groups_full = np.concatenate((_g_p_anchor, _g_n_anchor))
     _dev_n_keep = min(_anchor_n_pos, _anchor_n_neg)
     _dev_rng = np.random.default_rng(random_seed + n_splits_selection + 1)
@@ -2162,8 +2305,9 @@ def vocal_onset_model_selection(univariate_results_path: str,
         )
         n_workers = (1 if model_type == 'jax' else
                      pool_worker_count(step_cfg['pool_workers'], len(incumbent) + 1,
-                                       step_cfg['pool_memory_gb'], step_cfg['fit_peak_gb_base'],
-                                       step_cfg['fit_peak_gb_per_term']))
+                                       len(_dev_y) * history_frames, step_cfg['pool_memory_gb'],
+                                       step_cfg['fit_peak_gb_base'],
+                                       step_cfg['fit_peak_gb_per_million_row_terms']))
         n_folds = len(cv_folds)
         tasks = [(feat, fold_i) for feat in candidate_features for fold_i in range(n_folds)]
         pool = SelectionPool(n_workers)
@@ -2203,8 +2347,9 @@ def vocal_onset_model_selection(univariate_results_path: str,
                          for s in dev_sessions if s in all_feature_data[winner]}
         n_workers = (1 if model_type == 'jax' else
                      pool_worker_count(step_cfg['pool_workers'], len(trial),
-                                       step_cfg['pool_memory_gb'], step_cfg['fit_peak_gb_base'],
-                                       step_cfg['fit_peak_gb_per_term']))
+                                       len(_dev_y) * history_frames, step_cfg['pool_memory_gb'],
+                                       step_cfg['fit_peak_gb_base'],
+                                       step_cfg['fit_peak_gb_per_million_row_terms']))
         return run_step_shift_test(
             n_workers=n_workers,
             refit_and_score=lambda override: _onset_development_score(trial, override),
@@ -2241,21 +2386,19 @@ def vocal_onset_model_selection(univariate_results_path: str,
     fname = Path(univariate_results_path).name
     cond_match = re.search(r'((?:ephys_)?(?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
     target_condition = cond_match.group(1) if cond_match else "unknown"
-    prediction_mode = settings['model_params']['model_target_vocal_type']
-
-    # Mirror the Level-1 analysis_tag when a single onset target category is
-    # active ('individual' mode only): embed the category column name and index
-    # so step files for different categories (or label columns of different QLVM maps) never
-    # collide in the same model-selection directory.
-    onset_cat = settings['model_params']['onset_target_category']
-    if onset_cat is not None and prediction_mode == 'individual':
-        cat_col = settings['vocal_features']['usv_category_column_name']
+    # Mirror the Level-1 analysis_tag when a single onset target category was
+    # active at extraction ('individual' mode only, the only case the pickle records
+    # one): embed the category column name and index so step files for different
+    # categories (or label columns of different QLVM maps) never collide in the same
+    # model-selection directory.
+    if onset_cat is not None:
+        cat_col = _analysis_specific['usv_category_column_name']
         cat_seg = f"_cat_{cat_col}_{onset_cat}"
     else:
         cat_seg = ""
     # The onset target classes join the prefix when they are not the default ["usv"],
     # as in the Level-1 analysis_tag, so squeak-onset and USV-onset step files never collide.
-    target_type_seg = onset_target_tag(settings['model_params']['onset_target_classes'])
+    target_type_seg = onset_target_tag(onset_target_classes)
 
     prefix = f"model_selection_{target_condition}_{prediction_mode}{target_type_seg}{cat_seg}_{split_strategy}_step_"
 
@@ -2463,7 +2606,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
         current_model_features=current_model_features,
         all_feature_data=all_feature_data,
         pooled_feature_cache=pooled_feature_cache,
-        history_frames=pipeline.history_frames,
+        history_frames=history_frames,
         n_splines_value=n_splines_value,
         n_splines_time=n_splines_time,
         gam_kwargs=gam_kwargs,
@@ -3094,6 +3237,7 @@ def vocal_category_model_selection(
     # asserted across every per-feature pickle; fall back to the
     # Level-1 input pickle's copy for legacy runs.
     _require_analysis_type(all_feature_data, 'category', input_data_path)
+    _require_same_extraction(_input_pre_md_from_univ, all_feature_data, univariate_results_path, input_data_path)
     _input_md = _input_pre_md_from_univ
     if _input_md is None and '_input_metadata' in all_feature_data:
         _input_md = all_feature_data.pop('_input_metadata')
@@ -3142,10 +3286,9 @@ def vocal_category_model_selection(
         msg = "Not enough development sessions for cross-validation after reserving the held-out block."
         raise ValueError(msg)
 
-    # Strict Dictionary Access Only (No .get())
+    # The history length is the one the pickle was extracted with.
     camera_rate = settings['io']['camera_sampling_rate']
-    filter_history_sec = settings['model_params']['filter_history']
-    history_frames = int(np.floor(camera_rate * filter_history_sec))
+    history_frames = int(_recorded_input_field(_input_md, ('filter_history_frames',), input_data_path))
 
     step_cfg = _step_test_settings(settings, float(camera_rate))
     feature_traces, window_starts = _require_shift_test_inputs(all_feature_data, input_data_path, float(camera_rate))
@@ -3569,8 +3712,9 @@ def vocal_category_model_selection(
         )
         n_workers = (1 if model_type == 'jax' else
                      pool_worker_count(step_cfg['pool_workers'], len(incumbent) + 1,
-                                       step_cfg['pool_memory_gb'], step_cfg['fit_peak_gb_base'],
-                                       step_cfg['fit_peak_gb_per_term']))
+                                       len(_dev_y) * history_frames, step_cfg['pool_memory_gb'],
+                                       step_cfg['fit_peak_gb_base'],
+                                       step_cfg['fit_peak_gb_per_million_row_terms']))
         n_folds = len(cv_folds)
         tasks = [(feat, fold_i) for feat in candidate_features for fold_i in range(n_folds)]
         pool = SelectionPool(n_workers)
@@ -3610,8 +3754,9 @@ def vocal_category_model_selection(
                          for s in all_sessions_arr if s in all_feature_data[winner]}
         n_workers = (1 if model_type == 'jax' else
                      pool_worker_count(step_cfg['pool_workers'], len(trial),
-                                       step_cfg['pool_memory_gb'], step_cfg['fit_peak_gb_base'],
-                                       step_cfg['fit_peak_gb_per_term']))
+                                       len(_dev_y) * history_frames, step_cfg['pool_memory_gb'],
+                                       step_cfg['fit_peak_gb_base'],
+                                       step_cfg['fit_peak_gb_per_million_row_terms']))
         return run_step_shift_test(
             n_workers=n_workers,
             refit_and_score=lambda override: _category_development_score(trial, override),
@@ -4199,7 +4344,6 @@ def bout_parameter_model_selection(
         input_data_path: str,
         output_directory: str,
         settings_path: str | None = None,
-        target_variable: str = 'bout_durations',
         use_top_rank_as_anchor: bool = False,
         *,
         p_val: float
@@ -4285,8 +4429,6 @@ def bout_parameter_model_selection(
         The directory path where the resulting step files (.pkl) will be saved.
     settings_path : str, optional
         Path to the 'modeling_settings.json' configuration file.
-    target_variable : str, default 'bout_durations'
-        The name of the target variable to pull from the input data.
     use_top_rank_as_anchor : bool, default False
         If True, starts the search with the #1 ranked univariate feature.
     p_val : float
@@ -4376,6 +4518,7 @@ def bout_parameter_model_selection(
     # asserted against every per-feature univariate pickle, then fall
     # back to the Level-1 pickle's own block for legacy runs.
     _require_analysis_type(all_feature_data, 'params', input_data_path)
+    _require_same_extraction(_input_pre_md_from_univ, all_feature_data, univariate_results_path, input_data_path)
     _input_md = _input_pre_md_from_univ
     if _input_md is None and '_input_metadata' in all_feature_data:
         _input_md = all_feature_data.pop('_input_metadata')
@@ -4388,9 +4531,11 @@ def bout_parameter_model_selection(
     y_global = all_feature_data[ranked_features[0]]['y']
     groups_global = all_feature_data[ranked_features[0]]['groups']
 
+    # The regression target and the history length are the ones the pickle was extracted with.
+    target_variable = _recorded_input_field(_input_md, ('analysis_specific', 'target_variable'), input_data_path)
     camera_rate = settings['io']['camera_sampling_rate']
-    filter_history_sec = settings['model_params']['filter_history']
-    history_frames = int(np.floor(camera_rate * filter_history_sec))
+    history_frames = int(_recorded_input_field(_input_md, ('filter_history_frames',), input_data_path))
+    print(f"Target (from the input pickle): {target_variable}; history {history_frames} frames.")
 
     # Strict Dictionary Lookup
     model_ops = settings['model_params']
@@ -4806,8 +4951,9 @@ def bout_parameter_model_selection(
             candidate_fold=_params_candidate_fold,
         )
         n_workers = pool_worker_count(step_cfg['pool_workers'], len(incumbent) + 1,
-                                      step_cfg['pool_memory_gb'], step_cfg['fit_peak_gb_base'],
-                                      step_cfg['fit_peak_gb_per_term'])
+                                      _y_dev.size * history_frames, step_cfg['pool_memory_gb'],
+                                      step_cfg['fit_peak_gb_base'],
+                                      step_cfg['fit_peak_gb_per_million_row_terms'])
         n_folds = len(cv_folds)
         tasks = [(feat, fold_idx) for feat in candidate_features for fold_idx in range(n_folds)]
         pool = SelectionPool(n_workers)
@@ -4846,8 +4992,9 @@ def bout_parameter_model_selection(
         observed_score = _params_development_score(trial)
         winner_traces = {s: feature_traces[winner][str(s)] for s in _dev_session_ids}
         n_workers = pool_worker_count(step_cfg['pool_workers'], len(trial),
-                                      step_cfg['pool_memory_gb'], step_cfg['fit_peak_gb_base'],
-                                      step_cfg['fit_peak_gb_per_term'])
+                                      _y_dev.size * history_frames, step_cfg['pool_memory_gb'],
+                                      step_cfg['fit_peak_gb_base'],
+                                      step_cfg['fit_peak_gb_per_million_row_terms'])
         return run_step_shift_test(
             n_workers=n_workers,
             refit_and_score=lambda override: _params_development_score(trial, override),
@@ -5697,6 +5844,7 @@ def multinomial_vocal_category_model_selection(
     # captured above; the input-side block falls back to the Level-1
     # pickle if the consolidator did not provide one (legacy run).
     _require_analysis_type(raw_data, 'multinomial', input_data_path)
+    _require_same_extraction(_input_pre_md_from_univ, raw_data, univariate_results_path, input_data_path)
     _input_md = _input_pre_md_from_univ
     if _input_md is None and '_input_metadata' in raw_data:
         _input_md = raw_data.pop('_input_metadata')
@@ -6439,13 +6587,8 @@ def multinomial_vocal_category_model_selection(
                               'fold_base_tr': fold_base_tr, 'fold_base_te': fold_base_te},
             candidate_fold=_multinomial_candidate_fold,
         )
-        # The worker count is derived as in the other selectors but the pool runs with
-        # ONE worker: JAX (XLA's thread pool) is not fork-safe once the backend has run
-        # in this process, and a single fit already uses every core.
-        n_workers_requested = pool_worker_count(step_cfg['pool_workers'], len(incumbent) + 1,
-                                                step_cfg['pool_memory_gb'], step_cfg['fit_peak_gb_base'],
-                                                step_cfg['fit_peak_gb_per_term'])
-        del n_workers_requested
+        # The pool runs with ONE worker: JAX (XLA's thread pool) is not fork-safe once the
+        # backend has run in this process, and a single fit already uses every core.
         n_folds = len(cv_folds)
         tasks = [(feat, fold_idx) for feat in candidate_features for fold_idx in range(n_folds)]
         pool = SelectionPool(1)
@@ -7487,6 +7630,7 @@ def continuous_vocal_manifold_model_selection(
     # Final upstream-metadata harvest: prefer the univariate copy, fall back to
     # the input pickle's own block for legacy runs.
     _require_analysis_type(raw_data, 'continuous', input_data_path)
+    _require_same_extraction(_input_pre_md_from_univ, raw_data, univariate_results_path, input_data_path)
     _input_md = _input_pre_md_from_univ
     if _input_md is None and '_input_metadata' in raw_data:
         _input_md = raw_data.pop('_input_metadata')
@@ -8656,13 +8800,8 @@ def continuous_vocal_manifold_model_selection(
                            'fold_base_tr': fold_base_tr, 'fold_base_te': fold_base_te},
             candidate_fold=_manifold_candidate_fold,
         )
-        # The worker count is derived as in the other selectors but the pool runs with
-        # ONE worker: JAX (XLA's thread pool) is not fork-safe once the backend has run
-        # in this process, and a single fit already uses every core.
-        n_workers_requested = pool_worker_count(step_cfg['pool_workers'], len(incumbent) + 1,
-                                                step_cfg['pool_memory_gb'], step_cfg['fit_peak_gb_base'],
-                                                step_cfg['fit_peak_gb_per_term'])
-        del n_workers_requested
+        # The pool runs with ONE worker: JAX (XLA's thread pool) is not fork-safe once the
+        # backend has run in this process, and a single fit already uses every core.
         n_folds = len(cv_folds)
         tasks = [(feat, fold_idx) for feat in candidate_features for fold_idx in range(n_folds)]
         pool = SelectionPool(1)

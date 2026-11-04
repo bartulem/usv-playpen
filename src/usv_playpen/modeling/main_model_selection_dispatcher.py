@@ -34,9 +34,12 @@ Computational Strategy:
 - Traceback Verbosity: Explicitly captures and prints the full stack trace upon
   failure, which is critical for debugging pre-emption or I/O issues on cluster nodes.
 - Settings-Driven Knobs: the screening significance level
-  (``model_params.selection_p_val``) and the bout-parameter regression target
-  (``model_params.model_target_variable``) are read from ``modeling_settings.json``,
-  the same file the selectors read, so the CLI cannot silently override them.
+  (``model_params.selection_p_val``) is read from ``modeling_settings.json``, the
+  same file the selectors read, so the CLI cannot silently override it.
+- Data-Driven Target: what is selected for (the onset mode, target classes and
+  category, the bout-parameter regression target) and the history length are read
+  by each selector from the input pickle's ``_input_metadata``, the record of the
+  extraction it fits, never from the settings file.
 """
 
 from __future__ import annotations
@@ -104,13 +107,11 @@ def dispatch_model_selection(args: argparse.Namespace) -> int:
     """
     Routes the model selection task to the specific algorithm implementation.
 
-    This function implements the multi-line architecture for logical branching,
-    ensuring that specific hyperparameters (like target_variable for params)
-    are injected only where appropriate. The screening significance level
-    ``p_val`` and the params ``target_variable`` are read from the settings
-    file (``model_params.selection_p_val`` / ``model_params.model_target_variable``),
-    never from the command line, so the selection always runs with the
-    configured values.
+    This function implements the multi-line architecture for logical branching.
+    The screening significance level ``p_val`` is read from the settings file
+    (``model_params.selection_p_val``), never from the command line, so the
+    selection always runs with the configured value. The target each selector
+    fits is read by the selector from the input pickle.
 
     Parameters
     ----------
@@ -142,7 +143,6 @@ def dispatch_model_selection(args: argparse.Namespace) -> int:
     with Path(settings_path).open() as settings_file:
         model_params = json.load(settings_file)['model_params']
     p_val = model_params['selection_p_val']
-    target_variable = model_params['model_target_variable']
     print(f"Screening significance level (model_params.selection_p_val): {p_val}")
 
     # 2. Execution Routing with Multi-line Architecture
@@ -172,14 +172,11 @@ def dispatch_model_selection(args: argparse.Namespace) -> int:
 
         elif args.analysis_type == 'params':
 
-            print(f"Target Variable for Regression: {target_variable}")
-
             bout_parameter_model_selection(
                 univariate_results_path=args.univariate_path,
                 input_data_path=args.input_path,
                 settings_path=settings_path,
                 output_directory=args.output_dir,
-                target_variable=target_variable,
                 use_top_rank_as_anchor=args.anchor,
                 p_val=p_val
             )

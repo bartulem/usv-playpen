@@ -206,6 +206,13 @@ def compute_settings_sha256(settings_source) -> str:
       differences all surface as different SHAs (which is what we want
       — the hash represents the on-disk artifact, not the in-memory
       dict).
+    - The file's raw `bytes`, exactly as the pipeline read them. They are
+      hashed verbatim, giving the same SHA as the path form for the same
+      file. Use this form when the hash is taken after the run: a run
+      can last a day, and hashing the path then would fingerprint
+      whatever the file holds at that moment (an edit made while the job
+      ran) instead of the settings the run was configured with. Read the
+      file once, parse and hash those same bytes (`load_settings_with_sha256`).
     - A `dict` already loaded into memory. The dict is serialized with
       `json.dumps(..., sort_keys=True, default=str)` to produce a
       canonical byte form before hashing. Use this form when the
@@ -214,8 +221,9 @@ def compute_settings_sha256(settings_source) -> str:
 
     Parameters
     ----------
-    settings_source : str or dict
-        Either an absolute path to the JSON file or the loaded dict.
+    settings_source : str or bytes or dict
+        An absolute path to the JSON file, the file's raw bytes as read, or
+        the loaded dict.
 
     Returns
     -------
@@ -230,6 +238,8 @@ def compute_settings_sha256(settings_source) -> str:
             payload = json.dumps(settings_source, sort_keys=True,
                                  default=str).encode('utf-8')
             h.update(payload)
+        elif isinstance(settings_source, bytes):
+            h.update(settings_source)
         else:
             with Path(settings_source).open('rb') as fh:
                 for chunk in iter(lambda: fh.read(65536), b''):
@@ -240,6 +250,31 @@ def compute_settings_sha256(settings_source) -> str:
         # 'unknown'; any other error propagates.
         return 'unknown'
 
+
+
+def load_settings_with_sha256(settings_path: str) -> tuple[dict, str]:
+    """
+    Description
+    -----------
+    Reads a settings JSON once and returns both the parsed settings and the
+    SHA-256 of the exact bytes parsed, so a run's recorded fingerprint is that
+    of the settings it ran with, however long it runs and whatever happens to
+    the file meanwhile. The hash equals ``compute_settings_sha256(settings_path)``
+    for an unchanged file.
+
+    Parameters
+    ----------
+    settings_path (str)
+        Path to the settings JSON.
+
+    Returns
+    -------
+    settings, settings_sha256 (tuple[dict, str])
+        The parsed settings and the lowercase hex SHA-256 of the bytes read.
+    """
+
+    raw = Path(settings_path).read_bytes()
+    return json.loads(raw), compute_settings_sha256(raw)
 
 def assert_no_reserved_keys(payload: dict, reserved: tuple | None = None) -> None:
     """
@@ -618,7 +653,8 @@ def build_run_metadata(modeling_settings: dict,
                        null_strategy: str,
                        n_outer_folds: int,
                        split_strategy: str,
-                       settings_path: str | None = None) -> dict:
+                       settings_path: str | None = None,
+                       settings_sha256: str | None = None) -> dict:
     """
     Builds the Level-2 (`_run_metadata`) provenance block for a single
     per-feature univariate fit.
@@ -694,7 +730,13 @@ def build_run_metadata(modeling_settings: dict,
         `'mixed'`, `'session'`, etc., as resolved by the dispatcher.
     settings_path : str, optional
         Filesystem path to the settings JSON for SHA-256 hashing. See
-        `compute_settings_sha256`.
+        `compute_settings_sha256`. Hashed when the block is built, so a
+        caller that builds it at the end of a long run passes
+        ``settings_sha256`` instead.
+    settings_sha256 : str, optional
+        The fingerprint taken when the settings were read
+        (`load_settings_with_sha256`); when given it is recorded as is and
+        ``settings_path`` is not read.
 
     Returns
     -------
@@ -847,7 +889,8 @@ def build_run_metadata(modeling_settings: dict,
     metadata['git_commit'] = git_info['commit']
     metadata['git_dirty'] = git_info['dirty']
     metadata['package_version'] = get_package_version()
-    metadata['settings_sha256'] = compute_settings_sha256(settings_source)
+    metadata['settings_sha256'] = (settings_sha256 if settings_sha256 is not None
+                                   else compute_settings_sha256(settings_source))
 
     return metadata
 

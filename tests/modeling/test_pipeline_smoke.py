@@ -618,7 +618,6 @@ class TestModelSelectionDispatcher:
                 output_dir=str(ms_dir),
                 anchor=True,
                 pval=0.05,
-                target_variable='bout_durations',
             )
         )
 

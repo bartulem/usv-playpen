@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import io
 import json
 import pickle
 import sys
@@ -69,6 +70,7 @@ from .modeling_bases_functions import (
 from .modeling_metadata import (
     RESERVED_METADATA_KEYS,
     build_run_metadata,
+    compute_settings_sha256,
     inject_metadata,
     read_reserved_block,
 )
@@ -265,10 +267,12 @@ def dispatch_univariate_job(args: argparse.Namespace) -> int:
     settings_path = (str(args.settings) if args.settings is not None
                      else str(Path(__file__).resolve().parent.parent / '_parameter_settings' / 'modeling_settings.json'))
 
-    # 1. Load Experimental Configuration
+    # 1. Load Experimental Configuration. The fingerprint is taken from the bytes read
+    # here: a fit can run for a day, and the file may be edited meanwhile.
     try:
-        with Path(settings_path).open() as f:
-            settings = json.load(f)
+        settings_bytes = Path(settings_path).read_bytes()
+        settings = json.load(io.BytesIO(settings_bytes))
+        settings_sha256 = compute_settings_sha256(settings_bytes)
     except Exception as e:
         print(f"FATAL: Settings load failed: {e}")
         return 1
@@ -449,7 +453,7 @@ def dispatch_univariate_job(args: argparse.Namespace) -> int:
         null_strategy='y_permutation',
         n_outer_folds=int(settings['model_validation'][outer_fold_key]),
         split_strategy=settings['model_validation']['split_strategy'],
-        settings_path=settings_path,
+        settings_sha256=settings_sha256,
     )
     run_metadata['n_features_in_input'] = int(n_features_in_input)
 

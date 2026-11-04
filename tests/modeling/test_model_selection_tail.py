@@ -63,6 +63,7 @@ from tests.modeling._synth import (
     build_modeling_settings,
     build_session_tree,
     fit_counting_subclass,
+    selection_input_metadata,
     write_session_list_file,
 )
 
@@ -663,8 +664,8 @@ class TestBoutOnsetSelectionBranches:
         feature_names = ['self.speed', 'other.speed']
         session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
         held_ids = session_ids[-1:]
-        input_md = {'analysis_tag': 'bout', 'session_ids': session_ids,
-                    'held_out_session_ids': held_ids}
+        input_md = selection_input_metadata({'analysis_tag': 'bout', 'session_ids': session_ids,
+                                             'held_out_session_ids': held_ids}, 'onset', HISTORY_FRAMES)
         input_pkl = str(build_modeling_input_pickle(
             save_path=tmp_path / 'modeling_input.pkl',
             feature_names=feature_names,
@@ -718,8 +719,8 @@ class TestBoutOnsetSelectionBranches:
         feature_names = ['self.speed', 'other.speed']
         session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
         held_ids = session_ids[-1:]
-        input_md = {'analysis_tag': 'bout', 'session_ids': session_ids,
-                    'held_out_session_ids': held_ids}
+        input_md = selection_input_metadata({'analysis_tag': 'bout', 'session_ids': session_ids,
+                                             'held_out_session_ids': held_ids}, 'onset', HISTORY_FRAMES)
         input_pkl = str(build_modeling_input_pickle(
             save_path=tmp_path / 'modeling_input.pkl',
             feature_names=feature_names,
@@ -801,7 +802,7 @@ class TestPooledCacheMisalignment:
                     trace[start:start + HISTORY_FRAMES] = window
                 traces[feat][sess] = trace
         artifact.update(shift_test_inputs_block(traces, window_starts))
-        artifact['_input_metadata'] = {'analysis_tag': 'bout'}
+        artifact['_input_metadata'] = selection_input_metadata({'analysis_tag': 'bout'}, 'onset', HISTORY_FRAMES)
         input_pkl = tmp_path / 'modeling_input.pkl'
         with input_pkl.open('wb') as fh:
             pickle.dump(artifact, fh)
@@ -847,6 +848,7 @@ def _category_input_metadata():
 
     return {
         'analysis_tag': f"category_{CATEGORY_COLUMN}_{TARGET_CATEGORY}",
+        'filter_history_frames': HISTORY_FRAMES,
         'analysis_specific': {
             'target_category': TARGET_CATEGORY,
             'usv_category_column_name': CATEGORY_COLUMN,
@@ -1322,7 +1324,8 @@ def _build_params_input_pickle(save_path, feature_names, session_ids,
         if f_idx == 0:
             X = X + np.log(y)[:, None] * 0.6
         artifact[feature] = {'X': X.astype(float), 'y': y.copy(), 'groups': groups.copy()}
-    artifact['_input_metadata'] = {'analysis_tag': 'bout_durations'}
+    artifact['_input_metadata'] = selection_input_metadata(
+        {'analysis_tag': 'bout_durations'}, 'params', HISTORY_FRAMES)
     attach_shift_test_inputs(artifact, HISTORY_FRAMES, slots={'X': 'X'}, fps=CAMERA_FPS,
                              layout='global', seed=seed)
     save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1366,7 +1369,8 @@ def _write_params_ranking(save_path, feature_names, significant=True, n_folds=4,
             'null': {'explained_deviance': np.full(n_folds, 0.01, dtype=float)},
         }
     if input_pickle is None:
-        artifact['_input_metadata'] = {'analysis_tag': 'bout_durations'}
+        artifact['_input_metadata'] = selection_input_metadata(
+            {'analysis_tag': 'bout_durations'}, 'params', HISTORY_FRAMES)
     else:
         # The univariate dispatcher copies the input pickle's block verbatim, and the
         # selector prefers that copy.
@@ -1433,7 +1437,6 @@ class TestBoutParameterSelectionBranches:
             input_data_path=input_pkl,
             settings_path=_settings_json(tmp_path, settings),
             output_directory=str(ms_dir),
-            target_variable='bout_durations',
             use_top_rank_as_anchor=True,
             p_val=0.01,
         )
@@ -1463,7 +1466,6 @@ class TestBoutParameterSelectionBranches:
                 input_data_path=input_pkl,
                 settings_path=_settings_json(tmp_path, settings),
                 output_directory=str(ms_dir),
-                target_variable='bout_durations',
                 use_top_rank_as_anchor=True,
                 p_val=0.5,
             )
@@ -1492,7 +1494,6 @@ class TestBoutParameterSelectionBranches:
                 input_data_path=input_pkl,
                 settings_path=_settings_json(tmp_path, settings),
                 output_directory=str(ms_dir),
-                target_variable='bout_durations',
                 use_top_rank_as_anchor=True,
                 p_val=0.5,
             )
@@ -1538,7 +1539,6 @@ class TestBoutParameterSelectionBranches:
             input_data_path=input_pkl,
             settings_path=_settings_json(tmp_path, settings),
             output_directory=str(ms_dir),
-            target_variable='bout_durations',
             use_top_rank_as_anchor=True,
             p_val=0.5,
         )
@@ -1582,7 +1582,6 @@ class TestBoutParameterSelectionBranches:
             input_data_path=input_pkl,
             settings_path=_settings_json(tmp_path, settings),
             output_directory=str(ms_dir),
-            target_variable='bout_durations',
             use_top_rank_as_anchor=True,
             p_val=0.5,
         )
@@ -1853,7 +1852,7 @@ class TestResumeEqualsFresh:
         settings_path = _settings_json(tmp_path, settings)
         self._assert_resume_equals_fresh(lambda: bout_parameter_model_selection(
             univariate_results_path=ranking_pkl, input_data_path=input_pkl, settings_path=settings_path,
-            output_directory=str(ms_dir), target_variable='bout_durations', use_top_rank_as_anchor=True,
+            output_directory=str(ms_dir), use_top_rank_as_anchor=True,
             p_val=0.5), ms_dir, capsys)
 
 
@@ -1907,7 +1906,7 @@ class TestFreshStartQuarantinesStaleSteps:
         bout_parameter_model_selection(
             univariate_results_path=ranking_pkl, input_data_path=input_pkl,
             settings_path=_settings_json(tmp_path, settings), output_directory=str(ms_dir),
-            target_variable='bout_durations', use_top_rank_as_anchor=True, p_val=0.5)
+            use_top_rank_as_anchor=True, p_val=0.5)
 
         for path in ms_dir.glob(f'{prefix}*.pkl'):
             with path.open('rb') as fh:
@@ -2015,7 +2014,7 @@ class TestEmptySelectionFinalizes:
                 """
                 bout_parameter_model_selection(
                     univariate_results_path=ranking_pkl, input_data_path=input_pkl, settings_path=settings_path,
-                    output_directory=str(ms_dir), target_variable='bout_durations',
+                    output_directory=str(ms_dir),
                     use_top_rank_as_anchor=False, p_val=0.5)
 
         run()
@@ -2055,8 +2054,8 @@ class TestJaxEngineSelection:
         feature_names = ['self.speed', 'other.speed']
         session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
         held_ids = session_ids[-1:]
-        input_md = {'analysis_tag': 'bout', 'session_ids': session_ids,
-                    'held_out_session_ids': held_ids}
+        input_md = selection_input_metadata({'analysis_tag': 'bout', 'session_ids': session_ids,
+                                             'held_out_session_ids': held_ids}, 'onset', HISTORY_FRAMES)
         input_pkl = str(build_modeling_input_pickle(
             save_path=tmp_path / 'modeling_input.pkl',
             feature_names=feature_names,
@@ -2125,8 +2124,8 @@ class TestSklearnEngineSelection:
         feature_names = ['self.speed', 'other.speed']
         session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
         held_ids = session_ids[-1:]
-        input_md = {'analysis_tag': 'bout', 'session_ids': session_ids,
-                    'held_out_session_ids': held_ids}
+        input_md = selection_input_metadata({'analysis_tag': 'bout', 'session_ids': session_ids,
+                                             'held_out_session_ids': held_ids}, 'onset', HISTORY_FRAMES)
         input_pkl = str(build_modeling_input_pickle(
             save_path=tmp_path / 'modeling_input.pkl',
             feature_names=feature_names,

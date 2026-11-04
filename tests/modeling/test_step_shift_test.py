@@ -485,29 +485,57 @@ class TestShiftArithmetic:
             mu.macro_log_likelihood(np.array([0, 1]), np.array([[0.5], [0.5]]), np.array([0, 1]))
 
     def test_pool_worker_count_caps(self, monkeypatch):
-        """Requested workers, the memory cap and the SLURM environment are all honoured."""
+        """
+        Description
+        -----------
+        Requested workers, the memory cap and the SLURM environment are all honoured, and the per-fit
+        peak scales with the design: ``base + rate * (rows / 1e6) * n_terms``, counted against the
+        budget left after the calling process's own resident memory (stubbed here at 6 GB).
+        """
 
+        class _Memory:
+            rss = 6 * 1024 ** 3
+
+        class _Process:
+            def memory_info(self):
+                return _Memory()
+
+        monkeypatch.setattr(mu.psutil, 'Process', _Process)
         monkeypatch.delenv('SLURM_CPUS_PER_TASK', raising=False)
         monkeypatch.delenv('SLURM_MEM_PER_NODE', raising=False)
-        assert mu.pool_worker_count(4, n_terms=3, memory_gb=100.0, peak_gb_base=2.0, peak_gb_per_term=4.0) == 4
-        # 2 + 4 * 9 = 38 GB per fit: a 64 GB budget holds one.
-        assert mu.pool_worker_count(12, n_terms=9, memory_gb=64.0, peak_gb_base=2.0, peak_gb_per_term=4.0) == 1
-        # 2 + 4 * 3 = 14 GB per fit: 64 GB holds four.
-        assert mu.pool_worker_count(12, n_terms=3, memory_gb=64.0, peak_gb_base=2.0, peak_gb_per_term=4.0) == 4
+        # 2 + 3 * 1.0 * 3 = 11 GB per fit; (100 - 6) / 11 = 8.5, capped by the 4 requested.
+        assert mu.pool_worker_count(4, n_terms=3, fit_rows=1_000_000, memory_gb=100.0, peak_gb_base=2.0,
+                                    peak_gb_per_million_row_terms=3.0) == 4
+        # The same model on 2.5 million rows: 2 + 3 * 2.5 * 2 = 17 GB; (96 - 6) / 17 = 5.3 -> 5.
+        assert mu.pool_worker_count(12, n_terms=2, fit_rows=2_500_000, memory_gb=96.0, peak_gb_base=2.0,
+                                    peak_gb_per_million_row_terms=3.0) == 5
+        # More terms on the same rows: 2 + 3 * 2.5 * 6 = 47 GB; 90 / 47 -> 1.
+        assert mu.pool_worker_count(12, n_terms=6, fit_rows=2_500_000, memory_gb=96.0, peak_gb_base=2.0,
+                                    peak_gb_per_million_row_terms=3.0) == 1
+        # The parent's memory counts: without it the 2-term case would allow 96 / 17 = 5.6 -> 5 as well,
+        # but a parent holding 40 GB leaves (96 - 40) / 17 = 3.3 -> 3.
+        _Memory.rss = 40 * 1024 ** 3
+        assert mu.pool_worker_count(12, n_terms=2, fit_rows=2_500_000, memory_gb=96.0, peak_gb_base=2.0,
+                                    peak_gb_per_million_row_terms=3.0) == 3
+        _Memory.rss = 6 * 1024 ** 3
         # Never below one, even when a single fit exceeds the budget.
-        assert mu.pool_worker_count(12, n_terms=9, memory_gb=8.0, peak_gb_base=2.0, peak_gb_per_term=4.0) == 1
-        # Off the cluster, 0 means the machine's physical memory, never "no cap":
-        # a per-fit peak larger than the machine leaves one worker.
+        assert mu.pool_worker_count(12, n_terms=9, fit_rows=5_000_000, memory_gb=8.0, peak_gb_base=2.0,
+                                    peak_gb_per_million_row_terms=3.0) == 1
+        # Off the cluster, 0 means the machine's physical memory, never "no cap": a per-fit peak larger
+        # than the machine leaves one worker.
         physical_gb = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') / 1024.0 ** 3
-        assert mu.pool_worker_count(64, n_terms=1, memory_gb=0.0, peak_gb_base=0.0,
-                                    peak_gb_per_term=2.0 * physical_gb) == 1
-        assert mu.pool_worker_count(64, n_terms=1, memory_gb=0.0, peak_gb_base=0.0,
-                                    peak_gb_per_term=physical_gb / 3.5) == 3
+        assert mu.pool_worker_count(64, n_terms=1, fit_rows=1_000_000, memory_gb=0.0, peak_gb_base=0.0,
+                                    peak_gb_per_million_row_terms=2.0 * physical_gb) == 1
+        assert mu.pool_worker_count(64, n_terms=1, fit_rows=1_000_000, memory_gb=0.0, peak_gb_base=0.0,
+                                    peak_gb_per_million_row_terms=(physical_gb - 6.0) / 3.5) == 3
         monkeypatch.setenv('SLURM_CPUS_PER_TASK', '6')
         monkeypatch.setenv('SLURM_MEM_PER_NODE', str(96 * 1024))
-        assert mu.pool_worker_count(0, n_terms=3, memory_gb=0.0, peak_gb_base=2.0, peak_gb_per_term=4.0) == 6
-        assert mu.pool_worker_count(0, n_terms=9, memory_gb=0.0, peak_gb_base=2.0, peak_gb_per_term=4.0) == 2
-
+        # 2 + 3 * 1.0 * 3 = 11 GB: 90 / 11 = 8, capped by the 6 CPUs.
+        assert mu.pool_worker_count(0, n_terms=3, fit_rows=1_000_000, memory_gb=0.0, peak_gb_base=2.0,
+                                    peak_gb_per_million_row_terms=3.0) == 6
+        # 2 + 3 * 1.0 * 9 = 29 GB: 90 / 29 = 3.1 -> 3.
+        assert mu.pool_worker_count(0, n_terms=9, fit_rows=1_000_000, memory_gb=0.0, peak_gb_base=2.0,
+                                    peak_gb_per_million_row_terms=3.0) == 3
 
 # ---------------------------------------------------------------------------------
 # the pool
@@ -799,7 +827,7 @@ def _settings_for_guards() -> dict:
         'selection_pool_workers': 0,
         'selection_pool_memory_gb': 0,
         'selection_fit_peak_gb_base': 2,
-        'selection_fit_peak_gb_per_term': 4,
+        'selection_fit_peak_gb_per_million_row_terms': 3.0,
     }}
 
 
@@ -813,7 +841,7 @@ class TestSelectorGuards:
         cfg = ms._step_test_settings(_settings_for_guards(), 12.0)
         assert cfg == {
             'min_lag_seconds': 2.0, 'min_lag_frames': 24, 'checkpoint_every': 50, 'pool_workers': 0,
-            'pool_memory_gb': 0.0, 'fit_peak_gb_base': 2.0, 'fit_peak_gb_per_term': 4.0,
+            'pool_memory_gb': 0.0, 'fit_peak_gb_base': 2.0, 'fit_peak_gb_per_million_row_terms': 3.0,
         }
         settings = _settings_for_guards()
         settings['model_params']['selection_step_null_min_lag_seconds'] = 0.1
@@ -918,6 +946,7 @@ def _onset_input_metadata(session_ids: list, held_out: list, feature_names: list
         'feature_zoo_kept': list(feature_names),
         'filter_history_frames': HISTORY_FRAMES,
         'camera_sampling_rate_hz': CAMERA_FPS,
+        'analysis_specific': {'model_target_vocal_type': 'bout_onset', 'onset_target_classes': ['usv']},
     }
 
 

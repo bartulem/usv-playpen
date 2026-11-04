@@ -28,7 +28,6 @@ state collapse the EM engine suffers on weakly-identified categorical data.
 
 from __future__ import annotations
 
-import json
 import pickle
 from pathlib import Path
 
@@ -43,11 +42,11 @@ from .glm_hmm import (
 )
 from .modeling_metadata import (
     CONSOLIDATED_SELECTION_PATTERNS,
-    compute_settings_sha256,
     get_git_commit_info,
     get_package_version,
     inject_metadata,
     load_selection_results,
+    load_settings_with_sha256,
     read_reserved_block,
 )
 from .modeling_utils import held_out_session_ids_from_metadata
@@ -389,8 +388,8 @@ def run_glm_hmm_state_selection(input_data_path: str, settings_path: str,
         ``transition_matrix``, ``state_paths`` (session -> Viterbi states), and a
         ``metadata`` block describing the run.
     """
-    with Path(settings_path).open() as settings_file:
-        settings = json.load(settings_file)
+    # Fingerprinted from the bytes read here, not from the file when the run ends.
+    settings, settings_sha256 = load_settings_with_sha256(settings_path)
     glm_hmm_settings = settings['glm_hmm']
     emission_type = glm_hmm_settings['emission_type']
     if emission_type not in ('manifold', 'multinomial'):
@@ -724,7 +723,7 @@ def run_glm_hmm_state_selection(input_data_path: str, settings_path: str,
     results['metadata']['git_commit'] = git_info['commit']
     results['metadata']['git_dirty'] = git_info['dirty']
     results['metadata']['package_version'] = get_package_version()
-    results['metadata']['settings_sha256'] = compute_settings_sha256(settings_path)
+    results['metadata']['settings_sha256'] = settings_sha256
     if input_metadata:
         results = inject_metadata(results, _input_metadata=input_metadata)
 
