@@ -51,6 +51,7 @@ from usv_playpen.neural_modeling.neural_artifacts import (
     read_unit_artifact,
     write_unit_section,
 )
+from usv_playpen.neural_modeling.neural_nested_decoding import CONTROL_TARGETS
 
 RECORD = {"unit_uid": "m1_20250101_imec0_cl0001_ch001_good", "unit_id": "imec0_cl0001_ch001_good",
           "mouse_id": "m1", "rec_date": 20250101, "brain_area": "PAG", "block_split": None,
@@ -158,11 +159,13 @@ class TestBookkeeping:
             load_manifest(str(manifest), load_settings())
 
     def test_missing_inputs_are_named(self, tmp_path):
-        """Every absent input is reported before an array is launched."""
+        """Every absent input is reported before an array is launched. Every other input points at a
+        directory that exists, so the result does not depend on which shipped paths exist on the machine
+        running the test."""
         settings = load_settings()
         settings["paths"]["catalog_path"] = str(tmp_path / "absent_catalog.csv")
         settings["paths"]["data_root"] = str(tmp_path)
-        for target in ("manifold", "multinomial"):
+        for target in CONTROL_TARGETS:
             settings["paths"]["behaviour_control_model_path"][target] = str(tmp_path)
             settings["paths"]["behaviour_selection_result_path"][target] = str(tmp_path)
         missing = check_inputs(settings)
