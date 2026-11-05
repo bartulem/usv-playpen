@@ -501,9 +501,12 @@ def classify_unit(passes: dict, slope: float, conjunctions: dict) -> tuple[str, 
     2. Conditional -- the vocal gating test passes.
     3. Behavior-mediated -- T+ and a vocal test passes. With Transformation ruled out, the unit's vocal
        signal was not shown to go beyond behavior: its nested test failed, could not run, or passed on
-       its own while its conjunction was not rejected (flagged).
-    4. Remapping -- quiet passes and either the transfer passes with a negative slope, or the transfer
-       fails or is missing while a vocal test passes.
+       its own while its conjunction was not rejected. Subclass ``passed_separately`` for the last case
+       (each corrected test passes but the conjunction, corrected over its own units, does not).
+    4. Remapping -- quiet passes and either the transfer passes with a negative slope (subclass
+       ``reversed``), or the transfer fails or is missing while a vocal test passes (subclass
+       ``not_transferred``: the tuning is not detected during vocalization, which is not evidence that it
+       is lost).
     5. Vocal -- quiet does not pass and a vocal test passes. Subclasses, one per aspect that passes:
        ``onset`` or ``onset_beyond_behavior``, ``content`` or ``content_beyond_behavior`` (the nested test
        replaces its marginal one when both pass).
@@ -541,6 +544,9 @@ def classify_unit(passes: dict, slope: float, conjunctions: dict) -> tuple[str, 
     t_minus = quiet and transfer and bool(np.isfinite(slope) and slope < 0)
     vocal_pass = [test for test in VOCAL_TESTS if passes[test] is True]
     branches = [branch for branch in CONJUNCTIONS if conjunctions[branch] and positive]
+    # A branch whose components each passed on their own while its conjunction was not rejected.
+    separately = [branch for branch in CONJUNCTIONS
+                  if t_plus and passes[CONJUNCTIONS[branch][-1]] is True and branch not in branches]
     subclasses: list = []
     if branches:
         category, subclasses = "Transformation", branches
@@ -548,8 +554,10 @@ def classify_unit(passes: dict, slope: float, conjunctions: dict) -> tuple[str, 
         category = "Conditional"
     elif t_plus and vocal_pass:
         category = "Behavior-mediated"
+        if separately:
+            subclasses = ["passed_separately"]
     elif quiet and (t_minus or (not transfer and vocal_pass)):
-        category = "Remapping"
+        category, subclasses = "Remapping", ["reversed" if t_minus else "not_transferred"]
     elif not quiet and vocal_pass:
         category = "Vocal"
         for marginal, nested in (("occurrence", "nested_onset"), ("identity", "nested")):
@@ -562,9 +570,6 @@ def classify_unit(passes: dict, slope: float, conjunctions: dict) -> tuple[str, 
         category, subclasses = "Behavioral feedback", ["transferring" if t_plus else "quiet_only"]
     else:
         category = "None"
-    # A branch whose components each passed on their own while its conjunction was not rejected.
-    separately = [branch for branch in CONJUNCTIONS
-                  if t_plus and passes[CONJUNCTIONS[branch][-1]] is True and branch not in branches]
     marginal = ("+".join(branch for branch in branches if passes[BRANCH_MARGINAL[branch]] is True) or "none"
                 if category == "Transformation" else None)
     modifiers = {"subclasses": "+".join(subclasses), "marginal_decoding": marginal,
@@ -711,17 +716,24 @@ def _area_report(frame: pls.DataFrame, q: float, draws: dict) -> dict:
     -------
     report (dict)
         Per test: units tested, units rejected, units excluded by reason and the floor requirement (for
-        gating, read off the Bonferroni-adjusted floor its units reach, ``floor_p``); the
-        conjunction's count; the share of quiet-encoding units each conjunction requirement removes; the
-        correlation matrix of the tests' z-scores; the category counts; and how many transformation units
-        sit where the behaviour control buys nothing over no behaviour, which are kept and counted.
+        gating, read off the Bonferroni-adjusted floor its units reach, ``floor_p``); per conjunction, its
+        rejections and, as ``n_transformation``, those with a positive transfer slope (the headline count:
+        a rejected conjunction with a negative slope is not a transformation); the share of
+        quiet-encoding units each conjunction requirement removes, over the units on which that
+        requirement was tested (a missing test is neither a pass nor a fail); the correlation matrix of
+        the z-scores of every conjunction component and marginal decoding; the category counts; and how
+        many transformation units sit where the behaviour control buys nothing over no behaviour, which
+        are kept and counted.
     """
 
     report: dict = {"n_units": frame.height, "tests": {}}
     for test in [*TESTS, *CONJUNCTION_COLUMNS]:
         tested = frame.filter(pls.col(f"p_{test}").is_not_nan())
         entry = {"n_tested": tested.height, "n_rejected": int(frame[f"pass_{test}"].fill_null(False).sum())}
-        if test not in CONJUNCTION_COLUMNS:
+        if test in CONJUNCTION_COLUMNS:
+            positive = frame["transfer_slope"].fill_nan(0.0).fill_null(0.0) > 0
+            entry["n_transformation"] = int((frame[f"pass_{test}"].fill_null(False) & positive).sum())
+        else:
             reasons = frame.filter(pls.col(f"p_{test}").is_nan())[f"reason_{test}"].fill_null("unknown")
             entry["excluded"] = dict(zip(*np.unique(reasons.to_numpy().astype(str), return_counts=True),
                                          strict=True)) if reasons.len() else {}
@@ -740,13 +752,19 @@ def _area_report(frame: pls.DataFrame, q: float, draws: dict) -> dict:
 
     encoded = frame.filter(pls.col("pass_quiet").fill_null(False))
     if encoded.height:
-        transfers = (encoded["pass_transfer"].fill_null(False) & (encoded["transfer_slope"].fill_nan(0.0) > 0))
-        report["removed_by_requirement"] = {
-            "n_quiet_encoding": encoded.height,
-            "transfer": float(1.0 - transfers.mean()),
-            "nested": float(1.0 - encoded["pass_nested"].fill_null(False).mean()),
-            "nested_onset": float(1.0 - encoded["pass_nested_onset"].fill_null(False).mean())}
-    columns = [f"z_{test}" for test in ("quiet", "transfer", "occurrence", "identity", "nested")]
+        # Each requirement's share is taken over the quiet-encoding units on which it was tested: a unit
+        # whose test could not run was not removed by it, and is reported in n_tested instead.
+        removed = {"n_quiet_encoding": encoded.height}
+        for requirement in ("transfer", "nested", "nested_onset"):
+            tested = encoded.filter(pls.col(f"pass_{requirement}").is_not_null())
+            kept = tested[f"pass_{requirement}"]
+            if requirement == "transfer":
+                kept = kept & (tested["transfer_slope"].fill_nan(0.0) > 0)
+            removed[requirement] = {"n_tested": tested.height,
+                                    "share_removed": float(1.0 - kept.mean()) if tested.height else None}
+        report["removed_by_requirement"] = removed
+    columns = [f"z_{test}" for test in ("quiet", "transfer", "occurrence", "identity", "nested",
+                                        "nested_onset")]
     z = frame.select(columns).to_numpy().astype(np.float64)
     complete = np.isfinite(z).all(axis=1)
     report["z_correlation"] = {"tests": [c[2:] for c in columns], "n_units": int(complete.sum()),

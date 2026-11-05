@@ -869,7 +869,7 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
     if quiet_significant and transfer_significant and transfer["slope"] > 0:
         reading = "transformation candidate"
     elif quiet_significant and transfer_significant:
-        reading = "regime-switching (tuned in both regimes, opposite sign)"
+        reading = "remapping (tuned in both regimes, opposite sign)"
     elif quiet_significant:
         reading = "purely kinematic (no transfer)"
     else:
@@ -1089,7 +1089,7 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
     if quiet_significant and transfer_significant and transfer["slope"] > 0:
         reading = "transformation candidate"
     elif quiet_significant and transfer_significant:
-        reading = "regime-switching (tuned in both regimes, opposite sign)"
+        reading = "remapping (tuned in both regimes, opposite sign)"
     elif quiet_significant:
         reading = "purely kinematic (no transfer)"
     else:

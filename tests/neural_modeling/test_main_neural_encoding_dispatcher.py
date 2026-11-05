@@ -1497,7 +1497,7 @@ class TestCombine:
         ("quiet_p", "transfer_p", "transfer_slope", "reading"),
         [
             (0.001, 0.001, 0.3, "transformation candidate"),
-            (0.001, 0.001, -0.3, "regime-switching"),
+            (0.001, 0.001, -0.3, "remapping"),
             (0.001, 0.5, 0.3, "purely kinematic"),
             (0.5, 0.001, 0.3, "not tuned on quiet"),
         ],
@@ -1564,7 +1564,7 @@ class TestRunSingle:
         ("n_shuffles", "transfer_p", "transfer_slope", "reading"),
         [
             (199, 0.001, 0.3, "transformation candidate"),
-            (199, 0.001, -0.3, "regime-switching"),
+            (199, 0.001, -0.3, "remapping"),
             (199, 0.5, 0.3, "purely kinematic"),
             (9, 0.5, 0.3, "not tuned on quiet"),
         ],

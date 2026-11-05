@@ -4527,9 +4527,12 @@ any of occurrence, nested onset, identity and nested. The rules, in priority ord
    (identity, occurrence) also passed is noted in ``marginal_decoding``; it is not required.
 2. ``Conditional``: the vocal gating test passes.
 3. ``Behavior-mediated``: T+ and a vocal test passes. The nested test failed, could not run, or passed on
-   its own while its conjunction was not rejected (``separate_pass_conjunction_fail``).
-4. ``Remapping``: the quiet encoding passes and either the transfer passes with a negative slope, or it
-   fails or is missing (``remapping_transfer_missing``) while a vocal test passes.
+   its own while its conjunction was not rejected (subclass ``passed_separately``, also flagged in
+   ``separate_pass_conjunction_fail``).
+4. ``Remapping``: the quiet encoding passes and either the transfer passes with a negative slope
+   (subclass ``reversed``), or it fails or is missing (``remapping_transfer_missing``) while a vocal test
+   passes (subclass ``not_transferred``: the tuning is not detected during vocalization, which does not
+   show that it is lost).
 5. ``Vocal``: the quiet encoding does not pass and a vocal test does. Subclasses, one per aspect that
    passes: ``onset`` or ``onset_beyond_behavior``, ``content`` or ``content_beyond_behavior``.
 6. ``Behavioral feedback``: the quiet encoding passes. Subclasses ``transferring`` (T+) and ``quiet_only``.
@@ -4543,8 +4546,11 @@ consolidation's stops the step unless ``--allow-stale-sections`` excludes it (re
 The step writes ``neural_cohort_table.csv`` (one row per unit: every p-value, z, effect, pass and reason,
 plus descriptors: mouse, date, probe, cluster group, draw counts and floor flags per test, the selected
 features, AUROCs, kappas, spike counts and the gating breadth) and ``neural_cohort_report.pkl`` (per group:
-units tested and excluded, floor requirements, category and subclass counts, the correlation of the tests' z-scores, and
-the settings hashes found among the unit files).
+units tested and excluded, floor requirements, each conjunction's rejections and ``n_transformation``, the
+rejections with a positive transfer slope that make up the headline count, the share of quiet-encoding
+units each conjunction requirement removes over the units on which it was tested, category and subclass
+counts, the correlation of the z-scores of every conjunction component and marginal decoding, and the
+settings hashes found among the unit files).
 
 Figures
 ~~~~~~~

@@ -754,7 +754,7 @@ class TestTransferGuards:
     def test_the_screen_slope_gate_lives_with_the_screen(self):
         """It governs which FEATURES may enter selection. The verdict's slope condition is a
         different thing and is definitional -- its sign separates transformation from
-        regime-switching -- so it is deliberately not a setting."""
+        remapping -- so it is deliberately not a setting."""
         with (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"
               / "_parameter_settings" / "neural_modeling_settings.json").open() as handle:
             encoding = json.load(handle)["kinematic_encoding"]

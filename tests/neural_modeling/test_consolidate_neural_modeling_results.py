@@ -261,26 +261,33 @@ class TestClassifyUnit:
         category, modifiers = classify_unit(passes, 0.4, self._rejected())
         assert category == "Behavior-mediated"
         assert not modifiers["separate_pass_conjunction_fail"]
+        assert modifiers["subclasses"] == ""
 
     def test_a_separate_pass_without_its_conjunction_is_behavior_mediated_and_flagged(self):
-        """Components that each pass while their conjunction is not rejected give Behavior-mediated, flagged."""
+        """Components that each pass while their conjunction is not rejected give Behavior-mediated, flagged
+        and named by the subclass ``passed_separately``."""
         passes = self._passes(quiet=True, transfer=True, nested=True)
         category, modifiers = classify_unit(passes, 0.4, self._rejected())
         assert category == "Behavior-mediated"
         assert modifiers["separate_pass_conjunction_fail"]
+        assert modifiers["subclasses"] == "passed_separately"
 
     @pytest.mark.parametrize("transfer", [False, None])
-    def test_remapping_takes_a_lost_transfer_with_a_vocal_signal(self, transfer):
-        """Quiet with a failed or missing transfer and a vocal pass is Remapping; the missing case is flagged."""
+    def test_remapping_takes_an_undetected_transfer_with_a_vocal_signal(self, transfer):
+        """Quiet with a failed or missing transfer and a vocal pass is Remapping, subclass
+        ``not_transferred``; the missing case is flagged."""
         passes = self._passes(quiet=True, transfer=transfer, occurrence=True)
         category, modifiers = classify_unit(passes, float("nan"), self._rejected())
         assert category == "Remapping"
+        assert modifiers["subclasses"] == "not_transferred"
         assert modifiers["remapping_transfer_missing"] is (transfer is None)
 
     def test_a_negative_slope_is_remapping_without_any_vocal_signal(self):
-        """A transfer with a negative slope is Remapping even when no vocal test passes."""
+        """A transfer with a negative slope is Remapping, subclass ``reversed``, even when no vocal test passes."""
         passes = self._passes(quiet=True, transfer=True)
-        assert classify_unit(passes, -0.3, self._rejected())[0] == "Remapping"
+        category, modifiers = classify_unit(passes, -0.3, self._rejected())
+        assert category == "Remapping"
+        assert modifiers["subclasses"] == "reversed"
 
     @pytest.mark.parametrize(("states", "subclasses"), [
         ({"occurrence": True}, "onset"),
@@ -418,6 +425,41 @@ class TestConsolidate:
         assert report["PAG"]["tests"]["gating"]["excluded"] == {"no_vocal_tuning": 3, "not_run": 1}
         assert report["PAG"]["tests"]["gating"]["floor_requirement"] is None
         assert sum(report["PAG"]["categories"].values()) == 4
+
+    def test_the_headline_count_needs_a_positive_slope(self):
+        """A conjunction rejected with a negative transfer slope is counted as rejected but not as a
+        transformation, so ``n_transformation`` equals the Transformation category count."""
+        cohort = [_record(f"u{i}") for i in range(4)]
+        artifacts = {f"u{i}": _artifact() for i in range(3)}
+        artifacts["u3"] = _artifact(slope=-0.4)
+        _table, report = consolidate(cohort, artifacts, SETTINGS)
+        for branch in ("content", "onset"):
+            entry = report["PAG"]["tests"][f"conjunction_{branch}"]
+            assert entry["n_rejected"] == 4
+            assert entry["n_transformation"] == 3
+        assert report["PAG"]["categories"]["Transformation"] == 3
+
+    def test_a_requirement_removes_only_units_it_tested(self):
+        """The share each requirement removes is taken over the quiet-encoding units on which it ran: an
+        untested nested onset test removes no one, while a negative slope removes the unit from transfer."""
+        cohort = [_record(f"u{i}") for i in range(4)]
+        artifacts = {f"u{i}": _artifact() for i in range(4)}
+        artifacts["u2"]["nested_vocal_decoding_onset"] = {"ran": False, "reason": "not_vocal_testable"}
+        artifacts["u3"] = _artifact(slope=-0.4)
+        _table, report = consolidate(cohort, artifacts, SETTINGS)
+        removed = report["PAG"]["removed_by_requirement"]
+        assert removed["n_quiet_encoding"] == 4
+        assert removed["transfer"] == {"n_tested": 4, "share_removed": pytest.approx(0.25)}
+        assert removed["nested_onset"] == {"n_tested": 3, "share_removed": pytest.approx(0.0)}
+        assert removed["nested"] == {"n_tested": 4, "share_removed": pytest.approx(0.0)}
+
+    def test_the_z_correlation_covers_both_nested_tests(self):
+        """Both conjunctions' components and both marginal decodings enter the z-score correlation."""
+        cohort = [_record(f"u{i}") for i in range(4)]
+        artifacts = {f"u{i}": _artifact() for i in range(4)}
+        _table, report = consolidate(cohort, artifacts, SETTINGS)
+        assert report["PAG"]["z_correlation"]["tests"] == ["quiet", "transfer", "occurrence", "identity",
+                                                           "nested", "nested_onset"]
 
 
 class TestCorrelationMatrix:
