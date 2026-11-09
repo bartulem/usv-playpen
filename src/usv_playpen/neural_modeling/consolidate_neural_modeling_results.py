@@ -82,7 +82,8 @@ CONJUNCTION_COLUMNS = tuple(f"conjunction_{branch}" for branch in CONJUNCTIONS)
 BRANCH_MARGINAL = {"content": "identity", "onset": "occurrence"}
 
 #: The decoding tests whose pass also needs a positive effect (gain or added information): a one-sided p
-#: can floor for a gain below the null's centre, which is not information carried.
+#: can floor for a gain at or below zero when the null is centered further below zero, which is not
+#: information carried.
 SIGNED_TESTS = ("occurrence", "identity", "nested", "nested_onset")
 
 #: The vocal tests, in subclass order: onset, onset beyond behavior, content, content beyond behavior.
@@ -804,8 +805,9 @@ def consolidate(cohort: list, artifacts: dict, settings: dict) -> tuple[pls.Data
         for branch, components in CONJUNCTIONS.items():
             conjunction = [row[f"p_{test}"] for test in components]
             p_value = float(max(conjunction)) if np.isfinite(conjunction).all() else float("nan")
-            # A decoding passes only with a positive effect: a gain below its null's centre can floor a
-            # one-sided p, and that is not information carried. The conjunction fails with it.
+            # A decoding passes only with a positive effect: a gain at or below zero can floor a one-sided
+            # p when its null is centered further below zero, and that is not information carried. The
+            # conjunction fails with it.
             if np.isfinite(p_value) and any(not row[f"{test}_effect"] > 0
                                             for test in SIGNED_TESTS if test in components):
                 p_value = 1.0
