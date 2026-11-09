@@ -483,8 +483,12 @@ class Synchronizer:
                 one_recording = np.memmap(filename=npx_recording, mode='r', dtype='int16', order='C')
                 one_sample_num = one_recording.shape[0] // total_probe_ch
 
-                # reshape the array such that channels are rows and samples are columns
-                sync_data = one_recording.reshape((total_probe_ch, one_sample_num), order='F')[-1, :]
+                # reshape the array such that channels are rows and samples are columns;
+                # the sync row is copied out of the memory map and the map is released,
+                # because on Windows an open memory map of the binary blocks the phase-shift
+                # step below from replacing that file (PermissionError: [WinError 5])
+                sync_data = np.array(one_recording.reshape((total_probe_ch, one_sample_num), order='F')[-1, :])
+                del one_recording
 
                 # save sync channel data
                 with atomic_output_path(f'{sync_ch_file}.npy') as tmp_sync_ch_file, pathlib.Path(tmp_sync_ch_file).open('wb') as sync_ch_output_file:
