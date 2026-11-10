@@ -546,10 +546,9 @@ class TestModelSelectionDispatcher:
         """
         ``dispatch_model_selection`` validates the three required paths and routes
         the 'onset' task into ``vocal_onset_model_selection``. The dispatcher
-        auto-resolves the package settings JSON, so the real selection function
-        is wrapped to inject the synthetic settings path; this still exercises
-        the dispatcher's own validation and routing statements end-to-end without
-        raising.
+        is given the synthetic settings file (``--settings``), which also carries
+        the test's ``selection_p_val``; this exercises the dispatcher's own
+        validation and routing statements end-to-end without raising.
         """
 
         settings, _ = _build_settings(
@@ -577,53 +576,27 @@ class TestModelSelectionDispatcher:
         )
 
         settings_json = tmp_path / 'settings.json'
+        # the dispatcher reads the significance level from the settings file it is
+        # given, so the test's level goes into that file
+        settings['model_params']['selection_p_val'] = 0.05
         settings_json.write_text(json.dumps(settings))
-
-        # The dispatcher resolves and passes the package settings path; redirect
-        # the selection call to the synthetic settings instead of editing src/.
-        real_selection = vocal_onset_model_selection
-
-        def _wrapped(**kwargs):
-            """
-            Description
-            -----------
-            Forwards to the real selector with the synthetic settings path swapped
-            in, so the dispatcher's routing is exercised without editing the shipped
-            settings.
-
-            Parameters
-            ----------
-            kwargs (dict)
-                Keyword arguments the dispatcher passes; ``settings_path`` is overwritten.
-
-            Returns
-            -------
-            result (object)
-                Whatever ``vocal_onset_model_selection`` returns.
-            """
-
-            kwargs['settings_path'] = str(settings_json)
-            return real_selection(**kwargs)
-
-        monkeypatch.setattr(ms_dispatcher, 'vocal_onset_model_selection', _wrapped)
 
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
         ms_dispatcher.dispatch_model_selection(
             argparse.Namespace(
-                settings=None,
+                settings=str(settings_json),
                 analysis_type='onset',
                 univariate_path=str(combined_path),
                 input_path=input_pkl,
                 output_dir=str(ms_dir),
                 anchor=True,
-                pval=0.05,
             )
         )
 
         # The dispatcher swallows downstream exceptions and prints a traceback;
         # reaching here without an uncaught exception means validation + routing
-        # executed. On this synthetic data the wrapped selection runs the screen
+        # executed. On this synthetic data the selection runs the screen
         # to completion, so at least the Step-0 pickle is written.
         step_pkls = list(ms_dir.glob('model_selection_*_step_*.pkl'))
         assert len(step_pkls) >= 1
