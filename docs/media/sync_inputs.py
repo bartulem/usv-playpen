@@ -34,6 +34,7 @@ Writes
 
 from __future__ import annotations
 
+import itertools
 import pathlib
 import sys
 
@@ -48,9 +49,28 @@ t_start = pre_end + pause
 part1 = 6.0
 break_at = t_start + part1
 gap_vis = 0.45
-part2 = 1.6
-t_end = break_at + gap_vis + part2
+
+# Arduino pulses: 250 ms high, random 250-1500 ms gaps; the sequence starts at 0.5 s
+# so that the tracking start does not land on a pulse
+rng = np.random.default_rng(7)
+ar_all = []
+t = 0.5
+while t < 20.0:
+    if not (break_at - 0.25 < t < break_at + gap_vis):
+        ar_all.append(t)
+    t += 0.25 + rng.uniform(0.25, 1.5)
+
+# the tracking end sits in the middle of the Arduino gap nearest 1.5 s after the axis
+# break, so it never coincides with an LED event
+target_end = break_at + gap_vis + 1.5
+gaps = [(a + 0.25, b) for a, b in itertools.pairwise(ar_all) if a > break_at + gap_vis]
+gap_lo, gap_hi = min(gaps, key=lambda g: abs((g[0] + g[1]) / 2 - target_end))
+t_end = (gap_lo + gap_hi) / 2
 t_max = t_end + 1.2
+ar_on = [tt for tt in ar_all if tt + 0.25 <= t_max]
+if any(tt - 0.1 < t_start < tt + 0.35 for tt in ar_on):
+    msg = 'the tracking start lands on an Arduino pulse; change the sequence start'
+    raise ValueError(msg)
 
 # geometry (px)
 W = 960
@@ -81,13 +101,6 @@ tick_step = 0.09
 tb_times = np.concatenate([np.arange(0.05, pre_end, tick_step),
                            np.arange(t_start, break_at, tick_step),
                            np.arange(break_at + gap_vis, t_max, tick_step)])
-rng = np.random.default_rng(7)
-ar_on = []
-t = 0.2
-while t < t_max:
-    if not (break_at - 0.25 < t < break_at + gap_vis):
-        ar_on.append(t)
-    t += 0.25 + rng.uniform(0.25, 1.5)
 
 parts = []
 add = parts.append
@@ -148,9 +161,6 @@ y_lines_bottom = last_base + 48
 for tt in (t_start, t_end):
     add(f'<line class="sf-mark" x1="{f(x_of(tt))}" y1="{f(yb + 4)}" x2="{f(x_of(tt))}" y2="{f(y_lines_bottom)}"/>')
 yf = last_base + 24
-add(f'<line class="sf-muted-line" x1="{f(x_of(t_start) + 2)}" y1="{f(yf)}" x2="{f(x_of(t_end) - 2)}" y2="{f(yf)}" '
-    'marker-start="url(#sf-arr)" marker-end="url(#sf-arr)"/>')
-add(f'<text class="sf-note" x="{f(x_of((t_start + t_end) / 2))}" y="{f(yf - 6)}" text-anchor="middle">N video frames = N Triggerbox pulses</text>')
 for tt, name in ((t_start, 'tracking start'), (t_end, 'tracking end')):
     add(f'<text class="sf-label-n" x="{f(x_of(tt))}" y="{f(y_lines_bottom + 20)}" text-anchor="middle">{name}</text>')
 
@@ -165,11 +175,15 @@ lx = X_LABEL
 add(f'<path class="sf-ar sf-step" d="M{f(lx)} {f(yl + 6)}V{f(yl - 8)}H{f(lx + 14)}V{f(yl + 6)}"/>')
 add(f'<text class="sf-sub" x="{f(lx + 22)}" y="{f(yl + 4)}">Arduino SYNC pulse: 250 ms on, 250–1500 ms off</text>')
 # Triggerbox zoom (true scale, measured on ch04 of 20260421_182605: 0.116 ms high every 6.66 ms)
-ZOOM_T0 = 7.0                          # where the zoomed segment sits on the top trace (s, drawn axis)
+ZOOM_T0 = 8.8                          # where the zoomed segment sits on the top trace (s, drawn axis)
 row0_top = Y_FIRST - TRACE_H / 2
 add(f'<rect class="sf-zoombox" x="{f(x_of(ZOOM_T0) - 4)}" y="{f(row0_top - 4)}" width="14" height="{f(TRACE_H + 8)}" rx="2"/>')
 ix0, ix1 = 470, W - 2
 add(f'<rect class="sf-zoombox" x="{ix0}" y="{f(yl - 38)}" width="{ix1 - ix0}" height="92" rx="3"/>')
+# two lines join the boxed segment's corners to the panel's bottom corners
+box_x0, box_x1, box_y = x_of(ZOOM_T0) - 4, x_of(ZOOM_T0) + 10, row0_top - 4
+add(f'<line class="sf-zoomline" x1="{f(box_x0)}" y1="{f(box_y)}" x2="{ix0}" y2="{f(yl + 54)}"/>')
+add(f'<line class="sf-zoomline" x1="{f(box_x1)}" y1="{f(box_y)}" x2="{ix1}" y2="{f(yl + 54)}"/>')
 add(f'<text class="sf-sub" x="{ix0 + 12}" y="{f(yl - 18)}">boxed segment, true scale: 0.116 ms on, every 6.66 ms</text>')
 z_left, z_right, z_ms = ix0 + 14, ix1 - 14, 26.0
 pxms = (z_right - z_left) / z_ms
@@ -215,6 +229,7 @@ html[data-theme="dark"] .sync-fig { --sf-ink: #c1c1c1; --sf-muted: #8f8f8f; --sf
 .sync-fig .sf-scale { stroke: var(--sf-ink); stroke-width: 2; }
 .sync-fig .sf-arrow-tb { fill: var(--sf-tb); }
 .sync-fig .sf-arrow { fill: var(--sf-muted); }
+.sync-fig .sf-zoomline { stroke: var(--sf-muted); stroke-width: 1; }
 .sync-fig .sf-zoombox { fill: none; stroke: var(--sf-ink); stroke-width: 1.2; stroke-dasharray: 3 2; }
 </style>"""
 
