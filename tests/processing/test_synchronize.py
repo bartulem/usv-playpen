@@ -518,6 +518,90 @@ def test_validate_ephys_video_sync_writes_changepoints(tmp_path, processing_sett
     assert rec["total_num_channels"] == 5
 
 
+def test_validate_ephys_video_sync_accepts_a_long_pause_before_recording(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    The largest break in the camera TTL train is the pause before recording
+    starts, and its end marks the tracking start; its length is not a quality
+    criterion. Sessions in practice pause for roughly 2.3 s, so a synthetic
+    session with a 3 s pause before the frame train must still sync: the
+    changepoints JSON is written with the tracking window that starts at the
+    end of that pause. A cap on the pause length (a `< 2` s cap was once active
+    and rejected these sessions) fails this test.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp dir; session is rooted at `<tmp>/Data/<id>` so the
+        EPHYS mirror resolves to `<tmp>/EPHYS`.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        No-ops the interactive `smart_wait`.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
+
+    ini = configparser.ConfigParser()
+    ini.read(Path(usv_playpen.__file__).parent / "_config" / "calibrated_sample_rates_imec.ini")
+    headstage_sn = "23280356"
+    sr = float(ini["CalibratedHeadStages"][headstage_sn])
+
+    total_frames = 5
+    spacing = 6000
+    pause_seconds = 3.0
+    # rising-edge sample positions: 3 pre-pause edges, a 3 s pause, then
+    # total_frames + 1 post-pause edges spaced `spacing` apart.
+    pre = [100, 200, 300]
+    first_post = pre[-1] + int(round(pause_seconds * sr))
+    post = [first_post + i * spacing for i in range(total_frames + 1)]
+    edges = pre + post
+    n_samples = edges[-1] + 10
+
+    sync_ch = np.zeros(n_samples, dtype=np.int16)
+    for e in edges:
+        sync_ch[e + 1:e + 6] = 1000
+
+    n_ch = 5
+    frame = np.zeros((n_samples, n_ch), dtype=np.int16)
+    frame[:, -1] = sync_ch
+
+    root = tmp_path / "Data" / "20250919_155842"
+    imec_dir = root / "ephys" / "imec0"
+    imec_dir.mkdir(parents=True)
+    frame.tofile(imec_dir / "20250919_155842.imec0.ap.bin")
+    (imec_dir / "20250919_155842.imec0.ap.meta").write_text(
+        f"acqApLfSy=4,0,1\nimDatHs_sn={headstage_sn}\nimDatPrb_sn=22420014283\n"
+    )
+
+    tracking_samples = total_frames * spacing
+    (root / "video").mkdir()
+    (root / "video" / "sess_camera_frame_count_dict.json").write_text(json.dumps({
+        "total_frame_number_least": total_frames,
+        "total_video_time_least": tracking_samples / sr,
+    }))
+
+    processing_settings['synchronize_files']['Synchronizer']['validate_ephys_video_sync']['apply_phase_shift'] = False
+
+    sync = Synchronizer(
+        root_directory=str(root),
+        input_parameter_dict=processing_settings,
+        message_output=lambda *_a, **_k: None,
+    )
+    sync.validate_ephys_video_sync()
+
+    cp = root.parent.parent / "EPHYS" / "20250919_imec0" / "changepoints_info_20250919_imec0.json"
+    assert cp.is_file(), "a 3 s pause before recording was rejected; the changepoints JSON was not written"
+    rec = json.loads(cp.read_text())["20250919_155842.imec0"]
+    assert rec["tracking_start_end"] == [first_post + 1, first_post + 1 + tracking_samples]
+    assert rec["largest_camera_break_duration"] == first_post - pre[-1]
+
+
 def test_validate_ephys_video_sync_failed_rewrite_keeps_the_old_changepoints(tmp_path, processing_settings, mocker):
     """
     Description
