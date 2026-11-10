@@ -163,6 +163,17 @@ The steps rely on this layout holding one file of each kind a step looks for. A 
 
 Every file that a later step reads back (USV summaries, spectrogram and mask H5 files, 3D tracks, spike files, changepoints and sync JSONs, rewritten WAVs, model bundles, training sets) is written to a temporary file in the same folder and renamed into place, so an interrupted run leaves the previous file whole. An external program that fails or runs past its time budget (sox, ffmpeg, DAS, SLEAP conversion) stops the step with its command and return code.
 
+.. _sync-signals:
+
+Synchronization signals
+-----------------------
+Two TTL sources keep the audio, video and e-phys streams aligned. The Loopbio Triggerbox sends one pulse per camera frame (0.116 ms high every 6.66 ms, i.e., 150/s); it pulses all the time and pauses for ~2.3 s just before the cameras start recording. The Arduino sends 250 ms pulses separated by random 250–1500 ms gaps, which also drive the IR sync LEDs filmed by the cameras. The figure shows which input of each device receives which source.
+
+.. raw:: html
+   :file: media/sync_inputs.html
+
+The e-phys/video check finds the tracking start at the end of the ~2.3 s pause on the probe's SY bit, and the tracking end N pulses later (N being the number of video frames). The audio is cut to the video using the Triggerbox copy on ch04. The A/V check matches the random Arduino gaps on ch02 to the LED flashes seen by the sync camera.
+
 E-phys processing
 -----------------
 The processing of e-phys data passes several stages:
@@ -187,7 +198,7 @@ To run the e-phys/video synchronization check, you need to list the root directo
 
    <br>
 
-Neural recording data is aligned to the start of video recording, which is identifiable by searching for a ~2.3 s break in Loopbio Triggerbox pulses, which are constantly being transmitted to the Neuropixels digital input channel. The code recursively finds all the *ap.bin* files in the root directory and saves the digital input channel data (385th or last channel) to a separate Numpy file (which ends with *_sync_ch_data.npy*), if it hasn't been saved already.
+The pulses this check reads are shown in :ref:`sync-signals`. Neural recording data is aligned to the start of video recording, which is identifiable by searching for a ~2.3 s break in Loopbio Triggerbox pulses, which are constantly being transmitted to the Neuropixels digital input channel. The code recursively finds all the *ap.bin* files in the root directory and saves the digital input channel data (385th or last channel) to a separate Numpy file (which ends with *_sync_ch_data.npy*), if it hasn't been saved already.
 
 After finding the tracking start and end (based on the largest Triggerbox break duration and total number of recording frames) in this Numpy file, the total video duration will then be compared to the total video-aligned neural recording, and you will get a report back whether that discrepancy is below 12 ms (in other words, less than 2 video frames, which is an acceptable level of distortion). Information at what Neuropixels sample the first and last video recording frame were detected will be saved to, for instance, */mnt/falkner/Bartul/EPHYS/20250430_imec0/changepoints_info_20250430_imec0.json*, as exemplified below:
 
@@ -1374,7 +1385,7 @@ The *Convert to single-ch files* step populates the *original* directory with si
     │   └── video
     │       ...
 
-The *Crop AUDIO (to VIDEO)* step will also result in the creation of a *audio_triggerbox_sync_info.json* file, which contains the sample number of first and last recorded video frame and the break duration detected prior to recording. It will also contain information about the total duration of the audio recording and its discrepancy with the duration of the video recording. In the *sync* subdirectory, the *m_video_frames_in_audio_samples.txt* and *s_video_frames_in_audio_samples.txt* files will be created, which contain the sample numbers of video frame starts in the audio recording. These files are useful should troubleshooting sync issues arise.
+The *Crop AUDIO (to VIDEO)* step finds the video frames in the Triggerbox pulses on ch04 (see :ref:`sync-signals`). It will also result in the creation of a *audio_triggerbox_sync_info.json* file, which contains the sample number of first and last recorded video frame and the break duration detected prior to recording. It will also contain information about the total duration of the audio recording and its discrepancy with the duration of the video recording. In the *sync* subdirectory, the *m_video_frames_in_audio_samples.txt* and *s_video_frames_in_audio_samples.txt* files will be created, which contain the sample numbers of video frame starts in the audio recording. These files are useful should troubleshooting sync issues arise.
 
 .. code-block:: json
 
@@ -5172,7 +5183,7 @@ To run audio/video (A/V) synchronization, you need to list the root directories 
 
    <br>
 
-The A/V synchronization procedure will first create a *sync_px* file for each input camera, recording pixel intensities of each LED position. The objective is to identify the start of each IPI event in camera time and on both audio devices. One can then compare, for each individual IPI event, what the discrepancy is between the clocks of both devices and that is captured in the *summary.svg* histograms.
+The pulses this check reads are shown in :ref:`sync-signals`. The A/V synchronization procedure will first create a *sync_px* file for each input camera, recording pixel intensities of each LED position. The objective is to identify the start of each IPI event in camera time and on both audio devices. One can then compare, for each individual IPI event, what the discrepancy is between the clocks of both devices and that is captured in the *summary.svg* histograms.
 
 .. parsed-literal::
 
