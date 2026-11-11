@@ -1146,7 +1146,7 @@ class ContinuousModelingPipeline(FeatureZoo):
             valid_targets = []
             valid_cat = []
 
-            frame_indices = np.round(onsets * fps).astype(int)
+            frame_indices = np.floor(onsets * fps).astype(int)
             for i, f_idx in enumerate(frame_indices):
                 if self.history_frames <= f_idx <= max_frame_idx:
                     valid_onsets.append(f_idx)

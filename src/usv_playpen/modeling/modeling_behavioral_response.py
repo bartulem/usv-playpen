@@ -288,7 +288,7 @@ def bout_offset_anchors(bout_onsets: np.ndarray,
     forward_clean = forward_clean_times(offsets, vocal_starts, vocal_stops,
                                         lookahead_frames / camera_fps)
 
-    anchor_frames = np.round(offsets * camera_fps).astype(int)
+    anchor_frames = np.floor(offsets * camera_fps).astype(int)
     fits = (anchor_frames - history_frames >= 0) & (anchor_frames + lookahead_frames <= n_frames)
 
     keep = has_silence & forward_clean & fits
@@ -395,7 +395,7 @@ def inter_bout_quiet_anchors(bout_onsets: np.ndarray,
     if not drawn:
         return np.empty(0, dtype=int)
 
-    anchor_frames = np.round(np.asarray(drawn) * camera_fps).astype(int)
+    anchor_frames = np.floor(np.asarray(drawn) * camera_fps).astype(int)
     fits = (anchor_frames - history_frames >= 0) & (anchor_frames + lookahead_frames <= n_frames)
     # Rounding to the frame grid moves an anchor by up to half a frame, which
     # can carry its window onto a vocalization at the edge of a silent stretch.
@@ -506,7 +506,7 @@ def deep_silence_anchors(bout_onsets: np.ndarray,
     if not anchors:
         return np.empty(0, dtype=int)
 
-    anchor_frames = np.round(np.concatenate(anchors) * camera_fps).astype(int)
+    anchor_frames = np.floor(np.concatenate(anchors) * camera_fps).astype(int)
     fits = (anchor_frames - history_frames >= 0) & (anchor_frames + lookahead_frames <= n_frames)
     touched = windows_touch_vocalization(anchor_frames / camera_fps, history_seconds,
                                          lookahead_seconds, np.asarray(vocal_starts, dtype=float),
@@ -1734,7 +1734,7 @@ class MatchedDivergencePipeline(BehavioralResponsePipeline):
                     Frame indices that fit inside the recording.
                 """
 
-                anchor_frames = np.round(np.asarray(times) * camera_fps).astype(int)
+                anchor_frames = np.floor(np.asarray(times) * camera_fps).astype(int)
                 return anchor_frames[(anchor_frames - room_behind >= 0)
                                      & (anchor_frames + frames['window'] <= n_frames)]
 
