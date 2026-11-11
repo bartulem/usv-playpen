@@ -209,7 +209,8 @@ def onset_history_anchor_frames(starts_seconds: np.ndarray, fps: float) -> np.nd
     Description
     -----------
     The frame each vocalization's behaviour history ENDS at: the frame before the onset frame,
-    ``rint(start * fps) - 1``, so the lagged window built at it is strictly pre-onset.
+    ``floor(start * fps) - 1``, so the lagged window built at it is strictly pre-onset (the
+    floor is the rule every behavioral pipeline uses to map an onset time to its frame).
 
     The same convention is used where the cohort behaviour control is fitted and where its
     prediction is applied by the nested decoding.
@@ -228,7 +229,7 @@ def onset_history_anchor_frames(starts_seconds: np.ndarray, fps: float) -> np.nd
         edges; the caller drops those that lack a full in-bounds history).
     """
 
-    return np.rint(np.asarray(starts_seconds, dtype=np.float64) * fps).astype(np.int64) - 1
+    return np.floor(np.asarray(starts_seconds, dtype=np.float64) * fps).astype(np.int64) - 1
 
 
 def spike_labels_at_frames(spike_frames: np.ndarray, anchor_frames: np.ndarray,
