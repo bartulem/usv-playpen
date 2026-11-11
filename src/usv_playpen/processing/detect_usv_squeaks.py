@@ -62,9 +62,11 @@ the columns of earlier encodings -- ``squeak_frame_runs``, ``call_class``,
   in the context belongs to a neighbouring segment) and with no minimum run
   length, from half a hop before the first such frame's centre to half a hop
   after the last (:func:`squeak_envelope_frames`). The extent may reach into
-  the context. A ``squeak`` row with no above-threshold frame touching the
-  segment falls back to the segment frame of highest squeak probability (a
-  one-frame extent); the step reports how many rows needed it.
+  the context. A ``squeak`` row whose rule gives no extent or a one-frame
+  extent falls back to the half-peak extent: from the segment frame of highest
+  squeak probability, the extent grows to each side while the probability stays
+  above half of that peak, and may cross into the context; the step reports how
+  many rows needed it.
 
 The threshold was chosen on session-grouped cross-fitted predictions of the
 same recipe; the bundle records it, its class names, its
@@ -573,8 +575,16 @@ def squeak_envelope_frames(
     probability EXCEEDS ``threshold`` (strictly; no minimum run length) is kept when it touches the
     segment's own frames ``segment_first .. segment_last`` (a run lying wholly in the context belongs
     to a neighbouring segment), and the extent runs from the first kept run's first frame to the last
-    kept run's last frame (so it may reach into the context). When no frame above the threshold
-    touches the segment, the extent falls back to the one segment frame of highest probability.
+    kept run's last frame (so it may reach into the context).
+
+    When that rule gives no extent (no frame above the threshold touches the segment) or a one-frame
+    extent (a single frame crosses the threshold), the extent is instead grown from the segment frame
+    of highest probability: it extends to each side while the probability stays strictly above half
+    of that peak, and it may cross the segment's edges into the context, up to the window's ends. A
+    weak squeak, or one cut by the segment's edge, keeps frame scores below the threshold over its
+    whole span even though the frame track still rises over it; taking only the peak frame recorded
+    such squeaks as one-frame (2 ms) extents, which no squeak is. The half-peak width needs no tuned
+    constant and leaves every extent of two or more above-threshold frames unchanged.
 
     Parameters
     ----------
@@ -594,8 +604,8 @@ def squeak_envelope_frames(
     last (int)
         Last frame of the extent (inclusive).
     fallback (bool)
-        True when no above-threshold frame touched the segment and the highest-scoring segment frame
-        was used.
+        True when the threshold rule gave no extent or a one-frame extent and the half-peak extent
+        around the highest-scoring segment frame was used instead.
     """
 
     probability = np.asarray(frame_probability)
@@ -603,10 +613,16 @@ def squeak_envelope_frames(
     edges = np.flatnonzero(np.diff(above.astype(np.int8)))
     kept = [(int(first), int(stop) - 1) for first, stop in zip(edges[::2], edges[1::2], strict=True)
             if first <= segment_last and stop - 1 >= segment_first]
-    if kept:
+    if kept and kept[-1][1] > kept[0][0]:
         return kept[0][0], kept[-1][1], False
     best = segment_first + int(np.argmax(probability[segment_first:segment_last + 1]))
-    return best, best, True
+    half_peak = 0.5 * float(probability[best])
+    first = last = best
+    while first > 0 and probability[first - 1] > half_peak:
+        first -= 1
+    while last < probability.size - 1 and probability[last + 1] > half_peak:
+        last += 1
+    return first, last, True
 
 
 def frames_to_session_seconds(first: int, last: int, read_start_s: float) -> tuple[float, float]:
@@ -658,7 +674,7 @@ def classify_usv_squeak_rows(
     the arg-max of the mean probabilities, written as the ``usv`` / ``squeak`` booleans
     (``VOCAL_CLASS_FLAGS``), and on rows with ``squeak`` true the squeak extent is the envelope of the
     mean frame track's above-threshold frames touching the segment (:func:`squeak_envelope_frames`,
-    with its fallback; :func:`frames_to_session_seconds`). Rows flagged as noise (``noise`` true; a
+    with its half-peak fallback for no or one-frame extents; :func:`frames_to_session_seconds`). Rows flagged as noise (``noise`` true; a
     null ``noise`` counts as not noise, :func:`os_utils.drop_noise_usvs`) are not read at all and get
     nulls in every column, as do rows too short for one STFT window.
 
@@ -688,7 +704,7 @@ def classify_usv_squeak_rows(
     scores (pls.DataFrame)
         One row per summary row, the ``VOCAL_CLASS_COLUMNS``: ``usv`` / ``squeak`` (Boolean),
         ``usv_probability`` / ``squeak_probability`` / ``overlap_probability`` (Float64) and ``squeak_start`` / ``squeak_end``
-        (Float64). The number of squeak rows whose extent fell back to one frame is logged.
+        (Float64). The number of squeak rows whose extent fell back to the half-peak rule is logged.
 
     Raises
     ------
@@ -760,8 +776,9 @@ def classify_usv_squeak_rows(
         message_output(f"{unscorable} non-noise USV(s) are too short for one STFT window and get empty vocal-class columns.")
     n_squeak = sum(1 for row in scored_rows if squeak_flag[row])
     message_output(
-        f"Squeak extents: {n_fallback} of {n_squeak} squeak-bearing segment(s) had no frame above {bundle['span_threshold']} "
-        f"touching the segment and took the highest-scoring segment frame instead."
+        f"Squeak extents: {n_fallback} of {n_squeak} squeak-bearing segment(s) had no run of two or more frames above "
+        f"{bundle['span_threshold']} touching the segment and took the half-peak extent around the highest-scoring "
+        f"segment frame instead."
     )
     return pls.DataFrame(
         {
@@ -1489,7 +1506,8 @@ class USVSqueakModelTrainer:
             "extent_rule": {
                 "threshold": float(cfg['span_threshold']),
                 "rule": "one extent per segment: envelope of the frames above threshold in runs touching the segment, "
-                        "no minimum run; the highest-scoring segment frame when none",
+                        "no minimum run; when that gives no extent or one frame, the frames around the highest-scoring "
+                        "segment frame that stay above half of its probability",
             },
             "recipe": {
                 **recipe, "pretrained": bool(cfg['pretrained']), "seeds": [int(seed) for seed in cfg['seeds']],
@@ -1877,8 +1895,8 @@ def squeak_qlvm_inputs(
     frame has no room for them and no training set held a wider crop), and normalizes the rest the way
     the cell was trained (:func:`squeak_crop_inputs`, time-stretched or centred). The extent is already the envelope of all the row's
     above-threshold squeak frames, so a row with several squeaks is cropped to their envelope (one row
-    holds one pair of coordinates). A fallback extent (one frame) gives a crop of 5 frames, below the
-    8-frame minimum, so those rows get nulls.
+    holds one pair of coordinates). A half-peak fallback extent of three frames or fewer gives a crop
+    below the 8-frame minimum, so those rows get nulls.
 
     Parameters
     ----------

@@ -313,17 +313,39 @@ def test_squeak_envelope_frames_rule():
     assert squeaks.squeak_envelope_frames(track, 0.6, 10, 25) == (12, 21, False)
     assert squeaks.squeak_envelope_frames(track, 0.6, 5, 25) == (2, 21, False)
     assert squeaks.squeak_envelope_frames(track, 0.6, 21, 31) == (20, 39, False)
-    assert squeaks.squeak_envelope_frames(track, 0.6, 45, 55) == (45 + int(np.argmax(track[45:56])), 45 + int(np.argmax(track[45:56])), True)
+    # 0.6 is not strictly above the threshold, so the half-peak fallback takes frames 45-49 (> 0.3)
+    assert squeaks.squeak_envelope_frames(track, 0.6, 45, 55) == (45, 49, True)
 
 
-def test_squeak_envelope_frames_fallback_takes_the_best_segment_frame():
-    """With no frame above the threshold touching the segment, the extent is the one segment frame of
-    highest score, even when a context frame scores higher."""
+def test_squeak_envelope_frames_fallback_isolated_peak_stays_one_frame():
+    """With no frame above the threshold touching the segment, the extent grows from the best segment
+    frame (not a higher context frame) only over neighbours above half its score; an isolated peak
+    over a background below half of it stays one frame."""
     track = np.full(40, 0.1)
     track[3] = 0.95
     track[17] = 0.4
     track[22] = 0.3
     assert squeaks.squeak_envelope_frames(track, 0.6, 10, 30) == (17, 17, True)
+
+
+def test_squeak_envelope_frames_fallback_grows_to_half_peak_into_the_context():
+    """A squeak whose scores stay under the threshold is recovered as the frames above half of the best
+    segment frame's score, and the extent may cross the segment edge into the context."""
+    track = np.zeros(60)
+    track[20:31] = 0.3
+    track[24] = 0.5
+    assert squeaks.squeak_envelope_frames(track, 0.6, 10, 25) == (20, 30, True)
+
+
+def test_squeak_envelope_frames_one_frame_run_uses_the_half_peak_extent():
+    """A single frame crossing the threshold is not taken as a one-frame extent: the half-peak rule
+    around it decides the extent, while runs of two or more frames keep the threshold rule."""
+    track = np.zeros(40)
+    track[14:20] = 0.4
+    track[17] = 0.65
+    assert squeaks.squeak_envelope_frames(track, 0.6, 10, 30) == (14, 19, True)
+    track[18] = 0.65
+    assert squeaks.squeak_envelope_frames(track, 0.6, 10, 30) == (17, 18, False)
 
 
 def test_frames_to_session_seconds_uses_half_hop_edges():
