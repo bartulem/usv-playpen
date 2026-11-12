@@ -640,12 +640,14 @@ class ExperimentController:
             # Disable the legacy 'ssh-rsa' (SHA-1) public-key algorithm during
             # negotiation; force rsa-sha2-256 / rsa-sha2-512 instead.
             #
-            # Mitigates the GHSA paramiko advisory ("rsakey.py allows the
-            # SHA-1 algorithm", affected versions <= 4.0.0, no patched
-            # version available upstream as of this writing). All Princeton
-            # Falkner-lab SSH targets we connect to run modern OpenSSH and
-            # support SHA-2 RSA, so this restriction does not break any
-            # working connection.
+            # Originally the mitigation for GHSA-r374-rxx8-8654 ("rsakey.py
+            # allows the SHA-1 algorithm", affected versions < 5.0.0).
+            # paramiko 5.0.0 removed RSA SHA-1 and the SHA-1 key exchanges
+            # altogether, so on the locked 5.x release this argument is a
+            # no-op kept as a guard should an older paramiko ever be
+            # installed. The lab SSH targets we connect to run modern
+            # OpenSSH and support SHA-2 RSA, so it breaks no working
+            # connection.
             client.connect(
                 hostname=hostname, port=port, username=username,
                 password=password, timeout=self.exp_settings_dict['timeouts']['ssh_connect_timeout_s'],

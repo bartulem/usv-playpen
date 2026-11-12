@@ -110,7 +110,7 @@ def _collect_category_windows(times: np.ndarray,
     Slice history windows around event timestamps, skipping out-of-bounds rows.
 
     For each timestamp `t` in `times`, the window `[end - history_frames, end)`
-    with `end = round(t * sampling_rate)` is extracted from `column_data`.
+    with `end = floor(t * sampling_rate)` is extracted from `column_data`.
     Events whose window falls off the start or end of the recording are
     silently skipped (rather than being stored as a NaN row), so the returned
     array only contains fully-populated history windows. Any within-window
@@ -141,7 +141,7 @@ def _collect_category_windows(times: np.ndarray,
     # `valid_window_starts` keeps the events whose window `[end - history_frames,
     # end)` lies inside `[0, max_frame_idx]`, `cut_history_windows` gathers the
     # windows with NaN -> 0 inside each (`(0, history_frames)` when none is kept).
-    starts, _ = valid_window_starts(np.round(times * sampling_rate).astype(int), history_frames, max_frame_idx)
+    starts, _ = valid_window_starts(np.floor(times * sampling_rate).astype(int), history_frames, max_frame_idx)
     return cut_history_windows(column_data, starts, history_frames)
 
 
@@ -559,10 +559,10 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             # Window starts are the same for every column of the session (one
             # recording length, one set of event times): cut them once.
             target_starts, _ = valid_window_starts(
-                np.round(np.asarray(target_times, dtype=float) * fps).astype(int), hist_frames, n_frames,
+                np.floor(np.asarray(target_times, dtype=float) * fps).astype(int), hist_frames, n_frames,
             )
             other_starts, _ = valid_window_starts(
-                np.round(np.asarray(other_times, dtype=float) * fps).astype(int), hist_frames, n_frames,
+                np.floor(np.asarray(other_times, dtype=float) * fps).astype(int), hist_frames, n_frames,
             )
             session_window_starts[sess_id] = {
                 'target': target_starts, 'other': other_starts,

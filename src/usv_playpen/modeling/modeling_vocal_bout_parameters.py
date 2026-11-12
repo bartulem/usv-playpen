@@ -451,7 +451,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 continue
             onsets = bout_data_dict[sess_id][t_name]['bout_onsets']
             targets = bout_data_dict[sess_id][t_name][target_variable]
-            onset_frames = np.round(onsets * camera_fr_dict[sess_id]).astype(int)
+            onset_frames = np.floor(onsets * camera_fr_dict[sess_id]).astype(int)
 
             # The per-bout validity test (`start >= 0 and frame_idx <= n_frames`)
             # and the resulting window-start indices depend only on the onset

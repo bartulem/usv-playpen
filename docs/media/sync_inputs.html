@@ -1,0 +1,273 @@
+<style>
+  .sync-fig {
+    width: 100%;
+    max-width: 960px;
+    height: auto;
+    display: block;
+    margin: 0.5em auto 1.5em;
+    font-family: inherit;
+  }
+  .sync-fig {
+    --sf-ink: #404040;
+    --sf-muted: #6a6a6a;
+    --sf-none: #c9c9c9;
+    --sf-bg: #fcfcfc;
+    --sf-tb: #5b4bc4;
+    --sf-ar: #c4651a;
+  }
+  html[data-theme="dark"] .sync-fig {
+    --sf-ink: #c1c1c1;
+    --sf-muted: #8f8f8f;
+    --sf-none: #3a3a3a;
+    --sf-bg: #141414;
+    --sf-tb: #a99cf0;
+    --sf-ar: #f0a25a;
+  }
+  .sync-fig text {
+    font-family: inherit;
+  }
+  .sync-fig .sf-label {
+    font-size: 19px;
+    font-weight: 700;
+    fill: var(--sf-ink);
+  }
+  .sync-fig .sf-label-n {
+    font-size: 17px;
+    fill: var(--sf-ink);
+  }
+  .sync-fig .sf-sub {
+    font-size: 16px;
+    fill: var(--sf-muted);
+  }
+  .sync-fig .sf-note {
+    font-size: 16px;
+    fill: var(--sf-muted);
+    font-style: italic;
+  }
+  .sync-fig .sf-tbtext {
+    fill: var(--sf-tb);
+  }
+  .sync-fig .sf-tb {
+    stroke: var(--sf-tb);
+    fill: none;
+  }
+  .sync-fig .sf-ar {
+    stroke: var(--sf-ar);
+    fill: none;
+  }
+  .sync-fig .sf-base {
+    stroke-width: 1;
+    opacity: 0.55;
+  }
+  .sync-fig .sf-tick {
+    stroke-width: 1.2;
+  }
+  .sync-fig .sf-step {
+    stroke-width: 1.6;
+    stroke-linejoin: miter;
+  }
+  .sync-fig .sf-led {
+    fill: var(--sf-ar);
+    fill-opacity: 0.3;
+  }
+  .sync-fig .sf-none {
+    stroke: var(--sf-none);
+    stroke-width: 1;
+    stroke-dasharray: 2 3;
+  }
+  .sync-fig .sf-bg {
+    fill: var(--sf-bg);
+  }
+  .sync-fig .sf-break {
+    stroke: var(--sf-muted);
+    stroke-width: 1.2;
+  }
+  .sync-fig .sf-mark {
+    stroke: var(--sf-ink);
+    stroke-width: 1;
+    stroke-dasharray: 4 4;
+  }
+  .sync-fig .sf-muted-line {
+    stroke: var(--sf-muted);
+    stroke-width: 1;
+  }
+  .sync-fig .sf-bracket {
+    stroke-width: 1;
+  }
+  .sync-fig .sf-scale {
+    stroke: var(--sf-ink);
+    stroke-width: 2;
+  }
+  .sync-fig .sf-arrow-tb {
+    fill: var(--sf-tb);
+  }
+  .sync-fig .sf-arrow {
+    fill: var(--sf-muted);
+  }
+  .sync-fig .sf-zoomline {
+    stroke: var(--sf-muted);
+    stroke-width: 1;
+  }
+  .sync-fig .sf-zoombox {
+    fill: none;
+    stroke: var(--sf-ink);
+    stroke-width: 1.2;
+    stroke-dasharray: 3 2;
+  }
+</style>
+<svg
+  class="sync-fig"
+  viewBox="-4 0 968 578.0"
+  role="img"
+  aria-label="Sync pulses received by each recording device: the Loopbio Triggerbox camera-frame pulses and the Arduino SYNC pulses, with the tracking start after the ~2.3 s Triggerbox pause and the tracking end N pulses later"
+>
+  <defs>
+    <marker
+      id="sf-arr-tb"
+      viewBox="0 0 10 10"
+      refX="9"
+      refY="5"
+      markerWidth="7"
+      markerHeight="7"
+      orient="auto-start-reverse"
+    >
+      <path class="sf-arrow-tb" d="M0 0L10 5L0 10z" />
+    </marker>
+    <marker
+      id="sf-arr"
+      viewBox="0 0 10 10"
+      refX="9"
+      refY="5"
+      markerWidth="7"
+      markerHeight="7"
+      orient="auto-start-reverse"
+    >
+      <path class="sf-arrow" d="M0 0L10 5L0 10z" />
+    </marker>
+  </defs>
+  <text class="sf-label" x="0" y="164.0">USGH M and S · digital input 4</text>
+  <text class="sf-sub" x="0" y="185.0">
+    Triggerbox; stored in the lowest bit of ch04
+  </text>
+  <line class="sf-tb sf-base" x1="400.0" y1="180.0" x2="950.0" y2="180.0" />
+  <path
+    class="sf-tb sf-tick"
+    d="M401.9 180.0V156.0M405.3 180.0V156.0M408.7 180.0V156.0M412.1 180.0V156.0M415.6 180.0V156.0M419.0 180.0V156.0M422.4 180.0V156.0M425.8 180.0V156.0M429.2 180.0V156.0M432.6 180.0V156.0M436.0 180.0V156.0M439.4 180.0V156.0M442.9 180.0V156.0M446.3 180.0V156.0M449.7 180.0V156.0M453.1 180.0V156.0M456.5 180.0V156.0M459.9 180.0V156.0M463.3 180.0V156.0M466.8 180.0V156.0M470.2 180.0V156.0M473.6 180.0V156.0M477.0 180.0V156.0M480.4 180.0V156.0M483.8 180.0V156.0M487.2 180.0V156.0M490.7 180.0V156.0M494.1 180.0V156.0M497.5 180.0V156.0M500.9 180.0V156.0M504.3 180.0V156.0M507.7 180.0V156.0M511.1 180.0V156.0M601.0 180.0V156.0M604.4 180.0V156.0M607.9 180.0V156.0M611.3 180.0V156.0M614.7 180.0V156.0M618.1 180.0V156.0M621.5 180.0V156.0M624.9 180.0V156.0M628.3 180.0V156.0M631.8 180.0V156.0M635.2 180.0V156.0M638.6 180.0V156.0M642.0 180.0V156.0M645.4 180.0V156.0M648.8 180.0V156.0M652.2 180.0V156.0M655.7 180.0V156.0M659.1 180.0V156.0M662.5 180.0V156.0M665.9 180.0V156.0M669.3 180.0V156.0M672.7 180.0V156.0M676.1 180.0V156.0M679.6 180.0V156.0M683.0 180.0V156.0M686.4 180.0V156.0M689.8 180.0V156.0M693.2 180.0V156.0M696.6 180.0V156.0M700.0 180.0V156.0M703.4 180.0V156.0M706.9 180.0V156.0M710.3 180.0V156.0M713.7 180.0V156.0M717.1 180.0V156.0M720.5 180.0V156.0M723.9 180.0V156.0M727.3 180.0V156.0M730.8 180.0V156.0M734.2 180.0V156.0M737.6 180.0V156.0M741.0 180.0V156.0M744.4 180.0V156.0M747.8 180.0V156.0M751.2 180.0V156.0M754.7 180.0V156.0M758.1 180.0V156.0M761.5 180.0V156.0M764.9 180.0V156.0M768.3 180.0V156.0M771.7 180.0V156.0M775.1 180.0V156.0M778.6 180.0V156.0M782.0 180.0V156.0M785.4 180.0V156.0M788.8 180.0V156.0M792.2 180.0V156.0M795.6 180.0V156.0M799.0 180.0V156.0M802.5 180.0V156.0M805.9 180.0V156.0M809.3 180.0V156.0M812.7 180.0V156.0M816.1 180.0V156.0M819.5 180.0V156.0M822.9 180.0V156.0M826.3 180.0V156.0M845.7 180.0V156.0M849.1 180.0V156.0M852.5 180.0V156.0M855.9 180.0V156.0M859.3 180.0V156.0M862.8 180.0V156.0M866.2 180.0V156.0M869.6 180.0V156.0M873.0 180.0V156.0M876.4 180.0V156.0M879.8 180.0V156.0M883.2 180.0V156.0M886.7 180.0V156.0M890.1 180.0V156.0M893.5 180.0V156.0M896.9 180.0V156.0M900.3 180.0V156.0M903.7 180.0V156.0M907.1 180.0V156.0M910.6 180.0V156.0M914.0 180.0V156.0M917.4 180.0V156.0M920.8 180.0V156.0M924.2 180.0V156.0M927.6 180.0V156.0M931.0 180.0V156.0M934.5 180.0V156.0M937.9 180.0V156.0M941.3 180.0V156.0M944.7 180.0V156.0M948.1 180.0V156.0"
+  />
+  <rect class="sf-bg" x="830.6" y="152.0" width="13.1" height="32.0" />
+  <line class="sf-break" x1="833.6" y1="184.0" x2="839.6" y2="152.0" />
+  <line class="sf-break" x1="841.6" y1="184.0" x2="847.6" y2="152.0" />
+  <text class="sf-label" x="0" y="228.0">USGH M and S · digital input 2</text>
+  <text class="sf-sub" x="0" y="249.0">
+    Arduino SYNC; stored in the lowest bit of ch02
+  </text>
+  <line class="sf-ar sf-base" x1="400.0" y1="244.0" x2="950.0" y2="244.0" />
+  <path
+    class="sf-ar sf-step"
+    d="M419.0 244.0V220.0H428.4V244.0M467.6 244.0V220.0H477.1V244.0M529.1 244.0V220.0H538.6V244.0M584.8 244.0V220.0H594.3V244.0M614.5 244.0V220.0H623.9V244.0M647.7 244.0V220.0H657.1V244.0M708.0 244.0V220.0H717.5V244.0M727.3 244.0V220.0H736.7V244.0M785.2 244.0V220.0H794.6V244.0M883.1 244.0V220.0H892.6V244.0M916.4 244.0V220.0H925.9V244.0"
+  />
+  <rect class="sf-bg" x="830.6" y="216.0" width="13.1" height="32.0" />
+  <line class="sf-break" x1="833.6" y1="248.0" x2="839.6" y2="216.0" />
+  <line class="sf-break" x1="841.6" y1="248.0" x2="847.6" y2="216.0" />
+  <text class="sf-label" x="0" y="292.0">Neuropixels imec0/imec1 · SY bit</text>
+  <text class="sf-sub" x="0" y="313.0">Triggerbox; the probe sync channel</text>
+  <line class="sf-tb sf-base" x1="400.0" y1="308.0" x2="950.0" y2="308.0" />
+  <path
+    class="sf-tb sf-tick"
+    d="M401.9 308.0V284.0M405.3 308.0V284.0M408.7 308.0V284.0M412.1 308.0V284.0M415.6 308.0V284.0M419.0 308.0V284.0M422.4 308.0V284.0M425.8 308.0V284.0M429.2 308.0V284.0M432.6 308.0V284.0M436.0 308.0V284.0M439.4 308.0V284.0M442.9 308.0V284.0M446.3 308.0V284.0M449.7 308.0V284.0M453.1 308.0V284.0M456.5 308.0V284.0M459.9 308.0V284.0M463.3 308.0V284.0M466.8 308.0V284.0M470.2 308.0V284.0M473.6 308.0V284.0M477.0 308.0V284.0M480.4 308.0V284.0M483.8 308.0V284.0M487.2 308.0V284.0M490.7 308.0V284.0M494.1 308.0V284.0M497.5 308.0V284.0M500.9 308.0V284.0M504.3 308.0V284.0M507.7 308.0V284.0M511.1 308.0V284.0M601.0 308.0V284.0M604.4 308.0V284.0M607.9 308.0V284.0M611.3 308.0V284.0M614.7 308.0V284.0M618.1 308.0V284.0M621.5 308.0V284.0M624.9 308.0V284.0M628.3 308.0V284.0M631.8 308.0V284.0M635.2 308.0V284.0M638.6 308.0V284.0M642.0 308.0V284.0M645.4 308.0V284.0M648.8 308.0V284.0M652.2 308.0V284.0M655.7 308.0V284.0M659.1 308.0V284.0M662.5 308.0V284.0M665.9 308.0V284.0M669.3 308.0V284.0M672.7 308.0V284.0M676.1 308.0V284.0M679.6 308.0V284.0M683.0 308.0V284.0M686.4 308.0V284.0M689.8 308.0V284.0M693.2 308.0V284.0M696.6 308.0V284.0M700.0 308.0V284.0M703.4 308.0V284.0M706.9 308.0V284.0M710.3 308.0V284.0M713.7 308.0V284.0M717.1 308.0V284.0M720.5 308.0V284.0M723.9 308.0V284.0M727.3 308.0V284.0M730.8 308.0V284.0M734.2 308.0V284.0M737.6 308.0V284.0M741.0 308.0V284.0M744.4 308.0V284.0M747.8 308.0V284.0M751.2 308.0V284.0M754.7 308.0V284.0M758.1 308.0V284.0M761.5 308.0V284.0M764.9 308.0V284.0M768.3 308.0V284.0M771.7 308.0V284.0M775.1 308.0V284.0M778.6 308.0V284.0M782.0 308.0V284.0M785.4 308.0V284.0M788.8 308.0V284.0M792.2 308.0V284.0M795.6 308.0V284.0M799.0 308.0V284.0M802.5 308.0V284.0M805.9 308.0V284.0M809.3 308.0V284.0M812.7 308.0V284.0M816.1 308.0V284.0M819.5 308.0V284.0M822.9 308.0V284.0M826.3 308.0V284.0M845.7 308.0V284.0M849.1 308.0V284.0M852.5 308.0V284.0M855.9 308.0V284.0M859.3 308.0V284.0M862.8 308.0V284.0M866.2 308.0V284.0M869.6 308.0V284.0M873.0 308.0V284.0M876.4 308.0V284.0M879.8 308.0V284.0M883.2 308.0V284.0M886.7 308.0V284.0M890.1 308.0V284.0M893.5 308.0V284.0M896.9 308.0V284.0M900.3 308.0V284.0M903.7 308.0V284.0M907.1 308.0V284.0M910.6 308.0V284.0M914.0 308.0V284.0M917.4 308.0V284.0M920.8 308.0V284.0M924.2 308.0V284.0M927.6 308.0V284.0M931.0 308.0V284.0M934.5 308.0V284.0M937.9 308.0V284.0M941.3 308.0V284.0M944.7 308.0V284.0M948.1 308.0V284.0"
+  />
+  <rect class="sf-bg" x="830.6" y="280.0" width="13.1" height="32.0" />
+  <line class="sf-break" x1="833.6" y1="312.0" x2="839.6" y2="280.0" />
+  <line class="sf-break" x1="841.6" y1="312.0" x2="847.6" y2="280.0" />
+  <text class="sf-label" x="0" y="356.0">NIDQ · bit 5</text>
+  <text class="sf-sub" x="0" y="377.0">Triggerbox (optional)</text>
+  <line class="sf-tb sf-base" x1="400.0" y1="372.0" x2="950.0" y2="372.0" />
+  <path
+    class="sf-tb sf-tick"
+    d="M401.9 372.0V348.0M405.3 372.0V348.0M408.7 372.0V348.0M412.1 372.0V348.0M415.6 372.0V348.0M419.0 372.0V348.0M422.4 372.0V348.0M425.8 372.0V348.0M429.2 372.0V348.0M432.6 372.0V348.0M436.0 372.0V348.0M439.4 372.0V348.0M442.9 372.0V348.0M446.3 372.0V348.0M449.7 372.0V348.0M453.1 372.0V348.0M456.5 372.0V348.0M459.9 372.0V348.0M463.3 372.0V348.0M466.8 372.0V348.0M470.2 372.0V348.0M473.6 372.0V348.0M477.0 372.0V348.0M480.4 372.0V348.0M483.8 372.0V348.0M487.2 372.0V348.0M490.7 372.0V348.0M494.1 372.0V348.0M497.5 372.0V348.0M500.9 372.0V348.0M504.3 372.0V348.0M507.7 372.0V348.0M511.1 372.0V348.0M601.0 372.0V348.0M604.4 372.0V348.0M607.9 372.0V348.0M611.3 372.0V348.0M614.7 372.0V348.0M618.1 372.0V348.0M621.5 372.0V348.0M624.9 372.0V348.0M628.3 372.0V348.0M631.8 372.0V348.0M635.2 372.0V348.0M638.6 372.0V348.0M642.0 372.0V348.0M645.4 372.0V348.0M648.8 372.0V348.0M652.2 372.0V348.0M655.7 372.0V348.0M659.1 372.0V348.0M662.5 372.0V348.0M665.9 372.0V348.0M669.3 372.0V348.0M672.7 372.0V348.0M676.1 372.0V348.0M679.6 372.0V348.0M683.0 372.0V348.0M686.4 372.0V348.0M689.8 372.0V348.0M693.2 372.0V348.0M696.6 372.0V348.0M700.0 372.0V348.0M703.4 372.0V348.0M706.9 372.0V348.0M710.3 372.0V348.0M713.7 372.0V348.0M717.1 372.0V348.0M720.5 372.0V348.0M723.9 372.0V348.0M727.3 372.0V348.0M730.8 372.0V348.0M734.2 372.0V348.0M737.6 372.0V348.0M741.0 372.0V348.0M744.4 372.0V348.0M747.8 372.0V348.0M751.2 372.0V348.0M754.7 372.0V348.0M758.1 372.0V348.0M761.5 372.0V348.0M764.9 372.0V348.0M768.3 372.0V348.0M771.7 372.0V348.0M775.1 372.0V348.0M778.6 372.0V348.0M782.0 372.0V348.0M785.4 372.0V348.0M788.8 372.0V348.0M792.2 372.0V348.0M795.6 372.0V348.0M799.0 372.0V348.0M802.5 372.0V348.0M805.9 372.0V348.0M809.3 372.0V348.0M812.7 372.0V348.0M816.1 372.0V348.0M819.5 372.0V348.0M822.9 372.0V348.0M826.3 372.0V348.0M845.7 372.0V348.0M849.1 372.0V348.0M852.5 372.0V348.0M855.9 372.0V348.0M859.3 372.0V348.0M862.8 372.0V348.0M866.2 372.0V348.0M869.6 372.0V348.0M873.0 372.0V348.0M876.4 372.0V348.0M879.8 372.0V348.0M883.2 372.0V348.0M886.7 372.0V348.0M890.1 372.0V348.0M893.5 372.0V348.0M896.9 372.0V348.0M900.3 372.0V348.0M903.7 372.0V348.0M907.1 372.0V348.0M910.6 372.0V348.0M914.0 372.0V348.0M917.4 372.0V348.0M920.8 372.0V348.0M924.2 372.0V348.0M927.6 372.0V348.0M931.0 372.0V348.0M934.5 372.0V348.0M937.9 372.0V348.0M941.3 372.0V348.0M944.7 372.0V348.0M948.1 372.0V348.0"
+  />
+  <rect class="sf-bg" x="830.6" y="344.0" width="13.1" height="32.0" />
+  <line class="sf-break" x1="833.6" y1="376.0" x2="839.6" y2="344.0" />
+  <line class="sf-break" x1="841.6" y1="376.0" x2="847.6" y2="344.0" />
+  <text class="sf-label" x="0" y="420.0">NIDQ · bit 7</text>
+  <text class="sf-sub" x="0" y="441.0">Arduino SYNC (optional)</text>
+  <line class="sf-ar sf-base" x1="400.0" y1="436.0" x2="950.0" y2="436.0" />
+  <path
+    class="sf-ar sf-step"
+    d="M419.0 436.0V412.0H428.4V436.0M467.6 436.0V412.0H477.1V436.0M529.1 436.0V412.0H538.6V436.0M584.8 436.0V412.0H594.3V436.0M614.5 436.0V412.0H623.9V436.0M647.7 436.0V412.0H657.1V436.0M708.0 436.0V412.0H717.5V436.0M727.3 436.0V412.0H736.7V436.0M785.2 436.0V412.0H794.6V436.0M883.1 436.0V412.0H892.6V436.0M916.4 436.0V412.0H925.9V436.0"
+  />
+  <rect class="sf-bg" x="830.6" y="408.0" width="13.1" height="32.0" />
+  <line class="sf-break" x1="833.6" y1="440.0" x2="839.6" y2="408.0" />
+  <line class="sf-break" x1="841.6" y1="440.0" x2="847.6" y2="408.0" />
+  <text class="sf-label" x="0" y="484.0">Cameras · IR sync LED</text>
+  <text class="sf-sub" x="0" y="505.0">
+    Arduino SYNC; LED brightness in each frame
+  </text>
+  <line class="sf-ar sf-base" x1="601.0" y1="500.0" x2="904.5" y2="500.0" />
+  <line class="sf-none" x1="400.0" y1="500.0" x2="601.0" y2="500.0" />
+  <line class="sf-none" x1="904.5" y1="500.0" x2="950.0" y2="500.0" />
+  <text class="sf-note" x="500.5" y="494.0" text-anchor="middle">no video</text>
+  <path
+    class="sf-ar sf-step sf-led"
+    d="M614.5 500.0V486.8H615.6V476.0H623.9V500.0M647.7 500.0V486.8H648.8V476.0H657.1V500.0M708.0 500.0V486.8H709.2V476.0H717.5V500.0M727.3 500.0V486.8H728.4V476.0H736.7V500.0M785.2 500.0V486.8H786.3V476.0H794.6V500.0M883.1 500.0V486.8H884.2V476.0H892.6V500.0"
+  />
+  <rect class="sf-bg" x="830.6" y="472.0" width="13.1" height="32.0" />
+  <line class="sf-break" x1="833.6" y1="504.0" x2="839.6" y2="472.0" />
+  <line class="sf-break" x1="841.6" y1="504.0" x2="847.6" y2="472.0" />
+  <line
+    class="sf-tb sf-bracket"
+    x1="513.8"
+    y1="146.0"
+    x2="601.0"
+    y2="146.0"
+    marker-start="url(#sf-arr-tb)"
+    marker-end="url(#sf-arr-tb)"
+  />
+  <text class="sf-note sf-tbtext" x="557.4" y="139.0" text-anchor="middle">
+    ~2.3 s pause
+  </text>
+  <line class="sf-mark" x1="601.0" y1="150.0" x2="601.0" y2="548.0" />
+  <line class="sf-mark" x1="904.5" y1="150.0" x2="904.5" y2="548.0" />
+  <text class="sf-label-n" x="601.0" y="568.0" text-anchor="middle">
+    tracking start
+  </text>
+  <text class="sf-label-n" x="904.5" y="568.0" text-anchor="middle">
+    tracking end
+  </text>
+  <line class="sf-scale" x1="403.8" y1="524.0" x2="422.8" y2="524.0" />
+  <text class="sf-label-n" x="413.3" y="544.0" text-anchor="middle">0.5 s</text>
+  <path class="sf-ar sf-step" d="M0.0 52.0V38.0H14.0V52.0" />
+  <text class="sf-sub" x="22.0" y="50.0">
+    Arduino SYNC pulse: 250 ms on, 250–1500 ms off
+  </text>
+  <rect
+    class="sf-zoombox"
+    x="729.8"
+    y="152.0"
+    width="14"
+    height="32.0"
+    rx="2"
+  />
+  <rect class="sf-zoombox" x="470" y="8.0" width="488" height="92" rx="3" />
+  <line class="sf-zoomline" x1="729.8" y1="152.0" x2="470" y2="100.0" />
+  <line class="sf-zoomline" x1="743.8" y1="152.0" x2="958" y2="100.0" />
+  <text class="sf-sub" x="482" y="28.0">
+    boxed segment, true scale: 0.116 ms on, every 6.66 ms
+  </text>
+  <path
+    class="sf-tb sf-step"
+    d="M484.0 80.0H519.4V62.0H521.4V80.0H637.2V62.0H639.3V80.0H755.0V62.0H757.1V80.0H872.9V62.0H874.9V80.0H944.0"
+  />
+  <line
+    class="sf-muted-line"
+    x1="639.2"
+    y1="54.0"
+    x2="753.0"
+    y2="54.0"
+    marker-start="url(#sf-arr)"
+    marker-end="url(#sf-arr)"
+  />
+  <text class="sf-note" x="696.1" y="49.0" text-anchor="middle">6.66 ms</text>
+  <line class="sf-scale" x1="484.0" y1="92.0" x2="572.5" y2="92.0" />
+  <text class="sf-label-n" x="580.5" y="96.0">5 ms</text>
+</svg>

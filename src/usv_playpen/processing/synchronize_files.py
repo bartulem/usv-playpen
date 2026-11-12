@@ -483,8 +483,12 @@ class Synchronizer:
                 one_recording = np.memmap(filename=npx_recording, mode='r', dtype='int16', order='C')
                 one_sample_num = one_recording.shape[0] // total_probe_ch
 
-                # reshape the array such that channels are rows and samples are columns
-                sync_data = one_recording.reshape((total_probe_ch, one_sample_num), order='F')[-1, :]
+                # reshape the array such that channels are rows and samples are columns;
+                # the sync row is copied out of the memory map and the map is released,
+                # because on Windows an open memory map of the binary blocks the phase-shift
+                # step below from replacing that file (PermissionError: [WinError 5])
+                sync_data = np.array(one_recording.reshape((total_probe_ch, one_sample_num), order='F')[-1, :])
+                del one_recording
 
                 # save sync channel data
                 with atomic_output_path(f'{sync_ch_file}.npy') as tmp_sync_ch_file, pathlib.Path(tmp_sync_ch_file).open('wb') as sync_ch_output_file:
@@ -505,7 +509,7 @@ class Synchronizer:
              _, _) = self.find_lsb_changes(relevant_array=ch_sync_data, lsb_bool=False, total_frame_number=total_frame_number_least)
 
             largest_break_duration_sec = round(largest_break_duration / float(calibrated_sr_config['CalibratedHeadStages'][headstage_sn]), 3)
-            if (tracking_start, tracking_end) != (None, None) and largest_break_duration_sec < 2:
+            if (tracking_start, tracking_end) != (None, None):
                 spike_glx_sr = float(calibrated_sr_config['CalibratedHeadStages'][headstage_sn])
                 total_npx_recording_duration = (tracking_end - tracking_start) / spike_glx_sr
 
@@ -569,7 +573,8 @@ class Synchronizer:
                                         f'Values in original sync data: {count_values_in_sync_data}. Inspect further before proceeding.')
 
             else:
-                self.message_output(f"Tracking end exceeds e-phys recording boundary, so not found for {recording_file_name}.")
+                self.message_output(f"Tracking start/end not found for {recording_file_name}: the sync channel has fewer than two camera TTL breaks, "
+                                    f"or tracking end exceeds the e-phys recording boundary.")
                 continue
 
     @staticmethod
