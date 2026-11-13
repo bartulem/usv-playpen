@@ -1,7 +1,7 @@
 """
 @author: bartulem
-Cohort consolidation: the false-discovery correction across units, the conjunction test and the unit
-categories.
+Cohort consolidation: the false-discovery correction across units, the transformation intersection and
+the unit categories.
 
 Every per-unit result file holds metrics and p-values and no decisions, because a correction across units
 cannot be made from one unit. This module makes those decisions once, over the whole cohort:
@@ -15,16 +15,18 @@ cannot be made from one unit. This module makes those decisions once, over the w
 - it applies the Benjamini-Hochberg (or Benjamini-Yekutieli) procedure at ``inference.fdr_q`` to each
   test over the units where it ran, within each brain area unless ``cohort.pool_areas`` pools them, and a
   decoding test passes only with a positive effect as well;
-- it forms two conjunction p-values, one per transformation branch: content
-  ``max(p_quiet, p_transfer, p_nested)`` and onset ``max(p_quiet, p_transfer, p_nested_onset)`` (1.0 when
-  the branch's nested effect is not positive), and corrects each once;
-- it assigns each unit one of seven categories by priority (Transformation, Conditional,
-  Behavior-mediated, Remapping, Vocal, Behavioral feedback, None), with Transformation defined by a
-  rejected conjunction and a positive transfer slope, gives each category its subclasses, and records
-  everything else as modifiers;
-- it reports, per area, the floor requirement of each test, how many units each test could not use, the
-  share of units each requirement of the conjunction removes, and the correlation of the z-scores of the
-  quiet, transfer, occurrence, identity and nested tests;
+- it names a unit a Transformer OR when the quiet encoding and a nested test both pass after that
+  correction: content (quiet and nested) or onset (quiet and nested onset). Requiring every component to
+  pass is an intersection-union test, so no combined p-value is formed and nothing is corrected twice;
+- it assigns each unit one of five categories by priority (Transformer AND, Transformer OR, Buffer
+  USV, Buffer POSE, None), gives Transformer OR and Buffer USV their subclasses, and records
+  everything else as modifiers, among them the transformation branches a unit meets whatever its
+  category, and the transfer's state (transferring, reversed, not detected, untested), which is a
+  reported property of a unit and never a criterion;
+- it reports, per area, the floor requirement of each test, how many units each test could not use, each
+  transformation branch's units tested and met, the transfer states among the quiet-encoding and the
+  Transformer OR units, the share of quiet-encoding units each nested test removes, and the correlation of
+  the z-scores of the quiet, transfer, occurrence, identity and nested tests;
 - it writes one table row per unit with every p-value, z, effect, pass and reason, and the descriptors
   the cohort figures read (identity, draw counts, floor flags, model, AUROCs, kappas, spike counts).
 
@@ -37,9 +39,8 @@ by re-running only this step.
 Units recorded in one session (tested on blocks of it) are excluded from every correction unless
 ``inference.include_single_session_units`` admits them; they are listed either way.
 
-Exports :func:`unit_row`, :func:`fdr_reject`, :func:`classify_unit`, :func:`correlation_matrix`,
-:func:`consolidate` and the
-command-line entry :func:`main`.
+Exports :func:`unit_row`, :func:`fdr_reject`, :func:`transfer_state`, :func:`classify_unit`,
+:func:`correlation_matrix`, :func:`consolidate` and the command-line entry :func:`main`.
 """
 
 from __future__ import annotations
@@ -70,13 +71,13 @@ from .shift_null_inference import bh_floor_requirement
 #: The tests corrected across units, in report order, with the section and key each p-value is read from.
 TESTS = ("quiet", "transfer", "occurrence", "identity", "nested", "nested_onset", "gating")
 
-#: The two transformation branches: each branch's conjunction column and its components. The marginal
-#: decodings (identity, occurrence) are not components; they are recorded as a note on each unit.
-CONJUNCTIONS = {"content": ("quiet", "transfer", "nested"),
-                "onset": ("quiet", "transfer", "nested_onset")}
+#: The two transformation branches, each the intersection of the quiet encoding with one nested test.
+#: The transfer is not a component (it is reported as a property), and neither are the marginal decodings
+#: (identity, occurrence), which are recorded as a note on each unit.
+TRANSFORMATION_BRANCHES = {"content": ("quiet", "nested"), "onset": ("quiet", "nested_onset")}
 
-#: The conjunction columns, one per branch, corrected like a test.
-CONJUNCTION_COLUMNS = tuple(f"conjunction_{branch}" for branch in CONJUNCTIONS)
+#: The transfer's states, read from its corrected pass and its calibration slope.
+TRANSFER_STATES = ("transferring", "reversed", "not_detected", "untested")
 
 #: The marginal decoding each transformation branch is noted with.
 BRANCH_MARGINAL = {"content": "identity", "onset": "occurrence"}
@@ -89,9 +90,8 @@ SIGNED_TESTS = ("occurrence", "identity", "nested", "nested_onset")
 #: The vocal tests, in subclass order: onset, onset beyond behavior, content, content beyond behavior.
 VOCAL_TESTS = ("occurrence", "nested_onset", "identity", "nested")
 
-#: The seven primary categories, in priority order.
-CATEGORIES = ("Transformation", "Conditional", "Behavior-mediated", "Remapping", "Vocal",
-              "Behavioral feedback", "None")
+#: The five primary categories, in priority order.
+CATEGORIES = ("Transformer AND", "Transformer OR", "Buffer USV", "Buffer POSE", "None")
 
 #: The false-discovery procedures implemented.
 FDR_METHODS = ("bh", "by")
@@ -484,7 +484,42 @@ def fdr_reject(p_values: np.ndarray, q: float, method: str) -> np.ndarray:
     return benjamini_hochberg(values, level)[0]
 
 
-def classify_unit(passes: dict, slope: float, conjunctions: dict) -> tuple[str, dict]:
+def transfer_state(passed, slope: float) -> str:
+    """
+    Description
+    -----------
+    The transfer read as a property of the unit: ``transferring`` when the transfer test passes with a
+    positive calibration slope, ``reversed`` when it passes with a negative one (the frozen quiet filter
+    orders the vocal bins the opposite way), ``not_detected`` when it was tested and did not pass, and
+    ``untested`` when it could not run.
+
+    The state is reported beside the category and never decides it. The transfer scores a filter frozen
+    from the quiet fit, so its sensitivity follows the strength of the quiet encoding (a weak filter is a
+    weak predictor whatever happens to the relationship during vocalization), and a pass does not
+    condition on vocal state (a filter on a feature that itself predicts vocalizing can transfer through
+    the vocal drive it predicts). Neither direction qualifies it as a criterion.
+
+    Parameters
+    ----------
+    passed (bool | None)
+        The transfer's corrected pass state: True, False, or None when it did not run.
+    slope (float)
+        The transfer's pooled calibration slope.
+
+    Returns
+    -------
+    state (str)
+        One of :data:`TRANSFER_STATES`.
+    """
+
+    if passed is None:
+        return "untested"
+    if passed is False:
+        return "not_detected"
+    return "reversed" if bool(np.isfinite(slope) and slope < 0) else "transferring"
+
+
+def classify_unit(passes: dict, slope: float) -> tuple[str, dict]:
     """
     Description
     -----------
@@ -492,31 +527,36 @@ def classify_unit(passes: dict, slope: float, conjunctions: dict) -> tuple[str, 
 
     ``passes`` maps each test to True (rejected after correction), False (tested, not rejected) or None
     (not tested). A missing test is neither a pass nor a failure, so a rule that needs a test to pass, or
-    to fail, is not met by a missing one; the one exception is Remapping, where a missing transfer counts
-    as a transfer that did not happen. T+ means quiet and transfer pass with a positive slope, T- the same
-    with a negative slope; a vocal test is any of occurrence, nested onset, identity and nested. The
-    rules, first match wins:
+    to fail, is not met by a missing one. A vocal test is any of occurrence, nested onset, identity and
+    nested. The rules, first match wins:
 
-    1. Transformation -- a conjunction (content or onset) is rejected and the transfer slope is positive.
-       Subclasses: the branches rejected (``content``, ``onset``).
-    2. Conditional -- the vocal gating test passes.
-    3. Behavior-mediated -- T+ and a vocal test passes. With Transformation ruled out, the unit's vocal
-       signal was not shown to go beyond behavior: its nested test failed, could not run, or passed on
-       its own while its conjunction was not rejected. Subclass ``passed_separately`` for the last case
-       (each corrected test passes but the conjunction, corrected over its own units, does not).
-    4. Remapping -- quiet passes and either the transfer passes with a negative slope (subclass
-       ``reversed``), or the transfer fails or is missing while a vocal test passes (subclass
-       ``not_transferred``: the tuning is not detected during vocalization, which is not evidence that it
-       is lost).
-    5. Vocal -- quiet does not pass and a vocal test passes. Subclasses, one per aspect that passes:
+    1. Transformer AND -- the vocal gating test passes: the unit's vocal response depends on a kinematic
+       feature. It ranks first because the interaction is the more specific statement about a unit that
+       also meets a transformation branch; the branches such a unit meets stay visible in
+       ``transformation_branches``.
+    2. Transformer OR -- quiet passes and a nested test passes: nested makes the content branch, nested
+       onset the onset branch, and a unit can meet both. Subclasses: the branches met (``content``,
+       ``onset``). Each component is corrected across units on its own; requiring every component to pass
+       is an intersection-union test, so no combined p-value exists and none is corrected.
+    3. Buffer USV -- quiet does not pass and a vocal test passes. Subclasses, one per aspect that passes:
        ``onset`` or ``onset_beyond_behavior``, ``content`` or ``content_beyond_behavior`` (the nested test
        replaces its marginal one when both pass).
-    6. Behavioral feedback -- quiet passes. Subclasses: ``transferring`` (T+) or ``quiet_only``.
-    7. None.
+    4. Buffer POSE -- quiet passes. No nested test passes here, so a marginal vocal pass (occurrence,
+       identity), when there is one, is a vocal signal accounted for by behavior; it is carried in
+       ``vocal_tests_passed``.
+    5. None.
 
-    Transformation is defined by its conjunction rather than by each test passing on its own, so the
-    category count equals the headline count. Which marginal decoding (identity for content, occurrence
-    for onset) also passed is a note on the unit, not a subclass.
+    The names are circuit elements. A transformer combines the two inputs, pose and vocalization: AND
+    when the vocal response exists only under a pose condition (the interaction), OR when the two drive the
+    unit independently (both tunings present, no interaction detected). A buffer is tuned to one input and
+    is named by it: USV, the recorded animal's vocalizations, or POSE, the tracked pose of both animals and
+    its dynamics, the kinematic features.
+    In the mixed-selectivity vocabulary these are nonlinear mixed, linear mixed and pure selectivity.
+
+    The transfer is not part of any rule: its state (:func:`transfer_state`) is a modifier of every unit,
+    and the report counts the states among the quiet-encoding and the Transformer OR units. Which marginal
+    decoding (identity for content, occurrence for onset) also passed is a note on a unit meeting a
+    branch, not a subclass.
 
     Parameters
     ----------
@@ -524,43 +564,30 @@ def classify_unit(passes: dict, slope: float, conjunctions: dict) -> tuple[str, 
         ``{test: True | False | None}`` for every test in :data:`TESTS`.
     slope (float)
         The transfer's pooled calibration slope.
-    conjunctions (dict)
-        ``{branch: bool}`` for every branch in :data:`CONJUNCTIONS`: whether its conjunction was rejected.
 
     Returns
     -------
     category (str)
         One of :data:`CATEGORIES`.
     modifiers (dict)
-        ``subclasses`` (``+``-joined, ``""`` when the category has none), ``marginal_decoding`` (for
-        Transformation, the branches whose marginal decoding also passed, ``+``-joined or ``none``; None
-        otherwise), ``encoding_state`` (``T+``, ``T-``, ``kinematic_only`` or ``none``),
-        ``vocal_tests_passed``, ``nested``, ``nested_onset``, ``transfers``, ``gated``,
-        ``separate_pass_conjunction_fail`` and ``remapping_transfer_missing``.
+        ``subclasses`` (``+``-joined, ``""`` when the category has none), ``transformation_branches``
+        (the branches the unit meets whatever its category, ``+``-joined, ``""`` for none),
+        ``marginal_decoding`` (for a unit meeting a branch, the branches whose marginal decoding also
+        passed, ``+``-joined or ``none``; None otherwise), ``transfer_state`` (one of
+        :data:`TRANSFER_STATES`), ``vocal_tests_passed``, ``nested``, ``nested_onset`` and ``gated``.
     """
 
-    quiet, transfer = passes["quiet"] is True, passes["transfer"] is True
-    positive = bool(np.isfinite(slope) and slope > 0)
-    t_plus = quiet and transfer and positive
-    t_minus = quiet and transfer and bool(np.isfinite(slope) and slope < 0)
+    quiet = passes["quiet"] is True
     vocal_pass = [test for test in VOCAL_TESTS if passes[test] is True]
-    branches = [branch for branch in CONJUNCTIONS if conjunctions[branch] and positive]
-    # A branch whose components each passed on their own while its conjunction was not rejected.
-    separately = [branch for branch in CONJUNCTIONS
-                  if t_plus and passes[CONJUNCTIONS[branch][-1]] is True and branch not in branches]
+    branches = [branch for branch, components in TRANSFORMATION_BRANCHES.items()
+                if all(passes[test] is True for test in components)]
     subclasses: list = []
-    if branches:
-        category, subclasses = "Transformation", branches
-    elif passes["gating"] is True:
-        category = "Conditional"
-    elif t_plus and vocal_pass:
-        category = "Behavior-mediated"
-        if separately:
-            subclasses = ["passed_separately"]
-    elif quiet and (t_minus or (not transfer and vocal_pass)):
-        category, subclasses = "Remapping", ["reversed" if t_minus else "not_transferred"]
+    if passes["gating"] is True:
+        category = "Transformer AND"
+    elif branches:
+        category, subclasses = "Transformer OR", branches
     elif not quiet and vocal_pass:
-        category = "Vocal"
+        category = "Buffer USV"
         for marginal, nested in (("occurrence", "nested_onset"), ("identity", "nested")):
             aspect = "onset" if marginal == "occurrence" else "content"
             if passes[nested] is True:
@@ -568,18 +595,16 @@ def classify_unit(passes: dict, slope: float, conjunctions: dict) -> tuple[str, 
             elif passes[marginal] is True:
                 subclasses.append(aspect)
     elif quiet:
-        category, subclasses = "Behavioral feedback", ["transferring" if t_plus else "quiet_only"]
+        category = "Buffer POSE"
     else:
         category = "None"
     marginal = ("+".join(branch for branch in branches if passes[BRANCH_MARGINAL[branch]] is True) or "none"
-                if category == "Transformation" else None)
-    modifiers = {"subclasses": "+".join(subclasses), "marginal_decoding": marginal,
-                 "encoding_state": ("T+" if t_plus else "T-" if t_minus else "kinematic_only" if quiet else "none"),
+                if branches else None)
+    modifiers = {"subclasses": "+".join(subclasses), "transformation_branches": "+".join(branches),
+                 "marginal_decoding": marginal, "transfer_state": transfer_state(passes["transfer"], slope),
                  "vocal_tests_passed": "+".join(vocal_pass) if vocal_pass else "none",
-                 "nested": passes["nested"], "nested_onset": passes["nested_onset"], "transfers": transfer,
-                 "gated": passes["gating"],
-                 "separate_pass_conjunction_fail": bool(separately),
-                 "remapping_transfer_missing": bool(category == "Remapping" and passes["transfer"] is None)}
+                 "nested": passes["nested"], "nested_onset": passes["nested_onset"],
+                 "gated": passes["gating"]}
     return category, modifiers
 
 
@@ -698,6 +723,27 @@ def _subclass_counts(subclasses: pls.Series) -> dict:
     return counts
 
 
+def _transfer_counts(states: pls.Series) -> dict:
+    """
+    Description
+    -----------
+    How many units of a set are in each transfer state, every state listed even at zero.
+
+    Parameters
+    ----------
+    states (pls.Series)
+        The set's ``transfer_state`` column.
+
+    Returns
+    -------
+    counts (dict)
+        ``{state: units}`` for every state in :data:`TRANSFER_STATES`.
+    """
+
+    values = states.fill_null("untested").to_list()
+    return {state: int(sum(value == state for value in values)) for state in TRANSFER_STATES}
+
+
 def _area_report(frame: pls.DataFrame, q: float, draws: dict) -> dict:
     """
     Description
@@ -717,53 +763,63 @@ def _area_report(frame: pls.DataFrame, q: float, draws: dict) -> dict:
     -------
     report (dict)
         Per test: units tested, units rejected, units excluded by reason and the floor requirement (for
-        gating, read off the Bonferroni-adjusted floor its units reach, ``floor_p``); per conjunction, its
-        rejections and, as ``n_transformation``, those with a positive transfer slope (the headline count:
-        a rejected conjunction with a negative slope is not a transformation); the share of
-        quiet-encoding units each conjunction requirement removes, over the units on which that
-        requirement was tested (a missing test is neither a pass nor a fail); the correlation matrix of
-        the z-scores of every conjunction component and marginal decoding; the category counts; and how
-        many transformation units sit where the behaviour control buys nothing over no behaviour, which
-        are kept and counted.
+        gating, read off the Bonferroni-adjusted floor its units reach, ``floor_p``). ``transformation``:
+        per branch, the units on which both components ran and the units meeting both
+        (``n_transformation``), the units meeting any branch whatever their category
+        (``n_meeting_any_branch``), the number of Transformer OR units (``n_units``, those meeting a
+        branch and not gated), and their transfer states. ``removed_by_requirement``: the share of
+        quiet-encoding units each nested test removes, over
+        the units on which it was tested (a missing test is neither a pass nor a fail), and
+        ``transfer_among_quiet_encoding``, the transfer states of the same units. The correlation matrix of
+        the z-scores of the quiet, transfer, occurrence, identity and both nested tests; the category and
+        subclass counts; and how many transformation units sit where the behaviour control buys nothing
+        over no behaviour, which are kept and counted.
     """
 
     report: dict = {"n_units": frame.height, "tests": {}}
-    for test in [*TESTS, *CONJUNCTION_COLUMNS]:
+    for test in TESTS:
         tested = frame.filter(pls.col(f"p_{test}").is_not_nan())
         entry = {"n_tested": tested.height, "n_rejected": int(frame[f"pass_{test}"].fill_null(False).sum())}
-        if test in CONJUNCTION_COLUMNS:
-            positive = frame["transfer_slope"].fill_nan(0.0).fill_null(0.0) > 0
-            entry["n_transformation"] = int((frame[f"pass_{test}"].fill_null(False) & positive).sum())
-        else:
-            reasons = frame.filter(pls.col(f"p_{test}").is_nan())[f"reason_{test}"].fill_null("unknown")
-            entry["excluded"] = dict(zip(*np.unique(reasons.to_numpy().astype(str), return_counts=True),
-                                         strict=True)) if reasons.len() else {}
-            entry["excluded"] = {str(k): int(v) for k, v in entry["excluded"].items()}
-            if test in draws and tested.height:
-                entry["n_draws"] = draws[test]
-                entry["floor_requirement"] = bh_floor_requirement(tested.height, q, draws[test])
-            if test == "gating":
-                # A unit's gating p is Bonferroni-adjusted over its features, so it floors at
-                # F / (N + 1) rather than 1 / (N + 1); the requirement is read off the floor reached.
-                floored = frame.filter(pls.col("gating_at_floor"))["p_gating"].drop_nans()
-                entry["floor_p"] = float(floored.min()) if floored.len() else None
-                entry["floor_requirement"] = (tested.height * entry["floor_p"] / q
-                                              if entry["floor_p"] is not None else None)
+        reasons = frame.filter(pls.col(f"p_{test}").is_nan())[f"reason_{test}"].fill_null("unknown")
+        entry["excluded"] = dict(zip(*np.unique(reasons.to_numpy().astype(str), return_counts=True),
+                                     strict=True)) if reasons.len() else {}
+        entry["excluded"] = {str(k): int(v) for k, v in entry["excluded"].items()}
+        if test in draws and tested.height:
+            entry["n_draws"] = draws[test]
+            entry["floor_requirement"] = bh_floor_requirement(tested.height, q, draws[test])
+        if test == "gating":
+            # A unit's gating p is Bonferroni-adjusted over its features, so it floors at
+            # F / (N + 1) rather than 1 / (N + 1); the requirement is read off the floor reached.
+            floored = frame.filter(pls.col("gating_at_floor"))["p_gating"].drop_nans()
+            entry["floor_p"] = float(floored.min()) if floored.len() else None
+            entry["floor_requirement"] = (tested.height * entry["floor_p"] / q
+                                          if entry["floor_p"] is not None else None)
         report["tests"][test] = entry
+
+    transformation = frame.filter(pls.col("category") == "Transformer OR")
+    branches = {}
+    for branch, components in TRANSFORMATION_BRANCHES.items():
+        # A branch is tested on the units where both components ran, and met where both pass.
+        tested = frame.filter(pls.all_horizontal([pls.col(f"pass_{test}").is_not_null() for test in components]))
+        met = tested.filter(pls.all_horizontal([pls.col(f"pass_{test}").fill_null(False) for test in components]))
+        branches[branch] = {"n_tested": tested.height, "n_transformation": met.height}
+    meeting = frame.filter(pls.col("transformation_branches").fill_null("") != "")
+    report["transformation"] = {"branches": branches, "n_meeting_any_branch": meeting.height,
+                                "n_units": transformation.height,
+                                "transfer": _transfer_counts(transformation["transfer_state"])}
 
     encoded = frame.filter(pls.col("pass_quiet").fill_null(False))
     if encoded.height:
         # Each requirement's share is taken over the quiet-encoding units on which it was tested: a unit
         # whose test could not run was not removed by it, and is reported in n_tested instead.
         removed = {"n_quiet_encoding": encoded.height}
-        for requirement in ("transfer", "nested", "nested_onset"):
+        for requirement in ("nested", "nested_onset"):
             tested = encoded.filter(pls.col(f"pass_{requirement}").is_not_null())
             kept = tested[f"pass_{requirement}"]
-            if requirement == "transfer":
-                kept = kept & (tested["transfer_slope"].fill_nan(0.0) > 0)
             removed[requirement] = {"n_tested": tested.height,
                                     "share_removed": float(1.0 - kept.mean()) if tested.height else None}
         report["removed_by_requirement"] = removed
+        report["transfer_among_quiet_encoding"] = _transfer_counts(encoded["transfer_state"])
     columns = [f"z_{test}" for test in ("quiet", "transfer", "occurrence", "identity", "nested",
                                         "nested_onset")]
     z = frame.select(columns).to_numpy().astype(np.float64)
@@ -773,9 +829,6 @@ def _area_report(frame: pls.DataFrame, q: float, draws: dict) -> dict:
     report["categories"] = {name: int((frame["category"] == name).sum()) for name in CATEGORIES}
     report["subclasses"] = {name: _subclass_counts(frame.filter(pls.col("category") == name)["subclasses"])
                             for name in CATEGORIES}
-    report["separate_pass_conjunction_fail"] = int(frame["separate_pass_conjunction_fail"].sum())
-    report["remapping_transfer_missing"] = int(frame["remapping_transfer_missing"].sum())
-    transformation = frame.filter(pls.col("category") == "Transformation")
     # The column is Null-typed when no unit in the group has a nested result (a partial run, an area
     # without vocal tests); the cast keeps the comparison legal, and an unknown value is not "uninformative".
     informative = transformation["behaviour_informative"].cast(pls.Boolean).fill_null(True)
@@ -787,7 +840,7 @@ def consolidate(cohort: list, artifacts: dict, settings: dict) -> tuple[pls.Data
     """
     Description
     -----------
-    Correct every test across units, test the conjunction, and classify each unit.
+    Correct every test across units, form the transformation intersection, and classify each unit.
 
     Units are grouped by brain area unless ``cohort.pool_areas`` pools them, and each group is corrected on
     its own, so one area's count never depends on how many units of another were run. Single-session
@@ -808,7 +861,7 @@ def consolidate(cohort: list, artifacts: dict, settings: dict) -> tuple[pls.Data
     Returns
     -------
     table (pls.DataFrame)
-        One row per unit: inputs, the per-test and conjunction pass states, the category and the modifiers.
+        One row per unit: inputs, the per-test pass states, the category and the modifiers.
     report (dict)
         ``{correction group: report}`` (see :func:`_area_report`), plus ``excluded_single_session``.
     """
@@ -820,16 +873,6 @@ def consolidate(cohort: list, artifacts: dict, settings: dict) -> tuple[pls.Data
     rows = [unit_row(record, artifacts[record["unit_uid"]] if record["unit_uid"] in artifacts else {}, target)
             for record in cohort]
     for row in rows:
-        for branch, components in CONJUNCTIONS.items():
-            conjunction = [row[f"p_{test}"] for test in components]
-            p_value = float(max(conjunction)) if np.isfinite(conjunction).all() else float("nan")
-            # A decoding passes only with a positive effect: a gain at or below zero can floor a one-sided
-            # p when its null is centered further below zero, and that is not information carried. The
-            # conjunction fails with it.
-            if np.isfinite(p_value) and any(not row[f"{test}_effect"] > 0
-                                            for test in SIGNED_TESTS if test in components):
-                p_value = 1.0
-            row[f"p_conjunction_{branch}"] = p_value
         row["corrected"] = include_single or not row["single_session"]
         row["group"] = "pooled" if settings["cohort"]["pool_areas"] else row["brain_area"]
 
@@ -839,19 +882,19 @@ def consolidate(cohort: list, artifacts: dict, settings: dict) -> tuple[pls.Data
         members = [row for row in rows if row["group"] == group and row["corrected"]]
         if not members:
             continue
-        for test in [*TESTS, *CONJUNCTION_COLUMNS]:
+        for test in TESTS:
             p_values = np.array([row[f"p_{test}"] for row in members], dtype=np.float64)
             for row, corrected_state in zip(members, _passes(p_values, fdr_reject(p_values, q, method)),
                                             strict=True):
-                # A rejected decoding with a non-positive effect is a fail, not a pass.
+                # A rejected decoding with a non-positive effect is a fail, not a pass: a gain at or below
+                # zero can floor a one-sided p when its null is centered further below zero, and that is
+                # not information carried.
                 signed_fail = (corrected_state is True and test in SIGNED_TESTS
                                and not row[f"{test}_effect"] > 0)
                 row[f"pass_{test}"] = False if signed_fail else corrected_state
         for row in members:
             category, modifiers = classify_unit({test: row[f"pass_{test}"] for test in TESTS},
-                                                row["transfer_slope"],
-                                                {branch: row[f"pass_conjunction_{branch}"] is True
-                                                 for branch in CONJUNCTIONS})
+                                                row["transfer_slope"])
             row.update({"category": category, **modifiers,
                         "behaviour_informative": (None if not np.isfinite(row["behaviour_gain"])
                                                   else bool(row["behaviour_gain"] > 0))})
@@ -861,11 +904,10 @@ def consolidate(cohort: list, artifacts: dict, settings: dict) -> tuple[pls.Data
 
     excluded = [row for row in rows if not row["corrected"]]
     for row in excluded:
-        row.update({f"pass_{test}": None for test in [*TESTS, *CONJUNCTION_COLUMNS]})
-        row.update({"category": None, "subclasses": None, "marginal_decoding": None, "encoding_state": None,
-                    "vocal_tests_passed": None, "nested": None, "nested_onset": None, "transfers": None,
-                    "gated": None, "separate_pass_conjunction_fail": False,
-                    "remapping_transfer_missing": False, "behaviour_informative": None})
+        row.update({f"pass_{test}": None for test in TESTS})
+        row.update({"category": None, "subclasses": None, "transformation_branches": None,
+                    "marginal_decoding": None, "transfer_state": None, "vocal_tests_passed": None,
+                    "nested": None, "nested_onset": None, "gated": None, "behaviour_informative": None})
     report["excluded_single_session"] = [row["unit_uid"] for row in excluded]
     table = pls.DataFrame(out + excluded, infer_schema_length=None)
     return table, report

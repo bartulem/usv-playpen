@@ -867,11 +867,11 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
     quiet_significant = quiet_p < level
     transfer_significant = transfer["p"] < level
     if quiet_significant and transfer_significant and transfer["slope"] > 0:
-        reading = "transformation candidate"
+        reading = "quiet encoding, transferring"
     elif quiet_significant and transfer_significant:
-        reading = "remapping (tuned in both regimes, opposite sign)"
+        reading = "quiet encoding, reversed transfer (tuned in both regimes, opposite sign)"
     elif quiet_significant:
-        reading = "purely kinematic (no transfer)"
+        reading = "quiet encoding, transfer not detected"
     else:
         reading = "not tuned on quiet"
     message_output(f"  UNCORRECTED READING (not persisted): {reading} | quiet p {quiet_p:.4e} "
@@ -1087,11 +1087,11 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
     quiet_significant = quiet_p < level
     transfer_significant = transfer["p"] < level
     if quiet_significant and transfer_significant and transfer["slope"] > 0:
-        reading = "transformation candidate"
+        reading = "quiet encoding, transferring"
     elif quiet_significant and transfer_significant:
-        reading = "remapping (tuned in both regimes, opposite sign)"
+        reading = "quiet encoding, reversed transfer (tuned in both regimes, opposite sign)"
     elif quiet_significant:
-        reading = "purely kinematic (no transfer)"
+        reading = "quiet encoding, transfer not detected"
     else:
         reading = "not tuned on quiet"
     if screened_only:

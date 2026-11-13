@@ -1496,9 +1496,9 @@ class TestCombine:
     @pytest.mark.parametrize(
         ("quiet_p", "transfer_p", "transfer_slope", "reading"),
         [
-            (0.001, 0.001, 0.3, "transformation candidate"),
-            (0.001, 0.001, -0.3, "remapping"),
-            (0.001, 0.5, 0.3, "purely kinematic"),
+            (0.001, 0.001, 0.3, "quiet encoding, transferring"),
+            (0.001, 0.001, -0.3, "quiet encoding, reversed transfer"),
+            (0.001, 0.5, 0.3, "quiet encoding, transfer not detected"),
             (0.5, 0.001, 0.3, "not tuned on quiet"),
         ],
     )
@@ -1563,9 +1563,9 @@ class TestRunSingle:
     @pytest.mark.parametrize(
         ("n_shuffles", "transfer_p", "transfer_slope", "reading"),
         [
-            (199, 0.001, 0.3, "transformation candidate"),
-            (199, 0.001, -0.3, "remapping"),
-            (199, 0.5, 0.3, "purely kinematic"),
+            (199, 0.001, 0.3, "quiet encoding, transferring"),
+            (199, 0.001, -0.3, "quiet encoding, reversed transfer"),
+            (199, 0.5, 0.3, "quiet encoding, transfer not detected"),
             (9, 0.5, 0.3, "not tuned on quiet"),
         ],
     )

@@ -3,11 +3,12 @@
 Unit tests for ``usv_playpen.neural_modeling.consolidate_neural_modeling_results``.
 
 Coverage: reading one unit's p-values with every way a test can be missing, the false-discovery
-procedures, the category rules (including that a missing test is neither a pass nor a failure and that
-Transformation is the conjunction test), and the cohort consolidation -- correction within each area or
-pooled, the conjunction as the largest component p-value, the exclusion of single-session units, the
-report's floor requirements and exclusion counts, a group left with nothing to correct -- and the command
-line, which writes the cohort table and report and warns when the unit files disagree on their settings.
+procedures, the transfer state, the category rules (including that a missing test is neither a pass nor a
+failure, that a Transformer OR is the intersection of the corrected quiet and nested passes, and that the
+transfer decides nothing), and the cohort consolidation -- correction within each area or pooled, the
+exclusion of single-session units, the report's floor requirements, exclusion counts, transformation
+branches and transfer states, a group left with nothing to correct -- and the command line, which writes
+the cohort table and report and warns when the unit files disagree on their settings.
 """
 
 from __future__ import annotations
@@ -24,13 +25,15 @@ from usv_playpen.neural_modeling import (
 )
 from usv_playpen.neural_modeling.consolidate_neural_modeling_results import (
     CATEGORIES,
-    CONJUNCTIONS,
     TESTS,
+    TRANSFER_STATES,
+    TRANSFORMATION_BRANCHES,
     classify_unit,
     consolidate,
     correlation_matrix,
     fdr_reject,
     null_z,
+    transfer_state,
     unit_row,
 )
 from usv_playpen.neural_modeling.neural_significance import benjamini_hochberg
@@ -185,8 +188,24 @@ class TestFdrReject:
             fdr_reject(np.array([0.01]), 0.05, "BH")
 
 
+class TestTransferState:
+    """The transfer read as a property of a unit."""
+
+    @pytest.mark.parametrize(("passed", "slope", "state"), [
+        (None, float("nan"), "untested"),
+        (False, 0.3, "not_detected"),
+        (True, 0.3, "transferring"),
+        (True, -0.3, "reversed"),
+    ])
+    def test_the_four_states(self, passed, slope, state):
+        """Untested when it could not run, not detected when tested and failing, transferring with a
+        positive slope, reversed with a negative one."""
+        assert transfer_state(passed, slope) == state
+        assert state in TRANSFER_STATES
+
+
 class TestClassifyUnit:
-    """The seven categories, first match wins, with their subclasses and modifiers."""
+    """The five categories, first match wins, with their subclasses and modifiers."""
 
     @staticmethod
     def _passes(**states) -> dict:
@@ -207,87 +226,67 @@ class TestClassifyUnit:
         """
         return {**dict.fromkeys(TESTS, False), **states}
 
-    @staticmethod
-    def _rejected(*branches) -> dict:
-        """
-        Description
-        -----------
-        The conjunction states with only the given branches rejected.
-
-        Parameters
-        ----------
-        *branches (str)
-            The rejected branches (``content``, ``onset``).
-
-        Returns
-        -------
-        conjunctions (dict)
-            ``{branch: bool}``.
-        """
-        return {branch: branch in branches for branch in CONJUNCTIONS}
-
-    def test_transformation_is_a_rejected_conjunction_with_a_positive_slope(self):
-        """Either branch's conjunction makes a Transformation, with the branches as subclasses; a negative
-        slope makes the same unit Remapping."""
-        passes = self._passes(quiet=True, transfer=True, nested=True, nested_onset=True)
-        category, modifiers = classify_unit(passes, 0.4, self._rejected("content", "onset"))
-        assert category == "Transformation"
+    def test_transformer_or_is_quiet_with_a_nested_pass(self):
+        """Quiet with nested makes the content branch, with nested onset the onset branch, with both
+        both; the transfer plays no part and is carried as a state."""
+        both = self._passes(quiet=True, nested=True, nested_onset=True)
+        category, modifiers = classify_unit(both, float("nan"))
+        assert category == "Transformer OR"
         assert modifiers["subclasses"] == "content+onset"
-        assert classify_unit(passes, 0.4, self._rejected("onset"))[1]["subclasses"] == "onset"
-        assert classify_unit(passes, -0.4, self._rejected("content"))[0] == "Remapping"
+        assert modifiers["transfer_state"] == "not_detected"
+        onset_only = self._passes(quiet=True, nested_onset=True, transfer=None)
+        category, modifiers = classify_unit(onset_only, float("nan"))
+        assert category == "Transformer OR"
+        assert modifiers["subclasses"] == "onset"
+        assert modifiers["transfer_state"] == "untested"
+
+    def test_the_transfer_is_a_property_never_a_criterion(self):
+        """The same quiet-and-nested unit is a Transformer OR whether its transfer passes, fails, could
+        not run or is reversed; only ``transfer_state`` changes."""
+        for transfer, slope, state in ((True, 0.4, "transferring"), (False, 0.4, "not_detected"),
+                                       (None, float("nan"), "untested"), (True, -0.4, "reversed")):
+            category, modifiers = classify_unit(self._passes(quiet=True, nested=True, transfer=transfer), slope)
+            assert category == "Transformer OR"
+            assert modifiers["transfer_state"] == state
 
     def test_the_marginal_decoding_is_a_note_not_a_requirement(self):
-        """A content Transformation needs no identity pass; whether identity passed is noted."""
-        without = self._passes(quiet=True, transfer=True, nested=True)
-        with_identity = self._passes(quiet=True, transfer=True, nested=True, identity=True)
-        assert classify_unit(without, 0.4, self._rejected("content"))[1]["marginal_decoding"] == "none"
-        assert classify_unit(with_identity, 0.4, self._rejected("content"))[1]["marginal_decoding"] == "content"
-        assert classify_unit(without, 0.4, self._rejected())[1]["marginal_decoding"] is None
+        """A content Transformer OR needs no identity pass; whether identity passed is noted."""
+        without = self._passes(quiet=True, nested=True)
+        with_identity = self._passes(quiet=True, nested=True, identity=True)
+        assert classify_unit(without, 0.4)[1]["marginal_decoding"] == "none"
+        assert classify_unit(with_identity, 0.4)[1]["marginal_decoding"] == "content"
+        assert classify_unit(self._passes(quiet=True, identity=True), 0.4)[1]["marginal_decoding"] is None
 
-    def test_conditional_outranks_everything_below_transformation(self):
-        """A gated unit is Conditional whatever else it passes, unless a conjunction is rejected."""
+    def test_both_components_must_pass_and_a_missing_one_is_not_a_pass(self):
+        """A missing quiet or nested test makes no Transformer OR: the unit falls to the rule its other
+        passes meet."""
+        assert classify_unit(self._passes(quiet=None, nested=True), 0.4)[0] == "Buffer USV"
+        assert classify_unit(self._passes(quiet=True, nested=None, identity=True), 0.4)[0] == "Buffer POSE"
+
+    def test_transformer_and_outranks_transformer_or(self):
+        """A gated unit is a Transformer AND whatever else it passes; the transformation branches it also
+        meets stay visible as a modifier."""
         passes = self._passes(quiet=True, transfer=True, occurrence=True, nested=False, gating=True)
-        assert classify_unit(passes, 0.4, self._rejected())[0] == "Conditional"
-        assert classify_unit(self._passes(identity=True, gating=True), float("nan"),
-                             self._rejected())[0] == "Conditional"
-        passes = self._passes(quiet=True, transfer=True, nested=True, gating=True)
-        assert classify_unit(passes, 0.4, self._rejected("content"))[0] == "Transformation"
+        assert classify_unit(passes, 0.4)[0] == "Transformer AND"
+        assert classify_unit(self._passes(identity=True, gating=True), float("nan"))[0] == "Transformer AND"
+        category, modifiers = classify_unit(self._passes(quiet=True, nested=True, gating=True), 0.4)
+        assert category == "Transformer AND"
+        assert modifiers["transformation_branches"] == "content"
+        assert modifiers["subclasses"] == ""
+        assert modifiers["marginal_decoding"] == "none"
+        assert classify_unit(self._passes(quiet=True, nested=True), 0.4)[1]["transformation_branches"] == "content"
+        assert classify_unit(self._passes(quiet=True, identity=True), 0.4)[1]["transformation_branches"] == ""
 
     @pytest.mark.parametrize("nested", [False, None])
-    def test_behavior_mediated_takes_a_failed_or_missing_nested_test(self, nested):
-        """T+ with a vocal pass and no rejected conjunction is Behavior-mediated, whether the nested test
-        failed or could not run."""
+    def test_a_marginal_vocal_pass_without_a_nested_pass_is_a_buffer_pose(self, nested):
+        """Quiet with a vocal pass whose nested test failed or could not run is a Buffer POSE: the vocal pass
+        and the transfer are carried as modifiers, and there is no subclass."""
         passes = self._passes(quiet=True, transfer=True, identity=True, nested=nested)
-        category, modifiers = classify_unit(passes, 0.4, self._rejected())
-        assert category == "Behavior-mediated"
-        assert not modifiers["separate_pass_conjunction_fail"]
+        category, modifiers = classify_unit(passes, 0.4)
+        assert category == "Buffer POSE"
         assert modifiers["subclasses"] == ""
-
-    def test_a_separate_pass_without_its_conjunction_is_behavior_mediated_and_flagged(self):
-        """Components that each pass while their conjunction is not rejected give Behavior-mediated, flagged
-        and named by the subclass ``passed_separately``."""
-        passes = self._passes(quiet=True, transfer=True, nested=True)
-        category, modifiers = classify_unit(passes, 0.4, self._rejected())
-        assert category == "Behavior-mediated"
-        assert modifiers["separate_pass_conjunction_fail"]
-        assert modifiers["subclasses"] == "passed_separately"
-
-    @pytest.mark.parametrize("transfer", [False, None])
-    def test_remapping_takes_an_undetected_transfer_with_a_vocal_signal(self, transfer):
-        """Quiet with a failed or missing transfer and a vocal pass is Remapping, subclass
-        ``not_transferred``; the missing case is flagged."""
-        passes = self._passes(quiet=True, transfer=transfer, occurrence=True)
-        category, modifiers = classify_unit(passes, float("nan"), self._rejected())
-        assert category == "Remapping"
-        assert modifiers["subclasses"] == "not_transferred"
-        assert modifiers["remapping_transfer_missing"] is (transfer is None)
-
-    def test_a_negative_slope_is_remapping_without_any_vocal_signal(self):
-        """A transfer with a negative slope is Remapping, subclass ``reversed``, even when no vocal test passes."""
-        passes = self._passes(quiet=True, transfer=True)
-        category, modifiers = classify_unit(passes, -0.3, self._rejected())
-        assert category == "Remapping"
-        assert modifiers["subclasses"] == "reversed"
+        assert modifiers["vocal_tests_passed"] == "identity"
+        assert modifiers["transfer_state"] == "transferring"
 
     @pytest.mark.parametrize(("states", "subclasses"), [
         ({"occurrence": True}, "onset"),
@@ -298,35 +297,38 @@ class TestClassifyUnit:
     ])
     def test_vocal_subclasses_combine_and_the_nested_test_replaces_its_marginal(self, states, subclasses):
         """A vocal unit without quiet tuning carries one subclass per aspect that passes."""
-        category, modifiers = classify_unit(self._passes(**states), float("nan"), self._rejected())
-        assert category == "Vocal"
+        category, modifiers = classify_unit(self._passes(**states), float("nan"))
+        assert category == "Buffer USV"
         assert modifiers["subclasses"] == subclasses
 
-    def test_a_missing_quiet_test_still_allows_vocal(self):
-        """A unit whose kinematic encoding never ran is not quiet-tuned, so a vocal pass makes it Vocal."""
-        assert classify_unit(self._passes(quiet=None, transfer=None, identity=True), float("nan"),
-                             self._rejected())[0] == "Vocal"
+    def test_a_missing_quiet_test_still_allows_a_buffer_usv(self):
+        """A unit whose kinematic encoding never ran is not quiet-tuned, so a vocal pass makes it a Buffer USV."""
+        assert classify_unit(self._passes(quiet=None, transfer=None, identity=True), float("nan"))[0] == "Buffer USV"
 
-    @pytest.mark.parametrize(("states", "slope", "subclasses"), [
-        ({"quiet": True}, float("nan"), "quiet_only"),
+    @pytest.mark.parametrize(("states", "slope", "state"), [
+        ({"quiet": True}, float("nan"), "not_detected"),
+        ({"quiet": True, "transfer": None}, float("nan"), "untested"),
         ({"quiet": True, "transfer": True}, 0.3, "transferring"),
+        ({"quiet": True, "transfer": True}, -0.3, "reversed"),
     ])
-    def test_behavioral_feedback_has_two_forms(self, states, slope, subclasses):
-        """Quiet tuning with no vocal signal: quiet only, or transferring with a positive slope."""
-        category, modifiers = classify_unit(self._passes(**states), slope, self._rejected())
-        assert category == "Behavioral feedback"
-        assert modifiers["subclasses"] == subclasses
+    def test_a_buffer_pose_carries_the_transfer_as_a_modifier(self, states, slope, state):
+        """Quiet tuning with no vocal signal is a Buffer POSE in every transfer state, with no subclass."""
+        category, modifiers = classify_unit(self._passes(**states), slope)
+        assert category == "Buffer POSE"
+        assert modifiers["subclasses"] == ""
+        assert modifiers["transfer_state"] == state
 
     def test_nothing_passing_is_none(self):
         """No test passing gives None, with no subclass."""
-        category, modifiers = classify_unit(self._passes(), float("nan"), self._rejected())
+        category, modifiers = classify_unit(self._passes(), float("nan"))
         assert category == "None"
         assert modifiers["subclasses"] == ""
 
     def test_every_category_is_named(self):
-        """The rules use exactly the seven declared categories, in priority order."""
-        assert CATEGORIES == ("Transformation", "Conditional", "Behavior-mediated", "Remapping", "Vocal",
-                              "Behavioral feedback", "None")
+        """The rules use exactly the five declared categories, in priority order, and the two branches
+        are the quiet encoding with one nested test each."""
+        assert CATEGORIES == ("Transformer AND", "Transformer OR", "Buffer USV", "Buffer POSE", "None")
+        assert TRANSFORMATION_BRANCHES == {"content": ("quiet", "nested"), "onset": ("quiet", "nested_onset")}
 
 
 class TestConsolidate:
@@ -344,17 +346,29 @@ class TestConsolidate:
         pooled, _ = consolidate(cohort, artifacts, {**SETTINGS, "cohort": {"pool_areas": True}})
         assert pooled.filter(pooled["unit_uid"] == "pag0")["pass_quiet"][0] is False
 
-    def test_each_conjunction_is_the_largest_of_its_components(self):
-        """Content is the largest of quiet, transfer and nested, onset of quiet, transfer and nested onset;
-        the marginal decodings are in neither."""
-        artifact = _artifact(p=1e-3)
-        artifact["nested_vocal_decoding_manifold"]["p"] = 0.03
-        artifact["nested_vocal_decoding_onset"]["p"] = 0.02
-        artifact["vocalization_identity_manifold"]["p"] = 0.9
-        artifact["vocal_occurrence"]["p"] = 0.9
-        table, _ = consolidate([_record("u")], {"u": artifact}, SETTINGS)
-        assert table["p_conjunction_content"][0] == pytest.approx(0.03)
-        assert table["p_conjunction_onset"][0] == pytest.approx(0.02)
+    def test_transformer_or_is_the_intersection_of_corrected_passes(self):
+        """A unit is a Transformer OR when its quiet and nested tests each pass their own correction; no
+        combined p-value is formed, and the transfer is not consulted."""
+        cohort = [_record(f"u{i}") for i in range(10)]
+        artifacts = {f"u{i}": _artifact(p=0.9) for i in range(10)}
+        candidate = _artifact(p=1e-3)
+        candidate["nested_vocal_decoding_manifold"]["p"] = 0.03
+        candidate["nested_vocal_decoding_onset"]["p"] = 0.9
+        artifacts["u0"] = candidate
+        table, _ = consolidate(cohort, artifacts, SETTINGS)
+        row = table.filter(table["unit_uid"] == "u0").row(0, named=True)
+        # 0.03 fails BH at rank 1 of 10 (threshold 0.005): quiet passes, nested does not, so a Buffer POSE.
+        assert row["pass_quiet"] is True
+        assert row["pass_nested"] is False
+        assert row["category"] == "Buffer POSE"
+        assert "p_conjunction_content" not in table.columns
+        candidate["nested_vocal_decoding_manifold"]["p"] = 1e-3
+        candidate["kinematic_encoding"]["transfer_p"] = 0.9
+        table, _ = consolidate(cohort, artifacts, SETTINGS)
+        row = table.filter(table["unit_uid"] == "u0").row(0, named=True)
+        assert row["category"] == "Transformer OR"
+        assert row["subclasses"] == "content"
+        assert row["transfer_state"] == "not_detected"
 
     def test_switching_the_target_needs_only_the_consolidation(self):
         """The same result files classify differently under the other target: here the categorical
@@ -363,14 +377,16 @@ class TestConsolidate:
         manifold, _ = consolidate([_record("u")], {"u": artifact}, SETTINGS)
         multinomial, _ = consolidate([_record("u")], {"u": artifact},
                                      {**SETTINGS, "vocalizations": {"vocal_target": "multinomial"}})
-        assert manifold["category"][0] == "Transformation"
-        # The categorical nested test added -0.001: a non-positive effect fails the conjunction outright.
-        assert multinomial["p_conjunction_content"][0] == pytest.approx(1.0)
-        assert "content" not in multinomial["subclasses"][0]
+        assert manifold["category"][0] == "Transformer OR"
+        assert manifold["subclasses"][0] == "content+onset"
+        # The categorical nested test added -0.001: a non-positive effect fails it, so only the onset
+        # branch is left.
+        assert multinomial["pass_nested"][0] is False
+        assert multinomial["subclasses"][0] == "onset"
 
     def test_a_decoding_with_a_non_positive_effect_never_passes(self):
         """A floored p with a gain at or below zero is a fail for identity, nested and nested onset alike,
-        and it fails the conjunction; occurrence follows the same rule."""
+        so the onset branch is not met; occurrence follows the same rule."""
         artifact = _artifact(p=1e-3)
         artifact["vocalization_identity_manifold"]["gain"] = -0.02
         artifact["nested_vocal_decoding_onset"]["added"] = 0.0
@@ -378,7 +394,6 @@ class TestConsolidate:
         assert table["pass_identity"][0] is False
         assert table["pass_nested_onset"][0] is False
         assert table["pass_nested"][0] is True
-        assert table["p_conjunction_onset"][0] == pytest.approx(1.0)
         assert table["subclasses"][0] == "content"
 
     def test_a_best_screened_only_unit_enters_quiet_as_a_fail_and_transfer_as_untested(self):
@@ -411,7 +426,7 @@ class TestConsolidate:
         admitted = {**SETTINGS, "inference": {**SETTINGS["inference"], "include_single_session_units": True}}
         table, report = consolidate(cohort, artifacts, admitted)
         assert report["excluded_single_session"] == []
-        assert table.filter(table["unit_uid"] == "block")["category"][0] == "Transformation"
+        assert table.filter(table["unit_uid"] == "block")["category"][0] == "Transformer OR"
 
     def test_the_report_carries_the_floor_and_the_exclusions(self):
         """Each test reports its floor requirement at the draws behind it, and why units were excluded."""
@@ -426,32 +441,39 @@ class TestConsolidate:
         assert report["PAG"]["tests"]["gating"]["floor_requirement"] is None
         assert sum(report["PAG"]["categories"].values()) == 4
 
-    def test_the_headline_count_needs_a_positive_slope(self):
-        """A conjunction rejected with a negative transfer slope is counted as rejected but not as a
-        transformation, so ``n_transformation`` equals the Transformation category count."""
+    def test_the_transformer_or_count_and_its_transfer_states_are_reported(self):
+        """The Transformer OR count is the number of units meeting either branch, whatever their transfer;
+        the report gives each branch's tested and met counts and the transfer states of the category."""
         cohort = [_record(f"u{i}") for i in range(4)]
         artifacts = {f"u{i}": _artifact() for i in range(3)}
         artifacts["u3"] = _artifact(slope=-0.4)
         _table, report = consolidate(cohort, artifacts, SETTINGS)
+        transformation = report["PAG"]["transformation"]
         for branch in ("content", "onset"):
-            entry = report["PAG"]["tests"][f"conjunction_{branch}"]
-            assert entry["n_rejected"] == 4
-            assert entry["n_transformation"] == 3
-        assert report["PAG"]["categories"]["Transformation"] == 3
+            assert transformation["branches"][branch] == {"n_tested": 4, "n_transformation": 4}
+        assert transformation["n_meeting_any_branch"] == 4
+        assert transformation["n_units"] == 4
+        assert transformation["transfer"] == {"transferring": 3, "reversed": 1, "not_detected": 0,
+                                              "untested": 0}
+        assert report["PAG"]["categories"]["Transformer OR"] == 4
+        assert "conjunction_content" not in report["PAG"]["tests"]
 
     def test_a_requirement_removes_only_units_it_tested(self):
-        """The share each requirement removes is taken over the quiet-encoding units on which it ran: an
-        untested nested onset test removes no one, while a negative slope removes the unit from transfer."""
+        """The share each nested test removes is taken over the quiet-encoding units on which it ran: an
+        untested nested onset test removes no one. The transfer is no requirement; its states among the
+        same units are counted instead."""
         cohort = [_record(f"u{i}") for i in range(4)]
         artifacts = {f"u{i}": _artifact() for i in range(4)}
         artifacts["u2"]["nested_vocal_decoding_onset"] = {"ran": False, "reason": "not_vocal_testable"}
         artifacts["u3"] = _artifact(slope=-0.4)
         _table, report = consolidate(cohort, artifacts, SETTINGS)
         removed = report["PAG"]["removed_by_requirement"]
+        assert set(removed) == {"n_quiet_encoding", "nested", "nested_onset"}
         assert removed["n_quiet_encoding"] == 4
-        assert removed["transfer"] == {"n_tested": 4, "share_removed": pytest.approx(0.25)}
         assert removed["nested_onset"] == {"n_tested": 3, "share_removed": pytest.approx(0.0)}
         assert removed["nested"] == {"n_tested": 4, "share_removed": pytest.approx(0.0)}
+        assert report["PAG"]["transfer_among_quiet_encoding"] == {"transferring": 3, "reversed": 1,
+                                                                   "not_detected": 0, "untested": 0}
 
     def test_the_z_correlation_covers_both_nested_tests(self):
         """Both conjunctions' components and both marginal decodings enter the z-score correlation."""
@@ -492,13 +514,13 @@ class TestBehaviourModifier:
     """Units whose day the behaviour control does not help are kept, flagged and counted."""
 
     def test_an_uninformative_control_is_flagged_not_dropped(self):
-        """A transformation unit with a non-positive behaviour gain stays a Transformation, is flagged, and is
+        """A transformation unit with a non-positive behaviour gain stays a Transformer OR, is flagged, and is
         counted in the report."""
         informative, uninformative = _artifact(), _artifact()
         uninformative["nested_vocal_decoding_manifold"]["behaviour_over_no_behaviour"] = -0.002
         table, report = consolidate([_record("a"), _record("b")], {"a": informative, "b": uninformative},
                                     SETTINGS)
-        assert table["category"].to_list() == ["Transformation", "Transformation"]
+        assert table["category"].to_list() == ["Transformer OR", "Transformer OR"]
         assert table["behaviour_informative"].to_list() == [True, False]
         assert report["PAG"]["transformation_where_behaviour_uninformative"] == 1
 
@@ -569,13 +591,13 @@ class TestNestedOnset:
         assert row["reason_nested_onset"] == "not_run"
 
     def test_failing_it_removes_only_the_onset_branch(self):
-        """A unit failing only the onset nested test is still a content Transformation; the test's pass
+        """A unit failing only the onset nested test is still a content Transformer OR; the test's pass
         state is corrected per group and carried as the ``nested_onset`` modifier."""
         strong = _artifact(p=1e-3)
         strong["nested_vocal_decoding_onset"]["p"] = 0.9
         table, report = consolidate([_record("u")], {"u": strong}, SETTINGS)
         row = table.row(0, named=True)
-        assert row["category"] == "Transformation"
+        assert row["category"] == "Transformer OR"
         assert row["subclasses"] == "content"
         assert row["pass_nested_onset"] is False
         assert row["nested_onset"] is False
