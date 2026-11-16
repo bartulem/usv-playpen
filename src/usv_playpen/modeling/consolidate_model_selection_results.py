@@ -37,9 +37,17 @@ per-step files are *not* deleted by default — pass
 `--move_to_steps_subdir` to relocate them into a `<input_dir>/steps/`
 folder once consolidation succeeds.
 
-Like the univariate consolidator, the script asserts metadata equality
-across step files (modulo the `git_*` / `package_version` provenance
-fields that vary across nodes and rebuilds).
+The script asserts that `_input_metadata` and `_univariate_metadata`
+are equal across step files (modulo the `git_*` / `package_version`
+provenance fields that vary across nodes and rebuilds): a difference
+there means the steps were fitted on different data. A difference in
+`_run_metadata` does not stop the merge. A selection resumed under a
+newer package version records new settings keys or a new settings-file
+hash even when nothing that affects its fits changed, so the
+consolidator prints a warning naming every difference, records them in
+`_consolidation_metadata['run_metadata_mismatches']`, keeps step 0's
+`_run_metadata` as the hoisted block, and leaves each step's own block
+in its per-step file.
 
 CLI
 ---
@@ -485,8 +493,13 @@ def consolidate(input_dir: str,
     FileNotFoundError
         If `input_dir` is empty or does not exist.
     ValueError
-        On metadata mismatch, ambiguous prefix, missing step indices,
-        or — without `--allow_legacy` — a missing-metadata file.
+        On an `_input_metadata` or `_univariate_metadata` mismatch,
+        an ambiguous prefix, or — without `--allow_legacy` — a
+        missing-metadata file. An `_run_metadata` mismatch is not
+        raised: it prints a warning and is recorded in
+        `_consolidation_metadata['run_metadata_mismatches']` as a list
+        of `{'step_idx', 'file', 'differences'}` entries, each listing
+        how that step's block differs from step 0's.
     """
 
     in_dir = Path(input_dir)
@@ -523,6 +536,7 @@ def consolidate(input_dir: str,
 
     successfully_merged_paths = []
     successfully_merged_timestamps = []
+    run_metadata_mismatches = []
     step_payloads = []  # list of (idx, clean_dict)
 
     for step_idx, fp in indexed:
@@ -565,11 +579,15 @@ def consolidate(input_dir: str,
                     )
                 if not metadata_blocks_equal(canonical_run_md, cur_run,
                                              ignore_keys=ignore_provenance_keys):
+                    # A resume under a newer package version changes the
+                    # recorded settings without necessarily changing the
+                    # fits, so this is reported, not refused.
                     diffs = _diff_metadata(canonical_run_md, cur_run,
                                            ignore_keys=ignore_provenance_keys)
-                    raise ValueError(
-                        f"`_run_metadata` mismatch between earlier "
-                        f"step file and {fp.name}:\n  - " + "\n  - ".join(diffs)
+                    print(f"[consolidate] WARNING: `_run_metadata` of {fp.name} "
+                          f"differs from the first step file's:\n  - " + "\n  - ".join(diffs))
+                    run_metadata_mismatches.append(
+                        {'step_idx': int(step_idx), 'file': fp.name, 'differences': list(diffs)}
                     )
 
             # Adopt the `_univariate_metadata` block lazily and
@@ -607,6 +625,12 @@ def consolidate(input_dir: str,
         consolidator_name=CONSOLIDATOR_NAME,
         consolidator_version=CONSOLIDATOR_VERSION,
     )
+    cons_md['run_metadata_mismatches'] = run_metadata_mismatches
+    if run_metadata_mismatches:
+        print(f"[consolidate] WARNING: {len(run_metadata_mismatches)} step file(s) carry a "
+              "`_run_metadata` that differs from the first step file's; the hoisted block is "
+              "the first step file's, and the differences are recorded in "
+              "`_consolidation_metadata['run_metadata_mismatches']`.")
 
     # Verify step indices are contiguous starting from 0 — selectors
     # always emit sequential `step_0, step_1, ...` files. A gap means a

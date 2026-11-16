@@ -3788,8 +3788,11 @@ mismatch stops the univariate task, or the selection (for the univariate file
 as well as the input pickle), at load time with exit status 1 and a message
 naming the type to rerun with; an artifact that does not record the field is
 not checked. Consolidate the model-selection steps with
-``consolidate_model_selection`` (the same metadata-equality guard and metadata
-hoisting as the univariate consolidator above):
+``consolidate_model_selection`` (the same metadata hoisting as the univariate
+consolidator above; ``_input_metadata`` and ``_univariate_metadata`` must agree
+across step files, while a differing ``_run_metadata``, as left by a selection
+resumed under a newer package version, prints a warning, keeps step 0's block
+and is recorded per step in ``_consolidation_metadata.run_metadata_mismatches``):
 
 .. code-block:: python
 
