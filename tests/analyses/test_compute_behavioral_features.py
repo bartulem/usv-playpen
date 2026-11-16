@@ -62,7 +62,7 @@ class TestResolveFeatureLabel:
 
         assert FeatureZoo.resolve_feature_label('nose-nose', 'male', 'female') == 'partner distance'
         assert FeatureZoo.resolve_feature_label('nose-TTI', 'male', 'female') == 'nose-TTI distance'
-        assert FeatureZoo.resolve_feature_label('head-head', 'male', 'female') == 'inter-partner distance'
+        assert FeatureZoo.resolve_feature_label('head-head', 'male', 'female') == 'self-partner distance'
 
     def test_dyadic_angle_forward_and_reverse(self):
         """Both key orders (``allo_*-X`` and ``X-allo_*``) are labelled
@@ -138,7 +138,7 @@ class TestSocialDistanceColumns:
             feature = f'head-head{suffix}'
             reference = f'nose-nose{suffix}'
             assert FeatureZoo.feature_boundaries[feature] == FeatureZoo.feature_boundaries[reference]
-            assert FeatureZoo.resolve_feature_label(feature).startswith('inter-partner distance')
+            assert FeatureZoo.resolve_feature_label(feature).startswith('self-partner distance')
 
 
 class TestSocialHeadYawColumns:

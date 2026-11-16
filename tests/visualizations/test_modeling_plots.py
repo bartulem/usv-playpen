@@ -3579,19 +3579,49 @@ _REJECTED_ROW_LABELS = {'nose-nose': 'TESTED', 'decoy.feature': 'DECOY',
 
 @pytest.mark.filterwarnings("ignore:FigureCanvasAgg is non-interactive:UserWarning")
 @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
-@pytest.mark.parametrize('plotter', ['onset', 'multinomial', 'manifold'])
-def test_rejected_row_names_the_step_test_winner_and_its_p(tmp_path, plotter):
-    """The grey rejection row of every trajectory plotter names the feature the
-    step test turned down, with that test's adjusted p, even when another
-    candidate ranks better on the figure's display metric."""
+def test_selection_summary_numbers_steps_and_names_features_inside_bars(tmp_path):
+    """The single-target selection summary numbers its rows by step (the
+    rejected step takes the next number), writes each added feature inside its
+    bar with its change in the metric and no p-value, names the feature the
+    step test turned down on the rejected row even when another candidate
+    ranks better on the display metric, and draws one fold-scatter column per
+    accepted step on the right panel."""
 
     rng = np.random.default_rng(91)
-    if plotter == 'onset':
-        pkl = _write_selection_pickle(tmp_path, rng)
-        _plant_rejected_step_test(pkl, 'candidates')
-        fig = plot_model_selection_results(selection_results_path=pkl, metric_secondary='auc',
-                                           feature_label_overrides=_REJECTED_ROW_LABELS)[0]
-    elif plotter == 'multinomial':
+    pkl = _write_selection_pickle(tmp_path, rng)
+    _plant_rejected_step_test(pkl, 'candidates')
+    fig = plot_model_selection_results(selection_results_path=pkl, metric_secondary='auc',
+                                       feature_label_overrides=_REJECTED_ROW_LABELS)[0]
+    ax_traj, ax_right = fig.axes[0], fig.axes[1]
+    tick_labels = [tick.get_text() for tick in ax_traj.get_yticklabels()]
+    bar_texts = [text.get_text() for text in ax_traj.texts]
+    right_ticks = [tick.get_text() for tick in ax_right.get_xticklabels()]
+    n_scatter_columns = len(ax_right.collections)
+    ylabel = ax_traj.get_ylabel()
+    right_xlabel = [text.get_text() for text in ax_right.texts][0]
+    plt.close('all')
+    n_accepted = len(bar_texts) - 1
+    assert tick_labels == [str(k) for k in range(1, n_accepted + 2)]
+    assert ylabel == right_xlabel == 'Model selection step #'
+    assert bar_texts[-1].startswith('TESTED  (Δ ')
+    assert not any('DECOY' in text for text in bar_texts)
+    assert not any('p=' in text for text in bar_texts + tick_labels)
+    assert all('(Δ ' in text for text in bar_texts)
+    assert right_ticks == [str(k) for k in range(1, n_accepted + 1)]
+    assert n_scatter_columns == n_accepted
+
+
+@pytest.mark.filterwarnings("ignore:FigureCanvasAgg is non-interactive:UserWarning")
+@pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
+@pytest.mark.parametrize('plotter', ['multinomial', 'manifold'])
+def test_rejected_row_names_the_step_test_winner_and_its_p(tmp_path, plotter):
+    """The grey rejection row of the multinomial and manifold trajectory
+    plotters names the feature the step test turned down, with that test's
+    adjusted p, even when another candidate ranks better on the figure's
+    display metric."""
+
+    rng = np.random.default_rng(91)
+    if plotter == 'multinomial':
         pkl = _write_multinomial_selection_pickle(tmp_path, rng)
         _plant_rejected_step_test(pkl, 'candidates_summary')
         fig = plot_multinomial_selection_trajectory(selection_results_path=pkl, metric_primary='auc',

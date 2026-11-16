@@ -1442,7 +1442,7 @@ class FeatureZoo:
         "squeak_rate": "squeak rate",
         # dyadic distances (sex-neutral)
         "nose-nose": "partner distance",
-        "head-head": "inter-partner distance",
+        "head-head": "self-partner distance",
         "TTI-TTI": "TTI-TTI distance",
         "nose-TTI": "nose-TTI distance",
         "TTI-nose": "TTI-nose distance",
