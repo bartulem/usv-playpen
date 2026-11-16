@@ -3528,8 +3528,11 @@ generator seeded with ``model_validation.random_seed``, never from NumPy's globa
 held-out score's null and the model selections' held-out nulls follow the same rule.
 
 After the array finishes, merge the per-feature pickles into a single artifact.
-``consolidate_univariate`` asserts metadata equality across every pickle
-(guarding against stray files from a different run), hoists the agreed
+``consolidate_univariate`` asserts ``_input_metadata`` equality across every
+pickle (guarding against stray files from a different extraction); a differing
+``_run_metadata``, as left by a task re-run under a newer package version,
+prints a warning and is recorded per feature in
+``_consolidation_metadata.run_metadata_mismatches``. It hoists the agreed
 ``_input_metadata`` / ``_run_metadata`` / ``_consolidation_metadata`` blocks to the
 top, and emits a self-describing filename:
 
@@ -3788,11 +3791,11 @@ mismatch stops the univariate task, or the selection (for the univariate file
 as well as the input pickle), at load time with exit status 1 and a message
 naming the type to rerun with; an artifact that does not record the field is
 not checked. Consolidate the model-selection steps with
-``consolidate_model_selection`` (the same metadata hoisting as the univariate
-consolidator above; ``_input_metadata`` and ``_univariate_metadata`` must agree
-across step files, while a differing ``_run_metadata``, as left by a selection
-resumed under a newer package version, prints a warning, keeps step 0's block
-and is recorded per step in ``_consolidation_metadata.run_metadata_mismatches``):
+``consolidate_model_selection`` (the same metadata hoisting and the same
+warning for a differing ``_run_metadata`` as the univariate consolidator above,
+as left by a selection resumed under a newer package version: step 0's block is
+kept and each differing step is recorded; ``_input_metadata`` and
+``_univariate_metadata`` must agree across step files):
 
 .. code-block:: python
 

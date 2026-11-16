@@ -169,17 +169,42 @@ class TestUnivariateConsolidate:
         _write_pkl(tmp_path / 'univariate_tag_0002_c.pkl', _univariate_feature_pkl('feat_c', md_in, md_run))
         assert Path(cuv.consolidate(str(tmp_path))).is_file()
 
-    def test_metadata_mismatch_raises(self, tmp_path):
-        """A per-feature file disagreeing on a run-level metadata key
-        aborts the merge with ``ValueError``."""
+    def test_run_metadata_mismatch_warns_and_is_recorded(self, tmp_path, capsys):
+        """A per-feature file disagreeing on a run-level metadata key (a
+        task re-run under a newer package version) does not abort the
+        merge: the consolidator prints a warning, hoists the first file's
+        block, and records the differing feature in
+        ``run_metadata_mismatches``."""
 
         md_in, md_run = self._md()
         _write_pkl(tmp_path / 'univariate_tag_0000_a.pkl',
                    _univariate_feature_pkl('feat_a', md_in, md_run))
         _write_pkl(tmp_path / 'univariate_tag_0001_b.pkl',
                    _univariate_feature_pkl('feat_b', md_in, {'split_strategy': 'session'}))
-        with pytest.raises(ValueError, match='`_run_metadata` mismatch'):
-            cuv.consolidate(str(tmp_path))
+        out_path = cuv.consolidate(str(tmp_path))
+        assert 'WARNING: `_run_metadata` of univariate_tag_0001_b.pkl' in capsys.readouterr().out
+        with Path(out_path).open('rb') as fh:
+            cons = pickle.load(fh)
+        assert {'feat_a', 'feat_b'} <= set(cons)
+        assert cons['_run_metadata'] == md_run
+        mismatches = cons['_consolidation_metadata']['run_metadata_mismatches']
+        assert [m['feature'] for m in mismatches] == ['feat_b']
+        assert mismatches[0]['file'] == 'univariate_tag_0001_b.pkl'
+        assert any('split_strategy' in d for d in mismatches[0]['differences'])
+
+    def test_matching_run_metadata_records_no_mismatch(self, tmp_path):
+        """Per-feature files that agree on run-level metadata leave
+        ``run_metadata_mismatches`` empty."""
+
+        md_in, md_run = self._md()
+        _write_pkl(tmp_path / 'univariate_tag_0000_a.pkl',
+                   _univariate_feature_pkl('feat_a', md_in, md_run))
+        _write_pkl(tmp_path / 'univariate_tag_0001_b.pkl',
+                   _univariate_feature_pkl('feat_b', md_in, md_run))
+        out_path = cuv.consolidate(str(tmp_path))
+        with Path(out_path).open('rb') as fh:
+            cons = pickle.load(fh)
+        assert cons['_consolidation_metadata']['run_metadata_mismatches'] == []
 
     def test_input_metadata_mismatch_raises(self, tmp_path):
         """A per-feature file disagreeing on an ``_input_metadata`` key
