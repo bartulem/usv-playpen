@@ -599,11 +599,11 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             # Window starts are the same for every column of the session (one
             # recording length, one set of event times): cut them once.
             usv_starts, _ = valid_window_starts(
-                np.round(np.asarray(usv_event_times, dtype=float) * session_sampling_rate).astype(int),
+                np.floor(np.asarray(usv_event_times, dtype=float) * session_sampling_rate).astype(int),
                 history_frames, session_n_frames,
             )
             no_usv_starts, _ = valid_window_starts(
-                np.round(np.asarray(no_usv_event_times, dtype=float) * session_sampling_rate).astype(int),
+                np.floor(np.asarray(no_usv_event_times, dtype=float) * session_sampling_rate).astype(int),
                 history_frames, session_n_frames,
             )
             session_window_starts[beh_session_id] = {
