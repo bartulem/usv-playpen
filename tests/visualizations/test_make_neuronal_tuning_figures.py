@@ -71,6 +71,7 @@ from usv_playpen.visualizations.make_neuronal_tuning_figures import (
     NeuronalTuningFigureMaker,
     _category_class_count,
     load_qlvm_category_segmentation,
+    playback_speaker_position_cm,
 )
 
 
@@ -268,7 +269,8 @@ def _make_visualizations_parameters() -> dict:
     each is touched), a `figures` block (PDF output, dpi, seed and the
     colormaps, read directly by the figure maker) and the shipped
     `neuronal_tuning_figures` block (the bout panels' binning, smoothing and
-    contour settings).
+    contour settings) and the QLVM category colours
+    (the zoom panel's USV row).
 
     Parameters
     ----------
@@ -285,6 +287,7 @@ def _make_visualizations_parameters() -> dict:
         "figures":       {"sequential_cmap": "inferno", "diverging_cmap": "BrBG_r",
                           "fig_format": "pdf", "dpi": 300, "seed": 0, "timestamp_in_name": False},
         "neuronal_tuning_figures": _SHIPPED_VIZ_SETTINGS["neuronal_tuning_figures"],
+        "qlvm_figures": {"category_colors": _SHIPPED_VIZ_SETTINGS["qlvm_figures"]["category_colors"]},
     }
 
 
@@ -1665,6 +1668,7 @@ def _make_aggregate_visualizations_parameters() -> dict:
         "figures":           {"sequential_cmap": "inferno", "diverging_cmap": "BrBG_r",
                               "fig_format": "png", "dpi": 80, "seed": 0, "timestamp_in_name": False},
         "neuronal_tuning_figures": _SHIPPED_VIZ_SETTINGS["neuronal_tuning_figures"],
+        "qlvm_figures": {"category_colors": _SHIPPED_VIZ_SETTINGS["qlvm_figures"]["category_colors"]},
     }
 
 
@@ -3737,3 +3741,92 @@ def test_watershed_label_sits_in_the_largest_piece_of_a_split_category():
     assert settings["qlvm_label_inset"] <= label_y <= 1.0 - settings["qlvm_label_inset"]
     assert labels["1"].get_fontsize() == settings["qlvm_category_label_fontsize"]
     assert labels["1"].get_color() == settings["ink_color"]
+
+
+# Playback sessions: the speaker marker, the playback page and the PDF page sizes
+
+
+@pytest.mark.parametrize(("session", "code", "expected"), [
+    ("20250911_202056", "EPQL1MS", (0.0, -33.4)),
+    ("20241122_174447", "EPQL1MS", (-33.4, -33.4)),
+    ("20250911_194127", "EUQD1MS", None),
+])
+def test_playback_speaker_position_follows_code_and_year(tmp_path, session, code, expected):
+    """Playback sessions get the speaker of their year; any other session gets none."""
+    root = tmp_path / session
+    root.mkdir()
+    (root / f"{session}_metadata.yaml").write_text(f"Session:\n  session_experiment_code: {code}\n")
+    assert playback_speaker_position_cm(str(root)) == expected
+
+
+def _playback_payload(rng: np.random.Generator) -> dict:
+    """
+    Description
+    -----------
+    A small `playback_response` block with random rasters, enough for the
+    playback page to draw every panel.
+
+    Parameters
+    ----------
+    rng (np.random.Generator)
+        Random generator.
+
+    Returns
+    -------
+    payload (dict)
+        The block.
+    """
+
+    def block(n_rows, window, bin_seconds):
+        rows = [np.sort(rng.uniform(window[0], window[1], 20)).astype(np.float32) for _ in range(n_rows)]
+        edges = np.arange(window[0], window[1] + bin_seconds / 2, bin_seconds)
+        return {"rows": rows, "window": window, "durations": rng.uniform(0.05, 1.0, n_rows),
+                "bin_edges": edges, "bin_centers": 0.5 * (edges[:-1] + edges[1:]),
+                "rate_mean": rng.uniform(5, 10, edges.size - 1), "rate_sem": rng.uniform(0.1, 1, edges.size - 1)}
+
+    usv = block(40, (-0.1, 0.25), 0.005)
+    usv["position_in_bout"] = np.tile([1, 2, 3, 4], 10)
+    window_rate = {"mean": 8.0, "sem": 0.5, "n": 30, "seconds": (-0.06, -0.02), "clean": True}
+    return {
+        "n_bouts": 10, "n_bouts_modulation": 9, "n_usvs": 40, "n_shuffles": 10,
+        "bout_onset": block(10, (-2.0, 3.0), 0.02),
+        "bout_offset": block(10, (-2.0, 3.0), 0.02),
+        "usv_onset": usv,
+        "peri_onset": {"baseline": {**window_rate, "seconds": (-4.0, -0.5)}, "prior": window_rate,
+                       "usv": {**window_rate, "seconds": (-0.02, 0.02), "clean": False},
+                       "post": {**window_rate, "seconds": (0.02, 0.06)}},
+        "modulation": {"index": 0.1, "p_two_sided": 0.2, "fr_sound_per_bout": rng.uniform(5, 15, 9),
+                       "fr_silence_per_bout": rng.uniform(5, 15, 9)},
+    }
+
+
+def test_render_playback_page_draws_every_panel_once(tmp_path):
+    """The playback page draws its five panels and hands one figure to save_fig."""
+    maker = NeuronalTuningFigureMaker(root_directory=str(tmp_path),
+                                      visualizations_parameter_dict=_make_visualizations_parameters(),
+                                      message_output=lambda *_a, **_k: None)
+    saved = []
+    maker._render_playback_page("unit", _playback_payload(np.random.default_rng(0)),
+                                lambda fig, label: saved.append((fig, label)))
+    assert [label for _, label in saved] == ["playback"]
+    titles = [ax.get_title() for ax in saved[0][0].axes if ax.get_title()]
+    assert titles == ["(a) Bout onset", "(b) Bout offset", "(c) USV onset (first in bout at top)",
+                      "(d) Baseline and peri-onset firing", "(e) Playback modulation"]
+    plt.close(saved[0][0])
+
+
+def test_write_uniform_pdf_pages_share_width_and_keep_their_heights(tmp_path):
+    """Every page takes the widest page's width; each keeps its own height."""
+    small = plt.figure(figsize=(4.0, 2.0))
+    small.add_subplot().plot([0, 1], [0, 1])
+    large = plt.figure(figsize=(8.0, 6.0))
+    large.add_subplot().plot([0, 1], [1, 0])
+    out_path = tmp_path / "unit.pdf"
+    NeuronalTuningFigureMaker._write_uniform_pdf(out_path, [small, large], dpi=72)
+    boxes = [tuple(float(v) for v in m.groups())
+             for m in re.finditer(rb"/MediaBox \[\s*([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+)\s*\]", out_path.read_bytes())]
+    assert len(boxes) == 2
+    widths = [box[2] - box[0] for box in boxes]
+    heights = [box[3] - box[1] for box in boxes]
+    assert widths[0] == pytest.approx(widths[1])
+    assert heights[0] < heights[1]

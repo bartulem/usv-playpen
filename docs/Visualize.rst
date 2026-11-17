@@ -227,7 +227,7 @@ The rendering-side knobs live in the project-wide ``figures`` block of */usv-pla
 
    :Options: a positive integer, in dots per inch
    :Default: ``300``
-   :Notes: ``fig_format``, ``dpi``, ``seed`` and ``sequential_cmap`` are read directly by the neuronal tuning figures: a settings file missing any of them raises ``KeyError`` instead of drawing at a substituted value.
+   :Notes: ``dpi``, ``seed`` and ``sequential_cmap`` are read directly by the neuronal tuning figures: a settings file missing any of them raises ``KeyError`` instead of drawing at a substituted value. With ``pdf`` they write every page of a unit into one multi-page ``<unit>_neuronal_tuning.pdf`` (all pages one width, each its own height); any other format writes one file per page.
 
 .. _vis-figures-timestamp-in-name:
 
@@ -435,6 +435,10 @@ These blocks hold the analysis choices, sizes, colours and statistical levels of
       "light_color": "#CCCCCC",
       "hatch_color": "#BBBBBB",
       "vocal_page_figsize_inches": [16.0, 27.0],
+      "playback_page_figsize_inches": [16.0, 10.0],
+      "playback_sound_color": "#E69F00",
+      "playback_rate_color": "#000000",
+      "playback_rate_smooth_bins": 2.0,
       "behavioral_page_width_inches": 16.0,
       "behavioral_row_height_inches": 2.6,
       "region_grid_figsize_inches": [14.0, 6.4],
@@ -692,10 +696,14 @@ These blocks hold the analysis choices, sizes, colours and statistical levels of
       * ``dash_color`` — dashed references and "no data" notes; ``#888888``
       * ``light_color`` — unassigned-USV bars and their legend; ``#CCCCCC``
       * ``hatch_color`` — hatch edges; ``#BBBBBB``
+      * ``playback_sound_color`` — the played sound on the playback page (row shading, the peri-onset bars, the per-bout points); ``#E69F00``
+      * ``playback_rate_color`` — the mean firing rate and its SEM band drawn over each playback raster; ``#000000``
+      * ``playback_rate_smooth_bins`` — the Gaussian (in bins) smoothing the mean firing rate drawn over each playback raster; ``2.0``
 
       **Figure sizes in inches:**
 
       * ``vocal_page_figsize_inches`` — the one-page vocal layout; 16 x 27
+      * ``playback_page_figsize_inches`` — the playback page of a playback session (rasters and mean rates around bout onsets, bout offsets and USV onsets, the baseline and peri-onset firing rates, the modulation index); 16 x 10
       * ``behavioral_page_width_inches`` / ``behavioral_row_height_inches`` — 16 wide, 2.6 per feature row, at least one row: sized so 8 / 9 pt fonts fit
       * ``region_grid_figsize_inches`` — every 2 x 4 per-region grid; 14 x 6.4
       * ``sign_flip_figsize_inches`` — 10 x 5.4
@@ -2718,7 +2726,7 @@ The layout / sampling knobs live in the ``embedding_thumbnails`` block of */usv-
         "tile_orientation": "vertical",
         "apply_mask": true,
         "mask_excluded_categories": [],
-        "category_colors": null,
+        "category_colors": {"1": "#BBEBF1", "2": "#5CB8C4", "3": "#008591", "4": "#00515A"},
         "sampling_method": "spiral",
         "draw_cluster_boundaries": true,
         "draw_spiral_overlay": false,
@@ -2767,7 +2775,7 @@ The layout / sampling knobs live in the ``embedding_thumbnails`` block of */usv-
      - ``[]``
      - list of category numbers
    * - :ref:`category_colors <vis-embedding-thumbnails-category-colors>`
-     - ``null``
+     - the cyan scale below
      - ``null`` (auto), or ``{"1": "#RRGGBB", ...}``
    * - :ref:`scatter_max_points <vis-embedding-thumbnails-scatter-max-points>`
      - ``200000``
@@ -2897,7 +2905,8 @@ Core keys:
    :Options:
       * ``null`` — auto
       * ``{"1": "#RRGGBB", ...}`` — explicit colours
-   :Default: ``null``
+   :Default: ``{"1": "#BBEBF1", "2": "#5CB8C4", "3": "#008591", "4": "#00515A"}``
+   :Notes: the same colours as ``qlvm_figures.category_colors``: one cyan, light to dark, in the order of rising complexity (R-1 simple, R-2 biphones, R-3 intermediate, R-4 complex; duration, spectral entropy and mask count all rise in that order).
 
 .. _vis-embedding-thumbnails-scatter-max-points:
 
@@ -3809,7 +3818,7 @@ The ``qlvm_figures`` block (the seed is ``figures.seed`` and the colormap ``figu
             "/mnt/falkner/Bartul/spectrograms/qlvm/seeds/seed1234"
         ],
         "watershed_levels_file": "/mnt/falkner/Bartul/spectrograms/qlvm/watershed_levels.npz",
-        "category_colors": ["#4E79A7", "#F28E2B", "#59A14F", "#E15759"],
+        "category_colors": ["#BBEBF1", "#5CB8C4", "#008591", "#00515A"],
         "overview": {
             "n_examples": 10,
             "spiral_radius": 0.03,
@@ -3973,7 +3982,8 @@ The ``qlvm_figures`` block (the seed is ``figures.seed`` and the colormap ``figu
    One hex colour per category (R-1 … R-k in order).
 
    :Options: a list of hex colour strings, one per category
-   :Default: ``["#4E79A7", "#F28E2B", "#59A14F", "#E15759"]``
+   :Default: ``["#BBEBF1", "#5CB8C4", "#008591", "#00515A"]``
+   :Notes: one cyan hue whose lightness falls with the categories' complexity (R-1 simple, R-2 biphones, R-3 intermediate, R-4 complex; median duration, spectral entropy and mask count all rise in that order), in equal steps (CIEDE2000 ≈ 15-18 between neighbours, 16 for the lightest against white). Also read by the neural-modeling plots and the neuronal tuning figures' USV row.
 
 .. _vis-qlvm-figures-overview:
 
