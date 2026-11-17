@@ -218,6 +218,24 @@ Process
       --apply-phase-shift / --no-apply-phase-shift
                             De-skew each AP binary for the Neuropixels ADC sample-time offset (in place).
 
+``align-usv-playback``
+``align-usv-playback`` is the command-line interface for placing the played USVs of a playback session on the session timeline (see *Align USV playback* in the processing docs). Sessions whose experimental code is not a playback code (P) are skipped.
+
+.. code-block:: text
+
+    usage: align-usv-playback [-h] --root-directory PATH
+                              [--playback-directory PATH] [--ttl-device {m,s}]
+                              [--ttl-channel INTEGER]
+
+    required arguments:
+      --root-directory      Session root directory path.
+
+    optional arguments:
+      -h, --help            Show this help message and exit.
+      --playback-directory  Directory holding the playback WAVs and their _spacing.txt / _usvids.txt side-cars.
+      --ttl-device          USGH device recording the playback TTL.
+      --ttl-channel         USGH channel recording the playback TTL (1-based).
+
 ``hpss-audio``
 ``hpss-audio`` is the command-line interface for performing Harmonic-Percussive Source Separation (HPSS) on audio files.
 
@@ -1546,7 +1564,7 @@ Visualize
 ---------
 
 ``generate-rm-figs``
-``generate-rm-figs`` is the command-line interface for rendering the per-cluster neuronal tuning figures from existing pkls. Each cluster gets one combined output (behavioral pages + one vocal page per emitter, the QLVM category row at its bottom). The output file format and ratemap colormap are read from ``visualizations_settings.json`` under the shared ``figures`` block; compute-time knobs (``smoothing_sd``, ``behavioral_min_occupancy_seconds``) live on the analyses side and are read from each pkl's ``behavioral_metadata`` block at render time.
+``generate-rm-figs`` is the command-line interface for rendering the per-cluster neuronal tuning figures from existing pkls. Each cluster gets one combined output (behavioral pages + one vocal page per emitter, the QLVM category row at its bottom). The output file format and ratemap colormap are read from ``visualizations_settings.json`` under the shared ``figures`` block; compute-time knobs (``smoothing_sd``, ``behavioral_min_occupancy_seconds``) live on the analyses side and are read from each pkl's ``behavioral_metadata`` block at render time. The QLVM category row reads the category bundle under ``os_utils.SPECTROGRAMS_DIRECTORY`` (the lab spectrograms share); on a machine that cannot see that share, copy its ``categories/`` folder over and set the ``USV_PLAYPEN_SPECTROGRAMS_DIRECTORY`` environment variable to the folder holding it (the ratemaps cluster template exports it from its ``SPECTROGRAMS_DIRECTORY`` setting). In playback sessions (experimental code with P) the 2D occupancy panels mark the speaker with a dot (``PLAYBACK_SPEAKER_POSITION_CM``, by session year: the West corner in 2024, the middle of the south-west wall from 2025), pinned to the map's edge since the wall lies just outside the binned square.
 
 .. code-block:: text
 

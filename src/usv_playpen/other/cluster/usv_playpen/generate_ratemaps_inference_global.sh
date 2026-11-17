@@ -14,12 +14,20 @@
 # experimenter-scoped *_settings.json paths are re-keyed to it automatically --
 # no TOML edit needed.
 EXPERIMENTER_ID="Name"
-CPUS_PER_TASK=2
+# generate-rm and generate-rm-figs run on one core; a 1,250-unit session peaked at
+# ~10 GB and needs ~23 h for its behavioral tuning alone, so the limit leaves
+# room for the vocal tuning and the figures.
+CPUS_PER_TASK=1
 TOTAL_MEMORY="16G"
-TIME_RESTRICTION="18:00:00"
+TIME_RESTRICTION="72:00:00"
 EMAIL_ADDRESS="nsurname@domain.edu"
 EMAIL_TYPE="ALL"
 USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen"
+
+# Folder holding the QLVM category bundle (categories/) the figures draw; copy it
+# from the lab spectrograms directory when the cluster cannot see that share.
+# Empty keeps the lab path.
+SPECTROGRAMS_DIRECTORY=""
 
 # Most array tasks allowed to run at once (empty for no limit).
 MAX_CONCURRENT_TASKS=""
@@ -74,6 +82,7 @@ echo "Array task \$SLURM_ARRAY_TASK_ID: \$SESSION_ROOT_DIRECTORY"
 
 source $USV_PLAYPEN_PATH/.venv/bin/activate
 export EXPERIMENTER_ID="$EXPERIMENTER_ID"
+export USV_PLAYPEN_SPECTROGRAMS_DIRECTORY="$SPECTROGRAMS_DIRECTORY"
 
 generate-rm --root-directory "\$SESSION_ROOT_DIRECTORY"
 generate-rm-figs --root-directory "\$SESSION_ROOT_DIRECTORY"
