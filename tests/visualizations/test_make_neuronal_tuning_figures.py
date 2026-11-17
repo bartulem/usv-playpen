@@ -3016,6 +3016,7 @@ def _bout_page_grid(figure: Figure) -> gridspec.GridSpec:
     return gridspec.GridSpec(nrows=3, ncols=tuning_figures.VOCAL_PAGE_COLUMNS, figure=figure)
 
 
+@pytest.mark.usefixtures("qlvm_category_bundle")
 def test_bout_onset_panels_draw_session_zoom_scatter_and_raster(tmp_path):
     """
     Description
@@ -3052,6 +3053,7 @@ def test_bout_onset_panels_draw_session_zoom_scatter_and_raster(tmp_path):
     assert len(figure.axes) == 5
 
 
+@pytest.mark.usefixtures("qlvm_category_bundle")
 def test_bout_onset_panels_without_payload_or_bouts_say_so(tmp_path):
     """
     Description
